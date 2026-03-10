@@ -1,54 +1,49 @@
-#!/usr/bin/env -S uv run --script
-#
-# /// script
-# requires-python = ">=3.12"
-# dependencies = ["httpx", "websockets"]
-# ///
+#!/usr/bin/env python3
 """
-Execute a command in a sandbox and stream stdout.
+Execute a command in a sandbox and stream output.
 
 Usage:
-    ./sandbox_exec.py --control-plane http://localhost:8080 --sandbox-id <id> --exec "echo hello"
+    ./sandbox_exec.py --target localhost:50051 --sandbox-id <id> --exec "echo hello"
 """
 
 import argparse
-import asyncio
 import shlex
+import sys
 
 from sandbox import SandboxClient
 
 
-async def main() -> None:
-    parser = argparse.ArgumentParser(description="Execute a command in a sandbox and stream stdout")
-    parser.add_argument("--control-plane", required=True, help="Control plane URI (e.g., http://localhost:8080)")
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Execute a command in a sandbox and stream output")
+    parser.add_argument("--target", required=True, help="gRPC target (e.g., localhost:50051)")
     parser.add_argument("--sandbox-id", required=True, help="Sandbox ID")
     parser.add_argument("--exec", required=True, dest="command", help="Command to execute")
+    parser.add_argument("--workdir", help="Working directory")
+    parser.add_argument("--timeout", type=int, help="Timeout in seconds")
     args = parser.parse_args()
 
-    client = SandboxClient(args.control_plane)
+    client = SandboxClient(args.target)
     sandbox = client.get(id=args.sandbox_id)
 
-    # Parse the command string into command + args
     parts = shlex.split(args.command)
     command = parts[0]
     command_args = parts[1:] if len(parts) > 1 else []
 
-    # Start the exec (this triggers the process)
-    # We need to run exec and listen concurrently
-    async def run_exec() -> None:
-        # Run exec in a thread since it's synchronous
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, lambda: sandbox.exec(command, *command_args))
-        if result.error:
-            print(f"Error: {result.error}")
-
-    async def listen_stdout() -> None:
-        async for data in sandbox.stdout.listen():
-            print(data, end="", flush=True)
-
-    # Run both concurrently - exec triggers the command, listen gets the output
-    await asyncio.gather(run_exec(), listen_stdout())
+    for event in sandbox.exec_stream(
+        command, *command_args,
+        timeout_secs=args.timeout,
+        workdir=args.workdir,
+    ):
+        if event.stdout:
+            print(event.stdout, end="", flush=True)
+        if event.stderr:
+            print(event.stderr, end="", file=sys.stderr, flush=True)
+        if event.is_error:
+            print(f"Error: {event.error_code}: {event.error_message}", file=sys.stderr)
+            sys.exit(1)
+        if event.is_exited:
+            sys.exit(event.exit_code or 0)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

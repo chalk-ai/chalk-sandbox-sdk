@@ -1,40 +1,58 @@
-#!/usr/bin/env -S uv run --script
-#
-# /// script
-# requires-python = ">=3.12"
-# dependencies = ["websockets"]
-# ///
+#!/usr/bin/env python3
 """
-Subscribe to a sandbox's stdout via WebSocket.
+Execute a command in a sandbox interactively, with stdin support.
 
 Usage:
-    ./sandbox_stdout.py --control-plane http://localhost:8080 --sandbox-id <id>
+    ./sandbox_stdout.py --target localhost:50051 --sandbox-id <id> --exec "bash"
 """
 
 import argparse
-import asyncio
+import shlex
+import sys
+import threading
 
-import websockets
+from sandbox import SandboxClient
 
 
-async def main() -> None:
-    parser = argparse.ArgumentParser(description="Subscribe to a sandbox's stdout")
-    parser.add_argument("--control-plane", required=True, help="Control plane URI (e.g., http://localhost:8080)")
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Execute a command interactively in a sandbox")
+    parser.add_argument("--target", required=True, help="gRPC target (e.g., localhost:50051)")
     parser.add_argument("--sandbox-id", required=True, help="Sandbox ID")
+    parser.add_argument("--exec", required=True, dest="command", help="Command to execute")
     args = parser.parse_args()
 
-    # Convert HTTP URL to WebSocket URL
-    base = args.control_plane.rstrip("/")
-    ws_url = base.replace("http://", "ws://").replace("https://", "wss://")
-    url = f"{ws_url}/v1/sandboxes/{args.sandbox_id}/stdout"
+    client = SandboxClient(args.target)
+    sandbox = client.get(id=args.sandbox_id)
 
-    async with websockets.connect(url) as ws:
-        async for message in ws:
-            if isinstance(message, bytes):
-                print(message.decode("utf-8"), end="", flush=True)
-            else:
-                print(message, end="", flush=True)
+    parts = shlex.split(args.command)
+    command = parts[0]
+    command_args = parts[1:] if len(parts) > 1 else []
+
+    process = sandbox.exec_start(command, *command_args)
+
+    # Read stdin in a background thread
+    def read_stdin() -> None:
+        try:
+            for line in sys.stdin:
+                process.write_stdin(line)
+            process.close_stdin()
+        except Exception:
+            process.close_stdin()
+
+    stdin_thread = threading.Thread(target=read_stdin, daemon=True)
+    stdin_thread.start()
+
+    for event in process.output():
+        if event.stdout:
+            print(event.stdout, end="", flush=True)
+        if event.stderr:
+            print(event.stderr, end="", file=sys.stderr, flush=True)
+        if event.is_error:
+            print(f"Error: {event.error_code}: {event.error_message}", file=sys.stderr)
+            sys.exit(1)
+        if event.is_exited:
+            sys.exit(event.exit_code or 0)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

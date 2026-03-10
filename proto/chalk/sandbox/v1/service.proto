@@ -1,0 +1,180 @@
+syntax = "proto3";
+
+package chalk.sandbox.v1;
+
+// ExecRequest is the bidirectional streaming request for executing commands in a sandbox.
+// The first message must be an init message with sandbox_id and command details.
+// Subsequent messages contain stdin data, stdin EOF, or signals.
+message ExecRequest {
+  oneof message {
+    // Initial request to start command execution
+    ExecInit init = 1;
+
+    // Stdin data to send to the process
+    StdinData stdin_data = 2;
+
+    // Signal that stdin is closed
+    StdinEof stdin_eof = 3;
+
+    // Send a signal to the process
+    ExecSignal signal = 4;
+  }
+}
+
+// Initial configuration for executing a command in a sandbox
+message ExecInit {
+  // The sandbox to execute the command in
+  string sandbox_id = 1;
+
+  // The command to execute
+  string command = 2;
+
+  // Arguments to the command
+  repeated string args = 3;
+
+  // Optional working directory
+  optional string workdir = 4;
+
+  // Optional environment variables
+  map<string, string> env = 5;
+
+  // Optional timeout in seconds
+  optional uint64 timeout_secs = 6;
+}
+
+// Stdin data to send to the running process
+message StdinData {
+  bytes data = 1;
+}
+
+// Signal that stdin is closed
+message StdinEof {}
+
+// Send a signal to the running process
+message ExecSignal {
+  int32 signal = 1;
+}
+
+// ExecResponse is the bidirectional streaming response for command execution.
+message ExecResponse {
+  oneof message {
+    // Process has started
+    ProcessStarted process_started = 1;
+
+    // Output data from stdout or stderr
+    OutputData output_data = 2;
+
+    // Process has exited
+    ProcessExited process_exited = 3;
+
+    // An error occurred
+    ExecError error = 4;
+  }
+}
+
+// Notification that the process has started
+message ProcessStarted {
+  uint32 pid = 1;
+}
+
+// Output data from the process
+message OutputData {
+  enum Stream {
+    STREAM_UNSPECIFIED = 0;
+    STREAM_STDOUT = 1;
+    STREAM_STDERR = 2;
+  }
+
+  Stream stream = 1;
+  bytes data = 2;
+}
+
+// Notification that the process has exited
+message ProcessExited {
+  optional int32 exit_code = 1;
+  optional int32 signal = 2;
+}
+
+// Error from sandbox execution
+message ExecError {
+  string code = 1;
+  string message = 2;
+}
+
+// Request to create a new sandbox
+message CreateSandboxRequest {
+  // Container image to use for the sandbox
+  string image = 1;
+
+  // Optional resource limits
+  optional ResourceLimits resource_limits = 2;
+
+  // Optional environment variables to inject
+  map<string, string> env = 3;
+
+  // Optional name for the sandbox
+  optional string name = 4;
+}
+
+// Resource limits for the sandbox
+message ResourceLimits {
+  optional string cpu = 1;
+  optional string memory = 2;
+}
+
+// Response from creating a sandbox
+message CreateSandboxResponse {
+  SandboxInfo sandbox = 1;
+}
+
+// Request to terminate a sandbox
+message TerminateSandboxRequest {
+  string sandbox_id = 1;
+  optional int32 grace_period_seconds = 2;
+}
+
+// Response from terminating a sandbox
+message TerminateSandboxResponse {}
+
+// Request to get a sandbox by ID
+message GetSandboxRequest {
+  string sandbox_id = 1;
+}
+
+// Response containing sandbox info
+message GetSandboxResponse {
+  SandboxInfo sandbox = 1;
+}
+
+// Request to list sandboxes
+message ListSandboxesRequest {}
+
+// Response containing a list of sandboxes
+message ListSandboxesResponse {
+  repeated SandboxInfo sandboxes = 1;
+}
+
+// Information about a sandbox
+message SandboxInfo {
+  string id = 1;
+  string state = 2;
+  string created_at = 3;
+  optional string name = 4;
+}
+
+service SandboxService {
+  // Exec establishes a bidirectional streaming session to execute commands in a sandbox.
+  rpc Exec(stream ExecRequest) returns (stream ExecResponse);
+
+  // CreateSandbox provisions a new sandbox pod
+  rpc CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse);
+
+  // TerminateSandbox stops and removes a sandbox
+  rpc TerminateSandbox(TerminateSandboxRequest) returns (TerminateSandboxResponse);
+
+  // GetSandbox returns information about a specific sandbox
+  rpc GetSandbox(GetSandboxRequest) returns (GetSandboxResponse);
+
+  // ListSandboxes returns all sandboxes for the current environment
+  rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
+}
