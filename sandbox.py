@@ -30,6 +30,7 @@ from __future__ import annotations
 import queue
 import signal
 import threading
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -38,6 +39,7 @@ import grpc
 
 from chalk.sandbox.v1 import service_pb2 as pb
 from chalk.sandbox.v1 import service_pb2_grpc as pb_grpc
+from image import Image
 
 if TYPE_CHECKING:
     pass
@@ -62,6 +64,11 @@ class SandboxTerminatedError(SandboxError):
     pass
 
 
+class SandboxBuildError(SandboxError):
+    """Raised when a sandbox image build fails."""
+    pass
+
+
 class ExecError(SandboxError):
     """Raised when command execution fails."""
 
@@ -81,6 +88,7 @@ class SandboxInfo:
     state: str
     created_at: str
     name: str | None = None
+    build_id: str | None = None
 
 
 @dataclass
@@ -249,7 +257,8 @@ class Sandbox:
     def _fetch_info(self) -> SandboxInfo:
         try:
             resp = self._client._stub.GetSandbox(
-                pb.GetSandboxRequest(sandbox_id=self._id)
+                pb.GetSandboxRequest(sandbox_id=self._id),
+                metadata=self._client._metadata,
             )
         except grpc.RpcError as e:
             _handle_rpc_error(e, self._id)
@@ -339,7 +348,7 @@ class Sandbox:
                 yield req
 
         try:
-            response_iterator = self._client._stub.Exec(request_iterator())
+            response_iterator = self._client._stub.Exec(request_iterator(), metadata=self._client._metadata)
         except grpc.RpcError as e:
             _handle_rpc_error(e, self._id)
             raise
@@ -356,7 +365,7 @@ class Sandbox:
         if grace_period_seconds is not None:
             req.grace_period_seconds = grace_period_seconds
         try:
-            self._client._stub.TerminateSandbox(req)
+            self._client._stub.TerminateSandbox(req, metadata=self._client._metadata)
         except grpc.RpcError as e:
             _handle_rpc_error(e, self._id)
             raise
@@ -404,27 +413,44 @@ class SandboxClient:
 
     def create(
         self,
-        image: str,
+        image: str | Image,
         *,
         name: str | None = None,
         cpu: str | None = None,
         memory: str | None = None,
         env: dict[str, str] | None = None,
+        wait: bool = True,
+        poll_interval: float = 5.0,
+        timeout: float = 600.0,
     ) -> Sandbox:
         """
         Create a new sandbox.
 
+        When *image* is an Image spec, the server builds it asynchronously and
+        returns a sandbox in the "building" state.  If *wait* is True (the
+        default), this method polls GetSandbox until the sandbox reaches
+        "ready" (or "error").
+
         Args:
-            image: Container image to use
+            image: Container image to use — either a string reference
+                   (e.g. "ubuntu:latest") or a declarative Image builder.
             name: Optional name for the sandbox
             cpu: Optional CPU limit (e.g. "1", "500m")
             memory: Optional memory limit (e.g. "512Mi", "1Gi")
             env: Optional environment variables
+            wait: If True, poll until the sandbox is ready (default True).
+            poll_interval: Seconds between GetSandbox polls (default 5).
+            timeout: Maximum seconds to wait for the sandbox to become ready
+                     (default 600).
 
         Returns:
             A Sandbox handle
         """
-        req = pb.CreateSandboxRequest(image=image)
+        req = pb.CreateSandboxRequest()
+        if isinstance(image, Image):
+            req.image_spec.CopyFrom(image.to_proto())
+        else:
+            req.image = image
         if name is not None:
             req.name = name
         if cpu is not None or memory is not None:
@@ -438,11 +464,54 @@ class SandboxClient:
             for k, v in env.items():
                 req.env[k] = v
 
-        resp = self._stub.CreateSandbox(req)
+        resp = self._stub.CreateSandbox(req, metadata=self._metadata)
         info = _pb_to_sandbox_info(resp.sandbox)
         sandbox = Sandbox(self, info.id)
         sandbox._info = info
+
+        if wait and info.state in ("building", "connecting"):
+            sandbox._info = self._poll_until_ready(
+                sandbox.id,
+                poll_interval=poll_interval,
+                timeout=timeout,
+            )
+
         return sandbox
+
+    def _poll_until_ready(
+        self,
+        sandbox_id: str,
+        *,
+        poll_interval: float,
+        timeout: float,
+    ) -> SandboxInfo:
+        """Poll GetSandbox until the sandbox reaches a terminal state."""
+        deadline = time.monotonic() + timeout
+        while True:
+            if time.monotonic() >= deadline:
+                raise SandboxError(
+                    f"Timed out after {timeout}s waiting for sandbox {sandbox_id} to become ready"
+                )
+            time.sleep(poll_interval)
+            try:
+                resp = self._stub.GetSandbox(
+                    pb.GetSandboxRequest(sandbox_id=sandbox_id),
+                    metadata=self._metadata,
+                )
+            except grpc.RpcError as e:
+                _handle_rpc_error(e, sandbox_id)
+                raise
+            info = _pb_to_sandbox_info(resp.sandbox)
+            if info.state == "ready":
+                return info
+            if info.state == "error":
+                raise SandboxBuildError(
+                    f"Sandbox {sandbox_id} entered error state during image build"
+                )
+            if info.state == "terminated":
+                raise SandboxTerminatedError(
+                    f"Sandbox {sandbox_id} was terminated during image build"
+                )
 
     def get(self, id: str) -> Sandbox:
         """
@@ -454,7 +523,7 @@ class SandboxClient:
 
     def list(self) -> list[SandboxInfo]:
         """List all sandboxes."""
-        resp = self._stub.ListSandboxes(pb.ListSandboxesRequest())
+        resp = self._stub.ListSandboxes(pb.ListSandboxesRequest(), metadata=self._metadata)
         return [_pb_to_sandbox_info(s) for s in resp.sandboxes]
 
 
@@ -468,6 +537,7 @@ def _pb_to_sandbox_info(info: pb.SandboxInfo) -> SandboxInfo:
         state=info.state,
         created_at=info.created_at,
         name=info.name if info.HasField("name") else None,
+        build_id=info.build_id if info.HasField("build_id") else None,
     )
 
 

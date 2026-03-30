@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x1e\x63halk/sandbox/v1/service.proto\x12\x10\x63halk.sandbox.v1\"\xd8\x01\n\x0b\x45xecRequest\x12*\n\x04init\x18\x01 \x01(\x0b\x32\x1a.chalk.sandbox.v1.ExecInitH\x00\x12\x31\n\nstdin_data\x18\x02 \x01(\x0b\x32\x1b.chalk.sandbox.v1.StdinDataH\x00\x12/\n\tstdin_eof\x18\x03 \x01(\x0b\x32\x1a.chalk.sandbox.v1.StdinEofH\x00\x12.\n\x06signal\x18\x04 \x01(\x0b\x32\x1c.chalk.sandbox.v1.ExecSignalH\x00\x42\t\n\x07message\"\xe9\x01\n\x08\x45xecInit\x12\x12\n\nsandbox_id\x18\x01 \x01(\t\x12\x0f\n\x07\x63ommand\x18\x02 \x01(\t\x12\x0c\n\x04\x61rgs\x18\x03 \x03(\t\x12\x14\n\x07workdir\x18\x04 \x01(\tH\x00\x88\x01\x01\x12\x30\n\x03\x65nv\x18\x05 \x03(\x0b\x32#.chalk.sandbox.v1.ExecInit.EnvEntry\x12\x19\n\x0ctimeout_secs\x18\x06 \x01(\x04H\x01\x88\x01\x01\x1a*\n\x08\x45nvEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\x42\n\n\x08_workdirB\x0f\n\r_timeout_secs\"\x19\n\tStdinData\x12\x0c\n\x04\x64\x61ta\x18\x01 \x01(\x0c\"\n\n\x08StdinEof\"\x1c\n\nExecSignal\x12\x0e\n\x06signal\x18\x01 \x01(\x05\"\xf4\x01\n\x0c\x45xecResponse\x12;\n\x0fprocess_started\x18\x01 \x01(\x0b\x32 .chalk.sandbox.v1.ProcessStartedH\x00\x12\x33\n\x0boutput_data\x18\x02 \x01(\x0b\x32\x1c.chalk.sandbox.v1.OutputDataH\x00\x12\x39\n\x0eprocess_exited\x18\x03 \x01(\x0b\x32\x1f.chalk.sandbox.v1.ProcessExitedH\x00\x12,\n\x05\x65rror\x18\x04 \x01(\x0b\x32\x1b.chalk.sandbox.v1.ExecErrorH\x00\x42\t\n\x07message\"\x1d\n\x0eProcessStarted\x12\x0b\n\x03pid\x18\x01 \x01(\r\"\x97\x01\n\nOutputData\x12\x33\n\x06stream\x18\x01 \x01(\x0e\x32#.chalk.sandbox.v1.OutputData.Stream\x12\x0c\n\x04\x64\x61ta\x18\x02 \x01(\x0c\"F\n\x06Stream\x12\x16\n\x12STREAM_UNSPECIFIED\x10\x00\x12\x11\n\rSTREAM_STDOUT\x10\x01\x12\x11\n\rSTREAM_STDERR\x10\x02\"U\n\rProcessExited\x12\x16\n\texit_code\x18\x01 \x01(\x05H\x00\x88\x01\x01\x12\x13\n\x06signal\x18\x02 \x01(\x05H\x01\x88\x01\x01\x42\x0c\n\n_exit_codeB\t\n\x07_signal\"*\n\tExecError\x12\x0c\n\x04\x63ode\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t\"\xff\x01\n\x14\x43reateSandboxRequest\x12\r\n\x05image\x18\x01 \x01(\t\x12>\n\x0fresource_limits\x18\x02 \x01(\x0b\x32 .chalk.sandbox.v1.ResourceLimitsH\x00\x88\x01\x01\x12<\n\x03\x65nv\x18\x03 \x03(\x0b\x32/.chalk.sandbox.v1.CreateSandboxRequest.EnvEntry\x12\x11\n\x04name\x18\x04 \x01(\tH\x01\x88\x01\x01\x1a*\n\x08\x45nvEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\x42\x12\n\x10_resource_limitsB\x07\n\x05_name\"J\n\x0eResourceLimits\x12\x10\n\x03\x63pu\x18\x01 \x01(\tH\x00\x88\x01\x01\x12\x13\n\x06memory\x18\x02 \x01(\tH\x01\x88\x01\x01\x42\x06\n\x04_cpuB\t\n\x07_memory\"G\n\x15\x43reateSandboxResponse\x12.\n\x07sandbox\x18\x01 \x01(\x0b\x32\x1d.chalk.sandbox.v1.SandboxInfo\"i\n\x17TerminateSandboxRequest\x12\x12\n\nsandbox_id\x18\x01 \x01(\t\x12!\n\x14grace_period_seconds\x18\x02 \x01(\x05H\x00\x88\x01\x01\x42\x17\n\x15_grace_period_seconds\"\x1a\n\x18TerminateSandboxResponse\"\'\n\x11GetSandboxRequest\x12\x12\n\nsandbox_id\x18\x01 \x01(\t\"D\n\x12GetSandboxResponse\x12.\n\x07sandbox\x18\x01 \x01(\x0b\x32\x1d.chalk.sandbox.v1.SandboxInfo\"\x16\n\x14ListSandboxesRequest\"I\n\x15ListSandboxesResponse\x12\x30\n\tsandboxes\x18\x01 \x03(\x0b\x32\x1d.chalk.sandbox.v1.SandboxInfo\"X\n\x0bSandboxInfo\x12\n\n\x02id\x18\x01 \x01(\t\x12\r\n\x05state\x18\x02 \x01(\t\x12\x12\n\ncreated_at\x18\x03 \x01(\t\x12\x11\n\x04name\x18\x04 \x01(\tH\x00\x88\x01\x01\x42\x07\n\x05_name2\xe3\x03\n\x0eSandboxService\x12I\n\x04\x45xec\x12\x1d.chalk.sandbox.v1.ExecRequest\x1a\x1e.chalk.sandbox.v1.ExecResponse(\x01\x30\x01\x12`\n\rCreateSandbox\x12&.chalk.sandbox.v1.CreateSandboxRequest\x1a\'.chalk.sandbox.v1.CreateSandboxResponse\x12i\n\x10TerminateSandbox\x12).chalk.sandbox.v1.TerminateSandboxRequest\x1a*.chalk.sandbox.v1.TerminateSandboxResponse\x12W\n\nGetSandbox\x12#.chalk.sandbox.v1.GetSandboxRequest\x1a$.chalk.sandbox.v1.GetSandboxResponse\x12`\n\rListSandboxes\x12&.chalk.sandbox.v1.ListSandboxesRequest\x1a\'.chalk.sandbox.v1.ListSandboxesResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x1e\x63halk/sandbox/v1/service.proto\x12\x10\x63halk.sandbox.v1\"\xd8\x01\n\x0b\x45xecRequest\x12*\n\x04init\x18\x01 \x01(\x0b\x32\x1a.chalk.sandbox.v1.ExecInitH\x00\x12\x31\n\nstdin_data\x18\x02 \x01(\x0b\x32\x1b.chalk.sandbox.v1.StdinDataH\x00\x12/\n\tstdin_eof\x18\x03 \x01(\x0b\x32\x1a.chalk.sandbox.v1.StdinEofH\x00\x12.\n\x06signal\x18\x04 \x01(\x0b\x32\x1c.chalk.sandbox.v1.ExecSignalH\x00\x42\t\n\x07message\"\xe9\x01\n\x08\x45xecInit\x12\x12\n\nsandbox_id\x18\x01 \x01(\t\x12\x0f\n\x07\x63ommand\x18\x02 \x01(\t\x12\x0c\n\x04\x61rgs\x18\x03 \x03(\t\x12\x14\n\x07workdir\x18\x04 \x01(\tH\x00\x88\x01\x01\x12\x30\n\x03\x65nv\x18\x05 \x03(\x0b\x32#.chalk.sandbox.v1.ExecInit.EnvEntry\x12\x19\n\x0ctimeout_secs\x18\x06 \x01(\x04H\x01\x88\x01\x01\x1a*\n\x08\x45nvEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\x42\n\n\x08_workdirB\x0f\n\r_timeout_secs\"\x19\n\tStdinData\x12\x0c\n\x04\x64\x61ta\x18\x01 \x01(\x0c\"\n\n\x08StdinEof\"\x1c\n\nExecSignal\x12\x0e\n\x06signal\x18\x01 \x01(\x05\"\xf4\x01\n\x0c\x45xecResponse\x12;\n\x0fprocess_started\x18\x01 \x01(\x0b\x32 .chalk.sandbox.v1.ProcessStartedH\x00\x12\x33\n\x0boutput_data\x18\x02 \x01(\x0b\x32\x1c.chalk.sandbox.v1.OutputDataH\x00\x12\x39\n\x0eprocess_exited\x18\x03 \x01(\x0b\x32\x1f.chalk.sandbox.v1.ProcessExitedH\x00\x12,\n\x05\x65rror\x18\x04 \x01(\x0b\x32\x1b.chalk.sandbox.v1.ExecErrorH\x00\x42\t\n\x07message\"\x1d\n\x0eProcessStarted\x12\x0b\n\x03pid\x18\x01 \x01(\r\"\x97\x01\n\nOutputData\x12\x33\n\x06stream\x18\x01 \x01(\x0e\x32#.chalk.sandbox.v1.OutputData.Stream\x12\x0c\n\x04\x64\x61ta\x18\x02 \x01(\x0c\"F\n\x06Stream\x12\x16\n\x12STREAM_UNSPECIFIED\x10\x00\x12\x11\n\rSTREAM_STDOUT\x10\x01\x12\x11\n\rSTREAM_STDERR\x10\x02\"U\n\rProcessExited\x12\x16\n\texit_code\x18\x01 \x01(\x05H\x00\x88\x01\x01\x12\x13\n\x06signal\x18\x02 \x01(\x05H\x01\x88\x01\x01\x42\x0c\n\n_exit_codeB\t\n\x07_signal\"*\n\tExecError\x12\x0c\n\x04\x63ode\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t\"\xed\x01\n\tImageSpec\x12\x12\n\nbase_image\x18\x01 \x01(\t\x12*\n\x05steps\x18\x02 \x03(\x0b\x32\x1b.chalk.sandbox.v1.BuildStep\x12\x12\n\nentrypoint\x18\x03 \x03(\t\x12\x0b\n\x03\x63md\x18\x04 \x03(\t\x12\x14\n\x07workdir\x18\x05 \x01(\tH\x00\x88\x01\x01\x12\x31\n\x03\x65nv\x18\x06 \x03(\x0b\x32$.chalk.sandbox.v1.ImageSpec.EnvEntry\x1a*\n\x08\x45nvEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\x42\n\n\x08_workdir\"\x83\x02\n\tBuildStep\x12\x39\n\x0crun_commands\x18\x01 \x01(\x0b\x32!.chalk.sandbox.v1.RunCommandsStepH\x00\x12\x37\n\x0bpip_install\x18\x02 \x01(\x0b\x32 .chalk.sandbox.v1.PipInstallStepH\x00\x12\x31\n\x08\x61\x64\x64_file\x18\x03 \x01(\x0b\x32\x1d.chalk.sandbox.v1.AddFileStepH\x00\x12G\n\x13\x64ockerfile_commands\x18\x04 \x01(\x0b\x32(.chalk.sandbox.v1.DockerfileCommandsStepH\x00\x42\x06\n\x04step\"#\n\x0fRunCommandsStep\x12\x10\n\x08\x63ommands\x18\x01 \x03(\t\"\"\n\x0ePipInstallStep\x12\x10\n\x08packages\x18\x01 \x03(\t\"O\n\x0b\x41\x64\x64\x46ileStep\x12\x13\n\x0b\x64\x65stination\x18\x01 \x01(\t\x12\x0f\n\x07\x63ontent\x18\x02 \x01(\x0c\x12\x11\n\x04mode\x18\x03 \x01(\rH\x00\x88\x01\x01\x42\x07\n\x05_mode\"*\n\x16\x44ockerfileCommandsStep\x12\x10\n\x08\x63ommands\x18\x01 \x03(\t\"\xc4\x02\n\x14\x43reateSandboxRequest\x12\x0f\n\x05image\x18\x01 \x01(\tH\x00\x12\x31\n\nimage_spec\x18\x05 \x01(\x0b\x32\x1b.chalk.sandbox.v1.ImageSpecH\x00\x12>\n\x0fresource_limits\x18\x02 \x01(\x0b\x32 .chalk.sandbox.v1.ResourceLimitsH\x01\x88\x01\x01\x12<\n\x03\x65nv\x18\x03 \x03(\x0b\x32/.chalk.sandbox.v1.CreateSandboxRequest.EnvEntry\x12\x11\n\x04name\x18\x04 \x01(\tH\x02\x88\x01\x01\x1a*\n\x08\x45nvEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\x42\x0e\n\x0cimage_sourceB\x12\n\x10_resource_limitsB\x07\n\x05_name\"J\n\x0eResourceLimits\x12\x10\n\x03\x63pu\x18\x01 \x01(\tH\x00\x88\x01\x01\x12\x13\n\x06memory\x18\x02 \x01(\tH\x01\x88\x01\x01\x42\x06\n\x04_cpuB\t\n\x07_memory\"G\n\x15\x43reateSandboxResponse\x12.\n\x07sandbox\x18\x01 \x01(\x0b\x32\x1d.chalk.sandbox.v1.SandboxInfo\"i\n\x17TerminateSandboxRequest\x12\x12\n\nsandbox_id\x18\x01 \x01(\t\x12!\n\x14grace_period_seconds\x18\x02 \x01(\x05H\x00\x88\x01\x01\x42\x17\n\x15_grace_period_seconds\"\x1a\n\x18TerminateSandboxResponse\"\'\n\x11GetSandboxRequest\x12\x12\n\nsandbox_id\x18\x01 \x01(\t\"D\n\x12GetSandboxResponse\x12.\n\x07sandbox\x18\x01 \x01(\x0b\x32\x1d.chalk.sandbox.v1.SandboxInfo\"\x16\n\x14ListSandboxesRequest\"I\n\x15ListSandboxesResponse\x12\x30\n\tsandboxes\x18\x01 \x03(\x0b\x32\x1d.chalk.sandbox.v1.SandboxInfo\"|\n\x0bSandboxInfo\x12\n\n\x02id\x18\x01 \x01(\t\x12\r\n\x05state\x18\x02 \x01(\t\x12\x12\n\ncreated_at\x18\x03 \x01(\t\x12\x11\n\x04name\x18\x04 \x01(\tH\x00\x88\x01\x01\x12\x15\n\x08\x62uild_id\x18\x05 \x01(\tH\x01\x88\x01\x01\x42\x07\n\x05_nameB\x0b\n\t_build_id2\xe3\x03\n\x0eSandboxService\x12I\n\x04\x45xec\x12\x1d.chalk.sandbox.v1.ExecRequest\x1a\x1e.chalk.sandbox.v1.ExecResponse(\x01\x30\x01\x12`\n\rCreateSandbox\x12&.chalk.sandbox.v1.CreateSandboxRequest\x1a\'.chalk.sandbox.v1.CreateSandboxResponse\x12i\n\x10TerminateSandbox\x12).chalk.sandbox.v1.TerminateSandboxRequest\x1a*.chalk.sandbox.v1.TerminateSandboxResponse\x12W\n\nGetSandbox\x12#.chalk.sandbox.v1.GetSandboxRequest\x1a$.chalk.sandbox.v1.GetSandboxResponse\x12`\n\rListSandboxes\x12&.chalk.sandbox.v1.ListSandboxesRequest\x1a\'.chalk.sandbox.v1.ListSandboxesResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -33,6 +33,8 @@ if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
   _globals['_EXECINIT_ENVENTRY']._loaded_options = None
   _globals['_EXECINIT_ENVENTRY']._serialized_options = b'8\001'
+  _globals['_IMAGESPEC_ENVENTRY']._loaded_options = None
+  _globals['_IMAGESPEC_ENVENTRY']._serialized_options = b'8\001'
   _globals['_CREATESANDBOXREQUEST_ENVENTRY']._loaded_options = None
   _globals['_CREATESANDBOXREQUEST_ENVENTRY']._serialized_options = b'8\001'
   _globals['_EXECREQUEST']._serialized_start=53
@@ -59,28 +61,42 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_PROCESSEXITED']._serialized_end=1093
   _globals['_EXECERROR']._serialized_start=1095
   _globals['_EXECERROR']._serialized_end=1137
-  _globals['_CREATESANDBOXREQUEST']._serialized_start=1140
-  _globals['_CREATESANDBOXREQUEST']._serialized_end=1395
+  _globals['_IMAGESPEC']._serialized_start=1140
+  _globals['_IMAGESPEC']._serialized_end=1377
+  _globals['_IMAGESPEC_ENVENTRY']._serialized_start=434
+  _globals['_IMAGESPEC_ENVENTRY']._serialized_end=476
+  _globals['_BUILDSTEP']._serialized_start=1380
+  _globals['_BUILDSTEP']._serialized_end=1639
+  _globals['_RUNCOMMANDSSTEP']._serialized_start=1641
+  _globals['_RUNCOMMANDSSTEP']._serialized_end=1676
+  _globals['_PIPINSTALLSTEP']._serialized_start=1678
+  _globals['_PIPINSTALLSTEP']._serialized_end=1712
+  _globals['_ADDFILESTEP']._serialized_start=1714
+  _globals['_ADDFILESTEP']._serialized_end=1793
+  _globals['_DOCKERFILECOMMANDSSTEP']._serialized_start=1795
+  _globals['_DOCKERFILECOMMANDSSTEP']._serialized_end=1837
+  _globals['_CREATESANDBOXREQUEST']._serialized_start=1840
+  _globals['_CREATESANDBOXREQUEST']._serialized_end=2164
   _globals['_CREATESANDBOXREQUEST_ENVENTRY']._serialized_start=434
   _globals['_CREATESANDBOXREQUEST_ENVENTRY']._serialized_end=476
-  _globals['_RESOURCELIMITS']._serialized_start=1397
-  _globals['_RESOURCELIMITS']._serialized_end=1471
-  _globals['_CREATESANDBOXRESPONSE']._serialized_start=1473
-  _globals['_CREATESANDBOXRESPONSE']._serialized_end=1544
-  _globals['_TERMINATESANDBOXREQUEST']._serialized_start=1546
-  _globals['_TERMINATESANDBOXREQUEST']._serialized_end=1651
-  _globals['_TERMINATESANDBOXRESPONSE']._serialized_start=1653
-  _globals['_TERMINATESANDBOXRESPONSE']._serialized_end=1679
-  _globals['_GETSANDBOXREQUEST']._serialized_start=1681
-  _globals['_GETSANDBOXREQUEST']._serialized_end=1720
-  _globals['_GETSANDBOXRESPONSE']._serialized_start=1722
-  _globals['_GETSANDBOXRESPONSE']._serialized_end=1790
-  _globals['_LISTSANDBOXESREQUEST']._serialized_start=1792
-  _globals['_LISTSANDBOXESREQUEST']._serialized_end=1814
-  _globals['_LISTSANDBOXESRESPONSE']._serialized_start=1816
-  _globals['_LISTSANDBOXESRESPONSE']._serialized_end=1889
-  _globals['_SANDBOXINFO']._serialized_start=1891
-  _globals['_SANDBOXINFO']._serialized_end=1979
-  _globals['_SANDBOXSERVICE']._serialized_start=1982
-  _globals['_SANDBOXSERVICE']._serialized_end=2465
+  _globals['_RESOURCELIMITS']._serialized_start=2166
+  _globals['_RESOURCELIMITS']._serialized_end=2240
+  _globals['_CREATESANDBOXRESPONSE']._serialized_start=2242
+  _globals['_CREATESANDBOXRESPONSE']._serialized_end=2313
+  _globals['_TERMINATESANDBOXREQUEST']._serialized_start=2315
+  _globals['_TERMINATESANDBOXREQUEST']._serialized_end=2420
+  _globals['_TERMINATESANDBOXRESPONSE']._serialized_start=2422
+  _globals['_TERMINATESANDBOXRESPONSE']._serialized_end=2448
+  _globals['_GETSANDBOXREQUEST']._serialized_start=2450
+  _globals['_GETSANDBOXREQUEST']._serialized_end=2489
+  _globals['_GETSANDBOXRESPONSE']._serialized_start=2491
+  _globals['_GETSANDBOXRESPONSE']._serialized_end=2559
+  _globals['_LISTSANDBOXESREQUEST']._serialized_start=2561
+  _globals['_LISTSANDBOXESREQUEST']._serialized_end=2583
+  _globals['_LISTSANDBOXESRESPONSE']._serialized_start=2585
+  _globals['_LISTSANDBOXESRESPONSE']._serialized_end=2658
+  _globals['_SANDBOXINFO']._serialized_start=2660
+  _globals['_SANDBOXINFO']._serialized_end=2784
+  _globals['_SANDBOXSERVICE']._serialized_start=2787
+  _globals['_SANDBOXSERVICE']._serialized_end=3270
 # @@protoc_insertion_point(module_scope)

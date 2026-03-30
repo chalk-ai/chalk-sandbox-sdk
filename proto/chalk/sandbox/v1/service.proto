@@ -101,10 +101,76 @@ message ExecError {
   string message = 2;
 }
 
+// A declarative image specification built from composable steps.
+// Transmitted to the server which builds the image before starting the sandbox.
+message ImageSpec {
+  // Base image (e.g. "python:3.12-slim-bookworm")
+  string base_image = 1;
+
+  // Ordered build steps applied on top of the base image
+  repeated BuildStep steps = 2;
+
+  // Override container entrypoint
+  repeated string entrypoint = 3;
+
+  // Override container cmd
+  repeated string cmd = 4;
+
+  // Set the working directory in the final image
+  optional string workdir = 5;
+
+  // Environment variables baked into the image
+  map<string, string> env = 6;
+}
+
+// A single build step in a declarative image specification.
+message BuildStep {
+  oneof step {
+    RunCommandsStep run_commands = 1;
+    PipInstallStep pip_install = 2;
+    AddFileStep add_file = 3;
+    DockerfileCommandsStep dockerfile_commands = 4;
+  }
+}
+
+// Execute shell commands during the image build (each becomes a RUN layer).
+message RunCommandsStep {
+  repeated string commands = 1;
+}
+
+// Install Python packages via pip.
+message PipInstallStep {
+  repeated string packages = 1;
+}
+
+// Add a file with inline content to the image.
+message AddFileStep {
+  // Absolute destination path in the image
+  string destination = 1;
+
+  // File content
+  bytes content = 2;
+
+  // Optional file mode (e.g. 0o755). Defaults to 0644.
+  optional uint32 mode = 3;
+}
+
+// Raw Dockerfile instructions injected verbatim.
+message DockerfileCommandsStep {
+  repeated string commands = 1;
+}
+
 // Request to create a new sandbox
 message CreateSandboxRequest {
-  // Container image to use for the sandbox
-  string image = 1;
+  // Container image to use for the sandbox — either a pre-built image reference
+  // or a declarative image spec that the server will build.
+  oneof image_source {
+    // Pre-built container image reference (e.g. "ubuntu:latest")
+    string image = 1;
+
+    // Declarative image specification
+    ImageSpec image_spec = 5;
+  }
 
   // Optional resource limits
   optional ResourceLimits resource_limits = 2;
@@ -160,6 +226,9 @@ message SandboxInfo {
   string state = 2;
   string created_at = 3;
   optional string name = 4;
+  // Build ID for sandboxes created with image_spec (e.g. Argo workflow name).
+  // Present when state is "building" or after the build completes.
+  optional string build_id = 5;
 }
 
 service SandboxService {
