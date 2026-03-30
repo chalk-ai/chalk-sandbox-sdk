@@ -6,8 +6,13 @@ steps:
     command: |
       set -euo pipefail
 
+      echo "--- :gear: Install sops"
+      SOPS_VERSION=3.9.4
+      curl -fsSL "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64" -o /tmp/sops
+      chmod +x /tmp/sops
+
       echo "--- :key: Decrypt secrets"
-      sops --input-type dotenv --output-type dotenv -d .env.enc > /tmp/test.env
+      /tmp/sops --input-type dotenv --output-type dotenv -d .env.enc > /tmp/test.env
       set -a
       source /tmp/test.env
       set +a
