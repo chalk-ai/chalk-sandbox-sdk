@@ -15,7 +15,7 @@ from sandbox import SandboxClient
 
 client = SandboxClient("localhost:50051")
 
-# Create a sandbox
+# Create a sandbox from a pre-built image
 sandbox = client.create(image="ubuntu:latest", name="my-sandbox")
 
 # Run a command
@@ -25,6 +25,95 @@ print(result.exit_code)    # 0
 
 # Clean up
 sandbox.terminate()
+```
+
+## Declarative images
+
+Build custom container images with a fluent API instead of writing Dockerfiles.
+The image spec is serialized as protobuf and transmitted to the sandbox service,
+which builds and caches the image before starting the container.
+
+```python
+from sandbox import SandboxClient
+from image import Image
+
+client = SandboxClient("localhost:50051")
+
+# Build a data-science image declaratively
+img = (
+    Image.debian_slim("3.12")
+    .pip_install(["pandas", "numpy", "scikit-learn"])
+    .run_commands(
+        "apt-get update && apt-get install -y git curl",
+    )
+    .workdir("/home/user/app")
+    .env({"PYTHONDONTWRITEBYTECODE": "1"})
+)
+
+sandbox = client.create(image=img, name="data-science")
+result = sandbox.exec("python", "-c", "import pandas; print(pandas.__version__)")
+print(result.stdout_text)
+```
+
+### Base images
+
+```python
+# Arbitrary base image
+img = Image.base("node:22-slim")
+
+# Convenience: python + debian slim
+img = Image.debian_slim("3.12")  # python:3.12-slim-bookworm
+
+# From an existing Dockerfile (contents are inlined, so you can chain more steps)
+img = Image.from_dockerfile("Dockerfile").pip_install(["extra-dep"])
+```
+
+### Build steps
+
+```python
+img = (
+    Image.debian_slim("3.12")
+    # Install Python packages
+    .pip_install(["requests>=2.28", "flask"])
+
+    # Install from a requirements.txt (read locally, inlined into the spec)
+    .pip_install_from_requirements("requirements.txt")
+
+    # Run shell commands (each becomes a Docker RUN layer)
+    .run_commands(
+        "apt-get update && apt-get install -y git",
+        "mkdir -p /app/data",
+    )
+
+    # Add local files into the image
+    .add_local_file("config.yaml", "/app/config.yaml")
+    .add_local_file("entrypoint.sh", "/app/entrypoint.sh", mode=0o755)
+    .add_local_dir("src", "/app/src")
+
+    # Raw Dockerfile instructions
+    .dockerfile_commands(["EXPOSE 8080", "HEALTHCHECK CMD curl -f http://localhost:8080/"])
+
+    # Image-level configuration
+    .workdir("/app")
+    .env({"FLASK_APP": "app:create_app"})
+    .entrypoint(["/app/entrypoint.sh"])
+    .cmd(["serve"])
+)
+```
+
+### Immutable composition
+
+Each builder method returns a new `Image`, so intermediate images can be shared:
+
+```python
+base = Image.debian_slim("3.12").pip_install(["requests"])
+
+# Two different images that share the same base
+api_image = base.pip_install(["flask"]).workdir("/api")
+worker_image = base.pip_install(["celery"]).workdir("/worker")
+
+api_sandbox = client.create(image=api_image, name="api")
+worker_sandbox = client.create(image=worker_image, name="worker")
 ```
 
 ## Connecting

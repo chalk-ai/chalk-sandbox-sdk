@@ -108,8 +108,71 @@ class ExecError(_message.Message):
     message: str
     def __init__(self, code: _Optional[str] = ..., message: _Optional[str] = ...) -> None: ...
 
+class ImageSpec(_message.Message):
+    __slots__ = ("base_image", "steps", "entrypoint", "cmd", "workdir", "env")
+    class EnvEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: str
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
+    BASE_IMAGE_FIELD_NUMBER: _ClassVar[int]
+    STEPS_FIELD_NUMBER: _ClassVar[int]
+    ENTRYPOINT_FIELD_NUMBER: _ClassVar[int]
+    CMD_FIELD_NUMBER: _ClassVar[int]
+    WORKDIR_FIELD_NUMBER: _ClassVar[int]
+    ENV_FIELD_NUMBER: _ClassVar[int]
+    base_image: str
+    steps: _containers.RepeatedCompositeFieldContainer[BuildStep]
+    entrypoint: _containers.RepeatedScalarFieldContainer[str]
+    cmd: _containers.RepeatedScalarFieldContainer[str]
+    workdir: str
+    env: _containers.ScalarMap[str, str]
+    def __init__(self, base_image: _Optional[str] = ..., steps: _Optional[_Iterable[_Union[BuildStep, _Mapping]]] = ..., entrypoint: _Optional[_Iterable[str]] = ..., cmd: _Optional[_Iterable[str]] = ..., workdir: _Optional[str] = ..., env: _Optional[_Mapping[str, str]] = ...) -> None: ...
+
+class BuildStep(_message.Message):
+    __slots__ = ("run_commands", "pip_install", "add_file", "dockerfile_commands")
+    RUN_COMMANDS_FIELD_NUMBER: _ClassVar[int]
+    PIP_INSTALL_FIELD_NUMBER: _ClassVar[int]
+    ADD_FILE_FIELD_NUMBER: _ClassVar[int]
+    DOCKERFILE_COMMANDS_FIELD_NUMBER: _ClassVar[int]
+    run_commands: RunCommandsStep
+    pip_install: PipInstallStep
+    add_file: AddFileStep
+    dockerfile_commands: DockerfileCommandsStep
+    def __init__(self, run_commands: _Optional[_Union[RunCommandsStep, _Mapping]] = ..., pip_install: _Optional[_Union[PipInstallStep, _Mapping]] = ..., add_file: _Optional[_Union[AddFileStep, _Mapping]] = ..., dockerfile_commands: _Optional[_Union[DockerfileCommandsStep, _Mapping]] = ...) -> None: ...
+
+class RunCommandsStep(_message.Message):
+    __slots__ = ("commands",)
+    COMMANDS_FIELD_NUMBER: _ClassVar[int]
+    commands: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, commands: _Optional[_Iterable[str]] = ...) -> None: ...
+
+class PipInstallStep(_message.Message):
+    __slots__ = ("packages",)
+    PACKAGES_FIELD_NUMBER: _ClassVar[int]
+    packages: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, packages: _Optional[_Iterable[str]] = ...) -> None: ...
+
+class AddFileStep(_message.Message):
+    __slots__ = ("destination", "content", "mode")
+    DESTINATION_FIELD_NUMBER: _ClassVar[int]
+    CONTENT_FIELD_NUMBER: _ClassVar[int]
+    MODE_FIELD_NUMBER: _ClassVar[int]
+    destination: str
+    content: bytes
+    mode: int
+    def __init__(self, destination: _Optional[str] = ..., content: _Optional[bytes] = ..., mode: _Optional[int] = ...) -> None: ...
+
+class DockerfileCommandsStep(_message.Message):
+    __slots__ = ("commands",)
+    COMMANDS_FIELD_NUMBER: _ClassVar[int]
+    commands: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, commands: _Optional[_Iterable[str]] = ...) -> None: ...
+
 class CreateSandboxRequest(_message.Message):
-    __slots__ = ("image", "resource_limits", "env", "name")
+    __slots__ = ("image", "image_spec", "resource_limits", "env", "name")
     class EnvEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -118,14 +181,16 @@ class CreateSandboxRequest(_message.Message):
         value: str
         def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
     IMAGE_FIELD_NUMBER: _ClassVar[int]
+    IMAGE_SPEC_FIELD_NUMBER: _ClassVar[int]
     RESOURCE_LIMITS_FIELD_NUMBER: _ClassVar[int]
     ENV_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
     image: str
+    image_spec: ImageSpec
     resource_limits: ResourceLimits
     env: _containers.ScalarMap[str, str]
     name: str
-    def __init__(self, image: _Optional[str] = ..., resource_limits: _Optional[_Union[ResourceLimits, _Mapping]] = ..., env: _Optional[_Mapping[str, str]] = ..., name: _Optional[str] = ...) -> None: ...
+    def __init__(self, image: _Optional[str] = ..., image_spec: _Optional[_Union[ImageSpec, _Mapping]] = ..., resource_limits: _Optional[_Union[ResourceLimits, _Mapping]] = ..., env: _Optional[_Mapping[str, str]] = ..., name: _Optional[str] = ...) -> None: ...
 
 class ResourceLimits(_message.Message):
     __slots__ = ("cpu", "memory")
@@ -176,13 +241,15 @@ class ListSandboxesResponse(_message.Message):
     def __init__(self, sandboxes: _Optional[_Iterable[_Union[SandboxInfo, _Mapping]]] = ...) -> None: ...
 
 class SandboxInfo(_message.Message):
-    __slots__ = ("id", "state", "created_at", "name")
+    __slots__ = ("id", "state", "created_at", "name", "build_id")
     ID_FIELD_NUMBER: _ClassVar[int]
     STATE_FIELD_NUMBER: _ClassVar[int]
     CREATED_AT_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
+    BUILD_ID_FIELD_NUMBER: _ClassVar[int]
     id: str
     state: str
     created_at: str
     name: str
-    def __init__(self, id: _Optional[str] = ..., state: _Optional[str] = ..., created_at: _Optional[str] = ..., name: _Optional[str] = ...) -> None: ...
+    build_id: str
+    def __init__(self, id: _Optional[str] = ..., state: _Optional[str] = ..., created_at: _Optional[str] = ..., name: _Optional[str] = ..., build_id: _Optional[str] = ...) -> None: ...
