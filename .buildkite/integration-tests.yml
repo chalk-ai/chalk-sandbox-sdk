@@ -8,7 +8,7 @@ steps:
 
       echo "--- :gear: Install sops"
       SOPS_VERSION=3.9.4
-      curl -fsSL "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64" -o /tmp/sops
+      curl -fsSL "https://github.com/getsops/sops/releases/download/v$${SOPS_VERSION}/sops-v$${SOPS_VERSION}.linux.amd64" -o /tmp/sops
       chmod +x /tmp/sops
 
       echo "--- :key: Decrypt secrets"
