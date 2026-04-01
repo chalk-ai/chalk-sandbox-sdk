@@ -253,3 +253,39 @@ class SandboxInfo(_message.Message):
     name: str
     build_id: str
     def __init__(self, id: _Optional[str] = ..., state: _Optional[str] = ..., created_at: _Optional[str] = ..., name: _Optional[str] = ..., build_id: _Optional[str] = ...) -> None: ...
+
+class BuildCustomImageRequest(_message.Message):
+    __slots__ = ("image_spec", "target_registry", "tag")
+    IMAGE_SPEC_FIELD_NUMBER: _ClassVar[int]
+    TARGET_REGISTRY_FIELD_NUMBER: _ClassVar[int]
+    TAG_FIELD_NUMBER: _ClassVar[int]
+    image_spec: ImageSpec
+    target_registry: str
+    tag: str
+    def __init__(self, image_spec: _Optional[_Union[ImageSpec, _Mapping]] = ..., target_registry: _Optional[str] = ..., tag: _Optional[str] = ...) -> None: ...
+
+class BuildCustomImageResponse(_message.Message):
+    __slots__ = ("image", "build_id")
+    IMAGE_FIELD_NUMBER: _ClassVar[int]
+    BUILD_ID_FIELD_NUMBER: _ClassVar[int]
+    image: str
+    build_id: str
+    def __init__(self, image: _Optional[str] = ..., build_id: _Optional[str] = ...) -> None: ...
+
+class GetCustomImageRequest(_message.Message):
+    __slots__ = ("build_id",)
+    BUILD_ID_FIELD_NUMBER: _ClassVar[int]
+    build_id: str
+    def __init__(self, build_id: _Optional[str] = ...) -> None: ...
+
+class GetCustomImageResponse(_message.Message):
+    __slots__ = ("build_id", "status", "image", "error")
+    BUILD_ID_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    IMAGE_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    build_id: str
+    status: str
+    image: str
+    error: str
+    def __init__(self, build_id: _Optional[str] = ..., status: _Optional[str] = ..., image: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
