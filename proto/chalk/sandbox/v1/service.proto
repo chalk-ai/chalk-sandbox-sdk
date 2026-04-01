@@ -247,3 +247,54 @@ service SandboxService {
   // ListSandboxes returns all sandboxes for the current environment
   rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
 }
+
+// Request to build a custom container image from a declarative spec.
+message BuildCustomImageRequest {
+  // Declarative image specification
+  ImageSpec image_spec = 1;
+
+  // Optional target registry to push the built image to.
+  // If not set, uses the environment's default registry.
+  optional string target_registry = 2;
+
+  // Optional tag for the built image. If not set, a content-addressed tag is generated.
+  optional string tag = 3;
+}
+
+// Response from building a custom image.
+message BuildCustomImageResponse {
+  // The full image reference (e.g. "us-central1-docker.pkg.dev/project/repo/image:tag")
+  string image = 1;
+
+  // The build ID that can be used to track the build
+  string build_id = 2;
+}
+
+// Request to get the status of a custom image build by its build ID.
+message GetCustomImageRequest {
+  string build_id = 1;
+}
+
+// Response containing the status of a custom image build.
+message GetCustomImageResponse {
+  // The build ID
+  string build_id = 1;
+
+  // Build status: "building", "succeeded", "failed"
+  string status = 2;
+
+  // The full image reference (populated when status = "succeeded")
+  string image = 3;
+
+  // Error message (populated when status = "failed")
+  optional string error = 4;
+}
+
+// CustomImageService manages custom container image builds independently of sandboxes.
+service CustomImageService {
+  // BuildCustomImage builds a container image from a declarative ImageSpec.
+  rpc BuildCustomImage(BuildCustomImageRequest) returns (BuildCustomImageResponse);
+
+  // GetCustomImage returns the status of a custom image build by build ID.
+  rpc GetCustomImage(GetCustomImageRequest) returns (GetCustomImageResponse);
+}
