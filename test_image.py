@@ -493,7 +493,6 @@ def test_create_sandbox_with_plain_image(auth_headers: dict[str, str]) -> None:
 
 
 @needs_staging
-@pytest.mark.skip(reason="CustomImageService not yet deployed to staging — enable after go-api-server changes land")
 def test_build_custom_image(auth_headers: dict[str, str]) -> None:
     """Build a custom image via CustomImageService.BuildCustomImage and query it via GetCustomImage."""
     img = (
