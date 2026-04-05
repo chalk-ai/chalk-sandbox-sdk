@@ -23,9 +23,20 @@ sandbox container.
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from chalk.sandbox.v1 import service_pb2 as pb
+
+
+@dataclass(frozen=True)
+class LazyLocalFile:
+    """A reference to a local file that will be mounted as a volume at sandbox start."""
+
+    src: str
+    dest: str
+    mode: int | None = None
 
 
 class Image:
@@ -42,6 +53,7 @@ class Image:
         self._cmd: list[str] = []
         self._workdir: str | None = None
         self._env: dict[str, str] = {}
+        self._lazy_local_files: set[LazyLocalFile] = set()
 
     # -- Constructors ----------------------------------------------------------
 
@@ -104,6 +116,7 @@ class Image:
         new._cmd = list(self._cmd)
         new._workdir = self._workdir
         new._env = dict(self._env)
+        new._lazy_local_files = set(self._lazy_local_files)
         return new
 
     def run_commands(self, *commands: str) -> Image:
@@ -159,32 +172,44 @@ class Image:
         dest: str,
         *,
         mode: int | None = None,
+        strategy: Literal["copy", "volume"] = "volume",
     ) -> Image:
         """Add a local file into the image.
-
-        The file is read and its contents are inlined into the image spec.
 
         Args:
             src: Local file path.
             dest: Absolute destination path in the image.
             mode: Optional file permission mode (e.g. 0o755).
+            strategy: "copy" inlines the file contents into the image spec.
+                      "volume" (default) defers the file as a lazy reference
+                      to be mounted at sandbox start.
         """
-        content = Path(src).read_bytes()
-        step = pb.AddFileStep(destination=dest, content=content)
-        if mode is not None:
-            step.mode = mode
         new = self._copy()
-        new._steps.append(pb.BuildStep(add_file=step))
+        if strategy == "volume":
+            new._lazy_local_files.add(LazyLocalFile(src=str(Path(src).resolve()), dest=dest, mode=mode))
+        else:
+            content = Path(src).read_bytes()
+            step = pb.AddFileStep(destination=dest, content=content)
+            if mode is not None:
+                step.mode = mode
+            new._steps.append(pb.BuildStep(add_file=step))
         return new
 
-    def add_local_dir(self, src: str, dest: str) -> Image:
+    def add_local_dir(
+        self,
+        src: str,
+        dest: str,
+        *,
+        strategy: Literal["copy", "volume"] = "volume",
+    ) -> Image:
         """Add an entire local directory into the image.
-
-        All files are walked recursively and added individually.
 
         Args:
             src: Local directory path.
             dest: Absolute destination directory in the image.
+            strategy: "copy" inlines all file contents into the image spec.
+                      "volume" (default) defers each file as a lazy reference
+                      to be mounted at sandbox start.
         """
         new = self._copy()
         src_path = Path(src)
@@ -192,12 +217,17 @@ class Image:
             if file_path.is_file():
                 rel = file_path.relative_to(src_path)
                 file_dest = os.path.join(dest, str(rel))
-                content = file_path.read_bytes()
-                new._steps.append(
-                    pb.BuildStep(
-                        add_file=pb.AddFileStep(destination=file_dest, content=content)
+                if strategy == "volume":
+                    new._lazy_local_files.add(
+                        LazyLocalFile(src=str(file_path.resolve()), dest=file_dest)
                     )
-                )
+                else:
+                    content = file_path.read_bytes()
+                    new._steps.append(
+                        pb.BuildStep(
+                            add_file=pb.AddFileStep(destination=file_dest, content=content)
+                        )
+                    )
         return new
 
     def dockerfile_commands(self, commands: list[str]) -> Image:
@@ -256,6 +286,11 @@ class Image:
         new = self._copy()
         new._cmd = list(args)
         return new
+
+    @property
+    def lazy_local_files(self) -> set[LazyLocalFile]:
+        """Local files deferred for volume-mounting at sandbox start."""
+        return set(self._lazy_local_files)
 
     # -- Serialization ---------------------------------------------------------
 
