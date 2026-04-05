@@ -261,7 +261,7 @@ class TestImageAddFile:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write("print('hello')")
             f.flush()
-            img = Image.debian_slim().add_local_file(f.name, "/app/main.py")
+            img = Image.debian_slim().add_local_file(f.name, "/app/main.py", strategy="copy")
         step = img.to_proto().steps[0].add_file
         assert step.destination == "/app/main.py"
         assert step.content == b"print('hello')"
@@ -271,7 +271,7 @@ class TestImageAddFile:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False) as f:
             f.write("#!/bin/bash\necho hi")
             f.flush()
-            img = Image.debian_slim().add_local_file(f.name, "/app/run.sh", mode=0o755)
+            img = Image.debian_slim().add_local_file(f.name, "/app/run.sh", mode=0o755, strategy="copy")
         step = img.to_proto().steps[0].add_file
         assert step.mode == 0o755
 
@@ -280,7 +280,7 @@ class TestImageAddFile:
             (p := __import__("pathlib").Path(d) / "a.py").write_text("a")
             (p2 := __import__("pathlib").Path(d) / "sub").mkdir()
             (p2 / "b.py").write_text("b")
-            img = Image.debian_slim().add_local_dir(d, "/app")
+            img = Image.debian_slim().add_local_dir(d, "/app", strategy="copy")
         spec = img.to_proto()
         dests = [s.add_file.destination for s in spec.steps]
         assert "/app/a.py" in dests
@@ -387,7 +387,7 @@ class TestImageChaining:
             Image.debian_slim()
             .run_commands("apt-get update")
             .pip_install(["requests", "pandas"])
-            .add_local_file(__file__, "/app/test.py")
+            .add_local_file(__file__, "/app/test.py", strategy="copy")
             .dockerfile_commands(["EXPOSE 8080"])
             .env({"APP": "test"})
             .workdir("/app")
