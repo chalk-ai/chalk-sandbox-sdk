@@ -419,6 +419,7 @@ class SandboxClient:
         cpu: str | None = None,
         memory: str | None = None,
         env: dict[str, str] | None = None,
+        volumes: list[pb.VolumeMount] | None = None,
         wait: bool = True,
         poll_interval: float = 5.0,
         timeout: float = 600.0,
@@ -438,6 +439,7 @@ class SandboxClient:
             cpu: Optional CPU limit (e.g. "1", "500m")
             memory: Optional memory limit (e.g. "512Mi", "1Gi")
             env: Optional environment variables
+            volumes: Optional list of VolumeMount protos to attach
             wait: If True, poll until the sandbox is ready (default True).
             poll_interval: Seconds between GetSandbox polls (default 5).
             timeout: Maximum seconds to wait for the sandbox to become ready
@@ -463,6 +465,8 @@ class SandboxClient:
         if env is not None:
             for k, v in env.items():
                 req.env[k] = v
+        if volumes is not None:
+            req.volumes.extend(volumes)
 
         resp = self._stub.CreateSandbox(req, metadata=self._metadata)
         info = _pb_to_sandbox_info(resp.sandbox)

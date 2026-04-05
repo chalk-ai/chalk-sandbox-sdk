@@ -171,8 +171,20 @@ class DockerfileCommandsStep(_message.Message):
     commands: _containers.RepeatedScalarFieldContainer[str]
     def __init__(self, commands: _Optional[_Iterable[str]] = ...) -> None: ...
 
+class VolumeMount(_message.Message):
+    __slots__ = ("name", "mount_path", "type", "size_limit")
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    MOUNT_PATH_FIELD_NUMBER: _ClassVar[int]
+    TYPE_FIELD_NUMBER: _ClassVar[int]
+    SIZE_LIMIT_FIELD_NUMBER: _ClassVar[int]
+    name: str
+    mount_path: str
+    type: str
+    size_limit: str
+    def __init__(self, name: _Optional[str] = ..., mount_path: _Optional[str] = ..., type: _Optional[str] = ..., size_limit: _Optional[str] = ...) -> None: ...
+
 class CreateSandboxRequest(_message.Message):
-    __slots__ = ("image", "image_spec", "resource_limits", "env", "name")
+    __slots__ = ("image", "image_spec", "resource_limits", "env", "name", "volumes")
     class EnvEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -185,12 +197,14 @@ class CreateSandboxRequest(_message.Message):
     RESOURCE_LIMITS_FIELD_NUMBER: _ClassVar[int]
     ENV_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
+    VOLUMES_FIELD_NUMBER: _ClassVar[int]
     image: str
     image_spec: ImageSpec
     resource_limits: ResourceLimits
     env: _containers.ScalarMap[str, str]
     name: str
-    def __init__(self, image: _Optional[str] = ..., image_spec: _Optional[_Union[ImageSpec, _Mapping]] = ..., resource_limits: _Optional[_Union[ResourceLimits, _Mapping]] = ..., env: _Optional[_Mapping[str, str]] = ..., name: _Optional[str] = ...) -> None: ...
+    volumes: _containers.RepeatedCompositeFieldContainer[VolumeMount]
+    def __init__(self, image: _Optional[str] = ..., image_spec: _Optional[_Union[ImageSpec, _Mapping]] = ..., resource_limits: _Optional[_Union[ResourceLimits, _Mapping]] = ..., env: _Optional[_Mapping[str, str]] = ..., name: _Optional[str] = ..., volumes: _Optional[_Iterable[_Union[VolumeMount, _Mapping]]] = ...) -> None: ...
 
 class ResourceLimits(_message.Message):
     __slots__ = ("cpu", "memory")
