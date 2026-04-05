@@ -27,22 +27,17 @@ Usage:
 
 from __future__ import annotations
 
+import builtins
 import queue
 import signal
-import threading
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
-
 import grpc
 
 from chalk.sandbox.v1 import service_pb2 as pb
 from chalk.sandbox.v1 import service_pb2_grpc as pb_grpc
 from image import Image
-
-if TYPE_CHECKING:
-    pass
 
 
 # ---------------------------------------------------------------------------
@@ -383,7 +378,7 @@ class SandboxClient:
         target: str = "localhost:50051",
         *,
         credentials: grpc.ChannelCredentials | None = None,
-        metadata: list[tuple[str, str]] | None = None,
+        metadata: builtins.list[tuple[str, str]] | None = None,
     ) -> None:
         """
         Initialize the gRPC client.
@@ -419,7 +414,7 @@ class SandboxClient:
         cpu: str | None = None,
         memory: str | None = None,
         env: dict[str, str] | None = None,
-        volumes: list[pb.VolumeMount] | None = None,
+        volumes: builtins.list[pb.VolumeMount] | None = None,
         wait: bool = True,
         poll_interval: float = 5.0,
         timeout: float = 600.0,
@@ -525,7 +520,7 @@ class SandboxClient:
         """
         return Sandbox(self, id)
 
-    def list(self) -> list[SandboxInfo]:
+    def list(self) -> builtins.list[SandboxInfo]:
         """List all sandboxes."""
         resp = self._stub.ListSandboxes(pb.ListSandboxesRequest(), metadata=self._metadata)
         return [_pb_to_sandbox_info(s) for s in resp.sandboxes]
@@ -572,6 +567,7 @@ def _response_to_event(response: pb.ExecResponse) -> ExecEvent:
 
 
 def _handle_rpc_error(e: grpc.RpcError, sandbox_id: str) -> None:
+    assert isinstance(e, grpc.Call)
     if e.code() == grpc.StatusCode.NOT_FOUND:
         raise SandboxNotFoundError(f"Sandbox {sandbox_id} not found") from e
     if e.code() == grpc.StatusCode.FAILED_PRECONDITION:

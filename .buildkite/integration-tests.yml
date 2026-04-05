@@ -2,6 +2,17 @@ on:
   pull_request: {}
 
 steps:
+  - label: ":mag: ty type check"
+    command: |
+      set -euo pipefail
+      echo "--- :python: Install dependencies"
+      pip install ty
+      echo "--- :mag: Run ty"
+      ty check container.py sandbox.py image.py volume.py
+    agents:
+      queue: default
+    timeout_in_minutes: 5
+
   - label: ":pytest: Integration tests"
     command: |
       set -euo pipefail
