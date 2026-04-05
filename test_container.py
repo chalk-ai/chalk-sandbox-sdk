@@ -1,0 +1,83 @@
+"""End-to-end tests for the Container abstraction.
+
+Tests that Container(image=Image(...).add_local_file(...)) and
+Container(image=Image(...).add_local_dir(...)) correctly upload local
+files to the remote sandbox and make them readable via exec.
+"""
+
+import os
+import tempfile
+from pathlib import Path
+
+import pytest
+from dotenv import load_dotenv
+
+from container import Container
+from image import Image
+
+load_dotenv()
+
+CHALK_CLIENT_ID = os.environ.get("CHALK_CLIENT_ID", "")
+CHALK_API_SERVER = os.environ.get("CHALK_API_SERVER", "")
+
+needs_staging = pytest.mark.skipif(
+    not CHALK_CLIENT_ID or not CHALK_API_SERVER,
+    reason="CHALK_CLIENT_ID/CHALK_API_SERVER not set",
+)
+
+
+@needs_staging
+def test_container_add_local_file() -> None:
+    """Container with add_local_file should make the file readable via exec."""
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".txt", delete=False,
+    ) as f:
+        f.write("hello from local file")
+        f.flush()
+        local_path = f.name
+
+    try:
+        img = Image.debian_slim().add_local_file(local_path, "/app/data.txt")
+
+        c = Container(image=img, name="test-add-local-file")
+        try:
+            c.run()
+            result = c.exec("cat", "/app/data.txt")
+            assert result.exit_code == 0, (
+                f"cat exited with code {result.exit_code}: {result.stderr_text}"
+            )
+            assert result.stdout_text.strip() == "hello from local file"
+        finally:
+            c.terminate()
+    finally:
+        os.unlink(local_path)
+
+
+@needs_staging
+def test_container_add_local_dir() -> None:
+    """Container with add_local_dir should make all files in the directory readable via exec."""
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "greeting.txt").write_text("hello")
+        sub = Path(d) / "sub"
+        sub.mkdir()
+        (sub / "nested.txt").write_text("world")
+
+        img = Image.debian_slim().add_local_dir(d, "/app/mydir")
+
+        c = Container(image=img, name="test-add-local-dir")
+        try:
+            c.run()
+
+            r1 = c.exec("cat", "/app/mydir/greeting.txt")
+            assert r1.exit_code == 0, (
+                f"cat greeting.txt failed: {r1.stderr_text}"
+            )
+            assert r1.stdout_text.strip() == "hello"
+
+            r2 = c.exec("cat", "/app/mydir/sub/nested.txt")
+            assert r2.exit_code == 0, (
+                f"cat sub/nested.txt failed: {r2.stderr_text}"
+            )
+            assert r2.stdout_text.strip() == "world"
+        finally:
+            c.terminate()
