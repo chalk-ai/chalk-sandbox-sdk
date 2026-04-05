@@ -28,7 +28,7 @@ from pathlib import Path
 
 import httpx
 
-from image import Image
+from image import Image, LazyLocalFile
 
 
 # ---------------------------------------------------------------------------
@@ -84,8 +84,6 @@ class Container:
     container lifecycle in a single high-level API.
     """
 
-    _VOLUME_MOUNT_ROOT = "/mnt/chalk-files"
-
     def __init__(
         self,
         *,
@@ -105,7 +103,7 @@ class Container:
         self._built_image_uri: str | None = None
         self._container_id: str | None = None
         self._container_info: ContainerInfo | None = None
-        self._volume_name: str | None = None
+        self._volumes: list[tuple[str, str]] = []  # [(volume_name, mount_path)]
 
         # Auth state (lazily populated)
         self._api_server: str | None = None
@@ -151,7 +149,7 @@ class Container:
         c._built_image_uri = None
         c._container_id = None
         c._container_info = None
-        c._volume_name = None
+        c._volumes = []
         c._api_server = None
         c._access_token = None
         c._env_id = None
@@ -233,7 +231,7 @@ class Container:
         assert isinstance(self._image, Image)
         spec_dict = MessageToDict(self._image.to_proto())
         resp = self._custom_image_rpc(
-            "BuildCustomImage", {"imageSpec": spec_dict}, timeout=60,
+            "BuildCustomImage", {"imageSpec": spec_dict}, timeout=120,
         )
         if resp.status_code != 200:
             raise ImageBuildError(f"BuildCustomImage failed: {resp.text}")
@@ -263,29 +261,46 @@ class Container:
 
     # -- Volume upload ---------------------------------------------------------
 
-    def _upload_lazy_files(self) -> str:
-        """Create a volume, upload all lazy local files, return volume name."""
-        vol_name = f"container-files-{uuid.uuid4().hex[:12]}"
+    def _upload_lazy_files(self) -> list[tuple[str, str]]:
+        """Create volumes and upload lazy local files.
 
-        resp = self._volume_rpc("CreateVolume", {"name": vol_name})
-        if resp.status_code != 200:
-            raise ContainerError(f"CreateVolume failed: {resp.text}")
+        Groups files by destination directory. Creates one volume per unique
+        directory and uploads files with flat names (ChalkFS doesn't support
+        nested directory paths in a single mount).
 
+        Returns a list of (volume_name, mount_path) tuples.
+        """
         assert isinstance(self._image, Image)
-        for lf in self._image.lazy_local_files:
-            content = Path(lf.src).read_bytes()
-            encoded = base64.b64encode(content).decode("ascii")
-            vol_path = lf.dest.lstrip("/")
-            put_resp = self._volume_rpc(
-                "PutFile",
-                {"volumeName": vol_name, "path": vol_path, "data": encoded},
-            )
-            if put_resp.status_code != 200:
-                raise ContainerError(
-                    f"PutFile failed for {lf.dest}: {put_resp.text}"
-                )
 
-        return vol_name
+        # Group files by their destination directory
+        dir_to_files: dict[str, list[LazyLocalFile]] = {}
+        for lf in self._image.lazy_local_files:
+            dest_dir = str(Path(lf.dest).parent)
+            dir_to_files.setdefault(dest_dir, []).append(lf)
+
+        volumes: list[tuple[str, str]] = []
+        for dest_dir, files in dir_to_files.items():
+            vol_name = f"container-files-{uuid.uuid4().hex[:12]}"
+            resp = self._volume_rpc("CreateVolume", {"name": vol_name})
+            if resp.status_code != 200:
+                raise ContainerError(f"CreateVolume failed: {resp.text}")
+
+            for lf in files:
+                content = Path(lf.src).read_bytes()
+                encoded = base64.b64encode(content).decode("ascii")
+                flat_name = Path(lf.dest).name
+                put_resp = self._volume_rpc(
+                    "PutFile",
+                    {"volumeName": vol_name, "path": flat_name, "data": encoded},
+                )
+                if put_resp.status_code != 200:
+                    raise ContainerError(
+                        f"PutFile failed for {lf.dest}: {put_resp.text}"
+                    )
+
+            volumes.append((vol_name, dest_dir))
+
+        return volumes
 
     # -- Lifecycle -------------------------------------------------------------
 
@@ -317,9 +332,10 @@ class Container:
             self._image.lazy_local_files if isinstance(self._image, Image) else set()
         )
         if lazy_files:
-            print(f"Uploading {len(lazy_files)} local file(s) to volume...")
-            self._volume_name = self._upload_lazy_files()
-            print(f"Volume created: {self._volume_name}")
+            print(f"Uploading {len(lazy_files)} local file(s) to volume(s)...")
+            self._volumes = self._upload_lazy_files()
+            for vn, mp in self._volumes:
+                print(f"  Volume created: {vn} (mount: {mp})")
 
         # 3. Build the ContainerService spec
         container_name = self._name or f"container-{uuid.uuid4().hex[:8]}"
@@ -339,15 +355,15 @@ class Container:
                 resources["memory"] = self._memory
             spec["resources"] = resources
 
-        # Mount the volume via ChalkFS at a fixed root; files are stored
-        # under their destination paths (stripped of leading /).
-        if self._volume_name:
+        # Mount each volume via ChalkFS at its destination directory
+        if self._volumes:
             spec["volumes"] = [
                 {
-                    "name": self._volume_name,
-                    "mountPath": self._VOLUME_MOUNT_ROOT,
+                    "name": vol_name,
+                    "mountPath": mount_path,
                     "type": "chalkfs",
                 }
+                for vol_name, mount_path in self._volumes
             ]
 
         print(f"Starting container '{container_name}'...")
@@ -371,12 +387,9 @@ class Container:
                 poll_interval=poll_interval, timeout=ready_timeout,
             )
 
-        # 5. If we have lazy files, symlink them from the volume mount
-        #    into their expected destination paths.
+        # 5. Wait for ChalkFS volume files to become visible
         if lazy_files:
-            print("Linking volume-mounted files to destination paths...")
-            self._link_volume_files()
-            print("Files linked.")
+            self._wait_for_volume_files(timeout=120.0, poll_interval=5.0)
 
         return self
 
@@ -406,30 +419,35 @@ class Container:
             f"Container {self._container_id} timed out after {timeout}s"
         )
 
-    def _link_volume_files(self) -> None:
-        """Create symlinks from volume-mounted files to their destination paths."""
+    def _wait_for_volume_files(
+        self, *, timeout: float = 120.0, poll_interval: float = 5.0,
+    ) -> None:
+        """Poll until at least one uploaded file is visible in the ChalkFS mount."""
         assert isinstance(self._image, Image)
-        # Build a single shell script that creates all the symlinks
-        commands: list[str] = []
-        for lf in self._image.lazy_local_files:
-            vol_path = lf.dest.lstrip("/")
-            src = f"{self._VOLUME_MOUNT_ROOT}/{vol_path}"
-            dest = lf.dest
-            dest_dir = str(Path(dest).parent)
-            commands.append(f"mkdir -p {dest_dir} && ln -sf {src} {dest}")
-            if lf.mode is not None:
-                commands.append(f"chmod {oct(lf.mode)[2:]} {dest}")
+        sample = next(iter(self._image.lazy_local_files))
+        probe_path = sample.dest
+        print(f"Waiting for ChalkFS to sync (probing {probe_path})...")
 
-        if commands:
-            script = " && ".join(commands)
-            result = self.exec("sh", "-c", script)
-            if result.exit_code != 0:
-                raise ContainerError(
-                    f"Failed to link files: exit_code={result.exit_code} "
-                    f"stderr={result.stderr_text}"
-                )
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            result = self.exec("test", "-f", probe_path)
+            if result.exit_code == 0:
+                print("ChalkFS files ready.")
+                return
+            time.sleep(poll_interval)
 
-    def exec(self, *command: str, timeout_secs: int | None = None) -> ExecResult:
+        raise ContainerError(
+            f"ChalkFS files not visible after {timeout}s "
+            f"(probed {probe_path})"
+        )
+
+    def exec(
+        self,
+        *command: str,
+        timeout_secs: int | None = None,
+        _retries: int = 12,
+        _retry_delay: float = 5.0,
+    ) -> ExecResult:
         """Execute a command in the running container via ContainerService.ExecCommand."""
         if self._container_id is None:
             raise ContainerError("Container is not running. Call .run() first.")
@@ -441,18 +459,28 @@ class Container:
         if timeout_secs is not None:
             body["timeout"] = f"{timeout_secs}s"
 
-        resp = self._container_rpc("ExecCommand", body, timeout=timeout_secs or 30)
-        if resp.status_code != 200:
-            raise ContainerError(f"ExecCommand failed: {resp.text}")
-
-        data = resp.json()
-        stdout_b64 = data.get("stdout", "")
-        stderr_b64 = data.get("stderr", "")
-        return ExecResult(
-            stdout=base64.b64decode(stdout_b64) if stdout_b64 else b"",
-            stderr=base64.b64decode(stderr_b64) if stderr_b64 else b"",
-            exit_code=data.get("exitCode", 0),
-        )
+        # TODO(CHA-8630): Remove retry loop once the API reports accurate
+        # Running status (container may not be exec-ready immediately).
+        # Blocked on CHA-8629.
+        last_err: ContainerError | None = None
+        for attempt in range(_retries + 1):
+            resp = self._container_rpc("ExecCommand", body, timeout=timeout_secs or 30)
+            if resp.status_code == 200:
+                data = resp.json()
+                stdout_b64 = data.get("stdout", "")
+                stderr_b64 = data.get("stderr", "")
+                return ExecResult(
+                    stdout=base64.b64decode(stdout_b64) if stdout_b64 else b"",
+                    stderr=base64.b64decode(stderr_b64) if stderr_b64 else b"",
+                    exit_code=data.get("exitCode", 0),
+                )
+            last_err = ContainerError(f"ExecCommand failed: {resp.text}")
+            if "container not found" in resp.text and attempt < _retries:
+                time.sleep(_retry_delay)
+                continue
+            raise last_err
+        assert last_err is not None
+        raise last_err
 
     def stop(self, grace_period_seconds: int | None = None) -> None:
         """Stop the container and clean up the temporary volume."""
@@ -465,9 +493,9 @@ class Container:
             self._container_id = None
             self._container_info = None
 
-        if self._volume_name is not None:
-            self._volume_rpc("DeleteVolume", {"name": self._volume_name})
-            self._volume_name = None
+        for vol_name, _ in self._volumes:
+            self._volume_rpc("DeleteVolume", {"name": vol_name})
+        self._volumes = []
 
     def refresh(self) -> ContainerInfo:
         """Fetch latest container status from the server."""
