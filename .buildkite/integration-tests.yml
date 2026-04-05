@@ -22,7 +22,7 @@ steps:
       pip install pytest httpx python-dotenv grpcio grpcio-tools protobuf
 
       echo "--- :pytest: Run integration tests"
-      pytest test_image.py -v -s --tb=short
+      pytest test_image.py test_sandbox_exec.py test_volume.py -v -s --tb=short
     agents:
       queue: default
     timeout_in_minutes: 15
