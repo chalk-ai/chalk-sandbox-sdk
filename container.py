@@ -1,5 +1,5 @@
 """
-High-level Container abstraction for Chalk sandboxes.
+High-level Container abstraction backed by the Chalk ContainerService.
 
 Usage:
     from container import Container
@@ -7,14 +7,14 @@ Usage:
 
     img = Image.debian_slim().pip_install(["requests"]).add_local_file("app.py", "/app/app.py")
 
-    c = Container(image=img)
-    c.run()                         # builds image, uploads local files, starts sandbox
-    result = c.exec("python", "/app/app.py")
+    c = Container(image=img).run()
+    result = c.exec("cat", "/app/app.py")
     print(result.stdout_text)
-    c.terminate()
+    c.stop()
 
-Lazy local files tracked by the Image are uploaded to a one-off Chalk volume
-and copied into the sandbox at their destination paths after startup.
+Lazy local files tracked by the Image are uploaded to a one-off Chalk
+volume which is mounted into the container via ChalkFS at each file's
+destination path's common ancestor.
 """
 
 from __future__ import annotations
@@ -23,13 +23,17 @@ import base64
 import os
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
 
 from image import Image
-from sandbox import ExecResult, Sandbox, SandboxClient
 
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
 
 class ContainerError(Exception):
     """Base exception for Container errors."""
@@ -39,17 +43,53 @@ class ImageBuildError(ContainerError):
     """Raised when the custom image build fails."""
 
 
-class Container:
-    """A managed sandbox container backed by a declarative Image.
+# ---------------------------------------------------------------------------
+# Data classes
+# ---------------------------------------------------------------------------
 
-    Orchestrates image building, local file upload via volumes, and sandbox
-    lifecycle in a single high-level API.
+@dataclass
+class ExecResult:
+    """Result of an ExecCommand call."""
+    stdout: bytes
+    stderr: bytes
+    exit_code: int
+
+    @property
+    def stdout_text(self) -> str:
+        return self.stdout.decode("utf-8", errors="replace")
+
+    @property
+    def stderr_text(self) -> str:
+        return self.stderr.decode("utf-8", errors="replace")
+
+
+@dataclass
+class ContainerInfo:
+    """Metadata about a running container."""
+    id: str
+    name: str
+    status: str
+    pod_name: str
+    web_url: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Container
+# ---------------------------------------------------------------------------
+
+class Container:
+    """A managed container backed by the Chalk ContainerService.
+
+    Orchestrates image building, local file upload via volumes, and
+    container lifecycle in a single high-level API.
     """
+
+    _VOLUME_MOUNT_ROOT = "/mnt/chalk-files"
 
     def __init__(
         self,
         *,
-        image: Image,
+        image: Image | str,
         name: str | None = None,
         cpu: str | None = None,
         memory: str | None = None,
@@ -63,8 +103,8 @@ class Container:
 
         # Set after .run()
         self._built_image_uri: str | None = None
-        self._sandbox: Sandbox | None = None
-        self._sandbox_client: SandboxClient | None = None
+        self._container_id: str | None = None
+        self._container_info: ContainerInfo | None = None
         self._volume_name: str | None = None
 
         # Auth state (lazily populated)
@@ -72,17 +112,36 @@ class Container:
         self._access_token: str | None = None
         self._env_id: str | None = None
         self._connect_headers: dict[str, str] | None = None
-        self._grpc_metadata: list[tuple[str, str]] | None = None
 
     # -- Alternate constructors ------------------------------------------------
 
     @classmethod
-    def from_id(cls, sandbox_id: str) -> Container:
-        """Attach to an existing sandbox by ID.
+    def from_id(cls, container_id: str) -> Container:
+        """Attach to an existing container by ID."""
+        c = cls._make_empty()
+        c._ensure_auth()
+        resp = c._container_rpc("GetContainer", {"id": container_id})
+        if resp.status_code != 200:
+            raise ContainerError(f"GetContainer failed: {resp.text}")
+        c._container_info = _parse_container_response(resp.json()["container"])
+        c._container_id = c._container_info.id
+        return c
 
-        The returned container has no image and cannot be re-run, but supports
-        exec() and terminate().
-        """
+    @classmethod
+    def from_name(cls, name: str) -> Container:
+        """Attach to an existing container by name."""
+        c = cls._make_empty()
+        c._ensure_auth()
+        resp = c._container_rpc("GetContainer", {"name": name})
+        if resp.status_code != 200:
+            raise ContainerError(f"GetContainer failed: {resp.text}")
+        c._container_info = _parse_container_response(resp.json()["container"])
+        c._container_id = c._container_info.id
+        c._name = name
+        return c
+
+    @classmethod
+    def _make_empty(cls) -> Container:
         c = cls.__new__(cls)
         c._image = None  # type: ignore[assignment]
         c._name = None
@@ -90,56 +149,18 @@ class Container:
         c._memory = None
         c._env = {}
         c._built_image_uri = None
+        c._container_id = None
+        c._container_info = None
         c._volume_name = None
         c._api_server = None
         c._access_token = None
         c._env_id = None
         c._connect_headers = None
-        c._grpc_metadata = None
-        c._sandbox_client = None
-        c._sandbox = None
-
-        c._ensure_auth()
-        c._ensure_grpc_client()
-        assert c._sandbox_client is not None
-        c._sandbox = c._sandbox_client.get(id=sandbox_id)
         return c
 
-    @classmethod
-    def from_name(cls, name: str) -> Container:
-        """Attach to an existing sandbox by name.
-
-        Lists all sandboxes and finds the first one matching the given name.
-        """
-        c = cls.__new__(cls)
-        c._image = None  # type: ignore[assignment]
-        c._name = name
-        c._cpu = None
-        c._memory = None
-        c._env = {}
-        c._built_image_uri = None
-        c._volume_name = None
-        c._api_server = None
-        c._access_token = None
-        c._env_id = None
-        c._connect_headers = None
-        c._grpc_metadata = None
-        c._sandbox_client = None
-        c._sandbox = None
-
-        c._ensure_auth()
-        c._ensure_grpc_client()
-        assert c._sandbox_client is not None
-        for info in c._sandbox_client.list():
-            if info.name == name and info.state == "ready":
-                c._sandbox = c._sandbox_client.get(id=info.id)
-                return c
-        raise ContainerError(f"No ready sandbox found with name {name!r}")
-
-    # -- Auth & client setup ---------------------------------------------------
+    # -- Auth ------------------------------------------------------------------
 
     def _ensure_auth(self) -> None:
-        """Load credentials from environment and exchange for an access token."""
         if self._access_token is not None:
             return
 
@@ -171,29 +192,12 @@ class Container:
             "Authorization": f"Bearer {self._access_token}",
             "X-Chalk-Env-Id": self._env_id or "",
         }
-        self._grpc_metadata = [
-            ("authorization", f"Bearer {self._access_token}"),
-            ("x-chalk-env-id", self._env_id or ""),
-        ]
-
-    def _ensure_grpc_client(self) -> None:
-        """Create gRPC SandboxClient if not already created."""
-        if self._sandbox_client is not None:
-            return
-        self._ensure_auth()
-        import grpc
-
-        assert self._api_server is not None
-        host = self._api_server.replace("https://", "").replace("http://", "")
-        target = f"{host}:443"
-        credentials = grpc.ssl_channel_credentials()
-        self._sandbox_client = SandboxClient(
-            target, credentials=credentials, metadata=self._grpc_metadata,
-        )
 
     # -- Connect-protocol helpers ----------------------------------------------
 
-    def _connect_rpc(self, service: str, method: str, body: dict, timeout: float = 30) -> httpx.Response:
+    def _connect_rpc(
+        self, service: str, method: str, body: dict, timeout: float = 30,
+    ) -> httpx.Response:
         assert self._api_server is not None
         assert self._connect_headers is not None
         return httpx.post(
@@ -203,34 +207,45 @@ class Container:
             timeout=timeout,
         )
 
-    def _sandbox_rpc(self, method: str, body: dict, timeout: float = 30) -> httpx.Response:
-        return self._connect_rpc("chalk.sandbox.v1.SandboxService", method, body, timeout)
+    def _container_rpc(self, method: str, body: dict, timeout: float = 30) -> httpx.Response:
+        return self._connect_rpc(
+            "chalk.container.v1.ContainerService", method, body, timeout,
+        )
 
     def _custom_image_rpc(self, method: str, body: dict, timeout: float = 30) -> httpx.Response:
-        return self._connect_rpc("chalk.sandbox.v1.CustomImageService", method, body, timeout)
+        return self._connect_rpc(
+            "chalk.sandbox.v1.CustomImageService", method, body, timeout,
+        )
 
     def _volume_rpc(self, method: str, body: dict, timeout: float = 30) -> httpx.Response:
-        return self._connect_rpc("chalk.volume.v1.VolumeService", method, body, timeout)
+        return self._connect_rpc(
+            "chalk.volume.v1.VolumeService", method, body, timeout,
+        )
 
     # -- Image building --------------------------------------------------------
 
-    def _build_image(self, *, poll_interval: float = 5.0, timeout: float = 600.0) -> str:
+    def _build_image(
+        self, *, poll_interval: float = 5.0, timeout: float = 600.0,
+    ) -> str:
         """Build the Image spec via CustomImageService and return the image URI."""
         from google.protobuf.json_format import MessageToDict
 
+        assert isinstance(self._image, Image)
         spec_dict = MessageToDict(self._image.to_proto())
-        resp = self._custom_image_rpc("BuildCustomImage", {"imageSpec": spec_dict}, timeout=60)
+        resp = self._custom_image_rpc(
+            "BuildCustomImage", {"imageSpec": spec_dict}, timeout=60,
+        )
         if resp.status_code != 200:
             raise ImageBuildError(f"BuildCustomImage failed: {resp.text}")
 
         data = resp.json()
         build_id = data["buildId"]
-        image_uri = data.get("image", "")
 
-        # Poll until build succeeds
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            get_resp = self._custom_image_rpc("GetCustomImage", {"buildId": build_id})
+            get_resp = self._custom_image_rpc(
+                "GetCustomImage", {"buildId": build_id},
+            )
             if get_resp.status_code != 200:
                 raise ImageBuildError(f"GetCustomImage failed: {get_resp.text}")
             get_data = get_resp.json()
@@ -239,7 +254,8 @@ class Container:
                 return get_data["image"]
             if status == "failed":
                 raise ImageBuildError(
-                    f"Image build {build_id} failed: {get_data.get('error', 'unknown')}"
+                    f"Image build {build_id} failed: "
+                    f"{get_data.get('error', 'unknown')}"
                 )
             time.sleep(poll_interval)
 
@@ -248,49 +264,28 @@ class Container:
     # -- Volume upload ---------------------------------------------------------
 
     def _upload_lazy_files(self) -> str:
-        """Create a temporary volume and upload all lazy local files. Returns volume name."""
+        """Create a volume, upload all lazy local files, return volume name."""
         vol_name = f"container-files-{uuid.uuid4().hex[:12]}"
 
         resp = self._volume_rpc("CreateVolume", {"name": vol_name})
         if resp.status_code != 200:
             raise ContainerError(f"CreateVolume failed: {resp.text}")
 
+        assert isinstance(self._image, Image)
         for lf in self._image.lazy_local_files:
             content = Path(lf.src).read_bytes()
             encoded = base64.b64encode(content).decode("ascii")
-            # Use the dest path (strip leading /) as the volume file path
             vol_path = lf.dest.lstrip("/")
             put_resp = self._volume_rpc(
                 "PutFile",
                 {"volumeName": vol_name, "path": vol_path, "data": encoded},
             )
             if put_resp.status_code != 200:
-                raise ContainerError(f"PutFile failed for {lf.dest}: {put_resp.text}")
+                raise ContainerError(
+                    f"PutFile failed for {lf.dest}: {put_resp.text}"
+                )
 
         return vol_name
-
-    def _inject_files_via_exec(self) -> None:
-        """Copy uploaded volume files into the sandbox at their destination paths."""
-        assert self._sandbox is not None
-        assert self._volume_name is not None
-
-        for lf in self._image.lazy_local_files:
-            vol_path = lf.dest.lstrip("/")
-            content = Path(lf.src).read_bytes()
-
-            # Ensure parent directory exists, then write file via base64 decode
-            encoded = base64.b64encode(content).decode("ascii")
-            dest_dir = str(Path(lf.dest).parent)
-            script = f"mkdir -p {dest_dir} && echo '{encoded}' | base64 -d > {lf.dest}"
-            if lf.mode is not None:
-                script += f" && chmod {oct(lf.mode)[2:]} {lf.dest}"
-
-            result = self._sandbox.exec("sh", "-c", script, timeout_secs=30)
-            if result.exit_code != 0:
-                raise ContainerError(
-                    f"Failed to inject {lf.dest}: exit_code={result.exit_code} "
-                    f"stderr={result.stderr_text}"
-                )
 
     # -- Lifecycle -------------------------------------------------------------
 
@@ -299,123 +294,218 @@ class Container:
         *,
         poll_interval: float = 5.0,
         build_timeout: float = 600.0,
-        sandbox_timeout: float = 300.0,
+        ready_timeout: float = 300.0,
     ) -> Container:
-        """Build the image, upload local files, and start the sandbox.
+        """Build the image, upload local files, and start the container.
 
         Returns self for chaining.
         """
         self._ensure_auth()
-        self._ensure_grpc_client()
 
-        # 1. Build the image
-        print(f"Building image from {self._image!r}...")
-        self._built_image_uri = self._build_image(
-            poll_interval=poll_interval, timeout=build_timeout,
-        )
-        print(f"Image built: {self._built_image_uri}")
+        # 1. Resolve image URI
+        if isinstance(self._image, Image):
+            print(f"Building image from {self._image!r}...")
+            self._built_image_uri = self._build_image(
+                poll_interval=poll_interval, timeout=build_timeout,
+            )
+            print(f"Image built: {self._built_image_uri}")
+        else:
+            self._built_image_uri = self._image
 
         # 2. Upload lazy local files to a volume (if any)
-        lazy_files = self._image.lazy_local_files
+        lazy_files = (
+            self._image.lazy_local_files if isinstance(self._image, Image) else set()
+        )
         if lazy_files:
             print(f"Uploading {len(lazy_files)} local file(s) to volume...")
             self._volume_name = self._upload_lazy_files()
             print(f"Volume created: {self._volume_name}")
 
-        # 3. Create the sandbox with the built image URI
-        sandbox_name = self._name or f"container-{uuid.uuid4().hex[:8]}"
-        body: dict = {"image": self._built_image_uri, "name": sandbox_name}
-        if self._env:
-            body["env"] = self._env
-        if self._cpu or self._memory:
-            limits: dict = {}
-            if self._cpu:
-                limits["cpu"] = self._cpu
-            if self._memory:
-                limits["memory"] = self._memory
-            body["resourceLimits"] = limits
+        # 3. Build the ContainerService spec
+        container_name = self._name or f"container-{uuid.uuid4().hex[:8]}"
+        spec: dict = {
+            "name": container_name,
+            "image": self._built_image_uri,
+            "entrypoint": ["sleep", "infinity"],
+        }
 
-        print(f"Creating sandbox '{sandbox_name}'...")
-        resp = self._sandbox_rpc("CreateSandbox", body, timeout=60)
+        if self._env:
+            spec["envVars"] = self._env
+        if self._cpu or self._memory:
+            resources: dict = {}
+            if self._cpu:
+                resources["cpu"] = self._cpu
+            if self._memory:
+                resources["memory"] = self._memory
+            spec["resources"] = resources
+
+        # Mount the volume via ChalkFS at a fixed root; files are stored
+        # under their destination paths (stripped of leading /).
+        if self._volume_name:
+            spec["volumes"] = [
+                {
+                    "name": self._volume_name,
+                    "mountPath": self._VOLUME_MOUNT_ROOT,
+                    "type": "chalkfs",
+                }
+            ]
+
+        print(f"Starting container '{container_name}'...")
+        resp = self._container_rpc(
+            "RunContainer", {"container": {"spec": spec}}, timeout=60,
+        )
         if resp.status_code != 200:
-            raise ContainerError(f"CreateSandbox failed: {resp.text}")
+            raise ContainerError(f"RunContainer failed: {resp.text}")
 
         data = resp.json()
-        sandbox_id = data["sandbox"]["id"]
-        state = data["sandbox"]["state"]
+        self._container_info = _parse_container_response(data["container"])
+        self._container_id = self._container_info.id
+        print(
+            f"Container created: {self._container_id} "
+            f"(status={self._container_info.status})"
+        )
 
-        # Poll until ready
-        if state != "ready":
-            deadline = time.monotonic() + sandbox_timeout
-            while time.monotonic() < deadline:
-                time.sleep(poll_interval)
-                get_resp = self._sandbox_rpc("GetSandbox", {"sandboxId": sandbox_id})
-                if get_resp.status_code != 200:
-                    raise ContainerError(f"GetSandbox failed: {get_resp.text}")
-                state = get_resp.json()["sandbox"]["state"]
-                if state == "ready":
-                    break
-                if state in ("error", "terminated"):
-                    raise ContainerError(f"Sandbox {sandbox_id} entered {state} state")
-            else:
-                raise ContainerError(
-                    f"Sandbox {sandbox_id} timed out after {sandbox_timeout}s"
-                )
+        # 4. Poll until Running
+        if self._container_info.status != "Running":
+            self._poll_until_running(
+                poll_interval=poll_interval, timeout=ready_timeout,
+            )
 
-        assert self._sandbox_client is not None
-        self._sandbox = self._sandbox_client.get(id=sandbox_id)
-        print(f"Sandbox ready: {sandbox_id}")
-
-        # 4. Inject lazy local files into the sandbox
+        # 5. If we have lazy files, symlink them from the volume mount
+        #    into their expected destination paths.
         if lazy_files:
-            print("Injecting local files into sandbox...")
-            self._inject_files_via_exec()
-            print("Files injected.")
+            print("Linking volume-mounted files to destination paths...")
+            self._link_volume_files()
+            print("Files linked.")
 
         return self
 
-    def exec(
-        self,
-        command: str,
-        *args: str,
-        timeout_secs: int | None = None,
-        workdir: str | None = None,
-        env: dict[str, str] | None = None,
-    ) -> ExecResult:
-        """Execute a command in the running sandbox."""
-        if self._sandbox is None:
-            raise ContainerError("Container is not running. Call .run() first.")
-        return self._sandbox.exec(
-            command, *args,
-            timeout_secs=timeout_secs,
-            workdir=workdir,
-            env=env,
+    def _poll_until_running(
+        self, *, poll_interval: float, timeout: float,
+    ) -> None:
+        assert self._container_id is not None
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            time.sleep(poll_interval)
+            resp = self._container_rpc(
+                "GetContainer", {"id": self._container_id},
+            )
+            if resp.status_code != 200:
+                raise ContainerError(f"GetContainer failed: {resp.text}")
+            info = _parse_container_response(resp.json()["container"])
+            self._container_info = info
+            print(f"  poll: status={info.status}")
+            if info.status == "Running":
+                return
+            if info.status in ("Failed", "Succeeded"):
+                raise ContainerError(
+                    f"Container {self._container_id} entered "
+                    f"{info.status} state"
+                )
+        raise ContainerError(
+            f"Container {self._container_id} timed out after {timeout}s"
         )
 
-    def terminate(self, grace_period_seconds: int | None = None) -> None:
-        """Terminate the sandbox and clean up the temporary volume."""
-        if self._sandbox is not None:
-            self._sandbox.terminate(grace_period_seconds=grace_period_seconds)
-            self._sandbox = None
+    def _link_volume_files(self) -> None:
+        """Create symlinks from volume-mounted files to their destination paths."""
+        assert isinstance(self._image, Image)
+        # Build a single shell script that creates all the symlinks
+        commands: list[str] = []
+        for lf in self._image.lazy_local_files:
+            vol_path = lf.dest.lstrip("/")
+            src = f"{self._VOLUME_MOUNT_ROOT}/{vol_path}"
+            dest = lf.dest
+            dest_dir = str(Path(dest).parent)
+            commands.append(f"mkdir -p {dest_dir} && ln -sf {src} {dest}")
+            if lf.mode is not None:
+                commands.append(f"chmod {oct(lf.mode)[2:]} {dest}")
+
+        if commands:
+            script = " && ".join(commands)
+            result = self.exec("sh", "-c", script)
+            if result.exit_code != 0:
+                raise ContainerError(
+                    f"Failed to link files: exit_code={result.exit_code} "
+                    f"stderr={result.stderr_text}"
+                )
+
+    def exec(self, *command: str, timeout_secs: int | None = None) -> ExecResult:
+        """Execute a command in the running container via ContainerService.ExecCommand."""
+        if self._container_id is None:
+            raise ContainerError("Container is not running. Call .run() first.")
+
+        body: dict = {
+            "id": self._container_id,
+            "command": list(command),
+        }
+        if timeout_secs is not None:
+            body["timeout"] = f"{timeout_secs}s"
+
+        resp = self._container_rpc("ExecCommand", body, timeout=timeout_secs or 30)
+        if resp.status_code != 200:
+            raise ContainerError(f"ExecCommand failed: {resp.text}")
+
+        data = resp.json()
+        stdout_b64 = data.get("stdout", "")
+        stderr_b64 = data.get("stderr", "")
+        return ExecResult(
+            stdout=base64.b64decode(stdout_b64) if stdout_b64 else b"",
+            stderr=base64.b64decode(stderr_b64) if stderr_b64 else b"",
+            exit_code=data.get("exitCode", 0),
+        )
+
+    def stop(self, grace_period_seconds: int | None = None) -> None:
+        """Stop the container and clean up the temporary volume."""
+        self._ensure_auth()
+        if self._container_id is not None:
+            body: dict = {"id": self._container_id}
+            if grace_period_seconds is not None:
+                body["gracePeriodSeconds"] = grace_period_seconds
+            self._container_rpc("StopContainer", body)
+            self._container_id = None
+            self._container_info = None
 
         if self._volume_name is not None:
             self._volume_rpc("DeleteVolume", {"name": self._volume_name})
             self._volume_name = None
 
-        if self._sandbox_client is not None:
-            self._sandbox_client.close()
-            self._sandbox_client = None
+    def refresh(self) -> ContainerInfo:
+        """Fetch latest container status from the server."""
+        if self._container_id is None:
+            raise ContainerError("No container ID — call .run() first.")
+        self._ensure_auth()
+        resp = self._container_rpc("GetContainer", {"id": self._container_id})
+        if resp.status_code != 200:
+            raise ContainerError(f"GetContainer failed: {resp.text}")
+        self._container_info = _parse_container_response(resp.json()["container"])
+        return self._container_info
 
     @property
-    def sandbox_id(self) -> str | None:
-        """The underlying sandbox ID, if running."""
-        return self._sandbox.id if self._sandbox else None
+    def id(self) -> str | None:
+        return self._container_id
+
+    @property
+    def info(self) -> ContainerInfo | None:
+        return self._container_info
 
     @property
     def image_uri(self) -> str | None:
-        """The built image URI, if available."""
         return self._built_image_uri
 
     def __repr__(self) -> str:
-        state = "running" if self._sandbox else "stopped"
-        return f"Container(name={self._name!r}, state={state})"
+        status = self._container_info.status if self._container_info else "not started"
+        return f"Container(name={self._name!r}, status={status})"
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _parse_container_response(data: dict) -> ContainerInfo:
+    return ContainerInfo(
+        id=data["id"],
+        name=data["name"],
+        status=data["status"],
+        pod_name=data.get("podName", ""),
+        web_url=data.get("webUrl"),
+    )
