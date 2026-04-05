@@ -1,8 +1,8 @@
 """End-to-end tests for the Container abstraction.
 
-Tests that Container(image=Image(...).add_local_file(...)) and
-Container(image=Image(...).add_local_dir(...)) correctly upload local
-files to a ChalkFS volume and make them readable inside the container.
+Tests that Container(image=Image(...).add_local_file(..., strategy="copy")) and
+Container(image=Image(...).add_local_dir(..., strategy="copy")) correctly
+inline local files into the image and make them readable inside the container.
 """
 
 import os
@@ -29,14 +29,14 @@ needs_staging = pytest.mark.skipif(
 
 @needs_staging
 def test_container_add_local_file() -> None:
-    """Container with add_local_file mounts the file via ChalkFS volume."""
+    """Container with add_local_file(strategy='copy') bakes file into image."""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
         f.write("hello from local file")
         f.flush()
         local_path = f.name
 
     try:
-        img = Image.debian_slim().add_local_file(local_path, "/app/data.txt")
+        img = Image.debian_slim().add_local_file(local_path, "/app/data.txt", strategy="copy")
         c = Container(image=img, name=f"test-add-local-file-{uuid.uuid4().hex[:8]}")
         try:
             c.run()
@@ -53,14 +53,14 @@ def test_container_add_local_file() -> None:
 
 @needs_staging
 def test_container_add_local_dir() -> None:
-    """Container with add_local_dir mounts all files via ChalkFS volume."""
+    """Container with add_local_dir(strategy='copy') bakes files into image."""
     with tempfile.TemporaryDirectory() as d:
         (Path(d) / "greeting.txt").write_text("hello")
         sub = Path(d) / "sub"
         sub.mkdir()
         (sub / "nested.txt").write_text("world")
 
-        img = Image.debian_slim().add_local_dir(d, "/app/mydir")
+        img = Image.debian_slim().add_local_dir(d, "/app/mydir", strategy="copy")
         c = Container(image=img, name=f"test-add-local-dir-{uuid.uuid4().hex[:8]}")
         try:
             c.run()
