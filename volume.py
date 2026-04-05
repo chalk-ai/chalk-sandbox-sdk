@@ -1,0 +1,429 @@
+"""
+Python SDK for the Volume gRPC Service.
+
+Provides a Modal-style API for managing persistent named volumes backed by
+object storage.
+
+Usage:
+    from volume import VolumeClient
+
+    with VolumeClient("localhost:50051") as client:
+        # Create or look up a volume
+        vol = client.create("my-data")
+
+        # Upload files
+        vol.put_file("models/latest.bin", model_bytes)
+        vol.put_file("config.json", b'{"key": "value"}')
+
+        # Batch upload for efficiency
+        with vol.batch_upload() as batch:
+            batch.put("data/a.csv", csv_a)
+            batch.put("data/b.csv", csv_b)
+            batch.put("data/c.csv", csv_c)
+
+        # Read files
+        data = vol.read_file("models/latest.bin")
+
+        # List files
+        for f in vol.listdir("data/"):
+            print(f"{f.path}  {f.size} bytes")
+
+        # Remove a file
+        vol.remove_file("config.json")
+
+        # Delete the volume entirely
+        vol.delete()
+"""
+
+from __future__ import annotations
+
+import datetime
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+from typing import IO
+
+import grpc
+
+from chalk.volume.v1 import volume_pb2 as pb
+from chalk.volume.v1 import volume_pb2_grpc as pb_grpc
+
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+class VolumeError(Exception):
+    """Base exception for volume errors."""
+
+
+class VolumeNotFoundError(VolumeError):
+    """Raised when a volume is not found."""
+
+
+class FileNotFoundError_(VolumeError):
+    """Raised when a file within a volume is not found."""
+
+
+# ---------------------------------------------------------------------------
+# Data classes
+# ---------------------------------------------------------------------------
+
+@dataclass
+class VolumeInfo:
+    """Metadata about a volume."""
+    name: str
+    created_at: datetime.datetime | None = None
+
+
+@dataclass
+class FileInfo:
+    """Metadata about a file inside a volume."""
+    path: str
+    size: int
+    updated_at: datetime.datetime | None = None
+
+
+# ---------------------------------------------------------------------------
+# Batch upload context manager
+# ---------------------------------------------------------------------------
+
+class _BatchUpload:
+    """Accumulates put_file operations and executes them on exit."""
+
+    def __init__(self, volume: Volume) -> None:
+        self._volume = volume
+        self._files: list[tuple[str, bytes]] = []
+
+    def put(self, path: str, data: bytes | str) -> None:
+        """Stage a file for upload.
+
+        Args:
+            path: Destination path within the volume.
+            data: File contents (bytes or str).
+        """
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        self._files.append((path, data))
+
+    def put_file(self, path: str, local_path: str | Path) -> None:
+        """Stage a local file for upload.
+
+        Args:
+            path: Destination path within the volume.
+            local_path: Local file to read.
+        """
+        self._files.append((path, Path(local_path).read_bytes()))
+
+    def _flush(self) -> None:
+        for path, data in self._files:
+            self._volume.put_file(path, data)
+        self._files.clear()
+
+
+# ---------------------------------------------------------------------------
+# Volume handle
+# ---------------------------------------------------------------------------
+
+class Volume:
+    """A handle to a named volume, providing file operations."""
+
+    def __init__(self, client: VolumeClient, name: str) -> None:
+        self._client = client
+        self._name = name
+        self._info: VolumeInfo | None = None
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def info(self) -> VolumeInfo:
+        """Get volume info, fetching from server if needed."""
+        if self._info is None:
+            self._info = self._fetch_info()
+        return self._info
+
+    def reload(self) -> VolumeInfo:
+        """Force-refresh volume info from the server."""
+        self._info = self._fetch_info()
+        return self._info
+
+    def _fetch_info(self) -> VolumeInfo:
+        try:
+            resp = self._client._stub.GetVolume(
+                pb.GetVolumeRequest(name=self._name),
+                metadata=self._client._metadata,
+            )
+        except grpc.RpcError as e:
+            _handle_rpc_error(e, self._name)
+            raise
+        return _pb_to_volume_info(resp.volume)
+
+    # -- File operations -------------------------------------------------------
+
+    def read_file(self, path: str) -> bytes:
+        """Read a file's contents from the volume.
+
+        Args:
+            path: File path within the volume.
+
+        Returns:
+            The raw file bytes.
+        """
+        try:
+            resp = self._client._stub.GetFile(
+                pb.GetFileRequest(volume_name=self._name, path=path),
+                metadata=self._client._metadata,
+            )
+        except grpc.RpcError as e:
+            _handle_rpc_error(e, self._name)
+            raise
+        return resp.data
+
+    def put_file(self, path: str, data: bytes | str) -> None:
+        """Write a file into the volume.
+
+        Args:
+            path: Destination path within the volume.
+            data: File contents (bytes or str).
+        """
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        try:
+            self._client._stub.PutFile(
+                pb.PutFileRequest(volume_name=self._name, path=path, data=data),
+                metadata=self._client._metadata,
+            )
+        except grpc.RpcError as e:
+            _handle_rpc_error(e, self._name)
+            raise
+
+    def put_file_from_path(self, path: str, local_path: str | Path) -> None:
+        """Upload a local file into the volume.
+
+        Args:
+            path: Destination path within the volume.
+            local_path: Local file to read and upload.
+        """
+        self.put_file(path, Path(local_path).read_bytes())
+
+    def remove_file(self, path: str) -> None:
+        """Remove a file from the volume.
+
+        Args:
+            path: File path within the volume.
+        """
+        try:
+            self._client._stub.RemoveFile(
+                pb.RemoveFileRequest(volume_name=self._name, path=path),
+                metadata=self._client._metadata,
+            )
+        except grpc.RpcError as e:
+            _handle_rpc_error(e, self._name)
+            raise
+
+    def listdir(self, prefix: str = "", *, recursive: bool = True) -> list[FileInfo]:
+        """List files in the volume.
+
+        Args:
+            prefix: Only return files whose paths start with this prefix.
+            recursive: Currently always recursive (server-side behavior).
+
+        Returns:
+            List of FileInfo objects.
+        """
+        try:
+            resp = self._client._stub.ListFiles(
+                pb.ListFilesRequest(volume_name=self._name, prefix=prefix),
+                metadata=self._client._metadata,
+            )
+        except grpc.RpcError as e:
+            _handle_rpc_error(e, self._name)
+            raise
+        return [_pb_to_file_info(f) for f in resp.files]
+
+    def iterdir(self, prefix: str = "") -> Iterator[FileInfo]:
+        """Iterate over files in the volume.
+
+        Same as listdir() but returns an iterator for lazy consumption.
+
+        Args:
+            prefix: Only return files whose paths start with this prefix.
+        """
+        yield from self.listdir(prefix)
+
+    @contextmanager
+    def batch_upload(self) -> Iterator[_BatchUpload]:
+        """Context manager for batching multiple file uploads.
+
+        All staged files are uploaded when the context manager exits.
+
+        Usage:
+            with vol.batch_upload() as batch:
+                batch.put("a.txt", b"hello")
+                batch.put("b.txt", b"world")
+        """
+        batch = _BatchUpload(self)
+        yield batch
+        batch._flush()
+
+    # -- Volume lifecycle ------------------------------------------------------
+
+    def delete(self) -> None:
+        """Delete this volume and all its contents."""
+        try:
+            self._client._stub.DeleteVolume(
+                pb.DeleteVolumeRequest(name=self._name),
+                metadata=self._client._metadata,
+            )
+        except grpc.RpcError as e:
+            _handle_rpc_error(e, self._name)
+            raise
+
+    def __repr__(self) -> str:
+        return f"Volume(name={self._name!r})"
+
+
+# ---------------------------------------------------------------------------
+# Client
+# ---------------------------------------------------------------------------
+
+class VolumeClient:
+    """Client for the Volume gRPC Service."""
+
+    def __init__(
+        self,
+        target: str = "localhost:50051",
+        *,
+        credentials: grpc.ChannelCredentials | None = None,
+        metadata: list[tuple[str, str]] | None = None,
+    ) -> None:
+        """
+        Initialize the gRPC client.
+
+        Args:
+            target: gRPC server address (e.g. "localhost:50051" or "volumes.example.com:443")
+            credentials: Optional TLS/SSL channel credentials. If None, uses insecure channel.
+            metadata: Optional default metadata to send with every RPC call.
+        """
+        self._target = target
+        self._metadata = metadata
+        if credentials is not None:
+            self._channel = grpc.secure_channel(target, credentials)
+        else:
+            self._channel = grpc.insecure_channel(target)
+        self._stub = pb_grpc.VolumeServiceStub(self._channel)
+
+    def __enter__(self) -> VolumeClient:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """Close the gRPC channel."""
+        self._channel.close()
+
+    def create(self, name: str) -> Volume:
+        """Create a new named volume.
+
+        If the volume already exists on the server, behavior depends on the
+        server implementation (may return the existing volume or error).
+
+        Args:
+            name: Name for the volume.
+
+        Returns:
+            A Volume handle.
+        """
+        try:
+            resp = self._stub.CreateVolume(
+                pb.CreateVolumeRequest(name=name),
+                metadata=self._metadata,
+            )
+        except grpc.RpcError as e:
+            _handle_rpc_error(e, name)
+            raise
+        info = _pb_to_volume_info(resp.volume)
+        vol = Volume(self, info.name)
+        vol._info = info
+        return vol
+
+    def from_name(self, name: str) -> Volume:
+        """Get a Volume handle by name.
+
+        Does not validate the volume exists until you call a method on it.
+        Use this when you know the volume already exists.
+
+        Args:
+            name: Name of the existing volume.
+
+        Returns:
+            A Volume handle.
+        """
+        return Volume(self, name)
+
+    def lookup(self, name: str) -> Volume:
+        """Look up a volume by name, verifying it exists.
+
+        Args:
+            name: Name of the volume.
+
+        Returns:
+            A Volume handle with info pre-fetched.
+
+        Raises:
+            VolumeNotFoundError: If the volume does not exist.
+        """
+        vol = Volume(self, name)
+        vol.reload()
+        return vol
+
+    def list(self) -> list[VolumeInfo]:
+        """List all volumes.
+
+        Returns:
+            List of VolumeInfo objects.
+        """
+        resp = self._stub.ListVolumes(
+            pb.ListVolumesRequest(),
+            metadata=self._metadata,
+        )
+        return [_pb_to_volume_info(v) for v in resp.volumes]
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _pb_to_volume_info(info: pb.VolumeInfo) -> VolumeInfo:
+    created_at = None
+    if info.HasField("created_at"):
+        created_at = info.created_at.ToDatetime(tzinfo=datetime.timezone.utc)
+    return VolumeInfo(
+        name=info.name,
+        created_at=created_at,
+    )
+
+
+def _pb_to_file_info(info: pb.FileInfo) -> FileInfo:
+    updated_at = None
+    if info.HasField("updated_at"):
+        updated_at = info.updated_at.ToDatetime(tzinfo=datetime.timezone.utc)
+    return FileInfo(
+        path=info.path,
+        size=info.size,
+        updated_at=updated_at,
+    )
+
+
+def _handle_rpc_error(e: grpc.RpcError, volume_name: str) -> None:
+    if e.code() == grpc.StatusCode.NOT_FOUND:
+        raise VolumeNotFoundError(f"Volume {volume_name!r} not found") from e
+
+
+def connect(target: str = "localhost:50051", **kwargs: object) -> VolumeClient:
+    """Create a new VolumeClient."""
+    return VolumeClient(target, **kwargs)
