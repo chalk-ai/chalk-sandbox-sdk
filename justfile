@@ -24,8 +24,8 @@ ci-run:
     # Poll for the Buildkite check URL (may take a few seconds to appear)
     echo "Waiting for Buildkite check on PR #${pr_number}..."
     for i in $(seq 1 15); do
-        build_url=$(gh pr checks "${pr_number}" --json name,detailsUrl \
-            --jq '.[] | select(.name | test("buildkite"; "i")) | .detailsUrl' 2>/dev/null | tail -1 || true)
+        build_url=$(gh pr checks "${pr_number}" --json name,link \
+            --jq '.[] | select(.name | test("buildkite"; "i")) | .link' 2>/dev/null | tail -1 || true)
         if [[ -n "${build_url}" ]]; then
             break
         fi
