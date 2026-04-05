@@ -2,7 +2,10 @@
 
 ## Project tracking
 
-Linear project: https://linear.app/chalk-ai/project/sandbox-devxcapabilities-1ddd7f00a4e7/overview
+Linear project: "Sandbox Devx/capabilities" — https://linear.app/chalk-ai/project/sandbox-devxcapabilities-1ddd7f00a4e7/overview
+- Linear team: **Engineering** (key: CHA)
+- Linear project ID: `8a522950-da1f-424e-bc6d-8f63e0110fcf`
+- Initiative: "Sandbox Compute"
 
 ## Architecture
 
