@@ -7,6 +7,7 @@ files to a ChalkFS volume and make them readable inside the container.
 
 import os
 import tempfile
+import uuid
 from pathlib import Path
 
 import pytest
@@ -36,7 +37,7 @@ def test_container_add_local_file() -> None:
 
     try:
         img = Image.debian_slim().add_local_file(local_path, "/app/data.txt")
-        c = Container(image=img, name="test-add-local-file")
+        c = Container(image=img, name=f"test-add-local-file-{uuid.uuid4().hex[:8]}")
         try:
             c.run()
             result = c.exec("cat", "/app/data.txt")
@@ -60,7 +61,7 @@ def test_container_add_local_dir() -> None:
         (sub / "nested.txt").write_text("world")
 
         img = Image.debian_slim().add_local_dir(d, "/app/mydir")
-        c = Container(image=img, name="test-add-local-dir")
+        c = Container(image=img, name=f"test-add-local-dir-{uuid.uuid4().hex[:8]}")
         try:
             c.run()
 
