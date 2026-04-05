@@ -42,7 +42,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO
+
+import builtins
 
 import grpc
 
@@ -298,7 +299,7 @@ class VolumeClient:
         target: str = "localhost:50051",
         *,
         credentials: grpc.ChannelCredentials | None = None,
-        metadata: list[tuple[str, str]] | None = None,
+        metadata: builtins.list[tuple[str, str]] | None = None,
     ) -> None:
         """
         Initialize the gRPC client.
@@ -381,7 +382,7 @@ class VolumeClient:
         vol.reload()
         return vol
 
-    def list(self) -> list[VolumeInfo]:
+    def list(self) -> builtins.list[VolumeInfo]:
         """List all volumes.
 
         Returns:
@@ -420,10 +421,16 @@ def _pb_to_file_info(info: pb.FileInfo) -> FileInfo:
 
 
 def _handle_rpc_error(e: grpc.RpcError, volume_name: str) -> None:
+    assert isinstance(e, grpc.Call)
     if e.code() == grpc.StatusCode.NOT_FOUND:
         raise VolumeNotFoundError(f"Volume {volume_name!r} not found") from e
 
 
-def connect(target: str = "localhost:50051", **kwargs: object) -> VolumeClient:
+def connect(
+    target: str = "localhost:50051",
+    *,
+    credentials: grpc.ChannelCredentials | None = None,
+    metadata: builtins.list[tuple[str, str]] | None = None,
+) -> VolumeClient:
     """Create a new VolumeClient."""
-    return VolumeClient(target, **kwargs)
+    return VolumeClient(target, credentials=credentials, metadata=metadata)

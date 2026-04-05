@@ -3,6 +3,14 @@
 buildkite_org := "chalk"
 buildkite_pipeline := "chalk-sandbox-sdk-integration-tests"
 
+# Run ty type checker
+ty:
+    uv run --with ty ty check container.py sandbox.py image.py volume.py
+
+# Run ruff linter
+ruff:
+    uv run --with ruff ruff check container.py sandbox.py image.py volume.py
+
 # Run all e2e tests in CI and print a link to the build
 ci-run:
     #!/usr/bin/env bash
