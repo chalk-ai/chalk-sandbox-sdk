@@ -9,12 +9,34 @@ ci-run:
     set -euo pipefail
     branch="$(git rev-parse --abbrev-ref HEAD)"
     commit="$(git rev-parse HEAD)"
-    echo "Triggering Buildkite build on branch ${branch} (${commit})..."
-    build_url=$(curl -sS -X POST \
-        "https://api.buildkite.com/v2/organizations/{{ buildkite_org }}/pipelines/{{ buildkite_pipeline }}/builds" \
-        -H "Authorization: Bearer ${BUILDKITE_API_TOKEN}" \
-        -H "Content-Type: application/json" \
-        -d "{\"commit\": \"${commit}\", \"branch\": \"${branch}\", \"message\": \"Triggered via just ci-run\"}" \
-        | jq -r '.web_url')
+
+    # Push latest commits so Buildkite picks them up
+    echo "Pushing ${branch} to origin..."
+    git push origin "${branch}" 2>&1
+
+    # Find the PR number for this branch
+    pr_number=$(gh pr view --json number --jq '.number' 2>/dev/null || true)
+    if [[ -z "${pr_number}" ]]; then
+        echo "No open PR found for branch ${branch}. Create one first with: gh pr create"
+        exit 1
+    fi
+
+    # Poll for the Buildkite check URL (may take a few seconds to appear)
+    echo "Waiting for Buildkite check on PR #${pr_number}..."
+    for i in $(seq 1 15); do
+        build_url=$(gh pr checks "${pr_number}" --json name,detailsUrl \
+            --jq '.[] | select(.name | test("buildkite"; "i")) | .detailsUrl' 2>/dev/null | tail -1 || true)
+        if [[ -n "${build_url}" ]]; then
+            break
+        fi
+        sleep 2
+    done
+
+    if [[ -z "${build_url}" ]]; then
+        echo "Could not find Buildkite check URL. Check the PR directly:"
+        echo "  https://github.com/{{ buildkite_org }}/{{ buildkite_pipeline }}/pull/${pr_number}"
+        exit 1
+    fi
+
     echo ""
-    echo "Build started: ${build_url}"
+    echo "Build: ${build_url}"
