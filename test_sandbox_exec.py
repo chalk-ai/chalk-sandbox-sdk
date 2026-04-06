@@ -15,7 +15,7 @@ import httpx
 import pytest
 from dotenv import load_dotenv
 
-from sandbox import SandboxClient
+from chalkcompute import SandboxClient
 
 load_dotenv()
 

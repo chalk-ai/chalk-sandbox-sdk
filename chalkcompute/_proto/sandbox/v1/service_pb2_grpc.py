@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-from chalk.sandbox.v1 import service_pb2 as chalk_dot_sandbox_dot_v1_dot_service__pb2
+from chalkcompute._proto.sandbox.v1 import service_pb2 as chalk_dot_sandbox_dot_v1_dot_service__pb2
 
 GRPC_GENERATED_VERSION = '1.78.0'
 GRPC_VERSION = grpc.__version__

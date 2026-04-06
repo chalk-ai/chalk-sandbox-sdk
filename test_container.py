@@ -13,8 +13,7 @@ from pathlib import Path
 import pytest
 from dotenv import load_dotenv
 
-from container import Container
-from image import Image
+from chalkcompute import Container, Image
 
 load_dotenv()
 

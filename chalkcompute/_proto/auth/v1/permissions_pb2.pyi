@@ -1,4 +1,4 @@
-from chalk.utils.v1 import encoding_pb2 as _encoding_pb2
+from chalkcompute._proto.utils.v1 import encoding_pb2 as _encoding_pb2
 from google.protobuf import descriptor_pb2 as _descriptor_pb2
 from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
 from google.protobuf import descriptor as _descriptor

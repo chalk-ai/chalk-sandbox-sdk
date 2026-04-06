@@ -22,7 +22,7 @@ _runtime_version.ValidateProtobufRuntimeVersion(
 _sym_db = _symbol_database.Default()
 
 
-from chalk.utils.v1 import encoding_pb2 as chalk_dot_utils_dot_v1_dot_encoding__pb2
+from chalkcompute._proto.utils.v1 import encoding_pb2 as chalk_dot_utils_dot_v1_dot_encoding__pb2
 from google.protobuf import descriptor_pb2 as google_dot_protobuf_dot_descriptor__pb2
 
 

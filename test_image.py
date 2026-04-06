@@ -14,7 +14,7 @@ import pytest
 from dotenv import load_dotenv
 from google.protobuf.json_format import MessageToDict
 
-from image import Image
+from chalkcompute import Image
 
 load_dotenv()
 
