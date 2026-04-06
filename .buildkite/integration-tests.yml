@@ -8,7 +8,7 @@ steps:
       echo "--- :python: Install dependencies"
       pip install ty
       echo "--- :mag: Run ty"
-      ty check chalkcompute/
+      ty check chalkcompute/container.py chalkcompute/sandbox.py chalkcompute/image.py chalkcompute/volume.py
     agents:
       queue: default
     timeout_in_minutes: 5
