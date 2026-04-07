@@ -1,3 +1,16 @@
+"""
+This example shows how to deploy an OpenCode server in a Chalk container using an exec-based setup.
+The container is created from a base image, then we exec into it to install dependencies,
+clone a GitHub repo, and start the server. This approach is more flexible than a build-based setup
+since it allows for dynamic configuration and doesn't require Dockerfiles or multi-stage builds.
+
+Run With:
+python examples/opencode/deploy_exec.py \
+--github-token $(gh auth token) \
+--github-ref rk/opencode \
+--name opencode-server-2
+"""
+
 import argparse
 import logging
 import os
@@ -168,8 +181,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--github-ref",
         type=str,
-        default="main",
-        help="Git branch, tag, or SHA to check out. Default: main",
+        default=os.environ.get("GITHUB_REF", "main"),
+        help="Git branch, tag, or SHA to check out. Default: $GITHUB_REF or main",
     )
     parser.add_argument(
         "--github-token",
