@@ -57,10 +57,14 @@ DEFAULT_GITHUB_REPO = "chalk-ai/chalk-sandbox-sdk"
 
 def install_deps(container: Container) -> None:
     log.info("Installing curl and git...")
-    container.exec("bash", "-c", "apt-get update -qq && apt-get install -y -qq curl git", timeout_secs=180)
+    result = container.exec("bash", "-c", "apt-get update -qq && apt-get install -y -qq curl git 2>&1", timeout_secs=180)
+    if result.exit_code != 0:
+        raise RuntimeError(f"apt-get install failed (exit {result.exit_code}).\n{result.stdout_text.strip()}")
 
     log.info("Installing opencode...")
-    container.exec("bash", "-c", "curl -fsSL https://opencode.ai/install | bash", timeout_secs=120)
+    result = container.exec("bash", "-c", "curl -fsSL https://opencode.ai/install | bash 2>&1", timeout_secs=120)
+    if result.exit_code != 0:
+        raise RuntimeError(f"opencode install failed (exit {result.exit_code}).\n{result.stdout_text.strip()}")
 
 
 def clone_repo(container: Container, repo: str, ref: str, token: str | None) -> None:
@@ -111,14 +115,29 @@ def start_server(container: Container) -> None:
         f" --log-level=DEBUG > /tmp/opencode.log 2>&1 &",
     )
 
+    log.info("Waiting for opencode to be ready...")
+    for attempt in range(24):
+        result = container.exec(
+            "bash", "-c", f"curl -sf http://localhost:{OPENCODE_PORT} > /dev/null 2>&1; echo $?"
+        )
+        if result.stdout_text.strip() == "0":
+            return
+        if attempt < 23:
+            time.sleep(5)
+    raise RuntimeError(
+        "opencode server did not become ready after 2 minutes.\n"
+        "Check /tmp/opencode.log inside the container for details."
+    )
 
-def print_access_info(container: Container) -> None:
+
+def print_access_info(container: Container, password: str | None) -> None:
     web_url = container.info.web_url if container.info else None
 
     print("\n--- OpenCode server ready ---")
     if web_url:
         print(f"  Web UI:  {web_url}")
-        print(f"  TUI:     OPENCODE_SERVER_PASSWORD=<password> opencode attach {web_url}")
+        password_prefix = f"OPENCODE_SERVER_PASSWORD={password} " if password else ""
+        print(f"  TUI:     {password_prefix}opencode attach {web_url}")
     else:
         log.warning("No web_url returned; container is running but port may not be publicly reachable.")
         print(f"  Container ID: {container.id}")
@@ -157,7 +176,7 @@ def main(
         install_deps(container)
         clone_repo(container, github_repo, github_ref, github_token)
         start_server(container)
-        print_access_info(container)
+        print_access_info(container, password)
 
         mins = timeout_secs // 60
         log.info("Server running. Press Ctrl-C to stop (timeout: %dm).", mins)
