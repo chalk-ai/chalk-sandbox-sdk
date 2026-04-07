@@ -244,10 +244,22 @@ class Container:
 
         assert isinstance(self._image, Image)
         spec_dict = MessageToDict(self._image.to_proto())
-        resp = self._custom_image_rpc(
-            "BuildCustomImage", {"imageSpec": spec_dict}, timeout=120,
-        )
-        if resp.status_code != 200:
+
+        _build_retries = 3
+        _build_retry_delay = 5.0
+        for attempt in range(_build_retries + 1):
+            resp = self._custom_image_rpc(
+                "BuildCustomImage", {"imageSpec": spec_dict}, timeout=120,
+            )
+            if resp.status_code == 200:
+                break
+            if resp.status_code >= 500 and attempt < _build_retries:
+                print(
+                    f"BuildCustomImage transient error (attempt {attempt + 1}/{_build_retries},"
+                    f" status {resp.status_code}), retrying in {_build_retry_delay:.0f}s..."
+                )
+                time.sleep(_build_retry_delay)
+                continue
             raise ImageBuildError(f"BuildCustomImage failed: {resp.text}")
 
         data = resp.json()
