@@ -1,64 +1,50 @@
 """
 Polyglot code judge and sandbox safety demo built on Chalk containers.
 
-Run untrusted code — from competitive programming submissions to outright
-dangerous scripts — in fully isolated containers across Python, Node.js,
-Java, and C++.
+Three acts that show what you can do when arbitrary untrusted code runs in
+an isolated container: judge submissions, contain dangerous scripts, and
+execute AI-generated code without reviewing it first.
 
-## Demo
+## Run the demo
 
     python examples/polyglot_sandbox/run_code.py
 
-Two acts:
-
-  Act 1 — Code Judge
-    A LeetCode-style judge for a "sum N integers" problem. Three submissions
-    are evaluated: correct Python, correct Java, and a C++ solution with an
-    infinite loop. Shows the full verdict lifecycle across multiple test cases.
-
-    Python  (correct)       → PASS x3
-    Java    (correct)       → PASS x3
-    C++     (infinite loop) → TIMEOUT x3  — killed cleanly after 5s each
+  Act 1 — Code Judge (Python, Java, C++)
+    Judges a "sum N integers" problem across three submissions.
+    Python/Java pass all test cases. C++ has an infinite loop — TIMEOUT x3,
+    killed cleanly after 5s each, no cleanup needed.
 
   Act 2 — Dangerous Code, Run Safely
-    Four snippets that would cause real damage on a host machine, each run
-    inside a Chalk container to show what isolation actually means in practice.
+    Scripts that would damage a real machine, run inside a container:
+      rm -rf /       → exit=0,   container filesystem wiped, host untouched
+      fork bomb      → killed,   PID namespace contained the explosion
+      100 GB alloc   → exit=137, OOM-killed before touching host RAM
+      read ~/.ssh    → exit=0,   host filesystem not visible inside container
 
-    rm -rf /           exit=0    Wiped the container filesystem. Host untouched.
-    fork bomb          timeout   PID namespace contained the explosion.
-    100 GB allocation  exit=137  OOM-killed (SIGKILL) before touching host RAM.
-    read ~/.ssh/id_rsa exit=0    Host filesystem invisible — paths not found.
+  Act 3 — GPT-4o Writes Code, Sandbox Runs It
+    GPT-4o generates solutions in Python, Java, and C++. Each is piped
+    directly into judge() without human review. Requires OPENAI_API_KEY.
 
 ## How it works
 
-Each call to `judge()` follows three steps:
+Each submission gets one container (cold-start paid once, not per test case):
 
-1. **Start one container** per submission. The image is chosen per language:
-   python:3.12-slim, node:20-slim, eclipse-temurin:21-jdk, gcc:13.
-   Cold-start happens once — not once per test case.
-
-2. **Compile once** inside the container. Source is base64-encoded before
-   being passed to avoid shell quoting and length limits. javac / g++ compile
-   to /tmp. Interpreted languages just write the file. If compilation fails,
-   all test cases immediately get COMPILE_ERROR with the compiler output.
-
-3. **Run each test case** via container.exec() with a per-exec timeout.
-   stdin is piped in via printf. The container stays alive between test cases
-   so the JVM / runtime startup cost is paid only once per submission.
-   The container is stopped in a finally block regardless of outcome.
+1. Source is base64-encoded and written into the container — avoids shell
+   quoting limits that would break long Java/C++ sources.
+2. Compiled once (javac / g++). Failure → COMPILE_ERROR on all test cases.
+3. Each test case runs via container.exec() with a per-exec timeout. The
+   container stays alive between cases; stopped in a finally block.
 
 Verdicts:
     PASS          — stdout matches expected (whitespace-stripped)
     WRONG_ANSWER  — exited cleanly but output didn't match
     RUNTIME_ERROR — non-zero exit code
-    TIMEOUT       — exec hit time_limit_secs; process killed, container survives
-    COMPILE_ERROR — javac / g++ failed; remaining test cases skipped
+    TIMEOUT       — process killed after time_limit_secs; container survives
 
 ## Library usage
 
     from run_code import judge, run_once, Language, TestCase
 
-    # Judge a submission against test cases
     results = judge(
         Language.PYTHON,
         source_code,
@@ -68,20 +54,22 @@ Verdicts:
     for r in results:
         print(r.verdict, r.stdout)
 
-    # Run a one-off snippet (safety demo, prototyping, etc.)
-    result = run_once(Language.CPP, cpp_source, stdin="5\\n1 2 3 4 5")
+    result = run_once(Language.CPP, cpp_source)
     print(result.stdout)
 """
 
 from __future__ import annotations
 
 import base64
+import os
 import sys
 import time
 import uuid
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+
+import httpx
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -513,6 +501,78 @@ for path in targets:
 
 
 # ---------------------------------------------------------------------------
+# Act 3 — AI-generated submissions: GPT writes code, sandbox runs it
+# ---------------------------------------------------------------------------
+#
+# The whole point of a sandbox: you don't need to trust the code you run.
+# Ask an LLM to generate solutions, pipe them straight into judge() without
+# reading them. The sandbox handles whatever comes out.
+#
+# We ask GPT-4o for solutions in three languages and one deliberately broken
+# version — then judge all of them against the same test cases.
+
+PROBLEM_STATEMENT = """\
+Write a solution to this competitive programming problem:
+
+  Given N integers, one per line (first line is N, then N integers),
+  print their sum.
+
+  Example input:
+    3
+    1
+    2
+    3
+  Example output:
+    6
+
+Return ONLY the raw source code with no explanation, no markdown, no code fences.
+The code must read from stdin and print to stdout.
+"""
+
+AI_LANGUAGES: list[tuple[Language, str]] = [
+    (Language.PYTHON, "Write it in Python 3."),
+    (Language.JAVA,   "Write it in Java. The public class must be named Main."),
+    (Language.CPP,    "Write it in C++. Include all necessary headers."),
+]
+
+
+def generate_solution(extra_instruction: str) -> str:
+    """Ask GPT-4o to write a solution for PROBLEM_STATEMENT.
+
+    Uses httpx directly (already a chalkcompute dependency) so no extra
+    packages are required beyond what the SDK already installs.
+    """
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY environment variable not set")
+
+    response = httpx.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": "gpt-4o",
+            "temperature": 0,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are an expert competitive programmer. Return only raw source code — no markdown, no explanation.",
+                },
+                {
+                    "role": "user",
+                    "content": f"{PROBLEM_STATEMENT}\n{extra_instruction}",
+                },
+            ],
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()["choices"][0]["message"]["content"].strip()
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -553,6 +613,30 @@ def main() -> None:
         except Exception as exc:
             print(f"  killed by sandbox: {exc}")
         print()
+
+    # --- Act 3: AI-generated code ---
+    print("=" * 50)
+    print("  Act 3: GPT-4o Writes Code, Sandbox Runs It")
+    print("  No human reviews the generated code before execution.")
+    print("=" * 50 + "\n")
+
+    for lang, instruction in AI_LANGUAGES:
+        print(f"[{lang.value}] asking GPT-4o for a solution...")
+        try:
+            source = generate_solution(instruction)
+        except Exception as exc:
+            print(f"  generation failed: {exc}\n")
+            continue
+
+        # Print the first line of what GPT produced so the audience can see it's real code.
+        first_line = source.splitlines()[0] if source else "(empty)"
+        print(f"  generated ({len(source.splitlines())} lines): {first_line} ...")
+
+        results = judge(lang, source, TEST_CASES, time_limit_secs=10)
+        for r in results:
+            print(r)
+        passed = sum(1 for r in results if r.verdict == Verdict.PASS)
+        print(f"  → {passed}/{len(TEST_CASES)} test cases passed\n")
 
 
 if __name__ == "__main__":
