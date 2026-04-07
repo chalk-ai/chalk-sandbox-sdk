@@ -1,14 +1,34 @@
 """
-This example shows how to deploy an OpenCode server in a Chalk container using an exec-based setup.
-The container is created from a base image, then we exec into it to install dependencies,
-clone a GitHub repo, and start the server. This approach is more flexible than a build-based setup
-since it allows for dynamic configuration and doesn't require Dockerfiles or multi-stage builds.
+Launch an OpenCode server in a Chalk container pointed at any GitHub repo.
 
-Run With:
-python examples/opencode/deploy_exec.py \
---github-token $(gh auth token) \
---github-ref rk/opencode \
---name opencode-server-2
+The container starts from a base Ubuntu image, installs git and opencode, clones your
+repo, and starts the opencode server. Connect via the Web UI URL printed at the end.
+
+## Quickstart
+
+    python examples/opencode/deploy_exec.py \\
+        --github-repo your-org/your-repo \\
+        --github-ref main
+
+## Configuration
+
+All flags can be set via a .env file (loaded automatically) or environment variables:
+
+    GITHUB_TOKEN   GitHub personal access token — required for private repos.
+                   Get yours with: gh auth token
+    GITHUB_REF     Branch, tag, or SHA to check out. Default: main
+    OPENCODE_SERVER_PASSWORD  Password to protect the opencode server. Optional.
+    OPENAI_API_KEY OpenAI API key forwarded into the container. Optional —
+                   opencode ships with some free models.
+
+## Flags
+
+    --github-repo   GitHub repo to clone, e.g. my-org/my-repo (default: chalk-ai/chalk-sandbox-sdk)
+    --github-ref    Branch/tag/SHA to check out (default: $GITHUB_REF or main)
+    --github-token  GitHub PAT (default: $GITHUB_TOKEN)
+    --password      OpenCode server password (default: $OPENCODE_SERVER_PASSWORD)
+    --name          Container name in Chalk (default: opencode-server)
+    --timeout       How long to keep the server alive, e.g. 2h, 90m (default: 12h)
 """
 
 import argparse
@@ -57,7 +77,13 @@ def clone_repo(container: Container, repo: str, ref: str, token: str | None) -> 
             f"GIT_TERMINAL_PROMPT=0 git clone --quiet --depth 1 --branch {ref}"
             f" --no-single-branch https://github.com/{repo}.git /root/code"
         )
-    container.exec("bash", "-c", clone_cmd, timeout_secs=120)
+    result = container.exec("bash", "-c", clone_cmd + " 2>&1", timeout_secs=120)
+    if result.exit_code != 0:
+        raise RuntimeError(
+            f"Failed to clone {repo}@{ref} (exit {result.exit_code}).\n"
+            f"{result.stdout_text.strip()}\n"
+            "Tip: make sure GITHUB_TOKEN is set and has read access to the repo."
+        )
 
     # Copy local opencode config if present.
     config_path = Path("~/.config/opencode/opencode.json").expanduser()
