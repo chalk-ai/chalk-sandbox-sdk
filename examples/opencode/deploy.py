@@ -81,7 +81,7 @@ def start_server(container: Container) -> None:
         "bash",
         "-c",
         f"nohup opencode serve --hostname=0.0.0.0 --port={OPENCODE_PORT}"
-        f" --log-level=debug > /tmp/opencode.log 2>&1 &",
+        f" --log-level=DEBUG > /tmp/opencode.log 2>&1 &",
     )
 
 
@@ -125,6 +125,7 @@ def main(
         image=image,
         name=container_name,
         env=env,
+        port=OPENCODE_PORT,
     ).run()
 
     try:
