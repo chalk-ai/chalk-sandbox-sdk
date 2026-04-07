@@ -514,7 +514,7 @@ class SandboxClient:
                     f"Sandbox {sandbox_id} was terminated during image build"
                 )
 
-    def get(self, id: str) -> Sandbox:
+    def get(self, id: str) -> SandboxHandle:
         """
         Get a sandbox handle by ID.
 
