@@ -24,10 +24,10 @@ DEFAULT_GITHUB_REPO = "chalk-ai/chalk-sandbox-sdk"
 
 def install_deps(container: Container) -> None:
     log.info("Installing curl and git...")
-    container.exec("bash", "-c", "apt-get update -qq && apt-get install -y -qq curl git")
+    container.exec("bash", "-c", "apt-get update -qq && apt-get install -y -qq curl git", timeout_secs=180)
 
     log.info("Installing opencode...")
-    container.exec("bash", "-c", "curl -fsSL https://opencode.ai/install | bash")
+    container.exec("bash", "-c", "curl -fsSL https://opencode.ai/install | bash", timeout_secs=120)
 
 
 def clone_repo(container: Container, repo: str, ref: str, token: str | None) -> None:
@@ -44,7 +44,7 @@ def clone_repo(container: Container, repo: str, ref: str, token: str | None) -> 
             f"GIT_TERMINAL_PROMPT=0 git clone --quiet --depth 1 --branch {ref}"
             f" --no-single-branch https://github.com/{repo}.git /root/code"
         )
-    container.exec("bash", "-c", clone_cmd)
+    container.exec("bash", "-c", clone_cmd, timeout_secs=120)
 
     # Copy local opencode config if present.
     config_path = Path("~/.config/opencode/opencode.json").expanduser()
@@ -69,7 +69,7 @@ def start_server(container: Container) -> None:
         "bash",
         "-c",
         f"nohup {OPENCODE_BIN} serve --hostname=0.0.0.0 --port={OPENCODE_PORT}"
-        f" --log-level=debug > /tmp/opencode.log 2>&1 &",
+        f" --log-level=DEBUG > /tmp/opencode.log 2>&1 &",
     )
 
 
@@ -111,6 +111,7 @@ def main(
         image="ubuntu:latest",
         name=container_name,
         env=env,
+        port=OPENCODE_PORT,
     ).run()
 
     try:
