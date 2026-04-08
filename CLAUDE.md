@@ -16,12 +16,24 @@ Linear project: "Sandbox Devx/capabilities" — https://linear.app/chalk-ai/proj
 
 ## Testing
 
-Tests run via Buildkite (PR-triggered). Credentials are SOPS-encrypted in `.env.enc`.
+Tests run both **locally** and via **Buildkite** (PR-triggered). Credentials are SOPS-encrypted in `.env.enc`.
 
 ```
+just env        # decrypt .env.enc to .env (needed for local runs)
+uv run python -m pytest <test_file> -v   # run tests locally
 just ci-run     # push + print Buildkite build link
 ```
 
+All tests are expected to pass in both environments.
+
+
+Use 
+
+```
+just ty
+```
+
+to check `ty`
 ## Proto generation
 
 Python stubs are generated from `proto/` using `grpc_tools.protoc`. Server-side protos live in `chalk-private/protos/protos/chalk/`.
