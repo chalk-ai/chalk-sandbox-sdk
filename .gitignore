@@ -1,3 +1,4 @@
 .env
 .env.enc
 __pycache__/
+CLAUDE.local.md
