@@ -2,15 +2,16 @@
 
 from chalkcompute.container import Container, ContainerError, ContainerInfo, ExecResult as ContainerExecResult, ImageBuildError
 from chalkcompute.image import Image, LazyLocalFile
+from chalkcompute.managed_sandbox import ManagedSandboxError, Sandbox
 from chalkcompute.sandbox import (
     ExecError,
     ExecEvent,
     ExecProcess,
     ExecResult,
-    Sandbox,
     SandboxBuildError,
     SandboxClient,
     SandboxError,
+    SandboxHandle,
     SandboxInfo,
     SandboxNotFoundError,
     SandboxTerminatedError,
@@ -37,7 +38,9 @@ __all__ = [
     "Image",
     "ImageBuildError",
     "LazyLocalFile",
+    "ManagedSandboxError",
     "Sandbox",
+    "SandboxHandle",
     "SandboxBuildError",
     "SandboxClient",
     "SandboxError",

@@ -3,9 +3,17 @@
 buildkite_org := "chalk"
 buildkite_pipeline := "chalk-sandbox-sdk-integration-tests"
 
+# Decrypt .env.enc to .env
+env:
+    sops -d .env.enc > .env
+
+# Decrypt .env_aws.enc to .env_aws
+env-aws:
+    sops -d --input-type dotenv --output-type dotenv .env_aws.enc > .env_aws
+
 # Run ty type checker
 ty:
-    uv run --with ty ty check container.py sandbox.py image.py volume.py
+    uv run --with ty ty check container.py sandbox.py image.py volume.py managed_sandbox.py
 
 # Run ruff linter
 ruff:

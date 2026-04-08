@@ -1,8 +1,8 @@
 """End-to-end tests for the Container abstraction.
 
-Tests that Container(image=Image(...).add_local_file(..., strategy="copy")) and
-Container(image=Image(...).add_local_dir(..., strategy="copy")) correctly
-inline local files into the image and make them readable inside the container.
+Tests both strategies for injecting local files into containers:
+  - strategy="copy": inlines file contents into the image spec (baked at build time)
+  - strategy="volume": uploads files to a ChalkFS volume (mounted at runtime)
 """
 
 import os
@@ -26,9 +26,14 @@ needs_staging = pytest.mark.skipif(
 )
 
 
+# ---------------------------------------------------------------------------
+# strategy="copy" — files are inlined into the image spec at build time
+# ---------------------------------------------------------------------------
+
+
 @needs_staging
-def test_container_add_local_file() -> None:
-    """Container with add_local_file(strategy='copy') bakes file into image."""
+def test_container_copy_local_file() -> None:
+    """add_local_file(strategy='copy') bakes a single file into the image."""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
         f.write("hello from local file")
         f.flush()
@@ -36,7 +41,7 @@ def test_container_add_local_file() -> None:
 
     try:
         img = Image.debian_slim().add_local_file(local_path, "/app/data.txt", strategy="copy")
-        c = Container(image=img, name=f"test-add-local-file-{uuid.uuid4().hex[:8]}")
+        c = Container(image=img, name=f"test-copy-file-{uuid.uuid4().hex[:8]}")
         try:
             c.run()
             result = c.exec("cat", "/app/data.txt")
@@ -51,8 +56,8 @@ def test_container_add_local_file() -> None:
 
 
 @needs_staging
-def test_container_add_local_dir() -> None:
-    """Container with add_local_dir(strategy='copy') bakes files into image."""
+def test_container_copy_local_dir() -> None:
+    """add_local_dir(strategy='copy') bakes a directory tree into the image."""
     with tempfile.TemporaryDirectory() as d:
         (Path(d) / "greeting.txt").write_text("hello")
         sub = Path(d) / "sub"
@@ -60,7 +65,7 @@ def test_container_add_local_dir() -> None:
         (sub / "nested.txt").write_text("world")
 
         img = Image.debian_slim().add_local_dir(d, "/app/mydir", strategy="copy")
-        c = Container(image=img, name=f"test-add-local-dir-{uuid.uuid4().hex[:8]}")
+        c = Container(image=img, name=f"test-copy-dir-{uuid.uuid4().hex[:8]}")
         try:
             c.run()
 
@@ -71,5 +76,59 @@ def test_container_add_local_dir() -> None:
             r2 = c.exec("cat", "/app/mydir/sub/nested.txt")
             assert r2.exit_code == 0, f"cat sub/nested.txt failed: {r2.stderr_text}"
             assert r2.stdout_text.strip() == "world"
+        finally:
+            c.stop()
+
+
+# ---------------------------------------------------------------------------
+# strategy="volume" — files are uploaded to a ChalkFS volume at runtime
+# ---------------------------------------------------------------------------
+
+
+@needs_staging
+def test_container_volume_local_file() -> None:
+    """add_local_file(strategy='volume') mounts a file via ChalkFS volume."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+        f.write("hello from volume")
+        f.flush()
+        local_path = f.name
+
+    try:
+        img = Image.debian_slim().add_local_file(local_path, "/data/info.txt", strategy="volume")
+        c = Container(image=img, name=f"test-vol-file-{uuid.uuid4().hex[:8]}")
+        try:
+            c.run()
+            result = c.exec("cat", "/data/info.txt")
+            assert result.exit_code == 0, (
+                f"cat exited with code {result.exit_code}: {result.stderr_text}"
+            )
+            assert result.stdout_text.strip() == "hello from volume"
+        finally:
+            c.stop()
+    finally:
+        os.unlink(local_path)
+
+
+@needs_staging
+def test_container_volume_local_dir() -> None:
+    """add_local_dir(strategy='volume') mounts a directory via ChalkFS volumes."""
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "a.txt").write_text("alpha")
+        sub = Path(d) / "sub"
+        sub.mkdir()
+        (sub / "b.txt").write_text("beta")
+
+        img = Image.debian_slim().add_local_dir(d, "/data/mydir", strategy="volume")
+        c = Container(image=img, name=f"test-vol-dir-{uuid.uuid4().hex[:8]}")
+        try:
+            c.run()
+
+            r1 = c.exec("cat", "/data/mydir/a.txt")
+            assert r1.exit_code == 0, f"cat a.txt failed: {r1.stderr_text}"
+            assert r1.stdout_text.strip() == "alpha"
+
+            r2 = c.exec("cat", "/data/mydir/sub/b.txt")
+            assert r2.exit_code == 0, f"cat sub/b.txt failed: {r2.stderr_text}"
+            assert r2.stdout_text.strip() == "beta"
         finally:
             c.stop()

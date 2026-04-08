@@ -1,3 +1,4 @@
 .env
 .env.enc
+.env_aws
 __pycache__/

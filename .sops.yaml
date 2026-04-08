@@ -1,3 +1,3 @@
 creation_rules:
-  - path_regex: \.env(\.enc)?$
+  - path_regex: \.env(_aws)?(\.enc)?$
     gcp_kms: projects/chalk-ci-testing/locations/global/keyRings/github-secrets/cryptoKeys/sops-key

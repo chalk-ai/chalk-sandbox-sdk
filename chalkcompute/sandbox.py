@@ -208,8 +208,10 @@ class ExecProcess:
                     exit_code = pe.exit_code
                 if pe.HasField("signal"):
                     exit_signal = pe.signal
+                break
             elif msg_type == "error":
                 error = f"{response.error.code}: {response.error.message}"
+                break
 
         return ExecResult(
             _stdout=b"".join(stdout_parts),
@@ -225,7 +227,7 @@ class ExecProcess:
 # Sandbox handle
 # ---------------------------------------------------------------------------
 
-class Sandbox:
+class SandboxHandle:
     """A handle to a sandbox instance."""
 
     def __init__(self, client: SandboxClient, sandbox_id: str) -> None:
@@ -418,7 +420,7 @@ class SandboxClient:
         wait: bool = True,
         poll_interval: float = 5.0,
         timeout: float = 600.0,
-    ) -> Sandbox:
+    ) -> SandboxHandle:
         """
         Create a new sandbox.
 
@@ -441,7 +443,7 @@ class SandboxClient:
                      (default 600).
 
         Returns:
-            A Sandbox handle
+            A SandboxHandle
         """
         req = pb.CreateSandboxRequest()
         if isinstance(image, Image):
@@ -465,7 +467,7 @@ class SandboxClient:
 
         resp = self._stub.CreateSandbox(req, metadata=self._metadata)
         info = _pb_to_sandbox_info(resp.sandbox)
-        sandbox = Sandbox(self, info.id)
+        sandbox = SandboxHandle(self, info.id)
         sandbox._info = info
 
         if wait and info.state in ("building", "connecting"):
@@ -512,13 +514,13 @@ class SandboxClient:
                     f"Sandbox {sandbox_id} was terminated during image build"
                 )
 
-    def get(self, id: str) -> Sandbox:
+    def get(self, id: str) -> SandboxHandle:
         """
         Get a sandbox handle by ID.
 
         Does not validate the sandbox exists until you call a method on it.
         """
-        return Sandbox(self, id)
+        return SandboxHandle(self, id)
 
     def list(self) -> builtins.list[SandboxInfo]:
         """List all sandboxes."""

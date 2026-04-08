@@ -22,6 +22,15 @@ Tests run via Buildkite (PR-triggered). Credentials are SOPS-encrypted in `.env.
 just ci-run     # push + print Buildkite build link
 ```
 
+
+Use 
+
+```
+just ty
+```
+
+to check `ty`
+
 ## Proto generation
 
 Python stubs are generated from `proto/` using `grpc_tools.protoc`. Server-side protos live in `chalk-private/protos/protos/chalk/`.

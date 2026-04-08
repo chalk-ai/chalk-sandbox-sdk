@@ -108,6 +108,9 @@ class Container:
         self._lifetime = lifetime
         self._enable_ssh = enable_ssh
 
+        # User-mounted volumes (persist across stop; not auto-deleted)
+        self._user_volumes: list[tuple[str, str]] = []  # [(volume_name, mount_path)]
+
         # Set after .run()
         self._built_image_uri: str | None = None
         self._container_id: str | None = None
@@ -119,6 +122,29 @@ class Container:
         self._access_token: str | None = None
         self._env_id: str | None = None
         self._connect_headers: dict[str, str] | None = None
+
+    # -- Volume mounting -------------------------------------------------------
+
+    def mount_volume(self, name: str, mount_path: str) -> Container:
+        """Mount a named volume into the container.
+
+        The volume must already exist (created via VolumeService). It will be
+        mounted at *mount_path* using ChalkFS. Unlike auto-created volumes for
+        lazy local files, user-mounted volumes are **not** deleted when the
+        container is stopped.
+
+        Must be called before :meth:`run`.
+
+        Args:
+            name: Name of the existing volume.
+            mount_path: Absolute path where the volume will appear inside the
+                container.
+
+        Returns:
+            self, for chaining.
+        """
+        self._user_volumes.append((name, mount_path))
+        return self
 
     # -- Alternate constructors ------------------------------------------------
 
@@ -160,6 +186,7 @@ class Container:
         c._port = None
         c._lifetime = None
         c._enable_ssh = False
+        c._user_volumes = []
         c._built_image_uri = None
         c._container_id = None
         c._container_info = None
@@ -245,12 +272,20 @@ class Container:
         assert isinstance(self._image, Image)
         spec_dict = MessageToDict(self._image.to_proto())
         resp = self._custom_image_rpc(
-            "BuildCustomImage", {"imageSpec": spec_dict}, timeout=120,
+            "GetOrBuildCustomImage", {"imageSpec": spec_dict},
         )
         if resp.status_code != 200:
-            raise ImageBuildError(f"BuildCustomImage failed: {resp.text}")
+            raise ImageBuildError(f"GetOrBuildCustomImage failed: {resp.text}")
 
         data = resp.json()
+        status = data.get("status", "")
+        if status == "exists" or status == "succeeded":
+            return data["image"]
+        if status == "failed":
+            raise ImageBuildError(
+                f"Image build failed: {data.get('error', 'unknown')}"
+            )
+
         build_id = data["buildId"]
 
         deadline = time.monotonic() + timeout
@@ -379,14 +414,15 @@ class Container:
             spec["resources"] = resources
 
         # Mount each volume via ChalkFS at its destination directory
-        if self._volumes:
+        all_volumes = self._volumes + self._user_volumes
+        if all_volumes:
             spec["volumes"] = [
                 {
                     "name": vol_name,
                     "mountPath": mount_path,
                     "type": "chalkfs",
                 }
-                for vol_name, mount_path in self._volumes
+                for vol_name, mount_path in all_volumes
             ]
 
         print(f"Starting container '{container_name}'...")
