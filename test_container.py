@@ -51,6 +51,50 @@ def test_container_add_local_file() -> None:
 
 
 @needs_staging
+def test_container_run_commands_apt_install() -> None:
+    """run_commands can apt-install a package that is then available in the container."""
+    img = Image.debian_slim().run_commands(
+        "apt-get update && apt-get install -y --no-install-recommends jq",
+    )
+    c = Container(image=img, name=f"test-run-commands-{uuid.uuid4().hex[:8]}")
+    try:
+        c.run()
+        result = c.exec("jq", "--version")
+        assert result.exit_code == 0, (
+            f"jq --version exited with code {result.exit_code}: {result.stderr_text}"
+        )
+        assert result.stdout_text.strip().startswith("jq-")
+    finally:
+        c.stop()
+
+
+@needs_staging
+def test_container_from_dockerfile() -> None:
+    """from_dockerfile builds an image from a Dockerfile and runs the container."""
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".Dockerfile", delete=False,
+    ) as f:
+        f.write("FROM alpine:latest\nRUN apk add --no-cache curl\n")
+        f.flush()
+        dockerfile_path = f.name
+
+    try:
+        img = Image.from_dockerfile(dockerfile_path)
+        c = Container(image=img, name=f"test-dockerfile-{uuid.uuid4().hex[:8]}")
+        try:
+            c.run()
+            result = c.exec("curl", "--version")
+            assert result.exit_code == 0, (
+                f"curl --version exited with code {result.exit_code}: {result.stderr_text}"
+            )
+            assert "curl" in result.stdout_text.lower()
+        finally:
+            c.stop()
+    finally:
+        os.unlink(dockerfile_path)
+
+
+@needs_staging
 def test_container_add_local_dir() -> None:
     """Container with add_local_dir(strategy='copy') bakes files into image."""
     with tempfile.TemporaryDirectory() as d:

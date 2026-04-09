@@ -245,12 +245,20 @@ class Container:
         assert isinstance(self._image, Image)
         spec_dict = MessageToDict(self._image.to_proto())
         resp = self._custom_image_rpc(
-            "BuildCustomImage", {"imageSpec": spec_dict}, timeout=120,
+            "GetOrBuildCustomImage", {"imageSpec": spec_dict},
         )
         if resp.status_code != 200:
-            raise ImageBuildError(f"BuildCustomImage failed: {resp.text}")
+            raise ImageBuildError(f"GetOrBuildCustomImage failed: {resp.text}")
 
         data = resp.json()
+        status = data.get("status", "")
+        if status == "exists" or status == "succeeded":
+            return data["image"]
+        if status == "failed":
+            raise ImageBuildError(
+                f"Image build failed: {data.get('error', 'unknown')}"
+            )
+
         build_id = data["buildId"]
 
         deadline = time.monotonic() + timeout
@@ -267,7 +275,7 @@ class Container:
             if status == "failed":
                 raise ImageBuildError(
                     f"Image build {build_id} failed: "
-                    f"{get_data.get('error', 'unknown')}"
+                    f"{get_data.get('error', get_data.get('errorMessage', repr(get_data)))}"
                 )
             time.sleep(poll_interval)
 
