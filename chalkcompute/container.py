@@ -19,6 +19,7 @@ destination path's common ancestor.
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import time
 import uuid
@@ -26,6 +27,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
+
+log = logging.getLogger(__name__)
 
 from chalkcompute.image import Image, LazyLocalFile
 
@@ -96,6 +99,7 @@ class Container:
         port: int | None = None,
         lifetime: str | None = None,
         enable_ssh: bool = False,
+        volumes: list[tuple[str, str]] | None = None,
     ) -> None:
         self._image = image
         self._name = name
@@ -112,7 +116,7 @@ class Container:
         self._built_image_uri: str | None = None
         self._container_id: str | None = None
         self._container_info: ContainerInfo | None = None
-        self._volumes: list[tuple[str, str]] = []  # [(volume_name, mount_path)]
+        self._volumes: list[tuple[str, str]] = list(volumes or [])  # [(volume_name, mount_path)]
 
         # Auth state (lazily populated)
         self._api_server: str | None = None
@@ -262,21 +266,35 @@ class Container:
         build_id = data["buildId"]
 
         deadline = time.monotonic() + timeout
+        start = time.monotonic()
+        last_log = start
         while time.monotonic() < deadline:
             get_resp = self._custom_image_rpc(
                 "GetCustomImage", {"buildId": build_id},
             )
+            if get_resp.status_code >= 500:
+                time.sleep(poll_interval)
+                continue
             if get_resp.status_code != 200:
                 raise ImageBuildError(f"GetCustomImage failed: {get_resp.text}")
             get_data = get_resp.json()
             status = get_data.get("status", "")
             if status == "succeeded":
+                log.info("Image build succeeded (%.0fs).", time.monotonic() - start)
                 return get_data["image"]
             if status == "failed":
-                raise ImageBuildError(
-                    f"Image build {build_id} failed: "
-                    f"{get_data.get('error', get_data.get('errorMessage', repr(get_data)))}"
+                error_detail = (
+                    get_data.get("error")
+                    or get_data.get("errorMessage")
+                    or "no error detail returned by server"
                 )
+                raise ImageBuildError(
+                    f"Image build {build_id} failed: {error_detail}"
+                )
+            now = time.monotonic()
+            if now - last_log >= 30:
+                log.info("Still building image... (%.0fs elapsed)", now - start)
+                last_log = now
             time.sleep(poll_interval)
 
         raise ImageBuildError(f"Image build {build_id} timed out after {timeout}s")
@@ -331,7 +349,7 @@ class Container:
         *,
         poll_interval: float = 5.0,
         build_timeout: float = 600.0,
-        ready_timeout: float = 300.0,
+        ready_timeout: float = 600.0,
     ) -> Container:
         """Build the image, upload local files, and start the container.
 
@@ -355,7 +373,7 @@ class Container:
         )
         if lazy_files:
             print(f"Uploading {len(lazy_files)} local file(s) to volume(s)...")
-            self._volumes = self._upload_lazy_files()
+            self._volumes.extend(self._upload_lazy_files())
             for vn, mp in self._volumes:
                 print(f"  Volume created: {vn} (mount: {mp})")
 
@@ -412,11 +430,16 @@ class Container:
             f"(status={self._container_info.status})"
         )
 
-        # 4. Poll until Running
+        # 4. Poll until Running, then wait until exec is actually ready.
+        # The server may report Running before the pod is scheduled onto a node
+        # (known race for GPU/large-memory containers), so we always probe.
         if self._container_info.status != "Running":
             self._poll_until_running(
                 poll_interval=poll_interval, timeout=ready_timeout,
             )
+        else:
+            deadline = time.monotonic() + ready_timeout
+            self._wait_until_exec_ready(deadline=deadline)
 
         # 5. Wait for ChalkFS volume files to become visible
         if lazy_files:
@@ -440,6 +463,7 @@ class Container:
             self._container_info = info
             print(f"  poll: status={info.status}")
             if info.status == "Running":
+                self._wait_until_exec_ready(deadline=deadline)
                 return
             if info.status in ("Failed", "Succeeded"):
                 raise ContainerError(
@@ -448,6 +472,35 @@ class Container:
                 )
         raise ContainerError(
             f"Container {self._container_id} timed out after {timeout}s"
+        )
+
+    def _wait_until_exec_ready(self, *, deadline: float) -> None:
+        """Probe exec until the pod actually has a host assigned.
+
+        The server may report Running before the pod is scheduled onto a node
+        (known race). We probe with a no-op command and retry on
+        'does not have a host assigned' until the deadline.
+        """
+        assert self._container_id is not None
+        while time.monotonic() < deadline:
+            resp = self._container_rpc(
+                "ExecCommand",
+                {"id": self._container_id, "command": ["true"]},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                return
+            if "does not have a host assigned" in resp.text:
+                print(f"  poll: waiting for pod to be scheduled...")
+                time.sleep(30)
+                continue
+            if "container not found" in resp.text:
+                print(f"  poll: waiting for container to be exec-ready...")
+                time.sleep(5)
+                continue
+            raise ContainerError(f"ExecCommand probe failed: {resp.text}")
+        raise ContainerError(
+            f"Container {self._container_id} timed out waiting for exec-ready"
         )
 
     def _wait_for_volume_files(
