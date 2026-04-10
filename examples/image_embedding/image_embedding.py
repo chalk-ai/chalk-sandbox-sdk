@@ -164,12 +164,19 @@ def ensure_model_volume() -> None:
 
 def main(container_name: str, urls: list[str]) -> None:
     ensure_model_volume()
+    env: dict[str, str] = {}
+    if client_id := os.environ.get("CHALK_CLIENT_ID"):
+        env["CHALK_CLIENT_ID"] = client_id
+    if client_secret := os.environ.get("CHALK_CLIENT_SECRET"):
+        env["CHALK_CLIENT_SECRET"] = client_secret
+
     container = Container(
         image=Image.from_dockerfile(_DOCKERFILE),
         name=container_name,
         gpu="1",
         memory="24Gi",
         volumes=[(MODEL_VOLUME, HF_CACHE_PATH)],
+        env=env,
     ).run()
 
     try:
