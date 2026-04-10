@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 
 # Import helpers directly from the example script.
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from opencode import OPENCODE_PORT, clone_repo, install_deps, start_server  # noqa: E402
+from opencode import OPENCODE_IMAGE, OPENCODE_PORT, clone_repo, start_server  # noqa: E402
 
 load_dotenv()
 
@@ -44,7 +44,7 @@ def opencode_container() -> Generator[Container, None, None]:
     """
     name = f"test-opencode-{uuid.uuid4().hex[:8]}"
     container = Container(
-        image="python:3.12-slim",
+        image=OPENCODE_IMAGE,
         name=name,
         port=OPENCODE_PORT,
         entrypoint=[
@@ -55,7 +55,6 @@ def opencode_container() -> Generator[Container, None, None]:
         ],
     ).run()
     try:
-        install_deps(container)
         clone_repo(container, TEST_REPO, TEST_REF, token=None)
         start_server(container)
     except Exception:

@@ -14,11 +14,10 @@
 #
 # ## Overview
 #
-# 1. Start a bare Ubuntu container with a public port exposed.
-# 2. Install `curl`, `git`, and the `opencode` CLI inside it via `container.exec`.
-# 3. Clone the target GitHub repo into `/root/code`.
-# 4. Launch `opencode serve` in the background and poll until it responds.
-# 5. Print the Web UI URL and TUI attach command, then hold the container alive.
+# 1. Start a container from a pre-built image with `curl`, `git`, and `opencode` baked in.
+# 2. Clone the target GitHub repo into `/root/code`.
+# 3. Launch `opencode serve` in the background and poll until it responds.
+# 4. Print the Web UI URL and TUI attach command, then hold the container alive.
 #
 # Run it:
 #
@@ -40,7 +39,7 @@ import time
 import uuid
 from pathlib import Path
 
-from chalkcompute import Container
+from chalkcompute import Container, Image
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -52,32 +51,22 @@ OPENCODE_PORT = 4096
 OPENCODE_BIN = "/root/.opencode/bin/opencode"
 DEFAULT_GITHUB_REPO = "chalk-ai/chalk-sandbox-sdk"
 
-
-# ## Step 1 — Install dependencies
+# ## Base image — curl, git, and opencode pre-installed
 #
-# We start from a bare `ubuntu:latest` image and install everything at runtime via
-# `container.exec`. This avoids a slow image-build step — the container is already
-# running and we exec directly into it.
+# Baking dependencies into the image spec lets Chalk build and cache the image
+# once. Subsequent `Container.run()` calls reuse the cached image, skipping the
+# apt-get and opencode install entirely.
 
-def install_deps(container: Container) -> None:
-    log.info("Installing curl and git...")
-    result = container.exec(
-        "bash", "-c", "apt-get update -qq && apt-get install -y -qq curl git 2>&1",
-        timeout_secs=180,
+OPENCODE_IMAGE = (
+    Image.base("python:3.12-slim")
+    .run_commands(
+        "apt-get update -qq && apt-get install -y -qq curl git 2>&1",
+        "curl -fsSL https://opencode.ai/install | bash 2>&1",
     )
-    if result.exit_code != 0:
-        raise RuntimeError(f"apt-get install failed (exit {result.exit_code}).\n{result.stdout_text.strip()}")
-
-    log.info("Installing opencode...")
-    result = container.exec(
-        "bash", "-c", "curl -fsSL https://opencode.ai/install | bash 2>&1",
-        timeout_secs=120,
-    )
-    if result.exit_code != 0:
-        raise RuntimeError(f"opencode install failed (exit {result.exit_code}).\n{result.stdout_text.strip()}")
+)
 
 
-# ## Step 2 — Clone the repo
+# ## Step 1 — Clone the repo
 #
 # We shallow-clone a single branch or tag to keep the operation fast. If a token is
 # provided it's injected via `GIT_ASKPASS` so the credential doesn't appear in logs.
@@ -118,10 +107,10 @@ def clone_repo(container: Container, repo: str, ref: str, token: str | None) -> 
         )
 
 
-# ## Step 3 — Start the OpenCode server
+# ## Step 2 — Start the OpenCode server
 #
 # We run `opencode serve` in the background via `nohup`, redirecting output to
-# `/tmp/opencode.log`. We then poll the HTTP endpoint every 5 seconds (up to 2 minutes)
+# `/tmp/opencode.log`. We then poll the HTTP endpoint every 2 seconds (up to 2 minutes)
 # to confirm it's reachable before printing the URL — so the link we hand back is live.
 
 def start_server(container: Container) -> None:
@@ -139,15 +128,15 @@ def start_server(container: Container) -> None:
     )
 
     log.info("Waiting for opencode to be ready...")
-    for attempt in range(24):
+    for attempt in range(60):
         result = container.exec(
             "bash", "-c",
             f"curl -s http://localhost:{OPENCODE_PORT} > /dev/null 2>&1; echo $?",
         )
         if result.stdout_text.strip() == "0":
             return
-        if attempt < 23:
-            time.sleep(5)
+        if attempt < 59:
+            time.sleep(2)
     raise RuntimeError(
         "opencode server did not become ready after 2 minutes.\n"
         "Check /tmp/opencode.log inside the container for details."
@@ -191,7 +180,7 @@ def main(
         env["OPENAI_API_KEY"] = openai_key
 
     container = Container(
-        image="python:3.12-slim",
+        image=OPENCODE_IMAGE,
         name=container_name,
         env=env,
         port=OPENCODE_PORT,
@@ -202,7 +191,6 @@ def main(
     ).run()
 
     try:
-        install_deps(container)
         clone_repo(container, github_repo, github_ref, github_token)
         start_server(container)
         _print_access_info(container, password)
