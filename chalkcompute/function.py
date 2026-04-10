@@ -229,6 +229,10 @@ class Function:
         self._version_info: FunctionVersionInfo | None = None
         self._web_url: str | None = None
 
+        # gRPC call channel (lazily created on first __call__)
+        self._call_channel: Any = None
+        self._call_stub: Any = None
+
         # Auth state (lazily populated)
         self._api_server: str | None = None
         self._access_token: str | None = None
@@ -584,26 +588,81 @@ class Function:
 
     # -- Call ------------------------------------------------------------------
 
-    def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        """Call the remote function."""
-        import httpx
+    def _ensure_call_stub(self) -> None:
+        """Lazily create the gRPC channel and stub for calling the remote function."""
+        if self._call_stub is not None:
+            return
+
+        import re
+
+        import grpc
+        from chalk_remote_call._gen.chalk.runtime.v1 import (
+            remote_python_call_pb2_grpc as call_grpc,
+        )
 
         if self._web_url is None:
             raise FunctionError("Function is not deployed. Call .deploy() first.")
 
+        target = re.sub(r"^https?://", "", self._web_url)
+        if self._web_url.startswith("https"):
+            self._call_channel = grpc.secure_channel(target, grpc.ssl_channel_credentials())
+        else:
+            self._call_channel = grpc.insecure_channel(target)
+        self._call_stub = call_grpc.RemoteCallServiceStub(self._call_channel)
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        """Call the remote function via gRPC with Arrow IPC serialization."""
+        import pyarrow as pa
+        import pyarrow.ipc as ipc
+        from chalk_remote_call._gen.chalk.runtime.v1 import (
+            remote_python_call_pb2 as call_pb,
+        )
+
+        self._ensure_call_stub()
+
+        # 1. Bind args to function signature
         sig = inspect.signature(self._func)
         bound = sig.bind(*args, **kwargs)
         bound.apply_defaults()
-        payload = dict(bound.arguments)
 
-        response = httpx.post(
-            f"{self._web_url}/",
-            json=payload,
-            timeout=30.0,
-        )
-        response.raise_for_status()
-        result = response.json()
-        return result.get("result", result)
+        # 2. Build RecordBatch from args (one column per param, single row)
+        arrays = []
+        names = []
+        for param_name, value in bound.arguments.items():
+            arrays.append(pa.array([value]))
+            names.append(param_name)
+        batch = pa.record_batch(arrays, names=names)
+
+        # 3. Serialize to Arrow IPC (Feather) bytes
+        sink = pa.BufferOutputStream()
+        with ipc.new_stream(sink, batch.schema) as writer:
+            writer.write_batch(batch)
+        feather_bytes = sink.getvalue().to_pybytes()
+
+        # 4. gRPC streaming call
+        def requests():
+            yield call_pb.CallFunctionRequest(  # ty: ignore[unresolved-attribute]
+                name="handler", feather_stream=feather_bytes,
+            )
+
+        responses = list(self._call_stub.CallFunction(requests()))
+
+        if not responses:
+            raise FunctionError("No response received from remote function")
+
+        # 5. Deserialize response Arrow IPC bytes
+        results: list[Any] = []
+        for resp in responses:
+            reader = ipc.open_stream(resp.feather_stream)
+            for result_batch in reader:
+                result_dict = result_batch.to_pydict()
+                if "result" in result_dict:
+                    results.extend(result_dict["result"])
+
+        # Single-row call returns scalar
+        if len(results) == 1:
+            return results[0]
+        return results
 
     # -- Management ------------------------------------------------------------
 
