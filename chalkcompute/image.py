@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from chalkcompute._proto.sandbox.v1 import service_pb2 as pb
+from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as pb
 
 
 @dataclass(frozen=True)

@@ -35,8 +35,8 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 import grpc
 
-from chalkcompute._proto.sandbox.v1 import service_pb2 as pb
-from chalkcompute._proto.sandbox.v1 import service_pb2_grpc as pb_grpc
+from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as pb
+from chalkcompute._gen.chalk.sandbox.v1 import service_pb2_grpc as pb_grpc
 from chalkcompute.image import Image
 
 
@@ -44,23 +44,28 @@ from chalkcompute.image import Image
 # Exceptions
 # ---------------------------------------------------------------------------
 
+
 class SandboxError(Exception):
     """Base exception for sandbox errors."""
+
     pass
 
 
 class SandboxNotFoundError(SandboxError):
     """Raised when a sandbox is not found."""
+
     pass
 
 
 class SandboxTerminatedError(SandboxError):
     """Raised when a sandbox has terminated."""
+
     pass
 
 
 class SandboxBuildError(SandboxError):
     """Raised when a sandbox image build fails."""
+
     pass
 
 
@@ -76,9 +81,11 @@ class ExecError(SandboxError):
 # Data classes
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class SandboxInfo:
     """Information about a sandbox."""
+
     id: str
     state: str
     created_at: str
@@ -89,6 +96,7 @@ class SandboxInfo:
 @dataclass
 class ExecResult:
     """Result of a completed command execution."""
+
     _stdout: bytes
     _stderr: bytes
     exit_code: int | None
@@ -120,6 +128,7 @@ class ExecResult:
 @dataclass
 class ExecEvent:
     """A single event from a streaming exec call."""
+
     stdout: str | None = None
     stderr: str | None = None
     pid: int | None = None
@@ -148,6 +157,7 @@ class ExecEvent:
 @dataclass
 class ExecProcess:
     """Handle to a running exec stream, allowing stdin writes and signal sends."""
+
     _request_queue: queue.Queue = field(repr=False)
     _response_iterator: Iterator[pb.ExecResponse] = field(repr=False)
     _sandbox_id: str = field(repr=False)
@@ -157,21 +167,15 @@ class ExecProcess:
         """Send data to the process's stdin."""
         if isinstance(data, str):
             data = data.encode("utf-8")
-        self._request_queue.put(
-            pb.ExecRequest(stdin_data=pb.StdinData(data=data))
-        )
+        self._request_queue.put(pb.ExecRequest(stdin_data=pb.StdinData(data=data)))
 
     def close_stdin(self) -> None:
         """Signal EOF on stdin."""
-        self._request_queue.put(
-            pb.ExecRequest(stdin_eof=pb.StdinEof())
-        )
+        self._request_queue.put(pb.ExecRequest(stdin_eof=pb.StdinEof()))
 
     def send_signal(self, sig: int = signal.SIGTERM) -> None:
         """Send a signal to the process."""
-        self._request_queue.put(
-            pb.ExecRequest(signal=pb.ExecSignal(signal=sig))
-        )
+        self._request_queue.put(pb.ExecRequest(signal=pb.ExecSignal(signal=sig)))
 
     def output(self) -> Iterator[ExecEvent]:
         """Iterate over output events from the process."""
@@ -225,6 +229,7 @@ class ExecProcess:
 # Sandbox handle
 # ---------------------------------------------------------------------------
 
+
 class Sandbox:
     """A handle to a sandbox instance."""
 
@@ -274,7 +279,8 @@ class Sandbox:
         Returns an ExecResult with stdout/stderr and exit code.
         """
         process = self.exec_start(
-            command, *args,
+            command,
+            *args,
             timeout_secs=timeout_secs,
             workdir=workdir,
             env=env,
@@ -297,7 +303,8 @@ class Sandbox:
         process exit, and errors.
         """
         process = self.exec_start(
-            command, *args,
+            command,
+            *args,
             timeout_secs=timeout_secs,
             workdir=workdir,
             env=env,
@@ -343,7 +350,9 @@ class Sandbox:
                 yield req
 
         try:
-            response_iterator = self._client._stub.Exec(request_iterator(), metadata=self._client._metadata)
+            response_iterator = self._client._stub.Exec(
+                request_iterator(), metadata=self._client._metadata
+            )
         except grpc.RpcError as e:
             _handle_rpc_error(e, self._id)
             raise
@@ -369,6 +378,7 @@ class Sandbox:
 # ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
+
 
 class SandboxClient:
     """Client for the Sandbox gRPC Service."""
@@ -522,13 +532,16 @@ class SandboxClient:
 
     def list(self) -> builtins.list[SandboxInfo]:
         """List all sandboxes."""
-        resp = self._stub.ListSandboxes(pb.ListSandboxesRequest(), metadata=self._metadata)
+        resp = self._stub.ListSandboxes(
+            pb.ListSandboxesRequest(), metadata=self._metadata
+        )
         return [_pb_to_sandbox_info(s) for s in resp.sandboxes]
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _pb_to_sandbox_info(info: pb.SandboxInfo) -> SandboxInfo:
     return SandboxInfo(
