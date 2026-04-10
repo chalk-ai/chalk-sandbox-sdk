@@ -27,7 +27,7 @@ from pathlib import Path
 
 import httpx
 
-from chalkcompute.image import Image, LazyLocalFile
+from chalkcompute.image import Image
 
 
 # ---------------------------------------------------------------------------
@@ -297,12 +297,10 @@ class Container:
         Returns a list of (volume_name, mount_path) tuples.
         """
         assert isinstance(self._image, Image)
-
-        # Group files by their destination directory
-        dir_to_files: dict[str, list[LazyLocalFile]] = {}
-        for lf in self._image.lazy_local_files:
-            dest_dir = str(Path(lf.dest).parent)
-            dir_to_files.setdefault(dest_dir, []).append(lf)
+        try:
+            dir_to_files = self._image.lazy_local_files_grouped_for_volume_mounts()
+        except ValueError as e:
+            raise ContainerError(str(e)) from e
 
         volumes: list[tuple[str, str]] = []
         for dest_dir, files in dir_to_files.items():

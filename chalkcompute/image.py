@@ -129,9 +129,7 @@ class Image:
         """
         new = self._copy()
         new._steps.append(
-            pb.BuildStep(
-                run_commands=pb.RunCommandsStep(commands=list(commands))
-            )
+            pb.BuildStep(run_commands=pb.RunCommandsStep(commands=list(commands)))
         )
         return new
 
@@ -144,9 +142,7 @@ class Image:
         """
         new = self._copy()
         new._steps.append(
-            pb.BuildStep(
-                pip_install=pb.PipInstallStep(packages=packages)
-            )
+            pb.BuildStep(pip_install=pb.PipInstallStep(packages=packages))
         )
         return new
 
@@ -186,7 +182,9 @@ class Image:
         """
         new = self._copy()
         if strategy == "volume":
-            new._lazy_local_files.add(LazyLocalFile(src=str(Path(src).resolve()), dest=dest, mode=mode))
+            new._lazy_local_files.add(
+                LazyLocalFile(src=str(Path(src).resolve()), dest=dest, mode=mode)
+            )
         else:
             content = Path(src).read_bytes()
             step = pb.AddFileStep(destination=dest, content=content)
@@ -225,7 +223,9 @@ class Image:
                     content = file_path.read_bytes()
                     new._steps.append(
                         pb.BuildStep(
-                            add_file=pb.AddFileStep(destination=file_dest, content=content)
+                            add_file=pb.AddFileStep(
+                                destination=file_dest, content=content
+                            )
                         )
                     )
         return new
@@ -292,6 +292,32 @@ class Image:
         """Local files deferred for volume-mounting at sandbox start."""
         return set(self._lazy_local_files)
 
+    def validate_lazy_local_files_for_volume_mounts(self) -> None:
+        """Validate lazy local file destinations for volume mounting.
+
+        Volume-backed lazy files are grouped by parent directory and mounted at
+        that directory. Root-level destinations would require mounting at "/",
+        which is not supported by container runtimes.
+        """
+        self.lazy_local_files_grouped_for_volume_mounts()
+
+    def lazy_local_files_grouped_for_volume_mounts(
+        self,
+    ) -> dict[str, list[LazyLocalFile]]:
+        """Return lazy local files grouped by mount directory.
+
+        Validates each destination path before grouping.
+        """
+        grouped: dict[str, list[LazyLocalFile]] = {}
+        for lf in sorted(
+            self._lazy_local_files,
+            key=lambda x: (str(Path(x.dest).parent), x.dest, x.src),
+        ):
+            _validate_lazy_local_file_destination(lf.dest)
+            dest_dir = str(Path(lf.dest).parent)
+            grouped.setdefault(dest_dir, []).append(lf)
+        return grouped
+
     # -- Serialization ---------------------------------------------------------
 
     def to_proto(self) -> pb.ImageSpec:
@@ -318,3 +344,14 @@ class Image:
             parts.append(f", env={self._env!r}")
         parts.append(")")
         return "".join(parts)
+
+
+def _validate_lazy_local_file_destination(dest: str) -> None:
+    dest_dir = str(Path(dest).parent)
+    if dest_dir == "/":
+        raise ValueError(
+            "add_local_file(..., strategy='volume') cannot target root paths "
+            f"like {dest!r}; mounting a volume at '/' is not supported. "
+            "Use strategy='copy' or place files under a subdirectory "
+            "(for example '/app/app.py')."
+        )

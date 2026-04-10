@@ -1,6 +1,7 @@
 """Chalkbox — SDK for Chalk sandboxes, containers, and volumes."""
 
 from chalkcompute.container import Container, ContainerError, ContainerInfo, ExecResult as ContainerExecResult, ImageBuildError
+from chalkcompute.function import RemoteFunction, function
 from chalkcompute.image import Image, LazyLocalFile
 from chalkcompute.sandbox import (
     ExecError,
@@ -15,6 +16,7 @@ from chalkcompute.sandbox import (
     SandboxNotFoundError,
     SandboxTerminatedError,
 )
+from chalkcompute.scaling_group import ScalingGroup, ScalingGroupBuildError, ScalingGroupError, ScalingGroupInfo
 from chalkcompute.volume import (
     FileInfo,
     Volume,
@@ -37,6 +39,7 @@ __all__ = [
     "Image",
     "ImageBuildError",
     "LazyLocalFile",
+    "RemoteFunction",
     "Sandbox",
     "SandboxBuildError",
     "SandboxClient",
@@ -44,9 +47,14 @@ __all__ = [
     "SandboxInfo",
     "SandboxNotFoundError",
     "SandboxTerminatedError",
+    "ScalingGroup",
+    "ScalingGroupBuildError",
+    "ScalingGroupError",
+    "ScalingGroupInfo",
     "Volume",
     "VolumeClient",
     "VolumeError",
     "VolumeInfo",
     "VolumeNotFoundError",
+    "function",
 ]
