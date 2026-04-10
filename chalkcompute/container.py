@@ -99,6 +99,7 @@ class Container:
         port: int | None = None,
         lifetime: str | None = None,
         enable_ssh: bool = False,
+        volumes: list[tuple[str, str]] | None = None,
     ) -> None:
         self._image = image
         self._name = name
@@ -115,7 +116,7 @@ class Container:
         self._built_image_uri: str | None = None
         self._container_id: str | None = None
         self._container_info: ContainerInfo | None = None
-        self._volumes: list[tuple[str, str]] = []
+        self._volumes: list[tuple[str, str]] = list(volumes or [])
 
         self._client = ConnectClient()
 
@@ -250,7 +251,7 @@ class Container:
         if lazy_files:
             print(f"Uploading {len(lazy_files)} local file(s) to volume(s)...")
             assert isinstance(self._image, Image)
-            self._volumes = upload_lazy_files(
+            self._volumes += upload_lazy_files(
                 self._client, self._image, volume_prefix="container-files",
             )
             for vn, mp in self._volumes:
