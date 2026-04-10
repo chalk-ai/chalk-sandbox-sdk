@@ -11,17 +11,6 @@ Usage:
     # The scaling group is deployed when the module loads.
     # Calling the function makes an HTTP request to the remote endpoint.
     result = add(1, 2)
-
-Deployed as two files:
-
-    /app/user_module.py  — the user's source file, with chalkcompute
-                           imports and decorators stripped out
-    /app/handler.py      — a shim that imports the function and wraps it:
-
-        from user_module import add
-
-        def handler(event, context):
-            return add(**event)
 """
 
 from __future__ import annotations
@@ -40,6 +29,7 @@ from chalkcompute.image import Image
 from chalkcompute.scaling_group import ScalingGroup
 
 _REMOTE_ENV_VAR = "_CHALK_REMOTE_FUNCTION"
+_STRIP_SOURCE_ENV_VAR = "CHALK_FUNCTION_STRIP_SOURCE"
 
 
 # ---------------------------------------------------------------------------
@@ -75,10 +65,6 @@ def _strip_chalkcompute_from_source(source: str) -> str:
             for dec in node.decorator_list:
                 dec_source = ast.get_source_segment(source, dec)
                 if dec_source and "chalkcompute" in dec_source:
-                    # Remove the decorator line(s) including the @ symbol.
-                    # The @ is on the line before the decorator node in some
-                    # cases, so we start from the decorator's lineno which
-                    # already accounts for the @ in Python 3.8+.
                     remove_ranges.append((dec.lineno, dec.end_lineno or dec.lineno))
 
     # Build output, skipping removed line ranges
@@ -105,7 +91,10 @@ def _generate_handler_shim(func_name: str) -> str:
 def _write_temp(content: str) -> str:
     """Write content to a temp file and return its path."""
     f = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".py", prefix="chalkfn_", delete=False,
+        mode="w",
+        suffix=".py",
+        prefix="chalkfn_",
+        delete=False,
     )
     f.write(content)
     f.close()
@@ -171,7 +160,7 @@ def function(
     """Decorator that deploys a function as a remote scaling group.
 
     **Locally** (at decoration time):
-    1. AST-strips the source file (removes chalkcompute imports/decorators)
+    1. Copies the source file (or AST-strips it if ``CHALK_FUNCTION_STRIP_SOURCE=1``)
     2. Generates a handler shim that imports and wraps the function
     3. Builds an image with both files + ``chalk-remote-call-python``
     4. Creates a ScalingGroup and calls ``deploy()``
@@ -186,20 +175,26 @@ def function(
             return func
 
         base_image = image if image is not None else Image.debian_slim()
+        strip_source = os.environ.get(_STRIP_SOURCE_ENV_VAR, "") == "1"
 
-        # Strip chalkcompute from the user's source file
+        # Prepare the user module source
         source_file = inspect.getfile(func)
-        source = Path(source_file).read_text()
-        stripped_source = _strip_chalkcompute_from_source(source)
-        handler_shim = _generate_handler_shim(func.__name__)
+        if strip_source:
+            # AST-strip chalkcompute, no need to install it
+            source = Path(source_file).read_text()
+            user_module_path = _write_temp(_strip_chalkcompute_from_source(source))
+            extra_packages: list[str] = []
+        else:
+            # (default): deploy file unmodified, install chalkcompute
+            user_module_path = source_file
+            extra_packages = ["chalkcompute"]
 
-        # Write both to temp files for add_local_file
-        stripped_path = _write_temp(stripped_source)
+        handler_shim = _generate_handler_shim(func.__name__)
         shim_path = _write_temp(handler_shim)
 
         deploy_image = (
-            base_image.pip_install(["chalk-remote-call-python"])
-            .add_local_file(stripped_path, "/app/user_module.py", strategy="copy")
+            base_image.pip_install(["chalk-remote-call-python", *extra_packages])
+            .add_local_file(user_module_path, "/app/user_module.py", strategy="copy")
             .add_local_file(shim_path, "/app/handler.py", strategy="copy")
             .workdir("/app")
             .env({"PYTHONPATH": "/app", _REMOTE_ENV_VAR: "1"})
@@ -218,7 +213,7 @@ def function(
                 "CHALK_ENVIRONMENT_ID": os.environ.get("CHALK_ENVIRONMENT_ID", ""),
                 **(env or {}),
             },
-            port=8080,
+            port=6666,
             protocol="grpc",
             min_replicas=min_replicas,
             max_replicas=max_replicas,
@@ -226,8 +221,9 @@ def function(
         sg.deploy()
 
         # Clean up temp files after image build has consumed them
-        os.unlink(stripped_path)
         os.unlink(shim_path)
+        if strip_source:
+            os.unlink(user_module_path)
 
         return RemoteFunction(func, sg)
 
