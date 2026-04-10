@@ -629,7 +629,10 @@ class RemoteFunction:
         # gRPC requires host:port — use the scaling group's port
         host = target.split("/")[0]
         if ":" not in host:
-            target = f"{host}:{self._port}"
+            if self._web_url.startswith("https"):
+                target = f"{host}:443"
+            else:
+                target = f"{host}:{self._port}"
         else:
             target = host
 
@@ -771,8 +774,8 @@ class _NoOpFunction:
     """Wraps a function so that lifecycle methods are no-ops.
 
     Returned by the decorator when running inside the container
-    (_REMOTE_ENV_VAR) or when stripping source (_STRIP_SOURCE_ENV_VAR),
-    so calls like ``add.wait_ready()`` don't raise AttributeError.
+    (_REMOTE_ENV_VAR), so calls like ``add.wait_ready()`` don't
+    raise AttributeError.
     """
 
     def __init__(self, func: Callable) -> None:

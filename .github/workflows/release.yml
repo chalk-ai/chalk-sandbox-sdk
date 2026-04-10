@@ -1,17 +1,15 @@
 name: Publish to PyPI
 
 on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "PEP 440 version to publish (e.g. 0.1.0)"
-        required: true
-        type: string
+  release:
+    types:
+      - "published"
 
 jobs:
   build:
-    name: Build & verify
+    name: "Build distribution"
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -20,9 +18,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Set version
+      - name: Set version from release tag
         run: |
-          sed -i "s/^version = .*/version = \"${{ inputs.version }}\"/" pyproject.toml
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Setting version to $VERSION"
+          sed -i "s/^version = .*/version = \"$VERSION\"/" pyproject.toml
 
       - name: Build
         run: |
@@ -47,11 +47,10 @@ jobs:
           path: dist/
 
   publish:
-    name: Publish to PyPI
+    name: "Publish to PyPI"
     needs: build
     runs-on: ubuntu-latest
-    environment:
-      name: pypi
+    timeout-minutes: 10
     permissions:
       id-token: write
     steps:
