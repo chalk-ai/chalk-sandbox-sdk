@@ -18,13 +18,15 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
 
 VLLM_PORT = 8000
-MODEL = "BAAI/bge-visualized"
-MODEL_VOLUME = "vllm-model-bge-visualized"
+MODEL = "openai/clip-vit-base-patch32"
+MODEL_VOLUME = "clip-vit-base-patch32"
 HF_CACHE_PATH = "/root/.cache/huggingface"
+MODEL_LOCAL_PATH = f"{HF_CACHE_PATH}/hub/models--openai--clip-vit-base-patch32"
 
 START_SERVER_CMD = (
     f"nohup python3 -m vllm.entrypoints.openai.api_server "
-    f"--model {MODEL} "
+    f"--model {MODEL_LOCAL_PATH} "
+    f"--served-model-name {MODEL} "
     f"--host 0.0.0.0 --port {VLLM_PORT} "
     f"> /tmp/vllm.log 2>&1 &"
 )
@@ -103,7 +105,7 @@ def start_server(container: Container) -> None:
     log.info("Starting vLLM server (model: %s)...", MODEL)
     container.exec("bash", "-c", START_SERVER_CMD)
 
-    log.info("Waiting for vLLM to be ready (first run downloads ~7 GB of model weights)...")
+    log.info("Waiting for vLLM to be ready (first run downloads model weights)...")
     for attempt in range(20):
         result = container.exec("bash", "-c", HEALTH_CHECK_CMD)
         if result.stdout_text.strip() == "0":
@@ -173,8 +175,9 @@ def main(container_name: str, urls: list[str]) -> None:
     container = Container(
         image=Image.from_dockerfile(_DOCKERFILE),
         name=container_name,
-        gpu="1",
+        gpu="nvidia-rtx-pro-6000:1",
         memory="24Gi",
+        port=VLLM_PORT,
         volumes=[(MODEL_VOLUME, HF_CACHE_PATH)],
         env=env,
     ).run()
