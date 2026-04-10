@@ -36,4 +36,4 @@ just ty
 to check `ty`
 ## Proto generation
 
-Python stubs are generated from `proto/` using `grpc_tools.protoc`. Server-side protos live in `chalk-private/protos/protos/chalk/`.
+Python stubs are generated from `chalk-private/protos/generate.sh`.

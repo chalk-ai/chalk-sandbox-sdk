@@ -47,13 +47,14 @@ import builtins
 
 import grpc
 
-from chalkcompute._proto.volume.v1 import volume_pb2 as pb
-from chalkcompute._proto.volume.v1 import volume_pb2_grpc as pb_grpc
+from chalkcompute._gen.chalk.volume.v1 import volume_pb2 as pb
+from chalkcompute._gen.chalk.volume.v1 import volume_pb2_grpc as pb_grpc
 
 
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
+
 
 class VolumeError(Exception):
     """Base exception for volume errors."""
@@ -71,9 +72,11 @@ class FileNotFoundError_(VolumeError):
 # Data classes
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class VolumeInfo:
     """Metadata about a volume."""
+
     name: str
     created_at: datetime.datetime | None = None
 
@@ -81,6 +84,7 @@ class VolumeInfo:
 @dataclass
 class FileInfo:
     """Metadata about a file inside a volume."""
+
     path: str
     size: int
     updated_at: datetime.datetime | None = None
@@ -89,6 +93,7 @@ class FileInfo:
 # ---------------------------------------------------------------------------
 # Batch upload context manager
 # ---------------------------------------------------------------------------
+
 
 class _BatchUpload:
     """Accumulates put_file operations and executes them on exit."""
@@ -126,6 +131,7 @@ class _BatchUpload:
 # ---------------------------------------------------------------------------
 # Volume handle
 # ---------------------------------------------------------------------------
+
 
 class Volume:
     """A handle to a named volume, providing file operations."""
@@ -291,6 +297,7 @@ class Volume:
 # Client
 # ---------------------------------------------------------------------------
 
+
 class VolumeClient:
     """Client for the Volume gRPC Service."""
 
@@ -398,6 +405,7 @@ class VolumeClient:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _pb_to_volume_info(info: pb.VolumeInfo) -> VolumeInfo:
     created_at = None
