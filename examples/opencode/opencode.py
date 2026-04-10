@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 #
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.11"
 # dependencies = ["chalkcompute", "python-dotenv"]
 # ///
 
@@ -37,6 +37,7 @@ import argparse
 import logging
 import os
 import time
+import uuid
 from pathlib import Path
 
 from chalkcompute import Container
@@ -228,8 +229,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Launch OpenCode server in a Chalk container")
     parser.add_argument("--timeout", type=str, default="12",
                         help="Server lifetime (e.g. 2h, 90m). Bare number treated as hours. Default: 12")
-    parser.add_argument("--name", type=str, default="opencode-server",
-                        help="Container name. Default: opencode-server")
+    parser.add_argument("--name", type=str, default=f"opencode-server-{uuid.uuid4().hex[:8]}",
+                        help="Container name. Default: opencode-server-<random>")
     parser.add_argument("--password", type=str, default=os.environ.get("OPENCODE_SERVER_PASSWORD"),
                         help="OpenCode server password. Default: $OPENCODE_SERVER_PASSWORD")
     parser.add_argument("--github-repo", type=str, default=DEFAULT_GITHUB_REPO,
