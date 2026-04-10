@@ -244,21 +244,25 @@ class Container:
 
         assert isinstance(self._image, Image)
         spec_dict = MessageToDict(self._image.to_proto())
-        resp = self._custom_image_rpc(
-            "GetOrBuildCustomImage", {"imageSpec": spec_dict},
-        )
-        if resp.status_code != 200:
-            raise ImageBuildError(f"GetOrBuildCustomImage failed: {resp.text}")
+
+        _build_retries = 3
+        _build_retry_delay = 5.0
+        for attempt in range(_build_retries + 1):
+            resp = self._custom_image_rpc(
+                "BuildCustomImage", {"imageSpec": spec_dict}, timeout=120,
+            )
+            if resp.status_code == 200:
+                break
+            if resp.status_code >= 500 and attempt < _build_retries:
+                print(
+                    f"BuildCustomImage transient error (attempt {attempt + 1}/{_build_retries},"
+                    f" status {resp.status_code}), retrying in {_build_retry_delay:.0f}s..."
+                )
+                time.sleep(_build_retry_delay)
+                continue
+            raise ImageBuildError(f"BuildCustomImage failed: {resp.text}")
 
         data = resp.json()
-        status = data.get("status", "")
-        if status == "exists" or status == "succeeded":
-            return data["image"]
-        if status == "failed":
-            raise ImageBuildError(
-                f"Image build failed: {data.get('error', 'unknown')}"
-            )
-
         build_id = data["buildId"]
 
         deadline = time.monotonic() + timeout
@@ -275,7 +279,7 @@ class Container:
             if status == "failed":
                 raise ImageBuildError(
                     f"Image build {build_id} failed: "
-                    f"{get_data.get('error', get_data.get('errorMessage', repr(get_data)))}"
+                    f"{get_data.get('error', 'unknown')}"
                 )
             time.sleep(poll_interval)
 
