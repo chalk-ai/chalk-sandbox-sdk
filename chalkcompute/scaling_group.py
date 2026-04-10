@@ -21,7 +21,7 @@ Usage:
         .entrypoint(["python", "/app/app.py"])
     )
 
-    sg = ScalingGroup(image=img, port=8080).deploy()
+    sg = ScalingGroup(image=img, port=8080).deploy().wait_ready()
     resp = sg.call("/health", method="GET")
     print(resp.status_code)
     sg.delete()
@@ -307,6 +307,41 @@ class ScalingGroup:
             )
         url = f"{self._scaling_group_info.web_url}{path}"
         return httpx.request(method, url, json=json, content=data, headers=headers, timeout=timeout)
+
+    def wait_ready(
+        self,
+        *,
+        timeout: float = 120.0,
+        poll_interval: float = 2.0,
+    ) -> ScalingGroup:
+        """Wait until a running scaling group has at least one ready replica.
+
+        Returns self for chaining.
+        """
+        if self._scaling_group_id is None:
+            raise ScalingGroupError("No scaling group ID — call .deploy() first.")
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            info = self.refresh()
+            if info.status in ("Failed", "Error"):
+                raise ScalingGroupError(
+                    f"Scaling group {self._scaling_group_id} entered {info.status} state"
+                )
+            if (
+                info.status == "Running"
+                and info.ready_replicas > 0
+                and info.available_replicas > 0
+            ):
+                return self
+            time.sleep(poll_interval)
+
+        raise ScalingGroupError(
+            f"Scaling group {self._scaling_group_id} not ready after {timeout}s "
+            f"(status={self._scaling_group_info.status if self._scaling_group_info else 'unknown'}, "
+            f"ready={self._scaling_group_info.ready_replicas if self._scaling_group_info else 0}, "
+            f"available={self._scaling_group_info.available_replicas if self._scaling_group_info else 0})"
+        )
 
     def delete(self) -> None:
         """Delete the scaling group and clean up volumes."""

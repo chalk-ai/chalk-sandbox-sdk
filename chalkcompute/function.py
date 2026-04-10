@@ -18,7 +18,7 @@ Or imperatively:
         return x + y
 
     f = Function(add)
-    f.deploy()
+    f.deploy().wait_ready()
     print(f(1, 2))
     f.delete()
 """
@@ -217,6 +217,7 @@ class Function:
         max_replicas: int = 1,
     ) -> None:
         self._func = func
+        self._explicit_name = name
         self._func_name = name or getattr(func, "__name__", "anonymous")
         self._image = image
         self._cpu = cpu
@@ -256,7 +257,9 @@ class Function:
             user_module_path = source_file
             extra_packages = ["chalkcompute"]
 
-        handler_shim = _generate_handler_shim(getattr(self._func, "__name__", self._func_name))
+        handler_shim = _generate_handler_shim(
+            getattr(self._func, "__name__", self._func_name)
+        )
         shim_path = _write_temp(handler_shim)
 
         deploy_image = (
@@ -267,10 +270,10 @@ class Function:
             .entrypoint(["chalk-remote-call", "--handler", "handler.handler"])
         )
 
-        # Clean up temp files after image build has consumed them
-        os.unlink(shim_path)
+        # Track temp files for cleanup after lazy files are uploaded
+        self._temp_files = [shim_path]
         if strip_source:
-            os.unlink(user_module_path)
+            self._temp_files.append(user_module_path)
 
         return deploy_image
 
@@ -295,8 +298,10 @@ class Function:
         # 2. Build image URI
         print(f"Building image for function '{self._func_name}'...")
         image_uri = build_image(
-            self._client, deploy_image,
-            poll_interval=poll_interval, timeout=build_timeout,
+            self._client,
+            deploy_image,
+            poll_interval=poll_interval,
+            timeout=build_timeout,
         )
         print(f"Image built: {image_uri}")
 
@@ -305,14 +310,24 @@ class Function:
         if deploy_image.lazy_local_files:
             print(f"Uploading {len(deploy_image.lazy_local_files)} local file(s)...")
             volumes = upload_lazy_files(
-                self._client, deploy_image, volume_prefix="fn-files",
+                self._client,
+                deploy_image,
+                volume_prefix="fn-files",
             )
+
+        # Clean up temp files now that lazy files have been read
+        for tmp in getattr(self, "_temp_files", []):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        self._temp_files = []
 
         # 4. Generate schemas from function signature
         input_schema_proto, output_schema_proto = _build_schemas(self._func)
 
         # 5. Build ScalingGroupSpec
-        sg_name = f"fn-{self._func_name}-{uuid.uuid4().hex[:8]}"
+        sg_name = self._explicit_name if self._explicit_name else f"fn-{self._func_name}-{uuid.uuid4().hex[:8]}"
         container_spec: dict[str, Any] = {
             "name": sg_name,
             "image": image_uri,
@@ -341,8 +356,7 @@ class Function:
 
         if volumes:
             container_spec["volumes"] = [
-                {"name": vn, "mountPath": mp, "type": "chalkfs"}
-                for vn, mp in volumes
+                {"name": vn, "mountPath": mp, "type": "chalkfs"} for vn, mp in volumes
             ]
 
         spec: dict[str, Any] = {
@@ -355,7 +369,8 @@ class Function:
 
         # 6. Call CreateExternalFunctionVersion
         print(f"Registering function '{self._func_name}'...")
-        resp = self._client.rpc(_CATALOG_SVC,
+        resp = self._client.rpc(
+            _CATALOG_SVC,
             "CreateExternalFunctionVersion",
             {
                 "functionName": self._func_name,
@@ -400,13 +415,19 @@ class Function:
         return self
 
     def _poll_until_running(
-        self, *, sg_name: str, poll_interval: float, timeout: float,
+        self,
+        *,
+        sg_name: str,
+        poll_interval: float,
+        timeout: float,
     ) -> None:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             time.sleep(poll_interval)
-            resp = self._client.rpc(_SG_SVC,
-                "GetScalingGroup", {"name": sg_name},
+            resp = self._client.rpc(
+                _SG_SVC,
+                "GetScalingGroup",
+                {"name": sg_name},
             )
             if resp.status_code != 200:
                 raise FunctionError(f"GetScalingGroup failed: {resp.text}")
@@ -417,11 +438,41 @@ class Function:
             if status == "Running":
                 return
             if status in ("Failed", "Error"):
-                raise FunctionError(
-                    f"Scaling group {sg_name} entered {status} state"
-                )
+                raise FunctionError(f"Scaling group {sg_name} entered {status} state")
+        raise FunctionError(f"Scaling group {sg_name} timed out after {timeout}s")
+
+    def wait_ready(
+        self,
+        *,
+        timeout: float = 120.0,
+        poll_interval: float = 2.0,
+    ) -> Function:
+        """Wait until the backing scaling group has at least one ready replica.
+
+        Returns self for chaining.
+        """
+        if self._version_info is None:
+            raise FunctionError("No function version — call .deploy() first.")
+
+        sg_name = self._version_info.scaling_group_name
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            resp = self._client.rpc(_SG_SVC, "GetScalingGroup", {"name": sg_name})
+            if resp.status_code != 200:
+                raise FunctionError(f"GetScalingGroup failed: {resp.text}")
+            sg = resp.json()["scalingGroup"]
+            status = sg.get("status", "")
+            self._web_url = sg.get("webUrl")
+            if status in ("Failed", "Error"):
+                raise FunctionError(f"Scaling group {sg_name} entered {status} state")
+            ready = sg.get("readyReplicas", 0)
+            available = sg.get("availableReplicas", 0)
+            if status == "Running" and ready > 0 and available > 0:
+                return self
+            time.sleep(poll_interval)
+
         raise FunctionError(
-            f"Scaling group {sg_name} timed out after {timeout}s"
+            f"Function '{self._func_name}' not ready after {timeout}s (sg={sg_name})"
         )
 
     # -- Call ------------------------------------------------------------------
@@ -443,7 +494,9 @@ class Function:
 
         target = re.sub(r"^https?://", "", self._web_url)
         if self._web_url.startswith("https"):
-            self._call_channel = grpc.secure_channel(target, grpc.ssl_channel_credentials())
+            self._call_channel = grpc.secure_channel(
+                target, grpc.ssl_channel_credentials()
+            )
         else:
             self._call_channel = grpc.insecure_channel(target)
         self._call_stub = call_grpc.RemoteCallServiceStub(self._call_channel)
@@ -480,7 +533,8 @@ class Function:
         # 4. gRPC streaming call
         def requests():
             yield call_pb.CallFunctionRequest(  # ty: ignore[unresolved-attribute]
-                name="handler", feather_stream=feather_bytes,
+                name="handler",
+                feather_stream=feather_bytes,
             )
 
         responses = list(self._call_stub.CallFunction(requests()))
@@ -507,7 +561,8 @@ class Function:
     def delete(self) -> None:
         """Delete this function version."""
         if self._version_info is not None:
-            self._client.rpc(_CATALOG_SVC,
+            self._client.rpc(
+                _CATALOG_SVC,
                 "DeleteExternalFunctionVersion",
                 {"id": self._version_info.id},
             )
@@ -518,7 +573,8 @@ class Function:
         """Fetch latest function version info from the server."""
         if self._version_info is None:
             raise FunctionError("No function version — call .deploy() first.")
-        resp = self._client.rpc(_CATALOG_SVC,
+        resp = self._client.rpc(
+            _CATALOG_SVC,
             "GetExternalFunctionVersion",
             {"id": self._version_info.id, "includeScalingGroup": True},
         )
