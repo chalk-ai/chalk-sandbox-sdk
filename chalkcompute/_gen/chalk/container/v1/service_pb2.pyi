@@ -405,3 +405,55 @@ class ListContainerSnapshotsResponse(_message.Message):
     SNAPSHOTS_FIELD_NUMBER: _ClassVar[int]
     snapshots: _containers.RepeatedCompositeFieldContainer[ContainerSnapshot]
     def __init__(self, snapshots: _Optional[_Iterable[_Union[ContainerSnapshot, _Mapping]]] = ...) -> None: ...
+
+class ContainerTTYInput(_message.Message):
+    __slots__ = ("data", "resize")
+    DATA_FIELD_NUMBER: _ClassVar[int]
+    RESIZE_FIELD_NUMBER: _ClassVar[int]
+    data: bytes
+    resize: ContainerTerminalSize
+    def __init__(
+        self, data: _Optional[bytes] = ..., resize: _Optional[_Union[ContainerTerminalSize, _Mapping]] = ...
+    ) -> None: ...
+
+class ContainerTerminalSize(_message.Message):
+    __slots__ = ("rows", "cols")
+    ROWS_FIELD_NUMBER: _ClassVar[int]
+    COLS_FIELD_NUMBER: _ClassVar[int]
+    rows: int
+    cols: int
+    def __init__(self, rows: _Optional[int] = ..., cols: _Optional[int] = ...) -> None: ...
+
+class CreateContainerDebugTTYRequest(_message.Message):
+    __slots__ = ("init_request", "input")
+    INIT_REQUEST_FIELD_NUMBER: _ClassVar[int]
+    INPUT_FIELD_NUMBER: _ClassVar[int]
+    init_request: ContainerDebugTTYInitRequest
+    input: ContainerTTYInput
+    def __init__(
+        self,
+        init_request: _Optional[_Union[ContainerDebugTTYInitRequest, _Mapping]] = ...,
+        input: _Optional[_Union[ContainerTTYInput, _Mapping]] = ...,
+    ) -> None: ...
+
+class ContainerDebugTTYInitRequest(_message.Message):
+    __slots__ = ("id", "name", "command")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    COMMAND_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    name: str
+    command: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(
+        self, id: _Optional[str] = ..., name: _Optional[str] = ..., command: _Optional[_Iterable[str]] = ...
+    ) -> None: ...
+
+class CreateContainerDebugTTYResponse(_message.Message):
+    __slots__ = ("data", "error", "closed")
+    DATA_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    CLOSED_FIELD_NUMBER: _ClassVar[int]
+    data: bytes
+    error: str
+    closed: bool
+    def __init__(self, data: _Optional[bytes] = ..., error: _Optional[str] = ..., closed: bool = ...) -> None: ...

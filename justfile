@@ -5,11 +5,11 @@ buildkite_pipeline := "chalk-sandbox-sdk-integration-tests"
 
 # Run ty type checker
 ty:
-    uv run --with ty ty check chalkcompute/ --exclude chalkcompute/_proto/
+    uv run --with ty ty check chalkcompute/ --exclude chalkcompute/_gen/
 
 # Run ruff linter
 ruff:
-    uv run --with ruff ruff check chalkcompute/ --exclude chalkcompute/_proto/
+    uv run --with ruff ruff check chalkcompute/ --exclude chalkcompute/_gen/
 
 # Run all e2e tests in CI and print a link to the build
 ci-run:

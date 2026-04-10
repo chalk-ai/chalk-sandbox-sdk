@@ -65,6 +65,11 @@ class ContainerServiceStub(object):
             request_serializer=chalk_dot_container_dot_v1_dot_service__pb2.ListContainerSnapshotsRequest.SerializeToString,
             response_deserializer=chalk_dot_container_dot_v1_dot_service__pb2.ListContainerSnapshotsResponse.FromString,
         )
+        self.CreateContainerDebugTTY = channel.stream_stream(
+            "/chalk.container.v1.ContainerService/CreateContainerDebugTTY",
+            request_serializer=chalk_dot_container_dot_v1_dot_service__pb2.CreateContainerDebugTTYRequest.SerializeToString,
+            response_deserializer=chalk_dot_container_dot_v1_dot_service__pb2.CreateContainerDebugTTYResponse.FromString,
+        )
 
 
 class ContainerServiceServicer(object):
@@ -132,6 +137,16 @@ class ContainerServiceServicer(object):
         context.set_details("Method not implemented!")
         raise NotImplementedError("Method not implemented!")
 
+    def CreateContainerDebugTTY(self, request_iterator, context):
+        """CreateContainerDebugTTY establishes a bidirectional streaming TTY session to a container
+        The first request must contain init_request with container id or name
+        Subsequent requests contain input data to send to the TTY stdin
+        Responses contain output data from the TTY stdout/stderr
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
 
 def add_ContainerServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -184,6 +199,11 @@ def add_ContainerServiceServicer_to_server(servicer, server):
             servicer.ListContainerSnapshots,
             request_deserializer=chalk_dot_container_dot_v1_dot_service__pb2.ListContainerSnapshotsRequest.FromString,
             response_serializer=chalk_dot_container_dot_v1_dot_service__pb2.ListContainerSnapshotsResponse.SerializeToString,
+        ),
+        "CreateContainerDebugTTY": grpc.stream_stream_rpc_method_handler(
+            servicer.CreateContainerDebugTTY,
+            request_deserializer=chalk_dot_container_dot_v1_dot_service__pb2.CreateContainerDebugTTYRequest.FromString,
+            response_serializer=chalk_dot_container_dot_v1_dot_service__pb2.CreateContainerDebugTTYResponse.SerializeToString,
         ),
     }
     generic_handler = grpc.method_handlers_generic_handler("chalk.container.v1.ContainerService", rpc_method_handlers)
@@ -474,6 +494,35 @@ class ContainerService(object):
             "/chalk.container.v1.ContainerService/ListContainerSnapshots",
             chalk_dot_container_dot_v1_dot_service__pb2.ListContainerSnapshotsRequest.SerializeToString,
             chalk_dot_container_dot_v1_dot_service__pb2.ListContainerSnapshotsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
+
+    @staticmethod
+    def CreateContainerDebugTTY(
+        request_iterator,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.stream_stream(
+            request_iterator,
+            target,
+            "/chalk.container.v1.ContainerService/CreateContainerDebugTTY",
+            chalk_dot_container_dot_v1_dot_service__pb2.CreateContainerDebugTTYRequest.SerializeToString,
+            chalk_dot_container_dot_v1_dot_service__pb2.CreateContainerDebugTTYResponse.FromString,
             options,
             channel_credentials,
             insecure,
