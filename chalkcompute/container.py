@@ -286,7 +286,7 @@ class Container:
                 error_detail = (
                     get_data.get("error")
                     or get_data.get("errorMessage")
-                    or "no error detail returned by server"
+                    or f"no error detail returned by server (full response: {get_data})"
                 )
                 raise ImageBuildError(
                     f"Image build {build_id} failed: {error_detail}"
