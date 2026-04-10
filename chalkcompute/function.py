@@ -12,12 +12,12 @@ Usage:
 
 Or imperatively:
 
-    from chalkcompute import Function
+    from chalkcompute import RemoteFunction
 
     def add(x: int, y: int) -> int:
         return x + y
 
-    f = Function(add)
+    f = RemoteFunction(add)
     f.deploy().wait_ready()
     print(f(1, 2))
     f.delete()
@@ -35,7 +35,7 @@ import typing
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 from chalkcompute._connect import ConnectClient, build_image, upload_lazy_files
 
@@ -77,12 +77,28 @@ class FunctionVersionInfo:
 
 
 # ---------------------------------------------------------------------------
+# Protocol
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class DeployedFunction(Protocol):
+    """Common interface for RemoteFunction and _NoOpFunction."""
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
+    def deploy(self, **kwargs: Any) -> DeployedFunction: ...
+    def wait_ready(self, **kwargs: Any) -> DeployedFunction: ...
+    def delete(self) -> None: ...
+    def refresh(self) -> Any: ...
+
+
+# ---------------------------------------------------------------------------
 # Source transformation helpers
 # ---------------------------------------------------------------------------
 
 
 def _strip_chalkcompute_from_source(source: str) -> str:
-    """Remove chalkcompute imports and @chalkcompute.function decorators.
+    """Remove chalkcompute imports, decorators, and lifecycle calls.
 
     Preserves all other code (helpers, constants, classes, non-chalkcompute
     imports) so the deployed module is self-contained minus the SDK.
@@ -92,6 +108,9 @@ def _strip_chalkcompute_from_source(source: str) -> str:
 
     # Collect line ranges to remove (1-indexed, inclusive)
     remove_ranges: list[tuple[int, int]] = []
+
+    # Track names of functions decorated with @chalkcompute.function(...)
+    decorated_names: set[str] = set()
 
     for node in ast.iter_child_nodes(tree):
         # Remove: import chalkcompute / from chalkcompute import ...
@@ -110,6 +129,18 @@ def _strip_chalkcompute_from_source(source: str) -> str:
                 dec_source = ast.get_source_segment(source, dec)
                 if dec_source and "chalkcompute" in dec_source:
                     remove_ranges.append((dec.lineno, dec.end_lineno or dec.lineno))
+                    decorated_names.add(node.name)
+
+    # Remove method calls on decorated functions (e.g. add.wait_ready())
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+            call = node.value
+            if (
+                isinstance(call.func, ast.Attribute)
+                and isinstance(call.func.value, ast.Name)
+                and call.func.value.id in decorated_names
+            ):
+                remove_ranges.append((node.lineno, node.end_lineno or node.lineno))
 
     # Build output, skipping removed line ranges
     removed_lines: set[int] = set()
@@ -191,12 +222,19 @@ def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
     return input_schema, output_schema
 
 
+def _extract_field_names(schema_dict: dict | None) -> list[str]:
+    """Extract field names from an Arrow schema JSON dict."""
+    if not schema_dict:
+        return []
+    return [f["name"] for f in schema_dict.get("columns", []) if "name" in f]
+
+
 # ---------------------------------------------------------------------------
-# Function
+# RemoteFunction
 # ---------------------------------------------------------------------------
 
 
-class Function:
+class RemoteFunction:
     """A versioned remote function backed by ExternalFunctionCatalogService.
 
     Deploys a Python function as a ScalingGroup and registers it with
@@ -230,6 +268,10 @@ class Function:
         # Set after .deploy()
         self._version_info: FunctionVersionInfo | None = None
         self._web_url: str | None = None
+        self._port: int = 8080
+
+        # Input field names (populated from API response for from_id/from_name)
+        self._input_field_names: list[str] = []
 
         # gRPC call channel (lazily created on first __call__)
         self._call_channel: Any = None
@@ -238,6 +280,84 @@ class Function:
         self._client = ConnectClient()
 
         functools.update_wrapper(self, func)
+
+    # -- Alternate constructors ------------------------------------------------
+
+    @classmethod
+    def from_id(cls, version_id: str) -> RemoteFunction:
+        """Attach to an existing function version by ID."""
+        f = cls._make_empty()
+        resp = f._client.rpc(
+            _CATALOG_SVC,
+            "GetExternalFunctionVersion",
+            {"id": version_id, "includeScalingGroup": True},
+        )
+        if resp.status_code != 200:
+            raise FunctionError(f"GetExternalFunctionVersion failed: {resp.text}")
+        data = resp.json()
+        efv = data["externalFunctionVersion"]
+        f._version_info = FunctionVersionInfo(
+            id=efv["id"],
+            function_name=efv["functionName"],
+            version=efv.get("version", 0),
+            scaling_group_name=efv.get("scalingGroupName", ""),
+        )
+        f._func_name = efv["functionName"]
+        f._input_field_names = _extract_field_names(efv.get("inputArrowSchema"))
+        sg = data.get("scalingGroup")
+        if sg:
+            f._web_url = sg.get("webUrl")
+            f._port = sg.get("port", 8080)
+        return f
+
+    @classmethod
+    def from_name(cls, name: str) -> RemoteFunction:
+        """Attach to an existing function version by name."""
+        f = cls._make_empty()
+        resp = f._client.rpc(
+            _CATALOG_SVC,
+            "GetExternalFunctionVersion",
+            {"key": {"functionName": name}, "includeScalingGroup": True},
+        )
+        if resp.status_code != 200:
+            raise FunctionError(f"GetExternalFunctionVersion failed: {resp.text}")
+        data = resp.json()
+        efv = data["externalFunctionVersion"]
+        f._version_info = FunctionVersionInfo(
+            id=efv["id"],
+            function_name=efv["functionName"],
+            version=efv.get("version", 0),
+            scaling_group_name=efv.get("scalingGroupName", ""),
+        )
+        f._func_name = efv["functionName"]
+        f._explicit_name = name
+        f._input_field_names = _extract_field_names(efv.get("inputArrowSchema"))
+        sg = data.get("scalingGroup")
+        if sg:
+            f._web_url = sg.get("webUrl")
+            f._port = sg.get("port", 8080)
+        return f
+
+    @classmethod
+    def _make_empty(cls) -> RemoteFunction:
+        f = cls.__new__(cls)
+        f._func = lambda *a, **kw: None  # type: ignore[assignment]
+        f._explicit_name = None
+        f._func_name = "unknown"
+        f._image = None
+        f._cpu = None
+        f._memory = None
+        f._gpu = None
+        f._env = {}
+        f._min_replicas = 1
+        f._max_replicas = 1
+        f._version_info = None
+        f._web_url = None
+        f._input_field_names = []
+        f._call_channel = None
+        f._call_stub = None
+        f._client = ConnectClient()
+        return f
 
     # -- Image building --------------------------------------------------------
 
@@ -285,7 +405,7 @@ class Function:
         poll_interval: float = 5.0,
         build_timeout: float = 600.0,
         ready_timeout: float = 300.0,
-    ) -> Function:
+    ) -> RemoteFunction:
         """Build the image, register the function version, and wait until running.
 
         Returns self for chaining.
@@ -327,7 +447,11 @@ class Function:
         input_schema_proto, output_schema_proto = _build_schemas(self._func)
 
         # 5. Build ScalingGroupSpec
-        sg_name = self._explicit_name if self._explicit_name else f"fn-{self._func_name}-{uuid.uuid4().hex[:8]}"
+        sg_name = (
+            self._explicit_name
+            if self._explicit_name
+            else f"fn-{self._func_name}-{uuid.uuid4().hex[:8]}"
+        )
         container_spec: dict[str, Any] = {
             "name": sg_name,
             "image": image_uri,
@@ -395,8 +519,10 @@ class Function:
         sg_data = data.get("scalingGroup")
         if sg_data:
             self._web_url = sg_data.get("webUrl")
+            self._port = sg_data.get("port", 6666)
             sg_status = sg_data.get("status", "")
         else:
+            self._port = 6666
             sg_status = ""
 
         print(
@@ -446,7 +572,7 @@ class Function:
         *,
         timeout: float = 120.0,
         poll_interval: float = 2.0,
-    ) -> Function:
+    ) -> RemoteFunction:
         """Wait until the backing scaling group has at least one ready replica.
 
         Returns self for chaining.
@@ -492,7 +618,21 @@ class Function:
         if self._web_url is None:
             raise FunctionError("Function is not deployed. Call .deploy() first.")
 
-        target = re.sub(r"^https?://", "", self._web_url)
+        # Ensure we have auth tokens for gRPC metadata
+        self._client._ensure_auth()
+        self._call_metadata = [
+            ("authorization", f"Bearer {self._client._access_token}"),
+            ("x-chalk-env-id", self._client._env_id or ""),
+        ]
+
+        target = re.sub(r"^https?://", "", self._web_url).rstrip("/")
+        # gRPC requires host:port — use the scaling group's port
+        host = target.split("/")[0]
+        if ":" not in host:
+            target = f"{host}:{self._port}"
+        else:
+            target = host
+
         if self._web_url.startswith("https"):
             self._call_channel = grpc.secure_channel(
                 target, grpc.ssl_channel_credentials()
@@ -511,15 +651,28 @@ class Function:
 
         self._ensure_call_stub()
 
-        # 1. Bind args to function signature
-        sig = inspect.signature(self._func)
-        bound = sig.bind(*args, **kwargs)
-        bound.apply_defaults()
+        # 1. Build name→value mapping from args
+        if self._input_field_names:
+            # from_id / from_name: use schema field names
+            arguments: dict[str, Any] = {}
+            for i, name in enumerate(self._input_field_names):
+                if name in kwargs:
+                    arguments[name] = kwargs[name]
+                elif i < len(args):
+                    arguments[name] = args[i]
+                else:
+                    raise TypeError(f"Missing argument: {name}")
+        else:
+            # Normal constructor: use function signature
+            sig = inspect.signature(self._func)
+            bound = sig.bind(*args, **kwargs)
+            bound.apply_defaults()
+            arguments = bound.arguments
 
         # 2. Build RecordBatch from args (one column per param, single row)
         arrays = []
         names = []
-        for param_name, value in bound.arguments.items():
+        for param_name, value in arguments.items():
             arrays.append(pa.array([value]))
             names.append(param_name)
         batch = pa.record_batch(arrays, names=names)
@@ -537,7 +690,9 @@ class Function:
                 feather_stream=feather_bytes,
             )
 
-        responses = list(self._call_stub.CallFunction(requests()))
+        responses = list(
+            self._call_stub.CallFunction(requests(), metadata=self._call_metadata)
+        )
 
         if not responses:
             raise FunctionError("No response received from remote function")
@@ -604,7 +759,40 @@ class Function:
     def __repr__(self) -> str:
         v = f" v{self._version_info.version}" if self._version_info else ""
         deployed = "deployed" if self._version_info else "not deployed"
-        return f"Function({self._func_name!r}{v}, {deployed})"
+        return f"RemoteFunction({self._func_name!r}{v}, {deployed})"
+
+
+# ---------------------------------------------------------------------------
+# No-op wrapper
+# ---------------------------------------------------------------------------
+
+
+class _NoOpFunction:
+    """Wraps a function so that lifecycle methods are no-ops.
+
+    Returned by the decorator when running inside the container
+    (_REMOTE_ENV_VAR) or when stripping source (_STRIP_SOURCE_ENV_VAR),
+    so calls like ``add.wait_ready()`` don't raise AttributeError.
+    """
+
+    def __init__(self, func: Callable) -> None:
+        self._func = func
+        functools.update_wrapper(self, func)
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return self._func(*args, **kwargs)
+
+    def deploy(self, **_: Any) -> DeployedFunction:
+        return self
+
+    def wait_ready(self, **_: Any) -> DeployedFunction:
+        return self
+
+    def delete(self) -> None:
+        pass
+
+    def refresh(self) -> None:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -622,7 +810,7 @@ def function(
     env: dict[str, str] | None = None,
     min_replicas: int = 1,
     max_replicas: int = 1,
-) -> Callable:
+) -> Callable[..., RemoteFunction | _NoOpFunction]:
     """Decorator that deploys a function as a versioned remote function.
 
     **Locally** (at decoration time):
@@ -634,11 +822,11 @@ def function(
     The decorator is a no-op — returns the raw function unchanged.
     """
 
-    def decorator(func: Callable) -> Function | Callable:
+    def decorator(func: Callable) -> RemoteFunction | _NoOpFunction:
         if os.environ.get(_REMOTE_ENV_VAR):
-            return func
+            return _NoOpFunction(func)
 
-        f = Function(
+        f = RemoteFunction(
             func,
             image=image,
             name=name,
