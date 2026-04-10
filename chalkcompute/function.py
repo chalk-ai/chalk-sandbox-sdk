@@ -26,7 +26,6 @@ Or imperatively:
 from __future__ import annotations
 
 import ast
-import base64
 import functools
 import inspect
 import os
@@ -38,13 +37,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-if TYPE_CHECKING:
-    import httpx
+from chalkcompute._connect import ConnectClient, build_image, upload_lazy_files
 
+if TYPE_CHECKING:
     from chalkcompute.image import Image as _Image
 
 _REMOTE_ENV_VAR = "_CHALK_REMOTE_FUNCTION"
 _STRIP_SOURCE_ENV_VAR = "CHALK_FUNCTION_STRIP_SOURCE"
+_CATALOG_SVC = "chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService"
+_SG_SVC = "chalk.scalinggroup.v1.ScalingGroupManagerService"
 
 
 # ---------------------------------------------------------------------------
@@ -233,106 +234,9 @@ class Function:
         self._call_channel: Any = None
         self._call_stub: Any = None
 
-        # Auth state (lazily populated)
-        self._api_server: str | None = None
-        self._access_token: str | None = None
-        self._env_id: str | None = None
-        self._connect_headers: dict[str, str] | None = None
+        self._client = ConnectClient()
 
         functools.update_wrapper(self, func)
-
-    # -- Auth ------------------------------------------------------------------
-
-    def _ensure_auth(self) -> None:
-        if self._access_token is not None:
-            return
-
-        import httpx
-
-        self._api_server = os.environ.get("CHALK_API_SERVER", "")
-        client_id = os.environ.get("CHALK_CLIENT_ID", "")
-        client_secret = os.environ.get("CHALK_CLIENT_SECRET", "")
-        self._env_id = os.environ.get("CHALK_ENVIRONMENT_ID", "")
-
-        if not self._api_server or not client_id:
-            raise FunctionError(
-                "CHALK_API_SERVER and CHALK_CLIENT_ID must be set in the environment"
-            )
-
-        resp = httpx.post(
-            f"{self._api_server}/v1/oauth/token",
-            json={
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "grant_type": "client_credentials",
-            },
-            headers={"Accept": "application/json", "Content-Type": "application/json"},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        self._access_token = resp.json()["access_token"]
-
-        self._connect_headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self._access_token}",
-            "X-Chalk-Env-Id": self._env_id or "",
-        }
-
-    # -- Connect-protocol helpers ----------------------------------------------
-
-    def _connect_rpc(
-        self, service: str, method: str, body: dict, timeout: float = 30,
-    ) -> httpx.Response:
-        import httpx
-
-        assert self._api_server is not None
-        assert self._connect_headers is not None
-        return httpx.post(
-            f"{self._api_server}/{service}/{method}",
-            json=body,
-            headers=self._connect_headers,
-            timeout=timeout,
-        )
-
-    def _catalog_rpc(
-        self, method: str, body: dict, timeout: float = 30,
-    ) -> httpx.Response:
-        return self._connect_rpc(
-            "chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService",
-            method,
-            body,
-            timeout,
-        )
-
-    def _custom_image_rpc(
-        self, method: str, body: dict, timeout: float = 30,
-    ) -> httpx.Response:
-        return self._connect_rpc(
-            "chalk.sandbox.v1.CustomImageService",
-            method,
-            body,
-            timeout,
-        )
-
-    def _volume_rpc(
-        self, method: str, body: dict, timeout: float = 30,
-    ) -> httpx.Response:
-        return self._connect_rpc(
-            "chalk.volume.v1.VolumeService",
-            method,
-            body,
-            timeout,
-        )
-
-    def _scaling_group_rpc(
-        self, method: str, body: dict, timeout: float = 30,
-    ) -> httpx.Response:
-        return self._connect_rpc(
-            "chalk.scalinggroup.v1.ScalingGroupManagerService",
-            method,
-            body,
-            timeout,
-        )
 
     # -- Image building --------------------------------------------------------
 
@@ -370,73 +274,6 @@ class Function:
 
         return deploy_image
 
-    def _build_image_uri(
-        self, deploy_image: _Image, *, poll_interval: float = 5.0, timeout: float = 600.0,
-    ) -> str:
-        """Build the Image spec via CustomImageService and return the image URI."""
-        from google.protobuf.json_format import MessageToDict
-
-        spec_dict = MessageToDict(deploy_image.to_proto())
-        resp = self._custom_image_rpc(
-            "GetOrBuildCustomImage",
-            {"imageSpec": spec_dict},
-        )
-        if resp.status_code != 200:
-            raise FunctionBuildError(f"GetOrBuildCustomImage failed: {resp.text}")
-
-        data = resp.json()
-        status = data.get("status", "")
-        if status in ("exists", "succeeded"):
-            return data["image"]
-        if status == "failed":
-            raise FunctionBuildError(f"Image build failed: {data.get('error', 'unknown')}")
-
-        build_id = data["buildId"]
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            get_resp = self._custom_image_rpc("GetCustomImage", {"buildId": build_id})
-            if get_resp.status_code != 200:
-                raise FunctionBuildError(f"GetCustomImage failed: {get_resp.text}")
-            get_data = get_resp.json()
-            status = get_data.get("status", "")
-            if status == "succeeded":
-                return get_data["image"]
-            if status == "failed":
-                raise FunctionBuildError(
-                    f"Image build {build_id} failed: {get_data.get('error', 'unknown')}"
-                )
-            time.sleep(poll_interval)
-
-        raise FunctionBuildError(f"Image build {build_id} timed out after {timeout}s")
-
-    def _upload_lazy_files(self, deploy_image: _Image) -> list[tuple[str, str]]:
-        """Upload lazy local files to volumes. Returns [(volume_name, mount_path)]."""
-        try:
-            dir_to_files = deploy_image.lazy_local_files_grouped_for_volume_mounts()
-        except ValueError as e:
-            raise FunctionError(str(e)) from e
-
-        volumes: list[tuple[str, str]] = []
-        for dest_dir, files in dir_to_files.items():
-            vol_name = f"fn-files-{uuid.uuid4().hex[:12]}"
-            resp = self._volume_rpc("CreateVolume", {"name": vol_name})
-            if resp.status_code != 200:
-                raise FunctionError(f"CreateVolume failed: {resp.text}")
-
-            for lf in files:
-                content = Path(lf.src).read_bytes()
-                encoded = base64.b64encode(content).decode("ascii")
-                flat_name = Path(lf.dest).name
-                put_resp = self._volume_rpc(
-                    "PutFile",
-                    {"volumeName": vol_name, "path": flat_name, "data": encoded},
-                )
-                if put_resp.status_code != 200:
-                    raise FunctionError(f"PutFile failed for {lf.dest}: {put_resp.text}")
-
-            volumes.append((vol_name, dest_dir))
-        return volumes
-
     # -- Lifecycle -------------------------------------------------------------
 
     def deploy(
@@ -452,15 +289,14 @@ class Function:
         """
         from google.protobuf.json_format import MessageToDict
 
-        self._ensure_auth()
-
         # 1. Build deploy image
         deploy_image = self._build_deploy_image()
 
         # 2. Build image URI
         print(f"Building image for function '{self._func_name}'...")
-        image_uri = self._build_image_uri(
-            deploy_image, poll_interval=poll_interval, timeout=build_timeout,
+        image_uri = build_image(
+            self._client, deploy_image,
+            poll_interval=poll_interval, timeout=build_timeout,
         )
         print(f"Image built: {image_uri}")
 
@@ -468,7 +304,9 @@ class Function:
         volumes: list[tuple[str, str]] = []
         if deploy_image.lazy_local_files:
             print(f"Uploading {len(deploy_image.lazy_local_files)} local file(s)...")
-            volumes = self._upload_lazy_files(deploy_image)
+            volumes = upload_lazy_files(
+                self._client, deploy_image, volume_prefix="fn-files",
+            )
 
         # 4. Generate schemas from function signature
         input_schema_proto, output_schema_proto = _build_schemas(self._func)
@@ -517,7 +355,7 @@ class Function:
 
         # 6. Call CreateExternalFunctionVersion
         print(f"Registering function '{self._func_name}'...")
-        resp = self._catalog_rpc(
+        resp = self._client.rpc(_CATALOG_SVC,
             "CreateExternalFunctionVersion",
             {
                 "functionName": self._func_name,
@@ -567,7 +405,7 @@ class Function:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             time.sleep(poll_interval)
-            resp = self._scaling_group_rpc(
+            resp = self._client.rpc(_SG_SVC,
                 "GetScalingGroup", {"name": sg_name},
             )
             if resp.status_code != 200:
@@ -668,9 +506,8 @@ class Function:
 
     def delete(self) -> None:
         """Delete this function version."""
-        self._ensure_auth()
         if self._version_info is not None:
-            self._catalog_rpc(
+            self._client.rpc(_CATALOG_SVC,
                 "DeleteExternalFunctionVersion",
                 {"id": self._version_info.id},
             )
@@ -681,8 +518,7 @@ class Function:
         """Fetch latest function version info from the server."""
         if self._version_info is None:
             raise FunctionError("No function version — call .deploy() first.")
-        self._ensure_auth()
-        resp = self._catalog_rpc(
+        resp = self._client.rpc(_CATALOG_SVC,
             "GetExternalFunctionVersion",
             {"id": self._version_info.id, "includeScalingGroup": True},
         )

@@ -19,17 +19,18 @@ destination path's common ancestor.
 from __future__ import annotations
 
 import base64
-import os
 import time
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-if TYPE_CHECKING:
-    import httpx
+from chalkcompute._connect import ConnectClient, upload_lazy_files
 
+if TYPE_CHECKING:
     from chalkcompute.image import Image as _Image
+
+_SVC = "chalk.container.v1.ContainerService"
+_IMAGE_SVC = "chalk.sandbox.v1.CustomImageService"
 
 
 # ---------------------------------------------------------------------------
@@ -114,13 +115,9 @@ class Container:
         self._built_image_uri: str | None = None
         self._container_id: str | None = None
         self._container_info: ContainerInfo | None = None
-        self._volumes: list[tuple[str, str]] = []  # [(volume_name, mount_path)]
+        self._volumes: list[tuple[str, str]] = []
 
-        # Auth state (lazily populated)
-        self._api_server: str | None = None
-        self._access_token: str | None = None
-        self._env_id: str | None = None
-        self._connect_headers: dict[str, str] | None = None
+        self._client = ConnectClient()
 
     # -- Alternate constructors ------------------------------------------------
 
@@ -128,8 +125,7 @@ class Container:
     def from_id(cls, container_id: str) -> Container:
         """Attach to an existing container by ID."""
         c = cls._make_empty()
-        c._ensure_auth()
-        resp = c._container_rpc("GetContainer", {"id": container_id})
+        resp = c._client.rpc(_SVC, "GetContainer", {"id": container_id})
         if resp.status_code != 200:
             raise ContainerError(f"GetContainer failed: {resp.text}")
         c._container_info = _parse_container_response(resp.json()["container"])
@@ -140,8 +136,7 @@ class Container:
     def from_name(cls, name: str) -> Container:
         """Attach to an existing container by name."""
         c = cls._make_empty()
-        c._ensure_auth()
-        resp = c._container_rpc("GetContainer", {"name": name})
+        resp = c._client.rpc(_SVC, "GetContainer", {"name": name})
         if resp.status_code != 200:
             raise ContainerError(f"GetContainer failed: {resp.text}")
         c._container_info = _parse_container_response(resp.json()["container"])
@@ -166,81 +161,10 @@ class Container:
         c._container_id = None
         c._container_info = None
         c._volumes = []
-        c._api_server = None
-        c._access_token = None
-        c._env_id = None
-        c._connect_headers = None
+        c._client = ConnectClient()
         return c
 
-    # -- Auth ------------------------------------------------------------------
-
-    def _ensure_auth(self) -> None:
-        if self._access_token is not None:
-            return
-
-        import httpx
-
-        self._api_server = os.environ.get("CHALK_API_SERVER", "")
-        client_id = os.environ.get("CHALK_CLIENT_ID", "")
-        client_secret = os.environ.get("CHALK_CLIENT_SECRET", "")
-        self._env_id = os.environ.get("CHALK_ENVIRONMENT_ID", "")
-
-        if not self._api_server or not client_id:
-            raise ContainerError(
-                "CHALK_API_SERVER and CHALK_CLIENT_ID must be set in the environment"
-            )
-
-        resp = httpx.post(
-            f"{self._api_server}/v1/oauth/token",
-            json={
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "grant_type": "client_credentials",
-            },
-            headers={"Accept": "application/json", "Content-Type": "application/json"},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        self._access_token = resp.json()["access_token"]
-
-        self._connect_headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self._access_token}",
-            "X-Chalk-Env-Id": self._env_id or "",
-        }
-
-    # -- Connect-protocol helpers ----------------------------------------------
-
-    def _connect_rpc(
-        self, service: str, method: str, body: dict, timeout: float = 30,
-    ) -> httpx.Response:
-        import httpx
-
-        assert self._api_server is not None
-        assert self._connect_headers is not None
-        return httpx.post(
-            f"{self._api_server}/{service}/{method}",
-            json=body,
-            headers=self._connect_headers,
-            timeout=timeout,
-        )
-
-    def _container_rpc(self, method: str, body: dict, timeout: float = 30) -> httpx.Response:
-        return self._connect_rpc(
-            "chalk.container.v1.ContainerService", method, body, timeout,
-        )
-
-    def _custom_image_rpc(self, method: str, body: dict, timeout: float = 30) -> httpx.Response:
-        return self._connect_rpc(
-            "chalk.sandbox.v1.CustomImageService", method, body, timeout,
-        )
-
-    def _volume_rpc(self, method: str, body: dict, timeout: float = 30) -> httpx.Response:
-        return self._connect_rpc(
-            "chalk.volume.v1.VolumeService", method, body, timeout,
-        )
-
-    # -- Image building --------------------------------------------------------
+    # -- Image building (Container uses BuildCustomImage with retries) ---------
 
     def _build_image(
         self, *, poll_interval: float = 5.0, timeout: float = 600.0,
@@ -256,8 +180,9 @@ class Container:
         _build_retries = 3
         _build_retry_delay = 5.0
         for attempt in range(_build_retries + 1):
-            resp = self._custom_image_rpc(
-                "BuildCustomImage", {"imageSpec": spec_dict}, timeout=120,
+            resp = self._client.rpc(
+                _IMAGE_SVC, "BuildCustomImage",
+                {"imageSpec": spec_dict}, timeout=120,
             )
             if resp.status_code == 200:
                 break
@@ -275,8 +200,8 @@ class Container:
 
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            get_resp = self._custom_image_rpc(
-                "GetCustomImage", {"buildId": build_id},
+            get_resp = self._client.rpc(
+                _IMAGE_SVC, "GetCustomImage", {"buildId": build_id},
             )
             if get_resp.status_code != 200:
                 raise ImageBuildError(f"GetCustomImage failed: {get_resp.text}")
@@ -293,49 +218,6 @@ class Container:
 
         raise ImageBuildError(f"Image build {build_id} timed out after {timeout}s")
 
-    # -- Volume upload ---------------------------------------------------------
-
-    def _upload_lazy_files(self) -> list[tuple[str, str]]:
-        """Create volumes and upload lazy local files.
-
-        Groups files by destination directory. Creates one volume per unique
-        directory and uploads files with flat names (ChalkFS doesn't support
-        nested directory paths in a single mount).
-
-        Returns a list of (volume_name, mount_path) tuples.
-        """
-        from chalkcompute.image import Image
-
-        assert isinstance(self._image, Image)
-        try:
-            dir_to_files = self._image.lazy_local_files_grouped_for_volume_mounts()
-        except ValueError as e:
-            raise ContainerError(str(e)) from e
-
-        volumes: list[tuple[str, str]] = []
-        for dest_dir, files in dir_to_files.items():
-            vol_name = f"container-files-{uuid.uuid4().hex[:12]}"
-            resp = self._volume_rpc("CreateVolume", {"name": vol_name})
-            if resp.status_code != 200:
-                raise ContainerError(f"CreateVolume failed: {resp.text}")
-
-            for lf in files:
-                content = Path(lf.src).read_bytes()
-                encoded = base64.b64encode(content).decode("ascii")
-                flat_name = Path(lf.dest).name
-                put_resp = self._volume_rpc(
-                    "PutFile",
-                    {"volumeName": vol_name, "path": flat_name, "data": encoded},
-                )
-                if put_resp.status_code != 200:
-                    raise ContainerError(
-                        f"PutFile failed for {lf.dest}: {put_resp.text}"
-                    )
-
-            volumes.append((vol_name, dest_dir))
-
-        return volumes
-
     # -- Lifecycle -------------------------------------------------------------
 
     def run(
@@ -350,8 +232,6 @@ class Container:
         Returns self for chaining.
         """
         from chalkcompute.image import Image
-
-        self._ensure_auth()
 
         # 1. Resolve image URI
         if isinstance(self._image, Image):
@@ -369,7 +249,10 @@ class Container:
         )
         if lazy_files:
             print(f"Uploading {len(lazy_files)} local file(s) to volume(s)...")
-            self._volumes = self._upload_lazy_files()
+            assert isinstance(self._image, Image)
+            self._volumes = upload_lazy_files(
+                self._client, self._image, volume_prefix="container-files",
+            )
             for vn, mp in self._volumes:
                 print(f"  Volume created: {vn} (mount: {mp})")
 
@@ -400,20 +283,15 @@ class Container:
         if resources:
             spec["resources"] = resources
 
-        # Mount each volume via ChalkFS at its destination directory
         if self._volumes:
             spec["volumes"] = [
-                {
-                    "name": vol_name,
-                    "mountPath": mount_path,
-                    "type": "chalkfs",
-                }
+                {"name": vol_name, "mountPath": mount_path, "type": "chalkfs"}
                 for vol_name, mount_path in self._volumes
             ]
 
         print(f"Starting container '{container_name}'...")
-        resp = self._container_rpc(
-            "RunContainer", {"container": {"spec": spec}}, timeout=60,
+        resp = self._client.rpc(
+            _SVC, "RunContainer", {"container": {"spec": spec}}, timeout=60,
         )
         if resp.status_code != 200:
             raise ContainerError(f"RunContainer failed: {resp.text}")
@@ -445,9 +323,7 @@ class Container:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             time.sleep(poll_interval)
-            resp = self._container_rpc(
-                "GetContainer", {"id": self._container_id},
-            )
+            resp = self._client.rpc(_SVC, "GetContainer", {"id": self._container_id})
             if resp.status_code != 200:
                 raise ContainerError(f"GetContainer failed: {resp.text}")
             info = _parse_container_response(resp.json()["container"])
@@ -457,8 +333,7 @@ class Container:
                 return
             if info.status in ("Failed", "Succeeded"):
                 raise ContainerError(
-                    f"Container {self._container_id} entered "
-                    f"{info.status} state"
+                    f"Container {self._container_id} entered {info.status} state"
                 )
         raise ContainerError(
             f"Container {self._container_id} timed out after {timeout}s"
@@ -484,8 +359,7 @@ class Container:
             time.sleep(poll_interval)
 
         raise ContainerError(
-            f"ChalkFS files not visible after {timeout}s "
-            f"(probed {probe_path})"
+            f"ChalkFS files not visible after {timeout}s (probed {probe_path})"
         )
 
     def exec(
@@ -495,7 +369,7 @@ class Container:
         _retries: int = 12,
         _retry_delay: float = 5.0,
     ) -> ExecResult:
-        """Execute a command in the running container via ContainerService.ExecCommand."""
+        """Execute a command in the running container."""
         if self._container_id is None:
             raise ContainerError("Container is not running. Call .run() first.")
 
@@ -508,10 +382,9 @@ class Container:
 
         # TODO(CHA-8630): Remove retry loop once the API reports accurate
         # Running status (container may not be exec-ready immediately).
-        # Blocked on CHA-8629.
         last_err: ContainerError | None = None
         for attempt in range(_retries + 1):
-            resp = self._container_rpc("ExecCommand", body, timeout=timeout_secs or 30)
+            resp = self._client.rpc(_SVC, "ExecCommand", body, timeout=timeout_secs or 30)
             if resp.status_code == 200:
                 data = resp.json()
                 stdout_b64 = data.get("stdout", "")
@@ -531,25 +404,23 @@ class Container:
 
     def stop(self, grace_period_seconds: int | None = None) -> None:
         """Stop the container and clean up the temporary volume."""
-        self._ensure_auth()
         if self._container_id is not None:
             body: dict[str, Any] = {"id": self._container_id}
             if grace_period_seconds is not None:
                 body["gracePeriodSeconds"] = grace_period_seconds
-            self._container_rpc("StopContainer", body)
+            self._client.rpc(_SVC, "StopContainer", body)
             self._container_id = None
             self._container_info = None
 
         for vol_name, _ in self._volumes:
-            self._volume_rpc("DeleteVolume", {"name": vol_name})
+            self._client.rpc("chalk.volume.v1.VolumeService", "DeleteVolume", {"name": vol_name})
         self._volumes = []
 
     def refresh(self) -> ContainerInfo:
         """Fetch latest container status from the server."""
         if self._container_id is None:
             raise ContainerError("No container ID — call .run() first.")
-        self._ensure_auth()
-        resp = self._container_rpc("GetContainer", {"id": self._container_id})
+        resp = self._client.rpc(_SVC, "GetContainer", {"id": self._container_id})
         if resp.status_code != 200:
             raise ContainerError(f"GetContainer failed: {resp.text}")
         self._container_info = _parse_container_response(resp.json()["container"])

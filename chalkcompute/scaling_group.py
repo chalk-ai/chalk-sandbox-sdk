@@ -29,18 +29,19 @@ Usage:
 
 from __future__ import annotations
 
-import base64
-import os
 import time
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from chalkcompute._connect import ConnectClient, build_image, upload_lazy_files
 
 if TYPE_CHECKING:
     import httpx
 
     from chalkcompute.image import Image as _Image
+
+_SVC = "chalk.scalinggroup.v1.ScalingGroupManagerService"
 
 
 # ---------------------------------------------------------------------------
@@ -116,13 +117,9 @@ class ScalingGroup:
         self._built_image_uri: str | None = None
         self._scaling_group_id: str | None = None
         self._scaling_group_info: ScalingGroupInfo | None = None
-        self._volumes: list[tuple[str, str]] = []  # [(volume_name, mount_path)]
+        self._volumes: list[tuple[str, str]] = []
 
-        # Auth state (lazily populated)
-        self._api_server: str | None = None
-        self._access_token: str | None = None
-        self._env_id: str | None = None
-        self._connect_headers: dict[str, str] | None = None
+        self._client = ConnectClient()
 
     # -- Alternate constructors ------------------------------------------------
 
@@ -130,13 +127,10 @@ class ScalingGroup:
     def from_id(cls, scaling_group_id: str) -> ScalingGroup:
         """Attach to an existing scaling group by ID."""
         sg = cls._make_empty()
-        sg._ensure_auth()
-        resp = sg._scaling_group_rpc("GetScalingGroup", {"id": scaling_group_id})
+        resp = sg._client.rpc(_SVC, "GetScalingGroup", {"id": scaling_group_id})
         if resp.status_code != 200:
             raise ScalingGroupError(f"GetScalingGroup failed: {resp.text}")
-        sg._scaling_group_info = _parse_scaling_group_response(
-            resp.json()["scalingGroup"]
-        )
+        sg._scaling_group_info = _parse_scaling_group_response(resp.json()["scalingGroup"])
         sg._scaling_group_id = sg._scaling_group_info.id
         return sg
 
@@ -144,13 +138,10 @@ class ScalingGroup:
     def from_name(cls, name: str) -> ScalingGroup:
         """Attach to an existing scaling group by name."""
         sg = cls._make_empty()
-        sg._ensure_auth()
-        resp = sg._scaling_group_rpc("GetScalingGroup", {"name": name})
+        resp = sg._client.rpc(_SVC, "GetScalingGroup", {"name": name})
         if resp.status_code != 200:
             raise ScalingGroupError(f"GetScalingGroup failed: {resp.text}")
-        sg._scaling_group_info = _parse_scaling_group_response(
-            resp.json()["scalingGroup"]
-        )
+        sg._scaling_group_info = _parse_scaling_group_response(resp.json()["scalingGroup"])
         sg._scaling_group_id = sg._scaling_group_info.id
         sg._name = name
         return sg
@@ -173,195 +164,8 @@ class ScalingGroup:
         sg._scaling_group_id = None
         sg._scaling_group_info = None
         sg._volumes = []
-        sg._api_server = None
-        sg._access_token = None
-        sg._env_id = None
-        sg._connect_headers = None
+        sg._client = ConnectClient()
         return sg
-
-    # -- Auth ------------------------------------------------------------------
-
-    def _ensure_auth(self) -> None:
-        if self._access_token is not None:
-            return
-
-        import httpx
-
-        self._api_server = os.environ.get("CHALK_API_SERVER", "")
-        client_id = os.environ.get("CHALK_CLIENT_ID", "")
-        client_secret = os.environ.get("CHALK_CLIENT_SECRET", "")
-        self._env_id = os.environ.get("CHALK_ENVIRONMENT_ID", "")
-
-        if not self._api_server or not client_id:
-            raise ScalingGroupError(
-                "CHALK_API_SERVER and CHALK_CLIENT_ID must be set in the environment"
-            )
-
-        resp = httpx.post(
-            f"{self._api_server}/v1/oauth/token",
-            json={
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "grant_type": "client_credentials",
-            },
-            headers={"Accept": "application/json", "Content-Type": "application/json"},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        self._access_token = resp.json()["access_token"]
-
-        self._connect_headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self._access_token}",
-            "X-Chalk-Env-Id": self._env_id or "",
-        }
-
-    # -- Connect-protocol helpers ----------------------------------------------
-
-    def _connect_rpc(
-        self,
-        service: str,
-        method: str,
-        body: dict,
-        timeout: float = 30,
-    ) -> httpx.Response:
-        import httpx
-
-        assert self._api_server is not None
-        assert self._connect_headers is not None
-        return httpx.post(
-            f"{self._api_server}/{service}/{method}",
-            json=body,
-            headers=self._connect_headers,
-            timeout=timeout,
-        )
-
-    def _scaling_group_rpc(
-        self, method: str, body: dict, timeout: float = 30
-    ) -> httpx.Response:
-        return self._connect_rpc(
-            "chalk.scalinggroup.v1.ScalingGroupManagerService",
-            method,
-            body,
-            timeout,
-        )
-
-    def _custom_image_rpc(
-        self, method: str, body: dict, timeout: float = 30
-    ) -> httpx.Response:
-        return self._connect_rpc(
-            "chalk.sandbox.v1.CustomImageService",
-            method,
-            body,
-            timeout,
-        )
-
-    def _volume_rpc(
-        self, method: str, body: dict, timeout: float = 30
-    ) -> httpx.Response:
-        return self._connect_rpc(
-            "chalk.volume.v1.VolumeService",
-            method,
-            body,
-            timeout,
-        )
-
-    # -- Image building --------------------------------------------------------
-
-    def _build_image(
-        self,
-        *,
-        poll_interval: float = 5.0,
-        timeout: float = 600.0,
-    ) -> str:
-        """Build the Image spec via CustomImageService and return the image URI."""
-        from chalkcompute.image import Image
-
-        from google.protobuf.json_format import MessageToDict
-
-        assert isinstance(self._image, Image)
-        spec_dict = MessageToDict(self._image.to_proto())
-        resp = self._custom_image_rpc(
-            "GetOrBuildCustomImage",
-            {"imageSpec": spec_dict},
-        )
-        if resp.status_code != 200:
-            raise ScalingGroupBuildError(f"GetOrBuildCustomImage failed: {resp.text}")
-
-        data = resp.json()
-        status = data.get("status", "")
-        if status == "exists" or status == "succeeded":
-            return data["image"]
-        if status == "failed":
-            raise ScalingGroupBuildError(
-                f"Image build failed: {data.get('error', 'unknown')}"
-            )
-
-        build_id = data["buildId"]
-
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            get_resp = self._custom_image_rpc(
-                "GetCustomImage",
-                {"buildId": build_id},
-            )
-            if get_resp.status_code != 200:
-                raise ScalingGroupBuildError(f"GetCustomImage failed: {get_resp.text}")
-            get_data = get_resp.json()
-            status = get_data.get("status", "")
-            if status == "succeeded":
-                return get_data["image"]
-            if status == "failed":
-                raise ScalingGroupBuildError(
-                    f"Image build {build_id} failed: {get_data.get('error', 'unknown')}"
-                )
-            time.sleep(poll_interval)
-
-        raise ScalingGroupBuildError(
-            f"Image build {build_id} timed out after {timeout}s"
-        )
-
-    # -- Volume upload ---------------------------------------------------------
-
-    def _upload_lazy_files(self) -> list[tuple[str, str]]:
-        """Create volumes and upload lazy local files.
-
-        Groups files by destination directory. Creates one volume per unique
-        directory and uploads files with flat names.
-
-        Returns a list of (volume_name, mount_path) tuples.
-        """
-        from chalkcompute.image import Image
-
-        assert isinstance(self._image, Image)
-        try:
-            dir_to_files = self._image.lazy_local_files_grouped_for_volume_mounts()
-        except ValueError as e:
-            raise ScalingGroupError(str(e)) from e
-
-        volumes: list[tuple[str, str]] = []
-        for dest_dir, files in dir_to_files.items():
-            vol_name = f"sg-files-{uuid.uuid4().hex[:12]}"
-            resp = self._volume_rpc("CreateVolume", {"name": vol_name})
-            if resp.status_code != 200:
-                raise ScalingGroupError(f"CreateVolume failed: {resp.text}")
-
-            for lf in files:
-                content = Path(lf.src).read_bytes()
-                encoded = base64.b64encode(content).decode("ascii")
-                flat_name = Path(lf.dest).name
-                put_resp = self._volume_rpc(
-                    "PutFile",
-                    {"volumeName": vol_name, "path": flat_name, "data": encoded},
-                )
-                if put_resp.status_code != 200:
-                    raise ScalingGroupError(
-                        f"PutFile failed for {lf.dest}: {put_resp.text}"
-                    )
-
-            volumes.append((vol_name, dest_dir))
-
-        return volumes
 
     # -- Lifecycle -------------------------------------------------------------
 
@@ -378,14 +182,12 @@ class ScalingGroup:
         """
         from chalkcompute.image import Image
 
-        self._ensure_auth()
-
         # 1. Resolve image URI
         if isinstance(self._image, Image):
             print(f"Building image from {self._image!r}...")
-            self._built_image_uri = self._build_image(
-                poll_interval=poll_interval,
-                timeout=build_timeout,
+            self._built_image_uri = build_image(
+                self._client, self._image,
+                poll_interval=poll_interval, timeout=build_timeout,
             )
             print(f"Image built: {self._built_image_uri}")
         else:
@@ -397,7 +199,10 @@ class ScalingGroup:
         )
         if lazy_files:
             print(f"Uploading {len(lazy_files)} local file(s) to volume(s)...")
-            self._volumes = self._upload_lazy_files()
+            assert isinstance(self._image, Image)
+            self._volumes = upload_lazy_files(
+                self._client, self._image, volume_prefix="sg-files",
+            )
             for vn, mp in self._volumes:
                 print(f"  Volume created: {vn} (mount: {mp})")
 
@@ -427,11 +232,7 @@ class ScalingGroup:
 
         if self._volumes:
             container_spec["volumes"] = [
-                {
-                    "name": vol_name,
-                    "mountPath": mount_path,
-                    "type": "chalkfs",
-                }
+                {"name": vol_name, "mountPath": mount_path, "type": "chalkfs"}
                 for vol_name, mount_path in self._volumes
             ]
 
@@ -444,11 +245,7 @@ class ScalingGroup:
         }
 
         print(f"Deploying scaling group '{sg_name}'...")
-        resp = self._scaling_group_rpc(
-            "CreateScalingGroup",
-            {"spec": spec},
-            timeout=60,
-        )
+        resp = self._client.rpc(_SVC, "CreateScalingGroup", {"spec": spec}, timeout=60)
         if resp.status_code != 200:
             raise ScalingGroupError(f"CreateScalingGroup failed: {resp.text}")
 
@@ -463,26 +260,19 @@ class ScalingGroup:
         # 4. Poll until Running
         if self._scaling_group_info.status != "Running":
             self._poll_until_running(
-                poll_interval=poll_interval,
-                timeout=ready_timeout,
+                poll_interval=poll_interval, timeout=ready_timeout,
             )
 
         return self
 
     def _poll_until_running(
-        self,
-        *,
-        poll_interval: float,
-        timeout: float,
+        self, *, poll_interval: float, timeout: float,
     ) -> None:
         assert self._scaling_group_id is not None
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             time.sleep(poll_interval)
-            resp = self._scaling_group_rpc(
-                "GetScalingGroup",
-                {"id": self._scaling_group_id},
-            )
+            resp = self._client.rpc(_SVC, "GetScalingGroup", {"id": self._scaling_group_id})
             if resp.status_code != 200:
                 raise ScalingGroupError(f"GetScalingGroup failed: {resp.text}")
             info = _parse_scaling_group_response(resp.json()["scalingGroup"])
@@ -492,8 +282,7 @@ class ScalingGroup:
                 return
             if info.status in ("Failed", "Error"):
                 raise ScalingGroupError(
-                    f"Scaling group {self._scaling_group_id} entered "
-                    f"{info.status} state"
+                    f"Scaling group {self._scaling_group_id} entered {info.status} state"
                 )
         raise ScalingGroupError(
             f"Scaling group {self._scaling_group_id} timed out after {timeout}s"
@@ -517,42 +306,27 @@ class ScalingGroup:
                 "Scaling group has no web_url. Call .deploy() first or .refresh() to update."
             )
         url = f"{self._scaling_group_info.web_url}{path}"
-        return httpx.request(
-            method,
-            url,
-            json=json,
-            content=data,
-            headers=headers,
-            timeout=timeout,
-        )
+        return httpx.request(method, url, json=json, content=data, headers=headers, timeout=timeout)
 
     def delete(self) -> None:
         """Delete the scaling group and clean up volumes."""
-        self._ensure_auth()
         if self._scaling_group_id is not None:
-            self._scaling_group_rpc(
-                "DeleteScalingGroup", {"id": self._scaling_group_id}
-            )
+            self._client.rpc(_SVC, "DeleteScalingGroup", {"id": self._scaling_group_id})
             self._scaling_group_id = None
             self._scaling_group_info = None
 
         for vol_name, _ in self._volumes:
-            self._volume_rpc("DeleteVolume", {"name": vol_name})
+            self._client.rpc("chalk.volume.v1.VolumeService", "DeleteVolume", {"name": vol_name})
         self._volumes = []
 
     def refresh(self) -> ScalingGroupInfo:
         """Fetch latest scaling group status from the server."""
         if self._scaling_group_id is None:
             raise ScalingGroupError("No scaling group ID — call .deploy() first.")
-        self._ensure_auth()
-        resp = self._scaling_group_rpc(
-            "GetScalingGroup", {"id": self._scaling_group_id}
-        )
+        resp = self._client.rpc(_SVC, "GetScalingGroup", {"id": self._scaling_group_id})
         if resp.status_code != 200:
             raise ScalingGroupError(f"GetScalingGroup failed: {resp.text}")
-        self._scaling_group_info = _parse_scaling_group_response(
-            resp.json()["scalingGroup"]
-        )
+        self._scaling_group_info = _parse_scaling_group_response(resp.json()["scalingGroup"])
         return self._scaling_group_info
 
     @property
@@ -575,9 +349,7 @@ class ScalingGroup:
 
     def __repr__(self) -> str:
         status = (
-            self._scaling_group_info.status
-            if self._scaling_group_info
-            else "not deployed"
+            self._scaling_group_info.status if self._scaling_group_info else "not deployed"
         )
         return f"ScalingGroup(name={self._name!r}, status={status})"
 
