@@ -11,6 +11,10 @@ ty:
 ruff:
     uv run --with ruff ruff check chalkcompute/ --exclude chalkcompute/_gen/
 
+# Create a new GitHub release (interactive version bump)
+release:
+    ./release.sh
+
 # Run all e2e tests in CI and print a link to the build
 ci-run:
     #!/usr/bin/env bash
