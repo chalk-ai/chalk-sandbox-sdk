@@ -7,7 +7,7 @@ execute AI-generated code without reviewing it first.
 
 ## Run the demo
 
-    python examples/polyglot_sandbox/run_code.py
+    python examples/polyglot/polyglot.py
 
   Act 1 — Code Judge (Python, Java, C++)
     Judges a "sum N integers" problem across three submissions.
