@@ -1,4 +1,4 @@
-"""Tests for chalkcompute.pyarrow_converter.rich_to_pyarrow."""
+"""Tests for chalkcompute.arrow_schema and chalkcompute.function._build_schemas."""
 
 import dataclasses
 import decimal
@@ -8,10 +8,9 @@ import typing
 import uuid
 from datetime import date, datetime, time, timedelta
 
-import pyarrow as pa
 import pytest
 
-from chalkcompute.pyarrow_converter import rich_to_pyarrow
+from chalkcompute.arrow_schema import rich_to_arrow_schema
 
 
 # ---------------------------------------------------------------------------
@@ -32,80 +31,114 @@ class Color(enum.Enum):
 
 
 # ---------------------------------------------------------------------------
-# Scalar types
+# rich_to_arrow_schema: Python types → arrow_pb2.Schema
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "python_type, expected",
-    [
-        (str, pa.large_utf8()),
-        (int, pa.int64()),
-        (float, pa.float64()),
-        (bool, pa.bool_()),
-        (bytes, pa.large_binary()),
-        (datetime, pa.timestamp("us", "UTC")),
-        (date, pa.date64()),
-        (time, pa.time64("us")),
-        (timedelta, pa.duration("us")),
-        (decimal.Decimal, pa.large_utf8()),
-        (uuid.UUID, pa.large_utf8()),
-        (ipaddress.IPv4Address, pa.uint32()),
-        (ipaddress.IPv6Address, pa.large_utf8()),
-    ],
-)
-def test_scalar_types(python_type, expected):
-    assert rich_to_pyarrow(python_type) == expected
+class TestRichToArrowSchema:
+    def test_scalar_types(self):
+        proto = rich_to_arrow_schema({"x": int, "y": float, "s": str, "b": bool})
+        assert len(proto.columns) == 4
+        assert proto.columns[0].name == "x"
+        assert proto.columns[0].arrow_type.HasField("int64")
+        assert proto.columns[1].arrow_type.HasField("float64")
+        assert proto.columns[2].arrow_type.HasField("large_utf8")
+        assert proto.columns[3].arrow_type.HasField("bool")
 
+    def test_temporal_types(self):
+        proto = rich_to_arrow_schema({
+            "ts": datetime,
+            "d": date,
+            "t": time,
+            "dur": timedelta,
+        })
+        assert proto.columns[0].arrow_type.HasField("timestamp")
+        assert proto.columns[0].arrow_type.timestamp.timezone == "UTC"
+        assert proto.columns[1].arrow_type.HasField("date64")
+        assert proto.columns[2].arrow_type.HasField("time64")
+        assert proto.columns[3].arrow_type.HasField("duration")
 
-def test_date_in_struct():
-    assert rich_to_pyarrow(date, in_struct=True) == pa.date32()
+    def test_binary_types(self):
+        proto = rich_to_arrow_schema({"raw": bytes})
+        assert proto.columns[0].arrow_type.HasField("large_binary")
+
+    def test_optional_nullable(self):
+        proto = rich_to_arrow_schema({
+            "required": int,
+            "optional": typing.Optional[int],
+        })
+        assert proto.columns[0].nullable is False
+        assert proto.columns[0].arrow_type.HasField("int64")
+        assert proto.columns[1].nullable is True
+        assert proto.columns[1].arrow_type.HasField("int64")
+
+    def test_list_type(self):
+        proto = rich_to_arrow_schema({"items": typing.List[int]})
+        assert proto.columns[0].arrow_type.HasField("large_list")
+        inner = proto.columns[0].arrow_type.large_list.field_type
+        assert inner.arrow_type.HasField("int64")
+
+    def test_dict_type(self):
+        proto = rich_to_arrow_schema({"m": typing.Dict[str, float]})
+        assert proto.columns[0].arrow_type.HasField("map")
+        m = proto.columns[0].arrow_type.map
+        assert m.key_field.arrow_type.HasField("large_utf8")
+        assert m.item_field.arrow_type.HasField("float64")
+
+    def test_dataclass_struct(self):
+        proto = rich_to_arrow_schema({"addr": Address})
+        assert proto.columns[0].arrow_type.HasField("struct")
+        fields = proto.columns[0].arrow_type.struct.sub_field_types
+        assert len(fields) == 2
+        assert fields[0].name == "street"
+        assert fields[0].arrow_type.HasField("large_utf8")
+        assert fields[1].name == "zip_code"
+        assert fields[1].arrow_type.HasField("int64")
+
+    def test_enum_type(self):
+        proto = rich_to_arrow_schema({"color": Color})
+        assert proto.columns[0].arrow_type.HasField("large_utf8")
+
+    def test_special_types(self):
+        proto = rich_to_arrow_schema({
+            "d": decimal.Decimal,
+            "u": uuid.UUID,
+            "ip4": ipaddress.IPv4Address,
+            "ip6": ipaddress.IPv6Address,
+        })
+        assert proto.columns[0].arrow_type.HasField("large_utf8")  # Decimal
+        assert proto.columns[1].arrow_type.HasField("large_utf8")  # UUID
+        assert proto.columns[2].arrow_type.HasField("uint32")      # IPv4
+        assert proto.columns[3].arrow_type.HasField("large_utf8")  # IPv6
 
 
 # ---------------------------------------------------------------------------
-# Container types
+# _build_schemas: function signature → input/output protos
 # ---------------------------------------------------------------------------
 
 
-def test_list_int():
-    assert rich_to_pyarrow(typing.List[int]) == pa.large_list(pa.int64())
+class TestBuildSchemas:
+    def test_simple_function(self):
+        from chalkcompute.function import _build_schemas
 
+        def add(x: int, y: int) -> int:
+            return x + y
 
-def test_dict_str_float():
-    result = rich_to_pyarrow(typing.Dict[str, float])
-    assert isinstance(result, pa.MapType)
+        input_proto, output_proto = _build_schemas(add)
+        assert len(input_proto.columns) == 2
+        assert input_proto.columns[0].name == "x"
+        assert input_proto.columns[0].arrow_type.HasField("int64")
+        assert input_proto.columns[1].name == "y"
+        assert output_proto.columns[0].name == "result"
+        assert output_proto.columns[0].arrow_type.HasField("int64")
 
+    def test_mixed_types(self):
+        from chalkcompute.function import _build_schemas
 
-def test_tuple_str_ellipsis():
-    assert rich_to_pyarrow(typing.Tuple[str, ...]) == pa.large_list(pa.large_utf8())
+        def greet(name: str, count: int) -> str:
+            return name * count
 
-
-# ---------------------------------------------------------------------------
-# Optional
-# ---------------------------------------------------------------------------
-
-
-def test_optional_int():
-    assert rich_to_pyarrow(typing.Optional[int]) == pa.int64()
-
-
-# ---------------------------------------------------------------------------
-# Enum
-# ---------------------------------------------------------------------------
-
-
-def test_enum():
-    assert rich_to_pyarrow(Color) == pa.large_utf8()
-
-
-# ---------------------------------------------------------------------------
-# Dataclass / struct
-# ---------------------------------------------------------------------------
-
-
-def test_dataclass():
-    result = rich_to_pyarrow(Address)
-    assert isinstance(result, pa.StructType)
-    assert result.num_fields == 2
-    assert result.field("street").type == pa.large_utf8()
-    assert result.field("zip_code").type == pa.int64()
+        input_proto, output_proto = _build_schemas(greet)
+        assert input_proto.columns[0].arrow_type.HasField("large_utf8")
+        assert input_proto.columns[1].arrow_type.HasField("int64")
+        assert output_proto.columns[0].arrow_type.HasField("large_utf8")

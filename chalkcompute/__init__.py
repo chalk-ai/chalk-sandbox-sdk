@@ -10,7 +10,10 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "ContainerExecResult": ("chalkcompute.container", "ExecResult"),
     "ImageBuildError": ("chalkcompute.container", "ImageBuildError"),
     # function.py
-    "RemoteFunction": ("chalkcompute.function", "RemoteFunction"),
+    "Function": ("chalkcompute.function", "Function"),
+    "FunctionError": ("chalkcompute.function", "FunctionError"),
+    "FunctionBuildError": ("chalkcompute.function", "FunctionBuildError"),
+    "FunctionVersionInfo": ("chalkcompute.function", "FunctionVersionInfo"),
     "function": ("chalkcompute.function", "function"),
     # image.py
     "Image": ("chalkcompute.image", "Image"),
