@@ -24,10 +24,12 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
-import httpx
+if TYPE_CHECKING:
+    import httpx
 
-from chalkcompute.image import Image
+    from chalkcompute.image import Image as _Image
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +88,7 @@ class Container:
     def __init__(
         self,
         *,
-        image: Image | str,
+        image: _Image | str,
         name: str | None = None,
         cpu: str | None = None,
         memory: str | None = None,
@@ -176,6 +178,8 @@ class Container:
         if self._access_token is not None:
             return
 
+        import httpx
+
         self._api_server = os.environ.get("CHALK_API_SERVER", "")
         client_id = os.environ.get("CHALK_CLIENT_ID", "")
         client_secret = os.environ.get("CHALK_CLIENT_SECRET", "")
@@ -210,6 +214,8 @@ class Container:
     def _connect_rpc(
         self, service: str, method: str, body: dict, timeout: float = 30,
     ) -> httpx.Response:
+        import httpx
+
         assert self._api_server is not None
         assert self._connect_headers is not None
         return httpx.post(
@@ -240,6 +246,8 @@ class Container:
         self, *, poll_interval: float = 5.0, timeout: float = 600.0,
     ) -> str:
         """Build the Image spec via CustomImageService and return the image URI."""
+        from chalkcompute.image import Image
+
         from google.protobuf.json_format import MessageToDict
 
         assert isinstance(self._image, Image)
@@ -296,6 +304,8 @@ class Container:
 
         Returns a list of (volume_name, mount_path) tuples.
         """
+        from chalkcompute.image import Image
+
         assert isinstance(self._image, Image)
         try:
             dir_to_files = self._image.lazy_local_files_grouped_for_volume_mounts()
@@ -339,6 +349,8 @@ class Container:
 
         Returns self for chaining.
         """
+        from chalkcompute.image import Image
+
         self._ensure_auth()
 
         # 1. Resolve image URI
@@ -363,7 +375,7 @@ class Container:
 
         # 3. Build the ContainerService spec
         container_name = self._name or f"container-{uuid.uuid4().hex[:8]}"
-        spec: dict = {
+        spec: dict[str, Any] = {
             "name": container_name,
             "image": self._built_image_uri,
             "entrypoint": self._entrypoint or ["sleep", "infinity"],
@@ -378,7 +390,7 @@ class Container:
         if self._enable_ssh:
             spec["enableSsh"] = True
 
-        resources: dict = {}
+        resources: dict[str, str] = {}
         if self._cpu:
             resources["cpu"] = self._cpu
         if self._memory:
@@ -456,6 +468,8 @@ class Container:
         self, *, timeout: float = 120.0, poll_interval: float = 5.0,
     ) -> None:
         """Poll until at least one uploaded file is visible in the ChalkFS mount."""
+        from chalkcompute.image import Image
+
         assert isinstance(self._image, Image)
         sample = next(iter(self._image.lazy_local_files))
         probe_path = sample.dest
@@ -485,7 +499,7 @@ class Container:
         if self._container_id is None:
             raise ContainerError("Container is not running. Call .run() first.")
 
-        body: dict = {
+        body: dict[str, Any] = {
             "id": self._container_id,
             "command": list(command),
         }
@@ -519,7 +533,7 @@ class Container:
         """Stop the container and clean up the temporary volume."""
         self._ensure_auth()
         if self._container_id is not None:
-            body: dict = {"id": self._container_id}
+            body: dict[str, Any] = {"id": self._container_id}
             if grace_period_seconds is not None:
                 body["gracePeriodSeconds"] = grace_period_seconds
             self._container_rpc("StopContainer", body)

@@ -35,10 +35,12 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
-import httpx
+if TYPE_CHECKING:
+    import httpx
 
-from chalkcompute.image import Image
+    from chalkcompute.image import Image as _Image
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +88,7 @@ class ScalingGroup:
     def __init__(
         self,
         *,
-        image: Image | str,
+        image: _Image | str,
         name: str | None = None,
         cpu: str | None = None,
         memory: str | None = None,
@@ -183,6 +185,8 @@ class ScalingGroup:
         if self._access_token is not None:
             return
 
+        import httpx
+
         self._api_server = os.environ.get("CHALK_API_SERVER", "")
         client_id = os.environ.get("CHALK_CLIENT_ID", "")
         client_secret = os.environ.get("CHALK_CLIENT_SECRET", "")
@@ -221,6 +225,8 @@ class ScalingGroup:
         body: dict,
         timeout: float = 30,
     ) -> httpx.Response:
+        import httpx
+
         assert self._api_server is not None
         assert self._connect_headers is not None
         return httpx.post(
@@ -269,6 +275,8 @@ class ScalingGroup:
         timeout: float = 600.0,
     ) -> str:
         """Build the Image spec via CustomImageService and return the image URI."""
+        from chalkcompute.image import Image
+
         from google.protobuf.json_format import MessageToDict
 
         assert isinstance(self._image, Image)
@@ -323,6 +331,8 @@ class ScalingGroup:
 
         Returns a list of (volume_name, mount_path) tuples.
         """
+        from chalkcompute.image import Image
+
         assert isinstance(self._image, Image)
         try:
             dir_to_files = self._image.lazy_local_files_grouped_for_volume_mounts()
@@ -366,6 +376,8 @@ class ScalingGroup:
 
         Returns self for chaining.
         """
+        from chalkcompute.image import Image
+
         self._ensure_auth()
 
         # 1. Resolve image URI
@@ -391,7 +403,7 @@ class ScalingGroup:
 
         # 3. Build the ScalingGroupSpec
         sg_name = self._name or f"sg-{uuid.uuid4().hex[:8]}"
-        container_spec: dict = {
+        container_spec: dict[str, Any] = {
             "name": sg_name,
             "image": self._built_image_uri,
             "port": self._port,
@@ -403,7 +415,7 @@ class ScalingGroup:
         if self._env:
             container_spec["envVars"] = self._env
 
-        resources: dict = {}
+        resources: dict[str, str] = {}
         if self._cpu:
             resources["cpu"] = self._cpu
         if self._memory:
@@ -423,7 +435,7 @@ class ScalingGroup:
                 for vol_name, mount_path in self._volumes
             ]
 
-        spec: dict = {
+        spec: dict[str, Any] = {
             "containerSpec": container_spec,
             "scalingSpec": {
                 "minReplicas": self._min_replicas,
@@ -498,6 +510,8 @@ class ScalingGroup:
         timeout: float = 30.0,
     ) -> httpx.Response:
         """Make an HTTP request to the scaling group's endpoint."""
+        import httpx
+
         if self._scaling_group_info is None or self._scaling_group_info.web_url is None:
             raise ScalingGroupError(
                 "Scaling group has no web_url. Call .deploy() first or .refresh() to update."
