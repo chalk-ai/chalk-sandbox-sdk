@@ -170,53 +170,17 @@ class Container:
         self, *, poll_interval: float = 5.0, timeout: float = 600.0,
     ) -> str:
         """Build the Image spec via CustomImageService and return the image URI."""
+        from chalkcompute._connect import ConnectError, build_image
         from chalkcompute.image import Image
 
-        from google.protobuf.json_format import MessageToDict
-
         assert isinstance(self._image, Image)
-        spec_dict = MessageToDict(self._image.to_proto())
-
-        _build_retries = 3
-        _build_retry_delay = 5.0
-        for attempt in range(_build_retries + 1):
-            resp = self._client.rpc(
-                _IMAGE_SVC, "BuildCustomImage",
-                {"imageSpec": spec_dict}, timeout=120,
+        try:
+            return build_image(
+                self._client, self._image,
+                poll_interval=poll_interval, timeout=timeout,
             )
-            if resp.status_code == 200:
-                break
-            if resp.status_code >= 500 and attempt < _build_retries:
-                print(
-                    f"BuildCustomImage transient error (attempt {attempt + 1}/{_build_retries},"
-                    f" status {resp.status_code}), retrying in {_build_retry_delay:.0f}s..."
-                )
-                time.sleep(_build_retry_delay)
-                continue
-            raise ImageBuildError(f"BuildCustomImage failed: {resp.text}")
-
-        data = resp.json()
-        build_id = data["buildId"]
-
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            get_resp = self._client.rpc(
-                _IMAGE_SVC, "GetCustomImage", {"buildId": build_id},
-            )
-            if get_resp.status_code != 200:
-                raise ImageBuildError(f"GetCustomImage failed: {get_resp.text}")
-            get_data = get_resp.json()
-            status = get_data.get("status", "")
-            if status == "succeeded":
-                return get_data["image"]
-            if status == "failed":
-                raise ImageBuildError(
-                    f"Image build {build_id} failed: "
-                    f"{get_data.get('error', 'unknown')}"
-                )
-            time.sleep(poll_interval)
-
-        raise ImageBuildError(f"Image build {build_id} timed out after {timeout}s")
+        except ConnectError as e:
+            raise ImageBuildError(str(e)) from e
 
     # -- Lifecycle -------------------------------------------------------------
 
