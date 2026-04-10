@@ -78,13 +78,25 @@ def _strip_chalkcompute_from_source(source: str) -> str:
 
 
 def _generate_handler_shim(func_name: str) -> str:
-    """Generate a tiny handler.py that imports the function and wraps it."""
+    """Generate a handler.py that bridges Arrow columnar data to scalar calls.
+
+    chalk-remote-call passes ``event`` as ``dict[str, pa.Array]``.
+    The shim iterates over rows, extracts Python scalars via ``.as_py()``,
+    calls the user function per-row, and returns a ``pa.array`` of results.
+    """
     return (
+        "import pyarrow as pa\n"
+        "\n"
         f"from user_module import {func_name}\n"
         "\n"
         "\n"
         "def handler(event, context):\n"
-        f"    return {func_name}(**event)\n"
+        "    n = len(next(iter(event.values())))\n"
+        "    results = []\n"
+        "    for i in range(n):\n"
+        "        kwargs = {k: v[i].as_py() for k, v in event.items()}\n"
+        f"        results.append({func_name}(**kwargs))\n"
+        "    return pa.array(results)\n"
     )
 
 
@@ -194,9 +206,8 @@ def function(
 
         deploy_image = (
             base_image.pip_install(["chalk-remote-call-python", *extra_packages])
-            .add_local_file(user_module_path, "/app/user_module.py", strategy="copy")
-            .add_local_file(shim_path, "/app/handler.py", strategy="copy")
-            .workdir("/app")
+            .add_local_file(user_module_path, "/app/user_module.py")
+            .add_local_file(shim_path, "/app/handler.py")
             .env({"PYTHONPATH": "/app", _REMOTE_ENV_VAR: "1"})
             .entrypoint(["chalk-remote-call", "--handler", "handler.handler"])
         )
