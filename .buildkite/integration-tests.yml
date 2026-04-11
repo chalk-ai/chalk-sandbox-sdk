@@ -62,10 +62,11 @@ steps:
       rm /tmp/test.env
 
       echo "--- :python: Install dependencies"
-      pip install pytest python-dotenv httpx grpcio grpcio-tools protobuf chalkcompute
+      pip install pytest python-dotenv httpx grpcio grpcio-tools protobuf
+      pip install -e .
 
       echo "--- :brain: Deploy and test embedding functions"
-      pytest examples/embedding-function/test_embedding_function.py -v -s --tb=short
+      CHALK_FUNCTION_STRIP_SOURCE=1 pytest examples/embedding-function/test_embedding_function.py -v -s --tb=short
     agents:
       queue: default
     timeout_in_minutes: 20
