@@ -42,7 +42,6 @@ class Permission(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     PERMISSION_INFRASTRUCTURE_WRITE: _ClassVar[Permission]
     PERMISSION_ENVIRONMENT_CREATE: _ClassVar[Permission]
     PERMISSION_INTERNAL_DATAPLANE_STATUS_UPDATE: _ClassVar[Permission]
-
 PERMISSION_UNSPECIFIED: Permission
 PERMISSION_INSECURE_UNAUTHENTICATED: Permission
 PERMISSION_AUTHENTICATED: Permission

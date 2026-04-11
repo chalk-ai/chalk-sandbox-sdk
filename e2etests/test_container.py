@@ -7,6 +7,7 @@ inline local files into the image and make them readable inside the container.
 
 import os
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -95,6 +96,32 @@ def test_container_from_dockerfile() -> None:
 
 
 @needs_staging
+def test_image_build_cache() -> None:
+    """Building the same image twice should return immediately the second time."""
+    img = Image.debian_slim().run_commands("echo cache-test")
+
+    # First build: may take a while (actual image build)
+    c1 = Container(image=img, name=f"test-cache-1-{uuid.uuid4().hex[:8]}")
+    try:
+        c1.run()
+    finally:
+        c1.stop()
+
+    # Second build with the identical image spec: should be cached.
+    # We call _build_image directly to isolate image-build time from
+    # container startup time.
+    c2 = Container(image=img, name=f"test-cache-2-{uuid.uuid4().hex[:8]}")
+    t0 = time.monotonic()
+    image_uri = c2._build_image()
+    build_elapsed = time.monotonic() - t0
+
+    assert image_uri, "Expected a non-empty image URI"
+    assert build_elapsed < 10, (
+        f"Cached image build took {build_elapsed:.1f}s — expected near-instant"
+    )
+
+
+@needs_staging
 def test_container_add_local_dir() -> None:
     """Container with add_local_dir(strategy='copy') bakes files into image."""
     with tempfile.TemporaryDirectory() as d:
@@ -117,3 +144,21 @@ def test_container_add_local_dir() -> None:
             assert r2.stdout_text.strip() == "world"
         finally:
             c.stop()
+
+
+@needs_staging
+def test_container_env_vars() -> None:
+    """Image.env() variables are visible inside the running container."""
+    img = Image.debian_slim().env({"MY_VAR": "hello_world", "ANOTHER": "42"})
+    c = Container(image=img, name=f"test-env-vars-{uuid.uuid4().hex[:8]}")
+    try:
+        c.run()
+        r1 = c.exec("sh", "-c", "echo $MY_VAR")
+        assert r1.exit_code == 0, f"echo $MY_VAR failed: {r1.stderr_text}"
+        assert r1.stdout_text.strip() == "hello_world"
+
+        r2 = c.exec("sh", "-c", "echo $ANOTHER")
+        assert r2.exit_code == 0, f"echo $ANOTHER failed: {r2.stderr_text}"
+        assert r2.stdout_text.strip() == "42"
+    finally:
+        c.stop()

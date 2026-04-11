@@ -1,5 +1,8 @@
 on:
   pull_request: {}
+  push:
+    branches:
+      - main
 
 steps:
   - label: ":mag: ty type check"
@@ -33,7 +36,7 @@ steps:
       pip install pytest httpx python-dotenv grpcio grpcio-tools protobuf
 
       echo "--- :pytest: Run integration tests"
-      pytest test_image.py test_sandbox_exec.py test_volume.py test_container.py -v -s --tb=short
+      pytest e2etests/test_image.py e2etests/test_sandbox_exec.py e2etests/test_volume.py e2etests/test_container.py -v -s --tb=short
     agents:
       queue: default
     timeout_in_minutes: 15
