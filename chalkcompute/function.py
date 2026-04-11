@@ -253,6 +253,7 @@ class RemoteFunction:
         env: dict[str, str] | None = None,
         min_replicas: int = 1,
         max_replicas: int = 1,
+        volumes: list[tuple[str, str]] | None = None,
     ) -> None:
         self._func = func
         self._explicit_name = name
@@ -264,6 +265,7 @@ class RemoteFunction:
         self._env = env or {}
         self._min_replicas = min_replicas
         self._max_replicas = max_replicas
+        self._volumes: list[tuple[str, str]] = list(volumes or [])
 
         # Set after .deploy()
         self._version_info: FunctionVersionInfo | None = None
@@ -351,8 +353,10 @@ class RemoteFunction:
         f._env = {}
         f._min_replicas = 1
         f._max_replicas = 1
+        f._volumes = []
         f._version_info = None
         f._web_url = None
+        f._port = 6666
         f._input_field_names = []
         f._call_channel = None
         f._call_stub = None
@@ -426,10 +430,9 @@ class RemoteFunction:
         print(f"Image built: {image_uri}")
 
         # 3. Upload lazy local files
-        volumes: list[tuple[str, str]] = []
         if deploy_image.lazy_local_files:
             print(f"Uploading {len(deploy_image.lazy_local_files)} local file(s)...")
-            volumes = upload_lazy_files(
+            self._volumes += upload_lazy_files(
                 self._client,
                 deploy_image,
                 volume_prefix="fn-files",
@@ -461,9 +464,6 @@ class RemoteFunction:
             "envVars": {
                 "PYTHONPATH": "/app",
                 _REMOTE_ENV_VAR: "1",
-                "CHALK_CLIENT_ID": os.environ.get("CHALK_CLIENT_ID", ""),
-                "CHALK_CLIENT_SECRET": os.environ.get("CHALK_CLIENT_SECRET", ""),
-                "CHALK_ENVIRONMENT_ID": os.environ.get("CHALK_ENVIRONMENT_ID", ""),
                 **self._env,
             },
         }
@@ -478,9 +478,10 @@ class RemoteFunction:
         if resources:
             container_spec["resources"] = resources
 
-        if volumes:
+        if self._volumes:
             container_spec["volumes"] = [
-                {"name": vn, "mountPath": mp, "type": "chalkfs"} for vn, mp in volumes
+                {"name": vn, "mountPath": mp, "type": "chalkfs"}
+                for vn, mp in self._volumes
             ]
 
         spec: dict[str, Any] = {
@@ -813,6 +814,7 @@ def function(
     env: dict[str, str] | None = None,
     min_replicas: int = 1,
     max_replicas: int = 1,
+    volumes: list[tuple[str, str]] | None = None,
 ) -> Callable[..., RemoteFunction | _NoOpFunction]:
     """Decorator that deploys a function as a versioned remote function.
 
@@ -839,6 +841,7 @@ def function(
             env=env,
             min_replicas=min_replicas,
             max_replicas=max_replicas,
+            volumes=volumes,
         )
         f.deploy()
         return f

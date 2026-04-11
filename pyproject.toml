@@ -8,7 +8,7 @@ dependencies = [
     "grpcio>=1.60.0",
     "protobuf>=4.25.0",
     "httpx>=0.25.0",
-    "chalk-remote-call-python>=0.0.0",
+    "chalk-remote-call-python>=1.1.2",
 ]
 
 [build-system]

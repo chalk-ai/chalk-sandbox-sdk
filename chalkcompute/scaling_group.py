@@ -100,6 +100,7 @@ class ScalingGroup:
         protocol: str = "http",
         min_replicas: int = 1,
         max_replicas: int = 1,
+        volumes: list[tuple[str, str]] | None = None,
     ) -> None:
         self._image = image
         self._name = name
@@ -117,7 +118,7 @@ class ScalingGroup:
         self._built_image_uri: str | None = None
         self._scaling_group_id: str | None = None
         self._scaling_group_info: ScalingGroupInfo | None = None
-        self._volumes: list[tuple[str, str]] = []
+        self._volumes: list[tuple[str, str]] = list(volumes or [])
 
         self._client = ConnectClient()
 
@@ -200,7 +201,7 @@ class ScalingGroup:
         if lazy_files:
             print(f"Uploading {len(lazy_files)} local file(s) to volume(s)...")
             assert isinstance(self._image, Image)
-            self._volumes = upload_lazy_files(
+            self._volumes += upload_lazy_files(
                 self._client, self._image, volume_prefix="sg-files",
             )
             for vn, mp in self._volumes:
