@@ -20,8 +20,8 @@ log = logging.getLogger(__name__)
 VLLM_PORT = 8000
 MODEL = "openai/clip-vit-base-patch32"
 MODEL_VOLUME = "clip-vit-base-patch32"
-HF_CACHE_PATH = "/root/.cache/huggingface"
-MODEL_LOCAL_PATH = f"{HF_CACHE_PATH}/hub/models--openai--clip-vit-base-patch32"
+MODEL_DIR = "/model"  # volume mounted here with flat model files
+MODEL_LOCAL_PATH = "/tmp/model"  # reassembled files go here; vLLM reads from local disk
 
 START_SERVER_CMD = (
     f"nohup python3 -m vllm.entrypoints.openai.api_server "
@@ -36,45 +36,44 @@ HEALTH_CHECK_CMD = (
 )
 
 DEFAULT_URLS = [
-    "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Cat03.jpg/320px-Cat03.jpg",
-    "https://upload.wikimedia.org/wikipedia/commons/thumb/2/26/YellowLabradorLooking_new.jpg/320px-YellowLabradorLooking_new.jpg",
+    "https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba?w=320",
+    "https://images.unsplash.com/photo-1587300003388-59208cc962cb?w=320",
 ]
 
 EMBED_SCRIPT = f"""\
-import json
-import base64
+import io
 import math
 import sys
 import urllib.request
+import torch
+from PIL import Image
+from transformers import CLIPModel, CLIPProcessor
 
-VLLM_URL = "http://localhost:{VLLM_PORT}/v1/embeddings"
-MODEL = "{MODEL}"
+MODEL_PATH = "{MODEL_LOCAL_PATH}"
 
 urls = sys.argv[1:]
 if not urls:
     print("No image URLs provided.", file=sys.stderr)
     sys.exit(1)
 
+print("Loading CLIP model...")
+model = CLIPModel.from_pretrained(MODEL_PATH)
+processor = CLIPProcessor.from_pretrained(MODEL_PATH)
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model = model.to(device)
+model.eval()
+print(f"Model loaded on {{device}}")
+
 
 def embed(image_url: str) -> list[float]:
-    img_bytes = urllib.request.urlopen(image_url, timeout=30).read()
-    img_b64 = base64.b64encode(img_bytes).decode()
-
-    payload = json.dumps({{
-        "model": MODEL,
-        "input": [{{
-            "type": "image_url",
-            "image_url": {{"url": f"data:image/jpeg;base64,{{img_b64}}"}},
-        }}],
-    }}).encode()
-
-    req = urllib.request.Request(
-        VLLM_URL,
-        data=payload,
-        headers={{"Content-Type": "application/json"}},
-    )
-    resp = json.loads(urllib.request.urlopen(req, timeout=60).read())
-    return resp["data"][0]["embedding"]
+    req = urllib.request.Request(image_url, headers={{"User-Agent": "ChalkEmbed/1.0"}})
+    img_bytes = urllib.request.urlopen(req, timeout=30).read()
+    image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    inputs = processor(images=image, return_tensors="pt").to(device)
+    with torch.no_grad():
+        emb = model.get_image_features(**inputs)
+    emb = emb / emb.norm(dim=-1, keepdim=True)
+    return emb[0].cpu().tolist()
 
 
 def cosine(a: list[float], b: list[float]) -> float:
@@ -101,29 +100,55 @@ if len(embeddings) >= 2:
 """
 
 
-def start_server(container: Container) -> None:
-    log.info("Starting vLLM server (model: %s)...", MODEL)
-    container.exec("bash", "-c", START_SERVER_CMD)
+REASSEMBLE_SCRIPT = f"""\
+import os, glob, shutil
+src = "{MODEL_DIR}"
+dst = "{MODEL_LOCAL_PATH}"
+os.makedirs(dst, exist_ok=True)
 
-    log.info("Waiting for vLLM to be ready (first run downloads model weights)...")
-    for attempt in range(20):
-        result = container.exec("bash", "-c", HEALTH_CHECK_CMD)
-        if result.stdout_text.strip() == "0":
-            log.info("vLLM server is ready.")
-            return
-        if attempt < 19:
-            time.sleep(30)
-    raise RuntimeError(
-        "vLLM server did not become ready after 10 minutes (20 attempts × 30s).\n"
-        "Check /tmp/vllm.log inside the container for details."
-    )
+# Copy non-chunk files directly to local disk
+for f in os.listdir(src):
+    full = os.path.join(src, f)
+    if os.path.isfile(full) and ".part" not in f and ".chunkpart" not in f and ".manifest" not in f:
+        print(f"Copying {{f}}...")
+        shutil.copy2(full, os.path.join(dst, f))
+
+# Reassemble chunked files to local disk
+parts = sorted(glob.glob(os.path.join(src, "*.part*")))
+if parts:
+    groups = {{}}
+    for p in parts:
+        base = os.path.basename(p).rsplit(".part", 1)[0]
+        groups.setdefault(base, []).append(p)
+    for base, chunk_paths in sorted(groups.items()):
+        print(f"Reassembling {{base}} from {{len(chunk_paths)}} chunks...")
+        with open(os.path.join(dst, base), "wb") as out:
+            for cp in sorted(chunk_paths):
+                out.write(open(cp, "rb").read())
+    print("Reassembly complete.")
+else:
+    print("No chunks to reassemble.")
+"""
+
+
+def reassemble_chunks(container: Container) -> None:
+    log.info("Reassembling chunked model files...")
+    result = container.exec("python3", "-c", REASSEMBLE_SCRIPT, timeout_secs=300)
+    if result.stdout_text:
+        print(result.stdout_text, end="")
+    if result.exit_code != 0:
+        raise RuntimeError(f"Reassembly failed: {result.stderr_text}")
+
+
+def prepare_model(container: Container) -> None:
+    reassemble_chunks(container)
 
 
 def embed_images(container: Container, urls: list[str]) -> None:
     log.info("Embedding images...")
     result = container.exec(
         "python3", "-c", EMBED_SCRIPT, *urls,
-        timeout_secs=60 * len(urls),
+        timeout_secs=300,
     )
     if result.stdout_text:
         print(result.stdout_text, end="")
@@ -177,13 +202,12 @@ def main(container_name: str, urls: list[str]) -> None:
         name=container_name,
         gpu="nvidia-rtx-pro-6000:1",
         memory="24Gi",
-        port=VLLM_PORT,
-        volumes=[(MODEL_VOLUME, HF_CACHE_PATH)],
+        volumes=[(MODEL_VOLUME, MODEL_DIR)],
         env=env,
     ).run()
 
     try:
-        start_server(container)
+        prepare_model(container)
         embed_images(container, urls)
     except KeyboardInterrupt:
         print("\nShutting down...")

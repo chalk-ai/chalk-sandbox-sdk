@@ -116,7 +116,7 @@ class Container:
         self._built_image_uri: str | None = None
         self._container_id: str | None = None
         self._container_info: ContainerInfo | None = None
-        self._volumes: list[tuple[str, str]] = list(volumes or [])  # [(volume_name, mount_path)]
+        self._volumes: list[tuple[str, str]] = list(volumes or [])
 
         # Auth state (lazily populated)
         self._api_server: str | None = None
@@ -373,8 +373,9 @@ class Container:
         )
         if lazy_files:
             print(f"Uploading {len(lazy_files)} local file(s) to volume(s)...")
-            self._volumes.extend(self._upload_lazy_files())
-            for vn, mp in self._volumes:
+            new_vols = self._upload_lazy_files()
+            self._volumes.extend(new_vols)
+            for vn, mp in new_vols:
                 print(f"  Volume created: {vn} (mount: {mp})")
 
         # 3. Build the ContainerService spec
@@ -442,7 +443,7 @@ class Container:
             self._wait_until_exec_ready(deadline=deadline)
 
         # 5. Wait for ChalkFS volume files to become visible
-        if lazy_files:
+        if self._volumes:
             self._wait_for_volume_files(timeout=120.0, poll_interval=5.0)
 
         return self
@@ -506,23 +507,25 @@ class Container:
     def _wait_for_volume_files(
         self, *, timeout: float = 120.0, poll_interval: float = 5.0,
     ) -> None:
-        """Poll until at least one uploaded file is visible in the ChalkFS mount."""
-        assert isinstance(self._image, Image)
-        sample = next(iter(self._image.lazy_local_files))
-        probe_path = sample.dest
-        print(f"Waiting for ChalkFS to sync (probing {probe_path})...")
+        """Poll until ChalkFS volume mounts are visible and non-empty."""
+        mount_paths = [mp for _, mp in self._volumes]
+        print(f"Waiting for ChalkFS to sync ({', '.join(mount_paths)})...")
 
+        check_cmd = " && ".join(
+            f'test -d {mp} && [ "$(ls -A {mp} 2>/dev/null)" ]'
+            for mp in mount_paths
+        )
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            result = self.exec("test", "-f", probe_path)
+            result = self.exec("bash", "-c", check_cmd)
             if result.exit_code == 0:
-                print("ChalkFS files ready.")
+                print("ChalkFS volumes ready.")
                 return
             time.sleep(poll_interval)
 
         raise ContainerError(
-            f"ChalkFS files not visible after {timeout}s "
-            f"(probed {probe_path})"
+            f"ChalkFS volumes not ready after {timeout}s "
+            f"(checked {', '.join(mount_paths)})"
         )
 
     def exec(
@@ -577,8 +580,6 @@ class Container:
             self._container_id = None
             self._container_info = None
 
-        for vol_name, _ in self._volumes:
-            self._volume_rpc("DeleteVolume", {"name": vol_name})
         self._volumes = []
 
     def refresh(self) -> ContainerInfo:
