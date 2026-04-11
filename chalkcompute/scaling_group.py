@@ -278,7 +278,7 @@ class ScalingGroup:
             info = _parse_scaling_group_response(resp.json()["scalingGroup"])
             self._scaling_group_info = info
             print(f"  poll: status={info.status}")
-            if info.status == "Running":
+            if info.status in ("Running", "Available"):
                 return
             if info.status in ("Failed", "Error"):
                 raise ScalingGroupError(
@@ -329,7 +329,7 @@ class ScalingGroup:
                     f"Scaling group {self._scaling_group_id} entered {info.status} state"
                 )
             if (
-                info.status == "Running"
+                info.status in ("Running", "Available")
                 and info.ready_replicas > 0
                 and info.available_replicas > 0
             ):
