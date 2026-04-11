@@ -562,7 +562,7 @@ class RemoteFunction:
             status = sg.get("status", "")
             self._web_url = sg.get("webUrl")
             print(f"  poll: status={status}")
-            if status == "Running":
+            if status in ("Running", "Available"):
                 return
             if status in ("Failed", "Error"):
                 raise FunctionError(f"Scaling group {sg_name} entered {status} state")
@@ -594,7 +594,7 @@ class RemoteFunction:
                 raise FunctionError(f"Scaling group {sg_name} entered {status} state")
             ready = sg.get("readyReplicas", 0)
             available = sg.get("availableReplicas", 0)
-            if status == "Running" and ready > 0 and available > 0:
+            if status in ("Running", "Available") and ready > 0 and available > 0:
                 return self
             time.sleep(poll_interval)
 
