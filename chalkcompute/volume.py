@@ -1,7 +1,7 @@
 """
 Python SDK for the Volume gRPC Service.
 
-Provides a Modal-style API for managing persistent named volumes backed by
+Provides an API for managing persistent named volumes backed by
 object storage.
 
 Usage:
