@@ -178,6 +178,20 @@ def upload_lazy_files(
     except ValueError as e:
         raise ConnectError(str(e)) from e
 
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _put_file(vol_name: str, lf: object) -> None:
+        content = Path(lf.src).read_bytes()  # type: ignore[attr-defined]
+        encoded = base64.b64encode(content).decode("ascii")
+        flat_name = Path(lf.dest).name  # type: ignore[attr-defined]
+        put_resp = client.rpc(
+            "chalk.volume.v1.VolumeService",
+            "PutFile",
+            {"volumeName": vol_name, "path": flat_name, "data": encoded},
+        )
+        if put_resp.status_code != 200:
+            raise ConnectError(f"PutFile failed for {lf.dest}: {put_resp.text}")  # type: ignore[attr-defined]
+
     volumes: list[tuple[str, str]] = []
     for dest_dir, files in dir_to_files.items():
         vol_name = f"{volume_prefix}-{uuid.uuid4().hex[:12]}"
@@ -189,17 +203,10 @@ def upload_lazy_files(
         if resp.status_code != 200:
             raise ConnectError(f"CreateVolume failed: {resp.text}")
 
-        for lf in files:
-            content = Path(lf.src).read_bytes()
-            encoded = base64.b64encode(content).decode("ascii")
-            flat_name = Path(lf.dest).name
-            put_resp = client.rpc(
-                "chalk.volume.v1.VolumeService",
-                "PutFile",
-                {"volumeName": vol_name, "path": flat_name, "data": encoded},
-            )
-            if put_resp.status_code != 200:
-                raise ConnectError(f"PutFile failed for {lf.dest}: {put_resp.text}")
+        with ThreadPoolExecutor(max_workers=32) as pool:
+            futures = [pool.submit(_put_file, vol_name, lf) for lf in files]
+            for fut in as_completed(futures):
+                fut.result()
 
         volumes.append((vol_name, dest_dir))
 
