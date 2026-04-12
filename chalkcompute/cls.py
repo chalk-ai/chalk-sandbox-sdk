@@ -47,7 +47,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
-from chalkcompute._connect import ConnectClient, build_image, upload_lazy_files
+from chalkcompute._connect import ConnectClient
 from chalkcompute._tracing import traced
 from chalkcompute.function import (
     _CATALOG_SVC,

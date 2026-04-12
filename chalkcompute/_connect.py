@@ -18,7 +18,7 @@ from chalkcompute._tracing import traced as _traced
 if TYPE_CHECKING:
     import httpx
 
-    from chalkcompute.image import Image
+    from chalkcompute.image import Image, LazyLocalFile
 
 
 class ConnectError(Exception):
@@ -180,17 +180,17 @@ def upload_lazy_files(
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    def _put_file(vol_name: str, lf: object) -> None:
-        content = Path(lf.src).read_bytes()  # type: ignore[attr-defined]
+    def _put_file(vol_name: str, lf: LazyLocalFile) -> None:
+        content = Path(lf.src).read_bytes()
         encoded = base64.b64encode(content).decode("ascii")
-        flat_name = Path(lf.dest).name  # type: ignore[attr-defined]
+        flat_name = Path(lf.dest).name
         put_resp = client.rpc(
             "chalk.volume.v1.VolumeService",
             "PutFile",
             {"volumeName": vol_name, "path": flat_name, "data": encoded},
         )
         if put_resp.status_code != 200:
-            raise ConnectError(f"PutFile failed for {lf.dest}: {put_resp.text}")  # type: ignore[attr-defined]
+            raise ConnectError(f"PutFile failed for {lf.dest}: {put_resp.text}")
 
     volumes: list[tuple[str, str]] = []
     for dest_dir, files in dir_to_files.items():
