@@ -58,6 +58,7 @@ from chalkcompute.function import (
     _build_and_upload,
     _cleanup_temp_files,
     _extract_field_names,
+    _local_install_entrypoint,
     _make_base_image,
     _make_container_spec,
     _write_temp,
@@ -486,14 +487,15 @@ class RemoteClass:
                     f"cls-{self._class_name}-{method_info.name}-{uuid.uuid4().hex[:8]}"
                 )
 
+            handler_cmd = [
+                "chalk-remote-call",
+                "--handler",
+                f"handler_{method_info.name}.handler",
+            ]
             container_spec = _make_container_spec(
                 name=sg_name,
                 image_uri=image_uri,
-                entrypoint=[
-                    "chalk-remote-call",
-                    "--handler",
-                    f"handler_{method_info.name}.handler",
-                ],
+                entrypoint=_local_install_entrypoint(handler_cmd),
                 env=self._env,
                 cpu=self._cpu,
                 memory=self._memory,

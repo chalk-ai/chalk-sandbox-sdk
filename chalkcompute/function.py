@@ -43,8 +43,9 @@ if TYPE_CHECKING:
     from chalkcompute.image import Image as _Image
 
 _REMOTE_ENV_VAR = "_CHALK_REMOTE_FUNCTION"
-# When enabled, copy local ./chalkcompute source into /app/chalkcompute.
+# When enabled, mount the local SDK project and pip-install at container start.
 _LOCAL_COPY_ENV_VAR = "CHALK_FUNCTION_LOCAL_SDK_COPY"
+_LOCAL_SDK_MOUNT = "/tmp/sdk"
 _CATALOG_SVC = "chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService"
 _SG_SVC = "chalk.scalinggroup.v1.ScalingGroupManagerService"
 
@@ -134,24 +135,37 @@ def _write_temp(content: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _local_install_entrypoint(handler_cmd: list[str]) -> list[str]:
+    """Wrap *handler_cmd* with a local pip install when local-copy mode is on."""
+    if os.environ.get(_LOCAL_COPY_ENV_VAR, "") != "1":
+        return handler_cmd
+    install = f"pip install {_LOCAL_SDK_MOUNT}"
+    return ["sh", "-c", f"{install} && {' '.join(handler_cmd)}"]
+
+
 def _make_base_image(user_image: _Image | None) -> _Image:
     """Create the base deploy image with SDK packages and optional local overlay."""
-    from importlib.metadata import version as _pkg_version
-
     from chalkcompute.image import Image
 
+    local_copy = os.environ.get(_LOCAL_COPY_ENV_VAR, "") == "1"
+
     base = user_image if user_image is not None else Image.debian_slim()
-    image = base.pip_install(
-        [
-            "chalk-remote-call-python",
-            f"chalkcompute=={_pkg_version('chalkcompute')}",
-        ]
-    )
-    # Order doesn't matter here — add_local_dir appends a lazy volume
-    # mount, not a build step, so it's fine to add after pip_install.
-    if os.environ.get(_LOCAL_COPY_ENV_VAR, "") == "1":
-        local_sdk_dir = Path(__file__).resolve().parent
-        image = image.add_local_dir(str(local_sdk_dir), "/app/chalkcompute")
+
+    if local_copy:
+        # Mount the local SDK project via volume; the entrypoint will
+        # pip-install it before starting the handler.
+        project_root = Path(__file__).resolve().parent.parent
+        image = base.add_local_dir(str(project_root), _LOCAL_SDK_MOUNT)
+    else:
+        from importlib.metadata import version as _pkg_version
+
+        image = base.pip_install(
+            [
+                "chalk-remote-call-python",
+                f"chalkcompute=={_pkg_version('chalkcompute')}",
+            ]
+        )
+
     return image
 
 
@@ -423,7 +437,6 @@ class RemoteFunction:
             .add_local_file(source_file, "/app/user_module.py")
             .add_local_file(shim_path, "/app/handler.py")
             .env({"PYTHONPATH": "/app", _REMOTE_ENV_VAR: "1"})
-            .entrypoint(["chalk-remote-call", "--handler", "handler.handler"])
         )
 
         self._temp_files = [shim_path]
@@ -470,10 +483,11 @@ class RemoteFunction:
             if self._explicit_name
             else f"fn-{self._func_name}-{uuid.uuid4().hex[:8]}"
         )
+        handler_cmd = ["chalk-remote-call", "--handler", "handler.handler"]
         container_spec = _make_container_spec(
             name=sg_name,
             image_uri=image_uri,
-            entrypoint=["chalk-remote-call", "--handler", "handler.handler"],
+            entrypoint=_local_install_entrypoint(handler_cmd),
             env=self._env,
             cpu=self._cpu,
             memory=self._memory,
