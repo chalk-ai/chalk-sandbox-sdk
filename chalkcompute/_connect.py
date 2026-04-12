@@ -111,7 +111,7 @@ def build_image(
     client: ConnectClient,
     image: Image,
     *,
-    poll_interval: float = 5.0,
+    poll_interval: float = 0.5,
     timeout: float = 600.0,
 ) -> str:
     """Build an Image spec via CustomImageService, return the image URI.

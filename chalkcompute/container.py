@@ -169,7 +169,7 @@ class Container:
     # -- Image building (Container uses BuildCustomImage with retries) ---------
 
     def _build_image(
-        self, *, poll_interval: float = 5.0, timeout: float = 600.0,
+        self, *, poll_interval: float = 0.5, timeout: float = 600.0,
     ) -> str:
         """Build the Image spec via CustomImageService and return the image URI."""
         from chalkcompute._connect import ConnectError, build_image
@@ -190,7 +190,7 @@ class Container:
     def run(
         self,
         *,
-        poll_interval: float = 5.0,
+        poll_interval: float = 0.5,
         build_timeout: float = 600.0,
         ready_timeout: float = 300.0,
     ) -> Container:
@@ -307,7 +307,7 @@ class Container:
         )
 
     def _wait_for_volume_files(
-        self, *, timeout: float = 120.0, poll_interval: float = 5.0,
+        self, *, timeout: float = 120.0, poll_interval: float = 0.5,
     ) -> None:
         """Poll until at least one uploaded file is visible in the ChalkFS mount."""
         from chalkcompute.image import Image

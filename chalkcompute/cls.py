@@ -516,7 +516,7 @@ class RemoteClass:
     def deploy(
         self,
         *,
-        poll_interval: float = 5.0,
+        poll_interval: float = 0.5,
         build_timeout: float = 600.0,
         ready_timeout: float = 300.0,
     ) -> RemoteClass:

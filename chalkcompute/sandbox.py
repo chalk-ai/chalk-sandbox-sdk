@@ -430,7 +430,7 @@ class SandboxClient:
         env: dict[str, str] | None = None,
         volumes: builtins.list[pb.VolumeMount] | None = None,
         wait: bool = True,
-        poll_interval: float = 5.0,
+        poll_interval: float = 0.5,
         timeout: float = 600.0,
     ) -> Sandbox:
         """
