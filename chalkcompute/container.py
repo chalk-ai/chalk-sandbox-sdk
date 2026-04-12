@@ -289,7 +289,6 @@ class Container:
         assert self._container_id is not None
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            time.sleep(poll_interval)
             resp = self._client.rpc(_SVC, "GetContainer", {"id": self._container_id})
             if resp.status_code != 200:
                 raise ContainerError(f"GetContainer failed: {resp.text}")
@@ -302,6 +301,7 @@ class Container:
                 raise ContainerError(
                     f"Container {self._container_id} entered {info.status} state"
                 )
+            time.sleep(poll_interval)
         raise ContainerError(
             f"Container {self._container_id} timed out after {timeout}s"
         )

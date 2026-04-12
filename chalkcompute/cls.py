@@ -676,7 +676,6 @@ class RemoteClass:
     ) -> None:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            time.sleep(poll_interval)
             resp = self._client.rpc(_SG_SVC, "GetScalingGroup", {"name": sg_name})
             if resp.status_code != 200:
                 raise ClassError(f"GetScalingGroup failed: {resp.text}")
@@ -699,6 +698,7 @@ class RemoteClass:
                 return
             if status in ("Failed", "Error"):
                 raise ClassError(f"Scaling group {sg_name} entered {status} state")
+            time.sleep(poll_interval)
         raise ClassError(f"Scaling group {sg_name} timed out after {timeout}s")
 
     def wait_ready(

@@ -274,7 +274,6 @@ class ScalingGroup:
         assert self._scaling_group_id is not None
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            time.sleep(poll_interval)
             resp = self._client.rpc(_SVC, "GetScalingGroup", {"id": self._scaling_group_id})
             if resp.status_code != 200:
                 raise ScalingGroupError(f"GetScalingGroup failed: {resp.text}")
@@ -287,6 +286,7 @@ class ScalingGroup:
                 raise ScalingGroupError(
                     f"Scaling group {self._scaling_group_id} entered {info.status} state"
                 )
+            time.sleep(poll_interval)
         raise ScalingGroupError(
             f"Scaling group {self._scaling_group_id} timed out after {timeout}s"
         )

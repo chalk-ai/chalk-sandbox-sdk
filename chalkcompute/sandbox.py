@@ -500,12 +500,7 @@ class SandboxClient:
     ) -> SandboxInfo:
         """Poll GetSandbox until the sandbox reaches a terminal state."""
         deadline = time.monotonic() + timeout
-        while True:
-            if time.monotonic() >= deadline:
-                raise SandboxError(
-                    f"Timed out after {timeout}s waiting for sandbox {sandbox_id} to become ready"
-                )
-            time.sleep(poll_interval)
+        while time.monotonic() < deadline:
             try:
                 resp = self._stub.GetSandbox(
                     pb.GetSandboxRequest(sandbox_id=sandbox_id),
@@ -525,6 +520,10 @@ class SandboxClient:
                 raise SandboxTerminatedError(
                     f"Sandbox {sandbox_id} was terminated during image build"
                 )
+            time.sleep(poll_interval)
+        raise SandboxError(
+            f"Timed out after {timeout}s waiting for sandbox {sandbox_id} to become ready"
+        )
 
     def get(self, id: str) -> Sandbox:
         """
