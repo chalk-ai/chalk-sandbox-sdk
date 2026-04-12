@@ -1,8 +1,10 @@
 on:
-  pull_request: {}
+  pull_request:
+    branches:
+      - sai/mount-local-for-testing
   push:
     branches:
-      - main
+      - sai/mount-local-for-testing
 
 steps:
   - label: ":mag: ty type check"
@@ -11,7 +13,7 @@ steps:
       echo "--- :python: Install dependencies"
       pip install ty
       echo "--- :mag: Run ty"
-      ty check chalkcompute/container.py chalkcompute/sandbox.py chalkcompute/image.py chalkcompute/volume.py
+      ty check chalkcompute/ --exclude chalkcompute/_gen/
     agents:
       queue: default
     timeout_in_minutes: 5
@@ -66,7 +68,7 @@ steps:
       pip install -e .
 
       echo "--- :brain: Deploy and test embedding functions"
-      CHALK_FUNCTION_STRIP_SOURCE=1 pytest examples/embedding-function/test_embedding_function.py -v -s --tb=short
+      CHALK_FUNCTION_LOCAL_SDK_COPY=1 pytest examples/embedding-function/test_embedding_function.py -v -s --tb=short
     agents:
       queue: default
     timeout_in_minutes: 20

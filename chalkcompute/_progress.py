@@ -8,10 +8,14 @@ Falls back to plain print() when disabled or when rich is not installed.
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Literal
+import types
+from typing import TYPE_CHECKING, Literal, Union
 
 if TYPE_CHECKING:
+    from rich.console import ConsoleRenderable, RichCast
     from rich.live import Live
+
+    RenderableType = Union[ConsoleRenderable, RichCast, str]
 
 StepName = Literal[
     "volume",
@@ -74,10 +78,15 @@ class ContainerProgress:
             pass
         return self
 
-    def __exit__(self, *args: object) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: types.TracebackType | None,
+    ) -> None:
         if self._live is not None:
             self._live.update(self._render())
-            self._live.__exit__(*args)
+            self._live.__exit__(exc_type, exc_val, exc_tb)
 
     def update(
         self,
@@ -154,7 +163,7 @@ class ContainerProgress:
         return grid
 
 
-def _icon_label(icon: object, label: str, style: str = ""):
+def _icon_label(icon: RenderableType, label: str, style: str = ""):
     """Combine a spinner or text icon with a label in a tight grid."""
     from rich.table import Table
     from rich.text import Text

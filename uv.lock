@@ -449,7 +449,7 @@ dev = [
 
 [[package]]
 name = "chalkpy"
-version = "2.115.0"
+version = "2.115.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
@@ -475,23 +475,23 @@ dependencies = [
     { name = "tqdm" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8d/d4/15184780cc8a6bf28bfe4c5f7795776ccf35ad30248193fd159b7b875438/chalkpy-2.115.0.tar.gz", hash = "sha256:99a312ce29c15aeacd0d3f63b1963cc4053545cc86a6f7362bf3300a3fdfe5c8", size = 1415994, upload-time = "2026-04-10T05:18:56.27Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/13/92/1c9c9b02d2e2d199c8384fd8742fd83c96d9e8a040a34b6e2ceba04a9289/chalkpy-2.115.4.tar.gz", hash = "sha256:de13899b85eaa6bd74a15aab5d8925888e06eeb74f36e402fb094ee14cea9fe9", size = 1417491, upload-time = "2026-04-11T17:55:32.176Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/56/fd/da104cf469173bbceb9a5993fdca2fc5afb57ccb34962beea846b2aeeec7/chalkpy-2.115.0-cp311-cp311-macosx_10_13_x86_64.whl", hash = "sha256:f7d15923cff886d226d751915c6c42d6f3d987331c10e64d7dc14bdebdfeabba", size = 3578097, upload-time = "2026-04-10T05:18:30.338Z" },
-    { url = "https://files.pythonhosted.org/packages/28/80/9466d9526280e886a58e87e21fbd42a533710dd60abd09b62101116b1668/chalkpy-2.115.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:7f3a7213007e43b9c3274154fa5abfe3bbad9f17f10a30379d29f18839611d20", size = 3514685, upload-time = "2026-04-10T05:18:32.052Z" },
-    { url = "https://files.pythonhosted.org/packages/c4/48/e25f95e7acc3b8563bc38b3addfda9a9ebf0c5aa758ffbb5d0e3910cd640/chalkpy-2.115.0-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:54761395f97fa79b3e79cbd70dbd797b07db8d292b039d938f7de4e364c0c0bd", size = 3651694, upload-time = "2026-04-10T05:18:33.599Z" },
-    { url = "https://files.pythonhosted.org/packages/5d/30/91b91ba93327d83795cbda171cdeda20fc4c912a9b567a8d0bd02264c4d2/chalkpy-2.115.0-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:a515b03c953c16e25aef316748a579584fb784b0615125f5fe446b5e9dbb05fb", size = 3715081, upload-time = "2026-04-10T05:18:35.326Z" },
-    { url = "https://files.pythonhosted.org/packages/ac/f8/41a44b6d4b0c763382a8667dfbf23e682b3c694ec04f29d7f585a6e85e29/chalkpy-2.115.0-cp311-cp311-win_amd64.whl", hash = "sha256:c53c5fc6efae9167644c4e78746ef17d040055d26991d5067b76f82634e49768", size = 3414968, upload-time = "2026-04-10T05:18:36.874Z" },
-    { url = "https://files.pythonhosted.org/packages/12/08/60eb846f32318f733dab1360022a245d14f55ff198f272a419546052ddcd/chalkpy-2.115.0-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:1ef3f0747138afb908dba09ef2f63a20059d7c5355f963f24e5a448e4156135a", size = 3573886, upload-time = "2026-04-10T05:18:38.811Z" },
-    { url = "https://files.pythonhosted.org/packages/15/62/c5e85b973f75b7b8ab4947982fab5af8b6a860ec0e86064a13b4d9c71a83/chalkpy-2.115.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:39925882b739360caf303aef7a386aad93725ff72f14cf41d969bf771c83bf47", size = 3509524, upload-time = "2026-04-10T05:18:40.358Z" },
-    { url = "https://files.pythonhosted.org/packages/9a/f1/99f2592470cc0de8c72703b148efcc3693eacbcc4473a130122d8dac1f29/chalkpy-2.115.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:0e0f6f836193edc73d3f17711550689035874f8ed5637f5e630d3d0b18f3ff80", size = 3650239, upload-time = "2026-04-10T05:18:41.875Z" },
-    { url = "https://files.pythonhosted.org/packages/55/a3/fd72db4f44df13d3ab6636bae986d31b82ea84e1b6d9a8fd43ee36c996f0/chalkpy-2.115.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:210e1c6ada67b477db7f6f6708daa5772e81657445a3629d61770dfa386b7434", size = 3710777, upload-time = "2026-04-10T05:18:43.414Z" },
-    { url = "https://files.pythonhosted.org/packages/ac/04/21fff2a00d367bb6efa3b2744817299c62088bc410f185a8e7dca972c9dd/chalkpy-2.115.0-cp312-cp312-win_amd64.whl", hash = "sha256:c76d4551853cc8fe8e6734b29a09ca36afcb381bc49351349344055f5c9b1dba", size = 3412425, upload-time = "2026-04-10T05:18:45.152Z" },
-    { url = "https://files.pythonhosted.org/packages/3a/84/eb4ff21150636ddce1763148317e345e83f7409161b4dff020ebdd6ecd10/chalkpy-2.115.0-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:d190689144fdb1ebeba2fb5329db98f9e857a7e0f5ae5676a157cfab4bb6fee9", size = 3574702, upload-time = "2026-04-10T05:18:47.777Z" },
-    { url = "https://files.pythonhosted.org/packages/d5/c8/6ee7bf1268e47d66eb224d69661be9a5c493f6f9eec1215ede683b6018ab/chalkpy-2.115.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:6e271ac9051ffaca5de9825b4b98c4ef5adeb13bd7aed97897624b4f5132f53c", size = 3509619, upload-time = "2026-04-10T05:18:49.372Z" },
-    { url = "https://files.pythonhosted.org/packages/ab/96/706ed85554754dfca9088a11e4a38d5f465276a80c99f125775e0e11f57a/chalkpy-2.115.0-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:56320c2e35b486bb2d72e52bd7461c52ca4d5992d04bfc019696257b84d21d65", size = 3650249, upload-time = "2026-04-10T05:18:51.46Z" },
-    { url = "https://files.pythonhosted.org/packages/79/15/1137ac662d6f450a0e38c04a11a13a413b4d8075ecc7738f343b119888e7/chalkpy-2.115.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:1c5f3cf042956ad71dfdfe6c97a4b45207a7dbeaffe8daecc36a2838d5806a59", size = 3711064, upload-time = "2026-04-10T05:18:53.118Z" },
-    { url = "https://files.pythonhosted.org/packages/91/16/071527d6a6402a1f556fb4cbfd95984d83562e8b7a3e5601bf365b435e71/chalkpy-2.115.0-cp313-cp313-win_amd64.whl", hash = "sha256:79869814d638f1cc1f88d44ddf76fd50500675012a3c7172c160ac3a3f0b195c", size = 3412138, upload-time = "2026-04-10T05:18:54.777Z" },
+    { url = "https://files.pythonhosted.org/packages/96/58/0d82430c2c420f6a692b259f4bfb5a660c4d957866e79ce8db464d54a35c/chalkpy-2.115.4-cp311-cp311-macosx_10_13_x86_64.whl", hash = "sha256:6b9f55b1e12c01edd97c55fae7be4f21ee088a13a36fceb71b5babe318117f99", size = 3579539, upload-time = "2026-04-11T17:55:05.713Z" },
+    { url = "https://files.pythonhosted.org/packages/35/49/cb1ab0bcb0c0684f5e33c5170d7f0630c679773246d5dfdaa123c2ccdc2a/chalkpy-2.115.4-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:3ba20b272e28b308276dcccfa9ce6fc710939ea9a7bbbebed9e391bfdd8b29d5", size = 3516130, upload-time = "2026-04-11T17:55:07.686Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/e3/226c964095585dc58ebe7e6702c64c23758609221eb766ceb4d2a4dec6d6/chalkpy-2.115.4-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:7189daa2c7d45ac6f3de1533b3c350cf5068b6aee63553affdbbf1438a258281", size = 3653152, upload-time = "2026-04-11T17:55:09.097Z" },
+    { url = "https://files.pythonhosted.org/packages/0f/6e/ec6fe9b4664ef5d4a21e23d38091ef72cb638ef63e8fdb167d30bb126f05/chalkpy-2.115.4-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:85d3d3f90ff9a00981836e70c241d013d494aaba53b6731a167125d2bb4916cc", size = 3716541, upload-time = "2026-04-11T17:55:11.078Z" },
+    { url = "https://files.pythonhosted.org/packages/f9/a9/5e118ca989aa17f9a1c3a0dd6e65bec4e63cb65495b2f48a7de85c12acc6/chalkpy-2.115.4-cp311-cp311-win_amd64.whl", hash = "sha256:e156816ed6e26b575805fa1efef69dfbf2e548672d122ab3838b5ae473ab676f", size = 3416429, upload-time = "2026-04-11T17:55:12.771Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/ed/0b946c8d3953be08dc434f9c8285b70bcf86c8ce6fe4681841dd81a7df27/chalkpy-2.115.4-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:724b2458576ec77fcb9d4ae3a7c01293a7f755dfbca3adf70f62f474262b0d6c", size = 3575329, upload-time = "2026-04-11T17:55:14.31Z" },
+    { url = "https://files.pythonhosted.org/packages/09/38/fc919940ca29499a2fff6839361cc00df180c21081cb039f41a89c2ef471/chalkpy-2.115.4-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:729bf94070e409694ee0e79d9b3b1086ec47a88614bc0776b85b5ffc8da3c51d", size = 3510964, upload-time = "2026-04-11T17:55:16.101Z" },
+    { url = "https://files.pythonhosted.org/packages/e8/f6/1f02bf7a0724e79b5783a455a6cb95513b3cf3070cbc7eff453c72692710/chalkpy-2.115.4-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:5ffb093ef000443c6055a345e53703e290ecb02dae07532f6c59758348293e78", size = 3651697, upload-time = "2026-04-11T17:55:17.619Z" },
+    { url = "https://files.pythonhosted.org/packages/8a/e9/880622b8ccd69860ce55175d654fe721187203e419b1910b6520d152df39/chalkpy-2.115.4-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:89773c040cfe07c0b09706aab1f0857215c033d29537198cde50df7954ab5e5c", size = 3712236, upload-time = "2026-04-11T17:55:19.445Z" },
+    { url = "https://files.pythonhosted.org/packages/82/70/a06244e75ae9280a051273cf2f346ad0b3aeb0604b000c202556f903bb85/chalkpy-2.115.4-cp312-cp312-win_amd64.whl", hash = "sha256:3a016a30ff3ce3718ba39fdcea71c46f3bfde7a3929d02327f510d80079a19b5", size = 3413886, upload-time = "2026-04-11T17:55:20.972Z" },
+    { url = "https://files.pythonhosted.org/packages/46/ab/a2ce97a489ae88271e888492197fbaf577767d4552d9ad11e0cdacef0233/chalkpy-2.115.4-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:0ec707b492fe46ecc6ddc6c87c149a2a1812ba908da9b2a534b91076fbc037bd", size = 3576144, upload-time = "2026-04-11T17:55:22.662Z" },
+    { url = "https://files.pythonhosted.org/packages/72/ad/a80b24dc23e513f2f6338e010a46e5a368cc389ce16488634fdfadf67643/chalkpy-2.115.4-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:de4a8d9d7faf9fe9be28cce2784261473e83a2ea6390b43b6f97b987cbafbc2a", size = 3511062, upload-time = "2026-04-11T17:55:24.619Z" },
+    { url = "https://files.pythonhosted.org/packages/78/72/50174d14ec0cb87caa6f928a224ba6a48a1450b7425c68e04c4c888bcc8b/chalkpy-2.115.4-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:f236ad8b9e530c7cb2b9e8c046cfa412cacd1917a11086d7b0c026f241d9eba4", size = 3651707, upload-time = "2026-04-11T17:55:26.514Z" },
+    { url = "https://files.pythonhosted.org/packages/98/c6/b0f615a77061d7bb383e411e65b9b559428862db07d843d5458b1cf94425/chalkpy-2.115.4-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:eec3db7c6365c9b7610295b8fefdb725d4be3de0b5bc7f83b547a802fa9a8fdf", size = 3712527, upload-time = "2026-04-11T17:55:28.454Z" },
+    { url = "https://files.pythonhosted.org/packages/67/39/9879c6631367d7001dd3abd7e1eee57bb66f382e1d6416c5f2f9876b420e/chalkpy-2.115.4-cp313-cp313-win_amd64.whl", hash = "sha256:ddfc272cd88afb89891cf9e4611ae1e317c18caa3ef57db046ccc5d5a5d56bbb", size = 3413602, upload-time = "2026-04-11T17:55:30.368Z" },
 ]
 
 [package.optional-dependencies]
@@ -2266,15 +2266,15 @@ wheels = [
 
 [[package]]
 name = "rich"
-version = "14.3.3"
+version = "15.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "markdown-it-py" },
     { name = "pygments" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b3/c6/f3b320c27991c46f43ee9d856302c70dc2d0fb2dba4842ff739d5f46b393/rich-14.3.3.tar.gz", hash = "sha256:b8daa0b9e4eef54dd8cf7c86c03713f53241884e814f4e2f5fb342fe520f639b", size = 230582, upload-time = "2026-02-19T17:23:12.474Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c0/8f/0722ca900cc807c13a6a0c696dacf35430f72e0ec571c4275d2371fca3e9/rich-15.0.0.tar.gz", hash = "sha256:edd07a4824c6b40189fb7ac9bc4c52536e9780fbbfbddf6f1e2502c31b068c36", size = 230680, upload-time = "2026-04-12T08:24:00.75Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/14/25/b208c5683343959b670dc001595f2f3737e051da617f66c31f7c4fa93abc/rich-14.3.3-py3-none-any.whl", hash = "sha256:793431c1f8619afa7d3b52b2cdec859562b950ea0d4b6b505397612db8d5362d", size = 310458, upload-time = "2026-02-19T17:23:13.732Z" },
+    { url = "https://files.pythonhosted.org/packages/82/3b/64d4899d73f91ba49a8c18a8ff3f0ea8f1c1d75481760df8c68ef5235bf5/rich-15.0.0-py3-none-any.whl", hash = "sha256:33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb", size = 310654, upload-time = "2026-04-12T08:24:02.83Z" },
 ]
 
 [[package]]
