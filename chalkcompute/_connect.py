@@ -13,6 +13,8 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from chalkcompute._tracing import traced as _traced
+
 if TYPE_CHECKING:
     import httpx
 
@@ -83,15 +85,26 @@ class ConnectClient:
         """Make a Connect-protocol RPC call."""
         import httpx
 
-        self._ensure_auth()
-        assert self._api_server is not None
-        assert self._headers is not None
-        return httpx.post(
-            f"{self._api_server}/{service}/{method}",
-            json=body,
-            headers=self._headers,
-            timeout=timeout,
-        )
+        from chalkcompute._tracing import get_tracer
+
+        with get_tracer().start_as_current_span("chalkcompute.rpc") as span:
+            span.set_attribute("rpc.service", service)
+            span.set_attribute("rpc.method", method)
+            self._ensure_auth()
+            assert self._api_server is not None
+            assert self._headers is not None
+            resp = httpx.post(
+                f"{self._api_server}/{service}/{method}",
+                json=body,
+                headers=self._headers,
+                timeout=timeout,
+            )
+            span.set_attribute("http.response.status_code", resp.status_code)
+            if resp.status_code >= 400:
+                from opentelemetry.trace import StatusCode
+
+                span.set_status(StatusCode.ERROR, f"HTTP {resp.status_code}")
+            return resp
 
 
 # ---------------------------------------------------------------------------
@@ -99,11 +112,12 @@ class ConnectClient:
 # ---------------------------------------------------------------------------
 
 
+@_traced("chalkcompute.build_image")
 def build_image(
     client: ConnectClient,
     image: Image,
     *,
-    poll_interval: float = 5.0,
+    poll_interval: float = 0.5,
     timeout: float = 600.0,
 ) -> str:
     """Build an Image spec via CustomImageService, return the image URI.
@@ -151,6 +165,7 @@ def build_image(
     raise ConnectError(f"Image build {build_id} timed out after {timeout}s")
 
 
+@_traced("chalkcompute.upload_lazy_files")
 def upload_lazy_files(
     client: ConnectClient,
     image: Image,
@@ -163,6 +178,20 @@ def upload_lazy_files(
     except ValueError as e:
         raise ConnectError(str(e)) from e
 
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _put_file(vol_name: str, lf: object) -> None:
+        content = Path(lf.src).read_bytes()  # type: ignore[attr-defined]
+        encoded = base64.b64encode(content).decode("ascii")
+        flat_name = Path(lf.dest).name  # type: ignore[attr-defined]
+        put_resp = client.rpc(
+            "chalk.volume.v1.VolumeService",
+            "PutFile",
+            {"volumeName": vol_name, "path": flat_name, "data": encoded},
+        )
+        if put_resp.status_code != 200:
+            raise ConnectError(f"PutFile failed for {lf.dest}: {put_resp.text}")  # type: ignore[attr-defined]
+
     volumes: list[tuple[str, str]] = []
     for dest_dir, files in dir_to_files.items():
         vol_name = f"{volume_prefix}-{uuid.uuid4().hex[:12]}"
@@ -174,17 +203,10 @@ def upload_lazy_files(
         if resp.status_code != 200:
             raise ConnectError(f"CreateVolume failed: {resp.text}")
 
-        for lf in files:
-            content = Path(lf.src).read_bytes()
-            encoded = base64.b64encode(content).decode("ascii")
-            flat_name = Path(lf.dest).name
-            put_resp = client.rpc(
-                "chalk.volume.v1.VolumeService",
-                "PutFile",
-                {"volumeName": vol_name, "path": flat_name, "data": encoded},
-            )
-            if put_resp.status_code != 200:
-                raise ConnectError(f"PutFile failed for {lf.dest}: {put_resp.text}")
+        with ThreadPoolExecutor(max_workers=32) as pool:
+            futures = [pool.submit(_put_file, vol_name, lf) for lf in files]
+            for fut in as_completed(futures):
+                fut.result()
 
         volumes.append((vol_name, dest_dir))
 
