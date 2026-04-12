@@ -93,12 +93,18 @@ class ConnectClient:
             self._ensure_auth()
             assert self._api_server is not None
             assert self._headers is not None
-            return httpx.post(
+            resp = httpx.post(
                 f"{self._api_server}/{service}/{method}",
                 json=body,
                 headers=self._headers,
                 timeout=timeout,
             )
+            span.set_attribute("http.response.status_code", resp.status_code)
+            if resp.status_code >= 400:
+                from opentelemetry.trace import StatusCode
+
+                span.set_status(StatusCode.ERROR, f"HTTP {resp.status_code}")
+            return resp
 
 
 # ---------------------------------------------------------------------------
