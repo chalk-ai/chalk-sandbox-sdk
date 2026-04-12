@@ -38,6 +38,7 @@ import grpc
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as pb
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2_grpc as pb_grpc
 from chalkcompute.image import Image
+from chalkcompute._tracing import traced
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +266,7 @@ class Sandbox:
             raise
         return _pb_to_sandbox_info(resp.sandbox)
 
+    @traced("chalkcompute.sandbox.exec")
     def exec(
         self,
         command: str,
@@ -363,6 +365,7 @@ class Sandbox:
             _sandbox_id=self._id,
         )
 
+    @traced("chalkcompute.sandbox.terminate")
     def terminate(self, grace_period_seconds: int | None = None) -> None:
         """Terminate this sandbox."""
         req = pb.TerminateSandboxRequest(sandbox_id=self._id)
@@ -416,6 +419,7 @@ class SandboxClient:
         """Close the gRPC channel."""
         self._channel.close()
 
+    @traced("chalkcompute.sandbox.create")
     def create(
         self,
         image: str | Image,
@@ -426,7 +430,7 @@ class SandboxClient:
         env: dict[str, str] | None = None,
         volumes: builtins.list[pb.VolumeMount] | None = None,
         wait: bool = True,
-        poll_interval: float = 5.0,
+        poll_interval: float = 0.5,
         timeout: float = 600.0,
     ) -> Sandbox:
         """
@@ -496,12 +500,7 @@ class SandboxClient:
     ) -> SandboxInfo:
         """Poll GetSandbox until the sandbox reaches a terminal state."""
         deadline = time.monotonic() + timeout
-        while True:
-            if time.monotonic() >= deadline:
-                raise SandboxError(
-                    f"Timed out after {timeout}s waiting for sandbox {sandbox_id} to become ready"
-                )
-            time.sleep(poll_interval)
+        while time.monotonic() < deadline:
             try:
                 resp = self._stub.GetSandbox(
                     pb.GetSandboxRequest(sandbox_id=sandbox_id),
@@ -521,6 +520,10 @@ class SandboxClient:
                 raise SandboxTerminatedError(
                     f"Sandbox {sandbox_id} was terminated during image build"
                 )
+            time.sleep(poll_interval)
+        raise SandboxError(
+            f"Timed out after {timeout}s waiting for sandbox {sandbox_id} to become ready"
+        )
 
     def get(self, id: str) -> Sandbox:
         """

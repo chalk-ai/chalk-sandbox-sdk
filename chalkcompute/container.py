@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from chalkcompute._connect import ConnectClient, upload_lazy_files
+from chalkcompute._tracing import traced
 
 if TYPE_CHECKING:
     from chalkcompute.image import Image as _Image
@@ -168,7 +169,7 @@ class Container:
     # -- Image building (Container uses BuildCustomImage with retries) ---------
 
     def _build_image(
-        self, *, poll_interval: float = 5.0, timeout: float = 600.0,
+        self, *, poll_interval: float = 0.5, timeout: float = 600.0,
     ) -> str:
         """Build the Image spec via CustomImageService and return the image URI."""
         from chalkcompute._connect import ConnectError, build_image
@@ -185,10 +186,11 @@ class Container:
 
     # -- Lifecycle -------------------------------------------------------------
 
+    @traced("chalkcompute.container.run")
     def run(
         self,
         *,
-        poll_interval: float = 5.0,
+        poll_interval: float = 0.5,
         build_timeout: float = 600.0,
         ready_timeout: float = 300.0,
     ) -> Container:
@@ -287,7 +289,6 @@ class Container:
         assert self._container_id is not None
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            time.sleep(poll_interval)
             resp = self._client.rpc(_SVC, "GetContainer", {"id": self._container_id})
             if resp.status_code != 200:
                 raise ContainerError(f"GetContainer failed: {resp.text}")
@@ -300,12 +301,13 @@ class Container:
                 raise ContainerError(
                     f"Container {self._container_id} entered {info.status} state"
                 )
+            time.sleep(poll_interval)
         raise ContainerError(
             f"Container {self._container_id} timed out after {timeout}s"
         )
 
     def _wait_for_volume_files(
-        self, *, timeout: float = 120.0, poll_interval: float = 5.0,
+        self, *, timeout: float = 120.0, poll_interval: float = 0.5,
     ) -> None:
         """Poll until at least one uploaded file is visible in the ChalkFS mount."""
         from chalkcompute.image import Image
@@ -327,6 +329,7 @@ class Container:
             f"ChalkFS files not visible after {timeout}s (probed {probe_path})"
         )
 
+    @traced("chalkcompute.container.exec")
     def exec(
         self,
         *command: str,
@@ -367,6 +370,7 @@ class Container:
         assert last_err is not None
         raise last_err
 
+    @traced("chalkcompute.container.stop")
     def stop(self, grace_period_seconds: int | None = None) -> None:
         """Stop the container and clean up the temporary volume."""
         if self._container_id is not None:

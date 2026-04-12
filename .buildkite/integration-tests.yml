@@ -68,6 +68,9 @@ steps:
       pip install -e .
 
       echo "--- :brain: Deploy and test embedding functions"
+      export OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.chalk.ai:443
+      export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+      export OTEL_SERVICE_NAME=chalkcompute-ci-embedding
       CHALK_FUNCTION_LOCAL_SDK_COPY=1 pytest examples/embedding-function/test_embedding_function.py -v -s --tb=short
     agents:
       queue: default

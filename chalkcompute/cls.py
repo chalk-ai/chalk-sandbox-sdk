@@ -47,7 +47,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
-from chalkcompute._connect import ConnectClient
+from chalkcompute._connect import ConnectClient, build_image, upload_lazy_files
+from chalkcompute._tracing import traced
 from chalkcompute.function import (
     _CATALOG_SVC,
     _REMOTE_ENV_VAR,
@@ -442,10 +443,11 @@ class RemoteClass:
 
     # -- Lifecycle -------------------------------------------------------------
 
+    @traced("chalkcompute.cls.deploy")
     def deploy(
         self,
         *,
-        poll_interval: float = 5.0,
+        poll_interval: float = 0.5,
         build_timeout: float = 600.0,
         ready_timeout: float = 300.0,
     ) -> RemoteClass:
@@ -572,7 +574,6 @@ class RemoteClass:
     ) -> None:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            time.sleep(poll_interval)
             resp = self._client.rpc(_SG_SVC, "GetScalingGroup", {"name": sg_name})
             if resp.status_code != 200:
                 raise ClassError(f"GetScalingGroup failed: {resp.text}")
@@ -595,6 +596,7 @@ class RemoteClass:
                 return
             if status in ("Failed", "Error"):
                 raise ClassError(f"Scaling group {sg_name} entered {status} state")
+            time.sleep(poll_interval)
         raise ClassError(f"Scaling group {sg_name} timed out after {timeout}s")
 
     def wait_ready(
@@ -615,6 +617,7 @@ class RemoteClass:
                 )
         return self
 
+    @traced("chalkcompute.cls.delete")
     def delete(self) -> None:
         """Delete all function versions and clean up volumes."""
         for method_info in self._methods.values():
