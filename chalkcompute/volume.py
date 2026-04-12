@@ -49,6 +49,7 @@ import grpc
 
 from chalkcompute._gen.chalk.volume.v1 import volume_pb2 as pb
 from chalkcompute._gen.chalk.volume.v1 import volume_pb2_grpc as pb_grpc
+from chalkcompute._tracing import traced
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +171,7 @@ class Volume:
 
     # -- File operations -------------------------------------------------------
 
+    @traced("chalkcompute.volume.read_file")
     def read_file(self, path: str) -> bytes:
         """Read a file's contents from the volume.
 
@@ -189,6 +191,7 @@ class Volume:
             raise
         return resp.data
 
+    @traced("chalkcompute.volume.put_file")
     def put_file(self, path: str, data: bytes | str) -> None:
         """Write a file into the volume.
 
@@ -278,6 +281,7 @@ class Volume:
 
     # -- Volume lifecycle ------------------------------------------------------
 
+    @traced("chalkcompute.volume.delete")
     def delete(self) -> None:
         """Delete this volume and all its contents."""
         try:
@@ -334,6 +338,7 @@ class VolumeClient:
         """Close the gRPC channel."""
         self._channel.close()
 
+    @traced("chalkcompute.volume.create")
     def create(self, name: str) -> Volume:
         """Create a new named volume.
 

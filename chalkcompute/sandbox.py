@@ -38,6 +38,7 @@ import grpc
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as pb
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2_grpc as pb_grpc
 from chalkcompute.image import Image
+from chalkcompute._tracing import traced
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +266,7 @@ class Sandbox:
             raise
         return _pb_to_sandbox_info(resp.sandbox)
 
+    @traced("chalkcompute.sandbox.exec")
     def exec(
         self,
         command: str,
@@ -363,6 +365,7 @@ class Sandbox:
             _sandbox_id=self._id,
         )
 
+    @traced("chalkcompute.sandbox.terminate")
     def terminate(self, grace_period_seconds: int | None = None) -> None:
         """Terminate this sandbox."""
         req = pb.TerminateSandboxRequest(sandbox_id=self._id)
@@ -416,6 +419,7 @@ class SandboxClient:
         """Close the gRPC channel."""
         self._channel.close()
 
+    @traced("chalkcompute.sandbox.create")
     def create(
         self,
         image: str | Image,

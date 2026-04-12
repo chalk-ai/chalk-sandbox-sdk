@@ -13,6 +13,8 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from chalkcompute._tracing import traced as _traced
+
 if TYPE_CHECKING:
     import httpx
 
@@ -83,15 +85,20 @@ class ConnectClient:
         """Make a Connect-protocol RPC call."""
         import httpx
 
-        self._ensure_auth()
-        assert self._api_server is not None
-        assert self._headers is not None
-        return httpx.post(
-            f"{self._api_server}/{service}/{method}",
-            json=body,
-            headers=self._headers,
-            timeout=timeout,
-        )
+        from chalkcompute._tracing import get_tracer
+
+        with get_tracer().start_as_current_span("chalkcompute.rpc") as span:
+            span.set_attribute("rpc.service", service)
+            span.set_attribute("rpc.method", method)
+            self._ensure_auth()
+            assert self._api_server is not None
+            assert self._headers is not None
+            return httpx.post(
+                f"{self._api_server}/{service}/{method}",
+                json=body,
+                headers=self._headers,
+                timeout=timeout,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +106,7 @@ class ConnectClient:
 # ---------------------------------------------------------------------------
 
 
+@_traced("chalkcompute.build_image")
 def build_image(
     client: ConnectClient,
     image: Image,
@@ -151,6 +159,7 @@ def build_image(
     raise ConnectError(f"Image build {build_id} timed out after {timeout}s")
 
 
+@_traced("chalkcompute.upload_lazy_files")
 def upload_lazy_files(
     client: ConnectClient,
     image: Image,

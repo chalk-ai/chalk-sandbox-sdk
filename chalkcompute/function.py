@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 from chalkcompute._connect import ConnectClient, build_image, upload_lazy_files
+from chalkcompute._tracing import traced
 
 if TYPE_CHECKING:
     from chalkcompute.image import Image as _Image
@@ -403,6 +404,7 @@ class RemoteFunction:
 
     # -- Lifecycle -------------------------------------------------------------
 
+    @traced("chalkcompute.function.deploy")
     def deploy(
         self,
         *,
@@ -645,6 +647,7 @@ class RemoteFunction:
             self._call_channel = grpc.insecure_channel(target)
         self._call_stub = call_grpc.RemoteCallServiceStub(self._call_channel)
 
+    @traced("chalkcompute.function.call")
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """Call the remote function via gRPC with Arrow IPC serialization."""
         import pyarrow as pa
@@ -717,6 +720,7 @@ class RemoteFunction:
 
     # -- Management ------------------------------------------------------------
 
+    @traced("chalkcompute.function.delete")
     def delete(self) -> None:
         """Delete this function version."""
         if self._version_info is not None:

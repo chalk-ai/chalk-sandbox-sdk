@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from chalkcompute._connect import ConnectClient, upload_lazy_files
+from chalkcompute._tracing import traced
 
 if TYPE_CHECKING:
     from chalkcompute.image import Image as _Image
@@ -185,6 +186,7 @@ class Container:
 
     # -- Lifecycle -------------------------------------------------------------
 
+    @traced("chalkcompute.container.run")
     def run(
         self,
         *,
@@ -327,6 +329,7 @@ class Container:
             f"ChalkFS files not visible after {timeout}s (probed {probe_path})"
         )
 
+    @traced("chalkcompute.container.exec")
     def exec(
         self,
         *command: str,
@@ -367,6 +370,7 @@ class Container:
         assert last_err is not None
         raise last_err
 
+    @traced("chalkcompute.container.stop")
     def stop(self, grace_period_seconds: int | None = None) -> None:
         """Stop the container and clean up the temporary volume."""
         if self._container_id is not None:

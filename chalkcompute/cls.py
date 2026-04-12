@@ -50,6 +50,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from chalkcompute._connect import ConnectClient, build_image, upload_lazy_files
+from chalkcompute._tracing import traced
 from chalkcompute.function import (
     _CATALOG_SVC,
     _REMOTE_ENV_VAR,
@@ -511,6 +512,7 @@ class RemoteClass:
 
     # -- Lifecycle -------------------------------------------------------------
 
+    @traced("chalkcompute.cls.deploy")
     def deploy(
         self,
         *,
@@ -717,6 +719,7 @@ class RemoteClass:
                 )
         return self
 
+    @traced("chalkcompute.cls.delete")
     def delete(self) -> None:
         """Delete all function versions and clean up volumes."""
         for method_info in self._methods.values():
