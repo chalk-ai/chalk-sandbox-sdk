@@ -25,6 +25,7 @@ Or imperatively:
 
 from __future__ import annotations
 
+import ast
 import functools
 import inspect
 import os
@@ -45,6 +46,9 @@ if TYPE_CHECKING:
 _REMOTE_ENV_VAR = "_CHALK_REMOTE_FUNCTION"
 # When enabled, mount the local SDK project and pip-install at container start.
 _LOCAL_COPY_ENV_VAR = "CHALK_FUNCTION_LOCAL_SDK_COPY"
+# When enabled, strip chalkcompute references from user source instead of
+# mounting the local SDK.  Lighter-weight alternative to _LOCAL_COPY_ENV_VAR.
+_STRIP_SOURCE_ENV_VAR = "CHALK_FUNCTION_STRIP_SOURCE"
 _LOCAL_SDK_MOUNT = "/tmp/sdk"
 _CATALOG_SVC = "chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService"
 _SG_SVC = "chalk.scalinggroup.v1.ScalingGroupManagerService"
@@ -94,6 +98,66 @@ class DeployedFunction(Protocol):
     def refresh(self) -> Any: ...
 
 
+# ---------------------------------------------------------------------------
+# Source transformation helpers
+# ---------------------------------------------------------------------------
+
+
+def _strip_chalkcompute_from_source(source: str) -> str:
+    """Remove chalkcompute imports, decorators, and lifecycle calls.
+
+    Preserves all other code (helpers, constants, classes, non-chalkcompute
+    imports) so the deployed module is self-contained minus the SDK.
+    """
+    tree = ast.parse(source)
+    lines = source.splitlines(keepends=True)
+
+    # Collect line ranges to remove (1-indexed, inclusive)
+    remove_ranges: list[tuple[int, int]] = []
+
+    # Track names of functions decorated with @chalkcompute.function(...)
+    decorated_names: set[str] = set()
+
+    for node in ast.iter_child_nodes(tree):
+        # Remove: import chalkcompute / from chalkcompute import ...
+        if isinstance(node, ast.Import):
+            if any(alias.name.startswith("chalkcompute") for alias in node.names):
+                remove_ranges.append((node.lineno, node.end_lineno or node.lineno))
+                continue
+        if isinstance(node, ast.ImportFrom):
+            if node.module and node.module.startswith("chalkcompute"):
+                remove_ranges.append((node.lineno, node.end_lineno or node.lineno))
+                continue
+
+        # Remove @chalkcompute.function(...) decorators from function defs
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for dec in node.decorator_list:
+                dec_source = ast.get_source_segment(source, dec)
+                if dec_source and "chalkcompute" in dec_source:
+                    remove_ranges.append((dec.lineno, dec.end_lineno or dec.lineno))
+                    decorated_names.add(node.name)
+
+    # Remove method calls on decorated functions (e.g. add.wait_ready())
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+            call = node.value
+            if (
+                isinstance(call.func, ast.Attribute)
+                and isinstance(call.func.value, ast.Name)
+                and call.func.value.id in decorated_names
+            ):
+                remove_ranges.append((node.lineno, node.end_lineno or node.lineno))
+
+    # Build output, skipping removed line ranges
+    removed_lines: set[int] = set()
+    for start, end in remove_ranges:
+        for ln in range(start, end + 1):
+            removed_lines.add(ln)
+
+    kept = [line for i, line in enumerate(lines, start=1) if i not in removed_lines]
+    return "".join(kept)
+
+
 def _generate_handler_shim(func_name: str) -> str:
     """Generate a handler.py that bridges Arrow columnar data to scalar calls.
 
@@ -130,32 +194,73 @@ def _write_temp(content: str) -> str:
     return f.name
 
 
+def _should_strip_source() -> bool:
+    return os.environ.get(_STRIP_SOURCE_ENV_VAR, "") == "1"
+
+
+def _prepare_source_file(source_file: str) -> tuple[str, bool]:
+    """Return the source file path to deploy, optionally stripping chalkcompute.
+
+    Returns (path, is_temp) — if stripping produced a temp file, the caller
+    should clean it up.
+    """
+    if not _should_strip_source():
+        return source_file, False
+    from pathlib import Path
+
+    source = Path(source_file).read_text()
+    stripped = _strip_chalkcompute_from_source(source)
+    return _write_temp(stripped), True
+
+
 # ---------------------------------------------------------------------------
 # Shared image / deploy helpers (used by both function.py and cls.py)
 # ---------------------------------------------------------------------------
 
 
 def _local_install_entrypoint(handler_cmd: list[str]) -> list[str]:
-    """Wrap *handler_cmd* with a local pip install when local-copy mode is on."""
-    if os.environ.get(_LOCAL_COPY_ENV_VAR, "") != "1":
+    """Wrap *handler_cmd* with a tar extract + pip install when local-copy mode is on."""
+    if os.environ.get(_LOCAL_COPY_ENV_VAR, "") != "1" or _should_strip_source():
         return handler_cmd
-    install = f"pip install {_LOCAL_SDK_MOUNT}"
-    return ["sh", "-c", f"{install} && {' '.join(handler_cmd)}"]
+    from chalkcompute.image import ARCHIVE_NAME, _ARCHIVE_CHUNK_PREFIX
+
+    d = _LOCAL_SDK_MOUNT
+    # Reassemble chunked archive, extract, then pip install.
+    cat_parts = f"cat {d}/{_ARCHIVE_CHUNK_PREFIX}* > {d}/{ARCHIVE_NAME}"
+    extract = f"tar xzf {d}/{ARCHIVE_NAME} -C {d}"
+    install = f"pip install {d}"
+    return [
+        "sh",
+        "-c",
+        f"{cat_parts} && {extract} && {install} && {' '.join(handler_cmd)}",
+    ]
 
 
 def _make_base_image(user_image: _Image | None) -> _Image:
     """Create the base deploy image with SDK packages and optional local overlay."""
     from chalkcompute.image import Image
 
-    local_copy = os.environ.get(_LOCAL_COPY_ENV_VAR, "") == "1"
+    local_copy = (
+        os.environ.get(_LOCAL_COPY_ENV_VAR, "") == "1"
+        and not _should_strip_source()
+    )
 
     base = user_image if user_image is not None else Image.debian_slim()
 
     if local_copy:
         # Mount the local SDK project via volume; the entrypoint will
-        # pip-install it before starting the handler.
+        # extract the tar and pip-install before starting the handler.
         project_root = Path(__file__).resolve().parent.parent
-        image = base.add_local_dir(str(project_root), _LOCAL_SDK_MOUNT)
+        image = base.add_local_dir(
+            str(project_root),
+            _LOCAL_SDK_MOUNT,
+            exclude=[".git", "__pycache__", "*.pyc", ".env*", "e2etests", "examples"],
+            archive=True,
+        )
+    elif _should_strip_source():
+        # Source is stripped of chalkcompute references — only install the
+        # RPC runtime, not chalkcompute itself.
+        image = base.pip_install(["chalk-remote-call-python"])
     else:
         from importlib.metadata import version as _pkg_version
 
@@ -425,7 +530,9 @@ class RemoteFunction:
 
     def _build_deploy_image(self) -> _Image:
         """Build the deploy image with handler shim and user module."""
-        source_file = inspect.getfile(self._func)
+        source_file, source_is_temp = _prepare_source_file(
+            inspect.getfile(self._func)
+        )
 
         handler_shim = _generate_handler_shim(
             getattr(self._func, "__name__", self._func_name)
@@ -439,7 +546,7 @@ class RemoteFunction:
             .env({"PYTHONPATH": "/app", _REMOTE_ENV_VAR: "1"})
         )
 
-        self._temp_files = [shim_path]
+        self._temp_files = [shim_path] + ([source_file] if source_is_temp else [])
         return deploy_image
 
     # -- Lifecycle -------------------------------------------------------------

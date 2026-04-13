@@ -22,12 +22,22 @@ sandbox container.
 
 from __future__ import annotations
 
+import io
 import os
+import tarfile
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as pb
+
+
+ARCHIVE_NAME = "_archive.tar.gz"
+_ARCHIVE_CHUNK_PREFIX = "_archive.part."
+# PutFile payload is base64-encoded, so keep raw chunks under ~6 MB
+# to stay well within typical HTTP body limits after encoding (~8 MB).
+_ARCHIVE_CHUNK_SIZE = 6 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -199,6 +209,8 @@ class Image:
         dest: str,
         *,
         strategy: Literal["copy", "volume"] = "volume",
+        exclude: list[str] | None = None,
+        archive: bool = False,
     ) -> Image:
         """Add an entire local directory into the image.
 
@@ -208,26 +220,67 @@ class Image:
             strategy: "copy" inlines all file contents into the image spec.
                       "volume" (default) defers each file as a lazy reference
                       to be mounted at sandbox start.
+            exclude: Glob patterns to skip (matched against relative paths).
+                     e.g. [".git", "__pycache__", "*.pyc"]
+            archive: When True (volume strategy only), tar the directory into
+                     a single file for upload instead of individual files.
+                     The caller is responsible for extracting at the destination.
         """
         new = self._copy()
         src_path = Path(src)
-        for file_path in sorted(src_path.rglob("*")):
-            if file_path.is_file():
+        _exclude = exclude or []
+
+        def _iter_files() -> list[Path]:
+            result = []
+            for file_path in sorted(src_path.rglob("*")):
+                if not file_path.is_file():
+                    continue
                 rel = file_path.relative_to(src_path)
-                file_dest = os.path.join(dest, str(rel))
-                if strategy == "volume":
-                    new._lazy_local_files.add(
-                        LazyLocalFile(src=str(file_path.resolve()), dest=file_dest)
+                if any(rel.match(pat) for pat in _exclude):
+                    continue
+                result.append(file_path)
+            return result
+
+        if archive and strategy == "volume":
+            files = _iter_files()
+            if files:
+                buf = io.BytesIO()
+                with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+                    for file_path in files:
+                        rel = file_path.relative_to(src_path)
+                        tar.add(str(file_path), arcname=str(rel))
+                data = buf.getvalue()
+                # Split into chunks to stay within PutFile size limits.
+                for i in range(0, len(data), _ARCHIVE_CHUNK_SIZE):
+                    chunk = data[i : i + _ARCHIVE_CHUNK_SIZE]
+                    tmp = tempfile.NamedTemporaryFile(
+                        suffix=".tar.gz.part", delete=False
                     )
-                else:
-                    content = file_path.read_bytes()
-                    new._steps.append(
-                        pb.BuildStep(
-                            add_file=pb.AddFileStep(
-                                destination=file_dest, content=content
-                            )
+                    tmp.write(chunk)
+                    tmp.close()
+                    part_name = f"{_ARCHIVE_CHUNK_PREFIX}{i // _ARCHIVE_CHUNK_SIZE:04d}"
+                    part_dest = os.path.join(dest, part_name)
+                    new._lazy_local_files.add(
+                        LazyLocalFile(src=tmp.name, dest=part_dest)
+                    )
+            return new
+
+        for file_path in _iter_files():
+            rel = file_path.relative_to(src_path)
+            file_dest = os.path.join(dest, str(rel))
+            if strategy == "volume":
+                new._lazy_local_files.add(
+                    LazyLocalFile(src=str(file_path.resolve()), dest=file_dest)
+                )
+            else:
+                content = file_path.read_bytes()
+                new._steps.append(
+                    pb.BuildStep(
+                        add_file=pb.AddFileStep(
+                            destination=file_dest, content=content
                         )
                     )
+                )
         return new
 
     def dockerfile_commands(self, commands: list[str]) -> Image:

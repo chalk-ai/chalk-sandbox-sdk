@@ -10,7 +10,6 @@ import base64
 import os
 import time
 import uuid
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from chalkcompute._tracing import traced as _traced
@@ -180,14 +179,16 @@ def upload_lazy_files(
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    def _put_file(vol_name: str, lf: LazyLocalFile) -> None:
+    def _put_file(vol_name: str, lf: LazyLocalFile, dest_dir: str) -> None:
+        from pathlib import Path
+
         content = Path(lf.src).read_bytes()
         encoded = base64.b64encode(content).decode("ascii")
-        flat_name = Path(lf.dest).name
+        rel_path = os.path.relpath(lf.dest, dest_dir)
         put_resp = client.rpc(
             "chalk.volume.v1.VolumeService",
             "PutFile",
-            {"volumeName": vol_name, "path": flat_name, "data": encoded},
+            {"volumeName": vol_name, "path": rel_path, "data": encoded},
         )
         if put_resp.status_code != 200:
             raise ConnectError(f"PutFile failed for {lf.dest}: {put_resp.text}")
@@ -204,7 +205,9 @@ def upload_lazy_files(
             raise ConnectError(f"CreateVolume failed: {resp.text}")
 
         with ThreadPoolExecutor(max_workers=32) as pool:
-            futures = [pool.submit(_put_file, vol_name, lf) for lf in files]
+            futures = [
+                pool.submit(_put_file, vol_name, lf, dest_dir) for lf in files
+            ]
             for fut in as_completed(futures):
                 fut.result()
 

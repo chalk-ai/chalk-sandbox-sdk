@@ -39,6 +39,7 @@ Or imperatively:
 
 from __future__ import annotations
 
+import ast
 import inspect
 import os
 import time
@@ -61,6 +62,7 @@ from chalkcompute.function import (
     _local_install_entrypoint,
     _make_base_image,
     _make_container_spec,
+    _should_strip_source,
     _write_temp,
 )
 
@@ -133,6 +135,60 @@ class _MethodInfo:
     name: str
     func: Callable
     remote_function: RemoteFunction | None = field(default=None, repr=False)
+
+
+# ---------------------------------------------------------------------------
+# Source transformation
+# ---------------------------------------------------------------------------
+
+
+def _strip_chalkcompute_from_class_source(source: str) -> str:
+    """Remove chalkcompute imports, decorators, and lifecycle calls.
+
+    Like function._strip_chalkcompute_from_source but uses ast.walk() to
+    catch decorators inside ClassDef bodies (not just top-level nodes).
+    """
+    tree = ast.parse(source)
+    lines = source.splitlines(keepends=True)
+
+    remove_ranges: list[tuple[int, int]] = []
+    decorated_names: set[str] = set()
+
+    for node in ast.walk(tree):
+        # Remove: import chalkcompute / from chalkcompute import ...
+        if isinstance(node, ast.Import):
+            if any(alias.name.startswith("chalkcompute") for alias in node.names):
+                remove_ranges.append((node.lineno, node.end_lineno or node.lineno))
+        elif isinstance(node, ast.ImportFrom):
+            if node.module and node.module.startswith("chalkcompute"):
+                remove_ranges.append((node.lineno, node.end_lineno or node.lineno))
+
+        # Remove chalkcompute decorators from functions and classes
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            for dec in node.decorator_list:
+                dec_source = ast.get_source_segment(source, dec)
+                if dec_source and "chalkcompute" in dec_source:
+                    remove_ranges.append((dec.lineno, dec.end_lineno or dec.lineno))
+                    decorated_names.add(node.name)
+
+    # Remove method calls on decorated names (e.g. Adder.deploy(), Adder.delete())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+            call = node.value
+            if (
+                isinstance(call.func, ast.Attribute)
+                and isinstance(call.func.value, ast.Name)
+                and call.func.value.id in decorated_names
+            ):
+                remove_ranges.append((node.lineno, node.end_lineno or node.lineno))
+
+    removed_lines: set[int] = set()
+    for start, end in remove_ranges:
+        for ln in range(start, end + 1):
+            removed_lines.add(ln)
+
+    kept = [line for i, line in enumerate(lines, start=1) if i not in removed_lines]
+    return "".join(kept)
 
 
 # ---------------------------------------------------------------------------
@@ -406,6 +462,14 @@ class RemoteClass:
         source_file = inspect.getfile(self._user_cls)
 
         temp_files: list[str] = []
+
+        if _should_strip_source():
+            from pathlib import Path
+
+            source = Path(source_file).read_text()
+            stripped = _strip_chalkcompute_from_class_source(source)
+            source_file = _write_temp(stripped)
+            temp_files.append(source_file)
 
         deploy_image = _make_base_image(self._image).add_local_file(
             source_file, "/app/user_module.py"
