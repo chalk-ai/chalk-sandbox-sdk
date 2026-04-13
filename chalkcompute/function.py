@@ -52,6 +52,9 @@ _LOCAL_COPY_ENV_VAR = "CHALK_FUNCTION_LOCAL_SDK_COPY"
 # When enabled, strip chalkcompute references from user source instead of
 # mounting the local SDK.  Lighter-weight alternative to _LOCAL_COPY_ENV_VAR.
 _STRIP_SOURCE_ENV_VAR = "CHALK_FUNCTION_STRIP_SOURCE"
+# When enabled, route __call__ through the API server's CallExternalFunction
+# RPC instead of connecting directly to the scaling group's web URL.
+_CALL_VIA_API_ENV_VAR = "CHALK_FUNCTION_CALL_VIA_API"
 _LOCAL_SDK_MOUNT = "/tmp/sdk"
 _CATALOG_SVC = "chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService"
 _SG_SVC = "chalk.scalinggroup.v1.ScalingGroupManagerService"
@@ -198,7 +201,19 @@ def _write_temp(content: str) -> str:
 
 
 def _should_strip_source() -> bool:
-    return os.environ.get(_STRIP_SOURCE_ENV_VAR, "") == "1"
+    if _STRIP_SOURCE_ENV_VAR in os.environ:
+        return os.environ[_STRIP_SOURCE_ENV_VAR] == "1"
+
+    from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
+    try:
+        return _pkg_version("chalkcompute") == "0.0.0"
+    except PackageNotFoundError:
+        return False
+
+
+def _should_call_via_api() -> bool:
+    return os.environ.get(_CALL_VIA_API_ENV_VAR, "") == "1"
 
 
 def _prepare_source_file(source_file: str) -> tuple[str, bool]:
@@ -223,7 +238,8 @@ def _prepare_source_file(source_file: str) -> tuple[str, bool]:
 
 def _local_install_entrypoint(handler_cmd: list[str]) -> list[str]:
     """Wrap *handler_cmd* with a tar extract + pip install when local-copy mode is on."""
-    if os.environ.get(_LOCAL_COPY_ENV_VAR, "") != "1" or _should_strip_source():
+    strip_source = _should_strip_source()
+    if os.environ.get(_LOCAL_COPY_ENV_VAR, "") != "1" or strip_source:
         return handler_cmd
     from chalkcompute.image import ARCHIVE_NAME, _ARCHIVE_CHUNK_PREFIX
 
@@ -243,10 +259,8 @@ def _make_base_image(user_image: _Image | None) -> _Image:
     """Create the base deploy image with SDK packages and optional local overlay."""
     from chalkcompute.image import Image
 
-    local_copy = (
-        os.environ.get(_LOCAL_COPY_ENV_VAR, "") == "1"
-        and not _should_strip_source()
-    )
+    strip_source = _should_strip_source()
+    local_copy = os.environ.get(_LOCAL_COPY_ENV_VAR, "") == "1" and not strip_source
 
     base = user_image if user_image is not None else Image.debian_slim()
 
@@ -260,7 +274,7 @@ def _make_base_image(user_image: _Image | None) -> _Image:
             exclude=[".git", "__pycache__", "*.pyc", ".env*", "e2etests", "examples"],
             archive=True,
         )
-    elif _should_strip_source():
+    elif strip_source:
         # Source is stripped of chalkcompute references — only install the
         # RPC runtime, not chalkcompute itself.
         image = base.pip_install(["chalk-remote-call-python"])
@@ -767,16 +781,55 @@ class RemoteFunction:
             self._call_channel = grpc.insecure_channel(target)
         self._call_stub = call_grpc.RemoteCallServiceStub(self._call_channel)
 
+    def _call_via_api_rpc(self, feather_bytes: bytes) -> bytes:
+        """Call the remote function via the API server's CallExternalFunction RPC.
+
+        Returns the response Arrow IPC bytes.
+        """
+        import base64
+
+        if self._version_info is None:
+            raise FunctionError("No function version — call .deploy() first.")
+
+        function_key: dict[str, Any] = {
+            "functionName": self._version_info.function_name,
+        }
+        if self._version_info.version:
+            function_key["version"] = self._version_info.version
+
+        request_body: dict[str, Any] = {
+            "function": function_key,
+            "remoteCallRequest": {
+                "name": "handler",
+                "featherStream": base64.b64encode(feather_bytes).decode("ascii"),
+            },
+        }
+
+        resp = self._client.rpc(
+            _CATALOG_SVC,
+            "CallExternalFunction",
+            request_body,
+            timeout=300,
+        )
+        if resp.status_code != 200:
+            raise FunctionError(f"CallExternalFunction failed: {resp.text}")
+
+        data = resp.json()
+        remote_resp = data.get("remoteCallResponse")
+        if not remote_resp:
+            raise FunctionError("No remoteCallResponse in CallExternalFunction response")
+
+        feather_b64 = remote_resp.get("featherStream")
+        if not feather_b64:
+            raise FunctionError("No featherStream in CallExternalFunction response")
+
+        return base64.b64decode(feather_b64)
+
     @traced("chalkcompute.function.call")
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        """Call the remote function via gRPC with Arrow IPC serialization."""
+        """Call the remote function via gRPC or the API server."""
         import pyarrow as pa
         import pyarrow.ipc as ipc
-        from chalk_remote_call._gen.chalk.runtime.v1 import (
-            remote_python_call_pb2 as call_pb,
-        )
-
-        self._ensure_call_stub()
 
         # 1. Build name→value mapping from args
         if self._input_field_names:
@@ -810,30 +863,46 @@ class RemoteFunction:
             writer.write_batch(batch)
         feather_bytes = sink.getvalue().to_pybytes()
 
-        # 4. gRPC streaming call
-        def requests():
-            yield call_pb.CallFunctionRequest(  # ty: ignore[unresolved-attribute]
-                name="handler",
-                feather_stream=feather_bytes,
-            )
-
-        responses = list(
-            self._call_stub.CallFunction(requests(), metadata=self._call_metadata)
-        )
-
-        if not responses:
-            raise FunctionError("No response received from remote function")
-
-        # 5. Deserialize response Arrow IPC bytes
-        results: list[Any] = []
-        for resp in responses:
-            reader = ipc.open_stream(resp.feather_stream)
+        # 4. Call: branch on routing mode
+        if _should_call_via_api():
+            response_bytes = self._call_via_api_rpc(feather_bytes)
+            results: list[Any] = []
+            reader = ipc.open_stream(response_bytes)
             for result_batch in reader:
                 result_dict = result_batch.to_pydict()
                 if "result" in result_dict:
                     results.extend(result_dict["result"])
+        else:
+            from chalk_remote_call._gen.chalk.runtime.v1 import (
+                remote_python_call_pb2 as call_pb,
+            )
 
-        # Single-row call returns scalar
+            self._ensure_call_stub()
+
+            def requests():
+                yield call_pb.CallFunctionRequest(  # ty: ignore[unresolved-attribute]
+                    name="handler",
+                    feather_stream=feather_bytes,
+                )
+
+            responses = list(
+                self._call_stub.CallFunction(
+                    requests(), metadata=self._call_metadata
+                )
+            )
+
+            if not responses:
+                raise FunctionError("No response received from remote function")
+
+            results = []
+            for resp in responses:
+                reader = ipc.open_stream(resp.feather_stream)
+                for result_batch in reader:
+                    result_dict = result_batch.to_pydict()
+                    if "result" in result_dict:
+                        results.extend(result_dict["result"])
+
+        # 5. Single-row call returns scalar
         if len(results) == 1:
             return results[0]
         return results
