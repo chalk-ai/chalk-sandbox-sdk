@@ -2,6 +2,10 @@
 
 import importlib
 
+from chalkcompute._logging import setup_logging as _setup_logging
+
+_setup_logging()
+
 _LAZY_MAP: dict[str, tuple[str, str]] = {
     # container.py
     "Container": ("chalkcompute.container", "Container"),

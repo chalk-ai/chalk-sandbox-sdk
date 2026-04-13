@@ -186,6 +186,69 @@ def test_container_secret_from_env() -> None:
 
 
 @needs_staging
+def test_container_secret_from_local_env() -> None:
+    """Secret.from_local_env() reads a local env var and injects it into the container."""
+    local_var = f"TEST_LOCAL_SECRET_{uuid.uuid4().hex[:8].upper()}"
+    secret_value = f"local-secret-{uuid.uuid4().hex[:8]}"
+    os.environ[local_var] = secret_value
+
+    try:
+        img = Image.debian_slim()
+        c = Container(
+            image=img,
+            name=f"test-local-env-{uuid.uuid4().hex[:8]}",
+            secrets=[Secret.from_local_env(local_var)],
+        )
+        try:
+            c.run()
+            result = c.exec("sh", "-c", f"echo ${local_var}")
+            assert result.exit_code == 0, (
+                f"echo ${local_var} failed: {result.stderr_text}"
+            )
+            assert result.stdout_text.strip() == secret_value
+        finally:
+            c.stop()
+    finally:
+        del os.environ[local_var]
+
+
+@needs_staging
+def test_container_secret_from_local_env_file() -> None:
+    """Secret.from_local_env_file() reads a .env file and injects vars into the container."""
+    suffix = uuid.uuid4().hex[:8].upper()
+    var_a = f"FILE_SECRET_A_{suffix}"
+    var_b = f"FILE_SECRET_B_{suffix}"
+    val_a = f"value-a-{uuid.uuid4().hex[:8]}"
+    val_b = f"value-b-{uuid.uuid4().hex[:8]}"
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".env", delete=False) as f:
+        f.write(f"# a comment\n{var_a}={val_a}\n{var_b}='{val_b}'\n")
+        f.flush()
+        env_path = f.name
+
+    try:
+        img = Image.debian_slim()
+        c = Container(
+            image=img,
+            name=f"test-env-file-{uuid.uuid4().hex[:8]}",
+            secrets=[Secret.from_local_env_file(env_path)],
+        )
+        try:
+            c.run()
+            r1 = c.exec("sh", "-c", f"echo ${var_a}")
+            assert r1.exit_code == 0, f"echo ${var_a} failed: {r1.stderr_text}"
+            assert r1.stdout_text.strip() == val_a
+
+            r2 = c.exec("sh", "-c", f"echo ${var_b}")
+            assert r2.exit_code == 0, f"echo ${var_b} failed: {r2.stderr_text}"
+            assert r2.stdout_text.strip() == val_b
+        finally:
+            c.stop()
+    finally:
+        os.unlink(env_path)
+
+
+@needs_staging
 def test_container_env_vars() -> None:
     """Image.env() variables are visible inside the running container."""
     img = Image.debian_slim().env({"MY_VAR": "hello_world", "ANOTHER": "42"})

@@ -7,8 +7,11 @@ Falls back to plain print() when disabled or when rich is not installed.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import TYPE_CHECKING, Literal
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from rich.live import Live
@@ -100,11 +103,11 @@ class ContainerProgress:
         if detail:
             label = f"{label} ({detail})"
         if status == "in_progress":
-            print(f"  ⠸ {label}...")
+            logger.info("  ⠸ %s...", label)
         elif status == "done":
-            print(f"  ✓ {label}")
+            logger.info("  ✓ %s", label)
         elif status == "failed":
-            print(f"  ✗ {label}")
+            logger.info("  ✗ %s", label)
 
     def _render(self):
         """Build a rich renderable showing the hierarchical step tree."""

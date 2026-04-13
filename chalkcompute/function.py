@@ -28,6 +28,7 @@ from __future__ import annotations
 import ast
 import functools
 import inspect
+import logging
 import os
 import tempfile
 import time
@@ -39,6 +40,8 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 from chalkcompute._connect import ConnectClient, build_image, upload_lazy_files
 from chalkcompute._tracing import traced
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from chalkcompute.image import Image as _Image
@@ -422,18 +425,18 @@ class RemoteFunction:
         deploy_image = self._build_deploy_image()
 
         # 2. Build image URI
-        print(f"Building image for function '{self._func_name}'...")
+        logger.info("Building image for function '%s'...", self._func_name)
         image_uri = build_image(
             self._client,
             deploy_image,
             poll_interval=poll_interval,
             timeout=build_timeout,
         )
-        print(f"Image built: {image_uri}")
+        logger.info("Image built: %s", image_uri)
 
         # 3. Upload lazy local files
         if deploy_image.lazy_local_files:
-            print(f"Uploading {len(deploy_image.lazy_local_files)} local file(s)...")
+            logger.info("Uploading %d local file(s)...", len(deploy_image.lazy_local_files))
             self._volumes += upload_lazy_files(
                 self._client,
                 deploy_image,
@@ -495,7 +498,7 @@ class RemoteFunction:
         }
 
         # 6. Call CreateExternalFunctionVersion
-        print(f"Registering function '{self._func_name}'...")
+        logger.info("Registering function '%s'...", self._func_name)
         resp = self._client.rpc(
             _CATALOG_SVC,
             "CreateExternalFunctionVersion",
@@ -528,9 +531,11 @@ class RemoteFunction:
             self._port = 6666
             sg_status = ""
 
-        print(
-            f"Function version created: {self._version_info.function_name} "
-            f"v{self._version_info.version} (id={self._version_info.id})"
+        logger.info(
+            "Function version created: %s v%s (id=%s)",
+            self._version_info.function_name,
+            self._version_info.version,
+            self._version_info.id,
         )
 
         # 7. Poll scaling group until running
@@ -562,7 +567,7 @@ class RemoteFunction:
             sg = resp.json()["scalingGroup"]
             status = sg.get("status", "")
             self._web_url = sg.get("webUrl")
-            print(f"  poll: status={status}")
+            logger.info("  poll: status=%s", status)
             if status in ("Running", "Available"):
                 return
             if status in ("Failed", "Error"):
