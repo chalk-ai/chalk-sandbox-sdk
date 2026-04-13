@@ -7,10 +7,13 @@ image build polling, and volume file upload.
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import time
 import uuid
 from typing import TYPE_CHECKING, Any
+
+logger = logging.getLogger(__name__)
 
 from chalkcompute._tracing import traced as _traced
 
@@ -143,6 +146,8 @@ def build_image(
 
     build_id = data["buildId"]
     deadline = time.monotonic() + timeout
+    transient_failures = 0
+    max_transient_failures = 5
     while time.monotonic() < deadline:
         get_resp = client.rpc(
             "chalk.sandbox.v1.CustomImageService",
@@ -150,7 +155,19 @@ def build_image(
             {"buildId": build_id},
         )
         if get_resp.status_code != 200:
-            raise ConnectError(f"GetCustomImage failed: {get_resp.text}")
+            transient_failures += 1
+            if transient_failures >= max_transient_failures:
+                raise ConnectError(
+                    f"GetCustomImage failed after {transient_failures} consecutive "
+                    f"transient errors: {get_resp.text}"
+                )
+            logger.warning(
+                "GetCustomImage transient error (%d/%d): %s",
+                transient_failures, max_transient_failures, get_resp.text,
+            )
+            time.sleep(poll_interval)
+            continue
+        transient_failures = 0
         get_data = get_resp.json()
         status = get_data.get("status", "")
         if status == "succeeded":
