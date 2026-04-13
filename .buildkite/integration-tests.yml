@@ -10,8 +10,9 @@ steps:
       set -euo pipefail
       echo "--- :python: Install dependencies"
       pip install ty
+      pip install -e .
       echo "--- :mag: Run ty"
-      ty check chalkcompute/container.py chalkcompute/sandbox.py chalkcompute/image.py chalkcompute/volume.py
+      ty check chalkcompute/ --exclude chalkcompute/_gen/
     agents:
       queue: default
     timeout_in_minutes: 5

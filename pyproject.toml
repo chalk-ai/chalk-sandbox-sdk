@@ -1,6 +1,6 @@
 [project]
 name = "chalkcompute"
-version = "0.1.0"
+version = "0.0.0"
 description = "SDK for Chalk sandboxes, containers, and volumes"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -27,7 +27,7 @@ packages = ["chalkcompute"]
 
 [dependency-groups]
 dev = [
-    "chalkpy[runtime]>=2.113.7",
+    "chalkpy[runtime]>=2.114.0",
     "python-dotenv>=1.1.0",
     "pytest>=9.0.2",
 ]

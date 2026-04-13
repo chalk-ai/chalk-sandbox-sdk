@@ -44,7 +44,12 @@ if TYPE_CHECKING:
     from chalkcompute.image import Image as _Image
 
 _REMOTE_ENV_VAR = "_CHALK_REMOTE_FUNCTION"
+# When enabled, mount the local SDK project and pip-install at container start.
+_LOCAL_COPY_ENV_VAR = "CHALK_FUNCTION_LOCAL_SDK_COPY"
+# When enabled, strip chalkcompute references from user source instead of
+# mounting the local SDK.  Lighter-weight alternative to _LOCAL_COPY_ENV_VAR.
 _STRIP_SOURCE_ENV_VAR = "CHALK_FUNCTION_STRIP_SOURCE"
+_LOCAL_SDK_MOUNT = "/tmp/sdk"
 _CATALOG_SVC = "chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService"
 _SG_SVC = "chalk.scalinggroup.v1.ScalingGroupManagerService"
 
@@ -187,6 +192,163 @@ def _write_temp(content: str) -> str:
     f.write(content)
     f.close()
     return f.name
+
+
+def _should_strip_source() -> bool:
+    return os.environ.get(_STRIP_SOURCE_ENV_VAR, "") == "1"
+
+
+def _prepare_source_file(source_file: str) -> tuple[str, bool]:
+    """Return the source file path to deploy, optionally stripping chalkcompute.
+
+    Returns (path, is_temp) — if stripping produced a temp file, the caller
+    should clean it up.
+    """
+    if not _should_strip_source():
+        return source_file, False
+    from pathlib import Path
+
+    source = Path(source_file).read_text()
+    stripped = _strip_chalkcompute_from_source(source)
+    return _write_temp(stripped), True
+
+
+# ---------------------------------------------------------------------------
+# Shared image / deploy helpers (used by both function.py and cls.py)
+# ---------------------------------------------------------------------------
+
+
+def _local_install_entrypoint(handler_cmd: list[str]) -> list[str]:
+    """Wrap *handler_cmd* with a tar extract + pip install when local-copy mode is on."""
+    if os.environ.get(_LOCAL_COPY_ENV_VAR, "") != "1" or _should_strip_source():
+        return handler_cmd
+    from chalkcompute.image import ARCHIVE_NAME, _ARCHIVE_CHUNK_PREFIX
+
+    d = _LOCAL_SDK_MOUNT
+    # Reassemble chunked archive, extract, then pip install.
+    cat_parts = f"cat {d}/{_ARCHIVE_CHUNK_PREFIX}* > {d}/{ARCHIVE_NAME}"
+    extract = f"tar xzf {d}/{ARCHIVE_NAME} -C {d}"
+    install = f"pip install {d}"
+    return [
+        "sh",
+        "-c",
+        f"{cat_parts} && {extract} && {install} && {' '.join(handler_cmd)}",
+    ]
+
+
+def _make_base_image(user_image: _Image | None) -> _Image:
+    """Create the base deploy image with SDK packages and optional local overlay."""
+    from chalkcompute.image import Image
+
+    local_copy = (
+        os.environ.get(_LOCAL_COPY_ENV_VAR, "") == "1"
+        and not _should_strip_source()
+    )
+
+    base = user_image if user_image is not None else Image.debian_slim()
+
+    if local_copy:
+        # Mount the local SDK project via volume; the entrypoint will
+        # extract the tar and pip-install before starting the handler.
+        project_root = Path(__file__).resolve().parent.parent
+        image = base.add_local_dir(
+            str(project_root),
+            _LOCAL_SDK_MOUNT,
+            exclude=[".git", "__pycache__", "*.pyc", ".env*", "e2etests", "examples"],
+            archive=True,
+        )
+    elif _should_strip_source():
+        # Source is stripped of chalkcompute references — only install the
+        # RPC runtime, not chalkcompute itself.
+        image = base.pip_install(["chalk-remote-call-python"])
+    else:
+        from importlib.metadata import version as _pkg_version
+
+        image = base.pip_install(
+            [
+                "chalk-remote-call-python",
+                f"chalkcompute=={_pkg_version('chalkcompute')}",
+            ]
+        )
+
+    return image
+
+
+def _build_and_upload(
+    client: ConnectClient,
+    deploy_image: _Image,
+    *,
+    label: str,
+    volume_prefix: str,
+    poll_interval: float,
+    build_timeout: float,
+) -> tuple[str, list[tuple[str, str]]]:
+    """Build the container image and upload lazy local files.
+
+    Returns (image_uri, new_volumes).
+    """
+    print(f"Building image for {label}...")
+    image_uri = build_image(
+        client, deploy_image, poll_interval=poll_interval, timeout=build_timeout
+    )
+    print(f"Image built: {image_uri}")
+
+    new_volumes: list[tuple[str, str]] = []
+    if deploy_image.lazy_local_files:
+        print(f"Uploading {len(deploy_image.lazy_local_files)} local file(s)...")
+        new_volumes = upload_lazy_files(
+            client, deploy_image, volume_prefix=volume_prefix
+        )
+    return image_uri, new_volumes
+
+
+def _cleanup_temp_files(paths: list[str]) -> None:
+    """Remove temporary files, ignoring errors."""
+    for tmp in paths:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def _make_container_spec(
+    *,
+    name: str,
+    image_uri: str,
+    entrypoint: list[str],
+    env: dict[str, str],
+    cpu: str | None,
+    memory: str | None,
+    gpu: str | None,
+    volumes: list[tuple[str, str]],
+) -> dict[str, Any]:
+    """Build a container spec dict for CreateExternalFunctionVersion."""
+    spec: dict[str, Any] = {
+        "name": name,
+        "image": image_uri,
+        "port": 6666,
+        "protocol": "grpc",
+        "entrypoint": entrypoint,
+        "envVars": {
+            "PYTHONPATH": "/app",
+            _REMOTE_ENV_VAR: "1",
+            **env,
+        },
+    }
+    resources: dict[str, str] = {}
+    if cpu:
+        resources["cpu"] = cpu
+    if memory:
+        resources["memory"] = memory
+    if gpu:
+        resources["gpu"] = gpu
+    if resources:
+        spec["resources"] = resources
+    if volumes:
+        spec["volumes"] = [
+            {"name": vn, "mountPath": mp, "type": "chalkfs"} for vn, mp in volumes
+        ]
+    return spec
 
 
 # ---------------------------------------------------------------------------
@@ -368,19 +530,9 @@ class RemoteFunction:
 
     def _build_deploy_image(self) -> _Image:
         """Build the deploy image with handler shim and user module."""
-        from chalkcompute.image import Image
-
-        base_image = self._image if self._image is not None else Image.debian_slim()
-        strip_source = os.environ.get(_STRIP_SOURCE_ENV_VAR, "") == "1"
-
-        source_file = inspect.getfile(self._func)
-        if strip_source:
-            source = Path(source_file).read_text()
-            user_module_path = _write_temp(_strip_chalkcompute_from_source(source))
-            extra_packages: list[str] = []
-        else:
-            user_module_path = source_file
-            extra_packages = ["chalkcompute"]
+        source_file, source_is_temp = _prepare_source_file(
+            inspect.getfile(self._func)
+        )
 
         handler_shim = _generate_handler_shim(
             getattr(self._func, "__name__", self._func_name)
@@ -388,18 +540,13 @@ class RemoteFunction:
         shim_path = _write_temp(handler_shim)
 
         deploy_image = (
-            base_image.pip_install(["chalk-remote-call-python", *extra_packages])
-            .add_local_file(user_module_path, "/app/user_module.py")
+            _make_base_image(self._image)
+            .add_local_file(source_file, "/app/user_module.py")
             .add_local_file(shim_path, "/app/handler.py")
             .env({"PYTHONPATH": "/app", _REMOTE_ENV_VAR: "1"})
-            .entrypoint(["chalk-remote-call", "--handler", "handler.handler"])
         )
 
-        # Track temp files for cleanup after lazy files are uploaded
-        self._temp_files = [shim_path]
-        if strip_source:
-            self._temp_files.append(user_module_path)
-
+        self._temp_files = [shim_path] + ([source_file] if source_is_temp else [])
         return deploy_image
 
     # -- Lifecycle -------------------------------------------------------------
@@ -421,71 +568,39 @@ class RemoteFunction:
         # 1. Build deploy image
         deploy_image = self._build_deploy_image()
 
-        # 2. Build image URI
-        print(f"Building image for function '{self._func_name}'...")
-        image_uri = build_image(
+        # 2. Build image + upload lazy files
+        image_uri, new_vols = _build_and_upload(
             self._client,
             deploy_image,
+            label=f"function '{self._func_name}'",
+            volume_prefix="fn-files",
             poll_interval=poll_interval,
-            timeout=build_timeout,
+            build_timeout=build_timeout,
         )
-        print(f"Image built: {image_uri}")
-
-        # 3. Upload lazy local files
-        if deploy_image.lazy_local_files:
-            print(f"Uploading {len(deploy_image.lazy_local_files)} local file(s)...")
-            self._volumes += upload_lazy_files(
-                self._client,
-                deploy_image,
-                volume_prefix="fn-files",
-            )
-
-        # Clean up temp files now that lazy files have been read
-        for tmp in getattr(self, "_temp_files", []):
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
+        self._volumes += new_vols
+        _cleanup_temp_files(getattr(self, "_temp_files", []))
         self._temp_files = []
 
-        # 4. Generate schemas from function signature
+        # 3. Generate schemas from function signature
         input_schema_proto, output_schema_proto = _build_schemas(self._func)
 
-        # 5. Build ScalingGroupSpec
+        # 4. Build ScalingGroupSpec
         sg_name = (
             self._explicit_name
             if self._explicit_name
             else f"fn-{self._func_name}-{uuid.uuid4().hex[:8]}"
         )
-        container_spec: dict[str, Any] = {
-            "name": sg_name,
-            "image": image_uri,
-            "port": 6666,
-            "protocol": "grpc",
-            "entrypoint": ["chalk-remote-call", "--handler", "handler.handler"],
-            "envVars": {
-                "PYTHONPATH": "/app",
-                _REMOTE_ENV_VAR: "1",
-                **self._env,
-            },
-        }
-
-        resources: dict[str, str] = {}
-        if self._cpu:
-            resources["cpu"] = self._cpu
-        if self._memory:
-            resources["memory"] = self._memory
-        if self._gpu:
-            resources["gpu"] = self._gpu
-        if resources:
-            container_spec["resources"] = resources
-
-        if self._volumes:
-            container_spec["volumes"] = [
-                {"name": vn, "mountPath": mp, "type": "chalkfs"}
-                for vn, mp in self._volumes
-            ]
-
+        handler_cmd = ["chalk-remote-call", "--handler", "handler.handler"]
+        container_spec = _make_container_spec(
+            name=sg_name,
+            image_uri=image_uri,
+            entrypoint=_local_install_entrypoint(handler_cmd),
+            env=self._env,
+            cpu=self._cpu,
+            memory=self._memory,
+            gpu=self._gpu,
+            volumes=self._volumes,
+        )
         spec: dict[str, Any] = {
             "containerSpec": container_spec,
             "scalingSpec": {
@@ -826,6 +941,8 @@ def function(
     1. Derives Arrow schemas from the function's type hints
     2. Builds a deploy image with a handler shim
     3. Registers the function version via ExternalFunctionCatalogService
+    4. If ``CHALK_FUNCTION_LOCAL_SDK_COPY=1``, includes local SDK source in
+       the deploy image for unreleased feature iteration.
 
     **Remotely** (inside the container):
     The decorator is a no-op — returns the raw function unchanged.

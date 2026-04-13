@@ -46,19 +46,23 @@ import time
 import typing
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from chalkcompute._connect import ConnectClient, build_image, upload_lazy_files
+from chalkcompute._connect import ConnectClient
 from chalkcompute._tracing import traced
 from chalkcompute.function import (
     _CATALOG_SVC,
     _REMOTE_ENV_VAR,
     _SG_SVC,
-    _STRIP_SOURCE_ENV_VAR,
     FunctionVersionInfo,
     RemoteFunction,
+    _build_and_upload,
+    _cleanup_temp_files,
     _extract_field_names,
+    _local_install_entrypoint,
+    _make_base_image,
+    _make_container_spec,
+    _should_strip_source,
     _write_temp,
 )
 
@@ -455,29 +459,21 @@ class RemoteClass:
 
         Returns (Image, list_of_temp_file_paths).
         """
-        from chalkcompute.image import Image
-
-        base_image = self._image if self._image is not None else Image.debian_slim()
-        strip_source = os.environ.get(_STRIP_SOURCE_ENV_VAR, "") == "1"
-
         source_file = inspect.getfile(self._user_cls)
-        if strip_source:
-            source = Path(source_file).read_text()
-            user_module_path = _write_temp(
-                _strip_chalkcompute_from_class_source(source)
-            )
-            extra_packages: list[str] = []
-        else:
-            user_module_path = source_file
-            extra_packages = ["chalkcompute"]
 
         temp_files: list[str] = []
-        if strip_source:
-            temp_files.append(user_module_path)
 
-        deploy_image = base_image.pip_install(
-            ["chalk-remote-call-python", *extra_packages]
-        ).add_local_file(user_module_path, "/app/user_module.py")
+        if _should_strip_source():
+            from pathlib import Path
+
+            source = Path(source_file).read_text()
+            stripped = _strip_chalkcompute_from_class_source(source)
+            source_file = _write_temp(stripped)
+            temp_files.append(source_file)
+
+        deploy_image = _make_base_image(self._image).add_local_file(
+            source_file, "/app/user_module.py"
+        )
 
         # Precompute has-self flags for lifecycle hooks
         before_func = (
@@ -529,33 +525,19 @@ class RemoteClass:
         # 1. Build deploy image
         deploy_image, temp_files = self._build_deploy_image()
 
-        # 2. Build image URI (single build for all methods)
-        print(f"Building image for class '{self._class_name}'...")
-        image_uri = build_image(
+        # 2. Build image + upload lazy files
+        image_uri, new_vols = _build_and_upload(
             self._client,
             deploy_image,
+            label=f"class '{self._class_name}'",
+            volume_prefix="cls-files",
             poll_interval=poll_interval,
-            timeout=build_timeout,
+            build_timeout=build_timeout,
         )
-        print(f"Image built: {image_uri}")
+        self._volumes += new_vols
+        _cleanup_temp_files(temp_files)
 
-        # 3. Upload lazy local files
-        if deploy_image.lazy_local_files:
-            print(f"Uploading {len(deploy_image.lazy_local_files)} local file(s)...")
-            self._volumes += upload_lazy_files(
-                self._client,
-                deploy_image,
-                volume_prefix="cls-files",
-            )
-
-        # Clean up temp files
-        for tmp in temp_files:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-
-        # 4. Register each method as a function version
+        # 3. Register each method as a function version
         sg_names: list[str] = []
         for method_info in self._methods.values():
             input_schema, output_schema = _build_method_schemas(method_info.func)
@@ -569,39 +551,21 @@ class RemoteClass:
                     f"cls-{self._class_name}-{method_info.name}-{uuid.uuid4().hex[:8]}"
                 )
 
-            container_spec: dict[str, Any] = {
-                "name": sg_name,
-                "image": image_uri,
-                "port": 6666,
-                "protocol": "grpc",
-                "entrypoint": [
-                    "chalk-remote-call",
-                    "--handler",
-                    f"handler_{method_info.name}.handler",
-                ],
-                "envVars": {
-                    "PYTHONPATH": "/app",
-                    _REMOTE_ENV_VAR: "1",
-                    **self._env,
-                },
-            }
-
-            resources: dict[str, str] = {}
-            if self._cpu:
-                resources["cpu"] = self._cpu
-            if self._memory:
-                resources["memory"] = self._memory
-            if self._gpu:
-                resources["gpu"] = self._gpu
-            if resources:
-                container_spec["resources"] = resources
-
-            if self._volumes:
-                container_spec["volumes"] = [
-                    {"name": vn, "mountPath": mp, "type": "chalkfs"}
-                    for vn, mp in self._volumes
-                ]
-
+            handler_cmd = [
+                "chalk-remote-call",
+                "--handler",
+                f"handler_{method_info.name}.handler",
+            ]
+            container_spec = _make_container_spec(
+                name=sg_name,
+                image_uri=image_uri,
+                entrypoint=_local_install_entrypoint(handler_cmd),
+                env=self._env,
+                cpu=self._cpu,
+                memory=self._memory,
+                gpu=self._gpu,
+                volumes=self._volumes,
+            )
             spec: dict[str, Any] = {
                 "containerSpec": container_spec,
                 "scalingSpec": {
@@ -794,6 +758,10 @@ class _NoOpClass:
     def __getattr__(self, name: str) -> Any:
         return getattr(self._instance, name)
 
+    def __call__(self) -> _NoOpClass:
+        """Behave like a zero-arg constructor in remote handler imports."""
+        return self
+
     def deploy(self, **_: Any) -> _NoOpClass:
         return self
 
@@ -830,6 +798,8 @@ def cls(
     1. Scans the class for ``@method()``, ``@before()``, ``@after()``
     2. Builds a deploy image with per-method handler shims
     3. Registers each method via ExternalFunctionCatalogService
+    4. If ``CHALK_FUNCTION_LOCAL_SDK_COPY=1``, includes local SDK source in
+       the deploy image for unreleased feature iteration.
 
     **Remotely** (inside the container):
     The decorator is a no-op — returns an instance of the class.

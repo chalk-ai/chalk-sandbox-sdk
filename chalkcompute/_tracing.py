@@ -69,6 +69,6 @@ def traced(name: str) -> Callable[[F], F]:
             with get_tracer().start_as_current_span(name):
                 return func(*args, **kwargs)
 
-        return wrapper  # type: ignore[return-value]
+        return wrapper  # ty: ignore[invalid-return-type]
 
     return decorator

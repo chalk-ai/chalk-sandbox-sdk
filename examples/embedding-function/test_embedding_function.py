@@ -31,13 +31,12 @@ EXAMPLE_DIR = os.path.dirname(__file__)
 
 
 def _deploy_script(script_name: str) -> None:
-    """Run a deploy script as a subprocess with CHALK_FUNCTION_STRIP_SOURCE=1."""
-    env = {**os.environ, "CHALK_FUNCTION_STRIP_SOURCE": "1"}
+    """Run a deploy script as a subprocess."""
     result = subprocess.run(
         [sys.executable, os.path.join(EXAMPLE_DIR, script_name)],
         capture_output=True,
         text=True,
-        env=env,
+        env=os.environ,
         timeout=600,
     )
     if result.returncode != 0:
@@ -64,4 +63,6 @@ def test_embedding_function() -> None:
     for i, emb in enumerate(embeddings):
         assert isinstance(emb, list), f"Embedding {i} is not a list"
         assert len(emb) == 1536, f"Embedding {i} has {len(emb)} dims, expected 1536"
-        assert all(isinstance(v, float) for v in emb), f"Embedding {i} has non-float values"
+        assert all(isinstance(v, float) for v in emb), (
+            f"Embedding {i} has non-float values"
+        )
