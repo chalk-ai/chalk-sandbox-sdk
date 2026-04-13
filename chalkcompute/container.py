@@ -19,10 +19,13 @@ destination path's common ancestor.
 from __future__ import annotations
 
 import base64
+import logging
 import time
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+
+logger = logging.getLogger(__name__)
 
 from chalkcompute._connect import ConnectClient, upload_lazy_files
 from chalkcompute._tracing import traced
@@ -121,6 +124,7 @@ class Container:
         self._container_id: str | None = None
         self._container_info: ContainerInfo | None = None
         self._volumes: list[tuple[str, str]] = list(volumes or [])
+        self._upserted_secret_names: list[str] = []
 
         self._client = ConnectClient()
 
@@ -167,6 +171,7 @@ class Container:
         c._container_id = None
         c._container_info = None
         c._volumes = []
+        c._upserted_secret_names = []
         c._client = ConnectClient()
         return c
 
@@ -206,11 +211,11 @@ class Container:
 
         # 1. Resolve image URI
         if isinstance(self._image, Image):
-            print(f"Building image from {self._image!r}...")
+            logger.info("Building image from %r...", self._image)
             self._built_image_uri = self._build_image(
                 poll_interval=poll_interval, timeout=build_timeout,
             )
-            print(f"Image built: {self._built_image_uri}")
+            logger.info("Image built: %s", self._built_image_uri)
         else:
             self._built_image_uri = self._image
 
@@ -219,15 +224,24 @@ class Container:
             self._image.lazy_local_files if isinstance(self._image, Image) else set()
         )
         if lazy_files:
-            print(f"Uploading {len(lazy_files)} local file(s) to volume(s)...")
+            logger.info("Uploading %d local file(s) to volume(s)...", len(lazy_files))
             assert isinstance(self._image, Image)
             self._volumes += upload_lazy_files(
                 self._client, self._image, volume_prefix="container-files",
             )
             for vn, mp in self._volumes:
-                print(f"  Volume created: {vn} (mount: {mp})")
+                logger.info("  Volume created: %s (mount: %s)", vn, mp)
 
-        # 3. Build the ContainerService spec
+        # 3. Resolve lazy secrets (from_local_env / from_local_env_file)
+        if any(s.is_lazy for s in self._secrets):
+            from chalkcompute.secret import resolve_lazy_secrets
+
+            resolved, upserted = resolve_lazy_secrets(self._secrets, self._client)
+            self._secrets = resolved
+            self._upserted_secret_names = upserted
+            logger.info("Upserted %d secret(s) from local environment.", len(upserted))
+
+        # 4. Build the ContainerService spec
         container_name = self._name or f"container-{uuid.uuid4().hex[:8]}"
         spec: dict[str, Any] = {
             "name": container_name,
@@ -263,7 +277,7 @@ class Container:
         if self._secrets:
             spec["secretRefs"] = [s._to_proto_dict() for s in self._secrets]
 
-        print(f"Starting container '{container_name}'...")
+        logger.info("Starting container '%s'...", container_name)
         resp = self._client.rpc(
             _SVC, "RunContainer", {"container": {"spec": spec}}, timeout=60,
         )
@@ -273,18 +287,18 @@ class Container:
         data = resp.json()
         self._container_info = _parse_container_response(data["container"])
         self._container_id = self._container_info.id
-        print(
-            f"Container created: {self._container_id} "
-            f"(status={self._container_info.status})"
+        logger.info(
+            "Container created: %s (status=%s)",
+            self._container_id, self._container_info.status,
         )
 
-        # 4. Poll until Running
+        # 5. Poll until Running
         if self._container_info.status != "Running":
             self._poll_until_running(
                 poll_interval=poll_interval, timeout=ready_timeout,
             )
 
-        # 5. Wait for ChalkFS volume files to become visible
+        # 6. Wait for ChalkFS volume files to become visible
         if lazy_files:
             self._wait_for_volume_files(timeout=120.0, poll_interval=5.0)
 
@@ -301,7 +315,7 @@ class Container:
                 raise ContainerError(f"GetContainer failed: {resp.text}")
             info = _parse_container_response(resp.json()["container"])
             self._container_info = info
-            print(f"  poll: status={info.status}")
+            logger.info("  poll: status=%s", info.status)
             if info.status == "Running":
                 return
             if info.status in ("Failed", "Succeeded"):
@@ -322,13 +336,13 @@ class Container:
         assert isinstance(self._image, Image)
         sample = next(iter(self._image.lazy_local_files))
         probe_path = sample.dest
-        print(f"Waiting for ChalkFS to sync (probing {probe_path})...")
+        logger.info("Waiting for ChalkFS to sync (probing %s)...", probe_path)
 
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             result = self.exec("test", "-f", probe_path)
             if result.exit_code == 0:
-                print("ChalkFS files ready.")
+                logger.info("ChalkFS files ready.")
                 return
             time.sleep(poll_interval)
 
@@ -391,6 +405,12 @@ class Container:
         for vol_name, _ in self._volumes:
             self._client.rpc("chalk.volume.v1.VolumeService", "DeleteVolume", {"name": vol_name})
         self._volumes = []
+
+        if self._upserted_secret_names:
+            from chalkcompute.secret import delete_secrets
+
+            delete_secrets(self._client, self._upserted_secret_names)
+            self._upserted_secret_names = []
 
     def refresh(self) -> ContainerInfo:
         """Fetch latest container status from the server."""

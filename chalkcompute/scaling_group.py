@@ -29,6 +29,7 @@ Usage:
 
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from dataclasses import dataclass
@@ -36,6 +37,8 @@ from typing import TYPE_CHECKING, Any
 
 from chalkcompute._connect import ConnectClient, build_image, upload_lazy_files
 from chalkcompute._tracing import traced
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     import httpx
@@ -187,12 +190,12 @@ class ScalingGroup:
 
         # 1. Resolve image URI
         if isinstance(self._image, Image):
-            print(f"Building image from {self._image!r}...")
+            logger.info("Building image from %r...", self._image)
             self._built_image_uri = build_image(
                 self._client, self._image,
                 poll_interval=poll_interval, timeout=build_timeout,
             )
-            print(f"Image built: {self._built_image_uri}")
+            logger.info("Image built: %s", self._built_image_uri)
         else:
             self._built_image_uri = self._image
 
@@ -201,13 +204,13 @@ class ScalingGroup:
             self._image.lazy_local_files if isinstance(self._image, Image) else set()
         )
         if lazy_files:
-            print(f"Uploading {len(lazy_files)} local file(s) to volume(s)...")
+            logger.info("Uploading %d local file(s) to volume(s)...", len(lazy_files))
             assert isinstance(self._image, Image)
             self._volumes += upload_lazy_files(
                 self._client, self._image, volume_prefix="sg-files",
             )
             for vn, mp in self._volumes:
-                print(f"  Volume created: {vn} (mount: {mp})")
+                logger.info("  Volume created: %s (mount: %s)", vn, mp)
 
         # 3. Build the ScalingGroupSpec
         sg_name = self._name or f"sg-{uuid.uuid4().hex[:8]}"
@@ -247,7 +250,7 @@ class ScalingGroup:
             },
         }
 
-        print(f"Deploying scaling group '{sg_name}'...")
+        logger.info("Deploying scaling group '%s'...", sg_name)
         resp = self._client.rpc(_SVC, "CreateScalingGroup", {"spec": spec}, timeout=60)
         if resp.status_code != 200:
             raise ScalingGroupError(f"CreateScalingGroup failed: {resp.text}")
@@ -255,9 +258,9 @@ class ScalingGroup:
         data = resp.json()
         self._scaling_group_info = _parse_scaling_group_response(data["scalingGroup"])
         self._scaling_group_id = self._scaling_group_info.id
-        print(
-            f"Scaling group created: {self._scaling_group_id} "
-            f"(status={self._scaling_group_info.status})"
+        logger.info(
+            "Scaling group created: %s (status=%s)",
+            self._scaling_group_id, self._scaling_group_info.status,
         )
 
         # 4. Poll until Running
@@ -279,7 +282,7 @@ class ScalingGroup:
                 raise ScalingGroupError(f"GetScalingGroup failed: {resp.text}")
             info = _parse_scaling_group_response(resp.json()["scalingGroup"])
             self._scaling_group_info = info
-            print(f"  poll: status={info.status}")
+            logger.info("  poll: status=%s", info.status)
             if info.status in ("Running", "Available"):
                 return
             if info.status in ("Failed", "Error"):

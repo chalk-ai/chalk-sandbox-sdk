@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import logging
 import os
 import time
 import typing
@@ -68,6 +69,8 @@ from chalkcompute.function import (
 
 if TYPE_CHECKING:
     from chalkcompute.image import Image as _Image
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Marker attribute names
@@ -574,7 +577,7 @@ class RemoteClass:
                 },
             }
 
-            print(f"Registering method '{func_name}'...")
+            logger.info("Registering method '%s'...", func_name)
             resp = self._client.rpc(
                 _CATALOG_SVC,
                 "CreateExternalFunctionVersion",
@@ -615,7 +618,7 @@ class RemoteClass:
             rf._input_field_names = _extract_field_names(efv.get("inputArrowSchema"))
             method_info.remote_function = rf
 
-            print(f"  {func_name} v{version_info.version} (id={version_info.id})")
+            logger.info("  %s v%s (id=%s)", func_name, version_info.version, version_info.id)
 
             if sg_status != "Running":
                 sg_names.append(version_info.scaling_group_name)
@@ -657,7 +660,7 @@ class RemoteClass:
                 ):
                     rf._web_url = web_url
 
-            print(f"  poll {sg_name}: status={status}")
+            logger.info("  poll %s: status=%s", sg_name, status)
             if status == "Running":
                 return
             if status in ("Failed", "Error"):
