@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from dotenv import load_dotenv
 
-from chalkcompute import Container, Image
+from chalkcompute import Container, Image, Secret
 
 load_dotenv()
 
@@ -144,6 +144,45 @@ def test_container_add_local_dir() -> None:
             assert r2.stdout_text.strip() == "world"
         finally:
             c.stop()
+
+
+@needs_staging
+def test_container_secret_from_env() -> None:
+    """Secret.from_env() injects a Chalk secret as an env var into the container."""
+    from chalkcompute._connect import ConnectClient
+
+    client = ConnectClient()
+    secret_name = f"TEST_SECRET_{uuid.uuid4().hex[:8].upper()}"
+    secret_value = f"secret-value-{uuid.uuid4().hex[:8]}"
+    _SECRETS_SVC = "chalk.server.v1.EnvironmentSecretsService"
+
+    # Create a test secret in the environment
+    resp = client.rpc(
+        _SECRETS_SVC,
+        "UpsertSecret",
+        {"name": secret_name, "config": {"literal": secret_value}},
+    )
+    assert resp.status_code == 200, f"UpsertSecret failed: {resp.text}"
+
+    try:
+        img = Image.debian_slim()
+        c = Container(
+            image=img,
+            name=f"test-secret-{uuid.uuid4().hex[:8]}",
+            secrets=[Secret.from_env(secret_name)],
+        )
+        try:
+            c.run()
+            result = c.exec("sh", "-c", f"echo ${secret_name}")
+            assert result.exit_code == 0, (
+                f"echo ${secret_name} failed: {result.stderr_text}"
+            )
+            assert result.stdout_text.strip() == secret_value
+        finally:
+            c.stop()
+    finally:
+        # Clean up the test secret
+        client.rpc(_SECRETS_SVC, "DeleteSecret", {"name": secret_name})
 
 
 @needs_staging
