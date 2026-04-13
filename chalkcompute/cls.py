@@ -525,113 +525,140 @@ class RemoteClass:
         """
         from google.protobuf.json_format import MessageToDict
 
-        # 1. Build deploy image
-        deploy_image, temp_files = self._build_deploy_image()
-
-        # 2. Build image + upload lazy files
-        image_uri, new_vols = _build_and_upload(
-            self._client,
-            deploy_image,
-            label=f"class '{self._class_name}'",
-            volume_prefix="cls-files",
-            poll_interval=poll_interval,
-            build_timeout=build_timeout,
+        from chalkcompute._progress import (
+            progress_add,
+            progress_done,
+            progress_fail,
+            progress_finish,
+            progress_update,
         )
-        self._volumes += new_vols
-        _cleanup_temp_files(temp_files)
 
-        # 3. Register each method as a function version
-        sg_names: list[str] = []
-        for method_info in self._methods.values():
-            input_schema, output_schema = _build_method_schemas(method_info.func)
+        ckey = f"class:{self._class_name}"
+        progress_add(ckey, "class", f"Class \"{self._class_name}\"")
 
-            name_prefix = self._explicit_name or self._class_name
-            func_name = f"{name_prefix}.{method_info.name}"
-            if self._explicit_name:
-                sg_name = f"{self._explicit_name}-{method_info.name}"
-            else:
-                sg_name = (
-                    f"cls-{self._class_name}-{method_info.name}-{uuid.uuid4().hex[:8]}"
-                )
+        try:
+            # 1. Build deploy image
+            deploy_image, temp_files = self._build_deploy_image()
 
-            handler_cmd = [
-                "chalk-remote-call",
-                "--handler",
-                f"handler_{method_info.name}.handler",
-            ]
-            container_spec = _make_container_spec(
-                name=sg_name,
-                image_uri=image_uri,
-                entrypoint=_local_install_entrypoint(handler_cmd),
-                env=self._env,
-                cpu=self._cpu,
-                memory=self._memory,
-                gpu=self._gpu,
-                volumes=self._volumes,
-            )
-            spec: dict[str, Any] = {
-                "containerSpec": container_spec,
-                "scalingSpec": {
-                    "minReplicas": self._min_replicas,
-                    "maxReplicas": self._max_replicas,
-                },
-            }
-
-            logger.info("Registering method '%s'...", func_name)
-            resp = self._client.rpc(
-                _CATALOG_SVC,
-                "CreateExternalFunctionVersion",
-                {
-                    "functionName": func_name,
-                    "inputArrowSchema": MessageToDict(input_schema),
-                    "outputArrowSchema": MessageToDict(output_schema),
-                    "spec": spec,
-                },
-                timeout=60,
-            )
-            if resp.status_code != 200:
-                raise ClassBuildError(
-                    f"CreateExternalFunctionVersion failed for "
-                    f"'{func_name}': {resp.text}"
-                )
-
-            data = resp.json()
-            efv = data["externalFunctionVersion"]
-            version_info = FunctionVersionInfo(
-                id=efv["id"],
-                function_name=efv["functionName"],
-                version=efv.get("version", 0),
-                scaling_group_name=efv.get("scalingGroupName", sg_name),
-            )
-
-            sg_data = data.get("scalingGroup")
-            web_url = sg_data.get("webUrl") if sg_data else None
-            port = sg_data.get("port", 6666) if sg_data else 6666
-            sg_status = sg_data.get("status", "") if sg_data else ""
-
-            # Build a RemoteFunction proxy for calling this method
-            rf = RemoteFunction._make_empty()
-            rf._func_name = func_name
-            rf._version_info = version_info
-            rf._web_url = web_url
-            rf._port = port
-            rf._input_field_names = _extract_field_names(efv.get("inputArrowSchema"))
-            method_info.remote_function = rf
-
-            logger.info("  %s v%s (id=%s)", func_name, version_info.version, version_info.id)
-
-            if sg_status != "Running":
-                sg_names.append(version_info.scaling_group_name)
-
-        # 5. Poll scaling groups until running
-        for sg_name in sg_names:
-            self._poll_until_running(
-                sg_name=sg_name,
+            # 2. Build image + upload lazy files
+            image_uri, new_vols = _build_and_upload(
+                self._client,
+                deploy_image,
+                label=f"class '{self._class_name}'",
+                volume_prefix="cls-files",
                 poll_interval=poll_interval,
-                timeout=ready_timeout,
+                build_timeout=build_timeout,
+                progress_parent=ckey,
             )
+            self._volumes += new_vols
+            _cleanup_temp_files(temp_files)
 
-        self._deployed = True
+            # 3. Register each method as a function version
+            sg_names: list[str] = []
+            for method_info in self._methods.values():
+                input_schema, output_schema = _build_method_schemas(method_info.func)
+
+                name_prefix = self._explicit_name or self._class_name
+                func_name = f"{name_prefix}.{method_info.name}"
+                if self._explicit_name:
+                    sg_name = f"{self._explicit_name}-{method_info.name}"
+                else:
+                    sg_name = (
+                        f"cls-{self._class_name}-{method_info.name}-{uuid.uuid4().hex[:8]}"
+                    )
+
+                mkey = f"method:{func_name}"
+                progress_add(mkey, "method", f".{method_info.name}()", parent=ckey)
+
+                handler_cmd = [
+                    "chalk-remote-call",
+                    "--handler",
+                    f"handler_{method_info.name}.handler",
+                ]
+                container_spec = _make_container_spec(
+                    name=sg_name,
+                    image_uri=image_uri,
+                    entrypoint=_local_install_entrypoint(handler_cmd),
+                    env=self._env,
+                    cpu=self._cpu,
+                    memory=self._memory,
+                    gpu=self._gpu,
+                    volumes=self._volumes,
+                )
+                spec: dict[str, Any] = {
+                    "containerSpec": container_spec,
+                    "scalingSpec": {
+                        "minReplicas": self._min_replicas,
+                        "maxReplicas": self._max_replicas,
+                    },
+                }
+
+                logger.info("Registering method '%s'...", func_name)
+                resp = self._client.rpc(
+                    _CATALOG_SVC,
+                    "CreateExternalFunctionVersion",
+                    {
+                        "functionName": func_name,
+                        "inputArrowSchema": MessageToDict(input_schema),
+                        "outputArrowSchema": MessageToDict(output_schema),
+                        "spec": spec,
+                    },
+                    timeout=60,
+                )
+                if resp.status_code != 200:
+                    progress_fail(mkey)
+                    raise ClassBuildError(
+                        f"CreateExternalFunctionVersion failed for "
+                        f"'{func_name}': {resp.text}"
+                    )
+
+                data = resp.json()
+                efv = data["externalFunctionVersion"]
+                version_info = FunctionVersionInfo(
+                    id=efv["id"],
+                    function_name=efv["functionName"],
+                    version=efv.get("version", 0),
+                    scaling_group_name=efv.get("scalingGroupName", sg_name),
+                )
+
+                sg_data = data.get("scalingGroup")
+                web_url = sg_data.get("webUrl") if sg_data else None
+                port = sg_data.get("port", 6666) if sg_data else 6666
+                sg_status = sg_data.get("status", "") if sg_data else ""
+
+                # Build a RemoteFunction proxy for calling this method
+                rf = RemoteFunction._make_empty()
+                rf._func_name = func_name
+                rf._version_info = version_info
+                rf._web_url = web_url
+                rf._port = port
+                rf._input_field_names = _extract_field_names(efv.get("inputArrowSchema"))
+                method_info.remote_function = rf
+
+                logger.info("  %s v%s (id=%s)", func_name, version_info.version, version_info.id)
+                progress_done(mkey)
+
+                if sg_status != "Running":
+                    sg_names.append(version_info.scaling_group_name)
+
+            # 5. Poll scaling groups until running
+            if sg_names:
+                progress_update(ckey, detail="waiting for ready")
+            for sg_name in sg_names:
+                self._poll_until_running(
+                    sg_name=sg_name,
+                    poll_interval=poll_interval,
+                    timeout=ready_timeout,
+                )
+
+            self._deployed = True
+            progress_done(ckey, detail="ready")
+        except BaseException:
+            progress_fail(ckey)
+            raise
+        finally:
+            progress_finish()
+
         return self
 
     def _poll_until_running(

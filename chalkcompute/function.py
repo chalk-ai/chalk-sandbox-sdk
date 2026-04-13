@@ -299,23 +299,37 @@ def _build_and_upload(
     volume_prefix: str,
     poll_interval: float,
     build_timeout: float,
+    progress_parent: str | None = None,
 ) -> tuple[str, list[tuple[str, str]]]:
     """Build the container image and upload lazy local files.
 
     Returns (image_uri, new_volumes).
     """
-    print(f"Building image for {label}...")
+    from chalkcompute._progress import progress_add, progress_done
+
+    ikey = f"image:{label}"
+    progress_add(ikey, "image", "Building image", parent=progress_parent)
+
+    logger.info("Building image for %s...", label)
     image_uri = build_image(
         client, deploy_image, poll_interval=poll_interval, timeout=build_timeout
     )
-    print(f"Image built: {image_uri}")
+    logger.info("Image built: %s", image_uri)
+    progress_done(ikey)
 
     new_volumes: list[tuple[str, str]] = []
     if deploy_image.lazy_local_files:
-        print(f"Uploading {len(deploy_image.lazy_local_files)} local file(s)...")
+        vkey = f"upload:{label}"
+        progress_add(
+            vkey, "volume",
+            f"Uploading {len(deploy_image.lazy_local_files)} file(s)",
+            parent=progress_parent,
+        )
+        logger.info("Uploading %d local file(s)...", len(deploy_image.lazy_local_files))
         new_volumes = upload_lazy_files(
             client, deploy_image, volume_prefix=volume_prefix
         )
+        progress_done(vkey)
     return image_uri, new_volumes
 
 
@@ -582,98 +596,122 @@ class RemoteFunction:
         """
         from google.protobuf.json_format import MessageToDict
 
-        # 1. Build deploy image
-        deploy_image = self._build_deploy_image()
-
-        # 2. Build image + upload lazy files
-        image_uri, new_vols = _build_and_upload(
-            self._client,
-            deploy_image,
-            label=f"function '{self._func_name}'",
-            volume_prefix="fn-files",
-            poll_interval=poll_interval,
-            build_timeout=build_timeout,
-        )
-        self._volumes += new_vols
-        _cleanup_temp_files(getattr(self, "_temp_files", []))
-        self._temp_files = []
-
-        # 3. Generate schemas from function signature
-        input_schema_proto, output_schema_proto = _build_schemas(self._func)
-
-        # 4. Build ScalingGroupSpec
-        sg_name = (
-            self._explicit_name
-            if self._explicit_name
-            else f"fn-{self._func_name}-{uuid.uuid4().hex[:8]}"
-        )
-        handler_cmd = ["chalk-remote-call", "--handler", "handler.handler"]
-        container_spec = _make_container_spec(
-            name=sg_name,
-            image_uri=image_uri,
-            entrypoint=_local_install_entrypoint(handler_cmd),
-            env=self._env,
-            cpu=self._cpu,
-            memory=self._memory,
-            gpu=self._gpu,
-            volumes=self._volumes,
-        )
-        spec: dict[str, Any] = {
-            "containerSpec": container_spec,
-            "scalingSpec": {
-                "minReplicas": self._min_replicas,
-                "maxReplicas": self._max_replicas,
-            },
-        }
-
-        # 6. Call CreateExternalFunctionVersion
-        logger.info("Registering function '%s'...", self._func_name)
-        resp = self._client.rpc(
-            _CATALOG_SVC,
-            "CreateExternalFunctionVersion",
-            {
-                "functionName": self._func_name,
-                "inputArrowSchema": MessageToDict(input_schema_proto),
-                "outputArrowSchema": MessageToDict(output_schema_proto),
-                "spec": spec,
-            },
-            timeout=60,
-        )
-        if resp.status_code != 200:
-            raise FunctionError(f"CreateExternalFunctionVersion failed: {resp.text}")
-
-        data = resp.json()
-        efv = data["externalFunctionVersion"]
-        self._version_info = FunctionVersionInfo(
-            id=efv["id"],
-            function_name=efv["functionName"],
-            version=efv.get("version", 0),
-            scaling_group_name=efv.get("scalingGroupName", sg_name),
+        from chalkcompute._progress import (
+            progress_add,
+            progress_done,
+            progress_fail,
+            progress_finish,
+            progress_update,
         )
 
-        sg_data = data.get("scalingGroup")
-        if sg_data:
-            self._web_url = sg_data.get("webUrl")
-            self._port = sg_data.get("port", 6666)
-            sg_status = sg_data.get("status", "")
-        else:
-            self._port = 6666
-            sg_status = ""
+        fkey = f"function:{self._func_name}"
+        progress_add(fkey, "function", f"Function \"{self._func_name}\"")
 
-        logger.info(
-            "Function version created: %s v%s (id=%s)",
-            self._version_info.function_name,
-            self._version_info.version,
-            self._version_info.id,
-        )
+        try:
+            # 1. Build deploy image
+            deploy_image = self._build_deploy_image()
 
-        # 7. Poll scaling group until running
-        if sg_status != "Running":
-            self._poll_until_running(
-                sg_name=self._version_info.scaling_group_name,
+            # 2. Build image + upload lazy files
+            image_uri, new_vols = _build_and_upload(
+                self._client,
+                deploy_image,
+                label=f"function '{self._func_name}'",
+                volume_prefix="fn-files",
                 poll_interval=poll_interval,
-                timeout=ready_timeout,
+                build_timeout=build_timeout,
+                progress_parent=fkey,
             )
+            self._volumes += new_vols
+            _cleanup_temp_files(getattr(self, "_temp_files", []))
+            self._temp_files = []
+
+            # 3. Generate schemas from function signature
+            input_schema_proto, output_schema_proto = _build_schemas(self._func)
+
+            # 4. Build ScalingGroupSpec
+            sg_name = (
+                self._explicit_name
+                if self._explicit_name
+                else f"fn-{self._func_name}-{uuid.uuid4().hex[:8]}"
+            )
+            handler_cmd = ["chalk-remote-call", "--handler", "handler.handler"]
+            container_spec = _make_container_spec(
+                name=sg_name,
+                image_uri=image_uri,
+                entrypoint=_local_install_entrypoint(handler_cmd),
+                env=self._env,
+                cpu=self._cpu,
+                memory=self._memory,
+                gpu=self._gpu,
+                volumes=self._volumes,
+            )
+            spec: dict[str, Any] = {
+                "containerSpec": container_spec,
+                "scalingSpec": {
+                    "minReplicas": self._min_replicas,
+                    "maxReplicas": self._max_replicas,
+                },
+            }
+
+            # 6. Call CreateExternalFunctionVersion
+            rkey = f"register:{self._func_name}"
+            progress_add(rkey, "function", "Registering function", parent=fkey)
+            logger.info("Registering function '%s'...", self._func_name)
+            resp = self._client.rpc(
+                _CATALOG_SVC,
+                "CreateExternalFunctionVersion",
+                {
+                    "functionName": self._func_name,
+                    "inputArrowSchema": MessageToDict(input_schema_proto),
+                    "outputArrowSchema": MessageToDict(output_schema_proto),
+                    "spec": spec,
+                },
+                timeout=60,
+            )
+            if resp.status_code != 200:
+                raise FunctionError(f"CreateExternalFunctionVersion failed: {resp.text}")
+
+            data = resp.json()
+            efv = data["externalFunctionVersion"]
+            self._version_info = FunctionVersionInfo(
+                id=efv["id"],
+                function_name=efv["functionName"],
+                version=efv.get("version", 0),
+                scaling_group_name=efv.get("scalingGroupName", sg_name),
+            )
+
+            sg_data = data.get("scalingGroup")
+            if sg_data:
+                self._web_url = sg_data.get("webUrl")
+                self._port = sg_data.get("port", 6666)
+                sg_status = sg_data.get("status", "")
+            else:
+                self._port = 6666
+                sg_status = ""
+
+            logger.info(
+                "Function version created: %s v%s (id=%s)",
+                self._version_info.function_name,
+                self._version_info.version,
+                self._version_info.id,
+            )
+            progress_done(rkey)
+
+            # 7. Poll scaling group until running
+            if sg_status != "Running":
+                progress_update(fkey, detail="waiting for ready")
+                self._poll_until_running(
+                    sg_name=self._version_info.scaling_group_name,
+                    poll_interval=poll_interval,
+                    timeout=ready_timeout,
+                )
+
+            progress_done(fkey, detail="ready")
+        except BaseException:
+            progress_fail(fkey)
+            raise
+        finally:
+            progress_finish()
 
         return self
 

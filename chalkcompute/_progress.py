@@ -1,178 +1,348 @@
 """
-Rich hierarchical spinner display for Container.run() steps.
+Rich TUI progress display for chalkcompute deployments.
 
-Activated when CHALK_COMPUTE_SPINNERS=1 is set in the environment.
-Falls back to plain print() when disabled or when rich is not installed.
+Activated when ``CHALK_SANDBOX_TUI=true`` is set in the environment.
+Shows a hierarchical spinner tree of all resources being deployed:
+images, volumes, secrets, containers, functions, and classes.
+
+Falls back to normal logger output when disabled or when Rich is not installed.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import types
-from typing import TYPE_CHECKING, Literal, Union
+import threading
+from typing import Literal
 
 logger = logging.getLogger(__name__)
 
-if TYPE_CHECKING:
-    from rich.console import ConsoleRenderable, RichCast
-    from rich.live import Live
-
-    RenderableType = Union[ConsoleRenderable, RichCast, str]
-
-StepName = Literal[
+ResourceKind = Literal[
+    "image",
     "volume",
-    "upload",
-    "image_check",
-    "image_build",
-    "boot",
-    "files_sync",
+    "secret",
+    "container",
+    "function",
+    "class",
+    "method",
 ]
 
-StepStatus = Literal["pending", "in_progress", "done", "failed", "skipped"]
+StepStatus = Literal["pending", "active", "done", "failed", "skipped"]
 
-_STEP_LABELS: dict[StepName, str] = {
+_KIND_ICONS: dict[ResourceKind, str] = {
+    "image": "📦",
+    "volume": "💾",
+    "secret": "🔑",
+    "container": "🐳",
+    "function": "⚡",
+    "class": "🏗️",
+    "method": "  ↳",
+}
+
+_KIND_VERBS: dict[ResourceKind, str] = {
+    "image": "Building image",
     "volume": "Creating volume",
-    "upload": "Uploading files",
-    "image_check": "Checking image",
-    "image_build": "Building image",
-    "boot": "Booting container",
-    "files_sync": "Syncing files",
+    "secret": "Resolving secret",
+    "container": "Starting container",
+    "function": "Deploying function",
+    "class": "Deploying class",
+    "method": "Registering method",
 }
 
 
-def spinners_enabled() -> bool:
-    return os.environ.get("CHALK_COMPUTE_SPINNERS") == "1"
+def tui_enabled() -> bool:
+    """Return True when the Rich TUI progress display is enabled."""
+    return os.environ.get("CHALK_SANDBOX_TUI", "").lower() in ("true", "1")
 
 
-class ContainerProgress:
-    """Hierarchical spinner display for container launch steps.
+# ---------------------------------------------------------------------------
+# Resource state
+# ---------------------------------------------------------------------------
 
-    Usage::
 
-        with ContainerProgress("my-container", ["volume", "upload", "boot"]) as p:
-            p.update("volume", "in_progress")
-            ...
-            p.update("volume", "done")
+class _ResourceState:
+    __slots__ = ("kind", "label", "status", "detail", "children")
+
+    def __init__(self, kind: ResourceKind, label: str) -> None:
+        self.kind = kind
+        self.label = label
+        self.status: StepStatus = "active"
+        self.detail: str = ""
+        self.children: list[_ResourceState] = []
+
+
+# ---------------------------------------------------------------------------
+# Global TUI display singleton
+# ---------------------------------------------------------------------------
+
+
+class DeployProgress:
+    """Thread-safe global progress tracker rendered via Rich Live.
+
+    Call :meth:`add` to register a resource, :meth:`update` to change its
+    status, and the display auto-refreshes.  The Rich ``Live`` context is
+    started lazily on the first :meth:`add` and stopped when :meth:`finish`
+    is called (or all resources reach a terminal state).
     """
 
-    def __init__(self, container_name: str, steps: list[StepName]) -> None:
-        self._name = container_name
-        self._steps = steps
-        self._status: dict[StepName, StepStatus] = {s: "pending" for s in steps}
-        self._detail: dict[StepName, str] = {}
-        self._live: Live | None = None
-        self._use_rich = False
+    def __init__(self) -> None:
+        self._resources: dict[str, _ResourceState] = {}
+        self._order: list[str] = []
+        self._lock = threading.Lock()
+        self._live: Any = None  # rich.live.Live | None
+        self._started = False
+        self._logger_suppressed = False
 
-    def __enter__(self) -> ContainerProgress:
-        if not spinners_enabled():
-            return self
+    # -- Public API --------------------------------------------------------
+
+    def add(
+        self,
+        key: str,
+        kind: ResourceKind,
+        label: str,
+        *,
+        parent: str | None = None,
+        status: StepStatus = "active",
+        detail: str = "",
+    ) -> None:
+        """Register a resource in the progress tree."""
+        with self._lock:
+            state = _ResourceState(kind, label)
+            state.status = status
+            state.detail = detail
+            self._resources[key] = state
+
+            if parent and parent in self._resources:
+                self._resources[parent].children.append(state)
+            else:
+                self._order.append(key)
+
+            self._ensure_live()
+            self._refresh()
+
+    def update(
+        self,
+        key: str,
+        *,
+        status: StepStatus | None = None,
+        detail: str | None = None,
+        label: str | None = None,
+    ) -> None:
+        """Update a resource's status and/or detail."""
+        with self._lock:
+            state = self._resources.get(key)
+            if state is None:
+                return
+            if status is not None:
+                state.status = status
+            if detail is not None:
+                state.detail = detail
+            if label is not None:
+                state.label = label
+            self._refresh()
+
+    def finish(self) -> None:
+        """Stop the Live display and restore logger output."""
+        with self._lock:
+            self._stop_live()
+
+    # -- Rendering ---------------------------------------------------------
+
+    def _render(self) -> Any:
+        from rich.spinner import Spinner
+        from rich.table import Table
+        from rich.text import Text
+
+        grid = Table.grid(padding=(0, 0))
+        grid.add_column(width=3)  # icon
+        grid.add_column(width=3)  # status
+        grid.add_column()  # label + detail
+
+        for key in self._order:
+            state = self._resources[key]
+            self._render_row(grid, state, indent=0)
+
+        return grid
+
+    def _render_row(self, grid: Any, state: _ResourceState, indent: int) -> None:
+        from rich.spinner import Spinner
+        from rich.table import Table
+        from rich.text import Text
+
+        icon_str = _KIND_ICONS.get(state.kind, " ")
+        prefix = "  " * indent
+
+        if state.status == "active":
+            status_widget = Spinner("dots", style="cyan")
+        elif state.status == "done":
+            status_widget = Text("✓", style="bold green")
+        elif state.status == "failed":
+            status_widget = Text("✗", style="bold red")
+        elif state.status == "skipped":
+            status_widget = Text("–", style="dim")
+        else:  # pending
+            status_widget = Text("◌", style="dim")
+
+        label = state.label
+        if state.detail:
+            label = f"{label} — {state.detail}"
+
+        style = "dim" if state.status == "pending" else ""
+        if state.status == "failed":
+            style = "red"
+
+        icon_col = Text(f"{prefix}{icon_str}")
+        label_col = Text(f" {label}", style=style)
+
+        # Build a tight status + label row
+        row = Table.grid(padding=(0, 1))
+        row.add_column(width=2)
+        row.add_column()
+        row.add_row(status_widget, label_col)
+
+        grid.add_row(icon_col, Text(""), row)
+
+        for child in state.children:
+            self._render_row(grid, child, indent=indent + 1)
+
+    # -- Live management ---------------------------------------------------
+
+    def _ensure_live(self) -> None:
+        """Start the Rich Live display if not already started."""
+        if self._started:
+            return
         try:
             from rich.live import Live
 
-            self._use_rich = True
             self._live = Live(
                 self._render(),
                 refresh_per_second=12,
                 transient=False,
             )
-            self._live.__enter__()
+            self._live.start()
+            self._started = True
+            self._suppress_logger()
         except ImportError:
             pass
-        return self
 
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: types.TracebackType | None,
-    ) -> None:
+    def _refresh(self) -> None:
         if self._live is not None:
-            self._live.update(self._render())
-            self._live.__exit__(exc_type, exc_val, exc_tb)
+            try:
+                self._live.update(self._render())
+            except Exception:
+                pass
 
-    def update(
-        self,
-        step: StepName,
-        status: StepStatus,
-        detail: str = "",
-    ) -> None:
-        self._status[step] = status
-        if detail:
-            self._detail[step] = detail
-
+    def _stop_live(self) -> None:
         if self._live is not None:
-            self._live.update(self._render())
-        elif not self._use_rich:
-            self._print_update(step, status, detail)
+            try:
+                self._live.update(self._render())
+                self._live.stop()
+            except Exception:
+                pass
+            self._live = None
+        self._started = False
+        self._restore_logger()
 
-    def _print_update(self, step: StepName, status: StepStatus, detail: str) -> None:
-        """Fallback plain-text output when rich is not active."""
-        label = _STEP_LABELS.get(step, step)
-        if detail:
-            label = f"{label} ({detail})"
-        if status == "in_progress":
-            logger.info("  ⠸ %s...", label)
-        elif status == "done":
-            logger.info("  ✓ %s", label)
-        elif status == "failed":
-            logger.info("  ✗ %s", label)
+    # Loggers to suppress while the TUI is rendering.  httpx/httpcore are
+    # particularly noisy ("HTTP Request: POST ...") and corrupt the display.
+    _SUPPRESSED_LOGGERS = ("chalkcompute", "httpx", "httpcore")
 
-    def _render(self):
-        """Build a rich renderable showing the hierarchical step tree."""
-        from rich.spinner import Spinner
-        from rich.table import Table
-        from rich.text import Text
+    def _suppress_logger(self) -> None:
+        """Suppress noisy loggers while the TUI is active."""
+        if self._logger_suppressed:
+            return
+        self._saved_levels: dict[str, int] = {}
+        for name in self._SUPPRESSED_LOGGERS:
+            lg = logging.getLogger(name)
+            self._saved_levels[name] = lg.level
+            lg.setLevel(logging.CRITICAL + 1)
+        self._logger_suppressed = True
 
-        all_done = all(s in ("done", "skipped") for s in self._status.values())
-        any_failed = any(s == "failed" for s in self._status.values())
-
-        grid = Table.grid(padding=(0, 0))
-        grid.add_column(width=4, justify="right")
-        grid.add_column()
-
-        # Header row
-        if any_failed:
-            header_icon = Text(" ✗ ", style="bold red")
-        elif all_done:
-            header_icon = Text(" ✓ ", style="bold green")
-        else:
-            header_icon = Spinner("dots", style="bold cyan")
-
-        grid.add_row(header_icon, Text(f" Container \"{self._name}\"", style="bold"))
-
-        # Step rows
-        for step in self._steps:
-            status = self._status[step]
-            label = _STEP_LABELS.get(step, step)
-            detail = self._detail.get(step, "")
-            if detail:
-                label = f"{label} — {detail}"
-
-            if status == "in_progress":
-                icon = Spinner("dots", style="cyan")
-            elif status == "done":
-                icon = Text("✓", style="green")
-            elif status == "failed":
-                icon = Text("✗", style="red")
-            elif status == "skipped":
-                icon = Text("–", style="dim")
-            else:
-                icon = Text("◌", style="dim")
-
-            label_style = "dim" if status == "pending" else ""
-            grid.add_row(Text("   "), _icon_label(icon, label, label_style))
-
-        return grid
+    def _restore_logger(self) -> None:
+        """Restore logger levels saved before suppression."""
+        if not self._logger_suppressed:
+            return
+        for name, level in self._saved_levels.items():
+            logging.getLogger(name).setLevel(level)
+        self._saved_levels = {}
+        self._logger_suppressed = False
 
 
-def _icon_label(icon: RenderableType, label: str, style: str = ""):
-    """Combine a spinner or text icon with a label in a tight grid."""
-    from rich.table import Table
-    from rich.text import Text
+# ---------------------------------------------------------------------------
+# Module-level singleton
+# ---------------------------------------------------------------------------
 
-    row = Table.grid(padding=(0, 1))
-    row.add_column(width=2)
-    row.add_column()
-    row.add_row(icon, Text(label, style=style))
-    return row
+_global_progress: DeployProgress | None = None
+_global_lock = threading.Lock()
+
+
+def get_progress() -> DeployProgress | None:
+    """Return the global progress tracker, or None if TUI is disabled."""
+    global _global_progress
+    if not tui_enabled():
+        return None
+    with _global_lock:
+        if _global_progress is None:
+            _global_progress = DeployProgress()
+        return _global_progress
+
+
+def reset_progress() -> None:
+    """Stop and discard the global progress tracker."""
+    global _global_progress
+    with _global_lock:
+        if _global_progress is not None:
+            _global_progress.finish()
+            _global_progress = None
+
+
+# ---------------------------------------------------------------------------
+# Convenience helpers for common operations
+# ---------------------------------------------------------------------------
+
+
+def progress_add(
+    key: str,
+    kind: ResourceKind,
+    label: str,
+    *,
+    parent: str | None = None,
+    status: StepStatus = "active",
+    detail: str = "",
+) -> None:
+    """Add a resource to the global progress display (no-op if TUI disabled)."""
+    p = get_progress()
+    if p is not None:
+        p.add(key, kind, label, parent=parent, status=status, detail=detail)
+
+
+def progress_update(
+    key: str,
+    *,
+    status: StepStatus | None = None,
+    detail: str | None = None,
+    label: str | None = None,
+) -> None:
+    """Update a resource in the global progress display (no-op if TUI disabled)."""
+    p = get_progress()
+    if p is not None:
+        p.update(key, status=status, detail=detail, label=label)
+
+
+def progress_done(key: str, *, detail: str = "") -> None:
+    """Mark a resource as done in the global progress display."""
+    progress_update(key, status="done", detail=detail)
+
+
+def progress_fail(key: str, *, detail: str = "") -> None:
+    """Mark a resource as failed in the global progress display."""
+    progress_update(key, status="failed", detail=detail)
+
+
+def progress_finish() -> None:
+    """Stop the global progress display."""
+    reset_progress()
+
+
+# Keep the old import name alive but unused (backwards compat)
+from typing import Any  # noqa: E402
