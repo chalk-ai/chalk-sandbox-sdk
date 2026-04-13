@@ -29,6 +29,7 @@ from chalkcompute._tracing import traced
 
 if TYPE_CHECKING:
     from chalkcompute.image import Image as _Image
+    from chalkcompute.secret import Secret
 
 _SVC = "chalk.container.v1.ContainerService"
 _IMAGE_SVC = "chalk.sandbox.v1.CustomImageService"
@@ -101,6 +102,7 @@ class Container:
         lifetime: str | None = None,
         enable_ssh: bool = False,
         volumes: list[tuple[str, str]] | None = None,
+        secrets: list[Secret] | None = None,
     ) -> None:
         self._image = image
         self._name = name
@@ -112,6 +114,7 @@ class Container:
         self._port = port
         self._lifetime = lifetime
         self._enable_ssh = enable_ssh
+        self._secrets = list(secrets or [])
 
         # Set after .run()
         self._built_image_uri: str | None = None
@@ -159,6 +162,7 @@ class Container:
         c._port = None
         c._lifetime = None
         c._enable_ssh = False
+        c._secrets = []
         c._built_image_uri = None
         c._container_id = None
         c._container_info = None
@@ -255,6 +259,9 @@ class Container:
                 {"name": vol_name, "mountPath": mount_path, "type": "chalkfs"}
                 for vol_name, mount_path in self._volumes
             ]
+
+        if self._secrets:
+            spec["secretRefs"] = [s._to_proto_dict() for s in self._secrets]
 
         print(f"Starting container '{container_name}'...")
         resp = self._client.rpc(
