@@ -1,10 +1,8 @@
 on:
-  pull_request:
-    branches:
-      - sai/mount-local-for-testing
+  pull_request: {}
   push:
     branches:
-      - sai/mount-local-for-testing
+      - main
 
 steps:
   - label: ":mag: ty type check"
@@ -12,6 +10,7 @@ steps:
       set -euo pipefail
       echo "--- :python: Install dependencies"
       pip install ty
+      pip install -e .
       echo "--- :mag: Run ty"
       ty check chalkcompute/ --exclude chalkcompute/_gen/
     agents:
