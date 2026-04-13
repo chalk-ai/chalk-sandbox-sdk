@@ -207,100 +207,139 @@ class Container:
 
         Returns self for chaining.
         """
+        from chalkcompute._progress import (
+            progress_add,
+            progress_done,
+            progress_fail,
+            progress_finish,
+        )
         from chalkcompute.image import Image
 
-        # 1. Resolve image URI
-        if isinstance(self._image, Image):
-            logger.info("Building image from %r...", self._image)
-            self._built_image_uri = self._build_image(
-                poll_interval=poll_interval, timeout=build_timeout,
-            )
-            logger.info("Image built: %s", self._built_image_uri)
-        else:
-            self._built_image_uri = self._image
-
-        # 2. Upload lazy local files to a volume (if any)
-        lazy_files = (
-            self._image.lazy_local_files if isinstance(self._image, Image) else set()
-        )
-        if lazy_files:
-            logger.info("Uploading %d local file(s) to volume(s)...", len(lazy_files))
-            assert isinstance(self._image, Image)
-            self._volumes += upload_lazy_files(
-                self._client, self._image, volume_prefix="container-files",
-            )
-            for vn, mp in self._volumes:
-                logger.info("  Volume created: %s (mount: %s)", vn, mp)
-
-        # 3. Resolve lazy secrets (from_local_env / from_local_env_file)
-        if any(s.is_lazy for s in self._secrets):
-            from chalkcompute.secret import resolve_lazy_secrets
-
-            resolved, upserted = resolve_lazy_secrets(self._secrets, self._client)
-            self._secrets = resolved
-            self._upserted_secret_names = upserted
-            logger.info("Upserted %d secret(s) from local environment.", len(upserted))
-
-        # 4. Build the ContainerService spec
         container_name = self._name or f"container-{uuid.uuid4().hex[:8]}"
-        spec: dict[str, Any] = {
-            "name": container_name,
-            "image": self._built_image_uri,
-            "entrypoint": self._entrypoint or ["sleep", "infinity"],
-        }
+        self._name = container_name
+        ckey = f"container:{container_name}"
+        progress_add(ckey, "container", f"Container \"{container_name}\"")
 
-        if self._env:
-            spec["envVars"] = self._env
-        if self._port is not None:
-            spec["port"] = self._port
-        if self._lifetime is not None:
-            spec["lifetime"] = self._lifetime
-        if self._enable_ssh:
-            spec["enableSsh"] = True
+        try:
+            # 1. Resolve image URI
+            if isinstance(self._image, Image):
+                ikey = f"image:{container_name}"
+                progress_add(ikey, "image", "Building image", parent=ckey)
+                logger.info("Building image from %r...", self._image)
+                self._built_image_uri = self._build_image(
+                    poll_interval=poll_interval, timeout=build_timeout,
+                )
+                logger.info("Image built: %s", self._built_image_uri)
+                progress_done(ikey, detail="cached" if self._built_image_uri else "built")
+            else:
+                self._built_image_uri = self._image
 
-        resources: dict[str, str] = {}
-        if self._cpu:
-            resources["cpu"] = self._cpu
-        if self._memory:
-            resources["memory"] = self._memory
-        if self._gpu:
-            resources["gpu"] = self._gpu
-        if resources:
-            spec["resources"] = resources
+            # 2. Upload lazy local files to a volume (if any)
+            lazy_files = (
+                self._image.lazy_local_files if isinstance(self._image, Image) else set()
+            )
+            if lazy_files:
+                vkey = f"volume:{container_name}"
+                progress_add(
+                    vkey, "volume",
+                    f"Uploading {len(lazy_files)} file(s)",
+                    parent=ckey,
+                )
+                logger.info("Uploading %d local file(s) to volume(s)...", len(lazy_files))
+                assert isinstance(self._image, Image)
+                self._volumes += upload_lazy_files(
+                    self._client, self._image, volume_prefix="container-files",
+                )
+                for vn, mp in self._volumes:
+                    logger.info("  Volume created: %s (mount: %s)", vn, mp)
+                progress_done(vkey)
 
-        if self._volumes:
-            spec["volumes"] = [
-                {"name": vol_name, "mountPath": mount_path, "type": "chalkfs"}
-                for vol_name, mount_path in self._volumes
-            ]
+            # 3. Resolve lazy secrets (from_local_env / from_local_env_file)
+            if any(s.is_lazy for s in self._secrets):
+                skey = f"secret:{container_name}"
+                progress_add(skey, "secret", "Resolving secrets", parent=ckey)
+                from chalkcompute.secret import resolve_lazy_secrets
 
-        if self._secrets:
-            spec["secretRefs"] = [s._to_proto_dict() for s in self._secrets]
+                resolved, upserted = resolve_lazy_secrets(self._secrets, self._client)
+                self._secrets = resolved
+                self._upserted_secret_names = upserted
+                logger.info("Upserted %d secret(s) from local environment.", len(upserted))
+                progress_done(skey, detail=f"{len(upserted)} secret(s)")
 
-        logger.info("Starting container '%s'...", container_name)
-        resp = self._client.rpc(
-            _SVC, "RunContainer", {"container": {"spec": spec}}, timeout=60,
-        )
-        if resp.status_code != 200:
-            raise ContainerError(f"RunContainer failed: {resp.text}")
+            # 4. Build the ContainerService spec
+            spec: dict[str, Any] = {
+                "name": container_name,
+                "image": self._built_image_uri,
+                "entrypoint": self._entrypoint or ["sleep", "infinity"],
+            }
 
-        data = resp.json()
-        self._container_info = _parse_container_response(data["container"])
-        self._container_id = self._container_info.id
-        logger.info(
-            "Container created: %s (status=%s)",
-            self._container_id, self._container_info.status,
-        )
+            if self._env:
+                spec["envVars"] = self._env
+            if self._port is not None:
+                spec["port"] = self._port
+            if self._lifetime is not None:
+                spec["lifetime"] = self._lifetime
+            if self._enable_ssh:
+                spec["enableSsh"] = True
 
-        # 5. Poll until Running
-        if self._container_info.status != "Running":
-            self._poll_until_running(
-                poll_interval=poll_interval, timeout=ready_timeout,
+            resources: dict[str, str] = {}
+            if self._cpu:
+                resources["cpu"] = self._cpu
+            if self._memory:
+                resources["memory"] = self._memory
+            if self._gpu:
+                resources["gpu"] = self._gpu
+            if resources:
+                spec["resources"] = resources
+
+            if self._volumes:
+                spec["volumes"] = [
+                    {"name": vol_name, "mountPath": mount_path, "type": "chalkfs"}
+                    for vol_name, mount_path in self._volumes
+                ]
+
+            if self._secrets:
+                spec["secretRefs"] = [s._to_proto_dict() for s in self._secrets]
+
+            logger.info("Starting container '%s'...", container_name)
+            resp = self._client.rpc(
+                _SVC, "RunContainer", {"container": {"spec": spec}}, timeout=60,
+            )
+            if resp.status_code != 200:
+                raise ContainerError(f"RunContainer failed: {resp.text}")
+
+            data = resp.json()
+            self._container_info = _parse_container_response(data["container"])
+            self._container_id = self._container_info.id
+            logger.info(
+                "Container created: %s (status=%s)",
+                self._container_id, self._container_info.status,
             )
 
-        # 6. Wait for ChalkFS volume files to become visible
-        if lazy_files:
-            self._wait_for_volume_files(timeout=120.0, poll_interval=5.0)
+            # 5. Poll until Running
+            if self._container_info.status != "Running":
+                from chalkcompute._progress import progress_update
+
+                progress_update(ckey, detail="booting")
+                self._poll_until_running(
+                    poll_interval=poll_interval, timeout=ready_timeout,
+                )
+
+            # 6. Wait for ChalkFS volume files to become visible
+            if lazy_files:
+                from chalkcompute._progress import progress_update
+
+                fkey = f"filesync:{container_name}"
+                progress_add(fkey, "volume", "Syncing files", parent=ckey)
+                self._wait_for_volume_files(timeout=120.0, poll_interval=5.0)
+                progress_done(fkey)
+
+            progress_done(ckey, detail="running")
+        except BaseException:
+            progress_fail(ckey)
+            raise
+        finally:
+            progress_finish()
 
         return self
 
