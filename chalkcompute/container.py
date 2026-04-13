@@ -25,10 +25,10 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-logger = logging.getLogger(__name__)
-
 from chalkcompute._connect import ConnectClient, upload_lazy_files
 from chalkcompute._tracing import traced
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from chalkcompute.image import Image as _Image
