@@ -13,9 +13,9 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
-logger = logging.getLogger(__name__)
-
 from chalkcompute._tracing import traced as _traced
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     import httpx
