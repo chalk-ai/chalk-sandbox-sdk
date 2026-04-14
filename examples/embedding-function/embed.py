@@ -10,6 +10,9 @@ log = logging.getLogger(__name__)
 EMBEDDING_MODEL = "text-embedding-3-small"
 
 
+# Example of calling in examples/batched-embedding/call.py
+
+
 @chalkcompute.function(
     name="embed",
     image=chalkcompute.Image.debian_slim().pip_install(["openai"]),

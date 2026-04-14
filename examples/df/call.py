@@ -19,11 +19,6 @@ from chalkdf import Remote
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
 
-# The chalkpy gRPC client reads CHALK_ENVIRONMENT, not CHALK_ENVIRONMENT_ID.
-if "CHALK_ENVIRONMENT" not in os.environ and "CHALK_ENVIRONMENT_ID" in os.environ:
-    os.environ["CHALK_ENVIRONMENT"] = os.environ["CHALK_ENVIRONMENT_ID"]
-
-
 async def main() -> None:
     remote = Remote()
     fn = remote.function("df-groupby-sum", output_type=pa.int64())

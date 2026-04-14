@@ -179,16 +179,17 @@ def main(
     if openai_key := os.environ.get("OPENAI_API_KEY"):
         env["OPENAI_API_KEY"] = openai_key
 
-    container = Container(
-        image=OPENCODE_IMAGE,
-        name=container_name,
-        env=env,
-        port=OPENCODE_PORT,
-        entrypoint=[
-            "bash", "-c",
-            f"python3 -m http.server {OPENCODE_PORT} --bind 0.0.0.0 &>/dev/null & echo $! > /tmp/http_server.pid; tail -f /dev/null",
-        ],
-    ).run()
+    for _ in range(100):
+        container = Container(
+            image=OPENCODE_IMAGE,
+            name=container_name,
+            env=env,
+            port=OPENCODE_PORT,
+            entrypoint=[
+                "bash", "-c",
+                f"python3 -m http.server {OPENCODE_PORT} --bind 0.0.0.0 &>/dev/null & echo $! > /tmp/http_server.pid; tail -f /dev/null",
+            ],
+        ).run()
 
     try:
         clone_repo(container, github_repo, github_ref, github_token)
