@@ -3,6 +3,10 @@
 buildkite_org := "chalk"
 buildkite_pipeline := "chalk-sandbox-sdk-integration-tests"
 
+# Decrypt .env.enc to .env
+env:
+    sops --input-type dotenv --output-type dotenv -d .env.enc > .env
+
 # Run ty type checker
 ty:
     uv run --with ty ty check chalkcompute/ --exclude chalkcompute/_gen/
