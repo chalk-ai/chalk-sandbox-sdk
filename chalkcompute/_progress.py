@@ -149,9 +149,7 @@ class DeployProgress:
     # -- Rendering ---------------------------------------------------------
 
     def _render(self) -> Any:
-        from rich.spinner import Spinner
         from rich.table import Table
-        from rich.text import Text
 
         grid = Table.grid(padding=(0, 0))
         grid.add_column(width=3)  # icon
