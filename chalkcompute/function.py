@@ -40,11 +40,15 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 from chalkcompute._connect import ConnectClient, build_image, upload_lazy_files
 from chalkcompute._tracing import traced
+from chalkcompute.retry import RetryPolicy
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from chalkcompute.image import Image as _Image
+    from chalkcompute.secret import Secret as _Secret
+
+SerializationFormat = typing.Literal["pyarrow"]
 
 _REMOTE_ENV_VAR = "_CHALK_REMOTE_FUNCTION"
 # When enabled, mount the local SDK project and pip-install at container start.
@@ -448,6 +452,14 @@ class RemoteFunction:
         min_replicas: int = 1,
         max_replicas: int = 1,
         volumes: list[tuple[str, str]] | None = None,
+        secrets: list[_Secret] | None = None,
+        serialization_format: SerializationFormat = "pyarrow",
+        suspend_cooldown_period: int | None = None,
+        options: dict[str, str] | None = None,
+        max_buffer_duration: int | None = None,
+        max_batching_size: int | None = None,
+        retries: int | RetryPolicy | None = None,
+        rate_limit_key: str | None = None,
     ) -> None:
         self._func = func
         self._explicit_name = name
@@ -460,6 +472,14 @@ class RemoteFunction:
         self._min_replicas = min_replicas
         self._max_replicas = max_replicas
         self._volumes: list[tuple[str, str]] = list(volumes or [])
+        self._secrets: list[_Secret] = list(secrets or [])
+        self._serialization_format: SerializationFormat = serialization_format
+        self._suspend_cooldown_period = suspend_cooldown_period
+        self._options = options or {}
+        self._max_buffer_duration = max_buffer_duration
+        self._max_batching_size = max_batching_size
+        self._retries = RetryPolicy.from_int_or_policy(retries) if retries is not None else None
+        self._rate_limit_key = rate_limit_key
 
         # Set after .deploy()
         self._version_info: FunctionVersionInfo | None = None
@@ -548,6 +568,14 @@ class RemoteFunction:
         f._min_replicas = 1
         f._max_replicas = 1
         f._volumes = []
+        f._secrets = []
+        f._serialization_format = "pyarrow"
+        f._suspend_cooldown_period = None
+        f._options = {}
+        f._max_buffer_duration = None
+        f._max_batching_size = None
+        f._retries = None
+        f._rate_limit_key = None
         f._version_info = None
         f._web_url = None
         f._port = 6666
@@ -653,19 +681,50 @@ class RemoteFunction:
                 },
             }
 
+            # 5b. Resolve lazy secrets and add to container spec
+            if self._secrets:
+                from chalkcompute.secret import resolve_lazy_secrets
+
+                if any(s.is_lazy for s in self._secrets):
+                    resolved, _upserted = resolve_lazy_secrets(self._secrets, self._client)
+                    self._secrets = resolved
+                container_spec["secretRefs"] = [s._to_proto_dict() for s in self._secrets]
+
+            # 5c. Build function-level config
+            function_config: dict[str, Any] = {}
+            if self._serialization_format != "pyarrow":
+                function_config["serializationFormat"] = self._serialization_format
+            if self._suspend_cooldown_period is not None:
+                function_config["suspendCooldownPeriod"] = self._suspend_cooldown_period
+            if self._options:
+                function_config["options"] = self._options
+            if self._max_buffer_duration is not None:
+                function_config["maxBufferDuration"] = self._max_buffer_duration
+            if self._max_batching_size is not None:
+                function_config["maxBatchingSize"] = self._max_batching_size
+            if self._retries is not None:
+                function_config["retryPolicy"] = self._retries.to_dict()
+            if self._rate_limit_key is not None:
+                function_config["rateLimitKey"] = self._rate_limit_key
+
             # 6. Call CreateExternalFunctionVersion
             rkey = f"register:{self._func_name}"
             progress_add(rkey, "function", "Registering function", parent=fkey)
             logger.info("Registering function '%s'...", self._func_name)
+
+            create_request: dict[str, Any] = {
+                "functionName": self._func_name,
+                "inputArrowSchema": MessageToDict(input_schema_proto),
+                "outputArrowSchema": MessageToDict(output_schema_proto),
+                "spec": spec,
+            }
+            if function_config:
+                create_request["config"] = function_config
+
             resp = self._client.rpc(
                 _CATALOG_SVC,
                 "CreateExternalFunctionVersion",
-                {
-                    "functionName": self._func_name,
-                    "inputArrowSchema": MessageToDict(input_schema_proto),
-                    "outputArrowSchema": MessageToDict(output_schema_proto),
-                    "spec": spec,
-                },
+                create_request,
                 timeout=60,
             )
             if resp.status_code != 200:
@@ -1046,6 +1105,14 @@ def function(
     min_replicas: int = 1,
     max_replicas: int = 1,
     volumes: list[tuple[str, str]] | None = None,
+    secrets: list[_Secret] | None = None,
+    serialization_format: SerializationFormat = "pyarrow",
+    suspend_cooldown_period: int | None = None,
+    options: dict[str, str] | None = None,
+    max_buffer_duration: int | None = None,
+    max_batching_size: int | None = None,
+    retries: int | RetryPolicy | None = None,
+    rate_limit_key: str | None = None,
 ) -> Callable[..., RemoteFunction | _NoOpFunction]:
     """Decorator that deploys a function as a versioned remote function.
 
@@ -1058,6 +1125,34 @@ def function(
 
     **Remotely** (inside the container):
     The decorator is a no-op — returns the raw function unchanged.
+
+    Args:
+        image: Container image to deploy in. Defaults to ``Image.debian_slim()``.
+        cpu: CPU resource request (e.g. ``"1"``, ``"500m"``).
+        memory: Memory resource request (e.g. ``"1Gi"``, ``"512Mi"``).
+        gpu: GPU resource request.
+        name: Custom function name. Defaults to the function's ``__name__``.
+        env: Environment variables to pass to the function.
+        min_replicas: Minimum number of replicas.
+        max_replicas: Maximum number of replicas.
+        volumes: List of ``(name, mount_path)`` tuples for persistent storage.
+        secrets: List of :class:`~chalkcompute.Secret` references to inject.
+        serialization_format: Wire format for arguments and results.
+            Currently only ``"pyarrow"`` is supported.
+        suspend_cooldown_period: Time in seconds until containers shut down
+            after the last request.
+        options: Arbitrary key-value options forwarded to the Chalk platform.
+        max_buffer_duration: Maximum time in milliseconds to buffer incoming
+            items before invoking the handler. Defaults to 1000 ms when batching
+            is enabled. When batching is enabled, handler args are lists or a
+            single pyarrow table.
+        max_batching_size: Maximum number of items to accumulate before invoking
+            the handler. Defaults to 10 when batching is enabled.
+        retries: Retry policy for handler invocations. Pass an ``int`` for
+            simple max-attempts with default exponential backoff, or a
+            :class:`~chalk_remote_call.config.RetryPolicy` for full control.
+        rate_limit_key: Name of an externally defined rate limit policy.
+            Used to control outbound concurrency from multiple sources.
     """
 
     def decorator(func: Callable) -> RemoteFunction | _NoOpFunction:
@@ -1075,6 +1170,14 @@ def function(
             min_replicas=min_replicas,
             max_replicas=max_replicas,
             volumes=volumes,
+            secrets=secrets,
+            serialization_format=serialization_format,
+            suspend_cooldown_period=suspend_cooldown_period,
+            options=options,
+            max_buffer_duration=max_buffer_duration,
+            max_batching_size=max_batching_size,
+            retries=retries,
+            rate_limit_key=rate_limit_key,
         )
         f.deploy()
         return f
