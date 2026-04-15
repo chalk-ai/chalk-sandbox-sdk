@@ -1130,7 +1130,8 @@ def function(
         image: Container image to deploy in. Defaults to ``Image.debian_slim()``.
         cpu: CPU resource request (e.g. ``"1"``, ``"500m"``).
         memory: Memory resource request (e.g. ``"1Gi"``, ``"512Mi"``).
-        gpu: GPU resource request.
+        gpu: GPU resource request (e.g. ``"nvidia-l4"``, ``"2:nvidia-a100"``).
+            Format is ``"<count>:<type>"`` or just ``"<type>"`` for a single GPU.
         name: Custom function name. Defaults to the function's ``__name__``.
         env: Environment variables to pass to the function.
         min_replicas: Minimum number of replicas.
