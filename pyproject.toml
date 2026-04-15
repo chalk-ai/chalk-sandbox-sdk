@@ -39,4 +39,4 @@ python = ".venv"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-testpaths = ["e2etests"]
+testpaths = ["tests", "e2etests"]

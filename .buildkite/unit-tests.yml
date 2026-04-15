@@ -1,0 +1,27 @@
+on:
+  pull_request: {}
+  push:
+    branches:
+      - main
+      - "**"
+
+steps:
+  - label: ":mag: ty type check"
+    command: |
+      set -euo pipefail
+      echo "--- :mag: Run ty"
+      uv run --with ty ty check chalkcompute/ --exclude chalkcompute/_gen/
+    agents:
+      queue: default
+    timeout_in_minutes: 5
+
+  - label: ":pytest: Unit tests"
+    command: |
+      set -euo pipefail
+      echo "--- :python: Sync dependencies"
+      uv sync --all-extras
+      echo "--- :pytest: Run unit tests"
+      uv run python -m pytest tests/ -v --tb=short
+    agents:
+      queue: default
+    timeout_in_minutes: 5

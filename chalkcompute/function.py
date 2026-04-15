@@ -272,7 +272,7 @@ def _make_base_image(user_image: _Image | None) -> _Image:
         image = base.add_local_dir(
             str(project_root),
             _LOCAL_SDK_MOUNT,
-            exclude=[".git", "__pycache__", "*.pyc", ".env*", "e2etests", "examples"],
+            exclude=["tests", "e2etests", "examples"],
             archive=True,
         )
     elif strip_source:

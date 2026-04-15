@@ -5,18 +5,6 @@ on:
       - main
 
 steps:
-  - label: ":mag: ty type check"
-    command: |
-      set -euo pipefail
-      echo "--- :python: Install dependencies"
-      pip install ty
-      pip install -e .
-      echo "--- :mag: Run ty"
-      ty check chalkcompute/ --exclude chalkcompute/_gen/
-    agents:
-      queue: default
-    timeout_in_minutes: 5
-
   - label: ":pytest: Integration tests"
     command: |
       set -euo pipefail
@@ -33,11 +21,11 @@ steps:
       set +a
       rm /tmp/test.env
 
-      echo "--- :python: Install dependencies"
-      pip install pytest httpx python-dotenv grpcio grpcio-tools protobuf
+      echo "--- :python: Sync dependencies"
+      uv sync --all-extras
 
       echo "--- :pytest: Run integration tests"
-      pytest e2etests/test_image.py e2etests/test_sandbox_exec.py e2etests/test_volume.py e2etests/test_container.py -v -s --tb=short
+      uv run python -m pytest e2etests/test_image.py e2etests/test_sandbox_exec.py e2etests/test_volume.py e2etests/test_container.py -v -s --tb=short
     agents:
       queue: default
     timeout_in_minutes: 15
@@ -62,15 +50,14 @@ steps:
       set +a
       rm /tmp/test.env
 
-      echo "--- :python: Install dependencies"
-      pip install pytest python-dotenv httpx grpcio grpcio-tools protobuf
-      pip install -e .
+      echo "--- :python: Sync dependencies"
+      uv sync --all-extras
 
       echo "--- :brain: Deploy and test embedding functions"
       export OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.chalk.ai:443
       export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
       export OTEL_SERVICE_NAME=chalkcompute-ci-embedding
-      CHALK_FUNCTION_STRIP_SOURCE=1 pytest examples/embedding-function/test_embedding_function.py -v -s --tb=short
+      CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest examples/embedding-function/test_embedding_function.py -v -s --tb=short
     agents:
       queue: default
     timeout_in_minutes: 20
