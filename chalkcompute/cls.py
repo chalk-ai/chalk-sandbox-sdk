@@ -58,6 +58,7 @@ from chalkcompute.function import (
     _SG_SVC,
     FunctionVersionInfo,
     RemoteFunction,
+    SerializationFormat,
     _build_and_upload,
     _cleanup_temp_files,
     _extract_field_names,
@@ -67,9 +68,11 @@ from chalkcompute.function import (
     _should_strip_source,
     _write_temp,
 )
+from chalkcompute.retry import RetryPolicy
 
 if TYPE_CHECKING:
     from chalkcompute.image import Image as _Image
+    from chalkcompute.secret import Secret as _Secret
 
 logger = logging.getLogger(__name__)
 
@@ -330,6 +333,14 @@ class RemoteClass:
         min_replicas: int = 1,
         max_replicas: int = 1,
         volumes: list[tuple[str, str]] | None = None,
+        secrets: list[_Secret] | None = None,
+        serialization_format: SerializationFormat = "pyarrow",
+        suspend_cooldown_period: int | None = None,
+        options: dict[str, str] | None = None,
+        max_buffer_duration: int | None = None,
+        max_batching_size: int | None = None,
+        retries: int | RetryPolicy | None = None,
+        rate_limit_key: str | None = None,
     ) -> None:
         self._user_cls = user_cls
         self._class_name = user_cls.__name__
@@ -344,6 +355,14 @@ class RemoteClass:
         self._min_replicas = min_replicas
         self._max_replicas = max_replicas
         self._volumes: list[tuple[str, str]] = list(volumes or [])
+        self._secrets: list[_Secret] = list(secrets or [])
+        self._serialization_format: SerializationFormat = serialization_format
+        self._suspend_cooldown_period = suspend_cooldown_period
+        self._options = options or {}
+        self._max_buffer_duration = max_buffer_duration
+        self._max_batching_size = max_batching_size
+        self._retries = RetryPolicy.from_int_or_policy(retries) if retries is not None else None
+        self._rate_limit_key = rate_limit_key
 
         self._client = ConnectClient()
         self._deployed = False
@@ -451,6 +470,14 @@ class RemoteClass:
         rc._min_replicas = 1
         rc._max_replicas = 1
         rc._volumes = []
+        rc._secrets = []
+        rc._serialization_format = "pyarrow"
+        rc._suspend_cooldown_period = None
+        rc._options = {}
+        rc._max_buffer_duration = None
+        rc._max_batching_size = None
+        rc._retries = None
+        rc._rate_limit_key = None
         rc._client = ConnectClient()
         rc._deployed = False
         rc._methods = {}
@@ -589,6 +616,16 @@ class RemoteClass:
                     gpu=self._gpu,
                     volumes=self._volumes,
                 )
+
+                # Resolve lazy secrets and add to container spec
+                if self._secrets:
+                    from chalkcompute.secret import resolve_lazy_secrets
+
+                    if any(s.is_lazy for s in self._secrets):
+                        resolved, _upserted = resolve_lazy_secrets(self._secrets, self._client)
+                        self._secrets = resolved
+                    container_spec["secretRefs"] = [s._to_proto_dict() for s in self._secrets]
+
                 spec: dict[str, Any] = {
                     "containerSpec": container_spec,
                     "scalingSpec": {
@@ -597,16 +634,37 @@ class RemoteClass:
                     },
                 }
 
+                # Build function-level config
+                function_config: dict[str, Any] = {}
+                if self._serialization_format != "pyarrow":
+                    function_config["serializationFormat"] = self._serialization_format
+                if self._suspend_cooldown_period is not None:
+                    function_config["suspendCooldownPeriod"] = self._suspend_cooldown_period
+                if self._options:
+                    function_config["options"] = self._options
+                if self._max_buffer_duration is not None:
+                    function_config["maxBufferDuration"] = self._max_buffer_duration
+                if self._max_batching_size is not None:
+                    function_config["maxBatchingSize"] = self._max_batching_size
+                if self._retries is not None:
+                    function_config["retryPolicy"] = self._retries.to_dict()
+                if self._rate_limit_key is not None:
+                    function_config["rateLimitKey"] = self._rate_limit_key
+
                 logger.info("Registering method '%s'...", func_name)
+                create_request: dict[str, Any] = {
+                    "functionName": func_name,
+                    "inputArrowSchema": MessageToDict(input_schema),
+                    "outputArrowSchema": MessageToDict(output_schema),
+                    "spec": spec,
+                }
+                if function_config:
+                    create_request["config"] = function_config
+
                 resp = self._client.rpc(
                     _CATALOG_SVC,
                     "CreateExternalFunctionVersion",
-                    {
-                        "functionName": func_name,
-                        "inputArrowSchema": MessageToDict(input_schema),
-                        "outputArrowSchema": MessageToDict(output_schema),
-                        "spec": spec,
-                    },
+                    create_request,
                     timeout=60,
                 )
                 if resp.status_code != 200:
@@ -825,6 +883,14 @@ def cls(
     min_replicas: int = 1,
     max_replicas: int = 1,
     volumes: list[tuple[str, str]] | None = None,
+    secrets: list[_Secret] | None = None,
+    serialization_format: SerializationFormat = "pyarrow",
+    suspend_cooldown_period: int | None = None,
+    options: dict[str, str] | None = None,
+    max_buffer_duration: int | None = None,
+    max_batching_size: int | None = None,
+    retries: int | RetryPolicy | None = None,
+    rate_limit_key: str | None = None,
 ) -> Callable[..., RemoteClass | _NoOpClass]:
     """Decorator that deploys a class as versioned remote functions.
 
@@ -854,6 +920,14 @@ def cls(
             min_replicas=min_replicas,
             max_replicas=max_replicas,
             volumes=volumes,
+            secrets=secrets,
+            serialization_format=serialization_format,
+            suspend_cooldown_period=suspend_cooldown_period,
+            options=options,
+            max_buffer_duration=max_buffer_duration,
+            max_batching_size=max_batching_size,
+            retries=retries,
+            rate_limit_key=rate_limit_key,
         )
         rc.deploy()
         return rc
