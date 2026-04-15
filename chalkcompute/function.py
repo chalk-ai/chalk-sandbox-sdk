@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 from chalkcompute._connect import ConnectClient, build_image, upload_lazy_files
+from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import traced
 
 logger = logging.getLogger(__name__)
@@ -450,8 +451,12 @@ class RemoteFunction:
         volumes: list[tuple[str, str]] | None = None,
     ) -> None:
         self._func = func
+        if name is not None:
+            validate_dns_label(name)
         self._explicit_name = name
-        self._func_name = name or getattr(func, "__name__", "anonymous")
+        self._func_name = name or sanitize_dns_label(
+            getattr(func, "__name__", "anonymous")
+        )
         self._image = image
         self._cpu = cpu
         self._memory = memory
@@ -629,7 +634,7 @@ class RemoteFunction:
             input_schema_proto, output_schema_proto = _build_schemas(self._func)
 
             # 4. Build ScalingGroupSpec
-            sg_name = (
+            sg_name = sanitize_dns_label(
                 self._explicit_name
                 if self._explicit_name
                 else f"fn-{self._func_name}-{uuid.uuid4().hex[:8]}"

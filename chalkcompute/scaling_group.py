@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from chalkcompute._connect import ConnectClient, build_image, upload_lazy_files
+from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import traced
 
 logger = logging.getLogger(__name__)
@@ -107,6 +108,8 @@ class ScalingGroup:
         volumes: list[tuple[str, str]] | None = None,
     ) -> None:
         self._image = image
+        if name is not None:
+            validate_dns_label(name)
         self._name = name
         self._cpu = cpu
         self._memory = memory
@@ -213,7 +216,7 @@ class ScalingGroup:
                 logger.info("  Volume created: %s (mount: %s)", vn, mp)
 
         # 3. Build the ScalingGroupSpec
-        sg_name = self._name or f"sg-{uuid.uuid4().hex[:8]}"
+        sg_name = sanitize_dns_label(self._name or f"sg-{uuid.uuid4().hex[:8]}")
         container_spec: dict[str, Any] = {
             "name": sg_name,
             "image": self._built_image_uri,
