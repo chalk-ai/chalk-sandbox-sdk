@@ -65,7 +65,11 @@ class ConnectClient:
                 "client_secret": client_secret,
                 "grant_type": "client_credentials",
             },
-            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "X-Chalk-Server": "go-api",
+            },
             timeout=30,
         )
         resp.raise_for_status()
@@ -75,6 +79,7 @@ class ConnectClient:
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self._access_token}",
             "X-Chalk-Env-Id": self._env_id or "",
+            "X-Chalk-Server": "go-api",
         }
 
     def rpc(
