@@ -1,11 +1,19 @@
 # Chalk Sandbox SDK
 
+# Get list of just commands
+default:
+    @just --list
+
 buildkite_org := "chalk"
 buildkite_pipeline := "chalk-sandbox-sdk-integration-tests"
 
 # Decrypt .env.enc to .env
 env:
     sops --input-type dotenv --output-type dotenv -d .env.enc > .env
+
+# Sync all dependencies
+sync:
+    uv sync --all-extras
 
 # Run ty type checker
 ty:

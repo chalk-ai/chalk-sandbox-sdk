@@ -25,6 +25,12 @@ from typing import (
     is_typeddict,
 )
 
+
+try:
+    from pydantic import BaseModel as _PydanticBaseModel
+except ImportError:
+    _PydanticBaseModel = None  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
+
 try:
     from types import UnionType
 except ImportError:
@@ -70,20 +76,15 @@ def _is_namedtuple(value: Any) -> bool:
 
 
 def _has_attrs(typ: Any) -> bool:
-    try:
-        import attrs
-
-        return attrs.has(typ)
-    except ImportError:
-        return False
+    return hasattr(typ, "__attrs_attrs__")
 
 
 def _is_pydantic_basemodel(typ: Any) -> bool:
-    try:
-        from pydantic import BaseModel as _PydanticBaseModel
-    except ImportError:
-        return False
-    return isinstance(typ, type) and issubclass(typ, _PydanticBaseModel)
+    return (
+        _PydanticBaseModel is not None
+        and isinstance(typ, type)
+        and issubclass(typ, _PydanticBaseModel)
+    )
 
 
 # ---------------------------------------------------------------------------
