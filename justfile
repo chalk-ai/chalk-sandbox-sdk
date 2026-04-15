@@ -19,6 +19,10 @@ sync:
 ty:
     uv run --with ty ty check chalkcompute/ --exclude chalkcompute/_gen/
 
+# Run unit tests (no credentials needed)
+test *args:
+    uv run python -m pytest tests/ {{args}}
+
 # Run ruff linter
 ruff:
     uv run --with ruff ruff check chalkcompute/ --exclude chalkcompute/_gen/

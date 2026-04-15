@@ -17,6 +17,18 @@ steps:
       queue: default
     timeout_in_minutes: 5
 
+  - label: ":pytest: Unit tests"
+    command: |
+      set -euo pipefail
+      echo "--- :python: Install dependencies"
+      pip install pytest attrs
+      pip install -e .
+      echo "--- :pytest: Run unit tests"
+      pytest tests/ -v --tb=short
+    agents:
+      queue: default
+    timeout_in_minutes: 5
+
   - label: ":pytest: Integration tests"
     command: |
       set -euo pipefail

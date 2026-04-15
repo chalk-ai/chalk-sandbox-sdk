@@ -1,4 +1,4 @@
-"""Tests for chalkcompute.arrow_schema and chalkcompute.function._build_schemas."""
+"""Unit tests for chalkcompute.arrow_schema and chalkcompute.function._build_schemas."""
 
 import dataclasses
 import decimal

@@ -22,7 +22,6 @@ sandbox container.
 
 from __future__ import annotations
 
-import fnmatch
 import io
 import logging
 import os
@@ -219,24 +218,39 @@ class Image:
     ) -> Image:
         """Add an entire local directory into the image.
 
+        Automatically respects ``.gitignore`` and ``.chalkignore`` files found
+        at any level within *src* (each scoped to its directory subtree,
+        matching go-git's behavior).  The ``.git/`` directory is always
+        excluded.  Negation patterns (``!``) are supported.
+
         Args:
             src: Local directory path.
             dest: Absolute destination directory in the image.
             strategy: "copy" inlines all file contents into the image spec.
                       "volume" (default) defers each file as a lazy reference
                       to be mounted at sandbox start.
-            exclude: Glob patterns to skip (matched against relative paths).
-                     e.g. [".git", "__pycache__", "*.pyc"]
+            exclude: Additional glob patterns to skip (matched against relative
+                     paths).  These are applied on top of patterns loaded from
+                     ignore files.  e.g. ``["data/**", "*.csv"]``
             archive: When True (volume strategy only), tar the directory into
                      a single file for upload instead of individual files.
                      The caller is responsible for extracting at the destination.
         """
+        from chalkcompute._ignore import (
+            _match_exclude,
+            collect_ignore_patterns,
+            is_excluded as _is_pattern_excluded,
+        )
+
         new = self._copy()
         src_path = Path(src)
-        _exclude = exclude or []
+        ignore_patterns = collect_ignore_patterns(src_path)
+        _extra_exclude = exclude or []
 
         def _is_excluded(rel_str: str) -> bool:
-            return any(_match_exclude(rel_str, pat) for pat in _exclude)
+            if _is_pattern_excluded(rel_str, ignore_patterns):
+                return True
+            return any(_match_exclude(rel_str, pat) for pat in _extra_exclude)
 
         def _iter_files() -> list[Path]:
             result = []
@@ -245,8 +259,10 @@ class Image:
                     continue
                 rel = file_path.relative_to(src_path)
                 rel_str = str(rel)
-                excluded = _is_excluded(rel_str)
-                if excluded:
+                # Always skip .chalkignore files (at any depth).
+                if rel_str.endswith(".chalkignore"):
+                    continue
+                if _is_excluded(rel_str):
                     continue
                 result.append(file_path)
             return result
@@ -407,31 +423,6 @@ class Image:
             parts.append(f", env={self._env!r}")
         parts.append(")")
         return "".join(parts)
-
-
-def _match_exclude(rel_str: str, pattern: str) -> bool:
-    """Match a relative path against an exclude pattern (gitignore-style).
-
-    ``*`` matches within a single path component, ``**`` matches zero or more
-    complete components.  Patterns are anchored to the source directory root.
-    """
-    return _match_segments(rel_str.split("/"), pattern.split("/"))
-
-
-def _match_segments(path_segs: list[str], pat_segs: list[str]) -> bool:
-    if not pat_segs:
-        return not path_segs
-    if pat_segs[0] == "**":
-        rest = pat_segs[1:]
-        for skip in range(len(path_segs) + 1):
-            if _match_segments(path_segs[skip:], rest):
-                return True
-        return False
-    if not path_segs:
-        return False
-    if fnmatch.fnmatchcase(path_segs[0], pat_segs[0]):
-        return _match_segments(path_segs[1:], pat_segs[1:])
-    return False
 
 
 def _validate_lazy_local_file_destination(dest: str, *, mount_root: str | None = None) -> None:
