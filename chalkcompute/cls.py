@@ -50,6 +50,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
 from chalkcompute._connect import ConnectClient
+from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import traced
 from chalkcompute.function import (
     _CATALOG_SVC,
@@ -332,6 +333,8 @@ class RemoteClass:
     ) -> None:
         self._user_cls = user_cls
         self._class_name = user_cls.__name__
+        if name is not None:
+            validate_dns_label(name)
         self._explicit_name = name
         self._image = image
         self._cpu = cpu
@@ -558,12 +561,13 @@ class RemoteClass:
             for method_info in self._methods.values():
                 input_schema, output_schema = _build_method_schemas(method_info.func)
 
-                name_prefix = self._explicit_name or self._class_name
-                func_name = f"{name_prefix}.{method_info.name}"
+                name_prefix = self._explicit_name or sanitize_dns_label(self._class_name)
+                method_label = sanitize_dns_label(method_info.name)
+                func_name = f"{name_prefix}.{method_label}"
                 if self._explicit_name:
-                    sg_name = f"{self._explicit_name}-{method_info.name}"
+                    sg_name = f"{self._explicit_name}-{method_label}"
                 else:
-                    sg_name = (
+                    sg_name = sanitize_dns_label(
                         f"cls-{self._class_name}-{method_info.name}-{uuid.uuid4().hex[:8]}"
                     )
 

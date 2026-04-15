@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from chalkcompute._connect import ConnectClient, upload_lazy_files
+from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import traced
 
 logger = logging.getLogger(__name__)
@@ -108,6 +109,8 @@ class Container:
         secrets: list[Secret] | None = None,
     ) -> None:
         self._image = image
+        if name is not None:
+            validate_dns_label(name)
         self._name = name
         self._cpu = cpu
         self._memory = memory
@@ -215,7 +218,7 @@ class Container:
         )
         from chalkcompute.image import Image
 
-        container_name = self._name or f"container-{uuid.uuid4().hex[:8]}"
+        container_name = sanitize_dns_label(self._name or f"container-{uuid.uuid4().hex[:8]}")
         self._name = container_name
         ckey = f"container:{container_name}"
         progress_add(ckey, "container", f"Container \"{container_name}\"")
