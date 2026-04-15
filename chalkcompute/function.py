@@ -185,17 +185,33 @@ def _generate_handler_shim(func_name: str) -> str:
         "\n"
         f"from user_module import {func_name}\n"
         "\n"
-        f"_is_generator_func = inspect.isgeneratorfunction({func_name})\n"
+        f"_is_sync_gen = inspect.isgeneratorfunction({func_name})\n"
+        f"_is_async_gen = inspect.isasyncgenfunction({func_name})\n"
+        f"_is_coroutine = inspect.iscoroutinefunction({func_name}) and not _is_async_gen\n"
         "\n"
         "\n"
         "def handler(event, context):\n"
         "    n = len(next(iter(event.values())))\n"
-        "    if _is_generator_func:\n"
+        "    if _is_sync_gen:\n"
         "        def _gen():\n"
         "            for i in range(n):\n"
         "                kwargs = {k: v[i].as_py() for k, v in event.items()}\n"
         f"                yield from {func_name}(**kwargs)\n"
         "        return _gen()\n"
+        "    elif _is_async_gen:\n"
+        "        async def _agen():\n"
+        "            for i in range(n):\n"
+        "                kwargs = {k: v[i].as_py() for k, v in event.items()}\n"
+        f"                async for item in {func_name}(**kwargs):\n"
+        "                    yield item\n"
+        "        return _agen()\n"
+        "    elif _is_coroutine:\n"
+        "        import asyncio\n"
+        "        results = []\n"
+        "        for i in range(n):\n"
+        "            kwargs = {k: v[i].as_py() for k, v in event.items()}\n"
+        f"            results.append(asyncio.run({func_name}(**kwargs)))\n"
+        "        return results\n"
         "    else:\n"
         "        results = []\n"
         "        for i in range(n):\n"
@@ -266,10 +282,12 @@ def _local_install_entrypoint(handler_cmd: list[str]) -> list[str]:
     cat_parts = f"cat {d}/{_ARCHIVE_CHUNK_PREFIX}* > {d}/{ARCHIVE_NAME}"
     extract = f"tar xzf {d}/{ARCHIVE_NAME} -C {d}"
     install = f"pip install {d}"
+    # Also install any .whl files in /tmp/ (e.g. local chalk-remote-call-python builds).
+    install_wheels = "for whl in /tmp/*.whl; do [ -f \"$whl\" ] && pip install \"$whl\" --force-reinstall --no-deps; done"
     return [
         "sh",
         "-c",
-        f"{cat_parts} && {extract} && {install} && {' '.join(handler_cmd)}",
+        f"{cat_parts} && {extract} && {install} && {install_wheels} && {' '.join(handler_cmd)}",
     ]
 
 
@@ -410,7 +428,12 @@ def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
 
     Goes directly from Python type annotations to arrow_pb2.Schema protos
     without an intermediate PyArrow representation.
+
+    Also stores function traits (is_generator, is_async) in the output
+    schema's metadata so the client can discover them from the catalog.
     """
+    import collections.abc as _cabc
+
     from chalkcompute.arrow_schema import rich_to_arrow_schema
 
     hints = typing.get_type_hints(func)
@@ -426,10 +449,35 @@ def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
     input_schema = rich_to_arrow_schema(input_types)
 
     # Output: single column "result"
+    # For generator functions (Iterator[T], Generator[T, ...]), unwrap to the yield type.
     return_type = hints.get("return")
     if return_type is None:
         raise TypeError("Function must have a return type annotation")
+
+    is_generator = False
+    is_async = inspect.iscoroutinefunction(func) or inspect.isasyncgenfunction(func)
+
+    origin = getattr(return_type, "__origin__", None)
+    if origin is not None:
+        if origin in (_cabc.Iterator, _cabc.Generator):
+            is_generator = True
+            args = getattr(return_type, "__args__", ())
+            if args:
+                return_type = args[0]
+        elif origin in (_cabc.AsyncIterator, _cabc.AsyncGenerator):
+            is_generator = True
+            is_async = True
+            args = getattr(return_type, "__args__", ())
+            if args:
+                return_type = args[0]
+
     output_schema = rich_to_arrow_schema({"result": return_type})
+
+    # Store function traits in schema metadata for client discovery.
+    if is_generator:
+        output_schema.metadata["chalk.function.is_generator"] = "true"
+    if is_async:
+        output_schema.metadata["chalk.function.is_async"] = "true"
 
     return input_schema, output_schema
 
