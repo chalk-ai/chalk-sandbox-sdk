@@ -177,8 +177,6 @@ def _generate_handler_shim(func_name: str) -> str:
     calls the user function per-row, and returns a ``pa.array`` of results.
     """
     return (
-        "import pyarrow as pa\n"
-        "\n"
         f"from user_module import {func_name}\n"
         "\n"
         "\n"
@@ -188,7 +186,7 @@ def _generate_handler_shim(func_name: str) -> str:
         "    for i in range(n):\n"
         "        kwargs = {k: v[i].as_py() for k, v in event.items()}\n"
         f"        results.append({func_name}(**kwargs))\n"
-        "    return pa.array(results)\n"
+        "    return results\n"
     )
 
 
