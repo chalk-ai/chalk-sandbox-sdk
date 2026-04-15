@@ -9,6 +9,8 @@ steps:
   - label: ":mag: ty type check"
     command: |
       set -euo pipefail
+      echo "--- :python: Sync dependencies"
+      uv sync --all-extras
       echo "--- :mag: Run ty"
       uv run --with ty ty check chalkcompute/ --exclude chalkcompute/_gen/
     agents:
