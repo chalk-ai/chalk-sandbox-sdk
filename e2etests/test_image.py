@@ -287,6 +287,225 @@ class TestImageAddFile:
         assert "/app/sub/b.py" in dests
 
 
+class TestAddLocalDirExclude:
+    """Test that add_local_dir exclude patterns work correctly, including ** globs."""
+
+    @staticmethod
+    def _make_tree(root: str, paths: list[str]) -> None:
+        """Create files at the given relative paths under *root*."""
+        from pathlib import Path
+
+        for p in paths:
+            full = Path(root) / p
+            full.parent.mkdir(parents=True, exist_ok=True)
+            full.write_text(p)
+
+    def _collect_dests(self, src: str, exclude: list[str]) -> set[str]:
+        """Run add_local_dir(strategy='copy') and return the set of destinations."""
+        img = Image.debian_slim().add_local_dir(src, "/app", strategy="copy", exclude=exclude)
+        return {s.add_file.destination for s in img.to_proto().steps}
+
+    def test_venv_deeply_nested_excluded(self) -> None:
+        """'.venv/**' must exclude files at arbitrary depth under .venv/."""
+        with tempfile.TemporaryDirectory() as d:
+            self._make_tree(d, [
+                "main.py",
+                ".venv/pyvenv.cfg",
+                ".venv/lib/python3.12/site-packages/rich/pretty.py",
+                ".venv/lib/python3.12/site-packages/requests/__init__.py",
+            ])
+            dests = self._collect_dests(d, [".venv/**"])
+        assert dests == {"/app/main.py"}
+
+    def test_dunder_pycache_anywhere(self) -> None:
+        """'**/__pycache__/**' must exclude __pycache__ at any depth."""
+        with tempfile.TemporaryDirectory() as d:
+            self._make_tree(d, [
+                "app.py",
+                "__pycache__/app.cpython-312.pyc",
+                "pkg/__pycache__/mod.cpython-312.pyc",
+                "pkg/sub/__pycache__/deep.cpython-312.pyc",
+            ])
+            dests = self._collect_dests(d, ["**/__pycache__/**"])
+        assert dests == {"/app/app.py"}
+
+    def test_star_pyc_anywhere(self) -> None:
+        """'**/*.pyc' must exclude .pyc files at any depth."""
+        with tempfile.TemporaryDirectory() as d:
+            self._make_tree(d, [
+                "app.py",
+                "root.pyc",
+                "pkg/mod.pyc",
+                "pkg/sub/deep.pyc",
+            ])
+            dests = self._collect_dests(d, ["**/*.pyc"])
+        assert dests == {"/app/app.py"}
+
+    def test_prefix_wildcard_dir(self) -> None:
+        """'bazel-*/**' must exclude contents of any bazel-* directory."""
+        with tempfile.TemporaryDirectory() as d:
+            self._make_tree(d, [
+                "BUILD",
+                "bazel-bin/pkg/lib.so",
+                "bazel-out/k8/bin/main",
+            ])
+            dests = self._collect_dests(d, ["bazel-*/**"])
+        assert dests == {"/app/BUILD"}
+
+    def test_multiple_excludes_combined(self) -> None:
+        """Multiple patterns work together (mirrors DEFAULT_EXCLUDES subset)."""
+        with tempfile.TemporaryDirectory() as d:
+            self._make_tree(d, [
+                "src/main.py",
+                "src/util.py",
+                ".venv/lib/python3.12/site-packages/rich/pretty.py",
+                ".git/objects/abc123",
+                ".git/HEAD",
+                "src/__pycache__/main.cpython-312.pyc",
+                "bazel-bin/pkg/lib.so",
+                ".cache/something",
+            ])
+            dests = self._collect_dests(d, [
+                ".cache/**",
+                ".git/**",
+                "**/__pycache__/**",
+                "**/*.pyc",
+                "bazel-*/**",
+                ".venv/**",
+            ])
+        assert dests == {"/app/src/main.py", "/app/src/util.py"}
+
+    def test_no_excludes_includes_everything(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            self._make_tree(d, [
+                "a.py",
+                ".venv/lib/foo.py",
+                "__pycache__/a.pyc",
+            ])
+            dests = self._collect_dests(d, [])
+        assert len(dests) == 3
+
+    def test_exclude_with_volume_strategy(self) -> None:
+        """Exclude patterns also apply with strategy='volume'."""
+        with tempfile.TemporaryDirectory() as d:
+            self._make_tree(d, [
+                "app.py",
+                ".venv/lib/python3.12/site-packages/pkg/mod.py",
+            ])
+            img = Image.debian_slim().add_local_dir(d, "/app", strategy="volume", exclude=[".venv/**"])
+        lazy_dests = {lf.dest for lf in img.lazy_local_files}
+        assert len(lazy_dests) == 1
+        assert any("app.py" in d for d in lazy_dests)
+
+    def test_star_does_not_cross_directories(self) -> None:
+        """'*.pyc' only matches root-level .pyc, not nested ones."""
+        with tempfile.TemporaryDirectory() as d:
+            self._make_tree(d, [
+                "app.py",
+                "root.pyc",
+                "pkg/nested.pyc",
+                "pkg/sub/deep.pyc",
+            ])
+            dests = self._collect_dests(d, ["*.pyc"])
+        # Only root.pyc excluded; nested .pyc files are kept
+        assert dests == {"/app/app.py", "/app/pkg/nested.pyc", "/app/pkg/sub/deep.pyc"}
+
+    def test_doublestar_crosses_directories(self) -> None:
+        """'**/*.pyc' matches .pyc at any depth including root."""
+        with tempfile.TemporaryDirectory() as d:
+            self._make_tree(d, [
+                "app.py",
+                "root.pyc",
+                "pkg/nested.pyc",
+                "pkg/sub/deep.pyc",
+            ])
+            dests = self._collect_dests(d, ["**/*.pyc"])
+        assert dests == {"/app/app.py"}
+
+    def test_venv_only_matches_root_venv(self) -> None:
+        """'.venv/**' excludes root .venv only, not a nested one."""
+        with tempfile.TemporaryDirectory() as d:
+            self._make_tree(d, [
+                "app.py",
+                ".venv/lib/foo.py",
+                "projects/other/.venv/lib/bar.py",
+            ])
+            dests = self._collect_dests(d, [".venv/**"])
+        # Root .venv excluded, nested .venv kept
+        assert dests == {"/app/app.py", "/app/projects/other/.venv/lib/bar.py"}
+
+
+class TestVolumeGrouping:
+    """Test that lazy files are grouped into the right number of volumes."""
+
+    @staticmethod
+    def _make_tree(root: str, paths: list[str]) -> None:
+        from pathlib import Path
+
+        for p in paths:
+            full = Path(root) / p
+            full.parent.mkdir(parents=True, exist_ok=True)
+            full.write_text(p)
+
+    def test_add_local_dir_single_volume(self) -> None:
+        """All files from one add_local_dir call should produce one volume group."""
+        with tempfile.TemporaryDirectory() as d:
+            self._make_tree(d, [
+                "main.py",
+                "pkg/__init__.py",
+                "pkg/sub/deep.py",
+                "lib/utils.py",
+            ])
+            img = Image.debian_slim().add_local_dir(d, "/workspace", strategy="volume")
+        groups = img.lazy_local_files_grouped_for_volume_mounts()
+        assert list(groups.keys()) == ["/workspace"]
+        assert len(groups["/workspace"]) == 4
+
+    def test_add_local_file_groups_by_parent(self) -> None:
+        """add_local_file (no mount_root) should group by parent directory."""
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
+            f.write(b"a")
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as g:
+            g.write(b"b")
+        img = (
+            Image.debian_slim()
+            .add_local_file(f.name, "/app/a.py", strategy="volume")
+            .add_local_file(g.name, "/data/b.py", strategy="volume")
+        )
+        groups = img.lazy_local_files_grouped_for_volume_mounts()
+        assert sorted(groups.keys()) == ["/app", "/data"]
+
+    def test_add_local_dir_and_file_same_root_merge(self) -> None:
+        """add_local_dir and add_local_file targeting the same parent merge."""
+        with tempfile.TemporaryDirectory() as d:
+            self._make_tree(d, ["pkg/mod.py"])
+            with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
+                f.write(b"extra")
+            img = (
+                Image.debian_slim()
+                .add_local_dir(d, "/app", strategy="volume")
+                .add_local_file(f.name, "/app/extra.py", strategy="volume")
+            )
+        groups = img.lazy_local_files_grouped_for_volume_mounts()
+        assert list(groups.keys()) == ["/app"]
+        assert len(groups["/app"]) == 2
+
+    def test_two_add_local_dir_different_dests(self) -> None:
+        """Two add_local_dir calls with different dests produce two groups."""
+        with tempfile.TemporaryDirectory() as d1, tempfile.TemporaryDirectory() as d2:
+            self._make_tree(d1, ["a.py", "sub/b.py"])
+            self._make_tree(d2, ["c.py"])
+            img = (
+                Image.debian_slim()
+                .add_local_dir(d1, "/repo1", strategy="volume")
+                .add_local_dir(d2, "/repo2", strategy="volume")
+            )
+        groups = img.lazy_local_files_grouped_for_volume_mounts()
+        assert sorted(groups.keys()) == ["/repo1", "/repo2"]
+        assert len(groups["/repo1"]) == 2
+        assert len(groups["/repo2"]) == 1
+
+
 class TestImageDockerfileCommands:
     """Test dockerfile_commands builder."""
 

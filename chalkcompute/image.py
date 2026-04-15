@@ -22,7 +22,9 @@ sandbox container.
 
 from __future__ import annotations
 
+import fnmatch
 import io
+import logging
 import os
 import tarfile
 import tempfile
@@ -31,6 +33,8 @@ from pathlib import Path
 from typing import Literal
 
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as pb
+
+logger = logging.getLogger(__name__)
 
 
 ARCHIVE_NAME = "_archive.tar.gz"
@@ -47,6 +51,7 @@ class LazyLocalFile:
     src: str
     dest: str
     mode: int | None = None
+    mount_root: str | None = None
 
 
 class Image:
@@ -230,13 +235,18 @@ class Image:
         src_path = Path(src)
         _exclude = exclude or []
 
+        def _is_excluded(rel_str: str) -> bool:
+            return any(_match_exclude(rel_str, pat) for pat in _exclude)
+
         def _iter_files() -> list[Path]:
             result = []
             for file_path in sorted(src_path.rglob("*")):
                 if not file_path.is_file():
                     continue
                 rel = file_path.relative_to(src_path)
-                if any(rel.match(pat) for pat in _exclude):
+                rel_str = str(rel)
+                excluded = _is_excluded(rel_str)
+                if excluded:
                     continue
                 result.append(file_path)
             return result
@@ -261,7 +271,7 @@ class Image:
                     part_name = f"{_ARCHIVE_CHUNK_PREFIX}{i // _ARCHIVE_CHUNK_SIZE:04d}"
                     part_dest = os.path.join(dest, part_name)
                     new._lazy_local_files.add(
-                        LazyLocalFile(src=tmp.name, dest=part_dest)
+                        LazyLocalFile(src=tmp.name, dest=part_dest, mount_root=dest)
                     )
             return new
 
@@ -270,15 +280,13 @@ class Image:
             file_dest = os.path.join(dest, str(rel))
             if strategy == "volume":
                 new._lazy_local_files.add(
-                    LazyLocalFile(src=str(file_path.resolve()), dest=file_dest)
+                    LazyLocalFile(src=str(file_path.resolve()), dest=file_dest, mount_root=dest)
                 )
             else:
                 content = file_path.read_bytes()
                 new._steps.append(
                     pb.BuildStep(
-                        add_file=pb.AddFileStep(
-                            destination=file_dest, content=content
-                        )
+                        add_file=pb.AddFileStep(destination=file_dest, content=content)
                     )
                 )
         return new
@@ -359,15 +367,17 @@ class Image:
     ) -> dict[str, list[LazyLocalFile]]:
         """Return lazy local files grouped by mount directory.
 
-        Validates each destination path before grouping.
+        Files from ``add_local_dir`` carry a ``mount_root`` that keeps all
+        files from one call in a single volume.  Files from ``add_local_file``
+        (``mount_root is None``) fall back to grouping by parent directory.
         """
         grouped: dict[str, list[LazyLocalFile]] = {}
         for lf in sorted(
             self._lazy_local_files,
-            key=lambda x: (str(Path(x.dest).parent), x.dest, x.src),
+            key=lambda x: (x.mount_root or str(Path(x.dest).parent), x.dest, x.src),
         ):
-            _validate_lazy_local_file_destination(lf.dest)
-            dest_dir = str(Path(lf.dest).parent)
+            dest_dir = lf.mount_root or str(Path(lf.dest).parent)
+            _validate_lazy_local_file_destination(lf.dest, mount_root=lf.mount_root)
             grouped.setdefault(dest_dir, []).append(lf)
         return grouped
 
@@ -399,8 +409,33 @@ class Image:
         return "".join(parts)
 
 
-def _validate_lazy_local_file_destination(dest: str) -> None:
-    dest_dir = str(Path(dest).parent)
+def _match_exclude(rel_str: str, pattern: str) -> bool:
+    """Match a relative path against an exclude pattern (gitignore-style).
+
+    ``*`` matches within a single path component, ``**`` matches zero or more
+    complete components.  Patterns are anchored to the source directory root.
+    """
+    return _match_segments(rel_str.split("/"), pattern.split("/"))
+
+
+def _match_segments(path_segs: list[str], pat_segs: list[str]) -> bool:
+    if not pat_segs:
+        return not path_segs
+    if pat_segs[0] == "**":
+        rest = pat_segs[1:]
+        for skip in range(len(path_segs) + 1):
+            if _match_segments(path_segs[skip:], rest):
+                return True
+        return False
+    if not path_segs:
+        return False
+    if fnmatch.fnmatchcase(path_segs[0], pat_segs[0]):
+        return _match_segments(path_segs[1:], pat_segs[1:])
+    return False
+
+
+def _validate_lazy_local_file_destination(dest: str, *, mount_root: str | None = None) -> None:
+    dest_dir = mount_root or str(Path(dest).parent)
     if dest_dir == "/":
         raise ValueError(
             "add_local_file(..., strategy='volume') cannot target root paths "
