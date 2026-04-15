@@ -12,10 +12,11 @@ Image classification in an isolated Chalk container, orchestrated by Temporal wi
 ### 1. Deploy the Chalk classify function
 
 ```bash
-python classify.py
+set -a && source ../../.env && set +a
+uv run python classify.py
 ```
 
-This deploys `classify_image` as a serverless function on Chalk. The container image includes `transformers`, `torch` (CPU), and `Pillow` — untrusted images are downloaded and classified entirely inside the sandbox.
+This deploys `classify-image` as a serverless function on Chalk. The container image includes `transformers`, `torch` (CPU), and `Pillow` — untrusted images are downloaded and classified entirely inside the sandbox.
 
 ### 2. Start Temporal
 
@@ -23,27 +24,39 @@ This deploys `classify_image` as a serverless function on Chalk. The container i
 temporal server start-dev
 ```
 
-Web UI available at http://localhost:8080.
+Web UI available at http://localhost:8233.
 
 ### 3. Start the worker
 
 ```bash
-python worker.py
+set -a && source ../../.env && set +a
+uv run python worker.py
 ```
 
 ### 4. Submit an image for moderation
 
 ```bash
-python run.py https://example.com/some-image.jpg
+uv run python run.py https://images.pexels.com/photos/45201/kitty-cat-kitten-pet-45201.jpeg
 ```
 
-If the model is confident, the image is auto-approved. If confidence is below 85%, the workflow pauses and waits for human review.
+If the model is confident (>= 85%), the image is auto-approved. If confidence is below 85%, the workflow pauses and waits for human review.
 
 ### 5. Approve or reject (human-in-the-loop)
 
+**Option A — Temporal web UI:**
+
+1. Open http://localhost:8233
+2. Click on your workflow (e.g. `moderation-abc123`)
+3. Click **Signal** (top-right)
+4. Signal name: `review`
+5. Input: `"approved"` or `"rejected"`
+6. Click Send
+
+**Option B — CLI:**
+
 ```bash
-python approve.py <workflow_id> approved
-python approve.py <workflow_id> rejected
+uv run python approve.py <workflow_id> approved
+uv run python approve.py <workflow_id> rejected
 ```
 
 ## Architecture
@@ -52,7 +65,7 @@ python approve.py <workflow_id> rejected
 Temporal Server
   └─ ModerationWorkflow
        ├─ Activity: classify_image_activity
-       │    └─ Calls Chalk RemoteFunction "classify_image"
+       │    └─ Calls Chalk RemoteFunction "classify-image"
        │         └─ Runs ML inference in isolated container
        ├─ Wait: workflow.wait_condition (human signal)
        └─ Returns: final decision + reviewer info
