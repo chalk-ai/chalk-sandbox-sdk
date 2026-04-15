@@ -80,7 +80,7 @@ def _volume_rpc(
 @pytest.fixture(scope="module")
 def test_volume_name() -> str:
     """Generate a unique volume name for this test run."""
-    return f"test-volume-{uuid.uuid4().hex[:8]}"
+    return f"a-test-volume-{uuid.uuid4().hex[:8]}"
 
 
 @pytest.fixture(scope="module")
@@ -118,12 +118,42 @@ def test_list_volumes(
     auth_headers: dict[str, str],
     created_volume: str,
 ) -> None:
-    """ListVolumes should include our test volume."""
-    resp = _volume_rpc("ListVolumes", {}, auth_headers)
-    assert resp.status_code == 200, f"ListVolumes failed: {resp.text}"
-    data = resp.json()
-    names = [v["name"] for v in data.get("volumes", [])]
-    assert created_volume in names, f"Expected {created_volume} in {names}"
+    """ListVolumes should include our test volume, paginating if necessary."""
+    found = False
+    page_token = ""
+    total = 0
+    checked_structure = False
+
+    while True:
+        body: dict = {"pageSize": 100}
+        if page_token:
+            body["pageToken"] = page_token
+
+        resp = _volume_rpc("ListVolumes", body, auth_headers)
+        assert resp.status_code == 200, f"ListVolumes failed: {resp.text}"
+        data = resp.json()
+        volumes = data.get("volumes", [])
+        total += len(volumes)
+
+        # Spot-check structure once
+        if not checked_structure and volumes:
+            checked_structure = True
+            for v in volumes[:3]:
+                assert "name" in v, f"Volume missing 'name': {v}"
+                assert "createdAt" in v, f"Volume missing 'createdAt': {v}"
+
+        if any(v["name"] == created_volume for v in volumes):
+            found = True
+            break
+
+        page_token = data.get("nextPageToken", "")
+        if not page_token:
+            break
+
+    assert found, (
+        f"Expected {created_volume} in ListVolumes response "
+        f"({total} volumes seen across all pages)"
+    )
 
 
 @needs_staging
