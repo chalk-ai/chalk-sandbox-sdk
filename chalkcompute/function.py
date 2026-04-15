@@ -174,19 +174,34 @@ def _generate_handler_shim(func_name: str) -> str:
 
     chalk-remote-call passes ``event`` as ``dict[str, pa.Array]``.
     The shim iterates over rows, extracts Python scalars via ``.as_py()``,
-    calls the user function per-row, and returns a ``pa.array`` of results.
+    calls the user function per-row, and returns results.
+
+    If the user function is a generator (yields values), each yielded value
+    is returned as a separate item so that chalk-remote-call can stream them
+    as individual response chunks.
     """
     return (
+        "import inspect\n"
+        "\n"
         f"from user_module import {func_name}\n"
+        "\n"
+        f"_is_generator_func = inspect.isgeneratorfunction({func_name})\n"
         "\n"
         "\n"
         "def handler(event, context):\n"
         "    n = len(next(iter(event.values())))\n"
-        "    results = []\n"
-        "    for i in range(n):\n"
-        "        kwargs = {k: v[i].as_py() for k, v in event.items()}\n"
-        f"        results.append({func_name}(**kwargs))\n"
-        "    return results\n"
+        "    if _is_generator_func:\n"
+        "        def _gen():\n"
+        "            for i in range(n):\n"
+        "                kwargs = {k: v[i].as_py() for k, v in event.items()}\n"
+        f"                yield from {func_name}(**kwargs)\n"
+        "        return _gen()\n"
+        "    else:\n"
+        "        results = []\n"
+        "        for i in range(n):\n"
+        "            kwargs = {k: v[i].as_py() for k, v in event.items()}\n"
+        f"            results.append({func_name}(**kwargs))\n"
+        "        return results\n"
     )
 
 
