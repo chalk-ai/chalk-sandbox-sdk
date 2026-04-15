@@ -9,7 +9,6 @@ import uuid
 from datetime import date, datetime, time, timedelta
 
 import attrs
-import pytest
 
 from chalkcompute.arrow_schema import rich_to_arrow_schema
 
