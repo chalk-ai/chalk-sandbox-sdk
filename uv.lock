@@ -389,28 +389,28 @@ wheels = [
 
 [[package]]
 name = "chalk-remote-call-python"
-version = "1.1.2"
+version = "1.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyarrow" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9c/3d/8dbe922c4bb1d90e61bcf093be41d2b479fc60bc9f52f92db48a76a62c7f/chalk_remote_call_python-1.1.2.tar.gz", hash = "sha256:5a6a47d83081c2ba5687407864dbf0cc0b0e313f7f85f9373178374c9bf3fe37", size = 15562 }
+sdist = { url = "https://files.pythonhosted.org/packages/df/81/a3a7622fb3baafe18b3714dc2a4390669c929a87346fa5998677e545eedd/chalk_remote_call_python-1.2.0.tar.gz", hash = "sha256:d8f3e96d50d728ce507628a94d7eaf5c4cfbf1e26bf985d6b1679183339ad491", size = 24071 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4d/11/7725a5a9d2a99dbfa8bdef2ff28b40516c15ae519ee125322b7a7d7ba429/chalk_remote_call_python-1.1.2-cp311-cp311-macosx_10_13_x86_64.whl", hash = "sha256:42ab38b884130b9b80833de652afe65d6ab93eb211bc93ba239bde7305df880a", size = 2100843 },
-    { url = "https://files.pythonhosted.org/packages/5d/65/4225a9ee2bbc0883ca83b695e519081cfe2a85bcec9444f10e1b5a113a0b/chalk_remote_call_python-1.1.2-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:c993a51988f17dbe1b5e6b7239eb328d7245abf91348317fbe0d65f2f7b29ee7", size = 2035827 },
-    { url = "https://files.pythonhosted.org/packages/20/e0/259e52aa1689fd71f05ae462d7a5fb671d157f428d086bec11569e70ffc3/chalk_remote_call_python-1.1.2-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:ab33266614bc53b4fffa9a4fcae324da1cf78db92d9a51d535ade9f7f91eb6c9", size = 2335991 },
-    { url = "https://files.pythonhosted.org/packages/1a/f5/ac34bcb20490348b10a015a19458503e230970e88968878781f9b6cd228e/chalk_remote_call_python-1.1.2-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:17a22212d07927eec5f8a3a8dc9e0e945e8b7136ea7c66690196b3be2a050332", size = 2326322 },
-    { url = "https://files.pythonhosted.org/packages/dd/59/c448c17f7f2f7120c28f7d2e251953dc2a023237f339be29ab807bdda740/chalk_remote_call_python-1.1.2-cp311-cp311-win_amd64.whl", hash = "sha256:1e1195bac9beb03881868daac70ab5ff77e9a7b754e43e6f6ebd33637c18c31f", size = 1746926 },
-    { url = "https://files.pythonhosted.org/packages/fd/4a/f625d9ba68431f0fdb7105026bbab525ecdc3e5c889ba7ab74700f5f951c/chalk_remote_call_python-1.1.2-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:ffe19512c7880d6c858895012ecbc4bae172184c6ea416a1fb83ca86b819800a", size = 2099108 },
-    { url = "https://files.pythonhosted.org/packages/49/23/3b2b43f115eefe7ec35c94ee53128eed6590e9045e921a276889ef25813d/chalk_remote_call_python-1.1.2-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:3ed6c5e34849d5f6cfa75ed4f88f42be4762013eaa405463564bac06f3f5859e", size = 2035024 },
-    { url = "https://files.pythonhosted.org/packages/1e/54/211d7908778efd142bf4d66f452c40c461edadafa6749c1496dd761cc33d/chalk_remote_call_python-1.1.2-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:a3a91edf84fb552b58a3fd988a1fec44b41dc518abc1e6ae6e5caa9099f76f8c", size = 2333480 },
-    { url = "https://files.pythonhosted.org/packages/d8/9b/fa2d4a7dd7459803a03f7bd97bd6db7e45f35b225ed83dd60de22c70035a/chalk_remote_call_python-1.1.2-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:73ce415d018d72c1e72f63ce02e626d649e6b59acee02ccfbc30c94473d5d11c", size = 2324481 },
-    { url = "https://files.pythonhosted.org/packages/9d/3e/ce5cf3ade66b7f17d321b28bd5cf075347248a21edb7fb451d60895fc919/chalk_remote_call_python-1.1.2-cp312-cp312-win_amd64.whl", hash = "sha256:2b2c6afacfd58df5fe2b4f6bd280115afcb2d8efc122e1405efe77e1c40d4b71", size = 1750701 },
-    { url = "https://files.pythonhosted.org/packages/e7/48/eddaad4b6b0c2efe60cac63ac56148f36e616eef168a0605387e4f9079f7/chalk_remote_call_python-1.1.2-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:9eedc0359a59dde05afeb89549c93c4532b8081d91214646eff105609848e36f", size = 2099276 },
-    { url = "https://files.pythonhosted.org/packages/be/39/6f590f629d3bbdb5bf01812c989c9824eab82cdf76a4d66a90ee479cf35e/chalk_remote_call_python-1.1.2-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:5d46e486b9f9074752d7761ea57c608b03abdf58c17e1e101733adbbcdafdc7f", size = 2035253 },
-    { url = "https://files.pythonhosted.org/packages/54/4c/ad52bf5e9488e33781d26689c41ffbadf8674a04201c4bab67a4e93a7a4b/chalk_remote_call_python-1.1.2-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:d0d80b4ec3ab9da8753f8ea7481c71310d8083d4c25d235d85f6006fe9a0afb0", size = 2334036 },
-    { url = "https://files.pythonhosted.org/packages/04/92/050f59a939a8597cb61576886e3c112ddbcabd54c87f8e8e9ba32f9740b4/chalk_remote_call_python-1.1.2-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:bf042bd6d82796b5d3e5dc449c27c1c49fb84ea1398aef8a2dce3669f8fd351f", size = 2324793 },
-    { url = "https://files.pythonhosted.org/packages/2e/a7/3ac5215571c8405aea893871dd7fc2d0ed8201797a4b6ec81333bc805975/chalk_remote_call_python-1.1.2-cp313-cp313-win_amd64.whl", hash = "sha256:8eff6a8feb9bb72981172d00a0eda444c1b7efb32e5611047311fda317f65aa9", size = 1750767 },
+    { url = "https://files.pythonhosted.org/packages/57/d8/1ca1548130c4c3ae3fd8cec320c1a40564daaa0c82959482719fabb3b9a5/chalk_remote_call_python-1.2.0-cp311-cp311-macosx_10_13_x86_64.whl", hash = "sha256:589c98dd07dfeaa2cac4a217cbe99a22d4ae2afb67720f688b02c1af9bfaeee1", size = 2231895 },
+    { url = "https://files.pythonhosted.org/packages/db/9f/0e447e79f046848ab0221c3d7bb010ed080ff11847c65aa506cab03cf859/chalk_remote_call_python-1.2.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:0e08355e086a8908554961b8de66c84db7d4d944123aa614aebdee696de86903", size = 2171293 },
+    { url = "https://files.pythonhosted.org/packages/f2/06/2435073c833163719feeebc03f3bf41c6d39ef4f3711912b96e50b3ebb54/chalk_remote_call_python-1.2.0-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:96bc6929401c895c5cf5a1d579aed010a7d6e9842581d22a4d2b23b957a4d07d", size = 2469029 },
+    { url = "https://files.pythonhosted.org/packages/63/4d/cfd9669b0048310789f904605aeb905de2882d9d473708c31707d006253c/chalk_remote_call_python-1.2.0-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:7a2c4167d88b412b7ed2a7658ef24cee6a979499e6f2765c333033153d335d23", size = 2459995 },
+    { url = "https://files.pythonhosted.org/packages/20/3e/e54001fc56c8e19c54dffa3e0f95c84d6b7987b59c953c17e69188c51915/chalk_remote_call_python-1.2.0-cp311-cp311-win_amd64.whl", hash = "sha256:b4eba92007dba73bd8a115c5303452328ece96c9c06198d222c0cd8f4c6969b9", size = 1880304 },
+    { url = "https://files.pythonhosted.org/packages/ef/29/1f5b8321cef710a8046e8652266926ff325028c6c88d047062e3bbb0c3f4/chalk_remote_call_python-1.2.0-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:9c144e95c4f8e0bdf81ca6a4f1139c7ec54b8affea8d35b35b5fdffff7f434ab", size = 2231515 },
+    { url = "https://files.pythonhosted.org/packages/d2/31/caab388c797827fd6c8a69f901f9882123a783f7391ecd6dc4e0953fcbe3/chalk_remote_call_python-1.2.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:f2f376df6e89d8ab963e9f45aef267b7865281e32addf9850d6484cdf94c625e", size = 2170305 },
+    { url = "https://files.pythonhosted.org/packages/9f/bd/5affa5e51bdbfa9d7c6f1f89948733dd42e7cc5275af42661c90884df298/chalk_remote_call_python-1.2.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:a33b2e3fc9914b21878cd10fda909c5d9adac7dfeca0bb05f367fe8b6c172044", size = 2465996 },
+    { url = "https://files.pythonhosted.org/packages/9a/5e/d5bee3d14548bc8134ab509e9d0c8803cc76b4b5b06864b5416d98c37af2/chalk_remote_call_python-1.2.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:79faffc9119714512a39e33a6292710580e7970c4b8082d7e7bcf9bcff1251a1", size = 2458249 },
+    { url = "https://files.pythonhosted.org/packages/97/e5/c78535a67e91d45c03d781e8960bd6b9cab2be5a03318cc27ae4ae9201bb/chalk_remote_call_python-1.2.0-cp312-cp312-win_amd64.whl", hash = "sha256:d963d1cc0b549bfe9e664207f920903008c17eaa50dd805f28ee0675e1067ce9", size = 1881635 },
+    { url = "https://files.pythonhosted.org/packages/84/98/810eb7627152ecff1d7573979e0f3a881b49debf4f48f7e3d165d699ca6e/chalk_remote_call_python-1.2.0-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:0e65b0b03ec026bc1f4ff7b6f052c636b442c579198de9e3edc12ace5c6d8fcf", size = 2231776 },
+    { url = "https://files.pythonhosted.org/packages/aa/b6/5e7e6cb7222398d695c92f3e2830c0437464d57357f6253b7c6994ae1892/chalk_remote_call_python-1.2.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:22efc5c4687d2c7bc08336156e5a3246a3e8b092ca454ed8c1604b5227fd9337", size = 2170497 },
+    { url = "https://files.pythonhosted.org/packages/76/70/c80230d445bb80c8db5c1222bf7f4acf9fd9f13946211d7333487c3a63c3/chalk_remote_call_python-1.2.0-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:a38c5be2a3a1ce149bf8dc8b00027cdf119e16da5882bd94514d88b2da8dfd0e", size = 2466375 },
+    { url = "https://files.pythonhosted.org/packages/72/f5/a03665b86c4068174c896fe11125bb9649ffd67850c9ec6998092d10fdf9/chalk_remote_call_python-1.2.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:7f93f75b82a82f73209490a7bf0382233ee3608b11a17ae760d625b5ad8324ff", size = 2458609 },
+    { url = "https://files.pythonhosted.org/packages/fc/ba/2044c4ccd60bf121ebe9cd09f92cfe2f677670027b8ba473bffab8ff4701/chalk_remote_call_python-1.2.0-cp313-cp313-win_amd64.whl", hash = "sha256:c274ff99992413fd80affd59b7a9c0dbaab110a2ecf7747c820c3bd70238a280", size = 1881888 },
 ]
 
 [[package]]
@@ -439,7 +439,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "attrs", marker = "extra == 'dev'", specifier = ">=23.0.0" },
-    { name = "chalk-remote-call-python", specifier = ">=1.1.2" },
+    { name = "chalk-remote-call-python", specifier = ">=1.2.0" },
     { name = "chalkpy", extras = ["runtime"], marker = "extra == 'dev'", specifier = ">=2.114.0" },
     { name = "grpcio", specifier = ">=1.60.0" },
     { name = "httpx", specifier = ">=0.25.0" },
