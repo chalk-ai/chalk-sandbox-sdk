@@ -8,6 +8,7 @@ import typing
 import uuid
 from datetime import date, datetime, time, timedelta
 
+import attrs
 import pytest
 
 from chalkcompute.arrow_schema import rich_to_arrow_schema
@@ -22,6 +23,12 @@ from chalkcompute.arrow_schema import rich_to_arrow_schema
 class Address:
     street: str
     zip_code: int
+
+
+@attrs.define
+class Person:
+    name: str
+    age: int
 
 
 class Color(enum.Enum):
@@ -93,6 +100,16 @@ class TestRichToArrowSchema:
         assert fields[0].name == "street"
         assert fields[0].arrow_type.HasField("large_utf8")
         assert fields[1].name == "zip_code"
+        assert fields[1].arrow_type.HasField("int64")
+
+    def test_attrs_struct(self):
+        proto = rich_to_arrow_schema({"person": Person})
+        assert proto.columns[0].arrow_type.HasField("struct")
+        fields = proto.columns[0].arrow_type.struct.sub_field_types
+        assert len(fields) == 2
+        assert fields[0].name == "name"
+        assert fields[0].arrow_type.HasField("large_utf8")
+        assert fields[1].name == "age"
         assert fields[1].arrow_type.HasField("int64")
 
     def test_enum_type(self):
