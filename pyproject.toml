@@ -29,6 +29,7 @@ packages = ["chalkcompute"]
 [project.optional-dependencies]
 dev = [
     "attrs>=23.0.0",
+    "chalkdf",
     "chalkpy[runtime]>=2.114.0",
     "python-dotenv>=1.1.0",
     "pytest>=9.0.2",
