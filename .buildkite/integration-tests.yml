@@ -34,37 +34,13 @@ steps:
         - exit_status: -1
           limit: 2
 
-  - label: ":arrows_counterclockwise: Generator function example"
-    command: |
-      set -euo pipefail
-
-      echo "--- :gear: Install sops"
-      SOPS_VERSION=3.9.4
-      curl -fsSL "https://github.com/getsops/sops/releases/download/v$${SOPS_VERSION}/sops-v$${SOPS_VERSION}.linux.amd64" -o /tmp/sops
-      chmod +x /tmp/sops
-
-      echo "--- :key: Decrypt secrets"
-      /tmp/sops --input-type dotenv --output-type dotenv -d .env.enc > /tmp/test.env
-      set -a
-      source /tmp/test.env
-      set +a
-      rm /tmp/test.env
-
-      echo "--- :python: Sync dependencies"
-      uv sync --all-extras
-
-      echo "--- :arrows_counterclockwise: Deploy and test generator functions"
-      export OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.chalk.ai:443
-      export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
-      export OTEL_SERVICE_NAME=chalkcompute-ci-generator
-      CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest examples/generator/test_generator.py -v -s --tb=short
-    agents:
-      queue: default
-    timeout_in_minutes: 20
-    retry:
-      automatic:
-        - exit_status: -1
-          limit: 2
+  # TODO: Enable generator integration test once chalkdf with RemoteFunction is published.
+  # The test requires chalkdf.remote which isn't available on PyPI yet.
+  # - label: ":arrows_counterclockwise: Generator function example"
+  #   command: |
+  #     set -euo pipefail
+  #     ...
+  #     CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest examples/generator/test_generator.py -v -s --tb=short
 
   - label: ":brain: Embedding function example"
     command: |
