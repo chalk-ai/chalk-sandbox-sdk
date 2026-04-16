@@ -27,9 +27,9 @@ from typing import (
 
 
 try:
-    from pydantic import BaseModel as _PydanticBaseModel
+    from pydantic import BaseModel as _PydanticBaseModel  # ty: ignore[unresolved-import]
 except ImportError:
-    _PydanticBaseModel = None  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
+    _PydanticBaseModel = None  # type: ignore[assignment]
 
 try:
     from types import UnionType
