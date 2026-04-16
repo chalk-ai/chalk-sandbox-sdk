@@ -17,8 +17,7 @@ from workflow import TASK_QUEUE, ModerationWorkflow
 
 TEMPORAL_ADDRESS = "localhost:7233"
 
-# Public-domain cat image from Wikimedia Commons.
-DEFAULT_IMAGE = "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4d/Cat_November_2010-1a.jpg/1200px-Cat_November_2010-1a.jpg"
+DEFAULT_IMAGE = "https://images.pexels.com/photos/45201/kitty-cat-kitten-pet-45201.jpeg"
 
 
 async def main() -> None:
@@ -37,11 +36,15 @@ async def main() -> None:
 
     result = await handle.result()
 
-    print(f"\nClassification: top_label={result.top_label}  confidence={result.top_confidence}")
-    if result.decision == "auto_approved":
-        print("Decision: auto-approved (model confident)")
+    print(f"\nStage 1 (ResNet): top_label={result.top_label}  confidence={result.top_confidence}")
+    if result.policy_scores is None:
+        print("Stage 2 (CLIP):  skipped (stage 1 was decisive)")
     else:
-        print(f"Decision: {result.decision}  reviewed_by: {result.reviewed_by}")
+        scores = "  ".join(f"{k}={v:.2f}" for k, v in result.policy_scores.items())
+        print(f"Stage 2 (CLIP):  {scores}")
+    print(f"Decision: {result.decision}  reviewed_by: {result.reviewed_by}")
+    if result.reviewed_by == "human":
+        print(f"(signal sent via approve.py {workflow_id} <approved|rejected>)")
 
 
 if __name__ == "__main__":

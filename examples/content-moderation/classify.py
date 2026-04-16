@@ -5,9 +5,6 @@ import chalkcompute
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
 
-# Confidence below this threshold triggers human review.
-CONFIDENCE_THRESHOLD = 0.85
-
 # In production, swap microsoft/resnet-50 for a fine-tuned content moderation model.
 # The pipeline structure is identical — only the model name changes.
 MODEL_NAME = "microsoft/resnet-50"
@@ -27,7 +24,8 @@ def classify_image(image_url: str) -> str:
     Untrusted image bytes are fetched and processed entirely within the
     sandbox — the caller never handles raw upload data.
 
-    Returns a JSON string with classification results.
+    Returns a JSON string with the top-5 labels and the most-confident one.
+    Threshold/branching logic lives in the Temporal workflow, not here.
     """
     import io
     import json
@@ -52,5 +50,4 @@ def classify_image(image_url: str) -> str:
         "labels": labels,
         "top_label": top["label"],
         "top_confidence": top["confidence"],
-        "needs_review": top["confidence"] < CONFIDENCE_THRESHOLD,
     })

@@ -12,7 +12,12 @@ from concurrent.futures import ThreadPoolExecutor
 from temporalio.client import Client
 from temporalio.worker import Worker
 
-from workflow import TASK_QUEUE, ModerationWorkflow, classify_image_activity
+from workflow import (
+    TASK_QUEUE,
+    ModerationWorkflow,
+    classify_image_activity,
+    policy_check_activity,
+)
 
 TEMPORAL_ADDRESS = "localhost:7233"
 
@@ -23,7 +28,7 @@ async def main() -> None:
         client,
         task_queue=TASK_QUEUE,
         workflows=[ModerationWorkflow],
-        activities=[classify_image_activity],
+        activities=[classify_image_activity, policy_check_activity],
         activity_executor=ThreadPoolExecutor(max_workers=4),
     )
     print(f"Worker listening on task queue: {TASK_QUEUE}")
