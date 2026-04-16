@@ -34,14 +34,6 @@ steps:
         - exit_status: -1
           limit: 2
 
-  # TODO: Enable generator integration test once chalkdf with RemoteFunction is published.
-  # The test requires chalkdf.remote which isn't available on PyPI yet.
-  # - label: ":arrows_counterclockwise: Generator function example"
-  #   command: |
-  #     set -euo pipefail
-  #     ...
-  #     CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest examples/generator/test_generator.py -v -s --tb=short
-
   - label: ":brain: Embedding function example"
     command: |
       set -euo pipefail
