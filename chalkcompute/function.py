@@ -282,12 +282,10 @@ def _local_install_entrypoint(handler_cmd: list[str]) -> list[str]:
     cat_parts = f"cat {d}/{_ARCHIVE_CHUNK_PREFIX}* > {d}/{ARCHIVE_NAME}"
     extract = f"tar xzf {d}/{ARCHIVE_NAME} -C {d}"
     install = f"pip install {d}"
-    # Also install any .whl files in /tmp/ (e.g. local chalk-remote-call-python builds).
-    install_wheels = "for whl in /tmp/*.whl; do [ -f \"$whl\" ] && pip install \"$whl\" --force-reinstall --no-deps; done"
     return [
         "sh",
         "-c",
-        f"{cat_parts} && {extract} && {install} && {install_wheels} && {' '.join(handler_cmd)}",
+        f"{cat_parts} && {extract} && {install} && {' '.join(handler_cmd)}",
     ]
 
 
