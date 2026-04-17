@@ -27,6 +27,20 @@ needs_openai = pytest.mark.skipif(
     reason="OPENAI_API_KEY not set",
 )
 
+
+def _chalkdf_remote_available() -> bool:
+    try:
+        import chalkdf.remote  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+needs_chalkdf_remote = pytest.mark.skipif(
+    not _chalkdf_remote_available(),
+    reason="chalkdf.remote not available (requires a chalkdf release that includes it)",
+)
+
 EXAMPLE_DIR = os.path.dirname(__file__)
 
 
@@ -70,6 +84,7 @@ def test_embedding_function() -> None:
 
 @needs_staging
 @needs_openai
+@needs_chalkdf_remote
 def test_embedding_function_via_chalkdf_remote() -> None:
     """Deploy embed, then call it from a local client using chalkdf's Remote(...).
 

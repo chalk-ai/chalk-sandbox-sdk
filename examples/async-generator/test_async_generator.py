@@ -23,6 +23,20 @@ needs_staging = pytest.mark.skipif(
     reason="CHALK_CLIENT_ID/CHALK_API_SERVER not set",
 )
 
+
+def _chalkdf_remote_available() -> bool:
+    try:
+        import chalkdf.remote  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+needs_chalkdf_remote = pytest.mark.skipif(
+    not _chalkdf_remote_available(),
+    reason="chalkdf.remote not available (requires a chalkdf release that includes it)",
+)
+
 EXAMPLE_DIR = os.path.dirname(__file__)
 N = 5
 
@@ -45,6 +59,7 @@ def _deploy_script(script_name: str) -> None:
 
 
 @needs_staging
+@needs_chalkdf_remote
 def test_async_generator_stream_via_remote() -> None:
     """Deploy count-up, then stream its yielded values via chalkdf.Remote."""
     _deploy_script("count_up.py")
