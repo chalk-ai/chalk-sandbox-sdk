@@ -66,3 +66,32 @@ def test_embedding_function() -> None:
         assert all(isinstance(v, float) for v in emb), (
             f"Embedding {i} has non-float values"
         )
+
+
+@needs_staging
+@needs_openai
+def test_embedding_function_via_chalkdf_remote() -> None:
+    """Deploy embed, then call it from a local client using chalkdf's Remote(...).
+
+    Exercises the same Velox-dispatched direct call path used by
+    chalk-private/dataframe/examples/call_embed.py, rather than the
+    chalkcompute.RemoteFunction shortcut used in the other tests.
+    """
+    _deploy_script("embed.py")
+
+    import asyncio
+
+    from chalk.client.client_grpc import ChalkGRPCClient
+    from chalkdf.remote import Remote
+
+    async def _run() -> list[float]:
+        client = ChalkGRPCClient()
+        remote = Remote(chalk_client=client)
+        fn = remote.function("embed")
+        return await fn("hello")
+
+    embedding = asyncio.run(_run())
+
+    assert isinstance(embedding, list), f"Expected list, got {type(embedding).__name__}"
+    assert len(embedding) == 1536, f"Got {len(embedding)} dims, expected 1536"
+    assert all(isinstance(v, float) for v in embedding), "Non-float values in embedding"
