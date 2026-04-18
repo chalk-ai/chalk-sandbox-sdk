@@ -66,7 +66,7 @@ steps:
         - exit_status: -1
           limit: 2
 
-  - label: ":repeat: Async generator streaming example"
+  - label: ":arrows_counterclockwise: Generator function example"
     command: |
       set -euo pipefail
 
@@ -85,11 +85,8 @@ steps:
       echo "--- :python: Sync dependencies"
       uv sync --all-extras
 
-      echo "--- :repeat: Deploy and stream async-generator function"
-      export OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.chalk.ai:443
-      export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
-      export OTEL_SERVICE_NAME=chalkcompute-ci-async-generator
-      CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest examples/async-generator/test_async_generator.py -v -s --tb=short
+      echo "--- :arrows_counterclockwise: Deploy and test generator functions"
+      CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest examples/generator/test_generator.py -v -s --tb=short
     agents:
       queue: default
     timeout_in_minutes: 20
