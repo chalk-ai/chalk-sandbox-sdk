@@ -24,8 +24,17 @@ def classify_image(image_url: str) -> str:
     Untrusted image bytes are fetched and processed entirely within the
     sandbox — the caller never handles raw upload data.
 
-    Returns a JSON string with the top-5 labels and the most-confident one.
     Threshold/branching logic lives in the Temporal workflow, not here.
+
+    Parameters
+    ----------
+    image_url
+        URL of the image to download and classify.
+
+    Returns
+    -------
+    str
+        JSON-encoded object with the top-5 labels and the most-confident one.
     """
     import io
     import json

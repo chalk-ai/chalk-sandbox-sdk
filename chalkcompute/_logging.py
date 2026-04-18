@@ -13,7 +13,12 @@ _configured = False
 
 
 def setup_logging() -> None:
-    """Attach a handler to the ``chalkcompute`` root logger (idempotent)."""
+    """Attach a handler to the ``chalkcompute`` root logger (idempotent).
+
+    Uses ``rich.logging.RichHandler`` when available, otherwise a plain
+    ``logging.StreamHandler``. Safe to call multiple times; only the first
+    call installs the handler.
+    """
     global _configured
     if _configured:
         return

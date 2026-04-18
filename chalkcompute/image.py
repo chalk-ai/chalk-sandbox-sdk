@@ -45,7 +45,19 @@ _ARCHIVE_CHUNK_SIZE = 6 * 1024 * 1024
 
 @dataclass(frozen=True)
 class LazyLocalFile:
-    """A reference to a local file that will be mounted as a volume at sandbox start."""
+    """A reference to a local file mounted as a volume at sandbox start.
+
+    Attributes
+    ----------
+    src
+        Absolute local file path.
+    dest
+        Absolute destination path inside the container.
+    mode
+        Optional file permission mode.
+    mount_root
+        Optional mount directory overriding the default parent-based grouping.
+    """
 
     src: str
     dest: str
@@ -56,8 +68,17 @@ class LazyLocalFile:
 class Image:
     """Declarative, composable container image builder.
 
-    Uses a fluent (method-chaining) API. Each method returns a new Image
+    Uses a fluent (method-chaining) API. Each method returns a new ``Image``
     instance so that intermediate images can be shared and extended.
+
+    Examples
+    --------
+    >>> from chalkcompute import Image
+    >>> img = (
+    ...     Image.debian_slim("3.12")
+    ...     .pip_install(["requests", "pandas"])
+    ...     .workdir("/home/user/app")
+    ... )
     """
 
     def __init__(self, base_image: str) -> None:
@@ -75,18 +96,32 @@ class Image:
     def base(cls, image: str) -> Image:
         """Create an image from an arbitrary base image reference.
 
-        Args:
-            image: Full image reference (e.g. "python:3.12-slim-bookworm",
-                   "ghcr.io/org/image:tag").
+        Parameters
+        ----------
+        image
+            Full image reference (e.g. ``"python:3.12-slim-bookworm"``,
+            ``"ghcr.io/org/image:tag"``).
+
+        Returns
+        -------
+        Image
+            A new ``Image`` based on the given reference.
         """
         return cls(image)
 
     @classmethod
     def debian_slim(cls, python_version: str = "3.12") -> Image:
-        """Create an image based on python:<version>-slim-bookworm.
+        """Create an image based on ``python:<version>-slim-bookworm``.
 
-        Args:
-            python_version: Python version tag (default "3.12").
+        Parameters
+        ----------
+        python_version
+            Python version tag.
+
+        Returns
+        -------
+        Image
+            A new ``Image`` based on the selected Python slim image.
         """
         return cls(f"python:{python_version}-slim-bookworm")
 
@@ -94,11 +129,18 @@ class Image:
     def from_dockerfile(cls, path: str) -> Image:
         """Create an image from an existing Dockerfile.
 
-        The Dockerfile contents are transmitted as a dockerfile_commands step
-        so that additional builder methods can be chained on top.
+        The Dockerfile contents are transmitted as a ``dockerfile_commands``
+        step so that additional builder methods can be chained on top.
 
-        Args:
-            path: Path to the Dockerfile.
+        Parameters
+        ----------
+        path
+            Path to the Dockerfile.
+
+        Returns
+        -------
+        Image
+            A new ``Image`` whose build steps mirror the Dockerfile.
         """
         content = Path(path).read_text()
         # Extract FROM line as base image, rest as commands
@@ -136,10 +178,17 @@ class Image:
     def run_commands(self, *commands: str) -> Image:
         """Run shell commands during the image build.
 
-        Each string is executed as a separate RUN instruction.
+        Each string is executed as a separate ``RUN`` instruction.
 
-        Args:
-            *commands: Shell commands to run.
+        Parameters
+        ----------
+        *commands
+            Shell commands to run.
+
+        Returns
+        -------
+        Image
+            A new ``Image`` with the run steps appended.
         """
         new = self._copy()
         new._steps.append(
@@ -150,9 +199,16 @@ class Image:
     def pip_install(self, packages: list[str]) -> Image:
         """Install Python packages via pip.
 
-        Args:
-            packages: List of pip requirement specifiers
-                      (e.g. ["requests>=2.28", "pandas"]).
+        Parameters
+        ----------
+        packages
+            List of pip requirement specifiers
+            (e.g. ``["requests>=2.28", "pandas"]``).
+
+        Returns
+        -------
+        Image
+            A new ``Image`` with the pip install step appended.
         """
         new = self._copy()
         new._steps.append(
@@ -161,13 +217,20 @@ class Image:
         return new
 
     def pip_install_from_requirements(self, path: str) -> Image:
-        """Install packages from a requirements.txt file.
+        """Install packages from a ``requirements.txt`` file.
 
         The file is read locally and its contents are inlined into the image
         spec so that the file does not need to be accessible at build time.
 
-        Args:
-            path: Path to requirements.txt.
+        Parameters
+        ----------
+        path
+            Path to ``requirements.txt``.
+
+        Returns
+        -------
+        Image
+            A new ``Image`` with the pip install step appended.
         """
         packages = [
             line.strip()
@@ -175,6 +238,29 @@ class Image:
             if line.strip() and not line.strip().startswith("#")
         ]
         return self.pip_install(packages)
+
+    def uv_pip_install(self, packages: list[str]) -> Image:
+        """Install Python packages via ``uv pip install``.
+
+        Uses the ``uv`` resolver instead of ``pip`` for significantly faster
+        installs. Requires a base image that has ``uv`` available.
+
+        Parameters
+        ----------
+        packages
+            List of pip requirement specifiers
+            (e.g. ``["requests>=2.28", "pandas"]``).
+
+        Returns
+        -------
+        Image
+            A new ``Image`` with the uv pip install step appended.
+        """
+        new = self._copy()
+        new._steps.append(
+            pb.BuildStep(uv_pip_install=pb.UvPipInstallStep(packages=packages))
+        )
+        return new
 
     def add_local_file(
         self,
@@ -186,13 +272,23 @@ class Image:
     ) -> Image:
         """Add a local file into the image.
 
-        Args:
-            src: Local file path.
-            dest: Absolute destination path in the image.
-            mode: Optional file permission mode (e.g. 0o755).
-            strategy: "copy" inlines the file contents into the image spec.
-                      "volume" (default) defers the file as a lazy reference
-                      to be mounted at sandbox start.
+        Parameters
+        ----------
+        src
+            Local file path.
+        dest
+            Absolute destination path in the image.
+        mode
+            Optional file permission mode (e.g. ``0o755``).
+        strategy
+            ``"copy"`` inlines the file contents into the image spec.
+            ``"volume"`` (default) defers the file as a lazy reference
+            to be mounted at sandbox start.
+
+        Returns
+        -------
+        Image
+            A new ``Image`` with the file registered for inclusion.
         """
         new = self._copy()
         if strategy == "volume":
@@ -219,22 +315,33 @@ class Image:
         """Add an entire local directory into the image.
 
         Automatically respects ``.gitignore`` and ``.chalkignore`` files found
-        at any level within *src* (each scoped to its directory subtree,
+        at any level within ``src`` (each scoped to its directory subtree,
         matching go-git's behavior).  The ``.git/`` directory is always
         excluded.  Negation patterns (``!``) are supported.
 
-        Args:
-            src: Local directory path.
-            dest: Absolute destination directory in the image.
-            strategy: "copy" inlines all file contents into the image spec.
-                      "volume" (default) defers each file as a lazy reference
-                      to be mounted at sandbox start.
-            exclude: Additional glob patterns to skip (matched against relative
-                     paths).  These are applied on top of patterns loaded from
-                     ignore files.  e.g. ``["data/**", "*.csv"]``
-            archive: When True (volume strategy only), tar the directory into
-                     a single file for upload instead of individual files.
-                     The caller is responsible for extracting at the destination.
+        Parameters
+        ----------
+        src
+            Local directory path.
+        dest
+            Absolute destination directory in the image.
+        strategy
+            ``"copy"`` inlines all file contents into the image spec.
+            ``"volume"`` (default) defers each file as a lazy reference
+            to be mounted at sandbox start.
+        exclude
+            Additional glob patterns to skip (matched against relative
+            paths). These are applied on top of patterns loaded from
+            ignore files, e.g. ``["data/**", "*.csv"]``.
+        archive
+            When ``True`` (volume strategy only), tar the directory into
+            a single file for upload instead of individual files.
+            The caller is responsible for extracting at the destination.
+
+        Returns
+        -------
+        Image
+            A new ``Image`` with the directory registered for inclusion.
         """
         from chalkcompute._ignore import (
             _match_exclude,
@@ -312,9 +419,16 @@ class Image:
 
         These are injected verbatim into the generated Dockerfile.
 
-        Args:
-            commands: List of Dockerfile instructions
-                      (e.g. ["RUN echo hello", "EXPOSE 8080"]).
+        Parameters
+        ----------
+        commands
+            List of Dockerfile instructions
+            (e.g. ``["RUN echo hello", "EXPOSE 8080"]``).
+
+        Returns
+        -------
+        Image
+            A new ``Image`` with the Dockerfile commands appended.
         """
         new = self._copy()
         new._steps.append(
@@ -327,8 +441,15 @@ class Image:
     def env(self, variables: dict[str, str]) -> Image:
         """Set environment variables in the image.
 
-        Args:
-            variables: Mapping of variable names to values.
+        Parameters
+        ----------
+        variables
+            Mapping of variable names to values.
+
+        Returns
+        -------
+        Image
+            A new ``Image`` with the environment variables applied.
         """
         new = self._copy()
         new._env.update(variables)
@@ -337,8 +458,15 @@ class Image:
     def workdir(self, path: str) -> Image:
         """Set the working directory in the image.
 
-        Args:
-            path: Absolute path for the working directory.
+        Parameters
+        ----------
+        path
+            Absolute path for the working directory.
+
+        Returns
+        -------
+        Image
+            A new ``Image`` with the working directory set.
         """
         new = self._copy()
         new._workdir = path
@@ -347,18 +475,32 @@ class Image:
     def entrypoint(self, args: list[str]) -> Image:
         """Set the container entrypoint.
 
-        Args:
-            args: Entrypoint as exec-form list (e.g. ["/bin/bash"]).
+        Parameters
+        ----------
+        args
+            Entrypoint as exec-form list (e.g. ``["/bin/bash"]``).
+
+        Returns
+        -------
+        Image
+            A new ``Image`` with the entrypoint set.
         """
         new = self._copy()
         new._entrypoint = list(args)
         return new
 
     def cmd(self, args: list[str]) -> Image:
-        """Set the container CMD.
+        """Set the container ``CMD``.
 
-        Args:
-            args: CMD as exec-form list (e.g. ["/bin/bash", "-l"]).
+        Parameters
+        ----------
+        args
+            CMD as exec-form list (e.g. ``["/bin/bash", "-l"]``).
+
+        Returns
+        -------
+        Image
+            A new ``Image`` with the CMD set.
         """
         new = self._copy()
         new._cmd = list(args)
@@ -366,15 +508,26 @@ class Image:
 
     @property
     def lazy_local_files(self) -> set[LazyLocalFile]:
-        """Local files deferred for volume-mounting at sandbox start."""
+        """Local files deferred for volume-mounting at sandbox start.
+
+        Returns
+        -------
+        set[LazyLocalFile]
+            Copy of the set of lazy local files tracked by this image.
+        """
         return set(self._lazy_local_files)
 
     def validate_lazy_local_files_for_volume_mounts(self) -> None:
         """Validate lazy local file destinations for volume mounting.
 
         Volume-backed lazy files are grouped by parent directory and mounted at
-        that directory. Root-level destinations would require mounting at "/",
+        that directory. Root-level destinations would require mounting at ``/``,
         which is not supported by container runtimes.
+
+        Raises
+        ------
+        ValueError
+            If a lazy local file would require mounting at the root directory.
         """
         self.lazy_local_files_grouped_for_volume_mounts()
 
@@ -386,6 +539,11 @@ class Image:
         Files from ``add_local_dir`` carry a ``mount_root`` that keeps all
         files from one call in a single volume.  Files from ``add_local_file``
         (``mount_root is None``) fall back to grouping by parent directory.
+
+        Returns
+        -------
+        dict[str, list[LazyLocalFile]]
+            Mapping from mount directory to the files that should be placed there.
         """
         grouped: dict[str, list[LazyLocalFile]] = {}
         for lf in sorted(
@@ -400,7 +558,13 @@ class Image:
     # -- Serialization ---------------------------------------------------------
 
     def to_proto(self) -> pb.ImageSpec:
-        """Serialize this image definition to a protobuf ImageSpec."""
+        """Serialize this image definition to a protobuf ``ImageSpec``.
+
+        Returns
+        -------
+        pb.ImageSpec
+            The protobuf representation of this image.
+        """
         spec = pb.ImageSpec(
             base_image=self._base_image,
             steps=list(self._steps),
