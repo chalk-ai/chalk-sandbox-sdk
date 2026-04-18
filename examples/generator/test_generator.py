@@ -46,7 +46,7 @@ def _deploy_script(script_name: str) -> None:
 class TestSyncGenerator:
     @classmethod
     def setup_class(cls):
-        _deploy_script("deploy.py")
+        _deploy_script("deploy_sync.py")
 
     def test_direct_call_iterates(self):
         """for x in fn(5) yields 5 chunks."""
@@ -91,6 +91,10 @@ class TestSyncGenerator:
 
 @needs_staging
 class TestAsyncGenerator:
+    @classmethod
+    def setup_class(cls):
+        _deploy_script("deploy_async.py")
+
     def test_direct_call_async_iterates(self):
         """async for x in fn(5) yields 5 chunks."""
         from chalkdf.remote import Remote

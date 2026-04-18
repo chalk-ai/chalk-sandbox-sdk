@@ -100,7 +100,7 @@ def test_embedding_function_via_chalkdf_remote() -> None:
     from chalkdf.remote import Remote
 
     async def _run() -> list[float]:
-        client = ChalkGRPCClient()
+        client = ChalkGRPCClient(environment="tmnmc9beyujew")
         remote = Remote(chalk_client=client)
         fn = remote.function("embed")
         return await fn("hello")
