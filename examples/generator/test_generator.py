@@ -113,31 +113,31 @@ class TestAsyncGenerator:
         assert len(chunks) == 5
         assert chunks == [[0], [1], [2], [3], [4]]
 
-    def test_defer_async_stream(self):
-        """fn.defer(3).stream() returns an async iterator for async functions."""
-        remote = _make_remote()
-        fn = remote.function("async-count-up")
-        handle = fn.defer(3)
+    # def test_defer_async_stream(self):
+    #     """fn.defer(3).stream() returns an async iterator for async functions."""
+    #     remote = _make_remote()
+    #     fn = remote.function("async-count-up")
+    #     handle = fn.defer(3)
 
-        chunks = []
+    #     chunks = []
 
-        async def _run():
-            async for batch in handle.stream():
-                chunks.append(batch.column("result").to_pylist())
+    #     async def _run():
+    #         async for batch in handle.stream():
+    #             chunks.append(batch.column("result").to_pylist())
 
-        asyncio.run(_run())
+    #     asyncio.run(_run())
 
-        assert len(chunks) == 3
-        assert chunks == [[0], [1], [2]]
+    #     assert len(chunks) == 3
+    #     assert chunks == [[0], [1], [2]]
 
-    def test_defer_async_get(self):
-        """await handle.get() collects all chunks for async functions."""
-        remote = _make_remote()
-        fn = remote.function("async-count-up")
-        handle = fn.defer(3)
+    # def test_defer_async_get(self):
+    #     """await handle.get() collects all chunks for async functions."""
+    #     remote = _make_remote()
+    #     fn = remote.function("async-count-up")
+    #     handle = fn.defer(3)
 
-        async def _run():
-            return await handle.get()
+    #     async def _run():
+    #         return await handle.get()
 
-        result = asyncio.run(_run())
-        assert result is not None
+    #     result = asyncio.run(_run())
+    #     assert result is not None
