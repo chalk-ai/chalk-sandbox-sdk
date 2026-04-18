@@ -25,6 +25,14 @@ needs_staging = pytest.mark.skipif(
 EXAMPLE_DIR = os.path.dirname(__file__)
 
 
+def _make_remote():
+    from chalk.client.client_grpc import ChalkGRPCClient
+    from chalkdf.remote import Remote
+
+    client = ChalkGRPCClient(environment="tmnmc9beyujew")
+    return Remote(chalk_client=client)
+
+
 def _deploy_script(script_name: str) -> None:
     """Run a deploy script as a subprocess."""
     result = subprocess.run(
@@ -50,9 +58,7 @@ class TestSyncGenerator:
 
     def test_direct_call_iterates(self):
         """for x in fn(5) yields 5 chunks."""
-        from chalkdf.remote import Remote
-
-        remote = Remote()
+        remote = _make_remote()
         fn = remote.function("count-up")
 
         chunks = []
@@ -64,9 +70,7 @@ class TestSyncGenerator:
 
     def test_defer_stream(self):
         """fn.defer(3).stream() yields 3 chunks."""
-        from chalkdf.remote import Remote
-
-        remote = Remote()
+        remote = _make_remote()
         fn = remote.function("count-up")
         handle = fn.defer(3)
 
@@ -79,9 +83,7 @@ class TestSyncGenerator:
 
     def test_defer_get(self):
         """fn.defer(3).get() collects all chunks."""
-        from chalkdf.remote import Remote
-
-        remote = Remote()
+        remote = _make_remote()
         fn = remote.function("count-up")
         handle = fn.defer(3)
         result = handle.get()
@@ -97,9 +99,7 @@ class TestAsyncGenerator:
 
     def test_direct_call_async_iterates(self):
         """async for x in fn(5) yields 5 chunks."""
-        from chalkdf.remote import Remote
-
-        remote = Remote()
+        remote = _make_remote()
         fn = remote.function("async-count-up")
 
         chunks = []
@@ -115,9 +115,7 @@ class TestAsyncGenerator:
 
     def test_defer_async_stream(self):
         """fn.defer(3).stream() returns an async iterator for async functions."""
-        from chalkdf.remote import Remote
-
-        remote = Remote()
+        remote = _make_remote()
         fn = remote.function("async-count-up")
         handle = fn.defer(3)
 
@@ -134,9 +132,7 @@ class TestAsyncGenerator:
 
     def test_defer_async_get(self):
         """await handle.get() collects all chunks for async functions."""
-        from chalkdf.remote import Remote
-
-        remote = Remote()
+        remote = _make_remote()
         fn = remote.function("async-count-up")
         handle = fn.defer(3)
 
