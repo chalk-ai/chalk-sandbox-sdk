@@ -191,7 +191,7 @@ def _strip_chalkcompute_from_source(source: str) -> str:
     return "".join(kept)
 
 
-def _generate_handler_shim(func_name: str) -> str:
+def _generate_handler_shim(func_name: str, *, entry_module: str = "user_module") -> str:
     """Generate a ``handler.py`` that bridges Arrow columnar data to scalar calls.
 
     ``chalk-remote-call`` passes ``event`` as ``dict[str, pa.Array]``.
@@ -206,6 +206,10 @@ def _generate_handler_shim(func_name: str) -> str:
     ----------
     func_name
         Name of the user function to import and invoke.
+    entry_module
+        Dotted module path from which *func_name* is imported. When transitive
+        deps are shipped, this is the real package path of the decorated file;
+        otherwise it falls back to ``user_module``.
 
     Returns
     -------
@@ -215,7 +219,7 @@ def _generate_handler_shim(func_name: str) -> str:
     return (
         "import inspect\n"
         "\n"
-        f"from user_module import {func_name}\n"
+        f"from {entry_module} import {func_name}\n"
         "\n"
         f"_is_sync_gen = inspect.isgeneratorfunction({func_name})\n"
         f"_is_async_gen = inspect.isasyncgenfunction({func_name})\n"
@@ -282,13 +286,20 @@ def _should_call_via_api() -> bool:
     return os.environ.get(_CALL_VIA_API_ENV_VAR, "") == "1"
 
 
-def _prepare_source_file(source_file: str) -> tuple[str, bool]:
-    """Return the source file path to deploy, optionally stripping chalkcompute.
+def _materialize_source(path: Path | str, *, strip: bool) -> tuple[str, bool]:
+    """Return a path to the source content to ship.
+
+    When *strip* is True, chalkcompute references are removed and the result
+    is written to a temp file (caller must clean up). Otherwise the original
+    path is returned unchanged.
 
     Parameters
     ----------
-    source_file
-        Path to the original user source file.
+    path
+        Path to the user source file on disk.
+    strip
+        Whether to strip chalkcompute imports/decorators/lifecycle calls before
+        shipping.
 
     Returns
     -------
@@ -296,12 +307,10 @@ def _prepare_source_file(source_file: str) -> tuple[str, bool]:
         ``(path, is_temp)`` — if stripping produced a temp file, the caller
         should clean it up.
     """
-    if not _should_strip_source():
-        return source_file, False
-    from pathlib import Path
-
-    source = Path(source_file).read_text()
-    stripped = _strip_chalkcompute_from_source(source)
+    source_path = Path(path)
+    if not strip:
+        return str(source_path), False
+    stripped = _strip_chalkcompute_from_source(source_path.read_text(encoding="utf-8"))
     return _write_temp(stripped), True
 
 
@@ -648,6 +657,7 @@ class RemoteFunction:
         max_batching_size: int | None = None,
         retries: int | RetryPolicy | None = None,
         rate_limit_key: str | None = None,
+        upload_imported_files: bool = True,
     ) -> None:
         self._func = func
         if name is not None:
@@ -672,6 +682,7 @@ class RemoteFunction:
         self._max_batching_size = max_batching_size
         self._retries = RetryPolicy.from_int_or_policy(retries) if retries is not None else None
         self._rate_limit_key = rate_limit_key
+        self._upload_imported_files = upload_imported_files
 
         # Set after .deploy()
         self._version_info: FunctionVersionInfo | None = None
@@ -790,6 +801,7 @@ class RemoteFunction:
         f._max_batching_size = None
         f._retries = None
         f._rate_limit_key = None
+        f._upload_imported_files = True
         f._version_info = None
         f._web_url = None
         f._port = 6666
@@ -802,30 +814,49 @@ class RemoteFunction:
     # -- Image building --------------------------------------------------------
 
     def _build_deploy_image(self) -> _Image:
-        """Build the deploy image with handler shim and user module.
+        """Build the deploy image with handler shim and user module(s).
 
         Returns
         -------
         Image
             Declarative image ready to be built.
         """
-        source_file, source_is_temp = _prepare_source_file(
-            inspect.getfile(self._func)
+        from chalkcompute._deps import collect_local_sources
+
+        entry_file = Path(inspect.getfile(self._func)).resolve()
+        func_name = getattr(self._func, "__name__", self._func_name)
+
+        deploy_image = _make_base_image(self._image)
+        temp_files: list[str] = []
+        strip = _should_strip_source()
+
+        if self._upload_imported_files:
+            collected = collect_local_sources(entry_file)
+            entry_module = collected.entry.module_name
+            for src in collected.sources:
+                mount_src, is_temp = _materialize_source(src.path, strip=strip)
+                if is_temp:
+                    temp_files.append(mount_src)
+                deploy_image = deploy_image.add_local_file(mount_src, src.mount_path)
+        else:
+            entry_module = "user_module"
+            mount_src, is_temp = _materialize_source(entry_file, strip=strip)
+            if is_temp:
+                temp_files.append(mount_src)
+            deploy_image = deploy_image.add_local_file(
+                mount_src, "/app/user_module.py"
+            )
+
+        shim_path = _write_temp(
+            _generate_handler_shim(func_name, entry_module=entry_module)
+        )
+        temp_files.append(shim_path)
+
+        deploy_image = deploy_image.add_local_file(shim_path, "/app/handler.py").env(
+            {"PYTHONPATH": "/app", _REMOTE_ENV_VAR: "1"}
         )
 
-        handler_shim = _generate_handler_shim(
-            getattr(self._func, "__name__", self._func_name)
-        )
-        shim_path = _write_temp(handler_shim)
-
-        deploy_image = (
-            _make_base_image(self._image)
-            .add_local_file(source_file, "/app/user_module.py")
-            .add_local_file(shim_path, "/app/handler.py")
-            .env({"PYTHONPATH": "/app", _REMOTE_ENV_VAR: "1"})
-        )
-
-        self._temp_files = [shim_path] + ([source_file] if source_is_temp else [])
+        self._temp_files = temp_files
         return deploy_image
 
     # -- Lifecycle -------------------------------------------------------------
@@ -1398,6 +1429,7 @@ def function(
     max_batching_size: int | None = None,
     retries: int | RetryPolicy | None = None,
     rate_limit_key: str | None = None,
+    upload_imported_files: bool = True,
 ) -> Callable[..., RemoteFunction | _NoOpFunction]:
     """Decorator that deploys a function as a versioned remote function.
 
@@ -1456,6 +1488,12 @@ def function(
     rate_limit_key
         Name of an externally defined rate limit policy. Used to control
         outbound concurrency from multiple sources.
+    upload_imported_files
+        When ``True`` (default), walk the decorated function's imports and
+        ship every transitively imported file that lives under the same
+        project onto the image, preserving the package structure.
+        Pip-installed packages and stdlib modules are excluded. Set to
+        ``False`` to only ship the single source file (legacy behavior).
 
     Examples
     --------
@@ -1489,6 +1527,7 @@ def function(
             max_batching_size=max_batching_size,
             retries=retries,
             rate_limit_key=rate_limit_key,
+            upload_imported_files=upload_imported_files,
         )
         f.deploy()
         return f
