@@ -10,58 +10,39 @@ class RetryPolicy:
     """Retry configuration for handler invocations.
 
     Construct via the named constructors rather than instantiating directly.
+    With exponential backoff, wait times grow geometrically
+    (``initial``, ``initial * multiplier``, ``initial * multiplier^2``, ...)
+    capped at ``max_wait``. With ``linear``, wait times are constant between
+    retries. A plain ``int`` passed to ``function(retries=3)`` is shorthand
+    for ``RetryPolicy.exponential(attempts=3)``. By default all ``Exception``
+    subclasses trigger a retry; pass a tuple of exception classes to
+    ``retry_on`` to narrow the set.
 
-    Exponential backoff
-    -------------------
-    Wait times grow geometrically: ``initial``, ``initial * multiplier``,
-    ``initial * multiplier^2``, ..., capped at ``max_wait``::
+    Attributes
+    ----------
+    max_retries
+        Maximum number of retry attempts (not counting the initial call).
+    initial_wait_seconds
+        Base wait time in seconds before the first retry.
+    backoff_multiplier
+        Multiplier applied to wait time on each successive retry.
+        Use ``2.0`` for exponential backoff (the default) or ``1.0`` for fixed delay.
+    max_wait_seconds
+        Upper bound on wait time between retries.
+    jitter
+        If ``True``, add random jitter to wait times to avoid thundering herd.
+    retry_on
+        Tuple of exception types that trigger a retry.
+        Non-matching exceptions propagate immediately without consuming retry budget.
 
-        RetryPolicy.exponential(attempts=5, initial=1.0, max_wait=30.0)
-
-        # With jitter disabled
-        RetryPolicy.exponential(attempts=3, jitter=False)
-
-        # Retry only on specific exceptions
-        RetryPolicy.exponential(
-            attempts=4,
-            retry_on=(TimeoutError, ConnectionError),
-        )
-
-    Linear (fixed) delay
-    --------------------
-    Wait times are constant between retries::
-
-        RetryPolicy.linear(attempts=3, delay=2.0)
-
-        # Retry only on timeout
-        RetryPolicy.linear(attempts=5, delay=0.5, retry_on=(TimeoutError,))
-
-    Simple integer shorthand
-    ------------------------
-    Pass a plain ``int`` to ``function(retries=3)`` for simple max-attempts
-    with default exponential backoff (equivalent to
-    ``RetryPolicy.exponential(attempts=3)``).
-
-    Exception filtering
-    -------------------
-    By default all ``Exception`` subclasses trigger a retry.  Pass a tuple of
-    exception classes to ``retry_on`` to narrow the set::
-
-        # Only retry on network-related errors
-        RetryPolicy.exponential(
-            attempts=3,
-            retry_on=(ConnectionError, TimeoutError, OSError),
-        )
-
-    Attributes:
-        max_retries: Maximum number of retry attempts (not counting the initial call).
-        initial_wait_seconds: Base wait time in seconds before the first retry.
-        backoff_multiplier: Multiplier applied to wait time on each successive retry.
-            Use ``2.0`` for exponential backoff (the default) or ``1.0`` for fixed delay.
-        max_wait_seconds: Upper bound on wait time between retries.
-        jitter: If ``True``, add random jitter to wait times to avoid thundering herd.
-        retry_on: Tuple of exception types that trigger a retry.
-            Non-matching exceptions propagate immediately without consuming retry budget.
+    Examples
+    --------
+    >>> RetryPolicy.exponential(attempts=5, initial=1.0, max_wait=30.0)
+    >>> RetryPolicy.linear(attempts=3, delay=2.0)
+    >>> RetryPolicy.exponential(
+    ...     attempts=3,
+    ...     retry_on=(ConnectionError, TimeoutError, OSError),
+    ... )
     """
 
     max_retries: int = 3
@@ -83,21 +64,30 @@ class RetryPolicy:
     ) -> RetryPolicy:
         """Create a policy with exponential backoff.
 
-        Args:
-            attempts: Maximum number of retry attempts.
-            initial: Base wait time in seconds before the first retry.
-            multiplier: Multiplier applied to wait time on each successive retry.
-            max_wait: Upper bound on wait time between retries.
-            jitter: If ``True``, add random jitter to wait times.
-            retry_on: Exception types that trigger a retry.
+        Parameters
+        ----------
+        attempts
+            Maximum number of retry attempts.
+        initial
+            Base wait time in seconds before the first retry.
+        multiplier
+            Multiplier applied to wait time on each successive retry.
+        max_wait
+            Upper bound on wait time between retries.
+        jitter
+            If ``True``, add random jitter to wait times.
+        retry_on
+            Exception types that trigger a retry.
 
-        Returns:
+        Returns
+        -------
+        RetryPolicy
             A configured ``RetryPolicy``.
 
-        Examples::
-
-            RetryPolicy.exponential(attempts=5, initial=0.5, max_wait=30.0)
-            RetryPolicy.exponential(attempts=3, retry_on=(TimeoutError,))
+        Examples
+        --------
+        >>> RetryPolicy.exponential(attempts=5, initial=0.5, max_wait=30.0)
+        >>> RetryPolicy.exponential(attempts=3, retry_on=(TimeoutError,))
         """
         return RetryPolicy(
             max_retries=attempts,
@@ -118,23 +108,30 @@ class RetryPolicy:
     ) -> RetryPolicy:
         """Create a policy with fixed delay between retries.
 
-        Args:
-            attempts: Maximum number of retry attempts.
-            delay: Fixed wait time in seconds between retries.
-            jitter: If ``True``, add random jitter to wait times.
-            retry_on: Exception types that trigger a retry.
+        Parameters
+        ----------
+        attempts
+            Maximum number of retry attempts.
+        delay
+            Fixed wait time in seconds between retries.
+        jitter
+            If ``True``, add random jitter to wait times.
+        retry_on
+            Exception types that trigger a retry.
 
-        Returns:
+        Returns
+        -------
+        RetryPolicy
             A configured ``RetryPolicy``.
 
-        Examples::
-
-            RetryPolicy.linear(attempts=3, delay=2.0)
-            RetryPolicy.linear(
-                attempts=5,
-                delay=0.5,
-                retry_on=(ConnectionError, TimeoutError),
-            )
+        Examples
+        --------
+        >>> RetryPolicy.linear(attempts=3, delay=2.0)
+        >>> RetryPolicy.linear(
+        ...     attempts=5,
+        ...     delay=0.5,
+        ...     retry_on=(ConnectionError, TimeoutError),
+        ... )
         """
         return RetryPolicy(
             max_retries=attempts,
@@ -150,6 +147,11 @@ class RetryPolicy:
 
         The ``retry_on`` field is serialized as a list of exception class names
         only when it differs from the default ``(Exception,)``.
+
+        Returns
+        -------
+        dict[str, object]
+            A JSON-serializable dict representation of the policy.
         """
         d: dict[str, object] = {
             "max_retries": self.max_retries,
@@ -167,6 +169,16 @@ class RetryPolicy:
         """Normalize ``int | RetryPolicy`` into a ``RetryPolicy``.
 
         An ``int`` is treated as ``RetryPolicy.exponential(attempts=value)``.
+
+        Parameters
+        ----------
+        value
+            Either a max-attempts integer shorthand or a pre-built policy.
+
+        Returns
+        -------
+        RetryPolicy
+            The normalized policy.
         """
         if isinstance(value, int):
             return RetryPolicy.exponential(attempts=value)

@@ -43,10 +43,19 @@ def policy_check(image_url: str) -> str:
     """Score an image against policies using CLIP positive-vs-benigns softmax.
 
     Stage 2 of the moderation pipeline. Runs only when stage-1 confidence is
-    borderline — see workflow.py for the branching logic.
+    borderline — see ``workflow.py`` for the branching logic.
 
-    Returns JSON: {policy_scores: {name: p}, max_policy, max_score}. Each p is
-    an independent probability in [0, 1]; they do not have to sum to 1.
+    Parameters
+    ----------
+    image_url
+        URL of the image to score.
+
+    Returns
+    -------
+    str
+        JSON-encoded object of the form
+        ``{policy_scores: {name: p}, max_policy, max_score}``. Each ``p`` is
+        an independent probability in ``[0, 1]``; they do not have to sum to 1.
     """
     import io
     import json

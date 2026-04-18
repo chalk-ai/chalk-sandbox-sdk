@@ -76,7 +76,15 @@ class FileNotFoundError_(VolumeError):
 
 @dataclass
 class VolumeInfo:
-    """Metadata about a volume."""
+    """Metadata about a volume.
+
+    Attributes
+    ----------
+    name
+        Name of the volume.
+    created_at
+        Timestamp when the volume was created.
+    """
 
     name: str
     created_at: datetime.datetime | None = None
@@ -84,7 +92,17 @@ class VolumeInfo:
 
 @dataclass
 class FileInfo:
-    """Metadata about a file inside a volume."""
+    """Metadata about a file inside a volume.
+
+    Attributes
+    ----------
+    path
+        File path within the volume.
+    size
+        File size in bytes.
+    updated_at
+        Timestamp when the file was last updated.
+    """
 
     path: str
     size: int
@@ -106,9 +124,12 @@ class _BatchUpload:
     def put(self, path: str, data: bytes | str) -> None:
         """Stage a file for upload.
 
-        Args:
-            path: Destination path within the volume.
-            data: File contents (bytes or str).
+        Parameters
+        ----------
+        path
+            Destination path within the volume.
+        data
+            File contents (bytes or str).
         """
         if isinstance(data, str):
             data = data.encode("utf-8")
@@ -117,9 +138,12 @@ class _BatchUpload:
     def put_file(self, path: str, local_path: str | Path) -> None:
         """Stage a local file for upload.
 
-        Args:
-            path: Destination path within the volume.
-            local_path: Local file to read.
+        Parameters
+        ----------
+        path
+            Destination path within the volume.
+        local_path
+            Local file to read.
         """
         self._files.append((path, Path(local_path).read_bytes()))
 
@@ -175,10 +199,14 @@ class Volume:
     def read_file(self, path: str) -> bytes:
         """Read a file's contents from the volume.
 
-        Args:
-            path: File path within the volume.
+        Parameters
+        ----------
+        path
+            File path within the volume.
 
-        Returns:
+        Returns
+        -------
+        bytes
             The raw file bytes.
         """
         try:
@@ -195,9 +223,12 @@ class Volume:
     def put_file(self, path: str, data: bytes | str) -> None:
         """Write a file into the volume.
 
-        Args:
-            path: Destination path within the volume.
-            data: File contents (bytes or str).
+        Parameters
+        ----------
+        path
+            Destination path within the volume.
+        data
+            File contents (bytes or str).
         """
         if isinstance(data, str):
             data = data.encode("utf-8")
@@ -213,17 +244,22 @@ class Volume:
     def put_file_from_path(self, path: str, local_path: str | Path) -> None:
         """Upload a local file into the volume.
 
-        Args:
-            path: Destination path within the volume.
-            local_path: Local file to read and upload.
+        Parameters
+        ----------
+        path
+            Destination path within the volume.
+        local_path
+            Local file to read and upload.
         """
         self.put_file(path, Path(local_path).read_bytes())
 
     def remove_file(self, path: str) -> None:
         """Remove a file from the volume.
 
-        Args:
-            path: File path within the volume.
+        Parameters
+        ----------
+        path
+            File path within the volume.
         """
         try:
             self._client._stub.RemoveFile(
@@ -237,12 +273,17 @@ class Volume:
     def listdir(self, prefix: str = "", *, recursive: bool = True) -> list[FileInfo]:
         """List files in the volume.
 
-        Args:
-            prefix: Only return files whose paths start with this prefix.
-            recursive: Currently always recursive (server-side behavior).
+        Parameters
+        ----------
+        prefix
+            Only return files whose paths start with this prefix.
+        recursive
+            Currently always recursive (server-side behavior).
 
-        Returns:
-            List of FileInfo objects.
+        Returns
+        -------
+        list of FileInfo
+            One entry per matching file.
         """
         try:
             resp = self._client._stub.ListFiles(
@@ -257,10 +298,17 @@ class Volume:
     def iterdir(self, prefix: str = "") -> Iterator[FileInfo]:
         """Iterate over files in the volume.
 
-        Same as listdir() but returns an iterator for lazy consumption.
+        Same as ``listdir()`` but returns an iterator for lazy consumption.
 
-        Args:
-            prefix: Only return files whose paths start with this prefix.
+        Parameters
+        ----------
+        prefix
+            Only return files whose paths start with this prefix.
+
+        Yields
+        ------
+        FileInfo
+            One entry per matching file.
         """
         yield from self.listdir(prefix)
 
@@ -270,10 +318,11 @@ class Volume:
 
         All staged files are uploaded when the context manager exits.
 
-        Usage:
-            with vol.batch_upload() as batch:
-                batch.put("a.txt", b"hello")
-                batch.put("b.txt", b"world")
+        Examples
+        --------
+        >>> with vol.batch_upload() as batch:
+        ...     batch.put("a.txt", b"hello")
+        ...     batch.put("b.txt", b"world")
         """
         batch = _BatchUpload(self)
         yield batch
@@ -312,13 +361,18 @@ class VolumeClient:
         credentials: grpc.ChannelCredentials | None = None,
         metadata: builtins.list[tuple[str, str]] | None = None,
     ) -> None:
-        """
-        Initialize the gRPC client.
+        """Initialize the gRPC client.
 
-        Args:
-            target: gRPC server address (e.g. "localhost:50051" or "volumes.example.com:443")
-            credentials: Optional TLS/SSL channel credentials. If None, uses insecure channel.
-            metadata: Optional default metadata to send with every RPC call.
+        Parameters
+        ----------
+        target
+            gRPC server address (e.g. ``"localhost:50051"`` or
+            ``"volumes.example.com:443"``).
+        credentials
+            Optional TLS/SSL channel credentials. If ``None``, uses insecure
+            channel.
+        metadata
+            Optional default metadata to send with every RPC call.
         """
         self._target = target
         self._metadata = metadata
@@ -345,11 +399,15 @@ class VolumeClient:
         If the volume already exists on the server, behavior depends on the
         server implementation (may return the existing volume or error).
 
-        Args:
-            name: Name for the volume.
+        Parameters
+        ----------
+        name
+            Name for the volume.
 
-        Returns:
-            A Volume handle.
+        Returns
+        -------
+        Volume
+            A volume handle.
         """
         try:
             resp = self._stub.CreateVolume(
@@ -365,30 +423,40 @@ class VolumeClient:
         return vol
 
     def from_name(self, name: str) -> Volume:
-        """Get a Volume handle by name.
+        """Get a ``Volume`` handle by name.
 
         Does not validate the volume exists until you call a method on it.
         Use this when you know the volume already exists.
 
-        Args:
-            name: Name of the existing volume.
+        Parameters
+        ----------
+        name
+            Name of the existing volume.
 
-        Returns:
-            A Volume handle.
+        Returns
+        -------
+        Volume
+            A volume handle.
         """
         return Volume(self, name)
 
     def lookup(self, name: str) -> Volume:
         """Look up a volume by name, verifying it exists.
 
-        Args:
-            name: Name of the volume.
+        Parameters
+        ----------
+        name
+            Name of the volume.
 
-        Returns:
-            A Volume handle with info pre-fetched.
+        Returns
+        -------
+        Volume
+            A volume handle with info pre-fetched.
 
-        Raises:
-            VolumeNotFoundError: If the volume does not exist.
+        Raises
+        ------
+        VolumeNotFoundError
+            If the volume does not exist.
         """
         vol = Volume(self, name)
         vol.reload()
@@ -397,8 +465,10 @@ class VolumeClient:
     def list(self) -> builtins.list[VolumeInfo]:
         """List all volumes.
 
-        Returns:
-            List of VolumeInfo objects.
+        Returns
+        -------
+        list of VolumeInfo
+            One entry per volume.
         """
         resp = self._stub.ListVolumes(
             pb.ListVolumesRequest(),
@@ -445,5 +515,20 @@ def connect(
     credentials: grpc.ChannelCredentials | None = None,
     metadata: builtins.list[tuple[str, str]] | None = None,
 ) -> VolumeClient:
-    """Create a new VolumeClient."""
+    """Create a new ``VolumeClient``.
+
+    Parameters
+    ----------
+    target
+        gRPC server address.
+    credentials
+        Optional TLS/SSL channel credentials.
+    metadata
+        Optional default metadata to send with every RPC call.
+
+    Returns
+    -------
+    VolumeClient
+        A new client instance.
+    """
     return VolumeClient(target, credentials=credentials, metadata=metadata)

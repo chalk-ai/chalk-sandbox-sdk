@@ -57,7 +57,17 @@ class ImageBuildError(ContainerError):
 
 @dataclass
 class ExecResult:
-    """Result of an ExecCommand call."""
+    """Result of an ``ExecCommand`` call.
+
+    Attributes
+    ----------
+    stdout
+        Raw bytes written to standard output.
+    stderr
+        Raw bytes written to standard error.
+    exit_code
+        Process exit status.
+    """
     stdout: bytes
     stderr: bytes
     exit_code: int
@@ -73,7 +83,21 @@ class ExecResult:
 
 @dataclass
 class ContainerInfo:
-    """Metadata about a running container."""
+    """Metadata about a running container.
+
+    Attributes
+    ----------
+    id
+        Opaque container identifier assigned by the service.
+    name
+        DNS-safe container name.
+    status
+        Lifecycle state reported by the service (e.g. ``"Running"``).
+    pod_name
+        Underlying Kubernetes pod name.
+    web_url
+        Optional URL exposing the container's port, if one is published.
+    """
     id: str
     name: str
     status: str
@@ -86,10 +110,20 @@ class ContainerInfo:
 # ---------------------------------------------------------------------------
 
 class Container:
-    """A managed container backed by the Chalk ContainerService.
+    """A managed container backed by the Chalk ``ContainerService``.
 
     Orchestrates image building, local file upload via volumes, and
     container lifecycle in a single high-level API.
+
+    Examples
+    --------
+    >>> from chalkcompute import Container, Image
+    >>> img = Image.debian_slim().pip_install(["requests"])
+    >>> c = Container(image=img).run()
+    >>> result = c.exec("echo", "hello")
+    >>> result.stdout_text
+    'hello\\n'
+    >>> c.stop()
     """
 
     def __init__(
@@ -135,7 +169,23 @@ class Container:
 
     @classmethod
     def from_id(cls, container_id: str) -> Container:
-        """Attach to an existing container by ID."""
+        """Attach to an existing container by ID.
+
+        Parameters
+        ----------
+        container_id
+            Opaque container identifier assigned by the service.
+
+        Returns
+        -------
+        Container
+            A ``Container`` handle bound to the existing container.
+
+        Raises
+        ------
+        ContainerError
+            If the container cannot be found.
+        """
         c = cls._make_empty()
         resp = c._client.rpc(_SVC, "GetContainer", {"id": container_id})
         if resp.status_code != 200:
@@ -146,7 +196,23 @@ class Container:
 
     @classmethod
     def from_name(cls, name: str) -> Container:
-        """Attach to an existing container by name."""
+        """Attach to an existing container by name.
+
+        Parameters
+        ----------
+        name
+            DNS-safe container name.
+
+        Returns
+        -------
+        Container
+            A ``Container`` handle bound to the existing container.
+
+        Raises
+        ------
+        ContainerError
+            If the container cannot be found.
+        """
         c = cls._make_empty()
         resp = c._client.rpc(_SVC, "GetContainer", {"name": name})
         if resp.status_code != 200:
@@ -183,7 +249,25 @@ class Container:
     def _build_image(
         self, *, poll_interval: float = 0.5, timeout: float = 600.0,
     ) -> str:
-        """Build the Image spec via CustomImageService and return the image URI."""
+        """Build the ``Image`` spec via ``CustomImageService`` and return the URI.
+
+        Parameters
+        ----------
+        poll_interval
+            Seconds between build-status polls.
+        timeout
+            Maximum seconds to wait for the build to complete.
+
+        Returns
+        -------
+        str
+            The built image URI.
+
+        Raises
+        ------
+        ImageBuildError
+            If the build fails or times out.
+        """
         from chalkcompute._connect import ConnectError, build_image
         from chalkcompute.image import Image
 
@@ -208,7 +292,26 @@ class Container:
     ) -> Container:
         """Build the image, upload local files, and start the container.
 
-        Returns self for chaining.
+        Parameters
+        ----------
+        poll_interval
+            Seconds between status polls for both build and startup.
+        build_timeout
+            Maximum seconds to wait for the image build to complete.
+        ready_timeout
+            Maximum seconds to wait for the container to reach ``Running``.
+
+        Returns
+        -------
+        Container
+            ``self``, to allow chaining.
+
+        Raises
+        ------
+        ContainerError
+            If the container fails to start or times out.
+        ImageBuildError
+            If the image build fails.
         """
         from chalkcompute._progress import (
             progress_add,
@@ -372,7 +475,20 @@ class Container:
     def _wait_for_volume_files(
         self, *, timeout: float = 120.0, poll_interval: float = 0.5,
     ) -> None:
-        """Poll until at least one uploaded file is visible in the ChalkFS mount."""
+        """Poll until at least one uploaded file is visible in the ChalkFS mount.
+
+        Parameters
+        ----------
+        timeout
+            Maximum seconds to wait before giving up.
+        poll_interval
+            Seconds between probes.
+
+        Raises
+        ------
+        ContainerError
+            If no uploaded file becomes visible before the timeout.
+        """
         from chalkcompute.image import Image
 
         assert isinstance(self._image, Image)
@@ -400,7 +516,25 @@ class Container:
         _retries: int = 12,
         _retry_delay: float = 5.0,
     ) -> ExecResult:
-        """Execute a command in the running container."""
+        """Execute a command in the running container.
+
+        Parameters
+        ----------
+        *command
+            Command and arguments to execute (e.g. ``"cat", "/app/app.py"``).
+        timeout_secs
+            Optional execution timeout in seconds.
+
+        Returns
+        -------
+        ExecResult
+            The stdout, stderr, and exit code of the executed command.
+
+        Raises
+        ------
+        ContainerError
+            If the container is not running or the exec fails.
+        """
         if self._container_id is None:
             raise ContainerError("Container is not running. Call .run() first.")
 
@@ -435,7 +569,13 @@ class Container:
 
     @traced("chalkcompute.container.stop")
     def stop(self, grace_period_seconds: int | None = None) -> None:
-        """Stop the container and clean up the temporary volume."""
+        """Stop the container and clean up temporary volumes and secrets.
+
+        Parameters
+        ----------
+        grace_period_seconds
+            Optional grace period before forceful termination.
+        """
         if self._container_id is not None:
             body: dict[str, Any] = {"id": self._container_id}
             if grace_period_seconds is not None:
@@ -455,7 +595,18 @@ class Container:
             self._upserted_secret_names = []
 
     def refresh(self) -> ContainerInfo:
-        """Fetch latest container status from the server."""
+        """Fetch latest container status from the server.
+
+        Returns
+        -------
+        ContainerInfo
+            The latest metadata for the container.
+
+        Raises
+        ------
+        ContainerError
+            If no container ID is set (``run()`` was never called).
+        """
         if self._container_id is None:
             raise ContainerError("No container ID — call .run() first.")
         resp = self._client.rpc(_SVC, "GetContainer", {"id": self._container_id})

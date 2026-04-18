@@ -61,7 +61,18 @@ def _is_optional(typ: Any) -> bool:
 
 
 def _unwrap_optional(typ: Any) -> tuple[Any, bool]:
-    """Return (inner_type, is_nullable)."""
+    """Return the inner type and whether the original type is nullable.
+
+    Parameters
+    ----------
+    typ
+        The type annotation to unwrap.
+
+    Returns
+    -------
+    tuple[Any, bool]
+        A tuple of ``(inner_type, is_nullable)``.
+    """
     typ = _unwrap_annotated(typ)
     if _is_optional(typ):
         inner = next(a for a in get_args(typ) if a is not _NoneType)
@@ -95,9 +106,19 @@ def _is_pydantic_basemodel(typ: Any) -> bool:
 def rich_to_arrow_schema(
     params: dict[str, type],
 ) -> Any:
-    """Convert a dict of {name: python_type} to an arrow_pb2.Schema.
+    """Convert a mapping of ``{name: python_type}`` to an ``arrow_pb2.Schema``.
 
     Each entry becomes a column/field in the schema.
+
+    Parameters
+    ----------
+    params
+        Mapping of column name to Python type annotation.
+
+    Returns
+    -------
+    arrow_pb2.Schema
+        The serialized Arrow schema.
     """
     from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
 
@@ -115,7 +136,23 @@ def rich_to_arrow_schema(
 
 
 def _rich_to_arrow_type(python_type: Any) -> Any:
-    """Recursively convert a Python type to an arrow_pb2.ArrowType."""
+    """Recursively convert a Python type to an ``arrow_pb2.ArrowType``.
+
+    Parameters
+    ----------
+    python_type
+        The Python type annotation to convert.
+
+    Returns
+    -------
+    arrow_pb2.ArrowType
+        The Arrow type equivalent.
+
+    Raises
+    ------
+    TypeError
+        If the Python type cannot be represented as an Arrow type.
+    """
     from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
 
     E = arrow_pb2.EmptyMessage
