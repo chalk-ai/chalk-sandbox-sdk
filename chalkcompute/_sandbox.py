@@ -37,7 +37,7 @@ import grpc
 
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as pb
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2_grpc as pb_grpc
-from chalkcompute.image import Image
+from chalkcompute._image import Image
 from chalkcompute._tracing import traced
 
 

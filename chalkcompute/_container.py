@@ -32,8 +32,8 @@ from chalkcompute._tracing import traced
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from chalkcompute.image import Image as _Image
-    from chalkcompute.secret import Secret
+    from chalkcompute._image import Image as _Image
+    from chalkcompute._secret import Secret
 
 _SVC = "chalk.container.v1.ContainerService"
 _IMAGE_SVC = "chalk.sandbox.v1.CustomImageService"
@@ -269,7 +269,7 @@ class Container:
             If the build fails or times out.
         """
         from chalkcompute._connect import ConnectError, build_image
-        from chalkcompute.image import Image
+        from chalkcompute._image import Image
 
         assert isinstance(self._image, Image)
         try:
@@ -319,7 +319,7 @@ class Container:
             progress_fail,
             progress_finish,
         )
-        from chalkcompute.image import Image
+        from chalkcompute._image import Image
 
         container_name = sanitize_dns_label(self._name or f"container-{uuid.uuid4().hex[:8]}")
         self._name = container_name
@@ -364,7 +364,7 @@ class Container:
             if any(s.is_lazy for s in self._secrets):
                 skey = f"secret:{container_name}"
                 progress_add(skey, "secret", "Resolving secrets", parent=ckey)
-                from chalkcompute.secret import resolve_lazy_secrets
+                from chalkcompute._secret import resolve_lazy_secrets
 
                 resolved, upserted = resolve_lazy_secrets(self._secrets, self._client)
                 self._secrets = resolved
@@ -489,7 +489,7 @@ class Container:
         ContainerError
             If no uploaded file becomes visible before the timeout.
         """
-        from chalkcompute.image import Image
+        from chalkcompute._image import Image
 
         assert isinstance(self._image, Image)
         sample = next(iter(self._image.lazy_local_files))
@@ -589,7 +589,7 @@ class Container:
         self._volumes = []
 
         if self._upserted_secret_names:
-            from chalkcompute.secret import delete_secrets
+            from chalkcompute._secret import delete_secrets
 
             delete_secrets(self._client, self._upserted_secret_names)
             self._upserted_secret_names = []

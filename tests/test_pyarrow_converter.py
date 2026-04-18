@@ -1,4 +1,4 @@
-"""Unit tests for chalkcompute.arrow_schema and chalkcompute.function._build_schemas."""
+"""Unit tests for chalkcompute._arrow_schema and chalkcompute._function._build_schemas."""
 
 import dataclasses
 import decimal
@@ -10,7 +10,7 @@ from datetime import date, datetime, time, timedelta
 
 import attrs
 
-from chalkcompute.arrow_schema import rich_to_arrow_schema
+from chalkcompute._arrow_schema import rich_to_arrow_schema
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +135,7 @@ class TestRichToArrowSchema:
 
 class TestBuildSchemas:
     def test_simple_function(self):
-        from chalkcompute.function import _build_schemas
+        from chalkcompute._function import _build_schemas
 
         def add(x: int, y: int) -> int:
             return x + y
@@ -149,7 +149,7 @@ class TestBuildSchemas:
         assert output_proto.columns[0].arrow_type.HasField("int64")
 
     def test_mixed_types(self):
-        from chalkcompute.function import _build_schemas
+        from chalkcompute._function import _build_schemas
 
         def greet(name: str, count: int) -> str:
             return name * count

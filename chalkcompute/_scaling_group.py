@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     import httpx
 
-    from chalkcompute.image import Image as _Image
+    from chalkcompute._image import Image as _Image
 
 _SVC = "chalk.scalinggroup.v1.ScalingGroupManagerService"
 
@@ -267,7 +267,7 @@ class ScalingGroup:
         ScalingGroupError
             If deployment fails or times out.
         """
-        from chalkcompute.image import Image
+        from chalkcompute._image import Image
 
         # 1. Resolve image URI
         if isinstance(self._image, Image):

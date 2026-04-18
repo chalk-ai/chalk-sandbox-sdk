@@ -52,7 +52,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from chalkcompute._connect import ConnectClient
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import traced
-from chalkcompute.function import (
+from chalkcompute._function import (
     _CATALOG_SVC,
     _REMOTE_ENV_VAR,
     _SG_SVC,
@@ -68,11 +68,11 @@ from chalkcompute.function import (
     _should_strip_source,
     _write_temp,
 )
-from chalkcompute.retry import RetryPolicy
+from chalkcompute._retry import RetryPolicy
 
 if TYPE_CHECKING:
-    from chalkcompute.image import Image as _Image
-    from chalkcompute.secret import Secret as _Secret
+    from chalkcompute._image import Image as _Image
+    from chalkcompute._secret import Secret as _Secret
 
 logger = logging.getLogger(__name__)
 
@@ -233,7 +233,7 @@ def _build_method_schemas(method_func: Callable[..., Any]) -> tuple[Any, Any]:
     TypeError
         If any parameter or the return type lacks an annotation.
     """
-    from chalkcompute.arrow_schema import rich_to_arrow_schema
+    from chalkcompute._arrow_schema import rich_to_arrow_schema
 
     hints = typing.get_type_hints(method_func)
     sig = inspect.signature(method_func)
@@ -707,7 +707,7 @@ class RemoteClass:
 
                 # Resolve lazy secrets and add to container spec
                 if self._secrets:
-                    from chalkcompute.secret import resolve_lazy_secrets
+                    from chalkcompute._secret import resolve_lazy_secrets
 
                     if any(s.is_lazy for s in self._secrets):
                         resolved, _upserted = resolve_lazy_secrets(self._secrets, self._client)
