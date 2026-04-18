@@ -85,7 +85,19 @@ class FunctionBuildError(FunctionError):
 
 @dataclass
 class FunctionVersionInfo:
-    """Metadata about a deployed function version."""
+    """Metadata about a deployed function version.
+
+    Attributes
+    ----------
+    id
+        Unique identifier of the function version.
+    function_name
+        Registered function name.
+    version
+        Monotonic version number for this function.
+    scaling_group_name
+        Name of the scaling group backing this version.
+    """
 
     id: str
     function_name: str
@@ -119,6 +131,16 @@ def _strip_chalkcompute_from_source(source: str) -> str:
 
     Preserves all other code (helpers, constants, classes, non-chalkcompute
     imports) so the deployed module is self-contained minus the SDK.
+
+    Parameters
+    ----------
+    source
+        Python source text to rewrite.
+
+    Returns
+    -------
+    str
+        Rewritten source with chalkcompute references removed.
     """
     tree = ast.parse(source)
     lines = source.splitlines(keepends=True)
@@ -170,15 +192,25 @@ def _strip_chalkcompute_from_source(source: str) -> str:
 
 
 def _generate_handler_shim(func_name: str) -> str:
-    """Generate a handler.py that bridges Arrow columnar data to scalar calls.
+    """Generate a ``handler.py`` that bridges Arrow columnar data to scalar calls.
 
-    chalk-remote-call passes ``event`` as ``dict[str, pa.Array]``.
+    ``chalk-remote-call`` passes ``event`` as ``dict[str, pa.Array]``.
     The shim iterates over rows, extracts Python scalars via ``.as_py()``,
     calls the user function per-row, and returns results.
 
     If the user function is a generator (yields values), each yielded value
-    is returned as a separate item so that chalk-remote-call can stream them
-    as individual response chunks.
+    is returned as a separate item so that ``chalk-remote-call`` can stream
+    them as individual response chunks.
+
+    Parameters
+    ----------
+    func_name
+        Name of the user function to import and invoke.
+
+    Returns
+    -------
+    str
+        Python source for the handler shim.
     """
     return (
         "import inspect\n"
@@ -253,8 +285,16 @@ def _should_call_via_api() -> bool:
 def _prepare_source_file(source_file: str) -> tuple[str, bool]:
     """Return the source file path to deploy, optionally stripping chalkcompute.
 
-    Returns (path, is_temp) — if stripping produced a temp file, the caller
-    should clean it up.
+    Parameters
+    ----------
+    source_file
+        Path to the original user source file.
+
+    Returns
+    -------
+    tuple of (str, bool)
+        ``(path, is_temp)`` — if stripping produced a temp file, the caller
+        should clean it up.
     """
     if not _should_strip_source():
         return source_file, False
@@ -271,7 +311,18 @@ def _prepare_source_file(source_file: str) -> tuple[str, bool]:
 
 
 def _local_install_entrypoint(handler_cmd: list[str]) -> list[str]:
-    """Wrap *handler_cmd* with a tar extract + pip install when local-copy mode is on."""
+    """Wrap ``handler_cmd`` with a tar extract + pip install when local-copy mode is on.
+
+    Parameters
+    ----------
+    handler_cmd
+        Original handler command to wrap.
+
+    Returns
+    -------
+    list of str
+        Possibly-wrapped entrypoint command.
+    """
     strip_source = _should_strip_source()
     if os.environ.get(_LOCAL_COPY_ENV_VAR, "") != "1" or strip_source:
         return handler_cmd
@@ -337,7 +388,27 @@ def _build_and_upload(
 ) -> tuple[str, list[tuple[str, str]]]:
     """Build the container image and upload lazy local files.
 
-    Returns (image_uri, new_volumes).
+    Parameters
+    ----------
+    client
+        Connect RPC client.
+    deploy_image
+        Declarative image to build.
+    label
+        Human-readable label used in progress output.
+    volume_prefix
+        Prefix for any new volumes created for lazy local files.
+    poll_interval
+        Seconds between build status polls.
+    build_timeout
+        Maximum seconds to wait for the build to finish.
+    progress_parent
+        Optional parent key for nested progress reporting.
+
+    Returns
+    -------
+    tuple of (str, list of tuple of (str, str))
+        ``(image_uri, new_volumes)``.
     """
     from chalkcompute._progress import progress_add, progress_done
 
@@ -368,7 +439,13 @@ def _build_and_upload(
 
 
 def _cleanup_temp_files(paths: list[str]) -> None:
-    """Remove temporary files, ignoring errors."""
+    """Remove temporary files, ignoring errors.
+
+    Parameters
+    ----------
+    paths
+        Paths to temporary files to remove.
+    """
     for tmp in paths:
         try:
             os.unlink(tmp)
@@ -387,7 +464,32 @@ def _make_container_spec(
     gpu: str | None,
     volumes: list[tuple[str, str]],
 ) -> dict[str, Any]:
-    """Build a container spec dict for CreateExternalFunctionVersion."""
+    """Build a container spec dict for ``CreateExternalFunctionVersion``.
+
+    Parameters
+    ----------
+    name
+        Container/scaling-group name.
+    image_uri
+        Fully-qualified image URI.
+    entrypoint
+        Entrypoint command to run in the container.
+    env
+        Additional environment variables beyond the SDK defaults.
+    cpu
+        Optional CPU resource request.
+    memory
+        Optional memory resource request.
+    gpu
+        Optional GPU resource request.
+    volumes
+        List of ``(volume_name, mount_path)`` tuples.
+
+    Returns
+    -------
+    dict
+        Container spec dictionary.
+    """
     spec: dict[str, Any] = {
         "name": name,
         "image": image_uri,
@@ -422,13 +524,28 @@ def _make_container_spec(
 
 
 def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
-    """Derive input/output arrow_pb2.Schema protos from function type hints.
+    """Derive input/output ``arrow_pb2.Schema`` protos from function type hints.
 
-    Goes directly from Python type annotations to arrow_pb2.Schema protos
+    Goes directly from Python type annotations to ``arrow_pb2.Schema`` protos
     without an intermediate PyArrow representation.
 
-    Also stores function traits (is_generator, is_async) in the output
+    Also stores function traits (``is_generator``, ``is_async``) in the output
     schema's metadata so the client can discover them from the catalog.
+
+    Parameters
+    ----------
+    func
+        User function to inspect.
+
+    Returns
+    -------
+    tuple
+        ``(input_schema, output_schema)`` Arrow schema protos.
+
+    Raises
+    ------
+    TypeError
+        If any parameter or the return type lacks an annotation.
     """
     import collections.abc as _cabc
 
@@ -481,7 +598,18 @@ def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
 
 
 def _extract_field_names(schema_dict: dict | None) -> list[str]:
-    """Extract field names from an Arrow schema JSON dict."""
+    """Extract field names from an Arrow schema JSON dict.
+
+    Parameters
+    ----------
+    schema_dict
+        Arrow schema JSON dict, or ``None``.
+
+    Returns
+    -------
+    list of str
+        Field names in declaration order.
+    """
     if not schema_dict:
         return []
     return [f["name"] for f in schema_dict.get("columns", []) if "name" in f]
@@ -565,7 +693,18 @@ class RemoteFunction:
 
     @classmethod
     def from_id(cls, version_id: str) -> RemoteFunction:
-        """Attach to an existing function version by ID."""
+        """Attach to an existing function version by ID.
+
+        Parameters
+        ----------
+        version_id
+            Identifier of the function version.
+
+        Returns
+        -------
+        RemoteFunction
+            A handle bound to the existing version.
+        """
         f = cls._make_empty()
         resp = f._client.rpc(
             _CATALOG_SVC,
@@ -592,7 +731,18 @@ class RemoteFunction:
 
     @classmethod
     def from_name(cls, name: str) -> RemoteFunction:
-        """Attach to an existing function version by name."""
+        """Attach to an existing function version by name.
+
+        Parameters
+        ----------
+        name
+            Name of the function.
+
+        Returns
+        -------
+        RemoteFunction
+            A handle bound to the existing version.
+        """
         f = cls._make_empty()
         resp = f._client.rpc(
             _CATALOG_SVC,
@@ -652,7 +802,13 @@ class RemoteFunction:
     # -- Image building --------------------------------------------------------
 
     def _build_deploy_image(self) -> _Image:
-        """Build the deploy image with handler shim and user module."""
+        """Build the deploy image with handler shim and user module.
+
+        Returns
+        -------
+        Image
+            Declarative image ready to be built.
+        """
         source_file, source_is_temp = _prepare_source_file(
             inspect.getfile(self._func)
         )
@@ -684,7 +840,19 @@ class RemoteFunction:
     ) -> RemoteFunction:
         """Build the image, register the function version, and wait until running.
 
-        Returns self for chaining.
+        Parameters
+        ----------
+        poll_interval
+            Seconds between status polls.
+        build_timeout
+            Maximum seconds to wait for the image build.
+        ready_timeout
+            Maximum seconds to wait for the scaling group to become ready.
+
+        Returns
+        -------
+        RemoteFunction
+            ``self`` for chaining.
         """
         from google.protobuf.json_format import MessageToDict
 
@@ -873,7 +1041,22 @@ class RemoteFunction:
     ) -> RemoteFunction:
         """Wait until the backing scaling group has at least one ready replica.
 
-        Returns self for chaining.
+        Parameters
+        ----------
+        timeout
+            Maximum seconds to wait.
+        poll_interval
+            Seconds between status polls.
+
+        Returns
+        -------
+        RemoteFunction
+            ``self`` for chaining.
+
+        Raises
+        ------
+        FunctionError
+            If the function has not been deployed or never becomes ready.
         """
         if self._version_info is None:
             raise FunctionError("No function version — call .deploy() first.")
@@ -902,7 +1085,13 @@ class RemoteFunction:
     # -- Call ------------------------------------------------------------------
 
     def _ensure_call_stub(self) -> None:
-        """Lazily create the gRPC channel and stub for calling the remote function."""
+        """Lazily create the gRPC channel and stub for calling the remote function.
+
+        Raises
+        ------
+        FunctionError
+            If the function has not been deployed.
+        """
         if self._call_stub is not None:
             return
 
@@ -943,9 +1132,17 @@ class RemoteFunction:
         self._call_stub = call_grpc.RemoteCallServiceStub(self._call_channel)
 
     def _call_via_api_rpc(self, feather_bytes: bytes) -> bytes:
-        """Call the remote function via the API server's CallExternalFunction RPC.
+        """Call the remote function via the API server's ``CallExternalFunction`` RPC.
 
-        Returns the response Arrow IPC bytes.
+        Parameters
+        ----------
+        feather_bytes
+            Arrow IPC (Feather) bytes for the request.
+
+        Returns
+        -------
+        bytes
+            Response Arrow IPC bytes.
         """
         import base64
 
@@ -988,7 +1185,20 @@ class RemoteFunction:
 
     @traced("chalkcompute.function.call")
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        """Call the remote function via gRPC or the API server."""
+        """Call the remote function via gRPC or the API server.
+
+        Parameters
+        ----------
+        *args
+            Positional arguments to forward to the remote function.
+        **kwargs
+            Keyword arguments to forward to the remote function.
+
+        Returns
+        -------
+        Any
+            Scalar result for single-row calls, or a list of results otherwise.
+        """
         import pyarrow as pa
         import pyarrow.ipc as ipc
 
@@ -1083,7 +1293,18 @@ class RemoteFunction:
             self._web_url = None
 
     def refresh(self) -> FunctionVersionInfo:
-        """Fetch latest function version info from the server."""
+        """Fetch latest function version info from the server.
+
+        Returns
+        -------
+        FunctionVersionInfo
+            Updated version info.
+
+        Raises
+        ------
+        FunctionError
+            If the function has not been deployed or the RPC fails.
+        """
         if self._version_info is None:
             raise FunctionError("No function version — call .deploy() first.")
         resp = self._client.rpc(
@@ -1181,43 +1402,68 @@ def function(
     """Decorator that deploys a function as a versioned remote function.
 
     **Locally** (at decoration time):
+
     1. Derives Arrow schemas from the function's type hints
     2. Builds a deploy image with a handler shim
-    3. Registers the function version via ExternalFunctionCatalogService
+    3. Registers the function version via ``ExternalFunctionCatalogService``
     4. If ``CHALK_FUNCTION_LOCAL_SDK_COPY=1``, includes local SDK source in
        the deploy image for unreleased feature iteration.
 
     **Remotely** (inside the container):
     The decorator is a no-op — returns the raw function unchanged.
 
-    Args:
-        image: Container image to deploy in. Defaults to ``Image.debian_slim()``.
-        cpu: CPU resource request (e.g. ``"1"``, ``"500m"``).
-        memory: Memory resource request (e.g. ``"1Gi"``, ``"512Mi"``).
-        gpu: GPU resource request (e.g. ``"nvidia-l4"``, ``"2:nvidia-a100"``).
-            Format is ``"<count>:<type>"`` or just ``"<type>"`` for a single GPU.
-        name: Custom function name. Defaults to the function's ``__name__``.
-        env: Environment variables to pass to the function.
-        min_replicas: Minimum number of replicas.
-        max_replicas: Maximum number of replicas.
-        volumes: List of ``(name, mount_path)`` tuples for persistent storage.
-        secrets: List of :class:`~chalkcompute.Secret` references to inject.
-        serialization_format: Wire format for arguments and results.
-            Currently only ``"pyarrow"`` is supported.
-        suspend_cooldown_period: Time in seconds until containers shut down
-            after the last request.
-        options: Arbitrary key-value options forwarded to the Chalk platform.
-        max_buffer_duration: Maximum time in milliseconds to buffer incoming
-            items before invoking the handler. Defaults to 1000 ms when batching
-            is enabled. When batching is enabled, handler args are lists or a
-            single pyarrow table.
-        max_batching_size: Maximum number of items to accumulate before invoking
-            the handler. Defaults to 10 when batching is enabled.
-        retries: Retry policy for handler invocations. Pass an ``int`` for
-            simple max-attempts with default exponential backoff, or a
-            :class:`~chalk_remote_call.config.RetryPolicy` for full control.
-        rate_limit_key: Name of an externally defined rate limit policy.
-            Used to control outbound concurrency from multiple sources.
+    Parameters
+    ----------
+    image
+        Container image to deploy in. Defaults to ``Image.debian_slim()``.
+    cpu
+        CPU resource request (e.g. ``"1"``, ``"500m"``).
+    memory
+        Memory resource request (e.g. ``"1Gi"``, ``"512Mi"``).
+    gpu
+        GPU resource request (e.g. ``"nvidia-l4"``, ``"2:nvidia-a100"``).
+        Format is ``"<count>:<type>"`` or just ``"<type>"`` for a single GPU.
+    name
+        Custom function name. Defaults to the function's ``__name__``.
+    env
+        Environment variables to pass to the function.
+    min_replicas
+        Minimum number of replicas.
+    max_replicas
+        Maximum number of replicas.
+    volumes
+        List of ``(name, mount_path)`` tuples for persistent storage.
+    secrets
+        List of :class:`~chalkcompute.Secret` references to inject.
+    serialization_format
+        Wire format for arguments and results. Currently only ``"pyarrow"``
+        is supported.
+    suspend_cooldown_period
+        Time in seconds until containers shut down after the last request.
+    options
+        Arbitrary key-value options forwarded to the Chalk platform.
+    max_buffer_duration
+        Maximum time in milliseconds to buffer incoming items before invoking
+        the handler. Defaults to 1000 ms when batching is enabled. When
+        batching is enabled, handler args are lists or a single pyarrow table.
+    max_batching_size
+        Maximum number of items to accumulate before invoking the handler.
+        Defaults to 10 when batching is enabled.
+    retries
+        Retry policy for handler invocations. Pass an ``int`` for simple
+        max-attempts with default exponential backoff, or a
+        :class:`~chalk_remote_call.config.RetryPolicy` for full control.
+    rate_limit_key
+        Name of an externally defined rate limit policy. Used to control
+        outbound concurrency from multiple sources.
+
+    Examples
+    --------
+    >>> import chalkcompute
+    >>> @chalkcompute.function()
+    ... def add(x: int, y: int) -> int:
+    ...     return x + y
+    >>> add(1, 2)
     """
 
     def decorator(func: Callable) -> RemoteFunction | _NoOpFunction:

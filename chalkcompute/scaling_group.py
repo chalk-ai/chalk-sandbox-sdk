@@ -69,7 +69,23 @@ class ScalingGroupBuildError(ScalingGroupError):
 
 @dataclass
 class ScalingGroupInfo:
-    """Metadata about a scaling group."""
+    """Metadata about a scaling group.
+
+    Attributes
+    ----------
+    id
+        Opaque scaling-group identifier assigned by the service.
+    name
+        DNS-safe scaling-group name.
+    status
+        Lifecycle state reported by the service (e.g. ``"Running"``).
+    web_url
+        URL to which HTTP traffic should be sent, if ready.
+    ready_replicas
+        Number of replicas currently ready to serve traffic.
+    available_replicas
+        Number of replicas available behind the service endpoint.
+    """
 
     id: str
     name: str
@@ -85,10 +101,23 @@ class ScalingGroupInfo:
 
 
 class ScalingGroup:
-    """A managed scaling group backed by the Chalk ScalingGroupManagerService.
+    """A managed scaling group backed by ``ScalingGroupManagerService``.
 
     Orchestrates image building, local file upload via volumes, and
-    scaling group lifecycle in a single high-level API.
+    scaling-group lifecycle in a single high-level API.
+
+    Examples
+    --------
+    >>> from chalkcompute import ScalingGroup, Image
+    >>> img = (
+    ...     Image.debian_slim()
+    ...     .pip_install(["flask"])
+    ...     .add_local_file("./app.py", "/app/app.py")
+    ...     .entrypoint(["python", "/app/app.py"])
+    ... )
+    >>> sg = ScalingGroup(image=img, port=8080).deploy().wait_ready()
+    >>> resp = sg.call("/health", method="GET")
+    >>> sg.delete()
     """
 
     def __init__(
@@ -133,7 +162,23 @@ class ScalingGroup:
 
     @classmethod
     def from_id(cls, scaling_group_id: str) -> ScalingGroup:
-        """Attach to an existing scaling group by ID."""
+        """Attach to an existing scaling group by ID.
+
+        Parameters
+        ----------
+        scaling_group_id
+            Opaque scaling-group identifier assigned by the service.
+
+        Returns
+        -------
+        ScalingGroup
+            A ``ScalingGroup`` handle bound to the existing resource.
+
+        Raises
+        ------
+        ScalingGroupError
+            If the scaling group cannot be found.
+        """
         sg = cls._make_empty()
         resp = sg._client.rpc(_SVC, "GetScalingGroup", {"id": scaling_group_id})
         if resp.status_code != 200:
@@ -144,7 +189,23 @@ class ScalingGroup:
 
     @classmethod
     def from_name(cls, name: str) -> ScalingGroup:
-        """Attach to an existing scaling group by name."""
+        """Attach to an existing scaling group by name.
+
+        Parameters
+        ----------
+        name
+            DNS-safe scaling-group name.
+
+        Returns
+        -------
+        ScalingGroup
+            A ``ScalingGroup`` handle bound to the existing resource.
+
+        Raises
+        ------
+        ScalingGroupError
+            If the scaling group cannot be found.
+        """
         sg = cls._make_empty()
         resp = sg._client.rpc(_SVC, "GetScalingGroup", {"name": name})
         if resp.status_code != 200:
@@ -187,7 +248,24 @@ class ScalingGroup:
     ) -> ScalingGroup:
         """Build the image, upload local files, and create the scaling group.
 
-        Returns self for chaining.
+        Parameters
+        ----------
+        poll_interval
+            Seconds between status polls for both build and startup.
+        build_timeout
+            Maximum seconds to wait for the image build to complete.
+        ready_timeout
+            Maximum seconds to wait for the scaling group to reach ``Running``.
+
+        Returns
+        -------
+        ScalingGroup
+            ``self``, to allow chaining.
+
+        Raises
+        ------
+        ScalingGroupError
+            If deployment fails or times out.
         """
         from chalkcompute.image import Image
 
@@ -308,7 +386,33 @@ class ScalingGroup:
         headers: dict[str, str] | None = None,
         timeout: float = 30.0,
     ) -> httpx.Response:
-        """Make an HTTP request to the scaling group's endpoint."""
+        """Make an HTTP request to the scaling group's endpoint.
+
+        Parameters
+        ----------
+        path
+            URL path appended to the scaling group's ``web_url``.
+        method
+            HTTP method.
+        json
+            Optional JSON-serializable body.
+        data
+            Optional raw bytes body (mutually exclusive with ``json``).
+        headers
+            Optional HTTP headers.
+        timeout
+            Request timeout in seconds.
+
+        Returns
+        -------
+        httpx.Response
+            The HTTP response.
+
+        Raises
+        ------
+        ScalingGroupError
+            If the scaling group has no ``web_url`` yet.
+        """
         import httpx
 
         if self._scaling_group_info is None or self._scaling_group_info.web_url is None:
@@ -326,7 +430,23 @@ class ScalingGroup:
     ) -> ScalingGroup:
         """Wait until a running scaling group has at least one ready replica.
 
-        Returns self for chaining.
+        Parameters
+        ----------
+        timeout
+            Maximum seconds to wait before giving up.
+        poll_interval
+            Seconds between status polls.
+
+        Returns
+        -------
+        ScalingGroup
+            ``self``, to allow chaining.
+
+        Raises
+        ------
+        ScalingGroupError
+            If the group enters a terminal failed state or never becomes ready
+            before the timeout elapses.
         """
         if self._scaling_group_id is None:
             raise ScalingGroupError("No scaling group ID — call .deploy() first.")
@@ -355,7 +475,7 @@ class ScalingGroup:
 
     @traced("chalkcompute.scaling_group.delete")
     def delete(self) -> None:
-        """Delete the scaling group and clean up volumes."""
+        """Delete the scaling group and clean up associated volumes."""
         if self._scaling_group_id is not None:
             self._client.rpc(_SVC, "DeleteScalingGroup", {"id": self._scaling_group_id})
             self._scaling_group_id = None
@@ -366,7 +486,18 @@ class ScalingGroup:
         self._volumes = []
 
     def refresh(self) -> ScalingGroupInfo:
-        """Fetch latest scaling group status from the server."""
+        """Fetch latest scaling-group status from the server.
+
+        Returns
+        -------
+        ScalingGroupInfo
+            The latest metadata for the scaling group.
+
+        Raises
+        ------
+        ScalingGroupError
+            If no scaling-group ID is set (``deploy()`` was never called).
+        """
         if self._scaling_group_id is None:
             raise ScalingGroupError("No scaling group ID — call .deploy() first.")
         resp = self._client.rpc(_SVC, "GetScalingGroup", {"id": self._scaling_group_id})

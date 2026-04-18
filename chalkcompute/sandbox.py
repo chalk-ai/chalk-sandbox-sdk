@@ -85,7 +85,21 @@ class ExecError(SandboxError):
 
 @dataclass
 class SandboxInfo:
-    """Information about a sandbox."""
+    """Information about a sandbox.
+
+    Attributes
+    ----------
+    id
+        Sandbox identifier.
+    state
+        Current lifecycle state of the sandbox.
+    created_at
+        Timestamp when the sandbox was created.
+    name
+        Optional human-readable name for the sandbox.
+    build_id
+        Optional identifier of the image build associated with this sandbox.
+    """
 
     id: str
     state: str
@@ -96,7 +110,23 @@ class SandboxInfo:
 
 @dataclass
 class ExecResult:
-    """Result of a completed command execution."""
+    """Result of a completed command execution.
+
+    Attributes
+    ----------
+    _stdout
+        Raw stdout bytes captured from the process.
+    _stderr
+        Raw stderr bytes captured from the process.
+    exit_code
+        Exit code of the process, if it exited normally.
+    signal
+        Signal number that terminated the process, if any.
+    pid
+        PID of the process, if known.
+    error
+        Error string if execution failed.
+    """
 
     _stdout: bytes
     _stderr: bytes
@@ -128,7 +158,25 @@ class ExecResult:
 
 @dataclass
 class ExecEvent:
-    """A single event from a streaming exec call."""
+    """A single event from a streaming exec call.
+
+    Attributes
+    ----------
+    stdout
+        Stdout text chunk, if this event carries stdout output.
+    stderr
+        Stderr text chunk, if this event carries stderr output.
+    pid
+        PID of the started process, set on the process-started event.
+    exit_code
+        Exit code of the process, set on the process-exited event.
+    exit_signal
+        Signal number that terminated the process, if any.
+    error_code
+        Error code string, set on error events.
+    error_message
+        Error message string, set on error events.
+    """
 
     stdout: str | None = None
     stderr: str | None = None
@@ -157,7 +205,19 @@ class ExecEvent:
 
 @dataclass
 class ExecProcess:
-    """Handle to a running exec stream, allowing stdin writes and signal sends."""
+    """Handle to a running exec stream, allowing stdin writes and signal sends.
+
+    Attributes
+    ----------
+    _request_queue
+        Queue used to send ``ExecRequest`` messages to the server.
+    _response_iterator
+        Iterator over ``ExecResponse`` messages from the server.
+    _sandbox_id
+        Identifier of the sandbox the process is running in.
+    pid
+        PID of the running process once the server reports it.
+    """
 
     _request_queue: queue.Queue = field(repr=False)
     _response_iterator: Iterator[pb.ExecResponse] = field(repr=False)
@@ -165,7 +225,13 @@ class ExecProcess:
     pid: int | None = None
 
     def write_stdin(self, data: str | bytes) -> None:
-        """Send data to the process's stdin."""
+        """Send data to the process's stdin.
+
+        Parameters
+        ----------
+        data
+            Bytes or string to write to stdin. Strings are UTF-8 encoded.
+        """
         if isinstance(data, str):
             data = data.encode("utf-8")
         self._request_queue.put(pb.ExecRequest(stdin_data=pb.StdinData(data=data)))
@@ -175,11 +241,24 @@ class ExecProcess:
         self._request_queue.put(pb.ExecRequest(stdin_eof=pb.StdinEof()))
 
     def send_signal(self, sig: int = signal.SIGTERM) -> None:
-        """Send a signal to the process."""
+        """Send a signal to the process.
+
+        Parameters
+        ----------
+        sig
+            Signal number to send. Defaults to ``SIGTERM``.
+        """
         self._request_queue.put(pb.ExecRequest(signal=pb.ExecSignal(signal=sig)))
 
     def output(self) -> Iterator[ExecEvent]:
-        """Iterate over output events from the process."""
+        """Iterate over output events from the process.
+
+        Yields
+        ------
+        ExecEvent
+            Events describing process start, stdout/stderr chunks,
+            process exit, or errors.
+        """
         for response in self._response_iterator:
             event = _response_to_event(response)
             if event.pid is not None:
@@ -189,7 +268,13 @@ class ExecProcess:
                 return
 
     def wait(self) -> ExecResult:
-        """Consume all output and return the final result."""
+        """Consume all output and return the final result.
+
+        Returns
+        -------
+        ExecResult
+            Aggregated stdout, stderr, exit code, and signal information.
+        """
         stdout_parts: list[bytes] = []
         stderr_parts: list[bytes] = []
         exit_code: int | None = None
@@ -275,10 +360,25 @@ class Sandbox:
         workdir: str | None = None,
         env: dict[str, str] | None = None,
     ) -> ExecResult:
-        """
-        Execute a command and wait for it to complete.
+        """Execute a command and wait for it to complete.
 
-        Returns an ExecResult with stdout/stderr and exit code.
+        Parameters
+        ----------
+        command
+            Command binary or script to execute.
+        *args
+            Arguments to pass to the command.
+        timeout_secs
+            Optional timeout in seconds.
+        workdir
+            Optional working directory inside the sandbox.
+        env
+            Optional environment variables to set for the command.
+
+        Returns
+        -------
+        ExecResult
+            Result with stdout/stderr and exit code.
         """
         process = self.exec_start(
             command,
@@ -298,11 +398,26 @@ class Sandbox:
         workdir: str | None = None,
         env: dict[str, str] | None = None,
     ) -> Iterator[ExecEvent]:
-        """
-        Execute a command and stream events as they arrive.
+        """Execute a command and stream events as they arrive.
 
-        Yields ExecEvent objects for process start, stdout/stderr output,
-        process exit, and errors.
+        Parameters
+        ----------
+        command
+            Command binary or script to execute.
+        *args
+            Arguments to pass to the command.
+        timeout_secs
+            Optional timeout in seconds.
+        workdir
+            Optional working directory inside the sandbox.
+        env
+            Optional environment variables to set for the command.
+
+        Yields
+        ------
+        ExecEvent
+            Events for process start, stdout/stderr output, process exit,
+            and errors.
         """
         process = self.exec_start(
             command,
@@ -322,10 +437,27 @@ class Sandbox:
         workdir: str | None = None,
         env: dict[str, str] | None = None,
     ) -> ExecProcess:
-        """
-        Start a command and return an ExecProcess handle for interactive use.
+        """Start a command and return an ``ExecProcess`` handle for interactive use.
 
         The caller can write to stdin, send signals, and iterate output.
+
+        Parameters
+        ----------
+        command
+            Command binary or script to execute.
+        *args
+            Arguments to pass to the command.
+        timeout_secs
+            Optional timeout in seconds.
+        workdir
+            Optional working directory inside the sandbox.
+        env
+            Optional environment variables to set for the command.
+
+        Returns
+        -------
+        ExecProcess
+            Handle for interacting with the running process.
         """
         init = pb.ExecInit(
             sandbox_id=self._id,
@@ -367,7 +499,13 @@ class Sandbox:
 
     @traced("chalkcompute.sandbox.terminate")
     def terminate(self, grace_period_seconds: int | None = None) -> None:
-        """Terminate this sandbox."""
+        """Terminate this sandbox.
+
+        Parameters
+        ----------
+        grace_period_seconds
+            Optional grace period to allow running processes to shut down.
+        """
         req = pb.TerminateSandboxRequest(sandbox_id=self._id)
         if grace_period_seconds is not None:
             req.grace_period_seconds = grace_period_seconds
@@ -393,13 +531,18 @@ class SandboxClient:
         credentials: grpc.ChannelCredentials | None = None,
         metadata: builtins.list[tuple[str, str]] | None = None,
     ) -> None:
-        """
-        Initialize the gRPC client.
+        """Initialize the gRPC client.
 
-        Args:
-            target: gRPC server address (e.g. "localhost:50051" or "sandbox.example.com:443")
-            credentials: Optional TLS/SSL channel credentials. If None, uses insecure channel.
-            metadata: Optional default metadata to send with every RPC call.
+        Parameters
+        ----------
+        target
+            gRPC server address (e.g. ``"localhost:50051"`` or
+            ``"sandbox.example.com:443"``).
+        credentials
+            Optional TLS/SSL channel credentials. If ``None``, uses insecure
+            channel.
+        metadata
+            Optional default metadata to send with every RPC call.
         """
         self._target = target
         self._metadata = metadata
@@ -433,29 +576,40 @@ class SandboxClient:
         poll_interval: float = 0.5,
         timeout: float = 600.0,
     ) -> Sandbox:
-        """
-        Create a new sandbox.
+        """Create a new sandbox.
 
-        When *image* is an Image spec, the server builds it asynchronously and
-        returns a sandbox in the "building" state.  If *wait* is True (the
-        default), this method polls GetSandbox until the sandbox reaches
-        "ready" (or "error").
+        When ``image`` is an ``Image`` spec, the server builds it asynchronously
+        and returns a sandbox in the "building" state.  If ``wait`` is ``True``
+        (the default), this method polls ``GetSandbox`` until the sandbox
+        reaches "ready" (or "error").
 
-        Args:
-            image: Container image to use — either a string reference
-                   (e.g. "ubuntu:latest") or a declarative Image builder.
-            name: Optional name for the sandbox
-            cpu: Optional CPU limit (e.g. "1", "500m")
-            memory: Optional memory limit (e.g. "512Mi", "1Gi")
-            env: Optional environment variables
-            volumes: Optional list of VolumeMount protos to attach
-            wait: If True, poll until the sandbox is ready (default True).
-            poll_interval: Seconds between GetSandbox polls (default 5).
-            timeout: Maximum seconds to wait for the sandbox to become ready
-                     (default 600).
+        Parameters
+        ----------
+        image
+            Container image to use — either a string reference
+            (e.g. ``"ubuntu:latest"``) or a declarative ``Image`` builder.
+        name
+            Optional name for the sandbox.
+        cpu
+            Optional CPU limit (e.g. ``"1"``, ``"500m"``).
+        memory
+            Optional memory limit (e.g. ``"512Mi"``, ``"1Gi"``).
+        env
+            Optional environment variables.
+        volumes
+            Optional list of ``VolumeMount`` protos to attach.
+        wait
+            If ``True``, poll until the sandbox is ready (default ``True``).
+        poll_interval
+            Seconds between ``GetSandbox`` polls (default 5).
+        timeout
+            Maximum seconds to wait for the sandbox to become ready
+            (default 600).
 
-        Returns:
-            A Sandbox handle
+        Returns
+        -------
+        Sandbox
+            A sandbox handle.
         """
         req = pb.CreateSandboxRequest()
         if isinstance(image, Image):
@@ -526,15 +680,30 @@ class SandboxClient:
         )
 
     def get(self, id: str) -> Sandbox:
-        """
-        Get a sandbox handle by ID.
+        """Get a sandbox handle by ID.
 
         Does not validate the sandbox exists until you call a method on it.
+
+        Parameters
+        ----------
+        id
+            Sandbox identifier.
+
+        Returns
+        -------
+        Sandbox
+            A sandbox handle.
         """
         return Sandbox(self, id)
 
     def list(self) -> builtins.list[SandboxInfo]:
-        """List all sandboxes."""
+        """List all sandboxes.
+
+        Returns
+        -------
+        list of SandboxInfo
+            One entry per sandbox.
+        """
         resp = self._stub.ListSandboxes(
             pb.ListSandboxesRequest(), metadata=self._metadata
         )
@@ -591,7 +760,20 @@ def _handle_rpc_error(e: grpc.RpcError, sandbox_id: str) -> None:
 
 
 def connect(target: str = "localhost:50051", **kwargs) -> SandboxClient:
-    """Create a new SandboxClient."""
+    """Create a new ``SandboxClient``.
+
+    Parameters
+    ----------
+    target
+        gRPC server address.
+    **kwargs
+        Additional keyword arguments forwarded to ``SandboxClient``.
+
+    Returns
+    -------
+    SandboxClient
+        A new client instance.
+    """
     return SandboxClient(target, **kwargs)
 
 

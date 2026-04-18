@@ -13,20 +13,16 @@ _SECRETS_SVC = "chalk.server.v1.EnvironmentSecretsService"
 class Secret:
     """A reference to a Chalk secret or integration to inject as env vars.
 
-    Use the factory methods to create instances:
+    Construct instances via the factory methods rather than instantiating
+    directly.
 
-        # Reference an existing Chalk secret
-        Secret.from_env("OPENAI_API_TOKEN")
-
-        # Reference an existing Chalk integration
-        Secret.from_integration("prod_postgres")
-
-        # Inject a local env var into the remote environment
-        Secret.from_local_env("OPENAI_API_KEY")
-        Secret.from_local_env("OPENAI_API_KEY", env_var_name="API_KEY")
-
-        # Inject all vars from a local .env file
-        Secret.from_local_env_file(".env")
+    Examples
+    --------
+    >>> Secret.from_env("OPENAI_API_TOKEN")
+    >>> Secret.from_integration("prod_postgres")
+    >>> Secret.from_local_env("OPENAI_API_KEY")
+    >>> Secret.from_local_env("OPENAI_API_KEY", env_var_name="API_KEY")
+    >>> Secret.from_local_env_file(".env")
     """
 
     _integration_name: str | None = field(default=None, repr=False)
@@ -50,8 +46,22 @@ class Secret:
     ) -> Secret:
         """Reference a standalone secret by name (e.g. ``"OPENAI_API_TOKEN"``).
 
-        The secret's value is injected as an environment variable with the same
-        name, unless *alias* or *prefix* is given.
+        The secret's value is injected as an environment variable with the
+        same name, unless ``alias`` or ``prefix`` is given.
+
+        Parameters
+        ----------
+        name
+            Name of the Chalk secret.
+        alias
+            Rename the env var exposed in the container.
+        prefix
+            Optional prefix applied to the env var name.
+
+        Returns
+        -------
+        Secret
+            A secret reference.
         """
         aliases = {name: alias} if alias else {}
         return cls(
@@ -72,8 +82,22 @@ class Secret:
         """Reference an integration by name (e.g. ``"prod_postgres"``).
 
         All secrets associated with the integration are injected as env vars.
-        Use *keys* to limit which keys are injected, *aliases* to remap names,
-        or *prefix* to add a common prefix.
+
+        Parameters
+        ----------
+        name
+            Name of the Chalk integration.
+        keys
+            Limit injection to the listed keys.
+        aliases
+            Rename specific keys when exposing them as env vars.
+        prefix
+            Optional prefix applied to every injected env var.
+
+        Returns
+        -------
+        Secret
+            A secret reference bound to the named integration.
         """
         return cls(
             _integration_name=name,
@@ -94,10 +118,18 @@ class Secret:
         Reads ``os.environ[local_env_var]`` at container start time, upserts it
         as a Chalk secret, and injects it as an env var in the container.
 
-        Args:
-            local_env_var: Name of the local environment variable to read.
-            env_var_name: Name for the env var inside the container.
-                          Defaults to *local_env_var*.
+        Parameters
+        ----------
+        local_env_var
+            Name of the local environment variable to read.
+        env_var_name
+            Name for the env var inside the container.
+            Defaults to ``local_env_var``.
+
+        Returns
+        -------
+        Secret
+            A lazy secret reference resolved at ``Container.run()`` time.
         """
         return cls(
             _local_env_var=local_env_var,
@@ -114,6 +146,16 @@ class Secret:
         Reads the file at container start time, upserts each ``KEY=VALUE``
         pair as a Chalk secret, and injects them as env vars in the container.
         Lines starting with ``#`` and blank lines are ignored.
+
+        Parameters
+        ----------
+        path
+            Path to the local ``.env`` file.
+
+        Returns
+        -------
+        Secret
+            A lazy secret reference resolved at ``Container.run()`` time.
         """
         return cls(
             _local_env_file=path,
@@ -121,11 +163,23 @@ class Secret:
 
     @property
     def is_lazy(self) -> bool:
-        """True if this secret requires local resolution before container start."""
+        """Whether this secret requires local resolution before container start.
+
+        Returns
+        -------
+        bool
+            ``True`` if the secret is built from a local env var or env file.
+        """
         return self._local_env_var is not None or self._local_env_file is not None
 
     def _to_proto_dict(self) -> dict[str, Any]:
-        """Serialize to the dict shape expected by the SecretRef protobuf."""
+        """Serialize to the dict shape expected by the ``SecretRef`` protobuf.
+
+        Returns
+        -------
+        dict[str, Any]
+            A JSON-compatible dict representation.
+        """
         d: dict[str, Any] = {}
         if self._integration_name is not None:
             d["integrationName"] = self._integration_name
@@ -151,7 +205,18 @@ class Secret:
 
 
 def _parse_env_file(path: str) -> dict[str, str]:
-    """Parse a simple .env file into a dict of key-value pairs."""
+    """Parse a simple ``.env`` file into a dict of key-value pairs.
+
+    Parameters
+    ----------
+    path
+        Path to the ``.env`` file.
+
+    Returns
+    -------
+    dict[str, str]
+        Mapping of variable names to values.
+    """
     result: dict[str, str] = {}
     with open(path) as f:
         for line in f:
@@ -174,11 +239,28 @@ def resolve_lazy_secrets(
     secrets: list[Secret],
     client: Any,
 ) -> tuple[list[Secret], list[str]]:
-    """Resolve lazy secrets (from_local_env / from_local_env_file) into concrete secrets.
+    """Resolve lazy secrets into concrete secrets.
 
-    Reads local env vars / files, upserts them as Chalk secrets, and returns:
-    - A new list of Secret objects (lazy ones replaced with from_env equivalents)
-    - A list of upserted secret names (for cleanup on stop)
+    Reads local env vars and ``.env`` files referenced by lazy secrets,
+    upserts them as Chalk secrets, and returns replacements.
+
+    Parameters
+    ----------
+    secrets
+        The list of secret references, possibly including lazy ones.
+    client
+        The Connect client used to upsert secrets remotely.
+
+    Returns
+    -------
+    tuple[list[Secret], list[str]]
+        The resolved secrets (lazy ones replaced with ``from_env`` equivalents)
+        and the names of secrets that were upserted for cleanup purposes.
+
+    Raises
+    ------
+    ValueError
+        If a referenced local environment variable is not set.
     """
     resolved: list[Secret] = []
     upserted_names: list[str] = []
@@ -210,7 +292,22 @@ def resolve_lazy_secrets(
 
 
 def _upsert_secret(client: Any, name: str, value: str) -> None:
-    """Upsert a secret via EnvironmentSecretsService."""
+    """Upsert a secret via ``EnvironmentSecretsService``.
+
+    Parameters
+    ----------
+    client
+        Connect client used for the RPC.
+    name
+        Name of the secret to upsert.
+    value
+        Literal secret value.
+
+    Raises
+    ------
+    RuntimeError
+        If the upsert RPC fails.
+    """
     resp = client.rpc(
         _SECRETS_SVC,
         "UpsertSecret",
@@ -221,6 +318,14 @@ def _upsert_secret(client: Any, name: str, value: str) -> None:
 
 
 def delete_secrets(client: Any, names: list[str]) -> None:
-    """Delete secrets by name via EnvironmentSecretsService."""
+    """Delete secrets by name via ``EnvironmentSecretsService``.
+
+    Parameters
+    ----------
+    client
+        Connect client used for the RPC.
+    names
+        Names of secrets to delete.
+    """
     for name in names:
         client.rpc(_SECRETS_SVC, "DeleteSecret", {"name": name})
