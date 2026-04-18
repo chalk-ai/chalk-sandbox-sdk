@@ -94,6 +94,26 @@ def test_embedding_function_via_chalkdf_remote() -> None:
     """
     _deploy_script("embed.py")
 
+    from chalk.client.client_grpc import ChalkGRPCClient
+    from chalkdf.remote import Remote
+
+    client = ChalkGRPCClient(environment="tmnmc9beyujew")
+    remote = Remote(chalk_client=client)
+    fn = remote.function("embed")
+    embedding = fn("hello")
+
+    assert isinstance(embedding, list), f"Expected list, got {type(embedding).__name__}"
+    assert len(embedding) == 1536, f"Got {len(embedding)} dims, expected 1536"
+    assert all(isinstance(v, float) for v in embedding), "Non-float values in embedding"
+
+
+@needs_staging
+@needs_openai
+@needs_chalkdf_remote
+def test_async_embedding_function_via_chalkdf_remote() -> None:
+    """Deploy async-embed, then call it via chalkdf's Remote with await."""
+    _deploy_script("embed_async.py")
+
     import asyncio
 
     from chalk.client.client_grpc import ChalkGRPCClient
@@ -102,7 +122,7 @@ def test_embedding_function_via_chalkdf_remote() -> None:
     async def _run() -> list[float]:
         client = ChalkGRPCClient(environment="tmnmc9beyujew")
         remote = Remote(chalk_client=client)
-        fn = remote.function("embed")
+        fn = remote.function("async-embed")
         return await fn("hello")
 
     embedding = asyncio.run(_run())
