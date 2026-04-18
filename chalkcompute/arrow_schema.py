@@ -26,10 +26,11 @@ from typing import (
 )
 
 
+_PydanticBaseModel: Any = None
 try:
-    from pydantic import BaseModel as _PydanticBaseModel  # ty: ignore[unresolved-import]
+    from pydantic import BaseModel as _PydanticBaseModel  # noqa: F811
 except ImportError:
-    _PydanticBaseModel = None  # type: ignore[assignment]
+    pass
 
 try:
     from types import UnionType
