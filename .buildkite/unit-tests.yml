@@ -9,6 +9,7 @@ steps:
   - label: ":mag: ty type check"
     command: |
       set -euo pipefail
+      unset VIRTUAL_ENV
       echo "--- :python: Sync dependencies"
       uv sync --all-extras
       echo "--- :mag: Run ty"
@@ -20,6 +21,7 @@ steps:
   - label: ":pytest: Unit tests"
     command: |
       set -euo pipefail
+      unset VIRTUAL_ENV
       echo "--- :python: Sync dependencies"
       uv sync --all-extras
       echo "--- :pytest: Run unit tests"
