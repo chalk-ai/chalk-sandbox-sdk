@@ -85,55 +85,42 @@ class ExecError(SandboxError):
 
 @dataclass
 class SandboxInfo:
-    """Information about a sandbox.
-
-    Attributes
-    ----------
-    id
-        Sandbox identifier.
-    state
-        Current lifecycle state of the sandbox.
-    created_at
-        Timestamp when the sandbox was created.
-    name
-        Optional human-readable name for the sandbox.
-    build_id
-        Optional identifier of the image build associated with this sandbox.
-    """
+    """Information about a sandbox."""
 
     id: str
+    """Sandbox identifier."""
+
     state: str
+    """Current lifecycle state of the sandbox."""
+
     created_at: str
+    """Timestamp when the sandbox was created."""
+
     name: str | None = None
+    """Optional human-readable name for the sandbox."""
+
     build_id: str | None = None
+    """Optional identifier of the image build associated with this sandbox."""
 
 
 @dataclass
 class ExecResult:
-    """Result of a completed command execution.
-
-    Attributes
-    ----------
-    _stdout
-        Raw stdout bytes captured from the process.
-    _stderr
-        Raw stderr bytes captured from the process.
-    exit_code
-        Exit code of the process, if it exited normally.
-    signal
-        Signal number that terminated the process, if any.
-    pid
-        PID of the process, if known.
-    error
-        Error string if execution failed.
-    """
+    """Result of a completed command execution."""
 
     _stdout: bytes
     _stderr: bytes
+
     exit_code: int | None
+    """Exit code of the process, if it exited normally."""
+
     signal: int | None = None
+    """Signal number that terminated the process, if any."""
+
     pid: int | None = None
+    """PID of the process, if known."""
+
     error: str | None = None
+    """Error string if execution failed."""
 
     @property
     def stdout(self) -> Iterator[str]:
@@ -158,33 +145,28 @@ class ExecResult:
 
 @dataclass
 class ExecEvent:
-    """A single event from a streaming exec call.
-
-    Attributes
-    ----------
-    stdout
-        Stdout text chunk, if this event carries stdout output.
-    stderr
-        Stderr text chunk, if this event carries stderr output.
-    pid
-        PID of the started process, set on the process-started event.
-    exit_code
-        Exit code of the process, set on the process-exited event.
-    exit_signal
-        Signal number that terminated the process, if any.
-    error_code
-        Error code string, set on error events.
-    error_message
-        Error message string, set on error events.
-    """
+    """A single event from a streaming exec call."""
 
     stdout: str | None = None
+    """Stdout text chunk, if this event carries stdout output."""
+
     stderr: str | None = None
+    """Stderr text chunk, if this event carries stderr output."""
+
     pid: int | None = None
+    """PID of the started process, set on the process-started event."""
+
     exit_code: int | None = None
+    """Exit code of the process, set on the process-exited event."""
+
     exit_signal: int | None = None
+    """Signal number that terminated the process, if any."""
+
     error_code: str | None = None
+    """Error code string, set on error events."""
+
     error_message: str | None = None
+    """Error message string, set on error events."""
 
     @property
     def is_started(self) -> bool:
@@ -205,24 +187,14 @@ class ExecEvent:
 
 @dataclass
 class ExecProcess:
-    """Handle to a running exec stream, allowing stdin writes and signal sends.
-
-    Attributes
-    ----------
-    _request_queue
-        Queue used to send ``ExecRequest`` messages to the server.
-    _response_iterator
-        Iterator over ``ExecResponse`` messages from the server.
-    _sandbox_id
-        Identifier of the sandbox the process is running in.
-    pid
-        PID of the running process once the server reports it.
-    """
+    """Handle to a running exec stream, allowing stdin writes and signal sends."""
 
     _request_queue: queue.Queue = field(repr=False)
     _response_iterator: Iterator[pb.ExecResponse] = field(repr=False)
     _sandbox_id: str = field(repr=False)
+
     pid: int | None = None
+    """PID of the running process once the server reports it."""
 
     def write_stdin(self, data: str | bytes) -> None:
         """Send data to the process's stdin.
@@ -317,7 +289,27 @@ class ExecProcess:
 
 
 class Sandbox:
-    """A handle to a sandbox instance."""
+    """A handle to a sandbox instance.
+
+    Obtain instances from :meth:`SandboxClient.create` or
+    :meth:`SandboxClient.get`.  Use :meth:`exec` to run commands and
+    :meth:`terminate` to shut the sandbox down when you're done.
+
+    Examples
+    --------
+    >>> from chalkcompute import SandboxClient, Image
+    >>> sandbox = SandboxClient().create(
+    ...     image=Image.debian_slim().pip_install(["numpy"]),
+    ... )
+    >>> result = sandbox.exec(
+    ...     "python",
+    ...     "-c",
+    ...     "import numpy; print(numpy.__version__)",
+    ... )
+    >>> result.stdout_text.strip()
+    '1.26.4'
+    >>> sandbox.terminate()
+    """
 
     def __init__(self, client: SandboxClient, sandbox_id: str) -> None:
         self._client = client

@@ -57,52 +57,59 @@ class ImageBuildError(ContainerError):
 
 @dataclass
 class ExecResult:
-    """Result of an ``ExecCommand`` call.
+    """Result of a one-shot command executed inside a container.
 
-    Attributes
-    ----------
-    stdout
-        Raw bytes written to standard output.
-    stderr
-        Raw bytes written to standard error.
-    exit_code
-        Process exit status.
+    Returned by :meth:`Container.exec`.  All three fields are populated once
+    the command has finished — ``ExecResult`` does not stream.
     """
+
     stdout: bytes
+    """Raw bytes written to standard output by the command."""
+
     stderr: bytes
+    """Raw bytes written to standard error by the command."""
+
     exit_code: int
+    """POSIX exit status of the command (``0`` on success, non-zero on
+    error; signals are encoded as ``128 + signum`` where applicable)."""
 
     @property
     def stdout_text(self) -> str:
+        """:attr:`stdout` decoded as UTF-8 (with ``errors="replace"``).
+
+        Convenience for the common case where the command emits text.
+        Invalid UTF-8 bytes are replaced with ``U+FFFD`` rather than
+        raising.
+        """
         return self.stdout.decode("utf-8", errors="replace")
 
     @property
     def stderr_text(self) -> str:
+        """:attr:`stderr` decoded as UTF-8 (with ``errors="replace"``).
+
+        Same UTF-8-with-replacement semantics as :attr:`stdout_text`.
+        """
         return self.stderr.decode("utf-8", errors="replace")
 
 
 @dataclass
 class ContainerInfo:
-    """Metadata about a running container.
+    """Metadata about a running container."""
 
-    Attributes
-    ----------
-    id
-        Opaque container identifier assigned by the service.
-    name
-        DNS-safe container name.
-    status
-        Lifecycle state reported by the service (e.g. ``"Running"``).
-    pod_name
-        Underlying Kubernetes pod name.
-    web_url
-        Optional URL exposing the container's port, if one is published.
-    """
     id: str
+    """Opaque container identifier assigned by the service."""
+
     name: str
+    """DNS-safe container name."""
+
     status: str
+    """Lifecycle state reported by the service (e.g. ``"Running"``)."""
+
     pod_name: str
+    """Underlying Kubernetes pod name."""
+
     web_url: str | None = None
+    """Optional URL exposing the container's port, if one is published."""
 
 
 # ---------------------------------------------------------------------------
@@ -117,10 +124,21 @@ class Container:
 
     Examples
     --------
+    Build an image, run a container, and exec a command inside it:
+
     >>> from chalkcompute import Container, Image
-    >>> img = Image.debian_slim().pip_install(["requests"])
-    >>> c = Container(image=img).run()
-    >>> result = c.exec("echo", "hello")
+    >>> c = Container(
+    ...     image=(
+    ...         Image.debian_slim()
+    ...         .pip_install(["requests"])
+    ...         .add_local_file("./script.py", "/app/script.py")
+    ...     ),
+    ...     name="hello-container",
+    ...     cpu="1",
+    ...     memory="2Gi",
+    ...     env={"LOG_LEVEL": "INFO"},
+    ... ).run()
+    >>> result = c.exec("python", "/app/script.py")
     >>> result.stdout_text
     'hello\\n'
     >>> c.stop()
@@ -292,6 +310,13 @@ class Container:
     ) -> Container:
         """Build the image, upload local files, and start the container.
 
+        Walks through three phases and blocks until the container is ready
+        (or raises): (1) build the image via ``CustomImageService``, (2) if
+        the ``Image`` has ``add_local_file`` / ``add_local_dir`` entries
+        registered with ``strategy="volume"``, upload them to a managed
+        volume and attach it, (3) start the container and poll until it
+        reaches the ``Running`` state.
+
         Parameters
         ----------
         poll_interval
@@ -312,6 +337,33 @@ class Container:
             If the container fails to start or times out.
         ImageBuildError
             If the image build fails.
+
+        Examples
+        --------
+        Build an image from scratch, start a container, inspect it, and
+        tear it down:
+
+        >>> from chalkcompute import Container, Image
+        >>> img = (
+        ...     Image.debian_slim("3.13")
+        ...     .pip_install(["requests"])
+        ...     .add_local_file(
+        ...         "./app.py",
+        ...         "/app/app.py",
+        ...     )
+        ...     .workdir("/app")
+        ... )
+        >>> c = Container(
+        ...     image=img,
+        ...     name="hello-container",
+        ...     cpu="1",
+        ...     memory="2Gi",
+        ...     env={"LOG_LEVEL": "INFO"},
+        ... )
+        >>> c.run()
+        >>> c.info.status
+        'Running'
+        >>> c.stop()
         """
         from chalkcompute._progress import (
             progress_add,
@@ -518,6 +570,11 @@ class Container:
     ) -> ExecResult:
         """Execute a command in the running container.
 
+        The command runs as a one-shot process inside the already-started
+        container (equivalent to ``docker exec``).  Output is captured in
+        full and returned at once; use :meth:`Sandbox.exec` if you need a
+        streaming interface.
+
         Parameters
         ----------
         *command
@@ -534,6 +591,41 @@ class Container:
         ------
         ContainerError
             If the container is not running or the exec fails.
+
+        Examples
+        --------
+        Build an image, start a container, run a few commands against it,
+        and clean up:
+
+        >>> from chalkcompute import Container, Image
+        >>> c = Container(
+        ...     image=(
+        ...         Image.debian_slim("3.13")
+        ...         .pip_install(["requests"])
+        ...         .add_local_file(
+        ...             "./fetch.py",
+        ...             "/app/fetch.py",
+        ...         )
+        ...     ),
+        ...     name="fetcher",
+        ...     cpu="1",
+        ...     memory="1Gi",
+        ... ).run()
+        >>> hello = c.exec(
+        ...     "python",
+        ...     "/app/fetch.py",
+        ...     "https://example.com",
+        ... )
+        >>> hello.exit_code
+        0
+        >>> hello.stdout_text.splitlines()[0]
+        '<!doctype html>'
+        >>> err = c.exec("ls", "/does-not-exist")
+        >>> err.exit_code
+        2
+        >>> err.stderr_text
+        "ls: cannot access '/does-not-exist': No such file or directory\\n"
+        >>> c.stop()
         """
         if self._container_id is None:
             raise ContainerError("Container is not running. Call .run() first.")
@@ -617,14 +709,31 @@ class Container:
 
     @property
     def id(self) -> str | None:
+        """Opaque container identifier assigned by the service.
+
+        ``None`` until :meth:`run` (or :meth:`from_id` / :meth:`from_name`)
+        has resolved the container against the service.
+        """
         return self._container_id
 
     @property
     def info(self) -> ContainerInfo | None:
+        """The most recently fetched :class:`ContainerInfo` snapshot.
+
+        ``None`` until the container has been started or attached to.
+        Populated by :meth:`run`, :meth:`from_id`, and :meth:`from_name`.
+        Call :meth:`refresh_info` to fetch the latest state from the service.
+        """
         return self._container_info
 
     @property
     def image_uri(self) -> str | None:
+        """The fully qualified registry URI of the image the container uses.
+
+        Set after :meth:`run` finishes the image build (or, if the container
+        was constructed with a string image reference, equal to that
+        reference).  ``None`` before the container has been started.
+        """
         return self._built_image_uri
 
     def __repr__(self) -> str:

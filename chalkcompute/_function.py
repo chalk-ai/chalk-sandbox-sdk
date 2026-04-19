@@ -85,24 +85,19 @@ class FunctionBuildError(FunctionError):
 
 @dataclass
 class FunctionVersionInfo:
-    """Metadata about a deployed function version.
-
-    Attributes
-    ----------
-    id
-        Unique identifier of the function version.
-    function_name
-        Registered function name.
-    version
-        Monotonic version number for this function.
-    scaling_group_name
-        Name of the scaling group backing this version.
-    """
+    """Metadata about a deployed function version."""
 
     id: str
+    """Unique identifier of the function version."""
+
     function_name: str
+    """Registered function name."""
+
     version: int
+    """Monotonic version number for this function."""
+
     scaling_group_name: str
+    """Name of the scaling group backing this version."""
 
 
 # ---------------------------------------------------------------------------
@@ -625,6 +620,52 @@ class RemoteFunction:
 
     Deploys a Python function as a ScalingGroup and registers it with
     input/output Arrow schemas derived from the function's type hints.
+
+    Most users should prefer the :func:`function` decorator; use
+    ``RemoteFunction`` directly when you need the imperative API (for
+    example, when wrapping a function defined elsewhere, or when
+    constructing deployments programmatically).
+
+    Examples
+    --------
+    Decorator form — the most common entrypoint:
+
+    >>> import chalkcompute
+    >>> from chalkcompute import Image
+    >>> img = (
+    ...     Image.debian_slim()
+    ...     .pip_install(["numpy"])
+    ... )
+    >>> @chalkcompute.function(
+    ...     image=img,
+    ...     cpu="1",
+    ...     memory="2Gi",
+    ...     min_replicas=1,
+    ...     max_replicas=4,
+    ... )
+    ... def embed(text: str) -> list[float]:
+    ...     import numpy as np
+    ...     return np.ones(8).tolist()
+    >>> embed.deploy()
+    >>> embed("hello world")
+    [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+
+    Imperative form, for constructing a ``RemoteFunction`` from an existing
+    callable:
+
+    >>> from chalkcompute import RemoteFunction, Image
+    >>> def square(x: int) -> int:
+    ...     return x * x
+    >>> fn = RemoteFunction(
+    ...     square,
+    ...     image=Image.debian_slim(),
+    ...     name="square",
+    ...     min_replicas=1,
+    ...     max_replicas=2,
+    ... )
+    >>> fn.deploy()
+    >>> fn(7)
+    49
     """
 
     def __init__(

@@ -376,6 +376,45 @@ class RemoteClass:
     Deploys each ``@method()`` as a separate function version with its own
     scaling group, sharing a single container image.  Lifecycle hooks
     (``@before()`` / ``@after()``) run in every method's container.
+
+    Most users should prefer the :func:`cls` decorator.
+
+    Examples
+    --------
+    Deploy a stateful class with an expensive warm-up step, then call
+    individual methods remotely:
+
+    >>> import chalkcompute
+    >>> from chalkcompute import Image
+    >>> img = (
+    ...     Image.debian_slim()
+    ...     .pip_install(["sentence-transformers"])
+    ... )
+    >>> @chalkcompute.cls(
+    ...     image=img,
+    ...     cpu="2",
+    ...     memory="4Gi",
+    ...     min_replicas=1,
+    ...     max_replicas=2,
+    ... )
+    ... class Embedder:
+    ...     @chalkcompute.before()
+    ...     def load(self):
+    ...         from sentence_transformers import SentenceTransformer
+    ...         self.model = SentenceTransformer("all-MiniLM-L6-v2")
+    ...     @chalkcompute.method()
+    ...     def embed(self, text: str) -> list[float]:
+    ...         return self.model.encode(text).tolist()
+    ...     @chalkcompute.method()
+    ...     def embed_batch(self, texts: list[str]) -> list[list[float]]:
+    ...         return self.model.encode(texts).tolist()
+    ...     @chalkcompute.after()
+    ...     def shutdown(self):
+    ...         del self.model
+    >>> Embedder.deploy()
+    >>> e = Embedder()
+    >>> vec = e.embed("hello world")
+    >>> batch = e.embed_batch(["a", "b", "c"])
     """
 
     def __init__(
