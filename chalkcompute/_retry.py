@@ -18,23 +18,6 @@ class RetryPolicy:
     subclasses trigger a retry; pass a tuple of exception classes to
     ``retry_on`` to narrow the set.
 
-    Attributes
-    ----------
-    max_retries
-        Maximum number of retry attempts (not counting the initial call).
-    initial_wait_seconds
-        Base wait time in seconds before the first retry.
-    backoff_multiplier
-        Multiplier applied to wait time on each successive retry.
-        Use ``2.0`` for exponential backoff (the default) or ``1.0`` for fixed delay.
-    max_wait_seconds
-        Upper bound on wait time between retries.
-    jitter
-        If ``True``, add random jitter to wait times to avoid thundering herd.
-    retry_on
-        Tuple of exception types that trigger a retry.
-        Non-matching exceptions propagate immediately without consuming retry budget.
-
     Examples
     --------
     >>> RetryPolicy.exponential(attempts=5, initial=1.0, max_wait=30.0)
@@ -46,11 +29,24 @@ class RetryPolicy:
     """
 
     max_retries: int = 3
+    """Maximum number of retry attempts (not counting the initial call)."""
+
     initial_wait_seconds: float = 1.0
+    """Base wait time in seconds before the first retry."""
+
     backoff_multiplier: float = 2.0
+    """Multiplier applied to wait time on each successive retry. Use ``2.0`` for
+    exponential backoff (the default) or ``1.0`` for fixed delay."""
+
     max_wait_seconds: float = 60.0
+    """Upper bound on wait time between retries."""
+
     jitter: bool = True
+    """If ``True``, add random jitter to wait times to avoid thundering herd."""
+
     retry_on: tuple[type[BaseException], ...] = (Exception,)
+    """Tuple of exception types that trigger a retry. Non-matching exceptions
+    propagate immediately without consuming retry budget."""
 
     @staticmethod
     def exponential(

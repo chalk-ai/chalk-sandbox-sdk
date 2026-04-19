@@ -6,7 +6,7 @@ Build container images using a fluent API:
     from chalkcompute import Image
 
     img = (
-        Image.debian_slim("3.12")
+        Image.debian_slim("3.13")
         .pip_install(["requests", "pandas"])
         .run_commands("apt-get update && apt-get install -y git")
         .workdir("/home/user/app")
@@ -27,6 +27,7 @@ import logging
 import os
 import tarfile
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -45,24 +46,19 @@ _ARCHIVE_CHUNK_SIZE = 6 * 1024 * 1024
 
 @dataclass(frozen=True)
 class LazyLocalFile:
-    """A reference to a local file mounted as a volume at sandbox start.
-
-    Attributes
-    ----------
-    src
-        Absolute local file path.
-    dest
-        Absolute destination path inside the container.
-    mode
-        Optional file permission mode.
-    mount_root
-        Optional mount directory overriding the default parent-based grouping.
-    """
+    """A reference to a local file mounted as a volume at sandbox start."""
 
     src: str
+    """Absolute local file path."""
+
     dest: str
+    """Absolute destination path inside the container."""
+
     mode: int | None = None
+    """Optional file permission mode."""
+
     mount_root: str | None = None
+    """Optional mount directory overriding the default parent-based grouping."""
 
 
 class Image:
@@ -75,7 +71,7 @@ class Image:
     --------
     >>> from chalkcompute import Image
     >>> img = (
-    ...     Image.debian_slim("3.12")
+    ...     Image.debian_slim("3.13")
     ...     .pip_install(["requests", "pandas"])
     ...     .workdir("/home/user/app")
     ... )
@@ -99,18 +95,24 @@ class Image:
         Parameters
         ----------
         image
-            Full image reference (e.g. ``"python:3.12-slim-bookworm"``,
+            Full image reference (e.g. ``"python:3.13-slim-bookworm"``,
             ``"ghcr.io/org/image:tag"``).
 
         Returns
         -------
         Image
             A new ``Image`` based on the given reference.
+
+        Examples
+        --------
+        >>> from chalkcompute import Image
+        >>> img = Image.base("python:3.13-slim-bookworm")
+        >>> img = Image.base("ghcr.io/my-org/my-image:latest")
         """
         return cls(image)
 
     @classmethod
-    def debian_slim(cls, python_version: str = "3.12") -> Image:
+    def debian_slim(cls, python_version: str = "3.13") -> Image:
         """Create an image based on ``python:<version>-slim-bookworm``.
 
         Parameters
@@ -122,6 +124,12 @@ class Image:
         -------
         Image
             A new ``Image`` based on the selected Python slim image.
+
+        Examples
+        --------
+        >>> from chalkcompute import Image
+        >>> img = Image.debian_slim()
+        >>> img = Image.debian_slim("3.11")
         """
         return cls(f"python:{python_version}-slim-bookworm")
 
@@ -141,6 +149,15 @@ class Image:
         -------
         Image
             A new ``Image`` whose build steps mirror the Dockerfile.
+
+        Examples
+        --------
+        >>> from chalkcompute import Image
+        >>> img = Image.from_dockerfile("./Dockerfile")
+        >>> img = (
+        ...     Image.from_dockerfile("./Dockerfile")
+        ...     .pip_install(["rich"])
+        ... )
         """
         content = Path(path).read_text()
         # Extract FROM line as base image, rest as commands
@@ -189,6 +206,17 @@ class Image:
         -------
         Image
             A new ``Image`` with the run steps appended.
+
+        Examples
+        --------
+        >>> from chalkcompute import Image
+        >>> img = (
+        ...     Image.debian_slim()
+        ...     .run_commands(
+        ...         "apt-get update",
+        ...         "apt-get install -y curl git",
+        ...     )
+        ... )
         """
         new = self._copy()
         new._steps.append(
@@ -196,7 +224,72 @@ class Image:
         )
         return new
 
-    def pip_install(self, packages: list[str]) -> Image:
+    def uv_pip_install(self, packages: Sequence[str]) -> Image:
+        """Install Python packages via ``uv pip install``.
+
+        Uses the ``uv`` resolver instead of ``pip`` for significantly faster
+        installs. Requires a base image that has ``uv`` available.
+
+        Parameters
+        ----------
+        packages
+            List of pip requirement specifiers
+            (e.g. ``["requests>=2.28", "pandas"]``).
+
+        Returns
+        -------
+        Image
+            A new ``Image`` with the uv pip install step appended.
+
+        Examples
+        --------
+        >>> from chalkcompute import Image
+        >>> img = (
+        ...     Image.base("ghcr.io/astral-sh/uv:python3.13-bookworm-slim")
+        ...     .uv_pip_install(["requests", "polars"])
+        ... )
+        """
+        new = self._copy()
+        new._steps.append(
+            pb.BuildStep(uv_pip_install=pb.UvPipInstallStep(packages=list(packages)))
+        )
+        return new
+
+    def uv_pip_install_from_requirements(self, path: str) -> Image:
+        """Install packages from a ``requirements.txt`` file via ``uv pip install``.
+
+        The file is read locally and its contents are inlined into the image
+        spec so that the file does not need to be accessible at build time.
+        Uses the ``uv`` resolver for significantly faster installs than
+        :meth:`pip_install_from_requirements`.  Requires a base image that
+        has ``uv`` available.
+
+        Parameters
+        ----------
+        path
+            Path to ``requirements.txt``.
+
+        Returns
+        -------
+        Image
+            A new ``Image`` with the uv pip install step appended.
+
+        Examples
+        --------
+        >>> from chalkcompute import Image
+        >>> img = (
+        ...     Image.base("ghcr.io/astral-sh/uv:python3.13-bookworm-slim")
+        ...     .uv_pip_install_from_requirements("./requirements.txt")
+        ... )
+        """
+        packages = [
+            line.strip()
+            for line in Path(path).read_text().splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        return self.uv_pip_install(packages)
+
+    def pip_install(self, packages: Sequence[str]) -> Image:
         """Install Python packages via pip.
 
         Parameters
@@ -209,10 +302,18 @@ class Image:
         -------
         Image
             A new ``Image`` with the pip install step appended.
+
+        Examples
+        --------
+        >>> from chalkcompute import Image
+        >>> img = (
+        ...     Image.debian_slim()
+        ...     .pip_install(["requests>=2.28", "pandas"])
+        ... )
         """
         new = self._copy()
         new._steps.append(
-            pb.BuildStep(pip_install=pb.PipInstallStep(packages=packages))
+            pb.BuildStep(pip_install=pb.PipInstallStep(packages=list(packages)))
         )
         return new
 
@@ -231,6 +332,14 @@ class Image:
         -------
         Image
             A new ``Image`` with the pip install step appended.
+
+        Examples
+        --------
+        >>> from chalkcompute import Image
+        >>> img = (
+        ...     Image.debian_slim()
+        ...     .pip_install_from_requirements("./requirements.txt")
+        ... )
         """
         packages = [
             line.strip()
@@ -238,29 +347,6 @@ class Image:
             if line.strip() and not line.strip().startswith("#")
         ]
         return self.pip_install(packages)
-
-    def uv_pip_install(self, packages: list[str]) -> Image:
-        """Install Python packages via ``uv pip install``.
-
-        Uses the ``uv`` resolver instead of ``pip`` for significantly faster
-        installs. Requires a base image that has ``uv`` available.
-
-        Parameters
-        ----------
-        packages
-            List of pip requirement specifiers
-            (e.g. ``["requests>=2.28", "pandas"]``).
-
-        Returns
-        -------
-        Image
-            A new ``Image`` with the uv pip install step appended.
-        """
-        new = self._copy()
-        new._steps.append(
-            pb.BuildStep(uv_pip_install=pb.UvPipInstallStep(packages=packages))
-        )
-        return new
 
     def add_local_file(
         self,
@@ -272,6 +358,11 @@ class Image:
     ) -> Image:
         """Add a local file into the image.
 
+        Each call is **additive** — the file is appended to the set of
+        files (or build steps) already registered on the image, not
+        replacing them — so ``add_local_file`` can be chained many times
+        to bring in several files.
+
         Parameters
         ----------
         src
@@ -279,7 +370,20 @@ class Image:
         dest
             Absolute destination path in the image.
         mode
-            Optional file permission mode (e.g. ``0o755``).
+            Optional POSIX file permission mode. Written in octal with a
+            ``0o`` prefix; if omitted, the file is created with the image's
+            default permissions. Common values:
+
+            - ``0o755`` (``rwxr-xr-x``) — executable scripts and binaries;
+              owner can read/write/execute, everyone else read/execute.
+            - ``0o644`` (``rw-r--r--``) — regular data files; owner can
+              read/write, everyone else read-only.
+            - ``0o600`` (``rw-------``) — private files (credentials,
+              secrets, SSH keys); owner read/write, no access for others.
+            - ``0o700`` (``rwx------``) — owner-only directories or
+              private executables.
+            - ``0o400`` (``r--------``) — immutable/read-only files the
+              workload must not mutate.
         strategy
             ``"copy"`` inlines the file contents into the image spec.
             ``"volume"`` (default) defers the file as a lazy reference
@@ -289,6 +393,22 @@ class Image:
         -------
         Image
             A new ``Image`` with the file registered for inclusion.
+
+        Examples
+        --------
+        >>> from chalkcompute import Image
+        >>> img = (
+        ...     Image.debian_slim()
+        ...     .add_local_file(
+        ...         "./config.yaml",
+        ...         "/app/config.yaml",
+        ...     )
+        ...     .add_local_file(
+        ...         "./entrypoint.sh",
+        ...         "/app/entrypoint.sh",
+        ...         mode=0o755,
+        ...     )
+        ... )
         """
         new = self._copy()
         if strategy == "volume":
@@ -309,10 +429,15 @@ class Image:
         dest: str,
         *,
         strategy: Literal["copy", "volume"] = "volume",
-        exclude: list[str] | None = None,
+        exclude: Sequence[str] | None = None,
         archive: bool = False,
     ) -> Image:
         """Add an entire local directory into the image.
+
+        Each call is **additive** — the directory's files are appended to
+        the set already registered on the image, so ``add_local_dir`` can
+        be chained with other ``add_local_dir`` / ``add_local_file`` calls
+        to merge sources from multiple locations.
 
         Automatically respects ``.gitignore`` and ``.chalkignore`` files found
         at any level within ``src`` (each scoped to its directory subtree,
@@ -342,6 +467,18 @@ class Image:
         -------
         Image
             A new ``Image`` with the directory registered for inclusion.
+
+        Examples
+        --------
+        >>> from chalkcompute import Image
+        >>> img = (
+        ...     Image.debian_slim()
+        ...     .add_local_dir(
+        ...         "./src",
+        ...         "/app/src",
+        ...         exclude=["*.pyc", "__pycache__"],
+        ...     )
+        ... )
         """
         from chalkcompute._ignore import (
             _match_exclude,
@@ -414,10 +551,14 @@ class Image:
                 )
         return new
 
-    def dockerfile_commands(self, commands: list[str]) -> Image:
+    def dockerfile_commands(self, commands: Sequence[str]) -> Image:
         """Add raw Dockerfile instructions.
 
-        These are injected verbatim into the generated Dockerfile.
+        These are injected verbatim into the generated Dockerfile. Each call
+        is **additive** — instructions are appended to any previous build
+        steps (including prior ``dockerfile_commands`` calls), not replacing
+        them — so you can split a Dockerfile across multiple calls and
+        interleave with other builder methods.
 
         Parameters
         ----------
@@ -429,11 +570,22 @@ class Image:
         -------
         Image
             A new ``Image`` with the Dockerfile commands appended.
+
+        Examples
+        --------
+        >>> from chalkcompute import Image
+        >>> img = (
+        ...     Image.debian_slim()
+        ...     .dockerfile_commands([
+        ...         "USER root",
+        ...         "EXPOSE 8080",
+        ...     ])
+        ... )
         """
         new = self._copy()
         new._steps.append(
             pb.BuildStep(
-                dockerfile_commands=pb.DockerfileCommandsStep(commands=commands)
+                dockerfile_commands=pb.DockerfileCommandsStep(commands=list(commands))
             )
         )
         return new
@@ -450,6 +602,17 @@ class Image:
         -------
         Image
             A new ``Image`` with the environment variables applied.
+
+        Examples
+        --------
+        >>> from chalkcompute import Image
+        >>> img = (
+        ...     Image.debian_slim()
+        ...     .env({
+        ...         "LOG_LEVEL": "DEBUG",
+        ...         "PORT": "8080",
+        ...     })
+        ... )
         """
         new = self._copy()
         new._env.update(variables)
@@ -467,13 +630,43 @@ class Image:
         -------
         Image
             A new ``Image`` with the working directory set.
+
+        Examples
+        --------
+        >>> from chalkcompute import Image
+        >>> img = (
+        ...     Image.debian_slim()
+        ...     .workdir("/home/user/app")
+        ... )
         """
         new = self._copy()
         new._workdir = path
         return new
 
-    def entrypoint(self, args: list[str]) -> Image:
+    def entrypoint(self, args: Sequence[str]) -> Image:
         """Set the container entrypoint.
+
+        The ``ENTRYPOINT`` is the executable that always runs when the
+        container starts.  Unlike :meth:`cmd` — which provides *default
+        arguments* that callers can override at run time — the entrypoint
+        is fixed: callers can't swap it out by passing a different command
+        to ``Container.run`` or ``kubectl exec``, only append to it.
+
+        Together, ``ENTRYPOINT`` and ``CMD`` form the full command that
+        runs in the container:
+
+        - With only an entrypoint: ``ENTRYPOINT`` runs with no args.
+        - With only a CMD: the first element of ``CMD`` is treated as the
+          executable and the rest as its arguments.
+        - With both: the full command is ``ENTRYPOINT + CMD``, where
+          ``CMD`` supplies the default (overridable) arguments.
+
+        Each call **replaces** any previously set entrypoint.
+
+        Use exec-form (``["python", "-m", "my_app"]``) rather than
+        shell-form (``"python -m my_app"``) — exec-form skips the shell
+        wrapper and makes signals (SIGTERM, SIGINT) reach your process
+        directly, which matters for graceful shutdown.
 
         Parameters
         ----------
@@ -484,13 +677,30 @@ class Image:
         -------
         Image
             A new ``Image`` with the entrypoint set.
+
+        Examples
+        --------
+        >>> from chalkcompute import Image
+        >>> img = (
+        ...     Image.debian_slim()
+        ...     .entrypoint(["python", "-m", "my_app"])
+        ... )
         """
         new = self._copy()
         new._entrypoint = list(args)
         return new
 
-    def cmd(self, args: list[str]) -> Image:
+    def cmd(self, args: Sequence[str]) -> Image:
         """Set the container ``CMD``.
+
+        The ``CMD`` is the default argument list passed to the container's
+        entrypoint when the container starts.  Unlike :meth:`entrypoint` — which
+        sets the executable that always runs — ``CMD`` defines the *default
+        arguments* that can be overridden at run time (for example, by a
+        ``Container.run(command=[...])`` call or a Kubernetes pod spec).
+
+        If no ``entrypoint`` is set, the first element of ``CMD`` is treated as
+        the executable.  If an ``entrypoint`` is set, ``CMD`` is appended to it.
 
         Parameters
         ----------
@@ -501,6 +711,18 @@ class Image:
         -------
         Image
             A new ``Image`` with the CMD set.
+
+        Examples
+        --------
+        Run ``python -m my_app`` by default, but allow the caller to override
+        the module at run time:
+
+        >>> from chalkcompute import Image
+        >>> img = (
+        ...     Image.debian_slim()
+        ...     .entrypoint(["python"])
+        ...     .cmd(["-m", "my_app"])
+        ... )
         """
         new = self._copy()
         new._cmd = list(args)

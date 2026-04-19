@@ -17,10 +17,11 @@ load_dotenv()
 
 CHALK_CLIENT_ID = os.environ.get("CHALK_CLIENT_ID", "")
 CHALK_API_SERVER = os.environ.get("CHALK_API_SERVER", "")
+CHALK_ENVIRONMENT_ID = os.environ.get("CHALK_ENVIRONMENT_ID", "")
 
 needs_staging = pytest.mark.skipif(
-    not CHALK_CLIENT_ID or not CHALK_API_SERVER,
-    reason="CHALK_CLIENT_ID/CHALK_API_SERVER not set",
+    not CHALK_CLIENT_ID or not CHALK_API_SERVER or not CHALK_ENVIRONMENT_ID,
+    reason="CHALK_CLIENT_ID/CHALK_API_SERVER/CHALK_ENVIRONMENT_ID not set",
 )
 
 

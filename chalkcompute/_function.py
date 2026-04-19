@@ -41,13 +41,13 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 from chalkcompute._connect import ConnectClient, build_image, upload_lazy_files
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import traced
-from chalkcompute.retry import RetryPolicy
+from chalkcompute._retry import RetryPolicy
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from chalkcompute.image import Image as _Image
-    from chalkcompute.secret import Secret as _Secret
+    from chalkcompute._image import Image as _Image
+    from chalkcompute._secret import Secret as _Secret
 
 SerializationFormat = typing.Literal["pyarrow"]
 
@@ -85,24 +85,19 @@ class FunctionBuildError(FunctionError):
 
 @dataclass
 class FunctionVersionInfo:
-    """Metadata about a deployed function version.
-
-    Attributes
-    ----------
-    id
-        Unique identifier of the function version.
-    function_name
-        Registered function name.
-    version
-        Monotonic version number for this function.
-    scaling_group_name
-        Name of the scaling group backing this version.
-    """
+    """Metadata about a deployed function version."""
 
     id: str
+    """Unique identifier of the function version."""
+
     function_name: str
+    """Registered function name."""
+
     version: int
+    """Monotonic version number for this function."""
+
     scaling_group_name: str
+    """Name of the scaling group backing this version."""
 
 
 # ---------------------------------------------------------------------------
@@ -326,7 +321,7 @@ def _local_install_entrypoint(handler_cmd: list[str]) -> list[str]:
     strip_source = _should_strip_source()
     if os.environ.get(_LOCAL_COPY_ENV_VAR, "") != "1" or strip_source:
         return handler_cmd
-    from chalkcompute.image import ARCHIVE_NAME, _ARCHIVE_CHUNK_PREFIX
+    from chalkcompute._image import ARCHIVE_NAME, _ARCHIVE_CHUNK_PREFIX
 
     d = _LOCAL_SDK_MOUNT
     # Reassemble chunked archive, extract, then pip install.
@@ -342,7 +337,7 @@ def _local_install_entrypoint(handler_cmd: list[str]) -> list[str]:
 
 def _make_base_image(user_image: _Image | None) -> _Image:
     """Create the base deploy image with SDK packages and optional local overlay."""
-    from chalkcompute.image import Image
+    from chalkcompute._image import Image
 
     strip_source = _should_strip_source()
     local_copy = os.environ.get(_LOCAL_COPY_ENV_VAR, "") == "1" and not strip_source
@@ -549,7 +544,7 @@ def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
     """
     import collections.abc as _cabc
 
-    from chalkcompute.arrow_schema import rich_to_arrow_schema
+    from chalkcompute._arrow_schema import rich_to_arrow_schema
 
     hints = typing.get_type_hints(func)
     sig = inspect.signature(func)
@@ -625,6 +620,52 @@ class RemoteFunction:
 
     Deploys a Python function as a ScalingGroup and registers it with
     input/output Arrow schemas derived from the function's type hints.
+
+    Most users should prefer the :func:`function` decorator; use
+    ``RemoteFunction`` directly when you need the imperative API (for
+    example, when wrapping a function defined elsewhere, or when
+    constructing deployments programmatically).
+
+    Examples
+    --------
+    Decorator form — the most common entrypoint:
+
+    >>> import chalkcompute
+    >>> from chalkcompute import Image
+    >>> img = (
+    ...     Image.debian_slim()
+    ...     .pip_install(["numpy"])
+    ... )
+    >>> @chalkcompute.function(
+    ...     image=img,
+    ...     cpu="1",
+    ...     memory="2Gi",
+    ...     min_replicas=1,
+    ...     max_replicas=4,
+    ... )
+    ... def embed(text: str) -> list[float]:
+    ...     import numpy as np
+    ...     return np.ones(8).tolist()
+    >>> embed.deploy()
+    >>> embed("hello world")
+    [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+
+    Imperative form, for constructing a ``RemoteFunction`` from an existing
+    callable:
+
+    >>> from chalkcompute import RemoteFunction, Image
+    >>> def square(x: int) -> int:
+    ...     return x * x
+    >>> fn = RemoteFunction(
+    ...     square,
+    ...     image=Image.debian_slim(),
+    ...     name="square",
+    ...     min_replicas=1,
+    ...     max_replicas=2,
+    ... )
+    >>> fn.deploy()
+    >>> fn(7)
+    49
     """
 
     def __init__(
@@ -915,7 +956,7 @@ class RemoteFunction:
 
             # 5b. Resolve lazy secrets and add to container spec
             if self._secrets:
-                from chalkcompute.secret import resolve_lazy_secrets
+                from chalkcompute._secret import resolve_lazy_secrets
 
                 if any(s.is_lazy for s in self._secrets):
                     resolved, _upserted = resolve_lazy_secrets(self._secrets, self._client)

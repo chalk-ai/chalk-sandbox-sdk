@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     import httpx
 
-    from chalkcompute.image import Image, LazyLocalFile
+    from chalkcompute._image import Image, LazyLocalFile
 
 
 class ConnectError(Exception):

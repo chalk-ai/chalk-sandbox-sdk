@@ -76,37 +76,27 @@ class FileNotFoundError_(VolumeError):
 
 @dataclass
 class VolumeInfo:
-    """Metadata about a volume.
-
-    Attributes
-    ----------
-    name
-        Name of the volume.
-    created_at
-        Timestamp when the volume was created.
-    """
+    """Metadata about a volume."""
 
     name: str
+    """Name of the volume."""
+
     created_at: datetime.datetime | None = None
+    """Timestamp when the volume was created."""
 
 
 @dataclass
 class FileInfo:
-    """Metadata about a file inside a volume.
-
-    Attributes
-    ----------
-    path
-        File path within the volume.
-    size
-        File size in bytes.
-    updated_at
-        Timestamp when the file was last updated.
-    """
+    """Metadata about a file inside a volume."""
 
     path: str
+    """File path within the volume."""
+
     size: int
+    """File size in bytes."""
+
     updated_at: datetime.datetime | None = None
+    """Timestamp when the file was last updated."""
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +149,30 @@ class _BatchUpload:
 
 
 class Volume:
-    """A handle to a named volume, providing file operations."""
+    """A handle to a named volume, providing file operations.
+
+    Volumes are persistent storage backed by object storage. Obtain an
+    instance via :meth:`VolumeClient.create` or :meth:`VolumeClient.get`.
+
+    Examples
+    --------
+    Create a volume, upload files, and read them back:
+
+    >>> from chalkcompute import VolumeClient
+    >>> client = VolumeClient(target="volumes.example.com:443")
+    >>> vol = client.create("models")
+    >>> vol.put("config.yaml", b"learning_rate: 0.01\\n")
+    >>> vol.get("config.yaml")
+    b'learning_rate: 0.01\\n'
+    >>> [f.path for f in vol.list()]
+    ['config.yaml']
+
+    Batch-upload multiple files atomically:
+
+    >>> with vol.batch_upload() as batch:
+    ...     batch.put("a.txt", b"hello")
+    ...     batch.put("b.txt", b"world")
+    """
 
     def __init__(self, client: VolumeClient, name: str) -> None:
         self._client = client
@@ -220,7 +233,7 @@ class Volume:
         return resp.data
 
     @traced("chalkcompute.volume.put_file")
-    def put_file(self, path: str, data: bytes | str) -> None:
+    def put_file(self, path: str, data: bytes | str) -> Volume:
         """Write a file into the volume.
 
         Parameters
@@ -229,6 +242,11 @@ class Volume:
             Destination path within the volume.
         data
             File contents (bytes or str).
+
+        Returns
+        -------
+        Volume
+            ``self``, to allow chaining.
         """
         if isinstance(data, str):
             data = data.encode("utf-8")
@@ -240,8 +258,9 @@ class Volume:
         except grpc.RpcError as e:
             _handle_rpc_error(e, self._name)
             raise
+        return self
 
-    def put_file_from_path(self, path: str, local_path: str | Path) -> None:
+    def put_file_from_path(self, path: str, local_path: str | Path) -> Volume:
         """Upload a local file into the volume.
 
         Parameters
@@ -250,16 +269,27 @@ class Volume:
             Destination path within the volume.
         local_path
             Local file to read and upload.
+
+        Returns
+        -------
+        Volume
+            ``self``, to allow chaining.
         """
         self.put_file(path, Path(local_path).read_bytes())
+        return self
 
-    def remove_file(self, path: str) -> None:
+    def remove_file(self, path: str) -> Volume:
         """Remove a file from the volume.
 
         Parameters
         ----------
         path
             File path within the volume.
+
+        Returns
+        -------
+        Volume
+            ``self``, to allow chaining.
         """
         try:
             self._client._stub.RemoveFile(
@@ -269,6 +299,7 @@ class Volume:
         except grpc.RpcError as e:
             _handle_rpc_error(e, self._name)
             raise
+        return self
 
     def listdir(self, prefix: str = "", *, recursive: bool = True) -> list[FileInfo]:
         """List files in the volume.

@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     import httpx
 
-    from chalkcompute.image import Image as _Image
+    from chalkcompute._image import Image as _Image
 
 _SVC = "chalk.scalinggroup.v1.ScalingGroupManagerService"
 
@@ -69,30 +69,25 @@ class ScalingGroupBuildError(ScalingGroupError):
 
 @dataclass
 class ScalingGroupInfo:
-    """Metadata about a scaling group.
-
-    Attributes
-    ----------
-    id
-        Opaque scaling-group identifier assigned by the service.
-    name
-        DNS-safe scaling-group name.
-    status
-        Lifecycle state reported by the service (e.g. ``"Running"``).
-    web_url
-        URL to which HTTP traffic should be sent, if ready.
-    ready_replicas
-        Number of replicas currently ready to serve traffic.
-    available_replicas
-        Number of replicas available behind the service endpoint.
-    """
+    """Metadata about a scaling group."""
 
     id: str
+    """Opaque scaling-group identifier assigned by the service."""
+
     name: str
+    """DNS-safe scaling-group name."""
+
     status: str
+    """Lifecycle state reported by the service (e.g. ``"Running"``)."""
+
     web_url: str | None = None
+    """URL to which HTTP traffic should be sent, if ready."""
+
     ready_replicas: int = 0
+    """Number of replicas currently ready to serve traffic."""
+
     available_replicas: int = 0
+    """Number of replicas available behind the service endpoint."""
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +262,7 @@ class ScalingGroup:
         ScalingGroupError
             If deployment fails or times out.
         """
-        from chalkcompute.image import Image
+        from chalkcompute._image import Image
 
         # 1. Resolve image URI
         if isinstance(self._image, Image):
