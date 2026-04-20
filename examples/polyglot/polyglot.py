@@ -147,7 +147,7 @@ def _shell_quote(s: str) -> str:
 
 
 def _b64write(src: str, dest: str) -> str:
-    """Shell command that base64-decodes `src` into `dest` inside the container.
+    """Shell command that base64-decodes ``src`` into ``dest`` inside the container.
 
     Avoids shell quoting limits — base64 is plain ASCII with no special chars.
     """
@@ -230,10 +230,10 @@ def compile_source(
     *,
     container: Container,
 ) -> ExecutionResult:
-    """Compile `source` inside the container (write + build step).
+    """Compile ``source`` inside the container (write + build step).
 
     For interpreted languages this just writes the source file.
-    Returns an ExecutionResult — callers should check exit_code before running.
+    Returns an ``ExecutionResult`` — callers should check ``exit_code`` before running.
     """
     cfg = _CONFIGS[language]
     cmd = cfg["compile_cmd"](source)
@@ -255,9 +255,9 @@ def run_code(
     container: Container,
     timeout_secs: int | None = None,
 ) -> ExecutionResult:
-    """Run the already-compiled program inside `container`, feeding `stdin`.
+    """Run the already-compiled program inside ``container``, feeding ``stdin``.
 
-    Call `compile_source` first. The caller owns the container lifecycle.
+    Call ``compile_source`` first. The caller owns the container lifecycle.
     """
     cfg = _CONFIGS[language]
     timeout = timeout_secs or cfg["run_timeout"]
@@ -284,7 +284,7 @@ def judge(
     *,
     time_limit_secs: int = 5,
 ) -> list[JudgeResult]:
-    """Judge `source` against each test case.
+    """Judge ``source`` against each test case.
 
     Starts one container per submission and runs all test cases inside it via
     exec — paying the cold-start cost once, not per test case. The container
@@ -294,11 +294,11 @@ def judge(
     affecting the container itself or adjacent test cases.
 
     Verdicts:
-        PASS          — output matches expected (stripped)
-        WRONG_ANSWER  — ran successfully but output didn't match
-        RUNTIME_ERROR — non-zero exit code
-        TIMEOUT       — exec hit time_limit_secs
-        COMPILE_ERROR — compile step failed (Java/C++ only, detected via stderr)
+        ``PASS``          — output matches expected (stripped)
+        ``WRONG_ANSWER``  — ran successfully but output didn't match
+        ``RUNTIME_ERROR`` — non-zero exit code
+        ``TIMEOUT``       — exec hit ``time_limit_secs``
+        ``COMPILE_ERROR`` — compile step failed (Java/C++ only, detected via stderr)
     """
     cfg = _CONFIGS[language]
     container_name = f"polyglot-{language.value}-{uuid.uuid4().hex[:8]}"
@@ -537,7 +537,7 @@ AI_LANGUAGES: list[tuple[Language, str]] = [
 
 
 def generate_solution(extra_instruction: str) -> str:
-    """Ask GPT-4o to write a solution for PROBLEM_STATEMENT.
+    """Ask GPT-4o to write a solution for ``PROBLEM_STATEMENT``.
 
     Uses httpx directly (already a chalkcompute dependency) so no extra
     packages are required beyond what the SDK already installs.

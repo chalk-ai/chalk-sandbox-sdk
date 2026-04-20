@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     import httpx
 
-    from chalkcompute.image import Image, LazyLocalFile
+    from chalkcompute._image import Image, LazyLocalFile
 
 
 class ConnectError(Exception):
@@ -30,10 +30,18 @@ class ConnectError(Exception):
 class ConnectClient:
     """Authenticated Connect-protocol (HTTP/JSON) client for Chalk APIs.
 
-    Usage::
+    Environment variables (``CHALK_API_SERVER``, ``CHALK_CLIENT_ID``,
+    ``CHALK_CLIENT_SECRET``, ``CHALK_ENVIRONMENT_ID``) are read lazily on the
+    first RPC.
 
-        client = ConnectClient()       # reads env vars lazily on first RPC
-        resp = client.rpc("chalk.container.v1.ContainerService", "GetContainer", {"id": "..."})
+    Examples
+    --------
+    >>> client = ConnectClient()
+    >>> resp = client.rpc(
+    ...     "chalk.container.v1.ContainerService",
+    ...     "GetContainer",
+    ...     {"id": "..."},
+    ... )
     """
 
     def __init__(self) -> None:
@@ -89,7 +97,24 @@ class ConnectClient:
         body: dict[str, Any],
         timeout: float = 30,
     ) -> httpx.Response:
-        """Make a Connect-protocol RPC call."""
+        """Make a Connect-protocol RPC call.
+
+        Parameters
+        ----------
+        service
+            Fully-qualified service name (e.g. ``chalk.container.v1.ContainerService``).
+        method
+            Method name on the service.
+        body
+            JSON-serializable request body.
+        timeout
+            Request timeout in seconds.
+
+        Returns
+        -------
+        httpx.Response
+            The raw HTTP response from the Connect endpoint.
+        """
         import httpx
 
         from chalkcompute._tracing import get_tracer
@@ -127,9 +152,31 @@ def build_image(
     poll_interval: float = 0.5,
     timeout: float = 600.0,
 ) -> str:
-    """Build an Image spec via CustomImageService, return the image URI.
+    """Build an ``Image`` spec via ``CustomImageService`` and return its URI.
 
-    Uses GetOrBuildCustomImage (returns cached image if available).
+    Uses ``GetOrBuildCustomImage`` which returns a cached image if one is
+    available.
+
+    Parameters
+    ----------
+    client
+        Authenticated Connect client.
+    image
+        The declarative image definition to build.
+    poll_interval
+        Seconds between build-status polls.
+    timeout
+        Maximum seconds to wait for the build to complete.
+
+    Returns
+    -------
+    str
+        The built image URI.
+
+    Raises
+    ------
+    ConnectError
+        If the build fails or times out.
     """
     from google.protobuf.json_format import MessageToDict
 
@@ -193,7 +240,27 @@ def upload_lazy_files(
     *,
     volume_prefix: str = "files",
 ) -> list[tuple[str, str]]:
-    """Upload lazy local files to volumes. Returns [(volume_name, mount_path)]."""
+    """Upload lazy local files to volumes.
+
+    Parameters
+    ----------
+    client
+        Authenticated Connect client.
+    image
+        The image whose lazy local files should be uploaded.
+    volume_prefix
+        Prefix for the generated volume names.
+
+    Returns
+    -------
+    list[tuple[str, str]]
+        Pairs of ``(volume_name, mount_path)`` for each created volume.
+
+    Raises
+    ------
+    ConnectError
+        If volume creation or upload fails.
+    """
     try:
         dir_to_files = image.lazy_local_files_grouped_for_volume_mounts()
     except ValueError as e:

@@ -1,25 +1,16 @@
-"""Deploy generator functions (sync and async) to demonstrate streaming results.
+"""Deploy the async generator function.
 
-Run this file to deploy both functions:
-
-    uv run python examples/generator/deploy.py
+    uv run python examples/generator/deploy_async.py
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 
 import chalkcompute
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-
-
-@chalkcompute.function(name="count-up")
-def count_up(n: int) -> Iterator[int]:
-    """Sync generator: yields integers 0..n-1."""
-    for i in range(n):
-        yield i
 
 
 @chalkcompute.function(name="async-count-up")

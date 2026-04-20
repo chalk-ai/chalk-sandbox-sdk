@@ -32,8 +32,8 @@ from chalkcompute._tracing import traced
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from chalkcompute.image import Image as _Image
-    from chalkcompute.secret import Secret
+    from chalkcompute._image import Image as _Image
+    from chalkcompute._secret import Secret
 
 _SVC = "chalk.container.v1.ContainerService"
 _IMAGE_SVC = "chalk.sandbox.v1.CustomImageService"
@@ -57,28 +57,59 @@ class ImageBuildError(ContainerError):
 
 @dataclass
 class ExecResult:
-    """Result of an ExecCommand call."""
+    """Result of a one-shot command executed inside a container.
+
+    Returned by :meth:`Container.exec`.  All three fields are populated once
+    the command has finished — ``ExecResult`` does not stream.
+    """
+
     stdout: bytes
+    """Raw bytes written to standard output by the command."""
+
     stderr: bytes
+    """Raw bytes written to standard error by the command."""
+
     exit_code: int
+    """POSIX exit status of the command (``0`` on success, non-zero on
+    error; signals are encoded as ``128 + signum`` where applicable)."""
 
     @property
     def stdout_text(self) -> str:
+        """:attr:`stdout` decoded as UTF-8 (with ``errors="replace"``).
+
+        Convenience for the common case where the command emits text.
+        Invalid UTF-8 bytes are replaced with ``U+FFFD`` rather than
+        raising.
+        """
         return self.stdout.decode("utf-8", errors="replace")
 
     @property
     def stderr_text(self) -> str:
+        """:attr:`stderr` decoded as UTF-8 (with ``errors="replace"``).
+
+        Same UTF-8-with-replacement semantics as :attr:`stdout_text`.
+        """
         return self.stderr.decode("utf-8", errors="replace")
 
 
 @dataclass
 class ContainerInfo:
     """Metadata about a running container."""
+
     id: str
+    """Opaque container identifier assigned by the service."""
+
     name: str
+    """DNS-safe container name."""
+
     status: str
+    """Lifecycle state reported by the service (e.g. ``"Running"``)."""
+
     pod_name: str
+    """Underlying Kubernetes pod name."""
+
     web_url: str | None = None
+    """Optional URL exposing the container's port, if one is published."""
 
 
 # ---------------------------------------------------------------------------
@@ -86,10 +117,31 @@ class ContainerInfo:
 # ---------------------------------------------------------------------------
 
 class Container:
-    """A managed container backed by the Chalk ContainerService.
+    """A managed container backed by the Chalk ``ContainerService``.
 
     Orchestrates image building, local file upload via volumes, and
     container lifecycle in a single high-level API.
+
+    Examples
+    --------
+    Build an image, run a container, and exec a command inside it:
+
+    >>> from chalkcompute import Container, Image
+    >>> c = Container(
+    ...     image=(
+    ...         Image.debian_slim()
+    ...         .pip_install(["requests"])
+    ...         .add_local_file("./script.py", "/app/script.py")
+    ...     ),
+    ...     name="hello-container",
+    ...     cpu="1",
+    ...     memory="2Gi",
+    ...     env={"LOG_LEVEL": "INFO"},
+    ... ).run()
+    >>> result = c.exec("python", "/app/script.py")
+    >>> result.stdout_text
+    'hello\\n'
+    >>> c.stop()
     """
 
     def __init__(
@@ -135,7 +187,23 @@ class Container:
 
     @classmethod
     def from_id(cls, container_id: str) -> Container:
-        """Attach to an existing container by ID."""
+        """Attach to an existing container by ID.
+
+        Parameters
+        ----------
+        container_id
+            Opaque container identifier assigned by the service.
+
+        Returns
+        -------
+        Container
+            A ``Container`` handle bound to the existing container.
+
+        Raises
+        ------
+        ContainerError
+            If the container cannot be found.
+        """
         c = cls._make_empty()
         resp = c._client.rpc(_SVC, "GetContainer", {"id": container_id})
         if resp.status_code != 200:
@@ -146,7 +214,23 @@ class Container:
 
     @classmethod
     def from_name(cls, name: str) -> Container:
-        """Attach to an existing container by name."""
+        """Attach to an existing container by name.
+
+        Parameters
+        ----------
+        name
+            DNS-safe container name.
+
+        Returns
+        -------
+        Container
+            A ``Container`` handle bound to the existing container.
+
+        Raises
+        ------
+        ContainerError
+            If the container cannot be found.
+        """
         c = cls._make_empty()
         resp = c._client.rpc(_SVC, "GetContainer", {"name": name})
         if resp.status_code != 200:
@@ -183,9 +267,27 @@ class Container:
     def _build_image(
         self, *, poll_interval: float = 0.5, timeout: float = 600.0,
     ) -> str:
-        """Build the Image spec via CustomImageService and return the image URI."""
+        """Build the ``Image`` spec via ``CustomImageService`` and return the URI.
+
+        Parameters
+        ----------
+        poll_interval
+            Seconds between build-status polls.
+        timeout
+            Maximum seconds to wait for the build to complete.
+
+        Returns
+        -------
+        str
+            The built image URI.
+
+        Raises
+        ------
+        ImageBuildError
+            If the build fails or times out.
+        """
         from chalkcompute._connect import ConnectError, build_image
-        from chalkcompute.image import Image
+        from chalkcompute._image import Image
 
         assert isinstance(self._image, Image)
         try:
@@ -208,7 +310,60 @@ class Container:
     ) -> Container:
         """Build the image, upload local files, and start the container.
 
-        Returns self for chaining.
+        Walks through three phases and blocks until the container is ready
+        (or raises): (1) build the image via ``CustomImageService``, (2) if
+        the ``Image`` has ``add_local_file`` / ``add_local_dir`` entries
+        registered with ``strategy="volume"``, upload them to a managed
+        volume and attach it, (3) start the container and poll until it
+        reaches the ``Running`` state.
+
+        Parameters
+        ----------
+        poll_interval
+            Seconds between status polls for both build and startup.
+        build_timeout
+            Maximum seconds to wait for the image build to complete.
+        ready_timeout
+            Maximum seconds to wait for the container to reach ``Running``.
+
+        Returns
+        -------
+        Container
+            ``self``, to allow chaining.
+
+        Raises
+        ------
+        ContainerError
+            If the container fails to start or times out.
+        ImageBuildError
+            If the image build fails.
+
+        Examples
+        --------
+        Build an image from scratch, start a container, inspect it, and
+        tear it down:
+
+        >>> from chalkcompute import Container, Image
+        >>> img = (
+        ...     Image.debian_slim("3.13")
+        ...     .pip_install(["requests"])
+        ...     .add_local_file(
+        ...         "./app.py",
+        ...         "/app/app.py",
+        ...     )
+        ...     .workdir("/app")
+        ... )
+        >>> c = Container(
+        ...     image=img,
+        ...     name="hello-container",
+        ...     cpu="1",
+        ...     memory="2Gi",
+        ...     env={"LOG_LEVEL": "INFO"},
+        ... )
+        >>> c.run()
+        >>> c.info.status
+        'Running'
+        >>> c.stop()
         """
         from chalkcompute._progress import (
             progress_add,
@@ -216,7 +371,7 @@ class Container:
             progress_fail,
             progress_finish,
         )
-        from chalkcompute.image import Image
+        from chalkcompute._image import Image
 
         container_name = sanitize_dns_label(self._name or f"container-{uuid.uuid4().hex[:8]}")
         self._name = container_name
@@ -261,7 +416,7 @@ class Container:
             if any(s.is_lazy for s in self._secrets):
                 skey = f"secret:{container_name}"
                 progress_add(skey, "secret", "Resolving secrets", parent=ckey)
-                from chalkcompute.secret import resolve_lazy_secrets
+                from chalkcompute._secret import resolve_lazy_secrets
 
                 resolved, upserted = resolve_lazy_secrets(self._secrets, self._client)
                 self._secrets = resolved
@@ -372,8 +527,21 @@ class Container:
     def _wait_for_volume_files(
         self, *, timeout: float = 120.0, poll_interval: float = 0.5,
     ) -> None:
-        """Poll until at least one uploaded file is visible in the ChalkFS mount."""
-        from chalkcompute.image import Image
+        """Poll until at least one uploaded file is visible in the ChalkFS mount.
+
+        Parameters
+        ----------
+        timeout
+            Maximum seconds to wait before giving up.
+        poll_interval
+            Seconds between probes.
+
+        Raises
+        ------
+        ContainerError
+            If no uploaded file becomes visible before the timeout.
+        """
+        from chalkcompute._image import Image
 
         assert isinstance(self._image, Image)
         sample = next(iter(self._image.lazy_local_files))
@@ -400,7 +568,65 @@ class Container:
         _retries: int = 12,
         _retry_delay: float = 5.0,
     ) -> ExecResult:
-        """Execute a command in the running container."""
+        """Execute a command in the running container.
+
+        The command runs as a one-shot process inside the already-started
+        container (equivalent to ``docker exec``).  Output is captured in
+        full and returned at once; use :meth:`Sandbox.exec` if you need a
+        streaming interface.
+
+        Parameters
+        ----------
+        *command
+            Command and arguments to execute (e.g. ``"cat", "/app/app.py"``).
+        timeout_secs
+            Optional execution timeout in seconds.
+
+        Returns
+        -------
+        ExecResult
+            The stdout, stderr, and exit code of the executed command.
+
+        Raises
+        ------
+        ContainerError
+            If the container is not running or the exec fails.
+
+        Examples
+        --------
+        Build an image, start a container, run a few commands against it,
+        and clean up:
+
+        >>> from chalkcompute import Container, Image
+        >>> c = Container(
+        ...     image=(
+        ...         Image.debian_slim("3.13")
+        ...         .pip_install(["requests"])
+        ...         .add_local_file(
+        ...             "./fetch.py",
+        ...             "/app/fetch.py",
+        ...         )
+        ...     ),
+        ...     name="fetcher",
+        ...     cpu="1",
+        ...     memory="1Gi",
+        ... ).run()
+        >>> hello = c.exec(
+        ...     "python",
+        ...     "/app/fetch.py",
+        ...     "https://example.com",
+        ... )
+        >>> hello.exit_code
+        0
+        >>> hello.stdout_text.splitlines()[0]
+        '<!doctype html>'
+        >>> err = c.exec("ls", "/does-not-exist")
+        >>> err.exit_code
+        2
+        >>> err.stderr_text
+        "ls: cannot access '/does-not-exist': No such file or directory\\n"
+        >>> c.stop()
+        """
         if self._container_id is None:
             raise ContainerError("Container is not running. Call .run() first.")
 
@@ -435,7 +661,13 @@ class Container:
 
     @traced("chalkcompute.container.stop")
     def stop(self, grace_period_seconds: int | None = None) -> None:
-        """Stop the container and clean up the temporary volume."""
+        """Stop the container and clean up temporary volumes and secrets.
+
+        Parameters
+        ----------
+        grace_period_seconds
+            Optional grace period before forceful termination.
+        """
         if self._container_id is not None:
             body: dict[str, Any] = {"id": self._container_id}
             if grace_period_seconds is not None:
@@ -449,13 +681,24 @@ class Container:
         self._volumes = []
 
         if self._upserted_secret_names:
-            from chalkcompute.secret import delete_secrets
+            from chalkcompute._secret import delete_secrets
 
             delete_secrets(self._client, self._upserted_secret_names)
             self._upserted_secret_names = []
 
     def refresh(self) -> ContainerInfo:
-        """Fetch latest container status from the server."""
+        """Fetch latest container status from the server.
+
+        Returns
+        -------
+        ContainerInfo
+            The latest metadata for the container.
+
+        Raises
+        ------
+        ContainerError
+            If no container ID is set (``run()`` was never called).
+        """
         if self._container_id is None:
             raise ContainerError("No container ID — call .run() first.")
         resp = self._client.rpc(_SVC, "GetContainer", {"id": self._container_id})
@@ -466,14 +709,31 @@ class Container:
 
     @property
     def id(self) -> str | None:
+        """Opaque container identifier assigned by the service.
+
+        ``None`` until :meth:`run` (or :meth:`from_id` / :meth:`from_name`)
+        has resolved the container against the service.
+        """
         return self._container_id
 
     @property
     def info(self) -> ContainerInfo | None:
+        """The most recently fetched :class:`ContainerInfo` snapshot.
+
+        ``None`` until the container has been started or attached to.
+        Populated by :meth:`run`, :meth:`from_id`, and :meth:`from_name`.
+        Call :meth:`refresh_info` to fetch the latest state from the service.
+        """
         return self._container_info
 
     @property
     def image_uri(self) -> str | None:
+        """The fully qualified registry URI of the image the container uses.
+
+        Set after :meth:`run` finishes the image build (or, if the container
+        was constructed with a string image reference, equal to that
+        reference).  ``None`` before the container has been started.
+        """
         return self._built_image_uri
 
     def __repr__(self) -> str:

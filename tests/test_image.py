@@ -33,7 +33,7 @@ class TestImageDebianSlim:
 
     def test_default_python_version(self) -> None:
         img = Image.debian_slim()
-        assert img.to_proto().base_image == "python:3.12-slim-bookworm"
+        assert img.to_proto().base_image == "python:3.13-slim-bookworm"
 
     def test_custom_python_version(self) -> None:
         img = Image.debian_slim("3.11")
@@ -736,7 +736,7 @@ class TestImageProtoSerialization:
 
         img = Image.debian_slim().pip_install(["requests"]).env({"K": "V"})
         spec_dict = MessageToDict(img.to_proto(), preserving_proto_field_name=True)
-        assert spec_dict["base_image"] == "python:3.12-slim-bookworm"
+        assert spec_dict["base_image"] == "python:3.13-slim-bookworm"
         assert "steps" in spec_dict
         assert "env" in spec_dict
 
@@ -780,7 +780,7 @@ class TestImageChaining:
         )
         spec = img.to_proto()
         assert len(spec.steps) == 4
-        assert spec.base_image == "python:3.12-slim-bookworm"
+        assert spec.base_image == "python:3.13-slim-bookworm"
         assert spec.workdir == "/app"
         assert spec.env["APP"] == "test"
         assert list(spec.entrypoint) == ["python"]

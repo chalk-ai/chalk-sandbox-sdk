@@ -1,6 +1,10 @@
 # Content Moderation Pipeline
 
-Image classification in an isolated Chalk container, orchestrated by Temporal with human-in-the-loop approval for borderline results.
+Two-stage image moderation in isolated Chalk containers, orchestrated end-to-end by Temporal with human-in-the-loop approval for ambiguous results.
+
+- **Stage 1 — `classify-image`**: ResNet-50 supervised classification (top-5 labels).
+- **Stage 2 — `policy-check`**: CLIP zero-shot scoring against a fixed policy prompt list (`violence`, `adult`, `weapon`, `minor`).
+- **Orchestration**: Temporal owns all branching, thresholds, and the HITL signal — the Chalk functions just do ML.
 
 ## Prerequisites
 
@@ -9,14 +13,15 @@ Image classification in an isolated Chalk container, orchestrated by Temporal wi
 
 ## Quick start
 
-### 1. Deploy the Chalk classify function
+### 1. Deploy both Chalk functions
 
 ```bash
 set -a && source ../../.env && set +a
-uv run python classify.py
+uv run python classify.py        # stage 1 — ResNet
+uv run python policy_check.py    # stage 2 — CLIP zero-shot
 ```
 
-This deploys `classify-image` as a serverless function on Chalk. The container image includes `transformers`, `torch` (CPU), and `Pillow` — untrusted images are downloaded and classified entirely inside the sandbox.
+Each is a serverless function on Chalk in its own container image (debian_slim + CPU torch + transformers). Untrusted images are downloaded and processed entirely inside the sandbox — the caller never handles raw bytes.
 
 ### 2. Start Temporal
 
@@ -39,9 +44,17 @@ uv run python worker.py
 uv run python run.py https://images.pexels.com/photos/45201/kitty-cat-kitten-pet-45201.jpeg
 ```
 
-If the model is confident (>= 85%), the image is auto-approved. If confidence is below 85%, the workflow pauses and waits for human review.
+The workflow branches on stage-1 confidence:
+
+| Stage-1 confidence | Action |
+|---|---|
+| `≥ 0.85` | Auto-approve (skip stage 2) |
+| `< 0.5`  | Auto-reject (skip stage 2) |
+| `0.5 – 0.85` | Run CLIP policy check; if every policy `< 0.5` → auto-approve, else wait for human |
 
 ### 5. Approve or reject (human-in-the-loop)
+
+Triggered only when stage 2 flags at least one policy.
 
 **Option A — Temporal web UI:**
 
@@ -65,15 +78,20 @@ uv run python approve.py <workflow_id> rejected
 Temporal Server
   └─ ModerationWorkflow
        ├─ Activity: classify_image_activity
-       │    └─ Calls Chalk RemoteFunction "classify-image"
-       │         └─ Runs ML inference in isolated container
-       ├─ Wait: workflow.wait_condition (human signal)
-       └─ Returns: final decision + reviewer info
+       │    └─ Chalk RemoteFunction "classify-image"  (ResNet-50)
+       ├─ Branch on stage-1 confidence:
+       │    ≥ 0.85  → auto_approved
+       │    < 0.5   → auto_rejected
+       │    else    ↓
+       ├─ Activity: policy_check_activity
+       │    └─ Chalk RemoteFunction "policy-check"    (CLIP zero-shot)
+       ├─ If max(policy_scores) < 0.5 → auto_approved
+       └─ Else: workflow.wait_condition (human signal, 24h timeout)
 ```
 
 ## Testing
 
-Tests exercise the Chalk function directly (no Temporal server needed):
+Tests deploy both functions and invoke each directly (no Temporal server needed):
 
 ```bash
 uv run python -m pytest test_content_moderation.py -v

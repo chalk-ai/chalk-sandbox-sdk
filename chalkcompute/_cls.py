@@ -52,7 +52,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from chalkcompute._connect import ConnectClient
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import traced
-from chalkcompute.function import (
+from chalkcompute._function import (
     _CATALOG_SVC,
     _REMOTE_ENV_VAR,
     _SG_SVC,
@@ -68,11 +68,11 @@ from chalkcompute.function import (
     _should_strip_source,
     _write_temp,
 )
-from chalkcompute.retry import RetryPolicy
+from chalkcompute._retry import RetryPolicy
 
 if TYPE_CHECKING:
-    from chalkcompute.image import Image as _Image
-    from chalkcompute.secret import Secret as _Secret
+    from chalkcompute._image import Image as _Image
+    from chalkcompute._secret import Secret as _Secret
 
 logger = logging.getLogger(__name__)
 
@@ -152,8 +152,18 @@ class _MethodInfo:
 def _strip_chalkcompute_from_class_source(source: str) -> str:
     """Remove chalkcompute imports, decorators, and lifecycle calls.
 
-    Like function._strip_chalkcompute_from_source but uses ast.walk() to
-    catch decorators inside ClassDef bodies (not just top-level nodes).
+    Like ``function._strip_chalkcompute_from_source`` but uses ``ast.walk()``
+    to catch decorators inside ``ClassDef`` bodies (not just top-level nodes).
+
+    Parameters
+    ----------
+    source
+        Python source text to rewrite.
+
+    Returns
+    -------
+    str
+        Rewritten source with chalkcompute references removed.
     """
     tree = ast.parse(source)
     lines = source.splitlines(keepends=True)
@@ -206,9 +216,24 @@ def _strip_chalkcompute_from_class_source(source: str) -> str:
 def _build_method_schemas(method_func: Callable[..., Any]) -> tuple[Any, Any]:
     """Derive input/output Arrow schemas from a method's type hints.
 
-    Like function._build_schemas but skips the ``self`` parameter.
+    Like ``function._build_schemas`` but skips the ``self`` parameter.
+
+    Parameters
+    ----------
+    method_func
+        Method to inspect.
+
+    Returns
+    -------
+    tuple
+        ``(input_schema, output_schema)`` Arrow schema protos.
+
+    Raises
+    ------
+    TypeError
+        If any parameter or the return type lacks an annotation.
     """
-    from chalkcompute.arrow_schema import rich_to_arrow_schema
+    from chalkcompute._arrow_schema import rich_to_arrow_schema
 
     hints = typing.get_type_hints(method_func)
     sig = inspect.signature(method_func)
@@ -237,7 +262,18 @@ def _build_method_schemas(method_func: Callable[..., Any]) -> tuple[Any, Any]:
 
 
 def _has_self(func: Callable) -> bool:
-    """Return True if *func*'s first parameter is ``self``."""
+    """Return ``True`` if ``func``'s first parameter is ``self``.
+
+    Parameters
+    ----------
+    func
+        Callable to inspect.
+
+    Returns
+    -------
+    bool
+        Whether ``self`` appears in the signature.
+    """
     try:
         return "self" in inspect.signature(func).parameters
     except (ValueError, TypeError):
@@ -259,6 +295,28 @@ def _generate_class_handler_shim(
     delegates Arrow columnar data to the target method.  Methods that
     lack a ``self`` parameter are called as static/plain functions via
     the class rather than the instance.
+
+    Parameters
+    ----------
+    class_name
+        Name of the user class to import.
+    method_name
+        Name of the method to invoke.
+    method_has_self
+        Whether the method has a ``self`` parameter.
+    before_name
+        Name of the startup hook, if any.
+    before_has_self
+        Whether the startup hook has a ``self`` parameter.
+    after_name
+        Name of the shutdown hook, if any.
+    after_has_self
+        Whether the shutdown hook has a ``self`` parameter.
+
+    Returns
+    -------
+    str
+        Python source for the handler shim.
     """
     parts: list[str] = [
         "import pyarrow as pa",
@@ -318,6 +376,45 @@ class RemoteClass:
     Deploys each ``@method()`` as a separate function version with its own
     scaling group, sharing a single container image.  Lifecycle hooks
     (``@before()`` / ``@after()``) run in every method's container.
+
+    Most users should prefer the :func:`cls` decorator.
+
+    Examples
+    --------
+    Deploy a stateful class with an expensive warm-up step, then call
+    individual methods remotely:
+
+    >>> import chalkcompute
+    >>> from chalkcompute import Image
+    >>> img = (
+    ...     Image.debian_slim()
+    ...     .pip_install(["sentence-transformers"])
+    ... )
+    >>> @chalkcompute.cls(
+    ...     image=img,
+    ...     cpu="2",
+    ...     memory="4Gi",
+    ...     min_replicas=1,
+    ...     max_replicas=2,
+    ... )
+    ... class Embedder:
+    ...     @chalkcompute.before()
+    ...     def load(self):
+    ...         from sentence_transformers import SentenceTransformer
+    ...         self.model = SentenceTransformer("all-MiniLM-L6-v2")
+    ...     @chalkcompute.method()
+    ...     def embed(self, text: str) -> list[float]:
+    ...         return self.model.encode(text).tolist()
+    ...     @chalkcompute.method()
+    ...     def embed_batch(self, texts: list[str]) -> list[list[float]]:
+    ...         return self.model.encode(texts).tolist()
+    ...     @chalkcompute.after()
+    ...     def shutdown(self):
+    ...         del self.model
+    >>> Embedder.deploy()
+    >>> e = Embedder()
+    >>> vec = e.embed("hello world")
+    >>> batch = e.embed_batch(["a", "b", "c"])
     """
 
     def __init__(
@@ -400,6 +497,21 @@ class RemoteClass:
 
         Discovers all function versions whose ``functionName`` starts with
         ``{name}.`` and rebuilds a ``RemoteClass`` with callable methods.
+
+        Parameters
+        ----------
+        name
+            Class name previously used at deploy time.
+
+        Returns
+        -------
+        RemoteClass
+            A handle bound to the existing versions.
+
+        Raises
+        ------
+        ClassError
+            If no function versions are found for the given name.
         """
         rc = cls._make_empty(name)
 
@@ -490,7 +602,10 @@ class RemoteClass:
     def _build_deploy_image(self) -> tuple[Any, list[str]]:
         """Build the deploy image with all handler shims and user module.
 
-        Returns (Image, list_of_temp_file_paths).
+        Returns
+        -------
+        tuple
+            ``(Image, list_of_temp_file_paths)``.
         """
         source_file = inspect.getfile(self._user_cls)
 
@@ -551,7 +666,19 @@ class RemoteClass:
     ) -> RemoteClass:
         """Build the image and deploy all methods as function versions.
 
-        Returns self for chaining.
+        Parameters
+        ----------
+        poll_interval
+            Seconds between status polls.
+        build_timeout
+            Maximum seconds to wait for the image build.
+        ready_timeout
+            Maximum seconds to wait for scaling groups to become ready.
+
+        Returns
+        -------
+        RemoteClass
+            ``self`` for chaining.
         """
         from google.protobuf.json_format import MessageToDict
 
@@ -619,7 +746,7 @@ class RemoteClass:
 
                 # Resolve lazy secrets and add to container spec
                 if self._secrets:
-                    from chalkcompute.secret import resolve_lazy_secrets
+                    from chalkcompute._secret import resolve_lazy_secrets
 
                     if any(s.is_lazy for s in self._secrets):
                         resolved, _upserted = resolve_lazy_secrets(self._secrets, self._client)
@@ -765,7 +892,17 @@ class RemoteClass:
     ) -> RemoteClass:
         """Wait until all backing scaling groups have ready replicas.
 
-        Returns self for chaining.
+        Parameters
+        ----------
+        timeout
+            Maximum seconds to wait per method.
+        poll_interval
+            Seconds between status polls.
+
+        Returns
+        -------
+        RemoteClass
+            ``self`` for chaining.
         """
         for method_info in self._methods.values():
             if method_info.remote_function is not None:
@@ -793,7 +930,13 @@ class RemoteClass:
         self._deployed = False
 
     def refresh(self) -> dict[str, FunctionVersionInfo]:
-        """Fetch latest info for all methods from the server."""
+        """Fetch latest info for all methods from the server.
+
+        Returns
+        -------
+        dict
+            Mapping of method name to updated ``FunctionVersionInfo``.
+        """
         result: dict[str, FunctionVersionInfo] = {}
         for method_info in self._methods.values():
             if method_info.remote_function is not None:
@@ -851,7 +994,13 @@ class _NoOpClass:
         return getattr(self._instance, name)
 
     def __call__(self) -> _NoOpClass:
-        """Behave like a zero-arg constructor in remote handler imports."""
+        """Behave like a zero-arg constructor in remote handler imports.
+
+        Returns
+        -------
+        _NoOpClass
+            ``self``.
+        """
         return self
 
     def deploy(self, **_: Any) -> _NoOpClass:
@@ -895,14 +1044,57 @@ def cls(
     """Decorator that deploys a class as versioned remote functions.
 
     **Locally** (at decoration time):
+
     1. Scans the class for ``@method()``, ``@before()``, ``@after()``
     2. Builds a deploy image with per-method handler shims
-    3. Registers each method via ExternalFunctionCatalogService
+    3. Registers each method via ``ExternalFunctionCatalogService``
     4. If ``CHALK_FUNCTION_LOCAL_SDK_COPY=1``, includes local SDK source in
        the deploy image for unreleased feature iteration.
 
     **Remotely** (inside the container):
     The decorator is a no-op — returns an instance of the class.
+
+    Parameters
+    ----------
+    image
+        Container image to deploy in. Defaults to ``Image.debian_slim()``.
+    cpu
+        CPU resource request (e.g. ``"1"``, ``"500m"``).
+    memory
+        Memory resource request (e.g. ``"1Gi"``, ``"512Mi"``).
+    gpu
+        GPU resource request (e.g. ``"nvidia-l4"``, ``"2:nvidia-a100"``).
+    name
+        Custom class name. Defaults to the class's ``__name__``.
+    env
+        Environment variables to pass to the class containers.
+    min_replicas
+        Minimum number of replicas per method.
+    max_replicas
+        Maximum number of replicas per method.
+    volumes
+        List of ``(name, mount_path)`` tuples for persistent storage.
+    secrets
+        List of :class:`~chalkcompute.Secret` references to inject.
+    serialization_format
+        Wire format for arguments and results. Currently only ``"pyarrow"``
+        is supported.
+    suspend_cooldown_period
+        Time in seconds until containers shut down after the last request.
+    options
+        Arbitrary key-value options forwarded to the Chalk platform.
+    max_buffer_duration
+        Maximum time in milliseconds to buffer incoming items before invoking
+        the handler.
+    max_batching_size
+        Maximum number of items to accumulate before invoking the handler.
+    retries
+        Retry policy for handler invocations. Pass an ``int`` for simple
+        max-attempts with default exponential backoff, or a
+        :class:`~chalk_remote_call.config.RetryPolicy` for full control.
+    rate_limit_key
+        Name of an externally defined rate limit policy. Used to control
+        outbound concurrency from multiple sources.
     """
 
     def decorator(user_cls: type) -> RemoteClass | _NoOpClass:

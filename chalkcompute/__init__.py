@@ -7,57 +7,57 @@ from chalkcompute._logging import setup_logging as _setup_logging
 _setup_logging()
 
 _LAZY_MAP: dict[str, tuple[str, str]] = {
-    # container.py
-    "Container": ("chalkcompute.container", "Container"),
-    "ContainerError": ("chalkcompute.container", "ContainerError"),
-    "ContainerInfo": ("chalkcompute.container", "ContainerInfo"),
-    "ContainerExecResult": ("chalkcompute.container", "ExecResult"),
-    "ImageBuildError": ("chalkcompute.container", "ImageBuildError"),
-    # cls.py
-    "RemoteClass": ("chalkcompute.cls", "RemoteClass"),
-    "ClassError": ("chalkcompute.cls", "ClassError"),
-    "ClassBuildError": ("chalkcompute.cls", "ClassBuildError"),
-    "cls": ("chalkcompute.cls", "cls"),
-    "method": ("chalkcompute.cls", "method"),
-    "before": ("chalkcompute.cls", "before"),
-    "after": ("chalkcompute.cls", "after"),
-    # function.py
-    "RemoteFunction": ("chalkcompute.function", "RemoteFunction"),
-    "DeployedFunction": ("chalkcompute.function", "DeployedFunction"),
-    "FunctionError": ("chalkcompute.function", "FunctionError"),
-    "FunctionBuildError": ("chalkcompute.function", "FunctionBuildError"),
-    "FunctionVersionInfo": ("chalkcompute.function", "FunctionVersionInfo"),
-    "RetryPolicy": ("chalkcompute.retry", "RetryPolicy"),
-    "function": ("chalkcompute.function", "function"),
-    # image.py
-    "Image": ("chalkcompute.image", "Image"),
-    "LazyLocalFile": ("chalkcompute.image", "LazyLocalFile"),
-    # secret.py
-    "Secret": ("chalkcompute.secret", "Secret"),
-    # sandbox.py
-    "ExecError": ("chalkcompute.sandbox", "ExecError"),
-    "ExecEvent": ("chalkcompute.sandbox", "ExecEvent"),
-    "ExecProcess": ("chalkcompute.sandbox", "ExecProcess"),
-    "ExecResult": ("chalkcompute.sandbox", "ExecResult"),
-    "Sandbox": ("chalkcompute.sandbox", "Sandbox"),
-    "SandboxBuildError": ("chalkcompute.sandbox", "SandboxBuildError"),
-    "SandboxClient": ("chalkcompute.sandbox", "SandboxClient"),
-    "SandboxError": ("chalkcompute.sandbox", "SandboxError"),
-    "SandboxInfo": ("chalkcompute.sandbox", "SandboxInfo"),
-    "SandboxNotFoundError": ("chalkcompute.sandbox", "SandboxNotFoundError"),
-    "SandboxTerminatedError": ("chalkcompute.sandbox", "SandboxTerminatedError"),
-    # scaling_group.py
-    "ScalingGroup": ("chalkcompute.scaling_group", "ScalingGroup"),
-    "ScalingGroupBuildError": ("chalkcompute.scaling_group", "ScalingGroupBuildError"),
-    "ScalingGroupError": ("chalkcompute.scaling_group", "ScalingGroupError"),
-    "ScalingGroupInfo": ("chalkcompute.scaling_group", "ScalingGroupInfo"),
-    # volume.py
-    "FileInfo": ("chalkcompute.volume", "FileInfo"),
-    "Volume": ("chalkcompute.volume", "Volume"),
-    "VolumeClient": ("chalkcompute.volume", "VolumeClient"),
-    "VolumeError": ("chalkcompute.volume", "VolumeError"),
-    "VolumeInfo": ("chalkcompute.volume", "VolumeInfo"),
-    "VolumeNotFoundError": ("chalkcompute.volume", "VolumeNotFoundError"),
+    # _container.py
+    "Container": ("chalkcompute._container", "Container"),
+    "ContainerError": ("chalkcompute._container", "ContainerError"),
+    "ContainerInfo": ("chalkcompute._container", "ContainerInfo"),
+    "ContainerExecResult": ("chalkcompute._container", "ExecResult"),
+    "ImageBuildError": ("chalkcompute._container", "ImageBuildError"),
+    # _cls.py
+    "RemoteClass": ("chalkcompute._cls", "RemoteClass"),
+    "ClassError": ("chalkcompute._cls", "ClassError"),
+    "ClassBuildError": ("chalkcompute._cls", "ClassBuildError"),
+    "cls": ("chalkcompute._cls", "cls"),
+    "method": ("chalkcompute._cls", "method"),
+    "before": ("chalkcompute._cls", "before"),
+    "after": ("chalkcompute._cls", "after"),
+    # _function.py
+    "RemoteFunction": ("chalkcompute._function", "RemoteFunction"),
+    "DeployedFunction": ("chalkcompute._function", "DeployedFunction"),
+    "FunctionError": ("chalkcompute._function", "FunctionError"),
+    "FunctionBuildError": ("chalkcompute._function", "FunctionBuildError"),
+    "FunctionVersionInfo": ("chalkcompute._function", "FunctionVersionInfo"),
+    "RetryPolicy": ("chalkcompute._retry", "RetryPolicy"),
+    "function": ("chalkcompute._function", "function"),
+    # _image.py
+    "Image": ("chalkcompute._image", "Image"),
+    "LazyLocalFile": ("chalkcompute._image", "LazyLocalFile"),
+    # _secret.py
+    "Secret": ("chalkcompute._secret", "Secret"),
+    # _sandbox.py
+    "ExecError": ("chalkcompute._sandbox", "ExecError"),
+    "ExecEvent": ("chalkcompute._sandbox", "ExecEvent"),
+    "ExecProcess": ("chalkcompute._sandbox", "ExecProcess"),
+    "ExecResult": ("chalkcompute._sandbox", "ExecResult"),
+    "Sandbox": ("chalkcompute._sandbox", "Sandbox"),
+    "SandboxBuildError": ("chalkcompute._sandbox", "SandboxBuildError"),
+    "SandboxClient": ("chalkcompute._sandbox", "SandboxClient"),
+    "SandboxError": ("chalkcompute._sandbox", "SandboxError"),
+    "SandboxInfo": ("chalkcompute._sandbox", "SandboxInfo"),
+    "SandboxNotFoundError": ("chalkcompute._sandbox", "SandboxNotFoundError"),
+    "SandboxTerminatedError": ("chalkcompute._sandbox", "SandboxTerminatedError"),
+    # _scaling_group.py
+    "ScalingGroup": ("chalkcompute._scaling_group", "ScalingGroup"),
+    "ScalingGroupBuildError": ("chalkcompute._scaling_group", "ScalingGroupBuildError"),
+    "ScalingGroupError": ("chalkcompute._scaling_group", "ScalingGroupError"),
+    "ScalingGroupInfo": ("chalkcompute._scaling_group", "ScalingGroupInfo"),
+    # _volume.py
+    "FileInfo": ("chalkcompute._volume", "FileInfo"),
+    "Volume": ("chalkcompute._volume", "Volume"),
+    "VolumeClient": ("chalkcompute._volume", "VolumeClient"),
+    "VolumeError": ("chalkcompute._volume", "VolumeError"),
+    "VolumeInfo": ("chalkcompute._volume", "VolumeInfo"),
+    "VolumeNotFoundError": ("chalkcompute._volume", "VolumeNotFoundError"),
 }
 
 

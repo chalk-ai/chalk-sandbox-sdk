@@ -51,7 +51,13 @@ _KIND_VERBS: dict[ResourceKind, str] = {
 
 
 def tui_enabled() -> bool:
-    """Return True when the Rich TUI progress display is enabled."""
+    """Check whether the Rich TUI progress display is enabled.
+
+    Returns
+    -------
+    bool
+        ``True`` when ``CHALK_SANDBOX_TUI`` is set to ``"true"`` or ``"1"``.
+    """
     return os.environ.get("CHALK_SANDBOX_TUI", "").lower() in ("true", "1")
 
 
@@ -77,11 +83,11 @@ class _ResourceState:
 
 
 class DeployProgress:
-    """Thread-safe global progress tracker rendered via Rich Live.
+    """Thread-safe global progress tracker rendered via Rich ``Live``.
 
-    Call :meth:`add` to register a resource, :meth:`update` to change its
-    status, and the display auto-refreshes.  The Rich ``Live`` context is
-    started lazily on the first :meth:`add` and stopped when :meth:`finish`
+    Call ``add`` to register a resource, ``update`` to change its
+    status, and the display auto-refreshes. The Rich ``Live`` context is
+    started lazily on the first ``add`` and stopped when ``finish``
     is called (or all resources reach a terminal state).
     """
 
@@ -105,7 +111,23 @@ class DeployProgress:
         status: StepStatus = "active",
         detail: str = "",
     ) -> None:
-        """Register a resource in the progress tree."""
+        """Register a resource in the progress tree.
+
+        Parameters
+        ----------
+        key
+            Unique identifier for the resource.
+        kind
+            Resource kind for icon selection.
+        label
+            Human-readable label shown next to the spinner.
+        parent
+            Optional key of an existing resource to nest under.
+        status
+            Initial status for the new row.
+        detail
+            Optional detail string rendered after the label.
+        """
         with self._lock:
             state = _ResourceState(kind, label)
             state.status = status
@@ -128,7 +150,19 @@ class DeployProgress:
         detail: str | None = None,
         label: str | None = None,
     ) -> None:
-        """Update a resource's status and/or detail."""
+        """Update a resource's status and/or detail.
+
+        Parameters
+        ----------
+        key
+            Resource identifier previously passed to ``add``.
+        status
+            New status, if changing.
+        detail
+            New detail string, if changing.
+        label
+            New label, if changing.
+        """
         with self._lock:
             state = self._resources.get(key)
             if state is None:
@@ -206,7 +240,7 @@ class DeployProgress:
     # -- Live management ---------------------------------------------------
 
     def _ensure_live(self) -> None:
-        """Start the Rich Live display if not already started."""
+        """Start the Rich ``Live`` display if not already started."""
         if self._started:
             return
         try:
@@ -275,7 +309,13 @@ _global_lock = threading.Lock()
 
 
 def get_progress() -> DeployProgress | None:
-    """Return the global progress tracker, or None if TUI is disabled."""
+    """Return the global progress tracker.
+
+    Returns
+    -------
+    DeployProgress | None
+        The singleton tracker, or ``None`` if the TUI is disabled.
+    """
     global _global_progress
     if not tui_enabled():
         return None
@@ -308,7 +348,23 @@ def progress_add(
     status: StepStatus = "active",
     detail: str = "",
 ) -> None:
-    """Add a resource to the global progress display (no-op if TUI disabled)."""
+    """Add a resource to the global progress display (no-op if TUI disabled).
+
+    Parameters
+    ----------
+    key
+        Unique identifier for the resource.
+    kind
+        Resource kind for icon selection.
+    label
+        Human-readable label.
+    parent
+        Optional parent row to nest under.
+    status
+        Initial status for the row.
+    detail
+        Optional detail string.
+    """
     p = get_progress()
     if p is not None:
         p.add(key, kind, label, parent=parent, status=status, detail=detail)
@@ -321,19 +377,47 @@ def progress_update(
     detail: str | None = None,
     label: str | None = None,
 ) -> None:
-    """Update a resource in the global progress display (no-op if TUI disabled)."""
+    """Update a resource in the global progress display (no-op if TUI disabled).
+
+    Parameters
+    ----------
+    key
+        Resource identifier previously passed to ``progress_add``.
+    status
+        New status, if changing.
+    detail
+        New detail string, if changing.
+    label
+        New label, if changing.
+    """
     p = get_progress()
     if p is not None:
         p.update(key, status=status, detail=detail, label=label)
 
 
 def progress_done(key: str, *, detail: str = "") -> None:
-    """Mark a resource as done in the global progress display."""
+    """Mark a resource as done in the global progress display.
+
+    Parameters
+    ----------
+    key
+        Resource identifier previously passed to ``progress_add``.
+    detail
+        Optional final detail string.
+    """
     progress_update(key, status="done", detail=detail)
 
 
 def progress_fail(key: str, *, detail: str = "") -> None:
-    """Mark a resource as failed in the global progress display."""
+    """Mark a resource as failed in the global progress display.
+
+    Parameters
+    ----------
+    key
+        Resource identifier previously passed to ``progress_add``.
+    detail
+        Optional final detail string.
+    """
     progress_update(key, status="failed", detail=detail)
 
 

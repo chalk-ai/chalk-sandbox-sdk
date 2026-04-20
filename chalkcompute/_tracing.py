@@ -49,10 +49,15 @@ def _ensure_initialized() -> None:
 
 
 def get_tracer() -> Any:
-    """Return a tracer for chalkcompute.
+    """Return a tracer for ``chalkcompute``.
 
-    Returns a configured tracer if OTLP env vars are set,
-    otherwise returns the default no-op tracer.
+    Returns a configured tracer if OTLP env vars are set, otherwise the
+    default no-op tracer.
+
+    Returns
+    -------
+    opentelemetry.trace.Tracer
+        The configured or no-op tracer.
     """
     from opentelemetry import trace
 
@@ -61,7 +66,18 @@ def get_tracer() -> Any:
 
 
 def traced(name: str) -> Callable[[F], F]:
-    """Decorator that wraps a function in an OpenTelemetry span."""
+    """Wrap a function in an OpenTelemetry span.
+
+    Parameters
+    ----------
+    name
+        Span name.
+
+    Returns
+    -------
+    Callable
+        A decorator that wraps the target callable.
+    """
 
     def decorator(func: F) -> F:
         @functools.wraps(func)

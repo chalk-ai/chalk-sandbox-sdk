@@ -17,11 +17,18 @@ from pathlib import Path
 class IgnorePattern:
     """A single ignore pattern, possibly negated, scoped to a directory.
 
-    *domain* is the relative path (using ``/`` separators) from the source root
-    to the directory containing the ignore file.  An empty string means the
-    pattern was defined at the root.  When matching, only paths that start with
-    *domain* are considered, and the pattern is applied to the path portion
-    **after** the domain prefix.
+    Attributes
+    ----------
+    pattern
+        The raw gitignore-style pattern.
+    negation
+        If ``True``, the pattern *re-includes* matching paths.
+    domain
+        Relative path (using ``/`` separators) from the source root
+        to the directory containing the ignore file.  An empty string means
+        the pattern was defined at the root.  When matching, only paths that
+        start with ``domain`` are considered, and the pattern is applied to
+        the path portion **after** the domain prefix.
     """
 
     pattern: str
@@ -41,6 +48,16 @@ def _parse_ignore_lines(text: str) -> list[tuple[str, bool]]:
 
     Handles ``#`` comments, blank lines, ``!`` negation, trailing whitespace,
     and ``\\#`` escapes for literal hash characters.
+
+    Parameters
+    ----------
+    text
+        Raw contents of an ignore file.
+
+    Returns
+    -------
+    list[tuple[str, bool]]
+        Each entry is a ``(pattern, is_negation)`` pair.
     """
     results: list[tuple[str, bool]] = []
     for line in text.splitlines():
@@ -62,7 +79,7 @@ def _parse_ignore_lines(text: str) -> list[tuple[str, bool]]:
 
 
 def collect_ignore_patterns(src_dir: Path) -> list[IgnorePattern]:
-    """Collect ignore patterns by walking *src_dir* recursively.
+    """Collect ignore patterns by walking ``src_dir`` recursively.
 
     For every directory (starting at the root), any ``.gitignore`` and
     ``.chalkignore`` files are read and their patterns are recorded with the
@@ -70,9 +87,18 @@ def collect_ignore_patterns(src_dir: Path) -> list[IgnorePattern]:
 
     Order within each directory: ``.gitignore`` first, then ``.chalkignore``.
     Directories are visited in sorted order (parents before children) so that
-    negation in deeper directories can override shallower rules.
+    negation in deeper directories can override shallower rules.  The
+    ``.git/`` directory is always excluded via a hardcoded pattern.
 
-    The ``.git/`` directory is always excluded via a hardcoded pattern.
+    Parameters
+    ----------
+    src_dir
+        The source directory to scan for ignore files.
+
+    Returns
+    -------
+    list[IgnorePattern]
+        The collected patterns in match order.
     """
     patterns: list[IgnorePattern] = list(_ALWAYS_EXCLUDED)
 
@@ -113,8 +139,20 @@ def is_excluded(rel_path: str, patterns: list[IgnorePattern]) -> bool:
     """Check if a relative path is excluded by the given patterns.
 
     Evaluates patterns in order; the last matching rule wins.  Each pattern's
-    *domain* is checked first — a pattern with ``domain="src/pkg"`` only
+    ``domain`` is checked first — a pattern with ``domain="src/pkg"`` only
     considers paths under ``src/pkg/`` and matches against the remainder.
+
+    Parameters
+    ----------
+    rel_path
+        Path (using ``/`` separators) relative to the source root.
+    patterns
+        Patterns collected via ``collect_ignore_patterns``.
+
+    Returns
+    -------
+    bool
+        ``True`` if the path is excluded by the final matching rule.
     """
     result = False
     for p in patterns:
@@ -142,6 +180,18 @@ def _match_exclude(rel_str: str, pattern: str) -> bool:
 
     ``*`` matches within a single path component, ``**`` matches zero or more
     complete components.  Patterns are anchored to the source directory root.
+
+    Parameters
+    ----------
+    rel_str
+        Relative path to match.
+    pattern
+        The pattern to match against.
+
+    Returns
+    -------
+    bool
+        ``True`` if the path matches the pattern.
     """
     return _match_segments(rel_str.split("/"), pattern.split("/"))
 
