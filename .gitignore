@@ -1,5 +1,5 @@
 .env
-.env.enc
+.env.meta-ci
 __pycache__/
 *.pyc
 CLAUDE.local.md
