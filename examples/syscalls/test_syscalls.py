@@ -1,9 +1,5 @@
-#!/usr/bin/env -S uv run --script
-#
-# /// script
-# requires-python = ">=3.12"
-# dependencies = []
-# ///
+#!/usr/bin/env -S uv run
+
 """
 Test whether a selection of privileged syscalls can be invoked
 """
@@ -11,8 +7,7 @@ Test whether a selection of privileged syscalls can be invoked
 from pathlib import Path
 from uuid import uuid4
 
-from chalkcompute.container import Container
-from chalkcompute.image import Image
+from chalkcompute import Container, Image
 from dotenv import load_dotenv
 
 load_dotenv()
