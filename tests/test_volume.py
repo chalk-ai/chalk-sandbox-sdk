@@ -50,6 +50,7 @@ class TestVolumeClientFromEnv:
         assert client._metadata == [
             ("authorization", "Bearer token-123"),
             ("x-chalk-env-id", "env-456"),
+            ("x-chalk-server", "go-api"),
         ]
         connect_cls.assert_called_once_with()
         ensure_auth.assert_called_once_with()
