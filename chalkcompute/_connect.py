@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import re
 import time
 import uuid
 from typing import TYPE_CHECKING, Any
@@ -215,7 +216,9 @@ def build_image(
                 )
             logger.warning(
                 "GetCustomImage transient error (%d/%d): %s",
-                transient_failures, max_transient_failures, get_resp.text,
+                transient_failures,
+                max_transient_failures,
+                get_resp.text,
             )
             time.sleep(poll_interval)
             continue
@@ -294,12 +297,43 @@ def upload_lazy_files(
             raise ConnectError(f"CreateVolume failed: {resp.text}")
 
         with ThreadPoolExecutor(max_workers=32) as pool:
-            futures = [
-                pool.submit(_put_file, vol_name, lf, dest_dir) for lf in files
-            ]
+            futures = [pool.submit(_put_file, vol_name, lf, dest_dir) for lf in files]
             for fut in as_completed(futures):
                 fut.result()
 
         volumes.append((vol_name, dest_dir))
 
     return volumes
+
+
+def grpc_target_from_url(
+    url: str,
+    *,
+    insecure_port: int | None = None,
+) -> tuple[str, bool]:
+    """Convert an HTTP-style URL into a gRPC ``host:port`` target.
+
+    Parameters
+    ----------
+    url
+        URL or host string to convert.
+    insecure_port
+        Port to use for ``http://`` URLs when none is explicitly present.
+
+    Returns
+    -------
+    tuple[str, bool]
+        ``(target, use_tls)`` where ``target`` is a gRPC dial target.
+    """
+    use_tls = url.startswith("https://")
+    target = re.sub(r"^https?://", "", url).rstrip("/")
+    host = target.split("/")[0]
+
+    if ":" in host:
+        return host, use_tls
+
+    if use_tls:
+        return f"{host}:443", True
+    if insecure_port is not None:
+        return f"{host}:{insecure_port}", False
+    return host, False

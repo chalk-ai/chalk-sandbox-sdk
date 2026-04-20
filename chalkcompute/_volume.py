@@ -37,20 +37,20 @@ Usage:
 
 from __future__ import annotations
 
+import builtins
 import datetime
+import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-import builtins
-
 import grpc
 
+from chalkcompute._connect import ConnectClient, grpc_target_from_url
 from chalkcompute._gen.chalk.volume.v1 import volume_pb2 as pb
 from chalkcompute._gen.chalk.volume.v1 import volume_pb2_grpc as pb_grpc
 from chalkcompute._tracing import traced
-
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -174,8 +174,8 @@ class Volume:
     ...     batch.put("b.txt", b"world")
     """
 
-    def __init__(self, client: VolumeClient, name: str) -> None:
-        self._client = client
+    def __init__(self, name: str, client: VolumeClient | None = None) -> None:
+        self._client = client or VolumeClient.from_env()
         self._name = name
         self._info: VolumeInfo | None = None
 
@@ -391,6 +391,7 @@ class VolumeClient:
         *,
         credentials: grpc.ChannelCredentials | None = None,
         metadata: builtins.list[tuple[str, str]] | None = None,
+        options: builtins.list[tuple[str, builtins.int]] | None = None,
     ) -> None:
         """Initialize the gRPC client.
 
@@ -404,14 +405,43 @@ class VolumeClient:
             channel.
         metadata
             Optional default metadata to send with every RPC call.
+        options
+            Optional gRPC channel options.
         """
         self._target = target
         self._metadata = metadata
         if credentials is not None:
-            self._channel = grpc.secure_channel(target, credentials)
+            self._channel = grpc.secure_channel(target, credentials, options=options)
         else:
-            self._channel = grpc.insecure_channel(target)
+            self._channel = grpc.insecure_channel(target, options=options)
         self._stub = pb_grpc.VolumeServiceStub(self._channel)
+
+    @classmethod
+    def from_env(cls) -> VolumeClient:
+        """Create a ``VolumeClient`` from standard ``CHALK_*`` environment vars."""
+        if os.environ.get("CHALK_API_SERVER") is None:
+            raise ValueError(
+                "CHALK_API_SERVER must be set to construct Volume from env"
+            )
+
+        connect = ConnectClient()
+        connect._ensure_auth()
+
+        host, _use_tls = grpc_target_from_url(connect._api_server or "")
+
+        return cls(
+            host,
+            credentials=grpc.ssl_channel_credentials(),
+            metadata=[
+                ("authorization", f"Bearer {connect._access_token}"),
+                ("x-chalk-env-id", connect._env_id or ""),
+                ("x-chalk-server", "go-api"),
+            ],
+            options=[
+                ("grpc.max_send_message_length", -1),
+                ("grpc.max_receive_message_length", -1),
+            ],
+        )
 
     def __enter__(self) -> VolumeClient:
         return self
@@ -449,7 +479,7 @@ class VolumeClient:
             _handle_rpc_error(e, name)
             raise
         info = _pb_to_volume_info(resp.volume)
-        vol = Volume(self, info.name)
+        vol = Volume(info.name, client=self)
         vol._info = info
         return vol
 
@@ -469,7 +499,7 @@ class VolumeClient:
         Volume
             A volume handle.
         """
-        return Volume(self, name)
+        return Volume(name, client=self)
 
     def lookup(self, name: str) -> Volume:
         """Look up a volume by name, verifying it exists.
@@ -489,7 +519,7 @@ class VolumeClient:
         VolumeNotFoundError
             If the volume does not exist.
         """
-        vol = Volume(self, name)
+        vol = Volume(name, client=self)
         vol.reload()
         return vol
 
