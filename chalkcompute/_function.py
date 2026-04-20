@@ -38,7 +38,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
-from chalkcompute._connect import ConnectClient, build_image, upload_lazy_files
+from chalkcompute._connect import (
+    ConnectClient,
+    build_image,
+    grpc_target_from_url,
+    upload_lazy_files,
+)
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import traced
 from chalkcompute._retry import RetryPolicy
@@ -1136,8 +1141,6 @@ class RemoteFunction:
         if self._call_stub is not None:
             return
 
-        import re
-
         import grpc
         from chalk_remote_call._gen.chalk.runtime.v1 import (
             remote_python_call_pb2_grpc as call_grpc,
@@ -1153,18 +1156,12 @@ class RemoteFunction:
             ("x-chalk-env-id", self._client._env_id or ""),
         ]
 
-        target = re.sub(r"^https?://", "", self._web_url).rstrip("/")
-        # gRPC requires host:port — use the scaling group's port
-        host = target.split("/")[0]
-        if ":" not in host:
-            if self._web_url.startswith("https"):
-                target = f"{host}:443"
-            else:
-                target = f"{host}:{self._port}"
-        else:
-            target = host
+        target, use_tls = grpc_target_from_url(
+            self._web_url,
+            insecure_port=self._port,
+        )
 
-        if self._web_url.startswith("https"):
+        if use_tls:
             self._call_channel = grpc.secure_channel(
                 target, grpc.ssl_channel_credentials()
             )
