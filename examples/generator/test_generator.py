@@ -24,12 +24,14 @@ needs_staging = pytest.mark.skipif(
 
 EXAMPLE_DIR = os.path.dirname(__file__)
 
+CHALK_ENVIRONMENT_ID = os.environ.get("CHALK_ENVIRONMENT_ID", "tmnmc9beyujew")
+
 
 def _make_remote():
     from chalk.client.client_grpc import ChalkGRPCClient
     from chalkdf.remote import Remote
 
-    client = ChalkGRPCClient(environment="tmnmc9beyujew")
+    client = ChalkGRPCClient(environment=CHALK_ENVIRONMENT_ID)
     return Remote(chalk_client=client)
 
 
