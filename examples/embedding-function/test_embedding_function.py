@@ -15,7 +15,7 @@ load_dotenv()
 
 CHALK_CLIENT_ID = os.environ.get("CHALK_CLIENT_ID", "")
 CHALK_API_SERVER = os.environ.get("CHALK_API_SERVER", "")
-CHALK_ENVIRONMENT_ID = os.environ.get("CHALK_ENVIRONMENT_ID", "")
+CHALK_ENVIRONMENT_ID = os.environ.get("CHALK_ENVIRONMENT_ID", "tmnmc9beyujew")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 needs_staging = pytest.mark.skipif(
@@ -98,7 +98,7 @@ def test_embedding_function_via_chalkdf_remote() -> None:
     from chalk.client.client_grpc import ChalkGRPCClient
     from chalkdf.remote import Remote
 
-    client = ChalkGRPCClient(environment="tmnmc9beyujew")
+    client = ChalkGRPCClient(environment=CHALK_ENVIRONMENT_ID)
     remote = Remote(chalk_client=client)
     fn = remote.function("embed")
     embedding = fn("hello")
@@ -121,7 +121,7 @@ def test_async_embedding_function_via_chalkdf_remote() -> None:
     from chalkdf.remote import Remote
 
     async def _run() -> list[float]:
-        client = ChalkGRPCClient(environment="tmnmc9beyujew")
+        client = ChalkGRPCClient(environment=CHALK_ENVIRONMENT_ID)
         remote = Remote(chalk_client=client)
         fn = remote.function("async-embed")
         return await fn("hello")

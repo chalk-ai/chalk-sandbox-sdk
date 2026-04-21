@@ -7,9 +7,14 @@ default:
 buildkite_org := "chalk"
 buildkite_pipeline := "chalk-sandbox-sdk-integration-tests"
 
-# Decrypt .env.enc to .env
-env:
-    sops --input-type dotenv --output-type dotenv -d .env.enc > .env
+# Decrypt .env.enc to .env (or .env.<name>.enc to .env.<name> if name given)
+env name="":
+    sops --input-type dotenv --output-type dotenv -d ".env{{ if name != "" { "." + name } else { "" } }}.enc" > ".env{{ if name != "" { "." + name } else { "" } }}"
+
+# Encrypt .env (or .env.<name>) to .env.enc (or .env.<name>.enc) and delete plaintext
+encrypt name="":
+    sops --input-type dotenv --output-type dotenv -e ".env{{ if name != "" { "." + name } else { "" } }}" > ".env{{ if name != "" { "." + name } else { "" } }}.enc"
+    rm ".env{{ if name != "" { "." + name } else { "" } }}"
 
 # Sync all dependencies
 sync:

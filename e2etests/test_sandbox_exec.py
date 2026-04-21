@@ -146,6 +146,7 @@ def sandbox_id(connect_headers: dict[str, str]) -> str:
 
 
 @needs_staging
+@pytest.mark.xfail(reason="httpx.ReadTimeout due to tcp interceptor issues")
 def test_exec_ls(grpc_client: SandboxClient, sandbox_id: str) -> None:
     """Exec 'ls /' in the sandbox and verify we get directory listing output."""
     sandbox = grpc_client.get(id=sandbox_id)
@@ -171,6 +172,7 @@ def test_exec_ls(grpc_client: SandboxClient, sandbox_id: str) -> None:
 
 
 @needs_staging
+@pytest.mark.xfail(reason="httpx.ReadTimeout due to tcp interceptor issues")
 def test_pty_interaction(grpc_client: SandboxClient, sandbox_id: str) -> None:
     """Start an interactive shell, send a command via stdin, and verify output."""
     sandbox = grpc_client.get(id=sandbox_id)

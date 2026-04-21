@@ -5,7 +5,10 @@ on:
       - main
 
 steps:
-  - label: ":pytest: Integration tests"
+  - label: ":pytest: Integration tests ({{matrix}})"
+    matrix:
+      - "staging/ftqa"
+      - "meta-ci"
     command: |
       set -euo pipefail
       unset VIRTUAL_ENV
@@ -16,7 +19,8 @@ steps:
       chmod +x /tmp/sops
 
       echo "--- :key: Decrypt secrets"
-      /tmp/sops --input-type dotenv --output-type dotenv -d .env.enc > /tmp/test.env
+      if [ "{{matrix}}" = "staging/ftqa" ]; then ENV_FILE=".env.enc"; else ENV_FILE=".env.{{matrix}}.enc"; fi
+      /tmp/sops --input-type dotenv --output-type dotenv -d "$$ENV_FILE" > /tmp/test.env
       set -a
       source /tmp/test.env
       set +a
@@ -25,7 +29,7 @@ steps:
       echo "--- :python: Sync dependencies"
       uv sync --all-extras
 
-      echo "--- :pytest: Run integration tests"
+      echo "--- :pytest: Run integration tests ($$CHALK_API_SERVER)"
       uv run python -m pytest e2etests/test_image.py e2etests/test_sandbox_exec.py e2etests/test_volume.py e2etests/test_container.py -v -s --tb=short
     agents:
       queue: default
@@ -35,7 +39,10 @@ steps:
         - exit_status: -1
           limit: 2
 
-  - label: ":brain: Embedding function example"
+  - label: ":brain: Embedding function example ({{matrix}})"
+    matrix:
+      - "staging/ftqa"
+      - "meta-ci"
     command: |
       set -euo pipefail
       unset VIRTUAL_ENV
@@ -46,7 +53,8 @@ steps:
       chmod +x /tmp/sops
 
       echo "--- :key: Decrypt secrets"
-      /tmp/sops --input-type dotenv --output-type dotenv -d .env.enc > /tmp/test.env
+      if [ "{{matrix}}" = "staging/ftqa" ]; then ENV_FILE=".env.enc"; else ENV_FILE=".env.{{matrix}}.enc"; fi
+      /tmp/sops --input-type dotenv --output-type dotenv -d "$$ENV_FILE" > /tmp/test.env
       set -a
       source /tmp/test.env
       set +a
@@ -68,7 +76,10 @@ steps:
         - exit_status: -1
           limit: 2
 
-  - label: ":arrows_counterclockwise: Generator function example"
+  - label: ":arrows_counterclockwise: Generator function example ({{matrix}})"
+    matrix:
+      - "staging/ftqa"
+      - "meta-ci"
     command: |
       set -euo pipefail
       unset VIRTUAL_ENV
@@ -79,7 +90,8 @@ steps:
       chmod +x /tmp/sops
 
       echo "--- :key: Decrypt secrets"
-      /tmp/sops --input-type dotenv --output-type dotenv -d .env.enc > /tmp/test.env
+      if [ "{{matrix}}" = "staging/ftqa" ]; then ENV_FILE=".env.enc"; else ENV_FILE=".env.{{matrix}}.enc"; fi
+      /tmp/sops --input-type dotenv --output-type dotenv -d "$$ENV_FILE" > /tmp/test.env
       set -a
       source /tmp/test.env
       set +a
