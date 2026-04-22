@@ -6,15 +6,21 @@ Run this file to deploy the function:
 """
 
 import logging
+import sys
+from pathlib import Path
 
 import chalkcompute
+
+# Add examples dir to path so we can import test_utils
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from test_utils import make_function_name
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
 
 
 @chalkcompute.function(
-    name="chalk-sandbox-test-df-groupby-sum",
+    name=make_function_name("df-groupby-sum"),
     image=chalkcompute.Image.debian_slim().pip_install(["chalkdf", "chalkpy[runtime]", "pyarrow"]),
 )
 def df_groupby_sum(n: int) -> int:

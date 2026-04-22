@@ -9,15 +9,21 @@ so calls beyond 5/s will be queued and throttled.
 from __future__ import annotations
 
 import logging
+import sys
+from pathlib import Path
 
 import chalkcompute
 from chalkcompute._rate_limit import RateLimitPolicy
+
+# Add examples dir to path so we can import test_utils
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from test_utils import make_function_name
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 
 @chalkcompute.function(
-    name="chalk-sandbox-test-add-rate-limited",
+    name=make_function_name("add-rate-limited"),
     rate_limit=RateLimitPolicy(rate=5, per="second"),
 )
 def add_rate_limited(a: int, b: int) -> int:

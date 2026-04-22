@@ -1,8 +1,13 @@
 import logging
 import os
+import sys
+from pathlib import Path
 
 import chalkcompute
 
+# Add examples dir to path so we can import test_utils
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from test_utils import make_function_name
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -11,7 +16,7 @@ EMBEDDING_MODEL = "text-embedding-3-small"
 
 
 @chalkcompute.function(
-    name="chalk-sandbox-test-async-embed",
+    name=make_function_name("async-embed"),
     image=chalkcompute.Image.debian_slim().pip_install(["openai"]),
     env={
         "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),

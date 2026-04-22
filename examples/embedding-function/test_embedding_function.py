@@ -7,11 +7,16 @@ function can call embed and return embeddings.
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Add examples dir to path so we can import test_utils
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from test_utils import make_function_name
 
 CHALK_CLIENT_ID = os.environ.get("CHALK_CLIENT_ID", "")
 CHALK_API_SERVER = os.environ.get("CHALK_API_SERVER", "")
@@ -69,18 +74,27 @@ def test_embedding_function() -> None:
     _deploy_script("embed.py")
     _deploy_script("orchestrate.py")
 
-    import chalkcompute
+    try:
+        import chalkcompute
 
-    orchestrate = chalkcompute.RemoteFunction.from_name(name="chalk-sandbox-test-orchestrate")
-    embeddings = orchestrate(["Hello", "world!"])
+        orchestrate = chalkcompute.RemoteFunction.from_name(name=make_function_name("orchestrate"))
+        embeddings = orchestrate(["Hello", "world!"])
 
-    assert len(embeddings) == 2, f"Expected 2 embeddings, got {len(embeddings)}"
-    for i, emb in enumerate(embeddings):
-        assert isinstance(emb, list), f"Embedding {i} is not a list"
-        assert len(emb) == 1536, f"Embedding {i} has {len(emb)} dims, expected 1536"
-        assert all(isinstance(v, float) for v in emb), (
-            f"Embedding {i} has non-float values"
-        )
+        assert len(embeddings) == 2, f"Expected 2 embeddings, got {len(embeddings)}"
+        for i, emb in enumerate(embeddings):
+            assert isinstance(emb, list), f"Embedding {i} is not a list"
+            assert len(emb) == 1536, f"Embedding {i} has {len(emb)} dims, expected 1536"
+            assert all(isinstance(v, float) for v in emb), (
+                f"Embedding {i} has non-float values"
+            )
+    finally:
+        # Cleanup: delete deployed functions
+        try:
+            import chalkcompute
+            chalkcompute.RemoteFunction.from_name(name=make_function_name("orchestrate")).delete()
+            chalkcompute.RemoteFunction.from_name(name=make_function_name("embed")).delete()
+        except Exception as e:
+            print(f"Warning: Failed to delete functions: {e}")
 
 
 @needs_staging
@@ -95,17 +109,25 @@ def test_embedding_function_via_chalkdf_remote() -> None:
     """
     _deploy_script("embed.py")
 
-    from chalk.client.client_grpc import ChalkGRPCClient
-    from chalkdf.remote import Remote
+    try:
+        from chalk.client.client_grpc import ChalkGRPCClient
+        from chalkdf.remote import Remote
 
-    client = ChalkGRPCClient(environment=CHALK_ENVIRONMENT_ID)
-    remote = Remote(chalk_client=client)
-    fn = remote.function("chalk-sandbox-test-embed")
-    embedding = fn("hello")
+        client = ChalkGRPCClient(environment=CHALK_ENVIRONMENT_ID)
+        remote = Remote(chalk_client=client)
+        fn = remote.function(make_function_name("embed"))
+        embedding = fn("hello")
 
-    assert isinstance(embedding, list), f"Expected list, got {type(embedding).__name__}"
-    assert len(embedding) == 1536, f"Got {len(embedding)} dims, expected 1536"
-    assert all(isinstance(v, float) for v in embedding), "Non-float values in embedding"
+        assert isinstance(embedding, list), f"Expected list, got {type(embedding).__name__}"
+        assert len(embedding) == 1536, f"Got {len(embedding)} dims, expected 1536"
+        assert all(isinstance(v, float) for v in embedding), "Non-float values in embedding"
+    finally:
+        # Cleanup: delete deployed function
+        try:
+            import chalkcompute
+            chalkcompute.RemoteFunction.from_name(name=make_function_name("embed")).delete()
+        except Exception as e:
+            print(f"Warning: Failed to delete function: {e}")
 
 
 @needs_staging
@@ -115,19 +137,27 @@ def test_async_embedding_function_via_chalkdf_remote() -> None:
     """Deploy async-embed, then call it via chalkdf's Remote with await."""
     _deploy_script("embed_async.py")
 
-    import asyncio
+    try:
+        import asyncio
 
-    from chalk.client.client_grpc import ChalkGRPCClient
-    from chalkdf.remote import Remote
+        from chalk.client.client_grpc import ChalkGRPCClient
+        from chalkdf.remote import Remote
 
-    async def _run() -> list[float]:
-        client = ChalkGRPCClient(environment=CHALK_ENVIRONMENT_ID)
-        remote = Remote(chalk_client=client)
-        fn = remote.function("chalk-sandbox-test-async-embed")
-        return await fn("hello")
+        async def _run() -> list[float]:
+            client = ChalkGRPCClient(environment=CHALK_ENVIRONMENT_ID)
+            remote = Remote(chalk_client=client)
+            fn = remote.function(make_function_name("async-embed"))
+            return await fn("hello")
 
-    embedding = asyncio.run(_run())
+        embedding = asyncio.run(_run())
 
-    assert isinstance(embedding, list), f"Expected list, got {type(embedding).__name__}"
-    assert len(embedding) == 1536, f"Got {len(embedding)} dims, expected 1536"
-    assert all(isinstance(v, float) for v in embedding), "Non-float values in embedding"
+        assert isinstance(embedding, list), f"Expected list, got {type(embedding).__name__}"
+        assert len(embedding) == 1536, f"Got {len(embedding)} dims, expected 1536"
+        assert all(isinstance(v, float) for v in embedding), "Non-float values in embedding"
+    finally:
+        # Cleanup: delete deployed function
+        try:
+            import chalkcompute
+            chalkcompute.RemoteFunction.from_name(name=make_function_name("async-embed")).delete()
+        except Exception as e:
+            print(f"Warning: Failed to delete function: {e}")

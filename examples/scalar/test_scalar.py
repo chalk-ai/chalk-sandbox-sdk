@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 from dotenv import load_dotenv
@@ -28,6 +29,10 @@ needs_staging = pytest.mark.skipif(
 )
 
 EXAMPLE_DIR = os.path.dirname(__file__)
+
+# Add examples dir to path so we can import test_utils
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from test_utils import make_function_name
 
 
 def _deploy_script(script_name: str) -> None:
@@ -66,17 +71,27 @@ class TestSyncScalar:
     def setup_class(cls):
         _deploy_script("deploy_sync.py")
 
+    @classmethod
+    def teardown_class(cls):
+        """Delete the deployed function after tests."""
+        try:
+            import chalkcompute
+            fn = chalkcompute.RemoteFunction.from_name(name=make_function_name("add"))
+            fn.delete()
+        except Exception as e:
+            print(f"Warning: Failed to delete function: {e}")
+
     def test_direct_call(self):
         """fn(1, 10) → 11 via Velox."""
         remote = _make_remote()
-        fn = remote.function("chalk-sandbox-test-add")
+        fn = remote.function(make_function_name("add"))
         result = fn(1, 10)
         assert result == 11
 
     def test_defer_get(self):
         """fn.defer(2, 20).get() → [22] via queue."""
         remote = _make_remote()
-        fn = remote.function("chalk-sandbox-test-add")
+        fn = remote.function(make_function_name("add"))
         handle = fn.defer(2, 20)
         result = handle.get()
         assert result.to_pylist() == [22]
@@ -84,7 +99,7 @@ class TestSyncScalar:
     def test_concurrent_calls(self):
         """Fire 10 calls in parallel, verify all return correct results."""
         remote = _make_remote()
-        fn = remote.function("chalk-sandbox-test-add")
+        fn = remote.function(make_function_name("add"))
         n = 10
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=n) as pool:
@@ -97,7 +112,7 @@ class TestSyncScalar:
     def test_concurrent_defer_calls(self):
         """Fire 10 deferred calls, verify all return correct results."""
         remote = _make_remote()
-        fn = remote.function("chalk-sandbox-test-add")
+        fn = remote.function(make_function_name("add"))
         n = 10
 
         handles = [fn.defer(i, i * 10) for i in range(1, n + 1)]
@@ -109,7 +124,7 @@ class TestSyncScalar:
     def test_throughput(self):
         """Fire 20 rapid calls and measure throughput."""
         remote = _make_remote()
-        fn = remote.function("chalk-sandbox-test-add")
+        fn = remote.function(make_function_name("add"))
         n = 20
 
         start = time.monotonic()
@@ -134,10 +149,20 @@ class TestAsyncScalar:
     def setup_class(cls):
         _deploy_script("deploy_async.py")
 
+    @classmethod
+    def teardown_class(cls):
+        """Delete the deployed function after tests."""
+        try:
+            import chalkcompute
+            fn = chalkcompute.RemoteFunction.from_name(name=make_function_name("async-add"))
+            fn.delete()
+        except Exception as e:
+            print(f"Warning: Failed to delete function: {e}")
+
     def test_direct_call(self):
         """await fn(3, 30) → 33."""
         remote = _make_remote()
-        fn = remote.function("chalk-sandbox-test-async-add")
+        fn = remote.function(make_function_name("async-add"))
 
         async def _run():
             return await fn(3, 30)
@@ -148,7 +173,7 @@ class TestAsyncScalar:
     def test_defer_get(self):
         """await fn.defer(4, 40).get() → [44]."""
         remote = _make_remote()
-        fn = remote.function("chalk-sandbox-test-async-add")
+        fn = remote.function(make_function_name("async-add"))
         handle = fn.defer(4, 40)
 
         async def _run():
@@ -168,7 +193,7 @@ class TestTimeout:
     def test_defer_get_with_timeout(self):
         """handle.get(timeout=30) succeeds for a real function."""
         remote = _make_remote()
-        fn = remote.function("chalk-sandbox-test-add")
+        fn = remote.function(make_function_name("add"))
         handle = fn.defer(1, 1)
         result = handle.get(timeout=30)
         assert result.to_pylist() == [2]

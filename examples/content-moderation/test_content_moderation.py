@@ -8,11 +8,16 @@ manually via run.py + approve.py — see README.
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Add examples dir to path so we can import test_utils
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from test_utils import make_function_name
 
 CHALK_CLIENT_ID = os.environ.get("CHALK_CLIENT_ID", "")
 CHALK_API_SERVER = os.environ.get("CHALK_API_SERVER", "")
@@ -53,17 +58,25 @@ def test_classify_returns_predictions() -> None:
 
     _deploy_script("classify.py")
 
-    import chalkcompute
+    try:
+        import chalkcompute
 
-    classify = chalkcompute.RemoteFunction.from_name("chalk-sandbox-test-classify-image")
-    result = json.loads(classify(TEST_IMAGE_URL))
+        classify = chalkcompute.RemoteFunction.from_name(make_function_name("classify-image"))
+        result = json.loads(classify(TEST_IMAGE_URL))
 
-    assert len(result["labels"]) > 0
-    assert isinstance(result["top_label"], str)
-    assert isinstance(result["top_confidence"], float)
-    assert 0.0 <= result["top_confidence"] <= 1.0
-    # needs_review is no longer part of the stage-1 contract — Temporal owns thresholds.
-    assert "needs_review" not in result
+        assert len(result["labels"]) > 0
+        assert isinstance(result["top_label"], str)
+        assert isinstance(result["top_confidence"], float)
+        assert 0.0 <= result["top_confidence"] <= 1.0
+        # needs_review is no longer part of the stage-1 contract — Temporal owns thresholds.
+        assert "needs_review" not in result
+    finally:
+        # Cleanup: delete deployed function
+        try:
+            import chalkcompute
+            chalkcompute.RemoteFunction.from_name(name=make_function_name("classify-image")).delete()
+        except Exception as e:
+            print(f"Warning: Failed to delete function: {e}")
 
 
 @needs_staging
@@ -71,14 +84,24 @@ def test_classify_identifies_known_image() -> None:
     """The test image is a cat — the model should classify it as such."""
     import json
 
-    import chalkcompute
+    _deploy_script("classify.py")
 
-    classify = chalkcompute.RemoteFunction.from_name("chalk-sandbox-test-classify-image")
-    result = json.loads(classify(TEST_IMAGE_URL))
+    try:
+        import chalkcompute
 
-    all_labels = [lbl["label"].lower() for lbl in result["labels"]]
-    cat_labels = [name for name in all_labels if "cat" in name or "tabby" in name or "egyptian" in name]
-    assert len(cat_labels) > 0, f"Expected cat-related label, got: {all_labels}"
+        classify = chalkcompute.RemoteFunction.from_name(make_function_name("classify-image"))
+        result = json.loads(classify(TEST_IMAGE_URL))
+
+        all_labels = [lbl["label"].lower() for lbl in result["labels"]]
+        cat_labels = [name for name in all_labels if "cat" in name or "tabby" in name or "egyptian" in name]
+        assert len(cat_labels) > 0, f"Expected cat-related label, got: {all_labels}"
+    finally:
+        # Cleanup: delete deployed function
+        try:
+            import chalkcompute
+            chalkcompute.RemoteFunction.from_name(name=make_function_name("classify-image")).delete()
+        except Exception as e:
+            print(f"Warning: Failed to delete function: {e}")
 
 
 @needs_staging
@@ -88,15 +111,23 @@ def test_policy_check_returns_per_policy_scores() -> None:
 
     _deploy_script("policy_check.py")
 
-    import chalkcompute
+    try:
+        import chalkcompute
 
-    policy = chalkcompute.RemoteFunction.from_name("chalk-sandbox-test-policy-check")
-    result = json.loads(policy(TEST_IMAGE_URL))
+        policy = chalkcompute.RemoteFunction.from_name(make_function_name("policy-check"))
+        result = json.loads(policy(TEST_IMAGE_URL))
 
-    assert set(result["policy_scores"].keys()) == EXPECTED_POLICIES
-    for key, score in result["policy_scores"].items():
-        assert isinstance(score, float), f"{key} score is not a float"
-        assert 0.0 <= score <= 1.0, f"{key}={score} out of [0, 1]"
+        assert set(result["policy_scores"].keys()) == EXPECTED_POLICIES
+        for key, score in result["policy_scores"].items():
+            assert isinstance(score, float), f"{key} score is not a float"
+            assert 0.0 <= score <= 1.0, f"{key}={score} out of [0, 1]"
 
-    assert result["max_policy"] in EXPECTED_POLICIES
-    assert result["max_score"] == max(result["policy_scores"].values())
+        assert result["max_policy"] in EXPECTED_POLICIES
+        assert result["max_score"] == max(result["policy_scores"].values())
+    finally:
+        # Cleanup: delete deployed function
+        try:
+            import chalkcompute
+            chalkcompute.RemoteFunction.from_name(name=make_function_name("policy-check")).delete()
+        except Exception as e:
+            print(f"Warning: Failed to delete function: {e}")

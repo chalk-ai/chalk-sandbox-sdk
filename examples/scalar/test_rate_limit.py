@@ -18,6 +18,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 from dotenv import load_dotenv
@@ -33,6 +34,10 @@ needs_staging = pytest.mark.skipif(
 )
 
 EXAMPLE_DIR = os.path.dirname(__file__)
+
+# Add examples dir to path so we can import test_utils
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from test_utils import make_function_name
 
 
 def _deploy_script(script_name: str) -> None:
@@ -71,6 +76,16 @@ class TestRateLimit:
     def setup_class(cls):
         _deploy_script("deploy_rate_limited.py")
 
+    @classmethod
+    def teardown_class(cls):
+        """Delete the deployed function after tests."""
+        try:
+            import chalkcompute
+            fn = chalkcompute.RemoteFunction.from_name(name=make_function_name("add-rate-limited"))
+            fn.delete()
+        except Exception as e:
+            print(f"Warning: Failed to delete function: {e}")
+
     def test_rate_limit_throttles(self):
         """20 rapid calls at 5 req/s should take at least ~3 seconds.
 
@@ -79,7 +94,7 @@ class TestRateLimit:
         so 20 calls should take at least 3s (ceil(20/5) - 1 = 3).
         """
         remote = _make_remote()
-        fn = remote.function("chalk-sandbox-test-add-rate-limited")
+        fn = remote.function(make_function_name("add-rate-limited"))
         n = 20
 
         # Enqueue all at once
@@ -111,7 +126,7 @@ class TestRateLimit:
     def test_rate_limit_correctness_under_load(self):
         """All results are correct even under rate limiting."""
         remote = _make_remote()
-        fn = remote.function("chalk-sandbox-test-add-rate-limited")
+        fn = remote.function(make_function_name("add-rate-limited"))
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
             futures = [pool.submit(fn, i, i * 10) for i in range(1, 11)]
@@ -132,6 +147,16 @@ class TestConcurrencyLimit:
     def setup_class(cls):
         _deploy_script("deploy_concurrency_limited.py")
 
+    @classmethod
+    def teardown_class(cls):
+        """Delete the deployed function after tests."""
+        try:
+            import chalkcompute
+            fn = chalkcompute.RemoteFunction.from_name(name=make_function_name("slow-add"))
+            fn.delete()
+        except Exception as e:
+            print(f"Warning: Failed to delete function: {e}")
+
     def test_concurrency_limit_caps_parallelism(self):
         """6 calls with 1s sleep and max_concurrent=2 should take >= 3s.
 
@@ -139,7 +164,7 @@ class TestConcurrencyLimit:
         With max_concurrent=2, only 2 run at a time: ceil(6/2) × 1s = 3s minimum.
         """
         remote = _make_remote()
-        fn = remote.function("chalk-sandbox-test-slow-add")
+        fn = remote.function(make_function_name("slow-add"))
         n = 6
 
         handles = [fn.defer(i, 1) for i in range(n)]
@@ -164,7 +189,7 @@ class TestConcurrencyLimit:
     def test_concurrency_limit_correctness(self):
         """All results are correct even under concurrency limiting."""
         remote = _make_remote()
-        fn = remote.function("chalk-sandbox-test-slow-add")
+        fn = remote.function(make_function_name("slow-add"))
 
         handles = [fn.defer(i, i) for i in range(1, 5)]
         results = [h.get().to_pylist()[0] for h in handles]

@@ -10,10 +10,14 @@ Run `python agent.py` once to deploy, then invoke via `run.py`.
 
 import logging
 import os
+import sys
 from pathlib import Path
 
 import chalkcompute
 
+# Add examples dir to path so we can import test_utils
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from test_utils import make_function_name
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -25,7 +29,7 @@ _CATALOG_SRC = str(Path(__file__).parent / "catalog.py")
 
 
 @chalkcompute.function(
-    name="chalk-sandbox-test-fraud-agent",
+    name=make_function_name("fraud-agent"),
     image=(
         chalkcompute.Image.debian_slim()
         .pip_install(["httpx", "openai>=1.40.0"])
