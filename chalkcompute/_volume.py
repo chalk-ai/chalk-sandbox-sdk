@@ -72,7 +72,7 @@ logger = logging.getLogger(__name__)
 
 #: Files at or below this size are uploaded via gRPC inline PutFile(data=...).
 #: Files above this threshold use presigned object-storage upload.
-_INLINE_THRESHOLD_BYTES: int = 8 * 1024 * 1024  # 8 MB
+_INLINE_THRESHOLD_BYTES: int = 2 * 1024 * 1024  # 8 MB
 
 #: Part size sent to GetObjectUploadUri for multipart uploads.
 _PRESIGNED_PART_SIZE_BYTES: int = 10 * 1024 * 1024  # 10 MB
@@ -743,8 +743,9 @@ def _upload_multipart(
 
     Returns the storage object ID for the completed upload.
     """
-    import httpx
     from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    import httpx
 
     storage_object_id = resp.storage_object_id
     all_uris = list(resp.multipart.signed_upload_uris)
