@@ -9,11 +9,16 @@ import asyncio
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Add examples dir to path so we can import test_utils
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from test_utils import make_function_name
 
 CHALK_CLIENT_ID = os.environ.get("CHALK_CLIENT_ID", "")
 CHALK_API_SERVER = os.environ.get("CHALK_API_SERVER", "")
@@ -65,19 +70,27 @@ def test_async_generator_stream_via_remote() -> None:
     """Deploy count-up, then stream its yielded values via chalkdf.Remote."""
     _deploy_script("count_up.py")
 
-    import pyarrow as pa
-    from chalk.client.client_grpc import ChalkGRPCClient
-    from chalkdf.remote import Remote
+    try:
+        import pyarrow as pa
+        from chalk.client.client_grpc import ChalkGRPCClient
+        from chalkdf.remote import Remote
 
-    async def _collect() -> list[int]:
-        client = ChalkGRPCClient()
-        remote = Remote(chalk_client=client)
-        fn = remote.function("count-up", output_type=pa.int64())
-        collected: list[int] = []
-        async for batch in fn(N):
-            for value in batch.column(0).to_pylist():
-                collected.append(value)
-        return collected
+        async def _collect() -> list[int]:
+            client = ChalkGRPCClient()
+            remote = Remote(chalk_client=client)
+            fn = remote.function(make_function_name("count-up"), output_type=pa.int64())
+            collected: list[int] = []
+            async for batch in fn(N):
+                for value in batch.column(0).to_pylist():
+                    collected.append(value)
+            return collected
 
-    values = asyncio.run(_collect())
-    assert values == list(range(N)), f"Expected {list(range(N))}, got {values}"
+        values = asyncio.run(_collect())
+        assert values == list(range(N)), f"Expected {list(range(N))}, got {values}"
+    finally:
+        # Cleanup: delete deployed function
+        try:
+            import chalkcompute
+            chalkcompute.RemoteFunction.from_name(name=make_function_name("count-up")).delete()
+        except Exception as e:
+            print(f"Warning: Failed to delete function: {e}")
