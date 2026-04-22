@@ -1,12 +1,7 @@
+import argparse
 import logging
-import sys
-from pathlib import Path
 
 import chalkcompute
-
-# Add examples dir to path so we can import test_utils
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from test_utils import make_function_name
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -16,53 +11,66 @@ log = logging.getLogger(__name__)
 MODEL_NAME = "microsoft/resnet-50"
 
 
-@chalkcompute.function(
-    name=make_function_name("classify-image"),
-    image=(
-        chalkcompute.Image.debian_slim()
-        .run_commands("pip install torch --index-url https://download.pytorch.org/whl/cpu")
-        .pip_install(["transformers", "Pillow", "requests"])
-    ),
-)
-def classify_image(image_url: str) -> str:
-    """Download an image by URL and classify it inside an isolated container.
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Deploy image classification function")
+    parser.add_argument(
+        "--function-name",
+        default="chalk-sandbox-test-classify-image",
+        help="Name for the deployed function",
+    )
+    args = parser.parse_args()
 
-    Untrusted image bytes are fetched and processed entirely within the
-    sandbox — the caller never handles raw upload data.
+    @chalkcompute.function(
+        name=args.function_name,
+        image=(
+            chalkcompute.Image.debian_slim()
+            .run_commands("pip install torch --index-url https://download.pytorch.org/whl/cpu")
+            .pip_install(["transformers", "Pillow", "requests"])
+        ),
+    )
+    def classify_image(image_url: str) -> str:
+        """Download an image by URL and classify it inside an isolated container.
 
-    Threshold/branching logic lives in the Temporal workflow, not here.
+        Untrusted image bytes are fetched and processed entirely within the
+        sandbox — the caller never handles raw upload data.
 
-    Parameters
-    ----------
-    image_url
-        URL of the image to download and classify.
+        Threshold/branching logic lives in the Temporal workflow, not here.
 
-    Returns
-    -------
-    str
-        JSON-encoded object with the top-5 labels and the most-confident one.
-    """
-    import io
-    import json
+        Parameters
+        ----------
+        image_url
+            URL of the image to download and classify.
 
-    import requests
-    from PIL import Image
-    from transformers import pipeline
+        Returns
+        -------
+        str
+            JSON-encoded object with the top-5 labels and the most-confident one.
+        """
+        import io
+        import json
 
-    log.info("Downloading image: %s", image_url)
-    resp = requests.get(image_url, timeout=30, headers={"User-Agent": "ChalkModeration/1.0"})
-    resp.raise_for_status()
-    img = Image.open(io.BytesIO(resp.content))
+        import requests
+        from PIL import Image
+        from transformers import pipeline
 
-    log.info("Classifying with %s", MODEL_NAME)
-    classifier = pipeline("image-classification", model=MODEL_NAME)
-    results = classifier(img, top_k=5)
+        log.info("Downloading image: %s", image_url)
+        resp = requests.get(image_url, timeout=30, headers={"User-Agent": "ChalkModeration/1.0"})
+        resp.raise_for_status()
+        img = Image.open(io.BytesIO(resp.content))
 
-    labels = [{"label": r["label"], "confidence": round(r["score"], 4)} for r in results]
-    top = labels[0]
+        log.info("Classifying with %s", MODEL_NAME)
+        classifier = pipeline("image-classification", model=MODEL_NAME)
+        results = classifier(img, top_k=5)
 
-    return json.dumps({
-        "labels": labels,
-        "top_label": top["label"],
-        "top_confidence": top["confidence"],
-    })
+        labels = [{"label": r["label"], "confidence": round(r["score"], 4)} for r in results]
+        top = labels[0]
+
+        return json.dumps({
+            "labels": labels,
+            "top_label": top["label"],
+            "top_confidence": top["confidence"],
+        })
+
+
+if __name__ == "__main__":
+    main()

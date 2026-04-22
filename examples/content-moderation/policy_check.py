@@ -1,12 +1,7 @@
+import argparse
 import logging
-import sys
-from pathlib import Path
 
 import chalkcompute
-
-# Add examples dir to path so we can import test_utils
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from test_utils import make_function_name
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -37,69 +32,82 @@ BENIGN_ALTERNATIVES = [
 ]
 
 
-@chalkcompute.function(
-    name=make_function_name("policy-check"),
-    image=(
-        chalkcompute.Image.debian_slim()
-        .run_commands("pip install torch --index-url https://download.pytorch.org/whl/cpu")
-        .pip_install(["transformers", "Pillow", "requests"])
-    ),
-)
-def policy_check(image_url: str) -> str:
-    """Score an image against policies using CLIP positive-vs-benigns softmax.
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Deploy policy check function")
+    parser.add_argument(
+        "--function-name",
+        default="chalk-sandbox-test-policy-check",
+        help="Name for the deployed function",
+    )
+    args = parser.parse_args()
 
-    Stage 2 of the moderation pipeline. Runs only when stage-1 confidence is
-    borderline — see ``workflow.py`` for the branching logic.
+    @chalkcompute.function(
+        name=args.function_name,
+        image=(
+            chalkcompute.Image.debian_slim()
+            .run_commands("pip install torch --index-url https://download.pytorch.org/whl/cpu")
+            .pip_install(["transformers", "Pillow", "requests"])
+        ),
+    )
+    def policy_check(image_url: str) -> str:
+        """Score an image against policies using CLIP positive-vs-benigns softmax.
 
-    Parameters
-    ----------
-    image_url
-        URL of the image to score.
+        Stage 2 of the moderation pipeline. Runs only when stage-1 confidence is
+        borderline — see ``workflow.py`` for the branching logic.
 
-    Returns
-    -------
-    str
-        JSON-encoded object of the form
-        ``{policy_scores: {name: p}, max_policy, max_score}``. Each ``p`` is
-        an independent probability in ``[0, 1]``; they do not have to sum to 1.
-    """
-    import io
-    import json
+        Parameters
+        ----------
+        image_url
+            URL of the image to score.
 
-    import requests
-    from PIL import Image
-    from transformers import CLIPModel, CLIPProcessor
+        Returns
+        -------
+        str
+            JSON-encoded object of the form
+            ``{policy_scores: {name: p}, max_policy, max_score}``. Each ``p`` is
+            an independent probability in ``[0, 1]``; they do not have to sum to 1.
+        """
+        import io
+        import json
 
-    log.info("Downloading image: %s", image_url)
-    resp = requests.get(image_url, timeout=30, headers={"User-Agent": "ChalkModeration/1.0"})
-    resp.raise_for_status()
-    img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+        import requests
+        from PIL import Image
+        from transformers import CLIPModel, CLIPProcessor
 
-    log.info("Loading CLIP %s", MODEL_NAME)
-    model = CLIPModel.from_pretrained(MODEL_NAME)
-    processor = CLIPProcessor.from_pretrained(MODEL_NAME)
+        log.info("Downloading image: %s", image_url)
+        resp = requests.get(image_url, timeout=30, headers={"User-Agent": "ChalkModeration/1.0"})
+        resp.raise_for_status()
+        img = Image.open(io.BytesIO(resp.content)).convert("RGB")
 
-    keys = list(POLICY_PROMPTS.keys())
-    n_options = 1 + len(BENIGN_ALTERNATIVES)
+        log.info("Loading CLIP %s", MODEL_NAME)
+        model = CLIPModel.from_pretrained(MODEL_NAME)
+        processor = CLIPProcessor.from_pretrained(MODEL_NAME)
 
-    # One forward pass over all prompt groups; reshape afterwards.
-    flat_prompts: list[str] = []
-    for k in keys:
-        flat_prompts.append(POLICY_PROMPTS[k])
-        flat_prompts.extend(BENIGN_ALTERNATIVES)
+        keys = list(POLICY_PROMPTS.keys())
+        n_options = 1 + len(BENIGN_ALTERNATIVES)
 
-    log.info("Scoring %d policies vs %d benign alternatives", len(keys), len(BENIGN_ALTERNATIVES))
-    inputs = processor(text=flat_prompts, images=img, return_tensors="pt", padding=True)
-    logits = model(**inputs).logits_per_image                   # (1, len(keys) * n_options)
-    grouped = logits.view(len(keys), n_options)                 # (policies, [pos, benigns...])
-    probs = grouped.softmax(dim=-1)                             # per-policy softmax
-    scores = probs[:, 0].tolist()                               # P(positive) per policy
+        # One forward pass over all prompt groups; reshape afterwards.
+        flat_prompts: list[str] = []
+        for k in keys:
+            flat_prompts.append(POLICY_PROMPTS[k])
+            flat_prompts.extend(BENIGN_ALTERNATIVES)
 
-    policy_scores = {k: round(float(s), 4) for k, s in zip(keys, scores)}
-    max_policy = max(policy_scores, key=policy_scores.__getitem__)
+        log.info("Scoring %d policies vs %d benign alternatives", len(keys), len(BENIGN_ALTERNATIVES))
+        inputs = processor(text=flat_prompts, images=img, return_tensors="pt", padding=True)
+        logits = model(**inputs).logits_per_image                   # (1, len(keys) * n_options)
+        grouped = logits.view(len(keys), n_options)                 # (policies, [pos, benigns...])
+        probs = grouped.softmax(dim=-1)                             # per-policy softmax
+        scores = probs[:, 0].tolist()                               # P(positive) per policy
 
-    return json.dumps({
-        "policy_scores": policy_scores,
-        "max_policy": max_policy,
-        "max_score": policy_scores[max_policy],
-    })
+        policy_scores = {k: round(float(s), 4) for k, s in zip(keys, scores)}
+        max_policy = max(policy_scores, key=policy_scores.__getitem__)
+
+        return json.dumps({
+            "policy_scores": policy_scores,
+            "max_policy": max_policy,
+            "max_score": policy_scores[max_policy],
+        })
+
+
+if __name__ == "__main__":
+    main()

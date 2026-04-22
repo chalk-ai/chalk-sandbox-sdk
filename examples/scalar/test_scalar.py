@@ -35,9 +35,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from test_utils import make_function_name
 
 
-def _deploy_script(script_name: str) -> None:
+def _deploy_script(script_name: str, function_name: str | None = None) -> None:
+    cmd = [sys.executable, os.path.join(EXAMPLE_DIR, script_name)]
+    if function_name:
+        cmd.extend(["--function-name", function_name])
     result = subprocess.run(
-        [sys.executable, os.path.join(EXAMPLE_DIR, script_name)],
+        cmd,
         capture_output=True,
         text=True,
         env=os.environ,
@@ -69,7 +72,7 @@ def _make_remote():
 class TestSyncScalar:
     @classmethod
     def setup_class(cls):
-        _deploy_script("deploy_sync.py")
+        _deploy_script("deploy_sync.py", make_function_name("add"))
 
     @classmethod
     def teardown_class(cls):
@@ -147,7 +150,7 @@ class TestSyncScalar:
 class TestAsyncScalar:
     @classmethod
     def setup_class(cls):
-        _deploy_script("deploy_async.py")
+        _deploy_script("deploy_async.py", make_function_name("async-add"))
 
     @classmethod
     def teardown_class(cls):

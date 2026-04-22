@@ -12,23 +12,43 @@ Usage:
 import asyncio
 import logging
 import os
-import sys
-from pathlib import Path
+import subprocess
 
 import pyarrow as pa
 from chalkdf import Remote
 
-# Add examples dir to path so we can import test_utils
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from test_utils import make_function_name
-
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
 
+
+def _get_test_run_hash() -> str:
+    """Get a short hash for this test run, only in CI."""
+    if not os.environ.get("CI") and not os.environ.get("BUILDKITE"):
+        return ""
+    if hash_env := os.environ.get("CHALK_TEST_RUN_HASH"):
+        return hash_env[:8]
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()[:8]
+    except Exception:
+        pass
+    return ""
+
+
+_HASH = _get_test_run_hash()
+_FUNCTION_NAME = f"chalk-sandbox-test-{_HASH}-df-groupby-sum" if _HASH else "chalk-sandbox-test-df-groupby-sum"
+
+
 async def main() -> None:
     remote = Remote()
-    fn = remote.function(make_function_name("df-groupby-sum"), output_type=pa.int64())
-    log.info("Calling remote function %s...", make_function_name("df-groupby-sum"))
+    fn = remote.function(_FUNCTION_NAME, output_type=pa.int64())
+    log.info("Calling remote function %s...", _FUNCTION_NAME)
     result = await fn(1)
     log.info("Result: %s", result)
     print(f"Remote computed grand total: {result}")

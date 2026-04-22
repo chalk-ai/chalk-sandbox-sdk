@@ -40,10 +40,13 @@ def _make_remote():
     return Remote(chalk_client=client)
 
 
-def _deploy_script(script_name: str) -> None:
+def _deploy_script(script_name: str, function_name: str | None = None) -> None:
     """Run a deploy script as a subprocess."""
+    cmd = [sys.executable, os.path.join(EXAMPLE_DIR, script_name)]
+    if function_name:
+        cmd.extend(["--function-name", function_name])
     result = subprocess.run(
-        [sys.executable, os.path.join(EXAMPLE_DIR, script_name)],
+        cmd,
         capture_output=True,
         text=True,
         env=os.environ,
@@ -61,7 +64,7 @@ def _deploy_script(script_name: str) -> None:
 class TestSyncGenerator:
     @classmethod
     def setup_class(cls):
-        _deploy_script("deploy_sync.py")
+        _deploy_script("deploy_sync.py", make_function_name("count-up"))
 
     @classmethod
     def teardown_class(cls):
@@ -112,7 +115,7 @@ class TestSyncGenerator:
 class TestAsyncGenerator:
     @classmethod
     def setup_class(cls):
-        _deploy_script("deploy_async.py")
+        _deploy_script("deploy_async.py", make_function_name("async-count-up"))
 
     @classmethod
     def teardown_class(cls):
