@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     import httpx
 
     from chalkcompute._image import Image as _Image
+    from chalkcompute._secret import Secret as _Secret
 
 _SVC = "chalk.scalinggroup.v1.ScalingGroupManagerService"
 
@@ -124,12 +125,16 @@ class ScalingGroup:
         memory: str | None = None,
         gpu: str | None = None,
         env: dict[str, str] | None = None,
+        secrets: list[_Secret] | None = None,
+        volumes: list[tuple[str, str]] | None = None,
         entrypoint: list[str] | None = None,
         port: int = 8080,
         protocol: str = "http",
         min_replicas: int = 1,
         max_replicas: int = 1,
-        volumes: list[tuple[str, str]] | None = None,
+        shutdown_delay_seconds: int | None = None,
+        scaling_interval_seconds: int | None = None,
+        target_cpu_utilization_percentage: int | None = None,
     ) -> None:
         self._image = image
         if name is not None:
@@ -139,17 +144,21 @@ class ScalingGroup:
         self._memory = memory
         self._gpu = gpu
         self._env = env or {}
+        self._secrets: list[_Secret] = list(secrets or [])
+        self._volumes: list[tuple[str, str]] = list(volumes or [])
         self._entrypoint = entrypoint
         self._port = port
         self._protocol = protocol
         self._min_replicas = min_replicas
         self._max_replicas = max_replicas
+        self._shutdown_delay_seconds = shutdown_delay_seconds
+        self._scaling_interval_seconds = scaling_interval_seconds
+        self._target_cpu_utilization_percentage = target_cpu_utilization_percentage
 
         # Set after .deploy()
         self._built_image_uri: str | None = None
         self._scaling_group_id: str | None = None
         self._scaling_group_info: ScalingGroupInfo | None = None
-        self._volumes: list[tuple[str, str]] = list(volumes or [])
 
         self._client = ConnectClient()
 
@@ -178,7 +187,9 @@ class ScalingGroup:
         resp = sg._client.rpc(_SVC, "GetScalingGroup", {"id": scaling_group_id})
         if resp.status_code != 200:
             raise ScalingGroupError(f"GetScalingGroup failed: {resp.text}")
-        sg._scaling_group_info = _parse_scaling_group_response(resp.json()["scalingGroup"])
+        sg._scaling_group_info = _parse_scaling_group_response(
+            resp.json()["scalingGroup"]
+        )
         sg._scaling_group_id = sg._scaling_group_info.id
         return sg
 
@@ -205,7 +216,9 @@ class ScalingGroup:
         resp = sg._client.rpc(_SVC, "GetScalingGroup", {"name": name})
         if resp.status_code != 200:
             raise ScalingGroupError(f"GetScalingGroup failed: {resp.text}")
-        sg._scaling_group_info = _parse_scaling_group_response(resp.json()["scalingGroup"])
+        sg._scaling_group_info = _parse_scaling_group_response(
+            resp.json()["scalingGroup"]
+        )
         sg._scaling_group_id = sg._scaling_group_info.id
         sg._name = name
         return sg
@@ -219,15 +232,19 @@ class ScalingGroup:
         sg._memory = None
         sg._gpu = None
         sg._env = {}
+        sg._secrets = []
+        sg._volumes = []
         sg._entrypoint = None
         sg._port = 8080
         sg._protocol = "http"
         sg._min_replicas = 1
         sg._max_replicas = 1
+        sg._shutdown_delay_seconds = None
+        sg._scaling_interval_seconds = None
+        sg._target_cpu_utilization_percentage = None
         sg._built_image_uri = None
         sg._scaling_group_id = None
         sg._scaling_group_info = None
-        sg._volumes = []
         sg._client = ConnectClient()
         return sg
 
@@ -268,8 +285,10 @@ class ScalingGroup:
         if isinstance(self._image, Image):
             logger.info("Building image from %r...", self._image)
             self._built_image_uri = build_image(
-                self._client, self._image,
-                poll_interval=poll_interval, timeout=build_timeout,
+                self._client,
+                self._image,
+                poll_interval=poll_interval,
+                timeout=build_timeout,
             )
             logger.info("Image built: %s", self._built_image_uri)
         else:
@@ -283,7 +302,9 @@ class ScalingGroup:
             logger.info("Uploading %d local file(s) to volume(s)...", len(lazy_files))
             assert isinstance(self._image, Image)
             self._volumes += upload_lazy_files(
-                self._client, self._image, volume_prefix="sg-files",
+                self._client,
+                self._image,
+                volume_prefix="sg-files",
             )
             for vn, mp in self._volumes:
                 logger.info("  Volume created: %s (mount: %s)", vn, mp)
@@ -312,18 +333,36 @@ class ScalingGroup:
         if resources:
             container_spec["resources"] = resources
 
+        if self._secrets:
+            from chalkcompute._secret import resolve_lazy_secrets
+
+            if any(s.is_lazy for s in self._secrets):
+                resolved, _ = resolve_lazy_secrets(self._secrets, self._client)
+                self._secrets = resolved
+            container_spec["secretRefs"] = [s._to_proto_dict() for s in self._secrets]
+
         if self._volumes:
             container_spec["volumes"] = [
                 {"name": vol_name, "mountPath": mount_path, "type": "chalkfs"}
                 for vol_name, mount_path in self._volumes
             ]
 
+        scaling_spec: dict[str, Any] = {
+            "minReplicas": self._min_replicas,
+            "maxReplicas": self._max_replicas,
+        }
+        if self._shutdown_delay_seconds is not None:
+            scaling_spec["shutdownDelaySeconds"] = self._shutdown_delay_seconds
+        if self._scaling_interval_seconds is not None:
+            scaling_spec["windowSeconds"] = self._scaling_interval_seconds
+        if self._target_cpu_utilization_percentage is not None:
+            scaling_spec["targetCpuUtilizationPercentage"] = (
+                self._target_cpu_utilization_percentage
+            )
+
         spec: dict[str, Any] = {
             "containerSpec": container_spec,
-            "scalingSpec": {
-                "minReplicas": self._min_replicas,
-                "maxReplicas": self._max_replicas,
-            },
+            "scalingSpec": scaling_spec,
         }
 
         logger.info("Deploying scaling group '%s'...", sg_name)
@@ -336,24 +375,31 @@ class ScalingGroup:
         self._scaling_group_id = self._scaling_group_info.id
         logger.info(
             "Scaling group created: %s (status=%s)",
-            self._scaling_group_id, self._scaling_group_info.status,
+            self._scaling_group_id,
+            self._scaling_group_info.status,
         )
 
         # 4. Poll until Running
         if self._scaling_group_info.status != "Running":
             self._poll_until_running(
-                poll_interval=poll_interval, timeout=ready_timeout,
+                poll_interval=poll_interval,
+                timeout=ready_timeout,
             )
 
         return self
 
     def _poll_until_running(
-        self, *, poll_interval: float, timeout: float,
+        self,
+        *,
+        poll_interval: float,
+        timeout: float,
     ) -> None:
         assert self._scaling_group_id is not None
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            resp = self._client.rpc(_SVC, "GetScalingGroup", {"id": self._scaling_group_id})
+            resp = self._client.rpc(
+                _SVC, "GetScalingGroup", {"id": self._scaling_group_id}
+            )
             if resp.status_code != 200:
                 raise ScalingGroupError(f"GetScalingGroup failed: {resp.text}")
             info = _parse_scaling_group_response(resp.json()["scalingGroup"])
@@ -415,7 +461,9 @@ class ScalingGroup:
                 "Scaling group has no web_url. Call .deploy() first or .refresh() to update."
             )
         url = f"{self._scaling_group_info.web_url}{path}"
-        return httpx.request(method, url, json=json, content=data, headers=headers, timeout=timeout)
+        return httpx.request(
+            method, url, json=json, content=data, headers=headers, timeout=timeout
+        )
 
     def wait_ready(
         self,
@@ -477,7 +525,9 @@ class ScalingGroup:
             self._scaling_group_info = None
 
         for vol_name, _ in self._volumes:
-            self._client.rpc("chalk.volume.v1.VolumeService", "DeleteVolume", {"name": vol_name})
+            self._client.rpc(
+                "chalk.volume.v1.VolumeService", "DeleteVolume", {"name": vol_name}
+            )
         self._volumes = []
 
     def refresh(self) -> ScalingGroupInfo:
@@ -498,7 +548,9 @@ class ScalingGroup:
         resp = self._client.rpc(_SVC, "GetScalingGroup", {"id": self._scaling_group_id})
         if resp.status_code != 200:
             raise ScalingGroupError(f"GetScalingGroup failed: {resp.text}")
-        self._scaling_group_info = _parse_scaling_group_response(resp.json()["scalingGroup"])
+        self._scaling_group_info = _parse_scaling_group_response(
+            resp.json()["scalingGroup"]
+        )
         return self._scaling_group_info
 
     @property
@@ -521,7 +573,9 @@ class ScalingGroup:
 
     def __repr__(self) -> str:
         status = (
-            self._scaling_group_info.status if self._scaling_group_info else "not deployed"
+            self._scaling_group_info.status
+            if self._scaling_group_info
+            else "not deployed"
         )
         return f"ScalingGroup(name={self._name!r}, status={status})"
 

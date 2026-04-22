@@ -427,12 +427,15 @@ class RemoteClass:
         memory: str | None = None,
         gpu: str | None = None,
         env: dict[str, str] | None = None,
+        secrets: list[_Secret] | None = None,
+        volumes: list[tuple[str, str]] | None = None,
         min_replicas: int = 1,
         max_replicas: int = 1,
-        volumes: list[tuple[str, str]] | None = None,
-        secrets: list[_Secret] | None = None,
+        shutdown_delay_seconds: int | None = None,
+        scaling_interval_seconds: int | None = None,
+        target_cpu_utilization_percentage: int | None = None,
+        target_queue_depth: int | None = None,
         serialization_format: SerializationFormat = "pyarrow",
-        suspend_cooldown_period: int | None = None,
         options: dict[str, str] | None = None,
         max_buffer_duration: int | None = None,
         max_batching_size: int | None = None,
@@ -449,16 +452,21 @@ class RemoteClass:
         self._memory = memory
         self._gpu = gpu
         self._env = env or {}
+        self._secrets: list[_Secret] = list(secrets or [])
+        self._volumes: list[tuple[str, str]] = list(volumes or [])
         self._min_replicas = min_replicas
         self._max_replicas = max_replicas
-        self._volumes: list[tuple[str, str]] = list(volumes or [])
-        self._secrets: list[_Secret] = list(secrets or [])
+        self._shutdown_delay_seconds = shutdown_delay_seconds
+        self._scaling_interval_seconds = scaling_interval_seconds
+        self._target_cpu_utilization_percentage = target_cpu_utilization_percentage
+        self._target_queue_depth = target_queue_depth
         self._serialization_format: SerializationFormat = serialization_format
-        self._suspend_cooldown_period = suspend_cooldown_period
         self._options = options or {}
         self._max_buffer_duration = max_buffer_duration
         self._max_batching_size = max_batching_size
-        self._retries = RetryPolicy.from_int_or_policy(retries) if retries is not None else None
+        self._retries = (
+            RetryPolicy.from_int_or_policy(retries) if retries is not None else None
+        )
         self._rate_limit_key = rate_limit_key
 
         self._client = ConnectClient()
@@ -579,12 +587,15 @@ class RemoteClass:
         rc._memory = None
         rc._gpu = None
         rc._env = {}
+        rc._secrets = []
+        rc._volumes = []
         rc._min_replicas = 1
         rc._max_replicas = 1
-        rc._volumes = []
-        rc._secrets = []
+        rc._shutdown_delay_seconds = None
+        rc._scaling_interval_seconds = None
+        rc._target_cpu_utilization_percentage = None
+        rc._target_queue_depth = None
         rc._serialization_format = "pyarrow"
-        rc._suspend_cooldown_period = None
         rc._options = {}
         rc._max_buffer_duration = None
         rc._max_batching_size = None
@@ -691,7 +702,7 @@ class RemoteClass:
         )
 
         ckey = f"class:{self._class_name}"
-        progress_add(ckey, "class", f"Class \"{self._class_name}\"")
+        progress_add(ckey, "class", f'Class "{self._class_name}"')
 
         try:
             # 1. Build deploy image
@@ -715,7 +726,9 @@ class RemoteClass:
             for method_info in self._methods.values():
                 input_schema, output_schema = _build_method_schemas(method_info.func)
 
-                name_prefix = self._explicit_name or sanitize_dns_label(self._class_name)
+                name_prefix = self._explicit_name or sanitize_dns_label(
+                    self._class_name
+                )
                 method_label = sanitize_dns_label(method_info.name)
                 func_name = f"{name_prefix}.{method_label}"
                 if self._explicit_name:
@@ -749,24 +762,41 @@ class RemoteClass:
                     from chalkcompute._secret import resolve_lazy_secrets
 
                     if any(s.is_lazy for s in self._secrets):
-                        resolved, _upserted = resolve_lazy_secrets(self._secrets, self._client)
+                        resolved, _upserted = resolve_lazy_secrets(
+                            self._secrets, self._client
+                        )
                         self._secrets = resolved
-                    container_spec["secretRefs"] = [s._to_proto_dict() for s in self._secrets]
+                    container_spec["secretRefs"] = [
+                        s._to_proto_dict() for s in self._secrets
+                    ]
+
+                scaling_spec: dict[str, Any] = {
+                    "minReplicas": self._min_replicas,
+                    "maxReplicas": self._max_replicas,
+                }
+                if self._shutdown_delay_seconds is not None:
+                    scaling_spec["shutdownDelaySeconds"] = self._shutdown_delay_seconds
+                if self._scaling_interval_seconds is not None:
+                    scaling_spec["windowSeconds"] = self._scaling_interval_seconds
+                if self._target_cpu_utilization_percentage is not None:
+                    scaling_spec["targetCpuUtilizationPercentage"] = (
+                        self._target_cpu_utilization_percentage
+                    )
+                if self._target_queue_depth is not None:
+                    scaling_spec["functionQueueDepthTrigger"] = {
+                        "functionName": func_name,
+                        "targetQueueDepth": self._target_queue_depth,
+                    }
 
                 spec: dict[str, Any] = {
                     "containerSpec": container_spec,
-                    "scalingSpec": {
-                        "minReplicas": self._min_replicas,
-                        "maxReplicas": self._max_replicas,
-                    },
+                    "scalingSpec": scaling_spec,
                 }
 
                 # Build function-level config
                 function_config: dict[str, Any] = {}
                 if self._serialization_format != "pyarrow":
                     function_config["serializationFormat"] = self._serialization_format
-                if self._suspend_cooldown_period is not None:
-                    function_config["suspendCooldownPeriod"] = self._suspend_cooldown_period
                 if self._options:
                     function_config["options"] = self._options
                 if self._max_buffer_duration is not None:
@@ -821,10 +851,14 @@ class RemoteClass:
                 rf._version_info = version_info
                 rf._web_url = web_url
                 rf._port = port
-                rf._input_field_names = _extract_field_names(efv.get("inputArrowSchema"))
+                rf._input_field_names = _extract_field_names(
+                    efv.get("inputArrowSchema")
+                )
                 method_info.remote_function = rf
 
-                logger.info("  %s v%s (id=%s)", func_name, version_info.version, version_info.id)
+                logger.info(
+                    "  %s v%s (id=%s)", func_name, version_info.version, version_info.id
+                )
                 progress_done(mkey)
 
                 if sg_status != "Running":
@@ -1029,12 +1063,15 @@ def cls(
     gpu: str | None = None,
     name: str | None = None,
     env: dict[str, str] | None = None,
+    secrets: list[_Secret] | None = None,
+    volumes: list[tuple[str, str]] | None = None,
     min_replicas: int = 1,
     max_replicas: int = 1,
-    volumes: list[tuple[str, str]] | None = None,
-    secrets: list[_Secret] | None = None,
+    shutdown_delay_seconds: int | None = None,
+    scaling_interval_seconds: int | None = None,
+    target_cpu_utilization_percentage: int | None = None,
+    target_queue_depth: int | None = None,
     serialization_format: SerializationFormat = "pyarrow",
-    suspend_cooldown_period: int | None = None,
     options: dict[str, str] | None = None,
     max_buffer_duration: int | None = None,
     max_batching_size: int | None = None,
@@ -1068,26 +1105,37 @@ def cls(
         Custom class name. Defaults to the class's ``__name__``.
     env
         Environment variables to pass to the class containers.
+    secrets
+        List of :class:`~chalkcompute.Secret` references to inject.
+    volumes
+        List of ``(name, mount_path)`` tuples for persistent storage.
     min_replicas
         Minimum number of replicas per method.
     max_replicas
         Maximum number of replicas per method.
-    volumes
-        List of ``(name, mount_path)`` tuples for persistent storage.
-    secrets
-        List of :class:`~chalkcompute.Secret` references to inject.
+    shutdown_delay_seconds
+        Graceful termination period in seconds before replicas are forcibly
+        killed during scale-down. Defaults to 30s on the server.
+    scaling_interval_seconds
+        How often (in seconds) the autoscaler scrapes metrics to make scaling
+        decisions. Defaults to 60s on the server.
+    target_cpu_utilization_percentage
+        Target CPU utilization percentage (0-100) that drives autoscaling.
+    target_queue_depth
+        Target pending-request queue depth per replica. When set, the
+        autoscaler scales on each method's own queue depth.
     serialization_format
         Wire format for arguments and results. Currently only ``"pyarrow"``
         is supported.
-    suspend_cooldown_period
-        Time in seconds until containers shut down after the last request.
     options
         Arbitrary key-value options forwarded to the Chalk platform.
     max_buffer_duration
         Maximum time in milliseconds to buffer incoming items before invoking
-        the handler.
+        the handler. Defaults to 1000 ms when batching is enabled. When
+        batching is enabled, handler args are lists.
     max_batching_size
         Maximum number of items to accumulate before invoking the handler.
+        Defaults to 10 when batching is enabled.
     retries
         Retry policy for handler invocations. Pass an ``int`` for simple
         max-attempts with default exponential backoff, or a
@@ -1109,12 +1157,15 @@ def cls(
             memory=memory,
             gpu=gpu,
             env=env,
+            secrets=secrets,
+            volumes=volumes,
             min_replicas=min_replicas,
             max_replicas=max_replicas,
-            volumes=volumes,
-            secrets=secrets,
+            shutdown_delay_seconds=shutdown_delay_seconds,
+            scaling_interval_seconds=scaling_interval_seconds,
+            target_cpu_utilization_percentage=target_cpu_utilization_percentage,
+            target_queue_depth=target_queue_depth,
             serialization_format=serialization_format,
-            suspend_cooldown_period=suspend_cooldown_period,
             options=options,
             max_buffer_duration=max_buffer_duration,
             max_batching_size=max_batching_size,

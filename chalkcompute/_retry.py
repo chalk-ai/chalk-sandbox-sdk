@@ -48,6 +48,10 @@ class RetryPolicy:
     """Tuple of exception types that trigger a retry. Non-matching exceptions
     propagate immediately without consuming retry budget."""
 
+    key: str | None = None
+    """Shared-bucket identifier. Functions using the same key share one retry
+    context. Defaults to the function's qualified name if omitted."""
+
     @staticmethod
     def exponential(
         attempts: int = 3,
@@ -57,6 +61,7 @@ class RetryPolicy:
         max_wait: float = 60.0,
         jitter: bool = True,
         retry_on: tuple[type[BaseException], ...] = (Exception,),
+        key: str | None = None,
     ) -> RetryPolicy:
         """Create a policy with exponential backoff.
 
@@ -92,6 +97,7 @@ class RetryPolicy:
             max_wait_seconds=max_wait,
             jitter=jitter,
             retry_on=retry_on,
+            key=key,
         )
 
     @staticmethod
@@ -101,6 +107,7 @@ class RetryPolicy:
         delay: float = 1.0,
         jitter: bool = False,
         retry_on: tuple[type[BaseException], ...] = (Exception,),
+        key: str | None = None,
     ) -> RetryPolicy:
         """Create a policy with fixed delay between retries.
 
@@ -136,6 +143,7 @@ class RetryPolicy:
             max_wait_seconds=delay,
             jitter=jitter,
             retry_on=retry_on,
+            key=key,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -158,6 +166,8 @@ class RetryPolicy:
         }
         if self.retry_on != (Exception,):
             d["retry_on"] = [exc.__name__ for exc in self.retry_on]
+        if self.key is not None:
+            d["key"] = self.key
         return d
 
     @staticmethod

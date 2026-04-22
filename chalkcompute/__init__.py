@@ -28,6 +28,8 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "FunctionBuildError": ("chalkcompute._function", "FunctionBuildError"),
     "FunctionVersionInfo": ("chalkcompute._function", "FunctionVersionInfo"),
     "RetryPolicy": ("chalkcompute._retry", "RetryPolicy"),
+    "RateLimitPolicy": ("chalkcompute._rate_limit", "RateLimitPolicy"),
+    "ConcurrencyPolicy": ("chalkcompute._concurrency", "ConcurrencyPolicy"),
     "function": ("chalkcompute._function", "function"),
     # _image.py
     "Image": ("chalkcompute._image", "Image"),
