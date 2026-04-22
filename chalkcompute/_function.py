@@ -42,8 +42,8 @@ from chalkcompute._connect import (
     ConnectClient,
     build_image,
     grpc_target_from_url,
-    upload_lazy_files,
 )
+from chalkcompute._volume import VolumeClient, upload_lazy_files
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import traced
 from chalkcompute._retry import RetryPolicy
@@ -468,7 +468,8 @@ def _build_and_upload(
         )
         logger.info("Uploading %d local file(s)...", len(deploy_image.lazy_local_files))
         new_volumes = upload_lazy_files(
-            client, deploy_image, volume_prefix=volume_prefix
+            VolumeClient.from_connect(client), deploy_image,
+            volume_prefix=volume_prefix,
         )
         progress_done(vkey)
     return image_uri, new_volumes

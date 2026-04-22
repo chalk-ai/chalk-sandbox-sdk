@@ -25,7 +25,8 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from chalkcompute._connect import ConnectClient, upload_lazy_files
+from chalkcompute._connect import ConnectClient
+from chalkcompute._volume import VolumeClient, upload_lazy_files
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import traced
 
@@ -406,7 +407,8 @@ class Container:
                 logger.info("Uploading %d local file(s) to volume(s)...", len(lazy_files))
                 assert isinstance(self._image, Image)
                 self._volumes += upload_lazy_files(
-                    self._client, self._image, volume_prefix="container-files",
+                    VolumeClient.from_connect(self._client), self._image,
+                    volume_prefix="container-files",
                 )
                 for vn, mp in self._volumes:
                     logger.info("  Volume created: %s (mount: %s)", vn, mp)
