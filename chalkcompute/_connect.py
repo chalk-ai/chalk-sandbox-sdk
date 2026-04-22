@@ -1,17 +1,15 @@
 """Shared Connect-protocol client for Chalk API services.
 
 Provides auth (OAuth token exchange), Connect-protocol RPC dispatch,
-image build polling, and volume file upload.
+and image build polling.
 """
 
 from __future__ import annotations
 
-import base64
 import logging
 import os
 import re
 import time
-import uuid
 from typing import TYPE_CHECKING, Any
 
 import grpc
@@ -23,7 +21,7 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     import httpx
 
-    from chalkcompute._image import Image, LazyLocalFile
+    from chalkcompute._image import Image
 
 
 class ConnectError(Exception):
@@ -238,76 +236,6 @@ def build_image(
     raise ConnectError(f"Image build {build_id} timed out after {timeout}s")
 
 
-@_traced("chalkcompute.upload_lazy_files")
-def upload_lazy_files(
-    client: ConnectClient,
-    image: Image,
-    *,
-    volume_prefix: str = "files",
-) -> list[tuple[str, str]]:
-    """Upload lazy local files to volumes.
-
-    Parameters
-    ----------
-    client
-        Authenticated Connect client.
-    image
-        The image whose lazy local files should be uploaded.
-    volume_prefix
-        Prefix for the generated volume names.
-
-    Returns
-    -------
-    list[tuple[str, str]]
-        Pairs of ``(volume_name, mount_path)`` for each created volume.
-
-    Raises
-    ------
-    ConnectError
-        If volume creation or upload fails.
-    """
-    try:
-        dir_to_files = image.lazy_local_files_grouped_for_volume_mounts()
-    except ValueError as e:
-        raise ConnectError(str(e)) from e
-
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    def _put_file(vol_name: str, lf: LazyLocalFile, dest_dir: str) -> None:
-        from pathlib import Path
-
-        content = Path(lf.src).read_bytes()
-        encoded = base64.b64encode(content).decode("ascii")
-        rel_path = os.path.relpath(lf.dest, dest_dir)
-        put_resp = client.rpc(
-            "chalk.volume.v1.VolumeService",
-            "PutFile",
-            {"volumeName": vol_name, "path": rel_path, "data": encoded},
-        )
-        if put_resp.status_code != 200:
-            raise ConnectError(f"PutFile failed for {lf.dest}: {put_resp.text}")
-
-    volumes: list[tuple[str, str]] = []
-    for dest_dir, files in dir_to_files.items():
-        vol_name = f"{volume_prefix}-{uuid.uuid4().hex[:12]}"
-        resp = client.rpc(
-            "chalk.volume.v1.VolumeService",
-            "CreateVolume",
-            {"name": vol_name},
-        )
-        if resp.status_code != 200:
-            raise ConnectError(f"CreateVolume failed: {resp.text}")
-
-        with ThreadPoolExecutor(max_workers=32) as pool:
-            futures = [pool.submit(_put_file, vol_name, lf, dest_dir) for lf in files]
-            for fut in as_completed(futures):
-                fut.result()
-
-        volumes.append((vol_name, dest_dir))
-
-    return volumes
-
-
 def raise_for_grpc_error(
     e: grpc.RpcError,
     code_map: dict[grpc.StatusCode, tuple[type[Exception], str]],
@@ -328,6 +256,7 @@ def raise_for_grpc_error(
     if mapped is not None:
         exc_cls, message = mapped
         raise exc_cls(message) from e
+
 
 
 def grpc_target_from_url(

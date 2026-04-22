@@ -35,9 +35,10 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from chalkcompute._connect import ConnectClient, build_image, upload_lazy_files
+from chalkcompute._connect import ConnectClient, build_image
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import traced
+from chalkcompute._volume import VolumeClient, upload_lazy_files
 
 logger = logging.getLogger(__name__)
 
@@ -302,7 +303,7 @@ class ScalingGroup:
             logger.info("Uploading %d local file(s) to volume(s)...", len(lazy_files))
             assert isinstance(self._image, Image)
             self._volumes += upload_lazy_files(
-                self._client,
+                VolumeClient.from_connect(self._client),
                 self._image,
                 volume_prefix="sg-files",
             )

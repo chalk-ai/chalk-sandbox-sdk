@@ -38,8 +38,11 @@ Usage:
 from __future__ import annotations
 
 import datetime
+import hashlib
+import logging
 import os
-from collections.abc import Iterator
+import uuid
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,12 +52,29 @@ import grpc
 from chalkcompute._connect import ConnectClient, grpc_target_from_url, raise_for_grpc_error
 from chalkcompute._gen.chalk.volume.v1 import volume_pb2 as pb
 from chalkcompute._gen.chalk.volume.v1 import volume_pb2_grpc as pb_grpc
+from chalkcompute._image import Image, LazyLocalFile
 from chalkcompute._tracing import traced
 
 # Aliases defined before VolumeClient, which has a ``.list()`` method that
 # would otherwise shadow the builtin ``list`` in class-scope name resolution.
 _GrpcMetadata = list[tuple[str, str]]
 _GrpcOptions = list[tuple[str, int]]
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Upload routing constants
+# ---------------------------------------------------------------------------
+
+#: Files at or below this size are uploaded via gRPC inline PutFile(data=...).
+#: Files above this threshold use presigned object-storage upload.
+_INLINE_THRESHOLD_BYTES: int = 8 * 1024 * 1024  # 8 MB
+
+#: Part size sent to GetObjectUploadUri for multipart uploads.
+_PRESIGNED_PART_SIZE_BYTES: int = 10 * 1024 * 1024  # 10 MB
+
+#: Maximum number of signed-URL refreshes before giving up on a presigned upload.
+_PRESIGNED_MAX_RETRIES: int = 3
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -179,7 +199,7 @@ class Volume:
     """
 
     def __init__(self, name: str, client: VolumeClient | None = None) -> None:
-        self._client = client or VolumeClient.from_env()
+        self._client = client or VolumeClient.from_connect(ConnectClient())
         self._name = name
         self._info: VolumeInfo | None = None
 
@@ -240,6 +260,10 @@ class Volume:
     def put_file(self, path: str, data: bytes | str) -> Volume:
         """Write a file into the volume.
 
+        Small files (≤ 8 MB) are uploaded via gRPC inline ``PutFile(data=...)``.
+        Large files use a presigned object-storage URL (``GetObjectUploadUri`` →
+        direct S3/GCS upload → ``PutFile(storageObjectId=...)``).
+
         Parameters
         ----------
         path
@@ -254,14 +278,7 @@ class Volume:
         """
         if isinstance(data, str):
             data = data.encode("utf-8")
-        try:
-            self._client._stub.PutFile(
-                pb.PutFileRequest(volume_name=self._name, path=path, data=data),
-                metadata=self._client._metadata,
-            )
-        except grpc.RpcError as e:
-            _handle_rpc_error(e, self._name)
-            raise
+        _upload_bytes(self._client, self._name, path, data)
         return self
 
     def put_file_from_path(self, path: str, local_path: str | Path) -> Volume:
@@ -416,22 +433,17 @@ class VolumeClient:
             Optional gRPC channel options.
         """
         self._target = target
-        self._metadata = metadata
+        self._metadata = tuple(metadata) if metadata else ()
         if credentials is not None:
             self._channel = grpc.secure_channel(target, credentials, options=options)
         else:
             self._channel = grpc.insecure_channel(target, options=options)
         self._stub = pb_grpc.VolumeServiceStub(self._channel)
+        self._obj_stub = pb_grpc.DataPlaneObjectStorageServiceStub(self._channel)  # type: ignore
 
     @classmethod
-    def from_env(cls) -> VolumeClient:
-        """Create a ``VolumeClient`` from standard ``CHALK_*`` environment vars."""
-        if os.environ.get("CHALK_API_SERVER") is None:
-            raise ValueError(
-                "CHALK_API_SERVER must be set to construct Volume from env"
-            )
-
-        connect = ConnectClient()
+    def from_connect(cls, connect: ConnectClient) -> VolumeClient:
+        """Create a ``VolumeClient`` from an already-authenticated ``ConnectClient``."""
         connect._ensure_auth()
 
         host, _use_tls = grpc_target_from_url(connect._api_server or "")
@@ -543,6 +555,273 @@ class VolumeClient:
             metadata=self._metadata,
         )
         return [_pb_to_volume_info(v) for v in resp.volumes]
+
+
+# ---------------------------------------------------------------------------
+# Upload routing
+# ---------------------------------------------------------------------------
+
+
+def _upload_bytes(
+    client: VolumeClient, volume_name: str, path: str, data: bytes
+) -> None:
+    """Route a file upload to the right transport.
+
+    Files at or below ``_INLINE_THRESHOLD_BYTES`` are sent via gRPC inline
+    ``PutFile(data=...)``.  Larger files use a presigned object-storage upload
+    followed by ``PutFile(storageObjectId=...)``.
+    """
+    if len(data) <= _INLINE_THRESHOLD_BYTES:
+        _put_file_inline(client, volume_name, path, data)
+    else:
+        _put_file_presigned(client, volume_name, path, data)
+
+
+def _put_file_inline(
+    client: VolumeClient, volume_name: str, path: str, data: bytes
+) -> None:
+    """Upload via gRPC inline PutFile(data=...)."""
+    try:
+        client._stub.PutFile(
+            pb.PutFileRequest(volume_name=volume_name, path=path, data=data),
+            metadata=client._metadata,
+        )
+    except grpc.RpcError as e:
+        _handle_rpc_error(e, volume_name)
+        raise
+
+
+def _put_file_presigned(
+    client: VolumeClient, volume_name: str, path: str, data: bytes
+) -> None:
+    """Upload via presigned object-storage URL, then register with the volume.
+
+    Uses the gRPC ``DataPlaneObjectStorageServiceStub`` for
+    ``GetObjectUploadUri``, ``httpx`` for the direct object-storage transfer,
+    and gRPC ``VolumeServiceStub`` for the final ``PutFile(storageObjectId=...)``.
+    """
+    checksum = hashlib.md5(data).hexdigest()
+
+    def _get_uri():  # type: ignore[no-untyped-def]
+        return client._obj_stub.GetObjectUploadUri(
+            pb.GetObjectUploadUriRequest(
+                content_size=len(data),
+                hash=checksum,
+                part_size=_PRESIGNED_PART_SIZE_BYTES,
+            ),
+            metadata=client._metadata,
+        )
+
+    resp = _get_uri()
+    upload_type = resp.WhichOneof("upload")
+
+    if upload_type == "multipart":
+        storage_object_id = _upload_multipart(data, resp, _get_uri)
+    elif upload_type == "resumable":
+        storage_object_id = _upload_resumable(data, resp, _get_uri)
+    else:
+        raise VolumeError(f"Unsupported object-storage upload type: {upload_type!r}")
+
+    try:
+        client._stub.PutFile(
+            pb.PutFileRequest(
+                volume_name=volume_name,
+                path=path,
+                storage_object_id=storage_object_id,
+            ),
+            metadata=client._metadata,
+        )
+    except grpc.RpcError as e:
+        _handle_rpc_error(e, volume_name)
+        raise
+
+
+def _upload_multipart(
+    data: bytes,
+    resp: pb.GetObjectUploadUriResponse,
+    refresh: Callable[[], pb.GetObjectUploadUriResponse],
+) -> str:
+    """Upload via S3-style multipart presigned URLs.
+
+    On 401/403 from S3, refreshes all signed URLs via ``refresh()`` and restarts
+    from part 0 (S3 multipart uploads cannot be continued across credential sets).
+    """
+    import httpx
+
+    storage_object_id = resp.storage_object_id
+    all_uris = list(resp.multipart.signed_upload_uris)
+    part_uris = all_uris[:-1]
+    completion_uri = all_uris[-1]
+    n_parts = len(part_uris)
+
+    refresh_count = 0
+    etags: list[str] = []
+    i = 0
+    while i < n_parts:
+        chunk = data[
+            i * _PRESIGNED_PART_SIZE_BYTES : (i + 1) * _PRESIGNED_PART_SIZE_BYTES
+        ]
+        part_resp = httpx.put(part_uris[i], content=chunk, timeout=300)
+        if part_resp.status_code in (200, 204):
+            etags.append(part_resp.headers.get("ETag", ""))
+            i += 1
+            continue
+        if (
+            part_resp.status_code in (401, 403)
+            and refresh_count < _PRESIGNED_MAX_RETRIES
+        ):
+            refresh_count += 1
+            new_resp = refresh()
+            storage_object_id = new_resp.storage_object_id
+            all_uris = list(new_resp.multipart.signed_upload_uris)
+            part_uris = all_uris[:-1]
+            completion_uri = all_uris[-1]
+            etags.clear()
+            i = 0
+            continue
+        part_resp.raise_for_status()
+
+    parts_xml = "".join(
+        f"<Part><PartNumber>{j + 1}</PartNumber><ETag>{etag}</ETag></Part>"
+        for j, etag in enumerate(etags)
+    )
+    body = f"<CompleteMultipartUpload>{parts_xml}</CompleteMultipartUpload>".encode()
+    complete_resp = httpx.post(
+        completion_uri,
+        content=body,
+        headers={"Content-Type": "application/xml"},
+        timeout=60,
+    )
+    complete_resp.raise_for_status()
+    return storage_object_id
+
+
+def _upload_resumable(
+    data: bytes,
+    resp: pb.GetObjectUploadUriResponse,
+    refresh: Callable[[], pb.GetObjectUploadUriResponse],
+) -> str:
+    """Upload via GCS resumable signed URL.
+
+    Initiates a GCS resumable session (POST), then uploads all data in a single
+    PUT.  Refreshes the signed URL on 401/403 and re-initiates.
+    """
+    import httpx
+
+    storage_object_id = resp.storage_object_id
+    signed_uri = resp.resumable.signed_upload_uri
+    refresh_count = 0
+
+    while True:
+        # Initiate the resumable session.
+        init = httpx.post(
+            signed_uri,
+            content=b"",
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Content-Length": "0",
+                "x-goog-resumable": "start",
+            },
+            timeout=30,
+        )
+        if not init.is_success:
+            if (
+                init.status_code in (401, 403)
+                and refresh_count < _PRESIGNED_MAX_RETRIES
+            ):
+                refresh_count += 1
+                new_resp = refresh()
+                storage_object_id = new_resp.storage_object_id
+                signed_uri = new_resp.resumable.signed_upload_uri
+                continue
+            init.raise_for_status()
+
+        session_uri = init.headers.get("Location")
+        if not session_uri:
+            raise VolumeError(
+                "GCS resumable upload: missing Location header in initiation response"
+            )
+
+        put_resp = httpx.put(
+            session_uri,
+            content=data,
+            headers={"Content-Type": "application/octet-stream"},
+            timeout=600,
+        )
+        if put_resp.status_code in (200, 201):
+            return storage_object_id
+        if (
+            put_resp.status_code in (401, 403)
+            and refresh_count < _PRESIGNED_MAX_RETRIES
+        ):
+            refresh_count += 1
+            new_resp = refresh()
+            storage_object_id = new_resp.storage_object_id
+            signed_uri = new_resp.resumable.signed_upload_uri
+            continue
+        put_resp.raise_for_status()
+
+
+# ---------------------------------------------------------------------------
+# Lazy local file upload
+# ---------------------------------------------------------------------------
+
+
+@traced("chalkcompute.upload_lazy_files")
+def upload_lazy_files(
+    client: VolumeClient,
+    image: Image,
+    *,
+    volume_prefix: str = "files",
+) -> builtins.list[tuple[str, str]]:
+    """Upload an image's lazy local files to volumes.
+
+    Creates one volume per destination directory, uploads all files using the
+    shared ``_upload_bytes`` router (gRPC inline for small files, presigned
+    object-storage for large ones), and returns the ``(volume_name, mount_path)``
+    pairs needed to mount them in a container spec.
+
+    Parameters
+    ----------
+    client
+        Authenticated VolumeClient (gRPC).
+    image
+        The image whose lazy local files should be uploaded.
+    volume_prefix
+        Prefix for the generated volume names.
+
+    Returns
+    -------
+    list[tuple[str, str]]
+        Pairs of ``(volume_name, mount_path)`` for each created volume.
+    """
+    try:
+        dir_to_files = image.lazy_local_files_grouped_for_volume_mounts()
+    except ValueError as e:
+        raise VolumeError(str(e)) from e
+
+    if not dir_to_files:
+        return []
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _put_file(vol_name: str, lf: LazyLocalFile, dest_dir: str) -> None:
+        content = Path(lf.src).read_bytes()
+        rel_path = os.path.relpath(lf.dest, dest_dir)
+        _upload_bytes(client, vol_name, rel_path, content)
+
+    volumes: builtins.list[tuple[str, str]] = []
+    for dest_dir, files in dir_to_files.items():
+        vol = client.create(f"{volume_prefix}-{uuid.uuid4().hex[:12]}")
+
+        with ThreadPoolExecutor(max_workers=32) as pool:
+            futures = [pool.submit(_put_file, vol.name, lf, dest_dir) for lf in files]
+            for fut in as_completed(futures):
+                fut.result()
+
+        volumes.append((vol.name, dest_dir))
+
+    return volumes
 
 
 # ---------------------------------------------------------------------------
