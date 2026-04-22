@@ -193,27 +193,60 @@ def _strip_chalkcompute_from_source(source: str) -> str:
     return "".join(kept)
 
 
-def _generate_handler_shim(func_name: str) -> str:
+def _generate_handler_shim(func_name: str, *, batched: bool = False) -> str:
     """Generate a ``handler.py`` that bridges Arrow columnar data to scalar calls.
 
-    ``chalk-remote-call`` passes ``event`` as ``dict[str, pa.Array]``.
-    The shim iterates over rows, extracts Python scalars via ``.as_py()``,
-    calls the user function per-row, and returns results.
+    Non-batched mode: ``chalk-remote-call`` passes ``event`` as
+    ``dict[str, pa.Array]`` and calls ``handler(event, context)``. Generator
+    outputs stream as individual response chunks.
 
-    If the user function is a generator (yields values), each yielded value
-    is returned as a separate item so that ``chalk-remote-call`` can stream
-    them as individual response chunks.
+    Batched mode: the server coalesces multiple callers and passes
+    ``events: list[dict[str, pa.Array]]`` / ``contexts: list[dict]`` to
+    ``handler(events, contexts)``. The shim returns a list-of-lists —
+    one inner list per caller. Generators are not supported in this mode.
 
     Parameters
     ----------
     func_name
         Name of the user function to import and invoke.
+    batched
+        Whether the deployed function enables batching.
 
     Returns
     -------
     str
         Python source for the handler shim.
     """
+    if batched:
+        return (
+            "import inspect\n"
+            "\n"
+            f"from user_module import {func_name}\n"
+            "\n"
+            f"_is_coroutine = inspect.iscoroutinefunction({func_name})\n"
+            "\n"
+            "\n"
+            "def handler(events, contexts):\n"
+            "    results = []\n"
+            "    for event in events:\n"
+            "        n = len(next(iter(event.values())))\n"
+            "        if _is_coroutine:\n"
+            "            import asyncio\n"
+            "            async def _run_all():\n"
+            "                out = []\n"
+            "                for i in range(n):\n"
+            "                    kwargs = {k: v[i].as_py() for k, v in event.items()}\n"
+            f"                    out.append(await {func_name}(**kwargs))\n"
+            "                return out\n"
+            "            per_caller = asyncio.run(_run_all())\n"
+            "        else:\n"
+            "            per_caller = []\n"
+            "            for i in range(n):\n"
+            "                kwargs = {k: v[i].as_py() for k, v in event.items()}\n"
+            f"                per_caller.append({func_name}(**kwargs))\n"
+            "        results.append(per_caller)\n"
+            "    return results\n"
+        )
     return (
         "import inspect\n"
         "\n"
@@ -726,6 +759,14 @@ class RemoteFunction:
         self._options = options or {}
         self._max_buffer_duration = max_buffer_duration
         self._max_batching_size = max_batching_size
+        if max_batching_size is not None and (
+            inspect.isgeneratorfunction(func) or inspect.isasyncgenfunction(func)
+        ):
+            raise FunctionError(
+                f"Function '{self._func_name}' is a generator; generators are "
+                f"not supported with max_batching_size. Remove max_batching_size "
+                f"or change the function to return a value."
+            )
         self._retries = (
             RetryPolicy.from_int_or_policy(retries) if retries is not None else None
         )
@@ -883,7 +924,8 @@ class RemoteFunction:
         source_file, source_is_temp = _prepare_source_file(inspect.getfile(self._func))
 
         handler_shim = _generate_handler_shim(
-            getattr(self._func, "__name__", self._func_name)
+            getattr(self._func, "__name__", self._func_name),
+            batched=self._max_batching_size is not None,
         )
         shim_path = _write_temp(handler_shim)
 

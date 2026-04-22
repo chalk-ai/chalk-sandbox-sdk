@@ -288,6 +288,8 @@ def _generate_class_handler_shim(
     before_has_self: bool,
     after_name: str | None,
     after_has_self: bool,
+    *,
+    batched: bool = False,
 ) -> str:
     """Generate a handler shim for a single method on a class.
 
@@ -295,6 +297,11 @@ def _generate_class_handler_shim(
     delegates Arrow columnar data to the target method.  Methods that
     lack a ``self`` parameter are called as static/plain functions via
     the class rather than the instance.
+
+    Non-batched mode emits ``handler(event, context)``. Batched mode
+    emits ``handler(events, contexts)`` that returns a list-of-lists —
+    one inner list per coalesced caller. Generators are not supported
+    with batching (rejected at deploy time).
 
     Parameters
     ----------
@@ -312,15 +319,20 @@ def _generate_class_handler_shim(
         Name of the shutdown hook, if any.
     after_has_self
         Whether the shutdown hook has a ``self`` parameter.
+    batched
+        Whether the deployed method enables batching.
 
     Returns
     -------
     str
         Python source for the handler shim.
     """
-    parts: list[str] = [
-        "import pyarrow as pa",
-    ]
+    parts: list[str] = []
+
+    if batched:
+        parts.append("import inspect")
+    else:
+        parts.append("import pyarrow as pa")
 
     if after_name is not None:
         parts.append("import atexit")
@@ -351,16 +363,44 @@ def _generate_class_handler_shim(
         ]
 
     method_caller = "_instance" if method_has_self else class_name
-    parts += [
-        "",
-        "def handler(event, context):",
-        "    n = len(next(iter(event.values())))",
-        "    results = []",
-        "    for i in range(n):",
-        "        kwargs = {k: v[i].as_py() for k, v in event.items()}",
-        f"        results.append({method_caller}.{method_name}(**kwargs))",
-        "    return pa.array(results)",
-    ]
+    if batched:
+        parts += [
+            "",
+            f"_is_coroutine = inspect.iscoroutinefunction({method_caller}.{method_name})",
+            "",
+            "",
+            "def handler(events, contexts):",
+            "    results = []",
+            "    for event in events:",
+            "        n = len(next(iter(event.values())))",
+            "        if _is_coroutine:",
+            "            import asyncio",
+            "            async def _run_all():",
+            "                out = []",
+            "                for i in range(n):",
+            "                    kwargs = {k: v[i].as_py() for k, v in event.items()}",
+            f"                    out.append(await {method_caller}.{method_name}(**kwargs))",
+            "                return out",
+            "            per_caller = asyncio.run(_run_all())",
+            "        else:",
+            "            per_caller = []",
+            "            for i in range(n):",
+            "                kwargs = {k: v[i].as_py() for k, v in event.items()}",
+            f"                per_caller.append({method_caller}.{method_name}(**kwargs))",
+            "        results.append(per_caller)",
+            "    return results",
+        ]
+    else:
+        parts += [
+            "",
+            "def handler(event, context):",
+            "    n = len(next(iter(event.values())))",
+            "    results = []",
+            "    for i in range(n):",
+            "        kwargs = {k: v[i].as_py() for k, v in event.items()}",
+            f"        results.append({method_caller}.{method_name}(**kwargs))",
+            "    return pa.array(results)",
+        ]
 
     return "\n".join(parts) + "\n"
 
@@ -496,6 +536,18 @@ class RemoteClass:
             raise ClassError(
                 f"Class {user_cls.__name__} has no @method() decorated methods"
             )
+
+        if max_batching_size is not None:
+            for mname, mi in self._methods.items():
+                if inspect.isgeneratorfunction(mi.func) or inspect.isasyncgenfunction(
+                    mi.func
+                ):
+                    raise ClassError(
+                        f"Method '{self._class_name}.{mname}' is a generator; "
+                        f"generators are not supported with max_batching_size. "
+                        f"Remove max_batching_size or change the method to return "
+                        f"a value."
+                    )
 
     # -- Alternate constructors ------------------------------------------------
 
@@ -654,6 +706,7 @@ class RemoteClass:
                 before_has_self=_has_self(before_func) if before_func else False,
                 after_name=self._after_name,
                 after_has_self=_has_self(after_func) if after_func else False,
+                batched=self._max_batching_size is not None,
             )
             shim_path = _write_temp(shim_content)
             temp_files.append(shim_path)
