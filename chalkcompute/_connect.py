@@ -258,7 +258,6 @@ def raise_for_grpc_error(
         raise exc_cls(message) from e
 
 
-
 def grpc_target_from_url(
     url: str,
     *,
