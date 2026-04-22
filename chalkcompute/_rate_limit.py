@@ -31,6 +31,8 @@ class RateLimitPolicy:
 
     @classmethod
     def from_int_or_policy(cls, value: int | RateLimitPolicy) -> RateLimitPolicy:
+        if isinstance(value, bool):
+            raise TypeError(f"Expected int or {cls.__name__}, got bool")
         if isinstance(value, int):
             return cls(rate=value)
         return value

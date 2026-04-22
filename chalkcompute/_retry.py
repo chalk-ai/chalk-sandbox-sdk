@@ -150,7 +150,8 @@ class RetryPolicy:
         """Serialize to a plain dict for metadata / JSON export.
 
         The ``retry_on`` field is serialized as a list of exception class names
-        only when it differs from the default ``(Exception,)``.
+        only when it differs from the default ``(Exception,)``. The ``key``
+        field is omitted when ``None``.
 
         Returns
         -------
@@ -186,6 +187,8 @@ class RetryPolicy:
         RetryPolicy
             The normalized policy.
         """
+        if isinstance(value, bool):
+            raise TypeError("Expected int or RetryPolicy, got bool")
         if isinstance(value, int):
             return RetryPolicy.exponential(attempts=value)
         return value

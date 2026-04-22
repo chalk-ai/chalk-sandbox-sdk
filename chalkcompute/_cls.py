@@ -68,6 +68,8 @@ from chalkcompute._function import (
     _should_strip_source,
     _write_temp,
 )
+from chalkcompute._concurrency import ConcurrencyPolicy
+from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._retry import RetryPolicy
 
 if TYPE_CHECKING:
@@ -327,12 +329,7 @@ def _generate_class_handler_shim(
     str
         Python source for the handler shim.
     """
-    parts: list[str] = []
-
-    if batched:
-        parts.append("import inspect")
-    else:
-        parts.append("import pyarrow as pa")
+    parts: list[str] = ["import inspect"]
 
     if after_name is not None:
         parts.append("import atexit")
@@ -393,13 +390,39 @@ def _generate_class_handler_shim(
     else:
         parts += [
             "",
+            f"_is_sync_gen = inspect.isgeneratorfunction({method_caller}.{method_name})",
+            f"_is_async_gen = inspect.isasyncgenfunction({method_caller}.{method_name})",
+            f"_is_coroutine = inspect.iscoroutinefunction({method_caller}.{method_name}) and not _is_async_gen",
+            "",
+            "",
             "def handler(event, context):",
             "    n = len(next(iter(event.values())))",
-            "    results = []",
-            "    for i in range(n):",
-            "        kwargs = {k: v[i].as_py() for k, v in event.items()}",
-            f"        results.append({method_caller}.{method_name}(**kwargs))",
-            "    return pa.array(results)",
+            "    if _is_sync_gen:",
+            "        def _gen():",
+            "            for i in range(n):",
+            "                kwargs = {k: v[i].as_py() for k, v in event.items()}",
+            f"                yield from {method_caller}.{method_name}(**kwargs)",
+            "        return _gen()",
+            "    elif _is_async_gen:",
+            "        async def _agen():",
+            "            for i in range(n):",
+            "                kwargs = {k: v[i].as_py() for k, v in event.items()}",
+            f"                async for item in {method_caller}.{method_name}(**kwargs):",
+            "                    yield item",
+            "        return _agen()",
+            "    elif _is_coroutine:",
+            "        import asyncio",
+            "        results = []",
+            "        for i in range(n):",
+            "            kwargs = {k: v[i].as_py() for k, v in event.items()}",
+            f"            results.append(asyncio.run({method_caller}.{method_name}(**kwargs)))",
+            "        return results",
+            "    else:",
+            "        results = []",
+            "        for i in range(n):",
+            "            kwargs = {k: v[i].as_py() for k, v in event.items()}",
+            f"            results.append({method_caller}.{method_name}(**kwargs))",
+            "        return results",
         ]
 
     return "\n".join(parts) + "\n"
@@ -480,7 +503,8 @@ class RemoteClass:
         max_buffer_duration: int | None = None,
         max_batching_size: int | None = None,
         retries: int | RetryPolicy | None = None,
-        rate_limit_key: str | None = None,
+        rate_limit: int | RateLimitPolicy | None = None,
+        concurrency: int | ConcurrencyPolicy | None = None,
     ) -> None:
         self._user_cls = user_cls
         self._class_name = user_cls.__name__
@@ -507,7 +531,16 @@ class RemoteClass:
         self._retries = (
             RetryPolicy.from_int_or_policy(retries) if retries is not None else None
         )
-        self._rate_limit_key = rate_limit_key
+        self._rate_limit = (
+            RateLimitPolicy.from_int_or_policy(rate_limit)
+            if rate_limit is not None
+            else None
+        )
+        self._concurrency = (
+            ConcurrencyPolicy.from_int_or_policy(concurrency)
+            if concurrency is not None
+            else None
+        )
 
         self._client = ConnectClient()
         self._deployed = False
@@ -652,7 +685,8 @@ class RemoteClass:
         rc._max_buffer_duration = None
         rc._max_batching_size = None
         rc._retries = None
-        rc._rate_limit_key = None
+        rc._rate_limit = None
+        rc._concurrency = None
         rc._client = ConnectClient()
         rc._deployed = False
         rc._methods = {}
@@ -858,8 +892,10 @@ class RemoteClass:
                     function_config["maxBatchingSize"] = self._max_batching_size
                 if self._retries is not None:
                     function_config["retryPolicy"] = self._retries.to_dict()
-                if self._rate_limit_key is not None:
-                    function_config["rateLimitKey"] = self._rate_limit_key
+                if self._rate_limit is not None:
+                    function_config["rateLimit"] = self._rate_limit.to_dict()
+                if self._concurrency is not None:
+                    function_config["concurrency"] = self._concurrency.to_dict()
 
                 logger.info("Registering method '%s'...", func_name)
                 create_request: dict[str, Any] = {
@@ -1129,7 +1165,8 @@ def cls(
     max_buffer_duration: int | None = None,
     max_batching_size: int | None = None,
     retries: int | RetryPolicy | None = None,
-    rate_limit_key: str | None = None,
+    rate_limit: int | RateLimitPolicy | None = None,
+    concurrency: int | ConcurrencyPolicy | None = None,
 ) -> Callable[..., RemoteClass | _NoOpClass]:
     """Decorator that deploys a class as versioned remote functions.
 
@@ -1192,10 +1229,22 @@ def cls(
     retries
         Retry policy for handler invocations. Pass an ``int`` for simple
         max-attempts with default exponential backoff, or a
-        :class:`~chalk_remote_call.config.RetryPolicy` for full control.
-    rate_limit_key
-        Name of an externally defined rate limit policy. Used to control
-        outbound concurrency from multiple sources.
+        :class:`~chalkcompute.RetryPolicy` for full control. Enforced by
+        the dispatcher (chalkdf or the queue consumer), not the handler.
+    rate_limit
+        Rate limit policy for outbound calls. Pass an ``int`` for a simple
+        "N per second" cap with a per-method key, or a
+        :class:`~chalkcompute.RateLimitPolicy` for full control (``rate``,
+        ``per``, ``key``). Multiple methods sharing the same ``key`` share
+        one bucket — used when a downstream service imposes a throughput
+        limit across callers.
+    concurrency
+        Concurrency policy: cap on in-flight handler invocations. Pass an
+        ``int`` for a simple ``max_concurrent`` cap with a per-method key,
+        or a :class:`~chalkcompute.ConcurrencyPolicy` for full control
+        (``max_concurrent``, ``key``). Multiple methods sharing the same
+        ``key`` share one gate — independent of ``rate_limit`` (which caps
+        rate, not in-flight count).
     """
 
     def decorator(user_cls: type) -> RemoteClass | _NoOpClass:
@@ -1223,7 +1272,8 @@ def cls(
             max_buffer_duration=max_buffer_duration,
             max_batching_size=max_batching_size,
             retries=retries,
-            rate_limit_key=rate_limit_key,
+            rate_limit=rate_limit,
+            concurrency=concurrency,
         )
         rc.deploy()
         return rc

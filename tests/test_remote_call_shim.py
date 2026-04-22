@@ -145,7 +145,6 @@ class TestGenerateClassHandlerShimNormal:
             "Adder", "add", True, None, False, None, False
         )
         assert "def handler(event, context):" in src
-        assert "return pa.array(results)" in src
 
     def test_method_with_self(self):
         class Adder:
@@ -161,9 +160,7 @@ class TestGenerateClassHandlerShimNormal:
         )
         ns = _load_shim(src)
         event = {"x": pa.array([1, 2]), "y": pa.array([10, 20])}
-        result = ns["handler"](event, {})
-        assert isinstance(result, pa.Array)
-        assert result.to_pylist() == [111, 122]
+        assert ns["handler"](event, {}) == [111, 122]
 
     def test_method_without_self(self):
         class Calc:
@@ -177,7 +174,47 @@ class TestGenerateClassHandlerShimNormal:
         )
         ns = _load_shim(src)
         event = {"x": pa.array([3, 4, 5])}
-        assert ns["handler"](event, {}).to_pylist() == [6, 8, 10]
+        assert ns["handler"](event, {}) == [6, 8, 10]
+
+    def test_async_coroutine_method(self):
+        class Mul:
+            async def mul(self, x: int, y: int) -> int:
+                return x * y
+
+        _install_user_module(Mul=Mul)
+        src = _generate_class_handler_shim(
+            "Mul", "mul", True, None, False, None, False
+        )
+        ns = _load_shim(src)
+        event = {"x": pa.array([2, 3]), "y": pa.array([10, 10])}
+        assert ns["handler"](event, {}) == [20, 30]
+
+    def test_async_staticmethod_no_self(self):
+        class Calc:
+            @staticmethod
+            async def double(x: int) -> int:
+                return x * 2
+
+        _install_user_module(Calc=Calc)
+        src = _generate_class_handler_shim(
+            "Calc", "double", False, None, False, None, False
+        )
+        ns = _load_shim(src)
+        event = {"x": pa.array([4, 5])}
+        assert ns["handler"](event, {}) == [8, 10]
+
+    def test_sync_generator_method(self):
+        class G:
+            def expand(self, n: int):
+                for i in range(n):
+                    yield i
+
+        _install_user_module(G=G)
+        src = _generate_class_handler_shim(
+            "G", "expand", True, None, False, None, False
+        )
+        ns = _load_shim(src)
+        assert list(ns["handler"]({"n": pa.array([2, 3])}, {})) == [0, 1, 0, 1, 2]
 
     def test_before_hook_is_defined_as_on_startup(self):
         class Stateful:
@@ -197,9 +234,9 @@ class TestGenerateClassHandlerShimNormal:
         ns = _load_shim(src)
         event = {"x": pa.array([1])}
         assert callable(ns["on_startup"])
-        assert ns["handler"](event, {}).to_pylist() == [1]
+        assert ns["handler"](event, {}) == [1]
         ns["on_startup"]()
-        assert ns["handler"](event, {}).to_pylist() == [101]
+        assert ns["handler"](event, {}) == [101]
 
 
 class TestGenerateClassHandlerShimBatched:
@@ -242,6 +279,23 @@ class TestGenerateClassHandlerShimBatched:
             {"x": pa.array([4, 5]), "y": pa.array([10, 10])},
         ]
         assert ns["handler"](events, [{}, {}]) == [[6], [40, 50]]
+
+    def test_async_staticmethod_no_self(self):
+        class Calc:
+            @staticmethod
+            async def double(x: int) -> int:
+                return x * 2
+
+        _install_user_module(Calc=Calc)
+        src = _generate_class_handler_shim(
+            "Calc", "double", False, None, False, None, False, batched=True
+        )
+        ns = _load_shim(src)
+        events = [
+            {"x": pa.array([3, 4])},
+            {"x": pa.array([5])},
+        ]
+        assert ns["handler"](events, [{}, {}]) == [[6, 8], [10]]
 
 
 class TestShimViaRemoteCallLib:
