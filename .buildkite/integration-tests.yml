@@ -109,3 +109,37 @@ steps:
       automatic:
         - exit_status: -1
           limit: 2
+
+  - label: ":zap: Scalar function example ({{matrix}})"
+    matrix:
+      - "staging/ftqa"
+      - "meta-ci"
+    command: |
+      set -euo pipefail
+      unset VIRTUAL_ENV
+
+      echo "--- :gear: Install sops"
+      SOPS_VERSION=3.9.4
+      curl -fsSL "https://github.com/getsops/sops/releases/download/v$${SOPS_VERSION}/sops-v$${SOPS_VERSION}.linux.amd64" -o /tmp/sops
+      chmod +x /tmp/sops
+
+      echo "--- :key: Decrypt secrets"
+      if [ "{{matrix}}" = "staging/ftqa" ]; then ENV_FILE=".env.enc"; else ENV_FILE=".env.{{matrix}}.enc"; fi
+      /tmp/sops --input-type dotenv --output-type dotenv -d "$$ENV_FILE" > /tmp/test.env
+      set -a
+      source /tmp/test.env
+      set +a
+      rm /tmp/test.env
+
+      echo "--- :python: Sync dependencies"
+      uv sync --all-extras
+
+      echo "--- :zap: Deploy and test scalar functions"
+      CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest examples/scalar/test_scalar.py -v -s --tb=short
+    agents:
+      queue: default
+    timeout_in_minutes: 20
+    retry:
+      automatic:
+        - exit_status: -1
+          limit: 2

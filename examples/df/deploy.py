@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 
 
 @chalkcompute.function(
-    name="df-groupby-sum",
+    name="chalk-sandbox-test-df-groupby-sum",
     image=chalkcompute.Image.debian_slim().pip_install(["chalkdf", "chalkpy[runtime]", "pyarrow"]),
 )
 def df_groupby_sum(n: int) -> int:
