@@ -20,7 +20,7 @@ from google.protobuf import timestamp_pb2 as google_dot_protobuf_dot_timestamp__
 
 
 DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(
-    b'\n#chalk/scalinggroup/v1/service.proto\x12\x15\x63halk.scalinggroup.v1\x1a\x1f\x63halk/auth/v1/permissions.proto\x1a chalk/container/v1/service.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto"\x9f\x02\n\x0bScalingSpec\x12!\n\x0cmin_replicas\x18\x01 \x01(\x05R\x0bminReplicas\x12!\n\x0cmax_replicas\x18\x02 \x01(\x05R\x0bmaxReplicas\x12N\n!target_cpu_utilization_percentage\x18\x03 \x01(\x05H\x00R\x1etargetCpuUtilizationPercentage\x88\x01\x01\x12\x39\n\x16shutdown_delay_seconds\x18\x04 \x01(\x05H\x01R\x14shutdownDelaySeconds\x88\x01\x01\x42$\n"_target_cpu_utilization_percentageB\x19\n\x17_shutdown_delay_seconds"\xa8\x01\n\x10ScalingGroupSpec\x12M\n\x0e\x63ontainer_spec\x18\x01 \x01(\x0b\x32&.chalk.container.v1.ChalkContainerSpecR\rcontainerSpec\x12\x45\n\x0cscaling_spec\x18\x02 \x01(\x0b\x32".chalk.scalinggroup.v1.ScalingSpecR\x0bscalingSpec"\xa5\x05\n\x14ScalingGroupResponse\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x12\x1f\n\x0brevision_id\x18\x0c \x01(\tR\nrevisionId\x12\x16\n\x06status\x18\x03 \x01(\tR\x06status\x12*\n\x0estatus_message\x18\x04 \x01(\tH\x00R\rstatusMessage\x88\x01\x01\x12;\n\x04spec\x18\x05 \x01(\x0b\x32\'.chalk.scalinggroup.v1.ScalingGroupSpecR\x04spec\x12\x39\n\ncreated_at\x18\x06 \x01(\x0b\x32\x1a.google.protobuf.TimestampR\tcreatedAt\x12>\n\ndeleted_at\x18\x07 \x01(\x0b\x32\x1a.google.protobuf.TimestampH\x01R\tdeletedAt\x88\x01\x01\x12\x1c\n\x07web_url\x18\x08 \x01(\tH\x02R\x06webUrl\x88\x01\x01\x12%\n\x0eready_replicas\x18\t \x01(\x05R\rreadyReplicas\x12-\n\x12\x61vailable_replicas\x18\n \x01(\x05R\x11\x61vailableReplicas\x12U\n\x08metadata\x18\x0b \x03(\x0b\x32\x39.chalk.scalinggroup.v1.ScalingGroupResponse.MetadataEntryR\x08metadata\x1aS\n\rMetadataEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12,\n\x05value\x18\x02 \x01(\x0b\x32\x16.google.protobuf.ValueR\x05value:\x02\x38\x01\x42\x11\n\x0f_status_messageB\r\n\x0b_deleted_atB\n\n\x08_web_url"X\n\x19\x43reateScalingGroupRequest\x12;\n\x04spec\x18\x01 \x01(\x0b\x32\'.chalk.scalinggroup.v1.ScalingGroupSpecR\x04spec"n\n\x1a\x43reateScalingGroupResponse\x12P\n\rscaling_group\x18\x01 \x01(\x0b\x32+.chalk.scalinggroup.v1.ScalingGroupResponseR\x0cscalingGroup"V\n\x16GetScalingGroupRequest\x12\x13\n\x02id\x18\x01 \x01(\tH\x00R\x02id\x88\x01\x01\x12\x17\n\x04name\x18\x02 \x01(\tH\x01R\x04name\x88\x01\x01\x42\x05\n\x03_idB\x07\n\x05_name"k\n\x17GetScalingGroupResponse\x12P\n\rscaling_group\x18\x01 \x01(\x0b\x32+.chalk.scalinggroup.v1.ScalingGroupResponseR\x0cscalingGroup"\x1a\n\x18ListScalingGroupsRequest"o\n\x19ListScalingGroupsResponse\x12R\n\x0escaling_groups\x18\x01 \x03(\x0b\x32+.chalk.scalinggroup.v1.ScalingGroupResponseR\rscalingGroups"Y\n\x19\x44\x65leteScalingGroupRequest\x12\x13\n\x02id\x18\x01 \x01(\tH\x00R\x02id\x88\x01\x01\x12\x17\n\x04name\x18\x02 \x01(\tH\x01R\x04name\x88\x01\x01\x42\x05\n\x03_idB\x07\n\x05_name"n\n\x1a\x44\x65leteScalingGroupResponse\x12P\n\rscaling_group\x18\x01 \x01(\x0b\x32+.chalk.scalinggroup.v1.ScalingGroupResponseR\x0cscalingGroup"\xa2\x01\n\x1fUpdateScalingGroupStatusRequest\x12(\n\x10scaling_group_id\x18\x01 \x01(\tR\x0escalingGroupId\x12\x16\n\x06status\x18\x02 \x01(\tR\x06status\x12*\n\x0estatus_message\x18\x03 \x01(\tH\x00R\rstatusMessage\x88\x01\x01\x42\x11\n\x0f_status_message"x\n$BatchUpdateScalingGroupStatusRequest\x12P\n\x07updates\x18\x01 \x03(\x0b\x32\x36.chalk.scalinggroup.v1.UpdateScalingGroupStatusRequestR\x07updates"\'\n%BatchUpdateScalingGroupStatusResponse2\xb2\x05\n\x1aScalingGroupManagerService\x12~\n\x12\x43reateScalingGroup\x12\x30.chalk.scalinggroup.v1.CreateScalingGroupRequest\x1a\x31.chalk.scalinggroup.v1.CreateScalingGroupResponse"\x03\x80}\x0c\x12u\n\x0fGetScalingGroup\x12-.chalk.scalinggroup.v1.GetScalingGroupRequest\x1a..chalk.scalinggroup.v1.GetScalingGroupResponse"\x03\x80}\x0b\x12{\n\x11ListScalingGroups\x12/.chalk.scalinggroup.v1.ListScalingGroupsRequest\x1a\x30.chalk.scalinggroup.v1.ListScalingGroupsResponse"\x03\x80}\x0b\x12~\n\x12\x44\x65leteScalingGroup\x12\x30.chalk.scalinggroup.v1.DeleteScalingGroupRequest\x1a\x31.chalk.scalinggroup.v1.DeleteScalingGroupResponse"\x03\x80}\x0e\x12\x9f\x01\n\x1d\x42\x61tchUpdateScalingGroupStatus\x12;.chalk.scalinggroup.v1.BatchUpdateScalingGroupStatusRequest\x1a<.chalk.scalinggroup.v1.BatchUpdateScalingGroupStatusResponse"\x03\x80}!B\xbf\x01\n\x19\x63om.chalk.scalinggroup.v1B\x0cServiceProtoP\x01Z\x1escalinggroup/v1;scalinggroupv1\xa2\x02\x03\x43SX\xaa\x02\x15\x43halk.Scalinggroup.V1\xca\x02\x15\x43halk\\Scalinggroup\\V1\xe2\x02!Chalk\\Scalinggroup\\V1\\GPBMetadata\xea\x02\x17\x43halk::Scalinggroup::V1b\x06proto3'
+    b'\n#chalk/scalinggroup/v1/service.proto\x12\x15\x63halk.scalinggroup.v1\x1a\x1f\x63halk/auth/v1/permissions.proto\x1a chalk/container/v1/service.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto"\xfe\x03\n\x0bScalingSpec\x12!\n\x0cmin_replicas\x18\x01 \x01(\x05R\x0bminReplicas\x12!\n\x0cmax_replicas\x18\x02 \x01(\x05R\x0bmaxReplicas\x12N\n!target_cpu_utilization_percentage\x18\x03 \x01(\x05H\x00R\x1etargetCpuUtilizationPercentage\x88\x01\x01\x12\x39\n\x16shutdown_delay_seconds\x18\x04 \x01(\x05H\x01R\x14shutdownDelaySeconds\x88\x01\x01\x12*\n\x0ewindow_seconds\x18\x05 \x01(\x05H\x02R\rwindowSeconds\x88\x01\x01\x12}\n\x1c\x66unction_queue_depth_trigger\x18\x06 \x01(\x0b\x32\x37.chalk.scalinggroup.v1.FunctionQueueDepthScalingTriggerH\x03R\x19\x66unctionQueueDepthTrigger\x88\x01\x01\x42$\n"_target_cpu_utilization_percentageB\x19\n\x17_shutdown_delay_secondsB\x11\n\x0f_window_secondsB\x1f\n\x1d_function_queue_depth_trigger"u\n FunctionQueueDepthScalingTrigger\x12#\n\rfunction_name\x18\x01 \x01(\tR\x0c\x66unctionName\x12,\n\x12target_queue_depth\x18\x02 \x01(\x05R\x10targetQueueDepth"\xa8\x01\n\x10ScalingGroupSpec\x12M\n\x0e\x63ontainer_spec\x18\x01 \x01(\x0b\x32&.chalk.container.v1.ChalkContainerSpecR\rcontainerSpec\x12\x45\n\x0cscaling_spec\x18\x02 \x01(\x0b\x32".chalk.scalinggroup.v1.ScalingSpecR\x0bscalingSpec"\xa5\x05\n\x14ScalingGroupResponse\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x12\x1f\n\x0brevision_id\x18\x0c \x01(\tR\nrevisionId\x12\x16\n\x06status\x18\x03 \x01(\tR\x06status\x12*\n\x0estatus_message\x18\x04 \x01(\tH\x00R\rstatusMessage\x88\x01\x01\x12;\n\x04spec\x18\x05 \x01(\x0b\x32\'.chalk.scalinggroup.v1.ScalingGroupSpecR\x04spec\x12\x39\n\ncreated_at\x18\x06 \x01(\x0b\x32\x1a.google.protobuf.TimestampR\tcreatedAt\x12>\n\ndeleted_at\x18\x07 \x01(\x0b\x32\x1a.google.protobuf.TimestampH\x01R\tdeletedAt\x88\x01\x01\x12\x1c\n\x07web_url\x18\x08 \x01(\tH\x02R\x06webUrl\x88\x01\x01\x12%\n\x0eready_replicas\x18\t \x01(\x05R\rreadyReplicas\x12-\n\x12\x61vailable_replicas\x18\n \x01(\x05R\x11\x61vailableReplicas\x12U\n\x08metadata\x18\x0b \x03(\x0b\x32\x39.chalk.scalinggroup.v1.ScalingGroupResponse.MetadataEntryR\x08metadata\x1aS\n\rMetadataEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12,\n\x05value\x18\x02 \x01(\x0b\x32\x16.google.protobuf.ValueR\x05value:\x02\x38\x01\x42\x11\n\x0f_status_messageB\r\n\x0b_deleted_atB\n\n\x08_web_url"X\n\x19\x43reateScalingGroupRequest\x12;\n\x04spec\x18\x01 \x01(\x0b\x32\'.chalk.scalinggroup.v1.ScalingGroupSpecR\x04spec"n\n\x1a\x43reateScalingGroupResponse\x12P\n\rscaling_group\x18\x01 \x01(\x0b\x32+.chalk.scalinggroup.v1.ScalingGroupResponseR\x0cscalingGroup"V\n\x16GetScalingGroupRequest\x12\x13\n\x02id\x18\x01 \x01(\tH\x00R\x02id\x88\x01\x01\x12\x17\n\x04name\x18\x02 \x01(\tH\x01R\x04name\x88\x01\x01\x42\x05\n\x03_idB\x07\n\x05_name"k\n\x17GetScalingGroupResponse\x12P\n\rscaling_group\x18\x01 \x01(\x0b\x32+.chalk.scalinggroup.v1.ScalingGroupResponseR\x0cscalingGroup"\x1a\n\x18ListScalingGroupsRequest"o\n\x19ListScalingGroupsResponse\x12R\n\x0escaling_groups\x18\x01 \x03(\x0b\x32+.chalk.scalinggroup.v1.ScalingGroupResponseR\rscalingGroups"Y\n\x19\x44\x65leteScalingGroupRequest\x12\x13\n\x02id\x18\x01 \x01(\tH\x00R\x02id\x88\x01\x01\x12\x17\n\x04name\x18\x02 \x01(\tH\x01R\x04name\x88\x01\x01\x42\x05\n\x03_idB\x07\n\x05_name"n\n\x1a\x44\x65leteScalingGroupResponse\x12P\n\rscaling_group\x18\x01 \x01(\x0b\x32+.chalk.scalinggroup.v1.ScalingGroupResponseR\x0cscalingGroup"\xa2\x01\n\x1fUpdateScalingGroupStatusRequest\x12(\n\x10scaling_group_id\x18\x01 \x01(\tR\x0escalingGroupId\x12\x16\n\x06status\x18\x02 \x01(\tR\x06status\x12*\n\x0estatus_message\x18\x03 \x01(\tH\x00R\rstatusMessage\x88\x01\x01\x42\x11\n\x0f_status_message"x\n$BatchUpdateScalingGroupStatusRequest\x12P\n\x07updates\x18\x01 \x03(\x0b\x32\x36.chalk.scalinggroup.v1.UpdateScalingGroupStatusRequestR\x07updates"\'\n%BatchUpdateScalingGroupStatusResponse2\xb2\x05\n\x1aScalingGroupManagerService\x12~\n\x12\x43reateScalingGroup\x12\x30.chalk.scalinggroup.v1.CreateScalingGroupRequest\x1a\x31.chalk.scalinggroup.v1.CreateScalingGroupResponse"\x03\x80}\x0c\x12u\n\x0fGetScalingGroup\x12-.chalk.scalinggroup.v1.GetScalingGroupRequest\x1a..chalk.scalinggroup.v1.GetScalingGroupResponse"\x03\x80}\x0b\x12{\n\x11ListScalingGroups\x12/.chalk.scalinggroup.v1.ListScalingGroupsRequest\x1a\x30.chalk.scalinggroup.v1.ListScalingGroupsResponse"\x03\x80}\x0b\x12~\n\x12\x44\x65leteScalingGroup\x12\x30.chalk.scalinggroup.v1.DeleteScalingGroupRequest\x1a\x31.chalk.scalinggroup.v1.DeleteScalingGroupResponse"\x03\x80}\x0e\x12\x9f\x01\n\x1d\x42\x61tchUpdateScalingGroupStatus\x12;.chalk.scalinggroup.v1.BatchUpdateScalingGroupStatusRequest\x1a<.chalk.scalinggroup.v1.BatchUpdateScalingGroupStatusResponse"\x03\x80}!B\xbf\x01\n\x19\x63om.chalk.scalinggroup.v1B\x0cServiceProtoP\x01Z\x1escalinggroup/v1;scalinggroupv1\xa2\x02\x03\x43SX\xaa\x02\x15\x43halk.Scalinggroup.V1\xca\x02\x15\x43halk\\Scalinggroup\\V1\xe2\x02!Chalk\\Scalinggroup\\V1\\GPBMetadata\xea\x02\x17\x43halk::Scalinggroup::V1b\x06proto3'
 )
 
 _globals = globals()
@@ -46,35 +46,37 @@ if _descriptor._USE_C_DESCRIPTORS == False:
         "BatchUpdateScalingGroupStatus"
     ]._serialized_options = b"\200}!"
     _globals["_SCALINGSPEC"]._serialized_start = 193
-    _globals["_SCALINGSPEC"]._serialized_end = 480
-    _globals["_SCALINGGROUPSPEC"]._serialized_start = 483
-    _globals["_SCALINGGROUPSPEC"]._serialized_end = 651
-    _globals["_SCALINGGROUPRESPONSE"]._serialized_start = 654
-    _globals["_SCALINGGROUPRESPONSE"]._serialized_end = 1331
-    _globals["_SCALINGGROUPRESPONSE_METADATAENTRY"]._serialized_start = 1202
-    _globals["_SCALINGGROUPRESPONSE_METADATAENTRY"]._serialized_end = 1285
-    _globals["_CREATESCALINGGROUPREQUEST"]._serialized_start = 1333
-    _globals["_CREATESCALINGGROUPREQUEST"]._serialized_end = 1421
-    _globals["_CREATESCALINGGROUPRESPONSE"]._serialized_start = 1423
-    _globals["_CREATESCALINGGROUPRESPONSE"]._serialized_end = 1533
-    _globals["_GETSCALINGGROUPREQUEST"]._serialized_start = 1535
-    _globals["_GETSCALINGGROUPREQUEST"]._serialized_end = 1621
-    _globals["_GETSCALINGGROUPRESPONSE"]._serialized_start = 1623
-    _globals["_GETSCALINGGROUPRESPONSE"]._serialized_end = 1730
-    _globals["_LISTSCALINGGROUPSREQUEST"]._serialized_start = 1732
-    _globals["_LISTSCALINGGROUPSREQUEST"]._serialized_end = 1758
-    _globals["_LISTSCALINGGROUPSRESPONSE"]._serialized_start = 1760
-    _globals["_LISTSCALINGGROUPSRESPONSE"]._serialized_end = 1871
-    _globals["_DELETESCALINGGROUPREQUEST"]._serialized_start = 1873
-    _globals["_DELETESCALINGGROUPREQUEST"]._serialized_end = 1962
-    _globals["_DELETESCALINGGROUPRESPONSE"]._serialized_start = 1964
-    _globals["_DELETESCALINGGROUPRESPONSE"]._serialized_end = 2074
-    _globals["_UPDATESCALINGGROUPSTATUSREQUEST"]._serialized_start = 2077
-    _globals["_UPDATESCALINGGROUPSTATUSREQUEST"]._serialized_end = 2239
-    _globals["_BATCHUPDATESCALINGGROUPSTATUSREQUEST"]._serialized_start = 2241
-    _globals["_BATCHUPDATESCALINGGROUPSTATUSREQUEST"]._serialized_end = 2361
-    _globals["_BATCHUPDATESCALINGGROUPSTATUSRESPONSE"]._serialized_start = 2363
-    _globals["_BATCHUPDATESCALINGGROUPSTATUSRESPONSE"]._serialized_end = 2402
-    _globals["_SCALINGGROUPMANAGERSERVICE"]._serialized_start = 2405
-    _globals["_SCALINGGROUPMANAGERSERVICE"]._serialized_end = 3095
+    _globals["_SCALINGSPEC"]._serialized_end = 703
+    _globals["_FUNCTIONQUEUEDEPTHSCALINGTRIGGER"]._serialized_start = 705
+    _globals["_FUNCTIONQUEUEDEPTHSCALINGTRIGGER"]._serialized_end = 822
+    _globals["_SCALINGGROUPSPEC"]._serialized_start = 825
+    _globals["_SCALINGGROUPSPEC"]._serialized_end = 993
+    _globals["_SCALINGGROUPRESPONSE"]._serialized_start = 996
+    _globals["_SCALINGGROUPRESPONSE"]._serialized_end = 1673
+    _globals["_SCALINGGROUPRESPONSE_METADATAENTRY"]._serialized_start = 1544
+    _globals["_SCALINGGROUPRESPONSE_METADATAENTRY"]._serialized_end = 1627
+    _globals["_CREATESCALINGGROUPREQUEST"]._serialized_start = 1675
+    _globals["_CREATESCALINGGROUPREQUEST"]._serialized_end = 1763
+    _globals["_CREATESCALINGGROUPRESPONSE"]._serialized_start = 1765
+    _globals["_CREATESCALINGGROUPRESPONSE"]._serialized_end = 1875
+    _globals["_GETSCALINGGROUPREQUEST"]._serialized_start = 1877
+    _globals["_GETSCALINGGROUPREQUEST"]._serialized_end = 1963
+    _globals["_GETSCALINGGROUPRESPONSE"]._serialized_start = 1965
+    _globals["_GETSCALINGGROUPRESPONSE"]._serialized_end = 2072
+    _globals["_LISTSCALINGGROUPSREQUEST"]._serialized_start = 2074
+    _globals["_LISTSCALINGGROUPSREQUEST"]._serialized_end = 2100
+    _globals["_LISTSCALINGGROUPSRESPONSE"]._serialized_start = 2102
+    _globals["_LISTSCALINGGROUPSRESPONSE"]._serialized_end = 2213
+    _globals["_DELETESCALINGGROUPREQUEST"]._serialized_start = 2215
+    _globals["_DELETESCALINGGROUPREQUEST"]._serialized_end = 2304
+    _globals["_DELETESCALINGGROUPRESPONSE"]._serialized_start = 2306
+    _globals["_DELETESCALINGGROUPRESPONSE"]._serialized_end = 2416
+    _globals["_UPDATESCALINGGROUPSTATUSREQUEST"]._serialized_start = 2419
+    _globals["_UPDATESCALINGGROUPSTATUSREQUEST"]._serialized_end = 2581
+    _globals["_BATCHUPDATESCALINGGROUPSTATUSREQUEST"]._serialized_start = 2583
+    _globals["_BATCHUPDATESCALINGGROUPSTATUSREQUEST"]._serialized_end = 2703
+    _globals["_BATCHUPDATESCALINGGROUPSTATUSRESPONSE"]._serialized_start = 2705
+    _globals["_BATCHUPDATESCALINGGROUPSTATUSRESPONSE"]._serialized_end = 2744
+    _globals["_SCALINGGROUPMANAGERSERVICE"]._serialized_start = 2747
+    _globals["_SCALINGGROUPMANAGERSERVICE"]._serialized_end = 3437
 # @@protoc_insertion_point(module_scope)

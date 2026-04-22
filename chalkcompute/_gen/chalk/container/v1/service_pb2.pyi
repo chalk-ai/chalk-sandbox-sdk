@@ -42,6 +42,35 @@ class VolumeMount(_message.Message):
         size_limit: _Optional[str] = ...,
     ) -> None: ...
 
+class SecretRef(_message.Message):
+    __slots__ = ("integration_name", "secret_name", "keys", "aliases", "prefix")
+    class AliasesEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: str
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
+
+    INTEGRATION_NAME_FIELD_NUMBER: _ClassVar[int]
+    SECRET_NAME_FIELD_NUMBER: _ClassVar[int]
+    KEYS_FIELD_NUMBER: _ClassVar[int]
+    ALIASES_FIELD_NUMBER: _ClassVar[int]
+    PREFIX_FIELD_NUMBER: _ClassVar[int]
+    integration_name: str
+    secret_name: str
+    keys: _containers.RepeatedScalarFieldContainer[str]
+    aliases: _containers.ScalarMap[str, str]
+    prefix: str
+    def __init__(
+        self,
+        integration_name: _Optional[str] = ...,
+        secret_name: _Optional[str] = ...,
+        keys: _Optional[_Iterable[str]] = ...,
+        aliases: _Optional[_Mapping[str, str]] = ...,
+        prefix: _Optional[str] = ...,
+    ) -> None: ...
+
 class ChalkContainerSpec(_message.Message):
     __slots__ = (
         "name",
@@ -57,6 +86,7 @@ class ChalkContainerSpec(_message.Message):
         "protocol",
         "routing",
         "authentication",
+        "secret_refs",
     )
     class TagsEntry(_message.Message):
         __slots__ = ("key", "value")
@@ -87,6 +117,7 @@ class ChalkContainerSpec(_message.Message):
     PROTOCOL_FIELD_NUMBER: _ClassVar[int]
     ROUTING_FIELD_NUMBER: _ClassVar[int]
     AUTHENTICATION_FIELD_NUMBER: _ClassVar[int]
+    SECRET_REFS_FIELD_NUMBER: _ClassVar[int]
     name: str
     image: str
     entrypoint: _containers.RepeatedScalarFieldContainer[str]
@@ -100,6 +131,7 @@ class ChalkContainerSpec(_message.Message):
     protocol: str
     routing: str
     authentication: str
+    secret_refs: _containers.RepeatedCompositeFieldContainer[SecretRef]
     def __init__(
         self,
         name: _Optional[str] = ...,
@@ -115,6 +147,7 @@ class ChalkContainerSpec(_message.Message):
         protocol: _Optional[str] = ...,
         routing: _Optional[str] = ...,
         authentication: _Optional[str] = ...,
+        secret_refs: _Optional[_Iterable[_Union[SecretRef, _Mapping]]] = ...,
     ) -> None: ...
 
 class ContainerRequest(_message.Message):
