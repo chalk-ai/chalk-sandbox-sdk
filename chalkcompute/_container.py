@@ -153,12 +153,12 @@ class Container:
         memory: str | None = None,
         gpu: str | None = None,
         env: dict[str, str] | None = None,
-        entrypoint: list[str] | None = None,
+        secrets: list[Secret] | None = None,
+        volumes: list[tuple[str, str]] | None = None,
         port: int | None = None,
+        entrypoint: list[str] | None = None,
         lifetime: str | None = None,
         enable_ssh: bool = False,
-        volumes: list[tuple[str, str]] | None = None,
-        secrets: list[Secret] | None = None,
     ) -> None:
         self._image = image
         if name is not None:
@@ -168,17 +168,17 @@ class Container:
         self._memory = memory
         self._gpu = gpu
         self._env = env or {}
-        self._entrypoint = entrypoint
+        self._secrets = list(secrets or [])
+        self._volumes: list[tuple[str, str]] = list(volumes or [])
         self._port = port
+        self._entrypoint = entrypoint
         self._lifetime = lifetime
         self._enable_ssh = enable_ssh
-        self._secrets = list(secrets or [])
 
         # Set after .run()
         self._built_image_uri: str | None = None
         self._container_id: str | None = None
         self._container_info: ContainerInfo | None = None
-        self._volumes: list[tuple[str, str]] = list(volumes or [])
         self._upserted_secret_names: list[str] = []
 
         self._client = ConnectClient()
@@ -249,15 +249,15 @@ class Container:
         c._memory = None
         c._gpu = None
         c._env = {}
-        c._entrypoint = None
+        c._secrets = []
+        c._volumes = []
         c._port = None
+        c._entrypoint = None
         c._lifetime = None
         c._enable_ssh = False
-        c._secrets = []
         c._built_image_uri = None
         c._container_id = None
         c._container_info = None
-        c._volumes = []
         c._upserted_secret_names = []
         c._client = ConnectClient()
         return c
