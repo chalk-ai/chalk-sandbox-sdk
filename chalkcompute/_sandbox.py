@@ -10,10 +10,9 @@ Usage:
     sandbox = client.create(image="ubuntu:latest", name="my-sandbox")
     print(f"Created sandbox: {sandbox.id}")
 
-    # Execute a command with streaming output
+    # Execute a command and inspect its output
     result = sandbox.exec("python", "-c", "print('hello')")
-    for line in result.stdout:
-        print(line)
+    print(result.stdout_text)
     print(f"Exit code: {result.exit_code}")
 
     # Execute with real-time streaming
@@ -27,18 +26,25 @@ Usage:
 
 from __future__ import annotations
 
-import builtins
+import os
 import queue
 import signal
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+
 import grpc
 
+from chalkcompute._connect import ConnectClient, grpc_target_from_url, raise_for_grpc_error
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as pb
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2_grpc as pb_grpc
 from chalkcompute._image import Image
 from chalkcompute._tracing import traced
+
+# Aliases defined before SandboxClient, which has a ``.list()`` method that
+# would otherwise shadow the builtin ``list`` in class-scope name resolution.
+_GrpcMetadata = list[tuple[str, str]]
+_VolumeMountList = list[pb.VolumeMount]
 
 
 # ---------------------------------------------------------------------------
@@ -90,8 +96,8 @@ class SandboxInfo:
     id: str
     """Sandbox identifier."""
 
-    state: str
-    """Current lifecycle state of the sandbox."""
+    status: str
+    """Current lifecycle status of the sandbox."""
 
     created_at: str
     """Timestamp when the sandbox was created."""
@@ -107,8 +113,11 @@ class SandboxInfo:
 class ExecResult:
     """Result of a completed command execution."""
 
-    _stdout: bytes
-    _stderr: bytes
+    stdout: bytes
+    """Raw bytes written to standard output by the command."""
+
+    stderr: bytes
+    """Raw bytes written to standard error by the command."""
 
     exit_code: int | None
     """Exit code of the process, if it exited normally."""
@@ -123,24 +132,14 @@ class ExecResult:
     """Error string if execution failed."""
 
     @property
-    def stdout(self) -> Iterator[str]:
-        """Iterate over stdout lines."""
-        for line in self._stdout.decode("utf-8", errors="replace").splitlines():
-            yield line
-
-    @property
-    def stderr(self) -> Iterator[str]:
-        """Iterate over stderr lines."""
-        for line in self._stderr.decode("utf-8", errors="replace").splitlines():
-            yield line
-
-    @property
     def stdout_text(self) -> str:
-        return self._stdout.decode("utf-8", errors="replace")
+        """:attr:`stdout` decoded as UTF-8 (with ``errors="replace"``)."""
+        return self.stdout.decode("utf-8", errors="replace")
 
     @property
     def stderr_text(self) -> str:
-        return self._stderr.decode("utf-8", errors="replace")
+        """:attr:`stderr` decoded as UTF-8 (with ``errors="replace"``)."""
+        return self.stderr.decode("utf-8", errors="replace")
 
 
 @dataclass
@@ -274,8 +273,8 @@ class ExecProcess:
                 error = f"{response.error.code}: {response.error.message}"
 
         return ExecResult(
-            _stdout=b"".join(stdout_parts),
-            _stderr=b"".join(stderr_parts),
+            stdout=b"".join(stdout_parts),
+            stderr=b"".join(stderr_parts),
             exit_code=exit_code,
             signal=exit_signal,
             pid=pid,
@@ -513,6 +512,9 @@ class Sandbox:
 # ---------------------------------------------------------------------------
 
 
+_SandboxInfoList = list[SandboxInfo]
+
+
 class SandboxClient:
     """Client for the Sandbox gRPC Service."""
 
@@ -521,7 +523,7 @@ class SandboxClient:
         target: str = "localhost:50051",
         *,
         credentials: grpc.ChannelCredentials | None = None,
-        metadata: builtins.list[tuple[str, str]] | None = None,
+        metadata: _GrpcMetadata | None = None,
     ) -> None:
         """Initialize the gRPC client.
 
@@ -544,6 +546,29 @@ class SandboxClient:
             self._channel = grpc.insecure_channel(target)
         self._stub = pb_grpc.SandboxServiceStub(self._channel)
 
+    @classmethod
+    def from_env(cls) -> SandboxClient:
+        """Create a ``SandboxClient`` from standard ``CHALK_*`` environment vars."""
+        if os.environ.get("CHALK_API_SERVER") is None:
+            raise ValueError(
+                "CHALK_API_SERVER must be set to construct SandboxClient from env"
+            )
+
+        connect = ConnectClient()
+        connect._ensure_auth()
+
+        host, _use_tls = grpc_target_from_url(connect._api_server or "")
+
+        return cls(
+            host,
+            credentials=grpc.ssl_channel_credentials(),
+            metadata=[
+                ("authorization", f"Bearer {connect._access_token}"),
+                ("x-chalk-env-id", connect._env_id or ""),
+                ("x-chalk-server", "go-api"),
+            ],
+        )
+
     def __enter__(self) -> SandboxClient:
         return self
 
@@ -563,7 +588,7 @@ class SandboxClient:
         cpu: str | None = None,
         memory: str | None = None,
         env: dict[str, str] | None = None,
-        volumes: builtins.list[pb.VolumeMount] | None = None,
+        volumes: _VolumeMountList | None = None,
         wait: bool = True,
         poll_interval: float = 0.5,
         timeout: float = 600.0,
@@ -628,7 +653,7 @@ class SandboxClient:
         sandbox = Sandbox(self, info.id)
         sandbox._info = info
 
-        if wait and info.state in ("building", "connecting"):
+        if wait and info.status in ("building", "connecting"):
             sandbox._info = self._poll_until_ready(
                 sandbox.id,
                 poll_interval=poll_interval,
@@ -656,13 +681,13 @@ class SandboxClient:
                 _handle_rpc_error(e, sandbox_id)
                 raise
             info = _pb_to_sandbox_info(resp.sandbox)
-            if info.state == "ready":
+            if info.status == "ready":
                 return info
-            if info.state == "error":
+            if info.status == "error":
                 raise SandboxBuildError(
                     f"Sandbox {sandbox_id} entered error state during image build"
                 )
-            if info.state == "terminated":
+            if info.status == "terminated":
                 raise SandboxTerminatedError(
                     f"Sandbox {sandbox_id} was terminated during image build"
                 )
@@ -688,7 +713,7 @@ class SandboxClient:
         """
         return Sandbox(self, id)
 
-    def list(self) -> builtins.list[SandboxInfo]:
+    def list(self) -> _SandboxInfoList:
         """List all sandboxes.
 
         Returns
@@ -710,7 +735,7 @@ class SandboxClient:
 def _pb_to_sandbox_info(info: pb.SandboxInfo) -> SandboxInfo:
     return SandboxInfo(
         id=info.id,
-        state=info.state,
+        status=info.state,
         created_at=info.created_at,
         name=info.name if info.HasField("name") else None,
         build_id=info.build_id if info.HasField("build_id") else None,
@@ -744,11 +769,19 @@ def _response_to_event(response: pb.ExecResponse) -> ExecEvent:
 
 
 def _handle_rpc_error(e: grpc.RpcError, sandbox_id: str) -> None:
-    assert isinstance(e, grpc.Call)
-    if e.code() == grpc.StatusCode.NOT_FOUND:
-        raise SandboxNotFoundError(f"Sandbox {sandbox_id} not found") from e
-    if e.code() == grpc.StatusCode.FAILED_PRECONDITION:
-        raise SandboxTerminatedError(f"Sandbox {sandbox_id} has terminated") from e
+    raise_for_grpc_error(
+        e,
+        {
+            grpc.StatusCode.NOT_FOUND: (
+                SandboxNotFoundError,
+                f"Sandbox {sandbox_id} not found",
+            ),
+            grpc.StatusCode.FAILED_PRECONDITION: (
+                SandboxTerminatedError,
+                f"Sandbox {sandbox_id} has terminated",
+            ),
+        },
+    )
 
 
 def connect(target: str = "localhost:50051", **kwargs) -> SandboxClient:
@@ -774,13 +807,12 @@ if __name__ == "__main__":
 
     print("Listing sandboxes:")
     for sandbox_info in client.list():
-        print(f"  - {sandbox_info.id} ({sandbox_info.state}) {sandbox_info.name or ''}")
+        print(f"  - {sandbox_info.id} ({sandbox_info.status}) {sandbox_info.name or ''}")
 
     sandboxes = client.list()
     if sandboxes:
         sandbox = client.get(id=sandboxes[0].id)
         print(f"\nExecuting 'echo hello' on sandbox {sandbox.id}:")
         result = sandbox.exec("echo", "hello")
-        for line in result.stdout:
-            print(f"  stdout: {line}")
+        print(f"  stdout: {result.stdout_text.rstrip()}")
         print(f"  exit_code: {result.exit_code}")

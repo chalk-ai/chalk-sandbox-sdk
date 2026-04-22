@@ -37,7 +37,6 @@ Usage:
 
 from __future__ import annotations
 
-import builtins
 import datetime
 import os
 from collections.abc import Iterator
@@ -47,10 +46,15 @@ from pathlib import Path
 
 import grpc
 
-from chalkcompute._connect import ConnectClient, grpc_target_from_url
+from chalkcompute._connect import ConnectClient, grpc_target_from_url, raise_for_grpc_error
 from chalkcompute._gen.chalk.volume.v1 import volume_pb2 as pb
 from chalkcompute._gen.chalk.volume.v1 import volume_pb2_grpc as pb_grpc
 from chalkcompute._tracing import traced
+
+# Aliases defined before VolumeClient, which has a ``.list()`` method that
+# would otherwise shadow the builtin ``list`` in class-scope name resolution.
+_GrpcMetadata = list[tuple[str, str]]
+_GrpcOptions = list[tuple[str, int]]
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -65,7 +69,7 @@ class VolumeNotFoundError(VolumeError):
     """Raised when a volume is not found."""
 
 
-class FileNotFoundError_(VolumeError):
+class VolumeFileNotFoundError(VolumeError):
     """Raised when a file within a volume is not found."""
 
 
@@ -382,6 +386,9 @@ class Volume:
 # ---------------------------------------------------------------------------
 
 
+_VolumeInfoList = list[VolumeInfo]
+
+
 class VolumeClient:
     """Client for the Volume gRPC Service."""
 
@@ -390,8 +397,8 @@ class VolumeClient:
         target: str = "localhost:50051",
         *,
         credentials: grpc.ChannelCredentials | None = None,
-        metadata: builtins.list[tuple[str, str]] | None = None,
-        options: builtins.list[tuple[str, builtins.int]] | None = None,
+        metadata: _GrpcMetadata | None = None,
+        options: _GrpcOptions | None = None,
     ) -> None:
         """Initialize the gRPC client.
 
@@ -523,7 +530,7 @@ class VolumeClient:
         vol.reload()
         return vol
 
-    def list(self) -> builtins.list[VolumeInfo]:
+    def list(self) -> _VolumeInfoList:
         """List all volumes.
 
         Returns
@@ -565,16 +572,22 @@ def _pb_to_file_info(info: pb.FileInfo) -> FileInfo:
 
 
 def _handle_rpc_error(e: grpc.RpcError, volume_name: str) -> None:
-    assert isinstance(e, grpc.Call)
-    if e.code() == grpc.StatusCode.NOT_FOUND:
-        raise VolumeNotFoundError(f"Volume {volume_name!r} not found") from e
+    raise_for_grpc_error(
+        e,
+        {
+            grpc.StatusCode.NOT_FOUND: (
+                VolumeNotFoundError,
+                f"Volume {volume_name!r} not found",
+            ),
+        },
+    )
 
 
 def connect(
     target: str = "localhost:50051",
     *,
     credentials: grpc.ChannelCredentials | None = None,
-    metadata: builtins.list[tuple[str, str]] | None = None,
+    metadata: _GrpcMetadata | None = None,
 ) -> VolumeClient:
     """Create a new ``VolumeClient``.
 

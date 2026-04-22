@@ -14,6 +14,8 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
+import grpc
+
 from chalkcompute._tracing import traced as _traced
 
 logger = logging.getLogger(__name__)
@@ -304,6 +306,28 @@ def upload_lazy_files(
         volumes.append((vol_name, dest_dir))
 
     return volumes
+
+
+def raise_for_grpc_error(
+    e: grpc.RpcError,
+    code_map: dict[grpc.StatusCode, tuple[type[Exception], str]],
+) -> None:
+    """Translate a gRPC error to a typed exception if its status code is mapped.
+
+    Parameters
+    ----------
+    e
+        The gRPC error raised by a stub call.
+    code_map
+        Mapping from ``grpc.StatusCode`` to ``(exception_class, message)``
+        pairs.  Status codes not in the map are ignored — the caller
+        should re-raise the original error.
+    """
+    assert isinstance(e, grpc.Call)
+    mapped = code_map.get(e.code())
+    if mapped is not None:
+        exc_cls, message = mapped
+        raise exc_cls(message) from e
 
 
 def grpc_target_from_url(
