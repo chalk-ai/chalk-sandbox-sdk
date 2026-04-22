@@ -610,6 +610,8 @@ class StringRules(_message.Message):
         "ipv6_prefix",
         "host_and_port",
         "ulid",
+        "protobuf_fqn",
+        "protobuf_dot_fqn",
         "well_known_regex",
         "strict",
         "example",
@@ -647,6 +649,8 @@ class StringRules(_message.Message):
     IPV6_PREFIX_FIELD_NUMBER: _ClassVar[int]
     HOST_AND_PORT_FIELD_NUMBER: _ClassVar[int]
     ULID_FIELD_NUMBER: _ClassVar[int]
+    PROTOBUF_FQN_FIELD_NUMBER: _ClassVar[int]
+    PROTOBUF_DOT_FQN_FIELD_NUMBER: _ClassVar[int]
     WELL_KNOWN_REGEX_FIELD_NUMBER: _ClassVar[int]
     STRICT_FIELD_NUMBER: _ClassVar[int]
     EXAMPLE_FIELD_NUMBER: _ClassVar[int]
@@ -681,6 +685,8 @@ class StringRules(_message.Message):
     ipv6_prefix: bool
     host_and_port: bool
     ulid: bool
+    protobuf_fqn: bool
+    protobuf_dot_fqn: bool
     well_known_regex: KnownRegex
     strict: bool
     example: _containers.RepeatedScalarFieldContainer[str]
@@ -717,6 +723,8 @@ class StringRules(_message.Message):
         ipv6_prefix: bool = ...,
         host_and_port: bool = ...,
         ulid: bool = ...,
+        protobuf_fqn: bool = ...,
+        protobuf_dot_fqn: bool = ...,
         well_known_regex: _Optional[_Union[KnownRegex, str]] = ...,
         strict: bool = ...,
         example: _Optional[_Iterable[str]] = ...,

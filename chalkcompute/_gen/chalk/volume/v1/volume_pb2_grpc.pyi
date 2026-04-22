@@ -14,6 +14,10 @@ from chalkcompute._gen.chalk.volume.v1.volume_pb2 import (
     DeleteVolumeResponse,
     GetFileRequest,
     GetFileResponse,
+    GetObjectDownloadUriRequest,
+    GetObjectDownloadUriResponse,
+    GetObjectUploadUriRequest,
+    GetObjectUploadUriResponse,
     GetVolumeRequest,
     GetVolumeResponse,
     ListFilesRequest,
@@ -31,6 +35,39 @@ from grpc import (
     ServicerContext,
     UnaryUnaryMultiCallable,
 )
+
+class DataPlaneObjectStorageServiceStub:
+    """DataPlaneObjectStorageService provides pre-signed URIs for direct object storage access."""
+
+    def __init__(self, channel: Channel) -> None: ...
+    GetObjectUploadUri: UnaryUnaryMultiCallable[
+        GetObjectUploadUriRequest,
+        GetObjectUploadUriResponse,
+    ]
+    GetObjectDownloadUri: UnaryUnaryMultiCallable[
+        GetObjectDownloadUriRequest,
+        GetObjectDownloadUriResponse,
+    ]
+
+class DataPlaneObjectStorageServiceServicer(metaclass=ABCMeta):
+    """DataPlaneObjectStorageService provides pre-signed URIs for direct object storage access."""
+
+    @abstractmethod
+    def GetObjectUploadUri(
+        self,
+        request: GetObjectUploadUriRequest,
+        context: ServicerContext,
+    ) -> GetObjectUploadUriResponse: ...
+    @abstractmethod
+    def GetObjectDownloadUri(
+        self,
+        request: GetObjectDownloadUriRequest,
+        context: ServicerContext,
+    ) -> GetObjectDownloadUriResponse: ...
+
+def add_DataPlaneObjectStorageServiceServicer_to_server(
+    servicer: DataPlaneObjectStorageServiceServicer, server: Server
+) -> None: ...
 
 class VolumeServiceStub:
     """VolumeService manages persistent named volumes backed by object storage."""

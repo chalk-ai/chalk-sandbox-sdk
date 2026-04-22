@@ -16,22 +16,43 @@ from typing import (
 DESCRIPTOR: _descriptor.FileDescriptor
 
 class ScalingSpec(_message.Message):
-    __slots__ = ("min_replicas", "max_replicas", "target_cpu_utilization_percentage", "shutdown_delay_seconds")
+    __slots__ = (
+        "min_replicas",
+        "max_replicas",
+        "target_cpu_utilization_percentage",
+        "shutdown_delay_seconds",
+        "window_seconds",
+        "function_queue_depth_trigger",
+    )
     MIN_REPLICAS_FIELD_NUMBER: _ClassVar[int]
     MAX_REPLICAS_FIELD_NUMBER: _ClassVar[int]
     TARGET_CPU_UTILIZATION_PERCENTAGE_FIELD_NUMBER: _ClassVar[int]
     SHUTDOWN_DELAY_SECONDS_FIELD_NUMBER: _ClassVar[int]
+    WINDOW_SECONDS_FIELD_NUMBER: _ClassVar[int]
+    FUNCTION_QUEUE_DEPTH_TRIGGER_FIELD_NUMBER: _ClassVar[int]
     min_replicas: int
     max_replicas: int
     target_cpu_utilization_percentage: int
     shutdown_delay_seconds: int
+    window_seconds: int
+    function_queue_depth_trigger: FunctionQueueDepthScalingTrigger
     def __init__(
         self,
         min_replicas: _Optional[int] = ...,
         max_replicas: _Optional[int] = ...,
         target_cpu_utilization_percentage: _Optional[int] = ...,
         shutdown_delay_seconds: _Optional[int] = ...,
+        window_seconds: _Optional[int] = ...,
+        function_queue_depth_trigger: _Optional[_Union[FunctionQueueDepthScalingTrigger, _Mapping]] = ...,
     ) -> None: ...
+
+class FunctionQueueDepthScalingTrigger(_message.Message):
+    __slots__ = ("function_name", "target_queue_depth")
+    FUNCTION_NAME_FIELD_NUMBER: _ClassVar[int]
+    TARGET_QUEUE_DEPTH_FIELD_NUMBER: _ClassVar[int]
+    function_name: str
+    target_queue_depth: int
+    def __init__(self, function_name: _Optional[str] = ..., target_queue_depth: _Optional[int] = ...) -> None: ...
 
 class ScalingGroupSpec(_message.Message):
     __slots__ = ("container_spec", "scaling_spec")

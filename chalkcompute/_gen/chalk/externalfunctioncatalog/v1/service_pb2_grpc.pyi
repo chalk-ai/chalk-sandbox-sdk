@@ -8,6 +8,8 @@ from abc import (
     abstractmethod,
 )
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1.service_pb2 import (
+    CallExternalFunctionRequest,
+    CallExternalFunctionResponse,
     CreateExternalFunctionVersionRequest,
     CreateExternalFunctionVersionResponse,
     DeleteExternalFunctionVersionRequest,
@@ -16,6 +18,8 @@ from chalkcompute._gen.chalk.externalfunctioncatalog.v1.service_pb2 import (
     GetExternalFunctionVersionResponse,
     ListExternalFunctionVersionsRequest,
     ListExternalFunctionVersionsResponse,
+    ListExternalFunctionsRequest,
+    ListExternalFunctionsResponse,
 )
 from grpc import (
     Channel,
@@ -41,6 +45,14 @@ class ExternalFunctionCatalogServiceStub:
     DeleteExternalFunctionVersion: UnaryUnaryMultiCallable[
         DeleteExternalFunctionVersionRequest,
         DeleteExternalFunctionVersionResponse,
+    ]
+    ListExternalFunctions: UnaryUnaryMultiCallable[
+        ListExternalFunctionsRequest,
+        ListExternalFunctionsResponse,
+    ]
+    CallExternalFunction: UnaryUnaryMultiCallable[
+        CallExternalFunctionRequest,
+        CallExternalFunctionResponse,
     ]
 
 class ExternalFunctionCatalogServiceServicer(metaclass=ABCMeta):
@@ -68,6 +80,18 @@ class ExternalFunctionCatalogServiceServicer(metaclass=ABCMeta):
         request: DeleteExternalFunctionVersionRequest,
         context: ServicerContext,
     ) -> DeleteExternalFunctionVersionResponse: ...
+    @abstractmethod
+    def ListExternalFunctions(
+        self,
+        request: ListExternalFunctionsRequest,
+        context: ServicerContext,
+    ) -> ListExternalFunctionsResponse: ...
+    @abstractmethod
+    def CallExternalFunction(
+        self,
+        request: CallExternalFunctionRequest,
+        context: ServicerContext,
+    ) -> CallExternalFunctionResponse: ...
 
 def add_ExternalFunctionCatalogServiceServicer_to_server(
     servicer: ExternalFunctionCatalogServiceServicer, server: Server
