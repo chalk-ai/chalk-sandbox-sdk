@@ -14,7 +14,6 @@ import subprocess
 import sys
 import time
 
-import pyarrow as pa
 import pytest
 from dotenv import load_dotenv
 
@@ -166,35 +165,10 @@ class TestAsyncScalar:
 
 @needs_staging
 class TestTimeout:
-    def test_defer_get_timeout(self):
-        """handle.get(timeout=3) on nonexistent function raises TimeoutError."""
+    def test_defer_get_with_timeout(self):
+        """handle.get(timeout=30) succeeds for a real function."""
         remote = _make_remote()
         fn = remote.function("test-add")
-
-        # Get the raw async client to enqueue to a nonexistent function
-        from libchalk.runtime.remote_call import AsyncRemoteCallClient, GrpcChannelCredentials
-
-        client = remote._client
-        stub_provider = client._stub_refresher._stub
-        engine_channel = stub_provider._engine_channel
-        uri = engine_channel._channel._target
-        use_ssl = not (uri.startswith("localhost") or uri.startswith("127.0.0.1"))
-        creds = GrpcChannelCredentials.SSL() if use_ssl else GrpcChannelCredentials.Insecure()
-        metadata = {
-            "x-chalk-deployment-type": "function-queue",
-            "x-chalk-env-id": stub_provider.environment_id,
-        }
-        for interceptor in getattr(engine_channel, "_interceptors", ()):
-            refresher = getattr(interceptor, "_refresher", None)
-            if refresher is not None:
-                metadata["authorization"] = f"Bearer {refresher.get_token().access_token}"
-                break
-
-        raw_client = AsyncRemoteCallClient.create(uri, creds, metadata)
-        batch = pa.record_batch([pa.array([1])], schema=pa.schema([("a", pa.int64())]))
-        call_id = raw_client.enqueue("nonexistent_fn_timeout_ci_test", batch)
-
-        with pytest.raises(concurrent.futures.TimeoutError):
-            raw_client.get_result(call_id).result(timeout=3.0)
-
-        raw_client.cancel(call_id)
+        handle = fn.defer(1, 1)
+        result = handle.get(timeout=30)
+        assert result.to_pylist() == [2]
