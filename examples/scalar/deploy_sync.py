@@ -12,7 +12,7 @@ import chalkcompute
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 
-@chalkcompute.function(name="test-add")
+@chalkcompute.function(name="chalk-sandbox-test-add")
 def add(a: int, b: int) -> int:
     """Simple addition."""
     return a + b

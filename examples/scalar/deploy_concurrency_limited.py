@@ -18,7 +18,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 
 @chalkcompute.function(
-    name="test-slow-add",
+    name="chalk-sandbox-test-slow-add",
     concurrency=ConcurrencyPolicy(max_concurrent=2),
 )
 def slow_add(a: int, b: int) -> int:

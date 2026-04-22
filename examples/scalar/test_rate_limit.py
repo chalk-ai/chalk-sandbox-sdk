@@ -79,7 +79,7 @@ class TestRateLimit:
         so 20 calls should take at least 3s (ceil(20/5) - 1 = 3).
         """
         remote = _make_remote()
-        fn = remote.function("test-add-rate-limited")
+        fn = remote.function("chalk-sandbox-test-add-rate-limited")
         n = 20
 
         # Enqueue all at once
@@ -111,7 +111,7 @@ class TestRateLimit:
     def test_rate_limit_correctness_under_load(self):
         """All results are correct even under rate limiting."""
         remote = _make_remote()
-        fn = remote.function("test-add-rate-limited")
+        fn = remote.function("chalk-sandbox-test-add-rate-limited")
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
             futures = [pool.submit(fn, i, i * 10) for i in range(1, 11)]
@@ -139,7 +139,7 @@ class TestConcurrencyLimit:
         With max_concurrent=2, only 2 run at a time: ceil(6/2) × 1s = 3s minimum.
         """
         remote = _make_remote()
-        fn = remote.function("test-slow-add")
+        fn = remote.function("chalk-sandbox-test-slow-add")
         n = 6
 
         handles = [fn.defer(i, 1) for i in range(n)]
@@ -164,7 +164,7 @@ class TestConcurrencyLimit:
     def test_concurrency_limit_correctness(self):
         """All results are correct even under concurrency limiting."""
         remote = _make_remote()
-        fn = remote.function("test-slow-add")
+        fn = remote.function("chalk-sandbox-test-slow-add")
 
         handles = [fn.defer(i, i) for i in range(1, 5)]
         results = [h.get().to_pylist()[0] for h in handles]
