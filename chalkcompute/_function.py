@@ -47,6 +47,8 @@ from chalkcompute._connect import (
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import traced
 from chalkcompute._retry import RetryPolicy
+from chalkcompute._rate_limit import RateLimitPolicy
+from chalkcompute._concurrency import ConcurrencyPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -191,27 +193,60 @@ def _strip_chalkcompute_from_source(source: str) -> str:
     return "".join(kept)
 
 
-def _generate_handler_shim(func_name: str) -> str:
+def _generate_handler_shim(func_name: str, *, batched: bool = False) -> str:
     """Generate a ``handler.py`` that bridges Arrow columnar data to scalar calls.
 
-    ``chalk-remote-call`` passes ``event`` as ``dict[str, pa.Array]``.
-    The shim iterates over rows, extracts Python scalars via ``.as_py()``,
-    calls the user function per-row, and returns results.
+    Non-batched mode: ``chalk-remote-call`` passes ``event`` as
+    ``dict[str, pa.Array]`` and calls ``handler(event, context)``. Generator
+    outputs stream as individual response chunks.
 
-    If the user function is a generator (yields values), each yielded value
-    is returned as a separate item so that ``chalk-remote-call`` can stream
-    them as individual response chunks.
+    Batched mode: the server coalesces multiple callers and passes
+    ``events: list[dict[str, pa.Array]]`` / ``contexts: list[dict]`` to
+    ``handler(events, contexts)``. The shim returns a list-of-lists —
+    one inner list per caller. Generators are not supported in this mode.
 
     Parameters
     ----------
     func_name
         Name of the user function to import and invoke.
+    batched
+        Whether the deployed function enables batching.
 
     Returns
     -------
     str
         Python source for the handler shim.
     """
+    if batched:
+        return (
+            "import inspect\n"
+            "\n"
+            f"from user_module import {func_name}\n"
+            "\n"
+            f"_is_coroutine = inspect.iscoroutinefunction({func_name})\n"
+            "\n"
+            "\n"
+            "def handler(events, contexts):\n"
+            "    results = []\n"
+            "    for event in events:\n"
+            "        n = len(next(iter(event.values())))\n"
+            "        if _is_coroutine:\n"
+            "            import asyncio\n"
+            "            async def _run_all():\n"
+            "                out = []\n"
+            "                for i in range(n):\n"
+            "                    kwargs = {k: v[i].as_py() for k, v in event.items()}\n"
+            f"                    out.append(await {func_name}(**kwargs))\n"
+            "                return out\n"
+            "            per_caller = asyncio.run(_run_all())\n"
+            "        else:\n"
+            "            per_caller = []\n"
+            "            for i in range(n):\n"
+            "                kwargs = {k: v[i].as_py() for k, v in event.items()}\n"
+            f"                per_caller.append({func_name}(**kwargs))\n"
+            "        results.append(per_caller)\n"
+            "    return results\n"
+        )
     return (
         "import inspect\n"
         "\n"
@@ -426,7 +461,8 @@ def _build_and_upload(
     if deploy_image.lazy_local_files:
         vkey = f"upload:{label}"
         progress_add(
-            vkey, "volume",
+            vkey,
+            "volume",
             f"Uploading {len(deploy_image.lazy_local_files)} file(s)",
             parent=progress_parent,
         )
@@ -683,17 +719,21 @@ class RemoteFunction:
         memory: str | None = None,
         gpu: str | None = None,
         env: dict[str, str] | None = None,
+        secrets: list[_Secret] | None = None,
+        volumes: list[tuple[str, str]] | None = None,
         min_replicas: int = 1,
         max_replicas: int = 1,
-        volumes: list[tuple[str, str]] | None = None,
-        secrets: list[_Secret] | None = None,
+        shutdown_delay_seconds: int | None = None,
+        scaling_interval_seconds: int | None = None,
+        target_cpu_utilization_percentage: int | None = None,
+        target_queue_depth: int | None = None,
         serialization_format: SerializationFormat = "pyarrow",
-        suspend_cooldown_period: int | None = None,
         options: dict[str, str] | None = None,
         max_buffer_duration: int | None = None,
         max_batching_size: int | None = None,
         retries: int | RetryPolicy | None = None,
-        rate_limit_key: str | None = None,
+        rate_limit: int | RateLimitPolicy | None = None,
+        concurrency: int | ConcurrencyPolicy | None = None,
     ) -> None:
         self._func = func
         if name is not None:
@@ -707,17 +747,39 @@ class RemoteFunction:
         self._memory = memory
         self._gpu = gpu
         self._env = env or {}
+        self._secrets: list[_Secret] = list(secrets or [])
+        self._volumes: list[tuple[str, str]] = list(volumes or [])
         self._min_replicas = min_replicas
         self._max_replicas = max_replicas
-        self._volumes: list[tuple[str, str]] = list(volumes or [])
-        self._secrets: list[_Secret] = list(secrets or [])
+        self._shutdown_delay_seconds = shutdown_delay_seconds
+        self._scaling_interval_seconds = scaling_interval_seconds
+        self._target_cpu_utilization_percentage = target_cpu_utilization_percentage
+        self._target_queue_depth = target_queue_depth
         self._serialization_format: SerializationFormat = serialization_format
-        self._suspend_cooldown_period = suspend_cooldown_period
         self._options = options or {}
         self._max_buffer_duration = max_buffer_duration
         self._max_batching_size = max_batching_size
-        self._retries = RetryPolicy.from_int_or_policy(retries) if retries is not None else None
-        self._rate_limit_key = rate_limit_key
+        if max_batching_size is not None and (
+            inspect.isgeneratorfunction(func) or inspect.isasyncgenfunction(func)
+        ):
+            raise FunctionError(
+                f"Function '{self._func_name}' is a generator; generators are "
+                f"not supported with max_batching_size. Remove max_batching_size "
+                f"or change the function to return a value."
+            )
+        self._retries = (
+            RetryPolicy.from_int_or_policy(retries) if retries is not None else None
+        )
+        self._rate_limit = (
+            RateLimitPolicy.from_int_or_policy(rate_limit)
+            if rate_limit is not None
+            else None
+        )
+        self._concurrency = (
+            ConcurrencyPolicy.from_int_or_policy(concurrency)
+            if concurrency is not None
+            else None
+        )
 
         # Set after .deploy()
         self._version_info: FunctionVersionInfo | None = None
@@ -825,17 +887,21 @@ class RemoteFunction:
         f._memory = None
         f._gpu = None
         f._env = {}
+        f._secrets = []
+        f._volumes = []
         f._min_replicas = 1
         f._max_replicas = 1
-        f._volumes = []
-        f._secrets = []
+        f._shutdown_delay_seconds = None
+        f._scaling_interval_seconds = None
+        f._target_cpu_utilization_percentage = None
+        f._target_queue_depth = None
         f._serialization_format = "pyarrow"
-        f._suspend_cooldown_period = None
         f._options = {}
         f._max_buffer_duration = None
         f._max_batching_size = None
         f._retries = None
-        f._rate_limit_key = None
+        f._rate_limit = None
+        f._concurrency = None
         f._version_info = None
         f._web_url = None
         f._port = 6666
@@ -855,12 +921,11 @@ class RemoteFunction:
         Image
             Declarative image ready to be built.
         """
-        source_file, source_is_temp = _prepare_source_file(
-            inspect.getfile(self._func)
-        )
+        source_file, source_is_temp = _prepare_source_file(inspect.getfile(self._func))
 
         handler_shim = _generate_handler_shim(
-            getattr(self._func, "__name__", self._func_name)
+            getattr(self._func, "__name__", self._func_name),
+            batched=self._max_batching_size is not None,
         )
         shim_path = _write_temp(handler_shim)
 
@@ -911,7 +976,7 @@ class RemoteFunction:
         )
 
         fkey = f"function:{self._func_name}"
-        progress_add(fkey, "function", f"Function \"{self._func_name}\"")
+        progress_add(fkey, "function", f'Function "{self._func_name}"')
 
         try:
             # 1. Build deploy image
@@ -951,12 +1016,27 @@ class RemoteFunction:
                 gpu=self._gpu,
                 volumes=self._volumes,
             )
+            scaling_spec: dict[str, Any] = {
+                "minReplicas": self._min_replicas,
+                "maxReplicas": self._max_replicas,
+            }
+            if self._shutdown_delay_seconds is not None:
+                scaling_spec["shutdownDelaySeconds"] = self._shutdown_delay_seconds
+            if self._scaling_interval_seconds is not None:
+                scaling_spec["windowSeconds"] = self._scaling_interval_seconds
+            if self._target_cpu_utilization_percentage is not None:
+                scaling_spec["targetCpuUtilizationPercentage"] = (
+                    self._target_cpu_utilization_percentage
+                )
+            if self._target_queue_depth is not None:
+                scaling_spec["functionQueueDepthTrigger"] = {
+                    "functionName": self._func_name,
+                    "targetQueueDepth": self._target_queue_depth,
+                }
+
             spec: dict[str, Any] = {
                 "containerSpec": container_spec,
-                "scalingSpec": {
-                    "minReplicas": self._min_replicas,
-                    "maxReplicas": self._max_replicas,
-                },
+                "scalingSpec": scaling_spec,
             }
 
             # 5b. Resolve lazy secrets and add to container spec
@@ -964,16 +1044,18 @@ class RemoteFunction:
                 from chalkcompute._secret import resolve_lazy_secrets
 
                 if any(s.is_lazy for s in self._secrets):
-                    resolved, _upserted = resolve_lazy_secrets(self._secrets, self._client)
+                    resolved, _upserted = resolve_lazy_secrets(
+                        self._secrets, self._client
+                    )
                     self._secrets = resolved
-                container_spec["secretRefs"] = [s._to_proto_dict() for s in self._secrets]
+                container_spec["secretRefs"] = [
+                    s._to_proto_dict() for s in self._secrets
+                ]
 
             # 5c. Build function-level config
             function_config: dict[str, Any] = {}
             if self._serialization_format != "pyarrow":
                 function_config["serializationFormat"] = self._serialization_format
-            if self._suspend_cooldown_period is not None:
-                function_config["suspendCooldownPeriod"] = self._suspend_cooldown_period
             if self._options:
                 function_config["options"] = self._options
             if self._max_buffer_duration is not None:
@@ -982,8 +1064,10 @@ class RemoteFunction:
                 function_config["maxBatchingSize"] = self._max_batching_size
             if self._retries is not None:
                 function_config["retryPolicy"] = self._retries.to_dict()
-            if self._rate_limit_key is not None:
-                function_config["rateLimitKey"] = self._rate_limit_key
+            if self._rate_limit is not None:
+                function_config["rateLimit"] = self._rate_limit.to_dict()
+            if self._concurrency is not None:
+                function_config["concurrency"] = self._concurrency.to_dict()
 
             # 6. Call CreateExternalFunctionVersion
             rkey = f"register:{self._func_name}"
@@ -1006,7 +1090,9 @@ class RemoteFunction:
                 timeout=60,
             )
             if resp.status_code != 200:
-                raise FunctionError(f"CreateExternalFunctionVersion failed: {resp.text}")
+                raise FunctionError(
+                    f"CreateExternalFunctionVersion failed: {resp.text}"
+                )
 
             data = resp.json()
             efv = data["externalFunctionVersion"]
@@ -1213,7 +1299,9 @@ class RemoteFunction:
         data = resp.json()
         remote_resp = data.get("remoteCallResponse")
         if not remote_resp:
-            raise FunctionError("No remoteCallResponse in CallExternalFunction response")
+            raise FunctionError(
+                "No remoteCallResponse in CallExternalFunction response"
+            )
 
         feather_b64 = remote_resp.get("featherStream")
         if not feather_b64:
@@ -1295,9 +1383,7 @@ class RemoteFunction:
                 )
 
             responses = list(
-                self._call_stub.CallFunction(
-                    requests(), metadata=self._call_metadata
-                )
+                self._call_stub.CallFunction(requests(), metadata=self._call_metadata)
             )
 
             if not responses:
@@ -1425,17 +1511,21 @@ def function(
     gpu: str | None = None,
     name: str | None = None,
     env: dict[str, str] | None = None,
+    secrets: list[_Secret] | None = None,
+    volumes: list[tuple[str, str]] | None = None,
     min_replicas: int = 1,
     max_replicas: int = 1,
-    volumes: list[tuple[str, str]] | None = None,
-    secrets: list[_Secret] | None = None,
+    shutdown_delay_seconds: int | None = None,
+    scaling_interval_seconds: int | None = None,
+    target_cpu_utilization_percentage: int | None = None,
+    target_queue_depth: int | None = None,
     serialization_format: SerializationFormat = "pyarrow",
-    suspend_cooldown_period: int | None = None,
     options: dict[str, str] | None = None,
     max_buffer_duration: int | None = None,
     max_batching_size: int | None = None,
     retries: int | RetryPolicy | None = None,
-    rate_limit_key: str | None = None,
+    rate_limit: int | RateLimitPolicy | None = None,
+    concurrency: int | ConcurrencyPolicy | None = None,
 ) -> Callable[..., RemoteFunction | _NoOpFunction]:
     """Decorator that deploys a function as a versioned remote function.
 
@@ -1465,35 +1555,56 @@ def function(
         Custom function name. Defaults to the function's ``__name__``.
     env
         Environment variables to pass to the function.
+    secrets
+        List of :class:`~chalkcompute.Secret` references to inject.
+    volumes
+        List of ``(name, mount_path)`` tuples for persistent storage.
     min_replicas
         Minimum number of replicas.
     max_replicas
         Maximum number of replicas.
-    volumes
-        List of ``(name, mount_path)`` tuples for persistent storage.
-    secrets
-        List of :class:`~chalkcompute.Secret` references to inject.
+    shutdown_delay_seconds
+        Graceful termination period in seconds before replicas are forcibly
+        killed during scale-down. Defaults to 30s on the server.
+    scaling_interval_seconds
+        How often (in seconds) the autoscaler scrapes metrics to make scaling
+        decisions. Defaults to 60s on the server.
+    target_cpu_utilization_percentage
+        Target CPU utilization percentage (0-100) that drives autoscaling.
+    target_queue_depth
+        Target pending-request queue depth per replica. When set, the
+        autoscaler scales on the function's own queue depth.
     serialization_format
         Wire format for arguments and results. Currently only ``"pyarrow"``
         is supported.
-    suspend_cooldown_period
-        Time in seconds until containers shut down after the last request.
     options
         Arbitrary key-value options forwarded to the Chalk platform.
     max_buffer_duration
         Maximum time in milliseconds to buffer incoming items before invoking
         the handler. Defaults to 1000 ms when batching is enabled. When
-        batching is enabled, handler args are lists or a single pyarrow table.
+        batching is enabled, handler args are lists.
     max_batching_size
         Maximum number of items to accumulate before invoking the handler.
         Defaults to 10 when batching is enabled.
     retries
         Retry policy for handler invocations. Pass an ``int`` for simple
         max-attempts with default exponential backoff, or a
-        :class:`~chalk_remote_call.config.RetryPolicy` for full control.
-    rate_limit_key
-        Name of an externally defined rate limit policy. Used to control
-        outbound concurrency from multiple sources.
+        :class:`~chalkcompute.RetryPolicy` for full control. Enforced by
+        the dispatcher (chalkdf or the queue consumer), not the handler.
+    rate_limit
+        Rate limit policy for outbound calls. Pass an ``int`` for a simple
+        "N per second" cap with a per-function key, or a
+        :class:`~chalkcompute.RateLimitPolicy` for full control (``rate``,
+        ``per``, ``key``). Multiple functions sharing the same ``key`` share
+        one bucket — used when a downstream service imposes a throughput
+        limit across callers.
+    concurrency
+        Concurrency policy: cap on in-flight handler invocations. Pass an
+        ``int`` for a simple ``max_concurrent`` cap with a per-function key,
+        or a :class:`~chalkcompute.ConcurrencyPolicy` for full control
+        (``max_concurrent``, ``key``). Multiple functions sharing the same
+        ``key`` share one gate — independent of ``rate_limit`` (which caps
+        rate, not in-flight count).
 
     Examples
     --------
@@ -1516,17 +1627,21 @@ def function(
             memory=memory,
             gpu=gpu,
             env=env,
+            secrets=secrets,
+            volumes=volumes,
             min_replicas=min_replicas,
             max_replicas=max_replicas,
-            volumes=volumes,
-            secrets=secrets,
+            shutdown_delay_seconds=shutdown_delay_seconds,
+            scaling_interval_seconds=scaling_interval_seconds,
+            target_cpu_utilization_percentage=target_cpu_utilization_percentage,
+            target_queue_depth=target_queue_depth,
             serialization_format=serialization_format,
-            suspend_cooldown_period=suspend_cooldown_period,
             options=options,
             max_buffer_duration=max_buffer_duration,
             max_batching_size=max_batching_size,
             retries=retries,
-            rate_limit_key=rate_limit_key,
+            rate_limit=rate_limit,
+            concurrency=concurrency,
         )
         f.deploy()
         return f
