@@ -80,6 +80,9 @@ _PRESIGNED_PART_SIZE_BYTES: int = 10 * 1024 * 1024  # 10 MB
 #: Maximum number of signed-URL refreshes before giving up on a presigned upload.
 _PRESIGNED_MAX_RETRIES: int = 3
 
+#: Maximum concurrent threads for multipart part uploads and lazy file uploads.
+_UPLOAD_MAX_WORKERS: int = 32
+
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
@@ -735,9 +738,13 @@ def _upload_multipart(
 ) -> str:
     """Upload via S3-style multipart presigned URLs.
 
+    Parts are uploaded concurrently. On 401/403 from S3, all signed URLs
+    are refreshed and parts are re-uploaded from scratch.
+
     Returns the storage object ID for the completed upload.
     """
     import httpx
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     storage_object_id = resp.storage_object_id
     all_uris = list(resp.multipart.signed_upload_uris)
@@ -745,38 +752,45 @@ def _upload_multipart(
     completion_uri = all_uris[-1]
     n_parts = len(part_uris)
 
-    refresh_count = 0
-    etags: list[str] = []
-    i = 0
-    while i < n_parts:
+    def _put_part(i: int) -> tuple[int, str]:
+        """Upload part *i* and return ``(index, etag)``."""
         chunk = data[
             i * _PRESIGNED_PART_SIZE_BYTES : (i + 1) * _PRESIGNED_PART_SIZE_BYTES
         ]
-        part_resp = httpx.put(part_uris[i], content=chunk, timeout=300)
-        if part_resp.status_code in (200, 204):
-            etags.append(part_resp.headers.get("ETag", ""))
-            i += 1
-            continue
-        if (
-            part_resp.status_code in (401, 403)
-            and refresh_count < _PRESIGNED_MAX_RETRIES
-        ):
-            refresh_count += 1
-            logger.warning(
-                "Multipart upload: refreshing signed URLs (attempt %d/%d)",
-                refresh_count,
-                _PRESIGNED_MAX_RETRIES,
-            )
-            new_resp = refresh()
-            storage_object_id = new_resp.storage_object_id
-            all_uris = list(new_resp.multipart.signed_upload_uris)
-            part_uris = all_uris[:-1]
-            completion_uri = all_uris[-1]
-            etags.clear()
-            i = 0
-            continue
-        part_resp.raise_for_status()
+        r = httpx.put(part_uris[i], content=chunk, timeout=300)
+        if r.status_code in (401, 403):
+            r.raise_for_status()
+        r.raise_for_status()
+        return i, r.headers.get("ETag", "")
 
+    refresh_count = 0
+    while True:
+        try:
+            etags_by_index: dict[int, str] = {}
+            with ThreadPoolExecutor(max_workers=_UPLOAD_MAX_WORKERS) as pool:
+                for i, etag in pool.map(_put_part, range(n_parts)):
+                    etags_by_index[i] = etag
+            break
+        except httpx.HTTPStatusError as e:
+            if (
+                e.response.status_code in (401, 403)
+                and refresh_count < _PRESIGNED_MAX_RETRIES
+            ):
+                refresh_count += 1
+                logger.warning(
+                    "Multipart upload: refreshing signed URLs (attempt %d/%d)",
+                    refresh_count,
+                    _PRESIGNED_MAX_RETRIES,
+                )
+                new_resp = refresh()
+                storage_object_id = new_resp.storage_object_id
+                all_uris = list(new_resp.multipart.signed_upload_uris)
+                part_uris = all_uris[:-1]
+                completion_uri = all_uris[-1]
+                continue
+            raise
+
+    etags = [etags_by_index[i] for i in range(n_parts)]
     parts_xml = "".join(
         f"<Part><PartNumber>{j + 1}</PartNumber><ETag>{etag}</ETag></Part>"
         for j, etag in enumerate(etags)
@@ -929,7 +943,7 @@ def upload_lazy_files(
     for dest_dir, files in dir_to_files.items():
         vol = client.create(f"{volume_prefix}-{uuid.uuid4().hex[:12]}")
 
-        with ThreadPoolExecutor(max_workers=32) as pool:
+        with ThreadPoolExecutor(max_workers=_UPLOAD_MAX_WORKERS) as pool:
             futures = [pool.submit(_put_file, vol.name, lf, dest_dir) for lf in files]
             for fut in as_completed(futures):
                 fut.result()

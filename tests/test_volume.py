@@ -300,6 +300,8 @@ class TestPresignedMultipart:
         assert client._stub.PutFile.call_args[0][0].storage_object_id == "s3-obj"
 
     def test_refreshes_on_403(self):
+        import httpx as _httpx
+
         client = _make_vol_client()
         first = MagicMock(storage_object_id="old")
         first.WhichOneof.return_value = "multipart"
@@ -311,9 +313,14 @@ class TestPresignedMultipart:
 
         data = b"E" * (_INLINE_THRESHOLD_BYTES + 1)
 
+        forbidden = MagicMock(status_code=403, is_success=False)
+        forbidden.raise_for_status.side_effect = _httpx.HTTPStatusError(
+            "403", request=MagicMock(), response=forbidden,
+        )
+
         with patch("httpx.put") as mock_put, patch("httpx.post") as mock_post:
             mock_put.side_effect = [
-                MagicMock(status_code=403, is_success=False),
+                forbidden,
                 MagicMock(status_code=200, is_success=True, headers={"ETag": '"e1"'}),
             ]
             mock_post.return_value = MagicMock(status_code=200, is_success=True)
