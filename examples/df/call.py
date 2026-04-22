@@ -21,8 +21,8 @@ log = logging.getLogger(__name__)
 
 async def main() -> None:
     remote = Remote()
-    fn = remote.function("df-groupby-sum", output_type=pa.int64())
-    log.info("Calling remote function df-groupby-sum...")
+    fn = remote.function("chalk-sandbox-test-df-groupby-sum", output_type=pa.int64())
+    log.info("Calling remote function chalk-sandbox-test-df-groupby-sum...")
     result = await fn(1)
     log.info("Result: %s", result)
     print(f"Remote computed grand total: {result}")

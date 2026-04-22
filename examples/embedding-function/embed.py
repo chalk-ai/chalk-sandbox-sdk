@@ -14,7 +14,7 @@ EMBEDDING_MODEL = "text-embedding-3-small"
 
 
 @chalkcompute.function(
-    name="embed",
+    name="chalk-sandbox-test-embed",
     image=chalkcompute.Image.debian_slim().pip_install(["openai"]),
     env={
         "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),

@@ -17,7 +17,7 @@ MODEL = "gpt-4o-mini"
 
 
 @chalkcompute.function(
-    name="respond",
+    name="chalk-sandbox-test-respond",
     image=chalkcompute.Image.debian_slim().pip_install(["openai"]),
     env={
         "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),

@@ -72,7 +72,7 @@ def test_async_generator_stream_via_remote() -> None:
     async def _collect() -> list[int]:
         client = ChalkGRPCClient()
         remote = Remote(chalk_client=client)
-        fn = remote.function("count-up", output_type=pa.int64())
+        fn = remote.function("chalk-sandbox-test-count-up", output_type=pa.int64())
         collected: list[int] = []
         async for batch in fn(N):
             for value in batch.column(0).to_pylist():

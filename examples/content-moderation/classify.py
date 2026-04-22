@@ -11,7 +11,7 @@ MODEL_NAME = "microsoft/resnet-50"
 
 
 @chalkcompute.function(
-    name="classify-image",
+    name="chalk-sandbox-test-classify-image",
     image=(
         chalkcompute.Image.debian_slim()
         .run_commands("pip install torch --index-url https://download.pytorch.org/whl/cpu")

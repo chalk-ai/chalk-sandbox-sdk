@@ -71,7 +71,7 @@ def test_embedding_function() -> None:
 
     import chalkcompute
 
-    orchestrate = chalkcompute.RemoteFunction.from_name(name="orchestrate")
+    orchestrate = chalkcompute.RemoteFunction.from_name(name="chalk-sandbox-test-orchestrate")
     embeddings = orchestrate(["Hello", "world!"])
 
     assert len(embeddings) == 2, f"Expected 2 embeddings, got {len(embeddings)}"
@@ -100,7 +100,7 @@ def test_embedding_function_via_chalkdf_remote() -> None:
 
     client = ChalkGRPCClient(environment=CHALK_ENVIRONMENT_ID)
     remote = Remote(chalk_client=client)
-    fn = remote.function("embed")
+    fn = remote.function("chalk-sandbox-test-embed")
     embedding = fn("hello")
 
     assert isinstance(embedding, list), f"Expected list, got {type(embedding).__name__}"
@@ -123,7 +123,7 @@ def test_async_embedding_function_via_chalkdf_remote() -> None:
     async def _run() -> list[float]:
         client = ChalkGRPCClient(environment=CHALK_ENVIRONMENT_ID)
         remote = Remote(chalk_client=client)
-        fn = remote.function("async-embed")
+        fn = remote.function("chalk-sandbox-test-async-embed")
         return await fn("hello")
 
     embedding = asyncio.run(_run())

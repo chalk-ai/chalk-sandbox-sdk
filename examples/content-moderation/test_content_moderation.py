@@ -55,7 +55,7 @@ def test_classify_returns_predictions() -> None:
 
     import chalkcompute
 
-    classify = chalkcompute.RemoteFunction.from_name("classify-image")
+    classify = chalkcompute.RemoteFunction.from_name("chalk-sandbox-test-classify-image")
     result = json.loads(classify(TEST_IMAGE_URL))
 
     assert len(result["labels"]) > 0
@@ -73,7 +73,7 @@ def test_classify_identifies_known_image() -> None:
 
     import chalkcompute
 
-    classify = chalkcompute.RemoteFunction.from_name("classify-image")
+    classify = chalkcompute.RemoteFunction.from_name("chalk-sandbox-test-classify-image")
     result = json.loads(classify(TEST_IMAGE_URL))
 
     all_labels = [lbl["label"].lower() for lbl in result["labels"]]
@@ -90,7 +90,7 @@ def test_policy_check_returns_per_policy_scores() -> None:
 
     import chalkcompute
 
-    policy = chalkcompute.RemoteFunction.from_name("policy-check")
+    policy = chalkcompute.RemoteFunction.from_name("chalk-sandbox-test-policy-check")
     result = json.loads(policy(TEST_IMAGE_URL))
 
     assert set(result["policy_scores"].keys()) == EXPECTED_POLICIES
