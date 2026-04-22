@@ -51,7 +51,8 @@ def _make_remote():
     from chalk.client.client_grpc import ChalkGRPCClient
     from chalkdf.remote import Remote
 
-    client = ChalkGRPCClient(environment="tmnmc9beyujew")
+    env_id = os.environ.get("CHALK_ENVIRONMENT_ID", "tmnmc9beyujew")
+    client = ChalkGRPCClient(environment=env_id)
     return Remote(chalk_client=client)
 
 
