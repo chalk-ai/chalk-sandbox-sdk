@@ -558,18 +558,29 @@ class VolumeClient:
 
 
 # ---------------------------------------------------------------------------
-# Upload routing
+# Upload routing helpers
 # ---------------------------------------------------------------------------
 
 
 def _upload_bytes(
     client: VolumeClient, volume_name: str, path: str, data: bytes
 ) -> None:
-    """Route a file upload to the right transport.
+    """Upload a file using the appropriate transport.
 
     Files at or below ``_INLINE_THRESHOLD_BYTES`` are sent via gRPC inline
     ``PutFile(data=...)``.  Larger files use a presigned object-storage upload
     followed by ``PutFile(storageObjectId=...)``.
+
+    Parameters
+    ----------
+    client
+        Volume client used for the upload.
+    volume_name
+        Name of the destination volume.
+    path
+        Destination path within the volume.
+    data
+        File contents to upload.
     """
     if len(data) <= _INLINE_THRESHOLD_BYTES:
         _put_file_inline(client, volume_name, path, data)
@@ -580,7 +591,19 @@ def _upload_bytes(
 def _put_file_inline(
     client: VolumeClient, volume_name: str, path: str, data: bytes
 ) -> None:
-    """Upload via gRPC inline PutFile(data=...)."""
+    """Upload a file via gRPC inline ``PutFile(data=...)``.
+
+    Parameters
+    ----------
+    client
+        Volume client used for the upload.
+    volume_name
+        Name of the destination volume.
+    path
+        Destination path within the volume.
+    data
+        File contents to upload.
+    """
     try:
         client._stub.PutFile(
             pb.PutFileRequest(volume_name=volume_name, path=path, data=data),
@@ -589,16 +612,33 @@ def _put_file_inline(
     except grpc.RpcError as e:
         _handle_rpc_error(e, volume_name)
         raise
+    logger.info("Uploaded %s (inline, %d bytes)", path, len(data))
 
 
 def _put_file_presigned(
     client: VolumeClient, volume_name: str, path: str, data: bytes
 ) -> None:
-    """Upload via presigned object-storage URL, then register with the volume.
+    """Upload a file via a presigned object-storage URL.
 
     Uses the gRPC ``DataPlaneObjectStorageServiceStub`` for
     ``GetObjectUploadUri``, ``httpx`` for the direct object-storage transfer,
     and gRPC ``VolumeServiceStub`` for the final ``PutFile(storageObjectId=...)``.
+
+    Parameters
+    ----------
+    client
+        Volume client used for the upload.
+    volume_name
+        Name of the destination volume.
+    path
+        Destination path within the volume.
+    data
+        File contents to upload.
+
+    Raises
+    ------
+    VolumeError
+        If the server returns an unsupported object-storage upload type.
     """
     checksum = hashlib.md5(data).hexdigest()
 
@@ -634,6 +674,13 @@ def _put_file_presigned(
     except grpc.RpcError as e:
         _handle_rpc_error(e, volume_name)
         raise
+    logger.info(
+        "Uploaded %s (presigned %s, %d bytes, object=%s)",
+        path,
+        upload_type,
+        len(data),
+        storage_object_id,
+    )
 
 
 def _upload_multipart(
@@ -643,8 +690,7 @@ def _upload_multipart(
 ) -> str:
     """Upload via S3-style multipart presigned URLs.
 
-    On 401/403 from S3, refreshes all signed URLs via ``refresh()`` and restarts
-    from part 0 (S3 multipart uploads cannot be continued across credential sets).
+    Returns the storage object ID for the completed upload.
     """
     import httpx
 
@@ -671,6 +717,11 @@ def _upload_multipart(
             and refresh_count < _PRESIGNED_MAX_RETRIES
         ):
             refresh_count += 1
+            logger.warning(
+                "Multipart upload: refreshing signed URLs (attempt %d/%d)",
+                refresh_count,
+                _PRESIGNED_MAX_RETRIES,
+            )
             new_resp = refresh()
             storage_object_id = new_resp.storage_object_id
             all_uris = list(new_resp.multipart.signed_upload_uris)
@@ -693,6 +744,12 @@ def _upload_multipart(
         timeout=60,
     )
     complete_resp.raise_for_status()
+    logger.info(
+        "Multipart upload complete: object=%s parts=%d refreshes=%d",
+        storage_object_id,
+        n_parts,
+        refresh_count,
+    )
     return storage_object_id
 
 
@@ -701,10 +758,9 @@ def _upload_resumable(
     resp: pb.GetObjectUploadUriResponse,
     refresh: Callable[[], pb.GetObjectUploadUriResponse],
 ) -> str:
-    """Upload via GCS resumable signed URL.
+    """Upload via a GCS resumable signed URL.
 
-    Initiates a GCS resumable session (POST), then uploads all data in a single
-    PUT.  Refreshes the signed URL on 401/403 and re-initiates.
+    Returns the storage object ID for the completed upload.
     """
     import httpx
 
@@ -713,7 +769,6 @@ def _upload_resumable(
     refresh_count = 0
 
     while True:
-        # Initiate the resumable session.
         init = httpx.post(
             signed_uri,
             content=b"",
@@ -730,6 +785,11 @@ def _upload_resumable(
                 and refresh_count < _PRESIGNED_MAX_RETRIES
             ):
                 refresh_count += 1
+                logger.warning(
+                    "Resumable upload: refreshing signed URL (attempt %d/%d)",
+                    refresh_count,
+                    _PRESIGNED_MAX_RETRIES,
+                )
                 new_resp = refresh()
                 storage_object_id = new_resp.storage_object_id
                 signed_uri = new_resp.resumable.signed_upload_uri
@@ -749,12 +809,22 @@ def _upload_resumable(
             timeout=600,
         )
         if put_resp.status_code in (200, 201):
+            logger.info(
+                "Resumable upload complete: object=%s refreshes=%d",
+                storage_object_id,
+                refresh_count,
+            )
             return storage_object_id
         if (
             put_resp.status_code in (401, 403)
             and refresh_count < _PRESIGNED_MAX_RETRIES
         ):
             refresh_count += 1
+            logger.warning(
+                "Resumable upload: refreshing signed URL (attempt %d/%d)",
+                refresh_count,
+                _PRESIGNED_MAX_RETRIES,
+            )
             new_resp = refresh()
             storage_object_id = new_resp.storage_object_id
             signed_uri = new_resp.resumable.signed_upload_uri

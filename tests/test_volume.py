@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import logging
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -194,6 +195,14 @@ class TestUploadRouting:
         assert req.storage_object_id == "obj-gcs-123"
         assert not req.data
 
+    def test_inline_upload_logs_completion(self, caplog):
+        client = _make_vol_client()
+
+        with caplog.at_level(logging.INFO, logger="chalkcompute._volume"):
+            _upload_bytes(client, "vol", "file.txt", b"x" * 100)
+
+        assert "Uploaded file.txt (inline, 100 bytes)" in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # Presigned upload: GCS resumable
@@ -243,6 +252,24 @@ class TestPresignedResumable:
 
         assert client._obj_stub.GetObjectUploadUri.call_count == 2
         assert client._stub.PutFile.call_args[0][0].storage_object_id == "new"
+
+    def test_logs_completion(self, caplog):
+        client = _make_vol_client()
+        _set_resumable_response(client, "gcs-obj", "https://gcs/signed")
+        data = b"B" * (_INLINE_THRESHOLD_BYTES + 1)
+
+        with patch("httpx.post") as mock_post, patch("httpx.put") as mock_put:
+            mock_post.return_value = MagicMock(
+                status_code=200, is_success=True,
+                headers={"Location": "https://session/"},
+            )
+            mock_put.return_value = MagicMock(status_code=200, is_success=True)
+
+            with caplog.at_level(logging.INFO, logger="chalkcompute._volume"):
+                _put_file_presigned(client, "vol", "data.bin", data)
+
+        assert "Resumable upload complete: object=gcs-obj refreshes=0" in caplog.text
+        assert "Uploaded data.bin (presigned resumable" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +321,28 @@ class TestPresignedMultipart:
 
         assert client._obj_stub.GetObjectUploadUri.call_count == 2
         assert client._stub.PutFile.call_args[0][0].storage_object_id == "new"
+
+    def test_logs_completion(self, caplog):
+        client = _make_vol_client()
+        _set_multipart_response(
+            client,
+            "s3-obj",
+            part_uris=["https://s3/part/1"],
+            completion_uri="https://s3/complete",
+        )
+        data = b"D" * (_INLINE_THRESHOLD_BYTES + 1)
+
+        with patch("httpx.put") as mock_put, patch("httpx.post") as mock_post:
+            mock_put.return_value = MagicMock(
+                status_code=200, is_success=True, headers={"ETag": '"abc"'},
+            )
+            mock_post.return_value = MagicMock(status_code=200, is_success=True)
+
+            with caplog.at_level(logging.INFO, logger="chalkcompute._volume"):
+                _put_file_presigned(client, "vol", "archive.tar", data)
+
+        assert "Multipart upload complete: object=s3-obj parts=1 refreshes=0" in caplog.text
+        assert "Uploaded archive.tar (presigned multipart" in caplog.text
 
 
 # ---------------------------------------------------------------------------
