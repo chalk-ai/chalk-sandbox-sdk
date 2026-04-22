@@ -35,20 +35,20 @@ needs_staging = pytest.mark.skipif(
 EXAMPLE_DIR = os.path.dirname(__file__)
 
 
-# def _deploy_script(script_name: str) -> None:
-#     result = subprocess.run(
-#         [sys.executable, os.path.join(EXAMPLE_DIR, script_name)],
-#         capture_output=True,
-#         text=True,
-#         env=os.environ,
-#         timeout=600,
-#     )
-#     if result.returncode != 0:
-#         pytest.fail(
-#             f"{script_name} deploy failed (exit {result.returncode}):\n"
-#             f"stdout: {result.stdout[-500:]}\n"
-#             f"stderr: {result.stderr[-500:]}"
-#         )
+def _deploy_script(script_name: str) -> None:
+    result = subprocess.run(
+        [sys.executable, os.path.join(EXAMPLE_DIR, script_name)],
+        capture_output=True,
+        text=True,
+        env=os.environ,
+        timeout=600,
+    )
+    if result.returncode != 0:
+        pytest.fail(
+            f"{script_name} deploy failed (exit {result.returncode}):\n"
+            f"stdout: {result.stdout[-500:]}\n"
+            f"stderr: {result.stderr[-500:]}"
+        )
 
 
 def _make_remote():
@@ -67,9 +67,9 @@ def _make_remote():
 
 @needs_staging
 class TestRateLimit:
-    # @classmethod
-    # def setup_class(cls):
-    #     _deploy_script("deploy_rate_limited.py")
+    @classmethod
+    def setup_class(cls):
+        _deploy_script("deploy_rate_limited.py")
 
     def test_rate_limit_throttles(self):
         """20 rapid calls at 5 req/s should take at least ~3 seconds.
@@ -128,9 +128,9 @@ class TestRateLimit:
 
 @needs_staging
 class TestConcurrencyLimit:
-    # @classmethod
-    # def setup_class(cls):
-    #     _deploy_script("deploy_concurrency_limited.py")
+    @classmethod
+    def setup_class(cls):
+        _deploy_script("deploy_concurrency_limited.py")
 
     def test_concurrency_limit_caps_parallelism(self):
         """6 calls with 1s sleep and max_concurrent=2 should take >= 3s.
