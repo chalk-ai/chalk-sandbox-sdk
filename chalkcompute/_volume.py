@@ -843,7 +843,7 @@ def upload_lazy_files(
     image: Image,
     *,
     volume_prefix: str = "files",
-) -> builtins.list[tuple[str, str]]:
+) -> list[tuple[str, str]]:
     """Upload an image's lazy local files to volumes.
 
     Creates one volume per destination directory, uploads all files using the
@@ -880,7 +880,7 @@ def upload_lazy_files(
         rel_path = os.path.relpath(lf.dest, dest_dir)
         _upload_bytes(client, vol_name, rel_path, content)
 
-    volumes: builtins.list[tuple[str, str]] = []
+    volumes: list[tuple[str, str]] = []
     for dest_dir, files in dir_to_files.items():
         vol = client.create(f"{volume_prefix}-{uuid.uuid4().hex[:12]}")
 
