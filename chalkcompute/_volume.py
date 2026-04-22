@@ -462,6 +462,32 @@ class VolumeClient:
             ],
         )
 
+    def _refresh(self) -> None:
+        """Re-authenticate and rebuild the gRPC channel.
+
+        Creates a fresh ``ConnectClient``, fetches a new token, and
+        replaces the channel, stubs, and metadata in-place.
+        """
+        connect = ConnectClient()
+        connect._ensure_auth()
+        self._channel.close()
+
+        self._metadata = (
+            ("authorization", f"Bearer {connect._access_token}"),
+            ("x-chalk-env-id", connect._env_id or ""),
+            ("x-chalk-server", "go-api"),
+        )
+        self._channel = grpc.secure_channel(
+            self._target,
+            grpc.ssl_channel_credentials(),
+            options=[
+                ("grpc.max_send_message_length", -1),
+                ("grpc.max_receive_message_length", -1),
+            ],
+        )
+        self._stub = pb_grpc.VolumeServiceStub(self._channel)
+        self._obj_stub = pb_grpc.DataPlaneObjectStorageServiceStub(self._channel)  # type: ignore
+
     def __enter__(self) -> VolumeClient:
         return self
 
@@ -662,6 +688,7 @@ def _put_file_presigned(
     else:
         raise VolumeError(f"Unsupported object-storage upload type: {upload_type!r}")
 
+    client._refresh()
     try:
         client._stub.PutFile(
             pb.PutFileRequest(

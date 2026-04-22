@@ -41,6 +41,7 @@ def _make_vol_client() -> Any:
     client._metadata = [("authorization", "Bearer test-token")]
     client._stub = MagicMock()
     client._obj_stub = MagicMock()
+    client._refresh = MagicMock()
     return client
 
 
