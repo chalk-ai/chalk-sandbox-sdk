@@ -49,7 +49,11 @@ from pathlib import Path
 
 import grpc
 
-from chalkcompute._connect import ConnectClient, grpc_target_from_url, raise_for_grpc_error
+from chalkcompute._connect import (
+    ConnectClient,
+    grpc_target_from_url,
+    raise_for_grpc_error,
+)
 from chalkcompute._gen.chalk.volume.v1 import volume_pb2 as pb
 from chalkcompute._gen.chalk.volume.v1 import volume_pb2_grpc as pb_grpc
 from chalkcompute._image import Image, LazyLocalFile
@@ -260,9 +264,10 @@ class Volume:
     def put_file(self, path: str, data: bytes | str) -> Volume:
         """Write a file into the volume.
 
-        Small files (≤ 8 MB) are uploaded via gRPC inline ``PutFile(data=...)``.
-        Large files use a presigned object-storage URL (``GetObjectUploadUri`` →
-        direct S3/GCS upload → ``PutFile(storageObjectId=...)``).
+        Small files (<= ``_INLINE_THRESHOLD_BYTES``) are uploaded via gRPC
+        inline ``PutFile(data=...)``. Large files use a presigned
+        object-storage URL (``GetObjectUploadUri`` -> direct S3/GCS upload ->
+        ``PutFile(storageObjectId=...)``).
 
         Parameters
         ----------
@@ -443,7 +448,20 @@ class VolumeClient:
 
     @classmethod
     def from_connect(cls, connect: ConnectClient) -> VolumeClient:
-        """Create a ``VolumeClient`` from an already-authenticated ``ConnectClient``."""
+        """Create a ``VolumeClient`` from an already-authenticated ``ConnectClient``.
+
+        Parameters
+        ----------
+        connect
+            An authenticated ``ConnectClient`` instance. Auth is
+            ensured automatically if not already done.
+
+        Returns
+        -------
+        VolumeClient
+            A new client with TLS credentials and metadata derived
+            from the ``ConnectClient``'s token and environment.
+        """
         connect._ensure_auth()
 
         host, _use_tls = grpc_target_from_url(connect._api_server or "")
@@ -465,8 +483,8 @@ class VolumeClient:
     def _refresh(self) -> None:
         """Re-authenticate and rebuild the gRPC channel.
 
-        Creates a fresh ``ConnectClient``, fetches a new token, and
-        replaces the channel, stubs, and metadata in-place.
+        Creates a fresh ``ConnectClient``, fetches a new bearer token,
+        and replaces the channel, stubs, and metadata in-place.
         """
         connect = ConnectClient()
         connect._ensure_auth()
