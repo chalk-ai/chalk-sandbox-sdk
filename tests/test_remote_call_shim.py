@@ -7,6 +7,7 @@ import sys
 import types
 
 import pyarrow as pa
+import pytest
 from chalk_remote_call.arrow_utils import decode_ipc_stream, encode_record_batch
 
 from chalkcompute._cls import _generate_class_handler_shim
@@ -130,6 +131,22 @@ class TestGenerateHandlerShimBatched:
         ]
         assert ns["handler"](events, [{}, {}]) == [[3], [110, 220]]
 
+    def test_async_coroutine_preserves_order_with_different_row_counts(self):
+        seen: list[tuple[int, int]] = []
+
+        async def add(x: int, y: int) -> int:
+            seen.append((x, y))
+            return x + y
+
+        _install_user_module(add=add)
+        ns = _load_shim(_generate_handler_shim("add", batched=True))
+        events = [
+            {"x": pa.array([1, 2, 3]), "y": pa.array([10, 20, 30])},
+            {"x": pa.array([4]), "y": pa.array([40])},
+        ]
+        assert ns["handler"](events, [{}, {}]) == [[11, 22, 33], [44]]
+        assert seen == [(1, 10), (2, 20), (3, 30), (4, 40)]
+
     def test_empty_events_list(self):
         def double(x: int) -> int:
             return x * 2
@@ -137,6 +154,32 @@ class TestGenerateHandlerShimBatched:
         _install_user_module(double=double)
         ns = _load_shim(_generate_handler_shim("double", batched=True))
         assert ns["handler"]([], []) == []
+
+    def test_async_coroutine_uses_single_asyncio_run_per_coalesced_call(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        run_count = 0
+        original_run = asyncio.run
+
+        def counting_run(coro):
+            nonlocal run_count
+            run_count += 1
+            return original_run(coro)
+
+        monkeypatch.setattr(asyncio, "run", counting_run)
+
+        async def add(x: int, y: int) -> int:
+            return x + y
+
+        _install_user_module(add=add)
+        ns = _load_shim(_generate_handler_shim("add", batched=True))
+        events = [
+            {"x": pa.array([1]), "y": pa.array([2])},
+            {"x": pa.array([10, 20]), "y": pa.array([100, 200])},
+        ]
+
+        assert ns["handler"](events, [{}, {}]) == [[3], [110, 220]]
+        assert run_count == 1
 
 
 class TestGenerateClassHandlerShimNormal:
@@ -297,6 +340,31 @@ class TestGenerateClassHandlerShimBatched:
         ]
         assert ns["handler"](events, [{}, {}]) == [[6, 8], [10]]
 
+    def test_matches_function_shim_behavior(self):
+        def add(x: int, y: int) -> int:
+            return x + y
+
+        class Adder:
+            def add(self, x: int, y: int) -> int:
+                return x + y
+
+        _install_user_module(add=add, Adder=Adder)
+        function_ns = _load_shim(_generate_handler_shim("add", batched=True))
+        class_ns = _load_shim(
+            _generate_class_handler_shim(
+                "Adder", "add", True, None, False, None, False, batched=True
+            )
+        )
+        events = [
+            {"x": pa.array([1, 2]), "y": pa.array([10, 20])},
+            {"x": pa.array([3]), "y": pa.array([30])},
+        ]
+        contexts = [{"caller": "a"}, {"caller": "b"}]
+
+        assert class_ns["handler"](events, contexts) == function_ns["handler"](
+            events, contexts
+        )
+
 
 class TestShimViaRemoteCallLib:
     """End-to-end: drive chalk_remote_call.servicer.process_batches with our shim.
@@ -367,3 +435,48 @@ class TestShimViaRemoteCallLib:
         ipc_bytes = _encode_event({"x": pa.array([1, 2]), "y": pa.array([10, 20])})
         payloads = process_batches(ipc_bytes, ns["handler"], None, {})
         assert _decode_result_column(payloads) == [[111, 122]]
+
+    def test_batched_function_roundtrip_via_coalesced_bridge(self):
+        from chalk_remote_call.servicer import process_batches_coalesced
+
+        def add(x: int, y: int) -> int:
+            return x + y
+
+        _install_user_module(add=add)
+        ns = _load_shim(_generate_handler_shim("add", batched=True))
+
+        payloads = process_batches_coalesced(
+            [
+                _encode_event({"x": pa.array([1, 2]), "y": pa.array([10, 20])}),
+                _encode_event({"x": pa.array([3]), "y": pa.array([30])}),
+            ],
+            ns["handler"],
+            None,
+            [{}, {}],
+        )
+        assert _decode_result_column(payloads) == [[11, 22], [33]]
+
+    def test_batched_class_roundtrip_via_coalesced_bridge(self):
+        from chalk_remote_call.servicer import process_batches_coalesced
+
+        class Adder:
+            def add(self, x: int, y: int) -> int:
+                return x + y
+
+        _install_user_module(Adder=Adder)
+        ns = _load_shim(
+            _generate_class_handler_shim(
+                "Adder", "add", True, None, False, None, False, batched=True
+            )
+        )
+
+        payloads = process_batches_coalesced(
+            [
+                _encode_event({"x": pa.array([1]), "y": pa.array([10])}),
+                _encode_event({"x": pa.array([2, 3]), "y": pa.array([20, 30])}),
+            ],
+            ns["handler"],
+            None,
+            [{}, {}],
+        )
+        assert _decode_result_column(payloads) == [[11], [22, 33]]
