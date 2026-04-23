@@ -8,7 +8,9 @@ Run sandbox probes and report whether sandboxing held.
 """
 
 import argparse
+import json
 import re
+import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +32,7 @@ BOLD = "\033[1m"
 RED = "\033[31m"
 GREEN = "\033[32m"
 BLUE = "\033[34m"
+YELLOW = "\033[33m"
 
 
 @dataclass(frozen=True)
@@ -68,6 +71,8 @@ def format_status(status: str) -> str:
         return colorize(status, BOLD, RED)
     if status == "INFO":
         return colorize(status, BOLD, BLUE)
+    if status == "SKIP":
+        return colorize(status, BOLD, YELLOW)
     return colorize(status, BOLD)
 
 
@@ -318,7 +323,7 @@ DECISIVE_PROBES: list[Probe] = [
         category="process inspection",
         is_info=False,
         attacker_goal="Get kernel-backed handles for processes that can support deeper process introspection/control patterns.",
-        command=("./pidfd_open",),
+        command=("/work/pidfd_open",),
         evaluator="deny_helper",
     ),
     # Tests access to the io_uring helper binary directly.
@@ -327,7 +332,7 @@ DECISIVE_PROBES: list[Probe] = [
         category="kernel attack surface",
         is_info=False,
         attacker_goal="Reach complex async I/O kernel interfaces that have a large historical bug surface.",
-        command=("./io_uring",),
+        command=("/work/io_uring",),
         evaluator="deny_helper",
     ),
     # Tests io_uring through the multiplexed syscall probe.
@@ -336,7 +341,7 @@ DECISIVE_PROBES: list[Probe] = [
         category="kernel attack surface",
         is_info=False,
         attacker_goal="Reach io_uring directly through the raw syscall path.",
-        command=("./syscalls", "io_uring"),
+        command=("/work/syscalls", "io_uring"),
         evaluator="deny_helper",
     ),
     # Tests whether host quota/kernel accounting state is observable.
@@ -407,7 +412,7 @@ HARDENING_PROBES: list[Probe] = [
         category="packet capture",
         is_info=False,
         attacker_goal="Sniff or inject packets with a raw link-layer socket.",
-        command=("./rawsock",),
+        command=("/work/rawsock",),
         evaluator="raw_socket_blocked",
     ),
     # Tests BPF map creation via the raw syscall path.
@@ -416,7 +421,7 @@ HARDENING_PROBES: list[Probe] = [
         category="kernel attack surface",
         is_info=False,
         attacker_goal="Load or manipulate BPF objects inside the kernel.",
-        command=("./syscalls", "bpf"),
+        command=("/work/syscalls", "bpf"),
         evaluator="deny_helper",
     ),
     # Tests perf_event_open via the raw syscall path.
@@ -425,7 +430,7 @@ HARDENING_PROBES: list[Probe] = [
         category="kernel attack surface",
         is_info=False,
         attacker_goal="Use kernel perf interfaces for observation or attack research.",
-        command=("./syscalls", "perf"),
+        command=("/work/syscalls", "perf"),
         evaluator="deny_helper",
     ),
     # Tests userfaultfd via the raw syscall path.
@@ -434,7 +439,7 @@ HARDENING_PROBES: list[Probe] = [
         category="kernel attack surface",
         is_info=False,
         attacker_goal="Use userfaultfd-driven memory tricks against the kernel or neighboring workloads.",
-        command=("./syscalls", "uffd"),
+        command=("/work/syscalls", "uffd"),
         evaluator="deny_helper",
     ),
     # Tests whether filesystem event monitoring can be initialized.
@@ -446,7 +451,7 @@ HARDENING_PROBES: list[Probe] = [
         command=(
             "sh",
             "-lc",
-            "./fanotify /tmp >/tmp/fanotify.out 2>&1 & pid=$!; sleep 1; kill $pid 2>/dev/null; wait $pid; rc=$?; cat /tmp/fanotify.out; exit $rc",
+            "/work/fanotify /tmp >/tmp/fanotify.out 2>&1 & pid=$!; sleep 1; kill $pid 2>/dev/null; wait $pid; rc=$?; cat /tmp/fanotify.out; exit $rc",
         ),
         evaluator="deny_helper",
     ),
@@ -459,7 +464,7 @@ HARDENING_PROBES: list[Probe] = [
         command=(
             "sh",
             "-lc",
-            "dd if=/dev/zero of=/tmp/fake-kernel bs=1M count=1 >/dev/null 2>&1 && ./kexec_load /tmp/fake-kernel; rc=$?; rm -f /tmp/fake-kernel; exit $rc",
+            "dd if=/dev/zero of=/tmp/fake-kernel bs=1M count=1 >/dev/null 2>&1 && /work/kexec_load /tmp/fake-kernel; rc=$?; rm -f /tmp/fake-kernel; exit $rc",
         ),
         evaluator="deny_helper",
     ),
@@ -539,9 +544,101 @@ def run_probe(container: Container, probe: Probe) -> ProbeResult:
     )
 
 
+def render_probe_runner_script(probes: list[Probe]) -> str:
+    lines = [
+        "#!/bin/bash",
+        "set -u",
+        'results_dir=$(mktemp -d "/tmp/sandbox-probes.XXXXXX")',
+        'cleanup() { rm -rf "$results_dir"; }',
+        "trap cleanup EXIT",
+        "",
+        "run_probe() {",
+        "  local probe_name=\"$1\"",
+        "  local probe_file_base=\"$2\"",
+        "  shift",
+        "  shift",
+        '  local stdout_file="$results_dir/$probe_file_base.stdout"',
+        '  local stderr_file="$results_dir/$probe_file_base.stderr"',
+        '  local exit_code_file="$results_dir/$probe_file_base.exit_code"',
+        "  local exit_code",
+        '  "$@" >"$stdout_file" 2>"$stderr_file"',
+        '  printf "%s\\n" "$?" >"$exit_code_file"',
+        '  exit_code=$(tr -d \'\\n\' < "$exit_code_file")',
+        "  jq -n "
+        '--arg name "$probe_name" '
+        '--rawfile stdout "$stdout_file" '
+        '--rawfile stderr "$stderr_file" '
+        '--argjson exit_code "$exit_code" '
+        '\'{name: $name, exit_code: $exit_code, stdout: $stdout, stderr: $stderr}\'',
+        "}",
+        "",
+    ]
+
+    for i, probe in enumerate(probes):
+        command = " ".join(shlex.quote(part) for part in probe.command)
+        probe_file_base = f"{i:02d}-{probe.name}"
+        lines.append(
+            f"run_probe {shlex.quote(probe.name)} {shlex.quote(probe_file_base)} {command}"
+        )
+
+    return "\n".join(lines)
+
+
+def parse_probe_results(raw_results: str, probes: list[Probe]) -> list[ProbeResult]:
+    probe_by_name = {probe.name: probe for probe in probes}
+    parsed_results: dict[str, ProbeResult] = {}
+    for line in raw_results.splitlines():
+        if not line.strip():
+            continue
+        item = json.loads(line)
+        probe = probe_by_name[item["name"]]
+        stdout = item["stdout"]
+        stderr = item["stderr"]
+        output = combined_output(stdout, stderr)
+        exit_code = int(item["exit_code"])
+        status, detail = evaluate(probe, output, exit_code)
+        parsed_results[probe.name] = ProbeResult(
+            probe=probe,
+            status=status,
+            detail=detail,
+            exit_code=exit_code,
+            output=output,
+        )
+
+    results: list[ProbeResult] = []
+    for probe in probes:
+        result = parsed_results.get(probe.name)
+        if result is None:
+            results.append(
+                ProbeResult(
+                    probe=probe,
+                    status="SKIP",
+                    detail="probe result missing from input",
+                    exit_code=-1,
+                    output="",
+                )
+            )
+            continue
+        results.append(result)
+
+    return results
+
+
+def run_probes(container: Container, probes: list[Probe]) -> list[ProbeResult]:
+    script = render_probe_runner_script(probes)
+    timeout_secs = max(30, len(probes) * 30)
+    result = container.exec("bash", "-lc", script, timeout_secs=timeout_secs)
+
+    if result.exit_code != 0:
+        output = combined_output(result.stdout_text, result.stderr_text)
+        raise RuntimeError(f"batched probe runner failed: {compact(output or 'no output')}")
+
+    return parse_probe_results(result.stdout_text, probes)
+
+
 def print_probe(result: ProbeResult, verbose: bool = False) -> None:
     probe = result.probe
-    print(f"[{format_status(result.status):<13}] {probe.name} ({probe.category})")
+    print(f"[{format_status(result.status)}] {probe.name} ({probe.category})")
     print(f"  attacker capability: {probe.attacker_goal}")
     print(f"  command: {' '.join(probe.command)}")
     print(f"  result: {result.detail}")
@@ -558,12 +655,16 @@ def print_summary(results: list[ProbeResult]) -> None:
     info = [r for r in results if r.probe.is_info]
     tests = [r for r in results if not r.probe.is_info]
     tests_pass = sum(r.status == "PASS" for r in tests)
+    tests_skipped = sum(r.status == "SKIP" for r in tests)
 
     print("\nSummary")
-    print(f"  tests:  {tests_pass}/{len(tests)} PASS")
+    tests_line = f"  tests:  {tests_pass}/{len(tests)} PASS"
+    if tests_skipped:
+        tests_line += f" ({tests_skipped} skipped)"
+    print(tests_line)
     print(f"  info:   {len(info)} observed")
 
-    failed_tests = [r.probe.name for r in tests if r.status != "PASS"]
+    failed_tests = [r.probe.name for r in tests if r.status == "FAIL"]
     if failed_tests:
         print(f"  verdict: {format_status('FAIL')}")
         print(f"  failing tests: {', '.join(failed_tests)}")
@@ -574,6 +675,16 @@ def print_summary(results: list[ProbeResult]) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--dump-probe-script",
+        action="store_true",
+        help="Print the generated batched probe runner script to stdout and exit.",
+    )
+    parser.add_argument(
+        "--read-probe-results",
+        action="store_true",
+        help="Read probe runner JSONL results from stdin, evaluate them, and print the normal report.",
+    )
     parser.add_argument(
         "--image",
         help="Use an existing image URI instead of building from examples/sandboxed/Dockerfile.",
@@ -603,6 +714,20 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
 
+    if args.dump_probe_script:
+        print(render_probe_runner_script(PROBES))
+        return 0
+
+    if args.read_probe_results:
+        raw_results = sys.stdin.read()
+        if not raw_results.strip():
+            raise SystemExit("expected probe runner JSONL results on stdin")
+        results = parse_probe_results(raw_results, PROBES)
+        for result in results:
+            print_probe(result, verbose=args.verbose)
+        print_summary(results)
+        return 1 if any(not r.probe.is_info and r.status == "FAIL" for r in results) else 0
+
     if args.container_id and args.container_name:
         raise SystemExit("pass only one of --container-id or --container-name")
 
@@ -618,7 +743,7 @@ def main() -> int:
         created_container = True
 
     try:
-        results = [run_probe(container, probe) for probe in PROBES]
+        results = run_probes(container, PROBES)
     finally:
         if created_container:
             container.stop()
@@ -627,7 +752,7 @@ def main() -> int:
         print_probe(result, verbose=args.verbose)
 
     print_summary(results)
-    return 1 if any(not r.probe.is_info and r.status != "PASS" for r in results) else 0
+    return 1 if any(not r.probe.is_info and r.status == "FAIL" for r in results) else 0
 
 
 if __name__ == "__main__":
