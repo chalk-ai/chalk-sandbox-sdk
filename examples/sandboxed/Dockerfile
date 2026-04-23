@@ -4,9 +4,9 @@ RUN apk update && apk add --no-cache \
   bash \
   build-base \
   e2fsprogs \
-  eza \
   findutils \
   iproute2 \
+  jq \
   keyutils \
   kubectl \
   libcap-utils \
@@ -15,10 +15,12 @@ RUN apk update && apk add --no-cache \
   procps \
   quota-tools \
   strace \
+  tree \
   util-linux
 
 WORKDIR /work
 COPY rawsock.c pidfd_open.c io_uring.c syscalls.c fanotify.c kexec_load.c .
+COPY probe.sh .
 RUN for src in \
       rawsock \
       pidfd_open \
