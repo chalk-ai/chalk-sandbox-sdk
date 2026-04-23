@@ -18,6 +18,16 @@ steps:
       curl -fsSL "https://github.com/getsops/sops/releases/download/v$${SOPS_VERSION}/sops-v$${SOPS_VERSION}.linux.amd64" -o /tmp/sops
       chmod +x /tmp/sops
 
+      echo "--- :chalk: Install Chalk CLI"
+      CHALK_CLI_VERSION=v1.40.0
+      CHALK_CLI_DIR=/tmp/chalk-cli
+      mkdir -p "$$CHALK_CLI_DIR"
+      curl -fsSL "https://storage.googleapis.com/cli-go.chalk-prod.chalk.ai/$${CHALK_CLI_VERSION}/chalk-linux-amd64" -o "$$CHALK_CLI_DIR/chalk"
+      chmod +x "$$CHALK_CLI_DIR/chalk"
+      export PATH="$$CHALK_CLI_DIR:$$PATH"
+      chalk version
+      chalk metrics snapshot --help
+
       echo "--- :key: Decrypt secrets"
       if [ "{{matrix}}" = "staging/ftqa" ]; then ENV_FILE=".env.enc"; else ENV_FILE=".env.{{matrix}}.enc"; fi
       /tmp/sops --input-type dotenv --output-type dotenv -d "$$ENV_FILE" > /tmp/test.env
@@ -25,6 +35,8 @@ steps:
       source /tmp/test.env
       set +a
       rm /tmp/test.env
+      export CHALK_ACTIVE_ENVIRONMENT="$$CHALK_ENVIRONMENT_ID"
+      export CHALK_ASSERT_CONTAINER_METRICS=1
 
       echo "--- :python: Sync dependencies"
       uv sync --all-extras
