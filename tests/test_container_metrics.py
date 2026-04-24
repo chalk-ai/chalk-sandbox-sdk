@@ -8,10 +8,8 @@ from typing import Any
 import pytest
 
 from e2etests.container_metrics import (
-    _CONTAINER_METRICS_TARGETS,
     _has_metric_datapoint,
     assert_container_metrics,
-    register_container_metrics,
 )
 
 
@@ -107,22 +105,6 @@ def test_assert_container_metrics_retries_until_datapoint(
     )
 
     assert sleeps == [0.25]
-
-
-def test_register_container_metrics_defers_snapshot_call(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[Any] = []
-
-    monkeypatch.setenv("CHALK_ASSERT_CONTAINER_METRICS", "1")
-    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: calls.append((args, kwargs)))
-
-    try:
-        register_container_metrics(FakeContainer())  # type: ignore[arg-type]
-    finally:
-        _CONTAINER_METRICS_TARGETS.clear()
-
-    assert calls == []
 
 
 def test_assert_container_metrics_failure_mentions_container_identity(

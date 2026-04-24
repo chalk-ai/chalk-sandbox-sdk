@@ -16,8 +16,8 @@ from dotenv import load_dotenv
 
 from chalkcompute import Container, Image, Secret
 from e2etests.container_metrics import (
-    assert_registered_container_metrics,
-    register_container_metrics,
+    assert_container_metrics_target,
+    container_metrics_target,
 )
 
 load_dotenv()
@@ -49,7 +49,6 @@ def test_container_add_local_file() -> None:
                 f"cat exited with code {result.exit_code}: {result.stderr_text}"
             )
             assert result.stdout_text.strip() == "hello from local file"
-            register_container_metrics(c)
         finally:
             c.stop()
     finally:
@@ -70,7 +69,6 @@ def test_container_run_commands_apt_install() -> None:
             f"jq --version exited with code {result.exit_code}: {result.stderr_text}"
         )
         assert result.stdout_text.strip().startswith("jq-")
-        register_container_metrics(c)
     finally:
         c.stop()
 
@@ -95,7 +93,6 @@ def test_container_from_dockerfile() -> None:
                 f"curl --version exited with code {result.exit_code}: {result.stderr_text}"
             )
             assert "curl" in result.stdout_text.lower()
-            register_container_metrics(c)
         finally:
             c.stop()
     finally:
@@ -111,7 +108,6 @@ def test_image_build_cache() -> None:
     c1 = Container(image=img, name=f"test-cache-1-{uuid.uuid4().hex[:8]}")
     try:
         c1.run()
-        register_container_metrics(c1)
     finally:
         c1.stop()
 
@@ -150,7 +146,6 @@ def test_container_add_local_dir() -> None:
             r2 = c.exec("cat", "/app/mydir/sub/nested.txt")
             assert r2.exit_code == 0, f"cat sub/nested.txt failed: {r2.stderr_text}"
             assert r2.stdout_text.strip() == "world"
-            register_container_metrics(c)
         finally:
             c.stop()
 
@@ -187,7 +182,6 @@ def test_container_secret_from_env() -> None:
                 f"echo ${secret_name} failed: {result.stderr_text}"
             )
             assert result.stdout_text.strip() == secret_value
-            register_container_metrics(c)
         finally:
             c.stop()
     finally:
@@ -216,7 +210,6 @@ def test_container_secret_from_local_env() -> None:
                 f"echo ${local_var} failed: {result.stderr_text}"
             )
             assert result.stdout_text.strip() == secret_value
-            register_container_metrics(c)
         finally:
             c.stop()
     finally:
@@ -253,7 +246,6 @@ def test_container_secret_from_local_env_file() -> None:
             r2 = c.exec("sh", "-c", f"echo ${var_b}")
             assert r2.exit_code == 0, f"echo ${var_b} failed: {r2.stderr_text}"
             assert r2.stdout_text.strip() == val_b
-            register_container_metrics(c)
         finally:
             c.stop()
     finally:
@@ -274,12 +266,36 @@ def test_container_env_vars() -> None:
         r2 = c.exec("sh", "-c", "echo $ANOTHER")
         assert r2.exit_code == 0, f"echo $ANOTHER failed: {r2.stderr_text}"
         assert r2.stdout_text.strip() == "42"
-        register_container_metrics(c)
     finally:
         c.stop()
 
 
 @needs_staging
 def test_container_metrics_available() -> None:
-    """Container metrics eventually populate for all containers started in this module."""
-    assert_registered_container_metrics()
+    """Container metrics populate for a pod that stays alive across scrape intervals."""
+    if os.environ.get("CHALK_ASSERT_CONTAINER_METRICS") != "1":
+        pytest.skip("CHALK_ASSERT_CONTAINER_METRICS != 1")
+
+    c = Container(image=Image.debian_slim(), name=f"test-metrics-{uuid.uuid4().hex[:8]}")
+    target = None
+    try:
+        c.run()
+        target = container_metrics_target(c)
+        assert target.pod_name, (
+            "Cannot assert container metrics without podName "
+            f"(container name={target.name} id={target.id})"
+        )
+        print(
+            "Keeping metrics test container alive for 120s: "
+            f"name={target.name} id={target.id} podName={target.pod_name}"
+        )
+        time.sleep(120)
+    finally:
+        c.stop()
+
+    assert target is not None
+    assert_container_metrics_target(
+        target,
+        timeout_secs=300.0,
+        poll_interval_secs=10.0,
+    )
