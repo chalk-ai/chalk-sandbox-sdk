@@ -15,6 +15,10 @@ import pytest
 from dotenv import load_dotenv
 
 from chalkcompute import Container, Image, Secret
+from e2etests.container_metrics import (
+    assert_container_metrics_target,
+    container_metrics_target,
+)
 
 load_dotenv()
 
@@ -264,3 +268,34 @@ def test_container_env_vars() -> None:
         assert r2.stdout_text.strip() == "42"
     finally:
         c.stop()
+
+
+@needs_staging
+def test_container_metrics_available() -> None:
+    """Container metrics populate for a pod that stays alive across scrape intervals."""
+    if os.environ.get("CHALK_ASSERT_CONTAINER_METRICS") != "1":
+        pytest.skip("CHALK_ASSERT_CONTAINER_METRICS != 1")
+
+    c = Container(image=Image.debian_slim(), name=f"test-metrics-{uuid.uuid4().hex[:8]}")
+    target = None
+    try:
+        c.run()
+        target = container_metrics_target(c)
+        assert target.pod_name, (
+            "Cannot assert container metrics without podName "
+            f"(container name={target.name} id={target.id})"
+        )
+        print(
+            "Keeping metrics test container alive for 120s: "
+            f"name={target.name} id={target.id} podName={target.pod_name}"
+        )
+        time.sleep(120)
+    finally:
+        c.stop()
+
+    assert target is not None
+    assert_container_metrics_target(
+        target,
+        timeout_secs=300.0,
+        poll_interval_secs=10.0,
+    )
