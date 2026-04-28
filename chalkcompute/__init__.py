@@ -31,6 +31,8 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "RateLimitPolicy": ("chalkcompute._rate_limit", "RateLimitPolicy"),
     "ConcurrencyPolicy": ("chalkcompute._concurrency", "ConcurrencyPolicy"),
     "function": ("chalkcompute._function", "function"),
+    # _connect.py
+    "build_image": ("chalkcompute._connect", "build_image_from_spec"),
     # _image.py
     "Image": ("chalkcompute._image", "Image"),
     "LazyLocalFile": ("chalkcompute._image", "LazyLocalFile"),
