@@ -38,17 +38,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
+from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import (
     ConnectClient,
     build_image,
     grpc_target_from_url,
 )
-from chalkcompute._volume import VolumeClient, upload_lazy_files
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
-from chalkcompute._tracing import traced
-from chalkcompute._retry import RetryPolicy
+from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
-from chalkcompute._concurrency import ConcurrencyPolicy
+from chalkcompute._retry import RetryPolicy
+from chalkcompute._tracing import traced
+from chalkcompute._volume import VolumeClient, upload_lazy_files
 
 logger = logging.getLogger(__name__)
 
@@ -310,7 +311,8 @@ def _should_strip_source() -> bool:
     if _STRIP_SOURCE_ENV_VAR in os.environ:
         return os.environ[_STRIP_SOURCE_ENV_VAR] == "1"
 
-    from importlib.metadata import PackageNotFoundError, version as _pkg_version
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as _pkg_version
 
     try:
         return _pkg_version("chalkcompute") == "0.0.0"
@@ -366,7 +368,7 @@ def _local_install_entrypoint(handler_cmd: list[str]) -> list[str]:
     strip_source = _should_strip_source()
     if os.environ.get(_LOCAL_COPY_ENV_VAR, "") != "1" or strip_source:
         return handler_cmd
-    from chalkcompute._image import ARCHIVE_NAME, _ARCHIVE_CHUNK_PREFIX
+    from chalkcompute._image import _ARCHIVE_CHUNK_PREFIX, ARCHIVE_NAME
 
     d = _LOCAL_SDK_MOUNT
     # Reassemble chunked archive, extract, then pip install.
@@ -402,7 +404,7 @@ def _make_base_image(user_image: _Image | None) -> _Image:
     elif strip_source:
         # Source is stripped of chalkcompute references — only install the
         # RPC runtime, not chalkcompute itself.
-        image = base.pip_install(["chalk-remote-call-python"])
+        image = base.pip_install(["chalk-remote-call-python>=1.4.0"])
     else:
         from importlib.metadata import version as _pkg_version
 
@@ -473,7 +475,8 @@ def _build_and_upload(
         )
         logger.info("Uploading %d local file(s)...", len(deploy_image.lazy_local_files))
         new_volumes = upload_lazy_files(
-            VolumeClient.from_connect(client), deploy_image,
+            VolumeClient.from_connect(client),
+            deploy_image,
             volume_prefix=volume_prefix,
         )
         progress_done(vkey)
@@ -740,6 +743,7 @@ class RemoteFunction:
         retries: int | RetryPolicy | None = None,
         rate_limit: int | RateLimitPolicy | None = None,
         concurrency: int | ConcurrencyPolicy | None = None,
+        quota: int | QueuePolicy | None = None,
     ) -> None:
         self._func = func
         if name is not None:
@@ -785,6 +789,9 @@ class RemoteFunction:
             ConcurrencyPolicy.from_int_or_policy(concurrency)
             if concurrency is not None
             else None
+        )
+        self._quota = (
+            QueuePolicy.from_int_or_policy(quota) if quota is not None else None
         )
 
         # Set after .deploy()
@@ -908,6 +915,7 @@ class RemoteFunction:
         f._retries = None
         f._rate_limit = None
         f._concurrency = None
+        f._quota = None
         f._version_info = None
         f._web_url = None
         f._port = 6666
@@ -1074,6 +1082,8 @@ class RemoteFunction:
                 function_config["rateLimit"] = self._rate_limit.to_dict()
             if self._concurrency is not None:
                 function_config["concurrency"] = self._concurrency.to_dict()
+            if self._quota is not None:
+                function_config["queue"] = self._quota.to_dict()
 
             # 6. Call CreateExternalFunctionVersion
             rkey = f"register:{self._func_name}"
@@ -1532,6 +1542,7 @@ def function(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
+    quota: int | QueuePolicy | None = None,
 ) -> Callable[..., RemoteFunction | _NoOpFunction]:
     """Decorator that deploys a function as a versioned remote function.
 
@@ -1611,6 +1622,14 @@ def function(
         (``max_concurrent``, ``key``). Multiple functions sharing the same
         ``key`` share one gate — independent of ``rate_limit`` (which caps
         rate, not in-flight count).
+    quota
+        Queue quota: cap on the number of pending items that may be enqueued
+        for this function at once. Pass an ``int`` for a simple
+        ``max_items`` cap, or a :class:`~chalkcompute.QueuePolicy` for full
+        control (``max_items``, ``key``). Defaults to 500,000 items when
+        unset. Submitting past the cap raises a gRPC ``RESOURCE_EXHAUSTED``
+        error — clients should back off or call ``purge()`` on the function
+        to drain the queue.
 
     Examples
     --------
@@ -1648,6 +1667,7 @@ def function(
             retries=retries,
             rate_limit=rate_limit,
             concurrency=concurrency,
+            quota=quota,
         )
         f.deploy()
         return f
