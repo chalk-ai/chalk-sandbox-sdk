@@ -236,6 +236,12 @@ def build_image(
     raise ConnectError(f"Image build {build_id} timed out after {timeout}s")
 
 
+def build_image_from_spec(image: Image) -> str:
+    """Build an Image and return the URI. Authenticates via env vars."""
+    client = ConnectClient()
+    return build_image(client, image)
+
+
 def raise_for_grpc_error(
     e: grpc.RpcError,
     code_map: dict[grpc.StatusCode, tuple[type[Exception], str]],
