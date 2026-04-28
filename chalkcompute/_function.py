@@ -404,7 +404,7 @@ def _make_base_image(user_image: _Image | None) -> _Image:
     elif strip_source:
         # Source is stripped of chalkcompute references — only install the
         # RPC runtime, not chalkcompute itself.
-        image = base.pip_install(["chalk-remote-call-python>=1.4.0"])
+        image = base.pip_install(["chalk-remote-call-python"])
     else:
         from importlib.metadata import version as _pkg_version
 
