@@ -105,12 +105,16 @@ class ListFilesResponse(_message.Message):
     def __init__(self, files: _Optional[_Iterable[_Union[FileInfo, _Mapping]]] = ...) -> None: ...
 
 class GetFileRequest(_message.Message):
-    __slots__ = ("volume_name", "path")
+    __slots__ = ("volume_name", "path", "get_signed_uri")
     VOLUME_NAME_FIELD_NUMBER: _ClassVar[int]
     PATH_FIELD_NUMBER: _ClassVar[int]
+    GET_SIGNED_URI_FIELD_NUMBER: _ClassVar[int]
     volume_name: str
     path: str
-    def __init__(self, volume_name: _Optional[str] = ..., path: _Optional[str] = ...) -> None: ...
+    get_signed_uri: bool
+    def __init__(
+        self, volume_name: _Optional[str] = ..., path: _Optional[str] = ..., get_signed_uri: bool = ...
+    ) -> None: ...
 
 class GetFileResponse(_message.Message):
     __slots__ = ("data", "signed_download_uri")

@@ -16,6 +16,10 @@ from chalkcompute._gen.chalk.scalinggroup.v1.service_pb2 import (
     DeleteScalingGroupResponse,
     GetScalingGroupRequest,
     GetScalingGroupResponse,
+    GetScalingGroupRevisionRequest,
+    GetScalingGroupRevisionResponse,
+    ListScalingGroupRevisionsRequest,
+    ListScalingGroupRevisionsResponse,
     ListScalingGroupsRequest,
     ListScalingGroupsResponse,
 )
@@ -43,6 +47,16 @@ class ScalingGroupManagerServiceStub:
         ListScalingGroupsResponse,
     ]
     """ListScalingGroups lists all scaling groups in the current environment"""
+    GetScalingGroupRevision: UnaryUnaryMultiCallable[
+        GetScalingGroupRevisionRequest,
+        GetScalingGroupRevisionResponse,
+    ]
+    """GetScalingGroupRevision retrieves a specific scaling group revision"""
+    ListScalingGroupRevisions: UnaryUnaryMultiCallable[
+        ListScalingGroupRevisionsRequest,
+        ListScalingGroupRevisionsResponse,
+    ]
+    """ListScalingGroupRevisions lists scaling group revisions in the current environment"""
     DeleteScalingGroup: UnaryUnaryMultiCallable[
         DeleteScalingGroupRequest,
         DeleteScalingGroupResponse,
@@ -76,6 +90,20 @@ class ScalingGroupManagerServiceServicer(metaclass=ABCMeta):
         context: ServicerContext,
     ) -> ListScalingGroupsResponse:
         """ListScalingGroups lists all scaling groups in the current environment"""
+    @abstractmethod
+    def GetScalingGroupRevision(
+        self,
+        request: GetScalingGroupRevisionRequest,
+        context: ServicerContext,
+    ) -> GetScalingGroupRevisionResponse:
+        """GetScalingGroupRevision retrieves a specific scaling group revision"""
+    @abstractmethod
+    def ListScalingGroupRevisions(
+        self,
+        request: ListScalingGroupRevisionsRequest,
+        context: ServicerContext,
+    ) -> ListScalingGroupRevisionsResponse:
+        """ListScalingGroupRevisions lists scaling group revisions in the current environment"""
     @abstractmethod
     def DeleteScalingGroup(
         self,

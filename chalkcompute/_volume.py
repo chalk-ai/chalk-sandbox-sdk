@@ -48,6 +48,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import grpc
+import httpx
 
 from chalkcompute._connect import (
     ConnectClient,
@@ -253,15 +254,7 @@ class Volume:
         bytes
             The raw file bytes.
         """
-        try:
-            resp = self._client._stub.GetFile(
-                pb.GetFileRequest(volume_name=self._name, path=path),
-                metadata=self._client._metadata,
-            )
-        except grpc.RpcError as e:
-            _handle_rpc_error(e, self._name)
-            raise
-        return resp.data
+        return _read_file_bytes(self._client, self._name, path)
 
     @traced("chalkcompute.volume.put_file")
     def put_file(self, path: str, data: bytes | str) -> Volume:
@@ -447,7 +440,7 @@ class VolumeClient:
         else:
             self._channel = grpc.insecure_channel(target, options=options)
         self._stub = pb_grpc.VolumeServiceStub(self._channel)
-        self._obj_stub = pb_grpc.DataPlaneObjectStorageServiceStub(self._channel)  # type: ignore
+        self._obj_stub = pb_grpc.DataPlaneObjectStorageServiceStub(self._channel)
 
     @classmethod
     def from_connect(cls, connect: ConnectClient) -> VolumeClient:
@@ -507,7 +500,7 @@ class VolumeClient:
             ],
         )
         self._stub = pb_grpc.VolumeServiceStub(self._channel)
-        self._obj_stub = pb_grpc.DataPlaneObjectStorageServiceStub(self._channel)  # type: ignore
+        self._obj_stub = pb_grpc.DataPlaneObjectStorageServiceStub(self._channel)
 
     def __enter__(self) -> VolumeClient:
         return self
@@ -607,6 +600,41 @@ class VolumeClient:
 # ---------------------------------------------------------------------------
 # Upload routing helpers
 # ---------------------------------------------------------------------------
+
+
+def _read_file_bytes(client: VolumeClient, volume_name: str, path: str) -> bytes:
+    """Read a file using the transport selected by the server."""
+    try:
+        resp = client._stub.GetFile(
+            pb.GetFileRequest(volume_name=volume_name, path=path, get_signed_uri=True),
+            metadata=client._metadata,
+        )
+    except grpc.RpcError as e:
+        _handle_rpc_error(e, volume_name)
+        raise
+
+    content_type = resp.WhichOneof("content")
+    if content_type == "signed_download_uri":
+        return _read_file_from_signed_uri(resp.signed_download_uri)
+    if content_type == "data":
+        return resp.data
+    raise VolumeError(f"Unsupported file download response type: {content_type!r}")
+
+
+def _read_file_from_signed_uri(signed_download_uri: str) -> bytes:
+    """Download a file from object storage via a signed URL."""
+    try:
+        resp = httpx.get(signed_download_uri, timeout=300)
+        resp.raise_for_status()
+        return resp.content
+    except httpx.TimeoutException as e:
+        raise VolumeError(f"Timed out downloading signed file URL: {e}") from e
+    except httpx.HTTPStatusError as e:
+        raise VolumeError(
+            f"Signed file download failed with status {e.response.status_code}"
+        ) from e
+    except httpx.HTTPError as e:
+        raise VolumeError(f"Signed file download failed: {e}") from e
 
 
 def _upload_bytes(
@@ -745,8 +773,6 @@ def _upload_multipart(
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    import httpx
-
     storage_object_id = resp.storage_object_id
     all_uris = list(resp.multipart.signed_upload_uris)
     part_uris = all_uris[:-1]
@@ -822,8 +848,6 @@ def _upload_resumable(
 
     Returns the storage object ID for the completed upload.
     """
-    import httpx
-
     storage_object_id = resp.storage_object_id
     signed_uri = resp.resumable.signed_upload_uri
     refresh_count = 0
