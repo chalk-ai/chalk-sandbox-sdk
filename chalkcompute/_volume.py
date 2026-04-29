@@ -1,38 +1,21 @@
-"""
-Python SDK for the Volume gRPC Service.
+"""Client utilities for Chalk volumes backed by object storage.
 
-Provides an API for managing persistent named volumes backed by
-object storage.
-
-Usage:
-    from chalkcompute import VolumeClient
-
-    with VolumeClient("localhost:50051") as client:
-        # Create or look up a volume
-        vol = client.create("my-data")
-
-        # Upload files
-        vol.put_file("models/latest.bin", model_bytes)
-        vol.put_file("config.json", b'{"key": "value"}')
-
-        # Batch upload for efficiency
-        with vol.batch_upload() as batch:
-            batch.put("data/a.csv", csv_a)
-            batch.put("data/b.csv", csv_b)
-            batch.put("data/c.csv", csv_c)
-
-        # Read files
-        data = vol.read_file("models/latest.bin")
-
-        # List files
-        for f in vol.listdir("data/"):
-            print(f"{f.path}  {f.size} bytes")
-
-        # Remove a file
-        vol.remove_file("config.json")
-
-        # Delete the volume entirely
-        vol.delete()
+Examples
+--------
+>>> from chalkcompute import VolumeClient
+>>> with VolumeClient("localhost:50051") as client:
+...     vol = client.create("my-data")
+...     vol.put_file("models/latest.bin", model_bytes)
+...     vol.put_file("config.json", b'{"key": "value"}')
+...     with vol.batch_upload() as batch:
+...         batch.put("data/a.csv", csv_a)
+...         batch.put("data/b.csv", csv_b)
+...         batch.put("data/c.csv", csv_c)
+...     data = vol.read_file("models/latest.bin")
+...     for f in vol.listdir("data/"):
+...         print(f"{f.path}  {f.size} bytes")
+...     vol.remove_file("config.json")
+...     vol.delete()
 """
 
 from __future__ import annotations
@@ -108,27 +91,37 @@ class VolumeFileNotFoundError(VolumeError):
 
 @dataclass
 class VolumeInfo:
-    """Metadata about a volume."""
+    """Metadata about a volume.
+
+    Attributes
+    ----------
+    name
+        Name of the volume.
+    created_at
+        Timestamp when the volume was created.
+    """
 
     name: str
-    """Name of the volume."""
-
     created_at: datetime.datetime | None = None
-    """Timestamp when the volume was created."""
 
 
 @dataclass
 class FileInfo:
-    """Metadata about a file inside a volume."""
+    """Metadata about a file inside a volume.
+
+    Attributes
+    ----------
+    path
+        File path within the volume.
+    size
+        File size in bytes.
+    updated_at
+        Timestamp when the file was last updated.
+    """
 
     path: str
-    """File path within the volume."""
-
     size: int
-    """File size in bytes."""
-
     updated_at: datetime.datetime | None = None
-    """Timestamp when the file was last updated."""
 
 
 # ---------------------------------------------------------------------------
@@ -193,10 +186,10 @@ class Volume:
     >>> from chalkcompute import VolumeClient
     >>> client = VolumeClient(target="volumes.example.com:443")
     >>> vol = client.create("models")
-    >>> vol.put("config.yaml", b"learning_rate: 0.01\\n")
-    >>> vol.get("config.yaml")
+    >>> vol.put_file("config.yaml", b"learning_rate: 0.01\\n")
+    >>> vol.read_file("config.yaml")
     b'learning_rate: 0.01\\n'
-    >>> [f.path for f in vol.list()]
+    >>> [f.path for f in vol.listdir()]
     ['config.yaml']
 
     Batch-upload multiple files atomically:
@@ -217,13 +210,25 @@ class Volume:
 
     @property
     def info(self) -> VolumeInfo:
-        """Get volume info, fetching from server if needed."""
+        """Return cached volume metadata, fetching it on first access.
+
+        Returns
+        -------
+        VolumeInfo
+            Metadata for this volume.
+        """
         if self._info is None:
             self._info = self._fetch_info()
         return self._info
 
     def reload(self) -> VolumeInfo:
-        """Force-refresh volume info from the server."""
+        """Refresh volume metadata from the server.
+
+        Returns
+        -------
+        VolumeInfo
+            Fresh metadata for this volume.
+        """
         self._info = self._fetch_info()
         return self._info
 
@@ -385,7 +390,7 @@ class Volume:
 
     @traced("chalkcompute.volume.delete")
     def delete(self) -> None:
-        """Delete this volume and all its contents."""
+        """Delete this volume and all of its contents."""
         try:
             self._client._stub.DeleteVolume(
                 pb.DeleteVolumeRequest(name=self._name),
@@ -408,7 +413,7 @@ _VolumeInfoList = list[VolumeInfo]
 
 
 class VolumeClient:
-    """Client for the Volume gRPC Service."""
+    """Client for the Volume gRPC service."""
 
     def __init__(
         self,
@@ -509,7 +514,7 @@ class VolumeClient:
         self.close()
 
     def close(self) -> None:
-        """Close the gRPC channel."""
+        """Close the underlying gRPC channel"""
         self._channel.close()
 
     @traced("chalkcompute.volume.create")
@@ -603,7 +608,22 @@ class VolumeClient:
 
 
 def _read_file_bytes(client: VolumeClient, volume_name: str, path: str) -> bytes:
-    """Read a file using the transport selected by the server."""
+    """Read a file using the transport selected by the server.
+
+    Parameters
+    ----------
+    client
+        Volume client used for the download.
+    volume_name
+        Name of the source volume.
+    path
+        Path to read within the volume.
+
+    Returns
+    -------
+    bytes
+        Raw file contents.
+    """
     try:
         resp = client._stub.GetFile(
             pb.GetFileRequest(volume_name=volume_name, path=path, get_signed_uri=True),
@@ -622,7 +642,23 @@ def _read_file_bytes(client: VolumeClient, volume_name: str, path: str) -> bytes
 
 
 def _read_file_from_signed_uri(signed_download_uri: str) -> bytes:
-    """Download a file from object storage via a signed URL."""
+    """Download a file from object storage via a signed URL.
+
+    Parameters
+    ----------
+    signed_download_uri
+        Signed URL returned by the control plane.
+
+    Returns
+    -------
+    bytes
+        Raw file contents.
+
+    Raises
+    ------
+    VolumeError
+        If the download times out or the HTTP request fails.
+    """
     try:
         resp = httpx.get(signed_download_uri, timeout=300)
         resp.raise_for_status()
@@ -769,7 +805,20 @@ def _upload_multipart(
     Parts are uploaded concurrently. On 401/403 from S3, all signed URLs
     are refreshed and parts are re-uploaded from scratch.
 
-    Returns the storage object ID for the completed upload.
+    Parameters
+    ----------
+    data
+        File contents to upload.
+    resp
+        Initial multipart upload configuration returned by the server.
+    refresh
+        Callback that fetches a fresh upload configuration after signed URLs
+        expire.
+
+    Returns
+    -------
+    str
+        Storage object ID for the completed upload.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -846,7 +895,20 @@ def _upload_resumable(
 ) -> str:
     """Upload via a GCS resumable signed URL.
 
-    Returns the storage object ID for the completed upload.
+    Parameters
+    ----------
+    data
+        File contents to upload.
+    resp
+        Initial resumable upload configuration returned by the server.
+    refresh
+        Callback that fetches a fresh upload configuration after the signed URL
+        expires.
+
+    Returns
+    -------
+    str
+        Storage object ID for the completed upload.
     """
     storage_object_id = resp.storage_object_id
     signed_uri = resp.resumable.signed_upload_uri
