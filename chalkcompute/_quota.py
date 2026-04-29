@@ -23,15 +23,10 @@ class QueuePolicy:
     Examples
     --------
     >>> QueuePolicy(max_items=100_000)
-    >>> QueuePolicy(max_items=50_000, key="shared-bucket")
     """
 
     max_items: int = DEFAULT_MAX_ITEMS
     """Maximum number of pending items in the queue."""
-
-    key: str | None = None
-    """Shared-bucket identifier. Functions using the same key share one
-    quota. Defaults to the function's qualified name if omitted."""
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a plain dict for metadata / JSON export.
@@ -41,17 +36,13 @@ class QueuePolicy:
         dict[str, Any]
             A JSON-serializable dict representation of the policy.
         """
-        d: dict[str, Any] = {"max_items": self.max_items}
-        if self.key is not None:
-            d["key"] = self.key
-        return d
+        return {"max_items": self.max_items}
 
     @classmethod
     def from_int_or_policy(cls, value: int | QueuePolicy) -> QueuePolicy:
         """Normalize ``int | QueuePolicy`` into a ``QueuePolicy``.
 
-        An ``int`` is treated as ``QueuePolicy(max_items=value)`` with the
-        default key.
+        An ``int`` is treated as ``QueuePolicy(max_items=value)``.
 
         Parameters
         ----------

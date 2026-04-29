@@ -1624,12 +1624,12 @@ def function(
         rate, not in-flight count).
     quota
         Queue quota: cap on the number of pending items that may be enqueued
-        for this function at once. Pass an ``int`` for a simple
-        ``max_items`` cap, or a :class:`~chalkcompute.QueuePolicy` for full
-        control (``max_items``, ``key``). Defaults to 500,000 items when
-        unset. Submitting past the cap raises a gRPC ``RESOURCE_EXHAUSTED``
-        error — clients should back off or call ``purge()`` on the function
-        to drain the queue.
+        for this function at once. Pass an ``int`` for the cap, or a
+        :class:`~chalkcompute.QueuePolicy` (currently equivalent —
+        ``QueuePolicy(max_items=N)``). Defaults to 500,000 items when unset.
+        Submitting past the cap raises a gRPC ``RESOURCE_EXHAUSTED`` error —
+        clients should back off or call ``purge()`` on the function to drain
+        the queue.
 
     Examples
     --------
