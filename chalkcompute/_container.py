@@ -23,6 +23,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from chalkcompute._connect import ConnectClient
@@ -93,6 +94,25 @@ class ExecResult:
         return self.stderr.decode("utf-8", errors="replace")
 
 
+class KernelPolicy(Enum):
+    RESTRICTED = "RESTRICTED"
+    OPEN = "OPEN"
+
+
+@dataclass
+class ContainerSecurityPolicy:
+    """Security policy settings for a container.
+
+    A missing policy leaves the container unrestricted for backwards compatibility.
+    """
+
+    kernel_policy: KernelPolicy = KernelPolicy.RESTRICTED
+    """Kernel hardening policy."""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"kernelPolicy": self.kernel_policy.value}
+
+
 @dataclass
 class ContainerInfo:
     """Metadata about a running container."""
@@ -160,6 +180,7 @@ class Container:
         entrypoint: list[str] | None = None,
         lifetime: str | None = None,
         enable_ssh: bool = False,
+        security_policy: ContainerSecurityPolicy | None = None,
     ) -> None:
         self._image = image
         if name is not None:
@@ -175,6 +196,7 @@ class Container:
         self._entrypoint = entrypoint
         self._lifetime = lifetime
         self._enable_ssh = enable_ssh
+        self._security_policy = security_policy
 
         # Set after .run()
         self._built_image_uri: str | None = None
@@ -256,6 +278,7 @@ class Container:
         c._entrypoint = None
         c._lifetime = None
         c._enable_ssh = False
+        c._security_policy = None
         c._built_image_uri = None
         c._container_id = None
         c._container_info = None
@@ -441,6 +464,8 @@ class Container:
                 spec["lifetime"] = self._lifetime
             if self._enable_ssh:
                 spec["enableSsh"] = True
+            if self._security_policy is not None:
+                spec["securityPolicy"] = self._security_policy.to_dict()
 
             resources: dict[str, str] = {}
             if self._cpu:
