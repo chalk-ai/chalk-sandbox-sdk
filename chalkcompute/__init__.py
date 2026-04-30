@@ -11,8 +11,10 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "Container": ("chalkcompute._container", "Container"),
     "ContainerError": ("chalkcompute._container", "ContainerError"),
     "ContainerInfo": ("chalkcompute._container", "ContainerInfo"),
+    "ContainerSecurityPolicy": ("chalkcompute._container", "ContainerSecurityPolicy"),
     "ContainerExecResult": ("chalkcompute._container", "ExecResult"),
     "ImageBuildError": ("chalkcompute._container", "ImageBuildError"),
+    "KernelPolicy": ("chalkcompute._container", "KernelPolicy"),
     # _cls.py
     "RemoteClass": ("chalkcompute._cls", "RemoteClass"),
     "ClassError": ("chalkcompute._cls", "ClassError"),

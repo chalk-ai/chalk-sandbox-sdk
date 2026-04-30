@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from chalkcompute import Container, Image
+from chalkcompute import Container, ContainerSecurityPolicy, Image, KernelPolicy
 
 
 THIS_DIR = Path(__file__).resolve().parent
@@ -696,6 +696,11 @@ def parse_args() -> argparse.Namespace:
         help="Container name prefix.",
     )
     parser.add_argument(
+        "--restricted",
+        action="store_true",
+        help="Create a sandboxed/restricted container.",
+    )
+    parser.add_argument(
         "--container-id",
         help="Attach to an existing running container by ID instead of creating one.",
     )
@@ -739,7 +744,8 @@ def main() -> int:
         container = Container.from_name(args.container_name)
     else:
         image: Image | str = args.image if args.image else build_image()
-        container = Container(image=image, name=args.name)
+        policy = ContainerSecurityPolicy(kernel_policy=KernelPolicy.RESTRICTED) if args.restricted else None
+        container = Container(image=image, name=args.name, security_policy=policy)
         container.run()
         created_container = True
 
