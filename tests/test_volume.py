@@ -13,6 +13,7 @@ from chalkcompute._volume import (
     Volume,
     VolumeClient,
     _INLINE_THRESHOLD_BYTES,
+    _read_file_bytes,
     _put_file_presigned,
     _upload_bytes,
     upload_lazy_files,
@@ -155,6 +156,39 @@ class TestVolumeClientFromConnect:
 # ---------------------------------------------------------------------------
 # Upload routing
 # ---------------------------------------------------------------------------
+
+
+class TestReadRouting:
+    def test_signed_download_uri_uses_httpx(self):
+        client = _make_vol_client()
+        resp = MagicMock()
+        resp.WhichOneof.return_value = "signed_download_uri"
+        resp.signed_download_uri = "https://storage.example.com/file"
+        client._stub.GetFile.return_value = resp
+
+        with patch("httpx.get") as mock_get:
+            mock_get.return_value = MagicMock(content=b"payload")
+            data = _read_file_bytes(client, "vol", "file.txt")
+
+        assert data == b"payload"
+        req = client._stub.GetFile.call_args[0][0]
+        assert req.volume_name == "vol"
+        assert req.path == "file.txt"
+        assert req.get_signed_uri is True
+        mock_get.assert_called_once_with("https://storage.example.com/file", timeout=300)
+
+    def test_inline_data_falls_back_without_http(self):
+        client = _make_vol_client()
+        resp = MagicMock()
+        resp.WhichOneof.return_value = "data"
+        resp.data = b"inline"
+        client._stub.GetFile.return_value = resp
+
+        with patch("httpx.get") as mock_get:
+            data = _read_file_bytes(client, "vol", "file.txt")
+
+        assert data == b"inline"
+        mock_get.assert_not_called()
 
 
 class TestUploadRouting:
