@@ -1629,7 +1629,7 @@ def function(
         ``QueuePolicy(max_items=N)``). Defaults to 500,000 items when unset.
         Submitting past the cap raises a gRPC ``RESOURCE_EXHAUSTED`` error —
         clients should back off or call ``purge()`` on the function to drain
-        the queue if any items were erroneously added.
+        the queue if items were erroneously added.
 
     Examples
     --------
