@@ -32,6 +32,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "ConcurrencyPolicy": ("chalkcompute._concurrency", "ConcurrencyPolicy"),
     "function": ("chalkcompute._function", "function"),
     # _connect.py
+    "ConnectClient": ("chalkcompute._connect", "ConnectClient"),
     "build_image": ("chalkcompute._connect", "build_image_from_spec"),
     # _image.py
     "Image": ("chalkcompute._image", "Image"),
