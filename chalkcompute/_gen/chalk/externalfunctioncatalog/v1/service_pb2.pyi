@@ -77,6 +77,14 @@ class ConcurrencyPolicy(_message.Message):
     key: str
     def __init__(self, max_concurrent: _Optional[int] = ..., key: _Optional[str] = ...) -> None: ...
 
+class QueuePolicy(_message.Message):
+    __slots__ = ("max_items", "key")
+    MAX_ITEMS_FIELD_NUMBER: _ClassVar[int]
+    KEY_FIELD_NUMBER: _ClassVar[int]
+    max_items: int
+    key: str
+    def __init__(self, max_items: _Optional[int] = ..., key: _Optional[str] = ...) -> None: ...
+
 class FunctionConfig(_message.Message):
     __slots__ = (
         "serialization_format",
@@ -86,6 +94,7 @@ class FunctionConfig(_message.Message):
         "retry_policy",
         "rate_limit",
         "concurrency",
+        "queue",
     )
     class OptionsEntry(_message.Message):
         __slots__ = ("key", "value")
@@ -102,6 +111,7 @@ class FunctionConfig(_message.Message):
     RETRY_POLICY_FIELD_NUMBER: _ClassVar[int]
     RATE_LIMIT_FIELD_NUMBER: _ClassVar[int]
     CONCURRENCY_FIELD_NUMBER: _ClassVar[int]
+    QUEUE_FIELD_NUMBER: _ClassVar[int]
     serialization_format: SerializationFormat
     options: _containers.ScalarMap[str, str]
     max_buffer_duration: int
@@ -109,6 +119,7 @@ class FunctionConfig(_message.Message):
     retry_policy: RetryPolicy
     rate_limit: RateLimitPolicy
     concurrency: ConcurrencyPolicy
+    queue: QueuePolicy
     def __init__(
         self,
         serialization_format: _Optional[_Union[SerializationFormat, str]] = ...,
@@ -118,6 +129,7 @@ class FunctionConfig(_message.Message):
         retry_policy: _Optional[_Union[RetryPolicy, _Mapping]] = ...,
         rate_limit: _Optional[_Union[RateLimitPolicy, _Mapping]] = ...,
         concurrency: _Optional[_Union[ConcurrencyPolicy, _Mapping]] = ...,
+        queue: _Optional[_Union[QueuePolicy, _Mapping]] = ...,
     ) -> None: ...
 
 class ExternalFunctionVersion(_message.Message):
@@ -288,30 +300,40 @@ class DeleteExternalFunctionVersionResponse(_message.Message):
     def __init__(self) -> None: ...
 
 class ExternalFunctionSummary(_message.Message):
-    __slots__ = ("name", "latest_version", "latest_scaling_group_name", "latest_updated_at")
+    __slots__ = ("name", "latest_version", "latest_scaling_group_name", "latest_updated_at", "config", "scaling_group")
     NAME_FIELD_NUMBER: _ClassVar[int]
     LATEST_VERSION_FIELD_NUMBER: _ClassVar[int]
     LATEST_SCALING_GROUP_NAME_FIELD_NUMBER: _ClassVar[int]
     LATEST_UPDATED_AT_FIELD_NUMBER: _ClassVar[int]
+    CONFIG_FIELD_NUMBER: _ClassVar[int]
+    SCALING_GROUP_FIELD_NUMBER: _ClassVar[int]
     name: str
     latest_version: int
     latest_scaling_group_name: str
     latest_updated_at: _timestamp_pb2.Timestamp
+    config: FunctionConfig
+    scaling_group: _service_pb2.ScalingGroupResponse
     def __init__(
         self,
         name: _Optional[str] = ...,
         latest_version: _Optional[int] = ...,
         latest_scaling_group_name: _Optional[str] = ...,
         latest_updated_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
+        config: _Optional[_Union[FunctionConfig, _Mapping]] = ...,
+        scaling_group: _Optional[_Union[_service_pb2.ScalingGroupResponse, _Mapping]] = ...,
     ) -> None: ...
 
 class ListExternalFunctionsRequest(_message.Message):
-    __slots__ = ("cursor", "limit")
+    __slots__ = ("cursor", "limit", "include_scaling_group")
     CURSOR_FIELD_NUMBER: _ClassVar[int]
     LIMIT_FIELD_NUMBER: _ClassVar[int]
+    INCLUDE_SCALING_GROUP_FIELD_NUMBER: _ClassVar[int]
     cursor: str
     limit: int
-    def __init__(self, cursor: _Optional[str] = ..., limit: _Optional[int] = ...) -> None: ...
+    include_scaling_group: bool
+    def __init__(
+        self, cursor: _Optional[str] = ..., limit: _Optional[int] = ..., include_scaling_group: bool = ...
+    ) -> None: ...
 
 class ListExternalFunctionsResponse(_message.Message):
     __slots__ = ("functions", "next_cursor")

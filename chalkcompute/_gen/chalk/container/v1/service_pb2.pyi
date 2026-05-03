@@ -2,6 +2,7 @@ from chalkcompute._gen.chalk.auth.v1 import permissions_pb2 as _permissions_pb2
 from google.protobuf import duration_pb2 as _duration_pb2
 from google.protobuf import timestamp_pb2 as _timestamp_pb2
 from google.protobuf.internal import containers as _containers
+from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
 from typing import (
@@ -13,6 +14,16 @@ from typing import (
 )
 
 DESCRIPTOR: _descriptor.FileDescriptor
+
+class KernelPolicy(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    KERNEL_POLICY_UNSPECIFIED: _ClassVar[KernelPolicy]
+    KERNEL_POLICY_RESTRICTED: _ClassVar[KernelPolicy]
+    KERNEL_POLICY_OPEN: _ClassVar[KernelPolicy]
+
+KERNEL_POLICY_UNSPECIFIED: KernelPolicy
+KERNEL_POLICY_RESTRICTED: KernelPolicy
+KERNEL_POLICY_OPEN: KernelPolicy
 
 class ResourceLimits(_message.Message):
     __slots__ = ("cpu", "memory", "gpu")
@@ -87,6 +98,7 @@ class ChalkContainerSpec(_message.Message):
         "routing",
         "authentication",
         "secret_refs",
+        "security_policy",
     )
     class TagsEntry(_message.Message):
         __slots__ = ("key", "value")
@@ -118,6 +130,7 @@ class ChalkContainerSpec(_message.Message):
     ROUTING_FIELD_NUMBER: _ClassVar[int]
     AUTHENTICATION_FIELD_NUMBER: _ClassVar[int]
     SECRET_REFS_FIELD_NUMBER: _ClassVar[int]
+    SECURITY_POLICY_FIELD_NUMBER: _ClassVar[int]
     name: str
     image: str
     entrypoint: _containers.RepeatedScalarFieldContainer[str]
@@ -132,6 +145,7 @@ class ChalkContainerSpec(_message.Message):
     routing: str
     authentication: str
     secret_refs: _containers.RepeatedCompositeFieldContainer[SecretRef]
+    security_policy: ContainerSecurityPolicy
     def __init__(
         self,
         name: _Optional[str] = ...,
@@ -148,7 +162,14 @@ class ChalkContainerSpec(_message.Message):
         routing: _Optional[str] = ...,
         authentication: _Optional[str] = ...,
         secret_refs: _Optional[_Iterable[_Union[SecretRef, _Mapping]]] = ...,
+        security_policy: _Optional[_Union[ContainerSecurityPolicy, _Mapping]] = ...,
     ) -> None: ...
+
+class ContainerSecurityPolicy(_message.Message):
+    __slots__ = ("kernel_policy",)
+    KERNEL_POLICY_FIELD_NUMBER: _ClassVar[int]
+    kernel_policy: KernelPolicy
+    def __init__(self, kernel_policy: _Optional[_Union[KernelPolicy, str]] = ...) -> None: ...
 
 class ContainerRequest(_message.Message):
     __slots__ = ("spec",)
