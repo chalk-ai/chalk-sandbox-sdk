@@ -324,6 +324,65 @@ def _should_call_via_api() -> bool:
     return os.environ.get(_CALL_VIA_API_ENV_VAR, "") == "1"
 
 
+class FunctionCallHandle:
+    """Handle returned by :meth:`RemoteFunction.defer`."""
+
+    def __init__(self, function: RemoteFunction, call_id: str) -> None:
+        self._function = function
+        self._call_id = call_id
+        self._cursor = ""
+        self._poll_count = 0
+
+    @property
+    def call_id(self) -> str:
+        return self._call_id
+
+    def poll(self) -> Any:
+        result = self._function.poll(
+            self._call_id,
+            cursor=self._cursor,
+            poll_count=self._poll_count,
+        )
+        self._cursor = result.cursor
+        self._poll_count = result.poll_count
+        return result
+
+    def get(self, timeout: float | None = None) -> Any:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        chunks: list[bytes] = []
+
+        while True:
+            result = self.poll()
+            chunks.extend(result.chunks)
+
+            if result.is_failed:
+                message = result.error_message or "Remote call failed"
+                raise FunctionError(message)
+
+            if result.is_completed:
+                return self._function._materialize_result_chunks(chunks)
+
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(f"Remote call {self._call_id} timed out")
+
+    def stream(self) -> Any:
+        import pyarrow as pa
+
+        while True:
+            result = self.poll()
+            for chunk in result.chunks:
+                reader = pa.ipc.open_stream(pa.BufferReader(chunk))
+                for batch in reader:
+                    yield batch
+
+            if result.is_failed:
+                message = result.error_message or "Remote call failed"
+                raise FunctionError(message)
+
+            if result.is_completed:
+                return
+
+
 def _prepare_source_file(source_file: str) -> tuple[str, bool]:
     """Return the source file path to deploy, optionally stripping chalkcompute.
 
@@ -805,6 +864,8 @@ class RemoteFunction:
         # gRPC call channel (lazily created on first __call__)
         self._call_channel: Any = None
         self._call_stub: Any = None
+        self._remote_call_client: Any = None
+        self._queue_call_client: Any = None
 
         self._client = ConnectClient()
 
@@ -922,6 +983,8 @@ class RemoteFunction:
         f._input_field_names = []
         f._call_channel = None
         f._call_stub = None
+        f._remote_call_client = None
+        f._queue_call_client = None
         f._client = ConnectClient()
         return f
 
@@ -1271,6 +1334,120 @@ class RemoteFunction:
             self._call_channel = grpc.insecure_channel(target)
         self._call_stub = call_grpc.RemoteCallServiceStub(self._call_channel)
 
+    def _remote_call_metadata(self, *, queue: bool) -> list[tuple[str, str]]:
+        self._client._ensure_auth()
+        metadata = [
+            ("authorization", f"Bearer {self._client._access_token}"),
+            ("x-chalk-env-id", self._client._env_id or ""),
+        ]
+        if queue:
+            metadata.append(("x-chalk-deployment-type", "function-queue"))
+        return metadata
+
+    def _ensure_remote_call_client(self, *, queue: bool = False) -> Any:
+        attr = "_queue_call_client" if queue else "_remote_call_client"
+        client = getattr(self, attr)
+        if client is not None:
+            return client
+
+        if self._web_url is None:
+            raise FunctionError("Function is not deployed. Call .deploy() first.")
+
+        from chalkcompute._remote_call_client import RemoteCallClient
+
+        target, use_tls = grpc_target_from_url(
+            self._web_url,
+            insecure_port=self._port,
+        )
+        client = RemoteCallClient(
+            target,
+            metadata=self._remote_call_metadata(queue=queue),
+            use_tls=use_tls,
+        )
+        setattr(self, attr, client)
+        return client
+
+    def _call_direct_chunks_python_grpc(self, feather_bytes: bytes) -> list[bytes]:
+        from chalk_remote_call._gen.chalk.runtime.v1 import (
+            remote_python_call_pb2 as call_pb,
+        )
+
+        self._ensure_call_stub()
+
+        def requests() -> Any:
+            yield call_pb.CallFunctionRequest(  # ty: ignore[unresolved-attribute]
+                name="handler",
+                feather_stream=feather_bytes,
+            )
+
+        responses = list(
+            self._call_stub.CallFunction(requests(), metadata=self._call_metadata)
+        )
+        return [resp.feather_stream for resp in responses]
+
+    def _call_direct_chunks(self, feather_bytes: bytes) -> list[bytes]:
+        from chalkcompute._remote_call_client import RemoteCallClientUnavailable
+
+        try:
+            client = self._ensure_remote_call_client(queue=False)
+        except RemoteCallClientUnavailable:
+            return self._call_direct_chunks_python_grpc(feather_bytes)
+        return client.call_ipc("handler", feather_bytes)
+
+    def _queue_function_name(self) -> str:
+        if self._version_info is not None and self._version_info.function_name:
+            return self._version_info.function_name
+        return self._func_name
+
+    def _serialize_call_args(self, *args: Any, **kwargs: Any) -> bytes:
+        import pyarrow as pa
+        import pyarrow.ipc as ipc
+
+        if self._input_field_names:
+            arguments: dict[str, Any] = {}
+            for i, name in enumerate(self._input_field_names):
+                if name in kwargs:
+                    arguments[name] = kwargs[name]
+                elif i < len(args):
+                    arguments[name] = args[i]
+                else:
+                    raise TypeError(f"Missing argument: {name}")
+        else:
+            sig = inspect.signature(self._func)
+            bound = sig.bind(*args, **kwargs)
+            bound.apply_defaults()
+            arguments = bound.arguments
+
+        arrays = []
+        names = []
+        for param_name, value in arguments.items():
+            arrays.append(pa.array([value]))
+            names.append(param_name)
+        batch = pa.record_batch(arrays, names=names)
+
+        sink = pa.BufferOutputStream()
+        with ipc.new_stream(sink, batch.schema) as writer:
+            writer.write_batch(batch)
+        return sink.getvalue().to_pybytes()
+
+    def _decode_result_chunks(self, chunks: list[bytes]) -> list[Any]:
+        import pyarrow.ipc as ipc
+
+        results: list[Any] = []
+        for chunk in chunks:
+            reader = ipc.open_stream(chunk)
+            for result_batch in reader:
+                result_dict = result_batch.to_pydict()
+                if "result" in result_dict:
+                    results.extend(result_dict["result"])
+        return results
+
+    def _materialize_result_chunks(self, chunks: list[bytes]) -> Any:
+        results = self._decode_result_chunks(chunks)
+        if len(results) == 1:
+            return results[0]
+        return results
+
     def _call_via_api_rpc(self, feather_bytes: bytes) -> bytes:
         """Call the remote function via the API server's ``CallExternalFunction`` RPC.
 
@@ -1341,82 +1518,43 @@ class RemoteFunction:
         Any
             Scalar result for single-row calls, or a list of results otherwise.
         """
-        import pyarrow as pa
-        import pyarrow.ipc as ipc
+        feather_bytes = self._serialize_call_args(*args, **kwargs)
 
-        # 1. Build name→value mapping from args
-        if self._input_field_names:
-            # from_id / from_name: use schema field names
-            arguments: dict[str, Any] = {}
-            for i, name in enumerate(self._input_field_names):
-                if name in kwargs:
-                    arguments[name] = kwargs[name]
-                elif i < len(args):
-                    arguments[name] = args[i]
-                else:
-                    raise TypeError(f"Missing argument: {name}")
-        else:
-            # Normal constructor: use function signature
-            sig = inspect.signature(self._func)
-            bound = sig.bind(*args, **kwargs)
-            bound.apply_defaults()
-            arguments = bound.arguments
-
-        # 2. Build RecordBatch from args (one column per param, single row)
-        arrays = []
-        names = []
-        for param_name, value in arguments.items():
-            arrays.append(pa.array([value]))
-            names.append(param_name)
-        batch = pa.record_batch(arrays, names=names)
-
-        # 3. Serialize to Arrow IPC (Feather) bytes
-        sink = pa.BufferOutputStream()
-        with ipc.new_stream(sink, batch.schema) as writer:
-            writer.write_batch(batch)
-        feather_bytes = sink.getvalue().to_pybytes()
-
-        # 4. Call: branch on routing mode
         if _should_call_via_api():
             response_bytes = self._call_via_api_rpc(feather_bytes)
-            results: list[Any] = []
-            reader = ipc.open_stream(response_bytes)
-            for result_batch in reader:
-                result_dict = result_batch.to_pydict()
-                if "result" in result_dict:
-                    results.extend(result_dict["result"])
+            results = self._decode_result_chunks([response_bytes])
         else:
-            from chalk_remote_call._gen.chalk.runtime.v1 import (
-                remote_python_call_pb2 as call_pb,
-            )
-
-            self._ensure_call_stub()
-
-            def requests():
-                yield call_pb.CallFunctionRequest(  # ty: ignore[unresolved-attribute]
-                    name="handler",
-                    feather_stream=feather_bytes,
-                )
-
-            responses = list(
-                self._call_stub.CallFunction(requests(), metadata=self._call_metadata)
-            )
-
-            if not responses:
+            chunks = self._call_direct_chunks(feather_bytes)
+            if not chunks:
                 raise FunctionError("No response received from remote function")
+            results = self._decode_result_chunks(chunks)
 
-            results = []
-            for resp in responses:
-                reader = ipc.open_stream(resp.feather_stream)
-                for result_batch in reader:
-                    result_dict = result_batch.to_pydict()
-                    if "result" in result_dict:
-                        results.extend(result_dict["result"])
-
-        # 5. Single-row call returns scalar
         if len(results) == 1:
             return results[0]
         return results
+
+    def defer(self, *args: Any, **kwargs: Any) -> FunctionCallHandle:
+        """Enqueue this function call and return a handle immediately."""
+        feather_bytes = self._serialize_call_args(*args, **kwargs)
+        client = self._ensure_remote_call_client(queue=True)
+        call_id = client.enqueue(self._queue_function_name(), feather_bytes)
+        return FunctionCallHandle(self, call_id)
+
+    def poll(
+        self,
+        call_id: str,
+        *,
+        cursor: str = "",
+        poll_count: int = 0,
+    ) -> Any:
+        """Poll a deferred call once."""
+        client = self._ensure_remote_call_client(queue=True)
+        return client.poll_next(call_id, cursor, poll_count)
+
+    def purge(self) -> int:
+        """Drop pending queued calls for this function."""
+        client = self._ensure_remote_call_client(queue=True)
+        return int(client.purge_function(self._queue_function_name()))
 
     # -- Management ------------------------------------------------------------
 
