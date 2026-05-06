@@ -26,6 +26,7 @@ Or imperatively:
 from __future__ import annotations
 
 import ast
+import asyncio
 import functools
 import inspect
 import logging
@@ -330,6 +331,7 @@ class FunctionCallHandle:
     def __init__(self, function: RemoteFunction, call_id: str) -> None:
         self._function = function
         self._call_id = call_id
+        self._is_async = bool(getattr(function, "_is_async", False))
         self._cursor = ""
         self._poll_count = 0
 
@@ -348,6 +350,11 @@ class FunctionCallHandle:
         return result
 
     def get(self, timeout: float | None = None) -> Any:
+        if self._is_async:
+            return self._async_get(timeout)
+        return self._sync_get(timeout)
+
+    def _sync_get(self, timeout: float | None = None) -> Any:
         deadline = None if timeout is None else time.monotonic() + timeout
         chunks: list[bytes] = []
 
@@ -365,11 +372,36 @@ class FunctionCallHandle:
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError(f"Remote call {self._call_id} timed out")
 
+    async def _async_get(self, timeout: float | None = None) -> Any:
+        return await asyncio.to_thread(self._sync_get, timeout)
+
     def stream(self) -> Any:
+        if self._is_async:
+            return self._async_stream()
+        return self._sync_stream()
+
+    def _sync_stream(self) -> Any:
         import pyarrow as pa
 
         while True:
             result = self.poll()
+            for chunk in result.chunks:
+                reader = pa.ipc.open_stream(pa.BufferReader(chunk))
+                for batch in reader:
+                    yield batch
+
+            if result.is_failed:
+                message = result.error_message or "Remote call failed"
+                raise FunctionError(message)
+
+            if result.is_completed:
+                return
+
+    async def _async_stream(self) -> Any:
+        import pyarrow as pa
+
+        while True:
+            result = await asyncio.to_thread(self.poll)
             for chunk in result.chunks:
                 reader = pa.ipc.open_stream(pa.BufferReader(chunk))
                 for batch in reader:
@@ -719,6 +751,32 @@ def _extract_field_names(schema_dict: dict | None) -> list[str]:
     return [f["name"] for f in schema_dict.get("columns", []) if "name" in f]
 
 
+def _extract_schema_metadata(schema_dict: dict | None) -> dict[str, str]:
+    """Return Arrow schema metadata from a Connect JSON schema dict."""
+    if not schema_dict:
+        return {}
+
+    metadata = schema_dict.get("metadata") or {}
+    if isinstance(metadata, dict):
+        return {str(k): str(v) for k, v in metadata.items()}
+    if isinstance(metadata, list):
+        result: dict[str, str] = {}
+        for entry in metadata:
+            if isinstance(entry, dict) and "key" in entry:
+                result[str(entry["key"])] = str(entry.get("value", ""))
+        return result
+    return {}
+
+
+def _extract_function_traits(efv: dict[str, Any]) -> tuple[bool, bool]:
+    """Return ``(is_generator, is_async)`` from catalog function metadata."""
+    metadata = _extract_schema_metadata(efv.get("outputArrowSchema"))
+    return (
+        metadata.get("chalk.function.is_generator") == "true",
+        metadata.get("chalk.function.is_async") == "true",
+    )
+
+
 # ---------------------------------------------------------------------------
 # RemoteFunction
 # ---------------------------------------------------------------------------
@@ -860,6 +918,10 @@ class RemoteFunction:
 
         # Input field names (populated from API response for from_id/from_name)
         self._input_field_names: list[str] = []
+        self._is_generator = inspect.isgeneratorfunction(func) or inspect.isasyncgenfunction(
+            func
+        )
+        self._is_async = inspect.iscoroutinefunction(func) or inspect.isasyncgenfunction(func)
 
         # gRPC call channel (lazily created on first __call__)
         self._call_channel: Any = None
@@ -905,6 +967,7 @@ class RemoteFunction:
         )
         f._func_name = efv["functionName"]
         f._input_field_names = _extract_field_names(efv.get("inputArrowSchema"))
+        f._is_generator, f._is_async = _extract_function_traits(efv)
         sg = data.get("scalingGroup")
         if sg:
             f._web_url = sg.get("webUrl")
@@ -944,6 +1007,7 @@ class RemoteFunction:
         f._func_name = efv["functionName"]
         f._explicit_name = name
         f._input_field_names = _extract_field_names(efv.get("inputArrowSchema"))
+        f._is_generator, f._is_async = _extract_function_traits(efv)
         sg = data.get("scalingGroup")
         if sg:
             f._web_url = sg.get("webUrl")
@@ -981,6 +1045,8 @@ class RemoteFunction:
         f._web_url = None
         f._port = 6666
         f._input_field_names = []
+        f._is_generator = False
+        f._is_async = False
         f._call_channel = None
         f._call_stub = None
         f._remote_call_client = None
@@ -1355,10 +1421,13 @@ class RemoteFunction:
 
         from chalkcompute._remote_call_client import RemoteCallClient
 
-        target, use_tls = grpc_target_from_url(
-            self._web_url,
-            insecure_port=self._port,
-        )
+        if queue:
+            target, use_tls = self._client.grpc_engine_target()
+        else:
+            target, use_tls = grpc_target_from_url(
+                self._web_url,
+                insecure_port=self._port,
+            )
         client = RemoteCallClient(
             target,
             metadata=self._remote_call_metadata(queue=queue),
@@ -1518,6 +1587,16 @@ class RemoteFunction:
         Any
             Scalar result for single-row calls, or a list of results otherwise.
         """
+        if self._is_generator:
+            return self.defer(*args, **kwargs).stream()
+        if self._is_async:
+            return self._call_async(*args, **kwargs)
+        return self._call_sync(*args, **kwargs)
+
+    async def _call_async(self, *args: Any, **kwargs: Any) -> Any:
+        return await asyncio.to_thread(self._call_sync, *args, **kwargs)
+
+    def _call_sync(self, *args: Any, **kwargs: Any) -> Any:
         feather_bytes = self._serialize_call_args(*args, **kwargs)
 
         if _should_call_via_api():
