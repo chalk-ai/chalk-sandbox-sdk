@@ -37,3 +37,8 @@ to check `ty`
 ## Proto generation
 
 Python stubs are generated from `chalk-private/protos/generate.sh`.
+
+
+## Reproducing issues
+
+- When attempting to reproduce an issue, use our staging environment. Please use a worktree and attempt to reproduce the linear issue; link the PR to the linear issue w/ your analysis.
