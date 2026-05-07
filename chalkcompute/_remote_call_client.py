@@ -7,9 +7,7 @@ from typing import Sequence
 
 try:
     from chalkcompute._remote_call_native import (
-    from chalkcompute._remote_call_native import (
         RemoteCallClient as _NativeRemoteCallClient,
-    )
     )
 except ImportError as exc:  # pragma: no cover - exercised in source checkouts
     _NativeRemoteCallClient = None

@@ -27,6 +27,9 @@ class FakeConnectClient:
     def _ensure_auth(self) -> None:
         pass
 
+    def grpc_engine_target(self) -> tuple[str, bool]:
+        return "engine.example.com:443", True
+
 
 class FakeRemoteCallClient:
     instances: list["FakeRemoteCallClient"] = []
@@ -137,6 +140,8 @@ def test_defer_get_and_purge_use_queue_client() -> None:
     assert fn.purge() == 7
 
     client = FakeRemoteCallClient.instances[0]
+    assert client.endpoint == "engine.example.com:443"
+    assert client.use_tls is True
     assert ("x-chalk-deployment-type", "function-queue") in client.metadata
     assert client.enqueues[0][0] == "catalog-add"
     assert _read_input(client.enqueues[0][1]) == {"x": [98]}
