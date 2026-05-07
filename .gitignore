@@ -5,3 +5,5 @@ __pycache__/
 CLAUDE.local.md
 target/
 chalkcompute/_remote_call_native*.so
+.zoekt-index/
+.claude/worktrees

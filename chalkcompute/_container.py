@@ -19,10 +19,11 @@ destination path's common ancestor.
 from __future__ import annotations
 
 import base64
+import ipaddress
 import logging
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
@@ -34,6 +35,7 @@ from chalkcompute._tracing import traced
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from chalkcompute._image import Image as _Image
     from chalkcompute._secret import Secret
 
@@ -114,6 +116,94 @@ class ContainerSecurityPolicy:
 
 
 @dataclass
+class PortRange:
+    """Inclusive destination port range for a network policy route."""
+
+    start_port: int
+    """Inclusive start port. Must be between 1 and 65535."""
+
+    end_port: int | None = None
+    """Inclusive end port. Defaults to ``start_port``."""
+
+    def __post_init__(self) -> None:
+        if self.end_port is None:
+            self.end_port = self.start_port
+        _validate_port_range(self.start_port, self.end_port)
+
+    def to_dict(self) -> dict[str, int]:
+        assert self.end_port is not None
+        return {"startPort": self.start_port, "endPort": self.end_port}
+
+
+PortRangeInput = PortRange | tuple[int, int] | int
+
+
+@dataclass(init=False)
+class AllowedRoute:
+    """Allowed destination CIDR and optional destination port ranges.
+
+    Empty ``port_ranges`` means all destination ports for the route.
+    """
+
+    route: str
+    """Destination CIDR, e.g. ``"10.0.0.0/8"``."""
+
+    port_ranges: list[PortRange]
+    """Destination port ranges allowed for this route."""
+
+    def __init__(
+        self,
+        route: str | None = None,
+        port_ranges: Iterable[PortRangeInput] | None = None,
+        *,
+        cidr: str | None = None,
+        ports: Iterable[PortRangeInput] | None = None,
+    ) -> None:
+        if route is None:
+            route = cidr
+        elif cidr is not None and cidr != route:
+            raise ValueError("Pass only one of route or cidr")
+        if route is None:
+            raise ValueError("route is required")
+        if port_ranges is not None and ports is not None:
+            raise ValueError("Pass only one of port_ranges or ports")
+
+        ipaddress.ip_network(route)
+        self.route = route
+        self.port_ranges = [
+            _coerce_port_range(port_range)
+            for port_range in (port_ranges if port_ranges is not None else ports or [])
+        ]
+
+    def to_dict(self) -> dict[str, Any]:
+        body: dict[str, Any] = {"route": self.route}
+        if self.port_ranges:
+            body["portRanges"] = [
+                port_range.to_dict() for port_range in self.port_ranges
+            ]
+        return body
+
+
+@dataclass
+class NetworkPolicy:
+    """Network egress allowlist for a container.
+
+    A missing policy leaves networking unrestricted for backwards compatibility.
+    A present policy allows only its ``allowed_routes``.
+    """
+
+    allowed_routes: list[AllowedRoute] = field(default_factory=list)
+    """Allowed destination routes and their permitted destination ports."""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "allowedRoutes": [
+                allowed_route.to_dict() for allowed_route in self.allowed_routes
+            ]
+        }
+
+
+@dataclass
 class ContainerInfo:
     """Metadata about a running container."""
 
@@ -181,6 +271,7 @@ class Container:
         lifetime: str | None = None,
         enable_ssh: bool = False,
         security_policy: ContainerSecurityPolicy | None = None,
+        network_policy: NetworkPolicy | None = None,
     ) -> None:
         self._image = image
         if name is not None:
@@ -197,6 +288,7 @@ class Container:
         self._lifetime = lifetime
         self._enable_ssh = enable_ssh
         self._security_policy = security_policy
+        self._network_policy = network_policy
 
         # Set after .run()
         self._built_image_uri: str | None = None
@@ -279,6 +371,7 @@ class Container:
         c._lifetime = None
         c._enable_ssh = False
         c._security_policy = None
+        c._network_policy = None
         c._built_image_uri = None
         c._container_id = None
         c._container_info = None
@@ -466,6 +559,8 @@ class Container:
                 spec["enableSsh"] = True
             if self._security_policy is not None:
                 spec["securityPolicy"] = self._security_policy.to_dict()
+            if self._network_policy is not None:
+                spec["networkPolicy"] = self._network_policy.to_dict()
 
             resources: dict[str, str] = {}
             if self._cpu:
@@ -780,3 +875,28 @@ def _parse_container_response(data: dict) -> ContainerInfo:
         pod_name=data.get("podName", ""),
         web_url=data.get("webUrl"),
     )
+
+
+def _coerce_port_range(port_range: PortRangeInput) -> PortRange:
+    if isinstance(port_range, PortRange):
+        return port_range
+    if isinstance(port_range, int) and not isinstance(port_range, bool):
+        return PortRange(port_range)
+    if isinstance(port_range, tuple) and len(port_range) == 2:
+        start_port, end_port = port_range
+        return PortRange(start_port, end_port)
+    raise TypeError("port ranges must be PortRange, int, or (start_port, end_port)")
+
+
+def _validate_port_range(start_port: int, end_port: int) -> None:
+    _validate_port(start_port, "start_port")
+    _validate_port(end_port, "end_port")
+    if end_port < start_port:
+        raise ValueError("end_port must be greater than or equal to start_port")
+
+
+def _validate_port(port: int, name: str) -> None:
+    if isinstance(port, bool) or not isinstance(port, int):
+        raise TypeError(f"{name} must be an integer")
+    if port < 1 or port > 65535:
+        raise ValueError(f"{name} must be between 1 and 65535")
