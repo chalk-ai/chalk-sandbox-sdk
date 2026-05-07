@@ -514,6 +514,7 @@ class RemoteClass:
         self._user_cls = user_cls
         self._class_name = user_cls.__name__
         if name is not None:
+            name = name.lower()
             validate_dns_label(name)
         self._explicit_name = name
         self._image = image

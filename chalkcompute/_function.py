@@ -747,6 +747,7 @@ class RemoteFunction:
     ) -> None:
         self._func = func
         if name is not None:
+            name = name.lower()
             validate_dns_label(name)
         self._explicit_name = name
         self._func_name = name or sanitize_dns_label(
