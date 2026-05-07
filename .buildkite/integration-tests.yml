@@ -73,7 +73,7 @@ steps:
       rm /tmp/test.env
 
       echo "--- :python: Sync dependencies"
-      uv sync --all-extras
+      uv sync --all-extras --reinstall-package chalkcompute
 
       echo "--- :brain: Deploy and test embedding functions"
       export OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.chalk.ai:443
@@ -106,7 +106,7 @@ steps:
       rm /tmp/test.env
 
       echo "--- :python: Sync dependencies"
-      uv sync --all-extras
+      uv sync --all-extras --reinstall-package chalkcompute
 
       echo "--- :satellite: Invoke deployed remote functions without chalkdf"
       uv run python -m pytest e2etests/test_remote_function_calls.py -v -s --tb=short

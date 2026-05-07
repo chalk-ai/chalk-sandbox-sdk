@@ -13,6 +13,8 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Callable
+from typing import TypeVar
 
 import pytest
 from dotenv import load_dotenv
@@ -28,6 +30,7 @@ needs_staging = pytest.mark.skipif(
 )
 
 EXAMPLE_DIR = os.path.dirname(__file__)
+T = TypeVar("T")
 
 
 def _deploy_script(script_name: str) -> None:
@@ -55,6 +58,22 @@ def _make_remote():
     return Remote(chalk_client=client)
 
 
+def _is_queue_proxy_error(exc: RuntimeError) -> bool:
+    message = str(exc)
+    return "ProxyError" in message and "CallFunction RPC failed" in message
+
+
+def _retry_queue_proxy_call(call: Callable[[], T]) -> T:
+    for attempt in range(3):
+        try:
+            return call()
+        except RuntimeError as exc:
+            if not _is_queue_proxy_error(exc) or attempt == 2:
+                raise
+            time.sleep(2**attempt)
+    raise AssertionError("unreachable")
+
+
 # ---------------------------------------------------------------------------
 # Sync scalar
 # ---------------------------------------------------------------------------
@@ -77,8 +96,7 @@ class TestSyncScalar:
         """fn.defer(2, 20).get() → [22] via queue."""
         remote = _make_remote()
         fn = remote.function("chalk-sandbox-test-add")
-        handle = fn.defer(2, 20)
-        result = handle.get()
+        result = _retry_queue_proxy_call(lambda: fn.defer(2, 20).get())
         assert result.to_pylist() == [22]
 
     def test_concurrent_calls(self):
@@ -114,7 +132,7 @@ class TestSyncScalar:
 
         start = time.monotonic()
         for i in range(n):
-            fn.defer(i, 1).get()
+            _retry_queue_proxy_call(lambda i=i: fn.defer(i, 1).get())
         elapsed = time.monotonic() - start
 
         throughput = n / elapsed
@@ -149,12 +167,12 @@ class TestAsyncScalar:
         """await fn.defer(4, 40).get() → [44]."""
         remote = _make_remote()
         fn = remote.function("chalk-sandbox-test-async-add")
-        handle = fn.defer(4, 40)
 
         async def _run():
+            handle = fn.defer(4, 40)
             return await handle.get()
 
-        result = asyncio.run(_run())
+        result = _retry_queue_proxy_call(lambda: asyncio.run(_run()))
         assert result.to_pylist() == [44]
 
 
