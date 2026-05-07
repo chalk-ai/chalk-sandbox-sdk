@@ -5,9 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
 
-
 try:
-    from chalkcompute._remote_call_native import RemoteCallClient as _NativeRemoteCallClient
+    from chalkcompute._remote_call_native import (
+    from chalkcompute._remote_call_native import (
+        RemoteCallClient as _NativeRemoteCallClient,
+    )
+    )
 except ImportError as exc:  # pragma: no cover - exercised in source checkouts
     _NativeRemoteCallClient = None
     _NATIVE_IMPORT_ERROR: ImportError | None = exc
@@ -38,7 +41,7 @@ class RemoteCallPollResult:
 
 
 class RemoteCallClient:
-    """Byte-oriented remote-call client backed by the Rust implementation."""
+    """Byte-oriented remote-call client backed by the native Rust implementation."""
 
     def __init__(
         self,
