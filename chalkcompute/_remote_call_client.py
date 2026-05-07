@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+import importlib
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Any, Sequence
 
+_NativeRemoteCallClient: Any | None
+_NATIVE_IMPORT_ERROR: ImportError | None
 try:
-    from chalkcompute._remote_call_native import (
-        RemoteCallClient as _NativeRemoteCallClient,
-    )
+    _remote_call_native = importlib.import_module("chalkcompute._remote_call_native")
 except ImportError as exc:  # pragma: no cover - exercised in source checkouts
     _NativeRemoteCallClient = None
-    _NATIVE_IMPORT_ERROR: ImportError | None = exc
+    _NATIVE_IMPORT_ERROR = exc
 else:
+    _NativeRemoteCallClient = getattr(_remote_call_native, "RemoteCallClient")
     _NATIVE_IMPORT_ERROR = None
 
 
