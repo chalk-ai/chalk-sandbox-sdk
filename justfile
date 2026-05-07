@@ -32,6 +32,42 @@ test *args:
 ruff:
     uv run --with ruff ruff check chalkcompute/ --exclude chalkcompute/_gen/
 
+# Build a zoekt full-text index of the current codebase into .zoekt-index/
+zoekt-index:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    repo_root="$(git rev-parse --show-toplevel)"
+    index_dir="${repo_root}/.zoekt-index"
+    rm -rf "${index_dir}"
+    mkdir -p "${index_dir}"
+    # Stage only git-tracked files under a directory named "chalk-sandbox-sdk"
+    # so zoekt uses that as the repo name (it names repos after the indexed
+    # directory's basename). Using git ls-files keeps .venv, dist, __pycache__,
+    # etc. out of the index.
+    staging="$(mktemp -d)"
+    trap 'rm -rf "${staging}"' EXIT
+    target="${staging}/chalk-sandbox-sdk"
+    mkdir -p "${target}"
+    (cd "${repo_root}" && git ls-files -z) | (cd "${repo_root}" && rsync -a --files-from=- -0 ./ "${target}/")
+    zoekt-index -index "${index_dir}" -disable_ctags "${target}"
+    echo "Index written to ${index_dir}"
+
+# Examples: just zoekt-search 'SandboxClient'
+#           just zoekt-search -l 'def run file:py'   (filenames only)
+#           just zoekt-search 'has_many file:py'     (scope by filename regex)
+#           just zoekt-search -jsonl 'DataFrame'     (JSON output)
+# Search the zoekt index of this codebase (zoekt flags must precede the query).
+zoekt-search +args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    repo_root="$(git rev-parse --show-toplevel)"
+    index_dir="${repo_root}/.zoekt-index"
+    if [[ ! -d "${index_dir}" ]] || [[ -z "$(ls "${index_dir}"/*.zoekt 2>/dev/null)" ]]; then
+        echo "No index found. Run: just zoekt-index" >&2
+        exit 1
+    fi
+    exec zoekt -index_dir "${index_dir}" {{ args }}
+
 # Create a new GitHub release (interactive version bump)
 release:
     ./release.sh

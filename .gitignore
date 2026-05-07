@@ -3,3 +3,5 @@
 __pycache__/
 *.pyc
 CLAUDE.local.md
+.zoekt-index/
+.claude/worktrees
