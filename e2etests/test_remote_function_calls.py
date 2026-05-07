@@ -8,6 +8,7 @@ the queue-backed defer/get path, and streamed generator results.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import os
 import sys
 from collections.abc import AsyncIterator, Iterable
@@ -30,6 +31,14 @@ needs_chalk_auth = pytest.mark.skipif(
     not os.environ.get("CHALK_API_SERVER") or not os.environ.get("CHALK_CLIENT_ID"),
     reason="requires CHALK_API_SERVER and CHALK_CLIENT_ID",
 )
+
+
+@needs_chalk_auth
+def test_native_remote_call_extension_available() -> None:
+    assert "chalkdf" not in sys.modules
+
+    native = importlib.import_module("chalkcompute._remote_call_native")
+    assert hasattr(native, "RemoteCallClient")
 
 
 def _result_chunks(batches: Iterable[Any]) -> list[list[Any]]:
