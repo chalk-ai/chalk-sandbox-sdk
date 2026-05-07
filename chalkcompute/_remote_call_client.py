@@ -50,6 +50,11 @@ class RemoteCallClient:
         max_poll_delay_ms: int = 5000,
         poll_backoff_multiplier: float = 1.7,
         max_message_size: int | None = None,
+        auth_endpoint: str | None = None,
+        exchange_token: str | None = None,
+        requested_permissions: Sequence[int] | None = None,
+        auth_rpc_timeout_ms: int | None = None,
+        auth_retry_interval_ms: int | None = None,
     ) -> None:
         if _NativeRemoteCallClient is None:
             raise RemoteCallClientUnavailable(
@@ -65,6 +70,11 @@ class RemoteCallClient:
             max_poll_delay_ms,
             poll_backoff_multiplier,
             max_message_size,
+            auth_endpoint,
+            exchange_token,
+            list(requested_permissions) if requested_permissions is not None else None,
+            auth_rpc_timeout_ms,
+            auth_retry_interval_ms,
         )
 
     def call_ipc(self, name: str, input_ipc: bytes) -> list[bytes]:

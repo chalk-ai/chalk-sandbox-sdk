@@ -144,7 +144,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 [[package]]
 name = "chalk-protos"
 version = "0.1.0"
-source = "git+https://github.com/chalk-ai/chalk-private.git?rev=d69b5ecd9d7eb5c8b85e6febfbab6fee72842c07#d69b5ecd9d7eb5c8b85e6febfbab6fee72842c07"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=c57261fbadd318e245cec15e0d0eb14b9cc7f2fd#c57261fbadd318e245cec15e0d0eb14b9cc7f2fd"
 dependencies = [
  "prost",
  "prost-build",
@@ -156,7 +156,7 @@ dependencies = [
 [[package]]
 name = "chalk_remote_call_client"
 version = "0.1.0"
-source = "git+https://github.com/chalk-ai/chalk-private.git?rev=d69b5ecd9d7eb5c8b85e6febfbab6fee72842c07#d69b5ecd9d7eb5c8b85e6febfbab6fee72842c07"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=c57261fbadd318e245cec15e0d0eb14b9cc7f2fd#c57261fbadd318e245cec15e0d0eb14b9cc7f2fd"
 dependencies = [
  "bytes",
  "chalk-protos",

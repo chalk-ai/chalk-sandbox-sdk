@@ -44,6 +44,9 @@ from chalkcompute._connect import (
     ConnectClient,
     build_image,
     grpc_target_from_url,
+    service_auth_config_from_env,
+    service_auth_environment,
+    service_auth_grpc_engine_target,
 )
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._quota import QueuePolicy
@@ -1401,6 +1404,12 @@ class RemoteFunction:
         self._call_stub = call_grpc.RemoteCallServiceStub(self._call_channel)
 
     def _remote_call_metadata(self, *, queue: bool) -> list[tuple[str, str]]:
+        if service_auth_config_from_env() is not None:
+            metadata = [("x-chalk-env-id", service_auth_environment())]
+            if queue:
+                metadata.append(("x-chalk-deployment-type", "function-queue"))
+            return metadata
+
         self._client._ensure_auth()
         metadata = [
             ("authorization", f"Bearer {self._client._access_token}"),
@@ -1421,8 +1430,18 @@ class RemoteFunction:
 
         from chalkcompute._remote_call_client import RemoteCallClient
 
+        service_auth = service_auth_config_from_env()
         if queue:
-            target, use_tls = self._client.grpc_engine_target()
+            if service_auth is None:
+                target, use_tls = self._client.grpc_engine_target()
+            else:
+                service_auth_target = service_auth_grpc_engine_target()
+                if service_auth_target is None:
+                    raise FunctionError(
+                        "CHALK_GRPC_ENGINE must be set to enqueue remote function "
+                        "calls with CHALK_REMOTE_AUTH_EXCHANGE_TOKEN"
+                    )
+                target, use_tls = service_auth_target
         else:
             target, use_tls = grpc_target_from_url(
                 self._web_url,
@@ -1432,6 +1451,7 @@ class RemoteFunction:
             target,
             metadata=self._remote_call_metadata(queue=queue),
             use_tls=use_tls,
+            **(service_auth or {}),
         )
         setattr(self, attr, client)
         return client

@@ -27,6 +27,17 @@ class FakeConnectClient:
     def _ensure_auth(self) -> None:
         pass
 
+    def grpc_engine_target(self) -> tuple[str, bool]:
+        return "engine.chalk.test:443", True
+
+
+class ServiceAuthOnlyConnectClient:
+    def _ensure_auth(self) -> None:
+        raise AssertionError("client credentials auth should not be used")
+
+    def grpc_engine_target(self) -> tuple[str, bool]:
+        raise AssertionError("OAuth grpc engine discovery should not be used")
+
 
 class FakeRemoteCallClient:
     instances: list["FakeRemoteCallClient"] = []
@@ -109,6 +120,25 @@ def test_direct_call_uses_native_client_and_handler_name() -> None:
     assert _read_input(client.calls[0][1]) == {"x": [41]}
 
 
+def test_direct_call_uses_service_auth_from_environment(monkeypatch) -> None:
+    monkeypatch.setenv("CHALK_REMOTE_AUTH_ENDPOINT", "https://api.chalk.test")
+    monkeypatch.setenv("CHALK_REMOTE_AUTH_EXCHANGE_TOKEN", "exchange-token")
+    monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-service-auth")
+    FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
+
+    fn = _remote_function()
+    fn._client = ServiceAuthOnlyConnectClient()
+
+    assert fn(41) == 42
+
+    client = FakeRemoteCallClient.instances[0]
+    assert ("authorization", "Bearer access-token") not in client.metadata
+    assert ("x-chalk-env-id", "env-service-auth") in client.metadata
+    assert client.kwargs["auth_endpoint"] == "https://api.chalk.test"
+    assert client.kwargs["exchange_token"] == "exchange-token"
+    assert client.kwargs["requested_permissions"] == (2, 3, 11)
+
+
 def test_defer_get_and_purge_use_queue_client() -> None:
     FakeRemoteCallClient.poll_results = [
         RemoteCallPollResult(
@@ -137,7 +167,41 @@ def test_defer_get_and_purge_use_queue_client() -> None:
     assert fn.purge() == 7
 
     client = FakeRemoteCallClient.instances[0]
+    assert client.endpoint == "engine.chalk.test:443"
+    assert client.use_tls is True
     assert ("x-chalk-deployment-type", "function-queue") in client.metadata
     assert client.enqueues[0][0] == "catalog-add"
     assert _read_input(client.enqueues[0][1]) == {"x": [98]}
     assert client.purges == ["catalog-add"]
+
+
+def test_queue_call_uses_service_auth_engine_from_environment(monkeypatch) -> None:
+    monkeypatch.setenv("CHALK_REMOTE_AUTH_ENDPOINT", "https://api.chalk.test")
+    monkeypatch.setenv("CHALK_REMOTE_AUTH_EXCHANGE_TOKEN", "exchange-token")
+    monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-service-auth")
+    monkeypatch.setenv("CHALK_GRPC_ENGINE", "https://engine.chalk.test")
+    FakeRemoteCallClient.poll_results = [
+        RemoteCallPollResult(
+            status=3,
+            status_name="completed",
+            chunks=[_result_ipc([99])],
+            cursor="",
+            error_message=None,
+            poll_count=0,
+        ),
+    ]
+
+    fn = _remote_function()
+    fn._client = ServiceAuthOnlyConnectClient()
+    handle = fn.defer(98)
+
+    assert handle.call_id == "call-1"
+    assert handle.get() == 99
+
+    client = FakeRemoteCallClient.instances[0]
+    assert client.endpoint == "engine.chalk.test:443"
+    assert client.use_tls is True
+    assert ("x-chalk-env-id", "env-service-auth") in client.metadata
+    assert ("x-chalk-deployment-type", "function-queue") in client.metadata
+    assert client.kwargs["auth_endpoint"] == "https://api.chalk.test"
+    assert client.kwargs["exchange_token"] == "exchange-token"
