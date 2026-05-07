@@ -142,17 +142,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
+name = "chalk-protos"
+version = "0.1.0"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=d69b5ecd9d7eb5c8b85e6febfbab6fee72842c07#d69b5ecd9d7eb5c8b85e6febfbab6fee72842c07"
+dependencies = [
+ "prost",
+ "prost-build",
+ "prost-types",
+ "tonic",
+ "tonic-build",
+]
+
+[[package]]
 name = "chalk_remote_call_client"
 version = "0.1.0"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=d69b5ecd9d7eb5c8b85e6febfbab6fee72842c07#d69b5ecd9d7eb5c8b85e6febfbab6fee72842c07"
 dependencies = [
  "bytes",
- "prost",
- "prost-types",
+ "chalk-protos",
  "thiserror",
  "tokio",
  "tokio-stream",
  "tonic",
- "tonic-build",
 ]
 
 [[package]]

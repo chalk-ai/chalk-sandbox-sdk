@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use chalk_remote_call_client::{
+use chalk_remote_call::{
     BlockingRemoteCallClient, CallStatus, ChannelSecurity, PollBackoff, PollResult,
     RemoteCallClientConfig, RemoteCallError,
 };
