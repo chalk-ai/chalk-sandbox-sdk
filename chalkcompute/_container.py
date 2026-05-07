@@ -272,6 +272,7 @@ class Container:
         enable_ssh: bool = False,
         security_policy: ContainerSecurityPolicy | None = None,
         network_policy: NetworkPolicy | None = None,
+        tags: dict[str, str] | None = None,
     ) -> None:
         self._image = image
         if name is not None:
@@ -289,6 +290,7 @@ class Container:
         self._enable_ssh = enable_ssh
         self._security_policy = security_policy
         self._network_policy = network_policy
+        self._tags: dict[str, str] = dict(tags or {})
 
         # Set after .run()
         self._built_image_uri: str | None = None
@@ -372,6 +374,7 @@ class Container:
         c._enable_ssh = False
         c._security_policy = None
         c._network_policy = None
+        c._tags = {}
         c._built_image_uri = None
         c._container_id = None
         c._container_info = None
@@ -561,6 +564,8 @@ class Container:
                 spec["securityPolicy"] = self._security_policy.to_dict()
             if self._network_policy is not None:
                 spec["networkPolicy"] = self._network_policy.to_dict()
+            if self._tags:
+                spec["tags"] = dict(self._tags)
 
             resources: dict[str, str] = {}
             if self._cpu:
