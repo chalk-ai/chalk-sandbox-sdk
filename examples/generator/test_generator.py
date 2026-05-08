@@ -8,6 +8,9 @@ import asyncio
 import os
 import subprocess
 import sys
+import time
+from collections.abc import Callable
+from typing import TypeVar
 
 import pytest
 from dotenv import load_dotenv
@@ -25,6 +28,7 @@ needs_staging = pytest.mark.skipif(
 EXAMPLE_DIR = os.path.dirname(__file__)
 
 CHALK_ENVIRONMENT_ID = os.environ.get("CHALK_ENVIRONMENT_ID", "tmnmc9beyujew")
+T = TypeVar("T")
 
 
 def _make_remote():
@@ -52,6 +56,22 @@ def _deploy_script(script_name: str) -> None:
         )
 
 
+def _is_queue_proxy_error(exc: RuntimeError) -> bool:
+    message = str(exc)
+    return "ProxyError" in message and "CallFunction RPC failed" in message
+
+
+def _retry_queue_proxy_call(call: Callable[[], T]) -> T:
+    for attempt in range(3):
+        try:
+            return call()
+        except RuntimeError as exc:
+            if not _is_queue_proxy_error(exc) or attempt == 2:
+                raise
+            time.sleep(2**attempt)
+    raise AssertionError("unreachable")
+
+
 @needs_staging
 class TestSyncGenerator:
     @classmethod
@@ -63,9 +83,13 @@ class TestSyncGenerator:
         remote = _make_remote()
         fn = remote.function("count-up")
 
-        chunks = []
-        for batch in fn(5):
-            chunks.append(batch.column("result").to_pylist())
+        def _collect() -> list[list[int]]:
+            chunks = []
+            for batch in fn(5):
+                chunks.append(batch.column("result").to_pylist())
+            return chunks
+
+        chunks = _retry_queue_proxy_call(_collect)
 
         assert len(chunks) == 5
         assert chunks == [[0], [1], [2], [3], [4]]
@@ -73,12 +97,16 @@ class TestSyncGenerator:
     def test_defer_stream(self):
         """fn.defer(3).stream() yields 3 chunks."""
         remote = _make_remote()
-        fn = remote.function("count-up")
-        handle = fn.defer(3)
+        fn = remote.function("chalk-sandbox-test-count-up")
 
-        chunks = []
-        for batch in handle.stream():
-            chunks.append(batch.column("result").to_pylist())
+        def _collect() -> list[list[int]]:
+            handle = fn.defer(3)
+            chunks = []
+            for batch in handle.stream():
+                chunks.append(batch.column("result").to_pylist())
+            return chunks
+
+        chunks = _retry_queue_proxy_call(_collect)
 
         assert len(chunks) == 3
         assert chunks == [[0], [1], [2]]
@@ -86,9 +114,8 @@ class TestSyncGenerator:
     def test_defer_get(self):
         """fn.defer(3).get() collects all chunks."""
         remote = _make_remote()
-        fn = remote.function("count-up")
-        handle = fn.defer(3)
-        result = handle.get()
+        fn = remote.function("chalk-sandbox-test-count-up")
+        result = _retry_queue_proxy_call(lambda: fn.defer(3).get())
 
         assert result is not None
 
@@ -104,13 +131,13 @@ class TestAsyncGenerator:
         remote = _make_remote()
         fn = remote.function("async-count-up")
 
-        chunks = []
-
-        async def _run():
+        async def _collect() -> list[list[int]]:
+            chunks = []
             async for batch in fn(5):
                 chunks.append(batch.column("result").to_pylist())
+            return chunks
 
-        asyncio.run(_run())
+        chunks = _retry_queue_proxy_call(lambda: asyncio.run(_collect()))
 
         assert len(chunks) == 5
         assert chunks == [[0], [1], [2], [3], [4]]
@@ -118,16 +145,16 @@ class TestAsyncGenerator:
     def test_defer_async_stream(self):
         """fn.defer(3).stream() returns an async iterator for async functions."""
         remote = _make_remote()
-        fn = remote.function("async-count-up")
-        handle = fn.defer(3)
+        fn = remote.function("chalk-sandbox-test-async-count-up")
 
-        chunks = []
-
-        async def _run():
+        async def _collect() -> list[list[int]]:
+            handle = fn.defer(3)
+            chunks = []
             async for batch in handle.stream():
                 chunks.append(batch.column("result").to_pylist())
+            return chunks
 
-        asyncio.run(_run())
+        chunks = _retry_queue_proxy_call(lambda: asyncio.run(_collect()))
 
         assert len(chunks) == 3
         assert chunks == [[0], [1], [2]]
@@ -135,11 +162,11 @@ class TestAsyncGenerator:
     def test_defer_async_get(self):
         """await handle.get() collects all chunks for async functions."""
         remote = _make_remote()
-        fn = remote.function("async-count-up")
-        handle = fn.defer(3)
+        fn = remote.function("chalk-sandbox-test-async-count-up")
 
         async def _run():
+            handle = fn.defer(3)
             return await handle.get()
 
-        result = asyncio.run(_run())
+        result = _retry_queue_proxy_call(lambda: asyncio.run(_run()))
         assert result is not None

@@ -33,6 +33,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "DeployedFunction": ("chalkcompute._function", "DeployedFunction"),
     "FunctionError": ("chalkcompute._function", "FunctionError"),
     "FunctionBuildError": ("chalkcompute._function", "FunctionBuildError"),
+    "FunctionCallHandle": ("chalkcompute._function", "FunctionCallHandle"),
     "FunctionVersionInfo": ("chalkcompute._function", "FunctionVersionInfo"),
     "RetryPolicy": ("chalkcompute._retry", "RetryPolicy"),
     "RateLimitPolicy": ("chalkcompute._rate_limit", "RateLimitPolicy"),

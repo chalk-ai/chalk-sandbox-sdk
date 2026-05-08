@@ -39,10 +39,10 @@ steps:
       export CHALK_ASSERT_CONTAINER_METRICS=1
 
       echo "--- :python: Sync dependencies"
-      uv sync --all-extras
+      uv sync --all-extras --reinstall-package chalkcompute
 
       echo "--- :pytest: Run integration tests ($$CHALK_API_SERVER)"
-      uv run python -m pytest e2etests/test_image.py e2etests/test_sandbox_exec.py e2etests/test_volume.py e2etests/test_container.py -v -s --tb=short
+      uv run python -m pytest e2etests/test_image.py e2etests/test_sandbox_exec.py e2etests/test_volume.py e2etests/test_container.py e2etests/test_remote_function_calls.py -v -s --tb=short
     agents:
       queue: default
     timeout_in_minutes: 15
@@ -73,7 +73,7 @@ steps:
       rm /tmp/test.env
 
       echo "--- :python: Sync dependencies"
-      uv sync --all-extras
+      uv sync --all-extras --reinstall-package chalkcompute
 
       echo "--- :brain: Deploy and test embedding functions"
       export OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.chalk.ai:443
