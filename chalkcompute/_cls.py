@@ -4,17 +4,17 @@ Deploy Python classes as versioned remote functions backed by ExternalFunctionCa
 Usage:
     import chalkcompute
 
-    @chalkcompute.cls()
+    @chalkcompute.cls
     class Adder:
-        @chalkcompute.before()
+        @chalkcompute.before
         def on_startup(self) -> None:
             print("Adder started")
 
-        @chalkcompute.method()
+        @chalkcompute.method
         def add(self, x: int, y: int) -> int:
             return x + y
 
-        @chalkcompute.after()
+        @chalkcompute.after
         def on_shutdown(self) -> None:
             print("Adder stopped")
 
@@ -27,7 +27,7 @@ Or imperatively:
     from chalkcompute import RemoteClass
 
     class Adder:
-        @chalkcompute.method()
+        @chalkcompute.method
         def add(self, x: int, y: int) -> int:
             return x + y
 
@@ -47,7 +47,7 @@ import time
 import typing
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, TypeVar, overload
 
 from chalkcompute._connect import ConnectClient
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
@@ -62,6 +62,7 @@ from chalkcompute._function import (
     _build_and_upload,
     _cleanup_temp_files,
     _extract_field_names,
+    _is_chalkcompute_decorator,
     _local_install_entrypoint,
     _make_base_image,
     _make_container_spec,
@@ -85,6 +86,7 @@ logger = logging.getLogger(__name__)
 _CHALK_METHOD_MARKER = "_chalk_method"
 _CHALK_BEFORE_MARKER = "_chalk_before"
 _CHALK_AFTER_MARKER = "_chalk_after"
+F = TypeVar("F", bound=Callable[..., Any])
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -104,33 +106,63 @@ class ClassBuildError(ClassError):
 # ---------------------------------------------------------------------------
 
 
-def method() -> Callable:
+@overload
+def method(func: F, /) -> F: ...
+
+
+@overload
+def method() -> Callable[[F], F]: ...
+
+
+def method(func: F | None = None, /) -> F | Callable[[F], F]:
     """Mark a class method for remote deployment."""
 
-    def decorator(func: Callable) -> Callable:
-        setattr(func, _CHALK_METHOD_MARKER, True)
-        return func
+    def decorator(target: F) -> F:
+        setattr(target, _CHALK_METHOD_MARKER, True)
+        return target
 
+    if func is not None:
+        return decorator(func)
     return decorator
 
 
-def before() -> Callable:
+@overload
+def before(func: F, /) -> F: ...
+
+
+@overload
+def before() -> Callable[[F], F]: ...
+
+
+def before(func: F | None = None, /) -> F | Callable[[F], F]:
     """Mark a method as the startup hook (called before the server starts)."""
 
-    def decorator(func: Callable) -> Callable:
-        setattr(func, _CHALK_BEFORE_MARKER, True)
-        return func
+    def decorator(target: F) -> F:
+        setattr(target, _CHALK_BEFORE_MARKER, True)
+        return target
 
+    if func is not None:
+        return decorator(func)
     return decorator
 
 
-def after() -> Callable:
+@overload
+def after(func: F, /) -> F: ...
+
+
+@overload
+def after() -> Callable[[F], F]: ...
+
+
+def after(func: F | None = None, /) -> F | Callable[[F], F]:
     """Mark a method as the shutdown hook (called when the process exits)."""
 
-    def decorator(func: Callable) -> Callable:
-        setattr(func, _CHALK_AFTER_MARKER, True)
-        return func
+    def decorator(target: F) -> F:
+        setattr(target, _CHALK_AFTER_MARKER, True)
+        return target
 
+    if func is not None:
+        return decorator(func)
     return decorator
 
 
@@ -172,6 +204,22 @@ def _strip_chalkcompute_from_class_source(source: str) -> str:
 
     remove_ranges: list[tuple[int, int]] = []
     decorated_names: set[str] = set()
+    chalkcompute_module_names = {"chalkcompute"}
+    chalkcompute_decorator_names: set[str] = set()
+    chalkcompute_attributes = {"cls", "method", "before", "after"}
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "chalkcompute":
+                    chalkcompute_module_names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module and node.module.startswith("chalkcompute"):
+                for alias in node.names:
+                    if alias.name == "*":
+                        chalkcompute_decorator_names.update(chalkcompute_attributes)
+                    elif alias.name in chalkcompute_attributes:
+                        chalkcompute_decorator_names.add(alias.asname or alias.name)
 
     for node in ast.walk(tree):
         # Remove: import chalkcompute / from chalkcompute import ...
@@ -186,7 +234,15 @@ def _strip_chalkcompute_from_class_source(source: str) -> str:
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             for dec in node.decorator_list:
                 dec_source = ast.get_source_segment(source, dec)
-                if dec_source and "chalkcompute" in dec_source:
+                if (
+                    (dec_source is not None and "chalkcompute" in dec_source)
+                    or _is_chalkcompute_decorator(
+                        dec,
+                        module_names=chalkcompute_module_names,
+                        decorator_names=chalkcompute_decorator_names,
+                        attribute_names=chalkcompute_attributes,
+                    )
+                ):
                     remove_ranges.append((dec.lineno, dec.end_lineno or dec.lineno))
                     decorated_names.add(node.name)
 
@@ -441,9 +497,9 @@ def _generate_class_handler_shim(
 class RemoteClass:
     """A managed class backed by ExternalFunctionCatalogService.
 
-    Deploys each ``@method()`` as a separate function version with its own
+    Deploys each ``@method`` as a separate function version with its own
     scaling group, sharing a single container image.  Lifecycle hooks
-    (``@before()`` / ``@after()``) run in every method's container.
+    (``@before`` / ``@after``) run in every method's container.
 
     Most users should prefer the :func:`cls` decorator.
 
@@ -466,17 +522,17 @@ class RemoteClass:
     ...     max_replicas=2,
     ... )
     ... class Embedder:
-    ...     @chalkcompute.before()
+    ...     @chalkcompute.before
     ...     def load(self):
     ...         from sentence_transformers import SentenceTransformer
     ...         self.model = SentenceTransformer("all-MiniLM-L6-v2")
-    ...     @chalkcompute.method()
+    ...     @chalkcompute.method
     ...     def embed(self, text: str) -> list[float]:
     ...         return self.model.encode(text).tolist()
-    ...     @chalkcompute.method()
+    ...     @chalkcompute.method
     ...     def embed_batch(self, texts: list[str]) -> list[list[float]]:
     ...         return self.model.encode(texts).tolist()
-    ...     @chalkcompute.after()
+    ...     @chalkcompute.after
     ...     def shutdown(self):
     ...         del self.model
     >>> Embedder.deploy()
@@ -563,16 +619,16 @@ class RemoteClass:
                 self._methods[attr_name] = _MethodInfo(name=attr_name, func=attr)
             if getattr(attr, _CHALK_BEFORE_MARKER, False):
                 if self._before_name is not None:
-                    raise ClassError("Only one @before() method is allowed per class")
+                    raise ClassError("Only one @before method is allowed per class")
                 self._before_name = attr_name
             if getattr(attr, _CHALK_AFTER_MARKER, False):
                 if self._after_name is not None:
-                    raise ClassError("Only one @after() method is allowed per class")
+                    raise ClassError("Only one @after method is allowed per class")
                 self._after_name = attr_name
 
         if not self._methods:
             raise ClassError(
-                f"Class {user_cls.__name__} has no @method() decorated methods"
+                f"Class {user_cls.__name__} has no @method decorated methods"
             )
 
         if max_batching_size is not None:
@@ -1149,6 +1205,36 @@ class _NoOpClass:
 # ---------------------------------------------------------------------------
 
 
+@overload
+def cls(
+    user_cls: type,
+    /,
+    *,
+    image: _Image | None = None,
+    cpu: str | None = None,
+    memory: str | None = None,
+    gpu: str | None = None,
+    name: str | None = None,
+    env: dict[str, str] | None = None,
+    secrets: list[_Secret] | None = None,
+    volumes: list[tuple[str, str]] | None = None,
+    min_replicas: int = 1,
+    max_replicas: int = 1,
+    shutdown_delay_seconds: int | None = None,
+    scaling_interval_seconds: int | None = None,
+    target_cpu_utilization_percentage: int | None = None,
+    target_queue_depth: int | None = None,
+    serialization_format: SerializationFormat = "pyarrow",
+    options: dict[str, str] | None = None,
+    max_buffer_duration: int | None = None,
+    max_batching_size: int | None = None,
+    retries: int | RetryPolicy | None = None,
+    rate_limit: int | RateLimitPolicy | None = None,
+    concurrency: int | ConcurrencyPolicy | None = None,
+) -> RemoteClass | _NoOpClass: ...
+
+
+@overload
 def cls(
     *,
     image: _Image | None = None,
@@ -1173,11 +1259,40 @@ def cls(
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
 ) -> Callable[..., RemoteClass | _NoOpClass]:
+    ...
+
+
+def cls(
+    user_cls: type | None = None,
+    /,
+    *,
+    image: _Image | None = None,
+    cpu: str | None = None,
+    memory: str | None = None,
+    gpu: str | None = None,
+    name: str | None = None,
+    env: dict[str, str] | None = None,
+    secrets: list[_Secret] | None = None,
+    volumes: list[tuple[str, str]] | None = None,
+    min_replicas: int = 1,
+    max_replicas: int = 1,
+    shutdown_delay_seconds: int | None = None,
+    scaling_interval_seconds: int | None = None,
+    target_cpu_utilization_percentage: int | None = None,
+    target_queue_depth: int | None = None,
+    serialization_format: SerializationFormat = "pyarrow",
+    options: dict[str, str] | None = None,
+    max_buffer_duration: int | None = None,
+    max_batching_size: int | None = None,
+    retries: int | RetryPolicy | None = None,
+    rate_limit: int | RateLimitPolicy | None = None,
+    concurrency: int | ConcurrencyPolicy | None = None,
+) -> Callable[..., RemoteClass | _NoOpClass] | RemoteClass | _NoOpClass:
     """Decorator that deploys a class as versioned remote functions.
 
     **Locally** (at decoration time):
 
-    1. Scans the class for ``@method()``, ``@before()``, ``@after()``
+    1. Scans the class for ``@method``, ``@before``, ``@after``
     2. Builds a deploy image with per-method handler shims
     3. Registers each method via ``ExternalFunctionCatalogService``
     4. If ``CHALK_FUNCTION_LOCAL_SDK_COPY=1``, includes local SDK source in
@@ -1282,5 +1397,10 @@ def cls(
         )
         rc.deploy()
         return rc
+
+    if user_cls is not None:
+        if not isinstance(user_cls, type):
+            raise TypeError("cls() positional argument must be a class")
+        return decorator(user_cls)
 
     return decorator

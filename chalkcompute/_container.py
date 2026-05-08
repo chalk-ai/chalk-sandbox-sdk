@@ -244,7 +244,6 @@ class Container:
     ...         .pip_install(["requests"])
     ...         .add_local_file("./script.py", "/app/script.py")
     ...     ),
-    ...     name="hello-container",
     ...     cpu="1",
     ...     memory="2Gi",
     ...     env={"LOG_LEVEL": "INFO"},
@@ -475,7 +474,6 @@ class Container:
         ... )
         >>> c = Container(
         ...     image=img,
-        ...     name="hello-container",
         ...     cpu="1",
         ...     memory="2Gi",
         ...     env={"LOG_LEVEL": "INFO"},
@@ -734,7 +732,6 @@ class Container:
         ...             "/app/fetch.py",
         ...         )
         ...     ),
-        ...     name="fetcher",
         ...     cpu="1",
         ...     memory="1Gi",
         ... ).run()

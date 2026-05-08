@@ -69,14 +69,14 @@ class TestSyncScalar:
     def test_direct_call(self):
         """fn(1, 10) → 11 via Velox."""
         remote = _make_remote()
-        fn = remote.function("chalk-sandbox-test-add")
+        fn = remote.function("add")
         result = fn(1, 10)
         assert result == 11
 
     def test_defer_get(self):
         """fn.defer(2, 20).get() → [22] via queue."""
         remote = _make_remote()
-        fn = remote.function("chalk-sandbox-test-add")
+        fn = remote.function("add")
         handle = fn.defer(2, 20)
         result = handle.get()
         assert result.to_pylist() == [22]
@@ -84,7 +84,7 @@ class TestSyncScalar:
     def test_concurrent_calls(self):
         """Fire 10 calls in parallel, verify all return correct results."""
         remote = _make_remote()
-        fn = remote.function("chalk-sandbox-test-add")
+        fn = remote.function("add")
         n = 10
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=n) as pool:
@@ -97,7 +97,7 @@ class TestSyncScalar:
     def test_concurrent_defer_calls(self):
         """Fire 10 deferred calls, verify all return correct results."""
         remote = _make_remote()
-        fn = remote.function("chalk-sandbox-test-add")
+        fn = remote.function("add")
         n = 10
 
         handles = [fn.defer(i, i * 10) for i in range(1, n + 1)]
@@ -109,7 +109,7 @@ class TestSyncScalar:
     def test_throughput(self):
         """Fire 20 rapid calls and measure throughput."""
         remote = _make_remote()
-        fn = remote.function("chalk-sandbox-test-add")
+        fn = remote.function("add")
         n = 20
 
         start = time.monotonic()
@@ -137,7 +137,7 @@ class TestAsyncScalar:
     def test_direct_call(self):
         """await fn(3, 30) → 33."""
         remote = _make_remote()
-        fn = remote.function("chalk-sandbox-test-async-add")
+        fn = remote.function("async-add")
 
         async def _run():
             return await fn(3, 30)
@@ -148,7 +148,7 @@ class TestAsyncScalar:
     def test_defer_get(self):
         """await fn.defer(4, 40).get() → [44]."""
         remote = _make_remote()
-        fn = remote.function("chalk-sandbox-test-async-add")
+        fn = remote.function("async-add")
         handle = fn.defer(4, 40)
 
         async def _run():
@@ -168,7 +168,7 @@ class TestTimeout:
     def test_defer_get_with_timeout(self):
         """handle.get(timeout=30) succeeds for a real function."""
         remote = _make_remote()
-        fn = remote.function("chalk-sandbox-test-add")
+        fn = remote.function("add")
         handle = fn.defer(1, 1)
         result = handle.get(timeout=30)
         assert result.to_pylist() == [2]
