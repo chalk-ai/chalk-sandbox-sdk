@@ -129,7 +129,7 @@ class TestBatchingGeneratorGuardFunction:
 class TestBatchingGeneratorGuardClass:
     def test_sync_generator_method_with_batching_raises(self):
         class G:
-            @method()
+            @method
             def gen(self, n: int) -> int:
                 for i in range(n):
                     yield i
@@ -139,7 +139,7 @@ class TestBatchingGeneratorGuardClass:
 
     def test_async_generator_method_with_batching_raises(self):
         class A:
-            @method()
+            @method
             async def agen(self, n: int) -> int:
                 for i in range(n):
                     yield i
@@ -149,7 +149,7 @@ class TestBatchingGeneratorGuardClass:
 
     def test_sync_generator_method_allowed_without_batching(self):
         class G:
-            @method()
+            @method
             def gen(self, n: int) -> int:
                 for i in range(n):
                     yield i
@@ -158,7 +158,7 @@ class TestBatchingGeneratorGuardClass:
 
     def test_plain_method_with_batching_allowed(self):
         class Adder:
-            @method()
+            @method
             def add(self, x: int, y: int) -> int:
                 return x + y
 

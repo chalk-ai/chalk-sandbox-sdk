@@ -4,7 +4,7 @@ Deploy Python functions as versioned remote functions backed by ExternalFunction
 Usage:
     import chalkcompute
 
-    @chalkcompute.function()
+    @chalkcompute.function
     def add(x: int, y: int) -> int:
         return x + y
 
@@ -36,7 +36,7 @@ import typing
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Callable, Protocol, overload, runtime_checkable
 
 from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import (
@@ -151,7 +151,25 @@ def _strip_chalkcompute_from_source(source: str) -> str:
     # Collect line ranges to remove (1-indexed, inclusive)
     remove_ranges: list[tuple[int, int]] = []
 
-    # Track names of functions decorated with @chalkcompute.function(...)
+    # Track aliases that let users spell the decorator as either
+    # @chalkcompute.function, @cc.function, or @function.
+    chalkcompute_module_names = {"chalkcompute"}
+    chalkcompute_decorator_names: set[str] = set()
+
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "chalkcompute":
+                    chalkcompute_module_names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module and node.module.startswith("chalkcompute"):
+                for alias in node.names:
+                    if alias.name == "*":
+                        chalkcompute_decorator_names.add("function")
+                    elif alias.name == "function":
+                        chalkcompute_decorator_names.add(alias.asname or alias.name)
+
+    # Track names of functions decorated with a chalkcompute function decorator.
     decorated_names: set[str] = set()
 
     for node in ast.iter_child_nodes(tree):
@@ -169,7 +187,15 @@ def _strip_chalkcompute_from_source(source: str) -> str:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             for dec in node.decorator_list:
                 dec_source = ast.get_source_segment(source, dec)
-                if dec_source and "chalkcompute" in dec_source:
+                if (
+                    (dec_source is not None and "chalkcompute" in dec_source)
+                    or _is_chalkcompute_decorator(
+                        dec,
+                        module_names=chalkcompute_module_names,
+                        decorator_names=chalkcompute_decorator_names,
+                        attribute_names={"function"},
+                    )
+                ):
                     remove_ranges.append((dec.lineno, dec.end_lineno or dec.lineno))
                     decorated_names.add(node.name)
 
@@ -192,6 +218,29 @@ def _strip_chalkcompute_from_source(source: str) -> str:
 
     kept = [line for i, line in enumerate(lines, start=1) if i not in removed_lines]
     return "".join(kept)
+
+
+def _is_chalkcompute_decorator(
+    decorator: ast.expr,
+    *,
+    module_names: set[str],
+    decorator_names: set[str],
+    attribute_names: set[str],
+) -> bool:
+    """Return whether an AST decorator refers to a chalkcompute decorator."""
+    target = decorator.func if isinstance(decorator, ast.Call) else decorator
+
+    if isinstance(target, ast.Name):
+        return target.id in decorator_names
+
+    if isinstance(target, ast.Attribute):
+        return (
+            target.attr in attribute_names
+            and isinstance(target.value, ast.Name)
+            and target.value.id in module_names
+        )
+
+    return False
 
 
 def _generate_handler_shim(func_name: str, *, batched: bool = False) -> str:
@@ -709,7 +758,6 @@ class RemoteFunction:
     >>> fn = RemoteFunction(
     ...     square,
     ...     image=Image.debian_slim(),
-    ...     name="square",
     ...     min_replicas=1,
     ...     max_replicas=2,
     ... )
@@ -1519,6 +1567,37 @@ class _NoOpFunction:
 # ---------------------------------------------------------------------------
 
 
+@overload
+def function(
+    func: Callable[..., Any],
+    /,
+    *,
+    image: _Image | None = None,
+    cpu: str | None = None,
+    memory: str | None = None,
+    gpu: str | None = None,
+    name: str | None = None,
+    env: dict[str, str] | None = None,
+    secrets: list[_Secret] | None = None,
+    volumes: list[tuple[str, str]] | None = None,
+    min_replicas: int = 1,
+    max_replicas: int = 1,
+    shutdown_delay_seconds: int | None = None,
+    scaling_interval_seconds: int | None = None,
+    target_cpu_utilization_percentage: int | None = None,
+    target_queue_depth: int | None = None,
+    serialization_format: SerializationFormat = "pyarrow",
+    options: dict[str, str] | None = None,
+    max_buffer_duration: int | None = None,
+    max_batching_size: int | None = None,
+    retries: int | RetryPolicy | None = None,
+    rate_limit: int | RateLimitPolicy | None = None,
+    concurrency: int | ConcurrencyPolicy | None = None,
+    quota: int | QueuePolicy | None = None,
+) -> RemoteFunction | _NoOpFunction: ...
+
+
+@overload
 def function(
     *,
     image: _Image | None = None,
@@ -1544,6 +1623,36 @@ def function(
     concurrency: int | ConcurrencyPolicy | None = None,
     quota: int | QueuePolicy | None = None,
 ) -> Callable[..., RemoteFunction | _NoOpFunction]:
+    ...
+
+
+def function(
+    func: Callable[..., Any] | None = None,
+    /,
+    *,
+    image: _Image | None = None,
+    cpu: str | None = None,
+    memory: str | None = None,
+    gpu: str | None = None,
+    name: str | None = None,
+    env: dict[str, str] | None = None,
+    secrets: list[_Secret] | None = None,
+    volumes: list[tuple[str, str]] | None = None,
+    min_replicas: int = 1,
+    max_replicas: int = 1,
+    shutdown_delay_seconds: int | None = None,
+    scaling_interval_seconds: int | None = None,
+    target_cpu_utilization_percentage: int | None = None,
+    target_queue_depth: int | None = None,
+    serialization_format: SerializationFormat = "pyarrow",
+    options: dict[str, str] | None = None,
+    max_buffer_duration: int | None = None,
+    max_batching_size: int | None = None,
+    retries: int | RetryPolicy | None = None,
+    rate_limit: int | RateLimitPolicy | None = None,
+    concurrency: int | ConcurrencyPolicy | None = None,
+    quota: int | QueuePolicy | None = None,
+) -> Callable[..., RemoteFunction | _NoOpFunction] | RemoteFunction | _NoOpFunction:
     """Decorator that deploys a function as a versioned remote function.
 
     **Locally** (at decoration time):
@@ -1634,7 +1743,7 @@ def function(
     Examples
     --------
     >>> import chalkcompute
-    >>> @chalkcompute.function()
+    >>> @chalkcompute.function
     ... def add(x: int, y: int) -> int:
     ...     return x + y
     >>> add(1, 2)
@@ -1671,5 +1780,10 @@ def function(
         )
         f.deploy()
         return f
+
+    if func is not None:
+        if not callable(func):
+            raise TypeError("function() positional argument must be callable")
+        return decorator(func)
 
     return decorator

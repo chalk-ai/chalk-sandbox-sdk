@@ -9,7 +9,6 @@ log = logging.getLogger(__name__)
 
 
 @chalkcompute.function(
-    name="orchestrate",
     image=chalkcompute.Image.debian_slim().pip_install(["chalkcompute==1.1.1"]),
     env={
         "CHALK_CLIENT_ID": os.getenv("CHALK_CLIENT_ID"),
@@ -21,6 +20,6 @@ log = logging.getLogger(__name__)
 def orchestrate(texts: list[str]) -> list[list[float]]:
     import chalkcompute
 
-    embed = chalkcompute.RemoteFunction.from_name(name="embed")
+    embed = chalkcompute.RemoteFunction.from_name("embed")
     embeddings = [embed(text) for text in texts]
     return embeddings

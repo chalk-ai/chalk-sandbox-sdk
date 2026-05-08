@@ -1,6 +1,6 @@
 """Dynamic Chalk query from an OpenAI tool-use agent.
 
-Deploys a `@chalkcompute.function` named `fraud_agent` that takes a
+Deploys a `@chalkcompute.function` that takes a
 transaction_id, lets an LLM pick which Chalk features are worth fetching
 for a fraud-triage decision, pulls them via `ChalkClient.query`, and
 returns a structured verdict.
@@ -25,7 +25,6 @@ _CATALOG_SRC = str(Path(__file__).parent / "catalog.py")
 
 
 @chalkcompute.function(
-    name="fraud-agent",
     image=(
         chalkcompute.Image.debian_slim()
         .pip_install(["httpx", "openai>=1.40.0"])

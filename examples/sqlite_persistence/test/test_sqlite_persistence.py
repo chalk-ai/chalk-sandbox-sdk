@@ -116,7 +116,7 @@ def _wait_for_writable_mount(container: Container, path: str, timeout: float = 1
 def test_writer_creates_database(volume_name: str) -> None:
     """The writer container creates a SQLite DB on the volume."""
     writer = (
-        Container(image=image, name=f"tw-writer-{uuid.uuid4().hex[:6]}", env=CONTAINER_ENV)
+        Container(image=image, env=CONTAINER_ENV)
         .mount_volume(volume_name, MOUNT_PATH)
         .run()
     )
@@ -134,7 +134,7 @@ def test_two_readers_see_same_data(volume_name: str) -> None:
     """Two reader containers independently query the same SQLite DB."""
     # --- Write phase ---
     writer = (
-        Container(image=image, name=f"tr-writer-{uuid.uuid4().hex[:6]}", env=CONTAINER_ENV)
+        Container(image=image, env=CONTAINER_ENV)
         .mount_volume(volume_name, MOUNT_PATH)
         .run()
     )
@@ -147,12 +147,12 @@ def test_two_readers_see_same_data(volume_name: str) -> None:
 
     # --- Read phase (two independent containers) ---
     reader_a = (
-        Container(image=image, name=f"tr-reader-a-{uuid.uuid4().hex[:6]}", env=CONTAINER_ENV)
+        Container(image=image, env=CONTAINER_ENV)
         .mount_volume(volume_name, MOUNT_PATH)
         .run()
     )
     reader_b = (
-        Container(image=image, name=f"tr-reader-b-{uuid.uuid4().hex[:6]}", env=CONTAINER_ENV)
+        Container(image=image, env=CONTAINER_ENV)
         .mount_volume(volume_name, MOUNT_PATH)
         .run()
     )
