@@ -6,22 +6,44 @@ and image build polling.
 
 from __future__ import annotations
 
+import ast
+import functools
 import logging
+import json
 import os
 import re
 import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import grpc
+from connectrpc.client import ConnectClientSync as _ConnectClientSync
+from connectrpc.code import Code as _ConnectCode
+from connectrpc.errors import ConnectError as _ConnectRpcError
+from connectrpc.method import IdempotencyLevel, MethodInfo
+from google.protobuf import (
+    any_pb2,
+    descriptor_pb2,
+    descriptor_pool,
+    duration_pb2,
+    empty_pb2,
+    field_mask_pb2,
+    message_factory,
+    struct_pb2,
+    timestamp_pb2,
+)
+from google.protobuf.json_format import MessageToDict, ParseDict
+from google.protobuf.message import Message
 
 from chalkcompute._tracing import traced as _traced
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    import httpx
-
     from chalkcompute._image import Image
 
 
@@ -29,12 +51,32 @@ class ConnectError(Exception):
     """Raised by ConnectClient operations."""
 
 
+class _ConnectCallError(ConnectError):
+    def __init__(self, code: _ConnectCode, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+@dataclass
+class ConnectResponse:
+    """Small response shim for existing SDK code that consumes ``.json()``."""
+
+    status_code: int
+    text: str
+    _json: dict[str, Any]
+
+    def json(self) -> dict[str, Any]:
+        return self._json
+
+
 class ConnectClient:
-    """Authenticated Connect-protocol (HTTP/JSON) client for Chalk APIs.
+    """Authenticated Connect-protocol client for Chalk APIs.
 
     Environment variables (``CHALK_API_SERVER``, ``CHALK_CLIENT_ID``,
     ``CHALK_CLIENT_SECRET``, ``CHALK_ENVIRONMENT_ID``) are read lazily on the
-    first RPC.
+    first RPC. RPC payloads are protobuf messages on the wire; ``rpc`` remains
+    as a compatibility wrapper for older call sites that still build dicts.
 
     Examples
     --------
@@ -51,6 +93,7 @@ class ConnectClient:
         self._access_token: str | None = None
         self._env_id: str | None = None
         self._headers: dict[str, str] | None = None
+        self._connect_client: _ConnectClientSync | None = None
         self._grpc_engines: dict[str, str] = {}
         self._environment_id_to_name: dict[str, str] = {}
         self._primary_environment: str | None = None
@@ -59,9 +102,7 @@ class ConnectClient:
         if self._access_token is not None:
             return
 
-        import httpx
-
-        self._api_server = os.environ.get("CHALK_API_SERVER", "")
+        self._api_server = os.environ.get("CHALK_API_SERVER", "").rstrip("/")
         client_id = os.environ.get("CHALK_CLIENT_ID", "")
         client_secret = os.environ.get("CHALK_CLIENT_SECRET", "")
         requested_env = (
@@ -75,38 +116,83 @@ class ConnectClient:
                 "CHALK_API_SERVER and CHALK_CLIENT_ID must be set in the environment"
             )
 
-        resp = httpx.post(
-            f"{self._api_server}/v1/oauth/token",
-            json={
+        request_body = json.dumps(
+            {
                 "client_id": client_id,
                 "client_secret": client_secret,
                 "grant_type": "client_credentials",
-            },
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self._api_server}/v1/oauth/token",
+            data=request_body,
             headers={
                 "Accept": "application/json",
                 "Content-Type": "application/json",
                 "X-Chalk-Server": "go-api",
             },
-            timeout=30,
+            method="POST",
         )
-        resp.raise_for_status()
-        data = resp.json()
-        self._access_token = data["access_token"]
-        self._primary_environment = data.get("primary_environment")
-        self._grpc_engines = _string_map(data.get("grpc_engines"))
+        try:
+            with urllib.request.urlopen(request, timeout=30) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", errors="replace")
+            raise ConnectError(f"OAuth token exchange failed: {detail}") from e
+        except urllib.error.URLError as e:
+            raise ConnectError(f"OAuth token exchange failed: {e}") from e
+
+        self._access_token = payload["access_token"]
+        self._primary_environment = payload.get("primary_environment")
+        self._grpc_engines = _string_map(payload.get("grpc_engines"))
         self._environment_id_to_name = _string_map(
-            data.get("environment_id_to_name")
+            payload.get("environment_id_to_name")
         )
         self._env_id = self._resolve_environment_id(
             requested_env or self._primary_environment or ""
         )
 
         self._headers = {
-            "Content-Type": "application/json",
             "Authorization": f"Bearer {self._access_token}",
             "X-Chalk-Env-Id": self._env_id or "",
             "X-Chalk-Server": "go-api",
         }
+        self._connect_client = _ConnectClientSync(
+            self._api_server,
+            send_compression=None,
+        )
+
+    def unary(
+        self,
+        service: str,
+        method: str,
+        request: Message,
+        timeout: float = 30,
+    ) -> Message:
+        """Make a typed unary Connect RPC call."""
+        from chalkcompute._tracing import get_tracer
+
+        with get_tracer().start_as_current_span("chalkcompute.rpc") as span:
+            span.set_attribute("rpc.service", service)
+            span.set_attribute("rpc.method", method)
+            self._ensure_auth()
+            assert self._headers is not None
+            assert self._connect_client is not None
+            method_info = _method_info(service, method)
+            try:
+                response = self._connect_client.execute_unary(
+                    request=request,
+                    method=method_info,
+                    headers=self._headers,
+                    timeout_ms=int(timeout * 1000),
+                )
+            except _ConnectRpcError as e:
+                from opentelemetry.trace import StatusCode
+
+                span.set_status(StatusCode.ERROR, e.message)
+                raise _ConnectCallError(e.code, e.message) from e
+            span.set_attribute("http.response.status_code", 200)
+            return response
 
     def _resolve_environment_id(self, environment: str) -> str:
         if not environment:
@@ -151,10 +237,10 @@ class ConnectClient:
         self,
         service: str,
         method: str,
-        body: dict[str, Any],
+        body: dict[str, Any] | Message,
         timeout: float = 30,
-    ) -> httpx.Response:
-        """Make a Connect-protocol RPC call.
+    ) -> ConnectResponse:
+        """Make a unary Connect RPC call.
 
         Parameters
         ----------
@@ -163,37 +249,219 @@ class ConnectClient:
         method
             Method name on the service.
         body
-            JSON-serializable request body.
+            JSON-shaped dict or generated protobuf request message.
         timeout
             Request timeout in seconds.
 
         Returns
         -------
-        httpx.Response
-            The raw HTTP response from the Connect endpoint.
+        ConnectResponse
+            A compatibility response object exposing ``status_code``, ``text``,
+            and ``json()``.
         """
-        import httpx
-
         from chalkcompute._tracing import get_tracer
 
         with get_tracer().start_as_current_span("chalkcompute.rpc") as span:
             span.set_attribute("rpc.service", service)
             span.set_attribute("rpc.method", method)
-            self._ensure_auth()
-            assert self._api_server is not None
-            assert self._headers is not None
-            resp = httpx.post(
-                f"{self._api_server}/{service}/{method}",
-                json=body,
-                headers=self._headers,
-                timeout=timeout,
-            )
-            span.set_attribute("http.response.status_code", resp.status_code)
-            if resp.status_code >= 400:
+            try:
+                request = (
+                    body
+                    if isinstance(body, Message)
+                    else _parse_request(service, method, body)
+                )
+                response = self.unary(service, method, request, timeout=timeout)
+            except _ConnectCallError as e:
+                status_code = _http_status_from_connect_code(e.code)
+                span.set_attribute("http.response.status_code", status_code)
                 from opentelemetry.trace import StatusCode
 
-                span.set_status(StatusCode.ERROR, f"HTTP {resp.status_code}")
-            return resp
+                span.set_status(StatusCode.ERROR, e.message)
+                return ConnectResponse(
+                    status_code=status_code,
+                    text=e.message,
+                    _json={"code": e.code.value, "message": e.message},
+                )
+            except ConnectError as e:
+                span.set_attribute("http.response.status_code", 500)
+                from opentelemetry.trace import StatusCode
+
+                span.set_status(StatusCode.ERROR, str(e))
+                return ConnectResponse(status_code=500, text=str(e), _json={})
+
+            data = MessageToDict(response)
+            span.set_attribute("http.response.status_code", 200)
+            return ConnectResponse(status_code=200, text=json.dumps(data), _json=data)
+
+
+_GEN_ROOT = Path(__file__).with_name("_gen")
+_SERVICE_PROTO_FILES = {
+    "chalk.sandbox.v1.SandboxService": "chalk/sandbox/v1/service.proto",
+    "chalk.sandbox.v1.CustomImageService": "chalk/sandbox/v1/service.proto",
+    "chalk.container.v1.ContainerService": "chalk/container/v1/service.proto",
+    "chalk.scalinggroup.v1.ScalingGroupManagerService": (
+        "chalk/scalinggroup/v1/service.proto"
+    ),
+    "chalk.volume.v1.VolumeService": "chalk/volume/v1/volume.proto",
+    "chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService": (
+        "chalk/externalfunctioncatalog/v1/service.proto"
+    ),
+    "chalk.server.v1.EnvironmentSecretsService": (
+        "chalk/server/v1/environment_secrets.proto"
+    ),
+}
+
+
+def _local_pb2_path(proto_path: str) -> Path:
+    if proto_path == "chalk/volume/v1/volume.proto":
+        return _GEN_ROOT / "chalk/volume/v1/volume_pb2.py"
+    return _GEN_ROOT / proto_path.replace(".proto", "_pb2.py")
+
+
+def _external_pb2_candidates(proto_path: str) -> tuple[str, ...]:
+    module_suffix = proto_path.replace("/", ".").replace(".proto", "_pb2")
+    return (
+        f"chalk_remote_call._gen.{module_suffix}",
+        f"chalk._gen.{module_suffix}",
+    )
+
+
+def _extract_serialized_descriptor(path: Path) -> bytes | None:
+    tree = ast.parse(path.read_text())
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "AddSerializedFile"
+            and node.args
+        ):
+            value = ast.literal_eval(node.args[0])
+            if isinstance(value, bytes):
+                return value
+    return None
+
+
+def _serialized_descriptor(proto_path: str) -> bytes:
+    local_path = _local_pb2_path(proto_path)
+    if local_path.exists():
+        data = _extract_serialized_descriptor(local_path)
+        if data is not None:
+            return data
+
+    import importlib.util
+
+    for module_name in _external_pb2_candidates(proto_path):
+        try:
+            spec = importlib.util.find_spec(module_name)
+        except ModuleNotFoundError:
+            continue
+        if spec is None or spec.origin is None:
+            continue
+        data = _extract_serialized_descriptor(Path(spec.origin))
+        if data is not None:
+            return data
+
+    raise ConnectError(f"No serialized protobuf descriptor for {proto_path!r}")
+
+
+@functools.lru_cache(maxsize=1)
+def _descriptor_pool() -> descriptor_pool.DescriptorPool:
+    """Build a private pool so Connect calls do not conflict with chalkpy stubs."""
+    pool = descriptor_pool.DescriptorPool()  # ty: ignore[possibly-missing-implicit-call]
+    for descriptor in (
+        any_pb2.DESCRIPTOR,
+        descriptor_pb2.DESCRIPTOR,
+        duration_pb2.DESCRIPTOR,
+        empty_pb2.DESCRIPTOR,
+        field_mask_pb2.DESCRIPTOR,
+        struct_pb2.DESCRIPTOR,
+        timestamp_pb2.DESCRIPTOR,
+    ):
+        pool.AddSerializedFile(descriptor.serialized_pb)
+
+    for proto_path in (
+        "buf/validate/validate.proto",
+        "chalk/utils/v1/encoding.proto",
+        "chalk/auth/v1/permissions.proto",
+        "chalk/arrow/v1/arrow.proto",
+        "chalk/common/v1/chalk_error.proto",
+        "chalk/runtime/v1/remote_python_call.proto",
+        "chalk/sandbox/v1/service.proto",
+        "chalk/container/v1/service.proto",
+        "chalk/scalinggroup/v1/service.proto",
+        "chalk/volume/v1/volume.proto",
+        "chalk/externalfunctioncatalog/v1/service.proto",
+        "chalk/server/v1/environment_secrets.proto",
+    ):
+        path = _local_pb2_path(proto_path)
+        if path.exists() or proto_path in {
+            "chalk/auth/v1/permissions.proto",
+            "chalk/runtime/v1/remote_python_call.proto",
+        }:
+            pool.AddSerializedFile(_serialized_descriptor(proto_path))
+    return pool
+
+
+def _message_class(full_name: str) -> Any:
+    descriptor = _descriptor_pool().FindMessageTypeByName(full_name)
+    return message_factory.GetMessageClass(descriptor)
+
+
+def _new_message(full_name: str) -> Any:
+    return _message_class(full_name)()
+
+
+def _enum_value(full_name: str, name: str) -> int:
+    enum = _descriptor_pool().FindEnumTypeByName(full_name)
+    return enum.values_by_name[name].number
+
+
+def _method_info(service: str, method: str) -> MethodInfo[Any, Any]:
+    proto_path = _SERVICE_PROTO_FILES.get(service)
+    if proto_path is None:
+        raise ConnectError(f"No generated protobuf module for service {service!r}")
+    service_name = service.rsplit(".", 1)[1]
+    try:
+        service_descriptor = _descriptor_pool().FindFileByName(
+            proto_path
+        ).services_by_name[service_name]
+        method_descriptor = service_descriptor.methods_by_name[method]
+    except KeyError as e:
+        raise ConnectError(f"No generated method {service}/{method}") from e
+
+    request_type = _message_class(method_descriptor.input_type.full_name)
+    response_type = _message_class(method_descriptor.output_type.full_name)
+    return MethodInfo(
+        name=method,
+        service_name=service,
+        input=request_type,
+        output=response_type,
+        idempotency_level=IdempotencyLevel.UNKNOWN,
+    )
+
+
+def _parse_request(service: str, method: str, body: dict[str, Any]) -> Message:
+    request = _method_info(service, method).input()
+    return ParseDict(body, request)
+
+
+def _http_status_from_connect_code(code: _ConnectCode) -> int:
+    return {
+        _ConnectCode.CANCELED: 499,
+        _ConnectCode.INVALID_ARGUMENT: 400,
+        _ConnectCode.DEADLINE_EXCEEDED: 504,
+        _ConnectCode.NOT_FOUND: 404,
+        _ConnectCode.ALREADY_EXISTS: 409,
+        _ConnectCode.PERMISSION_DENIED: 403,
+        _ConnectCode.RESOURCE_EXHAUSTED: 429,
+        _ConnectCode.FAILED_PRECONDITION: 400,
+        _ConnectCode.ABORTED: 409,
+        _ConnectCode.OUT_OF_RANGE: 400,
+        _ConnectCode.UNIMPLEMENTED: 501,
+        _ConnectCode.UNAVAILABLE: 503,
+        _ConnectCode.DATA_LOSS: 500,
+        _ConnectCode.UNAUTHENTICATED: 401,
+    }.get(code, 500)
 
 
 # ---------------------------------------------------------------------------

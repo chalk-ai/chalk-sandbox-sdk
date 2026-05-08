@@ -5,13 +5,7 @@ from google.protobuf.internal import containers as _containers
 from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
-from typing import (
-    ClassVar as _ClassVar,
-    Iterable as _Iterable,
-    Mapping as _Mapping,
-    Optional as _Optional,
-    Union as _Union,
-)
+from typing import ClassVar as _ClassVar, Iterable as _Iterable, Mapping as _Mapping, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
@@ -20,7 +14,6 @@ class KernelPolicy(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     KERNEL_POLICY_UNSPECIFIED: _ClassVar[KernelPolicy]
     KERNEL_POLICY_RESTRICTED: _ClassVar[KernelPolicy]
     KERNEL_POLICY_OPEN: _ClassVar[KernelPolicy]
-
 KERNEL_POLICY_UNSPECIFIED: KernelPolicy
 KERNEL_POLICY_RESTRICTED: KernelPolicy
 KERNEL_POLICY_OPEN: KernelPolicy
@@ -45,13 +38,7 @@ class VolumeMount(_message.Message):
     mount_path: str
     type: str
     size_limit: str
-    def __init__(
-        self,
-        name: _Optional[str] = ...,
-        mount_path: _Optional[str] = ...,
-        type: _Optional[str] = ...,
-        size_limit: _Optional[str] = ...,
-    ) -> None: ...
+    def __init__(self, name: _Optional[str] = ..., mount_path: _Optional[str] = ..., type: _Optional[str] = ..., size_limit: _Optional[str] = ...) -> None: ...
 
 class SecretRef(_message.Message):
     __slots__ = ("integration_name", "secret_name", "keys", "aliases", "prefix")
@@ -62,7 +49,6 @@ class SecretRef(_message.Message):
         key: str
         value: str
         def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
-
     INTEGRATION_NAME_FIELD_NUMBER: _ClassVar[int]
     SECRET_NAME_FIELD_NUMBER: _ClassVar[int]
     KEYS_FIELD_NUMBER: _ClassVar[int]
@@ -73,33 +59,10 @@ class SecretRef(_message.Message):
     keys: _containers.RepeatedScalarFieldContainer[str]
     aliases: _containers.ScalarMap[str, str]
     prefix: str
-    def __init__(
-        self,
-        integration_name: _Optional[str] = ...,
-        secret_name: _Optional[str] = ...,
-        keys: _Optional[_Iterable[str]] = ...,
-        aliases: _Optional[_Mapping[str, str]] = ...,
-        prefix: _Optional[str] = ...,
-    ) -> None: ...
+    def __init__(self, integration_name: _Optional[str] = ..., secret_name: _Optional[str] = ..., keys: _Optional[_Iterable[str]] = ..., aliases: _Optional[_Mapping[str, str]] = ..., prefix: _Optional[str] = ...) -> None: ...
 
 class ChalkContainerSpec(_message.Message):
-    __slots__ = (
-        "name",
-        "image",
-        "entrypoint",
-        "tags",
-        "port",
-        "lifetime",
-        "resources",
-        "enable_ssh",
-        "env_vars",
-        "volumes",
-        "protocol",
-        "routing",
-        "authentication",
-        "secret_refs",
-        "security_policy",
-    )
+    __slots__ = ("name", "image", "entrypoint", "tags", "port", "lifetime", "resources", "enable_ssh", "env_vars", "volumes", "protocol", "routing", "authentication", "secret_refs", "security_policy", "network_policy")
     class TagsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -107,7 +70,6 @@ class ChalkContainerSpec(_message.Message):
         key: str
         value: str
         def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
-
     class EnvVarsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -115,7 +77,6 @@ class ChalkContainerSpec(_message.Message):
         key: str
         value: str
         def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
-
     NAME_FIELD_NUMBER: _ClassVar[int]
     IMAGE_FIELD_NUMBER: _ClassVar[int]
     ENTRYPOINT_FIELD_NUMBER: _ClassVar[int]
@@ -131,6 +92,7 @@ class ChalkContainerSpec(_message.Message):
     AUTHENTICATION_FIELD_NUMBER: _ClassVar[int]
     SECRET_REFS_FIELD_NUMBER: _ClassVar[int]
     SECURITY_POLICY_FIELD_NUMBER: _ClassVar[int]
+    NETWORK_POLICY_FIELD_NUMBER: _ClassVar[int]
     name: str
     image: str
     entrypoint: _containers.RepeatedScalarFieldContainer[str]
@@ -146,30 +108,36 @@ class ChalkContainerSpec(_message.Message):
     authentication: str
     secret_refs: _containers.RepeatedCompositeFieldContainer[SecretRef]
     security_policy: ContainerSecurityPolicy
-    def __init__(
-        self,
-        name: _Optional[str] = ...,
-        image: _Optional[str] = ...,
-        entrypoint: _Optional[_Iterable[str]] = ...,
-        tags: _Optional[_Mapping[str, str]] = ...,
-        port: _Optional[int] = ...,
-        lifetime: _Optional[_Union[_duration_pb2.Duration, _Mapping]] = ...,
-        resources: _Optional[_Union[ResourceLimits, _Mapping]] = ...,
-        enable_ssh: bool = ...,
-        env_vars: _Optional[_Mapping[str, str]] = ...,
-        volumes: _Optional[_Iterable[_Union[VolumeMount, _Mapping]]] = ...,
-        protocol: _Optional[str] = ...,
-        routing: _Optional[str] = ...,
-        authentication: _Optional[str] = ...,
-        secret_refs: _Optional[_Iterable[_Union[SecretRef, _Mapping]]] = ...,
-        security_policy: _Optional[_Union[ContainerSecurityPolicy, _Mapping]] = ...,
-    ) -> None: ...
+    network_policy: NetworkPolicy
+    def __init__(self, name: _Optional[str] = ..., image: _Optional[str] = ..., entrypoint: _Optional[_Iterable[str]] = ..., tags: _Optional[_Mapping[str, str]] = ..., port: _Optional[int] = ..., lifetime: _Optional[_Union[_duration_pb2.Duration, _Mapping]] = ..., resources: _Optional[_Union[ResourceLimits, _Mapping]] = ..., enable_ssh: bool = ..., env_vars: _Optional[_Mapping[str, str]] = ..., volumes: _Optional[_Iterable[_Union[VolumeMount, _Mapping]]] = ..., protocol: _Optional[str] = ..., routing: _Optional[str] = ..., authentication: _Optional[str] = ..., secret_refs: _Optional[_Iterable[_Union[SecretRef, _Mapping]]] = ..., security_policy: _Optional[_Union[ContainerSecurityPolicy, _Mapping]] = ..., network_policy: _Optional[_Union[NetworkPolicy, _Mapping]] = ...) -> None: ...
 
 class ContainerSecurityPolicy(_message.Message):
     __slots__ = ("kernel_policy",)
     KERNEL_POLICY_FIELD_NUMBER: _ClassVar[int]
     kernel_policy: KernelPolicy
     def __init__(self, kernel_policy: _Optional[_Union[KernelPolicy, str]] = ...) -> None: ...
+
+class NetworkPolicy(_message.Message):
+    __slots__ = ("allowed_routes",)
+    ALLOWED_ROUTES_FIELD_NUMBER: _ClassVar[int]
+    allowed_routes: _containers.RepeatedCompositeFieldContainer[AllowedRoute]
+    def __init__(self, allowed_routes: _Optional[_Iterable[_Union[AllowedRoute, _Mapping]]] = ...) -> None: ...
+
+class AllowedRoute(_message.Message):
+    __slots__ = ("route", "port_ranges")
+    ROUTE_FIELD_NUMBER: _ClassVar[int]
+    PORT_RANGES_FIELD_NUMBER: _ClassVar[int]
+    route: str
+    port_ranges: _containers.RepeatedCompositeFieldContainer[PortRange]
+    def __init__(self, route: _Optional[str] = ..., port_ranges: _Optional[_Iterable[_Union[PortRange, _Mapping]]] = ...) -> None: ...
+
+class PortRange(_message.Message):
+    __slots__ = ("start_port", "end_port")
+    START_PORT_FIELD_NUMBER: _ClassVar[int]
+    END_PORT_FIELD_NUMBER: _ClassVar[int]
+    start_port: int
+    end_port: int
+    def __init__(self, start_port: _Optional[int] = ..., end_port: _Optional[int] = ...) -> None: ...
 
 class ContainerRequest(_message.Message):
     __slots__ = ("spec",)
@@ -188,22 +156,7 @@ class HealthCheck(_message.Message):
     def __init__(self, healthy: bool = ..., status_code: _Optional[int] = ..., error: _Optional[str] = ...) -> None: ...
 
 class ContainerResponse(_message.Message):
-    __slots__ = (
-        "id",
-        "name",
-        "status",
-        "status_message",
-        "spec",
-        "created_at",
-        "stopped_at",
-        "pod_name",
-        "web_url",
-        "ssh_private_key",
-        "ssh_username",
-        "ssh_host",
-        "ssh_port",
-        "health_check",
-    )
+    __slots__ = ("id", "name", "status", "status_message", "spec", "created_at", "stopped_at", "pod_name", "web_url", "ssh_private_key", "ssh_username", "ssh_host", "ssh_port", "health_check")
     ID_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
     STATUS_FIELD_NUMBER: _ClassVar[int]
@@ -232,23 +185,7 @@ class ContainerResponse(_message.Message):
     ssh_host: str
     ssh_port: int
     health_check: HealthCheck
-    def __init__(
-        self,
-        id: _Optional[str] = ...,
-        name: _Optional[str] = ...,
-        status: _Optional[str] = ...,
-        status_message: _Optional[str] = ...,
-        spec: _Optional[_Union[ChalkContainerSpec, _Mapping]] = ...,
-        created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
-        stopped_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
-        pod_name: _Optional[str] = ...,
-        web_url: _Optional[str] = ...,
-        ssh_private_key: _Optional[str] = ...,
-        ssh_username: _Optional[str] = ...,
-        ssh_host: _Optional[str] = ...,
-        ssh_port: _Optional[int] = ...,
-        health_check: _Optional[_Union[HealthCheck, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, id: _Optional[str] = ..., name: _Optional[str] = ..., status: _Optional[str] = ..., status_message: _Optional[str] = ..., spec: _Optional[_Union[ChalkContainerSpec, _Mapping]] = ..., created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., stopped_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., pod_name: _Optional[str] = ..., web_url: _Optional[str] = ..., ssh_private_key: _Optional[str] = ..., ssh_username: _Optional[str] = ..., ssh_host: _Optional[str] = ..., ssh_port: _Optional[int] = ..., health_check: _Optional[_Union[HealthCheck, _Mapping]] = ...) -> None: ...
 
 class RunContainerRequest(_message.Message):
     __slots__ = ("container",)
@@ -270,9 +207,7 @@ class StopContainerRequest(_message.Message):
     id: str
     name: str
     grace_period_seconds: int
-    def __init__(
-        self, id: _Optional[str] = ..., name: _Optional[str] = ..., grace_period_seconds: _Optional[int] = ...
-    ) -> None: ...
+    def __init__(self, id: _Optional[str] = ..., name: _Optional[str] = ..., grace_period_seconds: _Optional[int] = ...) -> None: ...
 
 class StopContainerResponse(_message.Message):
     __slots__ = ("container",)
@@ -316,14 +251,7 @@ class ExecCommandRequest(_message.Message):
     command: _containers.RepeatedScalarFieldContainer[str]
     timeout: _duration_pb2.Duration
     stdin: bytes
-    def __init__(
-        self,
-        id: _Optional[str] = ...,
-        name: _Optional[str] = ...,
-        command: _Optional[_Iterable[str]] = ...,
-        timeout: _Optional[_Union[_duration_pb2.Duration, _Mapping]] = ...,
-        stdin: _Optional[bytes] = ...,
-    ) -> None: ...
+    def __init__(self, id: _Optional[str] = ..., name: _Optional[str] = ..., command: _Optional[_Iterable[str]] = ..., timeout: _Optional[_Union[_duration_pb2.Duration, _Mapping]] = ..., stdin: _Optional[bytes] = ...) -> None: ...
 
 class ExecCommandResponse(_message.Message):
     __slots__ = ("stdout", "stderr", "exit_code")
@@ -333,9 +261,7 @@ class ExecCommandResponse(_message.Message):
     stdout: bytes
     stderr: bytes
     exit_code: int
-    def __init__(
-        self, stdout: _Optional[bytes] = ..., stderr: _Optional[bytes] = ..., exit_code: _Optional[int] = ...
-    ) -> None: ...
+    def __init__(self, stdout: _Optional[bytes] = ..., stderr: _Optional[bytes] = ..., exit_code: _Optional[int] = ...) -> None: ...
 
 class UpdateContainerStatusRequest(_message.Message):
     __slots__ = ("container_id", "status", "status_message")
@@ -345,9 +271,7 @@ class UpdateContainerStatusRequest(_message.Message):
     container_id: str
     status: str
     status_message: str
-    def __init__(
-        self, container_id: _Optional[str] = ..., status: _Optional[str] = ..., status_message: _Optional[str] = ...
-    ) -> None: ...
+    def __init__(self, container_id: _Optional[str] = ..., status: _Optional[str] = ..., status_message: _Optional[str] = ...) -> None: ...
 
 class UpdateContainerStatusResponse(_message.Message):
     __slots__ = ("container",)
@@ -380,17 +304,7 @@ class ContainerSnapshotSpec(_message.Message):
     def __init__(self, gke_pod_snapshot: _Optional[_Union[GKEPodSnapshot, _Mapping]] = ...) -> None: ...
 
 class ContainerSnapshot(_message.Message):
-    __slots__ = (
-        "id",
-        "source_container_id",
-        "container_spec",
-        "snapshot_spec",
-        "status",
-        "status_message",
-        "created_at",
-        "completed_at",
-        "created_by",
-    )
+    __slots__ = ("id", "source_container_id", "container_spec", "snapshot_spec", "status", "status_message", "created_at", "completed_at", "created_by")
     ID_FIELD_NUMBER: _ClassVar[int]
     SOURCE_CONTAINER_ID_FIELD_NUMBER: _ClassVar[int]
     CONTAINER_SPEC_FIELD_NUMBER: _ClassVar[int]
@@ -409,18 +323,7 @@ class ContainerSnapshot(_message.Message):
     created_at: _timestamp_pb2.Timestamp
     completed_at: _timestamp_pb2.Timestamp
     created_by: str
-    def __init__(
-        self,
-        id: _Optional[str] = ...,
-        source_container_id: _Optional[str] = ...,
-        container_spec: _Optional[_Union[ChalkContainerSpec, _Mapping]] = ...,
-        snapshot_spec: _Optional[_Union[ContainerSnapshotSpec, _Mapping]] = ...,
-        status: _Optional[str] = ...,
-        status_message: _Optional[str] = ...,
-        created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
-        completed_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
-        created_by: _Optional[str] = ...,
-    ) -> None: ...
+    def __init__(self, id: _Optional[str] = ..., source_container_id: _Optional[str] = ..., container_spec: _Optional[_Union[ChalkContainerSpec, _Mapping]] = ..., snapshot_spec: _Optional[_Union[ContainerSnapshotSpec, _Mapping]] = ..., status: _Optional[str] = ..., status_message: _Optional[str] = ..., created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., completed_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., created_by: _Optional[str] = ...) -> None: ...
 
 class SnapshotContainerRequest(_message.Message):
     __slots__ = ("id", "name")
@@ -466,9 +369,7 @@ class ContainerTTYInput(_message.Message):
     RESIZE_FIELD_NUMBER: _ClassVar[int]
     data: bytes
     resize: ContainerTerminalSize
-    def __init__(
-        self, data: _Optional[bytes] = ..., resize: _Optional[_Union[ContainerTerminalSize, _Mapping]] = ...
-    ) -> None: ...
+    def __init__(self, data: _Optional[bytes] = ..., resize: _Optional[_Union[ContainerTerminalSize, _Mapping]] = ...) -> None: ...
 
 class ContainerTerminalSize(_message.Message):
     __slots__ = ("rows", "cols")
@@ -484,11 +385,7 @@ class CreateContainerDebugTTYRequest(_message.Message):
     INPUT_FIELD_NUMBER: _ClassVar[int]
     init_request: ContainerDebugTTYInitRequest
     input: ContainerTTYInput
-    def __init__(
-        self,
-        init_request: _Optional[_Union[ContainerDebugTTYInitRequest, _Mapping]] = ...,
-        input: _Optional[_Union[ContainerTTYInput, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, init_request: _Optional[_Union[ContainerDebugTTYInitRequest, _Mapping]] = ..., input: _Optional[_Union[ContainerTTYInput, _Mapping]] = ...) -> None: ...
 
 class ContainerDebugTTYInitRequest(_message.Message):
     __slots__ = ("id", "name", "command")
@@ -498,9 +395,7 @@ class ContainerDebugTTYInitRequest(_message.Message):
     id: str
     name: str
     command: _containers.RepeatedScalarFieldContainer[str]
-    def __init__(
-        self, id: _Optional[str] = ..., name: _Optional[str] = ..., command: _Optional[_Iterable[str]] = ...
-    ) -> None: ...
+    def __init__(self, id: _Optional[str] = ..., name: _Optional[str] = ..., command: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class CreateContainerDebugTTYResponse(_message.Message):
     __slots__ = ("data", "error", "closed")

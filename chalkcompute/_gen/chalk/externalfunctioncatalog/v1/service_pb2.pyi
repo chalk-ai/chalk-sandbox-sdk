@@ -7,13 +7,7 @@ from google.protobuf.internal import containers as _containers
 from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
-from typing import (
-    ClassVar as _ClassVar,
-    Iterable as _Iterable,
-    Mapping as _Mapping,
-    Optional as _Optional,
-    Union as _Union,
-)
+from typing import ClassVar as _ClassVar, Iterable as _Iterable, Mapping as _Mapping, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
@@ -28,7 +22,6 @@ class SerializationFormat(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     SERIALIZATION_FORMAT_UNSPECIFIED: _ClassVar[SerializationFormat]
     SERIALIZATION_FORMAT_PYARROW: _ClassVar[SerializationFormat]
-
 RATE_LIMIT_PER_UNSPECIFIED: RateLimitPer
 RATE_LIMIT_PER_SECOND: RateLimitPer
 RATE_LIMIT_PER_MINUTE: RateLimitPer
@@ -48,14 +41,7 @@ class RetryPolicy(_message.Message):
     backoff_multiplier: float
     max_backoff_ms: int
     key: str
-    def __init__(
-        self,
-        max_retries: _Optional[int] = ...,
-        initial_backoff_ms: _Optional[int] = ...,
-        backoff_multiplier: _Optional[float] = ...,
-        max_backoff_ms: _Optional[int] = ...,
-        key: _Optional[str] = ...,
-    ) -> None: ...
+    def __init__(self, max_retries: _Optional[int] = ..., initial_backoff_ms: _Optional[int] = ..., backoff_multiplier: _Optional[float] = ..., max_backoff_ms: _Optional[int] = ..., key: _Optional[str] = ...) -> None: ...
 
 class RateLimitPolicy(_message.Message):
     __slots__ = ("rate", "per", "key")
@@ -65,9 +51,7 @@ class RateLimitPolicy(_message.Message):
     rate: int
     per: RateLimitPer
     key: str
-    def __init__(
-        self, rate: _Optional[int] = ..., per: _Optional[_Union[RateLimitPer, str]] = ..., key: _Optional[str] = ...
-    ) -> None: ...
+    def __init__(self, rate: _Optional[int] = ..., per: _Optional[_Union[RateLimitPer, str]] = ..., key: _Optional[str] = ...) -> None: ...
 
 class ConcurrencyPolicy(_message.Message):
     __slots__ = ("max_concurrent", "key")
@@ -86,16 +70,7 @@ class QueuePolicy(_message.Message):
     def __init__(self, max_items: _Optional[int] = ..., key: _Optional[str] = ...) -> None: ...
 
 class FunctionConfig(_message.Message):
-    __slots__ = (
-        "serialization_format",
-        "options",
-        "max_buffer_duration",
-        "max_batching_size",
-        "retry_policy",
-        "rate_limit",
-        "concurrency",
-        "queue",
-    )
+    __slots__ = ("serialization_format", "options", "max_buffer_duration", "max_batching_size", "retry_policy", "rate_limit", "concurrency", "queue")
     class OptionsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -103,7 +78,6 @@ class FunctionConfig(_message.Message):
         key: str
         value: str
         def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
-
     SERIALIZATION_FORMAT_FIELD_NUMBER: _ClassVar[int]
     OPTIONS_FIELD_NUMBER: _ClassVar[int]
     MAX_BUFFER_DURATION_FIELD_NUMBER: _ClassVar[int]
@@ -120,30 +94,10 @@ class FunctionConfig(_message.Message):
     rate_limit: RateLimitPolicy
     concurrency: ConcurrencyPolicy
     queue: QueuePolicy
-    def __init__(
-        self,
-        serialization_format: _Optional[_Union[SerializationFormat, str]] = ...,
-        options: _Optional[_Mapping[str, str]] = ...,
-        max_buffer_duration: _Optional[int] = ...,
-        max_batching_size: _Optional[int] = ...,
-        retry_policy: _Optional[_Union[RetryPolicy, _Mapping]] = ...,
-        rate_limit: _Optional[_Union[RateLimitPolicy, _Mapping]] = ...,
-        concurrency: _Optional[_Union[ConcurrencyPolicy, _Mapping]] = ...,
-        queue: _Optional[_Union[QueuePolicy, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, serialization_format: _Optional[_Union[SerializationFormat, str]] = ..., options: _Optional[_Mapping[str, str]] = ..., max_buffer_duration: _Optional[int] = ..., max_batching_size: _Optional[int] = ..., retry_policy: _Optional[_Union[RetryPolicy, _Mapping]] = ..., rate_limit: _Optional[_Union[RateLimitPolicy, _Mapping]] = ..., concurrency: _Optional[_Union[ConcurrencyPolicy, _Mapping]] = ..., queue: _Optional[_Union[QueuePolicy, _Mapping]] = ...) -> None: ...
 
 class ExternalFunctionVersion(_message.Message):
-    __slots__ = (
-        "id",
-        "function_name",
-        "version",
-        "input_arrow_schema",
-        "output_arrow_schema",
-        "scaling_group_name",
-        "scaling_group_revision_id",
-        "created_at",
-        "config",
-    )
+    __slots__ = ("id", "function_name", "version", "input_arrow_schema", "output_arrow_schema", "scaling_group_name", "scaling_group_revision_id", "created_at", "config")
     ID_FIELD_NUMBER: _ClassVar[int]
     FUNCTION_NAME_FIELD_NUMBER: _ClassVar[int]
     VERSION_FIELD_NUMBER: _ClassVar[int]
@@ -162,18 +116,7 @@ class ExternalFunctionVersion(_message.Message):
     scaling_group_revision_id: str
     created_at: _timestamp_pb2.Timestamp
     config: FunctionConfig
-    def __init__(
-        self,
-        id: _Optional[str] = ...,
-        function_name: _Optional[str] = ...,
-        version: _Optional[int] = ...,
-        input_arrow_schema: _Optional[_Union[_arrow_pb2.Schema, _Mapping]] = ...,
-        output_arrow_schema: _Optional[_Union[_arrow_pb2.Schema, _Mapping]] = ...,
-        scaling_group_name: _Optional[str] = ...,
-        scaling_group_revision_id: _Optional[str] = ...,
-        created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
-        config: _Optional[_Union[FunctionConfig, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, id: _Optional[str] = ..., function_name: _Optional[str] = ..., version: _Optional[int] = ..., input_arrow_schema: _Optional[_Union[_arrow_pb2.Schema, _Mapping]] = ..., output_arrow_schema: _Optional[_Union[_arrow_pb2.Schema, _Mapping]] = ..., scaling_group_name: _Optional[str] = ..., scaling_group_revision_id: _Optional[str] = ..., created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., config: _Optional[_Union[FunctionConfig, _Mapping]] = ...) -> None: ...
 
 class CreateExternalFunctionVersionRequest(_message.Message):
     __slots__ = ("function_name", "input_arrow_schema", "output_arrow_schema", "spec", "config")
@@ -187,14 +130,7 @@ class CreateExternalFunctionVersionRequest(_message.Message):
     output_arrow_schema: _arrow_pb2.Schema
     spec: _service_pb2.ScalingGroupSpec
     config: FunctionConfig
-    def __init__(
-        self,
-        function_name: _Optional[str] = ...,
-        input_arrow_schema: _Optional[_Union[_arrow_pb2.Schema, _Mapping]] = ...,
-        output_arrow_schema: _Optional[_Union[_arrow_pb2.Schema, _Mapping]] = ...,
-        spec: _Optional[_Union[_service_pb2.ScalingGroupSpec, _Mapping]] = ...,
-        config: _Optional[_Union[FunctionConfig, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, function_name: _Optional[str] = ..., input_arrow_schema: _Optional[_Union[_arrow_pb2.Schema, _Mapping]] = ..., output_arrow_schema: _Optional[_Union[_arrow_pb2.Schema, _Mapping]] = ..., spec: _Optional[_Union[_service_pb2.ScalingGroupSpec, _Mapping]] = ..., config: _Optional[_Union[FunctionConfig, _Mapping]] = ...) -> None: ...
 
 class CreateExternalFunctionVersionResponse(_message.Message):
     __slots__ = ("external_function_version", "scaling_group")
@@ -202,11 +138,7 @@ class CreateExternalFunctionVersionResponse(_message.Message):
     SCALING_GROUP_FIELD_NUMBER: _ClassVar[int]
     external_function_version: ExternalFunctionVersion
     scaling_group: _service_pb2.ScalingGroupResponse
-    def __init__(
-        self,
-        external_function_version: _Optional[_Union[ExternalFunctionVersion, _Mapping]] = ...,
-        scaling_group: _Optional[_Union[_service_pb2.ScalingGroupResponse, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, external_function_version: _Optional[_Union[ExternalFunctionVersion, _Mapping]] = ..., scaling_group: _Optional[_Union[_service_pb2.ScalingGroupResponse, _Mapping]] = ...) -> None: ...
 
 class ExternalFunctionVersionKey(_message.Message):
     __slots__ = ("function_name", "version")
@@ -224,12 +156,7 @@ class GetExternalFunctionVersionRequest(_message.Message):
     id: str
     key: ExternalFunctionVersionKey
     include_scaling_group: bool
-    def __init__(
-        self,
-        id: _Optional[str] = ...,
-        key: _Optional[_Union[ExternalFunctionVersionKey, _Mapping]] = ...,
-        include_scaling_group: bool = ...,
-    ) -> None: ...
+    def __init__(self, id: _Optional[str] = ..., key: _Optional[_Union[ExternalFunctionVersionKey, _Mapping]] = ..., include_scaling_group: bool = ...) -> None: ...
 
 class GetExternalFunctionVersionResponse(_message.Message):
     __slots__ = ("external_function_version", "scaling_group")
@@ -237,11 +164,7 @@ class GetExternalFunctionVersionResponse(_message.Message):
     SCALING_GROUP_FIELD_NUMBER: _ClassVar[int]
     external_function_version: ExternalFunctionVersion
     scaling_group: _service_pb2.ScalingGroupResponse
-    def __init__(
-        self,
-        external_function_version: _Optional[_Union[ExternalFunctionVersion, _Mapping]] = ...,
-        scaling_group: _Optional[_Union[_service_pb2.ScalingGroupResponse, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, external_function_version: _Optional[_Union[ExternalFunctionVersion, _Mapping]] = ..., scaling_group: _Optional[_Union[_service_pb2.ScalingGroupResponse, _Mapping]] = ...) -> None: ...
 
 class ListExternalFunctionVersionsRequest(_message.Message):
     __slots__ = ("cursor", "limit", "include_scaling_group", "function_name")
@@ -253,13 +176,7 @@ class ListExternalFunctionVersionsRequest(_message.Message):
     limit: int
     include_scaling_group: bool
     function_name: str
-    def __init__(
-        self,
-        cursor: _Optional[str] = ...,
-        limit: _Optional[int] = ...,
-        include_scaling_group: bool = ...,
-        function_name: _Optional[str] = ...,
-    ) -> None: ...
+    def __init__(self, cursor: _Optional[str] = ..., limit: _Optional[int] = ..., include_scaling_group: bool = ..., function_name: _Optional[str] = ...) -> None: ...
 
 class ListExternalFunctionVersionsEntry(_message.Message):
     __slots__ = ("external_function_version", "scaling_group")
@@ -267,11 +184,7 @@ class ListExternalFunctionVersionsEntry(_message.Message):
     SCALING_GROUP_FIELD_NUMBER: _ClassVar[int]
     external_function_version: ExternalFunctionVersion
     scaling_group: _service_pb2.ScalingGroupResponse
-    def __init__(
-        self,
-        external_function_version: _Optional[_Union[ExternalFunctionVersion, _Mapping]] = ...,
-        scaling_group: _Optional[_Union[_service_pb2.ScalingGroupResponse, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, external_function_version: _Optional[_Union[ExternalFunctionVersion, _Mapping]] = ..., scaling_group: _Optional[_Union[_service_pb2.ScalingGroupResponse, _Mapping]] = ...) -> None: ...
 
 class ListExternalFunctionVersionsResponse(_message.Message):
     __slots__ = ("entries", "next_cursor")
@@ -279,11 +192,7 @@ class ListExternalFunctionVersionsResponse(_message.Message):
     NEXT_CURSOR_FIELD_NUMBER: _ClassVar[int]
     entries: _containers.RepeatedCompositeFieldContainer[ListExternalFunctionVersionsEntry]
     next_cursor: str
-    def __init__(
-        self,
-        entries: _Optional[_Iterable[_Union[ListExternalFunctionVersionsEntry, _Mapping]]] = ...,
-        next_cursor: _Optional[str] = ...,
-    ) -> None: ...
+    def __init__(self, entries: _Optional[_Iterable[_Union[ListExternalFunctionVersionsEntry, _Mapping]]] = ..., next_cursor: _Optional[str] = ...) -> None: ...
 
 class DeleteExternalFunctionVersionRequest(_message.Message):
     __slots__ = ("id", "key")
@@ -291,9 +200,7 @@ class DeleteExternalFunctionVersionRequest(_message.Message):
     KEY_FIELD_NUMBER: _ClassVar[int]
     id: str
     key: ExternalFunctionVersionKey
-    def __init__(
-        self, id: _Optional[str] = ..., key: _Optional[_Union[ExternalFunctionVersionKey, _Mapping]] = ...
-    ) -> None: ...
+    def __init__(self, id: _Optional[str] = ..., key: _Optional[_Union[ExternalFunctionVersionKey, _Mapping]] = ...) -> None: ...
 
 class DeleteExternalFunctionVersionResponse(_message.Message):
     __slots__ = ()
@@ -313,15 +220,7 @@ class ExternalFunctionSummary(_message.Message):
     latest_updated_at: _timestamp_pb2.Timestamp
     config: FunctionConfig
     scaling_group: _service_pb2.ScalingGroupResponse
-    def __init__(
-        self,
-        name: _Optional[str] = ...,
-        latest_version: _Optional[int] = ...,
-        latest_scaling_group_name: _Optional[str] = ...,
-        latest_updated_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
-        config: _Optional[_Union[FunctionConfig, _Mapping]] = ...,
-        scaling_group: _Optional[_Union[_service_pb2.ScalingGroupResponse, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, name: _Optional[str] = ..., latest_version: _Optional[int] = ..., latest_scaling_group_name: _Optional[str] = ..., latest_updated_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., config: _Optional[_Union[FunctionConfig, _Mapping]] = ..., scaling_group: _Optional[_Union[_service_pb2.ScalingGroupResponse, _Mapping]] = ...) -> None: ...
 
 class ListExternalFunctionsRequest(_message.Message):
     __slots__ = ("cursor", "limit", "include_scaling_group")
@@ -331,9 +230,7 @@ class ListExternalFunctionsRequest(_message.Message):
     cursor: str
     limit: int
     include_scaling_group: bool
-    def __init__(
-        self, cursor: _Optional[str] = ..., limit: _Optional[int] = ..., include_scaling_group: bool = ...
-    ) -> None: ...
+    def __init__(self, cursor: _Optional[str] = ..., limit: _Optional[int] = ..., include_scaling_group: bool = ...) -> None: ...
 
 class ListExternalFunctionsResponse(_message.Message):
     __slots__ = ("functions", "next_cursor")
@@ -341,11 +238,7 @@ class ListExternalFunctionsResponse(_message.Message):
     NEXT_CURSOR_FIELD_NUMBER: _ClassVar[int]
     functions: _containers.RepeatedCompositeFieldContainer[ExternalFunctionSummary]
     next_cursor: str
-    def __init__(
-        self,
-        functions: _Optional[_Iterable[_Union[ExternalFunctionSummary, _Mapping]]] = ...,
-        next_cursor: _Optional[str] = ...,
-    ) -> None: ...
+    def __init__(self, functions: _Optional[_Iterable[_Union[ExternalFunctionSummary, _Mapping]]] = ..., next_cursor: _Optional[str] = ...) -> None: ...
 
 class CallExternalFunctionRequest(_message.Message):
     __slots__ = ("function", "remote_call_request")
@@ -353,16 +246,10 @@ class CallExternalFunctionRequest(_message.Message):
     REMOTE_CALL_REQUEST_FIELD_NUMBER: _ClassVar[int]
     function: ExternalFunctionVersionKey
     remote_call_request: _remote_python_call_pb2.CallFunctionRequest
-    def __init__(
-        self,
-        function: _Optional[_Union[ExternalFunctionVersionKey, _Mapping]] = ...,
-        remote_call_request: _Optional[_Union[_remote_python_call_pb2.CallFunctionRequest, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, function: _Optional[_Union[ExternalFunctionVersionKey, _Mapping]] = ..., remote_call_request: _Optional[_Union[_remote_python_call_pb2.CallFunctionRequest, _Mapping]] = ...) -> None: ...
 
 class CallExternalFunctionResponse(_message.Message):
     __slots__ = ("remote_call_response",)
     REMOTE_CALL_RESPONSE_FIELD_NUMBER: _ClassVar[int]
     remote_call_response: _remote_python_call_pb2.CallFunctionResponse
-    def __init__(
-        self, remote_call_response: _Optional[_Union[_remote_python_call_pb2.CallFunctionResponse, _Mapping]] = ...
-    ) -> None: ...
+    def __init__(self, remote_call_response: _Optional[_Union[_remote_python_call_pb2.CallFunctionResponse, _Mapping]] = ...) -> None: ...

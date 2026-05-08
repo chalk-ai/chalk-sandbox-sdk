@@ -1,10 +1,4 @@
-"""Tests for policy dataclasses (rate limit / concurrency / retry) and the
-deploy-time guards that reject generator handlers + max_batching_size.
-
-The ``to_dict()`` output of each policy is the wire contract — the dict
-ends up in ``function_config`` on CreateExternalFunctionVersion, so these
-tests lock in the key names the server reads.
-"""
+"""Tests for policy dataclasses and deploy-time batching guards."""
 
 from __future__ import annotations
 
@@ -12,7 +6,13 @@ import pytest
 
 from chalkcompute._cls import ClassError, RemoteClass, method
 from chalkcompute._concurrency import ConcurrencyPolicy
-from chalkcompute._function import FunctionError, RemoteFunction
+from chalkcompute._function import (
+    FunctionError,
+    RemoteFunction,
+    _build_function_config_proto,
+)
+from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb2 as pb
+from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._retry import RetryPolicy
 
@@ -96,6 +96,56 @@ class TestRetryPolicyKey:
     def test_bool_rejected(self):
         with pytest.raises(TypeError, match="bool"):
             RetryPolicy.from_int_or_policy(True)  # type: ignore[arg-type]
+
+
+class TestFunctionConfigProto:
+    def test_builds_generated_proto_config(self):
+        config = _build_function_config_proto(
+            serialization_format="pyarrow",
+            options={"mode": "strict"},
+            max_buffer_duration=100,
+            max_batching_size=25,
+            retries=RetryPolicy.exponential(
+                attempts=4,
+                initial=0.5,
+                multiplier=1.5,
+                max_wait=10.0,
+                key="retry-shared",
+            ),
+            rate_limit=RateLimitPolicy(rate=60, per="minute", key="rate-shared"),
+            concurrency=ConcurrencyPolicy(max_concurrent=8, key="conc-shared"),
+            quota=QueuePolicy(max_items=1000),
+        )
+
+        assert config is not None
+        assert config.options["mode"] == "strict"
+        assert config.max_buffer_duration == 100
+        assert config.max_batching_size == 25
+        assert config.retry_policy.max_retries == 4
+        assert config.retry_policy.initial_backoff_ms == 500
+        assert config.retry_policy.backoff_multiplier == 1.5
+        assert config.retry_policy.max_backoff_ms == 10_000
+        assert config.retry_policy.key == "retry-shared"
+        assert config.rate_limit.rate == 60
+        assert config.rate_limit.per == pb.RATE_LIMIT_PER_MINUTE
+        assert config.rate_limit.key == "rate-shared"
+        assert config.concurrency.max_concurrent == 8
+        assert config.concurrency.key == "conc-shared"
+        assert config.queue.max_items == 1000
+
+    def test_omits_empty_config(self):
+        assert (
+            _build_function_config_proto(
+                serialization_format="pyarrow",
+                options={},
+                max_buffer_duration=None,
+                max_batching_size=None,
+                retries=None,
+                rate_limit=None,
+                concurrency=None,
+            )
+            is None
+        )
 
 
 class TestBatchingGeneratorGuardFunction:

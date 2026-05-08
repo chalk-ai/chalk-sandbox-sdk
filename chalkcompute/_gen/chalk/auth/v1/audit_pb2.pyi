@@ -11,7 +11,6 @@ class AuditLevel(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     AUDIT_LEVEL_UNSPECIFIED: _ClassVar[AuditLevel]
     AUDIT_LEVEL_ERRORS: _ClassVar[AuditLevel]
     AUDIT_LEVEL_ALL: _ClassVar[AuditLevel]
-
 AUDIT_LEVEL_UNSPECIFIED: AuditLevel
 AUDIT_LEVEL_ERRORS: AuditLevel
 AUDIT_LEVEL_ALL: AuditLevel

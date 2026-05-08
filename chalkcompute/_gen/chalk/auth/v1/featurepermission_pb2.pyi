@@ -12,7 +12,6 @@ class FeaturePermission(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     FEATURE_PERMISSION_ALLOW: _ClassVar[FeaturePermission]
     FEATURE_PERMISSION_ALLOW_INTERNAL: _ClassVar[FeaturePermission]
     FEATURE_PERMISSION_DENY: _ClassVar[FeaturePermission]
-
 FEATURE_PERMISSION_UNSPECIFIED: FeaturePermission
 FEATURE_PERMISSION_ALLOW: FeaturePermission
 FEATURE_PERMISSION_ALLOW_INTERNAL: FeaturePermission
@@ -26,16 +25,9 @@ class FeaturePermissions(_message.Message):
         VALUE_FIELD_NUMBER: _ClassVar[int]
         key: str
         value: FeaturePermission
-        def __init__(
-            self, key: _Optional[str] = ..., value: _Optional[_Union[FeaturePermission, str]] = ...
-        ) -> None: ...
-
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[_Union[FeaturePermission, str]] = ...) -> None: ...
     TAGS_FIELD_NUMBER: _ClassVar[int]
     DEFAULT_PERMISSION_FIELD_NUMBER: _ClassVar[int]
     tags: _containers.ScalarMap[str, FeaturePermission]
     default_permission: FeaturePermission
-    def __init__(
-        self,
-        tags: _Optional[_Mapping[str, FeaturePermission]] = ...,
-        default_permission: _Optional[_Union[FeaturePermission, str]] = ...,
-    ) -> None: ...
+    def __init__(self, tags: _Optional[_Mapping[str, FeaturePermission]] = ..., default_permission: _Optional[_Union[FeaturePermission, str]] = ...) -> None: ...

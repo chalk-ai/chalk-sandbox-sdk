@@ -1,4 +1,4 @@
-from chalkcompute._connect import grpc_target_from_url
+from chalkcompute._connect import _parse_request, grpc_target_from_url
 
 
 class TestGrpcTargetFromUrl:
@@ -31,3 +31,27 @@ class TestGrpcTargetFromUrl:
 
         assert target == "function.example.com:9000"
         assert use_tls is False
+
+
+class TestConnectRequestParsing:
+    def test_parses_json_dict_into_generated_proto(self):
+        request = _parse_request(
+            "chalk.container.v1.ContainerService",
+            "RunContainer",
+            {
+                "container": {
+                    "spec": {
+                        "name": "network-test",
+                        "image": "ubuntu:latest",
+                        "networkPolicy": {
+                            "allowedRoutes": [{"route": "10.0.0.0/8"}]
+                        },
+                    }
+                }
+            },
+        )
+
+        assert request.container.spec.name == "network-test"
+        assert request.container.spec.network_policy.allowed_routes[0].route == (
+            "10.0.0.0/8"
+        )

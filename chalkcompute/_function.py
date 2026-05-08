@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol, overload, runtime_che
 from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import (
     ConnectClient,
+    ConnectError,
     build_image,
     grpc_target_from_url,
 )
@@ -703,6 +704,62 @@ def _make_container_spec(
     return spec
 
 
+def _build_function_config_proto(
+    *,
+    serialization_format: SerializationFormat,
+    options: dict[str, str],
+    max_buffer_duration: int | None,
+    max_batching_size: int | None,
+    retries: RetryPolicy | None,
+    rate_limit: RateLimitPolicy | None,
+    concurrency: ConcurrencyPolicy | None,
+    quota: QueuePolicy | None = None,
+) -> Any | None:
+    """Build a generated ``FunctionConfig`` proto from SDK policy objects."""
+    from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb2 as pb
+
+    config = pb.FunctionConfig()
+    if serialization_format != "pyarrow":
+        raise ValueError(f"Unsupported serialization format: {serialization_format}")
+    if options:
+        config.options.update(options)
+    if max_buffer_duration is not None:
+        config.max_buffer_duration = max_buffer_duration
+    if max_batching_size is not None:
+        config.max_batching_size = max_batching_size
+    if retries is not None:
+        retry_policy = pb.RetryPolicy(max_retries=retries.max_retries)
+        retry_policy.initial_backoff_ms = int(retries.initial_wait_seconds * 1000)
+        retry_policy.backoff_multiplier = retries.backoff_multiplier
+        retry_policy.max_backoff_ms = int(retries.max_wait_seconds * 1000)
+        if retries.key is not None:
+            retry_policy.key = retries.key
+        config.retry_policy.CopyFrom(retry_policy)
+    if rate_limit is not None:
+        per = {
+            "second": pb.RATE_LIMIT_PER_SECOND,
+            "minute": pb.RATE_LIMIT_PER_MINUTE,
+            "hour": pb.RATE_LIMIT_PER_HOUR,
+        }.get(rate_limit.per)
+        if per is None:
+            raise ValueError(f"Unsupported rate limit period: {rate_limit.per}")
+        rate_limit_policy = pb.RateLimitPolicy(rate=rate_limit.rate, per=per)
+        if rate_limit.key is not None:
+            rate_limit_policy.key = rate_limit.key
+        config.rate_limit.CopyFrom(rate_limit_policy)
+    if concurrency is not None:
+        concurrency_policy = pb.ConcurrencyPolicy(
+            max_concurrent=concurrency.max_concurrent
+        )
+        if concurrency.key is not None:
+            concurrency_policy.key = concurrency.key
+        config.concurrency.CopyFrom(concurrency_policy)
+    if quota is not None:
+        config.queue.CopyFrom(pb.QueuePolicy(max_items=quota.max_items))
+
+    return config if config.ListFields() else None
+
+
 # ---------------------------------------------------------------------------
 # Schema helpers
 # ---------------------------------------------------------------------------
@@ -1156,7 +1213,7 @@ class RemoteFunction:
         RemoteFunction
             ``self`` for chaining.
         """
-        from google.protobuf.json_format import MessageToDict
+        from google.protobuf.json_format import MessageToDict, ParseDict
 
         from chalkcompute._progress import (
             progress_add,
@@ -1244,50 +1301,49 @@ class RemoteFunction:
                 ]
 
             # 5c. Build function-level config
-            function_config: dict[str, Any] = {}
-            if self._serialization_format != "pyarrow":
-                function_config["serializationFormat"] = self._serialization_format
-            if self._options:
-                function_config["options"] = self._options
-            if self._max_buffer_duration is not None:
-                function_config["maxBufferDuration"] = self._max_buffer_duration
-            if self._max_batching_size is not None:
-                function_config["maxBatchingSize"] = self._max_batching_size
-            if self._retries is not None:
-                function_config["retryPolicy"] = self._retries.to_dict()
-            if self._rate_limit is not None:
-                function_config["rateLimit"] = self._rate_limit.to_dict()
-            if self._concurrency is not None:
-                function_config["concurrency"] = self._concurrency.to_dict()
-            if self._quota is not None:
-                function_config["queue"] = self._quota.to_dict()
+            function_config = _build_function_config_proto(
+                serialization_format=self._serialization_format,
+                options=self._options,
+                max_buffer_duration=self._max_buffer_duration,
+                max_batching_size=self._max_batching_size,
+                retries=self._retries,
+                rate_limit=self._rate_limit,
+                concurrency=self._concurrency,
+                quota=self._quota,
+            )
 
             # 6. Call CreateExternalFunctionVersion
             rkey = f"register:{self._func_name}"
             progress_add(rkey, "function", "Registering function", parent=fkey)
             logger.info("Registering function '%s'...", self._func_name)
 
-            create_request: dict[str, Any] = {
-                "functionName": self._func_name,
-                "inputArrowSchema": MessageToDict(input_schema_proto),
-                "outputArrowSchema": MessageToDict(output_schema_proto),
-                "spec": spec,
-            }
-            if function_config:
-                create_request["config"] = function_config
-
-            resp = self._client.rpc(
-                _CATALOG_SVC,
-                "CreateExternalFunctionVersion",
-                create_request,
-                timeout=60,
+            from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import (
+                service_pb2 as catalog_pb,
             )
-            if resp.status_code != 200:
-                raise FunctionError(
-                    f"CreateExternalFunctionVersion failed: {resp.text}"
-                )
+            from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb2 as sg_pb
 
-            data = resp.json()
+            create_request = catalog_pb.CreateExternalFunctionVersionRequest(
+                function_name=self._func_name,
+                input_arrow_schema=input_schema_proto,
+                output_arrow_schema=output_schema_proto,
+                spec=ParseDict(spec, sg_pb.ScalingGroupSpec()),
+            )
+            if function_config is not None:
+                create_request.config.CopyFrom(function_config)
+
+            try:
+                create_response = self._client.unary(
+                    _CATALOG_SVC,
+                    "CreateExternalFunctionVersion",
+                    create_request,
+                    timeout=60,
+                )
+            except ConnectError as e:
+                raise FunctionError(
+                    f"CreateExternalFunctionVersion failed: {e}"
+                ) from e
+
+            data = MessageToDict(create_response)
             efv = data["externalFunctionVersion"]
             self._version_info = FunctionVersionInfo(
                 id=efv["id"],

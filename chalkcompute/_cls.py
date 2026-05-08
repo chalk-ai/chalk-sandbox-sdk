@@ -49,7 +49,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, TypeVar, overload
 
-from chalkcompute._connect import ConnectClient
+from chalkcompute._connect import ConnectClient, ConnectError
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import traced
 from chalkcompute._function import (
@@ -60,6 +60,7 @@ from chalkcompute._function import (
     RemoteFunction,
     SerializationFormat,
     _build_and_upload,
+    _build_function_config_proto,
     _cleanup_temp_files,
     _extract_field_names,
     _is_chalkcompute_decorator,
@@ -839,7 +840,7 @@ class RemoteClass:
         RemoteClass
             ``self`` for chaining.
         """
-        from google.protobuf.json_format import MessageToDict
+        from google.protobuf.json_format import MessageToDict, ParseDict
 
         from chalkcompute._progress import (
             progress_add,
@@ -942,46 +943,48 @@ class RemoteClass:
                 }
 
                 # Build function-level config
-                function_config: dict[str, Any] = {}
-                if self._serialization_format != "pyarrow":
-                    function_config["serializationFormat"] = self._serialization_format
-                if self._options:
-                    function_config["options"] = self._options
-                if self._max_buffer_duration is not None:
-                    function_config["maxBufferDuration"] = self._max_buffer_duration
-                if self._max_batching_size is not None:
-                    function_config["maxBatchingSize"] = self._max_batching_size
-                if self._retries is not None:
-                    function_config["retryPolicy"] = self._retries.to_dict()
-                if self._rate_limit is not None:
-                    function_config["rateLimit"] = self._rate_limit.to_dict()
-                if self._concurrency is not None:
-                    function_config["concurrency"] = self._concurrency.to_dict()
+                function_config = _build_function_config_proto(
+                    serialization_format=self._serialization_format,
+                    options=self._options,
+                    max_buffer_duration=self._max_buffer_duration,
+                    max_batching_size=self._max_batching_size,
+                    retries=self._retries,
+                    rate_limit=self._rate_limit,
+                    concurrency=self._concurrency,
+                )
 
                 logger.info("Registering method '%s'...", func_name)
-                create_request: dict[str, Any] = {
-                    "functionName": func_name,
-                    "inputArrowSchema": MessageToDict(input_schema),
-                    "outputArrowSchema": MessageToDict(output_schema),
-                    "spec": spec,
-                }
-                if function_config:
-                    create_request["config"] = function_config
-
-                resp = self._client.rpc(
-                    _CATALOG_SVC,
-                    "CreateExternalFunctionVersion",
-                    create_request,
-                    timeout=60,
+                from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import (
+                    service_pb2 as catalog_pb,
                 )
-                if resp.status_code != 200:
+                from chalkcompute._gen.chalk.scalinggroup.v1 import (
+                    service_pb2 as sg_pb,
+                )
+
+                create_request = catalog_pb.CreateExternalFunctionVersionRequest(
+                    function_name=func_name,
+                    input_arrow_schema=input_schema,
+                    output_arrow_schema=output_schema,
+                    spec=ParseDict(spec, sg_pb.ScalingGroupSpec()),
+                )
+                if function_config is not None:
+                    create_request.config.CopyFrom(function_config)
+
+                try:
+                    create_response = self._client.unary(
+                        _CATALOG_SVC,
+                        "CreateExternalFunctionVersion",
+                        create_request,
+                        timeout=60,
+                    )
+                except ConnectError as e:
                     progress_fail(mkey)
                     raise ClassBuildError(
                         f"CreateExternalFunctionVersion failed for "
-                        f"'{func_name}': {resp.text}"
-                    )
+                        f"'{func_name}': {e}"
+                    ) from e
 
-                data = resp.json()
+                data = MessageToDict(create_response)
                 efv = data["externalFunctionVersion"]
                 version_info = FunctionVersionInfo(
                     id=efv["id"],

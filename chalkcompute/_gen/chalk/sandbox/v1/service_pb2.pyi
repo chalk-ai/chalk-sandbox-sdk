@@ -3,13 +3,7 @@ from google.protobuf.internal import containers as _containers
 from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
-from typing import (
-    ClassVar as _ClassVar,
-    Iterable as _Iterable,
-    Mapping as _Mapping,
-    Optional as _Optional,
-    Union as _Union,
-)
+from typing import ClassVar as _ClassVar, Iterable as _Iterable, Mapping as _Mapping, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
@@ -25,14 +19,7 @@ class ExecRequest(_message.Message):
     stdin_eof: StdinEof
     signal: ExecSignal
     resize: ExecResize
-    def __init__(
-        self,
-        init: _Optional[_Union[ExecInit, _Mapping]] = ...,
-        stdin_data: _Optional[_Union[StdinData, _Mapping]] = ...,
-        stdin_eof: _Optional[_Union[StdinEof, _Mapping]] = ...,
-        signal: _Optional[_Union[ExecSignal, _Mapping]] = ...,
-        resize: _Optional[_Union[ExecResize, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, init: _Optional[_Union[ExecInit, _Mapping]] = ..., stdin_data: _Optional[_Union[StdinData, _Mapping]] = ..., stdin_eof: _Optional[_Union[StdinEof, _Mapping]] = ..., signal: _Optional[_Union[ExecSignal, _Mapping]] = ..., resize: _Optional[_Union[ExecResize, _Mapping]] = ...) -> None: ...
 
 class ExecInit(_message.Message):
     __slots__ = ("sandbox_id", "command", "args", "workdir", "env", "timeout_secs", "pty_info")
@@ -43,7 +30,6 @@ class ExecInit(_message.Message):
         key: str
         value: str
         def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
-
     SANDBOX_ID_FIELD_NUMBER: _ClassVar[int]
     COMMAND_FIELD_NUMBER: _ClassVar[int]
     ARGS_FIELD_NUMBER: _ClassVar[int]
@@ -58,16 +44,7 @@ class ExecInit(_message.Message):
     env: _containers.ScalarMap[str, str]
     timeout_secs: int
     pty_info: PtyInfo
-    def __init__(
-        self,
-        sandbox_id: _Optional[str] = ...,
-        command: _Optional[str] = ...,
-        args: _Optional[_Iterable[str]] = ...,
-        workdir: _Optional[str] = ...,
-        env: _Optional[_Mapping[str, str]] = ...,
-        timeout_secs: _Optional[int] = ...,
-        pty_info: _Optional[_Union[PtyInfo, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, sandbox_id: _Optional[str] = ..., command: _Optional[str] = ..., args: _Optional[_Iterable[str]] = ..., workdir: _Optional[str] = ..., env: _Optional[_Mapping[str, str]] = ..., timeout_secs: _Optional[int] = ..., pty_info: _Optional[_Union[PtyInfo, _Mapping]] = ...) -> None: ...
 
 class PtyInfo(_message.Message):
     __slots__ = ("cols", "rows")
@@ -111,13 +88,7 @@ class ExecResponse(_message.Message):
     output_data: OutputData
     process_exited: ProcessExited
     error: ExecError
-    def __init__(
-        self,
-        process_started: _Optional[_Union[ProcessStarted, _Mapping]] = ...,
-        output_data: _Optional[_Union[OutputData, _Mapping]] = ...,
-        process_exited: _Optional[_Union[ProcessExited, _Mapping]] = ...,
-        error: _Optional[_Union[ExecError, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, process_started: _Optional[_Union[ProcessStarted, _Mapping]] = ..., output_data: _Optional[_Union[OutputData, _Mapping]] = ..., process_exited: _Optional[_Union[ProcessExited, _Mapping]] = ..., error: _Optional[_Union[ExecError, _Mapping]] = ...) -> None: ...
 
 class ProcessStarted(_message.Message):
     __slots__ = ("pid",)
@@ -133,7 +104,6 @@ class OutputData(_message.Message):
         STREAM_STDOUT: _ClassVar[OutputData.Stream]
         STREAM_STDERR: _ClassVar[OutputData.Stream]
         STREAM_PTY_OUTPUT: _ClassVar[OutputData.Stream]
-
     STREAM_UNSPECIFIED: OutputData.Stream
     STREAM_STDOUT: OutputData.Stream
     STREAM_STDERR: OutputData.Stream
@@ -142,9 +112,7 @@ class OutputData(_message.Message):
     DATA_FIELD_NUMBER: _ClassVar[int]
     stream: OutputData.Stream
     data: bytes
-    def __init__(
-        self, stream: _Optional[_Union[OutputData.Stream, str]] = ..., data: _Optional[bytes] = ...
-    ) -> None: ...
+    def __init__(self, stream: _Optional[_Union[OutputData.Stream, str]] = ..., data: _Optional[bytes] = ...) -> None: ...
 
 class ProcessExited(_message.Message):
     __slots__ = ("exit_code", "signal")
@@ -171,7 +139,6 @@ class ImageSpec(_message.Message):
         key: str
         value: str
         def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
-
     BASE_IMAGE_FIELD_NUMBER: _ClassVar[int]
     STEPS_FIELD_NUMBER: _ClassVar[int]
     ENTRYPOINT_FIELD_NUMBER: _ClassVar[int]
@@ -184,15 +151,7 @@ class ImageSpec(_message.Message):
     cmd: _containers.RepeatedScalarFieldContainer[str]
     workdir: str
     env: _containers.ScalarMap[str, str]
-    def __init__(
-        self,
-        base_image: _Optional[str] = ...,
-        steps: _Optional[_Iterable[_Union[BuildStep, _Mapping]]] = ...,
-        entrypoint: _Optional[_Iterable[str]] = ...,
-        cmd: _Optional[_Iterable[str]] = ...,
-        workdir: _Optional[str] = ...,
-        env: _Optional[_Mapping[str, str]] = ...,
-    ) -> None: ...
+    def __init__(self, base_image: _Optional[str] = ..., steps: _Optional[_Iterable[_Union[BuildStep, _Mapping]]] = ..., entrypoint: _Optional[_Iterable[str]] = ..., cmd: _Optional[_Iterable[str]] = ..., workdir: _Optional[str] = ..., env: _Optional[_Mapping[str, str]] = ...) -> None: ...
 
 class BuildStep(_message.Message):
     __slots__ = ("run_commands", "pip_install", "add_file", "dockerfile_commands", "uv_pip_install", "uv_sync")
@@ -208,15 +167,7 @@ class BuildStep(_message.Message):
     dockerfile_commands: DockerfileCommandsStep
     uv_pip_install: UvPipInstallStep
     uv_sync: UvSyncStep
-    def __init__(
-        self,
-        run_commands: _Optional[_Union[RunCommandsStep, _Mapping]] = ...,
-        pip_install: _Optional[_Union[PipInstallStep, _Mapping]] = ...,
-        add_file: _Optional[_Union[AddFileStep, _Mapping]] = ...,
-        dockerfile_commands: _Optional[_Union[DockerfileCommandsStep, _Mapping]] = ...,
-        uv_pip_install: _Optional[_Union[UvPipInstallStep, _Mapping]] = ...,
-        uv_sync: _Optional[_Union[UvSyncStep, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, run_commands: _Optional[_Union[RunCommandsStep, _Mapping]] = ..., pip_install: _Optional[_Union[PipInstallStep, _Mapping]] = ..., add_file: _Optional[_Union[AddFileStep, _Mapping]] = ..., dockerfile_commands: _Optional[_Union[DockerfileCommandsStep, _Mapping]] = ..., uv_pip_install: _Optional[_Union[UvPipInstallStep, _Mapping]] = ..., uv_sync: _Optional[_Union[UvSyncStep, _Mapping]] = ...) -> None: ...
 
 class RunCommandsStep(_message.Message):
     __slots__ = ("commands",)
@@ -246,13 +197,7 @@ class UvSyncStep(_message.Message):
     uv_lock_lz4: bytes
     extras: _containers.RepeatedScalarFieldContainer[str]
     workdir: str
-    def __init__(
-        self,
-        pyproject_toml_lz4: _Optional[bytes] = ...,
-        uv_lock_lz4: _Optional[bytes] = ...,
-        extras: _Optional[_Iterable[str]] = ...,
-        workdir: _Optional[str] = ...,
-    ) -> None: ...
+    def __init__(self, pyproject_toml_lz4: _Optional[bytes] = ..., uv_lock_lz4: _Optional[bytes] = ..., extras: _Optional[_Iterable[str]] = ..., workdir: _Optional[str] = ...) -> None: ...
 
 class AddFileStep(_message.Message):
     __slots__ = ("destination", "content", "mode")
@@ -262,9 +207,7 @@ class AddFileStep(_message.Message):
     destination: str
     content: bytes
     mode: int
-    def __init__(
-        self, destination: _Optional[str] = ..., content: _Optional[bytes] = ..., mode: _Optional[int] = ...
-    ) -> None: ...
+    def __init__(self, destination: _Optional[str] = ..., content: _Optional[bytes] = ..., mode: _Optional[int] = ...) -> None: ...
 
 class DockerfileCommandsStep(_message.Message):
     __slots__ = ("commands",)
@@ -280,12 +223,7 @@ class BuildCustomImageRequest(_message.Message):
     image_spec: ImageSpec
     target_registry: str
     tag: str
-    def __init__(
-        self,
-        image_spec: _Optional[_Union[ImageSpec, _Mapping]] = ...,
-        target_registry: _Optional[str] = ...,
-        tag: _Optional[str] = ...,
-    ) -> None: ...
+    def __init__(self, image_spec: _Optional[_Union[ImageSpec, _Mapping]] = ..., target_registry: _Optional[str] = ..., tag: _Optional[str] = ...) -> None: ...
 
 class BuildCustomImageResponse(_message.Message):
     __slots__ = ("image", "build_id")
@@ -305,13 +243,7 @@ class VolumeMount(_message.Message):
     mount_path: str
     type: str
     size_limit: str
-    def __init__(
-        self,
-        name: _Optional[str] = ...,
-        mount_path: _Optional[str] = ...,
-        type: _Optional[str] = ...,
-        size_limit: _Optional[str] = ...,
-    ) -> None: ...
+    def __init__(self, name: _Optional[str] = ..., mount_path: _Optional[str] = ..., type: _Optional[str] = ..., size_limit: _Optional[str] = ...) -> None: ...
 
 class CreateSandboxRequest(_message.Message):
     __slots__ = ("image", "image_spec", "resource_limits", "env", "name", "volumes")
@@ -322,7 +254,6 @@ class CreateSandboxRequest(_message.Message):
         key: str
         value: str
         def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
-
     IMAGE_FIELD_NUMBER: _ClassVar[int]
     IMAGE_SPEC_FIELD_NUMBER: _ClassVar[int]
     RESOURCE_LIMITS_FIELD_NUMBER: _ClassVar[int]
@@ -335,15 +266,7 @@ class CreateSandboxRequest(_message.Message):
     env: _containers.ScalarMap[str, str]
     name: str
     volumes: _containers.RepeatedCompositeFieldContainer[VolumeMount]
-    def __init__(
-        self,
-        image: _Optional[str] = ...,
-        image_spec: _Optional[_Union[ImageSpec, _Mapping]] = ...,
-        resource_limits: _Optional[_Union[ResourceLimits, _Mapping]] = ...,
-        env: _Optional[_Mapping[str, str]] = ...,
-        name: _Optional[str] = ...,
-        volumes: _Optional[_Iterable[_Union[VolumeMount, _Mapping]]] = ...,
-    ) -> None: ...
+    def __init__(self, image: _Optional[str] = ..., image_spec: _Optional[_Union[ImageSpec, _Mapping]] = ..., resource_limits: _Optional[_Union[ResourceLimits, _Mapping]] = ..., env: _Optional[_Mapping[str, str]] = ..., name: _Optional[str] = ..., volumes: _Optional[_Iterable[_Union[VolumeMount, _Mapping]]] = ...) -> None: ...
 
 class ResourceLimits(_message.Message):
     __slots__ = ("cpu", "memory")
@@ -405,14 +328,7 @@ class SandboxInfo(_message.Message):
     created_at: str
     name: str
     build_id: str
-    def __init__(
-        self,
-        id: _Optional[str] = ...,
-        state: _Optional[str] = ...,
-        created_at: _Optional[str] = ...,
-        name: _Optional[str] = ...,
-        build_id: _Optional[str] = ...,
-    ) -> None: ...
+    def __init__(self, id: _Optional[str] = ..., state: _Optional[str] = ..., created_at: _Optional[str] = ..., name: _Optional[str] = ..., build_id: _Optional[str] = ...) -> None: ...
 
 class GetCustomImageRequest(_message.Message):
     __slots__ = ("build_id",)
@@ -430,13 +346,7 @@ class GetCustomImageResponse(_message.Message):
     status: str
     image: str
     error: str
-    def __init__(
-        self,
-        build_id: _Optional[str] = ...,
-        status: _Optional[str] = ...,
-        image: _Optional[str] = ...,
-        error: _Optional[str] = ...,
-    ) -> None: ...
+    def __init__(self, build_id: _Optional[str] = ..., status: _Optional[str] = ..., image: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
 
 class GetOrBuildCustomImageRequest(_message.Message):
     __slots__ = ("image_spec", "target_registry")
@@ -444,9 +354,7 @@ class GetOrBuildCustomImageRequest(_message.Message):
     TARGET_REGISTRY_FIELD_NUMBER: _ClassVar[int]
     image_spec: ImageSpec
     target_registry: str
-    def __init__(
-        self, image_spec: _Optional[_Union[ImageSpec, _Mapping]] = ..., target_registry: _Optional[str] = ...
-    ) -> None: ...
+    def __init__(self, image_spec: _Optional[_Union[ImageSpec, _Mapping]] = ..., target_registry: _Optional[str] = ...) -> None: ...
 
 class GetOrBuildCustomImageResponse(_message.Message):
     __slots__ = ("image", "build_id", "status", "error")
@@ -458,13 +366,7 @@ class GetOrBuildCustomImageResponse(_message.Message):
     build_id: str
     status: str
     error: str
-    def __init__(
-        self,
-        image: _Optional[str] = ...,
-        build_id: _Optional[str] = ...,
-        status: _Optional[str] = ...,
-        error: _Optional[str] = ...,
-    ) -> None: ...
+    def __init__(self, image: _Optional[str] = ..., build_id: _Optional[str] = ..., status: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
 
 class StreamCustomImageBuildUpdatesRequest(_message.Message):
     __slots__ = ("build_id",)
@@ -482,10 +384,4 @@ class StreamCustomImageBuildUpdatesResponse(_message.Message):
     image: str
     error: str
     message: str
-    def __init__(
-        self,
-        status: _Optional[str] = ...,
-        image: _Optional[str] = ...,
-        error: _Optional[str] = ...,
-        message: _Optional[str] = ...,
-    ) -> None: ...
+    def __init__(self, status: _Optional[str] = ..., image: _Optional[str] = ..., error: _Optional[str] = ..., message: _Optional[str] = ...) -> None: ...

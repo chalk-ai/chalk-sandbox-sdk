@@ -5,25 +5,12 @@ from google.protobuf import timestamp_pb2 as _timestamp_pb2
 from google.protobuf.internal import containers as _containers
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
-from typing import (
-    ClassVar as _ClassVar,
-    Iterable as _Iterable,
-    Mapping as _Mapping,
-    Optional as _Optional,
-    Union as _Union,
-)
+from typing import ClassVar as _ClassVar, Iterable as _Iterable, Mapping as _Mapping, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
 class ScalingSpec(_message.Message):
-    __slots__ = (
-        "min_replicas",
-        "max_replicas",
-        "target_cpu_utilization_percentage",
-        "shutdown_delay_seconds",
-        "window_seconds",
-        "function_queue_depth_trigger",
-    )
+    __slots__ = ("min_replicas", "max_replicas", "target_cpu_utilization_percentage", "shutdown_delay_seconds", "window_seconds", "function_queue_depth_trigger")
     MIN_REPLICAS_FIELD_NUMBER: _ClassVar[int]
     MAX_REPLICAS_FIELD_NUMBER: _ClassVar[int]
     TARGET_CPU_UTILIZATION_PERCENTAGE_FIELD_NUMBER: _ClassVar[int]
@@ -36,15 +23,7 @@ class ScalingSpec(_message.Message):
     shutdown_delay_seconds: int
     window_seconds: int
     function_queue_depth_trigger: FunctionQueueDepthScalingTrigger
-    def __init__(
-        self,
-        min_replicas: _Optional[int] = ...,
-        max_replicas: _Optional[int] = ...,
-        target_cpu_utilization_percentage: _Optional[int] = ...,
-        shutdown_delay_seconds: _Optional[int] = ...,
-        window_seconds: _Optional[int] = ...,
-        function_queue_depth_trigger: _Optional[_Union[FunctionQueueDepthScalingTrigger, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, min_replicas: _Optional[int] = ..., max_replicas: _Optional[int] = ..., target_cpu_utilization_percentage: _Optional[int] = ..., shutdown_delay_seconds: _Optional[int] = ..., window_seconds: _Optional[int] = ..., function_queue_depth_trigger: _Optional[_Union[FunctionQueueDepthScalingTrigger, _Mapping]] = ...) -> None: ...
 
 class FunctionQueueDepthScalingTrigger(_message.Message):
     __slots__ = ("function_name", "target_queue_depth")
@@ -60,38 +39,17 @@ class ScalingGroupSpec(_message.Message):
     SCALING_SPEC_FIELD_NUMBER: _ClassVar[int]
     container_spec: _service_pb2.ChalkContainerSpec
     scaling_spec: ScalingSpec
-    def __init__(
-        self,
-        container_spec: _Optional[_Union[_service_pb2.ChalkContainerSpec, _Mapping]] = ...,
-        scaling_spec: _Optional[_Union[ScalingSpec, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, container_spec: _Optional[_Union[_service_pb2.ChalkContainerSpec, _Mapping]] = ..., scaling_spec: _Optional[_Union[ScalingSpec, _Mapping]] = ...) -> None: ...
 
 class ScalingGroupResponse(_message.Message):
-    __slots__ = (
-        "id",
-        "name",
-        "revision_id",
-        "status",
-        "status_message",
-        "spec",
-        "created_at",
-        "updated_at",
-        "deleted_at",
-        "web_url",
-        "ready_replicas",
-        "available_replicas",
-        "metadata",
-    )
+    __slots__ = ("id", "name", "revision_id", "status", "status_message", "spec", "created_at", "updated_at", "deleted_at", "web_url", "ready_replicas", "available_replicas", "metadata")
     class MetadataEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
         VALUE_FIELD_NUMBER: _ClassVar[int]
         key: str
         value: _struct_pb2.Value
-        def __init__(
-            self, key: _Optional[str] = ..., value: _Optional[_Union[_struct_pb2.Value, _Mapping]] = ...
-        ) -> None: ...
-
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[_Union[_struct_pb2.Value, _Mapping]] = ...) -> None: ...
     ID_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
     REVISION_ID_FIELD_NUMBER: _ClassVar[int]
@@ -118,22 +76,7 @@ class ScalingGroupResponse(_message.Message):
     ready_replicas: int
     available_replicas: int
     metadata: _containers.MessageMap[str, _struct_pb2.Value]
-    def __init__(
-        self,
-        id: _Optional[str] = ...,
-        name: _Optional[str] = ...,
-        revision_id: _Optional[str] = ...,
-        status: _Optional[str] = ...,
-        status_message: _Optional[str] = ...,
-        spec: _Optional[_Union[ScalingGroupSpec, _Mapping]] = ...,
-        created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
-        updated_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
-        deleted_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
-        web_url: _Optional[str] = ...,
-        ready_replicas: _Optional[int] = ...,
-        available_replicas: _Optional[int] = ...,
-        metadata: _Optional[_Mapping[str, _struct_pb2.Value]] = ...,
-    ) -> None: ...
+    def __init__(self, id: _Optional[str] = ..., name: _Optional[str] = ..., revision_id: _Optional[str] = ..., status: _Optional[str] = ..., status_message: _Optional[str] = ..., spec: _Optional[_Union[ScalingGroupSpec, _Mapping]] = ..., created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., deleted_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., web_url: _Optional[str] = ..., ready_replicas: _Optional[int] = ..., available_replicas: _Optional[int] = ..., metadata: _Optional[_Mapping[str, _struct_pb2.Value]] = ...) -> None: ...
 
 class CreateScalingGroupRequest(_message.Message):
     __slots__ = ("spec",)
@@ -172,27 +115,14 @@ class ListScalingGroupsResponse(_message.Message):
     def __init__(self, scaling_groups: _Optional[_Iterable[_Union[ScalingGroupResponse, _Mapping]]] = ...) -> None: ...
 
 class ScalingGroupRevisionResponse(_message.Message):
-    __slots__ = (
-        "id",
-        "scaling_group_id",
-        "scaling_group_name",
-        "status",
-        "status_message",
-        "spec",
-        "created_at",
-        "metadata",
-        "latest",
-    )
+    __slots__ = ("id", "scaling_group_id", "scaling_group_name", "status", "status_message", "spec", "created_at", "metadata", "latest")
     class MetadataEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
         VALUE_FIELD_NUMBER: _ClassVar[int]
         key: str
         value: _struct_pb2.Value
-        def __init__(
-            self, key: _Optional[str] = ..., value: _Optional[_Union[_struct_pb2.Value, _Mapping]] = ...
-        ) -> None: ...
-
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[_Union[_struct_pb2.Value, _Mapping]] = ...) -> None: ...
     ID_FIELD_NUMBER: _ClassVar[int]
     SCALING_GROUP_ID_FIELD_NUMBER: _ClassVar[int]
     SCALING_GROUP_NAME_FIELD_NUMBER: _ClassVar[int]
@@ -211,18 +141,7 @@ class ScalingGroupRevisionResponse(_message.Message):
     created_at: _timestamp_pb2.Timestamp
     metadata: _containers.MessageMap[str, _struct_pb2.Value]
     latest: bool
-    def __init__(
-        self,
-        id: _Optional[str] = ...,
-        scaling_group_id: _Optional[str] = ...,
-        scaling_group_name: _Optional[str] = ...,
-        status: _Optional[str] = ...,
-        status_message: _Optional[str] = ...,
-        spec: _Optional[_Union[ScalingGroupSpec, _Mapping]] = ...,
-        created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
-        metadata: _Optional[_Mapping[str, _struct_pb2.Value]] = ...,
-        latest: bool = ...,
-    ) -> None: ...
+    def __init__(self, id: _Optional[str] = ..., scaling_group_id: _Optional[str] = ..., scaling_group_name: _Optional[str] = ..., status: _Optional[str] = ..., status_message: _Optional[str] = ..., spec: _Optional[_Union[ScalingGroupSpec, _Mapping]] = ..., created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., metadata: _Optional[_Mapping[str, _struct_pb2.Value]] = ..., latest: bool = ...) -> None: ...
 
 class GetScalingGroupRevisionRequest(_message.Message):
     __slots__ = ("scaling_group_id", "scaling_group_name", "revision_id")
@@ -232,12 +151,7 @@ class GetScalingGroupRevisionRequest(_message.Message):
     scaling_group_id: str
     scaling_group_name: str
     revision_id: str
-    def __init__(
-        self,
-        scaling_group_id: _Optional[str] = ...,
-        scaling_group_name: _Optional[str] = ...,
-        revision_id: _Optional[str] = ...,
-    ) -> None: ...
+    def __init__(self, scaling_group_id: _Optional[str] = ..., scaling_group_name: _Optional[str] = ..., revision_id: _Optional[str] = ...) -> None: ...
 
 class GetScalingGroupRevisionResponse(_message.Message):
     __slots__ = ("revision",)
@@ -255,13 +169,7 @@ class ListScalingGroupRevisionsRequest(_message.Message):
     scaling_group_name: str
     cursor: str
     limit: int
-    def __init__(
-        self,
-        scaling_group_id: _Optional[str] = ...,
-        scaling_group_name: _Optional[str] = ...,
-        cursor: _Optional[str] = ...,
-        limit: _Optional[int] = ...,
-    ) -> None: ...
+    def __init__(self, scaling_group_id: _Optional[str] = ..., scaling_group_name: _Optional[str] = ..., cursor: _Optional[str] = ..., limit: _Optional[int] = ...) -> None: ...
 
 class ListScalingGroupRevisionsResponse(_message.Message):
     __slots__ = ("revisions", "next_cursor")
@@ -269,11 +177,7 @@ class ListScalingGroupRevisionsResponse(_message.Message):
     NEXT_CURSOR_FIELD_NUMBER: _ClassVar[int]
     revisions: _containers.RepeatedCompositeFieldContainer[ScalingGroupRevisionResponse]
     next_cursor: str
-    def __init__(
-        self,
-        revisions: _Optional[_Iterable[_Union[ScalingGroupRevisionResponse, _Mapping]]] = ...,
-        next_cursor: _Optional[str] = ...,
-    ) -> None: ...
+    def __init__(self, revisions: _Optional[_Iterable[_Union[ScalingGroupRevisionResponse, _Mapping]]] = ..., next_cursor: _Optional[str] = ...) -> None: ...
 
 class DeleteScalingGroupRequest(_message.Message):
     __slots__ = ("id", "name")
@@ -297,17 +201,13 @@ class UpdateScalingGroupStatusRequest(_message.Message):
     scaling_group_id: str
     status: str
     status_message: str
-    def __init__(
-        self, scaling_group_id: _Optional[str] = ..., status: _Optional[str] = ..., status_message: _Optional[str] = ...
-    ) -> None: ...
+    def __init__(self, scaling_group_id: _Optional[str] = ..., status: _Optional[str] = ..., status_message: _Optional[str] = ...) -> None: ...
 
 class BatchUpdateScalingGroupStatusRequest(_message.Message):
     __slots__ = ("updates",)
     UPDATES_FIELD_NUMBER: _ClassVar[int]
     updates: _containers.RepeatedCompositeFieldContainer[UpdateScalingGroupStatusRequest]
-    def __init__(
-        self, updates: _Optional[_Iterable[_Union[UpdateScalingGroupStatusRequest, _Mapping]]] = ...
-    ) -> None: ...
+    def __init__(self, updates: _Optional[_Iterable[_Union[UpdateScalingGroupStatusRequest, _Mapping]]] = ...) -> None: ...
 
 class BatchUpdateScalingGroupStatusResponse(_message.Message):
     __slots__ = ()

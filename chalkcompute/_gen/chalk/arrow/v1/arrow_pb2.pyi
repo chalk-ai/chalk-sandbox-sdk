@@ -2,13 +2,7 @@ from google.protobuf.internal import containers as _containers
 from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
-from typing import (
-    ClassVar as _ClassVar,
-    Iterable as _Iterable,
-    Mapping as _Mapping,
-    Optional as _Optional,
-    Union as _Union,
-)
+from typing import ClassVar as _ClassVar, Iterable as _Iterable, Mapping as _Mapping, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
@@ -26,7 +20,6 @@ class FeatherCompression(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     FEATHER_COMPRESSION_UNCOMPRESSED: _ClassVar[FeatherCompression]
     FEATHER_COMPRESSION_LZ4: _ClassVar[FeatherCompression]
     FEATHER_COMPRESSION_ZSTD: _ClassVar[FeatherCompression]
-
 TIME_UNIT_UNSPECIFIED: TimeUnit
 TIME_UNIT_SECOND: TimeUnit
 TIME_UNIT_MILLISECOND: TimeUnit
@@ -46,16 +39,11 @@ class Schema(_message.Message):
         key: str
         value: str
         def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
-
     COLUMNS_FIELD_NUMBER: _ClassVar[int]
     METADATA_FIELD_NUMBER: _ClassVar[int]
     columns: _containers.RepeatedCompositeFieldContainer[Field]
     metadata: _containers.ScalarMap[str, str]
-    def __init__(
-        self,
-        columns: _Optional[_Iterable[_Union[Field, _Mapping]]] = ...,
-        metadata: _Optional[_Mapping[str, str]] = ...,
-    ) -> None: ...
+    def __init__(self, columns: _Optional[_Iterable[_Union[Field, _Mapping]]] = ..., metadata: _Optional[_Mapping[str, str]] = ...) -> None: ...
 
 class Field(_message.Message):
     __slots__ = ("name", "arrow_type", "nullable", "children", "metadata")
@@ -66,7 +54,6 @@ class Field(_message.Message):
         key: str
         value: str
         def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
-
     NAME_FIELD_NUMBER: _ClassVar[int]
     ARROW_TYPE_FIELD_NUMBER: _ClassVar[int]
     NULLABLE_FIELD_NUMBER: _ClassVar[int]
@@ -77,14 +64,7 @@ class Field(_message.Message):
     nullable: bool
     children: _containers.RepeatedCompositeFieldContainer[Field]
     metadata: _containers.ScalarMap[str, str]
-    def __init__(
-        self,
-        name: _Optional[str] = ...,
-        arrow_type: _Optional[_Union[ArrowType, _Mapping]] = ...,
-        nullable: bool = ...,
-        children: _Optional[_Iterable[_Union[Field, _Mapping]]] = ...,
-        metadata: _Optional[_Mapping[str, str]] = ...,
-    ) -> None: ...
+    def __init__(self, name: _Optional[str] = ..., arrow_type: _Optional[_Union[ArrowType, _Mapping]] = ..., nullable: bool = ..., children: _Optional[_Iterable[_Union[Field, _Mapping]]] = ..., metadata: _Optional[_Mapping[str, str]] = ...) -> None: ...
 
 class FixedSizeBinary(_message.Message):
     __slots__ = ("length",)
@@ -120,9 +100,7 @@ class FixedSizeList(_message.Message):
     LIST_SIZE_FIELD_NUMBER: _ClassVar[int]
     field_type: Field
     list_size: int
-    def __init__(
-        self, field_type: _Optional[_Union[Field, _Mapping]] = ..., list_size: _Optional[int] = ...
-    ) -> None: ...
+    def __init__(self, field_type: _Optional[_Union[Field, _Mapping]] = ..., list_size: _Optional[int] = ...) -> None: ...
 
 class Struct(_message.Message):
     __slots__ = ("sub_field_types",)
@@ -138,12 +116,7 @@ class Map(_message.Message):
     key_field: Field
     item_field: Field
     keys_sorted: bool
-    def __init__(
-        self,
-        key_field: _Optional[_Union[Field, _Mapping]] = ...,
-        item_field: _Optional[_Union[Field, _Mapping]] = ...,
-        keys_sorted: bool = ...,
-    ) -> None: ...
+    def __init__(self, key_field: _Optional[_Union[Field, _Mapping]] = ..., item_field: _Optional[_Union[Field, _Mapping]] = ..., keys_sorted: bool = ...) -> None: ...
 
 class ScalarListValue(_message.Message):
     __slots__ = ("arrow_data", "schema")
@@ -151,9 +124,7 @@ class ScalarListValue(_message.Message):
     SCHEMA_FIELD_NUMBER: _ClassVar[int]
     arrow_data: bytes
     schema: Schema
-    def __init__(
-        self, arrow_data: _Optional[bytes] = ..., schema: _Optional[_Union[Schema, _Mapping]] = ...
-    ) -> None: ...
+    def __init__(self, arrow_data: _Optional[bytes] = ..., schema: _Optional[_Union[Schema, _Mapping]] = ...) -> None: ...
 
 class ScalarTime32Value(_message.Message):
     __slots__ = ("time32_second_value", "time32_millisecond_value")
@@ -161,9 +132,7 @@ class ScalarTime32Value(_message.Message):
     TIME32_MILLISECOND_VALUE_FIELD_NUMBER: _ClassVar[int]
     time32_second_value: int
     time32_millisecond_value: int
-    def __init__(
-        self, time32_second_value: _Optional[int] = ..., time32_millisecond_value: _Optional[int] = ...
-    ) -> None: ...
+    def __init__(self, time32_second_value: _Optional[int] = ..., time32_millisecond_value: _Optional[int] = ...) -> None: ...
 
 class ScalarTime64Value(_message.Message):
     __slots__ = ("time64_microsecond_value", "time64_nanosecond_value")
@@ -171,18 +140,10 @@ class ScalarTime64Value(_message.Message):
     TIME64_NANOSECOND_VALUE_FIELD_NUMBER: _ClassVar[int]
     time64_microsecond_value: int
     time64_nanosecond_value: int
-    def __init__(
-        self, time64_microsecond_value: _Optional[int] = ..., time64_nanosecond_value: _Optional[int] = ...
-    ) -> None: ...
+    def __init__(self, time64_microsecond_value: _Optional[int] = ..., time64_nanosecond_value: _Optional[int] = ...) -> None: ...
 
 class ScalarTimestampValue(_message.Message):
-    __slots__ = (
-        "time_microsecond_value",
-        "time_nanosecond_value",
-        "time_second_value",
-        "time_millisecond_value",
-        "timezone",
-    )
+    __slots__ = ("time_microsecond_value", "time_nanosecond_value", "time_second_value", "time_millisecond_value", "timezone")
     TIME_MICROSECOND_VALUE_FIELD_NUMBER: _ClassVar[int]
     TIME_NANOSECOND_VALUE_FIELD_NUMBER: _ClassVar[int]
     TIME_SECOND_VALUE_FIELD_NUMBER: _ClassVar[int]
@@ -193,14 +154,7 @@ class ScalarTimestampValue(_message.Message):
     time_second_value: int
     time_millisecond_value: int
     timezone: str
-    def __init__(
-        self,
-        time_microsecond_value: _Optional[int] = ...,
-        time_nanosecond_value: _Optional[int] = ...,
-        time_second_value: _Optional[int] = ...,
-        time_millisecond_value: _Optional[int] = ...,
-        timezone: _Optional[str] = ...,
-    ) -> None: ...
+    def __init__(self, time_microsecond_value: _Optional[int] = ..., time_nanosecond_value: _Optional[int] = ..., time_second_value: _Optional[int] = ..., time_millisecond_value: _Optional[int] = ..., timezone: _Optional[str] = ...) -> None: ...
 
 class StructValue(_message.Message):
     __slots__ = ("field_values", "fields")
@@ -208,11 +162,7 @@ class StructValue(_message.Message):
     FIELDS_FIELD_NUMBER: _ClassVar[int]
     field_values: _containers.RepeatedCompositeFieldContainer[ScalarValue]
     fields: _containers.RepeatedCompositeFieldContainer[Field]
-    def __init__(
-        self,
-        field_values: _Optional[_Iterable[_Union[ScalarValue, _Mapping]]] = ...,
-        fields: _Optional[_Iterable[_Union[Field, _Mapping]]] = ...,
-    ) -> None: ...
+    def __init__(self, field_values: _Optional[_Iterable[_Union[ScalarValue, _Mapping]]] = ..., fields: _Optional[_Iterable[_Union[Field, _Mapping]]] = ...) -> None: ...
 
 class ScalarFixedSizeBinary(_message.Message):
     __slots__ = ("values", "length")
@@ -230,9 +180,7 @@ class DecimalValue(_message.Message):
     value: bytes
     precision: int
     scale: int
-    def __init__(
-        self, value: _Optional[bytes] = ..., precision: _Optional[int] = ..., scale: _Optional[int] = ...
-    ) -> None: ...
+    def __init__(self, value: _Optional[bytes] = ..., precision: _Optional[int] = ..., scale: _Optional[int] = ...) -> None: ...
 
 class Extension(_message.Message):
     __slots__ = ("name", "storage_type")
@@ -240,9 +188,7 @@ class Extension(_message.Message):
     STORAGE_TYPE_FIELD_NUMBER: _ClassVar[int]
     name: str
     storage_type: ArrowType
-    def __init__(
-        self, name: _Optional[str] = ..., storage_type: _Optional[_Union[ArrowType, _Mapping]] = ...
-    ) -> None: ...
+    def __init__(self, name: _Optional[str] = ..., storage_type: _Optional[_Union[ArrowType, _Mapping]] = ...) -> None: ...
 
 class ExtensionValue(_message.Message):
     __slots__ = ("extension_type", "storage_value")
@@ -250,50 +196,10 @@ class ExtensionValue(_message.Message):
     STORAGE_VALUE_FIELD_NUMBER: _ClassVar[int]
     extension_type: Extension
     storage_value: ScalarValue
-    def __init__(
-        self,
-        extension_type: _Optional[_Union[Extension, _Mapping]] = ...,
-        storage_value: _Optional[_Union[ScalarValue, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, extension_type: _Optional[_Union[Extension, _Mapping]] = ..., storage_value: _Optional[_Union[ScalarValue, _Mapping]] = ...) -> None: ...
 
 class ScalarValue(_message.Message):
-    __slots__ = (
-        "null_value",
-        "bool_value",
-        "float64_value",
-        "int64_value",
-        "large_utf8_value",
-        "timestamp_value",
-        "date_64_value",
-        "struct_value",
-        "large_list_value",
-        "time64_value",
-        "duration_second_value",
-        "duration_millisecond_value",
-        "duration_microsecond_value",
-        "duration_nanosecond_value",
-        "utf8_value",
-        "int8_value",
-        "int16_value",
-        "int32_value",
-        "uint8_value",
-        "uint16_value",
-        "uint32_value",
-        "uint64_value",
-        "float16_value",
-        "float32_value",
-        "date_32_value",
-        "time32_value",
-        "list_value",
-        "fixed_size_list_value",
-        "map_value",
-        "binary_value",
-        "large_binary_value",
-        "fixed_size_binary_value",
-        "decimal128_value",
-        "decimal256_value",
-        "extension_value",
-    )
+    __slots__ = ("null_value", "bool_value", "float64_value", "int64_value", "large_utf8_value", "timestamp_value", "date_64_value", "struct_value", "large_list_value", "time64_value", "duration_second_value", "duration_millisecond_value", "duration_microsecond_value", "duration_nanosecond_value", "utf8_value", "int8_value", "int16_value", "int32_value", "uint8_value", "uint16_value", "uint32_value", "uint64_value", "float16_value", "float32_value", "date_32_value", "time32_value", "list_value", "fixed_size_list_value", "map_value", "binary_value", "large_binary_value", "fixed_size_binary_value", "decimal128_value", "decimal256_value", "extension_value")
     NULL_VALUE_FIELD_NUMBER: _ClassVar[int]
     BOOL_VALUE_FIELD_NUMBER: _ClassVar[int]
     FLOAT64_VALUE_FIELD_NUMBER: _ClassVar[int]
@@ -364,80 +270,10 @@ class ScalarValue(_message.Message):
     decimal128_value: DecimalValue
     decimal256_value: DecimalValue
     extension_value: ExtensionValue
-    def __init__(
-        self,
-        null_value: _Optional[_Union[ArrowType, _Mapping]] = ...,
-        bool_value: bool = ...,
-        float64_value: _Optional[float] = ...,
-        int64_value: _Optional[int] = ...,
-        large_utf8_value: _Optional[str] = ...,
-        timestamp_value: _Optional[_Union[ScalarTimestampValue, _Mapping]] = ...,
-        date_64_value: _Optional[int] = ...,
-        struct_value: _Optional[_Union[StructValue, _Mapping]] = ...,
-        large_list_value: _Optional[_Union[ScalarListValue, _Mapping]] = ...,
-        time64_value: _Optional[_Union[ScalarTime64Value, _Mapping]] = ...,
-        duration_second_value: _Optional[int] = ...,
-        duration_millisecond_value: _Optional[int] = ...,
-        duration_microsecond_value: _Optional[int] = ...,
-        duration_nanosecond_value: _Optional[int] = ...,
-        utf8_value: _Optional[str] = ...,
-        int8_value: _Optional[int] = ...,
-        int16_value: _Optional[int] = ...,
-        int32_value: _Optional[int] = ...,
-        uint8_value: _Optional[int] = ...,
-        uint16_value: _Optional[int] = ...,
-        uint32_value: _Optional[int] = ...,
-        uint64_value: _Optional[int] = ...,
-        float16_value: _Optional[float] = ...,
-        float32_value: _Optional[float] = ...,
-        date_32_value: _Optional[int] = ...,
-        time32_value: _Optional[_Union[ScalarTime32Value, _Mapping]] = ...,
-        list_value: _Optional[_Union[ScalarListValue, _Mapping]] = ...,
-        fixed_size_list_value: _Optional[_Union[ScalarListValue, _Mapping]] = ...,
-        map_value: _Optional[_Union[ScalarListValue, _Mapping]] = ...,
-        binary_value: _Optional[bytes] = ...,
-        large_binary_value: _Optional[bytes] = ...,
-        fixed_size_binary_value: _Optional[_Union[ScalarFixedSizeBinary, _Mapping]] = ...,
-        decimal128_value: _Optional[_Union[DecimalValue, _Mapping]] = ...,
-        decimal256_value: _Optional[_Union[DecimalValue, _Mapping]] = ...,
-        extension_value: _Optional[_Union[ExtensionValue, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, null_value: _Optional[_Union[ArrowType, _Mapping]] = ..., bool_value: bool = ..., float64_value: _Optional[float] = ..., int64_value: _Optional[int] = ..., large_utf8_value: _Optional[str] = ..., timestamp_value: _Optional[_Union[ScalarTimestampValue, _Mapping]] = ..., date_64_value: _Optional[int] = ..., struct_value: _Optional[_Union[StructValue, _Mapping]] = ..., large_list_value: _Optional[_Union[ScalarListValue, _Mapping]] = ..., time64_value: _Optional[_Union[ScalarTime64Value, _Mapping]] = ..., duration_second_value: _Optional[int] = ..., duration_millisecond_value: _Optional[int] = ..., duration_microsecond_value: _Optional[int] = ..., duration_nanosecond_value: _Optional[int] = ..., utf8_value: _Optional[str] = ..., int8_value: _Optional[int] = ..., int16_value: _Optional[int] = ..., int32_value: _Optional[int] = ..., uint8_value: _Optional[int] = ..., uint16_value: _Optional[int] = ..., uint32_value: _Optional[int] = ..., uint64_value: _Optional[int] = ..., float16_value: _Optional[float] = ..., float32_value: _Optional[float] = ..., date_32_value: _Optional[int] = ..., time32_value: _Optional[_Union[ScalarTime32Value, _Mapping]] = ..., list_value: _Optional[_Union[ScalarListValue, _Mapping]] = ..., fixed_size_list_value: _Optional[_Union[ScalarListValue, _Mapping]] = ..., map_value: _Optional[_Union[ScalarListValue, _Mapping]] = ..., binary_value: _Optional[bytes] = ..., large_binary_value: _Optional[bytes] = ..., fixed_size_binary_value: _Optional[_Union[ScalarFixedSizeBinary, _Mapping]] = ..., decimal128_value: _Optional[_Union[DecimalValue, _Mapping]] = ..., decimal256_value: _Optional[_Union[DecimalValue, _Mapping]] = ..., extension_value: _Optional[_Union[ExtensionValue, _Mapping]] = ...) -> None: ...
 
 class ArrowType(_message.Message):
-    __slots__ = (
-        "none",
-        "bool",
-        "float64",
-        "int64",
-        "large_utf8",
-        "timestamp",
-        "date64",
-        "struct",
-        "large_list",
-        "time64",
-        "duration",
-        "utf8",
-        "int8",
-        "int16",
-        "int32",
-        "uint8",
-        "uint16",
-        "uint32",
-        "uint64",
-        "float16",
-        "float32",
-        "date32",
-        "time32",
-        "list",
-        "fixed_size_list",
-        "binary",
-        "large_binary",
-        "fixed_size_binary",
-        "decimal_128",
-        "decimal_256",
-        "map",
-        "extension",
-    )
+    __slots__ = ("none", "bool", "float64", "int64", "large_utf8", "timestamp", "date64", "struct", "large_list", "time64", "duration", "utf8", "int8", "int16", "int32", "uint8", "uint16", "uint32", "uint64", "float16", "float32", "date32", "time32", "list", "fixed_size_list", "binary", "large_binary", "fixed_size_binary", "decimal_128", "decimal_256", "map", "extension")
     NONE_FIELD_NUMBER: _ClassVar[int]
     BOOL_FIELD_NUMBER: _ClassVar[int]
     FLOAT64_FIELD_NUMBER: _ClassVar[int]
@@ -502,41 +338,7 @@ class ArrowType(_message.Message):
     decimal_256: Decimal
     map: Map
     extension: Extension
-    def __init__(
-        self,
-        none: _Optional[_Union[EmptyMessage, _Mapping]] = ...,
-        bool: _Optional[_Union[EmptyMessage, _Mapping]] = ...,
-        float64: _Optional[_Union[EmptyMessage, _Mapping]] = ...,
-        int64: _Optional[_Union[EmptyMessage, _Mapping]] = ...,
-        large_utf8: _Optional[_Union[EmptyMessage, _Mapping]] = ...,
-        timestamp: _Optional[_Union[Timestamp, _Mapping]] = ...,
-        date64: _Optional[_Union[EmptyMessage, _Mapping]] = ...,
-        struct: _Optional[_Union[Struct, _Mapping]] = ...,
-        large_list: _Optional[_Union[List, _Mapping]] = ...,
-        time64: _Optional[_Union[TimeUnit, str]] = ...,
-        duration: _Optional[_Union[TimeUnit, str]] = ...,
-        utf8: _Optional[_Union[EmptyMessage, _Mapping]] = ...,
-        int8: _Optional[_Union[EmptyMessage, _Mapping]] = ...,
-        int16: _Optional[_Union[EmptyMessage, _Mapping]] = ...,
-        int32: _Optional[_Union[EmptyMessage, _Mapping]] = ...,
-        uint8: _Optional[_Union[EmptyMessage, _Mapping]] = ...,
-        uint16: _Optional[_Union[EmptyMessage, _Mapping]] = ...,
-        uint32: _Optional[_Union[EmptyMessage, _Mapping]] = ...,
-        uint64: _Optional[_Union[EmptyMessage, _Mapping]] = ...,
-        float16: _Optional[_Union[EmptyMessage, _Mapping]] = ...,
-        float32: _Optional[_Union[EmptyMessage, _Mapping]] = ...,
-        date32: _Optional[_Union[EmptyMessage, _Mapping]] = ...,
-        time32: _Optional[_Union[TimeUnit, str]] = ...,
-        list: _Optional[_Union[List, _Mapping]] = ...,
-        fixed_size_list: _Optional[_Union[FixedSizeList, _Mapping]] = ...,
-        binary: _Optional[_Union[EmptyMessage, _Mapping]] = ...,
-        large_binary: _Optional[_Union[EmptyMessage, _Mapping]] = ...,
-        fixed_size_binary: _Optional[int] = ...,
-        decimal_128: _Optional[_Union[Decimal, _Mapping]] = ...,
-        decimal_256: _Optional[_Union[Decimal, _Mapping]] = ...,
-        map: _Optional[_Union[Map, _Mapping]] = ...,
-        extension: _Optional[_Union[Extension, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, none: _Optional[_Union[EmptyMessage, _Mapping]] = ..., bool: _Optional[_Union[EmptyMessage, _Mapping]] = ..., float64: _Optional[_Union[EmptyMessage, _Mapping]] = ..., int64: _Optional[_Union[EmptyMessage, _Mapping]] = ..., large_utf8: _Optional[_Union[EmptyMessage, _Mapping]] = ..., timestamp: _Optional[_Union[Timestamp, _Mapping]] = ..., date64: _Optional[_Union[EmptyMessage, _Mapping]] = ..., struct: _Optional[_Union[Struct, _Mapping]] = ..., large_list: _Optional[_Union[List, _Mapping]] = ..., time64: _Optional[_Union[TimeUnit, str]] = ..., duration: _Optional[_Union[TimeUnit, str]] = ..., utf8: _Optional[_Union[EmptyMessage, _Mapping]] = ..., int8: _Optional[_Union[EmptyMessage, _Mapping]] = ..., int16: _Optional[_Union[EmptyMessage, _Mapping]] = ..., int32: _Optional[_Union[EmptyMessage, _Mapping]] = ..., uint8: _Optional[_Union[EmptyMessage, _Mapping]] = ..., uint16: _Optional[_Union[EmptyMessage, _Mapping]] = ..., uint32: _Optional[_Union[EmptyMessage, _Mapping]] = ..., uint64: _Optional[_Union[EmptyMessage, _Mapping]] = ..., float16: _Optional[_Union[EmptyMessage, _Mapping]] = ..., float32: _Optional[_Union[EmptyMessage, _Mapping]] = ..., date32: _Optional[_Union[EmptyMessage, _Mapping]] = ..., time32: _Optional[_Union[TimeUnit, str]] = ..., list: _Optional[_Union[List, _Mapping]] = ..., fixed_size_list: _Optional[_Union[FixedSizeList, _Mapping]] = ..., binary: _Optional[_Union[EmptyMessage, _Mapping]] = ..., large_binary: _Optional[_Union[EmptyMessage, _Mapping]] = ..., fixed_size_binary: _Optional[int] = ..., decimal_128: _Optional[_Union[Decimal, _Mapping]] = ..., decimal_256: _Optional[_Union[Decimal, _Mapping]] = ..., map: _Optional[_Union[Map, _Mapping]] = ..., extension: _Optional[_Union[Extension, _Mapping]] = ...) -> None: ...
 
 class EmptyMessage(_message.Message):
     __slots__ = ()

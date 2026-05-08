@@ -820,7 +820,7 @@ def _upload_multipart(
     str
         Storage object ID for the completed upload.
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import ThreadPoolExecutor
 
     storage_object_id = resp.storage_object_id
     all_uris = list(resp.multipart.signed_upload_uris)

@@ -17,7 +17,6 @@ class StringEncoding(_message.Message):
         key: int
         value: str
         def __init__(self, key: _Optional[int] = ..., value: _Optional[str] = ...) -> None: ...
-
     MAPPING_FIELD_NUMBER: _ClassVar[int]
     mapping: _containers.ScalarMap[int, str]
     def __init__(self, mapping: _Optional[_Mapping[int, str]] = ...) -> None: ...
