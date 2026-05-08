@@ -1,3 +1,4 @@
+import contextlib
 from typing import Any
 
 from chalkcompute._connect import ConnectClient, grpc_engine_target_from_url, grpc_target_from_url
@@ -12,6 +13,24 @@ class _TokenResponse:
 
     def json(self) -> dict[str, Any]:
         return self._payload
+
+
+class _RPCResponse:
+    status_code = 200
+
+
+class _Span:
+    def set_attribute(self, *_args: object) -> None:
+        pass
+
+    def set_status(self, *_args: object) -> None:
+        pass
+
+
+class _Tracer:
+    @contextlib.contextmanager
+    def start_as_current_span(self, _name: str):
+        yield _Span()
 
 
 class TestGrpcTargetFromUrl:
@@ -104,6 +123,56 @@ class TestConnectClientGrpcEngineTarget:
 
         assert target == "localhost:50051"
         assert use_tls is False
+
+
+class TestConnectClientTracing:
+    def _client(self, monkeypatch) -> ConnectClient:
+        client = ConnectClient()
+        client._api_server = "https://api.chalk.test"
+        client._headers = {"Authorization": "Bearer token"}
+        monkeypatch.setattr(client, "_ensure_auth", lambda: None)
+        return client
+
+    def test_rpc_does_not_propagate_new_root_trace(self, monkeypatch):
+        posted: dict[str, Any] = {}
+
+        def fake_post(*args, **kwargs):
+            posted["kwargs"] = kwargs
+            return _RPCResponse()
+
+        def fail_current_trace_metadata():
+            raise AssertionError("trace metadata should not be injected without upstream trace")
+
+        monkeypatch.setattr("httpx.post", fake_post)
+        monkeypatch.setattr("chalkcompute._tracing.get_tracer", lambda: _Tracer())
+        monkeypatch.setattr("chalkcompute._tracing.has_current_trace_context", lambda: False)
+        monkeypatch.setattr("chalkcompute._tracing.current_trace_metadata", fail_current_trace_metadata)
+
+        self._client(monkeypatch).rpc("svc", "Method", {})
+
+        assert posted["kwargs"]["headers"] == {"Authorization": "Bearer token"}
+
+    def test_rpc_propagates_existing_trace_context(self, monkeypatch):
+        posted: dict[str, Any] = {}
+
+        def fake_post(*args, **kwargs):
+            posted["kwargs"] = kwargs
+            return _RPCResponse()
+
+        monkeypatch.setattr("httpx.post", fake_post)
+        monkeypatch.setattr("chalkcompute._tracing.get_tracer", lambda: _Tracer())
+        monkeypatch.setattr("chalkcompute._tracing.has_current_trace_context", lambda: True)
+        monkeypatch.setattr(
+            "chalkcompute._tracing.current_trace_metadata",
+            lambda: [("traceparent", "trace-id")],
+        )
+
+        client = self._client(monkeypatch)
+        client.rpc("svc", "Method", {})
+
+        assert posted["kwargs"]["headers"]["Authorization"] == "Bearer token"
+        assert posted["kwargs"]["headers"]["traceparent"] == "trace-id"
+        assert "traceparent" not in client._headers
 
 
 class TestConnectClientServiceAuth:

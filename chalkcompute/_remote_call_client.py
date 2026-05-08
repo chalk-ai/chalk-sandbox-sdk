@@ -105,11 +105,37 @@ class RemoteCallClient:
                 max_message_size,
             )
 
-    def call_ipc(self, name: str, input_ipc: bytes) -> list[bytes]:
-        return list(self._inner.call_ipc(name, input_ipc))
+    def call_ipc(
+        self,
+        name: str,
+        input_ipc: bytes,
+        metadata: Sequence[tuple[str, str]] = (),
+    ) -> list[bytes]:
+        if not metadata:
+            return list(self._inner.call_ipc(name, input_ipc))
+        try:
+            return list(self._inner.call_ipc(name, input_ipc, list(metadata)))
+        except TypeError as exc:
+            raise RemoteCallClientUnavailable(
+                "chalkcompute._remote_call_native is too old for per-call "
+                "remote-call metadata; rebuild/reinstall the local chalkcompute package"
+            ) from exc
 
-    def enqueue(self, name: str, input_ipc: bytes) -> str:
-        return str(self._inner.enqueue(name, input_ipc))
+    def enqueue(
+        self,
+        name: str,
+        input_ipc: bytes,
+        metadata: Sequence[tuple[str, str]] = (),
+    ) -> str:
+        if not metadata:
+            return str(self._inner.enqueue(name, input_ipc))
+        try:
+            return str(self._inner.enqueue(name, input_ipc, list(metadata)))
+        except TypeError as exc:
+            raise RemoteCallClientUnavailable(
+                "chalkcompute._remote_call_native is too old for per-call "
+                "remote-call metadata; rebuild/reinstall the local chalkcompute package"
+            ) from exc
 
     def poll_next(
         self,

@@ -269,18 +269,26 @@ class ConnectClient:
         """
         import httpx
 
-        from chalkcompute._tracing import get_tracer
+        from chalkcompute._tracing import (
+            current_trace_metadata,
+            get_tracer,
+            has_current_trace_context,
+        )
 
+        has_upstream_trace = has_current_trace_context()
         with get_tracer().start_as_current_span("chalkcompute.rpc") as span:
             span.set_attribute("rpc.service", service)
             span.set_attribute("rpc.method", method)
             self._ensure_auth()
             assert self._api_server is not None
             assert self._headers is not None
+            headers = self._headers
+            if has_upstream_trace and (trace_metadata := current_trace_metadata()):
+                headers = {**self._headers, **dict(trace_metadata)}
             resp = httpx.post(
                 f"{self._api_server}/{service}/{method}",
                 json=body,
-                headers=self._headers,
+                headers=headers,
                 timeout=timeout,
             )
             span.set_attribute("http.response.status_code", resp.status_code)

@@ -53,7 +53,11 @@ from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._retry import RetryPolicy
-from chalkcompute._tracing import traced
+from chalkcompute._tracing import (
+    current_trace_metadata,
+    remote_function_call_span,
+    traced,
+)
 from chalkcompute._volume import VolumeClient, upload_lazy_files
 
 logger = logging.getLogger(__name__)
@@ -65,6 +69,8 @@ if TYPE_CHECKING:
 SerializationFormat = typing.Literal["pyarrow"]
 
 _REMOTE_ENV_VAR = "_CHALK_REMOTE_FUNCTION"
+_REMOTE_FUNCTION_NAME_ENV_VAR = "CHALK_REMOTE_FUNCTION_NAME"
+_REMOTE_FUNCTION_NAME_METADATA = "x-chalk-function-name"
 # When enabled, mount the local SDK project and pip-install at container start.
 _LOCAL_COPY_ENV_VAR = "CHALK_FUNCTION_LOCAL_SDK_COPY"
 # When set to a local wheel path, mount that wheel and pip-install it at
@@ -1194,7 +1200,10 @@ class RemoteFunction:
                 name=sg_name,
                 image_uri=image_uri,
                 entrypoint=_local_install_entrypoint(handler_cmd),
-                env=self._env,
+                env={
+                    _REMOTE_FUNCTION_NAME_ENV_VAR: self._func_name,
+                    **self._env,
+                },
                 cpu=self._cpu,
                 memory=self._memory,
                 gpu=self._gpu,
@@ -1436,13 +1445,6 @@ class RemoteFunction:
         if self._web_url is None:
             raise FunctionError("Function is not deployed. Call .deploy() first.")
 
-        # Ensure we have auth tokens for gRPC metadata
-        self._client._ensure_auth()
-        self._call_metadata = [
-            ("authorization", f"Bearer {self._client._access_token}"),
-            ("x-chalk-env-id", self._client._env_id or ""),
-        ]
-
         target, use_tls = grpc_target_from_url(
             self._web_url,
             insecure_port=self._port,
@@ -1456,7 +1458,11 @@ class RemoteFunction:
             self._call_channel = grpc.insecure_channel(target)
         self._call_stub = call_grpc.RemoteCallServiceStub(self._call_channel)
 
-    def _remote_call_metadata(self, *, queue: bool) -> list[tuple[str, str]]:
+    def _remote_call_metadata(
+        self,
+        *,
+        queue: bool,
+    ) -> list[tuple[str, str]]:
         if service_auth_config_from_env() is not None:
             metadata = [("x-chalk-env-id", service_auth_environment())]
             if queue:
@@ -1472,44 +1478,70 @@ class RemoteFunction:
             metadata.append(("x-chalk-deployment-type", "function-queue"))
         return metadata
 
+    def _remote_call_trace_metadata(self) -> list[tuple[str, str]]:
+        metadata = current_trace_metadata()
+        if metadata:
+            metadata.append(
+                (_REMOTE_FUNCTION_NAME_METADATA, self._queue_function_name())
+            )
+        return metadata
+
+    def _remote_call_target(self, *, queue: bool) -> tuple[str, bool]:
+        if self._web_url is None:
+            raise FunctionError("Function is not deployed. Call .deploy() first.")
+
+        service_auth = service_auth_config_from_env()
+        if queue:
+            if service_auth is None:
+                return self._client.grpc_engine_target()
+            service_auth_target = service_auth_grpc_engine_target()
+            if service_auth_target is None:
+                raise FunctionError(
+                    "CHALK_GRPC_ENGINE must be set to enqueue remote function "
+                    "calls with CHALK_REMOTE_AUTH_EXCHANGE_TOKEN"
+                )
+            return service_auth_target
+        return grpc_target_from_url(
+            self._web_url,
+            insecure_port=self._port,
+        )
+
+    def _make_remote_call_client(
+        self,
+        *,
+        queue: bool,
+        metadata: list[tuple[str, str]],
+    ) -> Any:
+        from chalkcompute._remote_call_client import RemoteCallClient
+
+        target, use_tls = self._remote_call_target(queue=queue)
+        service_auth = service_auth_config_from_env()
+        client = RemoteCallClient(
+            target,
+            metadata=metadata,
+            use_tls=use_tls,
+            **(service_auth or {}),
+        )
+        return client
+
     def _ensure_remote_call_client(self, *, queue: bool = False) -> Any:
         attr = "_queue_call_client" if queue else "_remote_call_client"
         client = getattr(self, attr)
         if client is not None:
             return client
 
-        if self._web_url is None:
-            raise FunctionError("Function is not deployed. Call .deploy() first.")
-
-        from chalkcompute._remote_call_client import RemoteCallClient
-
-        service_auth = service_auth_config_from_env()
-        if queue:
-            if service_auth is None:
-                target, use_tls = self._client.grpc_engine_target()
-            else:
-                service_auth_target = service_auth_grpc_engine_target()
-                if service_auth_target is None:
-                    raise FunctionError(
-                        "CHALK_GRPC_ENGINE must be set to enqueue remote function "
-                        "calls with CHALK_REMOTE_AUTH_EXCHANGE_TOKEN"
-                    )
-                target, use_tls = service_auth_target
-        else:
-            target, use_tls = grpc_target_from_url(
-                self._web_url,
-                insecure_port=self._port,
-            )
-        client = RemoteCallClient(
-            target,
+        client = self._make_remote_call_client(
+            queue=queue,
             metadata=self._remote_call_metadata(queue=queue),
-            use_tls=use_tls,
-            **(service_auth or {}),
         )
         setattr(self, attr, client)
         return client
 
-    def _call_direct_chunks_python_grpc(self, feather_bytes: bytes) -> list[bytes]:
+    def _call_direct_chunks_python_grpc(
+        self,
+        feather_bytes: bytes,
+        metadata: list[tuple[str, str]],
+    ) -> list[bytes]:
         from chalk_remote_call._gen.chalk.runtime.v1 import (
             remote_python_call_pb2 as call_pb,
         )
@@ -1522,19 +1554,25 @@ class RemoteFunction:
                 feather_stream=feather_bytes,
             )
 
-        responses = list(
-            self._call_stub.CallFunction(requests(), metadata=self._call_metadata)
-        )
+        responses = list(self._call_stub.CallFunction(requests(), metadata=metadata))
         return [resp.feather_stream for resp in responses]
 
     def _call_direct_chunks(self, feather_bytes: bytes) -> list[bytes]:
         from chalkcompute._remote_call_client import RemoteCallClientUnavailable
 
+        metadata = self._remote_call_trace_metadata()
         try:
             client = self._ensure_remote_call_client(queue=False)
         except RemoteCallClientUnavailable:
-            return self._call_direct_chunks_python_grpc(feather_bytes)
-        return client.call_ipc("handler", feather_bytes)
+            fallback_metadata = [
+                *self._remote_call_metadata(queue=False),
+                *metadata,
+            ]
+            return self._call_direct_chunks_python_grpc(
+                feather_bytes,
+                fallback_metadata,
+            )
+        return client.call_ipc("handler", feather_bytes, metadata=metadata)
 
     def _queue_function_name(self) -> str:
         if self._version_info is not None and self._version_info.function_name:
@@ -1671,15 +1709,17 @@ class RemoteFunction:
 
     def _call_sync(self, *args: Any, **kwargs: Any) -> Any:
         feather_bytes = self._serialize_call_args(*args, **kwargs)
+        call_type = "api" if _should_call_via_api() else "direct"
 
-        if _should_call_via_api():
-            response_bytes = self._call_via_api_rpc(feather_bytes)
-            results = self._decode_result_chunks([response_bytes])
-        else:
-            chunks = self._call_direct_chunks(feather_bytes)
-            if not chunks:
-                raise FunctionError("No response received from remote function")
-            results = self._decode_result_chunks(chunks)
+        with remote_function_call_span(self._queue_function_name(), call_type):
+            if _should_call_via_api():
+                response_bytes = self._call_via_api_rpc(feather_bytes)
+                results = self._decode_result_chunks([response_bytes])
+            else:
+                chunks = self._call_direct_chunks(feather_bytes)
+                if not chunks:
+                    raise FunctionError("No response received from remote function")
+                results = self._decode_result_chunks(chunks)
 
         if len(results) == 1:
             return results[0]
@@ -1688,8 +1728,14 @@ class RemoteFunction:
     def defer(self, *args: Any, **kwargs: Any) -> FunctionCallHandle:
         """Enqueue this function call and return a handle immediately."""
         feather_bytes = self._serialize_call_args(*args, **kwargs)
-        client = self._ensure_remote_call_client(queue=True)
-        call_id = client.enqueue(self._queue_function_name(), feather_bytes)
+        function_name = self._queue_function_name()
+        with remote_function_call_span(function_name, "queue"):
+            client = self._ensure_remote_call_client(queue=True)
+            call_id = client.enqueue(
+                function_name,
+                feather_bytes,
+                metadata=self._remote_call_trace_metadata(),
+            )
         return FunctionCallHandle(self, call_id)
 
     def poll(

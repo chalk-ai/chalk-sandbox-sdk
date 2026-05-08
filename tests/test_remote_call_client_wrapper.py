@@ -6,6 +6,7 @@ from chalkcompute._remote_call_client import RemoteCallClient, RemoteCallClientU
 
 class LegacyNativeRemoteCallClient:
     calls: list[tuple[object, ...]] = []
+    method_calls: list[tuple[object, ...]] = []
 
     def __init__(self, *args: object) -> None:
         self.calls.append(args)
@@ -15,10 +16,19 @@ class LegacyNativeRemoteCallClient:
                 "arguments but 12 were given"
             )
 
+    def call_ipc(self, name: str, input_ipc: bytes) -> list[bytes]:
+        self.method_calls.append(("call_ipc", name, input_ipc))
+        return [b"ok"]
+
+    def enqueue(self, name: str, input_ipc: bytes) -> str:
+        self.method_calls.append(("enqueue", name, input_ipc))
+        return "call-1"
+
 
 @pytest.fixture(autouse=True)
 def legacy_native_client(monkeypatch: pytest.MonkeyPatch) -> None:
     LegacyNativeRemoteCallClient.calls = []
+    LegacyNativeRemoteCallClient.method_calls = []
     monkeypatch.setattr(
         remote_call_client,
         "_NativeRemoteCallClient",
@@ -55,3 +65,23 @@ def test_legacy_native_constructor_rejected_for_service_auth() -> None:
             exchange_token="exchange-token",
             requested_permissions=(2, 3, 11),
         )
+
+
+def test_legacy_native_call_shape_still_works_without_per_call_metadata() -> None:
+    client = RemoteCallClient("remote.chalk.test:443")
+
+    assert client.call_ipc("handler", b"in") == [b"ok"]
+    assert client.enqueue("pkg.fn", b"in") == "call-1"
+    assert LegacyNativeRemoteCallClient.method_calls == [
+        ("call_ipc", "handler", b"in"),
+        ("enqueue", "pkg.fn", b"in"),
+    ]
+
+
+def test_legacy_native_rejected_for_per_call_metadata() -> None:
+    client = RemoteCallClient("remote.chalk.test:443")
+
+    with pytest.raises(RemoteCallClientUnavailable, match="per-call"):
+        client.call_ipc("handler", b"in", metadata=(("traceparent", "trace"),))
+    with pytest.raises(RemoteCallClientUnavailable, match="per-call"):
+        client.enqueue("pkg.fn", b"in", metadata=(("traceparent", "trace"),))

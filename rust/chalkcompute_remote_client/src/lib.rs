@@ -95,18 +95,38 @@ impl PyRemoteCallClient {
         Ok(Self { inner })
     }
 
-    fn call_ipc(&self, py: Python<'_>, name: String, input_ipc: &[u8]) -> PyResult<Py<PyList>> {
+    #[pyo3(signature = (name, input_ipc, metadata=None))]
+    fn call_ipc(
+        &self,
+        py: Python<'_>,
+        name: String,
+        input_ipc: &[u8],
+        metadata: Option<Vec<(String, String)>>,
+    ) -> PyResult<Py<PyList>> {
         let input_ipc = Bytes::copy_from_slice(input_ipc);
         let chunks = py
-            .allow_threads(|| self.inner.call_ipc(name, input_ipc))
+            .allow_threads(|| match metadata {
+                Some(metadata) => self.inner.call_ipc_with_metadata(name, input_ipc, metadata),
+                None => self.inner.call_ipc(name, input_ipc),
+            })
             .map_err(to_py_err)?;
         chunks_to_pylist(py, chunks)
     }
 
-    fn enqueue(&self, py: Python<'_>, name: String, input_ipc: &[u8]) -> PyResult<String> {
+    #[pyo3(signature = (name, input_ipc, metadata=None))]
+    fn enqueue(
+        &self,
+        py: Python<'_>,
+        name: String,
+        input_ipc: &[u8],
+        metadata: Option<Vec<(String, String)>>,
+    ) -> PyResult<String> {
         let input_ipc = Bytes::copy_from_slice(input_ipc);
-        py.allow_threads(|| self.inner.enqueue(name, input_ipc))
-            .map_err(to_py_err)
+        py.allow_threads(|| match metadata {
+            Some(metadata) => self.inner.enqueue_with_metadata(name, input_ipc, metadata),
+            None => self.inner.enqueue(name, input_ipc),
+        })
+        .map_err(to_py_err)
     }
 
     #[pyo3(signature = (call_id, cursor=None, poll_count=0))]

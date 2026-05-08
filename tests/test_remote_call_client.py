@@ -49,17 +49,27 @@ class FakeRemoteCallClient:
         self.metadata = list(metadata)
         self.use_tls = use_tls
         self.kwargs = kwargs
-        self.calls: list[tuple[str, bytes]] = []
-        self.enqueues: list[tuple[str, bytes]] = []
+        self.calls: list[tuple[str, bytes, list[tuple[str, str]]]] = []
+        self.enqueues: list[tuple[str, bytes, list[tuple[str, str]]]] = []
         self.purges: list[str] = []
         FakeRemoteCallClient.instances.append(self)
 
-    def call_ipc(self, name: str, input_ipc: bytes) -> list[bytes]:
-        self.calls.append((name, input_ipc))
+    def call_ipc(
+        self,
+        name: str,
+        input_ipc: bytes,
+        metadata=(),
+    ) -> list[bytes]:
+        self.calls.append((name, input_ipc, list(metadata)))
         return list(self.direct_response_chunks)
 
-    def enqueue(self, name: str, input_ipc: bytes) -> str:
-        self.enqueues.append((name, input_ipc))
+    def enqueue(
+        self,
+        name: str,
+        input_ipc: bytes,
+        metadata=(),
+    ) -> str:
+        self.enqueues.append((name, input_ipc, list(metadata)))
         return "call-1"
 
     def poll_next(
@@ -118,6 +128,7 @@ def test_direct_call_uses_native_client_and_handler_name() -> None:
     assert ("x-chalk-deployment-type", "function-queue") not in client.metadata
     assert client.calls[0][0] == "handler"
     assert _read_input(client.calls[0][1]) == {"x": [41]}
+    assert client.calls[0][2] == []
 
 
 def test_direct_call_uses_service_auth_from_environment(monkeypatch) -> None:
@@ -137,6 +148,41 @@ def test_direct_call_uses_service_auth_from_environment(monkeypatch) -> None:
     assert client.kwargs["auth_endpoint"] == "https://api.chalk.test"
     assert client.kwargs["exchange_token"] == "exchange-token"
     assert client.kwargs["requested_permissions"] == (2, 3, 11)
+
+
+def test_direct_call_injects_fresh_trace_metadata_on_cached_client(monkeypatch) -> None:
+    traceparents = [
+        "00-11111111111111111111111111111111-1111111111111111-01",
+        "00-22222222222222222222222222222222-2222222222222222-01",
+    ]
+
+    def next_trace_metadata() -> list[tuple[str, str]]:
+        return [("traceparent", traceparents.pop(0))]
+
+    monkeypatch.setattr(
+        "chalkcompute._function.current_trace_metadata",
+        next_trace_metadata,
+    )
+    FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
+
+    fn = _remote_function()
+
+    assert fn(41) == 42
+    assert fn(41) == 42
+
+    assert len(FakeRemoteCallClient.instances) == 1
+    assert (
+        "traceparent",
+        "00-11111111111111111111111111111111-1111111111111111-01",
+    ) in FakeRemoteCallClient.instances[0].calls[0][2]
+    assert (
+        "traceparent",
+        "00-22222222222222222222222222222222-2222222222222222-01",
+    ) in FakeRemoteCallClient.instances[0].calls[1][2]
+    assert (
+        "x-chalk-function-name",
+        "catalog-add",
+    ) in FakeRemoteCallClient.instances[0].calls[0][2]
 
 
 def test_defer_get_and_purge_use_queue_client() -> None:
@@ -172,7 +218,32 @@ def test_defer_get_and_purge_use_queue_client() -> None:
     assert ("x-chalk-deployment-type", "function-queue") in client.metadata
     assert client.enqueues[0][0] == "catalog-add"
     assert _read_input(client.enqueues[0][1]) == {"x": [98]}
+    assert client.enqueues[0][2] == []
     assert client.purges == ["catalog-add"]
+
+
+def test_defer_injects_trace_metadata(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "chalkcompute._function.current_trace_metadata",
+        lambda: [
+            (
+                "traceparent",
+                "00-33333333333333333333333333333333-3333333333333333-01",
+            )
+        ],
+    )
+
+    fn = _remote_function()
+    handle = fn.defer(98)
+
+    assert handle.call_id == "call-1"
+    client = FakeRemoteCallClient.instances[0]
+    assert (
+        "traceparent",
+        "00-33333333333333333333333333333333-3333333333333333-01",
+    ) in client.enqueues[0][2]
+    assert ("x-chalk-function-name", "catalog-add") in client.enqueues[0][2]
+    assert client.enqueues[0][0] == "catalog-add"
 
 
 def test_queue_call_uses_service_auth_engine_from_environment(monkeypatch) -> None:
