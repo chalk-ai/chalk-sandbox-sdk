@@ -7,6 +7,7 @@ from chalkcompute._cls import cls as cls
 from chalkcompute._cls import method as method
 from chalkcompute._concurrency import ConcurrencyPolicy as ConcurrencyPolicy
 from chalkcompute._connect import ConnectClient as ConnectClient
+from chalkcompute._connect import build_image_from_spec as build_image
 from chalkcompute._container import AllowedRoute as AllowedRoute
 from chalkcompute._container import Container as Container
 from chalkcompute._container import ContainerError as ContainerError
@@ -19,6 +20,7 @@ from chalkcompute._container import NetworkPolicy as NetworkPolicy
 from chalkcompute._container import PortRange as PortRange
 from chalkcompute._function import DeployedFunction as DeployedFunction
 from chalkcompute._function import FunctionBuildError as FunctionBuildError
+from chalkcompute._function import FunctionCallHandle as FunctionCallHandle
 from chalkcompute._function import FunctionError as FunctionError
 from chalkcompute._function import FunctionVersionInfo as FunctionVersionInfo
 from chalkcompute._function import RemoteFunction as RemoteFunction
@@ -52,8 +54,6 @@ from chalkcompute._volume import VolumeFileNotFoundError as VolumeFileNotFoundEr
 from chalkcompute._volume import VolumeInfo as VolumeInfo
 from chalkcompute._volume import VolumeNotFoundError as VolumeNotFoundError
 
-def build_image(image: Image) -> str: ...
-
 __all__ = [
     "Container",
     "ContainerError",
@@ -76,6 +76,7 @@ __all__ = [
     "DeployedFunction",
     "FunctionError",
     "FunctionBuildError",
+    "FunctionCallHandle",
     "FunctionVersionInfo",
     "RetryPolicy",
     "RateLimitPolicy",
