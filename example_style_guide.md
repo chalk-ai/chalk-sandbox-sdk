@@ -61,7 +61,12 @@ This keeps prose visually interleaved with code in the raw `.py`, and doc render
   # ///
   ```
 - Keep inline scripts (passed to `container.exec`) short and self-contained. Define them as module-level string constants with a prose comment above.
-- Use `uuid` suffixes on resource names (volumes, containers) so examples are safe to run concurrently.
+- Avoid explicit `name=` arguments unless the example needs a stable lookup
+  across processes, demonstrates custom naming, or names a resource that has
+  to be reused later. Functions should usually rely on the Python function
+  name, and containers should usually let the SDK generate a name.
+- Use `uuid` suffixes when a resource must be named, especially volumes, so
+  examples are safe to run concurrently.
 - Always clean up in a `finally` block — stop containers, delete volumes.
 
 ## Writing the test (`test/test_<slug>.py`)

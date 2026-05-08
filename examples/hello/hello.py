@@ -38,7 +38,6 @@ image = Image.debian_slim("3.12").pip_install(["cowsay"])
 # 2. Start a container with the "hi" volume mounted at /data
 container = Container(
     image=image,
-    name="hello-example",
     volumes=[("hi", "/data")],
 )
 container.run()

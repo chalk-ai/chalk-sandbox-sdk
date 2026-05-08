@@ -32,7 +32,6 @@ BENIGN_ALTERNATIVES = [
 
 
 @chalkcompute.function(
-    name="policy-check",
     image=(
         chalkcompute.Image.debian_slim()
         .run_commands("pip install torch --index-url https://download.pytorch.org/whl/cpu")

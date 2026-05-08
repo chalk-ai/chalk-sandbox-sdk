@@ -1,4 +1,4 @@
-# Grindr Example
+# ChalkDF Projection Example
 
 Deploys a container via `chalk container run` that builds a `chalkdf.DataFrame`
 from a `pyarrow.Table` and runs a `.select(...).run()` projection.
@@ -39,11 +39,11 @@ python3 deploy.py
 ```
 
 This will:
-1. Stop any previous `grindr-chalkdf-example` container
+1. Stop any previous `chalkdf-projection-example` container
 2. Run `chalk container run` with `python:3.12-slim-bookworm`, installing
    `chalkdf`, `pyarrow`, and `chalkpy` at startup
 3. Wait 60s for pip install and script execution
-4. Fetch logs via `chalk logs --query pod_name:chalk-container-grindr-chalkdf-example`
+4. Fetch logs via `chalk logs --query pod_name:chalk-container-chalkdf-projection-example`
 
 ## Expected output
 

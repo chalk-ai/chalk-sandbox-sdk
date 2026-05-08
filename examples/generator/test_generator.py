@@ -81,7 +81,7 @@ class TestSyncGenerator:
     def test_direct_call_iterates(self):
         """for x in fn(5) yields 5 chunks."""
         remote = _make_remote()
-        fn = remote.function("chalk-sandbox-test-count-up")
+        fn = remote.function("count-up")
 
         def _collect() -> list[list[int]]:
             chunks = []
@@ -129,7 +129,7 @@ class TestAsyncGenerator:
     def test_direct_call_async_iterates(self):
         """async for x in fn(5) yields 5 chunks."""
         remote = _make_remote()
-        fn = remote.function("chalk-sandbox-test-async-count-up")
+        fn = remote.function("async-count-up")
 
         async def _collect() -> list[list[int]]:
             chunks = []
