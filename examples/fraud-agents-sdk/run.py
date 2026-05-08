@@ -30,7 +30,7 @@ from agents import Runner
 from agents.items import MessageOutputItem, ToolCallItem, ToolCallOutputItem
 from dotenv import load_dotenv
 
-from chalkcompute import Container, VolumeClient
+from chalkcompute import Container, VolumeClient, VolumeNotFoundError
 from chalkcompute._connect import ConnectClient  # internal helper used to auth VolumeClient
 
 from agent import build_agent
@@ -68,10 +68,37 @@ def _ensure_samples(case: str) -> Path:
     return case_dir
 
 
-def _upload_packet(case_dir: Path, vol_name: str) -> None:
-    print(f"[upload] {case_dir.name}/  ->  volume {vol_name}")
+def _ensure_volume(case_dir: Path, vol_name: str, *, refresh: bool) -> None:
+    """Ensure the case packet volume exists and is populated.
+
+    First run for a case: create the volume + upload the four packet files.
+    Subsequent runs: skip — the volume already has the files and ChalkFS
+    can mount it warm. Pass ``refresh=True`` to force re-upload (useful
+    after editing make_samples.py).
+    """
     with VolumeClient.from_connect(ConnectClient()) as vol_client:
-        vol = vol_client.create(vol_name)
+        if not refresh:
+            try:
+                vol_client.lookup(vol_name)
+                print(f"[volume] {vol_name} already exists  ->  reusing (skip upload)")
+                return
+            except VolumeNotFoundError:
+                pass
+
+        # First-time setup, or --refresh forced.
+        try:
+            vol_client.lookup(vol_name)
+            existed = True
+        except VolumeNotFoundError:
+            existed = False
+
+        if existed:
+            print(f"[volume] {vol_name} exists, --refresh: re-uploading packet")
+            vol = vol_client.from_name(vol_name)
+        else:
+            print(f"[volume] {vol_name} missing  ->  creating + uploading packet")
+            vol = vol_client.create(vol_name)
+
         for f in sorted(case_dir.iterdir()):
             if f.is_file():
                 vol.put_file(f.name, f.read_bytes())
@@ -159,14 +186,17 @@ async def _run_streamed(agent, prompt: str, max_turns: int = 20):
     return result.final_output
 
 
-async def investigate(case: str, *, keep: bool) -> None:
+async def investigate(case: str, *, keep: bool, refresh: bool) -> None:
     case_dir = _ensure_samples(case)
 
     run_id = uuid.uuid4().hex[:8]
-    vol_name = f"kyc-case-{run_id}"
+    # Persistent per-case volume — survives across runs so the dashboard shows
+    # the workspace and ChalkFS doesn't pay cold-sync each time. The container
+    # itself is still ephemeral.
+    vol_name = f"kyc-case-{case}"
     container_name = f"kyc-investigator-{run_id}"
 
-    _upload_packet(case_dir, vol_name)
+    _ensure_volume(case_dir, vol_name, refresh=refresh)
 
     # The container needs Chalk credentials to back the FUSE mount of the
     # volume; everything else (OPENAI_API_KEY) lives on the host where the
@@ -205,7 +235,14 @@ async def investigate(case: str, *, keep: bool) -> None:
             print(f"        dashboard: {DASHBOARD_BASE}/{container._container_id}")
             print(f"        stop with:  uv run python stop.py {container._container_id}")
         else:
-            print("[stop]  stopping container + deleting volume")
+            print("[stop]  stopping container (case packet volume is persistent)")
+            # Container.stop() iterates self._volumes and DeleteVolumes each one.
+            # Drop the persistent case volume from that list so it survives;
+            # leave the SDK's auto-created container-files-XXXX volume in place
+            # so it gets reaped (those are unique per run and would orphan).
+            container._volumes = [
+                (n, p) for (n, p) in container._volumes if n != vol_name
+            ]
             container.stop()
 
 
@@ -214,10 +251,13 @@ def main() -> None:
     parser.add_argument("case", nargs="?", default="case_fraud",
                         help="case_fraud or case_legit")
     parser.add_argument("--keep", action="store_true",
-                        help="don't stop the container or delete the volume after the verdict")
+                        help="don't stop the container after the verdict")
+    parser.add_argument("--refresh", action="store_true",
+                        help="re-upload the case packet to the persistent volume "
+                             "(use after editing make_samples.py)")
     args = parser.parse_args()
     case = args.case.removeprefix("samples/").rstrip("/")
-    asyncio.run(investigate(case, keep=args.keep))
+    asyncio.run(investigate(case, keep=args.keep, refresh=args.refresh))
 
 
 if __name__ == "__main__":
