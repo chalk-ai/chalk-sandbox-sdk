@@ -167,11 +167,7 @@ def test_defer_get_and_purge_use_queue_client() -> None:
     assert fn.purge() == 7
 
     client = FakeRemoteCallClient.instances[0]
-<<<<<<< HEAD
     assert client.endpoint == "engine.chalk.test:443"
-=======
-    assert client.endpoint == "engine.example.com:443"
->>>>>>> rene-remote-rust
     assert client.use_tls is True
     assert ("x-chalk-deployment-type", "function-queue") in client.metadata
     assert client.enqueues[0][0] == "catalog-add"
