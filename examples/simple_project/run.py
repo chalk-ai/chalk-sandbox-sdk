@@ -38,7 +38,7 @@ image = (
 )
 
 # 2. Construct and run the container
-container = Container(image=image, name="simple-project-example", lifetime="600s")
+container = Container(image=image, lifetime="600s")
 container.run()
 
 # 3. Verify the project files and opencode are installed, then stream output
@@ -66,17 +66,18 @@ chalk_env = {**os.environ}
 if "CHALK_ENVIRONMENT_ID" in chalk_env:
     chalk_env["CHALK_ACTIVE_ENVIRONMENT"] = chalk_env["CHALK_ENVIRONMENT_ID"]
 
-logs_result = subprocess.run(
-    [
-        "chalk", "logs",
-        "--query", f"pod_name:chalk-container-simple-project-example",
-        "--start-time", "10m ago",
-    ],
-    check=False, text=True, capture_output=True, env=chalk_env,
-)
-print(logs_result.stdout)
-if logs_result.stderr:
-    print(logs_result.stderr, file=sys.stderr)
+if container.info is not None:
+    logs_result = subprocess.run(
+        [
+            "chalk", "logs",
+            "--query", f"pod_name:{container.info.pod_name}",
+            "--start-time", "10m ago",
+        ],
+        check=False, text=True, capture_output=True, env=chalk_env,
+    )
+    print(logs_result.stdout)
+    if logs_result.stderr:
+        print(logs_result.stderr, file=sys.stderr)
 
 # Clean up
 container.stop()

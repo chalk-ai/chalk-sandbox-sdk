@@ -15,7 +15,6 @@ log = logging.getLogger(__name__)
 
 
 @chalkcompute.function(
-    name="count-up",
     image=chalkcompute.Image.debian_slim(),
 )
 async def count_up(n: int) -> AsyncIterator[int]:

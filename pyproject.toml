@@ -16,8 +16,8 @@ dependencies = [
 ]
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
 
 [tool.hatch.build.targets.sdist]
 include = ["chalkcompute/", "pyproject.toml", "README.md"]
@@ -25,6 +25,13 @@ exclude = ["examples/", ".env*", ".sops.yaml", "e2etests/", "test_*", "*.enc"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["chalkcompute"]
+
+[tool.maturin]
+manifest-path = "rust/chalkcompute_remote_client/Cargo.toml"
+module-name = "chalkcompute._remote_call_native"
+python-source = "."
+include = ["chalkcompute/**", "README.md"]
+exclude = ["examples/", ".env*", ".sops.yaml", "e2etests/", "test_*", "*.enc"]
 
 [project.optional-dependencies]
 dev = [

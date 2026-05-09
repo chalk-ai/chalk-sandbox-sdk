@@ -32,7 +32,6 @@
 import os
 import sys
 import tempfile
-import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -49,8 +48,6 @@ def main() -> None:
     # A minimal Debian slim image with one local file mounted via a Chalk
     # volume.  This exercises every progress step: volume creation, file
     # upload, image check, and (on first run) image build.
-
-    suffix = uuid.uuid4().hex[:8]
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
         f.write("Hello from the spinners demo!\n")
@@ -70,7 +67,6 @@ def main() -> None:
 
         container = Container(
             image=image,
-            name=f"spinners-demo-{suffix}",
             lifetime="5m",
         ).run()
 

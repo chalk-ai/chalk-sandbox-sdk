@@ -6,13 +6,20 @@ from chalkcompute._logging import setup_logging as _setup_logging
 
 _setup_logging()
 
+# Keep top-level imports lazy so `import chalkcompute` does not eagerly import
+# the grpc/protobuf/client modules. Update `__init__.pyi` when adding exports.
 _LAZY_MAP: dict[str, tuple[str, str]] = {
     # _container.py
     "Container": ("chalkcompute._container", "Container"),
     "ContainerError": ("chalkcompute._container", "ContainerError"),
     "ContainerInfo": ("chalkcompute._container", "ContainerInfo"),
+    "ContainerSecurityPolicy": ("chalkcompute._container", "ContainerSecurityPolicy"),
     "ContainerExecResult": ("chalkcompute._container", "ExecResult"),
+    "AllowedRoute": ("chalkcompute._container", "AllowedRoute"),
     "ImageBuildError": ("chalkcompute._container", "ImageBuildError"),
+    "KernelPolicy": ("chalkcompute._container", "KernelPolicy"),
+    "NetworkPolicy": ("chalkcompute._container", "NetworkPolicy"),
+    "PortRange": ("chalkcompute._container", "PortRange"),
     # _cls.py
     "RemoteClass": ("chalkcompute._cls", "RemoteClass"),
     "ClassError": ("chalkcompute._cls", "ClassError"),
@@ -26,12 +33,15 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "DeployedFunction": ("chalkcompute._function", "DeployedFunction"),
     "FunctionError": ("chalkcompute._function", "FunctionError"),
     "FunctionBuildError": ("chalkcompute._function", "FunctionBuildError"),
+    "FunctionCallHandle": ("chalkcompute._function", "FunctionCallHandle"),
     "FunctionVersionInfo": ("chalkcompute._function", "FunctionVersionInfo"),
     "RetryPolicy": ("chalkcompute._retry", "RetryPolicy"),
     "RateLimitPolicy": ("chalkcompute._rate_limit", "RateLimitPolicy"),
     "ConcurrencyPolicy": ("chalkcompute._concurrency", "ConcurrencyPolicy"),
+    "QueuePolicy": ("chalkcompute._quota", "QueuePolicy"),
     "function": ("chalkcompute._function", "function"),
     # _connect.py
+    "ConnectClient": ("chalkcompute._connect", "ConnectClient"),
     "build_image": ("chalkcompute._connect", "build_image_from_spec"),
     # _image.py
     "Image": ("chalkcompute._image", "Image"),

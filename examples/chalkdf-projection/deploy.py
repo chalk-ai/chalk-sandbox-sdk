@@ -5,7 +5,7 @@
 # dependencies = ["httpx"]
 # ///
 
-"""Deploy the Grindr example container via `chalk container run`, then tail logs."""
+"""Deploy the ChalkDF projection example container via `chalk container run`, then tail logs."""
 
 import base64
 import os
@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 
-CONTAINER_NAME = "grindr-chalkdf-example"
+CONTAINER_NAME = "chalkdf-projection-example"
 
 SCRIPT = """\
 import pyarrow as pa

@@ -1,0 +1,15 @@
+[package]
+name = "chalkcompute_remote_client"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+publish = false
+
+[lib]
+name = "_remote_call_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+bytes = "1"
+chalk_remote_call = { package = "chalk_remote_call_client", git = "https://github.com/chalk-ai/chalk-private.git", rev = "d69b5ecd9d7eb5c8b85e6febfbab6fee72842c07" }
+pyo3 = { version = "0.25.1", features = ["extension-module"] }

@@ -4,7 +4,7 @@ Deploy Python functions as versioned remote functions backed by ExternalFunction
 Usage:
     import chalkcompute
 
-    @chalkcompute.function()
+    @chalkcompute.function
     def add(x: int, y: int) -> int:
         return x + y
 
@@ -26,6 +26,7 @@ Or imperatively:
 from __future__ import annotations
 
 import ast
+import asyncio
 import functools
 import inspect
 import logging
@@ -36,19 +37,20 @@ import typing
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Callable, Protocol, overload, runtime_checkable
 
+from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import (
     ConnectClient,
     build_image,
     grpc_target_from_url,
 )
-from chalkcompute._volume import VolumeClient, upload_lazy_files
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
-from chalkcompute._tracing import traced
-from chalkcompute._retry import RetryPolicy
+from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
-from chalkcompute._concurrency import ConcurrencyPolicy
+from chalkcompute._retry import RetryPolicy
+from chalkcompute._tracing import traced
+from chalkcompute._volume import VolumeClient, upload_lazy_files
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +152,25 @@ def _strip_chalkcompute_from_source(source: str) -> str:
     # Collect line ranges to remove (1-indexed, inclusive)
     remove_ranges: list[tuple[int, int]] = []
 
-    # Track names of functions decorated with @chalkcompute.function(...)
+    # Track aliases that let users spell the decorator as either
+    # @chalkcompute.function, @cc.function, or @function.
+    chalkcompute_module_names = {"chalkcompute"}
+    chalkcompute_decorator_names: set[str] = set()
+
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "chalkcompute":
+                    chalkcompute_module_names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module and node.module.startswith("chalkcompute"):
+                for alias in node.names:
+                    if alias.name == "*":
+                        chalkcompute_decorator_names.add("function")
+                    elif alias.name == "function":
+                        chalkcompute_decorator_names.add(alias.asname or alias.name)
+
+    # Track names of functions decorated with a chalkcompute function decorator.
     decorated_names: set[str] = set()
 
     for node in ast.iter_child_nodes(tree):
@@ -168,7 +188,15 @@ def _strip_chalkcompute_from_source(source: str) -> str:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             for dec in node.decorator_list:
                 dec_source = ast.get_source_segment(source, dec)
-                if dec_source and "chalkcompute" in dec_source:
+                if (
+                    (dec_source is not None and "chalkcompute" in dec_source)
+                    or _is_chalkcompute_decorator(
+                        dec,
+                        module_names=chalkcompute_module_names,
+                        decorator_names=chalkcompute_decorator_names,
+                        attribute_names={"function"},
+                    )
+                ):
                     remove_ranges.append((dec.lineno, dec.end_lineno or dec.lineno))
                     decorated_names.add(node.name)
 
@@ -191,6 +219,29 @@ def _strip_chalkcompute_from_source(source: str) -> str:
 
     kept = [line for i, line in enumerate(lines, start=1) if i not in removed_lines]
     return "".join(kept)
+
+
+def _is_chalkcompute_decorator(
+    decorator: ast.expr,
+    *,
+    module_names: set[str],
+    decorator_names: set[str],
+    attribute_names: set[str],
+) -> bool:
+    """Return whether an AST decorator refers to a chalkcompute decorator."""
+    target = decorator.func if isinstance(decorator, ast.Call) else decorator
+
+    if isinstance(target, ast.Name):
+        return target.id in decorator_names
+
+    if isinstance(target, ast.Attribute):
+        return (
+            target.attr in attribute_names
+            and isinstance(target.value, ast.Name)
+            and target.value.id in module_names
+        )
+
+    return False
 
 
 def _generate_handler_shim(func_name: str, *, batched: bool = False) -> str:
@@ -310,7 +361,8 @@ def _should_strip_source() -> bool:
     if _STRIP_SOURCE_ENV_VAR in os.environ:
         return os.environ[_STRIP_SOURCE_ENV_VAR] == "1"
 
-    from importlib.metadata import PackageNotFoundError, version as _pkg_version
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as _pkg_version
 
     try:
         return _pkg_version("chalkcompute") == "0.0.0"
@@ -320,6 +372,96 @@ def _should_strip_source() -> bool:
 
 def _should_call_via_api() -> bool:
     return os.environ.get(_CALL_VIA_API_ENV_VAR, "") == "1"
+
+
+class FunctionCallHandle:
+    """Handle returned by :meth:`RemoteFunction.defer`."""
+
+    def __init__(self, function: RemoteFunction, call_id: str) -> None:
+        self._function = function
+        self._call_id = call_id
+        self._is_async = bool(getattr(function, "_is_async", False))
+        self._cursor = ""
+        self._poll_count = 0
+
+    @property
+    def call_id(self) -> str:
+        return self._call_id
+
+    def poll(self) -> Any:
+        result = self._function.poll(
+            self._call_id,
+            cursor=self._cursor,
+            poll_count=self._poll_count,
+        )
+        self._cursor = result.cursor
+        self._poll_count = result.poll_count
+        return result
+
+    def get(self, timeout: float | None = None) -> Any:
+        if self._is_async:
+            return self._async_get(timeout)
+        return self._sync_get(timeout)
+
+    def _sync_get(self, timeout: float | None = None) -> Any:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        chunks: list[bytes] = []
+
+        while True:
+            result = self.poll()
+            chunks.extend(result.chunks)
+
+            if result.is_failed:
+                message = result.error_message or "Remote call failed"
+                raise FunctionError(message)
+
+            if result.is_completed:
+                return self._function._materialize_result_chunks(chunks)
+
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(f"Remote call {self._call_id} timed out")
+
+    async def _async_get(self, timeout: float | None = None) -> Any:
+        return await asyncio.to_thread(self._sync_get, timeout)
+
+    def stream(self) -> Any:
+        if self._is_async:
+            return self._async_stream()
+        return self._sync_stream()
+
+    def _sync_stream(self) -> Any:
+        import pyarrow as pa
+
+        while True:
+            result = self.poll()
+            for chunk in result.chunks:
+                reader = pa.ipc.open_stream(pa.BufferReader(chunk))
+                for batch in reader:
+                    yield batch
+
+            if result.is_failed:
+                message = result.error_message or "Remote call failed"
+                raise FunctionError(message)
+
+            if result.is_completed:
+                return
+
+    async def _async_stream(self) -> Any:
+        import pyarrow as pa
+
+        while True:
+            result = await asyncio.to_thread(self.poll)
+            for chunk in result.chunks:
+                reader = pa.ipc.open_stream(pa.BufferReader(chunk))
+                for batch in reader:
+                    yield batch
+
+            if result.is_failed:
+                message = result.error_message or "Remote call failed"
+                raise FunctionError(message)
+
+            if result.is_completed:
+                return
 
 
 def _prepare_source_file(source_file: str) -> tuple[str, bool]:
@@ -366,7 +508,7 @@ def _local_install_entrypoint(handler_cmd: list[str]) -> list[str]:
     strip_source = _should_strip_source()
     if os.environ.get(_LOCAL_COPY_ENV_VAR, "") != "1" or strip_source:
         return handler_cmd
-    from chalkcompute._image import ARCHIVE_NAME, _ARCHIVE_CHUNK_PREFIX
+    from chalkcompute._image import _ARCHIVE_CHUNK_PREFIX, ARCHIVE_NAME
 
     d = _LOCAL_SDK_MOUNT
     # Reassemble chunked archive, extract, then pip install.
@@ -473,7 +615,8 @@ def _build_and_upload(
         )
         logger.info("Uploading %d local file(s)...", len(deploy_image.lazy_local_files))
         new_volumes = upload_lazy_files(
-            VolumeClient.from_connect(client), deploy_image,
+            VolumeClient.from_connect(client),
+            deploy_image,
             volume_prefix=volume_prefix,
         )
         progress_done(vkey)
@@ -657,6 +800,32 @@ def _extract_field_names(schema_dict: dict | None) -> list[str]:
     return [f["name"] for f in schema_dict.get("columns", []) if "name" in f]
 
 
+def _extract_schema_metadata(schema_dict: dict | None) -> dict[str, str]:
+    """Return Arrow schema metadata from a Connect JSON schema dict."""
+    if not schema_dict:
+        return {}
+
+    metadata = schema_dict.get("metadata") or {}
+    if isinstance(metadata, dict):
+        return {str(k): str(v) for k, v in metadata.items()}
+    if isinstance(metadata, list):
+        result: dict[str, str] = {}
+        for entry in metadata:
+            if isinstance(entry, dict) and "key" in entry:
+                result[str(entry["key"])] = str(entry.get("value", ""))
+        return result
+    return {}
+
+
+def _extract_function_traits(efv: dict[str, Any]) -> tuple[bool, bool]:
+    """Return ``(is_generator, is_async)`` from catalog function metadata."""
+    metadata = _extract_schema_metadata(efv.get("outputArrowSchema"))
+    return (
+        metadata.get("chalk.function.is_generator") == "true",
+        metadata.get("chalk.function.is_async") == "true",
+    )
+
+
 # ---------------------------------------------------------------------------
 # RemoteFunction
 # ---------------------------------------------------------------------------
@@ -706,7 +875,6 @@ class RemoteFunction:
     >>> fn = RemoteFunction(
     ...     square,
     ...     image=Image.debian_slim(),
-    ...     name="square",
     ...     min_replicas=1,
     ...     max_replicas=2,
     ... )
@@ -740,6 +908,7 @@ class RemoteFunction:
         retries: int | RetryPolicy | None = None,
         rate_limit: int | RateLimitPolicy | None = None,
         concurrency: int | ConcurrencyPolicy | None = None,
+        quota: int | QueuePolicy | None = None,
     ) -> None:
         self._func = func
         if name is not None:
@@ -786,6 +955,9 @@ class RemoteFunction:
             if concurrency is not None
             else None
         )
+        self._quota = (
+            QueuePolicy.from_int_or_policy(quota) if quota is not None else None
+        )
 
         # Set after .deploy()
         self._version_info: FunctionVersionInfo | None = None
@@ -794,10 +966,16 @@ class RemoteFunction:
 
         # Input field names (populated from API response for from_id/from_name)
         self._input_field_names: list[str] = []
+        self._is_generator = inspect.isgeneratorfunction(func) or inspect.isasyncgenfunction(
+            func
+        )
+        self._is_async = inspect.iscoroutinefunction(func) or inspect.isasyncgenfunction(func)
 
         # gRPC call channel (lazily created on first __call__)
         self._call_channel: Any = None
         self._call_stub: Any = None
+        self._remote_call_client: Any = None
+        self._queue_call_client: Any = None
 
         self._client = ConnectClient()
 
@@ -837,6 +1015,7 @@ class RemoteFunction:
         )
         f._func_name = efv["functionName"]
         f._input_field_names = _extract_field_names(efv.get("inputArrowSchema"))
+        f._is_generator, f._is_async = _extract_function_traits(efv)
         sg = data.get("scalingGroup")
         if sg:
             f._web_url = sg.get("webUrl")
@@ -876,6 +1055,7 @@ class RemoteFunction:
         f._func_name = efv["functionName"]
         f._explicit_name = name
         f._input_field_names = _extract_field_names(efv.get("inputArrowSchema"))
+        f._is_generator, f._is_async = _extract_function_traits(efv)
         sg = data.get("scalingGroup")
         if sg:
             f._web_url = sg.get("webUrl")
@@ -908,12 +1088,17 @@ class RemoteFunction:
         f._retries = None
         f._rate_limit = None
         f._concurrency = None
+        f._quota = None
         f._version_info = None
         f._web_url = None
         f._port = 6666
         f._input_field_names = []
+        f._is_generator = False
+        f._is_async = False
         f._call_channel = None
         f._call_stub = None
+        f._remote_call_client = None
+        f._queue_call_client = None
         f._client = ConnectClient()
         return f
 
@@ -1074,6 +1259,8 @@ class RemoteFunction:
                 function_config["rateLimit"] = self._rate_limit.to_dict()
             if self._concurrency is not None:
                 function_config["concurrency"] = self._concurrency.to_dict()
+            if self._quota is not None:
+                function_config["queue"] = self._quota.to_dict()
 
             # 6. Call CreateExternalFunctionVersion
             rkey = f"register:{self._func_name}"
@@ -1261,6 +1448,123 @@ class RemoteFunction:
             self._call_channel = grpc.insecure_channel(target)
         self._call_stub = call_grpc.RemoteCallServiceStub(self._call_channel)
 
+    def _remote_call_metadata(self, *, queue: bool) -> list[tuple[str, str]]:
+        self._client._ensure_auth()
+        metadata = [
+            ("authorization", f"Bearer {self._client._access_token}"),
+            ("x-chalk-env-id", self._client._env_id or ""),
+        ]
+        if queue:
+            metadata.append(("x-chalk-deployment-type", "function-queue"))
+        return metadata
+
+    def _ensure_remote_call_client(self, *, queue: bool = False) -> Any:
+        attr = "_queue_call_client" if queue else "_remote_call_client"
+        client = getattr(self, attr)
+        if client is not None:
+            return client
+
+        if self._web_url is None:
+            raise FunctionError("Function is not deployed. Call .deploy() first.")
+
+        from chalkcompute._remote_call_client import RemoteCallClient
+
+        if queue:
+            target, use_tls = self._client.grpc_engine_target()
+        else:
+            target, use_tls = grpc_target_from_url(
+                self._web_url,
+                insecure_port=self._port,
+            )
+        client = RemoteCallClient(
+            target,
+            metadata=self._remote_call_metadata(queue=queue),
+            use_tls=use_tls,
+        )
+        setattr(self, attr, client)
+        return client
+
+    def _call_direct_chunks_python_grpc(self, feather_bytes: bytes) -> list[bytes]:
+        from chalk_remote_call._gen.chalk.runtime.v1 import (
+            remote_python_call_pb2 as call_pb,
+        )
+
+        self._ensure_call_stub()
+
+        def requests() -> Any:
+            yield call_pb.CallFunctionRequest(  # ty: ignore[unresolved-attribute]
+                name="handler",
+                feather_stream=feather_bytes,
+            )
+
+        responses = list(
+            self._call_stub.CallFunction(requests(), metadata=self._call_metadata)
+        )
+        return [resp.feather_stream for resp in responses]
+
+    def _call_direct_chunks(self, feather_bytes: bytes) -> list[bytes]:
+        from chalkcompute._remote_call_client import RemoteCallClientUnavailable
+
+        try:
+            client = self._ensure_remote_call_client(queue=False)
+        except RemoteCallClientUnavailable:
+            return self._call_direct_chunks_python_grpc(feather_bytes)
+        return client.call_ipc("handler", feather_bytes)
+
+    def _queue_function_name(self) -> str:
+        if self._version_info is not None and self._version_info.function_name:
+            return self._version_info.function_name
+        return self._func_name
+
+    def _serialize_call_args(self, *args: Any, **kwargs: Any) -> bytes:
+        import pyarrow as pa
+        import pyarrow.ipc as ipc
+
+        if self._input_field_names:
+            arguments: dict[str, Any] = {}
+            for i, name in enumerate(self._input_field_names):
+                if name in kwargs:
+                    arguments[name] = kwargs[name]
+                elif i < len(args):
+                    arguments[name] = args[i]
+                else:
+                    raise TypeError(f"Missing argument: {name}")
+        else:
+            sig = inspect.signature(self._func)
+            bound = sig.bind(*args, **kwargs)
+            bound.apply_defaults()
+            arguments = bound.arguments
+
+        arrays = []
+        names = []
+        for param_name, value in arguments.items():
+            arrays.append(pa.array([value]))
+            names.append(param_name)
+        batch = pa.record_batch(arrays, names=names)
+
+        sink = pa.BufferOutputStream()
+        with ipc.new_stream(sink, batch.schema) as writer:
+            writer.write_batch(batch)
+        return sink.getvalue().to_pybytes()
+
+    def _decode_result_chunks(self, chunks: list[bytes]) -> list[Any]:
+        import pyarrow.ipc as ipc
+
+        results: list[Any] = []
+        for chunk in chunks:
+            reader = ipc.open_stream(chunk)
+            for result_batch in reader:
+                result_dict = result_batch.to_pydict()
+                if "result" in result_dict:
+                    results.extend(result_dict["result"])
+        return results
+
+    def _materialize_result_chunks(self, chunks: list[bytes]) -> Any:
+        results = self._decode_result_chunks(chunks)
+        if len(results) == 1:
+            return results[0]
+        return results
+
     def _call_via_api_rpc(self, feather_bytes: bytes) -> bytes:
         """Call the remote function via the API server's ``CallExternalFunction`` RPC.
 
@@ -1331,82 +1635,53 @@ class RemoteFunction:
         Any
             Scalar result for single-row calls, or a list of results otherwise.
         """
-        import pyarrow as pa
-        import pyarrow.ipc as ipc
+        if self._is_generator:
+            return self.defer(*args, **kwargs).stream()
+        if self._is_async:
+            return self._call_async(*args, **kwargs)
+        return self._call_sync(*args, **kwargs)
 
-        # 1. Build name→value mapping from args
-        if self._input_field_names:
-            # from_id / from_name: use schema field names
-            arguments: dict[str, Any] = {}
-            for i, name in enumerate(self._input_field_names):
-                if name in kwargs:
-                    arguments[name] = kwargs[name]
-                elif i < len(args):
-                    arguments[name] = args[i]
-                else:
-                    raise TypeError(f"Missing argument: {name}")
-        else:
-            # Normal constructor: use function signature
-            sig = inspect.signature(self._func)
-            bound = sig.bind(*args, **kwargs)
-            bound.apply_defaults()
-            arguments = bound.arguments
+    async def _call_async(self, *args: Any, **kwargs: Any) -> Any:
+        return await asyncio.to_thread(self._call_sync, *args, **kwargs)
 
-        # 2. Build RecordBatch from args (one column per param, single row)
-        arrays = []
-        names = []
-        for param_name, value in arguments.items():
-            arrays.append(pa.array([value]))
-            names.append(param_name)
-        batch = pa.record_batch(arrays, names=names)
+    def _call_sync(self, *args: Any, **kwargs: Any) -> Any:
+        feather_bytes = self._serialize_call_args(*args, **kwargs)
 
-        # 3. Serialize to Arrow IPC (Feather) bytes
-        sink = pa.BufferOutputStream()
-        with ipc.new_stream(sink, batch.schema) as writer:
-            writer.write_batch(batch)
-        feather_bytes = sink.getvalue().to_pybytes()
-
-        # 4. Call: branch on routing mode
         if _should_call_via_api():
             response_bytes = self._call_via_api_rpc(feather_bytes)
-            results: list[Any] = []
-            reader = ipc.open_stream(response_bytes)
-            for result_batch in reader:
-                result_dict = result_batch.to_pydict()
-                if "result" in result_dict:
-                    results.extend(result_dict["result"])
+            results = self._decode_result_chunks([response_bytes])
         else:
-            from chalk_remote_call._gen.chalk.runtime.v1 import (
-                remote_python_call_pb2 as call_pb,
-            )
-
-            self._ensure_call_stub()
-
-            def requests():
-                yield call_pb.CallFunctionRequest(  # ty: ignore[unresolved-attribute]
-                    name="handler",
-                    feather_stream=feather_bytes,
-                )
-
-            responses = list(
-                self._call_stub.CallFunction(requests(), metadata=self._call_metadata)
-            )
-
-            if not responses:
+            chunks = self._call_direct_chunks(feather_bytes)
+            if not chunks:
                 raise FunctionError("No response received from remote function")
+            results = self._decode_result_chunks(chunks)
 
-            results = []
-            for resp in responses:
-                reader = ipc.open_stream(resp.feather_stream)
-                for result_batch in reader:
-                    result_dict = result_batch.to_pydict()
-                    if "result" in result_dict:
-                        results.extend(result_dict["result"])
-
-        # 5. Single-row call returns scalar
         if len(results) == 1:
             return results[0]
         return results
+
+    def defer(self, *args: Any, **kwargs: Any) -> FunctionCallHandle:
+        """Enqueue this function call and return a handle immediately."""
+        feather_bytes = self._serialize_call_args(*args, **kwargs)
+        client = self._ensure_remote_call_client(queue=True)
+        call_id = client.enqueue(self._queue_function_name(), feather_bytes)
+        return FunctionCallHandle(self, call_id)
+
+    def poll(
+        self,
+        call_id: str,
+        *,
+        cursor: str = "",
+        poll_count: int = 0,
+    ) -> Any:
+        """Poll a deferred call once."""
+        client = self._ensure_remote_call_client(queue=True)
+        return client.poll_next(call_id, cursor, poll_count)
+
+    def purge(self) -> int:
+        """Drop pending queued calls for this function."""
+        client = self._ensure_remote_call_client(queue=True)
+        return int(client.purge_function(self._queue_function_name()))
 
     # -- Management ------------------------------------------------------------
 
@@ -1509,6 +1784,37 @@ class _NoOpFunction:
 # ---------------------------------------------------------------------------
 
 
+@overload
+def function(
+    func: Callable[..., Any],
+    /,
+    *,
+    image: _Image | None = None,
+    cpu: str | None = None,
+    memory: str | None = None,
+    gpu: str | None = None,
+    name: str | None = None,
+    env: dict[str, str] | None = None,
+    secrets: list[_Secret] | None = None,
+    volumes: list[tuple[str, str]] | None = None,
+    min_replicas: int = 1,
+    max_replicas: int = 1,
+    shutdown_delay_seconds: int | None = None,
+    scaling_interval_seconds: int | None = None,
+    target_cpu_utilization_percentage: int | None = None,
+    target_queue_depth: int | None = None,
+    serialization_format: SerializationFormat = "pyarrow",
+    options: dict[str, str] | None = None,
+    max_buffer_duration: int | None = None,
+    max_batching_size: int | None = None,
+    retries: int | RetryPolicy | None = None,
+    rate_limit: int | RateLimitPolicy | None = None,
+    concurrency: int | ConcurrencyPolicy | None = None,
+    quota: int | QueuePolicy | None = None,
+) -> RemoteFunction | _NoOpFunction: ...
+
+
+@overload
 def function(
     *,
     image: _Image | None = None,
@@ -1532,7 +1838,38 @@ def function(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
+    quota: int | QueuePolicy | None = None,
 ) -> Callable[..., RemoteFunction | _NoOpFunction]:
+    ...
+
+
+def function(
+    func: Callable[..., Any] | None = None,
+    /,
+    *,
+    image: _Image | None = None,
+    cpu: str | None = None,
+    memory: str | None = None,
+    gpu: str | None = None,
+    name: str | None = None,
+    env: dict[str, str] | None = None,
+    secrets: list[_Secret] | None = None,
+    volumes: list[tuple[str, str]] | None = None,
+    min_replicas: int = 1,
+    max_replicas: int = 1,
+    shutdown_delay_seconds: int | None = None,
+    scaling_interval_seconds: int | None = None,
+    target_cpu_utilization_percentage: int | None = None,
+    target_queue_depth: int | None = None,
+    serialization_format: SerializationFormat = "pyarrow",
+    options: dict[str, str] | None = None,
+    max_buffer_duration: int | None = None,
+    max_batching_size: int | None = None,
+    retries: int | RetryPolicy | None = None,
+    rate_limit: int | RateLimitPolicy | None = None,
+    concurrency: int | ConcurrencyPolicy | None = None,
+    quota: int | QueuePolicy | None = None,
+) -> Callable[..., RemoteFunction | _NoOpFunction] | RemoteFunction | _NoOpFunction:
     """Decorator that deploys a function as a versioned remote function.
 
     **Locally** (at decoration time):
@@ -1611,11 +1948,19 @@ def function(
         (``max_concurrent``, ``key``). Multiple functions sharing the same
         ``key`` share one gate — independent of ``rate_limit`` (which caps
         rate, not in-flight count).
+    quota
+        Queue quota: cap on the number of pending items that may be enqueued
+        for this function at once. Pass an ``int`` for the cap, or a
+        :class:`~chalkcompute.QueuePolicy` (currently equivalent —
+        ``QueuePolicy(max_items=N)``). Defaults to 500,000 items when unset.
+        Submitting past the cap raises a gRPC ``RESOURCE_EXHAUSTED`` error —
+        clients should back off or call ``purge()`` on the function to drain
+        the queue if items were erroneously added.
 
     Examples
     --------
     >>> import chalkcompute
-    >>> @chalkcompute.function()
+    >>> @chalkcompute.function
     ... def add(x: int, y: int) -> int:
     ...     return x + y
     >>> add(1, 2)
@@ -1648,8 +1993,14 @@ def function(
             retries=retries,
             rate_limit=rate_limit,
             concurrency=concurrency,
+            quota=quota,
         )
         f.deploy()
         return f
+
+    if func is not None:
+        if not callable(func):
+            raise TypeError("function() positional argument must be callable")
+        return decorator(func)
 
     return decorator

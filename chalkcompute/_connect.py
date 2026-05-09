@@ -11,6 +11,7 @@ import os
 import re
 import time
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 import grpc
 
@@ -50,6 +51,9 @@ class ConnectClient:
         self._access_token: str | None = None
         self._env_id: str | None = None
         self._headers: dict[str, str] | None = None
+        self._grpc_engines: dict[str, str] = {}
+        self._environment_id_to_name: dict[str, str] = {}
+        self._primary_environment: str | None = None
 
     def _ensure_auth(self) -> None:
         if self._access_token is not None:
@@ -60,7 +64,11 @@ class ConnectClient:
         self._api_server = os.environ.get("CHALK_API_SERVER", "")
         client_id = os.environ.get("CHALK_CLIENT_ID", "")
         client_secret = os.environ.get("CHALK_CLIENT_SECRET", "")
-        self._env_id = os.environ.get("CHALK_ENVIRONMENT_ID", "")
+        requested_env = (
+            os.environ.get("CHALK_ENVIRONMENT_ID")
+            or os.environ.get("CHALK_ENVIRONMENT")
+            or ""
+        )
 
         if not self._api_server or not client_id:
             raise ConnectError(
@@ -82,7 +90,16 @@ class ConnectClient:
             timeout=30,
         )
         resp.raise_for_status()
-        self._access_token = resp.json()["access_token"]
+        data = resp.json()
+        self._access_token = data["access_token"]
+        self._primary_environment = data.get("primary_environment")
+        self._grpc_engines = _string_map(data.get("grpc_engines"))
+        self._environment_id_to_name = _string_map(
+            data.get("environment_id_to_name")
+        )
+        self._env_id = self._resolve_environment_id(
+            requested_env or self._primary_environment or ""
+        )
 
         self._headers = {
             "Content-Type": "application/json",
@@ -90,6 +107,45 @@ class ConnectClient:
             "X-Chalk-Env-Id": self._env_id or "",
             "X-Chalk-Server": "go-api",
         }
+
+    def _resolve_environment_id(self, environment: str) -> str:
+        if not environment:
+            return ""
+        if (
+            environment in self._grpc_engines
+            or environment in self._environment_id_to_name
+        ):
+            return environment
+
+        lower_environment = environment.lower()
+        matches = [
+            env_id
+            for env_id, env_name in self._environment_id_to_name.items()
+            if env_name.lower() == lower_environment
+        ]
+        if len(matches) > 1:
+            raise ConnectError(
+                f"Multiple Chalk environments match {environment!r}: {matches}"
+            )
+        if len(matches) == 1:
+            return matches[0]
+        return environment
+
+    def grpc_engine_target(self) -> tuple[str, bool]:
+        """Return the active environment's gRPC engine target and TLS mode."""
+        self._ensure_auth()
+        if not self._env_id:
+            raise ConnectError("No Chalk environment selected")
+
+        query_server = self._grpc_engines.get(self._env_id)
+        if not query_server:
+            available = ", ".join(sorted(self._grpc_engines)) or "none"
+            raise ConnectError(
+                "No gRPC engine endpoint found for Chalk environment "
+                f"{self._env_id!r}. Available environments: {available}"
+            )
+
+        return grpc_engine_target_from_url(query_server)
 
     def rpc(
         self,
@@ -295,3 +351,27 @@ def grpc_target_from_url(
     if insecure_port is not None:
         return f"{host}:{insecure_port}", False
     return host, False
+
+
+def grpc_engine_target_from_url(url: str) -> tuple[str, bool]:
+    """Parse a Chalk engine URI using Chalk's external-TLS/local-insecure rule."""
+    if url.startswith(("localhost", "127.0.0.1", "10.")):
+        use_tls = False
+        target = url
+    else:
+        parsed = urlparse(url)
+        if parsed.scheme == "http":
+            use_tls = False
+        elif parsed.scheme == "https":
+            use_tls = True
+        else:
+            use_tls = True
+
+        target = url.removeprefix(parsed.scheme + "://") if parsed.scheme else url
+    return target.rstrip("/").split("/")[0], use_tls
+
+
+def _string_map(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(k): str(v) for k, v in value.items()}

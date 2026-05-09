@@ -1,4 +1,4 @@
-"""Image definition for the Grindr example container."""
+"""Image definition for the ChalkDF projection example container."""
 
 import sys
 import os

@@ -168,7 +168,7 @@ def main() -> None:
         # the container that wrote it.
         print("\n=== Starting writer container ===")
         writer = (
-            Container(image=image, name=f"sqlite-writer-{uuid.uuid4().hex[:6]}", env=CONTAINER_ENV)
+            Container(image=image, env=CONTAINER_ENV)
             .mount_volume(VOLUME_NAME, MOUNT_PATH)
             .run()
         )
@@ -189,12 +189,12 @@ def main() -> None:
         # database. Both should see all three rows.
         print("=== Starting reader containers ===")
         reader_a = (
-            Container(image=image, name=f"sqlite-reader-a-{uuid.uuid4().hex[:6]}", env=CONTAINER_ENV)
+            Container(image=image, env=CONTAINER_ENV)
             .mount_volume(VOLUME_NAME, MOUNT_PATH)
             .run()
         )
         reader_b = (
-            Container(image=image, name=f"sqlite-reader-b-{uuid.uuid4().hex[:6]}", env=CONTAINER_ENV)
+            Container(image=image, env=CONTAINER_ENV)
             .mount_volume(VOLUME_NAME, MOUNT_PATH)
             .run()
         )

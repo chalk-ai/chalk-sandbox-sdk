@@ -110,7 +110,6 @@ def create_volume(name: str, token: str) -> None:
 def main() -> None:
     run_id = uuid.uuid4().hex[:8]
     vol_name = f"hello-vol-{run_id}"
-    container_name = f"hello-container-{run_id}"
 
     token = _get_token()
     create_volume(vol_name, token)
@@ -123,7 +122,6 @@ def main() -> None:
 
     container = Container(
         image="python:3.12-slim-bookworm",
-        name=container_name,
         volumes=[(vol_name, MOUNT_PATH)],
         env=env,
     )

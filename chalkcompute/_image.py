@@ -13,7 +13,7 @@ Build container images using a fluent API:
         .env({"PROJECT_ROOT": "/home/user/app"})
     )
 
-    sandbox = client.create(image=img, name="my-sandbox")
+    sandbox = client.create(image=img)
 
 The image specification is serialized as a protobuf ImageSpec and transmitted
 to the sandbox service, which builds and caches the image before starting the
