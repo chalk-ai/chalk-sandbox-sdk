@@ -11,7 +11,7 @@ from chalkcompute._function import (
     RemoteFunction,
     _build_function_config_proto,
 )
-from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb2 as pb
+from chalkcompute._connect import _enum_value
 from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._retry import RetryPolicy
@@ -127,7 +127,10 @@ class TestFunctionConfigProto:
         assert config.retry_policy.max_backoff_ms == 10_000
         assert config.retry_policy.key == "retry-shared"
         assert config.rate_limit.rate == 60
-        assert config.rate_limit.per == pb.RATE_LIMIT_PER_MINUTE
+        assert config.rate_limit.per == _enum_value(
+            "chalk.externalfunctioncatalog.v1.RateLimitPer",
+            "RATE_LIMIT_PER_MINUTE",
+        )
         assert config.rate_limit.key == "rate-shared"
         assert config.concurrency.max_concurrent == 8
         assert config.concurrency.key == "conc-shared"

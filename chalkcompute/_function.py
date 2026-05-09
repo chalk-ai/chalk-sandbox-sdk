@@ -43,6 +43,8 @@ from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import (
     ConnectClient,
     ConnectError,
+    _enum_value,
+    _new_message,
     build_image,
     grpc_target_from_url,
 )
@@ -716,9 +718,7 @@ def _build_function_config_proto(
     quota: QueuePolicy | None = None,
 ) -> Any | None:
     """Build a generated ``FunctionConfig`` proto from SDK policy objects."""
-    from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb2 as pb
-
-    config = pb.FunctionConfig()
+    config = _new_message("chalk.externalfunctioncatalog.v1.FunctionConfig")
     if serialization_format != "pyarrow":
         raise ValueError(f"Unsupported serialization format: {serialization_format}")
     if options:
@@ -728,7 +728,8 @@ def _build_function_config_proto(
     if max_batching_size is not None:
         config.max_batching_size = max_batching_size
     if retries is not None:
-        retry_policy = pb.RetryPolicy(max_retries=retries.max_retries)
+        retry_policy = _new_message("chalk.externalfunctioncatalog.v1.RetryPolicy")
+        retry_policy.max_retries = retries.max_retries
         retry_policy.initial_backoff_ms = int(retries.initial_wait_seconds * 1000)
         retry_policy.backoff_multiplier = retries.backoff_multiplier
         retry_policy.max_backoff_ms = int(retries.max_wait_seconds * 1000)
@@ -737,27 +738,65 @@ def _build_function_config_proto(
         config.retry_policy.CopyFrom(retry_policy)
     if rate_limit is not None:
         per = {
-            "second": pb.RATE_LIMIT_PER_SECOND,
-            "minute": pb.RATE_LIMIT_PER_MINUTE,
-            "hour": pb.RATE_LIMIT_PER_HOUR,
+            "second": _enum_value(
+                "chalk.externalfunctioncatalog.v1.RateLimitPer",
+                "RATE_LIMIT_PER_SECOND",
+            ),
+            "minute": _enum_value(
+                "chalk.externalfunctioncatalog.v1.RateLimitPer",
+                "RATE_LIMIT_PER_MINUTE",
+            ),
+            "hour": _enum_value(
+                "chalk.externalfunctioncatalog.v1.RateLimitPer",
+                "RATE_LIMIT_PER_HOUR",
+            ),
         }.get(rate_limit.per)
         if per is None:
             raise ValueError(f"Unsupported rate limit period: {rate_limit.per}")
-        rate_limit_policy = pb.RateLimitPolicy(rate=rate_limit.rate, per=per)
+        rate_limit_policy = _new_message(
+            "chalk.externalfunctioncatalog.v1.RateLimitPolicy"
+        )
+        rate_limit_policy.rate = rate_limit.rate
+        rate_limit_policy.per = per
         if rate_limit.key is not None:
             rate_limit_policy.key = rate_limit.key
         config.rate_limit.CopyFrom(rate_limit_policy)
     if concurrency is not None:
-        concurrency_policy = pb.ConcurrencyPolicy(
-            max_concurrent=concurrency.max_concurrent
+        concurrency_policy = _new_message(
+            "chalk.externalfunctioncatalog.v1.ConcurrencyPolicy"
         )
+        concurrency_policy.max_concurrent = concurrency.max_concurrent
         if concurrency.key is not None:
             concurrency_policy.key = concurrency.key
         config.concurrency.CopyFrom(concurrency_policy)
     if quota is not None:
-        config.queue.CopyFrom(pb.QueuePolicy(max_items=quota.max_items))
+        queue_policy = _new_message("chalk.externalfunctioncatalog.v1.QueuePolicy")
+        queue_policy.max_items = quota.max_items
+        config.queue.CopyFrom(queue_policy)
 
     return config if config.ListFields() else None
+
+
+def _build_create_function_version_request(
+    *,
+    function_name: str,
+    input_arrow_schema: Any,
+    output_arrow_schema: Any,
+    spec: dict[str, Any],
+    config: Any | None,
+) -> Any:
+    from google.protobuf.json_format import ParseDict
+
+    request = _new_message(
+        "chalk.externalfunctioncatalog.v1.CreateExternalFunctionVersionRequest"
+    )
+    request.function_name = function_name
+    request.input_arrow_schema.ParseFromString(input_arrow_schema.SerializeToString())
+    request.output_arrow_schema.ParseFromString(output_arrow_schema.SerializeToString())
+    ParseDict(spec, request.spec)
+    if config is not None:
+        request.config.CopyFrom(config)
+    return request
 
 
 # ---------------------------------------------------------------------------
@@ -1213,7 +1252,7 @@ class RemoteFunction:
         RemoteFunction
             ``self`` for chaining.
         """
-        from google.protobuf.json_format import MessageToDict, ParseDict
+        from google.protobuf.json_format import MessageToDict
 
         from chalkcompute._progress import (
             progress_add,
@@ -1317,19 +1356,13 @@ class RemoteFunction:
             progress_add(rkey, "function", "Registering function", parent=fkey)
             logger.info("Registering function '%s'...", self._func_name)
 
-            from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import (
-                service_pb2 as catalog_pb,
-            )
-            from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb2 as sg_pb
-
-            create_request = catalog_pb.CreateExternalFunctionVersionRequest(
+            create_request = _build_create_function_version_request(
                 function_name=self._func_name,
                 input_arrow_schema=input_schema_proto,
                 output_arrow_schema=output_schema_proto,
-                spec=ParseDict(spec, sg_pb.ScalingGroupSpec()),
+                spec=spec,
+                config=function_config,
             )
-            if function_config is not None:
-                create_request.config.CopyFrom(function_config)
 
             try:
                 create_response = self._client.unary(
@@ -1477,7 +1510,7 @@ class RemoteFunction:
             return
 
         import grpc
-        from chalk_remote_call._gen.chalk.runtime.v1 import (
+        from chalkcompute._gen.chalk.runtime.v1 import (
             remote_python_call_pb2_grpc as call_grpc,
         )
 
@@ -1541,7 +1574,7 @@ class RemoteFunction:
         return client
 
     def _call_direct_chunks_python_grpc(self, feather_bytes: bytes) -> list[bytes]:
-        from chalk_remote_call._gen.chalk.runtime.v1 import (
+        from chalkcompute._gen.chalk.runtime.v1 import (
             remote_python_call_pb2 as call_pb,
         )
 

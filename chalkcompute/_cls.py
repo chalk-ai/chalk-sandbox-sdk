@@ -60,6 +60,7 @@ from chalkcompute._function import (
     RemoteFunction,
     SerializationFormat,
     _build_and_upload,
+    _build_create_function_version_request,
     _build_function_config_proto,
     _cleanup_temp_files,
     _extract_field_names,
@@ -840,7 +841,7 @@ class RemoteClass:
         RemoteClass
             ``self`` for chaining.
         """
-        from google.protobuf.json_format import MessageToDict, ParseDict
+        from google.protobuf.json_format import MessageToDict
 
         from chalkcompute._progress import (
             progress_add,
@@ -954,21 +955,13 @@ class RemoteClass:
                 )
 
                 logger.info("Registering method '%s'...", func_name)
-                from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import (
-                    service_pb2 as catalog_pb,
-                )
-                from chalkcompute._gen.chalk.scalinggroup.v1 import (
-                    service_pb2 as sg_pb,
-                )
-
-                create_request = catalog_pb.CreateExternalFunctionVersionRequest(
+                create_request = _build_create_function_version_request(
                     function_name=func_name,
                     input_arrow_schema=input_schema,
                     output_arrow_schema=output_schema,
-                    spec=ParseDict(spec, sg_pb.ScalingGroupSpec()),
+                    spec=spec,
+                    config=function_config,
                 )
-                if function_config is not None:
-                    create_request.config.CopyFrom(function_config)
 
                 try:
                     create_response = self._client.unary(

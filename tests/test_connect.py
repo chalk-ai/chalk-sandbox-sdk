@@ -1,3 +1,9 @@
+import importlib.util
+import subprocess
+import sys
+
+import pytest
+
 from chalkcompute._connect import _parse_request, grpc_target_from_url
 
 
@@ -55,3 +61,28 @@ class TestConnectRequestParsing:
         assert request.container.spec.network_policy.allowed_routes[0].route == (
             "10.0.0.0/8"
         )
+
+    def test_dynamic_connect_protos_do_not_conflict_with_chalkpy(self):
+        if importlib.util.find_spec("chalk") is None:
+            pytest.skip("chalkpy not installed")
+
+        code = """
+from chalkcompute._connect import _parse_request
+
+_parse_request(
+    "chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService",
+    "GetExternalFunctionVersion",
+    {"key": {"functionName": "orchestrate"}},
+)
+import chalkcompute._gen.chalk.auth.v1.permissions_pb2
+import chalk_remote_call._gen.chalk.runtime.v1.remote_python_call_pb2
+import chalk.client.client_grpc
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        assert result.returncode == 0, result.stderr
