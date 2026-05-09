@@ -568,10 +568,9 @@ class RemoteClass:
         concurrency: int | ConcurrencyPolicy | None = None,
     ) -> None:
         self._user_cls = user_cls
-        self._class_name = user_cls.__name__
         if name is not None:
             validate_dns_label(name)
-        self._explicit_name = name
+        self._class_name = name or sanitize_dns_label(user_cls.__name__)
         self._image = image
         self._cpu = cpu
         self._memory = memory
@@ -727,7 +726,6 @@ class RemoteClass:
         rc = cls.__new__(cls)
         rc._user_cls = None  # type: ignore[assignment]
         rc._class_name = name
-        rc._explicit_name = name
         rc._image = None
         rc._cpu = None
         rc._memory = None
@@ -874,17 +872,9 @@ class RemoteClass:
             for method_info in self._methods.values():
                 input_schema, output_schema = _build_method_schemas(method_info.func)
 
-                name_prefix = self._explicit_name or sanitize_dns_label(
-                    self._class_name
-                )
                 method_label = sanitize_dns_label(method_info.name)
-                func_name = f"{name_prefix}.{method_label}"
-                if self._explicit_name:
-                    sg_name = f"{self._explicit_name}-{method_label}"
-                else:
-                    sg_name = sanitize_dns_label(
-                        f"cls-{self._class_name}-{method_info.name}-{uuid.uuid4().hex[:8]}"
-                    )
+                func_name = f"{self._class_name}.{method_label}"
+                sg_name = f"{self._class_name}-{method_label}"
 
                 mkey = f"method:{func_name}"
                 progress_add(mkey, "method", f".{method_info.name}()", parent=ckey)

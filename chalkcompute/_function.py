@@ -913,7 +913,6 @@ class RemoteFunction:
         self._func = func
         if name is not None:
             validate_dns_label(name)
-        self._explicit_name = name
         self._func_name = name or sanitize_dns_label(
             getattr(func, "__name__", "anonymous")
         )
@@ -1053,7 +1052,6 @@ class RemoteFunction:
             scaling_group_name=efv.get("scalingGroupName", ""),
         )
         f._func_name = efv["functionName"]
-        f._explicit_name = name
         f._input_field_names = _extract_field_names(efv.get("inputArrowSchema"))
         f._is_generator, f._is_async = _extract_function_traits(efv)
         sg = data.get("scalingGroup")
@@ -1066,7 +1064,6 @@ class RemoteFunction:
     def _make_empty(cls) -> RemoteFunction:
         f = cls.__new__(cls)
         f._func = lambda *a, **kw: None  # type: ignore[assignment]
-        f._explicit_name = None
         f._func_name = "unknown"
         f._image = None
         f._cpu = None
@@ -1191,14 +1188,9 @@ class RemoteFunction:
             input_schema_proto, output_schema_proto = _build_schemas(self._func)
 
             # 4. Build ScalingGroupSpec
-            sg_name = sanitize_dns_label(
-                self._explicit_name
-                if self._explicit_name
-                else f"fn-{self._func_name}-{uuid.uuid4().hex[:8]}"
-            )
             handler_cmd = ["chalk-remote-call", "--handler", "handler.handler"]
             container_spec = _make_container_spec(
-                name=sg_name,
+                name=self._func_name,
                 image_uri=image_uri,
                 entrypoint=_local_install_entrypoint(handler_cmd),
                 env=self._env,
@@ -1293,7 +1285,7 @@ class RemoteFunction:
                 id=efv["id"],
                 function_name=efv["functionName"],
                 version=efv.get("version", 0),
-                scaling_group_name=efv.get("scalingGroupName", sg_name),
+                scaling_group_name=efv.get("scalingGroupName", self._func_name),
             )
 
             sg_data = data.get("scalingGroup")
