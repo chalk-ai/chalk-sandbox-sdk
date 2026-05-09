@@ -13,7 +13,7 @@ import chalkcompute
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 
-@chalkcompute.function(name="chalk-sandbox-test-async-count-up")
+@chalkcompute.function
 async def async_count_up(n: int) -> AsyncIterator[int]:
     """Async generator: yields integers 0..n-1 with simulated async work."""
     import asyncio

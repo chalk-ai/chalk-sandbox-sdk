@@ -71,7 +71,7 @@ def test_embedding_function() -> None:
 
     import chalkcompute
 
-    orchestrate = chalkcompute.RemoteFunction.from_name(name="orchestrate")
+    orchestrate = chalkcompute.RemoteFunction.from_name("orchestrate")
     embeddings = orchestrate(["Hello", "world!"])
 
     assert len(embeddings) == 2, f"Expected 2 embeddings, got {len(embeddings)}"

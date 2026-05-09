@@ -1,5 +1,5 @@
 import logging
-import os
+import hashlib
 
 import chalkcompute
 
@@ -7,20 +7,19 @@ import chalkcompute
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
 
-EMBEDDING_MODEL = "text-embedding-3-small"
+EMBEDDING_DIMS = 1536
+EMBEDDING_MODEL = "deterministic-fake-embedding"
 
 
 @chalkcompute.function(
-    name="async-embed",
-    image=chalkcompute.Image.debian_slim().pip_install(["openai"]),
-    env={
-        "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
-    },
+    image=chalkcompute.Image.debian_slim(),
 )
 async def async_embed(text: str) -> list[float]:
-    from openai import AsyncOpenAI
-
     log.info("Embedding text async (len=%s, model=%s)", len(text), EMBEDDING_MODEL)
-    client = AsyncOpenAI()
-    response = await client.embeddings.create(model=EMBEDDING_MODEL, input=text)
-    return list(response.data[0].embedding)
+    digest = hashlib.sha256(text.encode("utf-8")).digest()
+    value = int.from_bytes(digest[:8], "big")
+    embedding: list[float] = []
+    for _ in range(EMBEDDING_DIMS):
+        value = (1103515245 * value + 12345) & 0x7FFFFFFF
+        embedding.append((value / 0x7FFFFFFF) * 2.0 - 1.0)
+    return embedding

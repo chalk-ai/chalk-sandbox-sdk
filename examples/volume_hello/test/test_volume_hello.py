@@ -113,7 +113,6 @@ def test_file_readable_in_container(hello_vol: str) -> None:
 
     container = Container(
         image="python:3.12-slim-bookworm",
-        name=f"test-vol-hello-{uuid.uuid4().hex[:8]}",
         volumes=[(hello_vol, MOUNT_PATH)],
         env=env,
     )
