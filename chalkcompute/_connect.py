@@ -19,29 +19,18 @@ from chalkcompute._tracing import traced as _traced
 
 logger = logging.getLogger(__name__)
 
-_SERVICE_AUTH_EXCHANGE_TOKEN_ENV_VARS = (
-    "CHALK_REMOTE_AUTH_EXCHANGE_TOKEN",
-    "CHALK_EXCHANGE_TOKEN",
-)
-_SERVICE_AUTH_ENDPOINT_ENV_VARS = (
-    "CHALK_REMOTE_AUTH_ENDPOINT",
-    "CHALK_API_SERVER",
-    "_CHALK_API_SERVER",
-)
-_SERVICE_AUTH_ENVIRONMENT_ENV_VARS = (
-    "CHALK_ENVIRONMENT_ID",
-    "_CHALK_ACTIVE_ENVIRONMENT",
-    "CHALK_ENVIRONMENT",
-)
-_SERVICE_AUTH_GRPC_ENGINE_ENV_VARS = (
-    "CHALK_GRPC_ENGINE",
-    "CHALK_REMOTE_GRPC_ENDPOINT",
-    "CHALK_REMOTE_CALL_GRPC_ENDPOINT",
-)
+_SERVICE_AUTH_EXCHANGE_TOKEN_ENV_VAR = "CHALK_REMOTE_AUTH_EXCHANGE_TOKEN"
+_SERVICE_AUTH_ENDPOINT_ENV_VAR = "CHALK_REMOTE_AUTH_ENDPOINT"
+_SERVICE_AUTH_ENVIRONMENT_ENV_VAR = "CHALK_ENVIRONMENT_ID"
+_SERVICE_AUTH_GRPC_ENGINE_ENV_VAR = "CHALK_GRPC_ENGINE"
+
+_PERMISSION_AUTHENTICATED = 2
+_PERMISSION_QUERY_ONLINE = 3
+_PERMISSION_DEPLOY_READ = 11
 _SERVICE_AUTH_REQUESTED_PERMISSIONS = (
-    2,  # PERMISSION_AUTHENTICATED
-    3,  # PERMISSION_QUERY_ONLINE
-    11,  # PERMISSION_DEPLOY_READ
+    _PERMISSION_AUTHENTICATED,
+    _PERMISSION_QUERY_ONLINE,
+    _PERMISSION_DEPLOY_READ,
 )
 
 if TYPE_CHECKING:
@@ -54,24 +43,23 @@ class ConnectError(Exception):
     """Raised by ConnectClient operations."""
 
 
-def _first_env(names: tuple[str, ...]) -> str:
-    for name in names:
-        value = os.environ.get(name, "")
-        if value:
-            return value
-    return ""
-
-
 def service_auth_config_from_env() -> dict[str, Any] | None:
-    exchange_token = _first_env(_SERVICE_AUTH_EXCHANGE_TOKEN_ENV_VARS)
+    exchange_token = os.environ.get(_SERVICE_AUTH_EXCHANGE_TOKEN_ENV_VAR, "")
     if not exchange_token:
         return None
 
-    auth_endpoint = _first_env(_SERVICE_AUTH_ENDPOINT_ENV_VARS)
+    auth_endpoint = os.environ.get(_SERVICE_AUTH_ENDPOINT_ENV_VAR, "")
     if not auth_endpoint:
         raise ConnectError(
-            "CHALK_REMOTE_AUTH_ENDPOINT or CHALK_API_SERVER must be set when "
-            "CHALK_REMOTE_AUTH_EXCHANGE_TOKEN is set"
+            f"{_SERVICE_AUTH_ENDPOINT_ENV_VAR} must be set when "
+            f"{_SERVICE_AUTH_EXCHANGE_TOKEN_ENV_VAR} is set"
+        )
+
+    environment_id = os.environ.get(_SERVICE_AUTH_ENVIRONMENT_ENV_VAR, "")
+    if not environment_id:
+        raise ConnectError(
+            f"{_SERVICE_AUTH_ENVIRONMENT_ENV_VAR} must be set when "
+            f"{_SERVICE_AUTH_EXCHANGE_TOKEN_ENV_VAR} is set"
         )
 
     return {
@@ -82,11 +70,11 @@ def service_auth_config_from_env() -> dict[str, Any] | None:
 
 
 def service_auth_environment() -> str:
-    return _first_env(_SERVICE_AUTH_ENVIRONMENT_ENV_VARS)
+    return os.environ.get(_SERVICE_AUTH_ENVIRONMENT_ENV_VAR, "")
 
 
 def service_auth_grpc_engine_target() -> tuple[str, bool] | None:
-    target = _first_env(_SERVICE_AUTH_GRPC_ENGINE_ENV_VARS)
+    target = os.environ.get(_SERVICE_AUTH_GRPC_ENGINE_ENV_VAR, "")
     if not target:
         return None
     if target.startswith(("http://", "https://")):
