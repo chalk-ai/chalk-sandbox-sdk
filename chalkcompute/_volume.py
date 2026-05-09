@@ -465,11 +465,11 @@ class VolumeClient:
         """
         connect._ensure_auth()
 
-        host, _use_tls = grpc_target_from_url(connect._api_server or "")
+        host, use_tls = grpc_target_from_url(connect._api_server or "")
 
         return cls(
             host,
-            credentials=grpc.ssl_channel_credentials(),
+            credentials=grpc.ssl_channel_credentials() if use_tls else None,
             metadata=[
                 ("authorization", f"Bearer {connect._access_token}"),
                 ("x-chalk-env-id", connect._env_id or ""),
@@ -496,14 +496,22 @@ class VolumeClient:
             ("x-chalk-env-id", connect._env_id or ""),
             ("x-chalk-server", "go-api"),
         )
-        self._channel = grpc.secure_channel(
-            self._target,
-            grpc.ssl_channel_credentials(),
-            options=[
-                ("grpc.max_send_message_length", -1),
-                ("grpc.max_receive_message_length", -1),
-            ],
-        )
+        self._target, use_tls = grpc_target_from_url(connect._api_server or "")
+        options = [
+            ("grpc.max_send_message_length", -1),
+            ("grpc.max_receive_message_length", -1),
+        ]
+        if use_tls:
+            self._channel = grpc.secure_channel(
+                self._target,
+                grpc.ssl_channel_credentials(),
+                options=options,
+            )
+        else:
+            self._channel = grpc.insecure_channel(
+                self._target,
+                options=options,
+            )
         self._stub = pb_grpc.VolumeServiceStub(self._channel)
         self._obj_stub = pb_grpc.DataPlaneObjectStorageServiceStub(self._channel)
 
