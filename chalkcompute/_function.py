@@ -34,7 +34,6 @@ import os
 import tempfile
 import time
 import typing
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Protocol, overload, runtime_checkable
