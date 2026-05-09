@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 import chalkcompute._remote_call_client as remote_call_client
@@ -29,6 +31,11 @@ class LegacyNativeRemoteCallClient:
 def legacy_native_client(monkeypatch: pytest.MonkeyPatch) -> None:
     LegacyNativeRemoteCallClient.calls = []
     LegacyNativeRemoteCallClient.method_calls = []
+    monkeypatch.setattr(
+        remote_call_client,
+        "_warned_per_call_metadata_unsupported",
+        False,
+    )
     monkeypatch.setattr(
         remote_call_client,
         "_NativeRemoteCallClient",
@@ -78,10 +85,17 @@ def test_legacy_native_call_shape_still_works_without_per_call_metadata() -> Non
     ]
 
 
-def test_legacy_native_rejected_for_per_call_metadata() -> None:
+def test_legacy_native_drops_per_call_metadata_once(caplog: pytest.LogCaptureFixture) -> None:
     client = RemoteCallClient("remote.chalk.test:443")
 
-    with pytest.raises(RemoteCallClientUnavailable, match="per-call"):
-        client.call_ipc("handler", b"in", metadata=(("traceparent", "trace"),))
-    with pytest.raises(RemoteCallClientUnavailable, match="per-call"):
-        client.enqueue("pkg.fn", b"in", metadata=(("traceparent", "trace"),))
+    caplog.set_level(logging.WARNING, logger="chalkcompute._remote_call_client")
+
+    assert client.call_ipc("handler", b"in", metadata=(("traceparent", "trace-1"),)) == [b"ok"]
+    assert client.call_ipc("handler", b"in", metadata=(("traceparent", "trace-2"),)) == [b"ok"]
+    assert client.enqueue("pkg.fn", b"in", metadata=(("traceparent", "trace"),)) == "call-1"
+    assert LegacyNativeRemoteCallClient.method_calls == [
+        ("call_ipc", "handler", b"in"),
+        ("call_ipc", "handler", b"in"),
+        ("enqueue", "pkg.fn", b"in"),
+    ]
+    assert caplog.text.count("tracing metadata was dropped") == 1

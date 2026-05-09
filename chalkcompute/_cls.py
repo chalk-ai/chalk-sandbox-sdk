@@ -55,7 +55,6 @@ from chalkcompute._tracing import traced
 from chalkcompute._function import (
     _CATALOG_SVC,
     _REMOTE_ENV_VAR,
-    _REMOTE_FUNCTION_NAME_ENV_VAR,
     _SG_SVC,
     FunctionVersionInfo,
     RemoteFunction,
@@ -843,10 +842,7 @@ class RemoteClass:
                     name=sg_name,
                     image_uri=image_uri,
                     entrypoint=_local_install_entrypoint(handler_cmd),
-                    env={
-                        _REMOTE_FUNCTION_NAME_ENV_VAR: func_name,
-                        **self._env,
-                    },
+                    env=self._env,
                     cpu=self._cpu,
                     memory=self._memory,
                     gpu=self._gpu,

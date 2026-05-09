@@ -69,7 +69,6 @@ if TYPE_CHECKING:
 SerializationFormat = typing.Literal["pyarrow"]
 
 _REMOTE_ENV_VAR = "_CHALK_REMOTE_FUNCTION"
-_REMOTE_FUNCTION_NAME_ENV_VAR = "CHALK_REMOTE_FUNCTION_NAME"
 _REMOTE_FUNCTION_NAME_METADATA = "x-chalk-function-name"
 # When enabled, mount the local SDK project and pip-install at container start.
 _LOCAL_COPY_ENV_VAR = "CHALK_FUNCTION_LOCAL_SDK_COPY"
@@ -1200,10 +1199,7 @@ class RemoteFunction:
                 name=sg_name,
                 image_uri=image_uri,
                 entrypoint=_local_install_entrypoint(handler_cmd),
-                env={
-                    _REMOTE_FUNCTION_NAME_ENV_VAR: self._func_name,
-                    **self._env,
-                },
+                env=self._env,
                 cpu=self._cpu,
                 memory=self._memory,
                 gpu=self._gpu,
