@@ -153,6 +153,7 @@ class TestConnectClientTracing:
         assert posted["kwargs"]["headers"] == {"Authorization": "Bearer token"}
 
     def test_rpc_propagates_existing_trace_context(self, monkeypatch):
+        monkeypatch.setenv("CHALK_REMOTE_FUNCTION_TRACING", "1")
         posted: dict[str, Any] = {}
 
         def fake_post(*args, **kwargs):

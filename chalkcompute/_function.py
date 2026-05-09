@@ -56,6 +56,7 @@ from chalkcompute._retry import RetryPolicy
 from chalkcompute._tracing import (
     current_trace_metadata,
     remote_function_call_span,
+    remote_function_tracing_enabled,
     traced,
 )
 from chalkcompute._volume import VolumeClient, upload_lazy_files
@@ -1475,6 +1476,9 @@ class RemoteFunction:
         return metadata
 
     def _remote_call_trace_metadata(self) -> list[tuple[str, str]]:
+        if not remote_function_tracing_enabled():
+            return []
+
         metadata = current_trace_metadata()
         if metadata:
             metadata.append(

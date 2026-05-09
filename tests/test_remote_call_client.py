@@ -151,6 +151,7 @@ def test_direct_call_uses_service_auth_from_environment(monkeypatch) -> None:
 
 
 def test_direct_call_injects_fresh_trace_metadata_on_cached_client(monkeypatch) -> None:
+    monkeypatch.setenv("CHALK_REMOTE_FUNCTION_TRACING", "1")
     traceparents = [
         "00-11111111111111111111111111111111-1111111111111111-01",
         "00-22222222222222222222222222222222-2222222222222222-01",
@@ -183,6 +184,23 @@ def test_direct_call_injects_fresh_trace_metadata_on_cached_client(monkeypatch) 
         "x-chalk-function-name",
         "catalog-add",
     ) in FakeRemoteCallClient.instances[0].calls[0][2]
+
+
+def test_direct_call_does_not_inject_trace_metadata_by_default(monkeypatch) -> None:
+    def fail_trace_metadata() -> list[tuple[str, str]]:
+        raise AssertionError("trace metadata should not be requested unless tracing is enabled")
+
+    monkeypatch.setattr(
+        "chalkcompute._function.current_trace_metadata",
+        fail_trace_metadata,
+    )
+    FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
+
+    fn = _remote_function()
+
+    assert fn(41) == 42
+
+    assert FakeRemoteCallClient.instances[0].calls[0][2] == []
 
 
 def test_defer_get_and_purge_use_queue_client() -> None:
@@ -223,6 +241,7 @@ def test_defer_get_and_purge_use_queue_client() -> None:
 
 
 def test_defer_injects_trace_metadata(monkeypatch) -> None:
+    monkeypatch.setenv("CHALK_REMOTE_FUNCTION_TRACING", "1")
     monkeypatch.setattr(
         "chalkcompute._function.current_trace_metadata",
         lambda: [

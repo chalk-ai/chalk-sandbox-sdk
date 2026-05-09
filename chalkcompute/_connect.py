@@ -273,9 +273,12 @@ class ConnectClient:
             current_trace_metadata,
             get_tracer,
             has_current_trace_context,
+            remote_function_tracing_enabled,
         )
 
-        has_upstream_trace = has_current_trace_context()
+        has_upstream_trace = (
+            remote_function_tracing_enabled() and has_current_trace_context()
+        )
         with get_tracer().start_as_current_span("chalkcompute.rpc") as span:
             span.set_attribute("rpc.service", service)
             span.set_attribute("rpc.method", method)

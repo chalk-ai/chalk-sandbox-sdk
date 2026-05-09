@@ -18,6 +18,7 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 _TRACER_NAME = "chalkcompute"
 _TRACE_CONTEXT_METADATA_KEYS = ("traceparent", "tracestate", "baggage")
+_REMOTE_FUNCTION_TRACING_ENV_VAR = "CHALK_REMOTE_FUNCTION_TRACING"
 _initialized = False
 
 
@@ -67,8 +68,16 @@ def get_tracer() -> Any:
     return trace.get_tracer(_TRACER_NAME)
 
 
+def remote_function_tracing_enabled() -> bool:
+    """Return whether RemoteFunction tracing is explicitly enabled."""
+    return os.environ.get(_REMOTE_FUNCTION_TRACING_ENV_VAR, "") == "1"
+
+
 def has_current_trace_context() -> bool:
     """Return whether the current context carries a valid trace."""
+    if not remote_function_tracing_enabled():
+        return False
+
     try:
         from opentelemetry import trace
     except ImportError:
@@ -161,6 +170,10 @@ def remote_function_call_span(function_name: str, call_type: str) -> Iterator[An
 @contextlib.contextmanager
 def remote_function_invocation_span(function_name: str, context_metadata: Any) -> Iterator[Any]:
     """Trace a compute function invocation and restore propagated context."""
+    if not remote_function_tracing_enabled():
+        yield None
+        return
+
     parent_context = _extract_remote_call_context(context_metadata)
     if parent_context is None:
         yield None
