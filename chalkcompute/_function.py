@@ -910,11 +910,10 @@ class RemoteFunction:
         quota: int | QueuePolicy | None = None,
     ) -> None:
         self._func = func
+        self._func_name = getattr(func, "__name__", "anonymous")
         if name is not None:
             validate_dns_label(name)
-        self._func_name = name or sanitize_dns_label(
-            getattr(func, "__name__", "anonymous")
-        )
+        self._explicit_name = name
         self._image = image
         self._cpu = cpu
         self._memory = memory
@@ -1012,6 +1011,7 @@ class RemoteFunction:
             scaling_group_name=efv.get("scalingGroupName", ""),
         )
         f._func_name = efv["functionName"]
+        f._explicit_name = sanitize_dns_label(efv["functionName"])
         f._input_field_names = _extract_field_names(efv.get("inputArrowSchema"))
         f._is_generator, f._is_async = _extract_function_traits(efv)
         sg = data.get("scalingGroup")
@@ -1051,6 +1051,7 @@ class RemoteFunction:
             scaling_group_name=efv.get("scalingGroupName", ""),
         )
         f._func_name = efv["functionName"]
+        f._explicit_name = sanitize_dns_label(efv["functionName"])
         f._input_field_names = _extract_field_names(efv.get("inputArrowSchema"))
         f._is_generator, f._is_async = _extract_function_traits(efv)
         sg = data.get("scalingGroup")
@@ -1064,6 +1065,7 @@ class RemoteFunction:
         f = cls.__new__(cls)
         f._func = lambda *a, **kw: None  # type: ignore[assignment]
         f._func_name = "unknown"
+        f._explicit_name = "unknown"
         f._image = None
         f._cpu = None
         f._memory = None
@@ -1111,7 +1113,7 @@ class RemoteFunction:
         source_file, source_is_temp = _prepare_source_file(inspect.getfile(self._func))
 
         handler_shim = _generate_handler_shim(
-            getattr(self._func, "__name__", self._func_name),
+            self._func_name,
             batched=self._max_batching_size is not None,
         )
         shim_path = _write_temp(handler_shim)
@@ -1183,13 +1185,15 @@ class RemoteFunction:
             _cleanup_temp_files(getattr(self, "_temp_files", []))
             self._temp_files = []
 
-            # 3. Generate schemas from function signature
+            # 3. Register function version
             input_schema_proto, output_schema_proto = _build_schemas(self._func)
 
-            # 4. Build ScalingGroupSpec
+            sg_name = sanitize_dns_label(self._explicit_name or self._func_name)
+
             handler_cmd = ["chalk-remote-call", "--handler", "handler.handler"]
+
             container_spec = _make_container_spec(
-                name=self._func_name,
+                name=sg_name,
                 image_uri=image_uri,
                 entrypoint=_local_install_entrypoint(handler_cmd),
                 env=self._env,
@@ -1284,7 +1288,7 @@ class RemoteFunction:
                 id=efv["id"],
                 function_name=efv["functionName"],
                 version=efv.get("version", 0),
-                scaling_group_name=efv.get("scalingGroupName", self._func_name),
+                scaling_group_name=efv.get("scalingGroupName", sg_name),
             )
 
             sg_data = data.get("scalingGroup")
