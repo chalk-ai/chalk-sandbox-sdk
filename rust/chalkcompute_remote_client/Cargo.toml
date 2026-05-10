@@ -11,5 +11,5 @@ crate-type = ["cdylib"]
 
 [dependencies]
 bytes = "1"
-chalk_remote_call = { package = "chalk_remote_call_client", path = "../../../chalk-private/rust-crates/chalk/chalk_remote_call_client" }
+chalk_remote_call = { package = "chalk_remote_call_client", git = "https://github.com/chalk-ai/chalk-private.git", rev = "ebd180ea8d7e04f8e18187c73cac0f59828db199" }
 pyo3 = { version = "0.25.1", features = ["extension-module"] }
