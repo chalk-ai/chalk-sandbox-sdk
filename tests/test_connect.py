@@ -108,7 +108,7 @@ class TestConnectClientGrpcEngineTarget:
 
 class TestConnectClientServiceAuth:
     def test_uses_exchange_token_without_client_id(self, monkeypatch):
-        monkeypatch.setenv("CHALK_REMOTE_AUTH_ENDPOINT", "https://api.chalk.test")
+        monkeypatch.setenv("CHALK_API_SERVER", "https://api.chalk.test")
         monkeypatch.setenv("CHALK_REMOTE_AUTH_EXCHANGE_TOKEN", "exchange-token")
         monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-1")
         posted: dict[str, Any] = {}

@@ -121,7 +121,7 @@ def test_direct_call_uses_native_client_and_handler_name() -> None:
 
 
 def test_direct_call_uses_service_auth_from_environment(monkeypatch) -> None:
-    monkeypatch.setenv("CHALK_REMOTE_AUTH_ENDPOINT", "https://api.chalk.test")
+    monkeypatch.setenv("CHALK_API_SERVER", "https://api.chalk.test")
     monkeypatch.setenv("CHALK_REMOTE_AUTH_EXCHANGE_TOKEN", "exchange-token")
     monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-service-auth")
     FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
@@ -176,7 +176,7 @@ def test_defer_get_and_purge_use_queue_client() -> None:
 
 
 def test_queue_call_uses_service_auth_engine_from_environment(monkeypatch) -> None:
-    monkeypatch.setenv("CHALK_REMOTE_AUTH_ENDPOINT", "https://api.chalk.test")
+    monkeypatch.setenv("CHALK_API_SERVER", "https://api.chalk.test")
     monkeypatch.setenv("CHALK_REMOTE_AUTH_EXCHANGE_TOKEN", "exchange-token")
     monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-service-auth")
     monkeypatch.setenv("CHALK_GRPC_ENGINE", "https://engine.chalk.test")
