@@ -31,6 +31,7 @@ import functools
 import inspect
 import logging
 import os
+import shlex
 import tempfile
 import time
 import typing
@@ -44,6 +45,9 @@ from chalkcompute._connect import (
     ConnectClient,
     build_image,
     grpc_target_from_url,
+    service_auth_config_from_env,
+    service_auth_environment,
+    service_auth_grpc_engine_target,
 )
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._quota import QueuePolicy
@@ -63,6 +67,10 @@ SerializationFormat = typing.Literal["pyarrow"]
 _REMOTE_ENV_VAR = "_CHALK_REMOTE_FUNCTION"
 # When enabled, mount the local SDK project and pip-install at container start.
 _LOCAL_COPY_ENV_VAR = "CHALK_FUNCTION_LOCAL_SDK_COPY"
+# When set to a local wheel path, mount that wheel and pip-install it at
+# container start. This is useful for source checkouts with native extensions:
+# the wheel is built locally, while the remote pod only performs a fast install.
+_LOCAL_WHEEL_ENV_VAR = "CHALK_FUNCTION_LOCAL_SDK_WHEEL"
 # When enabled, strip chalkcompute references from user source instead of
 # mounting the local SDK.  Lighter-weight alternative to _LOCAL_COPY_ENV_VAR.
 _STRIP_SOURCE_ENV_VAR = "CHALK_FUNCTION_STRIP_SOURCE"
@@ -493,7 +501,7 @@ def _prepare_source_file(source_file: str) -> tuple[str, bool]:
 
 
 def _local_install_entrypoint(handler_cmd: list[str]) -> list[str]:
-    """Wrap ``handler_cmd`` with a tar extract + pip install when local-copy mode is on.
+    """Wrap ``handler_cmd`` with a local SDK install when requested.
 
     Parameters
     ----------
@@ -506,6 +514,17 @@ def _local_install_entrypoint(handler_cmd: list[str]) -> list[str]:
         Possibly-wrapped entrypoint command.
     """
     strip_source = _should_strip_source()
+    wheel_path = os.environ.get(_LOCAL_WHEEL_ENV_VAR, "")
+    if wheel_path and not strip_source:
+        d = _LOCAL_SDK_MOUNT
+        wheel_name = shlex.quote(Path(wheel_path).name)
+        command = " ".join(shlex.quote(part) for part in handler_cmd)
+        return [
+            "sh",
+            "-c",
+            f"set -eux; python -m pip install {d}/{wheel_name}; exec {command}",
+        ]
+
     if os.environ.get(_LOCAL_COPY_ENV_VAR, "") != "1" or strip_source:
         return handler_cmd
     from chalkcompute._image import _ARCHIVE_CHUNK_PREFIX, ARCHIVE_NAME
@@ -514,11 +533,12 @@ def _local_install_entrypoint(handler_cmd: list[str]) -> list[str]:
     # Reassemble chunked archive, extract, then pip install.
     cat_parts = f"cat {d}/{_ARCHIVE_CHUNK_PREFIX}* > {d}/{ARCHIVE_NAME}"
     extract = f"tar xzf {d}/{ARCHIVE_NAME} -C {d}"
-    install = f"pip install {d}"
+    install = f"python -m pip install {d}"
+    command = " ".join(shlex.quote(part) for part in handler_cmd)
     return [
         "sh",
         "-c",
-        f"{cat_parts} && {extract} && {install} && {' '.join(handler_cmd)}",
+        f"set -eux; {cat_parts}; {extract}; {install}; exec {command}",
     ]
 
 
@@ -527,18 +547,33 @@ def _make_base_image(user_image: _Image | None) -> _Image:
     from chalkcompute._image import Image
 
     strip_source = _should_strip_source()
-    local_copy = os.environ.get(_LOCAL_COPY_ENV_VAR, "") == "1" and not strip_source
+    wheel_path = os.environ.get(_LOCAL_WHEEL_ENV_VAR, "")
+    local_wheel = bool(wheel_path) and not strip_source
+    local_copy = (
+        os.environ.get(_LOCAL_COPY_ENV_VAR, "") == "1"
+        and not local_wheel
+        and not strip_source
+    )
 
     base = user_image if user_image is not None else Image.debian_slim()
 
-    if local_copy:
+    if local_wheel:
+        path = Path(wheel_path)
+        image = base.add_local_file(str(path), f"{_LOCAL_SDK_MOUNT}/{path.name}")
+    elif local_copy:
         # Mount the local SDK project via volume; the entrypoint will
         # extract the tar and pip-install before starting the handler.
         project_root = Path(__file__).resolve().parent.parent
         image = base.add_local_dir(
             str(project_root),
             _LOCAL_SDK_MOUNT,
-            exclude=["tests", "e2etests", "examples"],
+            exclude=[
+                "tests/**",
+                "e2etests/**",
+                "examples/**",
+                ".venv/**",
+                "**/target/**",
+            ],
             archive=True,
         )
     elif strip_source:
@@ -923,7 +958,8 @@ class RemoteFunction:
         self._gpu = gpu
         self._env = env or {}
         self._secrets: list[_Secret] = list(secrets or [])
-        self._volumes: list[tuple[str, str]] = list(volumes or [])
+        self._base_volumes: list[tuple[str, str]] = list(volumes or [])
+        self._volumes: list[tuple[str, str]] = list(self._base_volumes)
         self._min_replicas = min_replicas
         self._max_replicas = max_replicas
         self._shutdown_delay_seconds = shutdown_delay_seconds
@@ -1074,6 +1110,7 @@ class RemoteFunction:
         f._gpu = None
         f._env = {}
         f._secrets = []
+        f._base_volumes = []
         f._volumes = []
         f._min_replicas = 1
         f._max_replicas = 1
@@ -1183,7 +1220,11 @@ class RemoteFunction:
                 build_timeout=build_timeout,
                 progress_parent=fkey,
             )
-            self._volumes += new_vols
+            deploy_volumes = [
+                *getattr(self, "_base_volumes", []),
+                *new_vols,
+            ]
+            self._volumes = deploy_volumes
             _cleanup_temp_files(getattr(self, "_temp_files", []))
             self._temp_files = []
 
@@ -1205,7 +1246,7 @@ class RemoteFunction:
                 cpu=self._cpu,
                 memory=self._memory,
                 gpu=self._gpu,
-                volumes=self._volumes,
+                volumes=deploy_volumes,
             )
             scaling_spec: dict[str, Any] = {
                 "minReplicas": self._min_replicas,
@@ -1349,14 +1390,29 @@ class RemoteFunction:
                 raise FunctionError(f"GetScalingGroup failed: {resp.text}")
             sg = resp.json()["scalingGroup"]
             status = sg.get("status", "")
+            status_message = sg.get("statusMessage", "")
+            ready_replicas = sg.get("readyReplicas")
+            available_replicas = sg.get("availableReplicas")
             self._web_url = sg.get("webUrl")
-            logger.info("  poll: status=%s", status)
+            logger.info(
+                "  poll: status=%s ready=%s available=%s message=%s",
+                status,
+                ready_replicas,
+                available_replicas,
+                status_message or "",
+            )
             if status in ("Running", "Available"):
                 return
             if status in ("Failed", "Error"):
-                raise FunctionError(f"Scaling group {sg_name} entered {status} state")
+                message = f"Scaling group {sg_name} entered {status} state"
+                if status_message:
+                    message = f"{message}: {status_message}"
+                raise FunctionError(message)
             time.sleep(poll_interval)
-        raise FunctionError(f"Scaling group {sg_name} timed out after {timeout}s")
+        message = f"Scaling group {sg_name} timed out after {timeout}s"
+        if status_message:
+            message = f"{message}: {status_message}"
+        raise FunctionError(message)
 
     def wait_ready(
         self,
@@ -1449,6 +1505,12 @@ class RemoteFunction:
         self._call_stub = call_grpc.RemoteCallServiceStub(self._call_channel)
 
     def _remote_call_metadata(self, *, queue: bool) -> list[tuple[str, str]]:
+        if service_auth_config_from_env() is not None:
+            metadata = [("x-chalk-env-id", service_auth_environment())]
+            if queue:
+                metadata.append(("x-chalk-deployment-type", "function-queue"))
+            return metadata
+
         self._client._ensure_auth()
         metadata = [
             ("authorization", f"Bearer {self._client._access_token}"),
@@ -1469,8 +1531,18 @@ class RemoteFunction:
 
         from chalkcompute._remote_call_client import RemoteCallClient
 
+        service_auth = service_auth_config_from_env()
         if queue:
-            target, use_tls = self._client.grpc_engine_target()
+            if service_auth is None:
+                target, use_tls = self._client.grpc_engine_target()
+            else:
+                service_auth_target = service_auth_grpc_engine_target()
+                if service_auth_target is None:
+                    raise FunctionError(
+                        "CHALK_GRPC_ENGINE must be set to enqueue remote function "
+                        "calls with CHALK_REMOTE_AUTH_EXCHANGE_TOKEN"
+                    )
+                target, use_tls = service_auth_target
         else:
             target, use_tls = grpc_target_from_url(
                 self._web_url,
@@ -1480,6 +1552,7 @@ class RemoteFunction:
             target,
             metadata=self._remote_call_metadata(queue=queue),
             use_tls=use_tls,
+            **(service_auth or {}),
         )
         setattr(self, attr, client)
         return client

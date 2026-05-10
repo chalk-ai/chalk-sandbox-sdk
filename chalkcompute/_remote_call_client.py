@@ -53,6 +53,11 @@ class RemoteCallClient:
         max_poll_delay_ms: int = 5000,
         poll_backoff_multiplier: float = 1.7,
         max_message_size: int | None = None,
+        auth_endpoint: str | None = None,
+        exchange_token: str | None = None,
+        requested_permissions: Sequence[int] | None = None,
+        auth_rpc_timeout_ms: int | None = None,
+        auth_retry_interval_ms: int | None = None,
     ) -> None:
         if _NativeRemoteCallClient is None:
             raise RemoteCallClientUnavailable(
@@ -60,15 +65,45 @@ class RemoteCallClient:
                 "chalkcompute._remote_call_native extension"
             ) from _NATIVE_IMPORT_ERROR
 
-        self._inner = _NativeRemoteCallClient(
-            endpoint,
-            list(metadata),
-            use_tls,
-            initial_poll_delay_ms,
-            max_poll_delay_ms,
-            poll_backoff_multiplier,
-            max_message_size,
+        auth_kwargs = (
+            auth_endpoint,
+            exchange_token,
+            requested_permissions,
+            auth_rpc_timeout_ms,
+            auth_retry_interval_ms,
         )
+        try:
+            self._inner = _NativeRemoteCallClient(
+                endpoint,
+                list(metadata),
+                use_tls,
+                initial_poll_delay_ms,
+                max_poll_delay_ms,
+                poll_backoff_multiplier,
+                max_message_size,
+                auth_endpoint,
+                exchange_token,
+                list(requested_permissions)
+                if requested_permissions is not None
+                else None,
+                auth_rpc_timeout_ms,
+                auth_retry_interval_ms,
+            )
+        except TypeError as exc:
+            if any(value is not None for value in auth_kwargs):
+                raise RemoteCallClientUnavailable(
+                    "chalkcompute._remote_call_native is too old for service-auth "
+                    "remote calls; rebuild/reinstall the local chalkcompute package"
+                ) from exc
+            self._inner = _NativeRemoteCallClient(
+                endpoint,
+                list(metadata),
+                use_tls,
+                initial_poll_delay_ms,
+                max_poll_delay_ms,
+                poll_backoff_multiplier,
+                max_message_size,
+            )
 
     def call_ipc(self, name: str, input_ipc: bytes) -> list[bytes]:
         return list(self._inner.call_ipc(name, input_ipc))

@@ -19,6 +19,20 @@ from chalkcompute._tracing import traced as _traced
 
 logger = logging.getLogger(__name__)
 
+_SERVICE_AUTH_EXCHANGE_TOKEN_ENV_VAR = "CHALK_REMOTE_AUTH_EXCHANGE_TOKEN"
+_SERVICE_AUTH_ENDPOINT_ENV_VAR = "CHALK_API_SERVER"
+_SERVICE_AUTH_ENVIRONMENT_ENV_VAR = "CHALK_ENVIRONMENT_ID"
+_SERVICE_AUTH_GRPC_ENGINE_ENV_VAR = "CHALK_GRPC_ENGINE"
+
+_PERMISSION_AUTHENTICATED = 2
+_PERMISSION_QUERY_ONLINE = 3
+_PERMISSION_DEPLOY_READ = 11
+_SERVICE_AUTH_REQUESTED_PERMISSIONS = (
+    _PERMISSION_AUTHENTICATED,
+    _PERMISSION_QUERY_ONLINE,
+    _PERMISSION_DEPLOY_READ,
+)
+
 if TYPE_CHECKING:
     import httpx
 
@@ -27,6 +41,45 @@ if TYPE_CHECKING:
 
 class ConnectError(Exception):
     """Raised by ConnectClient operations."""
+
+
+def service_auth_config_from_env() -> dict[str, Any] | None:
+    exchange_token = os.environ.get(_SERVICE_AUTH_EXCHANGE_TOKEN_ENV_VAR, "")
+    if not exchange_token:
+        return None
+
+    auth_endpoint = os.environ.get(_SERVICE_AUTH_ENDPOINT_ENV_VAR, "")
+    if not auth_endpoint:
+        raise ConnectError(
+            f"{_SERVICE_AUTH_ENDPOINT_ENV_VAR} must be set when "
+            f"{_SERVICE_AUTH_EXCHANGE_TOKEN_ENV_VAR} is set"
+        )
+
+    environment_id = os.environ.get(_SERVICE_AUTH_ENVIRONMENT_ENV_VAR, "")
+    if not environment_id:
+        raise ConnectError(
+            f"{_SERVICE_AUTH_ENVIRONMENT_ENV_VAR} must be set when "
+            f"{_SERVICE_AUTH_EXCHANGE_TOKEN_ENV_VAR} is set"
+        )
+
+    return {
+        "auth_endpoint": auth_endpoint.rstrip("/"),
+        "exchange_token": exchange_token,
+        "requested_permissions": _SERVICE_AUTH_REQUESTED_PERMISSIONS,
+    }
+
+
+def service_auth_environment() -> str:
+    return os.environ.get(_SERVICE_AUTH_ENVIRONMENT_ENV_VAR, "")
+
+
+def service_auth_grpc_engine_target() -> tuple[str, bool] | None:
+    target = os.environ.get(_SERVICE_AUTH_GRPC_ENGINE_ENV_VAR, "")
+    if not target:
+        return None
+    if target.startswith(("http://", "https://")):
+        return grpc_target_from_url(target)
+    return grpc_engine_target_from_url(target)
 
 
 class ConnectClient:
@@ -60,6 +113,36 @@ class ConnectClient:
             return
 
         import httpx
+
+        service_auth = service_auth_config_from_env()
+        if service_auth is not None:
+            self._api_server = str(service_auth["auth_endpoint"]).rstrip("/")
+            resp = httpx.post(
+                f"{self._api_server}/chalk.server.v1.AuthService/GetInternalWorkingToken",
+                json={
+                    "requestedPermissions": list(
+                        service_auth["requested_permissions"]
+                    ),
+                },
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {service_auth['exchange_token']}",
+                    "Content-Type": "application/json",
+                    "X-Chalk-Server": "go-api",
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            self._access_token = data.get("accessToken") or data["access_token"]
+            self._env_id = self._resolve_environment_id(service_auth_environment())
+            self._headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self._access_token}",
+                "X-Chalk-Env-Id": self._env_id or "",
+                "X-Chalk-Server": "go-api",
+            }
+            return
 
         self._api_server = os.environ.get("CHALK_API_SERVER", "")
         client_id = os.environ.get("CHALK_CLIENT_ID", "")

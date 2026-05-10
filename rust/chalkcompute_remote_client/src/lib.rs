@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use chalk_remote_call::{
-    BlockingRemoteCallClient, CallStatus, ChannelSecurity, PollBackoff, PollResult,
-    RemoteCallClientConfig, RemoteCallError,
+    proto::chalk::auth::v1::Permission, BlockingRemoteCallClient, CallStatus, ChannelSecurity,
+    PollBackoff, PollResult, RemoteCallClientConfig, RemoteCallError,
 };
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -24,7 +24,12 @@ impl PyRemoteCallClient {
         initial_poll_delay_ms=50,
         max_poll_delay_ms=5000,
         poll_backoff_multiplier=1.7,
-        max_message_size=None
+        max_message_size=None,
+        auth_endpoint=None,
+        exchange_token=None,
+        requested_permissions=None,
+        auth_rpc_timeout_ms=None,
+        auth_retry_interval_ms=None
     ))]
     fn new(
         endpoint: String,
@@ -34,6 +39,11 @@ impl PyRemoteCallClient {
         max_poll_delay_ms: u64,
         poll_backoff_multiplier: f64,
         max_message_size: Option<usize>,
+        auth_endpoint: Option<String>,
+        exchange_token: Option<String>,
+        requested_permissions: Option<Vec<i32>>,
+        auth_rpc_timeout_ms: Option<u64>,
+        auth_retry_interval_ms: Option<u64>,
     ) -> PyResult<Self> {
         let mut config = RemoteCallClientConfig::new(endpoint).with_poll_backoff(PollBackoff::new(
             Duration::from_millis(initial_poll_delay_ms),
@@ -51,6 +61,30 @@ impl PyRemoteCallClient {
 
         if let Some(max_message_size) = max_message_size {
             config = config.with_max_message_size(max_message_size);
+        }
+
+        match (auth_endpoint, exchange_token) {
+            (Some(auth_endpoint), Some(exchange_token)) => {
+                let permissions = requested_permissions
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(permission_from_i32)
+                    .collect::<PyResult<Vec<_>>>()?;
+                config = config.with_service_auth(auth_endpoint, exchange_token, permissions);
+                if let Some(timeout) = auth_rpc_timeout_ms {
+                    config = config.with_service_auth_rpc_timeout(Duration::from_millis(timeout));
+                }
+                if let Some(interval) = auth_retry_interval_ms {
+                    config =
+                        config.with_service_auth_retry_interval(Duration::from_millis(interval));
+                }
+            }
+            (None, None) => {}
+            _ => {
+                return Err(PyRuntimeError::new_err(
+                    "auth_endpoint and exchange_token must be provided together",
+                ));
+            }
         }
 
         for (key, value) in metadata.unwrap_or_default() {
@@ -151,6 +185,11 @@ fn status_name(status: CallStatus) -> &'static str {
 
 fn to_py_err(error: RemoteCallError) -> PyErr {
     PyRuntimeError::new_err(error.to_string())
+}
+
+fn permission_from_i32(raw: i32) -> PyResult<Permission> {
+    Permission::from_i32(raw)
+        .ok_or_else(|| PyRuntimeError::new_err(format!("unknown permission value: {raw}")))
 }
 
 #[pymodule]
