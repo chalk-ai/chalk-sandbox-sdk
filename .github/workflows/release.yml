@@ -13,6 +13,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Configure git for private repos
+        run: git config --global url."https://x-access-token:${{ secrets.CI_SERVICES_GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -26,7 +29,7 @@ jobs:
 
       - name: Build
         run: |
-          pip install hatchling build
+          pip install maturin build
           python -m build
 
       - name: Verify package contents
