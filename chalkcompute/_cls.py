@@ -45,7 +45,6 @@ import logging
 import os
 import time
 import typing
-import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, TypeVar, overload
 
@@ -700,6 +699,7 @@ class RemoteClass:
 
             rf = RemoteFunction._make_empty()
             rf._func_name = efv["functionName"]
+            rf._explicit_name = sanitize_dns_label(efv["functionName"])
             rf._version_info = FunctionVersionInfo(
                 id=efv["id"],
                 function_name=efv["functionName"],
@@ -874,17 +874,8 @@ class RemoteClass:
             for method_info in self._methods.values():
                 input_schema, output_schema = _build_method_schemas(method_info.func)
 
-                name_prefix = self._explicit_name or sanitize_dns_label(
-                    self._class_name
-                )
-                method_label = sanitize_dns_label(method_info.name)
-                func_name = f"{name_prefix}.{method_label}"
-                if self._explicit_name:
-                    sg_name = f"{self._explicit_name}-{method_label}"
-                else:
-                    sg_name = sanitize_dns_label(
-                        f"cls-{self._class_name}-{method_info.name}-{uuid.uuid4().hex[:8]}"
-                    )
+                func_name = f"{self._explicit_name or self._class_name}.{method_info.name}"
+                sg_name = sanitize_dns_label(func_name)
 
                 mkey = f"method:{func_name}"
                 progress_add(mkey, "method", f".{method_info.name}()", parent=ckey)
@@ -894,6 +885,7 @@ class RemoteClass:
                     "--handler",
                     f"handler_{method_info.name}.handler",
                 ]
+
                 container_spec = _make_container_spec(
                     name=sg_name,
                     image_uri=image_uri,
@@ -998,6 +990,7 @@ class RemoteClass:
                 # Build a RemoteFunction proxy for calling this method
                 rf = RemoteFunction._make_empty()
                 rf._func_name = func_name
+                rf._explicit_name = sg_name
                 rf._version_info = version_info
                 rf._web_url = web_url
                 rf._port = port
