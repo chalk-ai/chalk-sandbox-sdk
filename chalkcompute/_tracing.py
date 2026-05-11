@@ -131,6 +131,10 @@ def _extract_remote_call_context(context_metadata: Any) -> Any | None:
 @contextlib.contextmanager
 def remote_function_call_span(function_name: str, call_type: str) -> Iterator[Any]:
     """Trace one outbound call from this process to another compute function."""
+    if not has_current_trace_context():
+        yield None
+        return
+
     try:
         from opentelemetry import context as otel_context
         from opentelemetry.trace import SpanKind, Status, StatusCode

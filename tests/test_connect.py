@@ -1,6 +1,7 @@
 import contextlib
 from typing import Any
 
+from chalkcompute import _tracing
 from chalkcompute._connect import ConnectClient, grpc_engine_target_from_url, grpc_target_from_url
 
 
@@ -126,6 +127,21 @@ class TestConnectClientGrpcEngineTarget:
 
 
 class TestConnectClientTracing:
+    def test_remote_function_call_span_noops_without_active_trace(self, monkeypatch):
+        monkeypatch.setattr(
+            "chalkcompute._tracing.has_current_trace_context",
+            lambda: False,
+        )
+        monkeypatch.setattr(
+            "chalkcompute._tracing.get_tracer",
+            lambda: (_ for _ in ()).throw(
+                AssertionError("remote function call should not start a root span")
+            ),
+        )
+
+        with _tracing.remote_function_call_span("embed", "direct") as span:
+            assert span is None
+
     def _client(self, monkeypatch) -> ConnectClient:
         client = ConnectClient()
         client._api_server = "https://api.chalk.test"
