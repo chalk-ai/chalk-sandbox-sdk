@@ -1,3 +1,5 @@
+import base64
+
 import pyarrow as pa
 import pytest
 
@@ -37,6 +39,32 @@ class ServiceAuthOnlyConnectClient:
 
     def grpc_engine_target(self) -> tuple[str, bool]:
         raise AssertionError("OAuth grpc engine discovery should not be used")
+
+
+class RpcConnectClient(FakeConnectClient):
+    def __init__(self) -> None:
+        self.rpc_calls = []
+
+    def rpc(self, *args, **kwargs):
+        self.rpc_calls.append((args, kwargs))
+        return _RpcResponse()
+
+
+class OldStyleRpcConnectClient(FakeConnectClient):
+    def rpc(self, service, method, body, timeout=30):
+        return _RpcResponse()
+
+
+class _RpcResponse:
+    status_code = 200
+    text = ""
+
+    def json(self):
+        return {
+            "remoteCallResponse": {
+                "featherStream": base64.b64encode(b"response-ipc").decode("ascii")
+            }
+        }
 
 
 class FakeRemoteCallClient:
@@ -151,7 +179,6 @@ def test_direct_call_uses_service_auth_from_environment(monkeypatch) -> None:
 
 
 def test_direct_call_injects_fresh_trace_metadata_on_cached_client(monkeypatch) -> None:
-    monkeypatch.setenv("CHALK_REMOTE_FUNCTION_TRACING", "1")
     traceparents = [
         "00-11111111111111111111111111111111-1111111111111111-01",
         "00-22222222222222222222222222222222-2222222222222222-01",
@@ -187,12 +214,9 @@ def test_direct_call_injects_fresh_trace_metadata_on_cached_client(monkeypatch) 
 
 
 def test_direct_call_does_not_inject_trace_metadata_by_default(monkeypatch) -> None:
-    def fail_trace_metadata() -> list[tuple[str, str]]:
-        raise AssertionError("trace metadata should not be requested unless tracing is enabled")
-
     monkeypatch.setattr(
         "chalkcompute._function.current_trace_metadata",
-        fail_trace_metadata,
+        lambda: [],
     )
     FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
 
@@ -201,6 +225,23 @@ def test_direct_call_does_not_inject_trace_metadata_by_default(monkeypatch) -> N
     assert fn(41) == 42
 
     assert FakeRemoteCallClient.instances[0].calls[0][2] == []
+
+
+def test_direct_call_propagates_trace_metadata_without_chalk_env(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "chalkcompute._function.current_trace_metadata",
+        lambda: [("traceparent", "trace-id")],
+    )
+    FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
+
+    fn = _remote_function()
+
+    assert fn(41) == 42
+
+    assert FakeRemoteCallClient.instances[0].calls[0][2] == [
+        ("traceparent", "trace-id"),
+        ("x-chalk-function-name", "catalog-add"),
+    ]
 
 
 def test_defer_get_and_purge_use_queue_client() -> None:
@@ -241,7 +282,6 @@ def test_defer_get_and_purge_use_queue_client() -> None:
 
 
 def test_defer_injects_trace_metadata(monkeypatch) -> None:
-    monkeypatch.setenv("CHALK_REMOTE_FUNCTION_TRACING", "1")
     monkeypatch.setattr(
         "chalkcompute._function.current_trace_metadata",
         lambda: [
@@ -263,6 +303,32 @@ def test_defer_injects_trace_metadata(monkeypatch) -> None:
     ) in client.enqueues[0][2]
     assert ("x-chalk-function-name", "catalog-add") in client.enqueues[0][2]
     assert client.enqueues[0][0] == "catalog-add"
+
+
+def test_api_rpc_call_propagates_remote_trace_headers(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "chalkcompute._function.current_trace_metadata",
+        lambda: [("traceparent", "trace-id")],
+    )
+
+    fn = _remote_function()
+    client = RpcConnectClient()
+    fn._client = client
+
+    assert fn._call_via_api_rpc(b"request-ipc") == b"response-ipc"
+
+    _, kwargs = client.rpc_calls[0]
+    assert kwargs["extra_headers"] == {
+        "traceparent": "trace-id",
+        "x-chalk-function-name": "catalog-add",
+    }
+
+
+def test_api_rpc_call_does_not_require_extra_headers_by_default() -> None:
+    fn = _remote_function()
+    fn._client = OldStyleRpcConnectClient()
+
+    assert fn._call_via_api_rpc(b"request-ipc") == b"response-ipc"
 
 
 def test_queue_call_uses_service_auth_engine_from_environment(monkeypatch) -> None:

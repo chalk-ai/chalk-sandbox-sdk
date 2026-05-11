@@ -145,15 +145,20 @@ class TestConnectClientTracing:
 
         monkeypatch.setattr("httpx.post", fake_post)
         monkeypatch.setattr("chalkcompute._tracing.get_tracer", lambda: _Tracer())
-        monkeypatch.setattr("chalkcompute._tracing.has_current_trace_context", lambda: False)
-        monkeypatch.setattr("chalkcompute._tracing.current_trace_metadata", fail_current_trace_metadata)
+        monkeypatch.setattr(
+            "chalkcompute._tracing.has_current_trace_context",
+            lambda: False,
+        )
+        monkeypatch.setattr(
+            "chalkcompute._tracing.current_trace_metadata",
+            fail_current_trace_metadata,
+        )
 
         self._client(monkeypatch).rpc("svc", "Method", {})
 
         assert posted["kwargs"]["headers"] == {"Authorization": "Bearer token"}
 
     def test_rpc_propagates_existing_trace_context(self, monkeypatch):
-        monkeypatch.setenv("CHALK_REMOTE_FUNCTION_TRACING", "1")
         posted: dict[str, Any] = {}
 
         def fake_post(*args, **kwargs):
@@ -162,7 +167,10 @@ class TestConnectClientTracing:
 
         monkeypatch.setattr("httpx.post", fake_post)
         monkeypatch.setattr("chalkcompute._tracing.get_tracer", lambda: _Tracer())
-        monkeypatch.setattr("chalkcompute._tracing.has_current_trace_context", lambda: True)
+        monkeypatch.setattr(
+            "chalkcompute._tracing.has_current_trace_context",
+            lambda: True,
+        )
         monkeypatch.setattr(
             "chalkcompute._tracing.current_trace_metadata",
             lambda: [("traceparent", "trace-id")],
@@ -174,6 +182,34 @@ class TestConnectClientTracing:
         assert posted["kwargs"]["headers"]["Authorization"] == "Bearer token"
         assert posted["kwargs"]["headers"]["traceparent"] == "trace-id"
         assert "traceparent" not in client._headers
+
+    def test_rpc_merges_extra_headers_without_mutating_cached_headers(self, monkeypatch):
+        posted: dict[str, Any] = {}
+
+        def fake_post(*args, **kwargs):
+            posted["kwargs"] = kwargs
+            return _RPCResponse()
+
+        monkeypatch.setattr("httpx.post", fake_post)
+        monkeypatch.setattr("chalkcompute._tracing.get_tracer", lambda: _Tracer())
+        monkeypatch.setattr(
+            "chalkcompute._tracing.has_current_trace_context",
+            lambda: False,
+        )
+
+        client = self._client(monkeypatch)
+        client.rpc(
+            "svc",
+            "Method",
+            {},
+            extra_headers={"x-chalk-function-name": "embed"},
+        )
+
+        assert posted["kwargs"]["headers"] == {
+            "Authorization": "Bearer token",
+            "x-chalk-function-name": "embed",
+        }
+        assert client._headers == {"Authorization": "Bearer token"}
 
 
 class TestConnectClientServiceAuth:

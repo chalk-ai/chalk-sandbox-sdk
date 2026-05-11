@@ -56,7 +56,6 @@ from chalkcompute._retry import RetryPolicy
 from chalkcompute._tracing import (
     current_trace_metadata,
     remote_function_call_span,
-    remote_function_tracing_enabled,
     traced,
 )
 from chalkcompute._volume import VolumeClient, upload_lazy_files
@@ -1476,9 +1475,6 @@ class RemoteFunction:
         return metadata
 
     def _remote_call_trace_metadata(self) -> list[tuple[str, str]]:
-        if not remote_function_tracing_enabled():
-            return []
-
         metadata = current_trace_metadata()
         if metadata:
             metadata.append(
@@ -1660,11 +1656,15 @@ class RemoteFunction:
             },
         }
 
+        trace_metadata = self._remote_call_trace_metadata()
+        rpc_kwargs: dict[str, Any] = {"timeout": 300}
+        if trace_metadata:
+            rpc_kwargs["extra_headers"] = dict(trace_metadata)
         resp = self._client.rpc(
             _CATALOG_SVC,
             "CallExternalFunction",
             request_body,
-            timeout=300,
+            **rpc_kwargs,
         )
         if resp.status_code != 200:
             raise FunctionError(f"CallExternalFunction failed: {resp.text}")

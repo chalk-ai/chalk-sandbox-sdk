@@ -1,8 +1,9 @@
 """OpenTelemetry tracing for chalkcompute.
 
-Tracing is enabled only when OTEL_EXPORTER_OTLP_ENDPOINT or
-OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is set in the environment.
-When neither is present, all tracing operations are no-ops.
+Span export is configured when OTEL_EXPORTER_OTLP_ENDPOINT or
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is set in the environment. When neither is
+present and no application tracer provider is installed, tracing operations use
+OpenTelemetry's no-op provider.
 """
 
 from __future__ import annotations
@@ -18,7 +19,6 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 _TRACER_NAME = "chalkcompute"
 _TRACE_CONTEXT_METADATA_KEYS = ("traceparent", "tracestate", "baggage")
-_REMOTE_FUNCTION_TRACING_ENV_VAR = "CHALK_REMOTE_FUNCTION_TRACING"
 _initialized = False
 
 
@@ -68,21 +68,14 @@ def get_tracer() -> Any:
     return trace.get_tracer(_TRACER_NAME)
 
 
-def remote_function_tracing_enabled() -> bool:
-    """Return whether RemoteFunction tracing is explicitly enabled."""
-    return os.environ.get(_REMOTE_FUNCTION_TRACING_ENV_VAR, "") == "1"
-
-
 def has_current_trace_context() -> bool:
     """Return whether the current context carries a valid trace."""
-    if not remote_function_tracing_enabled():
-        return False
-
     try:
         from opentelemetry import trace
     except ImportError:
         return False
 
+    _ensure_initialized()
     span_context = trace.get_current_span().get_span_context()
     return bool(span_context.is_valid)
 
@@ -138,12 +131,12 @@ def _extract_remote_call_context(context_metadata: Any) -> Any | None:
 @contextlib.contextmanager
 def remote_function_call_span(function_name: str, call_type: str) -> Iterator[Any]:
     """Trace one outbound call from this process to another compute function."""
-    if not has_current_trace_context():
+    try:
+        from opentelemetry import context as otel_context
+        from opentelemetry.trace import SpanKind, Status, StatusCode
+    except ImportError:
         yield None
         return
-
-    from opentelemetry import context as otel_context
-    from opentelemetry.trace import SpanKind, Status, StatusCode
 
     parent_context = otel_context.get_current()
     with get_tracer().start_as_current_span(
@@ -170,10 +163,6 @@ def remote_function_call_span(function_name: str, call_type: str) -> Iterator[An
 @contextlib.contextmanager
 def remote_function_invocation_span(function_name: str, context_metadata: Any) -> Iterator[Any]:
     """Trace a compute function invocation and restore propagated context."""
-    if not remote_function_tracing_enabled():
-        yield None
-        return
-
     parent_context = _extract_remote_call_context(context_metadata)
     if parent_context is None:
         yield None

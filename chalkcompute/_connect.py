@@ -10,7 +10,7 @@ import logging
 import os
 import re
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Mapping
 from urllib.parse import urlparse
 
 import grpc
@@ -248,6 +248,7 @@ class ConnectClient:
         method: str,
         body: dict[str, Any],
         timeout: float = 30,
+        extra_headers: Mapping[str, str] | None = None,
     ) -> httpx.Response:
         """Make a Connect-protocol RPC call.
 
@@ -261,6 +262,9 @@ class ConnectClient:
             JSON-serializable request body.
         timeout
             Request timeout in seconds.
+        extra_headers
+            Additional request headers. These are merged per call and do not
+            mutate the client's cached auth headers.
 
         Returns
         -------
@@ -273,12 +277,9 @@ class ConnectClient:
             current_trace_metadata,
             get_tracer,
             has_current_trace_context,
-            remote_function_tracing_enabled,
         )
 
-        has_upstream_trace = (
-            remote_function_tracing_enabled() and has_current_trace_context()
-        )
+        has_upstream_trace = has_current_trace_context()
         with get_tracer().start_as_current_span("chalkcompute.rpc") as span:
             span.set_attribute("rpc.service", service)
             span.set_attribute("rpc.method", method)
@@ -286,8 +287,10 @@ class ConnectClient:
             assert self._api_server is not None
             assert self._headers is not None
             headers = self._headers
+            if extra_headers:
+                headers = {**headers, **extra_headers}
             if has_upstream_trace and (trace_metadata := current_trace_metadata()):
-                headers = {**self._headers, **dict(trace_metadata)}
+                headers = {**headers, **dict(trace_metadata)}
             resp = httpx.post(
                 f"{self._api_server}/{service}/{method}",
                 json=body,
