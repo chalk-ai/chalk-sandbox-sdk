@@ -42,10 +42,14 @@ jobs:
           command: build
           args: --release --sdist --out dist -i python3.12
           manylinux: "2_28"
-          docker-options: -e CHALK_PRIVATE_READ_TOKEN
+          docker-options: -e CHALK_PRIVATE_READ_TOKEN -e PROTOC=/opt/protoc/bin/protoc
           before-script-linux: |
             set -euo pipefail
-            dnf install -y git protobuf-compiler
+            dnf install -y git curl unzip
+            curl -fsSLo /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v25.3/protoc-25.3-linux-x86_64.zip
+            mkdir -p /opt/protoc
+            unzip -q /tmp/protoc.zip -d /opt/protoc
+            /opt/protoc/bin/protoc --version
             git config --global url."https://x-access-token:${CHALK_PRIVATE_READ_TOKEN}@github.com/chalk-ai/chalk-private.git".insteadOf "https://github.com/chalk-ai/chalk-private.git"
 
       - name: Verify package contents
