@@ -1,7 +1,7 @@
 """Shared Connect-protocol client for Chalk API services.
 
-Provides auth (OAuth token exchange), Connect-protocol RPC dispatch,
-and image build polling.
+Provides auth (OAuth token exchange), typed Connect RPC dispatch, and image
+build polling.
 """
 
 from __future__ import annotations
@@ -83,7 +83,7 @@ def service_auth_grpc_engine_target() -> tuple[str, bool] | None:
 
 
 class ConnectClient:
-    """Authenticated Connect-protocol (HTTP/JSON) client for Chalk APIs.
+    """Authenticated Connect-protocol client for Chalk APIs.
 
     Environment variables (``CHALK_API_SERVER``, ``CHALK_CLIENT_ID``,
     ``CHALK_CLIENT_SECRET``, ``CHALK_ENVIRONMENT_ID``) are read lazily on the
@@ -92,10 +92,11 @@ class ConnectClient:
     Examples
     --------
     >>> client = ConnectClient()
-    >>> resp = client.rpc(
-    ...     "chalk.container.v1.ContainerService",
-    ...     "GetContainer",
-    ...     {"id": "..."},
+    >>> from chalkcompute._gen.chalk.container.v1 import service_connect, service_pb2
+    >>> client.unary(
+    ...     service_connect.ContainerServiceClientSync,
+    ...     "get_container",
+    ...     service_pb2.GetContainerRequest(id="..."),
     ... )
     """
 
@@ -137,7 +138,6 @@ class ConnectClient:
             self._access_token = data.get("accessToken") or data["access_token"]
             self._env_id = self._resolve_environment_id(service_auth_environment())
             self._headers = {
-                "Content-Type": "application/json",
                 "Authorization": f"Bearer {self._access_token}",
                 "X-Chalk-Env-Id": self._env_id or "",
                 "X-Chalk-Server": "go-api",
@@ -185,7 +185,6 @@ class ConnectClient:
         )
 
         self._headers = {
-            "Content-Type": "application/json",
             "Authorization": f"Bearer {self._access_token}",
             "X-Chalk-Env-Id": self._env_id or "",
             "X-Chalk-Server": "go-api",
@@ -230,6 +229,56 @@ class ConnectClient:
 
         return grpc_engine_target_from_url(query_server)
 
+    def connect_headers(self) -> dict[str, str]:
+        """Return authenticated headers for generated Connect clients."""
+        self._ensure_auth()
+        assert self._headers is not None
+        return self._headers
+
+    def unary(
+        self,
+        client_cls: type[Any],
+        method_name: str,
+        request: Any,
+        timeout: float | None = 30,
+    ) -> Any:
+        """Call a generated synchronous Connect unary method."""
+        from connectrpc.errors import ConnectError as ConnectRPCError
+
+        from chalkcompute._tracing import get_tracer
+
+        with get_tracer().start_as_current_span("chalkcompute.connect") as span:
+            span.set_attribute("rpc.client", client_cls.__name__)
+            span.set_attribute("rpc.method", method_name)
+            self._ensure_auth()
+            assert self._api_server is not None
+            assert self._headers is not None
+
+            rpc_client = client_cls(
+                self._api_server.rstrip("/"),
+                send_compression=None,
+            )
+            timeout_ms = None if timeout is None else int(timeout * 1000)
+            try:
+                return getattr(rpc_client, method_name)(
+                    request,
+                    headers=self._headers,
+                    timeout_ms=timeout_ms,
+                )
+            except ConnectRPCError as e:
+                from opentelemetry.trace import StatusCode
+
+                code = getattr(e, "code", None)
+                code_name = getattr(code, "name", str(code))
+                message = getattr(e, "message", str(e))
+                span.set_status(StatusCode.ERROR, f"{code_name}: {message}")
+                raise ConnectError(
+                    f"{client_cls.__name__}.{method_name} failed: "
+                    f"{code_name}: {message}"
+                ) from e
+            finally:
+                rpc_client.close()
+
     def rpc(
         self,
         service: str,
@@ -265,10 +314,15 @@ class ConnectClient:
             self._ensure_auth()
             assert self._api_server is not None
             assert self._headers is not None
+            headers = {
+                **self._headers,
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            }
             resp = httpx.post(
                 f"{self._api_server}/{service}/{method}",
                 json=body,
-                headers=self._headers,
+                headers=headers,
                 timeout=timeout,
             )
             span.set_attribute("http.response.status_code", resp.status_code)
@@ -318,57 +372,56 @@ def build_image(
     ConnectError
         If the build fails or times out.
     """
-    from google.protobuf.json_format import MessageToDict
-
-    spec_dict = MessageToDict(image.to_proto())
-    resp = client.rpc(
-        "chalk.sandbox.v1.CustomImageService",
-        "GetOrBuildCustomImage",
-        {"imageSpec": spec_dict},
+    from chalkcompute._gen.chalk.sandbox.v1 import (
+        service_connect as sandbox_connect,
     )
-    if resp.status_code != 200:
-        raise ConnectError(f"GetOrBuildCustomImage failed: {resp.text}")
+    from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as sandbox_pb
 
-    data = resp.json()
-    status = data.get("status", "")
+    resp = client.unary(
+        sandbox_connect.CustomImageServiceClientSync,
+        "get_or_build_custom_image",
+        sandbox_pb.GetOrBuildCustomImageRequest(image_spec=image.to_proto()),
+    )
+
+    status = resp.status
     if status in ("exists", "succeeded"):
-        return data["image"]
+        return resp.image
     if status == "failed":
-        raise ConnectError(f"Image build failed: {data.get('error', 'unknown')}")
+        raise ConnectError(f"Image build failed: {resp.error or 'unknown'}")
 
-    build_id = data["buildId"]
+    build_id = resp.build_id
     deadline = time.monotonic() + timeout
     transient_failures = 0
     max_transient_failures = 5
     while time.monotonic() < deadline:
-        get_resp = client.rpc(
-            "chalk.sandbox.v1.CustomImageService",
-            "GetCustomImage",
-            {"buildId": build_id},
-        )
-        if get_resp.status_code != 200:
+        try:
+            get_resp = client.unary(
+                sandbox_connect.CustomImageServiceClientSync,
+                "get_custom_image",
+                sandbox_pb.GetCustomImageRequest(build_id=build_id),
+            )
+        except ConnectError as e:
             transient_failures += 1
             if transient_failures >= max_transient_failures:
                 raise ConnectError(
                     f"GetCustomImage failed after {transient_failures} consecutive "
-                    f"transient errors: {get_resp.text}"
-                )
+                    f"transient errors: {e}"
+                ) from e
             logger.warning(
                 "GetCustomImage transient error (%d/%d): %s",
                 transient_failures,
                 max_transient_failures,
-                get_resp.text,
+                e,
             )
             time.sleep(poll_interval)
             continue
         transient_failures = 0
-        get_data = get_resp.json()
-        status = get_data.get("status", "")
+        status = get_resp.status
         if status == "succeeded":
-            return get_data["image"]
+            return get_resp.image
         if status == "failed":
             raise ConnectError(
-                f"Image build {build_id} failed: {get_data.get('error', 'unknown')}"
+                f"Image build {build_id} failed: {get_resp.error or 'unknown'}"
             )
         time.sleep(poll_interval)
 

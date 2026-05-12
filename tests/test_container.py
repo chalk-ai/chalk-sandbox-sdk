@@ -5,37 +5,31 @@ from typing import Any
 import pytest
 
 from chalkcompute import AllowedRoute, Container, NetworkPolicy, PortRange
+from chalkcompute._gen.chalk.container.v1 import service_connect as container_connect
+from chalkcompute._gen.chalk.container.v1 import service_pb2 as container_pb
 from chalkcompute._container import ContainerSecurityPolicy, KernelPolicy
-
-
-class _Response:
-    status_code = 200
-    text = ""
-
-    def json(self) -> dict[str, Any]:
-        return {
-            "container": {
-                "id": "container-123",
-                "name": "network-test",
-                "status": "Running",
-                "podName": "pod-network-test",
-            }
-        }
 
 
 class _Client:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str, dict[str, Any], float]] = []
+        self.calls: list[tuple[type[Any], str, Any, float | None]] = []
 
-    def rpc(
+    def unary(
         self,
-        service: str,
-        method: str,
-        body: dict[str, Any],
-        timeout: float = 30,
-    ) -> _Response:
-        self.calls.append((service, method, body, timeout))
-        return _Response()
+        client_cls: type[Any],
+        method_name: str,
+        request: Any,
+        timeout: float | None = 30,
+    ) -> container_pb.RunContainerResponse:
+        self.calls.append((client_cls, method_name, request, timeout))
+        return container_pb.RunContainerResponse(
+            container=container_pb.ContainerResponse(
+                id="container-123",
+                name="network-test",
+                status="Running",
+                pod_name="pod-network-test",
+            )
+        )
 
 
 def test_network_policy_serializes_allowed_routes() -> None:
@@ -96,21 +90,18 @@ def test_container_run_sends_network_policy() -> None:
     container.run()
 
     assert len(client.calls) == 1
-    service, method, body, timeout = client.calls[0]
-    assert service == "chalk.container.v1.ContainerService"
-    assert method == "RunContainer"
+    client_cls, method, request, timeout = client.calls[0]
+    assert client_cls is container_connect.ContainerServiceClientSync
+    assert method == "run_container"
     assert timeout == 60
-    assert body["container"]["spec"]["networkPolicy"] == {
-        "allowedRoutes": [
-            {
-                "route": "104.20.23.154/32",
-                "portRanges": [{"startPort": 443, "endPort": 443}],
-            }
-        ]
-    }
-    assert body["container"]["spec"]["securityPolicy"] == {
-        "kernelPolicy": "RESTRICTED"
-    }
+    spec = request.container.spec
+    assert spec.network_policy.allowed_routes[0].route == "104.20.23.154/32"
+    assert spec.network_policy.allowed_routes[0].port_ranges[0].start_port == 443
+    assert spec.network_policy.allowed_routes[0].port_ranges[0].end_port == 443
+    assert (
+        spec.security_policy.kernel_policy
+        == container_pb.KERNEL_POLICY_RESTRICTED
+    )
 
 
 def test_container_run_sends_tags() -> None:
@@ -125,8 +116,8 @@ def test_container_run_sends_tags() -> None:
     container.run()
 
     assert len(client.calls) == 1
-    _, _, body, _ = client.calls[0]
-    assert body["container"]["spec"]["tags"] == {
+    _, _, request, _ = client.calls[0]
+    assert dict(request.container.spec.tags) == {
         "team": "accounting",
         "env": "staging",
     }
@@ -139,5 +130,5 @@ def test_container_run_omits_tags_when_unset() -> None:
 
     container.run()
 
-    _, _, body, _ = client.calls[0]
-    assert "tags" not in body["container"]["spec"]
+    _, _, request, _ = client.calls[0]
+    assert len(request.container.spec.tags) == 0

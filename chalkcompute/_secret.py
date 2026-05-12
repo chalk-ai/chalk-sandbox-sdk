@@ -6,7 +6,11 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
-_SECRETS_SVC = "chalk.server.v1.EnvironmentSecretsService"
+from chalkcompute._gen.chalk.container.v1 import service_pb2 as container_pb
+from chalkcompute._gen.chalk.server.v1 import (
+    environment_secrets_connect as secrets_connect,
+)
+from chalkcompute._gen.chalk.server.v1 import environment_secrets_pb2 as secrets_pb
 
 
 @dataclass(frozen=True)
@@ -172,26 +176,26 @@ class Secret:
         """
         return self._local_env_var is not None or self._local_env_file is not None
 
-    def _to_proto_dict(self) -> dict[str, Any]:
-        """Serialize to the dict shape expected by the ``SecretRef`` protobuf.
+    def _to_proto(self) -> container_pb.SecretRef:
+        """Serialize to the ``SecretRef`` protobuf.
 
         Returns
         -------
-        dict[str, Any]
-            A JSON-compatible dict representation.
+        SecretRef
+            Protobuf secret reference.
         """
-        d: dict[str, Any] = {}
+        ref = container_pb.SecretRef()
         if self._integration_name is not None:
-            d["integrationName"] = self._integration_name
+            ref.integration_name = self._integration_name
         elif self._secret_name is not None:
-            d["secretName"] = self._secret_name
+            ref.secret_name = self._secret_name
         if self._keys:
-            d["keys"] = self._keys
+            ref.keys.extend(self._keys)
         if self._aliases:
-            d["aliases"] = self._aliases
+            ref.aliases.update(self._aliases)
         if self._prefix is not None:
-            d["prefix"] = self._prefix
-        return d
+            ref.prefix = self._prefix
+        return ref
 
     def __repr__(self) -> str:
         if self._local_env_file:
@@ -308,13 +312,14 @@ def _upsert_secret(client: Any, name: str, value: str) -> None:
     RuntimeError
         If the upsert RPC fails.
     """
-    resp = client.rpc(
-        _SECRETS_SVC,
-        "UpsertSecret",
-        {"name": name, "config": {"literal": value}},
+    client.unary(
+        secrets_connect.EnvironmentSecretsServiceClientSync,
+        "upsert_secret",
+        secrets_pb.UpsertSecretRequest(
+            name=name,
+            config=secrets_pb.SecretConfigValue(literal=value),
+        ),
     )
-    if resp.status_code != 200:
-        raise RuntimeError(f"Failed to upsert secret {name!r}: {resp.text}")
 
 
 def delete_secrets(client: Any, names: list[str]) -> None:
@@ -328,4 +333,8 @@ def delete_secrets(client: Any, names: list[str]) -> None:
         Names of secrets to delete.
     """
     for name in names:
-        client.rpc(_SECRETS_SVC, "DeleteSecret", {"name": name})
+        client.unary(
+            secrets_connect.EnvironmentSecretsServiceClientSync,
+            "delete_secret",
+            secrets_pb.DeleteSecretRequest(name=name),
+        )

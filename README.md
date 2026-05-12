@@ -348,6 +348,5 @@ echo "echo hello" | python sandbox_stdout.py --target localhost:50051 --sandbox-
 If the proto definition changes, regenerate the Python stubs:
 
 ```bash
-pip install grpcio-tools
-./generate.sh
+../chalk-private/protos/generate.sh chalk-sandbox-sdk
 ```

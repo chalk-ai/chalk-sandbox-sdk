@@ -48,23 +48,37 @@ import typing
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, TypeVar, overload
 
-from chalkcompute._connect import ConnectClient
+from chalkcompute._connect import ConnectClient, ConnectError
+from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import (
+    service_connect as catalog_connect,
+)
+from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import (
+    service_pb2 as catalog_pb,
+)
+from chalkcompute._gen.chalk.scalinggroup.v1 import (
+    service_connect as scaling_connect,
+)
+from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb2 as scaling_pb
+from chalkcompute._gen.chalk.volume.v1 import volume_connect, volume_pb2
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import traced
 from chalkcompute._function import (
-    _CATALOG_SVC,
     _REMOTE_ENV_VAR,
-    _SG_SVC,
     FunctionVersionInfo,
     RemoteFunction,
     SerializationFormat,
     _build_and_upload,
     _cleanup_temp_files,
     _extract_field_names,
+    _function_version_info_from_proto,
     _is_chalkcompute_decorator,
     _local_install_entrypoint,
+    _make_function_config,
     _make_base_image,
     _make_container_spec,
+    _make_scaling_spec,
+    _scaling_group_port,
+    _scaling_group_web_url,
     _should_strip_source,
     _write_temp,
 )
@@ -673,25 +687,40 @@ class RemoteClass:
         rc = cls._make_empty(name)
 
         # List all function versions, paginating, and collect those matching
-        entries: list[tuple[dict, dict | None]] = []
+        entries: list[
+            tuple[
+                catalog_pb.ExternalFunctionVersion,
+                scaling_pb.ScalingGroupResponse | None,
+            ]
+        ] = []
         cursor = ""
         while True:
-            req: dict[str, Any] = {"includeScalingGroup": True, "limit": 100}
-            if cursor:
-                req["cursor"] = cursor
-            resp = rc._client.rpc(
-                _CATALOG_SVC,
-                "ListExternalFunctionVersions",
-                req,
+            req = catalog_pb.ListExternalFunctionVersionsRequest(
+                include_scaling_group=True,
+                limit=100,
             )
-            if resp.status_code != 200:
-                raise ClassError(f"ListExternalFunctionVersions failed: {resp.text}")
-            data = resp.json()
-            for entry in data.get("entries", []):
-                efv = entry["externalFunctionVersion"]
-                if efv["functionName"].startswith(f"{name}."):
-                    entries.append((efv, entry.get("scalingGroup")))
-            cursor = data.get("nextCursor", "")
+            if cursor:
+                req.cursor = cursor
+            try:
+                resp = rc._client.unary(
+                    catalog_connect.ExternalFunctionCatalogServiceClientSync,
+                    "list_external_function_versions",
+                    req,
+                )
+            except ConnectError as e:
+                raise ClassError(f"ListExternalFunctionVersions failed: {e}") from e
+            for entry in resp.entries:
+                efv = entry.external_function_version
+                if efv.function_name.startswith(f"{name}."):
+                    entries.append(
+                        (
+                            efv,
+                            entry.scaling_group
+                            if entry.HasField("scaling_group")
+                            else None,
+                        )
+                    )
+            cursor = resp.next_cursor if resp.HasField("next_cursor") else ""
             if not cursor:
                 break
 
@@ -699,21 +728,16 @@ class RemoteClass:
             raise ClassError(f"No function versions found for class '{name}'")
 
         for efv, sg in entries:
-            method_name = efv["functionName"].split(".", 1)[1]
+            method_name = efv.function_name.split(".", 1)[1]
 
             rf = RemoteFunction._make_empty()
-            rf._func_name = efv["functionName"]
-            rf._explicit_name = sanitize_dns_label(efv["functionName"])
-            rf._version_info = FunctionVersionInfo(
-                id=efv["id"],
-                function_name=efv["functionName"],
-                version=efv.get("version", 0),
-                scaling_group_name=efv.get("scalingGroupName", ""),
-            )
-            rf._input_field_names = _extract_field_names(efv.get("inputArrowSchema"))
-            if sg:
-                rf._web_url = sg.get("webUrl")
-                rf._port = sg.get("port", 6666)
+            rf._func_name = efv.function_name
+            rf._explicit_name = sanitize_dns_label(efv.function_name)
+            rf._version_info = _function_version_info_from_proto(efv)
+            rf._input_field_names = _extract_field_names(efv.input_arrow_schema)
+            if sg is not None:
+                rf._web_url = _scaling_group_web_url(sg)
+                rf._port = _scaling_group_port(sg)
             else:
                 rf._port = 6666
 
@@ -844,8 +868,6 @@ class RemoteClass:
         RemoteClass
             ``self`` for chaining.
         """
-        from google.protobuf.json_format import MessageToDict
-
         from chalkcompute._progress import (
             progress_add,
             progress_done,
@@ -893,6 +915,15 @@ class RemoteClass:
                     f"handler_{method_info.name}.handler",
                 ]
 
+                if self._secrets:
+                    from chalkcompute._secret import resolve_lazy_secrets
+
+                    if any(s.is_lazy for s in self._secrets):
+                        resolved, _upserted = resolve_lazy_secrets(
+                            self._secrets, self._client
+                        )
+                        self._secrets = resolved
+
                 container_spec = _make_container_spec(
                     name=sg_name,
                     image_uri=image_uri,
@@ -902,99 +933,73 @@ class RemoteClass:
                     memory=self._memory,
                     gpu=self._gpu,
                     volumes=self._volumes,
+                    secrets=self._secrets,
                 )
 
-                # Resolve lazy secrets and add to container spec
-                if self._secrets:
-                    from chalkcompute._secret import resolve_lazy_secrets
-
-                    if any(s.is_lazy for s in self._secrets):
-                        resolved, _upserted = resolve_lazy_secrets(
-                            self._secrets, self._client
-                        )
-                        self._secrets = resolved
-                    container_spec["secretRefs"] = [
-                        s._to_proto_dict() for s in self._secrets
-                    ]
-
-                scaling_spec: dict[str, Any] = {
-                    "minReplicas": self._min_replicas,
-                    "maxReplicas": self._max_replicas,
-                }
-                if self._shutdown_delay_seconds is not None:
-                    scaling_spec["shutdownDelaySeconds"] = self._shutdown_delay_seconds
-                if self._scaling_interval_seconds is not None:
-                    scaling_spec["windowSeconds"] = self._scaling_interval_seconds
-                if self._target_cpu_utilization_percentage is not None:
-                    scaling_spec["targetCpuUtilizationPercentage"] = (
+                scaling_spec = _make_scaling_spec(
+                    min_replicas=self._min_replicas,
+                    max_replicas=self._max_replicas,
+                    shutdown_delay_seconds=self._shutdown_delay_seconds,
+                    scaling_interval_seconds=self._scaling_interval_seconds,
+                    target_cpu_utilization_percentage=(
                         self._target_cpu_utilization_percentage
-                    )
-                if self._target_queue_depth is not None:
-                    scaling_spec["functionQueueDepthTrigger"] = {
-                        "functionName": func_name,
-                        "targetQueueDepth": self._target_queue_depth,
-                    }
+                    ),
+                    target_queue_depth=self._target_queue_depth,
+                    function_name=func_name,
+                )
 
-                spec: dict[str, Any] = {
-                    "containerSpec": container_spec,
-                    "scalingSpec": scaling_spec,
-                }
-
-                # Build function-level config
-                function_config: dict[str, Any] = {}
-                if self._serialization_format != "pyarrow":
-                    function_config["serializationFormat"] = self._serialization_format
-                if self._options:
-                    function_config["options"] = self._options
-                if self._max_buffer_duration is not None:
-                    function_config["maxBufferDuration"] = self._max_buffer_duration
-                if self._max_batching_size is not None:
-                    function_config["maxBatchingSize"] = self._max_batching_size
-                if self._retries is not None:
-                    function_config["retryPolicy"] = self._retries.to_dict()
-                if self._rate_limit is not None:
-                    function_config["rateLimit"] = self._rate_limit.to_dict()
-                if self._concurrency is not None:
-                    function_config["concurrency"] = self._concurrency.to_dict()
-                if self._quota is not None:
-                    function_config["queue"] = self._quota.to_dict()
+                function_config = _make_function_config(
+                    serialization_format=self._serialization_format,
+                    options=self._options,
+                    max_buffer_duration=self._max_buffer_duration,
+                    max_batching_size=self._max_batching_size,
+                    retries=self._retries,
+                    rate_limit=self._rate_limit,
+                    concurrency=self._concurrency,
+                    quota=self._quota,
+                )
 
                 logger.info("Registering method '%s'...", func_name)
-                create_request: dict[str, Any] = {
-                    "functionName": func_name,
-                    "inputArrowSchema": MessageToDict(input_schema),
-                    "outputArrowSchema": MessageToDict(output_schema),
-                    "spec": spec,
-                }
-                if function_config:
-                    create_request["config"] = function_config
-
-                resp = self._client.rpc(
-                    _CATALOG_SVC,
-                    "CreateExternalFunctionVersion",
-                    create_request,
-                    timeout=60,
+                create_request = catalog_pb.CreateExternalFunctionVersionRequest(
+                    function_name=func_name,
+                    input_arrow_schema=input_schema,
+                    output_arrow_schema=output_schema,
+                    spec=scaling_pb.ScalingGroupSpec(
+                        container_spec=container_spec,
+                        scaling_spec=scaling_spec,
+                    ),
                 )
-                if resp.status_code != 200:
+                if function_config is not None:
+                    create_request.config.CopyFrom(function_config)
+
+                try:
+                    resp = self._client.unary(
+                        catalog_connect.ExternalFunctionCatalogServiceClientSync,
+                        "create_external_function_version",
+                        create_request,
+                        timeout=60,
+                    )
+                except ConnectError as e:
                     progress_fail(mkey)
                     raise ClassBuildError(
                         f"CreateExternalFunctionVersion failed for "
-                        f"'{func_name}': {resp.text}"
-                    )
+                        f"'{func_name}': {e}"
+                    ) from e
 
-                data = resp.json()
-                efv = data["externalFunctionVersion"]
-                version_info = FunctionVersionInfo(
-                    id=efv["id"],
-                    function_name=efv["functionName"],
-                    version=efv.get("version", 0),
-                    scaling_group_name=efv.get("scalingGroupName", sg_name),
+                efv = resp.external_function_version
+                version_info = _function_version_info_from_proto(
+                    efv,
+                    default_scaling_group_name=sg_name,
                 )
 
-                sg_data = data.get("scalingGroup")
-                web_url = sg_data.get("webUrl") if sg_data else None
-                port = sg_data.get("port", 6666) if sg_data else 6666
-                sg_status = sg_data.get("status", "") if sg_data else ""
+                if resp.HasField("scaling_group"):
+                    web_url = _scaling_group_web_url(resp.scaling_group)
+                    port = _scaling_group_port(resp.scaling_group)
+                    sg_status = resp.scaling_group.status
+                else:
+                    web_url = None
+                    port = 6666
+                    sg_status = ""
 
                 # Build a RemoteFunction proxy for calling this method
                 rf = RemoteFunction._make_empty()
@@ -1003,9 +1008,7 @@ class RemoteClass:
                 rf._version_info = version_info
                 rf._web_url = web_url
                 rf._port = port
-                rf._input_field_names = _extract_field_names(
-                    efv.get("inputArrowSchema")
-                )
+                rf._input_field_names = _extract_field_names(efv.input_arrow_schema)
                 method_info.remote_function = rf
 
                 logger.info(
@@ -1045,14 +1048,19 @@ class RemoteClass:
     ) -> None:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            resp = self._client.rpc(_SG_SVC, "GetScalingGroup", {"name": sg_name})
-            if resp.status_code != 200:
-                raise ClassError(f"GetScalingGroup failed: {resp.text}")
-            sg = resp.json()["scalingGroup"]
-            status = sg.get("status", "")
+            try:
+                resp = self._client.unary(
+                    scaling_connect.ScalingGroupManagerServiceClientSync,
+                    "get_scaling_group",
+                    scaling_pb.GetScalingGroupRequest(name=sg_name),
+                )
+            except ConnectError as e:
+                raise ClassError(f"GetScalingGroup failed: {e}") from e
+            sg = resp.scaling_group
+            status = sg.status
 
             # Update the web_url on the corresponding RemoteFunction
-            web_url = sg.get("webUrl")
+            web_url = _scaling_group_web_url(sg)
             for method_info in self._methods.values():
                 rf = method_info.remote_function
                 if (
@@ -1107,10 +1115,10 @@ class RemoteClass:
                 method_info.remote_function = None
 
         for vol_name, _ in self._volumes:
-            self._client.rpc(
-                "chalk.volume.v1.VolumeService",
-                "DeleteVolume",
-                {"name": vol_name},
+            self._client.unary(
+                volume_connect.VolumeServiceClientSync,
+                "delete_volume",
+                volume_pb2.DeleteVolumeRequest(name=vol_name),
             )
         self._volumes = []
         self._deployed = False
