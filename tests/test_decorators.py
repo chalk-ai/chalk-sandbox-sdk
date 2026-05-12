@@ -35,6 +35,25 @@ def test_function_decorator_accepts_called_and_uncalled_forms(
     assert [deployed_fn._func_name for deployed_fn in deployed] == ["bare", "called"]
 
 
+def test_function_decorator_passes_schedule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deployed: list[RemoteFunction] = []
+
+    def fake_deploy(self: RemoteFunction, **_: Any) -> RemoteFunction:
+        deployed.append(self)
+        return self
+
+    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
+
+    @function(schedule=" 1h ")
+    def scheduled() -> None:
+        pass
+
+    assert isinstance(scheduled, RemoteFunction)
+    assert deployed[0]._schedule == "1h"
+
+
 def test_function_uncalled_decorator_noops_in_remote_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -96,6 +115,27 @@ def test_class_decorators_accept_called_and_uncalled_forms(
     assert set(BareAdder._methods) == {"add"}
     assert BareAdder._before_name == "startup"
     assert BareAdder._after_name == "shutdown"
+
+
+def test_cls_decorator_passes_schedule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deployed: list[RemoteClass] = []
+
+    def fake_deploy(self: RemoteClass, **_: Any) -> RemoteClass:
+        deployed.append(self)
+        return self
+
+    monkeypatch.setattr(RemoteClass, "deploy", fake_deploy)
+
+    @cls(schedule="0 * * * *")
+    class ScheduledJobs:
+        @method
+        def tick(self) -> None:
+            pass
+
+    assert isinstance(ScheduledJobs, RemoteClass)
+    assert deployed[0]._schedule == "0 * * * *"
 
 
 def test_cls_uncalled_decorator_noops_in_remote_env(
