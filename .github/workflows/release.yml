@@ -13,6 +13,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Configure Cargo access to chalk-private
+        env:
+          CHALK_PRIVATE_READ_TOKEN: ${{ secrets.CHALK_PRIVATE_READ_TOKEN }}
+        run: |
+          if [ -z "$CHALK_PRIVATE_READ_TOKEN" ]; then
+            echo "CHALK_PRIVATE_READ_TOKEN must be a GitHub token with read access to chalk-ai/chalk-private." >&2
+            exit 1
+          fi
+          git config --global url."https://x-access-token:${CHALK_PRIVATE_READ_TOKEN}@github.com/chalk-ai/chalk-private.git".insteadOf "https://github.com/chalk-ai/chalk-private.git"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
