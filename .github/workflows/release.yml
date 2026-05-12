@@ -77,14 +77,13 @@ jobs:
           path: dist/
 
   build-macos:
-    name: "Build macOS arm64 wheel (py${{ matrix.python_version }}, ${{ matrix.runner }})"
-    runs-on: ${{ matrix.runner }}
+    name: "Build macOS arm64 wheel (py${{ matrix.python_version }})"
+    runs-on: macos-15
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         python_version: ["3.11", "3.12", "3.13"]
-        runner: ["macos-15", "macos-26"]
     env:
       CHALK_PRIVATE_READ_TOKEN: ${{ secrets.CHALK_PRIVATE_READ_TOKEN }}
     steps:
@@ -245,7 +244,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: dist-macos-arm64-${{ matrix.runner }}-py${{ matrix.python_version }}
+          name: dist-macos-arm64-py${{ matrix.python_version }}
           path: dist/*.whl
 
   publish:
