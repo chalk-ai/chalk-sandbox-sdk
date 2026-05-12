@@ -193,7 +193,10 @@ async def investigate(case: str, *, keep: bool, refresh: bool) -> None:
     # Persistent per-case volume — survives across runs so the dashboard shows
     # the workspace and ChalkFS doesn't pay cold-sync each time. The container
     # itself is still ephemeral.
-    vol_name = f"kyc-case-{case}"
+    # Kubernetes RFC 1123 forbids underscores in volume names (the Chalk Volume
+    # API allows them, but the underlying pod mount rejects them), so we
+    # hyphenate the case slug.
+    vol_name = f"kyc-case-{case.replace('_', '-')}"
     container_name = f"kyc-investigator-{run_id}"
 
     _ensure_volume(case_dir, vol_name, refresh=refresh)
