@@ -52,6 +52,14 @@ async def _async_result_chunks(batches: AsyncIterator[Any]) -> list[list[Any]]:
     return chunks
 
 
+async def _await_call(fn: Any, *args: Any) -> Any:
+    return await fn(*args)
+
+
+async def _await_get(handle: Any, *, timeout: float | None = None) -> Any:
+    return await handle.get(timeout=timeout)
+
+
 @needs_chalk_auth
 def test_sync_scalar_direct_and_defer() -> None:
     assert "chalkdf" not in sys.modules
@@ -59,9 +67,13 @@ def test_sync_scalar_direct_and_defer() -> None:
     fn = chalkcompute.RemoteFunction.from_name(SYNC_SCALAR_FUNCTION)
 
     assert fn(1, 10) == 11
+    assert asyncio.run(_await_call(fn, 2, 20)) == 22
 
-    handle = fn.defer(2, 20)
-    assert handle.get(timeout=60) == 22
+    handle = fn.defer(3, 30)
+    assert handle.get(timeout=60) == 33
+
+    async_handle = fn.defer(4, 40)
+    assert asyncio.run(_await_get(async_handle, timeout=60)) == 44
 
 
 @needs_chalk_auth
@@ -70,10 +82,14 @@ def test_async_scalar_direct_and_defer() -> None:
 
     fn = chalkcompute.RemoteFunction.from_name(ASYNC_SCALAR_FUNCTION)
 
-    assert asyncio.run(fn(3, 30)) == 33
+    assert fn(3, 30) == 33
+    assert asyncio.run(_await_call(fn, 4, 40)) == 44
 
-    handle = fn.defer(4, 40)
-    assert asyncio.run(handle.get(timeout=60)) == 44
+    handle = fn.defer(5, 50)
+    assert handle.get(timeout=60) == 55
+
+    async_handle = fn.defer(6, 60)
+    assert asyncio.run(_await_get(async_handle, timeout=60)) == 66
 
 
 @needs_chalk_auth
@@ -113,4 +129,7 @@ def test_async_generator_direct_and_defer() -> None:
     ]
 
     get_handle = fn.defer(3)
-    assert asyncio.run(get_handle.get(timeout=60)) == [0, 1, 2]
+    assert get_handle.get(timeout=60) == [0, 1, 2]
+
+    async_get_handle = fn.defer(3)
+    assert asyncio.run(_await_get(async_get_handle, timeout=60)) == [0, 1, 2]

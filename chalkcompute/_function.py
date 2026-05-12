@@ -33,6 +33,7 @@ import logging
 import os
 import shlex
 import tempfile
+import threading
 import time
 import typing
 import uuid
@@ -382,6 +383,34 @@ def _should_call_via_api() -> bool:
     return os.environ.get(_CALL_VIA_API_ENV_VAR, "") == "1"
 
 
+def _has_running_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+async def _run_in_worker_thread(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    result: dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            result["value"] = func(*args, **kwargs)
+        except BaseException as exc:
+            result["exception"] = exc
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    while thread.is_alive():
+        await asyncio.sleep(0.01)
+    thread.join()
+
+    if "exception" in result:
+        raise result["exception"]
+    return result.get("value")
+
+
 class FunctionCallHandle:
     """Handle returned by :meth:`RemoteFunction.defer`."""
 
@@ -407,7 +436,7 @@ class FunctionCallHandle:
         return result
 
     def get(self, timeout: float | None = None) -> Any:
-        if self._is_async:
+        if _has_running_event_loop():
             return self._async_get(timeout)
         return self._sync_get(timeout)
 
@@ -430,7 +459,7 @@ class FunctionCallHandle:
                 raise TimeoutError(f"Remote call {self._call_id} timed out")
 
     async def _async_get(self, timeout: float | None = None) -> Any:
-        return await asyncio.to_thread(self._sync_get, timeout)
+        return await _run_in_worker_thread(self._sync_get, timeout)
 
     def stream(self) -> Any:
         if self._is_async:
@@ -1710,12 +1739,12 @@ class RemoteFunction:
         """
         if self._is_generator:
             return self.defer(*args, **kwargs).stream()
-        if self._is_async:
+        if _has_running_event_loop():
             return self._call_async(*args, **kwargs)
         return self._call_sync(*args, **kwargs)
 
     async def _call_async(self, *args: Any, **kwargs: Any) -> Any:
-        return await asyncio.to_thread(self._call_sync, *args, **kwargs)
+        return await _run_in_worker_thread(self._call_sync, *args, **kwargs)
 
     def _call_sync(self, *args: Any, **kwargs: Any) -> Any:
         feather_bytes = self._serialize_call_args(*args, **kwargs)
