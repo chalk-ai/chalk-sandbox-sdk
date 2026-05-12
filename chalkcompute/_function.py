@@ -1376,7 +1376,8 @@ class RemoteFunction:
             # 3. Register function version
             input_schema_proto, output_schema_proto = _build_schemas(self._func)
 
-            sg_name = sanitize_dns_label(self._explicit_name or self._func_name)
+            registered_function_name = self._explicit_name or self._func_name
+            sg_name = sanitize_dns_label(registered_function_name)
 
             handler_cmd = ["chalk-remote-call", "--handler", "handler.handler"]
 
@@ -1410,7 +1411,7 @@ class RemoteFunction:
                     self._target_cpu_utilization_percentage
                 ),
                 target_queue_depth=self._target_queue_depth,
-                function_name=self._func_name,
+                function_name=registered_function_name,
             )
 
             function_config = _make_function_config(
@@ -1427,10 +1428,10 @@ class RemoteFunction:
             # 6. Call CreateExternalFunctionVersion
             rkey = f"register:{self._func_name}"
             progress_add(rkey, "function", "Registering function", parent=fkey)
-            logger.info("Registering function '%s'...", self._func_name)
+            logger.info("Registering function '%s'...", registered_function_name)
 
             create_request = catalog_pb.CreateExternalFunctionVersionRequest(
-                function_name=self._func_name,
+                function_name=registered_function_name,
                 input_arrow_schema=input_schema_proto,
                 output_arrow_schema=output_schema_proto,
                 spec=scaling_pb.ScalingGroupSpec(
