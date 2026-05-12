@@ -69,6 +69,7 @@ from chalkcompute._function import (
     _write_temp,
 )
 from chalkcompute._concurrency import ConcurrencyPolicy
+from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._retry import RetryPolicy
 
@@ -234,13 +235,12 @@ def _strip_chalkcompute_from_class_source(source: str) -> str:
             for dec in node.decorator_list:
                 dec_source = ast.get_source_segment(source, dec)
                 if (
-                    (dec_source is not None and "chalkcompute" in dec_source)
-                    or _is_chalkcompute_decorator(
-                        dec,
-                        module_names=chalkcompute_module_names,
-                        decorator_names=chalkcompute_decorator_names,
-                        attribute_names=chalkcompute_attributes,
-                    )
+                    dec_source is not None and "chalkcompute" in dec_source
+                ) or _is_chalkcompute_decorator(
+                    dec,
+                    module_names=chalkcompute_module_names,
+                    decorator_names=chalkcompute_decorator_names,
+                    attribute_names=chalkcompute_attributes,
                 ):
                     remove_ranges.append((dec.lineno, dec.end_lineno or dec.lineno))
                     decorated_names.add(node.name)
@@ -565,6 +565,7 @@ class RemoteClass:
         retries: int | RetryPolicy | None = None,
         rate_limit: int | RateLimitPolicy | None = None,
         concurrency: int | ConcurrencyPolicy | None = None,
+        quota: int | QueuePolicy | None = None,
     ) -> None:
         self._user_cls = user_cls
         self._class_name = user_cls.__name__
@@ -600,6 +601,9 @@ class RemoteClass:
             ConcurrencyPolicy.from_int_or_policy(concurrency)
             if concurrency is not None
             else None
+        )
+        self._quota = (
+            QueuePolicy.from_int_or_policy(quota) if quota is not None else None
         )
 
         self._client = ConnectClient()
@@ -748,6 +752,7 @@ class RemoteClass:
         rc._retries = None
         rc._rate_limit = None
         rc._concurrency = None
+        rc._quota = None
         rc._client = ConnectClient()
         rc._deployed = False
         rc._methods = {}
@@ -874,7 +879,9 @@ class RemoteClass:
             for method_info in self._methods.values():
                 input_schema, output_schema = _build_method_schemas(method_info.func)
 
-                func_name = f"{self._explicit_name or self._class_name}.{method_info.name}"
+                func_name = (
+                    f"{self._explicit_name or self._class_name}.{method_info.name}"
+                )
                 sg_name = sanitize_dns_label(func_name)
 
                 mkey = f"method:{func_name}"
@@ -949,6 +956,8 @@ class RemoteClass:
                     function_config["rateLimit"] = self._rate_limit.to_dict()
                 if self._concurrency is not None:
                     function_config["concurrency"] = self._concurrency.to_dict()
+                if self._quota is not None:
+                    function_config["queue"] = self._quota.to_dict()
 
                 logger.info("Registering method '%s'...", func_name)
                 create_request: dict[str, Any] = {
@@ -1224,6 +1233,7 @@ def cls(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
+    quota: int | QueuePolicy | None = None,
 ) -> RemoteClass | _NoOpClass: ...
 
 
@@ -1251,8 +1261,8 @@ def cls(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
-) -> Callable[..., RemoteClass | _NoOpClass]:
-    ...
+    quota: int | QueuePolicy | None = None,
+) -> Callable[..., RemoteClass | _NoOpClass]: ...
 
 
 def cls(
@@ -1280,6 +1290,7 @@ def cls(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
+    quota: int | QueuePolicy | None = None,
 ) -> Callable[..., RemoteClass | _NoOpClass] | RemoteClass | _NoOpClass:
     """Decorator that deploys a class as versioned remote functions.
 
@@ -1358,6 +1369,10 @@ def cls(
         (``max_concurrent``, ``key``). Multiple methods sharing the same
         ``key`` share one gate — independent of ``rate_limit`` (which caps
         rate, not in-flight count).
+    quota
+        Queue quota policy: cap on queued calls per key. Pass an ``int``
+        for a simple ``max_queue_depth`` cap with a per-method key, or a
+        :class:`~chalkcompute.QueuePolicy` for full control.
     """
 
     def decorator(user_cls: type) -> RemoteClass | _NoOpClass:
@@ -1387,6 +1402,7 @@ def cls(
             retries=retries,
             rate_limit=rate_limit,
             concurrency=concurrency,
+            quota=quota,
         )
         rc.deploy()
         return rc
