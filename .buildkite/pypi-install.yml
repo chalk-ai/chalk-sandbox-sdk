@@ -1,0 +1,38 @@
+on:
+  push:
+    branches:
+      - main
+
+steps:
+  - label: ":package: Install chalkcompute from PyPI (Python {{matrix}})"
+    matrix:
+      - "3.11"
+      - "3.12"
+      - "3.13"
+      - "3.14"
+    command: |
+      set -euo pipefail
+      unset VIRTUAL_ENV
+
+      echo "--- :docker: Install from public PyPI in a clean Python {{matrix}} container"
+      docker run --rm --pull always "python:{{matrix}}-slim" sh -euxc '
+        python -m pip install \
+          --isolated \
+          --no-cache-dir \
+          --only-binary=:all: \
+          --index-url https://pypi.org/simple \
+          chalkcompute
+
+        python - <<'"'"'PY'"'"'
+      from importlib.metadata import version
+
+      import chalkcompute
+      import chalkcompute._remote_call_native as native
+
+      print("chalkcompute", version("chalkcompute"))
+      print("native client", native.RemoteCallClient)
+      PY
+      '
+    agents:
+      queue: default
+    timeout_in_minutes: 10
