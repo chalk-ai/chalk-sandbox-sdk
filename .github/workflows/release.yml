@@ -12,27 +12,95 @@ on:
         default: true
 
 jobs:
-  build:
-    name: "Build wheel (${{ matrix.os_name }} py${{ matrix.python_version }})"
+  build-wheels:
+    name: "Build wheels (${{ matrix.os }})"
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
-            os_name: linux
-            python_version: "3.12"
-            manylinux: "2_28"
-          - os: [self-hosted, macOS, ARM64]
-            os_name: macos-arm64
-            python_version: "3.11"
-          - os: [self-hosted, macOS, ARM64]
-            os_name: macos-arm64
-            python_version: "3.12"
-          - os: [self-hosted, macOS, ARM64]
-            os_name: macos-arm64
-            python_version: "3.13"
+            cibw_archs_linux: "x86_64"
+          - os: macos-latest
+            cibw_archs_macos: "arm64"
+            macos_deployment_target: "11.0"
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure Cargo access to chalk-private (host)
+        shell: bash
+        env:
+          CHALK_PRIVATE_READ_TOKEN: ${{ secrets.CHALK_PRIVATE_READ_TOKEN }}
+        run: |
+          if [ -z "$CHALK_PRIVATE_READ_TOKEN" ]; then
+            echo "CHALK_PRIVATE_READ_TOKEN must be a GitHub token with read access to chalk-ai/chalk-private." >&2
+            exit 1
+          fi
+          git config --global url."https://x-access-token:${CHALK_PRIVATE_READ_TOKEN}@github.com/chalk-ai/chalk-private.git".insteadOf "https://github.com/chalk-ai/chalk-private.git"
+
+      - name: Set version from release tag
+        if: github.event_name == 'release'
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Setting version to $VERSION"
+          # BSD/macOS-compatible in-place edit
+          sed -i.bak "s/^version = .*/version = \"$VERSION\"/" pyproject.toml
+          rm -f pyproject.toml.bak
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protoc (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v3.1.4
+        env:
+          CHALK_PRIVATE_READ_TOKEN: ${{ secrets.CHALK_PRIVATE_READ_TOKEN }}
+          CIBW_BUILD: "cp311-* cp312-* cp313-*"
+          CIBW_SKIP: "*-musllinux_* *-win32 *_i686"
+          CIBW_MANYLINUX_X86_64_IMAGE: "manylinux_2_28"
+          CIBW_BEFORE_ALL_LINUX: |
+            set -euo pipefail
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            dnf install -y git unzip curl
+            curl -fsSLo /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v25.3/protoc-25.3-linux-x86_64.zip
+            mkdir -p /opt/protoc
+            unzip -q /tmp/protoc.zip -d /opt/protoc
+            git config --global url."https://x-access-token:${CHALK_PRIVATE_READ_TOKEN}@github.com/chalk-ai/chalk-private.git".insteadOf "https://github.com/chalk-ai/chalk-private.git"
+          CIBW_ENVIRONMENT_LINUX: 'PATH=/opt/protoc/bin:$HOME/.cargo/bin:$PATH PROTOC=/opt/protoc/bin/protoc'
+          CIBW_ENVIRONMENT_PASS_LINUX: "CHALK_PRIVATE_READ_TOKEN"
+          CIBW_ARCHS_LINUX: "${{ matrix.cibw_archs_linux || 'native' }}"
+          CIBW_ARCHS_MACOS: "${{ matrix.cibw_archs_macos || 'native' }}"
+          CIBW_ENVIRONMENT_MACOS: "MACOSX_DEPLOYMENT_TARGET=${{ matrix.macos_deployment_target || '11.0' }}"
+
+      - name: Verify package contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          for whl in wheelhouse/*.whl; do
+            echo "=== $whl ==="
+            python3 -m zipfile -l "$whl"
+            if python3 -m zipfile -l "$whl" | grep -qiE '\.env|\.enc|sops|test_'; then
+              echo "ERROR: Sensitive or test files found in wheel!"
+              exit 1
+            fi
+          done
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}-${{ matrix.cibw_archs_linux || matrix.cibw_archs_macos || 'default' }}
+          path: wheelhouse
+
+  build-sdist:
+    name: "Build source distribution"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -46,105 +114,34 @@ jobs:
           fi
           git config --global url."https://x-access-token:${CHALK_PRIVATE_READ_TOKEN}@github.com/chalk-ai/chalk-private.git".insteadOf "https://github.com/chalk-ai/chalk-private.git"
 
-      - name: Diagnose macOS runner
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          set -x
-          uname -a
-          whoami
-          echo "HOME=$HOME"
-          echo "PATH=$PATH"
-          xcode-select -p 2>&1 || true
-          ls -d /Applications/Xcode*.app 2>&1 || true
-          ls /Library/Developer/CommandLineTools 2>&1 || true
-          xcrun --sdk macosx --show-sdk-path 2>&1 || true
-          for v in 3.11 3.12 3.13; do
-            echo "--- python$v ---"
-            command -v "python$v" 2>&1 || true
-            ls -la "/opt/homebrew/bin/python$v" 2>&1 || true
-            ls -d "/Library/Frameworks/Python.framework/Versions/$v" 2>&1 || true
-            "python$v" --version 2>&1 || true
-          done
-          command -v brew 2>&1 || true
-          command -v uv 2>&1 || true
-          command -v protoc 2>&1 || true
-
-      - name: Set up Python (linux)
-        if: runner.os == 'Linux'
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python_version }}
-
-      - name: Install protoc (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          if ! command -v protoc >/dev/null 2>&1; then
-            brew install protobuf
-          fi
-          protoc --version
-
       - name: Set version from release tag
         if: github.event_name == 'release'
-        shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          echo "Setting version to $VERSION"
-          # BSD/macOS-compatible in-place edit
-          sed -i.bak "s/^version = .*/version = \"$VERSION\"/" pyproject.toml
-          rm -f pyproject.toml.bak
+          sed -i "s/^version = .*/version = \"$VERSION\"/" pyproject.toml
 
-      - name: Build (linux)
-        if: runner.os == 'Linux'
-        uses: PyO3/maturin-action@v1
-        env:
-          CHALK_PRIVATE_READ_TOKEN: ${{ secrets.CHALK_PRIVATE_READ_TOKEN }}
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          command: build
-          args: --release --sdist --out dist -i python${{ matrix.python_version }}
-          manylinux: ${{ matrix.manylinux }}
-          docker-options: -e CHALK_PRIVATE_READ_TOKEN -e PROTOC=/opt/protoc/bin/protoc
-          before-script-linux: |
-            set -euo pipefail
-            dnf install -y git curl unzip
-            curl -fsSLo /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v25.3/protoc-25.3-linux-x86_64.zip
-            mkdir -p /opt/protoc
-            unzip -q /tmp/protoc.zip -d /opt/protoc
-            /opt/protoc/bin/protoc --version
-            git config --global url."https://x-access-token:${CHALK_PRIVATE_READ_TOKEN}@github.com/chalk-ai/chalk-private.git".insteadOf "https://github.com/chalk-ai/chalk-private.git"
+          python-version: "3.12"
 
-      - name: Build (macOS)
-        if: runner.os == 'macOS'
-        uses: PyO3/maturin-action@v1
-        env:
-          CHALK_PRIVATE_READ_TOKEN: ${{ secrets.CHALK_PRIVATE_READ_TOKEN }}
-          MACOSX_DEPLOYMENT_TARGET: "11.0"
-        with:
-          command: build
-          args: --release --out dist -i python${{ matrix.python_version }}
-          target: aarch64-apple-darwin
-
-      - name: Verify package contents
-        shell: bash
+      - name: Build sdist
         run: |
-          echo "=== Wheel contents ==="
-          python -m zipfile -l dist/*.whl
-          echo ""
-          echo "=== Checking for sensitive files ==="
-          if python -m zipfile -l dist/*.whl | grep -qiE '\.env|\.enc|sops|test_'; then
-            echo "ERROR: Sensitive or test files found in wheel!"
-            exit 1
-          fi
+          pip install build
+          python -m build --sdist
 
-      - name: Upload artifacts
+      - name: Upload sdist
         uses: actions/upload-artifact@v4
         with:
-          name: dist-${{ matrix.os_name }}-py${{ matrix.python_version }}
-          path: dist/
+          name: sdist
+          path: dist/*.tar.gz
 
   publish:
     name: "Publish to PyPI"
-    needs: build
+    needs: [build-wheels, build-sdist]
     if: github.event_name == 'release' || inputs.skip_publish == false
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -153,8 +150,13 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: dist-*
+          pattern: wheels-*
           merge-multiple: true
+          path: dist/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdist
           path: dist/
 
       - name: Publish to PyPI
