@@ -137,7 +137,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          source ~/.zshrc 2>/dev/null || true
           if command -v protoc >/dev/null 2>&1; then
             echo "protoc found: $(command -v protoc)"
             protoc --version
@@ -153,7 +152,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          source ~/.zshrc 2>/dev/null || true
           if command -v cargo >/dev/null 2>&1; then
             echo "cargo found: $(command -v cargo)"
             cargo --version
@@ -178,7 +176,6 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          source ~/.zshrc 2>/dev/null || true
 
           PY_VER="${{ matrix.python_version }}"
           TARGET_VENV="$HOME/venv.${PY_VER}"
@@ -201,7 +198,6 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          source ~/.zshrc 2>/dev/null || true
           source "$VENV_PATH/bin/activate"
           # uv is faster + already used by the runner setup
           if command -v uv >/dev/null 2>&1; then
@@ -218,7 +214,6 @@ jobs:
           MACOSX_DEPLOYMENT_TARGET: "11.0"
         run: |
           set -euxo pipefail
-          source ~/.zshrc 2>/dev/null || true
           source "$VENV_PATH/bin/activate"
 
           # Make sure cargo + protoc are visible
