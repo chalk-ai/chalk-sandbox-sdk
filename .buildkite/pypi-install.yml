@@ -23,7 +23,7 @@ steps:
           --index-url https://pypi.org/simple \
           chalkcompute
 
-        python -c "from importlib.metadata import version; import chalkcompute; import chalkcompute._remote_call_native as native; print('chalkcompute', version('chalkcompute')); print('native client', native.RemoteCallClient)"
+        python -c "from importlib.metadata import version; import chalkcompute; import chalkcompute._remote_call_native as native; print(\"chalkcompute\", version(\"chalkcompute\")); print(\"native client\", native.RemoteCallClient)"
       '
     agents:
       queue: default
