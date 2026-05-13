@@ -2,7 +2,7 @@
 #
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["httpx", "python-dotenv"]
+# dependencies = ["python-dotenv"]
 # ///
 
 # # Shared SQLite on a Persistent Volume

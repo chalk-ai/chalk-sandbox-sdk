@@ -33,9 +33,15 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-from chalkcompute._connect import ConnectClient, build_image
+from chalkcompute._connect import ConnectClient, ConnectError, build_image
+from chalkcompute._container import build_chalk_container_spec
+from chalkcompute._gen.chalk.scalinggroup.v1 import (
+    service_connect as scaling_connect,
+)
+from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb2 as scaling_pb
+from chalkcompute._gen.chalk.volume.v1 import volume_connect, volume_pb2
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import traced
 from chalkcompute._volume import VolumeClient, upload_lazy_files
@@ -43,13 +49,10 @@ from chalkcompute._volume import VolumeClient, upload_lazy_files
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    import httpx
+    import requests
 
     from chalkcompute._image import Image as _Image
     from chalkcompute._secret import Secret as _Secret
-
-_SVC = "chalk.scalinggroup.v1.ScalingGroupManagerService"
-
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -185,12 +188,15 @@ class ScalingGroup:
             If the scaling group cannot be found.
         """
         sg = cls._make_empty()
-        resp = sg._client.rpc(_SVC, "GetScalingGroup", {"id": scaling_group_id})
-        if resp.status_code != 200:
-            raise ScalingGroupError(f"GetScalingGroup failed: {resp.text}")
-        sg._scaling_group_info = _parse_scaling_group_response(
-            resp.json()["scalingGroup"]
-        )
+        try:
+            resp = sg._client.unary(
+                scaling_connect.ScalingGroupManagerServiceClientSync,
+                scaling_connect.ScalingGroupManagerServiceClientSync.get_scaling_group,
+                scaling_pb.GetScalingGroupRequest(id=scaling_group_id),
+            )
+        except ConnectError as e:
+            raise ScalingGroupError(f"GetScalingGroup failed: {e}") from e
+        sg._scaling_group_info = _scaling_group_info_from_proto(resp.scaling_group)
         sg._scaling_group_id = sg._scaling_group_info.id
         return sg
 
@@ -214,12 +220,15 @@ class ScalingGroup:
             If the scaling group cannot be found.
         """
         sg = cls._make_empty()
-        resp = sg._client.rpc(_SVC, "GetScalingGroup", {"name": name})
-        if resp.status_code != 200:
-            raise ScalingGroupError(f"GetScalingGroup failed: {resp.text}")
-        sg._scaling_group_info = _parse_scaling_group_response(
-            resp.json()["scalingGroup"]
-        )
+        try:
+            resp = sg._client.unary(
+                scaling_connect.ScalingGroupManagerServiceClientSync,
+                scaling_connect.ScalingGroupManagerServiceClientSync.get_scaling_group,
+                scaling_pb.GetScalingGroupRequest(name=name),
+            )
+        except ConnectError as e:
+            raise ScalingGroupError(f"GetScalingGroup failed: {e}") from e
+        sg._scaling_group_info = _scaling_group_info_from_proto(resp.scaling_group)
         sg._scaling_group_id = sg._scaling_group_info.id
         sg._name = name
         return sg
@@ -312,67 +321,58 @@ class ScalingGroup:
 
         # 3. Build the ScalingGroupSpec
         sg_name = sanitize_dns_label(self._name or f"sg-{uuid.uuid4().hex[:8]}")
-        container_spec: dict[str, Any] = {
-            "name": sg_name,
-            "image": self._built_image_uri,
-            "port": self._port,
-            "protocol": self._protocol,
-        }
-
-        if self._entrypoint:
-            container_spec["entrypoint"] = self._entrypoint
-        if self._env:
-            container_spec["envVars"] = self._env
-
-        resources: dict[str, str] = {}
-        if self._cpu:
-            resources["cpu"] = self._cpu
-        if self._memory:
-            resources["memory"] = self._memory
-        if self._gpu:
-            resources["gpu"] = self._gpu
-        if resources:
-            container_spec["resources"] = resources
-
         if self._secrets:
             from chalkcompute._secret import resolve_lazy_secrets
 
             if any(s.is_lazy for s in self._secrets):
                 resolved, _ = resolve_lazy_secrets(self._secrets, self._client)
                 self._secrets = resolved
-            container_spec["secretRefs"] = [s._to_proto_dict() for s in self._secrets]
 
-        if self._volumes:
-            container_spec["volumes"] = [
-                {"name": vol_name, "mountPath": mount_path, "type": "chalkfs"}
-                for vol_name, mount_path in self._volumes
-            ]
+        assert self._built_image_uri is not None
+        container_spec = build_chalk_container_spec(
+            name=sg_name,
+            image=self._built_image_uri,
+            entrypoint=self._entrypoint,
+            env=self._env,
+            port=self._port,
+            protocol=self._protocol,
+            cpu=self._cpu,
+            memory=self._memory,
+            gpu=self._gpu,
+            volumes=self._volumes,
+            secrets=self._secrets,
+        )
 
-        scaling_spec: dict[str, Any] = {
-            "minReplicas": self._min_replicas,
-            "maxReplicas": self._max_replicas,
-        }
+        scaling_spec = scaling_pb.ScalingSpec(
+            min_replicas=self._min_replicas,
+            max_replicas=self._max_replicas,
+        )
         if self._shutdown_delay_seconds is not None:
-            scaling_spec["shutdownDelaySeconds"] = self._shutdown_delay_seconds
+            scaling_spec.shutdown_delay_seconds = self._shutdown_delay_seconds
         if self._scaling_interval_seconds is not None:
-            scaling_spec["windowSeconds"] = self._scaling_interval_seconds
+            scaling_spec.window_seconds = self._scaling_interval_seconds
         if self._target_cpu_utilization_percentage is not None:
-            scaling_spec["targetCpuUtilizationPercentage"] = (
+            scaling_spec.target_cpu_utilization_percentage = (
                 self._target_cpu_utilization_percentage
             )
 
-        spec: dict[str, Any] = {
-            "containerSpec": container_spec,
-            "scalingSpec": scaling_spec,
-        }
-
         logger.info("Deploying scaling group '%s'...", sg_name)
-        resp = self._client.rpc(_SVC, "CreateScalingGroup", {"spec": spec}, timeout=60)
-        if resp.status_code != 200:
-            raise ScalingGroupError(f"CreateScalingGroup failed: {resp.text}")
+        try:
+            resp = self._client.unary(
+                scaling_connect.ScalingGroupManagerServiceClientSync,
+                scaling_connect.ScalingGroupManagerServiceClientSync.create_scaling_group,
+                scaling_pb.CreateScalingGroupRequest(
+                    spec=scaling_pb.ScalingGroupSpec(
+                        container_spec=container_spec,
+                        scaling_spec=scaling_spec,
+                    )
+                ),
+                timeout=60,
+            )
+        except ConnectError as e:
+            raise ScalingGroupError(f"CreateScalingGroup failed: {e}") from e
 
-        data = resp.json()
-        self._scaling_group_info = _parse_scaling_group_response(data["scalingGroup"])
+        self._scaling_group_info = _scaling_group_info_from_proto(resp.scaling_group)
         self._scaling_group_id = self._scaling_group_info.id
         logger.info(
             "Scaling group created: %s (status=%s)",
@@ -398,12 +398,15 @@ class ScalingGroup:
         assert self._scaling_group_id is not None
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            resp = self._client.rpc(
-                _SVC, "GetScalingGroup", {"id": self._scaling_group_id}
-            )
-            if resp.status_code != 200:
-                raise ScalingGroupError(f"GetScalingGroup failed: {resp.text}")
-            info = _parse_scaling_group_response(resp.json()["scalingGroup"])
+            try:
+                resp = self._client.unary(
+                    scaling_connect.ScalingGroupManagerServiceClientSync,
+                    scaling_connect.ScalingGroupManagerServiceClientSync.get_scaling_group,
+                    scaling_pb.GetScalingGroupRequest(id=self._scaling_group_id),
+                )
+            except ConnectError as e:
+                raise ScalingGroupError(f"GetScalingGroup failed: {e}") from e
+            info = _scaling_group_info_from_proto(resp.scaling_group)
             self._scaling_group_info = info
             logger.info("  poll: status=%s", info.status)
             if info.status in ("Running", "Available"):
@@ -427,7 +430,7 @@ class ScalingGroup:
         data: bytes | None = None,
         headers: dict[str, str] | None = None,
         timeout: float = 30.0,
-    ) -> httpx.Response:
+    ) -> requests.Response:
         """Make an HTTP request to the scaling group's endpoint.
 
         Parameters
@@ -447,7 +450,7 @@ class ScalingGroup:
 
         Returns
         -------
-        httpx.Response
+        requests.Response
             The HTTP response.
 
         Raises
@@ -455,15 +458,15 @@ class ScalingGroup:
         ScalingGroupError
             If the scaling group has no ``web_url`` yet.
         """
-        import httpx
+        import requests
 
         if self._scaling_group_info is None or self._scaling_group_info.web_url is None:
             raise ScalingGroupError(
                 "Scaling group has no web_url. Call .deploy() first or .refresh() to update."
             )
         url = f"{self._scaling_group_info.web_url}{path}"
-        return httpx.request(
-            method, url, json=json, content=data, headers=headers, timeout=timeout
+        return requests.request(
+            method, url, json=json, data=data, headers=headers, timeout=timeout
         )
 
     def wait_ready(
@@ -521,13 +524,19 @@ class ScalingGroup:
     def delete(self) -> None:
         """Delete the scaling group and clean up associated volumes."""
         if self._scaling_group_id is not None:
-            self._client.rpc(_SVC, "DeleteScalingGroup", {"id": self._scaling_group_id})
+            self._client.unary(
+                scaling_connect.ScalingGroupManagerServiceClientSync,
+                scaling_connect.ScalingGroupManagerServiceClientSync.delete_scaling_group,
+                scaling_pb.DeleteScalingGroupRequest(id=self._scaling_group_id),
+            )
             self._scaling_group_id = None
             self._scaling_group_info = None
 
         for vol_name, _ in self._volumes:
-            self._client.rpc(
-                "chalk.volume.v1.VolumeService", "DeleteVolume", {"name": vol_name}
+            self._client.unary(
+                volume_connect.VolumeServiceClientSync,
+                volume_connect.VolumeServiceClientSync.delete_volume,
+                volume_pb2.DeleteVolumeRequest(name=vol_name),
             )
         self._volumes = []
 
@@ -546,12 +555,15 @@ class ScalingGroup:
         """
         if self._scaling_group_id is None:
             raise ScalingGroupError("No scaling group ID — call .deploy() first.")
-        resp = self._client.rpc(_SVC, "GetScalingGroup", {"id": self._scaling_group_id})
-        if resp.status_code != 200:
-            raise ScalingGroupError(f"GetScalingGroup failed: {resp.text}")
-        self._scaling_group_info = _parse_scaling_group_response(
-            resp.json()["scalingGroup"]
-        )
+        try:
+            resp = self._client.unary(
+                scaling_connect.ScalingGroupManagerServiceClientSync,
+                scaling_connect.ScalingGroupManagerServiceClientSync.get_scaling_group,
+                scaling_pb.GetScalingGroupRequest(id=self._scaling_group_id),
+            )
+        except ConnectError as e:
+            raise ScalingGroupError(f"GetScalingGroup failed: {e}") from e
+        self._scaling_group_info = _scaling_group_info_from_proto(resp.scaling_group)
         return self._scaling_group_info
 
     @property
@@ -586,12 +598,14 @@ class ScalingGroup:
 # ---------------------------------------------------------------------------
 
 
-def _parse_scaling_group_response(data: dict) -> ScalingGroupInfo:
+def _scaling_group_info_from_proto(
+    data: scaling_pb.ScalingGroupResponse,
+) -> ScalingGroupInfo:
     return ScalingGroupInfo(
-        id=data["id"],
-        name=data["name"],
-        status=data["status"],
-        web_url=data.get("webUrl"),
-        ready_replicas=data.get("readyReplicas", 0),
-        available_replicas=data.get("availableReplicas", 0),
+        id=data.id,
+        name=data.name,
+        status=data.status,
+        web_url=data.web_url if data.HasField("web_url") else None,
+        ready_replicas=data.ready_replicas,
+        available_replicas=data.available_replicas,
     )

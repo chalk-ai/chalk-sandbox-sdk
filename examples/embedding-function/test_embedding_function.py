@@ -7,6 +7,7 @@ function can call embed and return embeddings.
 import os
 import subprocess
 import sys
+import uuid
 
 import pytest
 from dotenv import load_dotenv
@@ -16,18 +17,11 @@ load_dotenv()
 CHALK_CLIENT_ID = os.environ.get("CHALK_CLIENT_ID", "")
 CHALK_API_SERVER = os.environ.get("CHALK_API_SERVER", "")
 CHALK_ENVIRONMENT_ID = os.environ.get("CHALK_ENVIRONMENT_ID", "tmnmc9beyujew")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 needs_staging = pytest.mark.skipif(
     not CHALK_CLIENT_ID or not CHALK_API_SERVER or not CHALK_ENVIRONMENT_ID,
     reason="CHALK_CLIENT_ID/CHALK_API_SERVER/CHALK_ENVIRONMENT_ID not set",
 )
-
-needs_openai = pytest.mark.skipif(
-    not OPENAI_API_KEY,
-    reason="OPENAI_API_KEY not set",
-)
-
 
 def _chalkdf_remote_available() -> bool:
     try:
@@ -45,13 +39,16 @@ needs_chalkdf_remote = pytest.mark.skipif(
 EXAMPLE_DIR = os.path.dirname(__file__)
 
 
-def _deploy_script(script_name: str) -> None:
+def _deploy_script(script_name: str, *, extra_env: dict[str, str] | None = None) -> None:
     """Run a deploy script as a subprocess."""
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
     result = subprocess.run(
         [sys.executable, os.path.join(EXAMPLE_DIR, script_name)],
         capture_output=True,
         text=True,
-        env=os.environ,
+        env=env,
         timeout=600,
     )
     if result.returncode != 0:
@@ -62,16 +59,25 @@ def _deploy_script(script_name: str) -> None:
         )
 
 
+def _function_name(prefix: str) -> str:
+    return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+
 @needs_staging
-@needs_openai
 def test_embedding_function() -> None:
-    """Deploy embed + orchestrate, then call orchestrate and verify results."""
-    _deploy_script("embed.py")
-    _deploy_script("orchestrate.py")
+    """Deploy mock embed + orchestrate, then verify deterministic embeddings."""
+    embed_name = _function_name("mock-embed")
+    orchestrate_name = _function_name("mock-orchestrate")
+    deploy_env = {
+        "CHALK_EMBED_FUNCTION_NAME": embed_name,
+        "CHALK_ORCHESTRATE_FUNCTION_NAME": orchestrate_name,
+    }
+    _deploy_script("embed.py", extra_env=deploy_env)
+    _deploy_script("orchestrate.py", extra_env=deploy_env)
 
     import chalkcompute
 
-    orchestrate = chalkcompute.RemoteFunction.from_name("orchestrate")
+    orchestrate = chalkcompute.RemoteFunction.from_name(orchestrate_name)
     embeddings = orchestrate(["Hello", "world!"])
 
     assert len(embeddings) == 2, f"Expected 2 embeddings, got {len(embeddings)}"
@@ -84,23 +90,23 @@ def test_embedding_function() -> None:
 
 
 @needs_staging
-@needs_openai
 @needs_chalkdf_remote
 def test_embedding_function_via_chalkdf_remote() -> None:
-    """Deploy embed, then call it from a local client using chalkdf's Remote(...).
+    """Deploy mock embed, then call it using chalkdf's Remote(...).
 
     Exercises the same Velox-dispatched direct call path used by
     chalk-private/dataframe/examples/call_embed.py, rather than the
     chalkcompute.RemoteFunction shortcut used in the other tests.
     """
-    _deploy_script("embed.py")
+    embed_name = _function_name("mock-embed")
+    _deploy_script("embed.py", extra_env={"CHALK_EMBED_FUNCTION_NAME": embed_name})
 
     from chalk.client.client_grpc import ChalkGRPCClient
     from chalkdf.remote import Remote
 
     client = ChalkGRPCClient(environment=CHALK_ENVIRONMENT_ID)
     remote = Remote(chalk_client=client)
-    fn = remote.function("embed")
+    fn = remote.function(embed_name)
     embedding = fn("hello")
 
     assert isinstance(embedding, list), f"Expected list, got {type(embedding).__name__}"
@@ -109,11 +115,14 @@ def test_embedding_function_via_chalkdf_remote() -> None:
 
 
 @needs_staging
-@needs_openai
 @needs_chalkdf_remote
 def test_async_embedding_function_via_chalkdf_remote() -> None:
-    """Deploy async-embed, then call it via chalkdf's Remote with await."""
-    _deploy_script("embed_async.py")
+    """Deploy mock async embed, then call it via chalkdf's Remote with await."""
+    async_embed_name = _function_name("mock-async-embed")
+    _deploy_script(
+        "embed_async.py",
+        extra_env={"CHALK_ASYNC_EMBED_FUNCTION_NAME": async_embed_name},
+    )
 
     import asyncio
 
@@ -123,7 +132,7 @@ def test_async_embedding_function_via_chalkdf_remote() -> None:
     async def _run() -> list[float]:
         client = ChalkGRPCClient(environment=CHALK_ENVIRONMENT_ID)
         remote = Remote(chalk_client=client)
-        fn = remote.function("async-embed")
+        fn = remote.function(async_embed_name)
         return await fn("hello")
 
     embedding = asyncio.run(_run())

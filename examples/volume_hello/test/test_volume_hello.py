@@ -14,8 +14,8 @@ import time
 import uuid
 from collections.abc import Iterator
 
-import httpx
 import pytest
+import requests
 from dotenv import load_dotenv
 
 from chalkcompute import Container
@@ -39,8 +39,9 @@ FILE_CONTENT = "Hello from a Chalk volume!"
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _get_token() -> str:
-    resp = httpx.post(
+    resp = requests.post(
         f"{os.environ['CHALK_API_SERVER']}/v1/oauth/token",
         json={
             "client_id": os.environ["CHALK_CLIENT_ID"],
@@ -53,8 +54,8 @@ def _get_token() -> str:
     return resp.json()["access_token"]
 
 
-def _volume_rpc(method: str, body: dict, *, token: str) -> httpx.Response:
-    return httpx.post(
+def _volume_rpc(method: str, body: dict, *, token: str) -> requests.Response:
+    return requests.post(
         f"{os.environ['CHALK_API_SERVER']}/chalk.volume.v1.VolumeService/{method}",
         json=body,
         headers={
@@ -69,6 +70,7 @@ def _volume_rpc(method: str, body: dict, *, token: str) -> httpx.Response:
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(scope="module")
 def token() -> str:
@@ -101,6 +103,7 @@ def hello_vol(token: str) -> Iterator[str]:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 @needs_staging
 def test_file_readable_in_container(hello_vol: str) -> None:

@@ -40,7 +40,9 @@ def test_container_add_local_file() -> None:
         local_path = f.name
 
     try:
-        img = Image.debian_slim().add_local_file(local_path, "/app/data.txt", strategy="copy")
+        img = Image.debian_slim().add_local_file(
+            local_path, "/app/data.txt", strategy="copy"
+        )
         c = Container(image=img, name=f"test-add-local-file-{uuid.uuid4().hex[:8]}")
         try:
             c.run()
@@ -77,7 +79,9 @@ def test_container_run_commands_apt_install() -> None:
 def test_container_from_dockerfile() -> None:
     """from_dockerfile builds an image from a Dockerfile and runs the container."""
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".Dockerfile", delete=False,
+        mode="w",
+        suffix=".Dockerfile",
+        delete=False,
     ) as f:
         f.write("FROM alpine:latest\nRUN apk add --no-cache curl\n")
         f.flush()
@@ -154,19 +158,26 @@ def test_container_add_local_dir() -> None:
 def test_container_secret_from_env() -> None:
     """Secret.from_env() injects a Chalk secret as an env var into the container."""
     from chalkcompute._connect import ConnectClient
+    from chalkcompute._gen.chalk.server.v1 import (
+        environment_secrets_connect as secrets_connect,
+    )
+    from chalkcompute._gen.chalk.server.v1 import (
+        environment_secrets_pb2 as secrets_pb,
+    )
 
     client = ConnectClient()
     secret_name = f"TEST_SECRET_{uuid.uuid4().hex[:8].upper()}"
     secret_value = f"secret-value-{uuid.uuid4().hex[:8]}"
-    _SECRETS_SVC = "chalk.server.v1.EnvironmentSecretsService"
 
     # Create a test secret in the environment
-    resp = client.rpc(
-        _SECRETS_SVC,
-        "UpsertSecret",
-        {"name": secret_name, "config": {"literal": secret_value}},
+    client.unary(
+        secrets_connect.EnvironmentSecretsServiceClientSync,
+        secrets_connect.EnvironmentSecretsServiceClientSync.upsert_secret,
+        secrets_pb.UpsertSecretRequest(
+            name=secret_name,
+            config=secrets_pb.SecretConfigValue(literal=secret_value),
+        ),
     )
-    assert resp.status_code == 200, f"UpsertSecret failed: {resp.text}"
 
     try:
         img = Image.debian_slim()
@@ -186,7 +197,11 @@ def test_container_secret_from_env() -> None:
             c.stop()
     finally:
         # Clean up the test secret
-        client.rpc(_SECRETS_SVC, "DeleteSecret", {"name": secret_name})
+        client.unary(
+            secrets_connect.EnvironmentSecretsServiceClientSync,
+            secrets_connect.EnvironmentSecretsServiceClientSync.delete_secret,
+            secrets_pb.DeleteSecretRequest(name=secret_name),
+        )
 
 
 @needs_staging
@@ -276,7 +291,9 @@ def test_container_metrics_available() -> None:
     if os.environ.get("CHALK_ASSERT_CONTAINER_METRICS") != "1":
         pytest.skip("CHALK_ASSERT_CONTAINER_METRICS != 1")
 
-    c = Container(image=Image.debian_slim(), name=f"test-metrics-{uuid.uuid4().hex[:8]}")
+    c = Container(
+        image=Image.debian_slim(), name=f"test-metrics-{uuid.uuid4().hex[:8]}"
+    )
     target = None
     try:
         c.run()

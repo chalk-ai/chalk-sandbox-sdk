@@ -275,9 +275,9 @@ class DeployProgress:
         self._started = False
         self._restore_logger()
 
-    # Loggers to suppress while the TUI is rendering.  httpx/httpcore are
+    # Loggers to suppress while the TUI is rendering.  urllib3 can be
     # particularly noisy ("HTTP Request: POST ...") and corrupt the display.
-    _SUPPRESSED_LOGGERS = ("chalkcompute", "httpx", "httpcore")
+    _SUPPRESSED_LOGGERS = ("chalkcompute", "urllib3")
 
     def _suppress_logger(self) -> None:
         """Suppress noisy loggers while the TUI is active."""

@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import grpc
-import httpx
+import requests
 
 from chalkcompute._connect import (
     ConnectClient,
@@ -668,16 +668,18 @@ def _read_file_from_signed_uri(signed_download_uri: str) -> bytes:
         If the download times out or the HTTP request fails.
     """
     try:
-        resp = httpx.get(signed_download_uri, timeout=300)
+        resp = requests.get(signed_download_uri, timeout=300)
         resp.raise_for_status()
         return resp.content
-    except httpx.TimeoutException as e:
+    except requests.Timeout as e:
         raise VolumeError(f"Timed out downloading signed file URL: {e}") from e
-    except httpx.HTTPStatusError as e:
+    except requests.HTTPError as e:
+        response = e.response
+        status_code = response.status_code if response is not None else "unknown"
         raise VolumeError(
-            f"Signed file download failed with status {e.response.status_code}"
+            f"Signed file download failed with status {status_code}"
         ) from e
-    except httpx.HTTPError as e:
+    except requests.RequestException as e:
         raise VolumeError(f"Signed file download failed: {e}") from e
 
 
@@ -740,7 +742,7 @@ def _put_file_presigned(
     """Upload a file via a presigned object-storage URL.
 
     Uses the gRPC ``DataPlaneObjectStorageServiceStub`` for
-    ``GetObjectUploadUri``, ``httpx`` for the direct object-storage transfer,
+    ``GetObjectUploadUri``, ``requests`` for the direct object-storage transfer,
     and gRPC ``VolumeServiceStub`` for the final ``PutFile(storageObjectId=...)``.
 
     Parameters
@@ -841,7 +843,7 @@ def _upload_multipart(
         chunk = data[
             i * _PRESIGNED_PART_SIZE_BYTES : (i + 1) * _PRESIGNED_PART_SIZE_BYTES
         ]
-        r = httpx.put(part_uris[i], content=chunk, timeout=300)
+        r = requests.put(part_uris[i], data=chunk, timeout=300)
         if r.status_code in (401, 403):
             r.raise_for_status()
         r.raise_for_status()
@@ -855,9 +857,11 @@ def _upload_multipart(
                 for i, etag in pool.map(_put_part, range(n_parts)):
                     etags_by_index[i] = etag
             break
-        except httpx.HTTPStatusError as e:
+        except requests.HTTPError as e:
+            response = e.response
             if (
-                e.response.status_code in (401, 403)
+                response is not None
+                and response.status_code in (401, 403)
                 and refresh_count < _PRESIGNED_MAX_RETRIES
             ):
                 refresh_count += 1
@@ -880,9 +884,9 @@ def _upload_multipart(
         for j, etag in enumerate(etags)
     )
     body = f"<CompleteMultipartUpload>{parts_xml}</CompleteMultipartUpload>".encode()
-    complete_resp = httpx.post(
+    complete_resp = requests.post(
         completion_uri,
-        content=body,
+        data=body,
         headers={"Content-Type": "application/xml"},
         timeout=60,
     )
@@ -923,9 +927,9 @@ def _upload_resumable(
     refresh_count = 0
 
     while True:
-        init = httpx.post(
+        init = requests.post(
             signed_uri,
-            content=b"",
+            data=b"",
             headers={
                 "Content-Type": "application/octet-stream",
                 "Content-Length": "0",
@@ -933,7 +937,7 @@ def _upload_resumable(
             },
             timeout=30,
         )
-        if not init.is_success:
+        if init.status_code >= 400:
             if (
                 init.status_code in (401, 403)
                 and refresh_count < _PRESIGNED_MAX_RETRIES
@@ -956,9 +960,9 @@ def _upload_resumable(
                 "GCS resumable upload: missing Location header in initiation response"
             )
 
-        put_resp = httpx.put(
+        put_resp = requests.put(
             session_uri,
-            content=data,
+            data=data,
             headers={"Content-Type": "application/octet-stream"},
             timeout=600,
         )

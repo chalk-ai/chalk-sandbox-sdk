@@ -2,7 +2,7 @@
 #
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["httpx"]
+# dependencies = []
 # ///
 
 """Deploy the ChalkDF projection example container via `chalk container run`, then tail logs."""

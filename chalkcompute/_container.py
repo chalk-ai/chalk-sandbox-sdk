@@ -18,16 +18,21 @@ destination path's common ancestor.
 
 from __future__ import annotations
 
-import base64
 import ipaddress
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from chalkcompute._connect import ConnectClient
+from google.protobuf import duration_pb2
+
+from chalkcompute._connect import ConnectClient, ConnectError
+from chalkcompute._gen.chalk.container.v1 import service_connect as container_connect
+from chalkcompute._gen.chalk.container.v1 import service_pb2 as container_pb
+from chalkcompute._gen.chalk.volume.v1 import volume_connect, volume_pb2
 from chalkcompute._volume import VolumeClient, upload_lazy_files
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import traced
@@ -39,13 +44,10 @@ if TYPE_CHECKING:
     from chalkcompute._image import Image as _Image
     from chalkcompute._secret import Secret
 
-_SVC = "chalk.container.v1.ContainerService"
-_IMAGE_SVC = "chalk.sandbox.v1.CustomImageService"
-
-
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
+
 
 class ContainerError(Exception):
     """Base exception for Container errors."""
@@ -58,6 +60,7 @@ class ImageBuildError(ContainerError):
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class ExecResult:
@@ -227,6 +230,7 @@ class ContainerInfo:
 # Container
 # ---------------------------------------------------------------------------
 
+
 class Container:
     """A managed container backed by the Chalk ``ContainerService``.
 
@@ -321,10 +325,15 @@ class Container:
             If the container cannot be found.
         """
         c = cls._make_empty()
-        resp = c._client.rpc(_SVC, "GetContainer", {"id": container_id})
-        if resp.status_code != 200:
-            raise ContainerError(f"GetContainer failed: {resp.text}")
-        c._container_info = _parse_container_response(resp.json()["container"])
+        try:
+            resp = c._client.unary(
+                container_connect.ContainerServiceClientSync,
+                container_connect.ContainerServiceClientSync.get_container,
+                container_pb.GetContainerRequest(id=container_id),
+            )
+        except ConnectError as e:
+            raise ContainerError(f"GetContainer failed: {e}") from e
+        c._container_info = _container_info_from_proto(resp.container)
         c._container_id = c._container_info.id
         return c
 
@@ -348,10 +357,15 @@ class Container:
             If the container cannot be found.
         """
         c = cls._make_empty()
-        resp = c._client.rpc(_SVC, "GetContainer", {"name": name})
-        if resp.status_code != 200:
-            raise ContainerError(f"GetContainer failed: {resp.text}")
-        c._container_info = _parse_container_response(resp.json()["container"])
+        try:
+            resp = c._client.unary(
+                container_connect.ContainerServiceClientSync,
+                container_connect.ContainerServiceClientSync.get_container,
+                container_pb.GetContainerRequest(name=name),
+            )
+        except ConnectError as e:
+            raise ContainerError(f"GetContainer failed: {e}") from e
+        c._container_info = _container_info_from_proto(resp.container)
         c._container_id = c._container_info.id
         c._name = name
         return c
@@ -384,7 +398,10 @@ class Container:
     # -- Image building (Container uses BuildCustomImage with retries) ---------
 
     def _build_image(
-        self, *, poll_interval: float = 0.5, timeout: float = 600.0,
+        self,
+        *,
+        poll_interval: float = 0.5,
+        timeout: float = 600.0,
     ) -> str:
         """Build the ``Image`` spec via ``CustomImageService`` and return the URI.
 
@@ -411,8 +428,10 @@ class Container:
         assert isinstance(self._image, Image)
         try:
             return build_image(
-                self._client, self._image,
-                poll_interval=poll_interval, timeout=timeout,
+                self._client,
+                self._image,
+                poll_interval=poll_interval,
+                timeout=timeout,
             )
         except ConnectError as e:
             raise ImageBuildError(str(e)) from e
@@ -491,10 +510,12 @@ class Container:
         )
         from chalkcompute._image import Image
 
-        container_name = sanitize_dns_label(self._name or f"container-{uuid.uuid4().hex[:8]}")
+        container_name = sanitize_dns_label(
+            self._name or f"container-{uuid.uuid4().hex[:8]}"
+        )
         self._name = container_name
         ckey = f"container:{container_name}"
-        progress_add(ckey, "container", f"Container \"{container_name}\"")
+        progress_add(ckey, "container", f'Container "{container_name}"')
 
         try:
             # 1. Resolve image URI
@@ -503,28 +524,37 @@ class Container:
                 progress_add(ikey, "image", "Building image", parent=ckey)
                 logger.info("Building image from %r...", self._image)
                 self._built_image_uri = self._build_image(
-                    poll_interval=poll_interval, timeout=build_timeout,
+                    poll_interval=poll_interval,
+                    timeout=build_timeout,
                 )
                 logger.info("Image built: %s", self._built_image_uri)
-                progress_done(ikey, detail="cached" if self._built_image_uri else "built")
+                progress_done(
+                    ikey, detail="cached" if self._built_image_uri else "built"
+                )
             else:
                 self._built_image_uri = self._image
 
             # 2. Upload lazy local files to a volume (if any)
             lazy_files = (
-                self._image.lazy_local_files if isinstance(self._image, Image) else set()
+                self._image.lazy_local_files
+                if isinstance(self._image, Image)
+                else set()
             )
             if lazy_files:
                 vkey = f"volume:{container_name}"
                 progress_add(
-                    vkey, "volume",
+                    vkey,
+                    "volume",
                     f"Uploading {len(lazy_files)} file(s)",
                     parent=ckey,
                 )
-                logger.info("Uploading %d local file(s) to volume(s)...", len(lazy_files))
+                logger.info(
+                    "Uploading %d local file(s) to volume(s)...", len(lazy_files)
+                )
                 assert isinstance(self._image, Image)
                 self._volumes += upload_lazy_files(
-                    VolumeClient.from_connect(self._client), self._image,
+                    VolumeClient.from_connect(self._client),
+                    self._image,
                     volume_prefix="container-files",
                 )
                 for vn, mp in self._volumes:
@@ -540,63 +570,49 @@ class Container:
                 resolved, upserted = resolve_lazy_secrets(self._secrets, self._client)
                 self._secrets = resolved
                 self._upserted_secret_names = upserted
-                logger.info("Upserted %d secret(s) from local environment.", len(upserted))
+                logger.info(
+                    "Upserted %d secret(s) from local environment.", len(upserted)
+                )
                 progress_done(skey, detail=f"{len(upserted)} secret(s)")
 
             # 4. Build the ContainerService spec
-            spec: dict[str, Any] = {
-                "name": container_name,
-                "image": self._built_image_uri,
-                "entrypoint": self._entrypoint or ["sleep", "infinity"],
-            }
-
-            if self._env:
-                spec["envVars"] = self._env
-            if self._port is not None:
-                spec["port"] = self._port
-            if self._lifetime is not None:
-                spec["lifetime"] = self._lifetime
-            if self._enable_ssh:
-                spec["enableSsh"] = True
-            if self._security_policy is not None:
-                spec["securityPolicy"] = self._security_policy.to_dict()
-            if self._network_policy is not None:
-                spec["networkPolicy"] = self._network_policy.to_dict()
-            if self._tags:
-                spec["tags"] = dict(self._tags)
-
-            resources: dict[str, str] = {}
-            if self._cpu:
-                resources["cpu"] = self._cpu
-            if self._memory:
-                resources["memory"] = self._memory
-            if self._gpu:
-                resources["gpu"] = self._gpu
-            if resources:
-                spec["resources"] = resources
-
-            if self._volumes:
-                spec["volumes"] = [
-                    {"name": vol_name, "mountPath": mount_path, "type": "chalkfs"}
-                    for vol_name, mount_path in self._volumes
-                ]
-
-            if self._secrets:
-                spec["secretRefs"] = [s._to_proto_dict() for s in self._secrets]
+            spec = build_chalk_container_spec(
+                name=container_name,
+                image=self._built_image_uri,
+                entrypoint=self._entrypoint or ["sleep", "infinity"],
+                env=self._env,
+                port=self._port,
+                lifetime=self._lifetime,
+                enable_ssh=self._enable_ssh,
+                cpu=self._cpu,
+                memory=self._memory,
+                gpu=self._gpu,
+                volumes=self._volumes,
+                secrets=self._secrets,
+                security_policy=self._security_policy,
+                network_policy=self._network_policy,
+                tags=self._tags,
+            )
 
             logger.info("Starting container '%s'...", container_name)
-            resp = self._client.rpc(
-                _SVC, "RunContainer", {"container": {"spec": spec}}, timeout=60,
-            )
-            if resp.status_code != 200:
-                raise ContainerError(f"RunContainer failed: {resp.text}")
+            try:
+                resp = self._client.unary(
+                    container_connect.ContainerServiceClientSync,
+                    container_connect.ContainerServiceClientSync.run_container,
+                    container_pb.RunContainerRequest(
+                        container=container_pb.ContainerRequest(spec=spec)
+                    ),
+                    timeout=60,
+                )
+            except ConnectError as e:
+                raise ContainerError(f"RunContainer failed: {e}") from e
 
-            data = resp.json()
-            self._container_info = _parse_container_response(data["container"])
+            self._container_info = _container_info_from_proto(resp.container)
             self._container_id = self._container_info.id
             logger.info(
                 "Container created: %s (status=%s)",
-                self._container_id, self._container_info.status,
+                self._container_id,
+                self._container_info.status,
             )
 
             # 5. Poll until Running
@@ -605,7 +621,8 @@ class Container:
 
                 progress_update(ckey, detail="booting")
                 self._poll_until_running(
-                    poll_interval=poll_interval, timeout=ready_timeout,
+                    poll_interval=poll_interval,
+                    timeout=ready_timeout,
                 )
 
             # 6. Wait for ChalkFS volume files to become visible
@@ -627,15 +644,23 @@ class Container:
         return self
 
     def _poll_until_running(
-        self, *, poll_interval: float, timeout: float,
+        self,
+        *,
+        poll_interval: float,
+        timeout: float,
     ) -> None:
         assert self._container_id is not None
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            resp = self._client.rpc(_SVC, "GetContainer", {"id": self._container_id})
-            if resp.status_code != 200:
-                raise ContainerError(f"GetContainer failed: {resp.text}")
-            info = _parse_container_response(resp.json()["container"])
+            try:
+                resp = self._client.unary(
+                    container_connect.ContainerServiceClientSync,
+                    container_connect.ContainerServiceClientSync.get_container,
+                    container_pb.GetContainerRequest(id=self._container_id),
+                )
+            except ConnectError as e:
+                raise ContainerError(f"GetContainer failed: {e}") from e
+            info = _container_info_from_proto(resp.container)
             self._container_info = info
             logger.info("  poll: status=%s", info.status)
             if info.status == "Running":
@@ -650,7 +675,10 @@ class Container:
         )
 
     def _wait_for_volume_files(
-        self, *, timeout: float = 120.0, poll_interval: float = 0.5,
+        self,
+        *,
+        timeout: float = 120.0,
+        poll_interval: float = 0.5,
     ) -> None:
         """Poll until at least one uploaded file is visible in the ChalkFS mount.
 
@@ -754,29 +782,32 @@ class Container:
         if self._container_id is None:
             raise ContainerError("Container is not running. Call .run() first.")
 
-        body: dict[str, Any] = {
-            "id": self._container_id,
-            "command": list(command),
-        }
+        request = container_pb.ExecCommandRequest(
+            id=self._container_id,
+            command=list(command),
+        )
         if timeout_secs is not None:
-            body["timeout"] = f"{timeout_secs}s"
+            request.timeout.CopyFrom(_duration_from_seconds(timeout_secs))
 
         # TODO(CHA-8630): Remove retry loop once the API reports accurate
         # Running status (container may not be exec-ready immediately).
         last_err: ContainerError | None = None
         for attempt in range(_retries + 1):
-            resp = self._client.rpc(_SVC, "ExecCommand", body, timeout=timeout_secs or 30)
-            if resp.status_code == 200:
-                data = resp.json()
-                stdout_b64 = data.get("stdout", "")
-                stderr_b64 = data.get("stderr", "")
-                return ExecResult(
-                    stdout=base64.b64decode(stdout_b64) if stdout_b64 else b"",
-                    stderr=base64.b64decode(stderr_b64) if stderr_b64 else b"",
-                    exit_code=data.get("exitCode", 0),
+            try:
+                resp = self._client.unary(
+                    container_connect.ContainerServiceClientSync,
+                    container_connect.ContainerServiceClientSync.exec_command,
+                    request,
+                    timeout=timeout_secs or 30,
                 )
-            last_err = ContainerError(f"ExecCommand failed: {resp.text}")
-            if "container not found" in resp.text and attempt < _retries:
+                return ExecResult(
+                    stdout=resp.stdout,
+                    stderr=resp.stderr,
+                    exit_code=resp.exit_code,
+                )
+            except ConnectError as e:
+                last_err = ContainerError(f"ExecCommand failed: {e}")
+            if "container not found" in str(last_err).lower() and attempt < _retries:
                 time.sleep(_retry_delay)
                 continue
             raise last_err
@@ -793,15 +824,23 @@ class Container:
             Optional grace period before forceful termination.
         """
         if self._container_id is not None:
-            body: dict[str, Any] = {"id": self._container_id}
+            request = container_pb.StopContainerRequest(id=self._container_id)
             if grace_period_seconds is not None:
-                body["gracePeriodSeconds"] = grace_period_seconds
-            self._client.rpc(_SVC, "StopContainer", body)
+                request.grace_period_seconds = grace_period_seconds
+            self._client.unary(
+                container_connect.ContainerServiceClientSync,
+                container_connect.ContainerServiceClientSync.stop_container,
+                request,
+            )
             self._container_id = None
             self._container_info = None
 
         for vol_name, _ in self._volumes:
-            self._client.rpc("chalk.volume.v1.VolumeService", "DeleteVolume", {"name": vol_name})
+            self._client.unary(
+                volume_connect.VolumeServiceClientSync,
+                volume_connect.VolumeServiceClientSync.delete_volume,
+                volume_pb2.DeleteVolumeRequest(name=vol_name),
+            )
         self._volumes = []
 
         if self._upserted_secret_names:
@@ -825,10 +864,15 @@ class Container:
         """
         if self._container_id is None:
             raise ContainerError("No container ID — call .run() first.")
-        resp = self._client.rpc(_SVC, "GetContainer", {"id": self._container_id})
-        if resp.status_code != 200:
-            raise ContainerError(f"GetContainer failed: {resp.text}")
-        self._container_info = _parse_container_response(resp.json()["container"])
+        try:
+            resp = self._client.unary(
+                container_connect.ContainerServiceClientSync,
+                container_connect.ContainerServiceClientSync.get_container,
+                container_pb.GetContainerRequest(id=self._container_id),
+            )
+        except ConnectError as e:
+            raise ContainerError(f"GetContainer failed: {e}") from e
+        self._container_info = _container_info_from_proto(resp.container)
         return self._container_info
 
     @property
@@ -869,14 +913,157 @@ class Container:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _parse_container_response(data: dict) -> ContainerInfo:
+_DURATION_RE = re.compile(r"(?P<amount>\d+(?:\.\d+)?)(?P<unit>ns|us|µs|ms|s|m|h)")
+_DURATION_UNITS = {
+    "ns": 1e-9,
+    "us": 1e-6,
+    "µs": 1e-6,
+    "ms": 1e-3,
+    "s": 1.0,
+    "m": 60.0,
+    "h": 3600.0,
+}
+
+
+def build_chalk_container_spec(
+    *,
+    name: str,
+    image: str,
+    entrypoint: list[str] | None = None,
+    env: dict[str, str] | None = None,
+    port: int | None = None,
+    lifetime: str | None = None,
+    enable_ssh: bool = False,
+    protocol: str | None = None,
+    cpu: str | None = None,
+    memory: str | None = None,
+    gpu: str | None = None,
+    volumes: list[tuple[str, str]] | None = None,
+    secrets: list[Any] | None = None,
+    security_policy: ContainerSecurityPolicy | None = None,
+    network_policy: NetworkPolicy | None = None,
+    tags: dict[str, str] | None = None,
+) -> container_pb.ChalkContainerSpec:
+    spec = container_pb.ChalkContainerSpec(name=name, image=image)
+    if entrypoint:
+        spec.entrypoint.extend(entrypoint)
+    if tags:
+        spec.tags.update(tags)
+    if port is not None:
+        spec.port = port
+    if lifetime is not None:
+        spec.lifetime.CopyFrom(_duration_from_string(lifetime))
+    if cpu or memory or gpu:
+        if cpu:
+            spec.resources.cpu = cpu
+        if memory:
+            spec.resources.memory = memory
+        if gpu:
+            spec.resources.gpu = gpu
+    if enable_ssh:
+        spec.enable_ssh = True
+    if env:
+        spec.env_vars.update(env)
+    if volumes:
+        spec.volumes.extend(
+            container_pb.VolumeMount(
+                name=vol_name,
+                mount_path=mount_path,
+                type="chalkfs",
+            )
+            for vol_name, mount_path in volumes
+        )
+    if protocol is not None:
+        spec.protocol = protocol
+    if secrets:
+        spec.secret_refs.extend(_secret_ref_to_proto(secret) for secret in secrets)
+    if security_policy is not None:
+        spec.security_policy.kernel_policy = _kernel_policy_to_proto(
+            security_policy.kernel_policy
+        )
+    if network_policy is not None:
+        for allowed_route in network_policy.allowed_routes:
+            route = spec.network_policy.allowed_routes.add(route=allowed_route.route)
+            route.port_ranges.extend(
+                container_pb.PortRange(
+                    start_port=port_range.start_port,
+                    end_port=port_range.end_port or port_range.start_port,
+                )
+                for port_range in allowed_route.port_ranges
+            )
+    return spec
+
+
+def _container_info_from_proto(data: container_pb.ContainerResponse) -> ContainerInfo:
     return ContainerInfo(
-        id=data["id"],
-        name=data["name"],
-        status=data["status"],
-        pod_name=data.get("podName", ""),
-        web_url=data.get("webUrl"),
+        id=data.id,
+        name=data.name,
+        status=data.status,
+        pod_name=data.pod_name,
+        web_url=data.web_url if data.HasField("web_url") else None,
     )
+
+
+def _duration_from_seconds(seconds: int) -> Any:
+    duration = duration_pb2.Duration()  # ty: ignore[unresolved-attribute]
+    duration.FromSeconds(seconds)
+    return duration
+
+
+def _duration_from_string(value: str) -> Any:
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError("duration cannot be empty")
+
+    total_seconds = 0.0
+    if re.fullmatch(r"\d+(?:\.\d+)?", stripped):
+        total_seconds = float(stripped) * _DURATION_UNITS["h"]
+    else:
+        position = 0
+        for match in _DURATION_RE.finditer(stripped):
+            if match.start() != position:
+                raise ValueError(f"invalid duration {value!r}")
+            total_seconds += (
+                float(match.group("amount")) * _DURATION_UNITS[match.group("unit")]
+            )
+            position = match.end()
+        if position != len(stripped):
+            raise ValueError(f"invalid duration {value!r}")
+
+    seconds = int(total_seconds)
+    nanos = round((total_seconds - seconds) * 1_000_000_000)
+    if nanos == 1_000_000_000:
+        seconds += 1
+        nanos = 0
+    duration = duration_pb2.Duration()  # ty: ignore[unresolved-attribute]
+    duration.seconds = seconds
+    duration.nanos = nanos
+    return duration
+
+
+def _secret_ref_to_proto(secret: Any) -> container_pb.SecretRef:
+    if hasattr(secret, "_to_proto"):
+        return secret._to_proto()
+    ref = container_pb.SecretRef()
+    integration_name = getattr(secret, "_integration_name", None)
+    secret_name = getattr(secret, "_secret_name", None)
+    if integration_name is not None:
+        ref.integration_name = integration_name
+    elif secret_name is not None:
+        ref.secret_name = secret_name
+    ref.keys.extend(getattr(secret, "_keys", []))
+    ref.aliases.update(getattr(secret, "_aliases", {}))
+    prefix = getattr(secret, "_prefix", None)
+    if prefix is not None:
+        ref.prefix = prefix
+    return ref
+
+
+def _kernel_policy_to_proto(policy: KernelPolicy) -> container_pb.KernelPolicy:
+    return {
+        KernelPolicy.RESTRICTED: container_pb.KERNEL_POLICY_RESTRICTED,
+        KernelPolicy.OPEN: container_pb.KERNEL_POLICY_OPEN,
+    }[policy]
 
 
 def _coerce_port_range(port_range: PortRangeInput) -> PortRange:

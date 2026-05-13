@@ -1,5 +1,6 @@
 import logging
 import hashlib
+import os
 
 import chalkcompute
 
@@ -9,10 +10,12 @@ log = logging.getLogger(__name__)
 
 EMBEDDING_DIMS = 1536
 EMBEDDING_MODEL = "deterministic-fake-embedding"
+FUNCTION_NAME = os.getenv("CHALK_ASYNC_EMBED_FUNCTION_NAME", "async-embed")
 
 
 @chalkcompute.function(
     image=chalkcompute.Image.debian_slim(),
+    name=FUNCTION_NAME,
 )
 async def async_embed(text: str) -> list[float]:
     log.info("Embedding text async (len=%s, model=%s)", len(text), EMBEDDING_MODEL)

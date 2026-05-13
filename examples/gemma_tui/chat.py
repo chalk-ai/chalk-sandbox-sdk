@@ -2,7 +2,7 @@
 #
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["httpx", "rich"]
+# dependencies = ["requests", "rich"]
 # ///
 """
 Rich TUI to chat with Gemma 3 4B running on a Chalk ScalingGroup.
@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import os
 
-import httpx
+import requests
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
@@ -39,30 +39,30 @@ console = Console()
 def stream_completion(messages: list[dict[str, str]]) -> str:
     """Send a chat completion request and stream the response token-by-token."""
     collected = ""
-    with httpx.Client(timeout=120) as client:
-        with client.stream(
-            "POST",
-            f"{BASE_URL}/v1/chat/completions",
-            json={
-                "model": MODEL,
-                "messages": messages,
-                "max_tokens": 1024,
-                "stream": True,
-            },
-        ) as resp:
-            resp.raise_for_status()
-            for line in resp.iter_lines():
-                if not line.startswith("data: "):
-                    continue
-                payload = line[len("data: ") :]
-                if payload.strip() == "[DONE]":
-                    break
-                chunk = json.loads(payload)
-                delta = chunk["choices"][0].get("delta", {})
-                token = delta.get("content", "")
-                if token:
-                    collected += token
-                    yield collected  # type: ignore[misc]
+    with requests.post(
+        f"{BASE_URL}/v1/chat/completions",
+        json={
+            "model": MODEL,
+            "messages": messages,
+            "max_tokens": 1024,
+            "stream": True,
+        },
+        stream=True,
+        timeout=120,
+    ) as resp:
+        resp.raise_for_status()
+        for raw_line in resp.iter_lines(decode_unicode=True):
+            if raw_line is None or not raw_line.startswith("data: "):
+                continue
+            payload = raw_line[len("data: ") :]
+            if payload.strip() == "[DONE]":
+                break
+            chunk = json.loads(payload)
+            delta = chunk["choices"][0].get("delta", {})
+            token = delta.get("content", "")
+            if token:
+                collected += token
+                yield collected  # type: ignore[misc]
     return collected  # type: ignore[return-value]
 
 
@@ -111,12 +111,16 @@ def main() -> None:
                             border_style="magenta",
                         )
                     )
-        except httpx.HTTPStatusError as e:
-            console.print(f"[bold red]Error:[/bold red] {e.response.status_code} - {e.response.text}")
+        except requests.HTTPError as e:
+            console.print(
+                f"[bold red]Error:[/bold red] {e.response.status_code} - {e.response.text}"
+            )
             messages.pop()
             continue
-        except httpx.ConnectError:
-            console.print("[bold red]Error:[/bold red] Cannot connect. Is the port-forward running?")
+        except requests.ConnectionError:
+            console.print(
+                "[bold red]Error:[/bold red] Cannot connect. Is the port-forward running?"
+            )
             messages.pop()
             continue
 

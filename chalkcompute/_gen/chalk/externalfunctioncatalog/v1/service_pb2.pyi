@@ -29,12 +29,31 @@ class SerializationFormat(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     SERIALIZATION_FORMAT_UNSPECIFIED: _ClassVar[SerializationFormat]
     SERIALIZATION_FORMAT_PYARROW: _ClassVar[SerializationFormat]
 
+class ExternalFunctionScheduledRunStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_UNSPECIFIED: _ClassVar[ExternalFunctionScheduledRunStatus]
+    EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_SCHEDULED: _ClassVar[ExternalFunctionScheduledRunStatus]
+    EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_RUNNING: _ClassVar[ExternalFunctionScheduledRunStatus]
+    EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_COMPLETED: _ClassVar[ExternalFunctionScheduledRunStatus]
+    EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_FAILED: _ClassVar[ExternalFunctionScheduledRunStatus]
+    EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_CANCELED: _ClassVar[ExternalFunctionScheduledRunStatus]
+    EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_NOT_READY: _ClassVar[ExternalFunctionScheduledRunStatus]
+    EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_WAITING: _ClassVar[ExternalFunctionScheduledRunStatus]
+
 RATE_LIMIT_PER_UNSPECIFIED: RateLimitPer
 RATE_LIMIT_PER_SECOND: RateLimitPer
 RATE_LIMIT_PER_MINUTE: RateLimitPer
 RATE_LIMIT_PER_HOUR: RateLimitPer
 SERIALIZATION_FORMAT_UNSPECIFIED: SerializationFormat
 SERIALIZATION_FORMAT_PYARROW: SerializationFormat
+EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_UNSPECIFIED: ExternalFunctionScheduledRunStatus
+EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_SCHEDULED: ExternalFunctionScheduledRunStatus
+EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_RUNNING: ExternalFunctionScheduledRunStatus
+EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_COMPLETED: ExternalFunctionScheduledRunStatus
+EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_FAILED: ExternalFunctionScheduledRunStatus
+EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_CANCELED: ExternalFunctionScheduledRunStatus
+EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_NOT_READY: ExternalFunctionScheduledRunStatus
+EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_WAITING: ExternalFunctionScheduledRunStatus
 
 class RetryPolicy(_message.Message):
     __slots__ = ("max_retries", "initial_backoff_ms", "backoff_multiplier", "max_backoff_ms", "key")
@@ -95,6 +114,7 @@ class FunctionConfig(_message.Message):
         "rate_limit",
         "concurrency",
         "queue",
+        "schedule",
     )
     class OptionsEntry(_message.Message):
         __slots__ = ("key", "value")
@@ -112,6 +132,7 @@ class FunctionConfig(_message.Message):
     RATE_LIMIT_FIELD_NUMBER: _ClassVar[int]
     CONCURRENCY_FIELD_NUMBER: _ClassVar[int]
     QUEUE_FIELD_NUMBER: _ClassVar[int]
+    SCHEDULE_FIELD_NUMBER: _ClassVar[int]
     serialization_format: SerializationFormat
     options: _containers.ScalarMap[str, str]
     max_buffer_duration: int
@@ -120,6 +141,7 @@ class FunctionConfig(_message.Message):
     rate_limit: RateLimitPolicy
     concurrency: ConcurrencyPolicy
     queue: QueuePolicy
+    schedule: str
     def __init__(
         self,
         serialization_format: _Optional[_Union[SerializationFormat, str]] = ...,
@@ -130,6 +152,7 @@ class FunctionConfig(_message.Message):
         rate_limit: _Optional[_Union[RateLimitPolicy, _Mapping]] = ...,
         concurrency: _Optional[_Union[ConcurrencyPolicy, _Mapping]] = ...,
         queue: _Optional[_Union[QueuePolicy, _Mapping]] = ...,
+        schedule: _Optional[str] = ...,
     ) -> None: ...
 
 class ExternalFunctionVersion(_message.Message):
@@ -344,6 +367,45 @@ class ListExternalFunctionsResponse(_message.Message):
     def __init__(
         self,
         functions: _Optional[_Iterable[_Union[ExternalFunctionSummary, _Mapping]]] = ...,
+        next_cursor: _Optional[str] = ...,
+    ) -> None: ...
+
+class ListExternalFunctionScheduledRunsRequest(_message.Message):
+    __slots__ = ("function_name", "cursor", "limit")
+    FUNCTION_NAME_FIELD_NUMBER: _ClassVar[int]
+    CURSOR_FIELD_NUMBER: _ClassVar[int]
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    function_name: str
+    cursor: str
+    limit: int
+    def __init__(
+        self, function_name: _Optional[str] = ..., cursor: _Optional[str] = ..., limit: _Optional[int] = ...
+    ) -> None: ...
+
+class ExternalFunctionScheduledRun(_message.Message):
+    __slots__ = ("id", "status", "created_at")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    CREATED_AT_FIELD_NUMBER: _ClassVar[int]
+    id: int
+    status: ExternalFunctionScheduledRunStatus
+    created_at: _timestamp_pb2.Timestamp
+    def __init__(
+        self,
+        id: _Optional[int] = ...,
+        status: _Optional[_Union[ExternalFunctionScheduledRunStatus, str]] = ...,
+        created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
+    ) -> None: ...
+
+class ListExternalFunctionScheduledRunsResponse(_message.Message):
+    __slots__ = ("runs", "next_cursor")
+    RUNS_FIELD_NUMBER: _ClassVar[int]
+    NEXT_CURSOR_FIELD_NUMBER: _ClassVar[int]
+    runs: _containers.RepeatedCompositeFieldContainer[ExternalFunctionScheduledRun]
+    next_cursor: str
+    def __init__(
+        self,
+        runs: _Optional[_Iterable[_Union[ExternalFunctionScheduledRun, _Mapping]]] = ...,
         next_cursor: _Optional[str] = ...,
     ) -> None: ...
 

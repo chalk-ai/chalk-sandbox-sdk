@@ -27,7 +27,7 @@ _CATALOG_SRC = str(Path(__file__).parent / "catalog.py")
 @chalkcompute.function(
     image=(
         chalkcompute.Image.debian_slim()
-        .pip_install(["httpx", "openai>=1.40.0"])
+        .pip_install(["requests", "openai>=1.40.0"])
         .add_local_file(_CATALOG_SRC, "/app/catalog.py")
     ),
     env={
@@ -42,7 +42,7 @@ def fraud_agent(transaction_id: int) -> str:
     import json as _json
     import os as _os
 
-    import httpx
+    import requests
     from openai import OpenAI
 
     from catalog import FEATURE_CATALOG
@@ -53,7 +53,7 @@ def fraud_agent(transaction_id: int) -> str:
     env_id = _os.environ["CHALK_ENVIRONMENT_ID"]
 
     # Exchange client credentials once for an access token.
-    token_resp = httpx.post(
+    token_resp = requests.post(
         f"{api_server}/v1/oauth/token",
         json={
             "client_id": _os.environ["CHALK_CLIENT_ID"],
@@ -80,7 +80,7 @@ def fraud_agent(transaction_id: int) -> str:
         bad = [n for n in feature_names if n not in allowed]
         if bad:
             return {"error": f"features not in catalog: {bad}"}
-        resp = httpx.post(
+        resp = requests.post(
             f"{api_server}/v1/query/online",
             headers=chalk_headers,
             json={

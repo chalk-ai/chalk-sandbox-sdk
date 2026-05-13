@@ -197,6 +197,12 @@ class AzureBlockUpload(_message.Message):
         part_size: _Optional[int] = ...,
     ) -> None: ...
 
+class DirectUpload(_message.Message):
+    __slots__ = ("signed_upload_uri",)
+    SIGNED_UPLOAD_URI_FIELD_NUMBER: _ClassVar[int]
+    signed_upload_uri: str
+    def __init__(self, signed_upload_uri: _Optional[str] = ...) -> None: ...
+
 class GetObjectUploadUriResponse(_message.Message):
     __slots__ = ("storage_object_id", "multipart", "resumable", "azure_block")
     STORAGE_OBJECT_ID_FIELD_NUMBER: _ClassVar[int]
