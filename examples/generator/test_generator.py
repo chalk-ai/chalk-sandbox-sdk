@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import time
+import uuid
 from collections.abc import Callable
 from typing import TypeVar
 
@@ -27,25 +28,25 @@ needs_staging = pytest.mark.skipif(
 
 EXAMPLE_DIR = os.path.dirname(__file__)
 
-CHALK_ENVIRONMENT_ID = os.environ.get("CHALK_ENVIRONMENT_ID", "tmnmc9beyujew")
+RUN_ID = os.environ.get("CHALK_TEST_RUN_ID", uuid.uuid4().hex[:8])
+SYNC_FUNCTION_NAME = f"count-up-{RUN_ID}"
+ASYNC_FUNCTION_NAME = f"async-count-up-{RUN_ID}"
 T = TypeVar("T")
 
 
-def _make_remote():
-    from chalk.client.client_grpc import ChalkGRPCClient
-    from chalkdf.remote import Remote
+def _make_remote_function(name: str):
+    from chalkcompute import RemoteFunction
 
-    client = ChalkGRPCClient(environment=CHALK_ENVIRONMENT_ID)
-    return Remote(chalk_client=client)
+    return RemoteFunction.from_name(name).wait_ready(timeout=120)
 
 
-def _deploy_script(script_name: str) -> None:
+def _deploy_script(script_name: str, extra_env: dict[str, str]) -> None:
     """Run a deploy script as a subprocess."""
     result = subprocess.run(
         [sys.executable, os.path.join(EXAMPLE_DIR, script_name)],
         capture_output=True,
         text=True,
-        env=os.environ,
+        env={**os.environ, **extra_env},
         timeout=600,
     )
     if result.returncode != 0:
@@ -76,12 +77,15 @@ def _retry_queue_proxy_call(call: Callable[[], T]) -> T:
 class TestSyncGenerator:
     @classmethod
     def setup_class(cls):
-        _deploy_script("deploy_sync.py")
+        _deploy_script(
+            "deploy_sync.py",
+            {"CHALK_SYNC_GENERATOR_FUNCTION_NAME": SYNC_FUNCTION_NAME},
+        )
+        cls.function = _make_remote_function(SYNC_FUNCTION_NAME)
 
     def test_direct_call_iterates(self):
         """for x in fn(5) yields 5 chunks."""
-        remote = _make_remote()
-        fn = remote.function("count-up")
+        fn = self.function
 
         def _collect() -> list[list[int]]:
             chunks = []
@@ -96,8 +100,7 @@ class TestSyncGenerator:
 
     def test_defer_stream(self):
         """fn.defer(3).stream() yields 3 chunks."""
-        remote = _make_remote()
-        fn = remote.function("chalk-sandbox-test-count-up")
+        fn = self.function
 
         def _collect() -> list[list[int]]:
             handle = fn.defer(3)
@@ -113,23 +116,25 @@ class TestSyncGenerator:
 
     def test_defer_get(self):
         """fn.defer(3).get() collects all chunks."""
-        remote = _make_remote()
-        fn = remote.function("chalk-sandbox-test-count-up")
+        fn = self.function
         result = _retry_queue_proxy_call(lambda: fn.defer(3).get())
 
-        assert result is not None
+        assert result == [0, 1, 2]
 
 
 @needs_staging
 class TestAsyncGenerator:
     @classmethod
     def setup_class(cls):
-        _deploy_script("deploy_async.py")
+        _deploy_script(
+            "deploy_async.py",
+            {"CHALK_ASYNC_GENERATOR_FUNCTION_NAME": ASYNC_FUNCTION_NAME},
+        )
+        cls.function = _make_remote_function(ASYNC_FUNCTION_NAME)
 
     def test_direct_call_async_iterates(self):
         """async for x in fn(5) yields 5 chunks."""
-        remote = _make_remote()
-        fn = remote.function("async-count-up")
+        fn = self.function
 
         async def _collect() -> list[list[int]]:
             chunks = []
@@ -144,8 +149,7 @@ class TestAsyncGenerator:
 
     def test_defer_async_stream(self):
         """fn.defer(3).stream() returns an async iterator for async functions."""
-        remote = _make_remote()
-        fn = remote.function("chalk-sandbox-test-async-count-up")
+        fn = self.function
 
         async def _collect() -> list[list[int]]:
             handle = fn.defer(3)
@@ -161,12 +165,11 @@ class TestAsyncGenerator:
 
     def test_defer_async_get(self):
         """await handle.get() collects all chunks for async functions."""
-        remote = _make_remote()
-        fn = remote.function("chalk-sandbox-test-async-count-up")
+        fn = self.function
 
         async def _run():
             handle = fn.defer(3)
             return await handle.get()
 
         result = _retry_queue_proxy_call(lambda: asyncio.run(_run()))
-        assert result is not None
+        assert result == [0, 1, 2]
