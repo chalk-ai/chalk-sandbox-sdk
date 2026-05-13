@@ -16,6 +16,8 @@ from chalkcompute._gen.chalk.externalfunctioncatalog.v1.service_pb2 import (
     DeleteExternalFunctionVersionResponse,
     GetExternalFunctionVersionRequest,
     GetExternalFunctionVersionResponse,
+    ListExternalFunctionScheduledRunsRequest,
+    ListExternalFunctionScheduledRunsResponse,
     ListExternalFunctionVersionsRequest,
     ListExternalFunctionVersionsResponse,
     ListExternalFunctionsRequest,
@@ -49,6 +51,10 @@ class ExternalFunctionCatalogServiceStub:
     ListExternalFunctions: UnaryUnaryMultiCallable[
         ListExternalFunctionsRequest,
         ListExternalFunctionsResponse,
+    ]
+    ListExternalFunctionScheduledRuns: UnaryUnaryMultiCallable[
+        ListExternalFunctionScheduledRunsRequest,
+        ListExternalFunctionScheduledRunsResponse,
     ]
     CallExternalFunction: UnaryUnaryMultiCallable[
         CallExternalFunctionRequest,
@@ -86,6 +92,12 @@ class ExternalFunctionCatalogServiceServicer(metaclass=ABCMeta):
         request: ListExternalFunctionsRequest,
         context: ServicerContext,
     ) -> ListExternalFunctionsResponse: ...
+    @abstractmethod
+    def ListExternalFunctionScheduledRuns(
+        self,
+        request: ListExternalFunctionScheduledRunsRequest,
+        context: ServicerContext,
+    ) -> ListExternalFunctionScheduledRunsResponse: ...
     @abstractmethod
     def CallExternalFunction(
         self,
