@@ -1,6 +1,6 @@
 """Deploy an async scalar function for testing.
 
-    CHALK_FUNCTION_STRIP_SOURCE=1 uv run python examples/scalar/deploy_async.py
+    uv run python examples/scalar/deploy_async.py
 """
 
 from __future__ import annotations
