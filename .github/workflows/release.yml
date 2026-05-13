@@ -13,9 +13,21 @@ on:
 
 jobs:
   build-linux:
-    name: "Build linux wheel + sdist"
+    name: "Build linux wheel + sdist (py${{ matrix.python_version }})"
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python_version: "3.11"
+            sdist_args: ""
+          - python_version: "3.12"
+            sdist_args: "--sdist"
+          - python_version: "3.13"
+            sdist_args: ""
+          - python_version: "3.14"
+            sdist_args: ""
     steps:
       - uses: actions/checkout@v4
 
@@ -32,7 +44,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python_version }}
 
       - name: Set version from release tag
         if: github.event_name == 'release'
@@ -47,7 +59,7 @@ jobs:
           CHALK_PRIVATE_READ_TOKEN: ${{ secrets.CHALK_PRIVATE_READ_TOKEN }}
         with:
           command: build
-          args: --release --sdist --out dist -i python3.12
+          args: --release ${{ matrix.sdist_args }} --out dist -i python${{ matrix.python_version }}
           manylinux: "2_28"
           docker-options: -e CHALK_PRIVATE_READ_TOKEN -e PROTOC=/opt/protoc/bin/protoc
           before-script-linux: |
@@ -73,7 +85,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: dist-linux
+          name: dist-linux-py${{ matrix.python_version }}
           path: dist/
 
   build-macos:
@@ -83,7 +95,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python_version: ["3.11", "3.12", "3.13"]
+        python_version: ["3.11", "3.12", "3.13", "3.14"]
     env:
       CHALK_PRIVATE_READ_TOKEN: ${{ secrets.CHALK_PRIVATE_READ_TOKEN }}
     steps:
