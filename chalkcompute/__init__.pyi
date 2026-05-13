@@ -8,6 +8,9 @@ from chalkcompute._cls import method as method
 from chalkcompute._concurrency import ConcurrencyPolicy as ConcurrencyPolicy
 from chalkcompute._connect import ConnectClient as ConnectClient
 from chalkcompute._connect import build_image_from_spec as build_image
+from chalkcompute._connect import (
+    build_image_with_volumes_from_spec as build_image_with_volumes,
+)
 from chalkcompute._container import AllowedRoute as AllowedRoute
 from chalkcompute._container import Container as Container
 from chalkcompute._container import ContainerError as ContainerError
@@ -85,6 +88,7 @@ __all__ = [
     "function",
     "ConnectClient",
     "build_image",
+    "build_image_with_volumes",
     "Image",
     "LazyLocalFile",
     "Secret",
