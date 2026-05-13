@@ -49,7 +49,7 @@ from chalkcompute._volume import VolumeClient, upload_lazy_files
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    import httpx
+    import requests
 
     from chalkcompute._image import Image as _Image
     from chalkcompute._secret import Secret as _Secret
@@ -191,7 +191,7 @@ class ScalingGroup:
         try:
             resp = sg._client.unary(
                 scaling_connect.ScalingGroupManagerServiceClientSync,
-                "get_scaling_group",
+                scaling_connect.ScalingGroupManagerServiceClientSync.get_scaling_group,
                 scaling_pb.GetScalingGroupRequest(id=scaling_group_id),
             )
         except ConnectError as e:
@@ -223,7 +223,7 @@ class ScalingGroup:
         try:
             resp = sg._client.unary(
                 scaling_connect.ScalingGroupManagerServiceClientSync,
-                "get_scaling_group",
+                scaling_connect.ScalingGroupManagerServiceClientSync.get_scaling_group,
                 scaling_pb.GetScalingGroupRequest(name=name),
             )
         except ConnectError as e:
@@ -360,7 +360,7 @@ class ScalingGroup:
         try:
             resp = self._client.unary(
                 scaling_connect.ScalingGroupManagerServiceClientSync,
-                "create_scaling_group",
+                scaling_connect.ScalingGroupManagerServiceClientSync.create_scaling_group,
                 scaling_pb.CreateScalingGroupRequest(
                     spec=scaling_pb.ScalingGroupSpec(
                         container_spec=container_spec,
@@ -401,7 +401,7 @@ class ScalingGroup:
             try:
                 resp = self._client.unary(
                     scaling_connect.ScalingGroupManagerServiceClientSync,
-                    "get_scaling_group",
+                    scaling_connect.ScalingGroupManagerServiceClientSync.get_scaling_group,
                     scaling_pb.GetScalingGroupRequest(id=self._scaling_group_id),
                 )
             except ConnectError as e:
@@ -430,7 +430,7 @@ class ScalingGroup:
         data: bytes | None = None,
         headers: dict[str, str] | None = None,
         timeout: float = 30.0,
-    ) -> httpx.Response:
+    ) -> requests.Response:
         """Make an HTTP request to the scaling group's endpoint.
 
         Parameters
@@ -450,7 +450,7 @@ class ScalingGroup:
 
         Returns
         -------
-        httpx.Response
+        requests.Response
             The HTTP response.
 
         Raises
@@ -458,15 +458,15 @@ class ScalingGroup:
         ScalingGroupError
             If the scaling group has no ``web_url`` yet.
         """
-        import httpx
+        import requests
 
         if self._scaling_group_info is None or self._scaling_group_info.web_url is None:
             raise ScalingGroupError(
                 "Scaling group has no web_url. Call .deploy() first or .refresh() to update."
             )
         url = f"{self._scaling_group_info.web_url}{path}"
-        return httpx.request(
-            method, url, json=json, content=data, headers=headers, timeout=timeout
+        return requests.request(
+            method, url, json=json, data=data, headers=headers, timeout=timeout
         )
 
     def wait_ready(
@@ -526,7 +526,7 @@ class ScalingGroup:
         if self._scaling_group_id is not None:
             self._client.unary(
                 scaling_connect.ScalingGroupManagerServiceClientSync,
-                "delete_scaling_group",
+                scaling_connect.ScalingGroupManagerServiceClientSync.delete_scaling_group,
                 scaling_pb.DeleteScalingGroupRequest(id=self._scaling_group_id),
             )
             self._scaling_group_id = None
@@ -535,7 +535,7 @@ class ScalingGroup:
         for vol_name, _ in self._volumes:
             self._client.unary(
                 volume_connect.VolumeServiceClientSync,
-                "delete_volume",
+                volume_connect.VolumeServiceClientSync.delete_volume,
                 volume_pb2.DeleteVolumeRequest(name=vol_name),
             )
         self._volumes = []
@@ -558,7 +558,7 @@ class ScalingGroup:
         try:
             resp = self._client.unary(
                 scaling_connect.ScalingGroupManagerServiceClientSync,
-                "get_scaling_group",
+                scaling_connect.ScalingGroupManagerServiceClientSync.get_scaling_group,
                 scaling_pb.GetScalingGroupRequest(id=self._scaling_group_id),
             )
         except ConnectError as e:

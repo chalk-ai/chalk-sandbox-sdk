@@ -57,7 +57,7 @@ This keeps prose visually interleaved with code in the raw `.py`, and doc render
   #
   # /// script
   # requires-python = ">=3.12"
-  # dependencies = ["httpx", "python-dotenv"]
+  # dependencies = ["requests", "python-dotenv"]
   # ///
   ```
 - Keep inline scripts (passed to `container.exec`) short and self-contained. Define them as module-level string constants with a prose comment above.

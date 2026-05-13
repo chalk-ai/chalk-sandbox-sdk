@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -12,16 +13,16 @@ from chalkcompute._container import ContainerSecurityPolicy, KernelPolicy
 
 class _Client:
     def __init__(self) -> None:
-        self.calls: list[tuple[type[Any], str, Any, float | None]] = []
+        self.calls: list[tuple[type[Any], Callable[..., Any], Any, float | None]] = []
 
     def unary(
         self,
         client_cls: type[Any],
-        method_name: str,
+        method: Callable[..., Any],
         request: Any,
         timeout: float | None = 30,
     ) -> container_pb.RunContainerResponse:
-        self.calls.append((client_cls, method_name, request, timeout))
+        self.calls.append((client_cls, method, request, timeout))
         return container_pb.RunContainerResponse(
             container=container_pb.ContainerResponse(
                 id="container-123",
@@ -76,13 +77,9 @@ def test_container_run_sends_network_policy() -> None:
     container = Container(
         image="ubuntu:latest",
         name="network-test",
-        security_policy=ContainerSecurityPolicy(
-            kernel_policy=KernelPolicy.RESTRICTED
-        ),
+        security_policy=ContainerSecurityPolicy(kernel_policy=KernelPolicy.RESTRICTED),
         network_policy=NetworkPolicy(
-            allowed_routes=[
-                AllowedRoute(cidr="104.20.23.154/32", ports=[(443, 443)])
-            ]
+            allowed_routes=[AllowedRoute(cidr="104.20.23.154/32", ports=[(443, 443)])]
         ),
     )
     container._client = client
@@ -92,16 +89,13 @@ def test_container_run_sends_network_policy() -> None:
     assert len(client.calls) == 1
     client_cls, method, request, timeout = client.calls[0]
     assert client_cls is container_connect.ContainerServiceClientSync
-    assert method == "run_container"
+    assert method is container_connect.ContainerServiceClientSync.run_container
     assert timeout == 60
     spec = request.container.spec
     assert spec.network_policy.allowed_routes[0].route == "104.20.23.154/32"
     assert spec.network_policy.allowed_routes[0].port_ranges[0].start_port == 443
     assert spec.network_policy.allowed_routes[0].port_ranges[0].end_port == 443
-    assert (
-        spec.security_policy.kernel_policy
-        == container_pb.KERNEL_POLICY_RESTRICTED
-    )
+    assert spec.security_policy.kernel_policy == container_pb.KERNEL_POLICY_RESTRICTED
 
 
 def test_container_run_sends_tags() -> None:

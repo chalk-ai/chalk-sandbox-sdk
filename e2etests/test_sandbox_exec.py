@@ -11,8 +11,8 @@ import os
 import time
 
 import grpc
-import httpx
 import pytest
+import requests
 from dotenv import load_dotenv
 
 from chalkcompute import SandboxClient
@@ -24,7 +24,9 @@ CHALK_CLIENT_SECRET = os.environ.get("CHALK_CLIENT_SECRET", "")
 CHALK_ENVIRONMENT_ID = os.environ.get("CHALK_ENVIRONMENT_ID", "")
 CHALK_API_SERVER = os.environ.get("CHALK_API_SERVER", "")
 
-SANDBOX_IMAGE = "us-central1-docker.pkg.dev/chalk-develop/base-images/chalk-sandbox-entrypoint"
+SANDBOX_IMAGE = (
+    "us-central1-docker.pkg.dev/chalk-develop/base-images/chalk-sandbox-entrypoint"
+)
 
 SANDBOX_SERVICE_BASE = f"{CHALK_API_SERVER}/chalk.sandbox.v1.SandboxService"
 
@@ -39,7 +41,7 @@ needs_staging = pytest.mark.skipif(
 
 def _get_access_token() -> str:
     """Exchange client credentials for a bearer token."""
-    resp = httpx.post(
+    resp = requests.post(
         f"{CHALK_API_SERVER}/v1/oauth/token",
         json={
             "client_id": CHALK_CLIENT_ID,
@@ -56,9 +58,11 @@ def _get_access_token() -> str:
     return resp.json()["access_token"]
 
 
-def _sandbox_rpc(method: str, body: dict, headers: dict[str, str], timeout: float = 30) -> httpx.Response:
+def _sandbox_rpc(
+    method: str, body: dict, headers: dict[str, str], timeout: float = 30
+) -> requests.Response:
     """Make a Connect-protocol unary RPC call to SandboxService."""
-    return httpx.post(
+    return requests.post(
         f"{SANDBOX_SERVICE_BASE}/{method}",
         json=body,
         headers=headers,
@@ -146,7 +150,7 @@ def sandbox_id(connect_headers: dict[str, str]) -> str:
 
 
 @needs_staging
-@pytest.mark.xfail(reason="httpx.ReadTimeout due to tcp interceptor issues")
+@pytest.mark.xfail(reason="HTTP read timeout due to tcp interceptor issues")
 def test_exec_ls(grpc_client: SandboxClient, sandbox_id: str) -> None:
     """Exec 'ls /' in the sandbox and verify we get directory listing output."""
     sandbox = grpc_client.get(id=sandbox_id)
@@ -168,11 +172,13 @@ def test_exec_ls(grpc_client: SandboxClient, sandbox_id: str) -> None:
     assert exit_code == 0, f"ls exited with code {exit_code}"
     # A Linux container root should have standard directories
     for expected_dir in ("bin", "etc", "usr", "tmp"):
-        assert expected_dir in stdout, f"Expected '{expected_dir}' in ls output: {stdout}"
+        assert expected_dir in stdout, (
+            f"Expected '{expected_dir}' in ls output: {stdout}"
+        )
 
 
 @needs_staging
-@pytest.mark.xfail(reason="httpx.ReadTimeout due to tcp interceptor issues")
+@pytest.mark.xfail(reason="HTTP read timeout due to tcp interceptor issues")
 def test_pty_interaction(grpc_client: SandboxClient, sandbox_id: str) -> None:
     """Start an interactive shell, send a command via stdin, and verify output."""
     sandbox = grpc_client.get(id=sandbox_id)

@@ -210,13 +210,12 @@ def _strip_chalkcompute_from_source(source: str) -> str:
             for dec in node.decorator_list:
                 dec_source = ast.get_source_segment(source, dec)
                 if (
-                    (dec_source is not None and "chalkcompute" in dec_source)
-                    or _is_chalkcompute_decorator(
-                        dec,
-                        module_names=chalkcompute_module_names,
-                        decorator_names=chalkcompute_decorator_names,
-                        attribute_names={"function"},
-                    )
+                    dec_source is not None and "chalkcompute" in dec_source
+                ) or _is_chalkcompute_decorator(
+                    dec,
+                    module_names=chalkcompute_module_names,
+                    decorator_names=chalkcompute_decorator_names,
+                    attribute_names={"function"},
                 ):
                     remove_ranges.append((dec.lineno, dec.end_lineno or dec.lineno))
                     decorated_names.add(node.name)
@@ -1154,10 +1153,12 @@ class RemoteFunction:
 
         # Input field names (populated from API response for from_id/from_name)
         self._input_field_names: list[str] = []
-        self._is_generator = inspect.isgeneratorfunction(func) or inspect.isasyncgenfunction(
+        self._is_generator = inspect.isgeneratorfunction(
             func
-        )
-        self._is_async = inspect.iscoroutinefunction(func) or inspect.isasyncgenfunction(func)
+        ) or inspect.isasyncgenfunction(func)
+        self._is_async = inspect.iscoroutinefunction(
+            func
+        ) or inspect.isasyncgenfunction(func)
 
         # gRPC call channel (lazily created on first __call__)
         self._call_channel: Any = None
@@ -1189,7 +1190,7 @@ class RemoteFunction:
         try:
             resp = f._client.unary(
                 catalog_connect.ExternalFunctionCatalogServiceClientSync,
-                "get_external_function_version",
+                catalog_connect.ExternalFunctionCatalogServiceClientSync.get_external_function_version,
                 catalog_pb.GetExternalFunctionVersionRequest(
                     id=version_id,
                     include_scaling_group=True,
@@ -1226,7 +1227,7 @@ class RemoteFunction:
         try:
             resp = f._client.unary(
                 catalog_connect.ExternalFunctionCatalogServiceClientSync,
-                "get_external_function_version",
+                catalog_connect.ExternalFunctionCatalogServiceClientSync.get_external_function_version,
                 catalog_pb.GetExternalFunctionVersionRequest(
                     key=catalog_pb.ExternalFunctionVersionKey(function_name=name),
                     include_scaling_group=True,
@@ -1445,14 +1446,12 @@ class RemoteFunction:
             try:
                 resp = self._client.unary(
                     catalog_connect.ExternalFunctionCatalogServiceClientSync,
-                    "create_external_function_version",
+                    catalog_connect.ExternalFunctionCatalogServiceClientSync.create_external_function_version,
                     create_request,
                     timeout=60,
                 )
             except ConnectError as e:
-                raise FunctionError(
-                    f"CreateExternalFunctionVersion failed: {e}"
-                ) from e
+                raise FunctionError(f"CreateExternalFunctionVersion failed: {e}") from e
 
             efv = resp.external_function_version
             self._version_info = _function_version_info_from_proto(
@@ -1507,16 +1506,14 @@ class RemoteFunction:
             try:
                 resp = self._client.unary(
                     scaling_connect.ScalingGroupManagerServiceClientSync,
-                    "get_scaling_group",
+                    scaling_connect.ScalingGroupManagerServiceClientSync.get_scaling_group,
                     scaling_pb.GetScalingGroupRequest(name=sg_name),
                 )
             except ConnectError as e:
                 raise FunctionError(f"GetScalingGroup failed: {e}") from e
             sg = resp.scaling_group
             status = sg.status
-            status_message = (
-                sg.status_message if sg.HasField("status_message") else ""
-            )
+            status_message = sg.status_message if sg.HasField("status_message") else ""
             ready_replicas = sg.ready_replicas
             available_replicas = sg.available_replicas
             self._web_url = _scaling_group_web_url(sg)
@@ -1574,7 +1571,7 @@ class RemoteFunction:
             try:
                 resp = self._client.unary(
                     scaling_connect.ScalingGroupManagerServiceClientSync,
-                    "get_scaling_group",
+                    scaling_connect.ScalingGroupManagerServiceClientSync.get_scaling_group,
                     scaling_pb.GetScalingGroupRequest(name=sg_name),
                 )
             except ConnectError as e:
@@ -1802,7 +1799,7 @@ class RemoteFunction:
         try:
             resp = self._client.unary(
                 catalog_connect.ExternalFunctionCatalogServiceClientSync,
-                "call_external_function",
+                catalog_connect.ExternalFunctionCatalogServiceClientSync.call_external_function,
                 request,
                 timeout=300,
             )
@@ -1891,7 +1888,7 @@ class RemoteFunction:
         if self._version_info is not None:
             self._client.unary(
                 catalog_connect.ExternalFunctionCatalogServiceClientSync,
-                "delete_external_function_version",
+                catalog_connect.ExternalFunctionCatalogServiceClientSync.delete_external_function_version,
                 catalog_pb.DeleteExternalFunctionVersionRequest(
                     id=self._version_info.id
                 ),
@@ -1917,7 +1914,7 @@ class RemoteFunction:
         try:
             resp = self._client.unary(
                 catalog_connect.ExternalFunctionCatalogServiceClientSync,
-                "get_external_function_version",
+                catalog_connect.ExternalFunctionCatalogServiceClientSync.get_external_function_version,
                 catalog_pb.GetExternalFunctionVersionRequest(
                     id=self._version_info.id,
                     include_scaling_group=True,
@@ -2038,8 +2035,7 @@ def function(
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
     quota: int | QueuePolicy | None = None,
-) -> Callable[..., RemoteFunction | _NoOpFunction]:
-    ...
+) -> Callable[..., RemoteFunction | _NoOpFunction]: ...
 
 
 def function(

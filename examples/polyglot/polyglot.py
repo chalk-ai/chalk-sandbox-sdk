@@ -68,7 +68,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-import httpx
+import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -78,6 +78,7 @@ from chalkcompute import Container
 # ---------------------------------------------------------------------------
 # Public types
 # ---------------------------------------------------------------------------
+
 
 class Language(str, Enum):
     PYTHON = "python"
@@ -129,7 +130,11 @@ class JudgeResult:
             line += f"\n    expected: {self.test_case.expected!r}"
             line += f"\n    got:      {self.stdout.strip()!r}"
         elif self.verdict in (Verdict.RUNTIME_ERROR, Verdict.COMPILE_ERROR):
-            first_err = self.stderr.strip().splitlines()[0] if self.stderr.strip() else "(no stderr)"
+            first_err = (
+                self.stderr.strip().splitlines()[0]
+                if self.stderr.strip()
+                else "(no stderr)"
+            )
             line += f"\n    {first_err}"
         return line
 
@@ -140,6 +145,7 @@ class JudgeResult:
 # Each language writes source to a temp file, compiles if needed, then runs
 # with stdin piped in. This pattern works uniformly for all four languages
 # and avoids heredoc-vs-pipe conflicts.
+
 
 def _shell_quote(s: str) -> str:
     return "'" + s.replace("'", "'\\''") + "'"
@@ -207,13 +213,10 @@ _CONFIGS: dict[Language, dict] = {
         "image": "gcc:13",
         # Compile once, run per test case.
         "compile_cmd": lambda src: (
-            f"{_b64write(src, '/tmp/main.cpp')} && "
-            "g++ -O2 -o /tmp/main /tmp/main.cpp"
+            f"{_b64write(src, '/tmp/main.cpp')} && g++ -O2 -o /tmp/main /tmp/main.cpp"
         ),
         "compile_timeout": 30,
-        "run_cmd": lambda stdin: (
-            f"printf '%s' {_shell_quote(stdin)} | /tmp/main"
-        ),
+        "run_cmd": lambda stdin: (f"printf '%s' {_shell_quote(stdin)} | /tmp/main"),
         "run_timeout": 10,
     },
 }
@@ -222,6 +225,7 @@ _CONFIGS: dict[Language, dict] = {
 # ---------------------------------------------------------------------------
 # Core: run one piece of code with stdin
 # ---------------------------------------------------------------------------
+
 
 def compile_source(
     language: Language,
@@ -276,6 +280,7 @@ def run_code(
 # Judge: run a submission against a list of test cases
 # ---------------------------------------------------------------------------
 
+
 def judge(
     language: Language,
     source: str,
@@ -309,13 +314,15 @@ def judge(
         if compile_result.exit_code != 0:
             # Fail all test cases with COMPILE_ERROR immediately.
             for tc in test_cases:
-                results.append(JudgeResult(
-                    test_case=tc,
-                    verdict=Verdict.COMPILE_ERROR,
-                    stdout="",
-                    stderr=compile_result.stderr,
-                    duration_secs=compile_result.duration_secs,
-                ))
+                results.append(
+                    JudgeResult(
+                        test_case=tc,
+                        verdict=Verdict.COMPILE_ERROR,
+                        stdout="",
+                        stderr=compile_result.stderr,
+                        duration_secs=compile_result.duration_secs,
+                    )
+                )
             return results
 
         # --- Run each test case ---
@@ -328,13 +335,15 @@ def judge(
                     timeout_secs=time_limit_secs,
                 )
             except Exception as exc:
-                results.append(JudgeResult(
-                    test_case=tc,
-                    verdict=Verdict.TIMEOUT,
-                    stdout="",
-                    stderr=str(exc),
-                    duration_secs=time_limit_secs,
-                ))
+                results.append(
+                    JudgeResult(
+                        test_case=tc,
+                        verdict=Verdict.TIMEOUT,
+                        stdout="",
+                        stderr=str(exc),
+                        duration_secs=time_limit_secs,
+                    )
+                )
                 continue
 
             stdout = exec_result.stdout
@@ -348,13 +357,15 @@ def judge(
             else:
                 verdict = Verdict.WRONG_ANSWER
 
-            results.append(JudgeResult(
-                test_case=tc,
-                verdict=verdict,
-                stdout=stdout,
-                stderr=stderr,
-                duration_secs=duration,
-            ))
+            results.append(
+                JudgeResult(
+                    test_case=tc,
+                    verdict=verdict,
+                    stdout=stdout,
+                    stderr=stderr,
+                    duration_secs=duration,
+                )
+            )
     finally:
         container.stop()
 
@@ -364,6 +375,7 @@ def judge(
 # ---------------------------------------------------------------------------
 # One-shot convenience wrapper (used by the safety demo)
 # ---------------------------------------------------------------------------
+
 
 def run_once(
     language: Language,
@@ -379,7 +391,9 @@ def run_once(
         compile_result = compile_source(language, source, container=container)
         if compile_result.exit_code != 0:
             return compile_result
-        return run_code(language, stdin=stdin, container=container, timeout_secs=timeout_secs)
+        return run_code(
+            language, stdin=stdin, container=container, timeout_secs=timeout_secs
+        )
     finally:
         container.stop()
 
@@ -392,9 +406,9 @@ def run_once(
 # Shows PASS, COMPILE_ERROR, and TIMEOUT verdicts.
 
 TEST_CASES = [
-    TestCase(stdin="3\n1\n2\n3",            expected="6",   label="small"),
+    TestCase(stdin="3\n1\n2\n3", expected="6", label="small"),
     TestCase(stdin="5\n10\n20\n30\n40\n50", expected="150", label="medium"),
-    TestCase(stdin="1\n42",                 expected="42",  label="single element"),
+    TestCase(stdin="1\n42", expected="42", label="single element"),
 ]
 
 JUDGE_SUBMISSIONS: list[tuple[Language, str, str]] = [
@@ -528,22 +542,22 @@ The code must read from stdin and print to stdout.
 
 AI_LANGUAGES: list[tuple[Language, str]] = [
     (Language.PYTHON, "Write it in Python 3."),
-    (Language.JAVA,   "Write it in Java. The public class must be named Main."),
-    (Language.CPP,    "Write it in C++. Include all necessary headers."),
+    (Language.JAVA, "Write it in Java. The public class must be named Main."),
+    (Language.CPP, "Write it in C++. Include all necessary headers."),
 ]
 
 
 def generate_solution(extra_instruction: str) -> str:
     """Ask GPT-4o to write a solution for ``PROBLEM_STATEMENT``.
 
-    Uses httpx directly (already a chalkcompute dependency) so no extra
-    packages are required beyond what the SDK already installs.
+    Uses requests directly so no extra packages are required beyond what the
+    SDK already installs.
     """
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY environment variable not set")
 
-    response = httpx.post(
+    response = requests.post(
         "https://api.openai.com/v1/chat/completions",
         headers={
             "Authorization": f"Bearer {api_key}",
@@ -572,6 +586,7 @@ def generate_solution(extra_instruction: str) -> str:
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     # --- Act 1: Judge ---

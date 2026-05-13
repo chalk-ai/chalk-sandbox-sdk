@@ -704,7 +704,7 @@ class RemoteClass:
             try:
                 resp = rc._client.unary(
                     catalog_connect.ExternalFunctionCatalogServiceClientSync,
-                    "list_external_function_versions",
+                    catalog_connect.ExternalFunctionCatalogServiceClientSync.list_external_function_versions,
                     req,
                 )
             except ConnectError as e:
@@ -975,15 +975,14 @@ class RemoteClass:
                 try:
                     resp = self._client.unary(
                         catalog_connect.ExternalFunctionCatalogServiceClientSync,
-                        "create_external_function_version",
+                        catalog_connect.ExternalFunctionCatalogServiceClientSync.create_external_function_version,
                         create_request,
                         timeout=60,
                     )
                 except ConnectError as e:
                     progress_fail(mkey)
                     raise ClassBuildError(
-                        f"CreateExternalFunctionVersion failed for "
-                        f"'{func_name}': {e}"
+                        f"CreateExternalFunctionVersion failed for '{func_name}': {e}"
                     ) from e
 
                 efv = resp.external_function_version
@@ -1051,7 +1050,7 @@ class RemoteClass:
             try:
                 resp = self._client.unary(
                     scaling_connect.ScalingGroupManagerServiceClientSync,
-                    "get_scaling_group",
+                    scaling_connect.ScalingGroupManagerServiceClientSync.get_scaling_group,
                     scaling_pb.GetScalingGroupRequest(name=sg_name),
                 )
             except ConnectError as e:
@@ -1117,7 +1116,7 @@ class RemoteClass:
         for vol_name, _ in self._volumes:
             self._client.unary(
                 volume_connect.VolumeServiceClientSync,
-                "delete_volume",
+                volume_connect.VolumeServiceClientSync.delete_volume,
                 volume_pb2.DeleteVolumeRequest(name=vol_name),
             )
         self._volumes = []

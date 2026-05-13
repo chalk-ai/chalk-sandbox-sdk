@@ -14,8 +14,8 @@ These tests exercise the VolumeService Connect-protocol endpoints:
 import os
 import uuid
 
-import httpx
 import pytest
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -35,7 +35,7 @@ needs_staging = pytest.mark.skipif(
 
 def _get_access_token() -> str:
     """Exchange client credentials for a bearer token."""
-    resp = httpx.post(
+    resp = requests.post(
         f"{CHALK_API_SERVER}/v1/oauth/token",
         json={
             "client_id": CHALK_CLIENT_ID,
@@ -67,9 +67,9 @@ def _volume_rpc(
     body: dict,
     headers: dict[str, str],
     timeout: float = 30,
-) -> httpx.Response:
+) -> requests.Response:
     """Make a Connect-protocol unary RPC call to VolumeService."""
-    return httpx.post(
+    return requests.post(
         f"{VOLUME_SERVICE_BASE}/{method}",
         json=body,
         headers=headers,

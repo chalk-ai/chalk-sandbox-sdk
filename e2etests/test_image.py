@@ -7,8 +7,8 @@ Unit tests have been moved to tests/test_image.py.
 import os
 import time
 
-import httpx
 import pytest
+import requests
 from dotenv import load_dotenv
 from google.protobuf.json_format import MessageToDict
 
@@ -30,7 +30,7 @@ POLL_TIMEOUT = 600
 
 def _get_access_token() -> str:
     """Exchange client credentials for a bearer token via the Chalk REST API."""
-    resp = httpx.post(
+    resp = requests.post(
         f"{CHALK_API_SERVER}/v1/oauth/token",
         json={
             "client_id": CHALK_CLIENT_ID,
@@ -57,9 +57,11 @@ def auth_headers() -> dict[str, str]:
     }
 
 
-def _sandbox_rpc(method: str, body: dict, headers: dict[str, str], timeout: float = 30) -> httpx.Response:
+def _sandbox_rpc(
+    method: str, body: dict, headers: dict[str, str], timeout: float = 30
+) -> requests.Response:
     """Make a Connect-protocol unary RPC call to SandboxService."""
-    return httpx.post(
+    return requests.post(
         f"{SANDBOX_SERVICE_BASE}/{method}",
         json=body,
         headers=headers,
@@ -67,9 +69,11 @@ def _sandbox_rpc(method: str, body: dict, headers: dict[str, str], timeout: floa
     )
 
 
-def _custom_image_rpc(method: str, body: dict, headers: dict[str, str], timeout: float = 30) -> httpx.Response:
+def _custom_image_rpc(
+    method: str, body: dict, headers: dict[str, str], timeout: float = 30
+) -> requests.Response:
     """Make a Connect-protocol unary RPC call to CustomImageService."""
-    return httpx.post(
+    return requests.post(
         f"{CUSTOM_IMAGE_SERVICE_BASE}/{method}",
         json=body,
         headers=headers,
@@ -116,7 +120,9 @@ def test_list_sandboxes(auth_headers: dict[str, str]) -> None:
 
 
 @needs_staging
-@pytest.mark.skip(reason="Sandbox pod connectivity is flaky in staging — sandbox enters error/timeout after image build")
+@pytest.mark.skip(
+    reason="Sandbox pod connectivity is flaky in staging — sandbox enters error/timeout after image build"
+)
 def test_create_sandbox_with_debian_image(auth_headers: dict[str, str]) -> None:
     """Create a sandbox with a debian_slim ImageSpec using async polling."""
     img = (
@@ -157,7 +163,9 @@ def test_create_sandbox_with_debian_image(auth_headers: dict[str, str]) -> None:
 
 
 @needs_staging
-@pytest.mark.skip(reason="Sandbox pod connectivity is flaky in staging — 504 gateway timeout")
+@pytest.mark.skip(
+    reason="Sandbox pod connectivity is flaky in staging — 504 gateway timeout"
+)
 def test_create_sandbox_with_plain_image(auth_headers: dict[str, str]) -> None:
     """Create a sandbox with a plain image string and poll until ready."""
     body = {

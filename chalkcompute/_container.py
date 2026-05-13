@@ -48,6 +48,7 @@ if TYPE_CHECKING:
 # Exceptions
 # ---------------------------------------------------------------------------
 
+
 class ContainerError(Exception):
     """Base exception for Container errors."""
 
@@ -59,6 +60,7 @@ class ImageBuildError(ContainerError):
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class ExecResult:
@@ -228,6 +230,7 @@ class ContainerInfo:
 # Container
 # ---------------------------------------------------------------------------
 
+
 class Container:
     """A managed container backed by the Chalk ``ContainerService``.
 
@@ -325,7 +328,7 @@ class Container:
         try:
             resp = c._client.unary(
                 container_connect.ContainerServiceClientSync,
-                "get_container",
+                container_connect.ContainerServiceClientSync.get_container,
                 container_pb.GetContainerRequest(id=container_id),
             )
         except ConnectError as e:
@@ -357,7 +360,7 @@ class Container:
         try:
             resp = c._client.unary(
                 container_connect.ContainerServiceClientSync,
-                "get_container",
+                container_connect.ContainerServiceClientSync.get_container,
                 container_pb.GetContainerRequest(name=name),
             )
         except ConnectError as e:
@@ -395,7 +398,10 @@ class Container:
     # -- Image building (Container uses BuildCustomImage with retries) ---------
 
     def _build_image(
-        self, *, poll_interval: float = 0.5, timeout: float = 600.0,
+        self,
+        *,
+        poll_interval: float = 0.5,
+        timeout: float = 600.0,
     ) -> str:
         """Build the ``Image`` spec via ``CustomImageService`` and return the URI.
 
@@ -422,8 +428,10 @@ class Container:
         assert isinstance(self._image, Image)
         try:
             return build_image(
-                self._client, self._image,
-                poll_interval=poll_interval, timeout=timeout,
+                self._client,
+                self._image,
+                poll_interval=poll_interval,
+                timeout=timeout,
             )
         except ConnectError as e:
             raise ImageBuildError(str(e)) from e
@@ -502,10 +510,12 @@ class Container:
         )
         from chalkcompute._image import Image
 
-        container_name = sanitize_dns_label(self._name or f"container-{uuid.uuid4().hex[:8]}")
+        container_name = sanitize_dns_label(
+            self._name or f"container-{uuid.uuid4().hex[:8]}"
+        )
         self._name = container_name
         ckey = f"container:{container_name}"
-        progress_add(ckey, "container", f"Container \"{container_name}\"")
+        progress_add(ckey, "container", f'Container "{container_name}"')
 
         try:
             # 1. Resolve image URI
@@ -514,28 +524,37 @@ class Container:
                 progress_add(ikey, "image", "Building image", parent=ckey)
                 logger.info("Building image from %r...", self._image)
                 self._built_image_uri = self._build_image(
-                    poll_interval=poll_interval, timeout=build_timeout,
+                    poll_interval=poll_interval,
+                    timeout=build_timeout,
                 )
                 logger.info("Image built: %s", self._built_image_uri)
-                progress_done(ikey, detail="cached" if self._built_image_uri else "built")
+                progress_done(
+                    ikey, detail="cached" if self._built_image_uri else "built"
+                )
             else:
                 self._built_image_uri = self._image
 
             # 2. Upload lazy local files to a volume (if any)
             lazy_files = (
-                self._image.lazy_local_files if isinstance(self._image, Image) else set()
+                self._image.lazy_local_files
+                if isinstance(self._image, Image)
+                else set()
             )
             if lazy_files:
                 vkey = f"volume:{container_name}"
                 progress_add(
-                    vkey, "volume",
+                    vkey,
+                    "volume",
                     f"Uploading {len(lazy_files)} file(s)",
                     parent=ckey,
                 )
-                logger.info("Uploading %d local file(s) to volume(s)...", len(lazy_files))
+                logger.info(
+                    "Uploading %d local file(s) to volume(s)...", len(lazy_files)
+                )
                 assert isinstance(self._image, Image)
                 self._volumes += upload_lazy_files(
-                    VolumeClient.from_connect(self._client), self._image,
+                    VolumeClient.from_connect(self._client),
+                    self._image,
                     volume_prefix="container-files",
                 )
                 for vn, mp in self._volumes:
@@ -551,7 +570,9 @@ class Container:
                 resolved, upserted = resolve_lazy_secrets(self._secrets, self._client)
                 self._secrets = resolved
                 self._upserted_secret_names = upserted
-                logger.info("Upserted %d secret(s) from local environment.", len(upserted))
+                logger.info(
+                    "Upserted %d secret(s) from local environment.", len(upserted)
+                )
                 progress_done(skey, detail=f"{len(upserted)} secret(s)")
 
             # 4. Build the ContainerService spec
@@ -577,7 +598,7 @@ class Container:
             try:
                 resp = self._client.unary(
                     container_connect.ContainerServiceClientSync,
-                    "run_container",
+                    container_connect.ContainerServiceClientSync.run_container,
                     container_pb.RunContainerRequest(
                         container=container_pb.ContainerRequest(spec=spec)
                     ),
@@ -590,7 +611,8 @@ class Container:
             self._container_id = self._container_info.id
             logger.info(
                 "Container created: %s (status=%s)",
-                self._container_id, self._container_info.status,
+                self._container_id,
+                self._container_info.status,
             )
 
             # 5. Poll until Running
@@ -599,7 +621,8 @@ class Container:
 
                 progress_update(ckey, detail="booting")
                 self._poll_until_running(
-                    poll_interval=poll_interval, timeout=ready_timeout,
+                    poll_interval=poll_interval,
+                    timeout=ready_timeout,
                 )
 
             # 6. Wait for ChalkFS volume files to become visible
@@ -621,7 +644,10 @@ class Container:
         return self
 
     def _poll_until_running(
-        self, *, poll_interval: float, timeout: float,
+        self,
+        *,
+        poll_interval: float,
+        timeout: float,
     ) -> None:
         assert self._container_id is not None
         deadline = time.monotonic() + timeout
@@ -629,7 +655,7 @@ class Container:
             try:
                 resp = self._client.unary(
                     container_connect.ContainerServiceClientSync,
-                    "get_container",
+                    container_connect.ContainerServiceClientSync.get_container,
                     container_pb.GetContainerRequest(id=self._container_id),
                 )
             except ConnectError as e:
@@ -649,7 +675,10 @@ class Container:
         )
 
     def _wait_for_volume_files(
-        self, *, timeout: float = 120.0, poll_interval: float = 0.5,
+        self,
+        *,
+        timeout: float = 120.0,
+        poll_interval: float = 0.5,
     ) -> None:
         """Poll until at least one uploaded file is visible in the ChalkFS mount.
 
@@ -767,7 +796,7 @@ class Container:
             try:
                 resp = self._client.unary(
                     container_connect.ContainerServiceClientSync,
-                    "exec_command",
+                    container_connect.ContainerServiceClientSync.exec_command,
                     request,
                     timeout=timeout_secs or 30,
                 )
@@ -800,7 +829,7 @@ class Container:
                 request.grace_period_seconds = grace_period_seconds
             self._client.unary(
                 container_connect.ContainerServiceClientSync,
-                "stop_container",
+                container_connect.ContainerServiceClientSync.stop_container,
                 request,
             )
             self._container_id = None
@@ -809,7 +838,7 @@ class Container:
         for vol_name, _ in self._volumes:
             self._client.unary(
                 volume_connect.VolumeServiceClientSync,
-                "delete_volume",
+                volume_connect.VolumeServiceClientSync.delete_volume,
                 volume_pb2.DeleteVolumeRequest(name=vol_name),
             )
         self._volumes = []
@@ -838,7 +867,7 @@ class Container:
         try:
             resp = self._client.unary(
                 container_connect.ContainerServiceClientSync,
-                "get_container",
+                container_connect.ContainerServiceClientSync.get_container,
                 container_pb.GetContainerRequest(id=self._container_id),
             )
         except ConnectError as e:
@@ -994,9 +1023,9 @@ def _duration_from_string(value: str) -> Any:
         for match in _DURATION_RE.finditer(stripped):
             if match.start() != position:
                 raise ValueError(f"invalid duration {value!r}")
-            total_seconds += float(match.group("amount")) * _DURATION_UNITS[
-                match.group("unit")
-            ]
+            total_seconds += (
+                float(match.group("amount")) * _DURATION_UNITS[match.group("unit")]
+            )
             position = match.end()
         if position != len(stripped):
             raise ValueError(f"invalid duration {value!r}")

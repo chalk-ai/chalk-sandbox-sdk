@@ -2,7 +2,7 @@
 #
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["chalkcompute", "httpx", "python-dotenv"]
+# dependencies = ["chalkcompute", "requests", "python-dotenv"]
 # ///
 
 # # Volume Hello World
@@ -24,7 +24,7 @@ import logging
 import os
 import uuid
 
-import httpx
+import requests
 from dotenv import load_dotenv
 
 from chalkcompute import Container
@@ -45,8 +45,9 @@ FILE_CONTENT = "Hello from a Chalk volume!\n"
 # tokens from Chalk's OAuth endpoint. We fetch one token and share it across
 # all direct API calls; the Container client fetches its own token internally.
 
+
 def _get_token() -> str:
-    resp = httpx.post(
+    resp = requests.post(
         f"{os.environ['CHALK_API_SERVER']}/v1/oauth/token",
         json={
             "client_id": os.environ["CHALK_CLIENT_ID"],
@@ -59,8 +60,8 @@ def _get_token() -> str:
     return resp.json()["access_token"]
 
 
-def _volume_rpc(method: str, body: dict, *, token: str) -> httpx.Response:
-    return httpx.post(
+def _volume_rpc(method: str, body: dict, *, token: str) -> requests.Response:
+    return requests.post(
         f"{os.environ['CHALK_API_SERVER']}/chalk.volume.v1.VolumeService/{method}",
         json=body,
         headers={
@@ -76,6 +77,7 @@ def _volume_rpc(method: str, body: dict, *, token: str) -> httpx.Response:
 #
 # `CreateVolume` is idempotent — a 409 means the volume already exists, which
 # is fine. File data is transmitted as base64 in the JSON body.
+
 
 def create_volume(name: str, token: str) -> None:
     resp = _volume_rpc("CreateVolume", {"name": name}, token=token)
@@ -106,6 +108,7 @@ def create_volume(name: str, token: str) -> None:
 #
 # `Container.stop()` also deletes volumes listed in `volumes`, so no separate
 # cleanup call is needed.
+
 
 def main() -> None:
     run_id = uuid.uuid4().hex[:8]

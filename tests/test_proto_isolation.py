@@ -21,22 +21,30 @@ def test_generated_chalk_protos_do_not_register_in_default_pool() -> None:
         from google.protobuf import descriptor_pool
 
         from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
+        from chalkcompute._gen.chalk.auth.v1 import audit_pb2, permissions_pb2
         from chalkcompute._gen.chalk.container.v1 import service_pb2 as container_pb2
         from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb2 as catalog_pb2
         from chalkcompute._gen.chalk.runtime.v1 import remote_python_call_pb2
         from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as sandbox_pb2
         from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb2 as scaling_pb2
-        from chalkcompute._gen.chalk.server.v1 import environment_secrets_pb2
+        from chalkcompute._gen.chalk.server.v1 import auth_pb2, environment_secrets_pb2, link_pb2
+        from chalkcompute._gen.chalk.utils.v1 import encoding_pb2, sensitive_pb2
         from chalkcompute._gen.chalk.volume.v1 import volume_pb2
 
         generated = [
             arrow_pb2.DESCRIPTOR,
+            audit_pb2.DESCRIPTOR,
+            permissions_pb2.DESCRIPTOR,
             container_pb2.DESCRIPTOR,
             catalog_pb2.DESCRIPTOR,
             remote_python_call_pb2.DESCRIPTOR,
             sandbox_pb2.DESCRIPTOR,
             scaling_pb2.DESCRIPTOR,
+            auth_pb2.DESCRIPTOR,
             environment_secrets_pb2.DESCRIPTOR,
+            link_pb2.DESCRIPTOR,
+            encoding_pb2.DESCRIPTOR,
+            sensitive_pb2.DESCRIPTOR,
             volume_pb2.DESCRIPTOR,
         ]
         assert all(
@@ -46,6 +54,7 @@ def test_generated_chalk_protos_do_not_register_in_default_pool() -> None:
 
         for name in (
             "chalk/arrow/v1/arrow.proto",
+            "chalk/auth/v1/audit.proto",
             "chalk/auth/v1/permissions.proto",
             "chalk/common/v1/chalk_error.proto",
             "chalk/container/v1/service.proto",
@@ -53,8 +62,11 @@ def test_generated_chalk_protos_do_not_register_in_default_pool() -> None:
             "chalk/runtime/v1/remote_python_call.proto",
             "chalk/sandbox/v1/service.proto",
             "chalk/scalinggroup/v1/service.proto",
+            "chalk/server/v1/auth.proto",
             "chalk/server/v1/environment_secrets.proto",
+            "chalk/server/v1/link.proto",
             "chalk/utils/v1/encoding.proto",
+            "chalk/utils/v1/sensitive.proto",
             "chalk/volume/v1/volume.proto",
         ):
             try:

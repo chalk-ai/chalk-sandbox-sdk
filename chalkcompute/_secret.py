@@ -202,7 +202,9 @@ class Secret:
             return f"Secret.from_local_env_file({self._local_env_file!r})"
         if self._local_env_var:
             name = self._env_var_name or self._local_env_var
-            return f"Secret.from_local_env({self._local_env_var!r}, env_var_name={name!r})"
+            return (
+                f"Secret.from_local_env({self._local_env_var!r}, env_var_name={name!r})"
+            )
         if self._secret_name:
             return f"Secret.from_env({self._secret_name!r})"
         return f"Secret.from_integration({self._integration_name!r})"
@@ -274,9 +276,7 @@ def resolve_lazy_secrets(
             local_var = secret._local_env_var
             value = os.environ.get(local_var)
             if value is None:
-                raise ValueError(
-                    f"Local environment variable {local_var!r} is not set"
-                )
+                raise ValueError(f"Local environment variable {local_var!r} is not set")
             remote_name = secret._env_var_name or local_var
             _upsert_secret(client, remote_name, value)
             upserted_names.append(remote_name)
@@ -314,7 +314,7 @@ def _upsert_secret(client: Any, name: str, value: str) -> None:
     """
     client.unary(
         secrets_connect.EnvironmentSecretsServiceClientSync,
-        "upsert_secret",
+        secrets_connect.EnvironmentSecretsServiceClientSync.upsert_secret,
         secrets_pb.UpsertSecretRequest(
             name=name,
             config=secrets_pb.SecretConfigValue(literal=value),
@@ -335,6 +335,6 @@ def delete_secrets(client: Any, names: list[str]) -> None:
     for name in names:
         client.unary(
             secrets_connect.EnvironmentSecretsServiceClientSync,
-            "delete_secret",
+            secrets_connect.EnvironmentSecretsServiceClientSync.delete_secret,
             secrets_pb.DeleteSecretRequest(name=name),
         )

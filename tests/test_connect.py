@@ -1,17 +1,59 @@
 from typing import Any
 
-from chalkcompute._connect import ConnectClient, grpc_engine_target_from_url, grpc_target_from_url
+from chalkcompute._connect import (
+    ConnectClient,
+    grpc_engine_target_from_url,
+    grpc_target_from_url,
+)
+from chalkcompute._gen.chalk.server.v1 import auth_connect, auth_pb2
 
 
-class _TokenResponse:
-    def __init__(self, payload: dict[str, Any]) -> None:
-        self._payload = payload
+def _patch_auth_client(
+    monkeypatch: Any,
+    *,
+    get_token_response: auth_pb2.GetTokenResponse | None = None,
+    internal_token_response: auth_pb2.GetInternalWorkingTokenResponse | None = None,
+) -> dict[str, Any]:
+    calls: dict[str, Any] = {}
 
-    def raise_for_status(self) -> None:
-        pass
+    class FakeAuthServiceClientSync:
+        def __init__(self, base_url: str, **kwargs: Any) -> None:
+            calls["base_url"] = base_url
+            calls["init_kwargs"] = kwargs
 
-    def json(self) -> dict[str, Any]:
-        return self._payload
+        def get_token(
+            self,
+            request: auth_pb2.GetTokenRequest,
+            *,
+            headers: dict[str, str] | None = None,
+            timeout_ms: int | None = None,
+        ) -> auth_pb2.GetTokenResponse:
+            calls["get_token_request"] = request
+            calls["get_token_headers"] = headers
+            calls["get_token_timeout_ms"] = timeout_ms
+            assert get_token_response is not None
+            return get_token_response
+
+        def get_internal_working_token(
+            self,
+            request: auth_pb2.GetInternalWorkingTokenRequest,
+            *,
+            headers: dict[str, str] | None = None,
+            timeout_ms: int | None = None,
+        ) -> auth_pb2.GetInternalWorkingTokenResponse:
+            calls["internal_token_request"] = request
+            calls["internal_token_headers"] = headers
+            calls["internal_token_timeout_ms"] = timeout_ms
+            assert internal_token_response is not None
+            return internal_token_response
+
+        def close(self) -> None:
+            calls["closed"] = True
+
+    monkeypatch.setattr(
+        auth_connect, "AuthServiceClientSync", FakeAuthServiceClientSync
+    )
+    return calls
 
 
 class TestGrpcTargetFromUrl:
@@ -66,17 +108,13 @@ class TestConnectClientGrpcEngineTarget:
         monkeypatch.setenv("CHALK_CLIENT_ID", "client-id")
         monkeypatch.setenv("CHALK_CLIENT_SECRET", "client-secret")
         monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-1")
-        monkeypatch.setattr(
-            "httpx.post",
-            lambda *args, **kwargs: _TokenResponse(
-                {
-                    "access_token": "token",
-                    "primary_environment": "env-1",
-                    "grpc_engines": {"env-1": "engine.staging.chalk.dev:443"},
-                    "environment_id_to_name": {"env-1": "Staging"},
-                }
-            ),
+        token_response = auth_pb2.GetTokenResponse(
+            access_token="token",
+            primary_environment="env-1",
         )
+        token_response.grpc_engines["env-1"] = "engine.staging.chalk.dev:443"
+        token_response.environment_id_to_name["env-1"] = "Staging"
+        _patch_auth_client(monkeypatch, get_token_response=token_response)
 
         target, use_tls = ConnectClient().grpc_engine_target()
 
@@ -88,17 +126,13 @@ class TestConnectClientGrpcEngineTarget:
         monkeypatch.setenv("CHALK_CLIENT_ID", "client-id")
         monkeypatch.setenv("CHALK_CLIENT_SECRET", "client-secret")
         monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "staging")
-        monkeypatch.setattr(
-            "httpx.post",
-            lambda *args, **kwargs: _TokenResponse(
-                {
-                    "access_token": "token",
-                    "primary_environment": "env-1",
-                    "grpc_engines": {"env-1": "localhost:50051"},
-                    "environment_id_to_name": {"env-1": "Staging"},
-                }
-            ),
+        token_response = auth_pb2.GetTokenResponse(
+            access_token="token",
+            primary_environment="env-1",
         )
+        token_response.grpc_engines["env-1"] = "localhost:50051"
+        token_response.environment_id_to_name["env-1"] = "Staging"
+        _patch_auth_client(monkeypatch, get_token_response=token_response)
 
         target, use_tls = ConnectClient().grpc_engine_target()
 
@@ -111,23 +145,21 @@ class TestConnectClientServiceAuth:
         monkeypatch.setenv("CHALK_API_SERVER", "https://api.chalk.test")
         monkeypatch.setenv("CHALK_REMOTE_AUTH_EXCHANGE_TOKEN", "exchange-token")
         monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-1")
-        posted: dict[str, Any] = {}
-
-        def fake_post(*args, **kwargs):
-            posted["args"] = args
-            posted["kwargs"] = kwargs
-            return _TokenResponse({"accessToken": "working-token"})
-
-        monkeypatch.setattr("httpx.post", fake_post)
+        calls = _patch_auth_client(
+            monkeypatch,
+            internal_token_response=auth_pb2.GetInternalWorkingTokenResponse(
+                access_token="working-token"
+            ),
+        )
 
         client = ConnectClient()
         client._ensure_auth()
 
-        assert posted["args"] == (
-            "https://api.chalk.test/chalk.server.v1.AuthService/GetInternalWorkingToken",
+        assert calls["base_url"] == "https://api.chalk.test"
+        assert list(calls["internal_token_request"].requested_permissions) == [2, 3, 11]
+        assert (
+            calls["internal_token_headers"]["Authorization"] == "Bearer exchange-token"
         )
-        assert posted["kwargs"]["json"] == {"requestedPermissions": [2, 3, 11]}
-        assert posted["kwargs"]["headers"]["Authorization"] == "Bearer exchange-token"
         assert client._headers is not None
         assert client._headers["Authorization"] == "Bearer working-token"
         assert client._headers["X-Chalk-Env-Id"] == "env-1"
