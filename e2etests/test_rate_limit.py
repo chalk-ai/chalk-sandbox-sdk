@@ -2,62 +2,14 @@
 
 These tests deploy functions with explicit policies and verify the
 policies are enforced by the catalog consumer.
-
-Can run in CI or by hand:
-
-    cd dataframe && source .venv/bin/activate
-    CHALK_FUNCTION_STRIP_SOURCE=1 python -m pytest \
-        ../chalk-sandbox-sdk/examples/scalar/test_rate_limit.py -v -s
-
-Prerequisites:
-    - CHALK_CLIENT_ID / CHALK_CLIENT_SECRET / CHALK_API_SERVER set
 """
 
 import concurrent.futures
-import os
-import subprocess
-import sys
 import time
 
-import pytest
-from dotenv import load_dotenv
+import chalkcompute
 
-load_dotenv()
-
-CHALK_CLIENT_ID = os.environ.get("CHALK_CLIENT_ID", "")
-CHALK_API_SERVER = os.environ.get("CHALK_API_SERVER", "")
-
-needs_staging = pytest.mark.skipif(
-    not CHALK_CLIENT_ID or not CHALK_API_SERVER,
-    reason="CHALK_CLIENT_ID/CHALK_API_SERVER not set",
-)
-
-EXAMPLE_DIR = os.path.dirname(__file__)
-
-
-def _deploy_script(script_name: str) -> None:
-    result = subprocess.run(
-        [sys.executable, os.path.join(EXAMPLE_DIR, script_name)],
-        capture_output=True,
-        text=True,
-        env=os.environ,
-        timeout=600,
-    )
-    if result.returncode != 0:
-        pytest.fail(
-            f"{script_name} deploy failed (exit {result.returncode}):\n"
-            f"stdout: {result.stdout[-500:]}\n"
-            f"stderr: {result.stderr[-500:]}"
-        )
-
-
-def _make_remote():
-    from chalk.client.client_grpc import ChalkGRPCClient
-    from chalkdf.remote import Remote
-
-    env_id = os.environ.get("CHALK_ENVIRONMENT_ID", "tmnmc9beyujew")
-    client = ChalkGRPCClient(environment=env_id)
-    return Remote(chalk_client=client)
+from e2etests.conftest import _deploy_script, needs_staging
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +21,7 @@ def _make_remote():
 class TestRateLimit:
     @classmethod
     def setup_class(cls):
-        _deploy_script("deploy_rate_limited.py")
+        _deploy_script("scalar", "deploy_rate_limited.py")
 
     def test_rate_limit_throttles(self):
         """20 rapid calls at 5 req/s should take at least ~3 seconds.
@@ -78,15 +30,14 @@ class TestRateLimit:
         With 5 req/s, the consumer can only process 5 per second,
         so 20 calls should take at least 3s (ceil(20/5) - 1 = 3).
         """
-        remote = _make_remote()
-        fn = remote.function("add-rate-limited")
+        fn = chalkcompute.RemoteFunction.from_name("add-rate-limited")
         n = 20
 
         # Enqueue all at once
         handles = [fn.defer(i, 1) for i in range(n)]
 
         start = time.monotonic()
-        results = [h.get().to_pylist()[0] for h in handles]
+        results = [h.get(timeout=120) for h in handles]
         elapsed = time.monotonic() - start
 
         # Verify correctness
@@ -110,8 +61,7 @@ class TestRateLimit:
 
     def test_rate_limit_correctness_under_load(self):
         """All results are correct even under rate limiting."""
-        remote = _make_remote()
-        fn = remote.function("add-rate-limited")
+        fn = chalkcompute.RemoteFunction.from_name("add-rate-limited")
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
             futures = [pool.submit(fn, i, i * 10) for i in range(1, 11)]
@@ -130,7 +80,7 @@ class TestRateLimit:
 class TestConcurrencyLimit:
     @classmethod
     def setup_class(cls):
-        _deploy_script("deploy_concurrency_limited.py")
+        _deploy_script("scalar", "deploy_concurrency_limited.py")
 
     def test_concurrency_limit_caps_parallelism(self):
         """6 calls with 1s sleep and max_concurrent=2 should take >= 3s.
@@ -138,14 +88,13 @@ class TestConcurrencyLimit:
         With unlimited concurrency, 6 × 1s-sleep calls would take ~1s (all parallel).
         With max_concurrent=2, only 2 run at a time: ceil(6/2) × 1s = 3s minimum.
         """
-        remote = _make_remote()
-        fn = remote.function("slow-add")
+        fn = chalkcompute.RemoteFunction.from_name("slow-add")
         n = 6
 
         handles = [fn.defer(i, 1) for i in range(n)]
 
         start = time.monotonic()
-        results = [h.get().to_pylist()[0] for h in handles]
+        results = [h.get(timeout=120) for h in handles]
         elapsed = time.monotonic() - start
 
         # Verify correctness
@@ -163,11 +112,10 @@ class TestConcurrencyLimit:
 
     def test_concurrency_limit_correctness(self):
         """All results are correct even under concurrency limiting."""
-        remote = _make_remote()
-        fn = remote.function("slow-add")
+        fn = chalkcompute.RemoteFunction.from_name("slow-add")
 
         handles = [fn.defer(i, i) for i in range(1, 5)]
-        results = [h.get().to_pylist()[0] for h in handles]
+        results = [h.get(timeout=120) for h in handles]
 
         expected = [i + i for i in range(1, 5)]
         assert results == expected

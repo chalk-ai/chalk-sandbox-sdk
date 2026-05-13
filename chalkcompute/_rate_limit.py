@@ -9,8 +9,7 @@ class RateLimitPolicy:
     """Rate limit policy for a remote function.
 
     Caps the outbound request rate across all callers sharing the same
-    ``key``. Enforced by the dispatcher (chalkdf or the queue consumer)
-    before an RPC leaves.
+    ``key``. Enforced before each outbound RPC.
     """
 
     rate: int

@@ -2050,8 +2050,8 @@ def function(
     retries
         Retry policy for handler invocations. Pass an ``int`` for simple
         max-attempts with default exponential backoff, or a
-        :class:`~chalkcompute.RetryPolicy` for full control. Enforced by
-        the dispatcher (chalkdf or the queue consumer), not the handler.
+        :class:`~chalkcompute.RetryPolicy` for full control. Enforced
+        before each outbound RPC, not in the handler.
     rate_limit
         Rate limit policy for outbound calls. Pass an ``int`` for a simple
         "N per second" cap with a per-function key, or a

@@ -3,23 +3,15 @@
 from __future__ import annotations
 
 import importlib.util
-import os
 import sys
 from pathlib import Path
 from types import ModuleType
 
 import pytest
-from dotenv import load_dotenv
 
 import chalkcompute
 from chalkcompute._function import _CATALOG_SVC
-
-load_dotenv()
-
-needs_chalk_auth = pytest.mark.skipif(
-    not os.environ.get("CHALK_API_SERVER") or not os.environ.get("CHALK_CLIENT_ID"),
-    reason="requires CHALK_API_SERVER and CHALK_CLIENT_ID",
-)
+from e2etests.conftest import needs_staging
 
 
 def _load_module(path: Path) -> ModuleType:
@@ -32,7 +24,7 @@ def _load_module(path: Path) -> ModuleType:
     return module
 
 
-@needs_chalk_auth
+@needs_staging
 def test_remote_function_registers_with_schedule(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -49,7 +41,7 @@ def test_remote_function_registers_with_schedule(
     fn = chalkcompute.RemoteFunction(
         module.scheduled_tick,
         name=name,
-        schedule="1m",
+        schedule="10m",
         min_replicas=1,
         max_replicas=1,
     )
@@ -65,7 +57,7 @@ def test_remote_function_registers_with_schedule(
     assert resp.status_code == 200, f"GetExternalFunctionVersion failed: {resp.text}"
 
     config = resp.json()["externalFunctionVersion"].get("config") or {}
-    assert config.get("schedule") == "1m"
+    assert config.get("schedule") == "10m"
 
     fn = chalkcompute.RemoteFunction.from_name("scheduled_tick")
     res = fn()
