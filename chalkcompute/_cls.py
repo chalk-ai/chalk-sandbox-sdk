@@ -1281,6 +1281,8 @@ def cls(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
+    quota: int | QueuePolicy | None = None,
+    schedule: str | None = None,
 ) -> Callable[..., RemoteClass | _NoOpClass]: ...
 
 
