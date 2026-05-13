@@ -66,6 +66,7 @@ if TYPE_CHECKING:
     from chalkcompute._secret import Secret as _Secret
 
 SerializationFormat = typing.Literal["pyarrow"]
+FunctionMode = typing.Literal["default", "fastapi"]
 
 _REMOTE_ENV_VAR = "_CHALK_REMOTE_FUNCTION"
 # When enabled, mount the local SDK project and pip-install at container start.
@@ -261,6 +262,7 @@ def _generate_handler_shim(
     *,
     batched: bool = False,
     bind_models: bool = False,
+    mode: FunctionMode = "default",
 ) -> str:
     """Generate a ``handler.py`` that bridges Arrow columnar data to scalar calls.
 
@@ -272,6 +274,9 @@ def _generate_handler_shim(
     ``events: list[dict[str, pa.Array]]`` / ``contexts: list[dict]`` to
     ``handler(events, contexts)``. The shim returns a list-of-lists —
     one inner list per caller. Generators are not supported in this mode.
+
+    FastAPI mode: the shim simply re-exports the user's ASGI app callable
+    as ``handler``; the server invokes it directly with ``(scope, receive, send)``.
 
     Parameters
     ----------
@@ -285,12 +290,17 @@ def _generate_handler_shim(
         the user module is imported. Required when ``models=`` is set so that
         any module-level ``F.catalog_call("model.<name>", ...)`` references can
         resolve.
+    mode
+        Handler mode. ``"default"`` is the historical event/context handler;
+        ``"fastapi"`` treats the user object as an ASGI3 app.
 
     Returns
     -------
     str
         Python source for the handler shim.
     """
+    if mode == "fastapi":
+        return f"from user_module import {func_name} as handler\n"
     bootstrap = (
         "from chalkcompute._model import apply_models_from_env as _apply_models\n"
         "_apply_models()\n"
@@ -544,8 +554,27 @@ def _source_text_for_deploy(source_file: str) -> str:
         ) from file_error
 
 
-def _source_file_for_deploy(func: Callable[..., Any]) -> str:
-    return inspect.getfile(inspect.unwrap(func))
+def _source_file_for_deploy(func: Any) -> str:
+    """Return the source file where ``func`` was defined.
+
+    For functions/classes this is ``inspect.getfile(inspect.unwrap(func))``.
+    For ASGI app instances (e.g. ``FastAPI()``) — used by ``mode="fastapi"`` —
+    we fall back to the module defining the instance via ``func.__module__``.
+    """
+    try:
+        return inspect.getfile(inspect.unwrap(func))
+    except TypeError:
+        pass
+    module_name = getattr(func, "__module__", None)
+    if module_name and module_name in sys.modules:
+        mod = sys.modules[module_name]
+        file = getattr(mod, "__file__", None)
+        if file:
+            return file
+    raise TypeError(
+        f"Cannot determine source file for {func!r}; pass a function or a "
+        "module-level ASGI app instance defined in your own module."
+    )
 
 
 def _prepare_source_file(source_file: str) -> tuple[str, bool]:
@@ -895,6 +924,23 @@ def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
     return input_schema, output_schema
 
 
+def _build_asgi_schemas() -> tuple[Any, Any]:
+    """Fixed schemas for ASGI/FastAPI mode.
+
+    Both input and output carry a single ``asgi`` ``LargeBinary`` column whose
+    values are serialized ``chalk.runtime.v1.Asgi`` proto messages.
+    """
+    from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
+
+    binary = arrow_pb2.ArrowType(large_binary=arrow_pb2.EmptyMessage())
+    field = arrow_pb2.Field(name="asgi", arrow_type=binary, nullable=False)
+    schema = arrow_pb2.Schema(columns=[field])
+    schema.metadata["chalk.function.mode"] = "fastapi"
+    out = arrow_pb2.Schema(columns=[arrow_pb2.Field(name="asgi", arrow_type=binary, nullable=False)])
+    out.metadata["chalk.function.mode"] = "fastapi"
+    return schema, out
+
+
 def _extract_field_names(schema_dict: dict | None) -> list[str]:
     """Extract field names from an Arrow schema JSON dict.
 
@@ -1048,9 +1094,18 @@ class RemoteFunction:
         schedule: str | None = None,
         models: typing.Mapping[str, Any] | None = None,
         chalk_client: Any | None = None,
+        mode: FunctionMode = "default",
     ) -> None:
         self._func = func
-        self._func_name = getattr(func, "__name__", "anonymous")
+        # ASGI app instances don't have __name__; fall back to the type name so
+        # autoderived function names remain stable across deploys.
+        self._func_name = getattr(func, "__name__", None) or type(func).__name__
+        self._mode: FunctionMode = mode
+        if mode == "fastapi" and max_batching_size is not None:
+            raise FunctionError(
+                "mode='fastapi' is incompatible with max_batching_size — each "
+                "gRPC call carries one ASGI connection and cannot be coalesced."
+            )
         if name is not None:
             validate_dns_label(name)
         self._explicit_name = name
@@ -1273,6 +1328,7 @@ class RemoteFunction:
         f._rate_limit = None
         f._concurrency = None
         f._quota = None
+        f._mode = "default"
         f._version_info = None
         f._web_url = None
         f._port = 6666
@@ -1306,6 +1362,7 @@ class RemoteFunction:
             self._func_name,
             batched=self._max_batching_size is not None,
             bind_models=bool(self._env.get(MODELS_ENV_VAR)),
+            mode=self._mode,
         )
         shim_path = _write_temp(handler_shim)
 
@@ -1381,11 +1438,16 @@ class RemoteFunction:
             self._temp_files = []
 
             # 3. Register function version
-            input_schema_proto, output_schema_proto = _build_schemas(self._func)
+            if self._mode == "fastapi":
+                input_schema_proto, output_schema_proto = _build_asgi_schemas()
+            else:
+                input_schema_proto, output_schema_proto = _build_schemas(self._func)
 
             sg_name = sanitize_dns_label(self._explicit_name or self._func_name)
 
             handler_cmd = ["chalk-remote-call", "--handler", "handler.handler"]
+            if self._mode == "fastapi":
+                handler_cmd += ["--mode", "fastapi"]
 
             container_spec = _make_container_spec(
                 name=sg_name,
@@ -2068,6 +2130,7 @@ def function(
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
+    mode: FunctionMode = "default",
 ) -> RemoteFunction | _NoOpFunction: ...
 
 
@@ -2098,6 +2161,7 @@ def function(
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
+    mode: FunctionMode = "default",
 ) -> Callable[..., RemoteFunction | _NoOpFunction]:
     ...
 
@@ -2130,6 +2194,7 @@ def function(
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
+    mode: FunctionMode = "default",
 ) -> Callable[..., RemoteFunction | _NoOpFunction] | RemoteFunction | _NoOpFunction:
     """Decorator that deploys a function as a versioned remote function.
 
@@ -2269,6 +2334,7 @@ def function(
             quota=quota,
             schedule=schedule,
             models=models,
+            mode=mode,
         )
         f.deploy()
         return f
