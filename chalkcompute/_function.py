@@ -291,7 +291,7 @@ def _generate_handler_shim(func_name: str, *, batched: bool = False) -> str:
             "            results = []\n"
             "            for event in events:\n"
             "                columns = {k: v.to_pylist() for k, v in event.items()}\n"
-            "                n = len(next(iter(columns.values())))\n"
+            "                n = len(next(iter(columns.values()))) if columns else 1\n"
             "                per_caller = []\n"
             "                for i in range(n):\n"
             "                    kwargs = {k: v[i] for k, v in columns.items()}\n"
@@ -302,7 +302,7 @@ def _generate_handler_shim(func_name: str, *, batched: bool = False) -> str:
             "    results = []\n"
             "    for event in events:\n"
             "        columns = {k: v.to_pylist() for k, v in event.items()}\n"
-            "        n = len(next(iter(columns.values())))\n"
+            "        n = len(next(iter(columns.values()))) if columns else 1\n"
             "        per_caller = []\n"
             "        for i in range(n):\n"
             "            kwargs = {k: v[i] for k, v in columns.items()}\n"
@@ -321,7 +321,7 @@ def _generate_handler_shim(func_name: str, *, batched: bool = False) -> str:
         "\n"
         "\n"
         "def handler(event, context):\n"
-        "    n = len(next(iter(event.values())))\n"
+        "    n = len(next(iter(event.values()))) if event else 1\n"
         "    if _is_sync_gen:\n"
         "        def _gen():\n"
         "            for i in range(n):\n"
@@ -1640,7 +1640,15 @@ class RemoteFunction:
             sig = inspect.signature(self._func)
             bound = sig.bind(*args, **kwargs)
             bound.apply_defaults()
-            arguments = bound.arguments
+            arguments = {
+                name: value
+                for name, value in bound.arguments.items()
+                if sig.parameters[name].kind
+                not in (
+                    inspect.Parameter.VAR_POSITIONAL,
+                    inspect.Parameter.VAR_KEYWORD,
+                )
+            }
 
         arrays = []
         names = []
