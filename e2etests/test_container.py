@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from dotenv import load_dotenv
 
-from chalkcompute import Container, Image, Secret
+from chalkcompute import ConnectClient, Container, Image, Secret, build_image
 from e2etests.container_metrics import (
     assert_container_metrics_target,
     container_metrics_target,
@@ -111,12 +111,11 @@ def test_image_build_cache() -> None:
     finally:
         c1.stop()
 
-    # Second build with the identical image spec: should be cached.
-    # We call _build_image directly to isolate image-build time from
-    # container startup time.
-    c2 = Container(image=img, name=f"test-cache-2-{uuid.uuid4().hex[:8]}")
+    # Second build with the identical image spec: should be cached. Use the
+    # public image-build helper to isolate image-build time from container
+    # startup time.
     t0 = time.monotonic()
-    image_uri = c2._build_image()
+    image_uri = build_image(img)
     build_elapsed = time.monotonic() - t0
 
     assert image_uri, "Expected a non-empty image URI"
@@ -153,14 +152,12 @@ def test_container_add_local_dir() -> None:
 @needs_staging
 def test_container_secret_from_env() -> None:
     """Secret.from_env() injects a Chalk secret as an env var into the container."""
-    from chalkcompute._connect import ConnectClient
-
     client = ConnectClient()
     secret_name = f"TEST_SECRET_{uuid.uuid4().hex[:8].upper()}"
     secret_value = f"secret-value-{uuid.uuid4().hex[:8]}"
     _SECRETS_SVC = "chalk.server.v1.EnvironmentSecretsService"
 
-    # Create a test secret in the environment
+    # No public SDK secret CRUD API exists yet; setup/cleanup uses Connect RPCs.
     resp = client.rpc(
         _SECRETS_SVC,
         "UpsertSecret",
