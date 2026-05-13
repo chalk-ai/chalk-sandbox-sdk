@@ -144,7 +144,7 @@ steps:
       rm /tmp/test.env
 
       echo "--- :python: Sync dependencies"
-      uv sync --all-extras
+      uv sync --all-extras --reinstall-package chalkcompute
 
       echo "--- :arrows_counterclockwise: Deploy and test generator functions"
       CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest e2etests/test_generator.py -v -s --tb=short
@@ -178,7 +178,7 @@ steps:
       rm /tmp/test.env
 
       echo "--- :python: Sync dependencies"
-      uv sync --all-extras
+      uv sync --all-extras --reinstall-package chalkcompute
 
       echo "--- :zap: Deploy and test scalar functions"
       CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest e2etests/test_scalar.py -v -s --tb=short
