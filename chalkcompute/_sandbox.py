@@ -35,11 +35,13 @@ from dataclasses import dataclass, field
 
 import grpc
 
-from chalkcompute._connect import ConnectClient, grpc_target_from_url, raise_for_grpc_error
+from chalkcompute._connect import ConnectClient, grpc_target_from_url, raise_for_grpc_error, build_image_from_spec
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as pb
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2_grpc as pb_grpc
 from chalkcompute._image import Image
 from chalkcompute._tracing import traced
+from chalkcompute._volume import VolumeClient
+from chalkcompute._volume import pb as _volume_pb
 
 # Aliases defined before SandboxClient, which has a ``.list()`` method that
 # would otherwise shadow the builtin ``list`` in class-scope name resolution.
@@ -629,6 +631,22 @@ class SandboxClient:
             A sandbox handle.
         """
         req = pb.CreateSandboxRequest()
+        # XXX scauligi hacks
+        if isinstance(image, str):
+            image = Image(image)
+        with VolumeClient.from_connect(ConnectClient()) as vc:
+            res = vc._stub.GetFile(
+                _volume_pb.GetFileRequest(
+                    volume_name="scauligi-sbox-entry",
+                    path="chalk-sandbox-entrypoint",
+                    get_signed_uri=True),
+                metadata=vc._metadata)
+            uri = res.signed_download_uri
+        image = image.dockerfile_commands([
+            f"ADD --chmod=555 {uri} /usr/local/bin/chalk-sandbox-entrypoint"
+        ]).cmd(["/usr/local/bin/chalk-sandbox-entrypoint"])
+        image = build_image_from_spec(image)
+        # XXX end hacks
         if isinstance(image, Image):
             req.image_spec.CopyFrom(image.to_proto())
         else:
