@@ -499,6 +499,9 @@ class TestGenerateHandlerShimFastAPI:
         assert ns["handler"] is app
 
     def test_shim_routes_through_process_batches_asgi(self):
+        # Depends on chalk-remote-call-python's ASGI module — added in a
+        # companion PR. Skip if the installed version doesn't ship it yet.
+        pytest.importorskip("chalk_remote_call.asgi_handler")
         from chalk_remote_call._gen.chalk.runtime.v1 import asgi_pb2
         from chalk_remote_call.asgi_handler import (
             decode_asgi_inputs,

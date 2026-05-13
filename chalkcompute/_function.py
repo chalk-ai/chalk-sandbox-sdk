@@ -33,6 +33,7 @@ import linecache
 import logging
 import os
 import shlex
+import sys
 import tempfile
 import threading
 import time
