@@ -161,16 +161,40 @@ class MetadataServiceAgent(_message.Message):
     __slots__ = ()
     def __init__(self) -> None: ...
 
+class ExchangeTokenDetails(_message.Message):
+    __slots__ = ("requestable_permissions", "generation_number", "subject", "environment_id")
+    REQUESTABLE_PERMISSIONS_FIELD_NUMBER: _ClassVar[int]
+    GENERATION_NUMBER_FIELD_NUMBER: _ClassVar[int]
+    SUBJECT_FIELD_NUMBER: _ClassVar[int]
+    ENVIRONMENT_ID_FIELD_NUMBER: _ClassVar[int]
+    requestable_permissions: _containers.RepeatedScalarFieldContainer[_permissions_pb2.Permission]
+    generation_number: int
+    subject: str
+    environment_id: str
+    def __init__(
+        self,
+        requestable_permissions: _Optional[_Iterable[_Union[_permissions_pb2.Permission, str]]] = ...,
+        generation_number: _Optional[int] = ...,
+        subject: _Optional[str] = ...,
+        environment_id: _Optional[str] = ...,
+    ) -> None: ...
+
 class TenantAgent(_message.Message):
-    __slots__ = ("team_id", "permissions")
+    __slots__ = ("team_id", "permissions", "environment_id", "exchange_token_details")
     TEAM_ID_FIELD_NUMBER: _ClassVar[int]
     PERMISSIONS_FIELD_NUMBER: _ClassVar[int]
+    ENVIRONMENT_ID_FIELD_NUMBER: _ClassVar[int]
+    EXCHANGE_TOKEN_DETAILS_FIELD_NUMBER: _ClassVar[int]
     team_id: str
     permissions: _containers.RepeatedScalarFieldContainer[_permissions_pb2.Permission]
+    environment_id: str
+    exchange_token_details: ExchangeTokenDetails
     def __init__(
         self,
         team_id: _Optional[str] = ...,
         permissions: _Optional[_Iterable[_Union[_permissions_pb2.Permission, str]]] = ...,
+        environment_id: _Optional[str] = ...,
+        exchange_token_details: _Optional[_Union[ExchangeTokenDetails, _Mapping]] = ...,
     ) -> None: ...
 
 class Agent(_message.Message):
