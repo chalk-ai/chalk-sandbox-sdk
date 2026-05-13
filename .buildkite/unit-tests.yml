@@ -10,6 +10,8 @@ steps:
     command: |
       set -euo pipefail
       unset VIRTUAL_ENV
+      echo "--- :python: Install uv"
+      source .buildkite/install-uv.sh
       echo "--- :python: Sync dependencies"
       uv sync --all-extras
       echo "--- :mag: Run ty"
@@ -22,6 +24,8 @@ steps:
     command: |
       set -euo pipefail
       unset VIRTUAL_ENV
+      echo "--- :python: Install uv"
+      source .buildkite/install-uv.sh
       echo "--- :python: Sync dependencies"
       uv sync --all-extras
       echo "--- :pytest: Run unit tests"
