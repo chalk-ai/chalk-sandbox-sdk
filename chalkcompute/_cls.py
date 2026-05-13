@@ -59,12 +59,14 @@ from chalkcompute._function import (
     RemoteFunction,
     SerializationFormat,
     _build_and_upload,
+    _callable_input_names,
     _cleanup_temp_files,
     _extract_field_names,
     _is_chalkcompute_decorator,
     _local_install_entrypoint,
     _make_base_image,
     _make_container_spec,
+    _normalize_schedule,
     _should_strip_source,
     _write_temp,
 )
@@ -566,6 +568,7 @@ class RemoteClass:
         rate_limit: int | RateLimitPolicy | None = None,
         concurrency: int | ConcurrencyPolicy | None = None,
         quota: int | QueuePolicy | None = None,
+        schedule: str | None = None,
     ) -> None:
         self._user_cls = user_cls
         self._class_name = user_cls.__name__
@@ -589,6 +592,10 @@ class RemoteClass:
         self._options = options or {}
         self._max_buffer_duration = max_buffer_duration
         self._max_batching_size = max_batching_size
+        self._schedule = _normalize_schedule(
+            schedule,
+            owner=f"Class '{self._class_name}' schedule",
+        )
         self._retries = (
             RetryPolicy.from_int_or_policy(retries) if retries is not None else None
         )
@@ -633,6 +640,15 @@ class RemoteClass:
             raise ClassError(
                 f"Class {user_cls.__name__} has no @method decorated methods"
             )
+
+        if self._schedule is not None:
+            for mname, mi in self._methods.items():
+                input_names = _callable_input_names(mi.func, skip_self=True)
+                if input_names:
+                    raise ClassError(
+                        f"Scheduled method '{self._class_name}.{mname}' cannot have "
+                        f"inputs: {', '.join(input_names)}"
+                    )
 
         if max_batching_size is not None:
             for mname, mi in self._methods.items():
@@ -749,6 +765,7 @@ class RemoteClass:
         rc._options = {}
         rc._max_buffer_duration = None
         rc._max_batching_size = None
+        rc._schedule = None
         rc._retries = None
         rc._rate_limit = None
         rc._concurrency = None
@@ -958,6 +975,8 @@ class RemoteClass:
                     function_config["concurrency"] = self._concurrency.to_dict()
                 if self._quota is not None:
                     function_config["queue"] = self._quota.to_dict()
+                if self._schedule is not None:
+                    function_config["schedule"] = self._schedule
 
                 logger.info("Registering method '%s'...", func_name)
                 create_request: dict[str, Any] = {
@@ -1234,6 +1253,7 @@ def cls(
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
     quota: int | QueuePolicy | None = None,
+    schedule: str | None = None,
 ) -> RemoteClass | _NoOpClass: ...
 
 
@@ -1262,6 +1282,7 @@ def cls(
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
     quota: int | QueuePolicy | None = None,
+    schedule: str | None = None,
 ) -> Callable[..., RemoteClass | _NoOpClass]: ...
 
 
@@ -1291,6 +1312,7 @@ def cls(
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
     quota: int | QueuePolicy | None = None,
+    schedule: str | None = None,
 ) -> Callable[..., RemoteClass | _NoOpClass] | RemoteClass | _NoOpClass:
     """Decorator that deploys a class as versioned remote functions.
 
@@ -1373,6 +1395,9 @@ def cls(
         Queue quota policy: cap on queued calls per key. Pass an ``int``
         for a simple ``max_queue_depth`` cap with a per-method key, or a
         :class:`~chalkcompute.QueuePolicy` for full control.
+    schedule
+        Optional crontab or Chalk duration string applied to every no-input
+        ``@method`` in the class (e.g. ``"0 * * * *"`` or ``"1h"``).
     """
 
     def decorator(user_cls: type) -> RemoteClass | _NoOpClass:
@@ -1403,6 +1428,7 @@ def cls(
             rate_limit=rate_limit,
             concurrency=concurrency,
             quota=quota,
+            schedule=schedule,
         )
         rc.deploy()
         return rc

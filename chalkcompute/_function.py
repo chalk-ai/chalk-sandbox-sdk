@@ -291,7 +291,7 @@ def _generate_handler_shim(func_name: str, *, batched: bool = False) -> str:
             "            results = []\n"
             "            for event in events:\n"
             "                columns = {k: v.to_pylist() for k, v in event.items()}\n"
-            "                n = len(next(iter(columns.values())))\n"
+            "                n = len(next(iter(columns.values()))) if columns else 1\n"
             "                per_caller = []\n"
             "                for i in range(n):\n"
             "                    kwargs = {k: v[i] for k, v in columns.items()}\n"
@@ -302,7 +302,7 @@ def _generate_handler_shim(func_name: str, *, batched: bool = False) -> str:
             "    results = []\n"
             "    for event in events:\n"
             "        columns = {k: v.to_pylist() for k, v in event.items()}\n"
-            "        n = len(next(iter(columns.values())))\n"
+            "        n = len(next(iter(columns.values()))) if columns else 1\n"
             "        per_caller = []\n"
             "        for i in range(n):\n"
             "            kwargs = {k: v[i] for k, v in columns.items()}\n"
@@ -321,7 +321,7 @@ def _generate_handler_shim(func_name: str, *, batched: bool = False) -> str:
         "\n"
         "\n"
         "def handler(event, context):\n"
-        "    n = len(next(iter(event.values())))\n"
+        "    n = len(next(iter(event.values()))) if event else 1\n"
         "    if _is_sync_gen:\n"
         "        def _gen():\n"
         "            for i in range(n):\n"
@@ -860,6 +860,30 @@ def _extract_function_traits(efv: dict[str, Any]) -> tuple[bool, bool]:
     )
 
 
+def _normalize_schedule(schedule: str | None, *, owner: str = "schedule") -> str | None:
+    if schedule is None:
+        return None
+    if not isinstance(schedule, str):
+        raise TypeError(f"{owner} must be a string or None")
+    normalized = schedule.strip()
+    if not normalized:
+        raise ValueError(f"{owner} must be a non-empty string")
+    return normalized
+
+
+def _callable_input_names(
+    func: Callable[..., Any],
+    *,
+    skip_self: bool = False,
+) -> list[str]:
+    names: list[str] = []
+    for param in inspect.signature(func).parameters.values():
+        if skip_self and param.name == "self":
+            continue
+        names.append(param.name)
+    return names
+
+
 # ---------------------------------------------------------------------------
 # RemoteFunction
 # ---------------------------------------------------------------------------
@@ -943,6 +967,7 @@ class RemoteFunction:
         rate_limit: int | RateLimitPolicy | None = None,
         concurrency: int | ConcurrencyPolicy | None = None,
         quota: int | QueuePolicy | None = None,
+        schedule: str | None = None,
     ) -> None:
         self._func = func
         self._func_name = getattr(func, "__name__", "anonymous")
@@ -967,6 +992,17 @@ class RemoteFunction:
         self._options = options or {}
         self._max_buffer_duration = max_buffer_duration
         self._max_batching_size = max_batching_size
+        self._schedule = _normalize_schedule(
+            schedule,
+            owner=f"Function '{self._func_name}' schedule",
+        )
+        if self._schedule is not None:
+            input_names = _callable_input_names(func)
+            if input_names:
+                raise FunctionError(
+                    f"Scheduled function '{self._func_name}' cannot have inputs: "
+                    f"{', '.join(input_names)}"
+                )
         if max_batching_size is not None and (
             inspect.isgeneratorfunction(func) or inspect.isasyncgenfunction(func)
         ):
@@ -1120,6 +1156,7 @@ class RemoteFunction:
         f._options = {}
         f._max_buffer_duration = None
         f._max_batching_size = None
+        f._schedule = None
         f._retries = None
         f._rate_limit = None
         f._concurrency = None
@@ -1297,6 +1334,8 @@ class RemoteFunction:
                 function_config["concurrency"] = self._concurrency.to_dict()
             if self._quota is not None:
                 function_config["queue"] = self._quota.to_dict()
+            if self._schedule is not None:
+                function_config["schedule"] = self._schedule
 
             # 6. Call CreateExternalFunctionVersion
             rkey = f"register:{self._func_name}"
@@ -1601,7 +1640,15 @@ class RemoteFunction:
             sig = inspect.signature(self._func)
             bound = sig.bind(*args, **kwargs)
             bound.apply_defaults()
-            arguments = bound.arguments
+            arguments = {
+                name: value
+                for name, value in bound.arguments.items()
+                if sig.parameters[name].kind
+                not in (
+                    inspect.Parameter.VAR_POSITIONAL,
+                    inspect.Parameter.VAR_KEYWORD,
+                )
+            }
 
         arrays = []
         names = []
@@ -1879,6 +1926,7 @@ def function(
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
     quota: int | QueuePolicy | None = None,
+    schedule: str | None = None,
 ) -> RemoteFunction | _NoOpFunction: ...
 
 
@@ -1907,6 +1955,7 @@ def function(
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
     quota: int | QueuePolicy | None = None,
+    schedule: str | None = None,
 ) -> Callable[..., RemoteFunction | _NoOpFunction]:
     ...
 
@@ -1937,6 +1986,7 @@ def function(
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
     quota: int | QueuePolicy | None = None,
+    schedule: str | None = None,
 ) -> Callable[..., RemoteFunction | _NoOpFunction] | RemoteFunction | _NoOpFunction:
     """Decorator that deploys a function as a versioned remote function.
 
@@ -2024,6 +2074,9 @@ def function(
         Submitting past the cap raises a gRPC ``RESOURCE_EXHAUSTED`` error —
         clients should back off or call ``purge()`` on the function to drain
         the queue if items were erroneously added.
+    schedule
+        Optional crontab or Chalk duration string for invoking a no-input
+        function on a schedule (e.g. ``"0 * * * *"`` or ``"1h"``).
 
     Examples
     --------
@@ -2062,6 +2115,7 @@ def function(
             rate_limit=rate_limit,
             concurrency=concurrency,
             quota=quota,
+            schedule=schedule,
         )
         f.deploy()
         return f

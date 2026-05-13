@@ -8,13 +8,60 @@ tests lock in the key names the server reads.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
+import chalkcompute._cls as cls_mod
+import chalkcompute._function as function_mod
 from chalkcompute._cls import ClassError, RemoteClass, method
 from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._function import FunctionError, RemoteFunction
 from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._retry import RetryPolicy
+
+
+class _FakeResponse:
+    status_code = 200
+    text = ""
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self._data = data
+
+    def json(self) -> dict[str, Any]:
+        return self._data
+
+
+class _CapturingClient:
+    def __init__(self) -> None:
+        self.requests: list[dict[str, Any]] = []
+
+    def rpc(
+        self,
+        _service: str,
+        method: str,
+        request: dict[str, Any],
+        **_: Any,
+    ) -> _FakeResponse:
+        if method != "CreateExternalFunctionVersion":
+            raise AssertionError(f"unexpected method: {method}")
+        self.requests.append(request)
+        return _FakeResponse(
+            {
+                "externalFunctionVersion": {
+                    "id": f"version-{len(self.requests)}",
+                    "functionName": request["functionName"],
+                    "version": len(self.requests),
+                    "scalingGroupName": request["spec"]["containerSpec"]["name"],
+                    "inputArrowSchema": request["inputArrowSchema"],
+                },
+                "scalingGroup": {
+                    "status": "Running",
+                    "webUrl": "http://127.0.0.1",
+                    "port": 6666,
+                },
+            }
+        )
 
 
 class TestRateLimitPolicyToDict:
@@ -163,3 +210,106 @@ class TestBatchingGeneratorGuardClass:
                 return x + y
 
         RemoteClass(Adder, max_batching_size=10)
+
+
+class TestScheduleValidationFunction:
+    def test_empty_schedule_rejected(self):
+        def tick() -> None:
+            pass
+
+        with pytest.raises(ValueError, match="non-empty"):
+            RemoteFunction(tick, schedule=" ")
+
+    def test_non_string_schedule_rejected(self):
+        def tick() -> None:
+            pass
+
+        with pytest.raises(TypeError, match="string"):
+            RemoteFunction(tick, schedule=1)  # type: ignore[arg-type]
+
+    def test_inputs_rejected_for_scheduled_function(self):
+        def add(x: int) -> int:
+            return x
+
+        with pytest.raises(FunctionError, match="cannot have inputs"):
+            RemoteFunction(add, schedule="1h")
+
+    def test_schedule_is_sent_in_function_config(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        def tick() -> None:
+            pass
+
+        client = _CapturingClient()
+        fn = RemoteFunction(tick, schedule=" 1h ")
+        fn._client = client  # type: ignore[assignment]
+        monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
+        monkeypatch.setattr(
+            function_mod,
+            "_build_and_upload",
+            lambda *_, **__: ("image:test", []),
+        )
+
+        fn.deploy()
+
+        assert client.requests[0]["config"]["schedule"] == "1h"
+
+
+class TestScheduleValidationClass:
+    def test_empty_schedule_rejected(self):
+        class Jobs:
+            @method
+            def tick(self) -> None:
+                pass
+
+        with pytest.raises(ValueError, match="non-empty"):
+            RemoteClass(Jobs, schedule="")
+
+    def test_non_string_schedule_rejected(self):
+        class Jobs:
+            @method
+            def tick(self) -> None:
+                pass
+
+        with pytest.raises(TypeError, match="string"):
+            RemoteClass(Jobs, schedule=1)  # type: ignore[arg-type]
+
+    def test_inputs_rejected_for_scheduled_method(self):
+        class Jobs:
+            @method
+            def tick(self, x: int) -> int:
+                return x
+
+        with pytest.raises(ClassError, match="cannot have inputs"):
+            RemoteClass(Jobs, schedule="1h")
+
+    def test_schedule_is_sent_in_each_method_config(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        class Jobs:
+            @method
+            def hourly(self) -> None:
+                pass
+
+            @method
+            def daily(self) -> None:
+                pass
+
+        client = _CapturingClient()
+        rc = RemoteClass(Jobs, schedule="0 * * * *")
+        rc._client = client  # type: ignore[assignment]
+        monkeypatch.setattr(RemoteClass, "_build_deploy_image", lambda _: (object(), []))
+        monkeypatch.setattr(
+            cls_mod,
+            "_build_and_upload",
+            lambda *_, **__: ("image:test", []),
+        )
+
+        rc.deploy()
+
+        assert [req["config"]["schedule"] for req in client.requests] == [
+            "0 * * * *",
+            "0 * * * *",
+        ]
