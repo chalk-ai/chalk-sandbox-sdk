@@ -4,7 +4,7 @@ on:
       - main
 
 steps:
-  - label: ":package: Install chalkcompute from PyPI (Python {{matrix}})"
+  - label: ":linux: Install chalkcompute from PyPI (Linux, Python {{matrix}})"
     matrix:
       - "3.11"
       - "3.12"
@@ -23,16 +23,44 @@ steps:
           --index-url https://pypi.org/simple \
           chalkcompute
 
-        python - <<'"'"'PY'"'"'
-      from importlib.metadata import version
-
-      import chalkcompute
-      import chalkcompute._remote_call_native as native
-
-      print("chalkcompute", version("chalkcompute"))
-      print("native client", native.RemoteCallClient)
-      PY
+        python -c "from importlib.metadata import version; import chalkcompute; import chalkcompute._remote_call_native as native; print('chalkcompute', version('chalkcompute')); print('native client', native.RemoteCallClient)"
       '
     agents:
       queue: default
+    timeout_in_minutes: 10
+
+  - label: ":mac: Install chalkcompute from PyPI (macOS, Python {{matrix}})"
+    matrix:
+      - "3.11"
+      - "3.12"
+      - "3.13"
+      - "3.14"
+    command: |
+      set -euo pipefail
+      unset VIRTUAL_ENV
+      unset GITHUB_TOKEN
+      unset GH_TOKEN
+      unset SSH_AUTH_SOCK
+
+      export HOME="$$(mktemp -d)"
+      export GIT_CONFIG_GLOBAL=/dev/null
+      export PIP_CONFIG_FILE=/dev/null
+      trap 'rm -rf "$$HOME"' EXIT
+
+      echo "--- :python: Create clean Python {{matrix}} environment"
+      uv python install "{{matrix}}"
+      uv venv --python "{{matrix}}" "$$HOME/venv"
+      . "$$HOME/venv/bin/activate"
+
+      echo "--- :package: Install from public PyPI without source builds"
+      python -m pip install \
+        --isolated \
+        --no-cache-dir \
+        --only-binary=:all: \
+        --index-url https://pypi.org/simple \
+        chalkcompute
+
+      python -c "from importlib.metadata import version; import chalkcompute; import chalkcompute._remote_call_native as native; print('chalkcompute', version('chalkcompute')); print('native client', native.RemoteCallClient)"
+    agents:
+      queue: macos
     timeout_in_minutes: 10
