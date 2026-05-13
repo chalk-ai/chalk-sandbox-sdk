@@ -1,0 +1,81 @@
+on:
+  push:
+    branches:
+      - main
+
+steps:
+  - label: ":linux: Install chalkcompute from PyPI (Linux, Python {{matrix}})"
+    matrix:
+      - "3.11"
+      - "3.12"
+      - "3.13"
+      - "3.14"
+    command: |
+      set -euo pipefail
+      unset VIRTUAL_ENV
+
+      echo "--- :docker: Install from public PyPI in a clean Python {{matrix}} container"
+      docker run --rm --pull always "python:{{matrix}}-slim" sh -euxc '
+        python -m pip install \
+          --isolated \
+          --no-cache-dir \
+          --only-binary=:all: \
+          --index-url https://pypi.org/simple \
+          chalkcompute
+
+        python -c "from importlib.metadata import version; import chalkcompute; import chalkcompute._remote_call_native as native; print('chalkcompute', version('chalkcompute')); print('native client', native.RemoteCallClient)"
+      '
+    agents:
+      queue: default
+    timeout_in_minutes: 10
+
+  - label: ":mac: Upload macOS PyPI install checks"
+    command: |
+      set -euo pipefail
+
+      if [ -z "$${CHALK_BUILDKITE_MACOS_QUEUE:-}" ]; then
+        echo "CHALK_BUILDKITE_MACOS_QUEUE must name an existing macOS queue in this Buildkite cluster." >&2
+        exit 1
+      fi
+
+      cat <<'YAML' | sed "s|__MACOS_QUEUE__|$${CHALK_BUILDKITE_MACOS_QUEUE}|g" | buildkite-agent pipeline upload
+      steps:
+        - label: ":mac: Install chalkcompute from PyPI (macOS, Python {{matrix}})"
+          matrix:
+            - "3.11"
+            - "3.12"
+            - "3.13"
+            - "3.14"
+          command: |
+            set -euo pipefail
+            unset VIRTUAL_ENV
+            unset GITHUB_TOKEN
+            unset GH_TOKEN
+            unset SSH_AUTH_SOCK
+
+            export HOME="$(mktemp -d)"
+            export GIT_CONFIG_GLOBAL=/dev/null
+            export PIP_CONFIG_FILE=/dev/null
+            trap 'rm -rf "$HOME"' EXIT
+
+            echo "--- :python: Create clean Python {{matrix}} environment"
+            uv python install "{{matrix}}"
+            uv venv --python "{{matrix}}" "$HOME/venv"
+            . "$HOME/venv/bin/activate"
+
+            echo "--- :package: Install from public PyPI without source builds"
+            python -m pip install \\
+              --isolated \\
+              --no-cache-dir \\
+              --only-binary=:all: \\
+              --index-url https://pypi.org/simple \\
+              chalkcompute
+
+            python -c "from importlib.metadata import version; import chalkcompute; import chalkcompute._remote_call_native as native; print('chalkcompute', version('chalkcompute')); print('native client', native.RemoteCallClient)"
+          agents:
+            queue: "__MACOS_QUEUE__"
+          timeout_in_minutes: 10
+      YAML
+    agents:
+      queue: default
+    timeout_in_minutes: 5
