@@ -3,7 +3,7 @@
 Rate limit: 5 requests per second. The catalog consumer will enforce this,
 so calls beyond 5/s will be queued and throttled.
 
-    CHALK_FUNCTION_STRIP_SOURCE=1 uv run python examples/scalar/deploy_rate_limited.py
+    uv run python examples/scalar/deploy_rate_limited.py
 """
 
 from __future__ import annotations

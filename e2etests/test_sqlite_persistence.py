@@ -5,26 +5,22 @@ independent containers that mount the same volume.
 """
 
 import os
-import sys
 import time
 import uuid
 
 import pytest
-from dotenv import load_dotenv
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../.."))
+from chalkcompute import Container, Image
+from e2etests.conftest import (
+    CHALK_API_SERVER,
+    CHALK_CLIENT_ID,
+    CHALK_CLIENT_SECRET,
+    CHALK_ENVIRONMENT_ID,
+    needs_staging,
+)
 
-from chalkcompute import Container, Image  # noqa: E402
-
-load_dotenv(os.path.join(os.path.dirname(__file__), "../../../.env"))
-
-CHALK_CLIENT_ID = os.environ.get("CHALK_CLIENT_ID", "")
-CHALK_CLIENT_SECRET = os.environ.get("CHALK_CLIENT_SECRET", "")
-CHALK_API_SERVER = os.environ.get("CHALK_API_SERVER", "")
-
-needs_staging = pytest.mark.skipif(
-    not CHALK_CLIENT_ID or not CHALK_API_SERVER,
-    reason="CHALK_CLIENT_ID/CHALK_API_SERVER not set",
+pytestmark = pytest.mark.skip(
+    reason="expensive — overlaps with test_volume_hello for the volume+container path"
 )
 
 # Passed into every container so ChalkFS can authenticate to the volume service.
@@ -32,7 +28,7 @@ CONTAINER_ENV = {
     "CHALK_CLIENT_ID": CHALK_CLIENT_ID,
     "CHALK_CLIENT_SECRET": CHALK_CLIENT_SECRET,
     "CHALK_API_SERVER": CHALK_API_SERVER,
-    "CHALK_ENVIRONMENT_ID": os.environ.get("CHALK_ENVIRONMENT_ID", ""),
+    "CHALK_ENVIRONMENT_ID": CHALK_ENVIRONMENT_ID,
 }
 
 MOUNT_PATH = "/data"

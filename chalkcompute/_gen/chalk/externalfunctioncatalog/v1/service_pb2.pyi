@@ -384,7 +384,7 @@ class ListExternalFunctionScheduledRunsRequest(_message.Message):
     ) -> None: ...
 
 class ExternalFunctionScheduledRun(_message.Message):
-    __slots__ = ("id", "status", "created_at", "attempt", "max_attempts", "metadata")
+    __slots__ = ("id", "status", "created_at", "metadata")
     class MetadataEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -398,22 +398,16 @@ class ExternalFunctionScheduledRun(_message.Message):
     ID_FIELD_NUMBER: _ClassVar[int]
     STATUS_FIELD_NUMBER: _ClassVar[int]
     CREATED_AT_FIELD_NUMBER: _ClassVar[int]
-    ATTEMPT_FIELD_NUMBER: _ClassVar[int]
-    MAX_ATTEMPTS_FIELD_NUMBER: _ClassVar[int]
     METADATA_FIELD_NUMBER: _ClassVar[int]
     id: int
     status: ExternalFunctionScheduledRunStatus
     created_at: _timestamp_pb2.Timestamp
-    attempt: int
-    max_attempts: int
     metadata: _containers.MessageMap[str, _struct_pb2.Value]
     def __init__(
         self,
         id: _Optional[int] = ...,
         status: _Optional[_Union[ExternalFunctionScheduledRunStatus, str]] = ...,
         created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
-        attempt: _Optional[int] = ...,
-        max_attempts: _Optional[int] = ...,
         metadata: _Optional[_Mapping[str, _struct_pb2.Value]] = ...,
     ) -> None: ...
 

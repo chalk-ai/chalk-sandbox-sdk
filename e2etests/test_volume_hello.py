@@ -1,11 +1,8 @@
-"""
-Volume hello-world test.
+"""Volume hello-world test.
 
 Proves that a file uploaded to a named volume is readable inside a container
 that mounts it. ChalkFS may take a few seconds to sync after the container
 starts, so we retry the read with a short backoff.
-
-    uv run python -m pytest examples/volume_hello/test/test_volume_hello.py -v -s
 """
 
 import base64
@@ -14,88 +11,40 @@ import time
 import uuid
 from collections.abc import Iterator
 
-import httpx
 import pytest
-from dotenv import load_dotenv
 
 from chalkcompute import Container
+from e2etests.conftest import _connect_rpc, needs_staging
 
-load_dotenv()
-
-CHALK_CLIENT_ID = os.environ.get("CHALK_CLIENT_ID")
-CHALK_API_SERVER = os.environ.get("CHALK_API_SERVER")
-
-needs_staging = pytest.mark.skipif(
-    not CHALK_CLIENT_ID or not CHALK_API_SERVER,
-    reason="CHALK_CLIENT_ID/CHALK_API_SERVER not set",
-)
+_VOLUME_SVC = "chalk.volume.v1.VolumeService"
 
 MOUNT_PATH = "/mnt/data"
 FILE_NAME = "hello.txt"
 FILE_CONTENT = "Hello from a Chalk volume!"
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _get_token() -> str:
-    resp = httpx.post(
-        f"{os.environ['CHALK_API_SERVER']}/v1/oauth/token",
-        json={
-            "client_id": os.environ["CHALK_CLIENT_ID"],
-            "client_secret": os.environ["CHALK_CLIENT_SECRET"],
-            "grant_type": "client_credentials",
-        },
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()["access_token"]
-
-
-def _volume_rpc(method: str, body: dict, *, token: str) -> httpx.Response:
-    return httpx.post(
-        f"{os.environ['CHALK_API_SERVER']}/chalk.volume.v1.VolumeService/{method}",
-        json=body,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "X-Chalk-Env-Id": os.environ.get("CHALK_ENVIRONMENT_ID", ""),
-            "Content-Type": "application/json",
-        },
-        timeout=30,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-@pytest.fixture(scope="module")
-def token() -> str:
-    return _get_token()
-
-
 @pytest.fixture
-def hello_vol(token: str) -> Iterator[str]:
+def hello_vol(auth_headers: dict[str, str]) -> Iterator[str]:
     """Create a volume with hello.txt, yield its name, then delete it."""
     vol_name = f"test-hello-vol-{uuid.uuid4().hex[:8]}"
 
-    resp = _volume_rpc("CreateVolume", {"name": vol_name}, token=token)
+    resp = _connect_rpc(_VOLUME_SVC, "CreateVolume", {"name": vol_name}, auth_headers)
     resp.raise_for_status()
-    resp = _volume_rpc(
+    resp = _connect_rpc(
+        _VOLUME_SVC,
         "PutFile",
         {
             "volumeName": vol_name,
             "path": FILE_NAME,
             "data": base64.b64encode(FILE_CONTENT.encode()).decode(),
         },
-        token=token,
+        auth_headers,
     )
     resp.raise_for_status()
 
     yield vol_name
 
-    _volume_rpc("DeleteVolume", {"name": vol_name}, token=token)
+    _connect_rpc(_VOLUME_SVC, "DeleteVolume", {"name": vol_name}, auth_headers)
 
 
 # ---------------------------------------------------------------------------

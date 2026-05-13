@@ -3,7 +3,7 @@
 Concurrency limit: 2 concurrent calls. The catalog consumer will enforce
 this via a semaphore, so at most 2 calls execute simultaneously.
 
-    CHALK_FUNCTION_STRIP_SOURCE=1 uv run python examples/scalar/deploy_concurrency_limited.py
+    uv run python examples/scalar/deploy_concurrency_limited.py
 """
 
 from __future__ import annotations

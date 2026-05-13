@@ -42,10 +42,44 @@ steps:
       uv sync --all-extras --reinstall-package chalkcompute
 
       echo "--- :pytest: Run integration tests ($$CHALK_API_SERVER)"
-      uv run python -m pytest e2etests/test_image.py e2etests/test_sandbox_exec.py e2etests/test_volume.py e2etests/test_container.py e2etests/test_remote_function_calls.py e2etests/test_remote_function_schedule.py -v -s --tb=short
+      uv run python -m pytest e2etests/test_image.py e2etests/test_sandbox_exec.py e2etests/test_volume.py e2etests/test_container.py -v -s --tb=short
     agents:
       queue: default
     timeout_in_minutes: 15
+    retry:
+      automatic:
+        - exit_status: -1
+          limit: 2
+
+  - label: ":alarm_clock: Remote function schedule ({{matrix}})"
+    matrix:
+      - "staging/ftqa"
+      - "meta-ci"
+    command: |
+      set -euo pipefail
+      unset VIRTUAL_ENV
+
+      echo "--- :gear: Install sops"
+      SOPS_VERSION=3.9.4
+      curl -fsSL "https://github.com/getsops/sops/releases/download/v$${SOPS_VERSION}/sops-v$${SOPS_VERSION}.linux.amd64" -o /tmp/sops
+      chmod +x /tmp/sops
+
+      echo "--- :key: Decrypt secrets"
+      if [ "{{matrix}}" = "staging/ftqa" ]; then ENV_FILE=".env.enc"; else ENV_FILE=".env.{{matrix}}.enc"; fi
+      /tmp/sops --input-type dotenv --output-type dotenv -d "$$ENV_FILE" > /tmp/test.env
+      set -a
+      source /tmp/test.env
+      set +a
+      rm /tmp/test.env
+
+      echo "--- :python: Sync dependencies"
+      uv sync --all-extras --reinstall-package chalkcompute
+
+      echo "--- :alarm_clock: Deploy and test scheduled remote function"
+      CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest e2etests/test_remote_function_schedule.py -v -s --tb=short
+    agents:
+      queue: default
+    timeout_in_minutes: 20
     retry:
       automatic:
         - exit_status: -1
@@ -79,7 +113,7 @@ steps:
       export OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.chalk.ai:443
       export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
       export OTEL_SERVICE_NAME=chalkcompute-ci-embedding
-      CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest examples/embedding-function/test_embedding_function.py -v -s --tb=short
+      CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest e2etests/test_embedding_function.py -v -s --tb=short
     agents:
       queue: default
     timeout_in_minutes: 20
@@ -110,10 +144,10 @@ steps:
       rm /tmp/test.env
 
       echo "--- :python: Sync dependencies"
-      uv sync --all-extras
+      uv sync --all-extras --reinstall-package chalkcompute
 
       echo "--- :arrows_counterclockwise: Deploy and test generator functions"
-      CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest examples/generator/test_generator.py -v -s --tb=short
+      CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest e2etests/test_generator.py -v -s --tb=short
     agents:
       queue: default
     timeout_in_minutes: 20
@@ -144,10 +178,10 @@ steps:
       rm /tmp/test.env
 
       echo "--- :python: Sync dependencies"
-      uv sync --all-extras
+      uv sync --all-extras --reinstall-package chalkcompute
 
       echo "--- :zap: Deploy and test scalar functions"
-      CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest examples/scalar/test_scalar.py -v -s --tb=short
+      CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest e2etests/test_scalar.py -v -s --tb=short
     agents:
       queue: default
     timeout_in_minutes: 20
