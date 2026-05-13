@@ -259,14 +259,82 @@ jobs:
           name: dist-macos-arm64-py${{ matrix.python_version }}
           path: dist/*.whl
 
+  verify-built-wheels:
+    name: "Verify built wheel install (${{ matrix.os }}, py${{ matrix.python_version }})"
+    needs: [build-linux, build-macos]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    permissions: {}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+        python_version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - name: Download built distributions
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist/
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python_version }}
+
+      - name: Install matching built wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -n "${CHALK_PRIVATE_READ_TOKEN:-}" ]; then
+            echo "CHALK_PRIVATE_READ_TOKEN should not be available in wheel verification." >&2
+            exit 1
+          fi
+
+          case "${{ matrix.os }}" in
+            ubuntu-*) platform_fragment="manylinux" ;;
+            macos-*) platform_fragment="macosx" ;;
+            *)
+              echo "Unsupported runner OS: ${{ matrix.os }}" >&2
+              exit 1
+              ;;
+          esac
+
+          py_tag="cp${{ matrix.python_version }}"
+          py_tag="${py_tag//./}"
+          wheel_pattern="chalkcompute-*-${py_tag}-${py_tag}-*${platform_fragment}*.whl"
+          shopt -s nullglob
+          wheels=(dist/$wheel_pattern)
+
+          if [ "${#wheels[@]}" -ne 1 ]; then
+            echo "Expected exactly one wheel matching ${wheel_pattern}; found ${#wheels[@]}." >&2
+            printf '%s\n' dist/* >&2
+            exit 1
+          fi
+
+          wheel="${wheels[0]}"
+          echo "Installing built wheel: ${wheel}"
+
+          python -m venv .venv
+          source .venv/bin/activate
+
+          python -m pip install \
+            --isolated \
+            --no-cache-dir \
+            --only-binary=:all: \
+            --index-url https://pypi.org/simple \
+            "$wheel"
+
+          python -c "from importlib.metadata import version; import chalkcompute; import chalkcompute._remote_call_native as native; print('chalkcompute', version('chalkcompute')); print('native client', native.RemoteCallClient)"
+
   publish:
     name: "Publish to PyPI"
-    needs: [build-linux, build-macos]
+    needs: [build-linux, build-macos, verify-built-wheels]
     if: github.event_name == 'release' || inputs.skip_publish == false
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    outputs:
-      package-version: ${{ steps.package.outputs.version }}
     permissions:
       id-token: write
     steps:
@@ -279,78 +347,8 @@ jobs:
       - name: List release artifacts
         run: ls -lh dist/
 
-      - name: Resolve package version
-        id: package
-        run: |
-          set -euo pipefail
-          sdist="$(find dist -maxdepth 1 -name 'chalkcompute-*.tar.gz' -print -quit)"
-          if [ -n "$sdist" ]; then
-            filename="${sdist##*/}"
-            version="${filename#chalkcompute-}"
-            version="${version%.tar.gz}"
-          else
-            wheel="$(find dist -maxdepth 1 -name 'chalkcompute-*.whl' -print -quit)"
-            if [ -z "$wheel" ]; then
-              echo "No chalkcompute distribution found in dist/" >&2
-              exit 1
-            fi
-            filename="${wheel##*/}"
-            version="$(python3 -c 'import sys; print(sys.argv[1].split("-")[1])' "$filename")"
-          fi
-          echo "Resolved package version: $version"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
           skip-existing: true
-
-  verify-pypi-install:
-    name: "Verify PyPI install (${{ matrix.os }}, py${{ matrix.python_version }})"
-    needs: publish
-    if: github.event_name == 'release' || inputs.skip_publish == false
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
-    permissions: {}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-15]
-        python_version: ["3.11", "3.12", "3.13", "3.14"]
-    steps:
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python_version }}
-
-      - name: Install published chalkcompute from PyPI
-        shell: bash
-        env:
-          PACKAGE_VERSION: ${{ needs.publish.outputs.package-version }}
-        run: |
-          set -euo pipefail
-
-          python -m venv .venv
-          source .venv/bin/activate
-
-          for attempt in {1..12}; do
-            if python -m pip install \
-              --isolated \
-              --no-cache-dir \
-              --only-binary=:all: \
-              --index-url https://pypi.org/simple \
-              "chalkcompute==${PACKAGE_VERSION}"; then
-              break
-            fi
-
-            if [ "$attempt" -eq 12 ]; then
-              echo "Failed to install chalkcompute==${PACKAGE_VERSION} from PyPI." >&2
-              exit 1
-            fi
-
-            echo "Package not installable yet, retrying in 10 seconds..."
-            sleep 10
-          done
-
-          python -c "from importlib.metadata import version; import chalkcompute; import chalkcompute._remote_call_native as native; print('chalkcompute', version('chalkcompute')); print('native client', native.RemoteCallClient)"
