@@ -17,6 +17,7 @@ _CUSTOM_IMAGE_SVC = "chalk.sandbox.v1.CustomImageService"
 
 POLL_INTERVAL = 5
 POLL_TIMEOUT = 600
+BUILD_CUSTOM_IMAGE_ATTEMPTS = 3
 
 
 def _poll_until_ready(sandbox_id: str, headers: dict[str, str]) -> dict:
@@ -130,7 +131,19 @@ def test_build_custom_image(auth_headers: dict[str, str]) -> None:
     spec_dict = MessageToDict(img.to_proto())
     body = {"imageSpec": spec_dict}
 
-    resp = _connect_rpc(_CUSTOM_IMAGE_SVC, "BuildCustomImage", body, auth_headers, timeout=600)
+    for attempt in range(1, BUILD_CUSTOM_IMAGE_ATTEMPTS + 1):
+        resp = _connect_rpc(
+            _CUSTOM_IMAGE_SVC, "BuildCustomImage", body, auth_headers, timeout=600
+        )
+        if resp.status_code == 200:
+            break
+        if resp.status_code < 500 or attempt == BUILD_CUSTOM_IMAGE_ATTEMPTS:
+            break
+        print(
+            f"BuildCustomImage transient failure "
+            f"({attempt}/{BUILD_CUSTOM_IMAGE_ATTEMPTS}): {resp.text}"
+        )
+        time.sleep(POLL_INTERVAL)
     assert resp.status_code == 200, f"BuildCustomImage failed: {resp.text}"
 
     data = resp.json()

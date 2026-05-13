@@ -11,6 +11,7 @@ just logs a timestamp so the schedule's effect is observable in the pod logs.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 
 import chalkcompute
@@ -18,8 +19,20 @@ import chalkcompute
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
 
+FUNCTION_NAME = os.getenv("CHALK_HEARTBEAT_FUNCTION_NAME", "heartbeat")
 
-@chalkcompute.function(schedule="10m")
+
+def _with_function_name(func):
+    func.__name__ = FUNCTION_NAME
+    globals()[FUNCTION_NAME] = func
+    return func
+
+
+@chalkcompute.function(
+    schedule="10m",
+    env={"CHALK_HEARTBEAT_FUNCTION_NAME": FUNCTION_NAME},
+)
+@_with_function_name
 def heartbeat() -> None:
     """Log a timestamp each time the schedule fires."""
     log.info("heartbeat at %s", datetime.now(timezone.utc).isoformat())
