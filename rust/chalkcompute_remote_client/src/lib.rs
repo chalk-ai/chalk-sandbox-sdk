@@ -7,7 +7,13 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use std::collections::HashMap;
+use std::env;
 use std::time::Duration;
+
+const SERVICE_AUTH_EXCHANGE_TOKEN_ENV_VAR: &str = "CHALK_REMOTE_AUTH_EXCHANGE_TOKEN";
+const SERVICE_AUTH_ENDPOINT_ENV_VAR: &str = "CHALK_API_SERVER";
+const SERVICE_AUTH_ENVIRONMENT_ENV_VAR: &str = "CHALK_ENVIRONMENT_ID";
+const SERVICE_AUTH_GRPC_ENGINE_ENV_VAR: &str = "CHALK_GRPC_ENGINE";
 
 #[pyclass(name = "RemoteCallClient", module = "chalkcompute._remote_call_native")]
 struct PyRemoteCallClient {
@@ -187,13 +193,91 @@ fn to_py_err(error: RemoteCallError) -> PyErr {
     PyRuntimeError::new_err(error.to_string())
 }
 
+#[pyfunction]
+fn resolve_service_auth_context(py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
+    let exchange_token = env::var(SERVICE_AUTH_EXCHANGE_TOKEN_ENV_VAR).unwrap_or_default();
+    if exchange_token.is_empty() {
+        return Ok(None);
+    }
+
+    let auth_endpoint = env::var(SERVICE_AUTH_ENDPOINT_ENV_VAR).unwrap_or_default();
+    if auth_endpoint.is_empty() {
+        return Err(PyRuntimeError::new_err(format!(
+            "{SERVICE_AUTH_ENDPOINT_ENV_VAR} must be set when \
+             {SERVICE_AUTH_EXCHANGE_TOKEN_ENV_VAR} is set"
+        )));
+    }
+
+    let environment_id = env::var(SERVICE_AUTH_ENVIRONMENT_ENV_VAR).unwrap_or_default();
+    if environment_id.is_empty() {
+        return Err(PyRuntimeError::new_err(format!(
+            "{SERVICE_AUTH_ENVIRONMENT_ENV_VAR} must be set when \
+             {SERVICE_AUTH_EXCHANGE_TOKEN_ENV_VAR} is set"
+        )));
+    }
+
+    let dict = PyDict::new(py);
+    dict.set_item("auth_endpoint", auth_endpoint.trim_end_matches('/'))?;
+    dict.set_item("exchange_token", exchange_token)?;
+    dict.set_item("environment_id", environment_id)?;
+    dict.set_item(
+        "requested_permissions",
+        vec![
+            Permission::Authenticated as i32,
+            Permission::QueryOnline as i32,
+            Permission::DeployRead as i32,
+        ],
+    )?;
+
+    match env::var(SERVICE_AUTH_GRPC_ENGINE_ENV_VAR).unwrap_or_default() {
+        value if value.is_empty() => dict.set_item("grpc_engine", py.None())?,
+        value => {
+            let (endpoint, use_tls) = grpc_engine_target_from_url(&value);
+            let grpc_engine = PyDict::new(py);
+            grpc_engine.set_item("target", endpoint)?;
+            grpc_engine.set_item("use_tls", use_tls)?;
+            dict.set_item("grpc_engine", grpc_engine)?;
+        }
+    }
+
+    Ok(Some(dict.unbind()))
+}
+
 fn permission_from_i32(raw: i32) -> PyResult<Permission> {
     Permission::from_i32(raw)
         .ok_or_else(|| PyRuntimeError::new_err(format!("unknown permission value: {raw}")))
 }
 
+fn grpc_engine_target_from_url(url: &str) -> (String, bool) {
+    let trimmed = url.trim_end_matches('/');
+    if trimmed.starts_with("localhost")
+        || trimmed.starts_with("127.0.0.1")
+        || trimmed.starts_with("10.")
+    {
+        return (
+            trimmed.split('/').next().unwrap_or_default().to_string(),
+            false,
+        );
+    }
+
+    let (scheme, remainder) = match trimmed.split_once("://") {
+        Some(parts) => parts,
+        None => ("", trimmed),
+    };
+    let use_tls = match scheme {
+        "http" => false,
+        "https" => true,
+        _ => true,
+    };
+    (
+        remainder.split('/').next().unwrap_or_default().to_string(),
+        use_tls,
+    )
+}
+
 #[pymodule]
 fn _remote_call_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRemoteCallClient>()?;
+    m.add_function(wrap_pyfunction!(resolve_service_auth_context, m)?)?;
     Ok(())
 }

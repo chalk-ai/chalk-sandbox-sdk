@@ -44,9 +44,7 @@ from chalkcompute._connect import (
     ConnectClient,
     build_image,
     grpc_target_from_url,
-    service_auth_config_from_env,
-    service_auth_environment,
-    service_auth_grpc_engine_target,
+    service_auth_context_from_env,
 )
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._quota import QueuePolicy
@@ -1539,8 +1537,9 @@ class RemoteFunction:
         self._call_stub = call_grpc.RemoteCallServiceStub(self._call_channel)
 
     def _remote_call_metadata(self, *, queue: bool) -> list[tuple[str, str]]:
-        if service_auth_config_from_env() is not None:
-            metadata = [("x-chalk-env-id", service_auth_environment())]
+        service_auth = service_auth_context_from_env()
+        if service_auth is not None:
+            metadata = [("x-chalk-env-id", service_auth.environment_id)]
             if queue:
                 metadata.append(("x-chalk-deployment-type", "function-queue"))
             return metadata
@@ -1565,18 +1564,17 @@ class RemoteFunction:
 
         from chalkcompute._remote_call_client import RemoteCallClient
 
-        service_auth = service_auth_config_from_env()
+        service_auth = service_auth_context_from_env()
         if queue:
             if service_auth is None:
                 target, use_tls = self._client.grpc_engine_target()
             else:
-                service_auth_target = service_auth_grpc_engine_target()
-                if service_auth_target is None:
+                if service_auth.grpc_engine is None:
                     raise FunctionError(
                         "CHALK_GRPC_ENGINE must be set to enqueue remote function "
                         "calls with CHALK_REMOTE_AUTH_EXCHANGE_TOKEN"
                     )
-                target, use_tls = service_auth_target
+                target, use_tls = service_auth.grpc_engine
         else:
             target, use_tls = grpc_target_from_url(
                 self._web_url,
@@ -1586,7 +1584,11 @@ class RemoteFunction:
             target,
             metadata=self._remote_call_metadata(queue=queue),
             use_tls=use_tls,
-            **(service_auth or {}),
+            auth_endpoint=service_auth.auth_endpoint if service_auth else None,
+            exchange_token=service_auth.exchange_token if service_auth else None,
+            requested_permissions=(
+                service_auth.requested_permissions if service_auth else None
+            ),
         )
         setattr(self, attr, client)
         return client

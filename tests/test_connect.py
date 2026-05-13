@@ -1,6 +1,7 @@
 from typing import Any
 
 from chalkcompute._connect import ConnectClient, grpc_engine_target_from_url, grpc_target_from_url
+from chalkcompute._remote_call_client import ServiceAuthContext
 
 
 class _TokenResponse:
@@ -108,9 +109,16 @@ class TestConnectClientGrpcEngineTarget:
 
 class TestConnectClientServiceAuth:
     def test_uses_exchange_token_without_client_id(self, monkeypatch):
-        monkeypatch.setenv("CHALK_API_SERVER", "https://api.chalk.test")
-        monkeypatch.setenv("CHALK_REMOTE_AUTH_EXCHANGE_TOKEN", "exchange-token")
-        monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-1")
+        monkeypatch.setattr(
+            "chalkcompute._connect.resolve_service_auth_context",
+            lambda: ServiceAuthContext(
+                auth_endpoint="https://api.chalk.test",
+                exchange_token="exchange-token",
+                environment_id="env-1",
+                requested_permissions=(2, 3, 11),
+                grpc_engine=None,
+            ),
+        )
         posted: dict[str, Any] = {}
 
         def fake_post(*args, **kwargs):
