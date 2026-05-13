@@ -4,12 +4,18 @@ on:
   release:
     types:
       - "published"
+  workflow_dispatch:
+    inputs:
+      skip_publish:
+        description: "Skip publishing to PyPI (only build wheels)"
+        type: boolean
+        default: true
 
 jobs:
-  build:
-    name: "Build distribution"
+  build-linux:
+    name: "Build linux wheel + sdist"
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -29,6 +35,7 @@ jobs:
           python-version: "3.12"
 
       - name: Set version from release tag
+        if: github.event_name == 'release'
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           echo "Setting version to $VERSION"
@@ -66,12 +73,184 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: dist
+          name: dist-linux
           path: dist/
+
+  build-macos:
+    name: "Build macOS arm64 wheel (py${{ matrix.python_version }})"
+    runs-on: macos-15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python_version: ["3.11", "3.12", "3.13"]
+    env:
+      CHALK_PRIVATE_READ_TOKEN: ${{ secrets.CHALK_PRIVATE_READ_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Diagnose runner environment
+        shell: bash
+        run: |
+          set -x
+          uname -a
+          sw_vers || true
+          whoami
+          echo "HOME=$HOME"
+          echo "PATH=$PATH"
+          which brew || true
+          which protoc || true
+          which cargo || true
+          which rustc || true
+          which uv || true
+          which python3 || true
+          xcode-select -p || true
+          ls -la /Applications | grep -i xcode || true
+          ls -la "$HOME" | head -40
+
+      - name: Configure Cargo access to chalk-private
+        shell: bash
+        run: |
+          if [ -z "$CHALK_PRIVATE_READ_TOKEN" ]; then
+            echo "CHALK_PRIVATE_READ_TOKEN must be a GitHub token with read access to chalk-ai/chalk-private." >&2
+            exit 1
+          fi
+          git config --global url."https://x-access-token:${CHALK_PRIVATE_READ_TOKEN}@github.com/chalk-ai/chalk-private.git".insteadOf "https://github.com/chalk-ai/chalk-private.git"
+
+      - name: Resolve DEVELOPER_DIR
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${DEVELOPER_DIR:-}" ] && [ -d "${DEVELOPER_DIR}" ]; then
+            echo "Using preset DEVELOPER_DIR=${DEVELOPER_DIR}"
+          elif command -v xcode-select >/dev/null 2>&1; then
+            DEVELOPER_DIR="$(xcode-select -p)"
+            echo "DEVELOPER_DIR from xcode-select: ${DEVELOPER_DIR}"
+          else
+            DEVELOPER_DIR="/Library/Developer/CommandLineTools"
+          fi
+          echo "DEVELOPER_DIR=${DEVELOPER_DIR}" >> "$GITHUB_ENV"
+          ls -la "${DEVELOPER_DIR}" || true
+
+      - name: Ensure protoc
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v protoc >/dev/null 2>&1; then
+            echo "protoc found: $(command -v protoc)"
+            protoc --version
+          else
+            echo "protoc not found, installing via brew"
+            brew install protobuf
+            echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+            "$(brew --prefix)/bin/protoc" --version
+          fi
+          # Always export PROTOC for the cargo build (resolved later via PATH lookup in the build step)
+
+      - name: Ensure Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v cargo >/dev/null 2>&1; then
+            echo "cargo found: $(command -v cargo)"
+            cargo --version
+            rustc --version
+          else
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            "$HOME/.cargo/bin/cargo" --version
+          fi
+
+      - name: Set version from release tag
+        if: github.event_name == 'release'
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Setting version to $VERSION"
+          # BSD sed needs explicit backup suffix; strip the backup file after.
+          sed -i.bak "s/^version = .*/version = \"$VERSION\"/" pyproject.toml
+          rm -f pyproject.toml.bak
+
+      - name: Prepare python venv (py${{ matrix.python_version }})
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          PY_VER="${{ matrix.python_version }}"
+          TARGET_VENV="$HOME/venv.${PY_VER}"
+
+          if [ ! -d "$TARGET_VENV" ]; then
+            if ! command -v uv >/dev/null 2>&1; then
+              echo "uv not found on PATH; installing via standalone installer"
+              curl -LsSf https://astral.sh/uv/install.sh | sh
+              echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+              export PATH="$HOME/.local/bin:$PATH"
+            fi
+            uv venv --python "$PY_VER" "$TARGET_VENV"
+          fi
+
+          echo "VENV_PATH=$TARGET_VENV" >> "$GITHUB_ENV"
+          echo "$TARGET_VENV/bin" >> "$GITHUB_PATH"
+          "$TARGET_VENV/bin/python" --version
+
+      - name: Install maturin in venv
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source "$VENV_PATH/bin/activate"
+          # uv is faster + already used by the runner setup
+          if command -v uv >/dev/null 2>&1; then
+            uv pip install "maturin>=1.7,<2"
+          else
+            python -m pip install --upgrade pip
+            python -m pip install "maturin>=1.7,<2"
+          fi
+          maturin --version
+
+      - name: Build wheel
+        shell: bash
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          set -euxo pipefail
+          source "$VENV_PATH/bin/activate"
+
+          # Make sure cargo + protoc are visible
+          export PATH="$HOME/.cargo/bin:$PATH"
+          export PROTOC="$(command -v protoc)"
+          echo "Using PROTOC=$PROTOC"
+          protoc --version
+
+          maturin build \
+            --release \
+            --target aarch64-apple-darwin \
+            --out dist \
+            -i "python${{ matrix.python_version }}"
+
+      - name: Verify package contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          source "$VENV_PATH/bin/activate"
+          for whl in dist/*.whl; do
+            echo "=== $whl ==="
+            python -m zipfile -l "$whl"
+            if python -m zipfile -l "$whl" | grep -qiE '\.env|\.enc|sops|test_'; then
+              echo "ERROR: Sensitive or test files found in wheel!"
+              exit 1
+            fi
+          done
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-macos-arm64-py${{ matrix.python_version }}
+          path: dist/*.whl
 
   publish:
     name: "Publish to PyPI"
-    needs: build
+    needs: [build-linux, build-macos]
+    if: github.event_name == 'release' || inputs.skip_publish == false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -79,8 +258,12 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: dist
+          pattern: dist-*
+          merge-multiple: true
           path: dist/
+
+      - name: List release artifacts
+        run: ls -lh dist/
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
