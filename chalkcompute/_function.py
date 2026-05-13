@@ -906,12 +906,11 @@ class RemoteFunction:
 
     >>> import chalkcompute
     >>> from chalkcompute import Image
-    >>> img = (
-    ...     Image.debian_slim()
-    ...     .pip_install(["numpy"])
-    ... )
     >>> @chalkcompute.function(
-    ...     image=img,
+    ...     image=(
+    ...         Image.debian_slim()
+    ...         .pip_install(["numpy"])
+    ...     ),
     ...     cpu="1",
     ...     memory="2Gi",
     ...     min_replicas=1,
