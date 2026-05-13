@@ -259,9 +259,79 @@ jobs:
           name: dist-macos-arm64-py${{ matrix.python_version }}
           path: dist/*.whl
 
+  verify-built-wheels:
+    name: "Verify built wheel install (${{ matrix.os }}, py${{ matrix.python_version }})"
+    needs: [build-linux, build-macos]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    permissions: {}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+        python_version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - name: Download built distributions
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist/
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python_version }}
+
+      - name: Install matching built wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -n "${CHALK_PRIVATE_READ_TOKEN:-}" ]; then
+            echo "CHALK_PRIVATE_READ_TOKEN should not be available in wheel verification." >&2
+            exit 1
+          fi
+
+          case "${{ matrix.os }}" in
+            ubuntu-*) platform_fragment="manylinux" ;;
+            macos-*) platform_fragment="macosx" ;;
+            *)
+              echo "Unsupported runner OS: ${{ matrix.os }}" >&2
+              exit 1
+              ;;
+          esac
+
+          py_tag="cp${{ matrix.python_version }}"
+          py_tag="${py_tag//./}"
+          wheel_pattern="chalkcompute-*-${py_tag}-${py_tag}-*${platform_fragment}*.whl"
+          shopt -s nullglob
+          wheels=(dist/$wheel_pattern)
+
+          if [ "${#wheels[@]}" -ne 1 ]; then
+            echo "Expected exactly one wheel matching ${wheel_pattern}; found ${#wheels[@]}." >&2
+            printf '%s\n' dist/* >&2
+            exit 1
+          fi
+
+          wheel="${wheels[0]}"
+          echo "Installing built wheel: ${wheel}"
+
+          python -m venv .venv
+          source .venv/bin/activate
+
+          python -m pip install \
+            --isolated \
+            --no-cache-dir \
+            --only-binary=:all: \
+            --index-url https://pypi.org/simple \
+            "$wheel"
+
+          python -c "from importlib.metadata import version; import chalkcompute; import chalkcompute._remote_call_native as native; print('chalkcompute', version('chalkcompute')); print('native client', native.RemoteCallClient)"
+
   publish:
     name: "Publish to PyPI"
-    needs: [build-linux, build-macos]
+    needs: [build-linux, build-macos, verify-built-wheels]
     if: github.event_name == 'release' || inputs.skip_publish == false
     runs-on: ubuntu-latest
     timeout-minutes: 10

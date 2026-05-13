@@ -99,6 +99,7 @@ class ChalkContainerSpec(_message.Message):
         "authentication",
         "secret_refs",
         "security_policy",
+        "network_policy",
     )
     class TagsEntry(_message.Message):
         __slots__ = ("key", "value")
@@ -131,6 +132,7 @@ class ChalkContainerSpec(_message.Message):
     AUTHENTICATION_FIELD_NUMBER: _ClassVar[int]
     SECRET_REFS_FIELD_NUMBER: _ClassVar[int]
     SECURITY_POLICY_FIELD_NUMBER: _ClassVar[int]
+    NETWORK_POLICY_FIELD_NUMBER: _ClassVar[int]
     name: str
     image: str
     entrypoint: _containers.RepeatedScalarFieldContainer[str]
@@ -146,6 +148,7 @@ class ChalkContainerSpec(_message.Message):
     authentication: str
     secret_refs: _containers.RepeatedCompositeFieldContainer[SecretRef]
     security_policy: ContainerSecurityPolicy
+    network_policy: NetworkPolicy
     def __init__(
         self,
         name: _Optional[str] = ...,
@@ -163,6 +166,7 @@ class ChalkContainerSpec(_message.Message):
         authentication: _Optional[str] = ...,
         secret_refs: _Optional[_Iterable[_Union[SecretRef, _Mapping]]] = ...,
         security_policy: _Optional[_Union[ContainerSecurityPolicy, _Mapping]] = ...,
+        network_policy: _Optional[_Union[NetworkPolicy, _Mapping]] = ...,
     ) -> None: ...
 
 class ContainerSecurityPolicy(_message.Message):
@@ -170,6 +174,30 @@ class ContainerSecurityPolicy(_message.Message):
     KERNEL_POLICY_FIELD_NUMBER: _ClassVar[int]
     kernel_policy: KernelPolicy
     def __init__(self, kernel_policy: _Optional[_Union[KernelPolicy, str]] = ...) -> None: ...
+
+class NetworkPolicy(_message.Message):
+    __slots__ = ("allowed_routes",)
+    ALLOWED_ROUTES_FIELD_NUMBER: _ClassVar[int]
+    allowed_routes: _containers.RepeatedCompositeFieldContainer[AllowedRoute]
+    def __init__(self, allowed_routes: _Optional[_Iterable[_Union[AllowedRoute, _Mapping]]] = ...) -> None: ...
+
+class AllowedRoute(_message.Message):
+    __slots__ = ("route", "port_ranges")
+    ROUTE_FIELD_NUMBER: _ClassVar[int]
+    PORT_RANGES_FIELD_NUMBER: _ClassVar[int]
+    route: str
+    port_ranges: _containers.RepeatedCompositeFieldContainer[PortRange]
+    def __init__(
+        self, route: _Optional[str] = ..., port_ranges: _Optional[_Iterable[_Union[PortRange, _Mapping]]] = ...
+    ) -> None: ...
+
+class PortRange(_message.Message):
+    __slots__ = ("start_port", "end_port")
+    START_PORT_FIELD_NUMBER: _ClassVar[int]
+    END_PORT_FIELD_NUMBER: _ClassVar[int]
+    start_port: int
+    end_port: int
+    def __init__(self, start_port: _Optional[int] = ..., end_port: _Optional[int] = ...) -> None: ...
 
 class ContainerRequest(_message.Message):
     __slots__ = ("spec",)
