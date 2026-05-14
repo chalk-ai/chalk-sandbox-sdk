@@ -80,11 +80,11 @@ def main() -> None:
         + "').decode())\""
     )
 
-    print(f"+ chalk container run --image python:3.12-slim-bookworm --name {CONTAINER_NAME} ...")
+    print(f"+ chalk container run --image python:3.14-slim-trixie --name {CONTAINER_NAME} ...")
     result = subprocess.run(
         [
             "chalk", "container", "run",
-            "--image", "python:3.12-slim-bookworm",
+            "--image", "python:3.14-slim-trixie",
             "--name", CONTAINER_NAME,
             "--entrypoint", f"bash,-c,{shell_cmd}",
             "--lifetime", "5m",

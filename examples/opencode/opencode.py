@@ -58,7 +58,7 @@ DEFAULT_GITHUB_REPO = "chalk-ai/chalk-sandbox-sdk"
 # apt-get and opencode install entirely.
 
 OPENCODE_IMAGE = (
-    Image.base("python:3.12-slim")
+    Image.debian_slim()
     .run_commands(
         "apt-get update -qq && apt-get install -y -qq curl git 2>&1",
         "curl -fsSL https://opencode.ai/install | bash 2>&1",

@@ -52,7 +52,7 @@ def test_list_sandboxes(auth_headers: dict[str, str]) -> None:
 def test_create_sandbox_with_debian_image(auth_headers: dict[str, str]) -> None:
     """Create a sandbox with a debian_slim ImageSpec using async polling."""
     img = (
-        Image.debian_slim("3.12")
+        Image.debian_slim()
         .pip_install(["requests"])
         .run_commands("echo 'image built successfully'")
         .workdir("/home/user")
@@ -93,7 +93,7 @@ def test_create_sandbox_with_debian_image(auth_headers: dict[str, str]) -> None:
 def test_create_sandbox_with_plain_image(auth_headers: dict[str, str]) -> None:
     """Create a sandbox with a plain image string and poll until ready."""
     body = {
-        "image": "python:3.12-slim-bookworm",
+        "image": "python:3.14-slim-trixie",
         "name": "test-plain-image",
     }
 
@@ -122,7 +122,7 @@ def test_create_sandbox_with_plain_image(auth_headers: dict[str, str]) -> None:
 def test_build_custom_image(auth_headers: dict[str, str]) -> None:
     """Build a custom image via CustomImageService.BuildCustomImage and query it via GetCustomImage."""
     img = (
-        Image.debian_slim("3.12")
+        Image.debian_slim()
         .pip_install(["requests"])
         .run_commands("echo 'custom image built'")
     )

@@ -172,7 +172,7 @@ def _java_wrap(src: str) -> str:
 
 _CONFIGS: dict[Language, dict] = {
     Language.PYTHON: {
-        "image": "python:3.12-slim",
+        "image": "python:3.14-slim-trixie",
         "compile_cmd": lambda src: _b64write(src, "/tmp/prog.py"),
         "compile_timeout": 10,
         "run_cmd": lambda stdin: (
@@ -181,7 +181,7 @@ _CONFIGS: dict[Language, dict] = {
         "run_timeout": 10,
     },
     Language.NODEJS: {
-        "image": "node:20-slim",
+        "image": "node:25-trixie-slim",
         "compile_cmd": lambda src: _b64write(src, "/tmp/prog.js"),
         "compile_timeout": 10,
         "run_cmd": lambda stdin: (
@@ -190,7 +190,7 @@ _CONFIGS: dict[Language, dict] = {
         "run_timeout": 10,
     },
     Language.JAVA: {
-        "image": "eclipse-temurin:21-jdk",
+        "image": "eclipse-temurin:25-jdk",
         # Compile once with a long timeout — javac cold-start on JDK can be slow.
         # Each test case then just runs the already-compiled class.
         "compile_cmd": lambda src: (
@@ -204,7 +204,7 @@ _CONFIGS: dict[Language, dict] = {
         "run_timeout": 10,
     },
     Language.CPP: {
-        "image": "gcc:13",
+        "image": "gcc:16",
         # Compile once, run per test case.
         "compile_cmd": lambda src: (
             f"{_b64write(src, '/tmp/main.cpp')} && "

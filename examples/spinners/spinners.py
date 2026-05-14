@@ -55,7 +55,7 @@ def main() -> None:
 
     try:
         image = (
-            Image.debian_slim("3.12")
+            Image.debian_slim()
             .add_local_file(local_file, "/app/hello.txt")
         )
 

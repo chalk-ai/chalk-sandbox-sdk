@@ -32,8 +32,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 from chalkcompute import Container, Image
 
-# 1. Define an image: Python 3.12 slim + cowsay
-image = Image.debian_slim("3.12").pip_install(["cowsay"])
+# 1. Define an image: Python slim + cowsay
+image = Image.debian_slim().pip_install(["cowsay"])
 
 # 2. Start a container with the "hi" volume mounted at /data
 container = Container(

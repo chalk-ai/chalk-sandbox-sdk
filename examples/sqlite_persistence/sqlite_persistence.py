@@ -56,7 +56,7 @@ DB_PATH = f"{MOUNT_PATH}/app.db"
 # All three containers share the same slim Python image. SQLite ships with
 # Python's standard library, so no extra packages are needed.
 
-image = Image.debian_slim("3.12")
+image = Image.debian_slim()
 
 
 # ## Helper: create the volume

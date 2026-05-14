@@ -7,7 +7,7 @@ from a `pyarrow.Table` and runs a `.select(...).run()` projection.
 
 | File | Purpose |
 |------|---------|
-| `image.py` | Declares the container image: `python:3.12-slim-bookworm` + `chalkdf`, `pyarrow`, `chalkpy` |
+| `image.py` | Declares the container image: `python:3.14-slim-trixie` + `chalkdf`, `pyarrow`, `chalkpy` |
 | `run.py` | The script that executes inside the container |
 | `deploy.py` | Orchestrates the full lifecycle: stop old container, deploy, wait, fetch logs |
 
@@ -40,7 +40,7 @@ python3 deploy.py
 
 This will:
 1. Stop any previous `chalkdf-projection-example` container
-2. Run `chalk container run` with `python:3.12-slim-bookworm`, installing
+2. Run `chalk container run` with `python:3.14-slim-trixie`, installing
    `chalkdf`, `pyarrow`, and `chalkpy` at startup
 3. Wait 60s for pip install and script execution
 4. Fetch logs via `chalk logs --query pod_name:chalk-container-chalkdf-projection-example`
