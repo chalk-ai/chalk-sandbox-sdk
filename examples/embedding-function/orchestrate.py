@@ -18,8 +18,6 @@ log = logging.getLogger(__name__)
     },
 )
 def orchestrate(texts: list[str]) -> list[list[float]]:
-    import chalkcompute
-
     embed = chalkcompute.RemoteFunction.from_name("embed")
     embeddings = [embed(text) for text in texts]
     return embeddings
