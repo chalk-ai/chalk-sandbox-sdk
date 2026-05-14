@@ -227,6 +227,20 @@ def test_direct_call_does_not_inject_trace_metadata_by_default(monkeypatch) -> N
     assert FakeRemoteCallClient.instances[0].calls[0][2] == []
 
 
+def test_direct_call_propagates_tracing_suppression(monkeypatch) -> None:
+    monkeypatch.setenv("CHALK_REMOTE_FUNCTION_TRACE_POLICY", "off")
+    FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
+
+    fn = _remote_function()
+
+    assert fn(41) == 42
+
+    assert FakeRemoteCallClient.instances[0].calls[0][2] == [
+        ("x-chalk-tracing-suppressed", "1"),
+        ("x-chalk-function-name", "catalog-add"),
+    ]
+
+
 def test_direct_call_propagates_trace_metadata_without_chalk_env(monkeypatch) -> None:
     monkeypatch.setattr(
         "chalkcompute._function.current_trace_metadata",

@@ -15,8 +15,6 @@ from urllib.parse import urlparse
 
 import grpc
 
-from chalkcompute._tracing import traced as _traced
-
 logger = logging.getLogger(__name__)
 
 _SERVICE_AUTH_EXCHANGE_TOKEN_ENV_VARS = (
@@ -273,36 +271,18 @@ class ConnectClient:
         """
         import httpx
 
-        from chalkcompute._tracing import (
-            current_trace_metadata,
-            get_tracer,
-            has_current_trace_context,
+        self._ensure_auth()
+        assert self._api_server is not None
+        assert self._headers is not None
+        headers = self._headers
+        if extra_headers:
+            headers = {**headers, **extra_headers}
+        return httpx.post(
+            f"{self._api_server}/{service}/{method}",
+            json=body,
+            headers=headers,
+            timeout=timeout,
         )
-
-        has_upstream_trace = has_current_trace_context()
-        with get_tracer().start_as_current_span("chalkcompute.rpc") as span:
-            span.set_attribute("rpc.service", service)
-            span.set_attribute("rpc.method", method)
-            self._ensure_auth()
-            assert self._api_server is not None
-            assert self._headers is not None
-            headers = self._headers
-            if extra_headers:
-                headers = {**headers, **extra_headers}
-            if has_upstream_trace and (trace_metadata := current_trace_metadata()):
-                headers = {**headers, **dict(trace_metadata)}
-            resp = httpx.post(
-                f"{self._api_server}/{service}/{method}",
-                json=body,
-                headers=headers,
-                timeout=timeout,
-            )
-            span.set_attribute("http.response.status_code", resp.status_code)
-            if resp.status_code >= 400:
-                from opentelemetry.trace import StatusCode
-
-                span.set_status(StatusCode.ERROR, f"HTTP {resp.status_code}")
-            return resp
 
 
 # ---------------------------------------------------------------------------
@@ -310,7 +290,6 @@ class ConnectClient:
 # ---------------------------------------------------------------------------
 
 
-@_traced("chalkcompute.build_image")
 def build_image(
     client: ConnectClient,
     image: Image,

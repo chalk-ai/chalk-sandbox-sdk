@@ -56,7 +56,6 @@ from chalkcompute._retry import RetryPolicy
 from chalkcompute._tracing import (
     current_trace_metadata,
     remote_function_call_span,
-    traced,
 )
 from chalkcompute._volume import VolumeClient, upload_lazy_files
 
@@ -67,6 +66,7 @@ if TYPE_CHECKING:
     from chalkcompute._secret import Secret as _Secret
 
 SerializationFormat = typing.Literal["pyarrow"]
+TracingPolicy = float | typing.Literal["off"] | None
 
 _REMOTE_ENV_VAR = "_CHALK_REMOTE_FUNCTION"
 _REMOTE_FUNCTION_NAME_METADATA = "x-chalk-function-name"
@@ -98,6 +98,24 @@ class FunctionError(Exception):
 
 class FunctionBuildError(FunctionError):
     """Raised when the function image build fails."""
+
+
+def _tracing_policy_to_dict(tracing: TracingPolicy) -> dict[str, Any] | None:
+    if tracing is None:
+        return None
+    if tracing == "off":
+        return {"mode": "TRACING_MODE_OFF"}
+    if isinstance(tracing, bool) or not isinstance(tracing, int | float):
+        raise TypeError(
+            'tracing must be None, "off", or a sample rate between 0.0 and 1.0'
+        )
+    sample_rate = float(tracing)
+    if sample_rate < 0.0 or sample_rate > 1.0:
+        raise ValueError("tracing sample rate must be between 0.0 and 1.0")
+    return {
+        "mode": "TRACING_MODE_SAMPLE",
+        "sampleRate": sample_rate,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -901,6 +919,7 @@ class RemoteFunction:
         rate_limit: int | RateLimitPolicy | None = None,
         concurrency: int | ConcurrencyPolicy | None = None,
         quota: int | QueuePolicy | None = None,
+        tracing: TracingPolicy = None,
     ) -> None:
         self._func = func
         if name is not None:
@@ -951,6 +970,8 @@ class RemoteFunction:
         self._quota = (
             QueuePolicy.from_int_or_policy(quota) if quota is not None else None
         )
+        self._tracing = tracing
+        self._tracing_config = _tracing_policy_to_dict(tracing)
 
         # Set after .deploy()
         self._version_info: FunctionVersionInfo | None = None
@@ -1083,6 +1104,8 @@ class RemoteFunction:
         f._rate_limit = None
         f._concurrency = None
         f._quota = None
+        f._tracing = None
+        f._tracing_config = None
         f._version_info = None
         f._web_url = None
         f._port = 6666
@@ -1126,7 +1149,6 @@ class RemoteFunction:
 
     # -- Lifecycle -------------------------------------------------------------
 
-    @traced("chalkcompute.function.deploy")
     def deploy(
         self,
         *,
@@ -1259,6 +1281,8 @@ class RemoteFunction:
                 function_config["concurrency"] = self._concurrency.to_dict()
             if self._quota is not None:
                 function_config["queue"] = self._quota.to_dict()
+            if self._tracing_config is not None:
+                function_config["tracing"] = self._tracing_config
 
             # 6. Call CreateExternalFunctionVersion
             rkey = f"register:{self._func_name}"
@@ -1682,7 +1706,6 @@ class RemoteFunction:
 
         return base64.b64decode(feather_b64)
 
-    @traced("chalkcompute.function.call")
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """Call the remote function via gRPC or the API server.
 
@@ -1756,7 +1779,6 @@ class RemoteFunction:
 
     # -- Management ------------------------------------------------------------
 
-    @traced("chalkcompute.function.delete")
     def delete(self) -> None:
         """Delete this function version."""
         if self._version_info is not None:
@@ -1879,6 +1901,7 @@ def function(
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
     quota: int | QueuePolicy | None = None,
+    tracing: TracingPolicy = None,
 ) -> Callable[..., RemoteFunction | _NoOpFunction]:
     """Decorator that deploys a function as a versioned remote function.
 
@@ -1966,6 +1989,11 @@ def function(
         Submitting past the cap raises a gRPC ``RESOURCE_EXHAUSTED`` error —
         clients should back off or call ``purge()`` on the function to drain
         the queue if items were erroneously added.
+    tracing
+        Remote invocation tracing policy. ``None`` inherits parent trace context
+        and does not start new traces, a float uses parent-based sampling with
+        that root sample rate when no parent is present, and ``"off"`` hard
+        suppresses tracing for the function and its nested remote calls.
 
     Examples
     --------
@@ -2004,6 +2032,7 @@ def function(
             rate_limit=rate_limit,
             concurrency=concurrency,
             quota=quota,
+            tracing=tracing,
         )
         f.deploy()
         return f

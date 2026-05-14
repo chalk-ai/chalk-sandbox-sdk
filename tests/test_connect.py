@@ -27,10 +27,17 @@ class _Span:
     def set_status(self, *_args: object) -> None:
         pass
 
+    def record_exception(self, *_args: object) -> None:
+        pass
+
 
 class _Tracer:
+    def __init__(self) -> None:
+        self.span_names: list[str] = []
+
     @contextlib.contextmanager
-    def start_as_current_span(self, _name: str):
+    def start_as_current_span(self, name: str):
+        self.span_names.append(name)
         yield _Span()
 
 
@@ -127,6 +134,95 @@ class TestConnectClientGrpcEngineTarget:
 
 
 class TestConnectClientTracing:
+    def test_configure_tracing_installs_parent_based_sampler(self, monkeypatch):
+        rates: list[float] = []
+        monkeypatch.setattr(_tracing, "_initialized", False)
+        monkeypatch.setattr(_tracing, "_provider", None)
+        monkeypatch.setattr(_tracing, "_user_tracing_configured", False)
+        monkeypatch.setattr(
+            _tracing,
+            "_install_tracer_provider",
+            lambda rate: rates.append(rate),
+        )
+
+        _tracing.configure_tracing(sample_rate=0.1)
+
+        assert rates == [0.1]
+        assert _tracing._user_tracing_configured is True
+
+    def test_trace_defaults_to_sample_rate_one_when_unconfigured(self, monkeypatch):
+        rates: list[float] = []
+        tracer = _Tracer()
+        monkeypatch.setattr(_tracing, "_initialized", False)
+        monkeypatch.setattr(_tracing, "_provider", None)
+        monkeypatch.setattr(_tracing, "_user_tracing_configured", False)
+        monkeypatch.setattr(
+            _tracing,
+            "_install_tracer_provider",
+            lambda rate: rates.append(rate),
+        )
+        monkeypatch.setattr(_tracing, "get_tracer", lambda: tracer)
+
+        with _tracing.trace("workflow"):
+            pass
+
+        assert rates == [1.0]
+        assert tracer.span_names == ["workflow"]
+
+    def test_trace_noops_when_remote_tracing_is_suppressed(self, monkeypatch):
+        monkeypatch.setenv("CHALK_REMOTE_FUNCTION_TRACE_POLICY", "off")
+        monkeypatch.setattr(
+            _tracing,
+            "_install_tracer_provider",
+            lambda _rate: (_ for _ in ()).throw(
+                AssertionError("suppressed tracing should not configure a provider")
+            ),
+        )
+        monkeypatch.setattr(
+            _tracing,
+            "get_tracer",
+            lambda: (_ for _ in ()).throw(
+                AssertionError("suppressed tracing should not request a tracer")
+            ),
+        )
+
+        with _tracing.trace("workflow") as span:
+            assert span is None
+
+        assert _tracing.current_trace_metadata() == [
+            ("x-chalk-tracing-suppressed", "1")
+        ]
+
+    def test_traced_decorator_uses_explicit_name(self, monkeypatch):
+        tracer = _Tracer()
+        monkeypatch.setattr(_tracing, "_initialized", False)
+        monkeypatch.setattr(_tracing, "_provider", None)
+        monkeypatch.setattr(_tracing, "_user_tracing_configured", False)
+        monkeypatch.setattr(_tracing, "_install_tracer_provider", lambda _rate: None)
+        monkeypatch.setattr(_tracing, "get_tracer", lambda: tracer)
+
+        @_tracing.traced("workflow")
+        def run_workflow() -> int:
+            return 42
+
+        assert run_workflow() == 42
+        assert tracer.span_names == ["workflow"]
+
+    def test_bare_traced_decorator_defaults_to_function_name(self, monkeypatch):
+        tracer = _Tracer()
+        monkeypatch.setattr(_tracing, "_initialized", False)
+        monkeypatch.setattr(_tracing, "_provider", None)
+        monkeypatch.setattr(_tracing, "_user_tracing_configured", False)
+        monkeypatch.setattr(_tracing, "_install_tracer_provider", lambda _rate: None)
+        monkeypatch.setattr(_tracing, "get_tracer", lambda: tracer)
+
+        @_tracing.traced
+        def run_workflow() -> int:
+            return 42
+
+        assert run_workflow() == 42
+        assert tracer.span_names == ["run_workflow"]
+
     def test_remote_function_call_span_noops_without_active_trace(self, monkeypatch):
         monkeypatch.setattr(
             "chalkcompute._tracing.has_current_trace_context",
@@ -149,7 +245,7 @@ class TestConnectClientTracing:
         monkeypatch.setattr(client, "_ensure_auth", lambda: None)
         return client
 
-    def test_rpc_does_not_propagate_new_root_trace(self, monkeypatch):
+    def test_rpc_does_not_inject_trace_metadata(self, monkeypatch):
         posted: dict[str, Any] = {}
 
         def fake_post(*args, **kwargs):
@@ -159,45 +255,15 @@ class TestConnectClientTracing:
         def fail_current_trace_metadata():
             raise AssertionError("trace metadata should not be injected without upstream trace")
 
-        monkeypatch.setattr("httpx.post", fake_post)
-        monkeypatch.setattr("chalkcompute._tracing.get_tracer", lambda: _Tracer())
-        monkeypatch.setattr(
-            "chalkcompute._tracing.has_current_trace_context",
-            lambda: False,
-        )
         monkeypatch.setattr(
             "chalkcompute._tracing.current_trace_metadata",
             fail_current_trace_metadata,
         )
+        monkeypatch.setattr("httpx.post", fake_post)
 
         self._client(monkeypatch).rpc("svc", "Method", {})
 
         assert posted["kwargs"]["headers"] == {"Authorization": "Bearer token"}
-
-    def test_rpc_propagates_existing_trace_context(self, monkeypatch):
-        posted: dict[str, Any] = {}
-
-        def fake_post(*args, **kwargs):
-            posted["kwargs"] = kwargs
-            return _RPCResponse()
-
-        monkeypatch.setattr("httpx.post", fake_post)
-        monkeypatch.setattr("chalkcompute._tracing.get_tracer", lambda: _Tracer())
-        monkeypatch.setattr(
-            "chalkcompute._tracing.has_current_trace_context",
-            lambda: True,
-        )
-        monkeypatch.setattr(
-            "chalkcompute._tracing.current_trace_metadata",
-            lambda: [("traceparent", "trace-id")],
-        )
-
-        client = self._client(monkeypatch)
-        client.rpc("svc", "Method", {})
-
-        assert posted["kwargs"]["headers"]["Authorization"] == "Bearer token"
-        assert posted["kwargs"]["headers"]["traceparent"] == "trace-id"
-        assert "traceparent" not in client._headers
 
     def test_rpc_merges_extra_headers_without_mutating_cached_headers(self, monkeypatch):
         posted: dict[str, Any] = {}
@@ -207,11 +273,6 @@ class TestConnectClientTracing:
             return _RPCResponse()
 
         monkeypatch.setattr("httpx.post", fake_post)
-        monkeypatch.setattr("chalkcompute._tracing.get_tracer", lambda: _Tracer())
-        monkeypatch.setattr(
-            "chalkcompute._tracing.has_current_trace_context",
-            lambda: False,
-        )
 
         client = self._client(monkeypatch)
         client.rpc(

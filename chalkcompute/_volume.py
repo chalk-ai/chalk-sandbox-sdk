@@ -41,7 +41,6 @@ from chalkcompute._connect import (
 from chalkcompute._gen.chalk.volume.v1 import volume_pb2 as pb
 from chalkcompute._gen.chalk.volume.v1 import volume_pb2_grpc as pb_grpc
 from chalkcompute._image import Image, LazyLocalFile
-from chalkcompute._tracing import traced
 
 # Aliases defined before VolumeClient, which has a ``.list()`` method that
 # would otherwise shadow the builtin ``list`` in class-scope name resolution.
@@ -245,7 +244,6 @@ class Volume:
 
     # -- File operations -------------------------------------------------------
 
-    @traced("chalkcompute.volume.read_file")
     def read_file(self, path: str) -> bytes:
         """Read a file's contents from the volume.
 
@@ -261,7 +259,6 @@ class Volume:
         """
         return _read_file_bytes(self._client, self._name, path)
 
-    @traced("chalkcompute.volume.put_file")
     def put_file(self, path: str, data: bytes | str) -> Volume:
         """Write a file into the volume.
 
@@ -388,7 +385,6 @@ class Volume:
 
     # -- Volume lifecycle ------------------------------------------------------
 
-    @traced("chalkcompute.volume.delete")
     def delete(self) -> None:
         """Delete this volume and all of its contents."""
         try:
@@ -517,7 +513,6 @@ class VolumeClient:
         """Close the underlying gRPC channel"""
         self._channel.close()
 
-    @traced("chalkcompute.volume.create")
     def create(self, name: str) -> Volume:
         """Create a new named volume.
 
@@ -820,7 +815,7 @@ def _upload_multipart(
     str
         Storage object ID for the completed upload.
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import ThreadPoolExecutor
 
     storage_object_id = resp.storage_object_id
     all_uris = list(resp.multipart.signed_upload_uris)
@@ -983,7 +978,6 @@ def _upload_resumable(
 # ---------------------------------------------------------------------------
 
 
-@traced("chalkcompute.upload_lazy_files")
 def upload_lazy_files(
     client: VolumeClient,
     image: Image,

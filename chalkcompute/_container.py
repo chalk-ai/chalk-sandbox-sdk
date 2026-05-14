@@ -30,7 +30,6 @@ from typing import TYPE_CHECKING, Any
 from chalkcompute._connect import ConnectClient
 from chalkcompute._volume import VolumeClient, upload_lazy_files
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
-from chalkcompute._tracing import traced
 
 logger = logging.getLogger(__name__)
 
@@ -417,7 +416,6 @@ class Container:
 
     # -- Lifecycle -------------------------------------------------------------
 
-    @traced("chalkcompute.container.run")
     def run(
         self,
         *,
@@ -682,7 +680,6 @@ class Container:
             f"ChalkFS files not visible after {timeout}s (probed {probe_path})"
         )
 
-    @traced("chalkcompute.container.exec")
     def exec(
         self,
         *command: str,
@@ -781,7 +778,6 @@ class Container:
         assert last_err is not None
         raise last_err
 
-    @traced("chalkcompute.container.stop")
     def stop(self, grace_period_seconds: int | None = None) -> None:
         """Stop the container and clean up temporary volumes and secrets.
 
