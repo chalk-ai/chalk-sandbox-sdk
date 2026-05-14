@@ -8,7 +8,6 @@ steps:
   - label: ":pytest: Integration tests ({{matrix}})"
     matrix:
       - "staging/ftqa"
-      - "meta-ci"
     command: |
       set -euo pipefail
       unset VIRTUAL_ENV
@@ -54,7 +53,6 @@ steps:
   - label: ":alarm_clock: Remote function schedule ({{matrix}})"
     matrix:
       - "staging/ftqa"
-      - "meta-ci"
     command: |
       set -euo pipefail
       unset VIRTUAL_ENV
@@ -79,8 +77,6 @@ steps:
       CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest e2etests/test_remote_function_schedule.py -v -s --tb=short
     agents:
       queue: default
-    concurrency: 1
-    concurrency_group: "chalk-sandbox-sdk/remote-functions/{{matrix}}"
     timeout_in_minutes: 20
     retry:
       automatic:
@@ -90,7 +86,6 @@ steps:
   - label: ":brain: Embedding function example ({{matrix}})"
     matrix:
       - "staging/ftqa"
-      - "meta-ci"
     command: |
       set -euo pipefail
       unset VIRTUAL_ENV
@@ -118,8 +113,6 @@ steps:
       CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest e2etests/test_embedding_function.py -v -s --tb=short
     agents:
       queue: default
-    concurrency: 1
-    concurrency_group: "chalk-sandbox-sdk/remote-functions/{{matrix}}"
     timeout_in_minutes: 20
     retry:
       automatic:
@@ -129,7 +122,6 @@ steps:
   - label: ":arrows_counterclockwise: Generator function example ({{matrix}})"
     matrix:
       - "staging/ftqa"
-      - "meta-ci"
     command: |
       set -euo pipefail
       unset VIRTUAL_ENV
@@ -154,8 +146,6 @@ steps:
       CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest e2etests/test_generator.py -v -s --tb=short
     agents:
       queue: default
-    concurrency: 1
-    concurrency_group: "chalk-sandbox-sdk/remote-functions/{{matrix}}"
     timeout_in_minutes: 20
     retry:
       automatic:
@@ -165,7 +155,6 @@ steps:
   - label: ":zap: Scalar function example ({{matrix}})"
     matrix:
       - "staging/ftqa"
-      - "meta-ci"
     command: |
       set -euo pipefail
       unset VIRTUAL_ENV
@@ -190,8 +179,6 @@ steps:
       CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest e2etests/test_scalar.py -v -s --tb=short
     agents:
       queue: default
-    concurrency: 1
-    concurrency_group: "chalk-sandbox-sdk/remote-functions/{{matrix}}"
     timeout_in_minutes: 20
     retry:
       automatic:
