@@ -4,6 +4,9 @@ on:
     branches:
       - main
 
+env:
+  UV_VERSION: "0.11.14"
+
 steps:
   - label: ":pytest: Integration tests ({{matrix}})"
     matrix:
@@ -34,8 +37,10 @@ steps:
       export CHALK_ACTIVE_ENVIRONMENT="$$CHALK_ENVIRONMENT_ID"
       export CHALK_ASSERT_CONTAINER_METRICS=1
 
+      echo "--- :python: Install uv"
+      source .buildkite/install-uv.sh
       echo "--- :python: Sync dependencies"
-      uv sync --all-extras --reinstall-package chalkcompute
+      uv sync --locked --all-extras --reinstall-package chalkcompute
 
       echo "--- :pytest: Run integration tests ($$CHALK_API_SERVER)"
       uv run python -m pytest e2etests/test_image.py e2etests/test_sandbox_exec.py e2etests/test_volume.py e2etests/test_container.py -v -s --tb=short
@@ -67,8 +72,10 @@ steps:
       set +a
       rm /tmp/test.env
 
+      echo "--- :python: Install uv"
+      source .buildkite/install-uv.sh
       echo "--- :python: Sync dependencies"
-      uv sync --all-extras --reinstall-package chalkcompute
+      uv sync --locked --all-extras --reinstall-package chalkcompute
 
       echo "--- :alarm_clock: Deploy and test scheduled remote function"
       CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest e2etests/test_remote_function_schedule.py -v -s --tb=short
@@ -100,8 +107,10 @@ steps:
       set +a
       rm /tmp/test.env
 
+      echo "--- :python: Install uv"
+      source .buildkite/install-uv.sh
       echo "--- :python: Sync dependencies"
-      uv sync --all-extras --reinstall-package chalkcompute
+      uv sync --locked --all-extras --reinstall-package chalkcompute
 
       echo "--- :brain: Deploy and test embedding functions"
       export OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.chalk.ai:443
@@ -136,8 +145,10 @@ steps:
       set +a
       rm /tmp/test.env
 
+      echo "--- :python: Install uv"
+      source .buildkite/install-uv.sh
       echo "--- :python: Sync dependencies"
-      uv sync --all-extras --reinstall-package chalkcompute
+      uv sync --locked --all-extras --reinstall-package chalkcompute
 
       echo "--- :arrows_counterclockwise: Deploy and test generator functions"
       CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest e2etests/test_generator.py -v -s --tb=short
@@ -169,8 +180,10 @@ steps:
       set +a
       rm /tmp/test.env
 
+      echo "--- :python: Install uv"
+      source .buildkite/install-uv.sh
       echo "--- :python: Sync dependencies"
-      uv sync --all-extras --reinstall-package chalkcompute
+      uv sync --locked --all-extras --reinstall-package chalkcompute
 
       echo "--- :zap: Deploy and test scalar functions"
       CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest e2etests/test_scalar.py -v -s --tb=short
