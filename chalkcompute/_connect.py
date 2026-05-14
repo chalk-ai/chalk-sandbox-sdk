@@ -15,6 +15,8 @@ from urllib.parse import urlparse
 
 import grpc
 
+from chalkcompute._tracing import instrumented as _instrumented
+
 logger = logging.getLogger(__name__)
 
 _SERVICE_AUTH_EXCHANGE_TOKEN_ENV_VARS = (
@@ -271,25 +273,36 @@ class ConnectClient:
         """
         import httpx
 
-        self._ensure_auth()
-        assert self._api_server is not None
-        assert self._headers is not None
-        headers = self._headers
-        if extra_headers:
-            headers = {**headers, **extra_headers}
-        return httpx.post(
-            f"{self._api_server}/{service}/{method}",
-            json=body,
-            headers=headers,
-            timeout=timeout,
-        )
+        from chalkcompute._tracing import get_tracer
+
+        with get_tracer().start_as_current_span("chalkcompute.rpc") as span:
+            span.set_attribute("rpc.service", service)
+            span.set_attribute("rpc.method", method)
+            self._ensure_auth()
+            assert self._api_server is not None
+            assert self._headers is not None
+            headers = self._headers
+            if extra_headers:
+                headers = {**headers, **extra_headers}
+            resp = httpx.post(
+                f"{self._api_server}/{service}/{method}",
+                json=body,
+                headers=headers,
+                timeout=timeout,
+            )
+            span.set_attribute("http.response.status_code", resp.status_code)
+            if resp.status_code >= 400:
+                from opentelemetry.trace import StatusCode
+
+                span.set_status(StatusCode.ERROR, f"HTTP {resp.status_code}")
+            return resp
 
 
 # ---------------------------------------------------------------------------
 # Shared helpers that operate on a ConnectClient
 # ---------------------------------------------------------------------------
 
-
+@_instrumented("chalkcompute.build_image")
 def build_image(
     client: ConnectClient,
     image: Image,

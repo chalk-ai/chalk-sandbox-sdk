@@ -51,6 +51,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from chalkcompute._connect import ConnectClient
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
+from chalkcompute._tracing import instrumented
 from chalkcompute._function import (
     _CATALOG_SVC,
     _REMOTE_ENV_VAR,
@@ -758,6 +759,7 @@ class RemoteClass:
 
     # -- Lifecycle -------------------------------------------------------------
 
+    @instrumented("chalkcompute.cls.deploy")
     def deploy(
         self,
         *,
@@ -1038,6 +1040,7 @@ class RemoteClass:
                 )
         return self
 
+    @instrumented("chalkcompute.cls.delete")
     def delete(self) -> None:
         """Delete all function versions and clean up volumes."""
         for method_info in self._methods.values():
