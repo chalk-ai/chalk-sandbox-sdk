@@ -42,8 +42,6 @@ _ARCHIVE_CHUNK_PREFIX = "_archive.part."
 # PutFile payload is base64-encoded, so keep raw chunks under ~6 MB
 # to stay well within typical HTTP body limits after encoding (~8 MB).
 _ARCHIVE_CHUNK_SIZE = 6 * 1024 * 1024
-_DEFAULT_PYTHON_VERSION = "3.14"
-_DEFAULT_DEBIAN_CODENAME = "trixie"
 
 
 @dataclass(frozen=True)
@@ -114,7 +112,7 @@ class Image:
         return cls(image)
 
     @classmethod
-    def debian_slim(cls, python_version: str = _DEFAULT_PYTHON_VERSION) -> Image:
+    def debian_slim(cls, python_version: str = "3.14") -> Image:
         """Create an image based on ``python:<version>-slim-trixie``.
 
         Parameters
@@ -133,7 +131,7 @@ class Image:
         >>> img = Image.debian_slim()
         >>> img = Image.debian_slim("3.14.5")
         """
-        return cls(f"python:{python_version}-slim-{_DEFAULT_DEBIAN_CODENAME}")
+        return cls(f"python:{python_version}-slim-trixie")
 
     @classmethod
     def from_dockerfile(cls, path: str) -> Image:
