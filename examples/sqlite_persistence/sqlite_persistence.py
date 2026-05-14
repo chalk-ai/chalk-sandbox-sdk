@@ -45,20 +45,10 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "../../.env"))
 #
 # A single volume name and mount path shared by all three containers. The
 # writer creates `/data/app.db`; each reader queries it.
-#
-# We also forward Chalk credentials into each container so the ChalkFS
-# volume sidecar can authenticate to the volume service.
 
 VOLUME_NAME = f"sqlite-persistence-{uuid.uuid4().hex[:8]}"
 MOUNT_PATH = "/data"
 DB_PATH = f"{MOUNT_PATH}/app.db"
-
-CONTAINER_ENV = {
-    "CHALK_CLIENT_ID": os.environ.get("CHALK_CLIENT_ID", ""),
-    "CHALK_CLIENT_SECRET": os.environ.get("CHALK_CLIENT_SECRET", ""),
-    "CHALK_API_SERVER": os.environ.get("CHALK_API_SERVER", ""),
-    "CHALK_ENVIRONMENT_ID": os.environ.get("CHALK_ENVIRONMENT_ID", ""),
-}
 
 
 # ## The image
@@ -168,7 +158,7 @@ def main() -> None:
         # the container that wrote it.
         print("\n=== Starting writer container ===")
         writer = (
-            Container(image=image, name=f"sqlite-writer-{uuid.uuid4().hex[:6]}", env=CONTAINER_ENV)
+            Container(image=image)
             .mount_volume(VOLUME_NAME, MOUNT_PATH)
             .run()
         )
@@ -189,12 +179,12 @@ def main() -> None:
         # database. Both should see all three rows.
         print("=== Starting reader containers ===")
         reader_a = (
-            Container(image=image, name=f"sqlite-reader-a-{uuid.uuid4().hex[:6]}", env=CONTAINER_ENV)
+            Container(image=image)
             .mount_volume(VOLUME_NAME, MOUNT_PATH)
             .run()
         )
         reader_b = (
-            Container(image=image, name=f"sqlite-reader-b-{uuid.uuid4().hex[:6]}", env=CONTAINER_ENV)
+            Container(image=image)
             .mount_volume(VOLUME_NAME, MOUNT_PATH)
             .run()
         )

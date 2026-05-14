@@ -4,77 +4,19 @@ These tests require CHALK_CLIENT_ID/CHALK_API_SERVER env vars.
 Unit tests have been moved to tests/test_image.py.
 """
 
-import os
 import time
 
-import httpx
 import pytest
-from dotenv import load_dotenv
 from google.protobuf.json_format import MessageToDict
 
 from chalkcompute import Image
+from e2etests.conftest import _connect_rpc, needs_staging
 
-load_dotenv()
-
-CHALK_CLIENT_ID = os.environ.get("CHALK_CLIENT_ID", "")
-CHALK_CLIENT_SECRET = os.environ.get("CHALK_CLIENT_SECRET", "")
-CHALK_ENVIRONMENT_ID = os.environ.get("CHALK_ENVIRONMENT_ID", "")
-CHALK_API_SERVER = os.environ.get("CHALK_API_SERVER", "")
-
-SANDBOX_SERVICE_BASE = f"{CHALK_API_SERVER}/chalk.sandbox.v1.SandboxService"
-CUSTOM_IMAGE_SERVICE_BASE = f"{CHALK_API_SERVER}/chalk.sandbox.v1.CustomImageService"
+_SANDBOX_SVC = "chalk.sandbox.v1.SandboxService"
+_CUSTOM_IMAGE_SVC = "chalk.sandbox.v1.CustomImageService"
 
 POLL_INTERVAL = 5
 POLL_TIMEOUT = 600
-
-
-def _get_access_token() -> str:
-    """Exchange client credentials for a bearer token via the Chalk REST API."""
-    resp = httpx.post(
-        f"{CHALK_API_SERVER}/v1/oauth/token",
-        json={
-            "client_id": CHALK_CLIENT_ID,
-            "client_secret": CHALK_CLIENT_SECRET,
-            "grant_type": "client_credentials",
-        },
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        },
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()["access_token"]
-
-
-@pytest.fixture(scope="module")
-def auth_headers() -> dict[str, str]:
-    token = _get_access_token()
-    return {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {token}",
-        "X-Chalk-Env-Id": CHALK_ENVIRONMENT_ID,
-    }
-
-
-def _sandbox_rpc(method: str, body: dict, headers: dict[str, str], timeout: float = 30) -> httpx.Response:
-    """Make a Connect-protocol unary RPC call to SandboxService."""
-    return httpx.post(
-        f"{SANDBOX_SERVICE_BASE}/{method}",
-        json=body,
-        headers=headers,
-        timeout=timeout,
-    )
-
-
-def _custom_image_rpc(method: str, body: dict, headers: dict[str, str], timeout: float = 30) -> httpx.Response:
-    """Make a Connect-protocol unary RPC call to CustomImageService."""
-    return httpx.post(
-        f"{CUSTOM_IMAGE_SERVICE_BASE}/{method}",
-        json=body,
-        headers=headers,
-        timeout=timeout,
-    )
 
 
 def _poll_until_ready(sandbox_id: str, headers: dict[str, str]) -> dict:
@@ -82,7 +24,7 @@ def _poll_until_ready(sandbox_id: str, headers: dict[str, str]) -> dict:
     deadline = time.monotonic() + POLL_TIMEOUT
     while time.monotonic() < deadline:
         time.sleep(POLL_INTERVAL)
-        resp = _sandbox_rpc("GetSandbox", {"sandboxId": sandbox_id}, headers)
+        resp = _connect_rpc(_SANDBOX_SVC, "GetSandbox", {"sandboxId": sandbox_id}, headers)
         assert resp.status_code == 200, f"GetSandbox failed: {resp.text}"
         data = resp.json()
         state = data.get("sandbox", {}).get("state", "")
@@ -95,20 +37,10 @@ def _poll_until_ready(sandbox_id: str, headers: dict[str, str]) -> dict:
     pytest.fail(f"Timed out after {POLL_TIMEOUT}s waiting for sandbox {sandbox_id}")
 
 
-# ---------------------------------------------------------------------------
-# Integration tests: require CHALK_* env vars
-# ---------------------------------------------------------------------------
-
-needs_staging = pytest.mark.skipif(
-    not CHALK_CLIENT_ID or not CHALK_API_SERVER,
-    reason="CHALK_CLIENT_ID/CHALK_API_SERVER not set",
-)
-
-
 @needs_staging
 def test_list_sandboxes(auth_headers: dict[str, str]) -> None:
     """Verify we can authenticate and call ListSandboxes."""
-    resp = _sandbox_rpc("ListSandboxes", {}, auth_headers)
+    resp = _connect_rpc(_SANDBOX_SVC, "ListSandboxes", {}, auth_headers)
     assert resp.status_code == 200, f"ListSandboxes failed: {resp.text}"
     data = resp.json()
     assert isinstance(data, dict)
@@ -133,7 +65,7 @@ def test_create_sandbox_with_debian_image(auth_headers: dict[str, str]) -> None:
         "name": "test-debian-slim",
     }
 
-    resp = _sandbox_rpc("CreateSandbox", body, auth_headers, timeout=30)
+    resp = _connect_rpc(_SANDBOX_SVC, "CreateSandbox", body, auth_headers, timeout=30)
     assert resp.status_code == 200, f"CreateSandbox failed: {resp.text}"
 
     data = resp.json()
@@ -153,7 +85,7 @@ def test_create_sandbox_with_debian_image(auth_headers: dict[str, str]) -> None:
     else:
         assert state == "ready", f"Unexpected state: {state}"
 
-    _sandbox_rpc("TerminateSandbox", {"sandboxId": sandbox_id}, auth_headers)
+    _connect_rpc(_SANDBOX_SVC, "TerminateSandbox", {"sandboxId": sandbox_id}, auth_headers)
 
 
 @needs_staging
@@ -165,7 +97,7 @@ def test_create_sandbox_with_plain_image(auth_headers: dict[str, str]) -> None:
         "name": "test-plain-image",
     }
 
-    resp = _sandbox_rpc("CreateSandbox", body, auth_headers, timeout=30)
+    resp = _connect_rpc(_SANDBOX_SVC, "CreateSandbox", body, auth_headers, timeout=30)
     assert resp.status_code == 200, f"CreateSandbox failed: {resp.text}"
 
     data = resp.json()
@@ -183,7 +115,7 @@ def test_create_sandbox_with_plain_image(auth_headers: dict[str, str]) -> None:
         assert state == "ready", f"Unexpected state: {state}"
 
     print(f"Sandbox {sandbox_id} is ready")
-    _sandbox_rpc("TerminateSandbox", {"sandboxId": sandbox_id}, auth_headers)
+    _connect_rpc(_SANDBOX_SVC, "TerminateSandbox", {"sandboxId": sandbox_id}, auth_headers)
 
 
 @needs_staging
@@ -198,7 +130,7 @@ def test_build_custom_image(auth_headers: dict[str, str]) -> None:
     spec_dict = MessageToDict(img.to_proto())
     body = {"imageSpec": spec_dict}
 
-    resp = _custom_image_rpc("BuildCustomImage", body, auth_headers, timeout=600)
+    resp = _connect_rpc(_CUSTOM_IMAGE_SVC, "BuildCustomImage", body, auth_headers, timeout=600)
     assert resp.status_code == 200, f"BuildCustomImage failed: {resp.text}"
 
     data = resp.json()
@@ -209,7 +141,7 @@ def test_build_custom_image(auth_headers: dict[str, str]) -> None:
     build_id = data["buildId"]
 
     # Query the build by ID
-    get_resp = _custom_image_rpc("GetCustomImage", {"buildId": build_id}, auth_headers)
+    get_resp = _connect_rpc(_CUSTOM_IMAGE_SVC, "GetCustomImage", {"buildId": build_id}, auth_headers)
     assert get_resp.status_code == 200, f"GetCustomImage failed: {get_resp.text}"
 
     get_data = get_resp.json()

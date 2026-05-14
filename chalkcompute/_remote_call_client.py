@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 _NativeRemoteCallClient: Any | None
 _NATIVE_IMPORT_ERROR: ImportError | None
+_remote_call_native: Any | None = None
 try:
     _remote_call_native = importlib.import_module("chalkcompute._remote_call_native")
 except ImportError as exc:  # pragma: no cover - exercised in source checkouts
@@ -25,6 +26,15 @@ _warned_per_call_metadata_unsupported = False
 
 class RemoteCallClientUnavailable(RuntimeError):
     """Raised when the native remote-call extension is not installed."""
+
+
+@dataclass(frozen=True)
+class ServiceAuthContext:
+    auth_endpoint: str
+    exchange_token: str
+    environment_id: str
+    requested_permissions: tuple[int, ...]
+    grpc_engine: tuple[str, bool] | None
 
 
 @dataclass(frozen=True)
@@ -180,3 +190,40 @@ class RemoteCallClient:
 
     def purge_all(self) -> dict[str, int]:
         return {str(k): int(v) for k, v in self._inner.purge_all().items()}
+
+
+def resolve_service_auth_context() -> ServiceAuthContext | None:
+    if _NativeRemoteCallClient is None:
+        raise RemoteCallClientUnavailable(
+            "chalkcompute service-auth environment resolution requires the "
+            "native chalkcompute._remote_call_native extension"
+        ) from _NATIVE_IMPORT_ERROR
+
+    resolver = getattr(_remote_call_native, "resolve_service_auth_context", None)
+    if resolver is None:
+        raise RemoteCallClientUnavailable(
+            "chalkcompute._remote_call_native is too old for service-auth "
+            "environment resolution; rebuild/reinstall the local chalkcompute package"
+        )
+
+    raw = resolver()
+    if raw is None:
+        return None
+
+    raw_grpc_engine = raw["grpc_engine"]
+    grpc_engine = None
+    if raw_grpc_engine is not None:
+        grpc_engine = (
+            str(raw_grpc_engine["target"]),
+            bool(raw_grpc_engine["use_tls"]),
+        )
+
+    return ServiceAuthContext(
+        auth_endpoint=str(raw["auth_endpoint"]),
+        exchange_token=str(raw["exchange_token"]),
+        environment_id=str(raw["environment_id"]),
+        requested_permissions=tuple(
+            int(value) for value in raw["requested_permissions"]
+        ),
+        grpc_engine=grpc_engine,
+    )

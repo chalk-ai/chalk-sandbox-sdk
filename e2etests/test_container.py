@@ -12,22 +12,12 @@ import uuid
 from pathlib import Path
 
 import pytest
-from dotenv import load_dotenv
 
 from chalkcompute import Container, Image, Secret
+from e2etests.conftest import needs_staging
 from e2etests.container_metrics import (
     assert_container_metrics_target,
     container_metrics_target,
-)
-
-load_dotenv()
-
-CHALK_CLIENT_ID = os.environ.get("CHALK_CLIENT_ID", "")
-CHALK_API_SERVER = os.environ.get("CHALK_API_SERVER", "")
-
-needs_staging = pytest.mark.skipif(
-    not CHALK_CLIENT_ID or not CHALK_API_SERVER,
-    reason="CHALK_CLIENT_ID/CHALK_API_SERVER not set",
 )
 
 

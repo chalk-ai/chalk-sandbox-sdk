@@ -111,3 +111,33 @@ def test_container_run_sends_network_policy() -> None:
     assert body["container"]["spec"]["securityPolicy"] == {
         "kernelPolicy": "RESTRICTED"
     }
+
+
+def test_container_run_sends_tags() -> None:
+    client = _Client()
+    container = Container(
+        image="ubuntu:latest",
+        name="tagged-container",
+        tags={"team": "accounting", "env": "staging"},
+    )
+    container._client = client
+
+    container.run()
+
+    assert len(client.calls) == 1
+    _, _, body, _ = client.calls[0]
+    assert body["container"]["spec"]["tags"] == {
+        "team": "accounting",
+        "env": "staging",
+    }
+
+
+def test_container_run_omits_tags_when_unset() -> None:
+    client = _Client()
+    container = Container(image="ubuntu:latest", name="untagged-container")
+    container._client = client
+
+    container.run()
+
+    _, _, body, _ = client.calls[0]
+    assert "tags" not in body["container"]["spec"]

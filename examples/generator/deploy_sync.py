@@ -13,7 +13,7 @@ import chalkcompute
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 
-@chalkcompute.function(name="chalk-sandbox-test-count-up")
+@chalkcompute.function
 def count_up(n: int) -> Iterator[int]:
     """Sync generator: yields integers 0..n-1."""
     for i in range(n):

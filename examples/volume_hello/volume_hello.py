@@ -100,9 +100,7 @@ def create_volume(name: str, token: str) -> None:
 #
 # The `volumes` parameter accepts `(volume_name, mount_path)` pairs. Chalk
 # mounts each volume via a ChalkFS sidecar — a FUSE process that syncs files
-# from object storage into the container's filesystem. The sidecar authenticates
-# using `CHALK_CLIENT_ID` and `CHALK_CLIENT_SECRET` forwarded in `env`.
-# Without them the mount fails with "Input/output error".
+# from object storage into the container's filesystem.
 #
 # `Container.stop()` also deletes volumes listed in `volumes`, so no separate
 # cleanup call is needed.
@@ -110,22 +108,13 @@ def create_volume(name: str, token: str) -> None:
 def main() -> None:
     run_id = uuid.uuid4().hex[:8]
     vol_name = f"hello-vol-{run_id}"
-    container_name = f"hello-container-{run_id}"
 
     token = _get_token()
     create_volume(vol_name, token)
 
-    env: dict[str, str] = {}
-    if client_id := os.environ.get("CHALK_CLIENT_ID"):
-        env["CHALK_CLIENT_ID"] = client_id
-    if client_secret := os.environ.get("CHALK_CLIENT_SECRET"):
-        env["CHALK_CLIENT_SECRET"] = client_secret
-
     container = Container(
         image="python:3.12-slim-bookworm",
-        name=container_name,
         volumes=[(vol_name, MOUNT_PATH)],
-        env=env,
     )
     try:
         container.run()

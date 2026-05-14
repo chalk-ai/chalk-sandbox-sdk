@@ -3,7 +3,10 @@ import logging
 import pytest
 
 import chalkcompute._remote_call_client as remote_call_client
-from chalkcompute._remote_call_client import RemoteCallClient, RemoteCallClientUnavailable
+from chalkcompute._remote_call_client import (
+    RemoteCallClient,
+    RemoteCallClientUnavailable,
+)
 
 
 class LegacyNativeRemoteCallClient:
@@ -85,14 +88,23 @@ def test_legacy_native_call_shape_still_works_without_per_call_metadata() -> Non
     ]
 
 
-def test_legacy_native_drops_per_call_metadata_once(caplog: pytest.LogCaptureFixture) -> None:
+def test_legacy_native_drops_per_call_metadata_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     client = RemoteCallClient("remote.chalk.test:443")
 
     caplog.set_level(logging.WARNING, logger="chalkcompute._remote_call_client")
 
-    assert client.call_ipc("handler", b"in", metadata=(("traceparent", "trace-1"),)) == [b"ok"]
-    assert client.call_ipc("handler", b"in", metadata=(("traceparent", "trace-2"),)) == [b"ok"]
-    assert client.enqueue("pkg.fn", b"in", metadata=(("traceparent", "trace"),)) == "call-1"
+    assert client.call_ipc(
+        "handler", b"in", metadata=(("traceparent", "trace-1"),)
+    ) == [b"ok"]
+    assert client.call_ipc(
+        "handler", b"in", metadata=(("traceparent", "trace-2"),)
+    ) == [b"ok"]
+    assert (
+        client.enqueue("pkg.fn", b"in", metadata=(("traceparent", "trace"),))
+        == "call-1"
+    )
     assert LegacyNativeRemoteCallClient.method_calls == [
         ("call_ipc", "handler", b"in"),
         ("call_ipc", "handler", b"in"),

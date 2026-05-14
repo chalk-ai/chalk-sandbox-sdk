@@ -4,17 +4,17 @@ Deploy Python classes as versioned remote functions backed by ExternalFunctionCa
 Usage:
     import chalkcompute
 
-    @chalkcompute.cls()
+    @chalkcompute.cls
     class Adder:
-        @chalkcompute.before()
+        @chalkcompute.before
         def on_startup(self) -> None:
             print("Adder started")
 
-        @chalkcompute.method()
+        @chalkcompute.method
         def add(self, x: int, y: int) -> int:
             return x + y
 
-        @chalkcompute.after()
+        @chalkcompute.after
         def on_shutdown(self) -> None:
             print("Adder stopped")
 
@@ -27,7 +27,7 @@ Or imperatively:
     from chalkcompute import RemoteClass
 
     class Adder:
-        @chalkcompute.method()
+        @chalkcompute.method
         def add(self, x: int, y: int) -> int:
             return x + y
 
@@ -45,9 +45,8 @@ import logging
 import os
 import time
 import typing
-import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, TypeVar, overload
 
 from chalkcompute._connect import ConnectClient
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
@@ -60,15 +59,19 @@ from chalkcompute._function import (
     RemoteFunction,
     SerializationFormat,
     _build_and_upload,
+    _callable_input_names,
     _cleanup_temp_files,
     _extract_field_names,
+    _is_chalkcompute_decorator,
     _local_install_entrypoint,
     _make_base_image,
     _make_container_spec,
+    _normalize_schedule,
     _should_strip_source,
     _write_temp,
 )
 from chalkcompute._concurrency import ConcurrencyPolicy
+from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._retry import RetryPolicy
 
@@ -85,6 +88,7 @@ logger = logging.getLogger(__name__)
 _CHALK_METHOD_MARKER = "_chalk_method"
 _CHALK_BEFORE_MARKER = "_chalk_before"
 _CHALK_AFTER_MARKER = "_chalk_after"
+F = TypeVar("F", bound=Callable[..., Any])
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -104,33 +108,63 @@ class ClassBuildError(ClassError):
 # ---------------------------------------------------------------------------
 
 
-def method() -> Callable:
+@overload
+def method(func: F, /) -> F: ...
+
+
+@overload
+def method() -> Callable[[F], F]: ...
+
+
+def method(func: F | None = None, /) -> F | Callable[[F], F]:
     """Mark a class method for remote deployment."""
 
-    def decorator(func: Callable) -> Callable:
-        setattr(func, _CHALK_METHOD_MARKER, True)
-        return func
+    def decorator(target: F) -> F:
+        setattr(target, _CHALK_METHOD_MARKER, True)
+        return target
 
+    if func is not None:
+        return decorator(func)
     return decorator
 
 
-def before() -> Callable:
+@overload
+def before(func: F, /) -> F: ...
+
+
+@overload
+def before() -> Callable[[F], F]: ...
+
+
+def before(func: F | None = None, /) -> F | Callable[[F], F]:
     """Mark a method as the startup hook (called before the server starts)."""
 
-    def decorator(func: Callable) -> Callable:
-        setattr(func, _CHALK_BEFORE_MARKER, True)
-        return func
+    def decorator(target: F) -> F:
+        setattr(target, _CHALK_BEFORE_MARKER, True)
+        return target
 
+    if func is not None:
+        return decorator(func)
     return decorator
 
 
-def after() -> Callable:
+@overload
+def after(func: F, /) -> F: ...
+
+
+@overload
+def after() -> Callable[[F], F]: ...
+
+
+def after(func: F | None = None, /) -> F | Callable[[F], F]:
     """Mark a method as the shutdown hook (called when the process exits)."""
 
-    def decorator(func: Callable) -> Callable:
-        setattr(func, _CHALK_AFTER_MARKER, True)
-        return func
+    def decorator(target: F) -> F:
+        setattr(target, _CHALK_AFTER_MARKER, True)
+        return target
 
+    if func is not None:
+        return decorator(func)
     return decorator
 
 
@@ -172,6 +206,22 @@ def _strip_chalkcompute_from_class_source(source: str) -> str:
 
     remove_ranges: list[tuple[int, int]] = []
     decorated_names: set[str] = set()
+    chalkcompute_module_names = {"chalkcompute"}
+    chalkcompute_decorator_names: set[str] = set()
+    chalkcompute_attributes = {"cls", "method", "before", "after"}
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "chalkcompute":
+                    chalkcompute_module_names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module and node.module.startswith("chalkcompute"):
+                for alias in node.names:
+                    if alias.name == "*":
+                        chalkcompute_decorator_names.update(chalkcompute_attributes)
+                    elif alias.name in chalkcompute_attributes:
+                        chalkcompute_decorator_names.add(alias.asname or alias.name)
 
     for node in ast.walk(tree):
         # Remove: import chalkcompute / from chalkcompute import ...
@@ -186,7 +236,14 @@ def _strip_chalkcompute_from_class_source(source: str) -> str:
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             for dec in node.decorator_list:
                 dec_source = ast.get_source_segment(source, dec)
-                if dec_source and "chalkcompute" in dec_source:
+                if (
+                    dec_source is not None and "chalkcompute" in dec_source
+                ) or _is_chalkcompute_decorator(
+                    dec,
+                    module_names=chalkcompute_module_names,
+                    decorator_names=chalkcompute_decorator_names,
+                    attribute_names=chalkcompute_attributes,
+                ):
                     remove_ranges.append((dec.lineno, dec.end_lineno or dec.lineno))
                     decorated_names.add(node.name)
 
@@ -441,9 +498,9 @@ def _generate_class_handler_shim(
 class RemoteClass:
     """A managed class backed by ExternalFunctionCatalogService.
 
-    Deploys each ``@method()`` as a separate function version with its own
+    Deploys each ``@method`` as a separate function version with its own
     scaling group, sharing a single container image.  Lifecycle hooks
-    (``@before()`` / ``@after()``) run in every method's container.
+    (``@before`` / ``@after``) run in every method's container.
 
     Most users should prefer the :func:`cls` decorator.
 
@@ -466,17 +523,17 @@ class RemoteClass:
     ...     max_replicas=2,
     ... )
     ... class Embedder:
-    ...     @chalkcompute.before()
+    ...     @chalkcompute.before
     ...     def load(self):
     ...         from sentence_transformers import SentenceTransformer
     ...         self.model = SentenceTransformer("all-MiniLM-L6-v2")
-    ...     @chalkcompute.method()
+    ...     @chalkcompute.method
     ...     def embed(self, text: str) -> list[float]:
     ...         return self.model.encode(text).tolist()
-    ...     @chalkcompute.method()
+    ...     @chalkcompute.method
     ...     def embed_batch(self, texts: list[str]) -> list[list[float]]:
     ...         return self.model.encode(texts).tolist()
-    ...     @chalkcompute.after()
+    ...     @chalkcompute.after
     ...     def shutdown(self):
     ...         del self.model
     >>> Embedder.deploy()
@@ -510,6 +567,8 @@ class RemoteClass:
         retries: int | RetryPolicy | None = None,
         rate_limit: int | RateLimitPolicy | None = None,
         concurrency: int | ConcurrencyPolicy | None = None,
+        quota: int | QueuePolicy | None = None,
+        schedule: str | None = None,
     ) -> None:
         self._user_cls = user_cls
         self._class_name = user_cls.__name__
@@ -533,6 +592,10 @@ class RemoteClass:
         self._options = options or {}
         self._max_buffer_duration = max_buffer_duration
         self._max_batching_size = max_batching_size
+        self._schedule = _normalize_schedule(
+            schedule,
+            owner=f"Class '{self._class_name}' schedule",
+        )
         self._retries = (
             RetryPolicy.from_int_or_policy(retries) if retries is not None else None
         )
@@ -545,6 +608,9 @@ class RemoteClass:
             ConcurrencyPolicy.from_int_or_policy(concurrency)
             if concurrency is not None
             else None
+        )
+        self._quota = (
+            QueuePolicy.from_int_or_policy(quota) if quota is not None else None
         )
 
         self._client = ConnectClient()
@@ -563,17 +629,34 @@ class RemoteClass:
                 self._methods[attr_name] = _MethodInfo(name=attr_name, func=attr)
             if getattr(attr, _CHALK_BEFORE_MARKER, False):
                 if self._before_name is not None:
-                    raise ClassError("Only one @before() method is allowed per class")
+                    raise ClassError("Only one @before method is allowed per class")
                 self._before_name = attr_name
             if getattr(attr, _CHALK_AFTER_MARKER, False):
                 if self._after_name is not None:
-                    raise ClassError("Only one @after() method is allowed per class")
+                    raise ClassError("Only one @after method is allowed per class")
                 self._after_name = attr_name
 
         if not self._methods:
             raise ClassError(
-                f"Class {user_cls.__name__} has no @method() decorated methods"
+                f"Class {user_cls.__name__} has no @method decorated methods"
             )
+
+        if self._schedule is not None:
+            for mname, mi in self._methods.items():
+                input_names = _callable_input_names(mi.func, skip_self=True)
+                if input_names:
+                    raise ClassError(
+                        f"Scheduled method '{self._class_name}.{mname}' cannot have "
+                        f"inputs: {', '.join(input_names)}"
+                    )
+                if inspect.isgeneratorfunction(mi.func) or inspect.isasyncgenfunction(
+                    mi.func
+                ):
+                    raise ClassError(
+                        f"Scheduled method '{self._class_name}.{mname}' cannot be a "
+                        f"generator; scheduled invocations have no caller to consume "
+                        f"yielded values."
+                    )
 
         if max_batching_size is not None:
             for mname, mi in self._methods.items():
@@ -644,6 +727,7 @@ class RemoteClass:
 
             rf = RemoteFunction._make_empty()
             rf._func_name = efv["functionName"]
+            rf._explicit_name = sanitize_dns_label(efv["functionName"])
             rf._version_info = FunctionVersionInfo(
                 id=efv["id"],
                 function_name=efv["functionName"],
@@ -689,9 +773,11 @@ class RemoteClass:
         rc._options = {}
         rc._max_buffer_duration = None
         rc._max_batching_size = None
+        rc._schedule = None
         rc._retries = None
         rc._rate_limit = None
         rc._concurrency = None
+        rc._quota = None
         rc._client = ConnectClient()
         rc._deployed = False
         rc._methods = {}
@@ -818,17 +904,10 @@ class RemoteClass:
             for method_info in self._methods.values():
                 input_schema, output_schema = _build_method_schemas(method_info.func)
 
-                name_prefix = self._explicit_name or sanitize_dns_label(
-                    self._class_name
+                func_name = (
+                    f"{self._explicit_name or self._class_name}.{method_info.name}"
                 )
-                method_label = sanitize_dns_label(method_info.name)
-                func_name = f"{name_prefix}.{method_label}"
-                if self._explicit_name:
-                    sg_name = f"{self._explicit_name}-{method_label}"
-                else:
-                    sg_name = sanitize_dns_label(
-                        f"cls-{self._class_name}-{method_info.name}-{uuid.uuid4().hex[:8]}"
-                    )
+                sg_name = sanitize_dns_label(func_name)
 
                 mkey = f"method:{func_name}"
                 progress_add(mkey, "method", f".{method_info.name}()", parent=ckey)
@@ -838,6 +917,7 @@ class RemoteClass:
                     "--handler",
                     f"handler_{method_info.name}.handler",
                 ]
+
                 container_spec = _make_container_spec(
                     name=sg_name,
                     image_uri=image_uri,
@@ -901,6 +981,10 @@ class RemoteClass:
                     function_config["rateLimit"] = self._rate_limit.to_dict()
                 if self._concurrency is not None:
                     function_config["concurrency"] = self._concurrency.to_dict()
+                if self._quota is not None:
+                    function_config["queue"] = self._quota.to_dict()
+                if self._schedule is not None:
+                    function_config["schedule"] = self._schedule
 
                 logger.info("Registering method '%s'...", func_name)
                 create_request: dict[str, Any] = {
@@ -942,6 +1026,7 @@ class RemoteClass:
                 # Build a RemoteFunction proxy for calling this method
                 rf = RemoteFunction._make_empty()
                 rf._func_name = func_name
+                rf._explicit_name = sg_name
                 rf._version_info = version_info
                 rf._web_url = web_url
                 rf._port = port
@@ -1149,6 +1234,38 @@ class _NoOpClass:
 # ---------------------------------------------------------------------------
 
 
+@overload
+def cls(
+    user_cls: type,
+    /,
+    *,
+    image: _Image | None = None,
+    cpu: str | None = None,
+    memory: str | None = None,
+    gpu: str | None = None,
+    name: str | None = None,
+    env: dict[str, str] | None = None,
+    secrets: list[_Secret] | None = None,
+    volumes: list[tuple[str, str]] | None = None,
+    min_replicas: int = 1,
+    max_replicas: int = 1,
+    shutdown_delay_seconds: int | None = None,
+    scaling_interval_seconds: int | None = None,
+    target_cpu_utilization_percentage: int | None = None,
+    target_queue_depth: int | None = None,
+    serialization_format: SerializationFormat = "pyarrow",
+    options: dict[str, str] | None = None,
+    max_buffer_duration: int | None = None,
+    max_batching_size: int | None = None,
+    retries: int | RetryPolicy | None = None,
+    rate_limit: int | RateLimitPolicy | None = None,
+    concurrency: int | ConcurrencyPolicy | None = None,
+    quota: int | QueuePolicy | None = None,
+    schedule: str | None = None,
+) -> RemoteClass | _NoOpClass: ...
+
+
+@overload
 def cls(
     *,
     image: _Image | None = None,
@@ -1172,12 +1289,44 @@ def cls(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
-) -> Callable[..., RemoteClass | _NoOpClass]:
+    quota: int | QueuePolicy | None = None,
+    schedule: str | None = None,
+) -> Callable[..., RemoteClass | _NoOpClass]: ...
+
+
+def cls(
+    user_cls: type | None = None,
+    /,
+    *,
+    image: _Image | None = None,
+    cpu: str | None = None,
+    memory: str | None = None,
+    gpu: str | None = None,
+    name: str | None = None,
+    env: dict[str, str] | None = None,
+    secrets: list[_Secret] | None = None,
+    volumes: list[tuple[str, str]] | None = None,
+    min_replicas: int = 1,
+    max_replicas: int = 1,
+    shutdown_delay_seconds: int | None = None,
+    scaling_interval_seconds: int | None = None,
+    target_cpu_utilization_percentage: int | None = None,
+    target_queue_depth: int | None = None,
+    serialization_format: SerializationFormat = "pyarrow",
+    options: dict[str, str] | None = None,
+    max_buffer_duration: int | None = None,
+    max_batching_size: int | None = None,
+    retries: int | RetryPolicy | None = None,
+    rate_limit: int | RateLimitPolicy | None = None,
+    concurrency: int | ConcurrencyPolicy | None = None,
+    quota: int | QueuePolicy | None = None,
+    schedule: str | None = None,
+) -> Callable[..., RemoteClass | _NoOpClass] | RemoteClass | _NoOpClass:
     """Decorator that deploys a class as versioned remote functions.
 
     **Locally** (at decoration time):
 
-    1. Scans the class for ``@method()``, ``@before()``, ``@after()``
+    1. Scans the class for ``@method``, ``@before``, ``@after``
     2. Builds a deploy image with per-method handler shims
     3. Registers each method via ``ExternalFunctionCatalogService``
     4. If ``CHALK_FUNCTION_LOCAL_SDK_COPY=1``, includes local SDK source in
@@ -1234,8 +1383,8 @@ def cls(
     retries
         Retry policy for handler invocations. Pass an ``int`` for simple
         max-attempts with default exponential backoff, or a
-        :class:`~chalkcompute.RetryPolicy` for full control. Enforced by
-        the dispatcher (chalkdf or the queue consumer), not the handler.
+        :class:`~chalkcompute.RetryPolicy` for full control. Enforced
+        before each outbound RPC, not in the handler.
     rate_limit
         Rate limit policy for outbound calls. Pass an ``int`` for a simple
         "N per second" cap with a per-method key, or a
@@ -1250,6 +1399,13 @@ def cls(
         (``max_concurrent``, ``key``). Multiple methods sharing the same
         ``key`` share one gate — independent of ``rate_limit`` (which caps
         rate, not in-flight count).
+    quota
+        Queue quota policy: cap on queued calls per key. Pass an ``int``
+        for a simple ``max_queue_depth`` cap with a per-method key, or a
+        :class:`~chalkcompute.QueuePolicy` for full control.
+    schedule
+        Optional crontab or Chalk duration string applied to every no-input
+        ``@method`` in the class (e.g. ``"0 * * * *"`` or ``"1h"``).
     """
 
     def decorator(user_cls: type) -> RemoteClass | _NoOpClass:
@@ -1279,8 +1435,15 @@ def cls(
             retries=retries,
             rate_limit=rate_limit,
             concurrency=concurrency,
+            quota=quota,
+            schedule=schedule,
         )
         rc.deploy()
         return rc
+
+    if user_cls is not None:
+        if not isinstance(user_cls, type):
+            raise TypeError("cls() positional argument must be a class")
+        return decorator(user_cls)
 
     return decorator

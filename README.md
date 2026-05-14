@@ -16,7 +16,7 @@ from sandbox import SandboxClient
 client = SandboxClient("localhost:50051")
 
 # Create a sandbox from a pre-built image
-sandbox = client.create(image="ubuntu:latest", name="my-sandbox")
+sandbox = client.create(image="ubuntu:latest")
 
 # Run a command
 result = sandbox.exec("echo", "hello world")
@@ -50,7 +50,7 @@ img = (
     .env({"PYTHONDONTWRITEBYTECODE": "1"})
 )
 
-sandbox = client.create(image=img, name="data-science")
+sandbox = client.create(image=img)
 result = sandbox.exec("python", "-c", "import pandas; print(pandas.__version__)")
 print(result.stdout_text)
 ```
@@ -112,8 +112,8 @@ base = Image.debian_slim("3.12").pip_install(["requests"])
 api_image = base.pip_install(["flask"]).workdir("/api")
 worker_image = base.pip_install(["celery"]).workdir("/worker")
 
-api_sandbox = client.create(image=api_image, name="api")
-worker_sandbox = client.create(image=worker_image, name="worker")
+api_sandbox = client.create(image=api_image)
+worker_sandbox = client.create(image=worker_image)
 ```
 
 ## Connecting
@@ -140,7 +140,6 @@ with SandboxClient("localhost:50051") as client:
 # Create with resource limits
 sandbox = client.create(
     image="ubuntu:latest",
-    name="dev-sandbox",
     cpu="2",
     memory="4Gi",
     env={"DEBIAN_FRONTEND": "noninteractive"},
@@ -236,7 +235,7 @@ result = sandbox.exec(
 from sandbox import SandboxClient
 
 client = SandboxClient("localhost:50051")
-sandbox = client.create(image="ubuntu:latest", name="repo-sandbox")
+sandbox = client.create(image="ubuntu:latest")
 
 # Install git
 sandbox.exec("apt-get", "update")
@@ -265,7 +264,6 @@ from sandbox import SandboxClient
 client = SandboxClient("localhost:50051")
 sandbox = client.create(
     image="ubuntu:latest",
-    name="opencode-agent",
     cpu="2",
     memory="4Gi",
     env={
@@ -314,7 +312,7 @@ for event in process.output():
 ### Long-running build with real-time output
 
 ```python
-sandbox = client.create(image="node:22", name="build")
+sandbox = client.create(image="node:22")
 
 sandbox.exec("git", "clone", "https://github.com/your-org/frontend.git", "/app")
 sandbox.exec("npm", "install", workdir="/app")

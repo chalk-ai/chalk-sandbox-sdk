@@ -64,7 +64,6 @@ import base64
 import os
 import sys
 import time
-import uuid
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -301,8 +300,7 @@ def judge(
         ``COMPILE_ERROR`` — compile step failed (Java/C++ only, detected via stderr)
     """
     cfg = _CONFIGS[language]
-    container_name = f"polyglot-{language.value}-{uuid.uuid4().hex[:8]}"
-    container = Container(image=cfg["image"], name=container_name).run()
+    container = Container(image=cfg["image"]).run()
 
     results: list[JudgeResult] = []
     try:
@@ -376,8 +374,7 @@ def run_once(
 ) -> ExecutionResult:
     """Spin up a container, run source once, stop the container, return the result."""
     cfg = _CONFIGS[language]
-    container_name = f"polyglot-{language.value}-{uuid.uuid4().hex[:8]}"
-    container = Container(image=cfg["image"], name=container_name).run()
+    container = Container(image=cfg["image"]).run()
     try:
         compile_result = compile_source(language, source, container=container)
         if compile_result.exit_code != 0:

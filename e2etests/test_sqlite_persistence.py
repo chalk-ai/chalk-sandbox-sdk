@@ -5,26 +5,22 @@ independent containers that mount the same volume.
 """
 
 import os
-import sys
 import time
 import uuid
 
 import pytest
-from dotenv import load_dotenv
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../.."))
+from chalkcompute import Container, Image
+from e2etests.conftest import (
+    CHALK_API_SERVER,
+    CHALK_CLIENT_ID,
+    CHALK_CLIENT_SECRET,
+    CHALK_ENVIRONMENT_ID,
+    needs_staging,
+)
 
-from chalkcompute import Container, Image  # noqa: E402
-
-load_dotenv(os.path.join(os.path.dirname(__file__), "../../../.env"))
-
-CHALK_CLIENT_ID = os.environ.get("CHALK_CLIENT_ID", "")
-CHALK_CLIENT_SECRET = os.environ.get("CHALK_CLIENT_SECRET", "")
-CHALK_API_SERVER = os.environ.get("CHALK_API_SERVER", "")
-
-needs_staging = pytest.mark.skipif(
-    not CHALK_CLIENT_ID or not CHALK_API_SERVER,
-    reason="CHALK_CLIENT_ID/CHALK_API_SERVER not set",
+pytestmark = pytest.mark.skip(
+    reason="expensive — overlaps with test_volume_hello for the volume+container path"
 )
 
 # Passed into every container so ChalkFS can authenticate to the volume service.
@@ -32,7 +28,7 @@ CONTAINER_ENV = {
     "CHALK_CLIENT_ID": CHALK_CLIENT_ID,
     "CHALK_CLIENT_SECRET": CHALK_CLIENT_SECRET,
     "CHALK_API_SERVER": CHALK_API_SERVER,
-    "CHALK_ENVIRONMENT_ID": os.environ.get("CHALK_ENVIRONMENT_ID", ""),
+    "CHALK_ENVIRONMENT_ID": CHALK_ENVIRONMENT_ID,
 }
 
 MOUNT_PATH = "/data"
@@ -116,7 +112,7 @@ def _wait_for_writable_mount(container: Container, path: str, timeout: float = 1
 def test_writer_creates_database(volume_name: str) -> None:
     """The writer container creates a SQLite DB on the volume."""
     writer = (
-        Container(image=image, name=f"tw-writer-{uuid.uuid4().hex[:6]}", env=CONTAINER_ENV)
+        Container(image=image, env=CONTAINER_ENV)
         .mount_volume(volume_name, MOUNT_PATH)
         .run()
     )
@@ -134,7 +130,7 @@ def test_two_readers_see_same_data(volume_name: str) -> None:
     """Two reader containers independently query the same SQLite DB."""
     # --- Write phase ---
     writer = (
-        Container(image=image, name=f"tr-writer-{uuid.uuid4().hex[:6]}", env=CONTAINER_ENV)
+        Container(image=image, env=CONTAINER_ENV)
         .mount_volume(volume_name, MOUNT_PATH)
         .run()
     )
@@ -147,12 +143,12 @@ def test_two_readers_see_same_data(volume_name: str) -> None:
 
     # --- Read phase (two independent containers) ---
     reader_a = (
-        Container(image=image, name=f"tr-reader-a-{uuid.uuid4().hex[:6]}", env=CONTAINER_ENV)
+        Container(image=image, env=CONTAINER_ENV)
         .mount_volume(volume_name, MOUNT_PATH)
         .run()
     )
     reader_b = (
-        Container(image=image, name=f"tr-reader-b-{uuid.uuid4().hex[:6]}", env=CONTAINER_ENV)
+        Container(image=image, env=CONTAINER_ENV)
         .mount_volume(volume_name, MOUNT_PATH)
         .run()
     )

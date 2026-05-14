@@ -7,7 +7,7 @@ Usage:
     client = SandboxClient("localhost:50051")
 
     # Create a sandbox
-    sandbox = client.create(image="ubuntu:latest", name="my-sandbox")
+    sandbox = client.create(image="ubuntu:latest")
     print(f"Created sandbox: {sandbox.id}")
 
     # Execute a command and inspect its output

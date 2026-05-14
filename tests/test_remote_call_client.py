@@ -4,7 +4,7 @@ import pyarrow as pa
 import pytest
 
 from chalkcompute._function import FunctionVersionInfo, RemoteFunction
-from chalkcompute._remote_call_client import RemoteCallPollResult
+from chalkcompute._remote_call_client import RemoteCallPollResult, ServiceAuthContext
 
 
 def _result_ipc(values: list[object]) -> bytes:
@@ -72,7 +72,9 @@ class FakeRemoteCallClient:
     direct_response_chunks: list[bytes] = []
     poll_results: list[RemoteCallPollResult] = []
 
-    def __init__(self, endpoint: str, *, metadata, use_tls: bool | None, **kwargs) -> None:
+    def __init__(
+        self, endpoint: str, *, metadata, use_tls: bool | None, **kwargs
+    ) -> None:
         self.endpoint = endpoint
         self.metadata = list(metadata)
         self.use_tls = use_tls
@@ -122,6 +124,9 @@ def reset_fake_client(monkeypatch):
     FakeRemoteCallClient.direct_response_chunks = []
     FakeRemoteCallClient.poll_results = []
     monkeypatch.setattr(remote_call_client, "RemoteCallClient", FakeRemoteCallClient)
+    monkeypatch.setattr(
+        "chalkcompute._function.service_auth_context_from_env", lambda: None
+    )
 
 
 def _remote_function() -> RemoteFunction:
@@ -160,9 +165,16 @@ def test_direct_call_uses_native_client_and_handler_name() -> None:
 
 
 def test_direct_call_uses_service_auth_from_environment(monkeypatch) -> None:
-    monkeypatch.setenv("CHALK_REMOTE_AUTH_ENDPOINT", "https://api.chalk.test")
-    monkeypatch.setenv("CHALK_REMOTE_AUTH_EXCHANGE_TOKEN", "exchange-token")
-    monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-service-auth")
+    monkeypatch.setattr(
+        "chalkcompute._function.service_auth_context_from_env",
+        lambda: ServiceAuthContext(
+            auth_endpoint="https://api.chalk.test",
+            exchange_token="exchange-token",
+            environment_id="env-service-auth",
+            requested_permissions=(2, 3, 11),
+            grpc_engine=None,
+        ),
+    )
     FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
 
     fn = _remote_function()
@@ -346,10 +358,16 @@ def test_api_rpc_call_does_not_require_extra_headers_by_default() -> None:
 
 
 def test_queue_call_uses_service_auth_engine_from_environment(monkeypatch) -> None:
-    monkeypatch.setenv("CHALK_REMOTE_AUTH_ENDPOINT", "https://api.chalk.test")
-    monkeypatch.setenv("CHALK_REMOTE_AUTH_EXCHANGE_TOKEN", "exchange-token")
-    monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-service-auth")
-    monkeypatch.setenv("CHALK_GRPC_ENGINE", "https://engine.chalk.test")
+    monkeypatch.setattr(
+        "chalkcompute._function.service_auth_context_from_env",
+        lambda: ServiceAuthContext(
+            auth_endpoint="https://api.chalk.test",
+            exchange_token="exchange-token",
+            environment_id="env-service-auth",
+            requested_permissions=(2, 3, 11),
+            grpc_engine=("engine.chalk.test:443", True),
+        ),
+    )
     FakeRemoteCallClient.poll_results = [
         RemoteCallPollResult(
             status=3,

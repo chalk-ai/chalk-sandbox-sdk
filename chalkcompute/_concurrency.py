@@ -9,8 +9,7 @@ class ConcurrencyPolicy:
     """Concurrency policy for a remote function.
 
     Caps in-flight handler invocations across all callers sharing the same
-    ``key``. Enforced by the dispatcher (chalkdf or the queue consumer)
-    before an RPC leaves.
+    ``key``. Enforced before each outbound RPC.
     """
 
     max_concurrent: int
