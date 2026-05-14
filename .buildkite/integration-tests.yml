@@ -8,6 +8,7 @@ steps:
   - label: ":pytest: Integration tests ({{matrix}})"
     matrix:
       - "staging/ftqa"
+      - "meta-ci"
     command: |
       set -euo pipefail
       unset VIRTUAL_ENV
@@ -53,6 +54,7 @@ steps:
   - label: ":alarm_clock: Remote function schedule ({{matrix}})"
     matrix:
       - "staging/ftqa"
+      - "meta-ci"
     command: |
       set -euo pipefail
       unset VIRTUAL_ENV
@@ -86,6 +88,7 @@ steps:
   - label: ":brain: Embedding function example ({{matrix}})"
     matrix:
       - "staging/ftqa"
+      - "meta-ci"
     command: |
       set -euo pipefail
       unset VIRTUAL_ENV
@@ -122,6 +125,7 @@ steps:
   - label: ":arrows_counterclockwise: Generator function example ({{matrix}})"
     matrix:
       - "staging/ftqa"
+      - "meta-ci"
     command: |
       set -euo pipefail
       unset VIRTUAL_ENV
@@ -155,6 +159,7 @@ steps:
   - label: ":zap: Scalar function example ({{matrix}})"
     matrix:
       - "staging/ftqa"
+      - "meta-ci"
     command: |
       set -euo pipefail
       unset VIRTUAL_ENV
