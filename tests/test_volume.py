@@ -399,7 +399,7 @@ class TestUploadLazyFiles:
 
         from chalkcompute._image import Image, LazyLocalFile
 
-        image = Image.base("python:3.12")
+        image = Image.base("python:3.14")
         image._lazy_local_files = {LazyLocalFile(src=str(src), dest="/app/hello.txt")}
 
         client = _make_vol_client()
@@ -419,7 +419,7 @@ class TestUploadLazyFiles:
     def test_empty_image_returns_early(self):
         from chalkcompute._image import Image
 
-        image = Image.base("python:3.12")
+        image = Image.base("python:3.14")
         image._lazy_local_files = set()
 
         client = _make_vol_client()

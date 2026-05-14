@@ -9,7 +9,7 @@ log = logging.getLogger(__name__)
 
 
 @chalkcompute.function(
-    image=chalkcompute.Image.debian_slim().pip_install(["chalkcompute==1.1.1"]),
+    image=chalkcompute.Image.debian_slim().pip_install(["chalkcompute"]),
     env={
         "CHALK_CLIENT_ID": os.getenv("CHALK_CLIENT_ID"),
         "CHALK_CLIENT_SECRET": os.getenv("CHALK_CLIENT_SECRET"),

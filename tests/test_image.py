@@ -33,11 +33,11 @@ class TestImageDebianSlim:
 
     def test_default_python_version(self) -> None:
         img = Image.debian_slim()
-        assert img.to_proto().base_image == "python:3.13-slim-bookworm"
+        assert img.to_proto().base_image == "python:3.14-slim-trixie"
 
     def test_custom_python_version(self) -> None:
-        img = Image.debian_slim("3.11")
-        assert img.to_proto().base_image == "python:3.11-slim-bookworm"
+        img = Image.debian_slim("3.14.5")
+        assert img.to_proto().base_image == "python:3.14.5-slim-trixie"
 
 
 class TestImageFromDockerfile:
@@ -45,11 +45,11 @@ class TestImageFromDockerfile:
 
     def test_simple_dockerfile(self) -> None:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".Dockerfile", delete=False) as f:
-            f.write("FROM python:3.12\nRUN pip install requests\nEXPOSE 8080\n")
+            f.write("FROM python:3.14\nRUN pip install requests\nEXPOSE 8080\n")
             f.flush()
             img = Image.from_dockerfile(f.name)
         spec = img.to_proto()
-        assert spec.base_image == "python:3.12"
+        assert spec.base_image == "python:3.14"
         assert len(spec.steps) == 1
         assert spec.steps[0].dockerfile_commands.commands == [
             "RUN pip install requests",
@@ -58,17 +58,17 @@ class TestImageFromDockerfile:
 
     def test_dockerfile_with_comments(self) -> None:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".Dockerfile", delete=False) as f:
-            f.write("# Build stage\nFROM alpine:3.18\n# Install deps\nRUN apk add git\n")
+            f.write("# Build stage\nFROM alpine:3.23\n# Install deps\nRUN apk add git\n")
             f.flush()
             img = Image.from_dockerfile(f.name)
         spec = img.to_proto()
-        assert spec.base_image == "alpine:3.18"
+        assert spec.base_image == "alpine:3.23"
         assert spec.steps[0].dockerfile_commands.commands == ["RUN apk add git"]
 
     def test_dockerfile_chaining(self) -> None:
         """from_dockerfile images can be further extended."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".Dockerfile", delete=False) as f:
-            f.write("FROM python:3.12\nRUN echo base\n")
+            f.write("FROM python:3.14\nRUN echo base\n")
             f.flush()
             img = Image.from_dockerfile(f.name).pip_install(["numpy"])
         spec = img.to_proto()
@@ -158,19 +158,19 @@ class TestImagePipInstall:
         assert img.to_proto().steps[0].pip_install.packages == ["requests"]
 
     def test_versioned_packages(self) -> None:
-        img = Image.debian_slim().pip_install(["requests>=2.28", "pandas==2.0.0"])
+        img = Image.debian_slim().pip_install(["requests>=2.34", "pandas==3.0.3"])
         assert img.to_proto().steps[0].pip_install.packages == [
-            "requests>=2.28",
-            "pandas==2.0.0",
+            "requests>=2.34",
+            "pandas==3.0.3",
         ]
 
     def test_pip_install_from_requirements(self) -> None:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-            f.write("requests>=2.28\n# comment\npandas\n\nnumpy\n")
+            f.write("requests>=2.34\n# comment\npandas\n\nnumpy\n")
             f.flush()
             img = Image.debian_slim().pip_install_from_requirements(f.name)
         assert img.to_proto().steps[0].pip_install.packages == [
-            "requests>=2.28",
+            "requests>=2.34",
             "pandas",
             "numpy",
         ]
@@ -237,8 +237,8 @@ class TestAddLocalDirExclude:
             self._make_tree(d, [
                 "main.py",
                 ".venv/pyvenv.cfg",
-                ".venv/lib/python3.12/site-packages/rich/pretty.py",
-                ".venv/lib/python3.12/site-packages/requests/__init__.py",
+                ".venv/lib/python3.14/site-packages/rich/pretty.py",
+                ".venv/lib/python3.14/site-packages/requests/__init__.py",
             ])
             dests = self._collect_dests(d, [".venv/**"])
         assert dests == {"/app/main.py"}
@@ -248,9 +248,9 @@ class TestAddLocalDirExclude:
         with tempfile.TemporaryDirectory() as d:
             self._make_tree(d, [
                 "app.py",
-                "__pycache__/app.cpython-312.pyc",
-                "pkg/__pycache__/mod.cpython-312.pyc",
-                "pkg/sub/__pycache__/deep.cpython-312.pyc",
+                "__pycache__/app.cpython-314.pyc",
+                "pkg/__pycache__/mod.cpython-314.pyc",
+                "pkg/sub/__pycache__/deep.cpython-314.pyc",
             ])
             dests = self._collect_dests(d, ["**/__pycache__/**"])
         assert dests == {"/app/app.py"}
@@ -284,10 +284,10 @@ class TestAddLocalDirExclude:
             self._make_tree(d, [
                 "src/main.py",
                 "src/util.py",
-                ".venv/lib/python3.12/site-packages/rich/pretty.py",
+                ".venv/lib/python3.14/site-packages/rich/pretty.py",
                 ".git/objects/abc123",
                 ".git/HEAD",
-                "src/__pycache__/main.cpython-312.pyc",
+                "src/__pycache__/main.cpython-314.pyc",
                 "bazel-bin/pkg/lib.so",
                 ".cache/something",
             ])
@@ -316,7 +316,7 @@ class TestAddLocalDirExclude:
         with tempfile.TemporaryDirectory() as d:
             self._make_tree(d, [
                 "app.py",
-                ".venv/lib/python3.12/site-packages/pkg/mod.py",
+                ".venv/lib/python3.14/site-packages/pkg/mod.py",
             ])
             img = Image.debian_slim().add_local_dir(d, "/app", strategy="volume", exclude=[".venv/**"])
         lazy_dests = {lf.dest for lf in img.lazy_local_files}
@@ -413,7 +413,7 @@ class TestChalkignore:
         with tempfile.TemporaryDirectory() as d:
             self._make_tree(d, [
                 "main.py",
-                "__pycache__/main.cpython-312.pyc",
+                "__pycache__/main.cpython-314.pyc",
                 ".venv/lib/foo.py",
             ])
             self._write_ignore(d, ".gitignore", "**/__pycache__/**\n.venv/**\n")
@@ -717,14 +717,14 @@ class TestImageProtoSerialization:
 
     def test_full_image_serialization(self) -> None:
         img = (
-            Image.debian_slim("3.12")
+            Image.debian_slim()
             .pip_install(["requests"])
             .run_commands("echo 'hello'")
             .workdir("/home/user")
             .env({"TEST_VAR": "hello"})
         )
         spec = img.to_proto()
-        assert spec.base_image == "python:3.12-slim-bookworm"
+        assert spec.base_image == "python:3.14-slim-trixie"
         assert len(spec.steps) == 2
         assert spec.steps[0].pip_install.packages == ["requests"]
         assert spec.steps[1].run_commands.commands == ["echo 'hello'"]
@@ -736,7 +736,7 @@ class TestImageProtoSerialization:
 
         img = Image.debian_slim().pip_install(["requests"]).env({"K": "V"})
         spec_dict = MessageToDict(img.to_proto(), preserving_proto_field_name=True)
-        assert spec_dict["base_image"] == "python:3.13-slim-bookworm"
+        assert spec_dict["base_image"] == "python:3.14-slim-trixie"
         assert "steps" in spec_dict
         assert "env" in spec_dict
 
@@ -780,7 +780,7 @@ class TestImageChaining:
         )
         spec = img.to_proto()
         assert len(spec.steps) == 4
-        assert spec.base_image == "python:3.13-slim-bookworm"
+        assert spec.base_image == "python:3.14-slim-trixie"
         assert spec.workdir == "/app"
         assert spec.env["APP"] == "test"
         assert list(spec.entrypoint) == ["python"]
