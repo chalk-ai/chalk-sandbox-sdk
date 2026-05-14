@@ -314,6 +314,7 @@ class Sandbox:
         self._client = client
         self._id = sandbox_id
         self._info: SandboxInfo | None = None
+        self._terminated = False
 
     @property
     def id(self) -> str:
@@ -497,6 +498,8 @@ class Sandbox:
         grace_period_seconds
             Optional grace period to allow running processes to shut down.
         """
+        if self._terminated:
+            return
         req = pb.TerminateSandboxRequest(sandbox_id=self._id)
         if grace_period_seconds is not None:
             req.grace_period_seconds = grace_period_seconds
@@ -505,6 +508,7 @@ class Sandbox:
         except grpc.RpcError as e:
             _handle_rpc_error(e, self._id)
             raise
+        self._terminated = True
 
 
 # ---------------------------------------------------------------------------
