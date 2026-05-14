@@ -12,9 +12,7 @@ import concurrent.futures
 import time
 
 import chalkcompute
-
 from e2etests.conftest import _deploy_script, needs_staging
-
 
 # ---------------------------------------------------------------------------
 # Sync scalar
@@ -90,7 +88,7 @@ class TestAsyncScalar:
 
     def test_direct_call(self):
         """await fn(3, 30) → 33."""
-        fn = chalkcompute.RemoteFunction.from_name("async-add")
+        fn = chalkcompute.RemoteFunction.from_name("async_add")
 
         async def _run():
             return await fn(3, 30)
@@ -99,7 +97,7 @@ class TestAsyncScalar:
 
     def test_defer_get(self):
         """await fn.defer(4, 40).get() → 44."""
-        fn = chalkcompute.RemoteFunction.from_name("async-add")
+        fn = chalkcompute.RemoteFunction.from_name("async_add")
         handle = fn.defer(4, 40)
 
         async def _run():
