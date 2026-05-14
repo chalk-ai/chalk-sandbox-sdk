@@ -339,6 +339,71 @@ def build_image_from_spec(image: Image) -> str:
     return build_image(client, image)
 
 
+@_traced("chalkcompute.build_image_with_volumes")
+def build_image_with_volumes(
+    client: ConnectClient,
+    image: Image,
+    *,
+    poll_interval: float = 0.5,
+    timeout: float = 600.0,
+    volume_prefix: str = "files",
+) -> tuple[str, list[tuple[str, str]]]:
+    """Build an ``Image`` and upload any lazy local files to volumes.
+
+    Combines :func:`build_image` (build via ``CustomImageService``) with
+    :func:`chalkcompute._volume.upload_lazy_files` (upload
+    ``add_local_file`` / ``add_local_dir`` entries registered with
+    ``strategy="volume"`` to managed volumes).
+
+    Parameters
+    ----------
+    client
+        Authenticated Connect client.
+    image
+        The declarative image definition to build.
+    poll_interval
+        Seconds between build-status polls.
+    timeout
+        Maximum seconds to wait for the build to complete.
+    volume_prefix
+        Prefix used when naming the generated volumes.
+
+    Returns
+    -------
+    tuple[str, list[tuple[str, str]]]
+        ``(image_uri, volumes)`` where ``volumes`` is a list of
+        ``(volume_name, mount_path)`` pairs to attach to a container spec.
+
+    Raises
+    ------
+    ConnectError
+        If the build fails or times out.
+    """
+    from chalkcompute._volume import VolumeClient, upload_lazy_files
+
+    image_uri = build_image(
+        client, image, poll_interval=poll_interval, timeout=timeout,
+    )
+    volumes: list[tuple[str, str]] = []
+    if image.lazy_local_files:
+        volumes = upload_lazy_files(
+            VolumeClient.from_connect(client),
+            image,
+            volume_prefix=volume_prefix,
+        )
+    return image_uri, volumes
+
+
+def build_image_with_volumes_from_spec(
+    image: Image,
+    *,
+    volume_prefix: str = "files",
+) -> tuple[str, list[tuple[str, str]]]:
+    """Build an Image and upload lazy files. Authenticates via env vars."""
+    client = ConnectClient()
+    return build_image_with_volumes(client, image, volume_prefix=volume_prefix)
+
+
 def raise_for_grpc_error(
     e: grpc.RpcError,
     code_map: dict[grpc.StatusCode, tuple[type[Exception], str]],
