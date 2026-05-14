@@ -18,12 +18,9 @@ steps:
       chmod +x /tmp/sops
 
       echo "--- :chalk: Install Chalk CLI"
-      CHALK_CLI_VERSION=v1.40.0
-      CHALK_CLI_DIR=/tmp/chalk-cli
-      mkdir -p "$$CHALK_CLI_DIR"
-      curl -fsSL "https://storage.googleapis.com/cli-go.chalk-prod.chalk.ai/$${CHALK_CLI_VERSION}/chalk-linux-amd64" -o "$$CHALK_CLI_DIR/chalk"
-      chmod +x "$$CHALK_CLI_DIR/chalk"
-      export PATH="$$CHALK_CLI_DIR:$$PATH"
+      export CHALK_INSTALL=/tmp/chalk-cli
+      export PATH="$$CHALK_INSTALL/bin:$$PATH"
+      curl -fsSL https://api.chalk.ai/install.sh | sh
       chalk version
       chalk metrics snapshot --help
 
