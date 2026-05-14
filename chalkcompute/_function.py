@@ -1002,6 +1002,11 @@ class RemoteFunction:
                     f"Scheduled function '{self._func_name}' cannot have inputs: "
                     f"{', '.join(input_names)}"
                 )
+            if inspect.isgeneratorfunction(func) or inspect.isasyncgenfunction(func):
+                raise FunctionError(
+                    f"Scheduled function '{self._func_name}' cannot be a generator; "
+                    f"scheduled invocations have no caller to consume yielded values."
+                )
         if max_batching_size is not None and (
             inspect.isgeneratorfunction(func) or inspect.isasyncgenfunction(func)
         ):
