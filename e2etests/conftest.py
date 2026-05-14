@@ -53,11 +53,17 @@ def _deploy_script(example_subdir: str, script_name: str) -> None:
         Script file name within that subdirectory (e.g. ``"deploy_sync.py"``).
     """
     script_path = EXAMPLES_DIR / example_subdir / script_name
+    env = os.environ.copy()
+    env["PYTHONPATH"] = (
+        f"{REPO_ROOT}{os.pathsep}{env['PYTHONPATH']}"
+        if env.get("PYTHONPATH")
+        else str(REPO_ROOT)
+    )
     result = subprocess.run(
         [sys.executable, str(script_path)],
         capture_output=True,
         text=True,
-        env=os.environ,
+        env=env,
         timeout=600,
     )
     if result.returncode != 0:
