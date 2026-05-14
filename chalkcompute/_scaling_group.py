@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Any
 
 from chalkcompute._connect import ConnectClient, build_image
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
-from chalkcompute._tracing import instrumented
+from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import VolumeClient, upload_lazy_files
 
 logger = logging.getLogger(__name__)
@@ -251,7 +251,7 @@ class ScalingGroup:
 
     # -- Lifecycle -------------------------------------------------------------
 
-    @instrumented("chalkcompute.scaling_group.deploy")
+    @_instrumented("chalkcompute.scaling_group.deploy")
     def deploy(
         self,
         *,
@@ -417,7 +417,7 @@ class ScalingGroup:
             f"Scaling group {self._scaling_group_id} timed out after {timeout}s"
         )
 
-    @instrumented("chalkcompute.scaling_group.call")
+    @_instrumented("chalkcompute.scaling_group.call")
     def call(
         self,
         path: str = "/",
@@ -517,7 +517,7 @@ class ScalingGroup:
             f"available={self._scaling_group_info.available_replicas if self._scaling_group_info else 0})"
         )
 
-    @instrumented("chalkcompute.scaling_group.delete")
+    @_instrumented("chalkcompute.scaling_group.delete")
     def delete(self) -> None:
         """Delete the scaling group and clean up associated volumes."""
         if self._scaling_group_id is not None:

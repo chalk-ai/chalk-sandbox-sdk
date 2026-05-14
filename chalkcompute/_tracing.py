@@ -201,7 +201,7 @@ def _decorate_traced(func: F, name: str | None) -> F:
     return wrapper  # ty: ignore[invalid-return-type]
 
 
-def instrumented(name: str) -> Callable[[F], F]:
+def _instrumented(name: str) -> Callable[[F], F]:
     """Trace internal SDK work without treating it as user tracing intent."""
 
     def decorator(func: F) -> F:

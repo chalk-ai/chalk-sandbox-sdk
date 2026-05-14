@@ -39,7 +39,7 @@ from chalkcompute._connect import ConnectClient, grpc_target_from_url, raise_for
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as pb
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2_grpc as pb_grpc
 from chalkcompute._image import Image
-from chalkcompute._tracing import instrumented
+from chalkcompute._tracing import _instrumented
 
 # Aliases defined before SandboxClient, which has a ``.list()`` method that
 # would otherwise shadow the builtin ``list`` in class-scope name resolution.
@@ -342,7 +342,7 @@ class Sandbox:
             raise
         return _pb_to_sandbox_info(resp.sandbox)
 
-    @instrumented("chalkcompute.sandbox.exec")
+    @_instrumented("chalkcompute.sandbox.exec")
     def exec(
         self,
         command: str,
@@ -488,7 +488,7 @@ class Sandbox:
             _sandbox_id=self._id,
         )
 
-    @instrumented("chalkcompute.sandbox.terminate")
+    @_instrumented("chalkcompute.sandbox.terminate")
     def terminate(self, grace_period_seconds: int | None = None) -> None:
         """Terminate this sandbox.
 
@@ -579,7 +579,7 @@ class SandboxClient:
         """Close the gRPC channel."""
         self._channel.close()
 
-    @instrumented("chalkcompute.sandbox.create")
+    @_instrumented("chalkcompute.sandbox.create")
     def create(
         self,
         image: str | Image,

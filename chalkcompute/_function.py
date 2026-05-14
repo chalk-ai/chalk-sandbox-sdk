@@ -55,7 +55,7 @@ from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._retry import RetryPolicy
 from chalkcompute._tracing import (
     current_trace_metadata,
-    instrumented,
+    _instrumented,
     remote_function_call_span,
 )
 from chalkcompute._volume import VolumeClient, upload_lazy_files
@@ -1150,7 +1150,7 @@ class RemoteFunction:
 
     # -- Lifecycle -------------------------------------------------------------
 
-    @instrumented("chalkcompute.function.deploy")
+    @_instrumented("chalkcompute.function.deploy")
     def deploy(
         self,
         *,
@@ -1708,7 +1708,7 @@ class RemoteFunction:
 
         return base64.b64decode(feather_b64)
 
-    @instrumented("chalkcompute.function.call")
+    @_instrumented("chalkcompute.function.call")
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """Call the remote function via gRPC or the API server.
 
@@ -1782,7 +1782,7 @@ class RemoteFunction:
 
     # -- Management ------------------------------------------------------------
 
-    @instrumented("chalkcompute.function.delete")
+    @_instrumented("chalkcompute.function.delete")
     def delete(self) -> None:
         """Delete this function version."""
         if self._version_info is not None:

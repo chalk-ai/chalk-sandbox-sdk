@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 
 import grpc
 
-from chalkcompute._tracing import instrumented as _instrumented
+from chalkcompute._tracing import _instrumented
 
 logger = logging.getLogger(__name__)
 
