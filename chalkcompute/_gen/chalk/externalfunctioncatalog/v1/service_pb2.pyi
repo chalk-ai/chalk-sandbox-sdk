@@ -256,16 +256,25 @@ class GetExternalFunctionVersionRequest(_message.Message):
     ) -> None: ...
 
 class GetExternalFunctionVersionResponse(_message.Message):
-    __slots__ = ("external_function_version", "scaling_group")
+    __slots__ = ("external_function_version", "scaling_group", "active_schedule")
     EXTERNAL_FUNCTION_VERSION_FIELD_NUMBER: _ClassVar[int]
     SCALING_GROUP_FIELD_NUMBER: _ClassVar[int]
+    ACTIVE_SCHEDULE_FIELD_NUMBER: _ClassVar[int]
     external_function_version: ExternalFunctionVersion
     scaling_group: _service_pb2.ScalingGroupResponse
+    active_schedule: ActiveSchedule
     def __init__(
         self,
         external_function_version: _Optional[_Union[ExternalFunctionVersion, _Mapping]] = ...,
         scaling_group: _Optional[_Union[_service_pb2.ScalingGroupResponse, _Mapping]] = ...,
+        active_schedule: _Optional[_Union[ActiveSchedule, _Mapping]] = ...,
     ) -> None: ...
+
+class ActiveSchedule(_message.Message):
+    __slots__ = ("cron",)
+    CRON_FIELD_NUMBER: _ClassVar[int]
+    cron: str
+    def __init__(self, cron: _Optional[str] = ...) -> None: ...
 
 class ListExternalFunctionVersionsRequest(_message.Message):
     __slots__ = ("cursor", "limit", "include_scaling_group", "function_name")
@@ -324,19 +333,29 @@ class DeleteExternalFunctionVersionResponse(_message.Message):
     def __init__(self) -> None: ...
 
 class ExternalFunctionSummary(_message.Message):
-    __slots__ = ("name", "latest_version", "latest_scaling_group_name", "latest_updated_at", "config", "scaling_group")
+    __slots__ = (
+        "name",
+        "latest_version",
+        "latest_scaling_group_name",
+        "latest_updated_at",
+        "config",
+        "scaling_group",
+        "active_schedule",
+    )
     NAME_FIELD_NUMBER: _ClassVar[int]
     LATEST_VERSION_FIELD_NUMBER: _ClassVar[int]
     LATEST_SCALING_GROUP_NAME_FIELD_NUMBER: _ClassVar[int]
     LATEST_UPDATED_AT_FIELD_NUMBER: _ClassVar[int]
     CONFIG_FIELD_NUMBER: _ClassVar[int]
     SCALING_GROUP_FIELD_NUMBER: _ClassVar[int]
+    ACTIVE_SCHEDULE_FIELD_NUMBER: _ClassVar[int]
     name: str
     latest_version: int
     latest_scaling_group_name: str
     latest_updated_at: _timestamp_pb2.Timestamp
     config: FunctionConfig
     scaling_group: _service_pb2.ScalingGroupResponse
+    active_schedule: ActiveSchedule
     def __init__(
         self,
         name: _Optional[str] = ...,
@@ -345,6 +364,7 @@ class ExternalFunctionSummary(_message.Message):
         latest_updated_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
         config: _Optional[_Union[FunctionConfig, _Mapping]] = ...,
         scaling_group: _Optional[_Union[_service_pb2.ScalingGroupResponse, _Mapping]] = ...,
+        active_schedule: _Optional[_Union[ActiveSchedule, _Mapping]] = ...,
     ) -> None: ...
 
 class ListExternalFunctionsRequest(_message.Message):

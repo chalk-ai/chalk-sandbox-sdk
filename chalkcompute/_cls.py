@@ -649,6 +649,14 @@ class RemoteClass:
                         f"Scheduled method '{self._class_name}.{mname}' cannot have "
                         f"inputs: {', '.join(input_names)}"
                     )
+                if inspect.isgeneratorfunction(mi.func) or inspect.isasyncgenfunction(
+                    mi.func
+                ):
+                    raise ClassError(
+                        f"Scheduled method '{self._class_name}.{mname}' cannot be a "
+                        f"generator; scheduled invocations have no caller to consume "
+                        f"yielded values."
+                    )
 
         if max_batching_size is not None:
             for mname, mi in self._methods.items():
