@@ -11,6 +11,7 @@ from __future__ import annotations
 import atexit
 import contextlib
 import functools
+import importlib
 import os
 from collections.abc import Callable, Iterator
 from typing import Any, TypeVar, cast, overload
@@ -25,6 +26,7 @@ _TRACE_SUPPRESSED_METADATA_KEY = "x-chalk-tracing-suppressed"
 _initialized = False
 _provider: Any | None = None
 _user_tracing_configured = False
+_tracer: Any | None = None
 
 
 def _is_enabled() -> bool:
@@ -43,16 +45,49 @@ def _validate_sample_rate(sample_rate: float) -> float:
     return rate
 
 
+@functools.cache
+def _get_otel_module(module_name: str) -> Any | None:
+    try:
+        return importlib.import_module(module_name)
+    except ImportError:
+        return None
+
+
+def _get_context_api() -> Any | None:
+    return _get_otel_module("opentelemetry.context")
+
+
+def _get_propagate_api() -> Any | None:
+    return _get_otel_module("opentelemetry.propagate")
+
+
+def _get_trace_api() -> Any | None:
+    return _get_otel_module("opentelemetry.trace")
+
+
+def _require_trace_api() -> Any:
+    trace_api = _get_trace_api()
+    if trace_api is None:
+        raise ImportError("opentelemetry.trace is required for tracing")
+    return trace_api
+
+
+def _has_tracing_intent() -> bool:
+    # Internal SDK instrumentation should stay cold until Chalk tracing is
+    # configured or OTEL exporter env vars indicate process-level tracing.
+    return _provider is not None or _user_tracing_configured or _is_enabled()
+
+
 def _install_tracer_provider(sample_rate: float) -> None:
-    global _provider
+    global _provider, _tracer
     if _provider is not None:
         return
 
-    from opentelemetry import trace
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
 
+    trace_api = _require_trace_api()
     resource = Resource.create({"service.name": "chalkcompute"})
     provider = TracerProvider(
         resource=resource,
@@ -67,8 +102,9 @@ def _install_tracer_provider(sample_rate: float) -> None:
 
         provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
 
-    trace.set_tracer_provider(provider)
+    trace_api.set_tracer_provider(provider)
     _provider = provider
+    _tracer = None
     atexit.register(provider.shutdown)
 
 
@@ -117,21 +153,21 @@ def get_tracer() -> Any:
     opentelemetry.trace.Tracer
         The configured or no-op tracer.
     """
-    from opentelemetry import trace
-
+    global _tracer
     _ensure_initialized()
-    return trace.get_tracer(_TRACER_NAME)
+    if _tracer is None:
+        _tracer = _require_trace_api().get_tracer(_TRACER_NAME)
+    return _tracer
 
 
 def has_current_trace_context() -> bool:
     """Return whether the current context carries a valid trace."""
-    try:
-        from opentelemetry import trace
-    except ImportError:
+    trace_api = _get_trace_api()
+    if trace_api is None:
         return False
 
     _ensure_initialized()
-    span_context = trace.get_current_span().get_span_context()
+    span_context = trace_api.get_current_span().get_span_context()
     return bool(span_context.is_valid)
 
 
@@ -143,14 +179,13 @@ def current_trace_metadata() -> list[tuple[str, str]]:
     if not has_current_trace_context():
         return []
 
-    try:
-        from opentelemetry import propagate
-    except ImportError:
+    propagate_api = _get_propagate_api()
+    if propagate_api is None:
         return []
 
     _ensure_initialized()
     carrier: dict[str, str] = {}
-    propagate.inject(carrier)
+    propagate_api.inject(carrier)
     return [
         (key, value)
         for key, value in carrier.items()
@@ -170,14 +205,14 @@ def _span(name: str) -> Iterator[Any]:
 
     _ensure_user_tracing_configured()
 
-    from opentelemetry.trace import Status, StatusCode
+    trace_api = _require_trace_api()
 
     with get_tracer().start_as_current_span(name) as span:
         try:
             yield span
         except Exception as exc:
             span.record_exception(exc)
-            span.set_status(Status(StatusCode.ERROR, str(exc)))
+            span.set_status(trace_api.Status(trace_api.StatusCode.ERROR, str(exc)))
             raise
 
 
@@ -207,6 +242,8 @@ def _instrumented(name: str) -> Callable[[F], F]:
     def decorator(func: F) -> F:
         @functools.wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
+            if not _has_tracing_intent():
+                return func(*args, **kwargs)
             with get_tracer().start_as_current_span(name):
                 return func(*args, **kwargs)
 
@@ -248,17 +285,16 @@ def remote_function_call_span(function_name: str, call_type: str) -> Iterator[An
         yield None
         return
 
-    try:
-        from opentelemetry import context as otel_context
-        from opentelemetry.trace import SpanKind, Status, StatusCode
-    except ImportError:
+    otel_context = _get_context_api()
+    trace_api = _get_trace_api()
+    if otel_context is None or trace_api is None:
         yield None
         return
 
     parent_context = otel_context.get_current()
     with get_tracer().start_as_current_span(
         "chalkcompute.remote_function.call",
-        kind=SpanKind.CLIENT,
+        kind=trace_api.SpanKind.CLIENT,
     ) as span:
         span.set_attribute("chalk.remote_function.name", function_name)
         span.set_attribute("chalk.remote_function.call_type", call_type)
@@ -273,5 +309,5 @@ def remote_function_call_span(function_name: str, call_type: str) -> Iterator[An
             yield span
         except Exception as exc:
             span.record_exception(exc)
-            span.set_status(Status(StatusCode.ERROR, str(exc)))
+            span.set_status(trace_api.Status(trace_api.StatusCode.ERROR, str(exc)))
             raise
