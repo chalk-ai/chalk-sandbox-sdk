@@ -101,14 +101,14 @@ class TestAsyncScalar:
 
     def test_direct_call(self):
         """Async scalar calls work in sync and async contexts."""
-        fn = chalkcompute.RemoteFunction.from_name("async-add")
+        fn = chalkcompute.RemoteFunction.from_name("async_add")
 
         assert fn(3, 30) == 33
         assert asyncio.run(_await_call(fn, 4, 40)) == 44
 
     def test_defer_get(self):
         """Async scalar defer/get works in sync and async contexts."""
-        fn = chalkcompute.RemoteFunction.from_name("async-add")
+        fn = chalkcompute.RemoteFunction.from_name("async_add")
         handle = fn.defer(5, 50)
         assert handle.get(timeout=60) == 55
 
