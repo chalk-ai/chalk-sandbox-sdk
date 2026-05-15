@@ -7,7 +7,6 @@ inline local files into the image and make them readable inside the container.
 
 import os
 import tempfile
-import time
 import uuid
 from pathlib import Path
 
@@ -15,10 +14,7 @@ import pytest
 
 from chalkcompute import Container, Image, Secret
 from e2etests.conftest import needs_staging
-from e2etests.container_metrics import (
-    assert_container_metrics_target,
-    container_metrics_target,
-)
+from e2etests.container_metrics import assert_container_metrics
 
 
 @needs_staging
@@ -267,25 +263,12 @@ def test_container_metrics_available() -> None:
         pytest.skip("CHALK_ASSERT_CONTAINER_METRICS != 1")
 
     c = Container(image=Image.debian_slim(), name=f"test-metrics-{uuid.uuid4().hex[:8]}")
-    target = None
     try:
         c.run()
-        target = container_metrics_target(c)
-        assert target.pod_name, (
-            "Cannot assert container metrics without podName "
-            f"(container name={target.name} id={target.id})"
+        assert_container_metrics(
+            c,
+            timeout_secs=300.0,
+            poll_interval_secs=10.0,
         )
-        print(
-            "Keeping metrics test container alive for 120s: "
-            f"name={target.name} id={target.id} podName={target.pod_name}"
-        )
-        time.sleep(120)
     finally:
         c.stop()
-
-    assert target is not None
-    assert_container_metrics_target(
-        target,
-        timeout_secs=300.0,
-        poll_interval_secs=10.0,
-    )

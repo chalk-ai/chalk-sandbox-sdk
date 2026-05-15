@@ -11,6 +11,9 @@ on:
         type: boolean
         default: true
 
+env:
+  UV_VERSION: "0.11.14"
+
 jobs:
   build-linux:
     name: "Build linux wheel + sdist (py${{ matrix.python_version }})"
@@ -188,16 +191,21 @@ jobs:
         run: |
           set -euxo pipefail
 
+          export UV_INSTALL_DIR="$HOME/.local/bin"
+          export UV_NO_MODIFY_PATH=1
+          mkdir -p "$UV_INSTALL_DIR"
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            "https://releases.astral.sh/github/uv/releases/download/${UV_VERSION}/uv-installer.sh" \
+            | sh
+          echo "$UV_INSTALL_DIR" >> "$GITHUB_PATH"
+          export PATH="$UV_INSTALL_DIR:$PATH"
+          test "$(uv --version | awk '{print $2}')" = "$UV_VERSION"
+          uv --version
+
           PY_VER="${{ matrix.python_version }}"
           TARGET_VENV="$HOME/venv.${PY_VER}"
 
           if [ ! -d "$TARGET_VENV" ]; then
-            if ! command -v uv >/dev/null 2>&1; then
-              echo "uv not found on PATH; installing via standalone installer"
-              curl -LsSf https://astral.sh/uv/install.sh | sh
-              echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-              export PATH="$HOME/.local/bin:$PATH"
-            fi
             uv venv --python "$PY_VER" "$TARGET_VENV"
           fi
 
