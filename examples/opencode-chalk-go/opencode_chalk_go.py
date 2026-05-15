@@ -121,11 +121,6 @@ def main(
         env["ANTHROPIC_API_KEY"] = anthropic_key
     if openai_key := os.environ.get("OPENAI_API_KEY"):
         env["OPENAI_API_KEY"] = openai_key
-    # ChalkFS needs credentials to mount the volume
-    if client_id := os.environ.get("CHALK_CLIENT_ID"):
-        env["CHALK_CLIENT_ID"] = client_id
-    if client_secret := os.environ.get("CHALK_CLIENT_SECRET"):
-        env["CHALK_CLIENT_SECRET"] = client_secret
 
     container = Container(
         image=OPENCODE_GO_IMAGE,

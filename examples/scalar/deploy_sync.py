@@ -1,6 +1,6 @@
 """Deploy a sync scalar function for testing.
 
-    CHALK_FUNCTION_STRIP_SOURCE=1 uv run python examples/scalar/deploy_sync.py
+    uv run python examples/scalar/deploy_sync.py
 """
 
 from __future__ import annotations

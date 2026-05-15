@@ -5,30 +5,21 @@ Proves that:
   2. The server's public web URL is reachable from outside the container.
 """
 
-import os
 import sys
 import uuid
 from collections.abc import Generator
-from pathlib import Path
 
 import httpx
 import pytest
 from chalkcompute import Container
-from dotenv import load_dotenv
+
+from e2etests.conftest import EXAMPLES_DIR, needs_staging
+
+pytestmark = pytest.mark.skip(reason="expensive — example-app integration smoke")
 
 # Import helpers directly from the example script.
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(EXAMPLES_DIR / "opencode"))
 from opencode import OPENCODE_IMAGE, OPENCODE_PORT, clone_repo, start_server  # noqa: E402
-
-load_dotenv()
-
-CHALK_CLIENT_ID = os.environ.get("CHALK_CLIENT_ID", "")
-CHALK_API_SERVER = os.environ.get("CHALK_API_SERVER", "")
-
-needs_staging = pytest.mark.skipif(
-    not CHALK_CLIENT_ID or not CHALK_API_SERVER,
-    reason="CHALK_CLIENT_ID/CHALK_API_SERVER not set",
-)
 
 # A tiny public repo to clone — avoids needing GITHUB_TOKEN in CI.
 TEST_REPO = "octocat/Hello-World"

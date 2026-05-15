@@ -1,7 +1,6 @@
 """A simple async-generator function deployed with @chalkcompute.function.
 
 The function yields integers one at a time so callers can stream results
-via chalkdf's ``Remote(...).function(name)`` iterator protocol.
 """
 
 import logging

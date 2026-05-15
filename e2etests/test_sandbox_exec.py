@@ -7,63 +7,25 @@ These tests:
   4. Clean up the sandbox
 """
 
-import os
 import time
 
 import grpc
-import httpx
 import pytest
-from dotenv import load_dotenv
 
 from chalkcompute import SandboxClient
-
-load_dotenv()
-
-CHALK_CLIENT_ID = os.environ.get("CHALK_CLIENT_ID", "")
-CHALK_CLIENT_SECRET = os.environ.get("CHALK_CLIENT_SECRET", "")
-CHALK_ENVIRONMENT_ID = os.environ.get("CHALK_ENVIRONMENT_ID", "")
-CHALK_API_SERVER = os.environ.get("CHALK_API_SERVER", "")
+from e2etests.conftest import (
+    CHALK_API_SERVER,
+    CHALK_ENVIRONMENT_ID,
+    _connect_rpc,
+    needs_staging,
+)
 
 SANDBOX_IMAGE = "us-central1-docker.pkg.dev/chalk-develop/base-images/chalk-sandbox-entrypoint"
 
-SANDBOX_SERVICE_BASE = f"{CHALK_API_SERVER}/chalk.sandbox.v1.SandboxService"
+_SVC = "chalk.sandbox.v1.SandboxService"
 
 POLL_INTERVAL = 5
 POLL_TIMEOUT = 300
-
-needs_staging = pytest.mark.skipif(
-    not CHALK_CLIENT_ID or not CHALK_API_SERVER,
-    reason="CHALK_CLIENT_ID/CHALK_API_SERVER not set",
-)
-
-
-def _get_access_token() -> str:
-    """Exchange client credentials for a bearer token."""
-    resp = httpx.post(
-        f"{CHALK_API_SERVER}/v1/oauth/token",
-        json={
-            "client_id": CHALK_CLIENT_ID,
-            "client_secret": CHALK_CLIENT_SECRET,
-            "grant_type": "client_credentials",
-        },
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        },
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()["access_token"]
-
-
-def _sandbox_rpc(method: str, body: dict, headers: dict[str, str], timeout: float = 30) -> httpx.Response:
-    """Make a Connect-protocol unary RPC call to SandboxService."""
-    return httpx.post(
-        f"{SANDBOX_SERVICE_BASE}/{method}",
-        json=body,
-        headers=headers,
-        timeout=timeout,
-    )
 
 
 def _poll_until_ready(sandbox_id: str, headers: dict[str, str]) -> dict:
@@ -71,7 +33,7 @@ def _poll_until_ready(sandbox_id: str, headers: dict[str, str]) -> dict:
     deadline = time.monotonic() + POLL_TIMEOUT
     while time.monotonic() < deadline:
         time.sleep(POLL_INTERVAL)
-        resp = _sandbox_rpc("GetSandbox", {"sandboxId": sandbox_id}, headers)
+        resp = _connect_rpc(_SVC, "GetSandbox", {"sandboxId": sandbox_id}, headers)
         assert resp.status_code == 200, f"GetSandbox failed: {resp.text}"
         data = resp.json()
         state = data.get("sandbox", {}).get("state", "")
@@ -81,20 +43,6 @@ def _poll_until_ready(sandbox_id: str, headers: dict[str, str]) -> dict:
         if state in ("error", "terminated"):
             pytest.fail(f"Sandbox {sandbox_id} entered {state} state: {data}")
     pytest.fail(f"Timed out after {POLL_TIMEOUT}s waiting for sandbox {sandbox_id}")
-
-
-@pytest.fixture(scope="module")
-def access_token() -> str:
-    return _get_access_token()
-
-
-@pytest.fixture(scope="module")
-def connect_headers(access_token: str) -> dict[str, str]:
-    return {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {access_token}",
-        "X-Chalk-Env-Id": CHALK_ENVIRONMENT_ID,
-    }
 
 
 @pytest.fixture(scope="module")
@@ -115,13 +63,13 @@ def grpc_client(access_token: str) -> SandboxClient:
 
 
 @pytest.fixture(scope="module")
-def sandbox_id(connect_headers: dict[str, str]) -> str:
+def sandbox_id(auth_headers: dict[str, str]) -> str:
     """Create a sandbox with the pre-built image and wait until ready. Clean up after tests."""
     body = {
         "image": SANDBOX_IMAGE,
         "name": "test-exec-e2e",
     }
-    resp = _sandbox_rpc("CreateSandbox", body, connect_headers, timeout=60)
+    resp = _connect_rpc(_SVC, "CreateSandbox", body, auth_headers, timeout=60)
     assert resp.status_code == 200, f"CreateSandbox failed: {resp.text}"
 
     data = resp.json()
@@ -134,14 +82,14 @@ def sandbox_id(connect_headers: dict[str, str]) -> str:
 
     if state != "ready":
         print("Polling until ready...")
-        ready_data = _poll_until_ready(sid, connect_headers)
+        ready_data = _poll_until_ready(sid, auth_headers)
         assert ready_data["sandbox"]["state"] == "ready"
 
     print(f"Sandbox {sid} is ready")
     yield sid
 
     # Cleanup
-    _sandbox_rpc("TerminateSandbox", {"sandboxId": sid}, connect_headers)
+    _connect_rpc(_SVC, "TerminateSandbox", {"sandboxId": sid}, auth_headers)
     print(f"Terminated sandbox {sid}")
 
 

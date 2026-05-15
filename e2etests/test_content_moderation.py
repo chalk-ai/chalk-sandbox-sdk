@@ -5,45 +5,15 @@ they can each be invoked directly. The Temporal workflow is exercised
 manually via run.py + approve.py — see README.
 """
 
-import os
-import subprocess
-import sys
-
 import pytest
-from dotenv import load_dotenv
 
-load_dotenv()
+from e2etests.conftest import _deploy_script, needs_staging
 
-CHALK_CLIENT_ID = os.environ.get("CHALK_CLIENT_ID", "")
-CHALK_API_SERVER = os.environ.get("CHALK_API_SERVER", "")
-
-needs_staging = pytest.mark.skipif(
-    not CHALK_CLIENT_ID or not CHALK_API_SERVER,
-    reason="CHALK_CLIENT_ID/CHALK_API_SERVER not set",
-)
-
-EXAMPLE_DIR = os.path.dirname(__file__)
+pytestmark = pytest.mark.skip(reason="expensive — example-app integration smoke")
 
 TEST_IMAGE_URL = "https://images.pexels.com/photos/45201/kitty-cat-kitten-pet-45201.jpeg"
 
 EXPECTED_POLICIES = {"violence", "adult", "weapon", "minor"}
-
-
-def _deploy_script(script_name: str) -> None:
-    """Run a deploy script as a subprocess."""
-    result = subprocess.run(
-        [sys.executable, os.path.join(EXAMPLE_DIR, script_name)],
-        capture_output=True,
-        text=True,
-        env=os.environ,
-        timeout=600,
-    )
-    if result.returncode != 0:
-        pytest.fail(
-            f"{script_name} deploy failed (exit {result.returncode}):\n"
-            f"stdout: {result.stdout[-500:]}\n"
-            f"stderr: {result.stderr[-500:]}"
-        )
 
 
 @needs_staging
@@ -51,7 +21,7 @@ def test_classify_returns_predictions() -> None:
     """Deploy classify_image and verify it returns labeled predictions."""
     import json
 
-    _deploy_script("classify.py")
+    _deploy_script("content-moderation", "classify.py")
 
     import chalkcompute
 
@@ -86,7 +56,7 @@ def test_policy_check_returns_per_policy_scores() -> None:
     """Deploy policy_check and verify it returns the expected policy schema."""
     import json
 
-    _deploy_script("policy_check.py")
+    _deploy_script("content-moderation", "policy_check.py")
 
     import chalkcompute
 

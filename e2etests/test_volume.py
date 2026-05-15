@@ -11,70 +11,13 @@ These tests exercise the VolumeService Connect-protocol endpoints:
   - DeleteVolume
 """
 
-import os
 import uuid
 
-import httpx
 import pytest
-from dotenv import load_dotenv
 
-load_dotenv()
+from e2etests.conftest import _connect_rpc, needs_staging
 
-CHALK_CLIENT_ID = os.environ.get("CHALK_CLIENT_ID", "")
-CHALK_CLIENT_SECRET = os.environ.get("CHALK_CLIENT_SECRET", "")
-CHALK_ENVIRONMENT_ID = os.environ.get("CHALK_ENVIRONMENT_ID", "")
-CHALK_API_SERVER = os.environ.get("CHALK_API_SERVER", "")
-
-VOLUME_SERVICE_BASE = f"{CHALK_API_SERVER}/chalk.volume.v1.VolumeService"
-
-needs_staging = pytest.mark.skipif(
-    not CHALK_CLIENT_ID or not CHALK_API_SERVER,
-    reason="CHALK_CLIENT_ID/CHALK_API_SERVER not set",
-)
-
-
-def _get_access_token() -> str:
-    """Exchange client credentials for a bearer token."""
-    resp = httpx.post(
-        f"{CHALK_API_SERVER}/v1/oauth/token",
-        json={
-            "client_id": CHALK_CLIENT_ID,
-            "client_secret": CHALK_CLIENT_SECRET,
-            "grant_type": "client_credentials",
-        },
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        },
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()["access_token"]
-
-
-@pytest.fixture(scope="module")
-def auth_headers() -> dict[str, str]:
-    token = _get_access_token()
-    return {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {token}",
-        "X-Chalk-Env-Id": CHALK_ENVIRONMENT_ID,
-    }
-
-
-def _volume_rpc(
-    method: str,
-    body: dict,
-    headers: dict[str, str],
-    timeout: float = 30,
-) -> httpx.Response:
-    """Make a Connect-protocol unary RPC call to VolumeService."""
-    return httpx.post(
-        f"{VOLUME_SERVICE_BASE}/{method}",
-        json=body,
-        headers=headers,
-        timeout=timeout,
-    )
+_SVC = "chalk.volume.v1.VolumeService"
 
 
 @pytest.fixture(scope="module")
@@ -89,7 +32,7 @@ def created_volume(
     test_volume_name: str,
 ) -> str:
     """Create a volume for the test session and delete it afterwards."""
-    resp = _volume_rpc("CreateVolume", {"name": test_volume_name}, auth_headers)
+    resp = _connect_rpc(_SVC, "CreateVolume", {"name": test_volume_name}, auth_headers)
     assert resp.status_code == 200, f"CreateVolume failed: {resp.text}"
     data = resp.json()
     assert "volume" in data
@@ -97,7 +40,7 @@ def created_volume(
     yield test_volume_name
 
     # Cleanup
-    _volume_rpc("DeleteVolume", {"name": test_volume_name}, auth_headers)
+    _connect_rpc(_SVC, "DeleteVolume", {"name": test_volume_name}, auth_headers)
 
 
 @needs_staging
@@ -106,7 +49,7 @@ def test_create_and_get_volume(
     created_volume: str,
 ) -> None:
     """CreateVolume then GetVolume returns matching metadata."""
-    resp = _volume_rpc("GetVolume", {"name": created_volume}, auth_headers)
+    resp = _connect_rpc(_SVC, "GetVolume", {"name": created_volume}, auth_headers)
     assert resp.status_code == 200, f"GetVolume failed: {resp.text}"
     data = resp.json()
     assert data["volume"]["name"] == created_volume
@@ -129,7 +72,7 @@ def test_list_volumes(
         if page_token:
             body["pageToken"] = page_token
 
-        resp = _volume_rpc("ListVolumes", body, auth_headers)
+        resp = _connect_rpc(_SVC, "ListVolumes", body, auth_headers)
         assert resp.status_code == 200, f"ListVolumes failed: {resp.text}"
         data = resp.json()
         volumes = data.get("volumes", [])
@@ -169,7 +112,7 @@ def test_put_and_get_file(
     encoded = base64.b64encode(file_content).decode("ascii")
 
     # Put the file
-    put_resp = _volume_rpc(
+    put_resp = _connect_rpc(_SVC, 
         "PutFile",
         {
             "volumeName": created_volume,
@@ -181,7 +124,7 @@ def test_put_and_get_file(
     assert put_resp.status_code == 200, f"PutFile failed: {put_resp.text}"
 
     # Get the file back
-    get_resp = _volume_rpc(
+    get_resp = _connect_rpc(_SVC, 
         "GetFile",
         {"volumeName": created_volume, "path": file_path},
         auth_headers,
@@ -197,7 +140,7 @@ def test_list_files(
     created_volume: str,
 ) -> None:
     """ListFiles should show files we uploaded."""
-    resp = _volume_rpc(
+    resp = _connect_rpc(_SVC, 
         "ListFiles",
         {"volumeName": created_volume, "prefix": "test-data/"},
         auth_headers,
@@ -218,7 +161,7 @@ def test_remove_file(
 
     # Put a file to remove
     file_path = "test-data/to-remove.txt"
-    _volume_rpc(
+    _connect_rpc(_SVC, 
         "PutFile",
         {
             "volumeName": created_volume,
@@ -229,7 +172,7 @@ def test_remove_file(
     )
 
     # Remove it
-    rm_resp = _volume_rpc(
+    rm_resp = _connect_rpc(_SVC, 
         "RemoveFile",
         {"volumeName": created_volume, "path": file_path},
         auth_headers,
@@ -237,7 +180,7 @@ def test_remove_file(
     assert rm_resp.status_code == 200, f"RemoveFile failed: {rm_resp.text}"
 
     # Verify it's gone
-    list_resp = _volume_rpc(
+    list_resp = _connect_rpc(_SVC, 
         "ListFiles",
         {"volumeName": created_volume, "prefix": "test-data/"},
         auth_headers,
@@ -252,14 +195,14 @@ def test_delete_volume(auth_headers: dict[str, str]) -> None:
     """Create and delete a standalone volume to verify DeleteVolume works."""
     vol_name = f"test-delete-{uuid.uuid4().hex[:8]}"
 
-    create_resp = _volume_rpc("CreateVolume", {"name": vol_name}, auth_headers)
+    create_resp = _connect_rpc(_SVC, "CreateVolume", {"name": vol_name}, auth_headers)
     assert create_resp.status_code == 200, f"CreateVolume failed: {create_resp.text}"
 
-    delete_resp = _volume_rpc("DeleteVolume", {"name": vol_name}, auth_headers)
+    delete_resp = _connect_rpc(_SVC, "DeleteVolume", {"name": vol_name}, auth_headers)
     assert delete_resp.status_code == 200, f"DeleteVolume failed: {delete_resp.text}"
 
     # GetVolume should fail
-    get_resp = _volume_rpc("GetVolume", {"name": vol_name}, auth_headers)
+    get_resp = _connect_rpc(_SVC, "GetVolume", {"name": vol_name}, auth_headers)
     assert get_resp.status_code != 200 or "code" in get_resp.json(), (
         f"Expected volume {vol_name} to be deleted but GetVolume succeeded: {get_resp.text}"
     )
