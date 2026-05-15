@@ -8,12 +8,13 @@ from google.protobuf import descriptor as _descriptor
 from google.protobuf import descriptor_pool as _descriptor_pool
 from google.protobuf import symbol_database as _symbol_database
 from google.protobuf.internal import builder as _builder
+from chalkcompute._proto_pool import DESCRIPTOR_POOL as _DESCRIPTOR_POOL, SYMBOL_DATABASE as _SYMBOL_DATABASE
 # @@protoc_insertion_point(imports)
 
-_sym_db = _symbol_database.Default()
+_sym_db = _SYMBOL_DATABASE
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(
+DESCRIPTOR = _DESCRIPTOR_POOL.AddSerializedFile(
     b'\n%chalk/auth/v1/featurepermission.proto\x12\rchalk.auth.v1"\x9d\x02\n\x12\x46\x65\x61turePermissions\x12?\n\x04tags\x18\x01 \x03(\x0b\x32+.chalk.auth.v1.FeaturePermissions.TagsEntryR\x04tags\x12T\n\x12\x64\x65\x66\x61ult_permission\x18\x02 \x01(\x0e\x32 .chalk.auth.v1.FeaturePermissionH\x00R\x11\x64\x65\x66\x61ultPermission\x88\x01\x01\x1aY\n\tTagsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x36\n\x05value\x18\x02 \x01(\x0e\x32 .chalk.auth.v1.FeaturePermissionR\x05value:\x02\x38\x01\x42\x15\n\x13_default_permission*\x99\x01\n\x11\x46\x65\x61turePermission\x12"\n\x1e\x46\x45\x41TURE_PERMISSION_UNSPECIFIED\x10\x00\x12\x1c\n\x18\x46\x45\x41TURE_PERMISSION_ALLOW\x10\x01\x12%\n!FEATURE_PERMISSION_ALLOW_INTERNAL\x10\x02\x12\x1b\n\x17\x46\x45\x41TURE_PERMISSION_DENY\x10\x03\x42\x91\x01\n\x11\x63om.chalk.auth.v1B\x16\x46\x65\x61turepermissionProtoP\x01Z\x0e\x61uth/v1;authv1\xa2\x02\x03\x43\x41X\xaa\x02\rChalk.Auth.V1\xca\x02\rChalk\\Auth\\V1\xe2\x02\x19\x43halk\\Auth\\V1\\GPBMetadata\xea\x02\x0f\x43halk::Auth::V1b\x06proto3'
 )
 

@@ -8,15 +8,16 @@ from google.protobuf import descriptor as _descriptor
 from google.protobuf import descriptor_pool as _descriptor_pool
 from google.protobuf import symbol_database as _symbol_database
 from google.protobuf.internal import builder as _builder
+from chalkcompute._proto_pool import DESCRIPTOR_POOL as _DESCRIPTOR_POOL, SYMBOL_DATABASE as _SYMBOL_DATABASE
 # @@protoc_insertion_point(imports)
 
-_sym_db = _symbol_database.Default()
+_sym_db = _SYMBOL_DATABASE
 
 
 from google.protobuf import descriptor_pb2 as google_dot_protobuf_dot_descriptor__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(
+DESCRIPTOR = _DESCRIPTOR_POOL.AddSerializedFile(
     b"\n\x1e\x63halk/utils/v1/sensitive.proto\x12\x0e\x63halk.utils.v1\x1a google/protobuf/descriptor.proto:@\n\tsensitive\x12\x1d.google.protobuf.FieldOptions\x18\x9b\xf4\x04 \x01(\x08R\tsensitive\x88\x01\x01\x42~\n\x12\x63om.chalk.utils.v1B\x0eSensitiveProtoP\x01\xa2\x02\x03\x43UX\xaa\x02\x0e\x43halk.Utils.V1\xca\x02\x0e\x43halk\\Utils\\V1\xe2\x02\x1a\x43halk\\Utils\\V1\\GPBMetadata\xea\x02\x10\x43halk::Utils::V1b\x06proto3"
 )
 
