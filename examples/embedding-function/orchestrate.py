@@ -1,5 +1,4 @@
 import logging
-import os
 
 import chalkcompute
 
@@ -14,6 +13,6 @@ log = logging.getLogger(__name__)
 def orchestrate(texts: list[str]) -> list[list[float]]:
     import chalkcompute
 
-    embed = chalkcompute.RemoteFunction.from_name("rene-test-embed")
+    embed = chalkcompute.RemoteFunction.from_name("embed-test")
     embeddings = [embed(text) for text in texts]
     return embeddings
