@@ -13,7 +13,11 @@ EMBEDDING_MODEL = "deterministic-fake-embedding"
 # Example of calling in examples/batched-embedding/call.py
 
 
+<<<<<<< HEAD
 @chalkcompute.function(image=chalkcompute.Image.debian_slim(), name="embed-test")
+=======
+@chalkcompute.function(image=chalkcompute.Image.debian_slim())
+>>>>>>> main
 def embed(text: str) -> list[float]:
     log.info("Embedding text (len=%s, model=%s)", len(text), EMBEDDING_MODEL)
     digest = hashlib.sha256(text.encode("utf-8")).digest()

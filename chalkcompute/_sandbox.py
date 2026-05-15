@@ -561,11 +561,11 @@ class SandboxClient:
         connect = ConnectClient()
         connect._ensure_auth()
 
-        host, _use_tls = grpc_target_from_url(connect._api_server or "")
+        host, use_tls = grpc_target_from_url(connect._api_server or "")
 
         return cls(
             host,
-            credentials=grpc.ssl_channel_credentials(),
+            credentials=grpc.ssl_channel_credentials() if use_tls else None,
             metadata=[
                 ("authorization", f"Bearer {connect._access_token}"),
                 ("x-chalk-env-id", connect._env_id or ""),

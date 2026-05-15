@@ -1,5 +1,6 @@
 from typing import Any
 
+from chalkcompute import SandboxClient
 from chalkcompute._connect import ConnectClient, grpc_engine_target_from_url, grpc_target_from_url
 from chalkcompute._remote_call_client import ServiceAuthContext
 
@@ -139,3 +140,27 @@ class TestConnectClientServiceAuth:
         assert client._headers is not None
         assert client._headers["Authorization"] == "Bearer working-token"
         assert client._headers["X-Chalk-Env-Id"] == "env-1"
+
+
+class TestSandboxClientFromEnv:
+    def test_uses_insecure_channel_for_local_http_api(self, monkeypatch):
+        monkeypatch.setenv("CHALK_API_SERVER", "http://localhost:18080")
+        monkeypatch.setenv("CHALK_CLIENT_ID", "client-id")
+        monkeypatch.setenv("CHALK_CLIENT_SECRET", "client-secret")
+        monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-1")
+        monkeypatch.setattr(
+            "httpx.post",
+            lambda *args, **kwargs: _TokenResponse(
+                {
+                    "access_token": "token",
+                    "primary_environment": "env-1",
+                    "environment_id_to_name": {"env-1": "Local"},
+                }
+            ),
+        )
+
+        client = SandboxClient.from_env()
+        try:
+            assert client._target == "localhost:18080"
+        finally:
+            client.close()

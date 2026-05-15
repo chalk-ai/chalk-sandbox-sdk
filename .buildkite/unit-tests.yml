@@ -5,13 +5,18 @@ on:
       - main
       - "**"
 
+env:
+  UV_VERSION: "0.11.14"
+
 steps:
   - label: ":mag: ty type check"
     command: |
       set -euo pipefail
       unset VIRTUAL_ENV
+      echo "--- :python: Install uv"
+      source .buildkite/install-uv.sh
       echo "--- :python: Sync dependencies"
-      uv sync --all-extras
+      uv sync --locked --all-extras
       echo "--- :mag: Run ty"
       uv run --with ty ty check chalkcompute/ --exclude chalkcompute/_gen/
     agents:
@@ -22,8 +27,10 @@ steps:
     command: |
       set -euo pipefail
       unset VIRTUAL_ENV
+      echo "--- :python: Install uv"
+      source .buildkite/install-uv.sh
       echo "--- :python: Sync dependencies"
-      uv sync --all-extras
+      uv sync --locked --all-extras
       echo "--- :pytest: Run unit tests"
       uv run python -m pytest tests/ -v --tb=short
     agents:

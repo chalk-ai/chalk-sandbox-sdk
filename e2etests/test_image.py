@@ -22,8 +22,7 @@ POLL_TIMEOUT = 600
 def _poll_until_ready(sandbox_id: str, headers: dict[str, str]) -> dict:
     """Poll GetSandbox until the sandbox reaches 'ready' or 'error' state."""
     deadline = time.monotonic() + POLL_TIMEOUT
-    while time.monotonic() < deadline:
-        time.sleep(POLL_INTERVAL)
+    while True:
         resp = _connect_rpc(_SANDBOX_SVC, "GetSandbox", {"sandboxId": sandbox_id}, headers)
         assert resp.status_code == 200, f"GetSandbox failed: {resp.text}"
         data = resp.json()
@@ -34,6 +33,9 @@ def _poll_until_ready(sandbox_id: str, headers: dict[str, str]) -> dict:
             return data
         if state in ("error", "terminated"):
             pytest.fail(f"Sandbox {sandbox_id} entered {state} state: {data}")
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(POLL_INTERVAL)
     pytest.fail(f"Timed out after {POLL_TIMEOUT}s waiting for sandbox {sandbox_id}")
 
 
