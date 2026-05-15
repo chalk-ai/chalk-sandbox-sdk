@@ -389,23 +389,27 @@ def _has_running_event_loop() -> bool:
 
 
 async def _run_in_worker_thread(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    result: dict[str, Any] = {}
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[Any] = loop.create_future()
+
+    def complete_with_result(value: Any) -> None:
+        if not future.cancelled():
+            future.set_result(value)
+
+    def complete_with_exception(exc: BaseException) -> None:
+        if not future.cancelled():
+            future.set_exception(exc)
 
     def run() -> None:
         try:
-            result["value"] = func(*args, **kwargs)
+            value = func(*args, **kwargs)
         except BaseException as exc:
-            result["exception"] = exc
+            loop.call_soon_threadsafe(complete_with_exception, exc)
+        else:
+            loop.call_soon_threadsafe(complete_with_result, value)
 
-    thread = threading.Thread(target=run, daemon=True)
-    thread.start()
-    while thread.is_alive():
-        await asyncio.sleep(0.01)
-    thread.join()
-
-    if "exception" in result:
-        raise result["exception"]
-    return result.get("value")
+    threading.Thread(target=run, daemon=True).start()
+    return await future
 
 
 class FunctionCallHandle:
