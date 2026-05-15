@@ -344,7 +344,7 @@ def build_image_from_spec(image: Image) -> str:
     return build_image(client, image)
 
 
-@_traced("chalkcompute.build_image_with_volumes")
+@_instrumented("chalkcompute.build_image_with_volumes")
 def build_image_with_volumes(
     client: ConnectClient,
     image: Image,
