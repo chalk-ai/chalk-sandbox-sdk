@@ -7,12 +7,14 @@ These tests:
   4. Clean up the sandbox
 """
 
+import os
 import time
 
 import grpc
 import pytest
 
 from chalkcompute import SandboxClient
+from chalkcompute._connect import grpc_target_from_url
 from e2etests.conftest import (
     CHALK_API_SERVER,
     CHALK_ENVIRONMENT_ID,
@@ -20,12 +22,19 @@ from e2etests.conftest import (
     needs_staging,
 )
 
-SANDBOX_IMAGE = "us-central1-docker.pkg.dev/chalk-develop/base-images/chalk-sandbox-entrypoint"
+SANDBOX_IMAGE = os.environ.get(
+    "CHALK_SANDBOX_E2E_IMAGE",
+    "us-central1-docker.pkg.dev/chalk-develop/base-images/chalk-sandbox-entrypoint",
+)
 
 _SVC = "chalk.sandbox.v1.SandboxService"
 
 POLL_INTERVAL = 5
 POLL_TIMEOUT = 300
+
+
+def _is_local_api() -> bool:
+    return CHALK_API_SERVER.startswith(("http://localhost", "http://127.0.0.1"))
 
 
 def _poll_until_ready(sandbox_id: str, headers: dict[str, str]) -> dict:
@@ -47,12 +56,9 @@ def _poll_until_ready(sandbox_id: str, headers: dict[str, str]) -> dict:
 
 @pytest.fixture(scope="module")
 def grpc_client(access_token: str) -> SandboxClient:
-    """Create a gRPC SandboxClient pointed at the staging API server."""
-    # Extract host from API server URL
-    host = CHALK_API_SERVER.replace("https://", "").replace("http://", "")
-    target = f"{host}:443"
-
-    credentials = grpc.ssl_channel_credentials()
+    """Create a gRPC SandboxClient pointed at the configured API server."""
+    target, use_tls = grpc_target_from_url(CHALK_API_SERVER)
+    credentials = grpc.ssl_channel_credentials() if use_tls else None
     metadata = [
         ("authorization", f"Bearer {access_token}"),
         ("x-chalk-env-id", CHALK_ENVIRONMENT_ID),
@@ -94,7 +100,10 @@ def sandbox_id(auth_headers: dict[str, str]) -> str:
 
 
 @needs_staging
-@pytest.mark.xfail(reason="httpx.ReadTimeout due to tcp interceptor issues")
+@pytest.mark.xfail(
+    not _is_local_api(),
+    reason="httpx.ReadTimeout due to tcp interceptor issues",
+)
 def test_exec_ls(grpc_client: SandboxClient, sandbox_id: str) -> None:
     """Exec 'ls /' in the sandbox and verify we get directory listing output."""
     sandbox = grpc_client.get(id=sandbox_id)
@@ -120,7 +129,10 @@ def test_exec_ls(grpc_client: SandboxClient, sandbox_id: str) -> None:
 
 
 @needs_staging
-@pytest.mark.xfail(reason="httpx.ReadTimeout due to tcp interceptor issues")
+@pytest.mark.xfail(
+    not _is_local_api(),
+    reason="httpx.ReadTimeout due to tcp interceptor issues",
+)
 def test_pty_interaction(grpc_client: SandboxClient, sandbox_id: str) -> None:
     """Start an interactive shell, send a command via stdin, and verify output."""
     sandbox = grpc_client.get(id=sandbox_id)

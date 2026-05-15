@@ -61,7 +61,7 @@ def test_file_readable_in_container(hello_vol: str) -> None:
         env["CHALK_CLIENT_SECRET"] = v
 
     container = Container(
-        image="python:3.12-slim-bookworm",
+        image="python:3.14-slim-trixie",
         volumes=[(hello_vol, MOUNT_PATH)],
         env=env,
     )

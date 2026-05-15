@@ -29,7 +29,7 @@ PROJECT_DIR = os.path.expanduser("~/chalk/simple_project")
 
 # 1. Build the image: Python slim + local project dir + install opencode
 image = (
-    Image.debian_slim("3.12")
+    Image.debian_slim()
     .add_local_dir(PROJECT_DIR, "/app/simple_project", strategy="copy")
     .run_commands(
         "pip install --quiet opencode-ai",

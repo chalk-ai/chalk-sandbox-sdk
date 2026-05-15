@@ -314,6 +314,7 @@ class Sandbox:
         self._client = client
         self._id = sandbox_id
         self._info: SandboxInfo | None = None
+        self._terminated = False
 
     @property
     def id(self) -> str:
@@ -497,6 +498,8 @@ class Sandbox:
         grace_period_seconds
             Optional grace period to allow running processes to shut down.
         """
+        if self._terminated:
+            return
         req = pb.TerminateSandboxRequest(sandbox_id=self._id)
         if grace_period_seconds is not None:
             req.grace_period_seconds = grace_period_seconds
@@ -505,6 +508,7 @@ class Sandbox:
         except grpc.RpcError as e:
             _handle_rpc_error(e, self._id)
             raise
+        self._terminated = True
 
 
 # ---------------------------------------------------------------------------
@@ -557,11 +561,11 @@ class SandboxClient:
         connect = ConnectClient()
         connect._ensure_auth()
 
-        host, _use_tls = grpc_target_from_url(connect._api_server or "")
+        host, use_tls = grpc_target_from_url(connect._api_server or "")
 
         return cls(
             host,
-            credentials=grpc.ssl_channel_credentials(),
+            credentials=grpc.ssl_channel_credentials() if use_tls else None,
             metadata=[
                 ("authorization", f"Bearer {connect._access_token}"),
                 ("x-chalk-env-id", connect._env_id or ""),

@@ -6,7 +6,7 @@ Build container images using a fluent API:
     from chalkcompute import Image
 
     img = (
-        Image.debian_slim("3.13")
+        Image.debian_slim()
         .pip_install(["requests", "pandas"])
         .run_commands("apt-get update && apt-get install -y git")
         .workdir("/home/user/app")
@@ -71,7 +71,7 @@ class Image:
     --------
     >>> from chalkcompute import Image
     >>> img = (
-    ...     Image.debian_slim("3.13")
+    ...     Image.debian_slim()
     ...     .pip_install(["requests", "pandas"])
     ...     .workdir("/home/user/app")
     ... )
@@ -95,7 +95,7 @@ class Image:
         Parameters
         ----------
         image
-            Full image reference (e.g. ``"python:3.13-slim-bookworm"``,
+            Full image reference (e.g. ``"python:3.14-slim-trixie"``,
             ``"ghcr.io/org/image:tag"``).
 
         Returns
@@ -106,14 +106,14 @@ class Image:
         Examples
         --------
         >>> from chalkcompute import Image
-        >>> img = Image.base("python:3.13-slim-bookworm")
+        >>> img = Image.base("python:3.14-slim-trixie")
         >>> img = Image.base("ghcr.io/my-org/my-image:latest")
         """
         return cls(image)
 
     @classmethod
-    def debian_slim(cls, python_version: str = "3.13") -> Image:
-        """Create an image based on ``python:<version>-slim-bookworm``.
+    def debian_slim(cls, python_version: str = "3.14") -> Image:
+        """Create an image based on ``python:<version>-slim-trixie``.
 
         Parameters
         ----------
@@ -129,9 +129,9 @@ class Image:
         --------
         >>> from chalkcompute import Image
         >>> img = Image.debian_slim()
-        >>> img = Image.debian_slim("3.11")
+        >>> img = Image.debian_slim("3.14.5")
         """
-        return cls(f"python:{python_version}-slim-bookworm")
+        return cls(f"python:{python_version}-slim-trixie")
 
     @classmethod
     def from_dockerfile(cls, path: str) -> Image:
@@ -234,7 +234,7 @@ class Image:
         ----------
         packages
             List of pip requirement specifiers
-            (e.g. ``["requests>=2.28", "pandas"]``).
+            (e.g. ``["requests", "pandas"]``).
 
         Returns
         -------
@@ -245,7 +245,7 @@ class Image:
         --------
         >>> from chalkcompute import Image
         >>> img = (
-        ...     Image.base("ghcr.io/astral-sh/uv:python3.13-bookworm-slim")
+        ...     Image.base("ghcr.io/astral-sh/uv:python3.14-trixie-slim")
         ...     .uv_pip_install(["requests", "polars"])
         ... )
         """
@@ -278,7 +278,7 @@ class Image:
         --------
         >>> from chalkcompute import Image
         >>> img = (
-        ...     Image.base("ghcr.io/astral-sh/uv:python3.13-bookworm-slim")
+        ...     Image.base("ghcr.io/astral-sh/uv:python3.14-trixie-slim")
         ...     .uv_pip_install_from_requirements("./requirements.txt")
         ... )
         """
@@ -296,7 +296,7 @@ class Image:
         ----------
         packages
             List of pip requirement specifiers
-            (e.g. ``["requests>=2.28", "pandas"]``).
+            (e.g. ``["requests", "pandas"]``).
 
         Returns
         -------
@@ -308,7 +308,7 @@ class Image:
         >>> from chalkcompute import Image
         >>> img = (
         ...     Image.debian_slim()
-        ...     .pip_install(["requests>=2.28", "pandas"])
+        ...     .pip_install(["requests", "pandas"])
         ... )
         """
         new = self._copy()

@@ -464,7 +464,7 @@ class Container:
 
         >>> from chalkcompute import Container, Image
         >>> img = (
-        ...     Image.debian_slim("3.13")
+        ...     Image.debian_slim()
         ...     .pip_install(["requests"])
         ...     .add_local_file(
         ...         "./app.py",
@@ -725,7 +725,7 @@ class Container:
         >>> from chalkcompute import Container, Image
         >>> c = Container(
         ...     image=(
-        ...         Image.debian_slim("3.13")
+        ...         Image.debian_slim()
         ...         .pip_install(["requests"])
         ...         .add_local_file(
         ...             "./fetch.py",

@@ -8,12 +8,13 @@ from google.protobuf import descriptor as _descriptor
 from google.protobuf import descriptor_pool as _descriptor_pool
 from google.protobuf import symbol_database as _symbol_database
 from google.protobuf.internal import builder as _builder
+from chalkcompute._proto_pool import DESCRIPTOR_POOL as _DESCRIPTOR_POOL, SYMBOL_DATABASE as _SYMBOL_DATABASE
 # @@protoc_insertion_point(imports)
 
-_sym_db = _symbol_database.Default()
+_sym_db = _SYMBOL_DATABASE
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(
+DESCRIPTOR = _DESCRIPTOR_POOL.AddSerializedFile(
     b'\n!chalk/utils/v1/field_change.proto\x12\x0e\x63halk.utils.v1"\xe0\x01\n\x0b\x46ieldChange\x12\x1d\n\nfield_name\x18\x01 \x01(\tR\tfieldName\x12*\n\x0eprevious_value\x18\x02 \x01(\tH\x00R\rpreviousValue\x88\x01\x01\x12 \n\tnew_value\x18\x03 \x01(\tH\x01R\x08newValue\x88\x01\x01\x12\x43\n\x0enested_changes\x18\x04 \x03(\x0b\x32\x1c.chalk.utils.v1.NestedChangeR\rnestedChangesB\x11\n\x0f_previous_valueB\x0c\n\n_new_value"\x91\x01\n\x0cNestedChange\x12\x12\n\x04path\x18\x01 \x01(\tR\x04path\x12*\n\x0eprevious_value\x18\x02 \x01(\tH\x00R\rpreviousValue\x88\x01\x01\x12 \n\tnew_value\x18\x03 \x01(\tH\x01R\x08newValue\x88\x01\x01\x42\x11\n\x0f_previous_valueB\x0c\n\n_new_valueB\x80\x01\n\x12\x63om.chalk.utils.v1B\x10\x46ieldChangeProtoP\x01\xa2\x02\x03\x43UX\xaa\x02\x0e\x43halk.Utils.V1\xca\x02\x0e\x43halk\\Utils\\V1\xe2\x02\x1a\x43halk\\Utils\\V1\\GPBMetadata\xea\x02\x10\x43halk::Utils::V1b\x06proto3'
 )
 

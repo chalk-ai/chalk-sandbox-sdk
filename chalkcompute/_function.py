@@ -1324,7 +1324,7 @@ class RemoteFunction:
                 )
             if self._target_queue_depth is not None:
                 scaling_spec["functionQueueDepthTrigger"] = {
-                    "functionName": self._func_name,
+                    "functionName": self._explicit_name or self._func_name,
                     "targetQueueDepth": self._target_queue_depth,
                 }
 
@@ -1372,10 +1372,12 @@ class RemoteFunction:
             # 6. Call CreateExternalFunctionVersion
             rkey = f"register:{self._func_name}"
             progress_add(rkey, "function", "Registering function", parent=fkey)
-            logger.info("Registering function '%s'...", self._func_name)
+            logger.info(
+                "Registering function '%s'...", self._explicit_name or self._func_name
+            )
 
             create_request: dict[str, Any] = {
-                "functionName": self._func_name,
+                "functionName": self._explicit_name or self._func_name,
                 "inputArrowSchema": MessageToDict(input_schema_proto),
                 "outputArrowSchema": MessageToDict(output_schema_proto),
                 "spec": spec,
