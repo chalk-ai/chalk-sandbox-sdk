@@ -12,7 +12,6 @@ import concurrent.futures
 import time
 
 import chalkcompute
-
 from e2etests.conftest import _deploy_script, needs_staging
 
 

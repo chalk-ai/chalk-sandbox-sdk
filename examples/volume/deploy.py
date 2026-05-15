@@ -91,7 +91,7 @@ def main() -> None:
     print("\n=== Running container with mounted volume ===")
     result = chalk([
         "container", "run",
-        "--image", "python:3.12-slim-bookworm",
+        "--image", "python:3.14-slim-trixie",
         "--name", CONTAINER_NAME,
         f"--volume={VOLUME_NAME}:{MOUNT_PATH}",
         "--entrypoint", f"bash,-c,sleep 10 && echo 'Files in {MOUNT_PATH}:' && ls -la {MOUNT_PATH}/ && echo '---' && cat {MOUNT_PATH}/{FILE_PATH}",

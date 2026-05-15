@@ -11,9 +11,7 @@ EMBEDDING_DIMS = 1536
 EMBEDDING_MODEL = "deterministic-fake-embedding"
 
 
-@chalkcompute.function(
-    image=chalkcompute.Image.debian_slim(),
-)
+@chalkcompute.function(image=chalkcompute.Image.debian_slim())
 async def async_embed(text: str) -> list[float]:
     log.info("Embedding text async (len=%s, model=%s)", len(text), EMBEDDING_MODEL)
     digest = hashlib.sha256(text.encode("utf-8")).digest()

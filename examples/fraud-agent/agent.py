@@ -27,7 +27,7 @@ _CATALOG_SRC = str(Path(__file__).parent / "catalog.py")
 @chalkcompute.function(
     image=(
         chalkcompute.Image.debian_slim()
-        .pip_install(["httpx", "openai>=1.40.0"])
+        .pip_install(["httpx", "openai"])
         .add_local_file(_CATALOG_SRC, "/app/catalog.py")
     ),
     env={

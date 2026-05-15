@@ -85,7 +85,7 @@ _CONTAINERS: dict[str, Container] = {}
 # ## Tool 1 — `start_container`
 #
 # Spawns a container from a tiny set of declarative knobs: a base image
-# string (e.g. `python:3.12-slim`, `debian:stable-slim`) and an optional
+# string (e.g. `python:3.14-slim-trixie`, `debian:stable-slim`) and an optional
 # list of pip packages. We deliberately keep the surface narrow — the agent
 # doesn't need every `Image` builder method to demo the harness pattern.
 #

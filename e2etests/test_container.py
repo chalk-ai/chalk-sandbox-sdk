@@ -7,7 +7,6 @@ inline local files into the image and make them readable inside the container.
 
 import os
 import tempfile
-import time
 import uuid
 from pathlib import Path
 
@@ -15,10 +14,7 @@ import pytest
 
 from chalkcompute import Container, Image, Secret
 from e2etests.conftest import needs_staging
-from e2etests.container_metrics import (
-    assert_container_metrics_target,
-    container_metrics_target,
-)
+from e2etests.container_metrics import assert_container_metrics
 
 
 @needs_staging
@@ -30,7 +26,9 @@ def test_container_add_local_file() -> None:
         local_path = f.name
 
     try:
-        img = Image.debian_slim().add_local_file(local_path, "/app/data.txt", strategy="copy")
+        img = Image.debian_slim().add_local_file(
+            local_path, "/app/data.txt", strategy="copy"
+        )
         c = Container(image=img, name=f"test-add-local-file-{uuid.uuid4().hex[:8]}")
         try:
             c.run()
@@ -67,7 +65,9 @@ def test_container_run_commands_apt_install() -> None:
 def test_container_from_dockerfile() -> None:
     """from_dockerfile builds an image from a Dockerfile and runs the container."""
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".Dockerfile", delete=False,
+        mode="w",
+        suffix=".Dockerfile",
+        delete=False,
     ) as f:
         f.write("FROM alpine:latest\nRUN apk add --no-cache curl\n")
         f.flush()
@@ -104,6 +104,8 @@ def test_image_build_cache() -> None:
     # Second build with the identical image spec: should be cached.
     # We call _build_image directly to isolate image-build time from
     # container startup time.
+    import time
+
     c2 = Container(image=img, name=f"test-cache-2-{uuid.uuid4().hex[:8]}")
     t0 = time.monotonic()
     image_uri = c2._build_image()
@@ -266,26 +268,15 @@ def test_container_metrics_available() -> None:
     if os.environ.get("CHALK_ASSERT_CONTAINER_METRICS") != "1":
         pytest.skip("CHALK_ASSERT_CONTAINER_METRICS != 1")
 
-    c = Container(image=Image.debian_slim(), name=f"test-metrics-{uuid.uuid4().hex[:8]}")
-    target = None
+    c = Container(
+        image=Image.debian_slim(), name=f"test-metrics-{uuid.uuid4().hex[:8]}"
+    )
     try:
         c.run()
-        target = container_metrics_target(c)
-        assert target.pod_name, (
-            "Cannot assert container metrics without podName "
-            f"(container name={target.name} id={target.id})"
+        assert_container_metrics(
+            c,
+            timeout_secs=300.0,
+            poll_interval_secs=10.0,
         )
-        print(
-            "Keeping metrics test container alive for 120s: "
-            f"name={target.name} id={target.id} podName={target.pod_name}"
-        )
-        time.sleep(120)
     finally:
         c.stop()
-
-    assert target is not None
-    assert_container_metrics_target(
-        target,
-        timeout_secs=300.0,
-        poll_interval_secs=10.0,
-    )

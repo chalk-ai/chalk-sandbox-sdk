@@ -43,6 +43,10 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     # _connect.py
     "ConnectClient": ("chalkcompute._connect", "ConnectClient"),
     "build_image": ("chalkcompute._connect", "build_image_from_spec"),
+    "build_image_with_volumes": (
+        "chalkcompute._connect",
+        "build_image_with_volumes_from_spec",
+    ),
     # _image.py
     "Image": ("chalkcompute._image", "Image"),
     "LazyLocalFile": ("chalkcompute._image", "LazyLocalFile"),

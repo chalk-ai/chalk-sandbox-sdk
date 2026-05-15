@@ -113,7 +113,7 @@ def main() -> None:
     create_volume(vol_name, token)
 
     container = Container(
-        image="python:3.12-slim-bookworm",
+        image="python:3.14-slim-trixie",
         volumes=[(vol_name, MOUNT_PATH)],
     )
     try:

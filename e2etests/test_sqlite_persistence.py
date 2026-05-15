@@ -62,7 +62,7 @@ for r in rows:
 print(f"read {{len(rows)}} rows")
 """.format(db_path=DB_PATH)
 
-image = Image.debian_slim("3.12")
+image = Image.debian_slim()
 
 
 def _create_volume(name: str) -> None:

@@ -57,7 +57,7 @@ MOUNT_PATH = "/root/code"
 # then layer on curl + opencode.
 
 OPENCODE_GO_IMAGE = (
-    Image.base("golang:1.24-bookworm")
+    Image.base("golang:1.26-trixie")
     .run_commands(
         "apt-get update -qq && apt-get install -y -qq curl git 2>&1",
         "curl -fsSL https://opencode.ai/install | bash 2>&1",

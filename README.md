@@ -41,7 +41,7 @@ client = SandboxClient("localhost:50051")
 
 # Build a data-science image declaratively
 img = (
-    Image.debian_slim("3.12")
+    Image.debian_slim()
     .pip_install(["pandas", "numpy", "scikit-learn"])
     .run_commands(
         "apt-get update && apt-get install -y git curl",
@@ -59,10 +59,10 @@ print(result.stdout_text)
 
 ```python
 # Arbitrary base image
-img = Image.base("node:22-slim")
+img = Image.base("node:25-trixie-slim")
 
 # Convenience: python + debian slim
-img = Image.debian_slim("3.12")  # python:3.12-slim-bookworm
+img = Image.debian_slim()  # python:3.14-slim-trixie
 
 # From an existing Dockerfile (contents are inlined, so you can chain more steps)
 img = Image.from_dockerfile("Dockerfile").pip_install(["extra-dep"])
@@ -72,9 +72,9 @@ img = Image.from_dockerfile("Dockerfile").pip_install(["extra-dep"])
 
 ```python
 img = (
-    Image.debian_slim("3.12")
+    Image.debian_slim()
     # Install Python packages
-    .pip_install(["requests>=2.28", "flask"])
+    .pip_install(["requests", "flask"])
 
     # Install from a requirements.txt (read locally, inlined into the spec)
     .pip_install_from_requirements("requirements.txt")
@@ -106,7 +106,7 @@ img = (
 Each builder method returns a new `Image`, so intermediate images can be shared:
 
 ```python
-base = Image.debian_slim("3.12").pip_install(["requests"])
+base = Image.debian_slim().pip_install(["requests"])
 
 # Two different images that share the same base
 api_image = base.pip_install(["flask"]).workdir("/api")
@@ -276,7 +276,7 @@ sandbox.exec("apt-get", "update")
 sandbox.exec("apt-get", "install", "-y", "git", "curl", "build-essential")
 
 # Install Go (opencode is a Go binary)
-sandbox.exec("bash", "-c", "curl -fsSL https://go.dev/dl/go1.24.1.linux-amd64.tar.gz | tar -C /usr/local -xz")
+sandbox.exec("bash", "-c", "curl -fsSL https://go.dev/dl/go1.26.3.linux-amd64.tar.gz | tar -C /usr/local -xz")
 sandbox.exec("bash", "-c", "echo 'export PATH=$PATH:/usr/local/go/bin:/root/go/bin' >> /root/.bashrc")
 
 # Install opencode
@@ -312,7 +312,7 @@ for event in process.output():
 ### Long-running build with real-time output
 
 ```python
-sandbox = client.create(image="node:22")
+sandbox = client.create(image="node:25-trixie-slim")
 
 sandbox.exec("git", "clone", "https://github.com/your-org/frontend.git", "/app")
 sandbox.exec("npm", "install", workdir="/app")

@@ -22,8 +22,7 @@ POLL_TIMEOUT = 600
 def _poll_until_ready(sandbox_id: str, headers: dict[str, str]) -> dict:
     """Poll GetSandbox until the sandbox reaches 'ready' or 'error' state."""
     deadline = time.monotonic() + POLL_TIMEOUT
-    while time.monotonic() < deadline:
-        time.sleep(POLL_INTERVAL)
+    while True:
         resp = _connect_rpc(_SANDBOX_SVC, "GetSandbox", {"sandboxId": sandbox_id}, headers)
         assert resp.status_code == 200, f"GetSandbox failed: {resp.text}"
         data = resp.json()
@@ -34,6 +33,9 @@ def _poll_until_ready(sandbox_id: str, headers: dict[str, str]) -> dict:
             return data
         if state in ("error", "terminated"):
             pytest.fail(f"Sandbox {sandbox_id} entered {state} state: {data}")
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(POLL_INTERVAL)
     pytest.fail(f"Timed out after {POLL_TIMEOUT}s waiting for sandbox {sandbox_id}")
 
 
@@ -52,7 +54,7 @@ def test_list_sandboxes(auth_headers: dict[str, str]) -> None:
 def test_create_sandbox_with_debian_image(auth_headers: dict[str, str]) -> None:
     """Create a sandbox with a debian_slim ImageSpec using async polling."""
     img = (
-        Image.debian_slim("3.12")
+        Image.debian_slim()
         .pip_install(["requests"])
         .run_commands("echo 'image built successfully'")
         .workdir("/home/user")
@@ -93,7 +95,7 @@ def test_create_sandbox_with_debian_image(auth_headers: dict[str, str]) -> None:
 def test_create_sandbox_with_plain_image(auth_headers: dict[str, str]) -> None:
     """Create a sandbox with a plain image string and poll until ready."""
     body = {
-        "image": "python:3.12-slim-bookworm",
+        "image": "python:3.14-slim-trixie",
         "name": "test-plain-image",
     }
 
@@ -122,7 +124,7 @@ def test_create_sandbox_with_plain_image(auth_headers: dict[str, str]) -> None:
 def test_build_custom_image(auth_headers: dict[str, str]) -> None:
     """Build a custom image via CustomImageService.BuildCustomImage and query it via GetCustomImage."""
     img = (
-        Image.debian_slim("3.12")
+        Image.debian_slim()
         .pip_install(["requests"])
         .run_commands("echo 'custom image built'")
     )
