@@ -14,6 +14,15 @@ import time
 import chalkcompute
 from e2etests.conftest import _deploy_script, needs_staging
 
+
+async def _await_call(fn, *args):
+    return await fn(*args)
+
+
+async def _await_get(handle, *, timeout=None):
+    return await handle.get(timeout=timeout)
+
+
 # ---------------------------------------------------------------------------
 # Sync scalar
 # ---------------------------------------------------------------------------
@@ -26,15 +35,19 @@ class TestSyncScalar:
         _deploy_script("scalar", "deploy_sync.py")
 
     def test_direct_call(self):
-        """fn(1, 10) → 11."""
+        """Sync scalar calls work in sync and async contexts."""
         fn = chalkcompute.RemoteFunction.from_name("add")
         assert fn(1, 10) == 11
+        assert asyncio.run(_await_call(fn, 2, 20)) == 22
 
     def test_defer_get(self):
-        """fn.defer(2, 20).get() → 22 via queue."""
+        """Sync scalar defer/get works in sync and async contexts."""
         fn = chalkcompute.RemoteFunction.from_name("add")
         handle = fn.defer(2, 20)
         assert handle.get(timeout=60) == 22
+
+        async_handle = fn.defer(3, 30)
+        assert asyncio.run(_await_get(async_handle, timeout=60)) == 33
 
     def test_concurrent_calls(self):
         """Fire 10 calls in parallel, verify all return correct results."""
@@ -87,23 +100,20 @@ class TestAsyncScalar:
         _deploy_script("scalar", "deploy_async.py")
 
     def test_direct_call(self):
-        """await fn(3, 30) → 33."""
+        """Async scalar calls work in sync and async contexts."""
         fn = chalkcompute.RemoteFunction.from_name("async_add")
 
-        async def _run():
-            return await fn(3, 30)
-
-        assert asyncio.run(_run()) == 33
+        assert fn(3, 30) == 33
+        assert asyncio.run(_await_call(fn, 4, 40)) == 44
 
     def test_defer_get(self):
-        """await fn.defer(4, 40).get() → 44."""
+        """Async scalar defer/get works in sync and async contexts."""
         fn = chalkcompute.RemoteFunction.from_name("async_add")
-        handle = fn.defer(4, 40)
+        handle = fn.defer(5, 50)
+        assert handle.get(timeout=60) == 55
 
-        async def _run():
-            return await handle.get(timeout=60)
-
-        assert asyncio.run(_run()) == 44
+        async_handle = fn.defer(6, 60)
+        assert asyncio.run(_await_get(async_handle, timeout=60)) == 66
 
 
 # ---------------------------------------------------------------------------
