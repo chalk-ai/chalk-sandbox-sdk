@@ -194,13 +194,12 @@ def _strip_chalkcompute_from_source(source: str) -> str:
             for dec in node.decorator_list:
                 dec_source = ast.get_source_segment(source, dec)
                 if (
-                    (dec_source is not None and "chalkcompute" in dec_source)
-                    or _is_chalkcompute_decorator(
-                        dec,
-                        module_names=chalkcompute_module_names,
-                        decorator_names=chalkcompute_decorator_names,
-                        attribute_names={"function"},
-                    )
+                    dec_source is not None and "chalkcompute" in dec_source
+                ) or _is_chalkcompute_decorator(
+                    dec,
+                    module_names=chalkcompute_module_names,
+                    decorator_names=chalkcompute_decorator_names,
+                    attribute_names={"function"},
                 ):
                     remove_ranges.append((dec.lineno, dec.end_lineno or dec.lineno))
                     decorated_names.add(node.name)
@@ -1037,10 +1036,12 @@ class RemoteFunction:
 
         # Input field names (populated from API response for from_id/from_name)
         self._input_field_names: list[str] = []
-        self._is_generator = inspect.isgeneratorfunction(func) or inspect.isasyncgenfunction(
+        self._is_generator = inspect.isgeneratorfunction(
             func
-        )
-        self._is_async = inspect.iscoroutinefunction(func) or inspect.isasyncgenfunction(func)
+        ) or inspect.isasyncgenfunction(func)
+        self._is_async = inspect.iscoroutinefunction(
+            func
+        ) or inspect.isasyncgenfunction(func)
 
         # gRPC call channel (lazily created on first __call__)
         self._call_channel: Any = None
@@ -1296,7 +1297,7 @@ class RemoteFunction:
                 )
             if self._target_queue_depth is not None:
                 scaling_spec["functionQueueDepthTrigger"] = {
-                    "functionName": self._func_name,
+                    "functionName": self._explicit_name or self._func_name,
                     "targetQueueDepth": self._target_queue_depth,
                 }
 
@@ -1342,10 +1343,12 @@ class RemoteFunction:
             # 6. Call CreateExternalFunctionVersion
             rkey = f"register:{self._func_name}"
             progress_add(rkey, "function", "Registering function", parent=fkey)
-            logger.info("Registering function '%s'...", self._func_name)
+            logger.info(
+                "Registering function '%s'...", self._explicit_name or self._func_name
+            )
 
             create_request: dict[str, Any] = {
-                "functionName": self._func_name,
+                "functionName": self._explicit_name or self._func_name,
                 "inputArrowSchema": MessageToDict(input_schema_proto),
                 "outputArrowSchema": MessageToDict(output_schema_proto),
                 "spec": spec,
@@ -1962,8 +1965,7 @@ def function(
     concurrency: int | ConcurrencyPolicy | None = None,
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
-) -> Callable[..., RemoteFunction | _NoOpFunction]:
-    ...
+) -> Callable[..., RemoteFunction | _NoOpFunction]: ...
 
 
 def function(
