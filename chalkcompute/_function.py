@@ -2140,7 +2140,7 @@ def function(
     tracing
         Remote-function tracing policy. ``None`` inherits parent trace context,
         a float sets the sampling rate for new root traces, and ``"off"``
-        suppresses tracing for this function.
+        uses OTel always-off sampling for this function.
 
     Examples
     --------

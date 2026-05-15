@@ -161,7 +161,7 @@ class TestTracingPolicy:
             "sampleRate": 0.1,
         }
 
-    def test_off_builds_hard_suppression_policy(self):
+    def test_off_builds_always_off_policy(self):
         def add(x: int) -> int:
             return x + 1
 

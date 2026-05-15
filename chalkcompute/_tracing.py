@@ -22,7 +22,6 @@ _TRACER_NAME = "chalkcompute"
 _DEFAULT_PUBLIC_TRACE_NAME = "chalkcompute.trace"
 _TRACE_CONTEXT_METADATA_KEYS = ("traceparent", "tracestate", "baggage")
 _REMOTE_FUNCTION_TRACE_POLICY_ENV_VAR = "CHALK_REMOTE_FUNCTION_TRACE_POLICY"
-_TRACE_SUPPRESSED_METADATA_KEY = "x-chalk-tracing-suppressed"
 _initialized = False
 _provider: Any | None = None
 _user_tracing_configured = False
@@ -138,7 +137,7 @@ def _ensure_user_tracing_configured() -> None:
         configure_tracing(sample_rate=1.0)
 
 
-def _is_remote_tracing_suppressed() -> bool:
+def _is_remote_tracing_off() -> bool:
     return os.environ.get(_REMOTE_FUNCTION_TRACE_POLICY_ENV_VAR) == "off"
 
 
@@ -166,16 +165,14 @@ def has_current_trace_context() -> bool:
     if trace_api is None:
         return False
 
-    _ensure_initialized()
+    if not _is_remote_tracing_off():
+        _ensure_initialized()
     span_context = trace_api.get_current_span().get_span_context()
     return bool(span_context.is_valid)
 
 
 def current_trace_metadata() -> list[tuple[str, str]]:
     """Return W3C trace metadata for the current OpenTelemetry context."""
-    if _is_remote_tracing_suppressed():
-        return [(_TRACE_SUPPRESSED_METADATA_KEY, "1")]
-
     if not has_current_trace_context():
         return []
 
@@ -199,7 +196,7 @@ def has_trace_metadata(metadata: list[tuple[str, str]]) -> bool:
 
 @contextlib.contextmanager
 def _span(name: str) -> Iterator[Any]:
-    if _is_remote_tracing_suppressed():
+    if _is_remote_tracing_off():
         yield None
         return
 
@@ -242,7 +239,7 @@ def _instrumented(name: str) -> Callable[[F], F]:
     def decorator(func: F) -> F:
         @functools.wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
-            if not _has_tracing_intent():
+            if _is_remote_tracing_off() or not _has_tracing_intent():
                 return func(*args, **kwargs)
             with get_tracer().start_as_current_span(name):
                 return func(*args, **kwargs)
@@ -281,7 +278,7 @@ def traced(arg: str | F | None = None) -> Callable[[F], F] | F:
 @contextlib.contextmanager
 def remote_function_call_span(function_name: str, call_type: str) -> Iterator[Any]:
     """Trace one outbound call from this process to another compute function."""
-    if _is_remote_tracing_suppressed() or not has_current_trace_context():
+    if _is_remote_tracing_off() or not has_current_trace_context():
         yield None
         return
 

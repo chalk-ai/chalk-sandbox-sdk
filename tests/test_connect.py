@@ -174,29 +174,28 @@ class TestConnectClientTracing:
         assert rates == [1.0]
         assert tracer.span_names == ["workflow"]
 
-    def test_trace_noops_when_remote_tracing_is_suppressed(self, monkeypatch):
+    def test_trace_noops_when_remote_tracing_is_off(self, monkeypatch):
         monkeypatch.setenv("CHALK_REMOTE_FUNCTION_TRACE_POLICY", "off")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector")
         monkeypatch.setattr(
             _tracing,
             "_install_tracer_provider",
             lambda _rate: (_ for _ in ()).throw(
-                AssertionError("suppressed tracing should not configure a provider")
+                AssertionError("off tracing should not configure a provider")
             ),
         )
         monkeypatch.setattr(
             _tracing,
             "get_tracer",
             lambda: (_ for _ in ()).throw(
-                AssertionError("suppressed tracing should not request a tracer")
+                AssertionError("off tracing should not request a tracer")
             ),
         )
 
         with _tracing.trace("workflow") as span:
             assert span is None
 
-        assert _tracing.current_trace_metadata() == [
-            ("x-chalk-tracing-suppressed", "1")
-        ]
+        assert _tracing.current_trace_metadata() == []
 
     def test_traced_decorator_uses_explicit_name(self, monkeypatch):
         tracer = _Tracer()
