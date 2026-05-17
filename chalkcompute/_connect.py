@@ -42,6 +42,32 @@ def service_auth_context_from_env() -> ServiceAuthContext | None:
         return None
 
 
+def _load_chalk_yml() -> dict[str, str] | None:
+    """Read the ``default`` token from ``~/.chalk.yml``, if it exists."""
+    try:
+        import yaml
+    except ImportError:
+        return None
+    p = os.path.join(os.getenv("XDG_CONFIG_HOME", os.path.expanduser("~")), ".chalk.yml")
+    if not os.path.exists(p):
+        return None
+    try:
+        with open(p) as f:
+            parsed = yaml.safe_load(f)
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    tokens = parsed.get("tokens")
+    if not isinstance(tokens, dict):
+        return None
+    absdir = str(os.path.abspath(os.getcwd()))
+    token = tokens.get(absdir) or tokens.get("default")
+    if not isinstance(token, dict):
+        return None
+    return {str(k): str(v) for k, v in token.items()}
+
+
 class ConnectClient:
     """Authenticated Connect-protocol (HTTP/JSON) client for Chalk APIs.
 
@@ -112,8 +138,17 @@ class ConnectClient:
         )
 
         if not self._api_server or not client_id:
+            cfg = _load_chalk_yml()
+            if cfg is not None:
+                client_id = client_id or cfg.get("clientId", "")
+                client_secret = client_secret or cfg.get("clientSecret", "")
+                self._api_server = self._api_server or cfg.get("apiServer", "")
+                requested_env = requested_env or cfg.get("activeEnvironment", "")
+
+        if not self._api_server or not client_id:
             raise ConnectError(
-                "CHALK_API_SERVER and CHALK_CLIENT_ID must be set in the environment"
+                "No Chalk credentials found. Set CHALK_CLIENT_ID/CHALK_CLIENT_SECRET "
+                "environment variables or configure ~/.chalk.yml"
             )
 
         resp = httpx.post(
