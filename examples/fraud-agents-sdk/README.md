@@ -1,74 +1,75 @@
 # KYC Fraud Agent — OpenAI Agents SDK on Chalk Compute
 
-Build an LLM agent (OpenAI Agents SDK) that investigates a KYC packet by
-shell-ing into a Chalk Compute container running in your cloud. The customer's
-ID images, selfie, and utility bill stay inside the sandbox; only the agent's
-shell commands and string outputs round-trip to OpenAI.
+An LLM agent (OpenAI Agents SDK) investigates a KYC packet by shell-ing into a
+Chalk Compute container running in your cloud. ID images and utility bills
+stay inside the sandbox; only shell commands and text outputs round-trip to
+OpenAI.
 
 ## What it does
 
 ```
-$ uv run python run.py case_fraud
-INFO: uploading packet from samples/case_fraud to volume kyc-case-a4f2b1
-INFO: building image and starting investigator container...
-INFO: agent ready — running investigation
+$ uv run python story.py case_fraud
 
-  ... agent calls chalk_list_workspace, chalk_shell("python /opt/tools/ocr.py id.jpg"),
-      chalk_shell("cat application.json"), chalk_shell("python /opt/tools/parse_pdf.py utility_bill.pdf"),
-      etc., then synthesizes a Verdict ...
+[volume] kyc-case-case-fraud already exists → reusing (skip upload)
+[build] building image + starting investigator container...
 
-================================================================
-VERDICT: HIGH   confidence=0.92
-================================================================
+╭─────────────────────────────────────────────────╮
+│ container: kyc-investigator-a4f2b1              │
+│ id:        cnt_…                                │
+│ dashboard: https://staging.chalk.dev/…          │
+╰─────────────────────────────────────────────────╯
 
-Reasoning:
-  The ID image OCR's to "John Smith / 1990-08-04 / S7654321" while the
-  application JSON claims "Jane Doe / 1985-03-12 / D1234567". The utility
-  bill is also addressed to John Smith. Three documents disagree about
-  who this applicant is — synthetic-identity pattern.
+[agent] investigation starting
 
-Signals:
-  - id.jpg name "John Smith" mismatches application.json name "Jane Doe"
-  - id.jpg dob "1990-08-04" mismatches application.json dob "1985-03-12"
-  - utility_bill.pdf account holder is "John Smith", not the applicant
+[01] bash(command='ls -la /workspace')
+[02] bash(command='cat /workspace/application.json')
+[03] bash(command='tesseract /workspace/id.jpeg - --psm 6')
+[04] bash(command='pdftotext /workspace/utility_bill.pdf -')
+…
+
+╭─ VERDICT: HIGH   confidence=0.92 ─────────────────╮
+│ Reasoning                                         │
+│   The ID OCR's to "John Smith / 1990-08-04" while │
+│   application.json claims "Jane Doe / 1985-03-12".│
+│   Utility bill is addressed to John Smith too.    │
+│ Signals                                           │
+│   • id.jpeg name "John Smith" ≠ application name  │
+│   • dob mismatch across application and ID        │
+│   • utility bill account holder is John Smith     │
+╰───────────────────────────────────────────────────╯
+
+[stop]  stopping container
 ```
 
 `case_legit` runs the same flow against a packet where everything agrees and
-returns a LOW verdict.
+returns LOW.
 
 ## How it's wired
 
-There are two ways to give an Agents SDK agent a shell. This example takes
-the lighter one.
+The agent gets **one** function tool: `bash`. Behind it sits a long-lived
+`chalkcompute.Container` with the case packet mounted from a `Volume` at
+`/workspace`. The investigator image is a Debian slim with `tesseract`,
+`exiftool`, `pdftotext`, `jq`, and python with `pillow` + `pypdf` +
+`exifread` — the agent composes whatever commands it needs.
 
-- **`SandboxAgent` provider** — the SDK ships a `BaseSandboxClient` contract
-  and concrete providers for Docker and Unix-local. A "real" Chalk integration
-  would implement that contract end-to-end (PTY, workspace tar snapshots,
-  mount strategies). That's SDK-level engineering.
-- **Function-tool wrappers** *(this example)* — a regular `agents.Agent` with
-  three `@function_tool`s (`chalk_shell`, `chalk_read_file`,
-  `chalk_list_workspace`) that call through to a long-lived
-  `chalkcompute.Container`. Visually identical to the agent, ~250 LOC total.
+The lighter alternative to implementing the OpenAI Agents SDK
+`BaseSandboxClient` provider contract end-to-end. Visually identical to the
+viewer; ~300 LOC across `story.py` + `ui.py`.
 
 ## Layout
 
 ```
 fraud-agents-sdk/
-  pyproject.toml
-  run.py                    # CLI entrypoint + Container/Volume lifecycle
-  agent.py                  # Agent definition, system prompt, Verdict schema
-  tools.py                  # @function_tool wrappers around container.exec
-  image.py                  # The investigator Image (debian-slim + tesseract +
-                            # pypdf + exiftool + scripts in /opt/tools)
-  tools_in_image/           # Scripts baked into the image
-    ocr.py                  #   tesseract + KYC-shaped regex
-    parse_pdf.py            #   pypdf text extraction
-    check_exif.py           #   exifread + cheap consistency flags
-    compare_fields.py       #   diff two JSON files on a key list
-  make_samples.py           # Generate synthetic samples (no real PII)
+  story.py            # the demo: Container + Volume + agent + streaming loop
+  ui.py               # rich console rendering (Panels, syntax-highlighted JSON, …)
+  image.py            # investigator Image declaration
   samples/
-    case_legit/             # All four documents agree
-    case_fraud/             # Application + ID + bill name three ways apart
+    case_legit/       # all three documents agree
+    case_fraud/       # application + ID + bill name three ways apart
+  demo_tools/         # auxiliary CLIs, kept out of story.py
+    keep.py           #   run but leave container alive
+    refresh.py        #   re-upload case packet after editing samples/
+    stop.py           #   stop a kept-alive container by ID
 ```
 
 ## Prereqs
@@ -81,51 +82,61 @@ CHALK_API_SERVER
 OPENAI_API_KEY
 ```
 
-Stick them in a `.env` next to `run.py` (loaded via `python-dotenv`) or export
-them directly.
+Drop them in a `.env` next to `story.py` (loaded via `python-dotenv`).
 
 ## Running
 
 ```bash
 uv sync
-uv run python run.py case_fraud
-uv run python run.py case_legit
+uv run python story.py case_fraud
+uv run python story.py case_legit
 ```
 
 First run takes a couple of minutes to build the investigator image (apt
 install of `tesseract-ocr`, `libimage-exiftool-perl`, `poppler-utils`, `jq`).
 Subsequent runs reuse the cached image.
 
-`samples/case_legit/` and `samples/case_fraud/` are auto-generated by
-`make_samples.py` on first run if they're missing — synthetic JPGs (PIL-rendered)
-and a synthetic PDF (reportlab). No real IDs, no real faces.
+The per-case Volume is persistent — `story.py` skips upload when it already
+exists. After editing files in `samples/`, force a re-upload:
+
+```bash
+uv run python story.py case_fraud --refresh
+```
+
+To leave the container alive afterward for dashboard poking:
+
+```bash
+uv run python story.py case_fraud --keep
+# … inspect in the dashboard …
+uv run python -m demo_tools.stop <container_id>
+```
+
+Both flags delegate to `demo_tools/` — the behavior lives there, story.py
+just dispatches.
 
 ## Adding a new fraud check
 
-The agent discovers tools at `/opt/tools/` via the system prompt. To add a
-new check:
+The image is the API. To give the agent a new capability:
 
-1. Drop a script into `tools_in_image/` (any executable that takes paths and
-   prints structured output).
-2. Reference it in `image.py`'s `_SCRIPTS` list.
-3. Mention the new tool in `agent.py`'s `SYSTEM_PROMPT` so the agent knows it
-   exists.
+1. Add the package / binary to `image.py` (`apt-get install …` or
+   `.pip_install([…])`).
+2. Optionally mention it in `story.py`'s `SYSTEM_PROMPT`.
 
-No code changes elsewhere. The image is the API.
+The agent discovers and composes; no code change in the runner.
 
 ## Swapping to a local model
 
-The agent loop runs on the host where you invoke `run.py`, so the model call
-is the only thing that round-trips outside your VPC. To keep that local too,
-point Agents SDK at a vLLM scaling group (see `examples/vllm-gemma/` for the
-deployment shape) and override the model in `agent.py`:
+The agent loop runs on the host where you invoke `story.py`, so the model
+call is the only thing that round-trips outside your VPC. Point the Agents
+SDK at a vLLM scaling group (see `examples/vllm-gemma/`) and override the
+model in `story.py`:
 
 ```python
 from openai import AsyncOpenAI
 from agents import OpenAIChatCompletionsModel
 
 agent = Agent(
-    ...
+    ...,
     model=OpenAIChatCompletionsModel(
         model="Qwen/Qwen2.5-7B-Instruct",
         openai_client=AsyncOpenAI(base_url="https://your-vllm-endpoint/v1",
@@ -136,10 +147,8 @@ agent = Agent(
 
 ## Out of scope
 
-- Real KYC accuracy. The forensics tools are deliberately simple — the
-  showcase is the agent's *investigative loop*, not state-of-the-art ID
-  verification.
-- GPU inference. Image-tampering detection and face-match models would
-  replace the current scripts; the wiring (Image + script + system prompt)
-  is the same shape.
-- A true `BaseSandboxClient` provider port. See note above.
+- Real KYC accuracy. The showcase is the agent's investigative *loop*, not
+  state-of-the-art ID verification.
+- GPU inference. Image-tampering and face-match models would slot into the
+  image the same way `tesseract` does.
+- A true `BaseSandboxClient` provider port for Chalk Compute.

@@ -350,6 +350,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "reportlab" },
+    { name = "rich" },
 ]
 
 [package.metadata]
@@ -360,6 +361,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "reportlab", specifier = ">=4.0" },
+    { name = "rich", specifier = ">=13.0" },
 ]
 
 [[package]]
