@@ -112,17 +112,19 @@ class ConnectClient:
             or ""
         )
 
-        if not self._api_server or not client_id:
-            if self._chalk_client is not None:
-                cc = self._chalk_client
-                if cc._client_id is None or cc._client_secret is None:
-                    if hasattr(cc, "_exchange_credentials"):
-                        cc._exchange_credentials()
-                client_id = client_id or cc._client_id or ""
-                client_secret = client_secret or cc._client_secret or ""
-                self._api_server = self._api_server or cc._api_server or ""
-                env = getattr(cc, "_primary_environment", None) or getattr(cc, "_environment", None) or ""
-                requested_env = requested_env or env
+        if self._chalk_client is not None:
+            cc = self._chalk_client
+            if cc._client_id is None or cc._client_secret is None:
+                if hasattr(cc, "_exchange_credentials"):
+                    cc._exchange_credentials()
+            if not self._api_server:
+                self._api_server = cc._api_server or ""
+            if not client_id:
+                client_id = cc._client_id or ""
+            if not client_secret:
+                client_secret = cc._client_secret or ""
+            if not requested_env:
+                requested_env = getattr(cc, "_primary_environment", None) or getattr(cc, "_environment", None) or ""
 
         if not self._api_server or not client_id:
             raise ConnectError(
