@@ -1,9 +1,6 @@
-"""Stop and clean up a kept-alive investigator container.
+"""Stop a kept-alive investigator container.
 
-    uv run python stop.py <container_id>
-
-Used after a `--keep` run when you're done inspecting the container in the
-dashboard. Loads .env first so the chalkcompute client can authenticate.
+    uv run python -m demo_tools.stop <container_id>
 """
 
 import sys
@@ -17,7 +14,7 @@ from chalkcompute import Container  # noqa: E402  (import after load_dotenv)
 
 def main() -> None:
     if len(sys.argv) != 2:
-        print("usage: uv run python stop.py <container_id>", file=sys.stderr)
+        print("usage: uv run python -m demo_tools.stop <container_id>", file=sys.stderr)
         sys.exit(2)
     container_id = sys.argv[1]
     print(f"stopping container {container_id}...")
