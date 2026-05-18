@@ -4,6 +4,7 @@ and aesthetics live entirely in this file."""
 
 import json
 
+from agents.items import ToolCallItem, ToolCallOutputItem
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
@@ -142,6 +143,28 @@ def verdict(v):
     console.print()
     console.print(Panel(body, title=title, border_style=color, padding=(1, 2)))
     console.print()
+
+
+async def stream(result):
+    """Consume an Agents SDK streamed run, rendering call → output pairs.
+
+    The agent can emit multiple parallel ToolCallItems in one turn before any
+    ToolCallOutputItem fires; buffer them and pair on output so the viewer
+    sees call → output, call → output, not 3 calls then 3 outputs.
+    """
+    pending: list = []
+    turn = 0
+    async for event in result.stream_events():
+        if event.type != "run_item_stream_event":
+            continue
+        item = event.item
+        if isinstance(item, ToolCallItem):
+            pending.append(item)
+        elif isinstance(item, ToolCallOutputItem):
+            if pending:
+                turn += 1
+                tool_call(turn, pending.pop(0))
+            tool_output(item)
 
 
 def container_stopping():

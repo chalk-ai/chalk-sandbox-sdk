@@ -62,7 +62,7 @@ viewer; ~300 LOC across `story.py` + `ui.py`.
 fraud-agents-sdk/
   story.py            # the demo: Container + Volume + agent + streaming loop
   ui.py               # rich console rendering (Panels, syntax-highlighted JSON, …)
-  image.py            # investigator Image declaration
+  bash_tool.py        # the agent's one @function_tool, bound to a Container
   samples/
     case_legit/       # all three documents agree
     case_fraud/       # application + ID + bill name three ways apart
@@ -118,9 +118,9 @@ just dispatches.
 
 The image is the API. To give the agent a new capability:
 
-1. Add the package / binary to `image.py` (`apt-get install …` or
-   `.pip_install([…])`).
-2. Optionally mention it in `story.py`'s `SYSTEM_PROMPT`.
+1. Add the package / binary to the inline `Image` block in `story.py`
+   (`apt-get install …` or `.pip_install([…])`).
+2. Optionally mention it in the `SYSTEM_PROMPT`.
 
 The agent discovers and composes; no code change in the runner.
 
