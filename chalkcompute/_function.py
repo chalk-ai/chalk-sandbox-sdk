@@ -511,8 +511,8 @@ def _source_text_for_deploy(source_file: str) -> str:
             return "".join(cached_lines)
 
         raise FunctionBuildError(
-            f"Could not read source file {source_file!r}. If this function was defined in an interactive "
-            "session, define it in a Python file before deploying."
+            f"Could not read source for {source_file!r} from disk or the "
+            "Python source cache."
         ) from file_error
 
 
