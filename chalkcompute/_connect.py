@@ -59,7 +59,7 @@ class ConnectClient:
     ... )
     """
 
-    def __init__(self) -> None:
+    def __init__(self, chalk_client: Any | None = None) -> None:
         self._api_server: str | None = None
         self._access_token: str | None = None
         self._env_id: str | None = None
@@ -67,6 +67,7 @@ class ConnectClient:
         self._grpc_engines: dict[str, str] = {}
         self._environment_id_to_name: dict[str, str] = {}
         self._primary_environment: str | None = None
+        self._chalk_client = chalk_client
 
     def _ensure_auth(self) -> None:
         if self._access_token is not None:
@@ -112,8 +113,21 @@ class ConnectClient:
         )
 
         if not self._api_server or not client_id:
+            if self._chalk_client is not None:
+                cc = self._chalk_client
+                if cc._client_id is None or cc._client_secret is None:
+                    if hasattr(cc, "_exchange_credentials"):
+                        cc._exchange_credentials()
+                client_id = client_id or cc._client_id or ""
+                client_secret = client_secret or cc._client_secret or ""
+                self._api_server = self._api_server or cc._api_server or ""
+                env = getattr(cc, "_primary_environment", None) or getattr(cc, "_environment", None) or ""
+                requested_env = requested_env or env
+
+        if not self._api_server or not client_id:
             raise ConnectError(
-                "CHALK_API_SERVER and CHALK_CLIENT_ID must be set in the environment"
+                "No Chalk credentials found. Set CHALK_CLIENT_ID/CHALK_CLIENT_SECRET "
+                "environment variables or pass a ChalkClient instance."
             )
 
         resp = httpx.post(
@@ -333,9 +347,9 @@ def build_image(
     raise ConnectError(f"Image build {build_id} timed out after {timeout}s")
 
 
-def build_image_from_spec(image: Image) -> str:
+def build_image_from_spec(image: Image, chalk_client: Any | None = None) -> str:
     """Build an Image and return the URI. Authenticates via env vars."""
-    client = ConnectClient()
+    client = ConnectClient(chalk_client=chalk_client)
     return build_image(client, image)
 
 
@@ -398,9 +412,10 @@ def build_image_with_volumes_from_spec(
     image: Image,
     *,
     volume_prefix: str = "files",
+    chalk_client: Any | None = None,
 ) -> tuple[str, list[tuple[str, str]]]:
     """Build an Image and upload lazy files. Authenticates via env vars."""
-    client = ConnectClient()
+    client = ConnectClient(chalk_client=chalk_client)
     return build_image_with_volumes(client, image, volume_prefix=volume_prefix)
 
 
