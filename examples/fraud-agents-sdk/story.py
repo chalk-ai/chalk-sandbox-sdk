@@ -16,23 +16,24 @@ import uuid
 from pathlib import Path
 from typing import Literal
 
-from agents import Agent, Runner
-from agents.items import ToolCallItem, ToolCallOutputItem
+from agents import Agent, Runner, function_tool
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
-from chalkcompute import Container, VolumeClient, VolumeNotFoundError
+from chalkcompute import Container, Image, VolumeClient, VolumeNotFoundError
 from chalkcompute._connect import ConnectClient
 
 import ui
-from bash_tool import WORKSPACE, make_bash_tool
-from image import investigator_image
+from bash_tool import WORKSPACE, format_result
 
 load_dotenv()
 
 # Demo output should be the agent loop, not infra plumbing.
 for noisy in ("httpx", "chalkcompute", "openai", "openai._base_client"):
     logging.getLogger(noisy).setLevel(logging.WARNING)
+
+def _open_volume_client() -> VolumeClient:
+    return VolumeClient.from_connect(ConnectClient())
 
 SAMPLES = Path(__file__).parent / "samples"
 MODEL = "gpt-4o"
@@ -61,19 +62,26 @@ class Verdict(BaseModel):
 
 
 def ensure_volume(case_dir: Path, vol_name: str) -> None:
-    with VolumeClient.from_connect(ConnectClient()) as vc:
-        try:
-            vc.lookup(vol_name)
+    """Create the volume and upload the case packet — or reuse it if it exists."""
+    with _open_volume_client() as vc:
+        if _volume_exists(vc, vol_name):
             ui.volume_reused(vol_name)
             return
-        except VolumeNotFoundError:
-            pass
+
         ui.volume_creating(vol_name)
         vol = vc.create(vol_name)
         for f in sorted(case_dir.iterdir()):
             if f.is_file():
-                vol.put_file(f.name, f.read_bytes())
-                ui.volume_added(f.name, f.stat().st_size)
+                data = f.read_bytes()
+                vol.put_file(f.name, data)
+                ui.volume_added(f.name, len(data))
+
+def _volume_exists(vc: VolumeClient, name: str) -> bool:
+    try:
+        vc.lookup(name)
+        return True
+    except VolumeNotFoundError:
+        return False
 
 
 async def investigate(case: str) -> None:
@@ -84,8 +92,19 @@ async def investigate(case: str) -> None:
     vol_name = f"kyc-case-{case.replace('_', '-')}"
     ensure_volume(case_dir, vol_name)
 
+    image = (
+        Image.debian_slim("3.12")
+        .run_commands(
+            "apt-get update",
+            "apt-get install -y --no-install-recommends "
+            "tesseract-ocr libimage-exiftool-perl poppler-utils jq",
+            "rm -rf /var/lib/apt/lists/*",
+        )
+        .pip_install(["pypdf>=4.0", "pillow>=10.0", "exifread>=3.0"])
+    )
+
     container = Container(
-        image=investigator_image(),
+        image=image,
         name=f"kyc-investigator-{uuid.uuid4().hex[:8]}",
         cpu="1",
         memory="2Gi",
@@ -101,11 +120,16 @@ async def investigate(case: str) -> None:
     container.run()
     ui.container_started(container)
 
+    @function_tool
+    def bash(command: str) -> str:
+        """Run a bash command in the sandbox. cwd=/workspace."""
+        return format_result(container.exec("bash", "-lc", f"cd {WORKSPACE} && {command}"))
+
     agent = Agent(
         name="kyc-fraud-investigator",
         instructions=SYSTEM_PROMPT,
         model=MODEL,
-        tools=[make_bash_tool(container)],
+        tools=[bash],
         output_type=Verdict,
     )
 
@@ -116,22 +140,7 @@ async def investigate(case: str) -> None:
             input="Investigate the case packet at /workspace and return a Verdict.",
             max_turns=20,
         )
-        # The agent can emit multiple parallel ToolCallItems in one turn before
-        # any ToolCallOutputItem fires — buffer them and pair on output so the
-        # viewer sees call → output, call → output, not 3 calls then 3 outputs.
-        pending: list = []
-        turn = 0
-        async for event in result.stream_events():
-            if event.type != "run_item_stream_event":
-                continue
-            item = event.item
-            if isinstance(item, ToolCallItem):
-                pending.append(item)
-            elif isinstance(item, ToolCallOutputItem):
-                if pending:
-                    turn += 1
-                    ui.tool_call(turn, pending.pop(0))
-                ui.tool_output(item)
+        await ui.stream(result)
         ui.verdict(result.final_output)
     finally:
         ui.container_stopping()
