@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import linecache
 import textwrap
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -8,7 +10,11 @@ import pytest
 from chalkcompute._cls import RemoteClass, _NoOpClass, after, before, cls, method
 from chalkcompute._cls import _strip_chalkcompute_from_class_source
 from chalkcompute._function import RemoteFunction, _NoOpFunction, function
-from chalkcompute._function import _REMOTE_ENV_VAR, _strip_chalkcompute_from_source
+from chalkcompute._function import (
+    _REMOTE_ENV_VAR,
+    _prepare_source_file,
+    _strip_chalkcompute_from_source,
+)
 
 
 def test_function_decorator_accepts_called_and_uncalled_forms(
@@ -174,6 +180,42 @@ def test_function_source_strip_handles_uncalled_direct_import() -> None:
     namespace: dict[str, Any] = {}
     exec(stripped, namespace)
     assert namespace["add"](1, 2) == 3
+
+
+def test_function_source_strip_handles_ipython_cached_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CHALK_FUNCTION_STRIP_SOURCE", "1")
+    filename = "<ipython-input-3-53bd707a177b>"
+    source = textwrap.dedent(
+        """
+        import chalkcompute
+
+        @chalkcompute.function
+        def test(x: str):
+            print(x)
+        """
+    )
+    linecache.cache[filename] = (
+        len(source),
+        None,
+        source.splitlines(keepends=True),
+        filename,
+    )
+
+    try:
+        source_file, source_is_temp = _prepare_source_file(filename)
+        try:
+            stripped = Path(source_file).read_text()
+        finally:
+            Path(source_file).unlink()
+    finally:
+        linecache.cache.pop(filename, None)
+
+    assert source_is_temp
+    assert "chalkcompute" not in stripped
+    assert "@chalkcompute.function" not in stripped
+    assert "def test" in stripped
 
 
 def test_class_source_strip_handles_uncalled_direct_imports() -> None:

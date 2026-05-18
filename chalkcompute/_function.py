@@ -29,6 +29,7 @@ import ast
 import asyncio
 import functools
 import inspect
+import linecache
 import logging
 import os
 import shlex
@@ -387,7 +388,9 @@ def _has_running_event_loop() -> bool:
     return True
 
 
-async def _run_in_worker_thread(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+async def _run_in_worker_thread(
+    func: Callable[..., Any], *args: Any, **kwargs: Any
+) -> Any:
     loop = asyncio.get_running_loop()
     future: asyncio.Future[Any] = loop.create_future()
 
@@ -501,13 +504,46 @@ class FunctionCallHandle:
                 return
 
 
-def _prepare_source_file(source_file: str) -> tuple[str, bool]:
+def _source_text_for_deploy(
+    source_file: str,
+    source_obj: Callable[..., Any] | None = None,
+) -> str:
+    try:
+        return Path(source_file).read_text()
+    except OSError as file_error:
+        cached_lines = linecache.getlines(source_file)
+        if cached_lines:
+            return "".join(cached_lines)
+
+        if source_obj is not None:
+            try:
+                return inspect.getsource(source_obj)
+            except (OSError, TypeError) as inspect_error:
+                raise FunctionBuildError(
+                    f"Could not read source for function '{getattr(source_obj, '__name__', '<unknown>')}' "
+                    f"from {source_file!r}. If this function was defined in an interactive session, "
+                    "define it in a Python file before deploying."
+                ) from inspect_error
+
+        raise FunctionBuildError(
+            f"Could not read source file {source_file!r}. If this function was defined in an interactive "
+            "session, define it in a Python file before deploying."
+        ) from file_error
+
+
+def _prepare_source_file(
+    source_file: str,
+    source_obj: Callable[..., Any] | None = None,
+) -> tuple[str, bool]:
     """Return the source file path to deploy, optionally stripping chalkcompute.
 
     Parameters
     ----------
     source_file
         Path to the original user source file.
+    source_obj
+        Original callable. Used as a fallback for interactive sources that
+        only exist in ``linecache``.
 
     Returns
     -------
@@ -515,11 +551,13 @@ def _prepare_source_file(source_file: str) -> tuple[str, bool]:
         ``(path, is_temp)`` — if stripping produced a temp file, the caller
         should clean it up.
     """
+    source_path = Path(source_file)
     if not _should_strip_source():
-        return source_file, False
-    from pathlib import Path
+        if source_path.is_file():
+            return source_file, False
+        return _write_temp(_source_text_for_deploy(source_file, source_obj)), True
 
-    source = Path(source_file).read_text()
+    source = _source_text_for_deploy(source_file, source_obj)
     stripped = _strip_chalkcompute_from_source(source)
     return _write_temp(stripped), True
 
@@ -1220,7 +1258,10 @@ class RemoteFunction:
         Image
             Declarative image ready to be built.
         """
-        source_file, source_is_temp = _prepare_source_file(inspect.getfile(self._func))
+        source_file, source_is_temp = _prepare_source_file(
+            inspect.getfile(self._func),
+            self._func,
+        )
 
         handler_shim = _generate_handler_shim(
             self._func_name,
