@@ -7,10 +7,13 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import grpc
+import pytest
 
 from chalkcompute._connect import ConnectClient
+from chalkcompute._gen.chalk.volume.v1 import volume_pb2 as pb
 from chalkcompute._volume import (
     Volume,
+    VolumeClosedError,
     VolumeClient,
     _INLINE_THRESHOLD_BYTES,
     _read_file_bytes,
@@ -34,6 +37,14 @@ class MockConnect(ConnectClient):
 
     def _ensure_auth(self) -> None:
         pass
+
+
+class FakeRpcError(grpc.RpcError):
+    def __init__(self, code: grpc.StatusCode) -> None:
+        self._code = code
+
+    def code(self) -> grpc.StatusCode:
+        return self._code
 
 
 def _make_vol_client() -> Any:
@@ -79,16 +90,28 @@ def _set_multipart_response(
 
 
 class TestVolumeConstructor:
-    def test_accepts_explicit_client_and_name(self):
-        client = object.__new__(VolumeClient)
+    def test_accepts_explicit_client_and_gets_existing_volume(self):
+        client = _make_vol_client()
+        client._stub.GetVolume.return_value = pb.GetVolumeResponse(
+            volume=pb.VolumeInfo(name="my-data"),
+        )
 
         vol = Volume("my-data", client=client)
 
         assert vol.name == "my-data"
         assert vol._client is client
+        client._stub.GetVolume.assert_not_called()
+        client._stub.CreateVolume.assert_not_called()
+        assert vol.info.name == "my-data"
+        client._stub.GetVolume.assert_called_once()
+        client._stub.CreateVolume.assert_not_called()
 
-    def test_accepts_name_only_and_creates_client_from_connect(self):
-        client = object.__new__(VolumeClient)
+    def test_accepts_name_only_and_creates_missing_volume(self):
+        client = _make_vol_client()
+        client._stub.GetVolume.side_effect = FakeRpcError(grpc.StatusCode.NOT_FOUND)
+        client._stub.CreateVolume.return_value = pb.CreateVolumeResponse(
+            volume=pb.VolumeInfo(name="my-data"),
+        )
 
         with patch.object(VolumeClient, "from_connect", return_value=client) as from_connect:
             vol = Volume("my-data")
@@ -96,6 +119,96 @@ class TestVolumeConstructor:
         assert vol.name == "my-data"
         assert vol._client is client
         from_connect.assert_called_once()
+        client._stub.GetVolume.assert_not_called()
+        client._stub.CreateVolume.assert_not_called()
+        assert vol.info.name == "my-data"
+        client._stub.CreateVolume.assert_called_once()
+
+    def test_put_file_lazily_creates_missing_volume(self):
+        client = _make_vol_client()
+        client._stub.GetVolume.side_effect = FakeRpcError(grpc.StatusCode.NOT_FOUND)
+        client._stub.CreateVolume.return_value = pb.CreateVolumeResponse(
+            volume=pb.VolumeInfo(name="my-data"),
+        )
+        vol = Volume("my-data", client=client)
+
+        vol.put_file("hello.txt", b"hello")
+
+        client._stub.CreateVolume.assert_called_once()
+        req = client._stub.PutFile.call_args[0][0]
+        assert req.volume_name == "my-data"
+        assert req.path == "hello.txt"
+        assert req.data == b"hello"
+
+    def test_can_create_handle_without_get_or_create(self):
+        client = _make_vol_client()
+
+        vol = Volume("my-data", client=client, create_if_missing=False)
+
+        assert vol.name == "my-data"
+        client._stub.GetVolume.assert_not_called()
+        client._stub.CreateVolume.assert_not_called()
+
+    def test_close_closes_default_client(self):
+        client = _make_vol_client()
+        client.close = MagicMock()
+
+        with patch.object(VolumeClient, "from_connect", return_value=client):
+            vol = Volume("my-data")
+
+        vol.close()
+        vol.close()
+
+        client.close.assert_called_once()
+
+    def test_close_closes_explicit_client(self):
+        client = _make_vol_client()
+        client.close = MagicMock()
+        vol = Volume("my-data", client=client)
+
+        vol.close()
+
+        client.close.assert_called_once()
+
+    def test_context_manager_closes_owned_client(self):
+        client = _make_vol_client()
+        client.close = MagicMock()
+
+        with patch.object(VolumeClient, "from_connect", return_value=client):
+            with Volume("my-data") as vol:
+                assert vol.name == "my-data"
+
+        client.close.assert_called_once()
+
+    def test_closed_volume_operations_raise(self):
+        client = _make_vol_client()
+        client.close = MagicMock()
+        vol = Volume("my-data", client=client)
+        vol.close()
+
+        with pytest.raises(VolumeClosedError):
+            _ = vol.info
+        with pytest.raises(VolumeClosedError):
+            vol.reload()
+        with pytest.raises(VolumeClosedError):
+            vol.put_file("hello.txt", b"hello")
+        with pytest.raises(VolumeClosedError):
+            vol.read_file("hello.txt")
+        with pytest.raises(VolumeClosedError):
+            vol.listdir()
+        with pytest.raises(VolumeClosedError):
+            vol.remove_file("hello.txt")
+        with pytest.raises(VolumeClosedError):
+            vol.delete()
+        with pytest.raises(VolumeClosedError):
+            with vol.batch_upload():
+                pass
+        with pytest.raises(VolumeClosedError):
+            with vol:
+                pass
+
+        client._stub.GetVolume.assert_not_called()
+        client._stub.PutFile.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -130,14 +243,16 @@ class TestVolumeClientFromConnect:
         client.close()
 
     def test_from_connect_called_by_volume_init_default(self):
-        connect = MockConnect("https://api.chalk.ai")
+        client = _make_vol_client()
+        client._stub.GetVolume.return_value = pb.GetVolumeResponse(
+            volume=pb.VolumeInfo(name="test-vol"),
+        )
 
-        with patch("chalkcompute._volume.ConnectClient", return_value=connect):
-            with patch.object(connect, "_ensure_auth"):
-                vol = Volume("test-vol")
+        with patch.object(VolumeClient, "from_connect", return_value=client) as from_connect:
+            vol = Volume("test-vol")
 
-        assert vol._client._target == "api.chalk.ai:443"
-        vol._client.close()
+        assert vol._client is client
+        from_connect.assert_called_once()
 
     def test_channel_options_are_forwarded(self):
         client = VolumeClient(

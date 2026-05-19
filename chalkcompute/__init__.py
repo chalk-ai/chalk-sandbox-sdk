@@ -73,6 +73,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "FileInfo": ("chalkcompute._volume", "FileInfo"),
     "Volume": ("chalkcompute._volume", "Volume"),
     "VolumeClient": ("chalkcompute._volume", "VolumeClient"),
+    "VolumeClosedError": ("chalkcompute._volume", "VolumeClosedError"),
     "VolumeError": ("chalkcompute._volume", "VolumeError"),
     "VolumeFileNotFoundError": ("chalkcompute._volume", "VolumeFileNotFoundError"),
     "VolumeInfo": ("chalkcompute._volume", "VolumeInfo"),
