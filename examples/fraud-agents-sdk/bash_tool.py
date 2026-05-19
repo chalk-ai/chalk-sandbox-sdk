@@ -1,6 +1,4 @@
-"""Formatting plumbing for the bash tool: stdout + [stderr] + exit code, capped
-at 16KB. What the model reads — distinct from `ui.tool_output`, which is what
-the viewer reads."""
+"""Formats container.exec results as stdout + [stderr] + exit code for the model."""
 
 WORKSPACE = "/workspace"
 _MAX_OUTPUT_BYTES = 16 * 1024

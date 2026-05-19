@@ -2,10 +2,6 @@
 
     uv run python story.py case_fraud
     uv run python story.py case_legit
-
-Chalk Compute hosts a sandboxed container — your image, your VPC, your GPU.
-The agent has one tool (bash) and composes its own forensics commands. PII
-stays in the sandbox; only commands and text outputs round-trip to OpenAI.
 """
 
 import argparse
@@ -20,7 +16,7 @@ from agents import Agent, Runner, function_tool
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
-from chalkcompute import Container, Image, VolumeClient, VolumeNotFoundError
+from chalkcompute import Container, Image, VolumeClient
 from chalkcompute._connect import ConnectClient
 
 import ui
@@ -28,12 +24,8 @@ from bash_tool import WORKSPACE, format_result
 
 load_dotenv()
 
-# Demo output should be the agent loop, not infra plumbing.
 for noisy in ("httpx", "chalkcompute", "openai", "openai._base_client"):
     logging.getLogger(noisy).setLevel(logging.WARNING)
-
-def _open_volume_client() -> VolumeClient:
-    return VolumeClient.from_connect(ConnectClient())
 
 SAMPLES = Path(__file__).parent / "samples"
 MODEL = "gpt-4o"
@@ -41,17 +33,33 @@ MODEL = "gpt-4o"
 SYSTEM_PROMPT = """\
 You are a KYC fraud investigator. You have one tool: bash, executing in
 a sandboxed container with the case packet at /workspace. Start by
-listing /workspace — do not assume filenames.
+listing /workspace — do not assume filenames or document types.
 
 The container has tesseract, exiftool, pdftotext, jq, and python with
-pillow + pypdf + exifread. Compose whatever commands you need.
+pillow + pypdf + exifread. Identify each file and pick the matching
+tool: images → tesseract OCR; text PDFs → pdftotext; JSON → cat/jq.
 
-Decide by identity correlation: name and DOB should agree across the
-application, the ID, and the utility bill. Mismatch = high risk; all
-consistent = low risk. EXIF alone is not enough to raise risk.
+Decide by identity correlation: the applicant's name and DOB must be
+consistent across the application form, their identity document, and
+any supporting document (lease, utility bill, registration, etc.).
+Mismatch on name or DOB = high risk. All consistent = low risk.
+EXIF alone is not enough to raise risk.
+
+Supporting documents must be authenticated. Agreements (leases,
+affidavits, contracts) must show a signature or signature block naming
+the applicant. Statements (bills, registrations) must show
+account-holder or owner metadata. An unsigned lease or anonymous
+statement is not valid evidence — flag it even if the name matches.
 
 Return a Verdict with specific signals (file + field + observation).
 """
+
+_NARRATION_DIRECTIVE = (
+    "Between bash calls, write at most one short sentence — only to state what "
+    "a document is and which tool you'll use, or to state a judgment from "
+    "evidence just gathered. Never announce the next command; never recap the "
+    "last output verbatim."
+)
 
 
 class Verdict(BaseModel):
@@ -61,36 +69,21 @@ class Verdict(BaseModel):
     signals: list[str]
 
 
-def ensure_volume(case_dir: Path, vol_name: str) -> None:
-    """Create the volume and upload the case packet — or reuse it if it exists."""
-    with _open_volume_client() as vc:
-        if _volume_exists(vc, vol_name):
-            ui.volume_reused(vol_name)
-            return
-
-        ui.volume_creating(vol_name)
-        vol = vc.create(vol_name)
-        for f in sorted(case_dir.iterdir()):
-            if f.is_file():
-                data = f.read_bytes()
-                vol.put_file(f.name, data)
-                ui.volume_added(f.name, len(data))
-
-def _volume_exists(vc: VolumeClient, name: str) -> bool:
-    try:
-        vc.lookup(name)
-        return True
-    except VolumeNotFoundError:
-        return False
-
-
-async def investigate(case: str) -> None:
+async def main(case: str) -> None:
     case_dir = SAMPLES / case
     if not case_dir.is_dir():
         raise SystemExit(f"unknown case: {case}")
+    run_id = uuid.uuid4().hex[:6]
 
-    vol_name = f"kyc-case-{case.replace('_', '-')}"
-    ensure_volume(case_dir, vol_name)
+    vol_name = f"kyc-case-{case.replace('_', '-')}-{run_id}"
+    files = sorted(f for f in case_dir.iterdir() if f.is_file())
+
+    with VolumeClient.from_connect(ConnectClient()) as vc:
+        ui.volume_creating(vol_name)
+        volume = vc.create(vol_name)
+        for f in files:
+            volume.put_file(f.name, f.read_bytes())
+            ui.volume_added(f.name, f.stat().st_size)
 
     image = (
         Image.debian_slim("3.12")
@@ -105,7 +98,7 @@ async def investigate(case: str) -> None:
 
     container = Container(
         image=image,
-        name=f"kyc-investigator-{uuid.uuid4().hex[:8]}",
+        name=f"kyc-investigator-{run_id}",
         cpu="1",
         memory="2Gi",
         volumes=[(vol_name, WORKSPACE)],
@@ -115,7 +108,6 @@ async def investigate(case: str) -> None:
         },
         lifetime="600s",
     )
-
     ui.build_starting()
     container.run()
     ui.container_started(container)
@@ -127,7 +119,7 @@ async def investigate(case: str) -> None:
 
     agent = Agent(
         name="kyc-fraud-investigator",
-        instructions=SYSTEM_PROMPT,
+        instructions=f"{SYSTEM_PROMPT}\n{_NARRATION_DIRECTIVE}",
         model=MODEL,
         tools=[bash],
         output_type=Verdict,
@@ -143,33 +135,12 @@ async def investigate(case: str) -> None:
         await ui.stream(result)
         ui.verdict(result.final_output)
     finally:
-        ui.container_stopping()
-        # Keep the persistent case volume alive across runs; let the SDK
-        # reap its own per-run container-files-XXXX volume.
-        container._volumes = [(n, p) for (n, p) in container._volumes if n != vol_name]
-        container.stop()
-
-
-def main() -> None:
-    p = argparse.ArgumentParser()
-    p.add_argument("case", nargs="?", default="case_fraud", help="case_fraud or case_legit")
-    p.add_argument("--keep", action="store_true",
-                   help="leave the container alive after the verdict (delegates to demo_tools.keep)")
-    p.add_argument("--refresh", action="store_true",
-                   help="re-upload the case packet before investigating (delegates to demo_tools.refresh)")
-    args = p.parse_args()
-    case = args.case.removeprefix("samples/").rstrip("/")
-
-    if args.refresh:
-        from demo_tools.refresh import refresh
-        refresh(case)
-
-    if args.keep:
-        from demo_tools.keep import keep
-        asyncio.run(keep(case))
-    else:
-        asyncio.run(investigate(case))
+        ui.container_kept(container)
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("case", nargs="?", default="case_fraud",
+                        help="case_fraud or case_legit")
+    case = parser.parse_args().case.removeprefix("samples/").rstrip("/")
+    asyncio.run(main(case))
