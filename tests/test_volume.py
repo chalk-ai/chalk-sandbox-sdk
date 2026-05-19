@@ -7,11 +7,13 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import grpc
+import pytest
 
 from chalkcompute._connect import ConnectClient
 from chalkcompute._gen.chalk.volume.v1 import volume_pb2 as pb
 from chalkcompute._volume import (
     Volume,
+    VolumeClosedError,
     VolumeClient,
     _INLINE_THRESHOLD_BYTES,
     _read_file_bytes,
@@ -146,6 +148,67 @@ class TestVolumeConstructor:
         assert vol.name == "my-data"
         client._stub.GetVolume.assert_not_called()
         client._stub.CreateVolume.assert_not_called()
+
+    def test_close_closes_default_client(self):
+        client = _make_vol_client()
+        client.close = MagicMock()
+
+        with patch.object(VolumeClient, "from_connect", return_value=client):
+            vol = Volume("my-data")
+
+        vol.close()
+        vol.close()
+
+        client.close.assert_called_once()
+
+    def test_close_closes_explicit_client(self):
+        client = _make_vol_client()
+        client.close = MagicMock()
+        vol = Volume("my-data", client=client)
+
+        vol.close()
+
+        client.close.assert_called_once()
+
+    def test_context_manager_closes_owned_client(self):
+        client = _make_vol_client()
+        client.close = MagicMock()
+
+        with patch.object(VolumeClient, "from_connect", return_value=client):
+            with Volume("my-data") as vol:
+                assert vol.name == "my-data"
+
+        client.close.assert_called_once()
+
+    def test_closed_volume_operations_raise(self):
+        client = _make_vol_client()
+        client.close = MagicMock()
+        vol = Volume("my-data", client=client)
+        vol.close()
+
+        with pytest.raises(VolumeClosedError):
+            _ = vol.info
+        with pytest.raises(VolumeClosedError):
+            vol.reload()
+        with pytest.raises(VolumeClosedError):
+            vol.put_file("hello.txt", b"hello")
+        with pytest.raises(VolumeClosedError):
+            vol.read_file("hello.txt")
+        with pytest.raises(VolumeClosedError):
+            vol.listdir()
+        with pytest.raises(VolumeClosedError):
+            vol.remove_file("hello.txt")
+        with pytest.raises(VolumeClosedError):
+            vol.delete()
+        with pytest.raises(VolumeClosedError):
+            with vol.batch_upload():
+                pass
+        with pytest.raises(VolumeClosedError):
+            with vol:
+                pass
+
+        client._stub.GetVolume.assert_not_called()
+        client._stub.PutFile.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

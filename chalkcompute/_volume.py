@@ -76,6 +76,10 @@ class VolumeError(Exception):
     """Base exception for volume errors."""
 
 
+class VolumeClosedError(VolumeError):
+    """Raised when an operation is attempted on a closed volume."""
+
+
 class VolumeNotFoundError(VolumeError):
     """Raised when a volume is not found."""
 
@@ -210,6 +214,7 @@ class Volume:
         self._name = name
         self._info: VolumeInfo | None = None
         self._create_if_missing = create_if_missing
+        self._closed = False
 
     @property
     def name(self) -> str:
@@ -224,6 +229,7 @@ class Volume:
         VolumeInfo
             Metadata for this volume.
         """
+        self._raise_if_closed()
         if self._info is None:
             self._info = self._fetch_info()
         return self._info
@@ -240,6 +246,7 @@ class Volume:
         return self._info
 
     def _fetch_info(self) -> VolumeInfo:
+        self._raise_if_closed()
         try:
             resp = self._client._stub.GetVolume(
                 pb.GetVolumeRequest(name=self._name),
@@ -263,7 +270,12 @@ class Volume:
             raise
         return _pb_to_volume_info(resp.volume)
 
-    def _ensure_exists(self) -> None:
+    def _raise_if_closed(self) -> None:
+        if self._closed:
+            raise VolumeClosedError(f"Volume {self._name!r} is closed")
+
+    def _ensure_ready(self) -> None:
+        self._raise_if_closed()
         if self._info is None:
             self._info = self._fetch_info()
 
@@ -283,7 +295,7 @@ class Volume:
         bytes
             The raw file bytes.
         """
-        self._ensure_exists()
+        self._ensure_ready()
         return _read_file_bytes(self._client, self._name, path)
 
     @traced("chalkcompute.volume.put_file")
@@ -309,7 +321,7 @@ class Volume:
         """
         if isinstance(data, str):
             data = data.encode("utf-8")
-        self._ensure_exists()
+        self._ensure_ready()
         _upload_bytes(self._client, self._name, path, data)
         return self
 
@@ -344,7 +356,7 @@ class Volume:
         Volume
             ``self``, to allow chaining.
         """
-        self._ensure_exists()
+        self._ensure_ready()
         try:
             self._client._stub.RemoveFile(
                 pb.RemoveFileRequest(volume_name=self._name, path=path),
@@ -370,7 +382,7 @@ class Volume:
         list of FileInfo
             One entry per matching file.
         """
-        self._ensure_exists()
+        self._ensure_ready()
         try:
             resp = self._client._stub.ListFiles(
                 pb.ListFilesRequest(volume_name=self._name, prefix=prefix),
@@ -410,6 +422,7 @@ class Volume:
         ...     batch.put("a.txt", b"hello")
         ...     batch.put("b.txt", b"world")
         """
+        self._raise_if_closed()
         batch = _BatchUpload(self)
         yield batch
         batch._flush()
@@ -419,7 +432,7 @@ class Volume:
     @traced("chalkcompute.volume.delete")
     def delete(self) -> None:
         """Delete this volume and all of its contents."""
-        self._ensure_exists()
+        self._ensure_ready()
         try:
             self._client._stub.DeleteVolume(
                 pb.DeleteVolumeRequest(name=self._name),
@@ -428,6 +441,19 @@ class Volume:
         except grpc.RpcError as e:
             _handle_rpc_error(e, self._name)
             raise
+
+    def close(self) -> None:
+        """Close the underlying client used by this Volume."""
+        if not self._closed:
+            self._client.close()
+        self._closed = True
+
+    def __enter__(self) -> Volume:
+        self._raise_if_closed()
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
 
     def __repr__(self) -> str:
         return f"Volume(name={self._name!r})"
