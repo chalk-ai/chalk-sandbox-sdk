@@ -1,7 +1,7 @@
 """KYC fraud investigator on Chalk Compute.
 
-    uv run python story.py case_fraud
-    uv run python story.py case_legit
+    uv run python story.py case-fraud
+    uv run python story.py case-legit
 """
 
 import argparse
@@ -73,10 +73,10 @@ async def main(case: str) -> None:
     case_dir = SAMPLES / case
     if not case_dir.is_dir():
         raise SystemExit(f"unknown case: {case}")
-    run_id = uuid.uuid4().hex[:6]
 
-    vol_name = f"kyc-case-{case.replace('_', '-')}-{run_id}"
-    files = sorted(f for f in case_dir.iterdir() if f.is_file())
+    run_id = uuid.uuid4().hex[:6]
+    vol_name = f"kyc-{case}-{run_id}"
+    files = sorted(p for p in case_dir.iterdir() if p.is_file())
 
     with VolumeClient.from_connect(ConnectClient()) as vc:
         ui.volume_creating(vol_name)
@@ -140,7 +140,7 @@ async def main(case: str) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("case", nargs="?", default="case_fraud",
-                        help="case_fraud or case_legit")
+    parser.add_argument("case", nargs="?", default="case-fraud",
+                        help="case-fraud or case-legit")
     case = parser.parse_args().case.removeprefix("samples/").rstrip("/")
     asyncio.run(main(case))
