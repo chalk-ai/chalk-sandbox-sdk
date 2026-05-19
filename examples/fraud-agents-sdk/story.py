@@ -16,8 +16,9 @@ from agents import Agent, Runner, function_tool
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
-from chalkcompute import Container, Image, VolumeClient
-from chalkcompute._connect import ConnectClient
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from chalkcompute import Container, Image, Volume
 
 import ui
 from bash_tool import WORKSPACE, format_result
@@ -36,20 +37,18 @@ a sandboxed container with the case packet at /workspace. Start by
 listing /workspace — do not assume filenames or document types.
 
 The container has tesseract, exiftool, pdftotext, jq, and python with
-pillow + pypdf + exifread. Identify each file and pick the matching
-tool: images → tesseract OCR; text PDFs → pdftotext; JSON → cat/jq.
+pillow + pypdf + exifread. Compose your own commands. 
 
 Decide by identity correlation: the applicant's name and DOB must be
 consistent across the application form, their identity document, and
-any supporting document (lease, utility bill, registration, etc.).
+any supporting documents .
 Mismatch on name or DOB = high risk. All consistent = low risk.
 EXIF alone is not enough to raise risk.
 
-Supporting documents must be authenticated. Agreements (leases,
-affidavits, contracts) must show a signature or signature block naming
-the applicant. Statements (bills, registrations) must show
-account-holder or owner metadata. An unsigned lease or anonymous
-statement is not valid evidence — flag it even if the name matches.
+Supporting documents must be authenticated. Agreements must show a signature 
+naming the applicant. Statements must show account-holder or owner metadata.
+An unsigned lease or anonymous statement is not valid evidence — flag it 
+even if the name matches.
 
 Return a Verdict with specific signals (file + field + observation).
 """
@@ -70,17 +69,12 @@ class Verdict(BaseModel):
 
 
 async def main(case: str) -> None:
-    case_dir = SAMPLES / case
-    if not case_dir.is_dir():
-        raise SystemExit(f"unknown case: {case}")
-
     run_id = uuid.uuid4().hex[:6]
     vol_name = f"kyc-{case}-{run_id}"
-    files = sorted(p for p in case_dir.iterdir() if p.is_file())
+    files = [p for p in (SAMPLES / case).iterdir() if p.is_file()]
 
-    with VolumeClient.from_connect(ConnectClient()) as vc:
+    with Volume(vol_name) as volume:
         ui.volume_creating(vol_name)
-        volume = vc.create(vol_name)
         for f in files:
             volume.put_file(f.name, f.read_bytes())
             ui.volume_added(f.name, f.stat().st_size)
