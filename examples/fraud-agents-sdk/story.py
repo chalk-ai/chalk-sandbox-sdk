@@ -50,14 +50,6 @@ even if the name matches.
 Return a Verdict with specific signals (file + field + observation).
 """
 
-_NARRATION_DIRECTIVE = (
-    "Between bash calls, write at most one short sentence — only to state what "
-    "a document is and which tool you'll use, or to state a judgment from "
-    "evidence just gathered. Never announce the next command; never recap the "
-    "last output verbatim."
-)
-
-
 class Verdict(BaseModel):
     risk: Literal["low", "medium", "high"]
     confidence: float = Field(ge=0.0, le=1.0)
@@ -99,13 +91,13 @@ async def main(case: str) -> None:
     ui.container_started(container)
 
     @function_tool
-    def bash(command: str) -> str:
-        """Run a bash command in the sandbox. cwd=/workspace."""
+    def bash(thought: str, command: str) -> str:
+        """Run a bash command in /workspace. `thought` is one sentence shown to the user explaining why you're running this command."""
         return format_result(container.exec("bash", "-lc", f"cd {WORKSPACE} && {command}"))
 
     agent = Agent(
         name="kyc-fraud-investigator",
-        instructions=f"{SYSTEM_PROMPT}\n{_NARRATION_DIRECTIVE}",
+        instructions=SYSTEM_PROMPT,
         model="gpt-4o",
         tools=[bash],
         output_type=Verdict,

@@ -2,7 +2,7 @@
 
 import json
 
-from agents.items import MessageOutputItem, ToolCallItem, ToolCallOutputItem
+from agents.items import ToolCallItem, ToolCallOutputItem
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
@@ -64,10 +64,17 @@ def _format_args(raw):
 def tool_call(turn, item):
     raw = item.raw_item
     name = getattr(raw, "name", None) or "?"
-    args = getattr(raw, "arguments", None) or "{}"
+    args_raw = getattr(raw, "arguments", None) or "{}"
+    try:
+        parsed = json.loads(args_raw) if isinstance(args_raw, str) else dict(args_raw)
+    except (ValueError, TypeError):
+        parsed = {}
+    thought = parsed.pop("thought", None) if isinstance(parsed, dict) else None
+    if thought:
+        agent_thought(thought)
     console.print(
-        f"\n[bold magenta]\\[{turn:02d}][/] [bold cyan]{name}[/]"
-        f"[dim]([/][white]{_format_args(args)}[/][dim])[/]"
+        f"[bold magenta]\\[{turn:02d}][/] [bold cyan]{name}[/]"
+        f"[dim]([/][white]{_format_args(parsed)}[/][dim])[/]"
     )
 
 
@@ -83,28 +90,24 @@ def _try_json(chunk):
 
 def tool_output(item):
     output = item.output if isinstance(item.output, str) else str(item.output)
-    chunks = [c for c in output.split("\n\n") if c.strip()]
-    if not chunks:
+    body = output.rstrip()
+    lines_all = body.splitlines()
+    if lines_all and lines_all[-1].strip().startswith("[exit "):
+        body = "\n".join(lines_all[:-1]).rstrip()
+    if not body.strip():
         return
-    for chunk in chunks:
-        parsed = _try_json(chunk)
-        if parsed is not None:
-            pretty = json.dumps(parsed, indent=2, ensure_ascii=False)
-            console.print(Syntax(pretty, "json", theme="ansi_dark", background_color="default", word_wrap=True, padding=(0, 4)))
-        else:
-            stripped = chunk.strip()
-            if stripped.startswith("[exit "):
-                continue
-            lines = stripped.splitlines()
-            if len(lines) <= 5 and len(stripped) <= 200:
-                for line in lines:
-                    console.print(f"    [dim]{line}[/]", highlight=False)
-            else:
-                preview = lines[0][:80] if lines else ""
-                console.print(
-                    f"    [dim]→ {len(lines)} lines  "
-                    f"[italic]\"{preview}…\"[/][/]"
-                )
+    parsed = _try_json(body)
+    if parsed is not None:
+        pretty = json.dumps(parsed, indent=2, ensure_ascii=False)
+        console.print(Syntax(pretty, "json", theme="ansi_dark", background_color="default", word_wrap=True, padding=(0, 4)))
+        return
+    lines = body.splitlines()
+    if len(lines) <= 5 and len(body) <= 200:
+        for line in lines:
+            console.print(f"    [dim]{line}[/]", highlight=False)
+    else:
+        first = next((l for l in lines if l.strip()), "")[:80]
+        console.print(f"    [dim]→ {len(lines)} lines: [italic]\"{first}…\"[/][/]")
 
 
 def verdict(v):
@@ -128,20 +131,6 @@ def verdict(v):
     console.print()
 
 
-_NARRATION_NOISE_PREFIXES = (
-    "now i", "i'll", "i will", "let me", "let's", "i'm going to",
-    "next, i", "first, i", "going to ",
-)
-
-
-def _is_useful_narration(text: str) -> bool:
-    t = text.strip()
-    if not t or len(t.split()) > 40:
-        return False
-    lower = t.lower()
-    return not any(lower.startswith(p) for p in _NARRATION_NOISE_PREFIXES)
-
-
 def agent_thought(text: str) -> None:
     console.print(f"\n[bold yellow]\\[agent][/] [italic]{text.strip()}[/]")
 
@@ -162,25 +151,6 @@ async def stream(result):
                 turn += 1
                 tool_call(turn, pending.pop(0))
             tool_output(item)
-        elif isinstance(item, MessageOutputItem):
-            text = _extract_text(item)
-            if _is_useful_narration(text):
-                agent_thought(text)
-
-
-def _extract_text(item: MessageOutputItem) -> str:
-    raw = getattr(item, "raw_item", item)
-    content = getattr(raw, "content", None)
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for c in content:
-            t = getattr(c, "text", None) or (c.get("text") if isinstance(c, dict) else None)
-            if t:
-                parts.append(t)
-        return " ".join(parts)
-    return str(content or "")
 
 
 def container_kept(container):
