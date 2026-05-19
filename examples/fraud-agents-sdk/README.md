@@ -8,7 +8,7 @@ OpenAI.
 ## What it does
 
 ```
-$ uv run python story.py case_fraud
+$ uv run python story.py case-fraud
 
 [volume] kyc-case-case-fraud already exists → reusing (skip upload)
 [build] building image + starting investigator container...
@@ -41,7 +41,7 @@ $ uv run python story.py case_fraud
 [stop]  stopping container
 ```
 
-`case_legit` runs the same flow against a packet where everything agrees and
+`case-legit` runs the same flow against a packet where everything agrees and
 returns LOW.
 
 ## How it's wired
@@ -64,8 +64,8 @@ fraud-agents-sdk/
   ui.py               # rich console rendering (Panels, syntax-highlighted JSON, …)
   bash_tool.py        # the agent's one @function_tool, bound to a Container
   samples/
-    case_legit/       # application + ID + signed lease, all agree
-    case_fraud/       # application + ID + utility bill, names disagree
+    case-legit/       # application + ID + signed lease, all agree
+    case-fraud/       # application + ID + utility bill, names disagree
 ```
 
 ## Prereqs
@@ -84,8 +84,8 @@ Drop them in a `.env` next to `story.py` (loaded via `python-dotenv`).
 
 ```bash
 uv sync
-uv run python story.py case_fraud
-uv run python story.py case_legit
+uv run python story.py case-fraud
+uv run python story.py case-legit
 ```
 
 First run takes a couple of minutes to build the investigator image (apt
