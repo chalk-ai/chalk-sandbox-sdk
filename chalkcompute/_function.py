@@ -29,6 +29,7 @@ import ast
 import asyncio
 import functools
 import inspect
+import linecache
 import logging
 import os
 import shlex
@@ -501,6 +502,20 @@ class FunctionCallHandle:
                 return
 
 
+def _source_text_for_deploy(source_file: str) -> str:
+    try:
+        return Path(source_file).read_text()
+    except OSError as file_error:
+        cached_lines = linecache.getlines(source_file)
+        if cached_lines:
+            return "".join(cached_lines)
+
+        raise FunctionBuildError(
+            f"Could not read source for {source_file!r} from disk or the "
+            "Python source cache."
+        ) from file_error
+
+
 def _prepare_source_file(source_file: str) -> tuple[str, bool]:
     """Return the source file path to deploy, optionally stripping chalkcompute.
 
@@ -515,11 +530,13 @@ def _prepare_source_file(source_file: str) -> tuple[str, bool]:
         ``(path, is_temp)`` — if stripping produced a temp file, the caller
         should clean it up.
     """
+    source_path = Path(source_file)
     if not _should_strip_source():
-        return source_file, False
-    from pathlib import Path
+        if source_path.is_file():
+            return source_file, False
+        return _write_temp(_source_text_for_deploy(source_file)), True
 
-    source = Path(source_file).read_text()
+    source = _source_text_for_deploy(source_file)
     stripped = _strip_chalkcompute_from_source(source)
     return _write_temp(stripped), True
 
