@@ -145,45 +145,6 @@ class TestRetryPolicyKey:
             RetryPolicy.from_int_or_policy(True)  # type: ignore[arg-type]
 
 
-class TestTracingPolicy:
-    def test_none_omits_remote_tracing_config(self):
-        def add(x: int) -> int:
-            return x + 1
-
-        assert RemoteFunction(add, tracing=None)._tracing_config is None
-
-    def test_sample_rate_builds_policy(self):
-        def add(x: int) -> int:
-            return x + 1
-
-        assert RemoteFunction(add, tracing=0.1)._tracing_config == {
-            "mode": "TRACING_MODE_PARENT_BASED_TRACE_ID_RATIO",
-            "sampleRate": 0.1,
-        }
-
-    def test_off_builds_always_off_policy(self):
-        def add(x: int) -> int:
-            return x + 1
-
-        assert RemoteFunction(add, tracing="off")._tracing_config == {
-            "mode": "TRACING_MODE_ALWAYS_OFF"
-        }
-
-    def test_bool_rejected(self):
-        def add(x: int) -> int:
-            return x + 1
-
-        with pytest.raises(TypeError, match="tracing"):
-            RemoteFunction(add, tracing=True)  # type: ignore[arg-type]
-
-    def test_out_of_range_sample_rate_rejected(self):
-        def add(x: int) -> int:
-            return x + 1
-
-        with pytest.raises(ValueError, match="sample rate"):
-            RemoteFunction(add, tracing=1.1)
-
-
 class TestBatchingGeneratorGuardFunction:
     def test_sync_generator_with_batching_raises(self):
         def gen(n: int) -> int:

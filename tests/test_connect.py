@@ -1,6 +1,8 @@
 import contextlib
 from typing import Any
 
+import pytest
+
 from chalkcompute import SandboxClient, _tracing
 from chalkcompute._connect import (
     ConnectClient,
@@ -25,25 +27,60 @@ class _RPCResponse:
     status_code = 200
 
 
+class _SpanContext:
+    is_valid = True
+
+
 class _Span:
+    def __init__(self) -> None:
+        self.attributes: dict[str, object] = {}
+        self.statuses: list[tuple[object, ...]] = []
+        self.recorded_exceptions: list[tuple[object, ...]] = []
+
     def set_attribute(self, *_args: object) -> None:
-        pass
+        if len(_args) == 2:
+            self.attributes[str(_args[0])] = _args[1]
 
     def set_status(self, *_args: object) -> None:
-        pass
+        self.statuses.append(_args)
 
     def record_exception(self, *_args: object) -> None:
-        pass
+        self.recorded_exceptions.append(_args)
+
+    def get_span_context(self) -> _SpanContext:
+        return _SpanContext()
 
 
 class _Tracer:
     def __init__(self) -> None:
         self.span_names: list[str] = []
+        self.spans: list[_Span] = []
 
     @contextlib.contextmanager
-    def start_as_current_span(self, name: str):
+    def start_as_current_span(self, name: str, *_args: object, **_kwargs: object):
         self.span_names.append(name)
-        yield _Span()
+        span = _Span()
+        self.spans.append(span)
+        yield span
+
+
+class _OtelContext:
+    @staticmethod
+    def get_current() -> object:
+        return object()
+
+    @staticmethod
+    def attach(_context: object) -> object:
+        return object()
+
+    @staticmethod
+    def detach(_token: object) -> None:
+        pass
+
+
+class _TraceApi:
+    class SpanKind:
+        CLIENT = object()
 
 
 class TestGrpcTargetFromUrl:
@@ -139,7 +176,7 @@ class TestConnectClientGrpcEngineTarget:
 
 
 class TestConnectClientTracing:
-    def test_configure_tracing_installs_parent_based_sampler(self, monkeypatch):
+    def test_internal_configure_tracing_installs_parent_based_sampler(self, monkeypatch):
         rates: list[float] = []
         monkeypatch.setattr(_tracing, "_initialized", False)
         monkeypatch.setattr(_tracing, "_provider", None)
@@ -150,7 +187,7 @@ class TestConnectClientTracing:
             lambda sample_rate: rates.append(sample_rate),
         )
 
-        _tracing.configure_tracing(sample_rate=0.1)
+        _tracing._configure_tracing(sample_rate=0.1)
 
         assert rates == [0.1]
         assert _tracing._user_tracing_configured is True
@@ -173,6 +210,23 @@ class TestConnectClientTracing:
 
         assert rates == [1.0]
         assert tracer.span_names == ["workflow"]
+
+    def test_trace_leaves_exception_recording_to_otel_context_manager(
+        self, monkeypatch
+    ):
+        tracer = _Tracer()
+        monkeypatch.setattr(_tracing, "_initialized", False)
+        monkeypatch.setattr(_tracing, "_provider", None)
+        monkeypatch.setattr(_tracing, "_user_tracing_configured", False)
+        monkeypatch.setattr(_tracing, "_install_tracer_provider", lambda _rate: None)
+        monkeypatch.setattr(_tracing, "get_tracer", lambda: tracer)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            with _tracing.trace("workflow"):
+                raise RuntimeError("boom")
+
+        assert tracer.spans[0].recorded_exceptions == []
+        assert tracer.spans[0].statuses == []
 
     def test_trace_noops_when_remote_tracing_is_off(self, monkeypatch):
         monkeypatch.setenv("CHALK_REMOTE_FUNCTION_TRACE_POLICY", "always_off")
@@ -241,6 +295,22 @@ class TestConnectClientTracing:
 
         with _tracing.remote_function_call_span("embed", "direct") as span:
             assert span is None
+
+    def test_remote_call_span_leaves_exception_recording_to_otel_context_manager(
+        self, monkeypatch
+    ):
+        tracer = _Tracer()
+        monkeypatch.setattr(_tracing, "has_current_trace_context", lambda: True)
+        monkeypatch.setattr(_tracing, "get_tracer", lambda: tracer)
+        monkeypatch.setattr(_tracing, "_get_context_api", lambda: _OtelContext)
+        monkeypatch.setattr(_tracing, "_get_trace_api", lambda: _TraceApi)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            with _tracing.remote_function_call_span("embed", "direct"):
+                raise RuntimeError("boom")
+
+        assert tracer.spans[0].recorded_exceptions == []
+        assert tracer.spans[0].statuses == []
 
     def _client(self, monkeypatch) -> ConnectClient:
         client = ConnectClient()

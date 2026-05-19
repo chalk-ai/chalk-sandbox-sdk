@@ -66,7 +66,6 @@ if TYPE_CHECKING:
     from chalkcompute._secret import Secret as _Secret
 
 SerializationFormat = typing.Literal["pyarrow"]
-TracingPolicy = float | typing.Literal["off"] | None
 
 _REMOTE_ENV_VAR = "_CHALK_REMOTE_FUNCTION"
 # When enabled, mount the local SDK project and pip-install at container start.
@@ -97,24 +96,6 @@ class FunctionError(Exception):
 
 class FunctionBuildError(FunctionError):
     """Raised when the function image build fails."""
-
-
-def _tracing_policy_to_dict(tracing: TracingPolicy) -> dict[str, Any] | None:
-    if tracing is None:
-        return None
-    if tracing == "off":
-        return {"mode": "TRACING_MODE_ALWAYS_OFF"}
-    if isinstance(tracing, bool) or not isinstance(tracing, int | float):
-        raise TypeError(
-            'tracing must be None, "off", or a sample rate between 0.0 and 1.0'
-        )
-    sample_rate = float(tracing)
-    if sample_rate < 0.0 or sample_rate > 1.0:
-        raise ValueError("tracing sample rate must be between 0.0 and 1.0")
-    return {
-        "mode": "TRACING_MODE_PARENT_BASED_TRACE_ID_RATIO",
-        "sampleRate": sample_rate,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -1037,7 +1018,6 @@ class RemoteFunction:
         concurrency: int | ConcurrencyPolicy | None = None,
         quota: int | QueuePolicy | None = None,
         schedule: str | None = None,
-        tracing: TracingPolicy = None,
     ) -> None:
         self._func = func
         self._func_name = getattr(func, "__name__", "anonymous")
@@ -1102,8 +1082,6 @@ class RemoteFunction:
         self._quota = (
             QueuePolicy.from_int_or_policy(quota) if quota is not None else None
         )
-        self._tracing = tracing
-        self._tracing_config = _tracing_policy_to_dict(tracing)
 
         # Set after .deploy()
         self._version_info: FunctionVersionInfo | None = None
@@ -1415,8 +1393,6 @@ class RemoteFunction:
                 function_config["queue"] = self._quota.to_dict()
             if self._schedule is not None:
                 function_config["schedule"] = self._schedule
-            if self._tracing_config is not None:
-                function_config["tracing"] = self._tracing_config
 
             # 6. Call CreateExternalFunctionVersion
             rkey = f"register:{self._func_name}"
@@ -2031,7 +2007,6 @@ def function(
     concurrency: int | ConcurrencyPolicy | None = None,
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
-    tracing: TracingPolicy = None,
 ) -> RemoteFunction | _NoOpFunction: ...
 
 
@@ -2061,7 +2036,6 @@ def function(
     concurrency: int | ConcurrencyPolicy | None = None,
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
-    tracing: TracingPolicy = None,
 ) -> Callable[..., RemoteFunction | _NoOpFunction]: ...
 
 
@@ -2092,7 +2066,6 @@ def function(
     concurrency: int | ConcurrencyPolicy | None = None,
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
-    tracing: TracingPolicy = None,
 ) -> Callable[..., RemoteFunction | _NoOpFunction] | RemoteFunction | _NoOpFunction:
     """Decorator that deploys a function as a versioned remote function.
 
@@ -2183,10 +2156,6 @@ def function(
     schedule
         Optional crontab or Chalk duration string for invoking a no-input
         function on a schedule (e.g. ``"0 * * * *"`` or ``"1h"``).
-    tracing
-        Remote-function tracing policy. ``None`` inherits parent trace context,
-        a float sets the sampling rate for new root traces, and ``"off"``
-        uses OTel always-off sampling for this function.
 
     Examples
     --------
@@ -2226,7 +2195,6 @@ def function(
             concurrency=concurrency,
             quota=quota,
             schedule=schedule,
-            tracing=tracing,
         )
         f.deploy()
         return f

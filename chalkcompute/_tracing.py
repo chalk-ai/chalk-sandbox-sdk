@@ -107,7 +107,7 @@ def _install_tracer_provider(sample_rate: float) -> None:
     atexit.register(provider.shutdown)
 
 
-def configure_tracing(*, sample_rate: float = 1.0) -> None:
+def _configure_tracing(*, sample_rate: float = 1.0) -> None:
     """Configure caller-side tracing for this process.
 
     The sampler is parent-based: existing parent trace decisions are respected,
@@ -134,7 +134,7 @@ def _ensure_initialized() -> None:
 
 def _ensure_user_tracing_configured() -> None:
     if not _user_tracing_configured:
-        configure_tracing(sample_rate=1.0)
+        _configure_tracing(sample_rate=1.0)
 
 
 def _is_remote_tracing_off() -> bool:
@@ -202,15 +202,8 @@ def _span(name: str) -> Iterator[Any]:
 
     _ensure_user_tracing_configured()
 
-    trace_api = _require_trace_api()
-
     with get_tracer().start_as_current_span(name) as span:
-        try:
-            yield span
-        except Exception as exc:
-            span.record_exception(exc)
-            span.set_status(trace_api.Status(trace_api.StatusCode.ERROR, str(exc)))
-            raise
+        yield span
 
 
 @contextlib.contextmanager
@@ -302,9 +295,4 @@ def remote_function_call_span(function_name: str, call_type: str) -> Iterator[An
             finally:
                 otel_context.detach(token)
             return
-        try:
-            yield span
-        except Exception as exc:
-            span.record_exception(exc)
-            span.set_status(trace_api.Status(trace_api.StatusCode.ERROR, str(exc)))
-            raise
+        yield span
