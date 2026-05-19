@@ -29,10 +29,12 @@ import ast
 import asyncio
 import functools
 import inspect
+import linecache
 import logging
 import os
 import shlex
 import tempfile
+import threading
 import time
 import typing
 from dataclasses import dataclass
@@ -401,6 +403,38 @@ def _should_call_via_api() -> bool:
     return os.environ.get(_CALL_VIA_API_ENV_VAR, "") == "1"
 
 
+def _has_running_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+async def _run_in_worker_thread(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[Any] = loop.create_future()
+
+    def complete_with_result(value: Any) -> None:
+        if not future.cancelled():
+            future.set_result(value)
+
+    def complete_with_exception(exc: BaseException) -> None:
+        if not future.cancelled():
+            future.set_exception(exc)
+
+    def run() -> None:
+        try:
+            value = func(*args, **kwargs)
+        except BaseException as exc:
+            loop.call_soon_threadsafe(complete_with_exception, exc)
+        else:
+            loop.call_soon_threadsafe(complete_with_result, value)
+
+    threading.Thread(target=run, daemon=True).start()
+    return await future
+
+
 class FunctionCallHandle:
     """Handle returned by :meth:`RemoteFunction.defer`."""
 
@@ -426,7 +460,7 @@ class FunctionCallHandle:
         return result
 
     def get(self, timeout: float | None = None) -> Any:
-        if self._is_async:
+        if _has_running_event_loop():
             return self._async_get(timeout)
         return self._sync_get(timeout)
 
@@ -449,7 +483,7 @@ class FunctionCallHandle:
                 raise TimeoutError(f"Remote call {self._call_id} timed out")
 
     async def _async_get(self, timeout: float | None = None) -> Any:
-        return await asyncio.to_thread(self._sync_get, timeout)
+        return await _run_in_worker_thread(self._sync_get, timeout)
 
     def stream(self) -> Any:
         if self._is_async:
@@ -491,6 +525,20 @@ class FunctionCallHandle:
                 return
 
 
+def _source_text_for_deploy(source_file: str) -> str:
+    try:
+        return Path(source_file).read_text()
+    except OSError as file_error:
+        cached_lines = linecache.getlines(source_file)
+        if cached_lines:
+            return "".join(cached_lines)
+
+        raise FunctionBuildError(
+            f"Could not read source for {source_file!r} from disk or the "
+            "Python source cache."
+        ) from file_error
+
+
 def _prepare_source_file(source_file: str) -> tuple[str, bool]:
     """Return the source file path to deploy, optionally stripping chalkcompute.
 
@@ -505,11 +553,13 @@ def _prepare_source_file(source_file: str) -> tuple[str, bool]:
         ``(path, is_temp)`` — if stripping produced a temp file, the caller
         should clean it up.
     """
+    source_path = Path(source_file)
     if not _should_strip_source():
-        return source_file, False
-    from pathlib import Path
+        if source_path.is_file():
+            return source_file, False
+        return _write_temp(_source_text_for_deploy(source_file)), True
 
-    source = Path(source_file).read_text()
+    source = _source_text_for_deploy(source_file)
     stripped = _strip_chalkcompute_from_source(source)
     return _write_temp(stripped), True
 
@@ -1798,12 +1848,12 @@ class RemoteFunction:
         """
         if self._is_generator:
             return self.defer(*args, **kwargs).stream()
-        if self._is_async:
+        if _has_running_event_loop():
             return self._call_async(*args, **kwargs)
         return self._call_sync(*args, **kwargs)
 
     async def _call_async(self, *args: Any, **kwargs: Any) -> Any:
-        return await asyncio.to_thread(self._call_sync, *args, **kwargs)
+        return await _run_in_worker_thread(self._call_sync, *args, **kwargs)
 
     def _call_sync(self, *args: Any, **kwargs: Any) -> Any:
         feather_bytes = self._serialize_call_args(*args, **kwargs)

@@ -46,6 +46,7 @@ import os
 import time
 import typing
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, TypeVar, overload
 
 from chalkcompute._connect import ConnectClient
@@ -68,6 +69,7 @@ from chalkcompute._function import (
     _make_container_spec,
     _normalize_schedule,
     _should_strip_source,
+    _source_text_for_deploy,
     _write_temp,
 )
 from chalkcompute._concurrency import ConcurrencyPolicy
@@ -787,6 +789,19 @@ class RemoteClass:
 
     # -- Image building --------------------------------------------------------
 
+    def _source_file_for_deploy(self) -> str:
+        try:
+            return inspect.getfile(self._user_cls)
+        except (OSError, TypeError) as class_error:
+            for method_info in self._methods.values():
+                try:
+                    return inspect.getfile(method_info.func)
+                except (OSError, TypeError):
+                    continue
+            raise ClassBuildError(
+                f"Could not determine source file for class {self._class_name!r}"
+            ) from class_error
+
     def _build_deploy_image(self) -> tuple[Any, list[str]]:
         """Build the deploy image with all handler shims and user module.
 
@@ -795,16 +810,18 @@ class RemoteClass:
         tuple
             ``(Image, list_of_temp_file_paths)``.
         """
-        source_file = inspect.getfile(self._user_cls)
+        source_file = self._source_file_for_deploy()
 
         temp_files: list[str] = []
+        source_path = Path(source_file)
 
         if _should_strip_source():
-            from pathlib import Path
-
-            source = Path(source_file).read_text()
+            source = _source_text_for_deploy(source_file)
             stripped = _strip_chalkcompute_from_class_source(source)
             source_file = _write_temp(stripped)
+            temp_files.append(source_file)
+        elif not source_path.is_file():
+            source_file = _write_temp(_source_text_for_deploy(source_file))
             temp_files.append(source_file)
 
         deploy_image = _make_base_image(self._image).add_local_file(
@@ -1090,7 +1107,7 @@ class RemoteClass:
                     rf._web_url = web_url
 
             logger.info("  poll %s: status=%s", sg_name, status)
-            if status == "Running":
+            if status in ("Running", "Available"):
                 return
             if status in ("Failed", "Error"):
                 raise ClassError(f"Scaling group {sg_name} entered {status} state")

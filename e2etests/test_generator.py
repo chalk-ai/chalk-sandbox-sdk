@@ -62,8 +62,10 @@ class TestAsyncGenerator:
         assert asyncio.run(_collect()) == [[0], [1], [2]]
 
     def test_defer_async_get(self):
-        """await handle.get() collects all chunks for async functions."""
+        """handle.get() collects all chunks in sync and async contexts."""
         fn = chalkcompute.RemoteFunction.from_name("async_count_up")
+
+        assert fn.defer(3).get(timeout=60) == [0, 1, 2]
 
         async def _run():
             return await fn.defer(3).get(timeout=60)

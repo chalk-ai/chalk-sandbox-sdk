@@ -1,3 +1,4 @@
+import asyncio
 import base64
 
 import pyarrow as pa
@@ -146,6 +147,23 @@ def _remote_function() -> RemoteFunction:
     return fn
 
 
+def _async_remote_function() -> RemoteFunction:
+    async def add(x: int) -> int:
+        return x + 1
+
+    fn = RemoteFunction(add, name="catalog-async-add")
+    fn._web_url = "http://127.0.0.1"
+    fn._port = 7777
+    fn._client = FakeConnectClient()
+    fn._version_info = FunctionVersionInfo(
+        id="version-1",
+        function_name="catalog-async-add",
+        version=1,
+        scaling_group_name="sg",
+    )
+    return fn
+
+
 def test_direct_call_uses_native_client_and_catalog_function_name() -> None:
     FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
 
@@ -162,6 +180,25 @@ def test_direct_call_uses_native_client_and_catalog_function_name() -> None:
     assert client.calls[0][0] == "catalog-add"
     assert _read_input(client.calls[0][1]) == {"x": [41]}
     assert client.calls[0][2] == []
+
+
+def test_sync_direct_call_can_be_awaited_in_async_context() -> None:
+    FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
+
+    fn = _remote_function()
+
+    async def call() -> int:
+        return await fn(41)
+
+    assert asyncio.run(call()) == 42
+
+
+def test_async_direct_call_can_be_used_synchronously() -> None:
+    FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
+
+    fn = _async_remote_function()
+
+    assert fn(41) == 42
 
 
 def test_direct_call_uses_service_auth_from_environment(monkeypatch) -> None:
@@ -260,6 +297,45 @@ def test_defer_get_and_purge_use_queue_client() -> None:
     assert _read_input(client.enqueues[0][1]) == {"x": [98]}
     assert client.enqueues[0][2] == []
     assert client.purges == ["catalog-add"]
+
+
+def test_deferred_get_can_be_awaited_in_async_context() -> None:
+    FakeRemoteCallClient.poll_results = [
+        RemoteCallPollResult(
+            status=3,
+            status_name="completed",
+            chunks=[_result_ipc([99])],
+            cursor="",
+            error_message=None,
+            poll_count=0,
+        ),
+    ]
+
+    fn = _remote_function()
+    handle = fn.defer(98)
+
+    async def get() -> int:
+        return await handle.get()
+
+    assert asyncio.run(get()) == 99
+
+
+def test_async_deferred_get_can_be_used_synchronously() -> None:
+    FakeRemoteCallClient.poll_results = [
+        RemoteCallPollResult(
+            status=3,
+            status_name="completed",
+            chunks=[_result_ipc([99])],
+            cursor="",
+            error_message=None,
+            poll_count=0,
+        ),
+    ]
+
+    fn = _async_remote_function()
+    handle = fn.defer(98)
+
+    assert handle.get() == 99
 
 
 def test_defer_injects_trace_metadata(monkeypatch) -> None:
