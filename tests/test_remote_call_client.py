@@ -146,7 +146,7 @@ def _remote_function() -> RemoteFunction:
     return fn
 
 
-def test_direct_call_uses_native_client_and_handler_name() -> None:
+def test_direct_call_uses_native_client_and_catalog_function_name() -> None:
     FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
 
     fn = _remote_function()
@@ -159,7 +159,7 @@ def test_direct_call_uses_native_client_and_handler_name() -> None:
     assert ("authorization", "Bearer access-token") in client.metadata
     assert ("x-chalk-env-id", "env-id") in client.metadata
     assert ("x-chalk-deployment-type", "function-queue") not in client.metadata
-    assert client.calls[0][0] == "handler"
+    assert client.calls[0][0] == "catalog-add"
     assert _read_input(client.calls[0][1]) == {"x": [41]}
     assert client.calls[0][2] == []
 
@@ -219,10 +219,10 @@ def test_direct_call_injects_fresh_trace_metadata_on_cached_client(monkeypatch) 
         "traceparent",
         "00-22222222222222222222222222222222-2222222222222222-01",
     ) in FakeRemoteCallClient.instances[0].calls[1][2]
-    assert (
-        "x-chalk-function-name",
-        "catalog-add",
-    ) in FakeRemoteCallClient.instances[0].calls[0][2]
+    assert not any(
+        key == "x-chalk-function-name"
+        for key, _ in FakeRemoteCallClient.instances[0].calls[0][2]
+    )
 
 
 def test_defer_get_and_purge_use_queue_client() -> None:
@@ -282,7 +282,7 @@ def test_defer_injects_trace_metadata(monkeypatch) -> None:
         "traceparent",
         "00-33333333333333333333333333333333-3333333333333333-01",
     ) in client.enqueues[0][2]
-    assert ("x-chalk-function-name", "catalog-add") in client.enqueues[0][2]
+    assert not any(key == "x-chalk-function-name" for key, _ in client.enqueues[0][2])
     assert client.enqueues[0][0] == "catalog-add"
 
 
@@ -298,10 +298,10 @@ def test_api_rpc_call_propagates_remote_trace_headers(monkeypatch) -> None:
 
     assert fn._call_via_api_rpc(b"request-ipc") == b"response-ipc"
 
-    _, kwargs = client.rpc_calls[0]
+    args, kwargs = client.rpc_calls[0]
+    assert args[2]["remoteCallRequest"]["name"] == "catalog-add"
     assert kwargs["extra_headers"] == {
         "traceparent": "trace-id",
-        "x-chalk-function-name": "catalog-add",
     }
 
 

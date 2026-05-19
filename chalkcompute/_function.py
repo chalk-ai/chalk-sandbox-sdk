@@ -67,7 +67,6 @@ SerializationFormat = typing.Literal["pyarrow"]
 TracingPolicy = float | typing.Literal["off"] | None
 
 _REMOTE_ENV_VAR = "_CHALK_REMOTE_FUNCTION"
-_REMOTE_FUNCTION_NAME_METADATA = "x-chalk-function-name"
 # When enabled, mount the local SDK project and pip-install at container start.
 _LOCAL_COPY_ENV_VAR = "CHALK_FUNCTION_LOCAL_SDK_COPY"
 # When set to a local wheel path, mount that wheel and pip-install it at
@@ -102,7 +101,7 @@ def _tracing_policy_to_dict(tracing: TracingPolicy) -> dict[str, Any] | None:
     if tracing is None:
         return None
     if tracing == "off":
-        return {"mode": "TRACING_MODE_OFF"}
+        return {"mode": "TRACING_MODE_ALWAYS_OFF"}
     if isinstance(tracing, bool) or not isinstance(tracing, int | float):
         raise TypeError(
             'tracing must be None, "off", or a sample rate between 0.0 and 1.0'
@@ -111,7 +110,7 @@ def _tracing_policy_to_dict(tracing: TracingPolicy) -> dict[str, Any] | None:
     if sample_rate < 0.0 or sample_rate > 1.0:
         raise ValueError("tracing sample rate must be between 0.0 and 1.0")
     return {
-        "mode": "TRACING_MODE_SAMPLE",
+        "mode": "TRACING_MODE_PARENT_BASED_TRACE_ID_RATIO",
         "sampleRate": sample_rate,
     }
 
@@ -1582,14 +1581,6 @@ class RemoteFunction:
             metadata.append(("x-chalk-deployment-type", "function-queue"))
         return metadata
 
-    def _remote_call_trace_metadata(self) -> list[tuple[str, str]]:
-        metadata = current_trace_metadata()
-        if metadata:
-            metadata.append(
-                (_REMOTE_FUNCTION_NAME_METADATA, self._queue_function_name())
-            )
-        return metadata
-
     def _ensure_remote_call_client(self, *, queue: bool = False) -> Any:
         attr = "_queue_call_client" if queue else "_remote_call_client"
         client = getattr(self, attr)
@@ -1633,6 +1624,7 @@ class RemoteFunction:
     def _call_direct_chunks_python_grpc(
         self,
         feather_bytes: bytes,
+        function_name: str,
         metadata: list[tuple[str, str]],
     ) -> list[bytes]:
         from chalk_remote_call._gen.chalk.runtime.v1 import (
@@ -1643,7 +1635,7 @@ class RemoteFunction:
 
         def requests() -> Any:
             yield call_pb.CallFunctionRequest(  # ty: ignore[unresolved-attribute]
-                name="handler",
+                name=function_name,
                 feather_stream=feather_bytes,
             )
 
@@ -1653,7 +1645,8 @@ class RemoteFunction:
     def _call_direct_chunks(self, feather_bytes: bytes) -> list[bytes]:
         from chalkcompute._remote_call_client import RemoteCallClientUnavailable
 
-        metadata = self._remote_call_trace_metadata()
+        function_name = self._queue_function_name()
+        metadata = current_trace_metadata()
         try:
             client = self._ensure_remote_call_client(queue=False)
         except RemoteCallClientUnavailable:
@@ -1663,9 +1656,10 @@ class RemoteFunction:
             ]
             return self._call_direct_chunks_python_grpc(
                 feather_bytes,
+                function_name,
                 fallback_metadata,
             )
-        return client.call_ipc("handler", feather_bytes, metadata=metadata)
+        return client.call_ipc(function_name, feather_bytes, metadata=metadata)
 
     def _queue_function_name(self) -> str:
         if self._version_info is not None and self._version_info.function_name:
@@ -1756,12 +1750,12 @@ class RemoteFunction:
         request_body: dict[str, Any] = {
             "function": function_key,
             "remoteCallRequest": {
-                "name": "handler",
+                "name": self._queue_function_name(),
                 "featherStream": base64.b64encode(feather_bytes).decode("ascii"),
             },
         }
 
-        trace_metadata = self._remote_call_trace_metadata()
+        trace_metadata = current_trace_metadata()
         rpc_kwargs: dict[str, Any] = {"timeout": 300}
         if trace_metadata:
             rpc_kwargs["extra_headers"] = dict(trace_metadata)
@@ -1838,7 +1832,7 @@ class RemoteFunction:
             call_id = client.enqueue(
                 function_name,
                 feather_bytes,
-                metadata=self._remote_call_trace_metadata(),
+                metadata=current_trace_metadata(),
             )
         return FunctionCallHandle(self, call_id)
 

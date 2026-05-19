@@ -157,7 +157,7 @@ class TestTracingPolicy:
             return x + 1
 
         assert RemoteFunction(add, tracing=0.1)._tracing_config == {
-            "mode": "TRACING_MODE_SAMPLE",
+            "mode": "TRACING_MODE_PARENT_BASED_TRACE_ID_RATIO",
             "sampleRate": 0.1,
         }
 
@@ -166,7 +166,7 @@ class TestTracingPolicy:
             return x + 1
 
         assert RemoteFunction(add, tracing="off")._tracing_config == {
-            "mode": "TRACING_MODE_OFF"
+            "mode": "TRACING_MODE_ALWAYS_OFF"
         }
 
     def test_bool_rejected(self):

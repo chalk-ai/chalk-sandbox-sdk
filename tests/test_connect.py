@@ -175,7 +175,7 @@ class TestConnectClientTracing:
         assert tracer.span_names == ["workflow"]
 
     def test_trace_noops_when_remote_tracing_is_off(self, monkeypatch):
-        monkeypatch.setenv("CHALK_REMOTE_FUNCTION_TRACE_POLICY", "off")
+        monkeypatch.setenv("CHALK_REMOTE_FUNCTION_TRACE_POLICY", "always_off")
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector")
         monkeypatch.setattr(
             _tracing,
@@ -287,12 +287,12 @@ class TestConnectClientTracing:
             "svc",
             "Method",
             {},
-            extra_headers={"x-chalk-function-name": "embed"},
+            extra_headers={"x-chalk-test-header": "embed"},
         )
 
         assert posted["kwargs"]["headers"] == {
             "Authorization": "Bearer token",
-            "x-chalk-function-name": "embed",
+            "x-chalk-test-header": "embed",
         }
         assert client._headers == {"Authorization": "Bearer token"}
 

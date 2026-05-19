@@ -138,7 +138,7 @@ def _ensure_user_tracing_configured() -> None:
 
 
 def _is_remote_tracing_off() -> bool:
-    return os.environ.get(_REMOTE_FUNCTION_TRACE_POLICY_ENV_VAR) == "off"
+    return os.environ.get(_REMOTE_FUNCTION_TRACE_POLICY_ENV_VAR) == "always_off"
 
 
 def get_tracer() -> Any:
