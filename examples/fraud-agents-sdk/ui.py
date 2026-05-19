@@ -1,10 +1,8 @@
-"""Rich console rendering for the fraud-agent demo. Story-named helpers
-(`volume_reused`, `tool_call`, `verdict`, …) so `story.py` reads like prose
-and aesthetics live entirely in this file."""
+"""Rich console rendering for the fraud-agent demo."""
 
 import json
 
-from agents.items import ToolCallItem, ToolCallOutputItem
+from agents.items import MessageOutputItem, ToolCallItem, ToolCallOutputItem
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
@@ -23,12 +21,8 @@ def _truncate(s, n):
     return s if len(s) <= n else s[:n] + f"  …[+{len(s) - n} chars]"
 
 
-def volume_reused(name):
-    console.print(f"[bold cyan]\\[volume][/] [green]{name}[/] already exists [dim]→ reusing (skip upload)[/]")
-
-
 def volume_creating(name):
-    console.print(f"[bold cyan]\\[volume][/] [green]{name}[/] missing [dim]→ creating + uploading packet[/]")
+    console.print(f"[bold cyan]\\[volume][/] [green]{name}[/] [dim]→ uploading packet[/]")
 
 
 def volume_added(name, size):
@@ -44,7 +38,7 @@ def container_started(container):
     short = cid.split("-")[0] if "-" in cid else cid[:8]
     url = f"{DASHBOARD_BASE}/{cid}"
     console.print(
-        f"[bold cyan]\\[ready][/]  [bold]{container._name}[/]  "
+        f"[bold cyan]\\[ready][/] [bold]{container._name}[/] "
         f"[dim]→[/] [link={url}]dashboard ({short}…)[/]"
     )
 
@@ -88,13 +82,6 @@ def _try_json(chunk):
 
 
 def tool_output(item):
-    """Render a tool result for the viewer.
-
-    JSON blobs get syntax-highlighted — they're small, structured, the eye
-    parses them instantly. Plaintext (OCR dumps, PDF text, exit-only output)
-    collapses to a single dim line: the *signals* the agent extracts are
-    what surface in the Verdict, not the raw bytes.
-    """
     output = item.output if isinstance(item.output, str) else str(item.output)
     chunks = [c for c in output.split("\n\n") if c.strip()]
     if not chunks:
@@ -109,10 +96,6 @@ def tool_output(item):
             if stripped.startswith("[exit "):
                 continue
             lines = stripped.splitlines()
-            # Short output (ls, exit codes, one-line greps) is signal — show
-            # verbatim. Long output (OCR dumps, PDF text) is noise to the viewer
-            # — collapse to a one-line preview. The agent's Verdict signals
-            # surface what actually mattered.
             if len(lines) <= 5 and len(stripped) <= 200:
                 for line in lines:
                     console.print(f"    [dim]{line}[/]", highlight=False)
@@ -145,13 +128,27 @@ def verdict(v):
     console.print()
 
 
-async def stream(result):
-    """Consume an Agents SDK streamed run, rendering call → output pairs.
+_NARRATION_NOISE_PREFIXES = (
+    "now i", "i'll", "i will", "let me", "let's", "i'm going to",
+    "next, i", "first, i", "going to ",
+)
 
-    The agent can emit multiple parallel ToolCallItems in one turn before any
-    ToolCallOutputItem fires; buffer them and pair on output so the viewer
-    sees call → output, call → output, not 3 calls then 3 outputs.
-    """
+
+def _is_useful_narration(text: str) -> bool:
+    t = text.strip()
+    if not t or len(t.split()) > 40:
+        return False
+    lower = t.lower()
+    return not any(lower.startswith(p) for p in _NARRATION_NOISE_PREFIXES)
+
+
+def agent_thought(text: str) -> None:
+    console.print(f"\n[bold yellow]\\[agent][/] [italic]{text.strip()}[/]")
+
+
+async def stream(result):
+    # Parallel ToolCallItems may all fire before any ToolCallOutputItem;
+    # buffer them and pair on output so the viewer sees call→output pairs.
     pending: list = []
     turn = 0
     async for event in result.stream_events():
@@ -165,16 +162,34 @@ async def stream(result):
                 turn += 1
                 tool_call(turn, pending.pop(0))
             tool_output(item)
+        elif isinstance(item, MessageOutputItem):
+            text = _extract_text(item)
+            if _is_useful_narration(text):
+                agent_thought(text)
 
 
-def container_stopping():
-    console.print("[bold cyan]\\[stop][/]  stopping container")
+def _extract_text(item: MessageOutputItem) -> str:
+    raw = getattr(item, "raw_item", item)
+    content = getattr(raw, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for c in content:
+            t = getattr(c, "text", None) or (c.get("text") if isinstance(c, dict) else None)
+            if t:
+                parts.append(t)
+        return " ".join(parts)
+    return str(content or "")
 
 
 def container_kept(container):
-    """Used by demo_tools/keep.py — leaves container alive for inspection."""
     cid = container._container_id
     url = f"{DASHBOARD_BASE}/{cid}"
-    console.print("[bold yellow]\\[keep][/]  leaving container running for inspection")
+    stop_cmd = (
+        f"""uv run python -c "from dotenv import load_dotenv; load_dotenv(); """
+        f"""from chalkcompute import Container; Container.from_id('{cid}').stop()" """
+    ).strip()
+    console.print(f"\n[bold yellow]\\[kept][/] container left running for inspection")
     console.print(f"        [dim]dashboard:[/] [link={url}]{url}[/]")
-    console.print(f"        [dim]stop with:[/]  [bold]uv run python -m demo_tools.stop {cid}[/]")
+    console.print(f"        [dim]stop with:[/] [bold]{stop_cmd}[/]")

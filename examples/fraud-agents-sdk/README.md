@@ -64,12 +64,8 @@ fraud-agents-sdk/
   ui.py               # rich console rendering (Panels, syntax-highlighted JSON, …)
   bash_tool.py        # the agent's one @function_tool, bound to a Container
   samples/
-    case_legit/       # all three documents agree
-    case_fraud/       # application + ID + bill name three ways apart
-  demo_tools/         # auxiliary CLIs, kept out of story.py
-    keep.py           #   run but leave container alive
-    refresh.py        #   re-upload case packet after editing samples/
-    stop.py           #   stop a kept-alive container by ID
+    case_legit/       # application + ID + signed lease, all agree
+    case_fraud/       # application + ID + utility bill, names disagree
 ```
 
 ## Prereqs
@@ -96,23 +92,13 @@ First run takes a couple of minutes to build the investigator image (apt
 install of `tesseract-ocr`, `libimage-exiftool-perl`, `poppler-utils`, `jq`).
 Subsequent runs reuse the cached image.
 
-The per-case Volume is persistent — `story.py` skips upload when it already
-exists. After editing files in `samples/`, force a re-upload:
+Each run creates a fresh per-run volume and uploads the case packet — the
+upload shows up in the terminal every time, which is what you want during a
+demo.
 
-```bash
-uv run python story.py case_fraud --refresh
-```
-
-To leave the container alive afterward for dashboard poking:
-
-```bash
-uv run python story.py case_fraud --keep
-# … inspect in the dashboard …
-uv run python -m demo_tools.stop <container_id>
-```
-
-Both flags delegate to `demo_tools/` — the behavior lives there, story.py
-just dispatches.
+Containers are **not** auto-stopped at the end of a run so you can inspect
+them in the dashboard. The `[kept]` line printed after each verdict gives
+you the dashboard URL and the exact command to stop the container.
 
 ## Adding a new fraud check
 
