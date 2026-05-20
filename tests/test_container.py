@@ -132,6 +132,51 @@ def test_container_run_sends_tags() -> None:
     }
 
 
+def test_run_twice_raises_container_error() -> None:
+    client = _Client()
+    container = Container(image="ubuntu:latest", name="double-run-test")
+    container._client = client
+
+    container.run()
+
+    from chalkcompute._container import ContainerError
+    with pytest.raises(ContainerError, match="already running"):
+        container.run()
+
+    assert len(client.calls) == 1  # second run() never reached the RPC
+
+
+def test_stop_then_run_again_is_allowed() -> None:
+    """stop() clears _container_id so a subsequent run() must succeed."""
+
+    class _StopResponse:
+        status_code = 200
+        text = ""
+
+        def json(self) -> dict[str, Any]:
+            return {}
+
+    call_log: list[tuple[str, str]] = []
+
+    class _TrackingClient(_Client):
+        def rpc(self, service: str, method: str, body: dict[str, Any], timeout: float = 30) -> Any:
+            call_log.append((service, method))
+            if method == "StopContainer":
+                return _StopResponse()
+            return super().rpc(service, method, body, timeout)
+
+    client = _TrackingClient()
+    container = Container(image="ubuntu:latest", name="restart-test")
+    container._client = client
+
+    container.run()
+    container.stop()
+    container.run()  # must not raise
+
+    run_calls = [m for _, m in call_log if m == "RunContainer"]
+    assert len(run_calls) == 2
+
+
 def test_container_run_omits_tags_when_unset() -> None:
     client = _Client()
     container = Container(image="ubuntu:latest", name="untagged-container")

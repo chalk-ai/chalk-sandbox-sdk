@@ -483,6 +483,9 @@ class Container:
         'Running'
         >>> c.stop()
         """
+        if self._container_id is not None:
+            raise ContainerError("Container is already running. Call .stop() before calling .run() again.")
+
         from chalkcompute._progress import (
             progress_add,
             progress_done,
