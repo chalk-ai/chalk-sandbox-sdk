@@ -108,6 +108,9 @@ class VolumeInfo:
 
     name: str
     created_at: datetime.datetime | None = None
+    volume_id: str | None = None
+    access_mode: str | None = None
+    ref: str | None = None
 
 
 @dataclass
@@ -127,6 +130,12 @@ class FileInfo:
     path: str
     size: int
     updated_at: datetime.datetime | None = None
+    kind: str | None = None
+    hash: str | None = None
+    mode: int | None = None
+    uid: int | None = None
+    gid: int | None = None
+    nlink: int | None = None
 
 
 # ---------------------------------------------------------------------------
