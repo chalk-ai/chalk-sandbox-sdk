@@ -163,8 +163,8 @@ def _strip_chalkcompute_from_source(source: str) -> str:
     # Collect line ranges to remove (1-indexed, inclusive)
     remove_ranges: list[tuple[int, int]] = []
 
-    # Track aliases that let users spell the decorator as either
-    # @chalkcompute.function, @cc.function, or @function.
+    # Track aliases that let users spell SDK decorators as either
+    # @chalkcompute.function, @cc.function, @function, or @traced.
     chalkcompute_module_names = {"chalkcompute"}
     chalkcompute_decorator_names: set[str] = set()
 
@@ -178,7 +178,8 @@ def _strip_chalkcompute_from_source(source: str) -> str:
                 for alias in node.names:
                     if alias.name == "*":
                         chalkcompute_decorator_names.add("function")
-                    elif alias.name == "function":
+                        chalkcompute_decorator_names.add("traced")
+                    elif alias.name in {"function", "traced"}:
                         chalkcompute_decorator_names.add(alias.asname or alias.name)
 
     # Track names of functions decorated with a chalkcompute function decorator.
@@ -195,7 +196,8 @@ def _strip_chalkcompute_from_source(source: str) -> str:
                 remove_ranges.append((node.lineno, node.end_lineno or node.lineno))
                 continue
 
-        # Remove @chalkcompute.function(...) decorators from function defs
+        # Remove @chalkcompute.function(...) / @chalkcompute.traced decorators
+        # from function defs.
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             for dec in node.decorator_list:
                 dec_source = ast.get_source_segment(source, dec)
@@ -205,7 +207,7 @@ def _strip_chalkcompute_from_source(source: str) -> str:
                     dec,
                     module_names=chalkcompute_module_names,
                     decorator_names=chalkcompute_decorator_names,
-                    attribute_names={"function"},
+                    attribute_names={"function", "traced"},
                 ):
                     remove_ranges.append((dec.lineno, dec.end_lineno or dec.lineno))
                     decorated_names.add(node.name)
@@ -392,7 +394,9 @@ def _has_running_event_loop() -> bool:
     return True
 
 
-async def _run_in_worker_thread(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+async def _run_in_worker_thread(
+    func: Callable[..., Any], *args: Any, **kwargs: Any
+) -> Any:
     loop = asyncio.get_running_loop()
     future: asyncio.Future[Any] = loop.create_future()
 
@@ -518,6 +522,10 @@ def _source_text_for_deploy(source_file: str) -> str:
             f"Could not read source for {source_file!r} from disk or the "
             "Python source cache."
         ) from file_error
+
+
+def _source_file_for_deploy(func: Callable[..., Any]) -> str:
+    return inspect.getfile(inspect.unwrap(func))
 
 
 def _prepare_source_file(source_file: str) -> tuple[str, bool]:
@@ -1241,7 +1249,9 @@ class RemoteFunction:
         Image
             Declarative image ready to be built.
         """
-        source_file, source_is_temp = _prepare_source_file(inspect.getfile(self._func))
+        source_file, source_is_temp = _prepare_source_file(
+            _source_file_for_deploy(self._func)
+        )
 
         handler_shim = _generate_handler_shim(
             self._func_name,
