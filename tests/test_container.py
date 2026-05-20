@@ -141,3 +141,28 @@ def test_container_run_omits_tags_when_unset() -> None:
 
     _, _, body, _ = client.calls[0]
     assert "tags" not in body["container"]["spec"]
+
+
+def test_mount_volume_appends_and_chains() -> None:
+    c = (
+        Container(image="ubuntu:latest")
+        .mount_volume("vol-a", "/data")
+        .mount_volume("vol-b", "/scratch")
+    )
+    assert c._volumes == [("vol-a", "/data"), ("vol-b", "/scratch")]
+
+
+def test_mount_volume_sent_in_run_container_rpc() -> None:
+    client = _Client()
+    container = (
+        Container(image="ubuntu:latest", name="vol-test")
+        .mount_volume("my-volume", "/data")
+    )
+    container._client = client
+
+    container.run()
+
+    _, _, body, _ = client.calls[0]
+    assert body["container"]["spec"]["volumes"] == [
+        {"name": "my-volume", "mountPath": "/data", "type": "chalkfs"}
+    ]
