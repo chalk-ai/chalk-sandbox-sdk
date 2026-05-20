@@ -132,6 +132,37 @@ def test_container_run_sends_tags() -> None:
     }
 
 
+def test_exec_binary_not_found_returns_exit_code_127() -> None:
+    class _NotFoundResponse:
+        status_code = 400
+        text = (
+            '{"code":"unknown","message":"failed to execute command: OCI runtime exec failed: '
+            'exec failed: unable to start container process: exec: \\"nonexistentbinary\\": '
+            'executable file not found in $PATH"}'
+        )
+
+        def json(self) -> dict[str, Any]:
+            return {}
+
+    class _ExecClient(_Client):
+        def rpc(self, service: str, method: str, body: dict[str, Any], timeout: float = 30) -> Any:
+            if method == "ExecCommand":
+                return _NotFoundResponse()
+            return super().rpc(service, method, body, timeout)
+
+    from chalkcompute._container import ExecResult
+    client = _ExecClient()
+    container = Container(image="ubuntu:latest", name="exec-test")
+    container._client = client
+    container.run()
+    container._container_id = "fake-id"
+
+    result = container.exec("nonexistentbinary")
+    assert isinstance(result, ExecResult)
+    assert result.exit_code == 127
+    assert b"executable file not found" in result.stderr
+
+
 def test_container_run_omits_tags_when_unset() -> None:
     client = _Client()
     container = Container(image="ubuntu:latest", name="untagged-container")

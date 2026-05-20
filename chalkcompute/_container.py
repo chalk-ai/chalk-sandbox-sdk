@@ -776,6 +776,12 @@ class Container:
                     exit_code=data.get("exitCode", 0),
                 )
             last_err = ContainerError(f"ExecCommand failed: {resp.text}")
+            if "executable file not found in $PATH" in resp.text:
+                return ExecResult(
+                    stdout=b"",
+                    stderr=b"executable file not found in $PATH\n",
+                    exit_code=127,
+                )
             if "container not found" in resp.text and attempt < _retries:
                 time.sleep(_retry_delay)
                 continue
