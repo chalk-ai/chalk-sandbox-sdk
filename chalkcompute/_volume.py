@@ -25,7 +25,7 @@ import hashlib
 import logging
 import os
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -74,6 +74,10 @@ _UPLOAD_MAX_WORKERS: int = 32
 
 class VolumeError(Exception):
     """Base exception for volume errors."""
+
+
+class VolumeClosedError(VolumeError):
+    """Raised when an operation is attempted on a closed volume."""
 
 
 class VolumeNotFoundError(VolumeError):
@@ -199,10 +203,18 @@ class Volume:
     ...     batch.put("b.txt", b"world")
     """
 
-    def __init__(self, name: str, client: VolumeClient | None = None) -> None:
+    def __init__(
+        self,
+        name: str,
+        client: VolumeClient | None = None,
+        *,
+        create_if_missing: bool = True,
+    ) -> None:
         self._client = client or VolumeClient.from_connect(ConnectClient())
         self._name = name
         self._info: VolumeInfo | None = None
+        self._create_if_missing = create_if_missing
+        self._closed = False
 
     @property
     def name(self) -> str:
@@ -217,6 +229,7 @@ class Volume:
         VolumeInfo
             Metadata for this volume.
         """
+        self._raise_if_closed()
         if self._info is None:
             self._info = self._fetch_info()
         return self._info
@@ -233,15 +246,38 @@ class Volume:
         return self._info
 
     def _fetch_info(self) -> VolumeInfo:
+        self._raise_if_closed()
         try:
             resp = self._client._stub.GetVolume(
                 pb.GetVolumeRequest(name=self._name),
                 metadata=self._client._metadata,
             )
         except grpc.RpcError as e:
+            code = getattr(e, "code", lambda: None)()
+            if not self._create_if_missing or code != grpc.StatusCode.NOT_FOUND:
+                _handle_rpc_error(e, self._name)
+                raise
+        else:
+            return _pb_to_volume_info(resp.volume)
+
+        try:
+            resp = self._client._stub.CreateVolume(
+                pb.CreateVolumeRequest(name=self._name),
+                metadata=self._client._metadata,
+            )
+        except grpc.RpcError as e:
             _handle_rpc_error(e, self._name)
             raise
         return _pb_to_volume_info(resp.volume)
+
+    def _raise_if_closed(self) -> None:
+        if self._closed:
+            raise VolumeClosedError(f"Volume {self._name!r} is closed")
+
+    def _ensure_ready(self) -> None:
+        self._raise_if_closed()
+        if self._info is None:
+            self._info = self._fetch_info()
 
     # -- File operations -------------------------------------------------------
 
@@ -259,6 +295,7 @@ class Volume:
         bytes
             The raw file bytes.
         """
+        self._ensure_ready()
         return _read_file_bytes(self._client, self._name, path)
 
     @traced("chalkcompute.volume.put_file")
@@ -284,6 +321,7 @@ class Volume:
         """
         if isinstance(data, str):
             data = data.encode("utf-8")
+        self._ensure_ready()
         _upload_bytes(self._client, self._name, path, data)
         return self
 
@@ -318,6 +356,7 @@ class Volume:
         Volume
             ``self``, to allow chaining.
         """
+        self._ensure_ready()
         try:
             self._client._stub.RemoveFile(
                 pb.RemoveFileRequest(volume_name=self._name, path=path),
@@ -343,6 +382,7 @@ class Volume:
         list of FileInfo
             One entry per matching file.
         """
+        self._ensure_ready()
         try:
             resp = self._client._stub.ListFiles(
                 pb.ListFilesRequest(volume_name=self._name, prefix=prefix),
@@ -371,7 +411,7 @@ class Volume:
         yield from self.listdir(prefix)
 
     @contextmanager
-    def batch_upload(self) -> Iterator[_BatchUpload]:
+    def batch_upload(self) -> Generator[_BatchUpload, None, None]:
         """Context manager for batching multiple file uploads.
 
         All staged files are uploaded when the context manager exits.
@@ -382,6 +422,7 @@ class Volume:
         ...     batch.put("a.txt", b"hello")
         ...     batch.put("b.txt", b"world")
         """
+        self._raise_if_closed()
         batch = _BatchUpload(self)
         yield batch
         batch._flush()
@@ -391,6 +432,7 @@ class Volume:
     @traced("chalkcompute.volume.delete")
     def delete(self) -> None:
         """Delete this volume and all of its contents."""
+        self._ensure_ready()
         try:
             self._client._stub.DeleteVolume(
                 pb.DeleteVolumeRequest(name=self._name),
@@ -399,6 +441,19 @@ class Volume:
         except grpc.RpcError as e:
             _handle_rpc_error(e, self._name)
             raise
+
+    def close(self) -> None:
+        """Close the underlying client used by this Volume."""
+        if not self._closed:
+            self._client.close()
+        self._closed = True
+
+    def __enter__(self) -> Volume:
+        self._raise_if_closed()
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
 
     def __repr__(self) -> str:
         return f"Volume(name={self._name!r})"
@@ -551,7 +606,7 @@ class VolumeClient:
             _handle_rpc_error(e, name)
             raise
         info = _pb_to_volume_info(resp.volume)
-        vol = Volume(info.name, client=self)
+        vol = Volume(info.name, client=self, create_if_missing=False)
         vol._info = info
         return vol
 
@@ -571,7 +626,7 @@ class VolumeClient:
         Volume
             A volume handle.
         """
-        return Volume(name, client=self)
+        return Volume(name, client=self, create_if_missing=False)
 
     def lookup(self, name: str) -> Volume:
         """Look up a volume by name, verifying it exists.
@@ -591,7 +646,7 @@ class VolumeClient:
         VolumeNotFoundError
             If the volume does not exist.
         """
-        vol = Volume(name, client=self)
+        vol = Volume(name, client=self, create_if_missing=False)
         vol.reload()
         return vol
 

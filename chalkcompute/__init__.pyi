@@ -56,6 +56,7 @@ from chalkcompute._secret import Secret as Secret
 from chalkcompute._volume import FileInfo as FileInfo
 from chalkcompute._volume import Volume as Volume
 from chalkcompute._volume import VolumeClient as VolumeClient
+from chalkcompute._volume import VolumeClosedError as VolumeClosedError
 from chalkcompute._volume import VolumeError as VolumeError
 from chalkcompute._volume import VolumeFileNotFoundError as VolumeFileNotFoundError
 from chalkcompute._volume import VolumeInfo as VolumeInfo
@@ -118,6 +119,7 @@ __all__ = [
     "FileInfo",
     "Volume",
     "VolumeClient",
+    "VolumeClosedError",
     "VolumeError",
     "VolumeFileNotFoundError",
     "VolumeInfo",

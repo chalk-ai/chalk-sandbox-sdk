@@ -7,7 +7,6 @@ function can call embed and return embeddings.
 import asyncio
 
 import chalkcompute
-
 from e2etests.conftest import _deploy_script, needs_openai, needs_staging
 
 
@@ -18,7 +17,7 @@ def test_orchestrate() -> None:
     _deploy_script("embedding-function", "embed.py")
     _deploy_script("embedding-function", "orchestrate.py")
 
-    orchestrate = chalkcompute.RemoteFunction.from_name("orchestrate")
+    orchestrate = chalkcompute.RemoteFunction.from_name("orchestrate-test")
     embeddings = orchestrate(["Hello", "world!"])
 
     assert len(embeddings) == 2, f"Expected 2 embeddings, got {len(embeddings)}"
@@ -36,7 +35,7 @@ def test_embed_direct_call() -> None:
     """Deploy embed, then call it directly from a local client."""
     _deploy_script("embedding-function", "embed.py")
 
-    fn = chalkcompute.RemoteFunction.from_name("embed")
+    fn = chalkcompute.RemoteFunction.from_name("embed-test")
     embedding = fn("hello")
 
     assert isinstance(embedding, list), f"Expected list, got {type(embedding).__name__}"
