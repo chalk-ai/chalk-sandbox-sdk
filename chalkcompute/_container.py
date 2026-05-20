@@ -285,6 +285,16 @@ class Container:
         self._volumes: list[tuple[str, str]] = list(volumes or [])
         self._port = port
         self._entrypoint = entrypoint
+        if lifetime is not None:
+            from google.protobuf import duration_pb2
+            from google.protobuf.json_format import Parse, ParseError
+            try:
+                Parse(f'"{lifetime}"', duration_pb2.Duration())
+            except ParseError:
+                raise ValueError(
+                    f"Invalid lifetime {lifetime!r}. "
+                    "Use a protobuf duration string (e.g. '30s', '1.5s', '300s')."
+                )
         self._lifetime = lifetime
         self._enable_ssh = enable_ssh
         self._security_policy = security_policy

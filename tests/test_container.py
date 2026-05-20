@@ -131,7 +131,17 @@ def test_container_run_sends_tags() -> None:
         "env": "staging",
     }
 
+    
+def test_lifetime_valid_formats_accepted() -> None:
+    for lifetime in ["30s", "1.5s", "300s", "0.5s", "3600s"]:
+        Container(image="ubuntu:latest", lifetime=lifetime)  # must not raise
 
+
+def test_lifetime_invalid_formats_rejected() -> None:
+    for lifetime in ["not-a-duration", "5m", "2h", "30", "abc", ""]:
+        with pytest.raises(ValueError, match="lifetime"):
+            Container(image="ubuntu:latest", lifetime=lifetime)
+            
 def test_run_twice_raises_container_error() -> None:
     client = _Client()
     container = Container(image="ubuntu:latest", name="double-run-test")
