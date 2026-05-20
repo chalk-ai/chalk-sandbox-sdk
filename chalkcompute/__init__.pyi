@@ -30,6 +30,10 @@ from chalkcompute._function import RemoteFunction as RemoteFunction
 from chalkcompute._function import function as function
 from chalkcompute._image import Image as Image
 from chalkcompute._image import LazyLocalFile as LazyLocalFile
+from chalkcompute._model import ModelError as ModelError
+from chalkcompute._model import ModelNotDeployedError as ModelNotDeployedError
+from chalkcompute._model import ModelNotFoundError as ModelNotFoundError
+from chalkcompute._model import bind_model as bind_model
 from chalkcompute._quota import QueuePolicy as QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy as RateLimitPolicy
 from chalkcompute._retry import RetryPolicy as RetryPolicy
@@ -86,6 +90,10 @@ __all__ = [
     "ConcurrencyPolicy",
     "QueuePolicy",
     "function",
+    "bind_model",
+    "ModelError",
+    "ModelNotFoundError",
+    "ModelNotDeployedError",
     "ConnectClient",
     "build_image",
     "build_image_with_volumes",

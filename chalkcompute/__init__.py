@@ -40,6 +40,11 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "ConcurrencyPolicy": ("chalkcompute._concurrency", "ConcurrencyPolicy"),
     "QueuePolicy": ("chalkcompute._quota", "QueuePolicy"),
     "function": ("chalkcompute._function", "function"),
+    # _model.py
+    "bind_model": ("chalkcompute._model", "bind_model"),
+    "ModelError": ("chalkcompute._model", "ModelError"),
+    "ModelNotFoundError": ("chalkcompute._model", "ModelNotFoundError"),
+    "ModelNotDeployedError": ("chalkcompute._model", "ModelNotDeployedError"),
     # _connect.py
     "ConnectClient": ("chalkcompute._connect", "ConnectClient"),
     "build_image": ("chalkcompute._connect", "build_image_from_spec"),
