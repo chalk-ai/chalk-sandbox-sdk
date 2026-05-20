@@ -31,6 +31,7 @@ import queue
 import signal
 import time
 from collections.abc import Iterator
+from typing import Any
 from dataclasses import dataclass, field
 
 import grpc
@@ -551,14 +552,14 @@ class SandboxClient:
         self._stub = pb_grpc.SandboxServiceStub(self._channel)
 
     @classmethod
-    def from_env(cls) -> SandboxClient:
+    def from_env(cls, *, chalk_client: Any | None = None) -> SandboxClient:
         """Create a ``SandboxClient`` from standard ``CHALK_*`` environment vars."""
         if os.environ.get("CHALK_API_SERVER") is None:
             raise ValueError(
                 "CHALK_API_SERVER must be set to construct SandboxClient from env"
             )
 
-        connect = ConnectClient()
+        connect = ConnectClient(chalk_client=chalk_client)
         connect._ensure_auth()
 
         host, use_tls = grpc_target_from_url(connect._api_server or "")

@@ -26,6 +26,7 @@ import logging
 import os
 import uuid
 from collections.abc import Callable, Generator, Iterator
+from typing import Any
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -209,8 +210,9 @@ class Volume:
         client: VolumeClient | None = None,
         *,
         create_if_missing: bool = True,
+        chalk_client: Any | None = None,
     ) -> None:
-        self._client = client or VolumeClient.from_connect(ConnectClient())
+        self._client = client or VolumeClient.from_connect(ConnectClient(chalk_client=chalk_client), chalk_client=chalk_client)
         self._name = name
         self._info: VolumeInfo | None = None
         self._create_if_missing = create_if_missing
@@ -495,6 +497,7 @@ class VolumeClient:
         """
         self._target = target
         self._metadata = tuple(metadata) if metadata else ()
+        self._chalk_client: Any | None = None
         if credentials is not None:
             self._channel = grpc.secure_channel(target, credentials, options=options)
         else:
@@ -503,7 +506,7 @@ class VolumeClient:
         self._obj_stub = pb_grpc.DataPlaneObjectStorageServiceStub(self._channel)
 
     @classmethod
-    def from_connect(cls, connect: ConnectClient) -> VolumeClient:
+    def from_connect(cls, connect: ConnectClient, *, chalk_client: Any | None = None) -> VolumeClient:
         """Create a ``VolumeClient`` from an already-authenticated ``ConnectClient``.
 
         Parameters
@@ -511,6 +514,9 @@ class VolumeClient:
         connect
             An authenticated ``ConnectClient`` instance. Auth is
             ensured automatically if not already done.
+        chalk_client
+            Optional ``ChalkClient`` passed through for re-authentication
+            in ``_refresh()``.
 
         Returns
         -------
@@ -522,7 +528,7 @@ class VolumeClient:
 
         host, use_tls = grpc_target_from_url(connect._api_server or "")
 
-        return cls(
+        client = cls(
             host,
             credentials=grpc.ssl_channel_credentials() if use_tls else None,
             metadata=[
@@ -535,6 +541,8 @@ class VolumeClient:
                 ("grpc.max_receive_message_length", -1),
             ],
         )
+        client._chalk_client = chalk_client
+        return client
 
     def _refresh(self) -> None:
         """Re-authenticate and rebuild the gRPC channel.
@@ -542,7 +550,7 @@ class VolumeClient:
         Creates a fresh ``ConnectClient``, fetches a new bearer token,
         and replaces the channel, stubs, and metadata in-place.
         """
-        connect = ConnectClient()
+        connect = ConnectClient(chalk_client=getattr(self, "_chalk_client", None))
         connect._ensure_auth()
         self._channel.close()
 

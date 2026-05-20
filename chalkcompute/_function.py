@@ -1035,6 +1035,7 @@ class RemoteFunction:
         quota: int | QueuePolicy | None = None,
         schedule: str | None = None,
         models: typing.Mapping[str, Any] | None = None,
+        chalk_client: Any | None = None,
     ) -> None:
         self._func = func
         self._func_name = getattr(func, "__name__", "anonymous")
@@ -1124,14 +1125,14 @@ class RemoteFunction:
         self._remote_call_client: Any = None
         self._queue_call_client: Any = None
 
-        self._client = ConnectClient()
+        self._client = ConnectClient(chalk_client=chalk_client)
 
         functools.update_wrapper(self, func)
 
     # -- Alternate constructors ------------------------------------------------
 
     @classmethod
-    def from_id(cls, version_id: str) -> RemoteFunction:
+    def from_id(cls, version_id: str, *, chalk_client: Any | None = None) -> RemoteFunction:
         """Attach to an existing function version by ID.
 
         Parameters
@@ -1144,7 +1145,7 @@ class RemoteFunction:
         RemoteFunction
             A handle bound to the existing version.
         """
-        f = cls._make_empty()
+        f = cls._make_empty(chalk_client=chalk_client)
         resp = f._client.rpc(
             _CATALOG_SVC,
             "GetExternalFunctionVersion",
@@ -1171,7 +1172,7 @@ class RemoteFunction:
         return f
 
     @classmethod
-    def from_name(cls, name: str) -> RemoteFunction:
+    def from_name(cls, name: str, *, chalk_client: Any | None = None) -> RemoteFunction:
         """Attach to an existing function version by name.
 
         Parameters
@@ -1184,7 +1185,7 @@ class RemoteFunction:
         RemoteFunction
             A handle bound to the existing version.
         """
-        f = cls._make_empty()
+        f = cls._make_empty(chalk_client=chalk_client)
         resp = f._client.rpc(
             _CATALOG_SVC,
             "GetExternalFunctionVersion",
@@ -1211,7 +1212,7 @@ class RemoteFunction:
         return f
 
     @classmethod
-    def _make_empty(cls) -> RemoteFunction:
+    def _make_empty(cls, *, chalk_client: Any | None = None) -> RemoteFunction:
         f = cls.__new__(cls)
         f._func = lambda *a, **kw: None  # type: ignore[assignment]
         f._func_name = "unknown"
@@ -1249,7 +1250,7 @@ class RemoteFunction:
         f._call_stub = None
         f._remote_call_client = None
         f._queue_call_client = None
-        f._client = ConnectClient()
+        f._client = ConnectClient(chalk_client=chalk_client)
         return f
 
     # -- Image building --------------------------------------------------------
