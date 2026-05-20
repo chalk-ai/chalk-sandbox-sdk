@@ -761,11 +761,14 @@ class Container:
         if timeout_secs is not None:
             body["timeout"] = f"{timeout_secs}s"
 
+        # Add buffer so the HTTP connection outlives the in-container exec
+        # timeout rather than racing it.
+        rpc_timeout = (timeout_secs + 10) if timeout_secs is not None else 30
+
         # TODO(CHA-8630): Remove retry loop once the API reports accurate
         # Running status (container may not be exec-ready immediately).
-        last_err: ContainerError | None = None
         for attempt in range(_retries + 1):
-            resp = self._client.rpc(_SVC, "ExecCommand", body, timeout=timeout_secs or 30)
+            resp = self._client.rpc(_SVC, "ExecCommand", body, timeout=rpc_timeout)
             if resp.status_code == 200:
                 data = resp.json()
                 stdout_b64 = data.get("stdout", "")
@@ -775,13 +778,11 @@ class Container:
                     stderr=base64.b64decode(stderr_b64) if stderr_b64 else b"",
                     exit_code=data.get("exitCode", 0),
                 )
-            last_err = ContainerError(f"ExecCommand failed: {resp.text}")
-            if "container not found" in resp.text and attempt < _retries:
-                time.sleep(_retry_delay)
-                continue
-            raise last_err
-        assert last_err is not None
-        raise last_err
+            if "container not found" not in resp.text or attempt >= _retries:
+                raise ContainerError(f"ExecCommand failed: {resp.text}")
+            time.sleep(_retry_delay)
+
+        raise ContainerError(f"ExecCommand failed after {_retries} retries")
 
     @traced("chalkcompute.container.stop")
     def stop(self, grace_period_seconds: int | None = None) -> None:
