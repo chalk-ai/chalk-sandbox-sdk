@@ -417,6 +417,37 @@ class Container:
         except ConnectError as e:
             raise ImageBuildError(str(e)) from e
 
+    # -- Volume helpers --------------------------------------------------------
+
+    def mount_volume(self, name: str, mount_path: str) -> Container:
+        """Mount a named volume into the container.
+
+        Must be called before :meth:`run`. Returns ``self`` for chaining.
+
+        Parameters
+        ----------
+        name
+            Name of the Chalk volume to mount.
+        mount_path
+            Absolute path inside the container where the volume is mounted.
+
+        Returns
+        -------
+        Container
+            ``self``, to allow chaining.
+
+        Examples
+        --------
+        >>> from chalkcompute import Container, Image
+        >>> c = (
+        ...     Container(image=Image.debian_slim())
+        ...     .mount_volume("my-data", "/data")
+        ...     .run()
+        ... )
+        """
+        self._volumes.append((name, mount_path))
+        return self
+
     # -- Lifecycle -------------------------------------------------------------
 
     @traced("chalkcompute.container.run")
