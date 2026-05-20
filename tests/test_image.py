@@ -6,6 +6,8 @@ These tests run without any network access or credentials.
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from chalkcompute import Image
 
 
@@ -208,6 +210,35 @@ class TestImageAddFile:
         dests = [s.add_file.destination for s in spec.steps]
         assert "/app/a.py" in dests
         assert "/app/sub/b.py" in dests
+
+
+# ---------------------------------------------------------------------------
+# add_local_file eager validation
+# ---------------------------------------------------------------------------
+
+
+class TestAddLocalFileEagerValidation:
+    """A3/A5: add_local_file(strategy='volume') validates dest and src at construction."""
+
+    def test_root_dest_raises_immediately(self) -> None:
+        """A3: /foo.py (parent '/') should raise at construction, not at run()."""
+        with pytest.raises(ValueError, match="root"):
+            Image.debian_slim().add_local_file(__file__, "/foo.py", strategy="volume")
+
+    def test_nested_dest_accepted(self) -> None:
+        """A3: /app/foo.py is valid and should not raise."""
+        img = Image.debian_slim().add_local_file(__file__, "/app/foo.py", strategy="volume")
+        assert any(lf.dest == "/app/foo.py" for lf in img.lazy_local_files)
+
+    def test_nonexistent_src_raises_immediately(self) -> None:
+        """A5: a missing source file should raise FileNotFoundError at construction."""
+        with pytest.raises(FileNotFoundError, match="not found"):
+            Image.debian_slim().add_local_file("/no/such/file.py", "/app/file.py", strategy="volume")
+
+    def test_copy_strategy_unaffected(self) -> None:
+        """strategy='copy' already raised FileNotFoundError; behaviour must not change."""
+        with pytest.raises((FileNotFoundError, OSError)):
+            Image.debian_slim().add_local_file("/no/such/file.py", "/app/file.py", strategy="copy")
 
 
 # ---------------------------------------------------------------------------

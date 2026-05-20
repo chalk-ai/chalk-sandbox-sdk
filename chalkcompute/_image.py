@@ -412,8 +412,14 @@ class Image:
         """
         new = self._copy()
         if strategy == "volume":
+            _validate_lazy_local_file_destination(dest)
+            src_path = Path(src).resolve()
+            if not src_path.exists():
+                raise FileNotFoundError(
+                    f"add_local_file: source file not found: {str(src_path)!r}"
+                )
             new._lazy_local_files.add(
-                LazyLocalFile(src=str(Path(src).resolve()), dest=dest, mode=mode)
+                LazyLocalFile(src=str(src_path), dest=dest, mode=mode)
             )
         else:
             content = Path(src).read_bytes()
