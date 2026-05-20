@@ -212,7 +212,7 @@ class Volume:
         create_if_missing: bool = True,
         chalk_client: Any | None = None,
     ) -> None:
-        self._client = client or VolumeClient.from_connect(ConnectClient(chalk_client=chalk_client), chalk_client=chalk_client)
+        self._client = client or VolumeClient.from_connect(ConnectClient(chalk_client=chalk_client))
         self._name = name
         self._info: VolumeInfo | None = None
         self._create_if_missing = create_if_missing
@@ -506,7 +506,7 @@ class VolumeClient:
         self._obj_stub = pb_grpc.DataPlaneObjectStorageServiceStub(self._channel)
 
     @classmethod
-    def from_connect(cls, connect: ConnectClient, *, chalk_client: Any | None = None) -> VolumeClient:
+    def from_connect(cls, connect: ConnectClient) -> VolumeClient:
         """Create a ``VolumeClient`` from an already-authenticated ``ConnectClient``.
 
         Parameters
@@ -514,9 +514,6 @@ class VolumeClient:
         connect
             An authenticated ``ConnectClient`` instance. Auth is
             ensured automatically if not already done.
-        chalk_client
-            Optional ``ChalkClient`` passed through for re-authentication
-            in ``_refresh()``.
 
         Returns
         -------
@@ -541,7 +538,7 @@ class VolumeClient:
                 ("grpc.max_receive_message_length", -1),
             ],
         )
-        client._chalk_client = chalk_client
+        client._chalk_client = getattr(connect, "_chalk_client", None)
         return client
 
     def _refresh(self) -> None:
