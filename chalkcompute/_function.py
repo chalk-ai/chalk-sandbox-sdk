@@ -250,7 +250,12 @@ def _is_chalkcompute_decorator(
     return False
 
 
-def _generate_handler_shim(func_name: str, *, batched: bool = False) -> str:
+def _generate_handler_shim(
+    func_name: str,
+    *,
+    batched: bool = False,
+    bind_models: bool = False,
+) -> str:
     """Generate a ``handler.py`` that bridges Arrow columnar data to scalar calls.
 
     Non-batched mode: ``chalk-remote-call`` passes ``event`` as
@@ -268,15 +273,29 @@ def _generate_handler_shim(func_name: str, *, batched: bool = False) -> str:
         Name of the user function to import and invoke.
     batched
         Whether the deployed function enables batching.
+    bind_models
+        When ``True``, the shim calls ``apply_models_from_env`` on import to
+        bind every model declared via the decorator's ``models=`` kwarg before
+        the user module is imported. Required when ``models=`` is set so that
+        any module-level ``F.catalog_call("model.<name>", ...)`` references can
+        resolve.
 
     Returns
     -------
     str
         Python source for the handler shim.
     """
+    bootstrap = (
+        "from chalkcompute._model import apply_models_from_env as _apply_models\n"
+        "_apply_models()\n"
+        "\n"
+        if bind_models
+        else ""
+    )
     if batched:
         return (
-            "import inspect\n"
+            bootstrap
+            + "import inspect\n"
             "\n"
             f"from user_module import {func_name}\n"
             "\n"
@@ -310,7 +329,8 @@ def _generate_handler_shim(func_name: str, *, batched: bool = False) -> str:
             "    return results\n"
         )
     return (
-        "import inspect\n"
+        bootstrap
+        + "import inspect\n"
         "\n"
         f"from user_module import {func_name}\n"
         "\n"
@@ -1014,6 +1034,7 @@ class RemoteFunction:
         concurrency: int | ConcurrencyPolicy | None = None,
         quota: int | QueuePolicy | None = None,
         schedule: str | None = None,
+        models: typing.Mapping[str, Any] | None = None,
     ) -> None:
         self._func = func
         self._func_name = getattr(func, "__name__", "anonymous")
@@ -1024,7 +1045,11 @@ class RemoteFunction:
         self._cpu = cpu
         self._memory = memory
         self._gpu = gpu
-        self._env = env or {}
+        self._env = dict(env) if env else {}
+        if models:
+            from chalkcompute._model import MODELS_ENV_VAR, encode_models_env
+
+            self._env[MODELS_ENV_VAR] = encode_models_env(models)
         self._secrets: list[_Secret] = list(secrets or [])
         self._base_volumes: list[tuple[str, str]] = list(volumes or [])
         self._volumes: list[tuple[str, str]] = list(self._base_volumes)
@@ -1239,9 +1264,12 @@ class RemoteFunction:
         """
         source_file, source_is_temp = _prepare_source_file(inspect.getfile(self._func))
 
+        from chalkcompute._model import MODELS_ENV_VAR
+
         handler_shim = _generate_handler_shim(
             self._func_name,
             batched=self._max_batching_size is not None,
+            bind_models=bool(self._env.get(MODELS_ENV_VAR)),
         )
         shim_path = _write_temp(handler_shim)
 
@@ -1986,6 +2014,7 @@ def function(
     concurrency: int | ConcurrencyPolicy | None = None,
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
+    models: typing.Mapping[str, Any] | None = None,
 ) -> RemoteFunction | _NoOpFunction: ...
 
 
@@ -2015,7 +2044,9 @@ def function(
     concurrency: int | ConcurrencyPolicy | None = None,
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
-) -> Callable[..., RemoteFunction | _NoOpFunction]: ...
+    models: typing.Mapping[str, Any] | None = None,
+) -> Callable[..., RemoteFunction | _NoOpFunction]:
+    ...
 
 
 def function(
@@ -2045,6 +2076,7 @@ def function(
     concurrency: int | ConcurrencyPolicy | None = None,
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
+    models: typing.Mapping[str, Any] | None = None,
 ) -> Callable[..., RemoteFunction | _NoOpFunction] | RemoteFunction | _NoOpFunction:
     """Decorator that deploys a function as a versioned remote function.
 
@@ -2135,6 +2167,15 @@ def function(
     schedule
         Optional crontab or Chalk duration string for invoking a no-input
         function on a schedule (e.g. ``"0 * * * *"`` or ``"1h"``).
+    models
+        Mapping of ``model_name -> output_type`` for Chalk models that should
+        be auto-bound into the local chalkdf catalog before the function body
+        runs. Each entry becomes a :func:`~chalkcompute.bind_model` call
+        invoked by the handler shim on import, so
+        ``F.catalog_call("model.<name>", ..., output_type=<type>)`` resolves
+        without any explicit setup in the function body. For advanced overrides
+        (``version``, ``method_name``, ``qualified_name``) call
+        :func:`~chalkcompute.bind_model` directly inside the function.
 
     Examples
     --------
@@ -2174,6 +2215,7 @@ def function(
             concurrency=concurrency,
             quota=quota,
             schedule=schedule,
+            models=models,
         )
         f.deploy()
         return f
