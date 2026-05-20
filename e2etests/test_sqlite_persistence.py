@@ -11,25 +11,11 @@ import uuid
 import pytest
 
 from chalkcompute import Container, Image
-from e2etests.conftest import (
-    CHALK_API_SERVER,
-    CHALK_CLIENT_ID,
-    CHALK_CLIENT_SECRET,
-    CHALK_ENVIRONMENT_ID,
-    needs_staging,
-)
+from e2etests.conftest import needs_staging
 
 pytestmark = pytest.mark.skip(
     reason="expensive — overlaps with test_volume_hello for the volume+container path"
 )
-
-# Passed into every container so ChalkFS can authenticate to the volume service.
-CONTAINER_ENV = {
-    "CHALK_CLIENT_ID": CHALK_CLIENT_ID,
-    "CHALK_CLIENT_SECRET": CHALK_CLIENT_SECRET,
-    "CHALK_API_SERVER": CHALK_API_SERVER,
-    "CHALK_ENVIRONMENT_ID": CHALK_ENVIRONMENT_ID,
-}
 
 MOUNT_PATH = "/data"
 DB_PATH = f"{MOUNT_PATH}/app.db"
@@ -112,7 +98,7 @@ def _wait_for_writable_mount(container: Container, path: str, timeout: float = 1
 def test_writer_creates_database(volume_name: str) -> None:
     """The writer container creates a SQLite DB on the volume."""
     writer = (
-        Container(image=image, env=CONTAINER_ENV)
+        Container(image=image)
         .mount_volume(volume_name, MOUNT_PATH)
         .run()
     )
@@ -130,7 +116,7 @@ def test_two_readers_see_same_data(volume_name: str) -> None:
     """Two reader containers independently query the same SQLite DB."""
     # --- Write phase ---
     writer = (
-        Container(image=image, env=CONTAINER_ENV)
+        Container(image=image)
         .mount_volume(volume_name, MOUNT_PATH)
         .run()
     )
@@ -143,12 +129,12 @@ def test_two_readers_see_same_data(volume_name: str) -> None:
 
     # --- Read phase (two independent containers) ---
     reader_a = (
-        Container(image=image, env=CONTAINER_ENV)
+        Container(image=image)
         .mount_volume(volume_name, MOUNT_PATH)
         .run()
     )
     reader_b = (
-        Container(image=image, env=CONTAINER_ENV)
+        Container(image=image)
         .mount_volume(volume_name, MOUNT_PATH)
         .run()
     )
