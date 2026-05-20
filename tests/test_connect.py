@@ -1,7 +1,14 @@
+import contextlib
 from typing import Any
 
-from chalkcompute import SandboxClient
-from chalkcompute._connect import ConnectClient, grpc_engine_target_from_url, grpc_target_from_url
+import pytest
+
+from chalkcompute import SandboxClient, _tracing
+from chalkcompute._connect import (
+    ConnectClient,
+    grpc_engine_target_from_url,
+    grpc_target_from_url,
+)
 from chalkcompute._remote_call_client import ServiceAuthContext
 
 
@@ -14,6 +21,66 @@ class _TokenResponse:
 
     def json(self) -> dict[str, Any]:
         return self._payload
+
+
+class _RPCResponse:
+    status_code = 200
+
+
+class _SpanContext:
+    is_valid = True
+
+
+class _Span:
+    def __init__(self) -> None:
+        self.attributes: dict[str, object] = {}
+        self.statuses: list[tuple[object, ...]] = []
+        self.recorded_exceptions: list[tuple[object, ...]] = []
+
+    def set_attribute(self, *_args: object) -> None:
+        if len(_args) == 2:
+            self.attributes[str(_args[0])] = _args[1]
+
+    def set_status(self, *_args: object) -> None:
+        self.statuses.append(_args)
+
+    def record_exception(self, *_args: object) -> None:
+        self.recorded_exceptions.append(_args)
+
+    def get_span_context(self) -> _SpanContext:
+        return _SpanContext()
+
+
+class _Tracer:
+    def __init__(self) -> None:
+        self.span_names: list[str] = []
+        self.spans: list[_Span] = []
+
+    @contextlib.contextmanager
+    def start_as_current_span(self, name: str, *_args: object, **_kwargs: object):
+        self.span_names.append(name)
+        span = _Span()
+        self.spans.append(span)
+        yield span
+
+
+class _OtelContext:
+    @staticmethod
+    def get_current() -> object:
+        return object()
+
+    @staticmethod
+    def attach(_context: object) -> object:
+        return object()
+
+    @staticmethod
+    def detach(_token: object) -> None:
+        pass
+
+
+class _TraceApi:
+    class SpanKind:
+        CLIENT = object()
 
 
 class TestGrpcTargetFromUrl:
@@ -106,6 +173,198 @@ class TestConnectClientGrpcEngineTarget:
 
         assert target == "localhost:50051"
         assert use_tls is False
+
+
+class TestConnectClientTracing:
+    def test_internal_configure_tracing_installs_parent_based_sampler(self, monkeypatch):
+        rates: list[float] = []
+        monkeypatch.setattr(_tracing, "_initialized", False)
+        monkeypatch.setattr(_tracing, "_provider", None)
+        monkeypatch.setattr(_tracing, "_user_tracing_configured", False)
+        monkeypatch.setattr(
+            _tracing,
+            "_install_tracer_provider",
+            lambda sample_rate: rates.append(sample_rate),
+        )
+
+        _tracing._configure_tracing(sample_rate=0.1)
+
+        assert rates == [0.1]
+        assert _tracing._user_tracing_configured is True
+
+    def test_trace_defaults_to_sample_rate_one_when_unconfigured(self, monkeypatch):
+        rates: list[float] = []
+        tracer = _Tracer()
+        monkeypatch.setattr(_tracing, "_initialized", False)
+        monkeypatch.setattr(_tracing, "_provider", None)
+        monkeypatch.setattr(_tracing, "_user_tracing_configured", False)
+        monkeypatch.setattr(
+            _tracing,
+            "_install_tracer_provider",
+            lambda sample_rate: rates.append(sample_rate),
+        )
+        monkeypatch.setattr(_tracing, "get_tracer", lambda: tracer)
+
+        with _tracing.trace("workflow"):
+            pass
+
+        assert rates == [1.0]
+        assert tracer.span_names == ["workflow"]
+
+    def test_trace_leaves_exception_recording_to_otel_context_manager(
+        self, monkeypatch
+    ):
+        tracer = _Tracer()
+        monkeypatch.setattr(_tracing, "_initialized", False)
+        monkeypatch.setattr(_tracing, "_provider", None)
+        monkeypatch.setattr(_tracing, "_user_tracing_configured", False)
+        monkeypatch.setattr(_tracing, "_install_tracer_provider", lambda _rate: None)
+        monkeypatch.setattr(_tracing, "get_tracer", lambda: tracer)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            with _tracing.trace("workflow"):
+                raise RuntimeError("boom")
+
+        assert tracer.spans[0].recorded_exceptions == []
+        assert tracer.spans[0].statuses == []
+
+    def test_trace_noops_when_remote_tracing_is_off(self, monkeypatch):
+        monkeypatch.setenv("CHALK_REMOTE_FUNCTION_TRACE_POLICY", "always_off")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector")
+        monkeypatch.setattr(
+            _tracing,
+            "_install_tracer_provider",
+            lambda _rate: (_ for _ in ()).throw(
+                AssertionError("off tracing should not configure a provider")
+            ),
+        )
+        monkeypatch.setattr(
+            _tracing,
+            "get_tracer",
+            lambda: (_ for _ in ()).throw(
+                AssertionError("off tracing should not request a tracer")
+            ),
+        )
+
+        with _tracing.trace("workflow") as span:
+            assert span is None
+
+        assert _tracing.current_trace_metadata() == []
+
+    def test_traced_decorator_uses_explicit_name(self, monkeypatch):
+        tracer = _Tracer()
+        monkeypatch.setattr(_tracing, "_initialized", False)
+        monkeypatch.setattr(_tracing, "_provider", None)
+        monkeypatch.setattr(_tracing, "_user_tracing_configured", False)
+        monkeypatch.setattr(_tracing, "_install_tracer_provider", lambda _rate: None)
+        monkeypatch.setattr(_tracing, "get_tracer", lambda: tracer)
+
+        @_tracing.traced("workflow")
+        def run_workflow() -> int:
+            return 42
+
+        assert run_workflow() == 42
+        assert tracer.span_names == ["workflow"]
+
+    def test_bare_traced_decorator_defaults_to_function_name(self, monkeypatch):
+        tracer = _Tracer()
+        monkeypatch.setattr(_tracing, "_initialized", False)
+        monkeypatch.setattr(_tracing, "_provider", None)
+        monkeypatch.setattr(_tracing, "_user_tracing_configured", False)
+        monkeypatch.setattr(_tracing, "_install_tracer_provider", lambda _rate: None)
+        monkeypatch.setattr(_tracing, "get_tracer", lambda: tracer)
+
+        @_tracing.traced
+        def run_workflow() -> int:
+            return 42
+
+        assert run_workflow() == 42
+        assert tracer.span_names == ["run_workflow"]
+
+    def test_remote_function_call_span_noops_without_active_trace(self, monkeypatch):
+        monkeypatch.setattr(
+            "chalkcompute._tracing.has_current_trace_context",
+            lambda: False,
+        )
+        monkeypatch.setattr(
+            "chalkcompute._tracing.get_tracer",
+            lambda: (_ for _ in ()).throw(
+                AssertionError("remote function call should not start a root span")
+            ),
+        )
+
+        with _tracing.remote_function_call_span("embed", "direct") as span:
+            assert span is None
+
+    def test_remote_call_span_leaves_exception_recording_to_otel_context_manager(
+        self, monkeypatch
+    ):
+        tracer = _Tracer()
+        monkeypatch.setattr(_tracing, "has_current_trace_context", lambda: True)
+        monkeypatch.setattr(_tracing, "get_tracer", lambda: tracer)
+        monkeypatch.setattr(_tracing, "_get_context_api", lambda: _OtelContext)
+        monkeypatch.setattr(_tracing, "_get_trace_api", lambda: _TraceApi)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            with _tracing.remote_function_call_span("embed", "direct"):
+                raise RuntimeError("boom")
+
+        assert tracer.spans[0].recorded_exceptions == []
+        assert tracer.spans[0].statuses == []
+
+    def _client(self, monkeypatch) -> ConnectClient:
+        client = ConnectClient()
+        client._api_server = "https://api.chalk.test"
+        client._headers = {"Authorization": "Bearer token"}
+        monkeypatch.setattr(client, "_ensure_auth", lambda: None)
+        return client
+
+    def test_rpc_does_not_inject_trace_metadata(self, monkeypatch):
+        posted: dict[str, Any] = {}
+
+        def fake_post(*args, **kwargs):
+            posted["kwargs"] = kwargs
+            return _RPCResponse()
+
+        def fail_current_trace_metadata():
+            raise AssertionError(
+                "trace metadata should not be injected without upstream trace"
+            )
+
+        monkeypatch.setattr(
+            "chalkcompute._tracing.current_trace_metadata",
+            fail_current_trace_metadata,
+        )
+        monkeypatch.setattr("httpx.post", fake_post)
+
+        self._client(monkeypatch).rpc("svc", "Method", {})
+
+        assert posted["kwargs"]["headers"] == {"Authorization": "Bearer token"}
+
+    def test_rpc_merges_extra_headers_without_mutating_cached_headers(
+        self, monkeypatch
+    ):
+        posted: dict[str, Any] = {}
+
+        def fake_post(*args, **kwargs):
+            posted["kwargs"] = kwargs
+            return _RPCResponse()
+
+        monkeypatch.setattr("httpx.post", fake_post)
+
+        client = self._client(monkeypatch)
+        client.rpc(
+            "svc",
+            "Method",
+            {},
+            extra_headers={"x-chalk-test-header": "embed"},
+        )
+
+        assert posted["kwargs"]["headers"] == {
+            "Authorization": "Bearer token",
+            "x-chalk-test-header": "embed",
+        }
+        assert client._headers == {"Authorization": "Bearer token"}
 
 
 class TestConnectClientServiceAuth:

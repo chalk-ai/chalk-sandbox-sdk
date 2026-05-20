@@ -300,7 +300,9 @@ class TestScheduleValidationClass:
         client = _CapturingClient()
         rc = RemoteClass(Jobs, schedule="0 * * * *")
         rc._client = client  # type: ignore[assignment]
-        monkeypatch.setattr(RemoteClass, "_build_deploy_image", lambda _: (object(), []))
+        monkeypatch.setattr(
+            RemoteClass, "_build_deploy_image", lambda _: (object(), [])
+        )
         monkeypatch.setattr(
             cls_mod,
             "_build_and_upload",

@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any
 from chalkcompute._connect import ConnectClient
 from chalkcompute._volume import VolumeClient, upload_lazy_files
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
-from chalkcompute._tracing import traced
+from chalkcompute._tracing import _instrumented
 
 logger = logging.getLogger(__name__)
 
@@ -427,9 +427,40 @@ class Container:
         except ConnectError as e:
             raise ImageBuildError(str(e)) from e
 
+    # -- Volume helpers --------------------------------------------------------
+
+    def mount_volume(self, name: str, mount_path: str) -> Container:
+        """Mount a named volume into the container.
+
+        Must be called before :meth:`run`. Returns ``self`` for chaining.
+
+        Parameters
+        ----------
+        name
+            Name of the Chalk volume to mount.
+        mount_path
+            Absolute path inside the container where the volume is mounted.
+
+        Returns
+        -------
+        Container
+            ``self``, to allow chaining.
+
+        Examples
+        --------
+        >>> from chalkcompute import Container, Image
+        >>> c = (
+        ...     Container(image=Image.debian_slim())
+        ...     .mount_volume("my-data", "/data")
+        ...     .run()
+        ... )
+        """
+        self._volumes.append((name, mount_path))
+        return self
+
     # -- Lifecycle -------------------------------------------------------------
 
-    @traced("chalkcompute.container.run")
+    @_instrumented("chalkcompute.container.run")
     def run(
         self,
         *,
@@ -493,6 +524,9 @@ class Container:
         'Running'
         >>> c.stop()
         """
+        if self._container_id is not None:
+            raise ContainerError("Container is already running. Call .stop() before calling .run() again.")
+
         from chalkcompute._progress import (
             progress_add,
             progress_done,
@@ -695,7 +729,7 @@ class Container:
             f"ChalkFS files not visible after {timeout}s (probed {probe_path})"
         )
 
-    @traced("chalkcompute.container.exec")
+    @_instrumented("chalkcompute.container.exec")
     def exec(
         self,
         *command: str,
@@ -771,11 +805,14 @@ class Container:
         if timeout_secs is not None:
             body["timeout"] = f"{timeout_secs}s"
 
+        # Add buffer so the HTTP connection outlives the in-container exec
+        # timeout rather than racing it.
+        rpc_timeout = (timeout_secs + 10) if timeout_secs is not None else 30
+
         # TODO(CHA-8630): Remove retry loop once the API reports accurate
         # Running status (container may not be exec-ready immediately).
-        last_err: ContainerError | None = None
         for attempt in range(_retries + 1):
-            resp = self._client.rpc(_SVC, "ExecCommand", body, timeout=timeout_secs or 30)
+            resp = self._client.rpc(_SVC, "ExecCommand", body, timeout=rpc_timeout)
             if resp.status_code == 200:
                 data = resp.json()
                 stdout_b64 = data.get("stdout", "")
@@ -785,15 +822,13 @@ class Container:
                     stderr=base64.b64decode(stderr_b64) if stderr_b64 else b"",
                     exit_code=data.get("exitCode", 0),
                 )
-            last_err = ContainerError(f"ExecCommand failed: {resp.text}")
-            if "container not found" in resp.text and attempt < _retries:
-                time.sleep(_retry_delay)
-                continue
-            raise last_err
-        assert last_err is not None
-        raise last_err
+            if "container not found" not in resp.text or attempt >= _retries:
+                raise ContainerError(f"ExecCommand failed: {resp.text}")
+            time.sleep(_retry_delay)
 
-    @traced("chalkcompute.container.stop")
+        raise ContainerError(f"ExecCommand failed after {_retries} retries")
+
+    @_instrumented("chalkcompute.container.stop")
     def stop(self, grace_period_seconds: int | None = None) -> None:
         """Stop the container and clean up temporary volumes and secrets.
 

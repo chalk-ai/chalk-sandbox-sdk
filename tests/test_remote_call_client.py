@@ -1,4 +1,5 @@
 import asyncio
+import base64
 
 import pyarrow as pa
 import pytest
@@ -41,27 +42,65 @@ class ServiceAuthOnlyConnectClient:
         raise AssertionError("OAuth grpc engine discovery should not be used")
 
 
+class RpcConnectClient(FakeConnectClient):
+    def __init__(self) -> None:
+        self.rpc_calls = []
+
+    def rpc(self, *args, **kwargs):
+        self.rpc_calls.append((args, kwargs))
+        return _RpcResponse()
+
+
+class OldStyleRpcConnectClient(FakeConnectClient):
+    def rpc(self, service, method, body, timeout=30):
+        return _RpcResponse()
+
+
+class _RpcResponse:
+    status_code = 200
+    text = ""
+
+    def json(self):
+        return {
+            "remoteCallResponse": {
+                "featherStream": base64.b64encode(b"response-ipc").decode("ascii")
+            }
+        }
+
+
 class FakeRemoteCallClient:
     instances: list["FakeRemoteCallClient"] = []
     direct_response_chunks: list[bytes] = []
     poll_results: list[RemoteCallPollResult] = []
 
-    def __init__(self, endpoint: str, *, metadata, use_tls: bool | None, **kwargs) -> None:
+    def __init__(
+        self, endpoint: str, *, metadata, use_tls: bool | None, **kwargs
+    ) -> None:
         self.endpoint = endpoint
         self.metadata = list(metadata)
         self.use_tls = use_tls
         self.kwargs = kwargs
-        self.calls: list[tuple[str, bytes]] = []
-        self.enqueues: list[tuple[str, bytes]] = []
+        self.calls: list[tuple[str, bytes, list[tuple[str, str]]]] = []
+        self.enqueues: list[tuple[str, bytes, list[tuple[str, str]]]] = []
         self.purges: list[str] = []
         FakeRemoteCallClient.instances.append(self)
 
-    def call_ipc(self, name: str, input_ipc: bytes) -> list[bytes]:
-        self.calls.append((name, input_ipc))
+    def call_ipc(
+        self,
+        name: str,
+        input_ipc: bytes,
+        metadata=(),
+    ) -> list[bytes]:
+        self.calls.append((name, input_ipc, list(metadata)))
         return list(self.direct_response_chunks)
 
-    def enqueue(self, name: str, input_ipc: bytes) -> str:
-        self.enqueues.append((name, input_ipc))
+    def enqueue(
+        self,
+        name: str,
+        input_ipc: bytes,
+        metadata=(),
+    ) -> str:
+        self.enqueues.append((name, input_ipc, list(metadata)))
         return "call-1"
 
     def poll_next(
@@ -86,7 +125,9 @@ def reset_fake_client(monkeypatch):
     FakeRemoteCallClient.direct_response_chunks = []
     FakeRemoteCallClient.poll_results = []
     monkeypatch.setattr(remote_call_client, "RemoteCallClient", FakeRemoteCallClient)
-    monkeypatch.setattr("chalkcompute._function.service_auth_context_from_env", lambda: None)
+    monkeypatch.setattr(
+        "chalkcompute._function.service_auth_context_from_env", lambda: None
+    )
 
 
 def _remote_function() -> RemoteFunction:
@@ -123,7 +164,7 @@ def _async_remote_function() -> RemoteFunction:
     return fn
 
 
-def test_direct_call_uses_native_client_and_handler_name() -> None:
+def test_direct_call_uses_native_client_and_catalog_function_name() -> None:
     FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
 
     fn = _remote_function()
@@ -136,8 +177,9 @@ def test_direct_call_uses_native_client_and_handler_name() -> None:
     assert ("authorization", "Bearer access-token") in client.metadata
     assert ("x-chalk-env-id", "env-id") in client.metadata
     assert ("x-chalk-deployment-type", "function-queue") not in client.metadata
-    assert client.calls[0][0] == "handler"
+    assert client.calls[0][0] == "catalog-add"
     assert _read_input(client.calls[0][1]) == {"x": [41]}
+    assert client.calls[0][2] == []
 
 
 def test_sync_direct_call_can_be_awaited_in_async_context() -> None:
@@ -185,6 +227,41 @@ def test_direct_call_uses_service_auth_from_environment(monkeypatch) -> None:
     assert client.kwargs["requested_permissions"] == (2, 3, 11)
 
 
+def test_direct_call_injects_fresh_trace_metadata_on_cached_client(monkeypatch) -> None:
+    traceparents = [
+        "00-11111111111111111111111111111111-1111111111111111-01",
+        "00-22222222222222222222222222222222-2222222222222222-01",
+    ]
+
+    def next_trace_metadata() -> list[tuple[str, str]]:
+        return [("traceparent", traceparents.pop(0))]
+
+    monkeypatch.setattr(
+        "chalkcompute._function.current_trace_metadata",
+        next_trace_metadata,
+    )
+    FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
+
+    fn = _remote_function()
+
+    assert fn(41) == 42
+    assert fn(41) == 42
+
+    assert len(FakeRemoteCallClient.instances) == 1
+    assert (
+        "traceparent",
+        "00-11111111111111111111111111111111-1111111111111111-01",
+    ) in FakeRemoteCallClient.instances[0].calls[0][2]
+    assert (
+        "traceparent",
+        "00-22222222222222222222222222222222-2222222222222222-01",
+    ) in FakeRemoteCallClient.instances[0].calls[1][2]
+    assert not any(
+        key == "x-chalk-function-name"
+        for key, _ in FakeRemoteCallClient.instances[0].calls[0][2]
+    )
+
+
 def test_defer_get_and_purge_use_queue_client() -> None:
     FakeRemoteCallClient.poll_results = [
         RemoteCallPollResult(
@@ -218,6 +295,7 @@ def test_defer_get_and_purge_use_queue_client() -> None:
     assert ("x-chalk-deployment-type", "function-queue") in client.metadata
     assert client.enqueues[0][0] == "catalog-add"
     assert _read_input(client.enqueues[0][1]) == {"x": [98]}
+    assert client.enqueues[0][2] == []
     assert client.purges == ["catalog-add"]
 
 
@@ -258,6 +336,56 @@ def test_async_deferred_get_can_be_used_synchronously() -> None:
     handle = fn.defer(98)
 
     assert handle.get() == 99
+
+
+def test_defer_injects_trace_metadata(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "chalkcompute._function.current_trace_metadata",
+        lambda: [
+            (
+                "traceparent",
+                "00-33333333333333333333333333333333-3333333333333333-01",
+            )
+        ],
+    )
+
+    fn = _remote_function()
+    handle = fn.defer(98)
+
+    assert handle.call_id == "call-1"
+    client = FakeRemoteCallClient.instances[0]
+    assert (
+        "traceparent",
+        "00-33333333333333333333333333333333-3333333333333333-01",
+    ) in client.enqueues[0][2]
+    assert not any(key == "x-chalk-function-name" for key, _ in client.enqueues[0][2])
+    assert client.enqueues[0][0] == "catalog-add"
+
+
+def test_api_rpc_call_propagates_remote_trace_headers(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "chalkcompute._function.current_trace_metadata",
+        lambda: [("traceparent", "trace-id")],
+    )
+
+    fn = _remote_function()
+    client = RpcConnectClient()
+    fn._client = client
+
+    assert fn._call_via_api_rpc(b"request-ipc") == b"response-ipc"
+
+    args, kwargs = client.rpc_calls[0]
+    assert args[2]["remoteCallRequest"]["name"] == "catalog-add"
+    assert kwargs["extra_headers"] == {
+        "traceparent": "trace-id",
+    }
+
+
+def test_api_rpc_call_does_not_require_extra_headers_by_default() -> None:
+    fn = _remote_function()
+    fn._client = OldStyleRpcConnectClient()
+
+    assert fn._call_via_api_rpc(b"request-ipc") == b"response-ipc"
 
 
 def test_queue_call_uses_service_auth_engine_from_environment(monkeypatch) -> None:

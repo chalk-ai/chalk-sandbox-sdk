@@ -112,7 +112,7 @@ def test_put_and_get_file(
     encoded = base64.b64encode(file_content).decode("ascii")
 
     # Put the file
-    put_resp = _connect_rpc(_SVC, 
+    put_resp = _connect_rpc(_SVC,
         "PutFile",
         {
             "volumeName": created_volume,
@@ -124,7 +124,7 @@ def test_put_and_get_file(
     assert put_resp.status_code == 200, f"PutFile failed: {put_resp.text}"
 
     # Get the file back
-    get_resp = _connect_rpc(_SVC, 
+    get_resp = _connect_rpc(_SVC,
         "GetFile",
         {"volumeName": created_volume, "path": file_path},
         auth_headers,
@@ -140,7 +140,7 @@ def test_list_files(
     created_volume: str,
 ) -> None:
     """ListFiles should show files we uploaded."""
-    resp = _connect_rpc(_SVC, 
+    resp = _connect_rpc(_SVC,
         "ListFiles",
         {"volumeName": created_volume, "prefix": "test-data/"},
         auth_headers,
@@ -161,7 +161,7 @@ def test_remove_file(
 
     # Put a file to remove
     file_path = "test-data/to-remove.txt"
-    _connect_rpc(_SVC, 
+    _connect_rpc(_SVC,
         "PutFile",
         {
             "volumeName": created_volume,
@@ -172,7 +172,7 @@ def test_remove_file(
     )
 
     # Remove it
-    rm_resp = _connect_rpc(_SVC, 
+    rm_resp = _connect_rpc(_SVC,
         "RemoveFile",
         {"volumeName": created_volume, "path": file_path},
         auth_headers,
@@ -180,7 +180,7 @@ def test_remove_file(
     assert rm_resp.status_code == 200, f"RemoveFile failed: {rm_resp.text}"
 
     # Verify it's gone
-    list_resp = _connect_rpc(_SVC, 
+    list_resp = _connect_rpc(_SVC,
         "ListFiles",
         {"volumeName": created_volume, "prefix": "test-data/"},
         auth_headers,

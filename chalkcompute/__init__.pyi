@@ -53,6 +53,8 @@ from chalkcompute._scaling_group import ScalingGroupBuildError as ScalingGroupBu
 from chalkcompute._scaling_group import ScalingGroupError as ScalingGroupError
 from chalkcompute._scaling_group import ScalingGroupInfo as ScalingGroupInfo
 from chalkcompute._secret import Secret as Secret
+from chalkcompute._tracing import trace as trace
+from chalkcompute._tracing import traced as traced
 from chalkcompute._volume import FileInfo as FileInfo
 from chalkcompute._volume import Volume as Volume
 from chalkcompute._volume import VolumeClient as VolumeClient
@@ -98,6 +100,8 @@ __all__ = [
     "ConnectClient",
     "build_image",
     "build_image_with_volumes",
+    "trace",
+    "traced",
     "Image",
     "LazyLocalFile",
     "Secret",

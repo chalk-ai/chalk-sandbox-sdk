@@ -21,9 +21,19 @@ class RemoteCallClient:
         auth_retry_interval_ms: int | None = None,
     ) -> None: ...
 
-    def call_ipc(self, name: str, input_ipc: bytes) -> list[bytes]: ...
+    def call_ipc(
+        self,
+        name: str,
+        input_ipc: bytes,
+        metadata: Sequence[tuple[str, str]] | None = None,
+    ) -> list[bytes]: ...
 
-    def enqueue(self, name: str, input_ipc: bytes) -> str: ...
+    def enqueue(
+        self,
+        name: str,
+        input_ipc: bytes,
+        metadata: Sequence[tuple[str, str]] | None = None,
+    ) -> str: ...
 
     def poll_next(
         self,
