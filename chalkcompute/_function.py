@@ -52,7 +52,11 @@ from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._retry import RetryPolicy
-from chalkcompute._tracing import traced
+from chalkcompute._tracing import (
+    _instrumented,
+    current_trace_metadata,
+    remote_function_call_span,
+)
 from chalkcompute._volume import VolumeClient, upload_lazy_files
 
 logger = logging.getLogger(__name__)
@@ -159,8 +163,8 @@ def _strip_chalkcompute_from_source(source: str) -> str:
     # Collect line ranges to remove (1-indexed, inclusive)
     remove_ranges: list[tuple[int, int]] = []
 
-    # Track aliases that let users spell the decorator as either
-    # @chalkcompute.function, @cc.function, or @function.
+    # Track aliases that let users spell SDK decorators as either
+    # @chalkcompute.function, @cc.function, @function, or @traced.
     chalkcompute_module_names = {"chalkcompute"}
     chalkcompute_decorator_names: set[str] = set()
 
@@ -174,7 +178,8 @@ def _strip_chalkcompute_from_source(source: str) -> str:
                 for alias in node.names:
                     if alias.name == "*":
                         chalkcompute_decorator_names.add("function")
-                    elif alias.name == "function":
+                        chalkcompute_decorator_names.add("traced")
+                    elif alias.name in {"function", "traced"}:
                         chalkcompute_decorator_names.add(alias.asname or alias.name)
 
     # Track names of functions decorated with a chalkcompute function decorator.
@@ -191,7 +196,8 @@ def _strip_chalkcompute_from_source(source: str) -> str:
                 remove_ranges.append((node.lineno, node.end_lineno or node.lineno))
                 continue
 
-        # Remove @chalkcompute.function(...) decorators from function defs
+        # Remove @chalkcompute.function(...) / @chalkcompute.traced decorators
+        # from function defs.
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             for dec in node.decorator_list:
                 dec_source = ast.get_source_segment(source, dec)
@@ -201,7 +207,7 @@ def _strip_chalkcompute_from_source(source: str) -> str:
                     dec,
                     module_names=chalkcompute_module_names,
                     decorator_names=chalkcompute_decorator_names,
-                    attribute_names={"function"},
+                    attribute_names={"function", "traced"},
                 ):
                     remove_ranges.append((dec.lineno, dec.end_lineno or dec.lineno))
                     decorated_names.add(node.name)
@@ -408,7 +414,9 @@ def _has_running_event_loop() -> bool:
     return True
 
 
-async def _run_in_worker_thread(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+async def _run_in_worker_thread(
+    func: Callable[..., Any], *args: Any, **kwargs: Any
+) -> Any:
     loop = asyncio.get_running_loop()
     future: asyncio.Future[Any] = loop.create_future()
 
@@ -534,6 +542,10 @@ def _source_text_for_deploy(source_file: str) -> str:
             f"Could not read source for {source_file!r} from disk or the "
             "Python source cache."
         ) from file_error
+
+
+def _source_file_for_deploy(func: Callable[..., Any]) -> str:
+    return inspect.getfile(inspect.unwrap(func))
 
 
 def _prepare_source_file(source_file: str) -> tuple[str, bool]:
@@ -1035,6 +1047,7 @@ class RemoteFunction:
         quota: int | QueuePolicy | None = None,
         schedule: str | None = None,
         models: typing.Mapping[str, Any] | None = None,
+        chalk_client: Any | None = None,
     ) -> None:
         self._func = func
         self._func_name = getattr(func, "__name__", "anonymous")
@@ -1137,14 +1150,14 @@ class RemoteFunction:
         self._remote_call_client: Any = None
         self._queue_call_client: Any = None
 
-        self._client = ConnectClient()
+        self._client = ConnectClient(chalk_client=chalk_client)
 
         functools.update_wrapper(self, func)
 
     # -- Alternate constructors ------------------------------------------------
 
     @classmethod
-    def from_id(cls, version_id: str) -> RemoteFunction:
+    def from_id(cls, version_id: str, *, chalk_client: Any | None = None) -> RemoteFunction:
         """Attach to an existing function version by ID.
 
         Parameters
@@ -1157,7 +1170,7 @@ class RemoteFunction:
         RemoteFunction
             A handle bound to the existing version.
         """
-        f = cls._make_empty()
+        f = cls._make_empty(chalk_client=chalk_client)
         resp = f._client.rpc(
             _CATALOG_SVC,
             "GetExternalFunctionVersion",
@@ -1184,7 +1197,7 @@ class RemoteFunction:
         return f
 
     @classmethod
-    def from_name(cls, name: str) -> RemoteFunction:
+    def from_name(cls, name: str, *, chalk_client: Any | None = None) -> RemoteFunction:
         """Attach to an existing function version by name.
 
         Parameters
@@ -1197,7 +1210,7 @@ class RemoteFunction:
         RemoteFunction
             A handle bound to the existing version.
         """
-        f = cls._make_empty()
+        f = cls._make_empty(chalk_client=chalk_client)
         resp = f._client.rpc(
             _CATALOG_SVC,
             "GetExternalFunctionVersion",
@@ -1224,7 +1237,7 @@ class RemoteFunction:
         return f
 
     @classmethod
-    def _make_empty(cls) -> RemoteFunction:
+    def _make_empty(cls, *, chalk_client: Any | None = None) -> RemoteFunction:
         f = cls.__new__(cls)
         f._func = lambda *a, **kw: None  # type: ignore[assignment]
         f._func_name = "unknown"
@@ -1262,7 +1275,7 @@ class RemoteFunction:
         f._call_stub = None
         f._remote_call_client = None
         f._queue_call_client = None
-        f._client = ConnectClient()
+        f._client = ConnectClient(chalk_client=chalk_client)
         return f
 
     # -- Image building --------------------------------------------------------
@@ -1275,7 +1288,9 @@ class RemoteFunction:
         Image
             Declarative image ready to be built.
         """
-        source_file, source_is_temp = _prepare_source_file(inspect.getfile(self._func))
+        source_file, source_is_temp = _prepare_source_file(
+            _source_file_for_deploy(self._func)
+        )
 
         from chalkcompute._model import MODELS_ENV_VAR
 
@@ -1298,7 +1313,7 @@ class RemoteFunction:
 
     # -- Lifecycle -------------------------------------------------------------
 
-    @traced("chalkcompute.function.deploy")
+    @_instrumented("chalkcompute.function.deploy")
     def deploy(
         self,
         *,
@@ -1614,13 +1629,6 @@ class RemoteFunction:
         if self._web_url is None:
             raise FunctionError("Function is not deployed. Call .deploy() first.")
 
-        # Ensure we have auth tokens for gRPC metadata
-        self._client._ensure_auth()
-        self._call_metadata = [
-            ("authorization", f"Bearer {self._client._access_token}"),
-            ("x-chalk-env-id", self._client._env_id or ""),
-        ]
-
         target, use_tls = grpc_target_from_url(
             self._web_url,
             insecure_port=self._port,
@@ -1691,7 +1699,12 @@ class RemoteFunction:
         setattr(self, attr, client)
         return client
 
-    def _call_direct_chunks_python_grpc(self, feather_bytes: bytes) -> list[bytes]:
+    def _call_direct_chunks_python_grpc(
+        self,
+        feather_bytes: bytes,
+        function_name: str,
+        metadata: list[tuple[str, str]],
+    ) -> list[bytes]:
         from chalk_remote_call._gen.chalk.runtime.v1 import (
             remote_python_call_pb2 as call_pb,
         )
@@ -1700,23 +1713,31 @@ class RemoteFunction:
 
         def requests() -> Any:
             yield call_pb.CallFunctionRequest(  # ty: ignore[unresolved-attribute]
-                name="handler",
+                name=function_name,
                 feather_stream=feather_bytes,
             )
 
-        responses = list(
-            self._call_stub.CallFunction(requests(), metadata=self._call_metadata)
-        )
+        responses = list(self._call_stub.CallFunction(requests(), metadata=metadata))
         return [resp.feather_stream for resp in responses]
 
     def _call_direct_chunks(self, feather_bytes: bytes) -> list[bytes]:
         from chalkcompute._remote_call_client import RemoteCallClientUnavailable
 
+        function_name = self._queue_function_name()
+        metadata = current_trace_metadata()
         try:
             client = self._ensure_remote_call_client(queue=False)
         except RemoteCallClientUnavailable:
-            return self._call_direct_chunks_python_grpc(feather_bytes)
-        return client.call_ipc("handler", feather_bytes)
+            fallback_metadata = [
+                *self._remote_call_metadata(queue=False),
+                *metadata,
+            ]
+            return self._call_direct_chunks_python_grpc(
+                feather_bytes,
+                function_name,
+                fallback_metadata,
+            )
+        return client.call_ipc(function_name, feather_bytes, metadata=metadata)
 
     def _queue_function_name(self) -> str:
         if self._version_info is not None and self._version_info.function_name:
@@ -1807,16 +1828,20 @@ class RemoteFunction:
         request_body: dict[str, Any] = {
             "function": function_key,
             "remoteCallRequest": {
-                "name": "handler",
+                "name": self._queue_function_name(),
                 "featherStream": base64.b64encode(feather_bytes).decode("ascii"),
             },
         }
 
+        trace_metadata = current_trace_metadata()
+        rpc_kwargs: dict[str, Any] = {"timeout": 300}
+        if trace_metadata:
+            rpc_kwargs["extra_headers"] = dict(trace_metadata)
         resp = self._client.rpc(
             _CATALOG_SVC,
             "CallExternalFunction",
             request_body,
-            timeout=300,
+            **rpc_kwargs,
         )
         if resp.status_code != 200:
             raise FunctionError(f"CallExternalFunction failed: {resp.text}")
@@ -1834,7 +1859,6 @@ class RemoteFunction:
 
         return base64.b64decode(feather_b64)
 
-    @traced("chalkcompute.function.call")
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """Call the remote function via gRPC or the API server.
 
@@ -1861,15 +1885,17 @@ class RemoteFunction:
 
     def _call_sync(self, *args: Any, **kwargs: Any) -> Any:
         feather_bytes = self._serialize_call_args(*args, **kwargs)
+        call_type = "api" if _should_call_via_api() else "direct"
 
-        if _should_call_via_api():
-            response_bytes = self._call_via_api_rpc(feather_bytes)
-            results = self._decode_result_chunks([response_bytes])
-        else:
-            chunks = self._call_direct_chunks(feather_bytes)
-            if not chunks:
-                raise FunctionError("No response received from remote function")
-            results = self._decode_result_chunks(chunks)
+        with remote_function_call_span(self._queue_function_name(), call_type):
+            if _should_call_via_api():
+                response_bytes = self._call_via_api_rpc(feather_bytes)
+                results = self._decode_result_chunks([response_bytes])
+            else:
+                chunks = self._call_direct_chunks(feather_bytes)
+                if not chunks:
+                    raise FunctionError("No response received from remote function")
+                results = self._decode_result_chunks(chunks)
 
         if len(results) == 1:
             return results[0]
@@ -1878,8 +1904,14 @@ class RemoteFunction:
     def defer(self, *args: Any, **kwargs: Any) -> FunctionCallHandle:
         """Enqueue this function call and return a handle immediately."""
         feather_bytes = self._serialize_call_args(*args, **kwargs)
-        client = self._ensure_remote_call_client(queue=True)
-        call_id = client.enqueue(self._queue_function_name(), feather_bytes)
+        function_name = self._queue_function_name()
+        with remote_function_call_span(function_name, "queue"):
+            client = self._ensure_remote_call_client(queue=True)
+            call_id = client.enqueue(
+                function_name,
+                feather_bytes,
+                metadata=current_trace_metadata(),
+            )
         return FunctionCallHandle(self, call_id)
 
     def poll(
@@ -1900,7 +1932,7 @@ class RemoteFunction:
 
     # -- Management ------------------------------------------------------------
 
-    @traced("chalkcompute.function.delete")
+    @_instrumented("chalkcompute.function.delete")
     def delete(self) -> None:
         """Delete this function version."""
         if self._version_info is not None:

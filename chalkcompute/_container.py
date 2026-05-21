@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any
 from chalkcompute._connect import ConnectClient
 from chalkcompute._volume import VolumeClient, upload_lazy_files
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
-from chalkcompute._tracing import traced
+from chalkcompute._tracing import _instrumented
 
 logger = logging.getLogger(__name__)
 
@@ -272,6 +272,7 @@ class Container:
         security_policy: ContainerSecurityPolicy | None = None,
         network_policy: NetworkPolicy | None = None,
         tags: dict[str, str] | None = None,
+        chalk_client: Any | None = None,
     ) -> None:
         self._image = image
         if name is not None:
@@ -298,6 +299,16 @@ class Container:
         self._volumes: list[tuple[str, str]] = list(volumes or [])
         self._port = port
         self._entrypoint = entrypoint
+        if lifetime is not None:
+            from google.protobuf import duration_pb2
+            from google.protobuf.json_format import Parse, ParseError
+            try:
+                Parse(f'"{lifetime}"', duration_pb2.Duration())
+            except ParseError:
+                raise ValueError(
+                    f"Invalid lifetime {lifetime!r}. "
+                    "Use a protobuf duration string (e.g. '30s', '1.5s', '300s')."
+                )
         self._lifetime = lifetime
         self._enable_ssh = enable_ssh
         self._security_policy = security_policy
@@ -310,12 +321,12 @@ class Container:
         self._container_info: ContainerInfo | None = None
         self._upserted_secret_names: list[str] = []
 
-        self._client = ConnectClient()
+        self._client = ConnectClient(chalk_client=chalk_client)
 
     # -- Alternate constructors ------------------------------------------------
 
     @classmethod
-    def from_id(cls, container_id: str) -> Container:
+    def from_id(cls, container_id: str, *, chalk_client: Any | None = None) -> Container:
         """Attach to an existing container by ID.
 
         Parameters
@@ -333,7 +344,7 @@ class Container:
         ContainerError
             If the container cannot be found.
         """
-        c = cls._make_empty()
+        c = cls._make_empty(chalk_client=chalk_client)
         resp = c._client.rpc(_SVC, "GetContainer", {"id": container_id})
         if resp.status_code != 200:
             raise ContainerError(f"GetContainer failed: {resp.text}")
@@ -342,7 +353,7 @@ class Container:
         return c
 
     @classmethod
-    def from_name(cls, name: str) -> Container:
+    def from_name(cls, name: str, *, chalk_client: Any | None = None) -> Container:
         """Attach to an existing container by name.
 
         Parameters
@@ -360,7 +371,7 @@ class Container:
         ContainerError
             If the container cannot be found.
         """
-        c = cls._make_empty()
+        c = cls._make_empty(chalk_client=chalk_client)
         resp = c._client.rpc(_SVC, "GetContainer", {"name": name})
         if resp.status_code != 200:
             raise ContainerError(f"GetContainer failed: {resp.text}")
@@ -370,7 +381,7 @@ class Container:
         return c
 
     @classmethod
-    def _make_empty(cls) -> Container:
+    def _make_empty(cls, *, chalk_client: Any | None = None) -> Container:
         c = cls.__new__(cls)
         c._image = None  # type: ignore[assignment]
         c._name = None
@@ -391,7 +402,7 @@ class Container:
         c._container_id = None
         c._container_info = None
         c._upserted_secret_names = []
-        c._client = ConnectClient()
+        c._client = ConnectClient(chalk_client=chalk_client)
         return c
 
     # -- Image building (Container uses BuildCustomImage with retries) ---------
@@ -430,9 +441,40 @@ class Container:
         except ConnectError as e:
             raise ImageBuildError(str(e)) from e
 
+    # -- Volume helpers --------------------------------------------------------
+
+    def mount_volume(self, name: str, mount_path: str) -> Container:
+        """Mount a named volume into the container.
+
+        Must be called before :meth:`run`. Returns ``self`` for chaining.
+
+        Parameters
+        ----------
+        name
+            Name of the Chalk volume to mount.
+        mount_path
+            Absolute path inside the container where the volume is mounted.
+
+        Returns
+        -------
+        Container
+            ``self``, to allow chaining.
+
+        Examples
+        --------
+        >>> from chalkcompute import Container, Image
+        >>> c = (
+        ...     Container(image=Image.debian_slim())
+        ...     .mount_volume("my-data", "/data")
+        ...     .run()
+        ... )
+        """
+        self._volumes.append((name, mount_path))
+        return self
+
     # -- Lifecycle -------------------------------------------------------------
 
-    @traced("chalkcompute.container.run")
+    @_instrumented("chalkcompute.container.run")
     def run(
         self,
         *,
@@ -496,6 +538,9 @@ class Container:
         'Running'
         >>> c.stop()
         """
+        if self._container_id is not None:
+            raise ContainerError("Container is already running. Call .stop() before calling .run() again.")
+
         from chalkcompute._progress import (
             progress_add,
             progress_done,
@@ -698,7 +743,7 @@ class Container:
             f"ChalkFS files not visible after {timeout}s (probed {probe_path})"
         )
 
-    @traced("chalkcompute.container.exec")
+    @_instrumented("chalkcompute.container.exec")
     def exec(
         self,
         *command: str,
@@ -797,7 +842,7 @@ class Container:
 
         raise ContainerError(f"ExecCommand failed after {_retries} retries")
 
-    @traced("chalkcompute.container.stop")
+    @_instrumented("chalkcompute.container.stop")
     def stop(self, grace_period_seconds: int | None = None) -> None:
         """Stop the container and clean up temporary volumes and secrets.
 

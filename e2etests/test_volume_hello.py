@@ -6,7 +6,6 @@ starts, so we retry the read with a short backoff.
 """
 
 import base64
-import os
 import time
 import uuid
 from collections.abc import Iterator
@@ -54,16 +53,9 @@ def hello_vol(auth_headers: dict[str, str]) -> Iterator[str]:
 @needs_staging
 def test_file_readable_in_container(hello_vol: str) -> None:
     """A file uploaded to a volume is visible at the mount path inside a container."""
-    env: dict[str, str] = {}
-    if v := os.environ.get("CHALK_CLIENT_ID"):
-        env["CHALK_CLIENT_ID"] = v
-    if v := os.environ.get("CHALK_CLIENT_SECRET"):
-        env["CHALK_CLIENT_SECRET"] = v
-
     container = Container(
         image="python:3.14-slim-trixie",
         volumes=[(hello_vol, MOUNT_PATH)],
-        env=env,
     )
     try:
         container.run()

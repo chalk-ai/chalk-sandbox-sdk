@@ -26,6 +26,7 @@ import logging
 import os
 import uuid
 from collections.abc import Callable, Generator, Iterator
+from typing import Any
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,7 +42,7 @@ from chalkcompute._connect import (
 from chalkcompute._gen.chalk.volume.v1 import volume_pb2 as pb
 from chalkcompute._gen.chalk.volume.v1 import volume_pb2_grpc as pb_grpc
 from chalkcompute._image import Image, LazyLocalFile
-from chalkcompute._tracing import traced
+from chalkcompute._tracing import _instrumented
 
 # Aliases defined before VolumeClient, which has a ``.list()`` method that
 # would otherwise shadow the builtin ``list`` in class-scope name resolution.
@@ -209,8 +210,9 @@ class Volume:
         client: VolumeClient | None = None,
         *,
         create_if_missing: bool = True,
+        chalk_client: Any | None = None,
     ) -> None:
-        self._client = client or VolumeClient.from_connect(ConnectClient())
+        self._client = client or VolumeClient.from_connect(ConnectClient(chalk_client=chalk_client))
         self._name = name
         self._info: VolumeInfo | None = None
         self._create_if_missing = create_if_missing
@@ -281,7 +283,7 @@ class Volume:
 
     # -- File operations -------------------------------------------------------
 
-    @traced("chalkcompute.volume.read_file")
+    @_instrumented("chalkcompute.volume.read_file")
     def read_file(self, path: str) -> bytes:
         """Read a file's contents from the volume.
 
@@ -298,7 +300,7 @@ class Volume:
         self._ensure_ready()
         return _read_file_bytes(self._client, self._name, path)
 
-    @traced("chalkcompute.volume.put_file")
+    @_instrumented("chalkcompute.volume.put_file")
     def put_file(self, path: str, data: bytes | str) -> Volume:
         """Write a file into the volume.
 
@@ -429,7 +431,7 @@ class Volume:
 
     # -- Volume lifecycle ------------------------------------------------------
 
-    @traced("chalkcompute.volume.delete")
+    @_instrumented("chalkcompute.volume.delete")
     def delete(self) -> None:
         """Delete this volume and all of its contents."""
         self._ensure_ready()
@@ -495,6 +497,7 @@ class VolumeClient:
         """
         self._target = target
         self._metadata = tuple(metadata) if metadata else ()
+        self._chalk_client: Any | None = None
         if credentials is not None:
             self._channel = grpc.secure_channel(target, credentials, options=options)
         else:
@@ -522,7 +525,7 @@ class VolumeClient:
 
         host, use_tls = grpc_target_from_url(connect._api_server or "")
 
-        return cls(
+        client = cls(
             host,
             credentials=grpc.ssl_channel_credentials() if use_tls else None,
             metadata=[
@@ -535,6 +538,8 @@ class VolumeClient:
                 ("grpc.max_receive_message_length", -1),
             ],
         )
+        client._chalk_client = getattr(connect, "_chalk_client", None)
+        return client
 
     def _refresh(self) -> None:
         """Re-authenticate and rebuild the gRPC channel.
@@ -542,7 +547,7 @@ class VolumeClient:
         Creates a fresh ``ConnectClient``, fetches a new bearer token,
         and replaces the channel, stubs, and metadata in-place.
         """
-        connect = ConnectClient()
+        connect = ConnectClient(chalk_client=getattr(self, "_chalk_client", None))
         connect._ensure_auth()
         self._channel.close()
 
@@ -580,7 +585,7 @@ class VolumeClient:
         """Close the underlying gRPC channel"""
         self._channel.close()
 
-    @traced("chalkcompute.volume.create")
+    @_instrumented("chalkcompute.volume.create")
     def create(self, name: str) -> Volume:
         """Create a new named volume.
 
@@ -1046,7 +1051,7 @@ def _upload_resumable(
 # ---------------------------------------------------------------------------
 
 
-@traced("chalkcompute.upload_lazy_files")
+@_instrumented("chalkcompute.upload_lazy_files")
 def upload_lazy_files(
     client: VolumeClient,
     image: Image,

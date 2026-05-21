@@ -38,7 +38,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from chalkcompute._connect import (
     ConnectClient,
@@ -83,6 +83,7 @@ def bind_model(
     qualified_name: str | None = None,
     method_name: str | None = None,
     client: ConnectClient | None = None,
+    chalk_client: Any | None = None,
 ) -> None:
     """Register a deployed Chalk model in the local chalkdf catalog.
 
@@ -140,7 +141,7 @@ def bind_model(
         logger.debug("Model %r already bound to %r; skipping", name, fqn)
         return
 
-    client = client or ConnectClient()
+    client = client or ConnectClient(chalk_client=chalk_client)
     web_url = _resolve_web_url(client, name, version=version)
 
     target, use_tls = grpc_target_from_url(web_url)

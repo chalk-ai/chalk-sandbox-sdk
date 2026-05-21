@@ -7,10 +7,15 @@ from typing import Any
 
 import pytest
 
+from chalkcompute import traced
 from chalkcompute._cls import RemoteClass, _NoOpClass, after, before, cls, method
 from chalkcompute._cls import _strip_chalkcompute_from_class_source
 from chalkcompute._function import RemoteFunction, _NoOpFunction, function
-from chalkcompute._function import _REMOTE_ENV_VAR, _strip_chalkcompute_from_source
+from chalkcompute._function import (
+    _REMOTE_ENV_VAR,
+    _source_file_for_deploy,
+    _strip_chalkcompute_from_source,
+)
 
 
 def test_function_decorator_accepts_called_and_uncalled_forms(
@@ -176,6 +181,36 @@ def test_function_source_strip_handles_uncalled_direct_import() -> None:
     namespace: dict[str, Any] = {}
     exec(stripped, namespace)
     assert namespace["add"](1, 2) == 3
+
+
+def test_function_source_strip_removes_direct_imported_traced_decorator() -> None:
+    source = textwrap.dedent(
+        """
+        from chalkcompute import function as remote_function, traced as span
+
+        @span("workflow")
+        @remote_function
+        def add(x: int, y: int) -> int:
+            return x + y
+        """
+    )
+
+    stripped = _strip_chalkcompute_from_source(source)
+
+    assert "chalkcompute" not in stripped
+    assert "@span" not in stripped
+    assert "@remote_function" not in stripped
+    namespace: dict[str, Any] = {}
+    exec(stripped, namespace)
+    assert namespace["add"](1, 2) == 3
+
+
+def test_source_file_for_deploy_unwraps_traced_function() -> None:
+    @traced
+    def add(x: int, y: int) -> int:
+        return x + y
+
+    assert Path(_source_file_for_deploy(add)).resolve() == Path(__file__).resolve()
 
 
 def test_function_source_strip_handles_ipython_cached_source(

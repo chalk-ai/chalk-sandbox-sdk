@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import importlib
+import logging
 from dataclasses import dataclass
 from typing import Any, Sequence
+
+logger = logging.getLogger(__name__)
 
 _NativeRemoteCallClient: Any | None
 _NATIVE_IMPORT_ERROR: ImportError | None
@@ -17,6 +20,8 @@ except ImportError as exc:  # pragma: no cover - exercised in source checkouts
 else:
     _NativeRemoteCallClient = getattr(_remote_call_native, "RemoteCallClient")
     _NATIVE_IMPORT_ERROR = None
+
+_warned_per_call_metadata_unsupported = False
 
 
 class RemoteCallClientUnavailable(RuntimeError):
@@ -114,12 +119,52 @@ class RemoteCallClient:
                 poll_backoff_multiplier,
                 max_message_size,
             )
+        self._supports_per_call_metadata: bool | None = None
 
-    def call_ipc(self, name: str, input_ipc: bytes) -> list[bytes]:
-        return list(self._inner.call_ipc(name, input_ipc))
+    def _warn_per_call_metadata_unsupported(self) -> None:
+        global _warned_per_call_metadata_unsupported
+        if _warned_per_call_metadata_unsupported:
+            return
+        _warned_per_call_metadata_unsupported = True
+        logger.warning(
+            "Remote function tracing metadata was dropped because the installed "
+            "chalkcompute._remote_call_native extension does not support per-call "
+            "metadata. Rebuild or reinstall chalkcompute to enable nested remote-call tracing."
+        )
 
-    def enqueue(self, name: str, input_ipc: bytes) -> str:
-        return str(self._inner.enqueue(name, input_ipc))
+    def call_ipc(
+        self,
+        name: str,
+        input_ipc: bytes,
+        metadata: Sequence[tuple[str, str]] = (),
+    ) -> list[bytes]:
+        if not metadata or self._supports_per_call_metadata is False:
+            return list(self._inner.call_ipc(name, input_ipc))
+        try:
+            chunks = list(self._inner.call_ipc(name, input_ipc, list(metadata)))
+            self._supports_per_call_metadata = True
+            return chunks
+        except TypeError:
+            self._supports_per_call_metadata = False
+            self._warn_per_call_metadata_unsupported()
+            return list(self._inner.call_ipc(name, input_ipc))
+
+    def enqueue(
+        self,
+        name: str,
+        input_ipc: bytes,
+        metadata: Sequence[tuple[str, str]] = (),
+    ) -> str:
+        if not metadata or self._supports_per_call_metadata is False:
+            return str(self._inner.enqueue(name, input_ipc))
+        try:
+            call_id = str(self._inner.enqueue(name, input_ipc, list(metadata)))
+            self._supports_per_call_metadata = True
+            return call_id
+        except TypeError:
+            self._supports_per_call_metadata = False
+            self._warn_per_call_metadata_unsupported()
+            return str(self._inner.enqueue(name, input_ipc))
 
     def poll_next(
         self,
@@ -177,6 +222,8 @@ def resolve_service_auth_context() -> ServiceAuthContext | None:
         auth_endpoint=str(raw["auth_endpoint"]),
         exchange_token=str(raw["exchange_token"]),
         environment_id=str(raw["environment_id"]),
-        requested_permissions=tuple(int(value) for value in raw["requested_permissions"]),
+        requested_permissions=tuple(
+            int(value) for value in raw["requested_permissions"]
+        ),
         grpc_engine=grpc_engine,
     )

@@ -10,7 +10,7 @@ import logging
 import os
 import re
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Mapping
 from urllib.parse import urlparse
 
 import grpc
@@ -20,7 +20,7 @@ from chalkcompute._remote_call_client import (
     ServiceAuthContext,
     resolve_service_auth_context,
 )
-from chalkcompute._tracing import traced as _traced
+from chalkcompute._tracing import _instrumented
 
 logger = logging.getLogger(__name__)
 
@@ -151,9 +151,7 @@ class ConnectClient:
         self._access_token = data["access_token"]
         self._primary_environment = data.get("primary_environment")
         self._grpc_engines = _string_map(data.get("grpc_engines"))
-        self._environment_id_to_name = _string_map(
-            data.get("environment_id_to_name")
-        )
+        self._environment_id_to_name = _string_map(data.get("environment_id_to_name"))
         self._env_id = self._resolve_environment_id(
             requested_env or self._primary_environment or ""
         )
@@ -210,6 +208,7 @@ class ConnectClient:
         method: str,
         body: dict[str, Any],
         timeout: float = 30,
+        extra_headers: Mapping[str, str] | None = None,
     ) -> httpx.Response:
         """Make a Connect-protocol RPC call.
 
@@ -223,6 +222,9 @@ class ConnectClient:
             JSON-serializable request body.
         timeout
             Request timeout in seconds.
+        extra_headers
+            Additional request headers. These are merged per call and do not
+            mutate the client's cached auth headers.
 
         Returns
         -------
@@ -239,10 +241,13 @@ class ConnectClient:
             self._ensure_auth()
             assert self._api_server is not None
             assert self._headers is not None
+            headers = self._headers
+            if extra_headers:
+                headers = {**headers, **extra_headers}
             resp = httpx.post(
                 f"{self._api_server}/{service}/{method}",
                 json=body,
-                headers=self._headers,
+                headers=headers,
                 timeout=timeout,
             )
             span.set_attribute("http.response.status_code", resp.status_code)
@@ -258,7 +263,7 @@ class ConnectClient:
 # ---------------------------------------------------------------------------
 
 
-@_traced("chalkcompute.build_image")
+@_instrumented("chalkcompute.build_image")
 def build_image(
     client: ConnectClient,
     image: Image,
@@ -355,7 +360,7 @@ def build_image_from_spec(image: Image, chalk_client: Any | None = None) -> str:
     return build_image(client, image)
 
 
-@_traced("chalkcompute.build_image_with_volumes")
+@_instrumented("chalkcompute.build_image_with_volumes")
 def build_image_with_volumes(
     client: ConnectClient,
     image: Image,
