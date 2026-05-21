@@ -290,7 +290,7 @@ class Container:
             from google.protobuf import duration_pb2
             from google.protobuf.json_format import Parse, ParseError
             try:
-                Parse(f'"{lifetime}"', duration_pb2.Duration())
+                Parse(f'"{lifetime}"', duration_pb2.Duration())  # ty: ignore[unresolved-attribute]
             except ParseError:
                 raise ValueError(
                     f"Invalid lifetime {lifetime!r}. "
