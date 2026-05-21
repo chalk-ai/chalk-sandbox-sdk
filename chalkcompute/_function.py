@@ -1042,6 +1042,12 @@ class RemoteFunction:
             validate_dns_label(name)
         self._explicit_name = name
         self._image = image
+        if cpu is not None and not isinstance(cpu, str):
+            raise TypeError(f"cpu must be a string such as '2' or '500m', got {cpu!r}")
+        if memory is not None and not isinstance(memory, str):
+            raise TypeError(f"memory must be a string such as '2Gi' or '512Mi', got {memory!r}")
+        if gpu is not None and not isinstance(gpu, str):
+            raise TypeError(f"gpu must be a string such as 'nvidia-l4', got {gpu!r}")
         self._cpu = cpu
         self._memory = memory
         self._gpu = gpu
@@ -1051,6 +1057,13 @@ class RemoteFunction:
 
             self._env[MODELS_ENV_VAR] = encode_models_env(models)
         self._secrets: list[_Secret] = list(secrets or [])
+        if volumes is not None:
+            for item in volumes:
+                if not (isinstance(item, (tuple, list)) and len(item) == 2 and all(isinstance(s, str) for s in item)):
+                    raise ValueError(
+                        f"Each volumes entry must be a (name, mount_path) string tuple, got {item!r}. "
+                        f"Example: volumes=[('my-volume', '/data')]"
+                    )
         self._base_volumes: list[tuple[str, str]] = list(volumes or [])
         self._volumes: list[tuple[str, str]] = list(self._base_volumes)
         self._min_replicas = min_replicas
