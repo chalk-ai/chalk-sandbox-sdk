@@ -136,6 +136,7 @@ class ScalingGroup:
         shutdown_delay_seconds: int | None = None,
         scaling_interval_seconds: int | None = None,
         target_cpu_utilization_percentage: int | None = None,
+        chalk_client: Any | None = None,
     ) -> None:
         self._image = image
         if name is not None:
@@ -161,12 +162,12 @@ class ScalingGroup:
         self._scaling_group_id: str | None = None
         self._scaling_group_info: ScalingGroupInfo | None = None
 
-        self._client = ConnectClient()
+        self._client = ConnectClient(chalk_client=chalk_client)
 
     # -- Alternate constructors ------------------------------------------------
 
     @classmethod
-    def from_id(cls, scaling_group_id: str) -> ScalingGroup:
+    def from_id(cls, scaling_group_id: str, *, chalk_client: Any | None = None) -> ScalingGroup:
         """Attach to an existing scaling group by ID.
 
         Parameters
@@ -184,7 +185,7 @@ class ScalingGroup:
         ScalingGroupError
             If the scaling group cannot be found.
         """
-        sg = cls._make_empty()
+        sg = cls._make_empty(chalk_client=chalk_client)
         resp = sg._client.rpc(_SVC, "GetScalingGroup", {"id": scaling_group_id})
         if resp.status_code != 200:
             raise ScalingGroupError(f"GetScalingGroup failed: {resp.text}")
@@ -195,7 +196,7 @@ class ScalingGroup:
         return sg
 
     @classmethod
-    def from_name(cls, name: str) -> ScalingGroup:
+    def from_name(cls, name: str, *, chalk_client: Any | None = None) -> ScalingGroup:
         """Attach to an existing scaling group by name.
 
         Parameters
@@ -213,7 +214,7 @@ class ScalingGroup:
         ScalingGroupError
             If the scaling group cannot be found.
         """
-        sg = cls._make_empty()
+        sg = cls._make_empty(chalk_client=chalk_client)
         resp = sg._client.rpc(_SVC, "GetScalingGroup", {"name": name})
         if resp.status_code != 200:
             raise ScalingGroupError(f"GetScalingGroup failed: {resp.text}")
@@ -225,7 +226,7 @@ class ScalingGroup:
         return sg
 
     @classmethod
-    def _make_empty(cls) -> ScalingGroup:
+    def _make_empty(cls, *, chalk_client: Any | None = None) -> ScalingGroup:
         sg = cls.__new__(cls)
         sg._image = None  # type: ignore[assignment]
         sg._name = None
@@ -246,7 +247,7 @@ class ScalingGroup:
         sg._built_image_uri = None
         sg._scaling_group_id = None
         sg._scaling_group_info = None
-        sg._client = ConnectClient()
+        sg._client = ConnectClient(chalk_client=chalk_client)
         return sg
 
     # -- Lifecycle -------------------------------------------------------------

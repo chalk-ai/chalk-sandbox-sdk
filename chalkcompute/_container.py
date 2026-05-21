@@ -272,6 +272,7 @@ class Container:
         security_policy: ContainerSecurityPolicy | None = None,
         network_policy: NetworkPolicy | None = None,
         tags: dict[str, str] | None = None,
+        chalk_client: Any | None = None,
     ) -> None:
         self._image = image
         if name is not None:
@@ -307,12 +308,12 @@ class Container:
         self._container_info: ContainerInfo | None = None
         self._upserted_secret_names: list[str] = []
 
-        self._client = ConnectClient()
+        self._client = ConnectClient(chalk_client=chalk_client)
 
     # -- Alternate constructors ------------------------------------------------
 
     @classmethod
-    def from_id(cls, container_id: str) -> Container:
+    def from_id(cls, container_id: str, *, chalk_client: Any | None = None) -> Container:
         """Attach to an existing container by ID.
 
         Parameters
@@ -330,7 +331,7 @@ class Container:
         ContainerError
             If the container cannot be found.
         """
-        c = cls._make_empty()
+        c = cls._make_empty(chalk_client=chalk_client)
         resp = c._client.rpc(_SVC, "GetContainer", {"id": container_id})
         if resp.status_code != 200:
             raise ContainerError(f"GetContainer failed: {resp.text}")
@@ -339,7 +340,7 @@ class Container:
         return c
 
     @classmethod
-    def from_name(cls, name: str) -> Container:
+    def from_name(cls, name: str, *, chalk_client: Any | None = None) -> Container:
         """Attach to an existing container by name.
 
         Parameters
@@ -357,7 +358,7 @@ class Container:
         ContainerError
             If the container cannot be found.
         """
-        c = cls._make_empty()
+        c = cls._make_empty(chalk_client=chalk_client)
         resp = c._client.rpc(_SVC, "GetContainer", {"name": name})
         if resp.status_code != 200:
             raise ContainerError(f"GetContainer failed: {resp.text}")
@@ -367,7 +368,7 @@ class Container:
         return c
 
     @classmethod
-    def _make_empty(cls) -> Container:
+    def _make_empty(cls, *, chalk_client: Any | None = None) -> Container:
         c = cls.__new__(cls)
         c._image = None  # type: ignore[assignment]
         c._name = None
@@ -388,7 +389,7 @@ class Container:
         c._container_id = None
         c._container_info = None
         c._upserted_secret_names = []
-        c._client = ConnectClient()
+        c._client = ConnectClient(chalk_client=chalk_client)
         return c
 
     # -- Image building (Container uses BuildCustomImage with retries) ---------

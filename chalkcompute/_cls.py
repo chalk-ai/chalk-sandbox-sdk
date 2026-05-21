@@ -571,6 +571,7 @@ class RemoteClass:
         concurrency: int | ConcurrencyPolicy | None = None,
         quota: int | QueuePolicy | None = None,
         schedule: str | None = None,
+        chalk_client: Any | None = None,
     ) -> None:
         self._user_cls = user_cls
         self._class_name = user_cls.__name__
@@ -615,7 +616,7 @@ class RemoteClass:
             QueuePolicy.from_int_or_policy(quota) if quota is not None else None
         )
 
-        self._client = ConnectClient()
+        self._client = ConnectClient(chalk_client=chalk_client)
         self._deployed = False
 
         # Scan the class for markers
@@ -675,7 +676,7 @@ class RemoteClass:
     # -- Alternate constructors ------------------------------------------------
 
     @classmethod
-    def from_name(cls, name: str) -> RemoteClass:
+    def from_name(cls, name: str, *, chalk_client: Any | None = None) -> RemoteClass:
         """Attach to an existing remote class by name.
 
         Discovers all function versions whose ``functionName`` starts with
@@ -696,7 +697,7 @@ class RemoteClass:
         ClassError
             If no function versions are found for the given name.
         """
-        rc = cls._make_empty(name)
+        rc = cls._make_empty(name, chalk_client=chalk_client)
 
         # List all function versions, paginating, and collect those matching
         entries: list[tuple[dict, dict | None]] = []
@@ -753,7 +754,7 @@ class RemoteClass:
         return rc
 
     @classmethod
-    def _make_empty(cls, name: str) -> RemoteClass:
+    def _make_empty(cls, name: str, *, chalk_client: Any | None = None) -> RemoteClass:
         rc = cls.__new__(cls)
         rc._user_cls = None  # type: ignore[assignment]
         rc._class_name = name
@@ -780,7 +781,7 @@ class RemoteClass:
         rc._rate_limit = None
         rc._concurrency = None
         rc._quota = None
-        rc._client = ConnectClient()
+        rc._client = ConnectClient(chalk_client=chalk_client)
         rc._deployed = False
         rc._methods = {}
         rc._before_name = None
