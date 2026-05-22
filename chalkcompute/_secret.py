@@ -101,6 +101,8 @@ class Secret:
         Secret
             A secret reference bound to the named integration.
         """
+        if not name or not name.strip():
+            raise ValueError("integration name cannot be empty")
         return cls(
             _integration_name=name,
             _keys=list(keys or []),
