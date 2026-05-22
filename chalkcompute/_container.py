@@ -859,6 +859,8 @@ class Container:
         grace_period_seconds
             Optional grace period before forceful termination.
         """
+        if self._container_id is None:
+            raise ContainerError("container has not been started; call .run() first")
         if self._container_id is not None:
             body: dict[str, Any] = {"id": self._container_id}
             if grace_period_seconds is not None:
