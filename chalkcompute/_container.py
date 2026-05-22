@@ -287,7 +287,13 @@ class Container:
         self._cpu = cpu
         self._memory = memory
         self._gpu = gpu
-        self._env = env or {}
+        if env is not None:
+            for k, v in env.items():
+                if not isinstance(k, str) or not k:
+                    raise ValueError(f"env keys must be non-empty strings, got {k!r}")
+                if not isinstance(v, str):
+                    raise ValueError(f"env values must be strings, got {v!r} for key {k!r}")
+        self._env = dict(env) if env else {}
         self._secrets = list(secrets or [])
         if volumes is not None:
             for item in volumes:
@@ -297,6 +303,8 @@ class Container:
                         f"Example: volumes=[('my-volume', '/data')]"
                     )
         self._volumes: list[tuple[str, str]] = list(volumes or [])
+        if port is not None and not (1 <= port <= 65535):
+            raise ValueError(f"port must be between 1 and 65535, got {port!r}")
         self._port = port
         self._entrypoint = entrypoint
         if lifetime is not None:

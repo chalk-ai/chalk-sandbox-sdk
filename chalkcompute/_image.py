@@ -410,6 +410,8 @@ class Image:
         ...     )
         ... )
         """
+        if strategy not in ("copy", "volume"):
+            raise ValueError(f"invalid strategy {strategy!r}, must be 'copy' or 'volume'")
         new = self._copy()
         if strategy == "volume":
             _validate_lazy_local_file_destination(dest)
