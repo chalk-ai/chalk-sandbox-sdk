@@ -711,8 +711,10 @@ class Container:
                     f"Container {self._container_id} entered {info.status} state"
                 )
             time.sleep(poll_interval)
+        status = self._container_info.status if self._container_info else "unknown"
         raise ContainerError(
-            f"Container {self._container_id} timed out after {timeout}s"
+            f"Container {self._container_id} timed out after {timeout}s "
+            f"(last status: {status})"
         )
 
     def _wait_for_volume_files(
