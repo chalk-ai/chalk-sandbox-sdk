@@ -109,6 +109,8 @@ class Image:
         >>> img = Image.base("python:3.14-slim-trixie")
         >>> img = Image.base("ghcr.io/my-org/my-image:latest")
         """
+        if not image or not image.strip():
+            raise ValueError("base image reference cannot be empty")
         return cls(image)
 
     @classmethod
