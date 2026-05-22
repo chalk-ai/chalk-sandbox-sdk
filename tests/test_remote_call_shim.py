@@ -480,3 +480,61 @@ class TestShimViaRemoteCallLib:
             [{}, {}],
         )
         assert _decode_result_column(payloads) == [[11], [22, 33]]
+
+
+class TestGenerateHandlerShimFastAPI:
+    """The fastapi-mode shim is a one-liner that re-exports the user's ASGI
+    app callable; the chalk-remote-call server then invokes it directly with
+    (scope, receive, send) via process_batches_asgi."""
+
+    def test_shim_reexports_app_callable(self):
+        async def app(
+            scope: dict, receive, send  # type: ignore[no-untyped-def]
+        ) -> None:
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        _install_user_module(app=app)
+        ns = _load_shim(_generate_handler_shim("app", mode="fastapi"))
+        assert ns["handler"] is app
+
+    def test_shim_routes_through_process_batches_asgi(self):
+        # Depends on chalk-remote-call-python's ASGI module — added in a
+        # companion PR. Skip if the installed version doesn't ship it yet.
+        pytest.importorskip("chalk_remote_call.asgi_handler")
+        from chalk_remote_call._gen.chalk.runtime.v1 import asgi_pb2
+        from chalk_remote_call.asgi_handler import (
+            decode_asgi_inputs,
+            encode_asgi_outputs,
+            process_batches_asgi,
+        )
+
+        async def app(scope, receive, send):  # type: ignore[no-untyped-def]
+            assert scope["type"] == "http"
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 201,
+                    "headers": [(b"content-type", b"text/plain")],
+                }
+            )
+            await send({"type": "http.response.body", "body": b"created"})
+
+        _install_user_module(app=app)
+        ns = _load_shim(_generate_handler_shim("app", mode="fastapi"))
+
+        scope_msg = asgi_pb2.Asgi()
+        scope_msg.http.method = "POST"
+        scope_msg.http.scheme = "http"
+        scope_msg.http.path = "/things"
+        scope_msg.http.http_version = "1.1"
+
+        ipc_in = encode_asgi_outputs([scope_msg])
+        chunks = process_batches_asgi(ipc_in, ns["handler"], None, {})
+        decoded = decode_asgi_inputs(chunks[0])
+        assert [m.WhichOneof("message") for m in decoded] == [
+            "http_response_start",
+            "http_response_body",
+        ]
+        assert decoded[0].http_response_start.status == 201
+        assert decoded[1].http_response_body.body == b"created"
