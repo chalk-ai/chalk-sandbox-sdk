@@ -1079,6 +1079,14 @@ class RemoteFunction:
                     )
         self._base_volumes: list[tuple[str, str]] = list(volumes or [])
         self._volumes: list[tuple[str, str]] = list(self._base_volumes)
+        if min_replicas < 0:
+            raise ValueError(f"min_replicas must be >= 0, got {min_replicas}")
+        if max_replicas < 0:
+            raise ValueError(f"max_replicas must be >= 0, got {max_replicas}")
+        if min_replicas > max_replicas:
+            raise ValueError(
+                f"min_replicas ({min_replicas}) must be <= max_replicas ({max_replicas})"
+            )
         self._min_replicas = min_replicas
         self._max_replicas = max_replicas
         self._shutdown_delay_seconds = shutdown_delay_seconds

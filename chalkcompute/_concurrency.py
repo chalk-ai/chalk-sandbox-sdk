@@ -32,5 +32,7 @@ class ConcurrencyPolicy:
         if isinstance(value, bool):
             raise TypeError(f"Expected int or {cls.__name__}, got bool")
         if isinstance(value, int):
+            if value <= 0:
+                raise ValueError(f"concurrency must be > 0, got {value}")
             return cls(max_concurrent=value)
         return value
