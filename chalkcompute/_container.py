@@ -311,11 +311,16 @@ class Container:
             from google.protobuf import duration_pb2
             from google.protobuf.json_format import Parse, ParseError
             try:
-                Parse(f'"{lifetime}"', duration_pb2.Duration())  # ty: ignore[unresolved-attribute]
+                _parsed_lifetime = Parse(f'"{lifetime}"', duration_pb2.Duration())  # ty: ignore[unresolved-attribute]
             except ParseError:
                 raise ValueError(
                     f"Invalid lifetime {lifetime!r}. "
                     "Use a protobuf duration string (e.g. '30s', '1.5s', '300s')."
+                )
+            if _parsed_lifetime.seconds == 0 and _parsed_lifetime.nanos == 0:  # ty: ignore[unresolved-attribute]
+                raise ValueError(
+                    f"Invalid lifetime {lifetime!r}: lifetime must be greater than 0 "
+                    "(e.g. '30s', '5m')."
                 )
         self._lifetime = lifetime
         self._enable_ssh = enable_ssh
@@ -707,6 +712,12 @@ class Container:
             if info.status == "Running":
                 return
             if info.status in ("Failed", "Succeeded"):
+                if info.status == "Succeeded" and self._lifetime is not None:
+                    raise ContainerError(
+                        f"Container {self._container_id} expired before becoming ready "
+                        f"(lifetime={self._lifetime!r}). The configured lifetime may be "
+                        f"shorter than pod scheduling time."
+                    )
                 raise ContainerError(
                     f"Container {self._container_id} entered {info.status} state"
                 )
