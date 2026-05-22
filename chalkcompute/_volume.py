@@ -345,6 +345,37 @@ class Volume:
         self.put_file(path, Path(local_path).read_bytes())
         return self
 
+    @_instrumented("chalkcompute.volume.put_file_from_url")
+    def put_file_from_url(self, path: str, source_url: str) -> Volume:
+        """Tell the server to fetch a file from a URL and store it in the volume.
+
+        The server downloads the file directly from ``source_url`` into the
+        volume's backing object storage — no data passes through the client.
+        The server-side fetch runs asynchronously; the RPC returns immediately.
+
+        Parameters
+        ----------
+        path
+            Destination path within the volume.
+        source_url
+            URL the server will download from (e.g. a presigned download URL).
+
+        Returns
+        -------
+        Volume
+            ``self``, to allow chaining.
+        """
+        self._ensure_ready()
+        try:
+            self._client._stub.PutFile(
+                pb.PutFileRequest(volume_name=self._name, path=path, source_url=source_url),
+                metadata=self._client._metadata,
+            )
+        except grpc.RpcError as e:
+            _handle_rpc_error(e, self._name)
+            raise
+        return self
+
     def remove_file(self, path: str) -> Volume:
         """Remove a file from the volume.
 

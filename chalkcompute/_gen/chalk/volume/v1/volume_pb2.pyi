@@ -125,21 +125,24 @@ class GetFileResponse(_message.Message):
     def __init__(self, data: _Optional[bytes] = ..., signed_download_uri: _Optional[str] = ...) -> None: ...
 
 class PutFileRequest(_message.Message):
-    __slots__ = ("volume_name", "path", "data", "storage_object_id")
+    __slots__ = ("volume_name", "path", "data", "storage_object_id", "source_url")
     VOLUME_NAME_FIELD_NUMBER: _ClassVar[int]
     PATH_FIELD_NUMBER: _ClassVar[int]
     DATA_FIELD_NUMBER: _ClassVar[int]
     STORAGE_OBJECT_ID_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_URL_FIELD_NUMBER: _ClassVar[int]
     volume_name: str
     path: str
     data: bytes
     storage_object_id: str
+    source_url: str
     def __init__(
         self,
         volume_name: _Optional[str] = ...,
         path: _Optional[str] = ...,
         data: _Optional[bytes] = ...,
         storage_object_id: _Optional[str] = ...,
+        source_url: _Optional[str] = ...,
     ) -> None: ...
 
 class PutFileResponse(_message.Message):
