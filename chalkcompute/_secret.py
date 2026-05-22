@@ -63,6 +63,8 @@ class Secret:
         Secret
             A secret reference.
         """
+        if not name or not name.strip():
+            raise ValueError("secret name cannot be empty")
         aliases = {name: alias} if alias else {}
         return cls(
             _secret_name=name,
@@ -199,7 +201,7 @@ class Secret:
         if self._local_env_var:
             name = self._env_var_name or self._local_env_var
             return f"Secret.from_local_env({self._local_env_var!r}, env_var_name={name!r})"
-        if self._secret_name:
+        if self._secret_name is not None:
             return f"Secret.from_env({self._secret_name!r})"
         return f"Secret.from_integration({self._integration_name!r})"
 

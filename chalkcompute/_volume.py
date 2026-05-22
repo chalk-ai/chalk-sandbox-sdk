@@ -212,6 +212,8 @@ class Volume:
         create_if_missing: bool = True,
         chalk_client: Any | None = None,
     ) -> None:
+        if not name or not name.strip():
+            raise ValueError("volume name cannot be empty")
         self._client = client or VolumeClient.from_connect(ConnectClient(chalk_client=chalk_client))
         self._name = name
         self._info: VolumeInfo | None = None
