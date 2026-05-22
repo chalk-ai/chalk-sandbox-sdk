@@ -1,11 +1,16 @@
 import asyncio
 import base64
+import contextvars
 
 import pyarrow as pa
 import pytest
 
 from chalkcompute._function import FunctionVersionInfo, RemoteFunction
-from chalkcompute._remote_call_client import RemoteCallPollResult, ServiceAuthContext
+from chalkcompute._remote_call_client import (
+    RemoteCallClientUnavailable,
+    RemoteCallPollResult,
+    ServiceAuthContext,
+)
 
 
 def _result_ipc(values: list[object]) -> bytes:
@@ -260,6 +265,67 @@ def test_direct_call_injects_fresh_trace_metadata_on_cached_client(monkeypatch) 
         key == "x-chalk-function-name"
         for key, _ in FakeRemoteCallClient.instances[0].calls[0][2]
     )
+
+
+def test_awaited_direct_call_preserves_trace_context_in_worker_thread(
+    monkeypatch,
+) -> None:
+    trace_metadata_var: contextvars.ContextVar[list[tuple[str, str]]] = (
+        contextvars.ContextVar("trace_metadata")
+    )
+    monkeypatch.setattr(
+        "chalkcompute._function.current_trace_metadata",
+        lambda: trace_metadata_var.get([]),
+    )
+    FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
+
+    fn = _remote_function()
+
+    async def call() -> int:
+        token = trace_metadata_var.set([("traceparent", "trace-id")])
+        try:
+            return await fn(41)
+        finally:
+            trace_metadata_var.reset(token)
+
+    assert asyncio.run(call()) == 42
+    assert ("traceparent", "trace-id") in FakeRemoteCallClient.instances[0].calls[0][2]
+
+
+def test_direct_call_python_grpc_fallback_combines_auth_and_trace_metadata(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        "chalkcompute._function.current_trace_metadata",
+        lambda: [("traceparent", "trace-id")],
+    )
+
+    fn = _remote_function()
+
+    def unavailable(*, queue: bool = False) -> object:
+        raise RemoteCallClientUnavailable("native unavailable")
+
+    def fake_python_grpc(
+        feather_bytes: bytes,
+        function_name: str,
+        metadata: list[tuple[str, str]],
+    ) -> list[bytes]:
+        captured["input"] = _read_input(feather_bytes)
+        captured["function_name"] = function_name
+        captured["metadata"] = metadata
+        return [_result_ipc([42])]
+
+    monkeypatch.setattr(fn, "_ensure_remote_call_client", unavailable)
+    monkeypatch.setattr(fn, "_call_direct_chunks_python_grpc", fake_python_grpc)
+
+    assert fn(41) == 42
+
+    assert captured["input"] == {"x": [41]}
+    assert captured["function_name"] == "catalog-add"
+    assert ("authorization", "Bearer access-token") in captured["metadata"]
+    assert ("x-chalk-env-id", "env-id") in captured["metadata"]
+    assert ("traceparent", "trace-id") in captured["metadata"]
 
 
 def test_defer_get_and_purge_use_queue_client() -> None:

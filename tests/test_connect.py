@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 from typing import Any
 
@@ -55,13 +56,18 @@ class _Tracer:
     def __init__(self) -> None:
         self.span_names: list[str] = []
         self.spans: list[_Span] = []
+        self.active_span_names: list[str] = []
 
     @contextlib.contextmanager
     def start_as_current_span(self, name: str, *_args: object, **_kwargs: object):
         self.span_names.append(name)
         span = _Span()
         self.spans.append(span)
-        yield span
+        self.active_span_names.append(name)
+        try:
+            yield span
+        finally:
+            self.active_span_names.pop()
 
 
 class _OtelContext:
@@ -176,7 +182,9 @@ class TestConnectClientGrpcEngineTarget:
 
 
 class TestConnectClientTracing:
-    def test_internal_configure_tracing_installs_parent_based_sampler(self, monkeypatch):
+    def test_internal_configure_tracing_installs_parent_based_sampler(
+        self, monkeypatch
+    ):
         rates: list[float] = []
         monkeypatch.setattr(_tracing, "_initialized", False)
         monkeypatch.setattr(_tracing, "_provider", None)
@@ -280,6 +288,22 @@ class TestConnectClientTracing:
 
         assert run_workflow() == 42
         assert tracer.span_names == ["run_workflow"]
+
+    def test_async_traced_decorator_keeps_span_open_while_awaiting(self, monkeypatch):
+        tracer = _Tracer()
+        monkeypatch.setattr(_tracing, "_initialized", False)
+        monkeypatch.setattr(_tracing, "_provider", None)
+        monkeypatch.setattr(_tracing, "_user_tracing_configured", False)
+        monkeypatch.setattr(_tracing, "_install_tracer_provider", lambda _rate: None)
+        monkeypatch.setattr(_tracing, "get_tracer", lambda: tracer)
+
+        @_tracing.traced("workflow")
+        async def run_workflow() -> list[str]:
+            await asyncio.sleep(0)
+            return list(tracer.active_span_names)
+
+        assert asyncio.run(run_workflow()) == ["workflow"]
+        assert tracer.span_names == ["workflow"]
 
     def test_remote_function_call_span_noops_without_active_trace(self, monkeypatch):
         monkeypatch.setattr(

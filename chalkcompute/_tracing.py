@@ -12,6 +12,7 @@ import atexit
 import contextlib
 import functools
 import importlib
+import inspect
 import os
 from collections.abc import Callable, Iterator
 from typing import Any, TypeVar, cast, overload
@@ -218,9 +219,39 @@ def _default_span_name(func: Callable[..., Any]) -> str:
 
 
 def _decorate_traced(func: F, name: str | None) -> F:
+    span_name = name or _default_span_name(func)
+
+    if inspect.iscoroutinefunction(func):
+
+        @functools.wraps(func)
+        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+            with _span(span_name):
+                return await func(*args, **kwargs)
+
+        return async_wrapper  # ty: ignore[invalid-return-type]
+
+    if inspect.isasyncgenfunction(func):
+
+        @functools.wraps(func)
+        async def async_generator_wrapper(*args: Any, **kwargs: Any) -> Any:
+            with _span(span_name):
+                async for item in func(*args, **kwargs):
+                    yield item
+
+        return async_generator_wrapper  # ty: ignore[invalid-return-type]
+
+    if inspect.isgeneratorfunction(func):
+
+        @functools.wraps(func)
+        def generator_wrapper(*args: Any, **kwargs: Any) -> Any:
+            with _span(span_name):
+                yield from func(*args, **kwargs)
+
+        return generator_wrapper  # ty: ignore[invalid-return-type]
+
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        with _span(name or _default_span_name(func)):
+        with _span(span_name):
             return func(*args, **kwargs)
 
     return wrapper  # ty: ignore[invalid-return-type]
