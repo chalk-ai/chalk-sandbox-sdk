@@ -52,7 +52,7 @@ from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._remote_function_tracing import (
-    Tracing,
+    RemoteFunctionTracingConfig,
     TracingConfig,
     normalize_remote_function_tracing,
 )
@@ -1063,7 +1063,7 @@ class RemoteFunction:
         concurrency: int | ConcurrencyPolicy | None = None,
         quota: int | QueuePolicy | None = None,
         schedule: str | None = None,
-        tracing: TracingConfig | None = None,
+        tracing: RemoteFunctionTracingConfig | None = None,
         models: typing.Mapping[str, Any] | None = None,
         chalk_client: Any | None = None,
     ) -> None:
@@ -1332,7 +1332,7 @@ class RemoteFunction:
         deploy_image = (
             _make_base_image(
                 self._image,
-                include_tracing=isinstance(self._tracing, Tracing),
+                include_tracing=isinstance(self._tracing, TracingConfig),
             )
             .add_local_file(source_file, "/app/user_module.py")
             .add_local_file(shim_path, "/app/handler.py")
@@ -2093,7 +2093,7 @@ def function(
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
-    tracing: TracingConfig | None = None,
+    tracing: RemoteFunctionTracingConfig | None = None,
 ) -> RemoteFunction | _NoOpFunction: ...
 
 
@@ -2124,7 +2124,7 @@ def function(
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
-    tracing: TracingConfig | None = None,
+    tracing: RemoteFunctionTracingConfig | None = None,
 ) -> Callable[..., RemoteFunction | _NoOpFunction]:
     ...
 
@@ -2157,7 +2157,7 @@ def function(
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
-    tracing: TracingConfig | None = None,
+    tracing: RemoteFunctionTracingConfig | None = None,
 ) -> Callable[..., RemoteFunction | _NoOpFunction] | RemoteFunction | _NoOpFunction:
     """Decorator that deploys a function as a versioned remote function.
 
@@ -2259,7 +2259,7 @@ def function(
         :func:`~chalkcompute.bind_model` directly inside the function.
     tracing
         Set ``True`` to turn on server-side remote-function tracing. Use
-        :class:`~chalkcompute.Tracing` for sampling. Set ``False`` to
+        :class:`~chalkcompute.TracingConfig` for sampling. Set ``False`` to
         explicitly turn tracing off. When omitted, the server default is
         parent-based always-off: sampled incoming parents are honored, but
         untraced requests do not create new root traces.

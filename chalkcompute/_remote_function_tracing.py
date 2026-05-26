@@ -18,7 +18,7 @@ _MODE_TO_PROTO = {
 
 
 @dataclass(frozen=True)
-class Tracing:
+class TracingConfig:
     """Tracing config for customer compute spans."""
 
     sample_rate: float
@@ -79,23 +79,23 @@ def _validate_sample_rate(sample_rate: float) -> float:
     return rate
 
 
-TracingConfig = bool | Tracing
+RemoteFunctionTracingConfig = bool | TracingConfig
 
 
 def normalize_remote_function_tracing(
-    tracing: TracingConfig | None,
-) -> Tracing | _RemoteFunctionTracingPolicy | None:
+    tracing: RemoteFunctionTracingConfig | None,
+) -> TracingConfig | _RemoteFunctionTracingPolicy | None:
     if tracing is None:
         return None
     if isinstance(tracing, bool):
         return (
-            Tracing(sample_rate=1.0)
+            TracingConfig(sample_rate=1.0)
             if tracing
             else _RemoteFunctionTracingPolicy.always_off()
         )
-    if isinstance(tracing, Tracing):
+    if isinstance(tracing, TracingConfig):
         return tracing
     raise TypeError(
-        "tracing must be a bool or Tracing, "
+        "tracing must be a bool or TracingConfig, "
         f"got {type(tracing).__name__}"
     )

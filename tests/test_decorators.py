@@ -17,7 +17,7 @@ from chalkcompute._function import (
     _source_file_for_deploy,
     _strip_chalkcompute_from_source,
 )
-from chalkcompute._remote_function_tracing import Tracing
+from chalkcompute._remote_function_tracing import TracingConfig
 
 
 def test_function_decorator_accepts_called_and_uncalled_forms(
@@ -79,7 +79,7 @@ def test_function_decorator_passes_tracing(
         pass
 
     assert isinstance(traced_function, RemoteFunction)
-    assert deployed[0]._tracing == Tracing(sample_rate=1.0)
+    assert deployed[0]._tracing == TracingConfig(sample_rate=1.0)
 
 
 def test_function_deploy_image_installs_lightweight_runtime_by_default(
@@ -144,7 +144,7 @@ def test_stripped_function_deploy_image_installs_tracing_runtime_when_enabled(
     def add(x: int, y: int) -> int:
         return x + y
 
-    fn = RemoteFunction(add, tracing=Tracing(sample_rate=0.0))
+    fn = RemoteFunction(add, tracing=TracingConfig(sample_rate=0.0))
 
     image = fn._build_deploy_image()
 
@@ -303,7 +303,7 @@ def test_function_source_strip_removes_tracing_policy_decorator_arg() -> None:
         import chalkcompute
 
         @chalkcompute.function(
-            tracing=chalkcompute.Tracing(sample_rate=1.0),
+            tracing=chalkcompute.TracingConfig(sample_rate=1.0),
         )
         def add(x: int, y: int) -> int:
             return x + y
@@ -313,7 +313,7 @@ def test_function_source_strip_removes_tracing_policy_decorator_arg() -> None:
     stripped = _strip_chalkcompute_from_source(source)
 
     assert "chalkcompute" not in stripped
-    assert "Tracing" not in stripped
+    assert "TracingConfig" not in stripped
     namespace: dict[str, Any] = {}
     exec(stripped, namespace)
     assert namespace["add"](1, 2) == 3
