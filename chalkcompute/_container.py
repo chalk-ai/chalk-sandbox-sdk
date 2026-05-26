@@ -389,7 +389,7 @@ class Container:
         return c
 
     @classmethod
-    def list(cls, *, chalk_client: Any | None = None) -> list[ContainerInfo]:
+    def list_all(cls, *, chalk_client: Any | None = None) -> list[ContainerInfo]:
         """List all running containers in the current environment.
 
         Returns
