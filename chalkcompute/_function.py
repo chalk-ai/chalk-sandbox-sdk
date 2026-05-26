@@ -1703,6 +1703,7 @@ class RemoteFunction:
             requested_permissions=(
                 service_auth.requested_permissions if service_auth else None
             ),
+            initial_poll_delay_ms=5,
         )
         setattr(self, attr, client)
         return client
