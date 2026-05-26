@@ -52,8 +52,8 @@ from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._remote_function_tracing import (
-    RemoteFunctionTracingConfig,
-    TracingConfig,
+    TracingPolicy,
+    TracingPolicyConfig,
     normalize_remote_function_tracing,
 )
 from chalkcompute._retry import RetryPolicy
@@ -625,16 +625,19 @@ def _local_install_entrypoint(handler_cmd: list[str]) -> list[str]:
     ]
 
 
-def _remote_call_runtime_package(*, include_tracing: bool) -> str:
-    if include_tracing:
-        return "chalk-remote-call-python[tracing]"
-    return "chalk-remote-call-python"
+_REMOTE_CALL_RUNTIME_PACKAGE = "chalk-remote-call-python"
+
+
+def _remote_call_runtime_package_with_extras(extras: list[str]) -> str:
+    if not extras:
+        return _REMOTE_CALL_RUNTIME_PACKAGE
+    return f"{_REMOTE_CALL_RUNTIME_PACKAGE}[{','.join(sorted(extras))}]"
 
 
 def _make_base_image(
     user_image: _Image | None,
     *,
-    include_tracing: bool = False,
+    remote_call_runtime_package: str = _REMOTE_CALL_RUNTIME_PACKAGE,
 ) -> _Image:
     """Create the base deploy image with SDK packages and optional local overlay."""
     from chalkcompute._image import Image
@@ -672,15 +675,13 @@ def _make_base_image(
     elif strip_source:
         # Source is stripped of chalkcompute references — only install the
         # RPC runtime, not chalkcompute itself.
-        image = base.pip_install(
-            [_remote_call_runtime_package(include_tracing=include_tracing)]
-        )
+        image = base.pip_install([remote_call_runtime_package])
     else:
         from importlib.metadata import version as _pkg_version
 
         image = base.pip_install(
             [
-                _remote_call_runtime_package(include_tracing=include_tracing),
+                remote_call_runtime_package,
                 f"chalkcompute=={_pkg_version('chalkcompute')}",
             ]
         )
@@ -1063,7 +1064,7 @@ class RemoteFunction:
         concurrency: int | ConcurrencyPolicy | None = None,
         quota: int | QueuePolicy | None = None,
         schedule: str | None = None,
-        tracing: RemoteFunctionTracingConfig | None = None,
+        tracing: TracingPolicyConfig | None = None,
         models: typing.Mapping[str, Any] | None = None,
         chalk_client: Any | None = None,
     ) -> None:
@@ -1332,7 +1333,7 @@ class RemoteFunction:
         deploy_image = (
             _make_base_image(
                 self._image,
-                include_tracing=isinstance(self._tracing, TracingConfig),
+                remote_call_runtime_package=self._remote_call_runtime_package(),
             )
             .add_local_file(source_file, "/app/user_module.py")
             .add_local_file(shim_path, "/app/handler.py")
@@ -1549,6 +1550,12 @@ class RemoteFunction:
             progress_finish()
 
         return self
+
+    def _remote_call_runtime_package(self) -> str:
+        extras: list[str] = []
+        if isinstance(self._tracing, TracingPolicy):
+            extras.append("tracing")
+        return _remote_call_runtime_package_with_extras(extras)
 
     def _poll_until_running(
         self,
@@ -2093,7 +2100,7 @@ def function(
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
-    tracing: RemoteFunctionTracingConfig | None = None,
+    tracing: TracingPolicyConfig | None = None,
 ) -> RemoteFunction | _NoOpFunction: ...
 
 
@@ -2124,7 +2131,7 @@ def function(
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
-    tracing: RemoteFunctionTracingConfig | None = None,
+    tracing: TracingPolicyConfig | None = None,
 ) -> Callable[..., RemoteFunction | _NoOpFunction]:
     ...
 
@@ -2157,7 +2164,7 @@ def function(
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
-    tracing: RemoteFunctionTracingConfig | None = None,
+    tracing: TracingPolicyConfig | None = None,
 ) -> Callable[..., RemoteFunction | _NoOpFunction] | RemoteFunction | _NoOpFunction:
     """Decorator that deploys a function as a versioned remote function.
 
@@ -2259,7 +2266,7 @@ def function(
         :func:`~chalkcompute.bind_model` directly inside the function.
     tracing
         Set ``True`` to turn on server-side remote-function tracing. Use
-        :class:`~chalkcompute.TracingConfig` for sampling. Set ``False`` to
+        :class:`~chalkcompute.TracingPolicy` for sampling. Set ``False`` to
         explicitly turn tracing off. When omitted, the server default is
         parent-based always-off: sampled incoming parents are honored, but
         untraced requests do not create new root traces.

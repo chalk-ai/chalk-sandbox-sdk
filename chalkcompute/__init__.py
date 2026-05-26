@@ -39,9 +39,9 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "RateLimitPolicy": ("chalkcompute._rate_limit", "RateLimitPolicy"),
     "ConcurrencyPolicy": ("chalkcompute._concurrency", "ConcurrencyPolicy"),
     "QueuePolicy": ("chalkcompute._quota", "QueuePolicy"),
-    "TracingConfig": (
+    "TracingPolicy": (
         "chalkcompute._remote_function_tracing",
-        "TracingConfig",
+        "TracingPolicy",
     ),
     "function": ("chalkcompute._function", "function"),
     # _model.py

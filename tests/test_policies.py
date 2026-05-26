@@ -19,7 +19,7 @@ from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._function import FunctionError, RemoteFunction
 from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._remote_function_tracing import (
-    TracingConfig,
+    TracingPolicy,
     normalize_remote_function_tracing,
 )
 from chalkcompute._retry import RetryPolicy
@@ -149,28 +149,28 @@ class TestRetryPolicyKey:
             RetryPolicy.from_int_or_policy(True)  # type: ignore[arg-type]
 
 
-class TestTracingConfig:
+class TestTracingPolicy:
     def test_sample_rate_to_dict(self):
-        assert TracingConfig(sample_rate=0.25).to_dict() == {
+        assert TracingPolicy(sample_rate=0.25).to_dict() == {
             "mode": "TRACING_MODE_PARENT_BASED_TRACE_ID_RATIO",
             "sampleRate": 0.25,
         }
 
     def test_sample_rate_validation(self):
         with pytest.raises(ValueError, match="between 0.0 and 1.0"):
-            TracingConfig(sample_rate=1.5)
+            TracingPolicy(sample_rate=1.5)
 
         with pytest.raises(TypeError, match="number"):
-            TracingConfig(sample_rate=True)  # type: ignore[arg-type]
+            TracingPolicy(sample_rate=True)  # type: ignore[arg-type]
 
     def test_bool_tracing_config_normalization(self):
-        assert normalize_remote_function_tracing(True) == TracingConfig(sample_rate=1.0)
+        assert normalize_remote_function_tracing(True) == TracingPolicy(sample_rate=1.0)
         assert normalize_remote_function_tracing(False).to_dict() == {
             "mode": "TRACING_MODE_ALWAYS_OFF"
         }
 
     def test_invalid_tracing_config_rejected(self):
-        with pytest.raises(TypeError, match="tracing must be a bool or TracingConfig"):
+        with pytest.raises(TypeError, match="tracing must be a bool or TracingPolicy"):
             normalize_remote_function_tracing("on")  # type: ignore[arg-type]
 
 
@@ -292,7 +292,7 @@ class TestScheduleValidationFunction:
             return x + y
 
         client = _CapturingClient()
-        fn = RemoteFunction(add, tracing=TracingConfig(sample_rate=0.25))
+        fn = RemoteFunction(add, tracing=TracingPolicy(sample_rate=0.25))
         fn._client = client  # type: ignore[assignment]
         monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
         monkeypatch.setattr(
