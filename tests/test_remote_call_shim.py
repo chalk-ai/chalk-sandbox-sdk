@@ -96,7 +96,8 @@ class TestGenerateHandlerShimBatched:
     def test_signature(self):
         src = _generate_handler_shim("fn", batched=True)
         assert "def handler(events, contexts):" in src
-        assert "for event in events:" in src
+        assert "_flatten_events(events)" in src
+        assert "as_completed" in src
 
     def test_sync_multi_caller_returns_list_of_lists(self):
         def add(x: int, y: int) -> int:
