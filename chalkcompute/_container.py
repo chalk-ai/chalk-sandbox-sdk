@@ -389,6 +389,26 @@ class Container:
         return c
 
     @classmethod
+    def list(cls, *, chalk_client: Any | None = None) -> list[ContainerInfo]:
+        """List all running containers in the current environment.
+
+        Returns
+        -------
+        list[ContainerInfo]
+            Info records for all active containers, ordered by creation time descending.
+
+        Raises
+        ------
+        ContainerError
+            If the request fails.
+        """
+        c = cls._make_empty(chalk_client=chalk_client)
+        resp = c._client.rpc(_SVC, "ListContainers", {})
+        if resp.status_code != 200:
+            raise ContainerError(f"ListContainers failed: {resp.text}")
+        return [_parse_container_response(item) for item in resp.json().get("containers", [])]
+
+    @classmethod
     def _make_empty(cls, *, chalk_client: Any | None = None) -> Container:
         c = cls.__new__(cls)
         c._image = None  # type: ignore[assignment]
