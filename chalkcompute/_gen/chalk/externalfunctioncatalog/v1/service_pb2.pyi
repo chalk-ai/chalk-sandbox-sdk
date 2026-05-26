@@ -30,6 +30,13 @@ class SerializationFormat(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     SERIALIZATION_FORMAT_UNSPECIFIED: _ClassVar[SerializationFormat]
     SERIALIZATION_FORMAT_PYARROW: _ClassVar[SerializationFormat]
 
+class TracingMode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    TRACING_MODE_UNSPECIFIED: _ClassVar[TracingMode]
+    TRACING_MODE_PARENT_BASED_ALWAYS_OFF: _ClassVar[TracingMode]
+    TRACING_MODE_PARENT_BASED_TRACE_ID_RATIO: _ClassVar[TracingMode]
+    TRACING_MODE_ALWAYS_OFF: _ClassVar[TracingMode]
+
 class ExternalFunctionScheduledRunStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_UNSPECIFIED: _ClassVar[ExternalFunctionScheduledRunStatus]
@@ -47,6 +54,10 @@ RATE_LIMIT_PER_MINUTE: RateLimitPer
 RATE_LIMIT_PER_HOUR: RateLimitPer
 SERIALIZATION_FORMAT_UNSPECIFIED: SerializationFormat
 SERIALIZATION_FORMAT_PYARROW: SerializationFormat
+TRACING_MODE_UNSPECIFIED: TracingMode
+TRACING_MODE_PARENT_BASED_ALWAYS_OFF: TracingMode
+TRACING_MODE_PARENT_BASED_TRACE_ID_RATIO: TracingMode
+TRACING_MODE_ALWAYS_OFF: TracingMode
 EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_UNSPECIFIED: ExternalFunctionScheduledRunStatus
 EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_SCHEDULED: ExternalFunctionScheduledRunStatus
 EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_RUNNING: ExternalFunctionScheduledRunStatus
@@ -105,6 +116,16 @@ class QueuePolicy(_message.Message):
     key: str
     def __init__(self, max_items: _Optional[int] = ..., key: _Optional[str] = ...) -> None: ...
 
+class TracingPolicy(_message.Message):
+    __slots__ = ("mode", "sample_rate")
+    MODE_FIELD_NUMBER: _ClassVar[int]
+    SAMPLE_RATE_FIELD_NUMBER: _ClassVar[int]
+    mode: TracingMode
+    sample_rate: float
+    def __init__(
+        self, mode: _Optional[_Union[TracingMode, str]] = ..., sample_rate: _Optional[float] = ...
+    ) -> None: ...
+
 class FunctionConfig(_message.Message):
     __slots__ = (
         "serialization_format",
@@ -116,6 +137,7 @@ class FunctionConfig(_message.Message):
         "concurrency",
         "queue",
         "schedule",
+        "tracing",
     )
     class OptionsEntry(_message.Message):
         __slots__ = ("key", "value")
@@ -134,6 +156,7 @@ class FunctionConfig(_message.Message):
     CONCURRENCY_FIELD_NUMBER: _ClassVar[int]
     QUEUE_FIELD_NUMBER: _ClassVar[int]
     SCHEDULE_FIELD_NUMBER: _ClassVar[int]
+    TRACING_FIELD_NUMBER: _ClassVar[int]
     serialization_format: SerializationFormat
     options: _containers.ScalarMap[str, str]
     max_buffer_duration: int
@@ -143,6 +166,7 @@ class FunctionConfig(_message.Message):
     concurrency: ConcurrencyPolicy
     queue: QueuePolicy
     schedule: str
+    tracing: TracingPolicy
     def __init__(
         self,
         serialization_format: _Optional[_Union[SerializationFormat, str]] = ...,
@@ -154,6 +178,7 @@ class FunctionConfig(_message.Message):
         concurrency: _Optional[_Union[ConcurrencyPolicy, _Mapping]] = ...,
         queue: _Optional[_Union[QueuePolicy, _Mapping]] = ...,
         schedule: _Optional[str] = ...,
+        tracing: _Optional[_Union[TracingPolicy, _Mapping]] = ...,
     ) -> None: ...
 
 class ExternalFunctionVersion(_message.Message):
@@ -241,18 +266,21 @@ class ExternalFunctionVersionKey(_message.Message):
     def __init__(self, function_name: _Optional[str] = ..., version: _Optional[int] = ...) -> None: ...
 
 class GetExternalFunctionVersionRequest(_message.Message):
-    __slots__ = ("id", "key", "include_scaling_group")
+    __slots__ = ("id", "key", "include_scaling_group", "include_active_schedule")
     ID_FIELD_NUMBER: _ClassVar[int]
     KEY_FIELD_NUMBER: _ClassVar[int]
     INCLUDE_SCALING_GROUP_FIELD_NUMBER: _ClassVar[int]
+    INCLUDE_ACTIVE_SCHEDULE_FIELD_NUMBER: _ClassVar[int]
     id: str
     key: ExternalFunctionVersionKey
     include_scaling_group: bool
+    include_active_schedule: bool
     def __init__(
         self,
         id: _Optional[str] = ...,
         key: _Optional[_Union[ExternalFunctionVersionKey, _Mapping]] = ...,
         include_scaling_group: bool = ...,
+        include_active_schedule: bool = ...,
     ) -> None: ...
 
 class GetExternalFunctionVersionResponse(_message.Message):
@@ -368,15 +396,21 @@ class ExternalFunctionSummary(_message.Message):
     ) -> None: ...
 
 class ListExternalFunctionsRequest(_message.Message):
-    __slots__ = ("cursor", "limit", "include_scaling_group")
+    __slots__ = ("cursor", "limit", "include_scaling_group", "include_active_schedule")
     CURSOR_FIELD_NUMBER: _ClassVar[int]
     LIMIT_FIELD_NUMBER: _ClassVar[int]
     INCLUDE_SCALING_GROUP_FIELD_NUMBER: _ClassVar[int]
+    INCLUDE_ACTIVE_SCHEDULE_FIELD_NUMBER: _ClassVar[int]
     cursor: str
     limit: int
     include_scaling_group: bool
+    include_active_schedule: bool
     def __init__(
-        self, cursor: _Optional[str] = ..., limit: _Optional[int] = ..., include_scaling_group: bool = ...
+        self,
+        cursor: _Optional[str] = ...,
+        limit: _Optional[int] = ...,
+        include_scaling_group: bool = ...,
+        include_active_schedule: bool = ...,
     ) -> None: ...
 
 class ListExternalFunctionsResponse(_message.Message):

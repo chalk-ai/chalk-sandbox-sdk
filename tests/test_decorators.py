@@ -13,9 +13,11 @@ from chalkcompute._cls import _strip_chalkcompute_from_class_source
 from chalkcompute._function import RemoteFunction, _NoOpFunction, function
 from chalkcompute._function import (
     _REMOTE_ENV_VAR,
+    _STRIP_SOURCE_ENV_VAR,
     _source_file_for_deploy,
     _strip_chalkcompute_from_source,
 )
+from chalkcompute._remote_function_tracing import TracingPolicy
 
 
 def test_function_decorator_accepts_called_and_uncalled_forms(
@@ -59,6 +61,96 @@ def test_function_decorator_passes_schedule(
 
     assert isinstance(scheduled, RemoteFunction)
     assert deployed[0]._schedule == "1h"
+
+
+def test_function_decorator_passes_tracing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deployed: list[RemoteFunction] = []
+
+    def fake_deploy(self: RemoteFunction, **_: Any) -> RemoteFunction:
+        deployed.append(self)
+        return self
+
+    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
+
+    @function(tracing=True)
+    def traced_function() -> None:
+        pass
+
+    assert isinstance(traced_function, RemoteFunction)
+    assert deployed[0]._tracing == TracingPolicy(sample_rate=1.0)
+
+
+def test_function_deploy_image_installs_lightweight_runtime_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(_STRIP_SOURCE_ENV_VAR, "0")
+
+    def add(x: int, y: int) -> int:
+        return x + y
+
+    fn = RemoteFunction(add)
+
+    image = fn._build_deploy_image()
+
+    assert image.to_proto().steps[0].pip_install.packages == [
+        "chalk-remote-call-python",
+        "chalkcompute==0.0.0",
+    ]
+
+
+def test_function_deploy_image_installs_tracing_runtime_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(_STRIP_SOURCE_ENV_VAR, "0")
+
+    def add(x: int, y: int) -> int:
+        return x + y
+
+    fn = RemoteFunction(add, tracing=True)
+
+    image = fn._build_deploy_image()
+
+    assert image.to_proto().steps[0].pip_install.packages == [
+        "chalk-remote-call-python[tracing]",
+        "chalkcompute==0.0.0",
+    ]
+
+
+def test_function_deploy_image_installs_lightweight_runtime_when_tracing_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(_STRIP_SOURCE_ENV_VAR, "0")
+
+    def add(x: int, y: int) -> int:
+        return x + y
+
+    fn = RemoteFunction(add, tracing=False)
+
+    image = fn._build_deploy_image()
+
+    assert image.to_proto().steps[0].pip_install.packages == [
+        "chalk-remote-call-python",
+        "chalkcompute==0.0.0",
+    ]
+
+
+def test_stripped_function_deploy_image_installs_tracing_runtime_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(_STRIP_SOURCE_ENV_VAR, "1")
+
+    def add(x: int, y: int) -> int:
+        return x + y
+
+    fn = RemoteFunction(add, tracing=TracingPolicy(sample_rate=0.0))
+
+    image = fn._build_deploy_image()
+
+    assert image.to_proto().steps[0].pip_install.packages == [
+        "chalk-remote-call-python[tracing]"
+    ]
 
 
 def test_function_uncalled_decorator_noops_in_remote_env(
@@ -200,6 +292,28 @@ def test_function_source_strip_removes_direct_imported_traced_decorator() -> Non
     assert "chalkcompute" not in stripped
     assert "@span" not in stripped
     assert "@remote_function" not in stripped
+    namespace: dict[str, Any] = {}
+    exec(stripped, namespace)
+    assert namespace["add"](1, 2) == 3
+
+
+def test_function_source_strip_removes_tracing_policy_decorator_arg() -> None:
+    source = textwrap.dedent(
+        """
+        import chalkcompute
+
+        @chalkcompute.function(
+            tracing=chalkcompute.TracingPolicy(sample_rate=1.0),
+        )
+        def add(x: int, y: int) -> int:
+            return x + y
+        """
+    )
+
+    stripped = _strip_chalkcompute_from_source(source)
+
+    assert "chalkcompute" not in stripped
+    assert "TracingPolicy" not in stripped
     namespace: dict[str, Any] = {}
     exec(stripped, namespace)
     assert namespace["add"](1, 2) == 3

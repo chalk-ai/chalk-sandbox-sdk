@@ -36,6 +36,7 @@ from chalkcompute._model import ModelNotFoundError as ModelNotFoundError
 from chalkcompute._model import bind_model as bind_model
 from chalkcompute._quota import QueuePolicy as QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy as RateLimitPolicy
+from chalkcompute._remote_function_tracing import TracingPolicy as TracingPolicy
 from chalkcompute._retry import RetryPolicy as RetryPolicy
 from chalkcompute._sandbox import ExecError as ExecError
 from chalkcompute._sandbox import ExecEvent as ExecEvent
@@ -53,7 +54,7 @@ from chalkcompute._scaling_group import ScalingGroupBuildError as ScalingGroupBu
 from chalkcompute._scaling_group import ScalingGroupError as ScalingGroupError
 from chalkcompute._scaling_group import ScalingGroupInfo as ScalingGroupInfo
 from chalkcompute._secret import Secret as Secret
-from chalkcompute._tracing import trace as trace
+from chalkcompute._tracing import span as span
 from chalkcompute._tracing import traced as traced
 from chalkcompute._volume import FileInfo as FileInfo
 from chalkcompute._volume import Volume as Volume
@@ -92,6 +93,7 @@ __all__ = [
     "RateLimitPolicy",
     "ConcurrencyPolicy",
     "QueuePolicy",
+    "TracingPolicy",
     "function",
     "bind_model",
     "ModelError",
@@ -100,7 +102,7 @@ __all__ = [
     "ConnectClient",
     "build_image",
     "build_image_with_volumes",
-    "trace",
+    "span",
     "traced",
     "Image",
     "LazyLocalFile",

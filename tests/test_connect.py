@@ -192,7 +192,7 @@ class TestConnectClientTracing:
         assert rates == [0.1]
         assert _tracing._user_tracing_configured is True
 
-    def test_trace_defaults_to_sample_rate_one_when_unconfigured(self, monkeypatch):
+    def test_span_defaults_to_sample_rate_one_when_unconfigured(self, monkeypatch):
         rates: list[float] = []
         tracer = _Tracer()
         monkeypatch.setattr(_tracing, "_initialized", False)
@@ -205,13 +205,13 @@ class TestConnectClientTracing:
         )
         monkeypatch.setattr(_tracing, "get_tracer", lambda: tracer)
 
-        with _tracing.trace("workflow"):
+        with _tracing.span("workflow"):
             pass
 
         assert rates == [1.0]
         assert tracer.span_names == ["workflow"]
 
-    def test_trace_leaves_exception_recording_to_otel_context_manager(
+    def test_span_leaves_exception_recording_to_otel_context_manager(
         self, monkeypatch
     ):
         tracer = _Tracer()
@@ -222,13 +222,13 @@ class TestConnectClientTracing:
         monkeypatch.setattr(_tracing, "get_tracer", lambda: tracer)
 
         with pytest.raises(RuntimeError, match="boom"):
-            with _tracing.trace("workflow"):
+            with _tracing.span("workflow"):
                 raise RuntimeError("boom")
 
         assert tracer.spans[0].recorded_exceptions == []
         assert tracer.spans[0].statuses == []
 
-    def test_trace_noops_when_remote_tracing_is_off(self, monkeypatch):
+    def test_span_noops_when_remote_tracing_is_off(self, monkeypatch):
         monkeypatch.setenv("CHALK_REMOTE_FUNCTION_TRACE_POLICY", "always_off")
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector")
         monkeypatch.setattr(
@@ -246,7 +246,7 @@ class TestConnectClientTracing:
             ),
         )
 
-        with _tracing.trace("workflow") as span:
+        with _tracing.span("workflow") as span:
             assert span is None
 
         assert _tracing.current_trace_metadata() == []

@@ -39,6 +39,10 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "RateLimitPolicy": ("chalkcompute._rate_limit", "RateLimitPolicy"),
     "ConcurrencyPolicy": ("chalkcompute._concurrency", "ConcurrencyPolicy"),
     "QueuePolicy": ("chalkcompute._quota", "QueuePolicy"),
+    "TracingPolicy": (
+        "chalkcompute._remote_function_tracing",
+        "TracingPolicy",
+    ),
     "function": ("chalkcompute._function", "function"),
     # _model.py
     "bind_model": ("chalkcompute._model", "bind_model"),
@@ -53,7 +57,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "build_image_with_volumes_from_spec",
     ),
     # _tracing.py
-    "trace": ("chalkcompute._tracing", "trace"),
+    "span": ("chalkcompute._tracing", "span"),
     "traced": ("chalkcompute._tracing", "traced"),
     # _image.py
     "Image": ("chalkcompute._image", "Image"),

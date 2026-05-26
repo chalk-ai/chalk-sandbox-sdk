@@ -52,6 +52,11 @@ from chalkcompute._connect import (
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
+from chalkcompute._remote_function_tracing import (
+    TracingPolicy,
+    TracingPolicyConfig,
+    normalize_remote_function_tracing,
+)
 from chalkcompute._retry import RetryPolicy
 from chalkcompute._tracing import (
     _instrumented,
@@ -638,7 +643,20 @@ def _local_install_entrypoint(handler_cmd: list[str]) -> list[str]:
     ]
 
 
-def _make_base_image(user_image: _Image | None) -> _Image:
+_REMOTE_CALL_RUNTIME_PACKAGE = "chalk-remote-call-python"
+
+
+def _remote_call_runtime_package_with_extras(extras: list[str]) -> str:
+    if not extras:
+        return _REMOTE_CALL_RUNTIME_PACKAGE
+    return f"{_REMOTE_CALL_RUNTIME_PACKAGE}[{','.join(sorted(extras))}]"
+
+
+def _make_base_image(
+    user_image: _Image | None,
+    *,
+    remote_call_runtime_package: str = _REMOTE_CALL_RUNTIME_PACKAGE,
+) -> _Image:
     """Create the base deploy image with SDK packages and optional local overlay."""
     from chalkcompute._image import Image
 
@@ -675,13 +693,13 @@ def _make_base_image(user_image: _Image | None) -> _Image:
     elif strip_source:
         # Source is stripped of chalkcompute references — only install the
         # RPC runtime, not chalkcompute itself.
-        image = base.pip_install(["chalk-remote-call-python"])
+        image = base.pip_install([remote_call_runtime_package])
     else:
         from importlib.metadata import version as _pkg_version
 
         image = base.pip_install(
             [
-                "chalk-remote-call-python",
+                remote_call_runtime_package,
                 f"chalkcompute=={_pkg_version('chalkcompute')}",
             ]
         )
@@ -1064,6 +1082,7 @@ class RemoteFunction:
         concurrency: int | ConcurrencyPolicy | None = None,
         quota: int | QueuePolicy | None = None,
         schedule: str | None = None,
+        tracing: TracingPolicyConfig | None = None,
         models: typing.Mapping[str, Any] | None = None,
         chalk_client: Any | None = None,
     ) -> None:
@@ -1155,6 +1174,7 @@ class RemoteFunction:
         self._quota = (
             QueuePolicy.from_int_or_policy(quota) if quota is not None else None
         )
+        self._tracing = normalize_remote_function_tracing(tracing)
 
         # Set after .deploy()
         self._version_info: FunctionVersionInfo | None = None
@@ -1291,6 +1311,7 @@ class RemoteFunction:
         f._rate_limit = None
         f._concurrency = None
         f._quota = None
+        f._tracing = None
         f._version_info = None
         f._web_url = None
         f._port = 6666
@@ -1328,7 +1349,10 @@ class RemoteFunction:
         shim_path = _write_temp(handler_shim)
 
         deploy_image = (
-            _make_base_image(self._image)
+            _make_base_image(
+                self._image,
+                remote_call_runtime_package=self._remote_call_runtime_package(),
+            )
             .add_local_file(source_file, "/app/user_module.py")
             .add_local_file(shim_path, "/app/handler.py")
             .env({"PYTHONPATH": "/app", _REMOTE_ENV_VAR: "1"})
@@ -1471,6 +1495,8 @@ class RemoteFunction:
                 function_config["queue"] = self._quota.to_dict()
             if self._schedule is not None:
                 function_config["schedule"] = self._schedule
+            if self._tracing is not None:
+                function_config["tracing"] = self._tracing.to_dict()
 
             # 6. Call CreateExternalFunctionVersion
             rkey = f"register:{self._func_name}"
@@ -1542,6 +1568,12 @@ class RemoteFunction:
             progress_finish()
 
         return self
+
+    def _remote_call_runtime_package(self) -> str:
+        extras: list[str] = []
+        if isinstance(self._tracing, TracingPolicy):
+            extras.append("tracing")
+        return _remote_call_runtime_package_with_extras(extras)
 
     def _poll_until_running(
         self,
@@ -2087,6 +2119,7 @@ def function(
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
+    tracing: TracingPolicyConfig | None = None,
 ) -> RemoteFunction | _NoOpFunction: ...
 
 
@@ -2117,6 +2150,7 @@ def function(
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
+    tracing: TracingPolicyConfig | None = None,
 ) -> Callable[..., RemoteFunction | _NoOpFunction]:
     ...
 
@@ -2149,6 +2183,7 @@ def function(
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
+    tracing: TracingPolicyConfig | None = None,
 ) -> Callable[..., RemoteFunction | _NoOpFunction] | RemoteFunction | _NoOpFunction:
     """Decorator that deploys a function as a versioned remote function.
 
@@ -2248,6 +2283,12 @@ def function(
         without any explicit setup in the function body. For advanced overrides
         (``version``, ``method_name``, ``qualified_name``) call
         :func:`~chalkcompute.bind_model` directly inside the function.
+    tracing
+        Set ``True`` to turn on server-side remote-function tracing. Use
+        :class:`~chalkcompute.TracingPolicy` for sampling. Set ``False`` to
+        explicitly turn tracing off. When omitted, the server default is
+        parent-based always-off: sampled incoming parents are honored, but
+        untraced requests do not create new root traces.
 
     Examples
     --------
@@ -2287,6 +2328,7 @@ def function(
             concurrency=concurrency,
             quota=quota,
             schedule=schedule,
+            tracing=tracing,
             models=models,
         )
         f.deploy()

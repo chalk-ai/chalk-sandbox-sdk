@@ -19,7 +19,7 @@ from typing import Any, TypeVar, cast, overload
 F = TypeVar("F", bound=Callable[..., Any])
 
 _TRACER_NAME = "chalkcompute"
-_DEFAULT_PUBLIC_TRACE_NAME = "chalkcompute.trace"
+_DEFAULT_PUBLIC_SPAN_NAME = "chalkcompute.span"
 _TRACE_CONTEXT_METADATA_KEYS = ("traceparent", "tracestate", "baggage")
 _REMOTE_FUNCTION_TRACE_POLICY_ENV_VAR = "CHALK_REMOTE_FUNCTION_TRACE_POLICY"
 _initialized = False
@@ -207,14 +207,14 @@ def _span(name: str) -> Iterator[Any]:
 
 
 @contextlib.contextmanager
-def trace(name: str = _DEFAULT_PUBLIC_TRACE_NAME) -> Iterator[Any]:
-    """Start a caller-side span and propagate its trace context to nested calls."""
+def span(name: str = _DEFAULT_PUBLIC_SPAN_NAME) -> Iterator[Any]:
+    """Start a span and propagate its trace context to nested calls."""
     with _span(name) as span:
         yield span
 
 
 def _default_span_name(func: Callable[..., Any]) -> str:
-    return getattr(func, "__name__", _DEFAULT_PUBLIC_TRACE_NAME)
+    return getattr(func, "__name__", _DEFAULT_PUBLIC_SPAN_NAME)
 
 
 def _decorate_traced(func: F, name: str | None) -> F:
