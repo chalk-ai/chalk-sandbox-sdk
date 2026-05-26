@@ -18,6 +18,10 @@ from chalkcompute._cls import ClassError, RemoteClass, method
 from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._function import FunctionError, RemoteFunction
 from chalkcompute._rate_limit import RateLimitPolicy
+from chalkcompute._remote_function_tracing import (
+    Tracing,
+    normalize_remote_function_tracing,
+)
 from chalkcompute._retry import RetryPolicy
 
 
@@ -145,6 +149,31 @@ class TestRetryPolicyKey:
             RetryPolicy.from_int_or_policy(True)  # type: ignore[arg-type]
 
 
+class TestTracing:
+    def test_sample_rate_to_dict(self):
+        assert Tracing(sample_rate=0.25).to_dict() == {
+            "mode": "TRACING_MODE_PARENT_BASED_TRACE_ID_RATIO",
+            "sampleRate": 0.25,
+        }
+
+    def test_sample_rate_validation(self):
+        with pytest.raises(ValueError, match="between 0.0 and 1.0"):
+            Tracing(sample_rate=1.5)
+
+        with pytest.raises(TypeError, match="number"):
+            Tracing(sample_rate=True)  # type: ignore[arg-type]
+
+    def test_bool_tracing_config_normalization(self):
+        assert normalize_remote_function_tracing(True) == Tracing(sample_rate=1.0)
+        assert normalize_remote_function_tracing(False).to_dict() == {
+            "mode": "TRACING_MODE_ALWAYS_OFF"
+        }
+
+    def test_invalid_tracing_config_rejected(self):
+        with pytest.raises(TypeError, match="tracing must be a bool or Tracing"):
+            normalize_remote_function_tracing("on")  # type: ignore[arg-type]
+
+
 class TestBatchingGeneratorGuardFunction:
     def test_sync_generator_with_batching_raises(self):
         def gen(n: int) -> int:
@@ -254,6 +283,98 @@ class TestScheduleValidationFunction:
         fn.deploy()
 
         assert client.requests[0]["config"]["schedule"] == "1h"
+
+    def test_tracing_is_sent_in_function_config(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        def add(x: int, y: int) -> int:
+            return x + y
+
+        client = _CapturingClient()
+        fn = RemoteFunction(add, tracing=Tracing(sample_rate=0.25))
+        fn._client = client  # type: ignore[assignment]
+        monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
+        monkeypatch.setattr(
+            function_mod,
+            "_build_and_upload",
+            lambda *_, **__: ("image:test", []),
+        )
+
+        fn.deploy()
+
+        assert client.requests[0]["config"]["tracing"] == {
+            "mode": "TRACING_MODE_PARENT_BASED_TRACE_ID_RATIO",
+            "sampleRate": 0.25,
+        }
+
+    def test_tracing_true_turns_on_remote_function_tracing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        def add(x: int, y: int) -> int:
+            return x + y
+
+        client = _CapturingClient()
+        fn = RemoteFunction(add, tracing=True)
+        fn._client = client  # type: ignore[assignment]
+        monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
+        monkeypatch.setattr(
+            function_mod,
+            "_build_and_upload",
+            lambda *_, **__: ("image:test", []),
+        )
+
+        fn.deploy()
+
+        assert client.requests[0]["config"]["tracing"] == {
+            "mode": "TRACING_MODE_PARENT_BASED_TRACE_ID_RATIO",
+            "sampleRate": 1.0,
+        }
+
+    def test_tracing_false_turns_off_remote_function_tracing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        def add(x: int, y: int) -> int:
+            return x + y
+
+        client = _CapturingClient()
+        fn = RemoteFunction(add, tracing=False)
+        fn._client = client  # type: ignore[assignment]
+        monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
+        monkeypatch.setattr(
+            function_mod,
+            "_build_and_upload",
+            lambda *_, **__: ("image:test", []),
+        )
+
+        fn.deploy()
+
+        assert client.requests[0]["config"]["tracing"] == {
+            "mode": "TRACING_MODE_ALWAYS_OFF"
+        }
+
+    def test_tracing_config_omitted_by_default(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        def add(x: int, y: int) -> int:
+            return x + y
+
+        client = _CapturingClient()
+        fn = RemoteFunction(add)
+        fn._client = client  # type: ignore[assignment]
+        monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
+        monkeypatch.setattr(
+            function_mod,
+            "_build_and_upload",
+            lambda *_, **__: ("image:test", []),
+        )
+
+        fn.deploy()
+
+        assert "config" not in client.requests[0]
 
 
 class TestScheduleValidationClass:
