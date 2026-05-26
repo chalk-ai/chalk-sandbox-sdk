@@ -28,14 +28,23 @@ READINESS_POLL_INTERVAL = 5
 
 
 def _wait_for_ready_replicas(client: ChalkClient, sg_name: str, timeout: float) -> str:
-    """Poll until the scaling group has at least one ready replica. Returns the webUrl."""
+    """Poll until the scaling group has at least one ready replica and the gRPC handler is serving."""
     deadline = time.monotonic() + timeout
+    web_url: str | None = None
     while time.monotonic() < deadline:
-        groups = client.list_scaling_groups()
-        for sg in groups.scalingGroups:
-            if sg.name == sg_name and sg.readyReplicas and sg.readyReplicas > 0:
-                assert sg.webUrl, f"Scaling group {sg_name} ready but missing webUrl"
-                return sg.webUrl
+        if web_url is None:
+            groups = client.list_scaling_groups()
+            for sg in groups.scalingGroups:
+                if sg.name == sg_name and sg.readyReplicas and sg.readyReplicas > 0:
+                    assert sg.webUrl, f"Scaling group {sg_name} ready but missing webUrl"
+                    web_url = sg.webUrl
+                    break
+        if web_url is not None:
+            try:
+                _call_model(web_url, {"x": [1.0]})
+                return web_url
+            except RuntimeError:
+                pass
         time.sleep(READINESS_POLL_INTERVAL)
     raise TimeoutError(f"Scaling group {sg_name} not ready after {timeout}s")
 
