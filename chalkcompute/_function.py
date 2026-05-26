@@ -34,6 +34,7 @@ import logging
 import os
 import shlex
 import tempfile
+import textwrap
 import threading
 import time
 import typing
@@ -299,81 +300,98 @@ def _generate_handler_shim(
         else ""
     )
     if batched:
-        return (
-            bootstrap
-            + "import inspect\n"
-            "\n"
-            f"from user_module import {func_name}\n"
-            "\n"
-            f"_is_coroutine = inspect.iscoroutinefunction({func_name})\n"
-            "\n"
-            "\n"
-            "def handler(events, contexts):\n"
-            "    if _is_coroutine:\n"
-            "        import asyncio\n"
-            "        async def _run_all():\n"
-            "            results = []\n"
-            "            for event in events:\n"
-            "                columns = {k: v.to_pylist() for k, v in event.items()}\n"
-            "                n = len(next(iter(columns.values()))) if columns else 1\n"
-            "                per_caller = []\n"
-            "                for i in range(n):\n"
-            "                    kwargs = {k: v[i] for k, v in columns.items()}\n"
-            f"                    per_caller.append(await {func_name}(**kwargs))\n"
-            "                results.append(per_caller)\n"
-            "            return results\n"
-            "        return asyncio.run(_run_all())\n"
-            "    results = []\n"
-            "    for event in events:\n"
-            "        columns = {k: v.to_pylist() for k, v in event.items()}\n"
-            "        n = len(next(iter(columns.values()))) if columns else 1\n"
-            "        per_caller = []\n"
-            "        for i in range(n):\n"
-            "            kwargs = {k: v[i] for k, v in columns.items()}\n"
-            f"            per_caller.append({func_name}(**kwargs))\n"
-            "        results.append(per_caller)\n"
-            "    return results\n"
-        )
-    return (
-        bootstrap
-        + "import inspect\n"
-        "\n"
-        f"from user_module import {func_name}\n"
-        "\n"
-        f"_is_sync_gen = inspect.isgeneratorfunction({func_name})\n"
-        f"_is_async_gen = inspect.isasyncgenfunction({func_name})\n"
-        f"_is_coroutine = inspect.iscoroutinefunction({func_name}) and not _is_async_gen\n"
-        "\n"
-        "\n"
-        "def handler(event, context):\n"
-        "    n = len(next(iter(event.values()))) if event else 1\n"
-        "    if _is_sync_gen:\n"
-        "        def _gen():\n"
-        "            for i in range(n):\n"
-        "                kwargs = {k: v[i].as_py() for k, v in event.items()}\n"
-        f"                yield from {func_name}(**kwargs)\n"
-        "        return _gen()\n"
-        "    elif _is_async_gen:\n"
-        "        async def _agen():\n"
-        "            for i in range(n):\n"
-        "                kwargs = {k: v[i].as_py() for k, v in event.items()}\n"
-        f"                async for item in {func_name}(**kwargs):\n"
-        "                    yield item\n"
-        "        return _agen()\n"
-        "    elif _is_coroutine:\n"
-        "        import asyncio\n"
-        "        results = []\n"
-        "        for i in range(n):\n"
-        "            kwargs = {k: v[i].as_py() for k, v in event.items()}\n"
-        f"            results.append(asyncio.run({func_name}(**kwargs)))\n"
-        "        return results\n"
-        "    else:\n"
-        "        results = []\n"
-        "        for i in range(n):\n"
-        "            kwargs = {k: v[i].as_py() for k, v in event.items()}\n"
-        f"            results.append({func_name}(**kwargs))\n"
-        "        return results\n"
-    )
+        # Flatten all (caller_idx, row_idx, kwargs) across every caller so
+        # each item is an independent unit of work.  Results are collected in
+        # completion order (not submission order), then regrouped per caller.
+        # This means a slow item in one caller never blocks another caller's
+        # items from completing — true promise semantics.
+        return bootstrap + textwrap.dedent(f"""\
+            import inspect
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            from user_module import {func_name}
+
+            _is_coroutine = inspect.iscoroutinefunction({func_name})
+
+
+            def _flatten_events(events):
+                work = []
+                for ci, event in enumerate(events):
+                    columns = {{k: v.to_pylist() for k, v in event.items()}}
+                    n = len(next(iter(columns.values()))) if columns else 1
+                    for ri in range(n):
+                        work.append((ci, ri, {{k: v[ri] for k, v in columns.items()}}))
+                return work
+
+
+            def _regroup(work, flat_results, n_callers):
+                bucket = {{}}
+                for (ci, ri, _), val in zip(work, flat_results):
+                    bucket.setdefault(ci, {{}})[ri] = val
+                return [[bucket[ci][ri] for ri in sorted(bucket[ci])]
+                        for ci in range(n_callers)]
+
+
+            def handler(events, contexts):
+                work = _flatten_events(events)
+                if _is_coroutine:
+                    import asyncio
+                    async def _run_all():
+                        coros = [{func_name}(**kw) for _, _, kw in work]
+                        flat = await asyncio.gather(*coros)
+                        return _regroup(work, flat, len(events))
+                    return asyncio.run(_run_all())
+                bucket = {{}}
+                with ThreadPoolExecutor(max_workers=max(1, len(work))) as ex:
+                    futures = {{
+                        ex.submit({func_name}, **kw): (ci, ri)
+                        for ci, ri, kw in work
+                    }}
+                    for fut in as_completed(futures):
+                        ci, ri = futures[fut]
+                        bucket.setdefault(ci, {{}})[ri] = fut.result()
+                return [[bucket[ci][ri] for ri in sorted(bucket[ci])]
+                        for ci in range(len(events))]
+            """)
+    return bootstrap + textwrap.dedent(f"""\
+        import inspect
+
+        from user_module import {func_name}
+
+        _is_sync_gen = inspect.isgeneratorfunction({func_name})
+        _is_async_gen = inspect.isasyncgenfunction({func_name})
+        _is_coroutine = inspect.iscoroutinefunction({func_name}) and not _is_async_gen
+
+
+        def handler(event, context):
+            n = len(next(iter(event.values()))) if event else 1
+            if _is_sync_gen:
+                def _gen():
+                    for i in range(n):
+                        kwargs = {{k: v[i].as_py() for k, v in event.items()}}
+                        yield from {func_name}(**kwargs)
+                return _gen()
+            elif _is_async_gen:
+                async def _agen():
+                    for i in range(n):
+                        kwargs = {{k: v[i].as_py() for k, v in event.items()}}
+                        async for item in {func_name}(**kwargs):
+                            yield item
+                return _agen()
+            elif _is_coroutine:
+                import asyncio
+                results = []
+                for i in range(n):
+                    kwargs = {{k: v[i].as_py() for k, v in event.items()}}
+                    results.append(asyncio.run({func_name}(**kwargs)))
+                return results
+            else:
+                results = []
+                for i in range(n):
+                    kwargs = {{k: v[i].as_py() for k, v in event.items()}}
+                    results.append({func_name}(**kwargs))
+                return results
+        """)
 
 
 def _write_temp(content: str) -> str:
