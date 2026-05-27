@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import os
 import logging
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import grpc
+import httpx
 import pytest
 
 from chalkcompute._connect import ConnectClient
@@ -16,9 +18,12 @@ from chalkcompute._volume import (
     VolumeClosedError,
     VolumeClient,
     _INLINE_THRESHOLD_BYTES,
+    _PRESIGNED_PART_SIZE_BYTES,
+    _get_source_content_length,
     _read_file_bytes,
     _put_file_presigned,
     _upload_bytes,
+    _upload_from_url,
     upload_lazy_files,
 )
 
@@ -542,3 +547,221 @@ class TestUploadLazyFiles:
 
         assert upload_lazy_files(client, image) == []
         client.create.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Streaming URL upload
+# ---------------------------------------------------------------------------
+
+
+class _FakeStreamResponse:
+    """Minimal mock for httpx streaming response context manager."""
+
+    def __init__(self, data: bytes, status_code: int = 200, content_length: int | None = None):
+        self._data = data
+        self.status_code = status_code
+        self.is_success = 200 <= status_code < 300
+        cl = content_length if content_length is not None else len(data)
+        self.headers = {"content-length": str(cl)}
+
+    def raise_for_status(self) -> None:
+        if not self.is_success:
+            raise httpx.HTTPStatusError("error", request=MagicMock(), response=self)  # type: ignore[arg-type]
+
+    def iter_bytes(self, chunk_size: int = 65536) -> Iterator[bytes]:
+        for i in range(0, len(self._data), chunk_size):
+            yield self._data[i : i + chunk_size]
+
+    def __enter__(self) -> _FakeStreamResponse:
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+class TestGetSourceContentLength:
+    def test_head_success(self):
+        with patch("httpx.head") as mock_head:
+            mock_head.return_value = MagicMock(
+                is_success=True,
+                headers={"content-length": "12345"},
+            )
+            assert _get_source_content_length("https://example.com/file") == 12345
+
+    def test_head_fails_falls_back_to_get(self):
+        with patch("httpx.head") as mock_head, patch("httpx.stream") as mock_stream:
+            mock_head.side_effect = httpx.HTTPError("HEAD not allowed")
+            mock_stream.return_value = _FakeStreamResponse(b"x" * 100, content_length=100)
+            assert _get_source_content_length("https://example.com/file") == 100
+
+    def test_head_no_content_length_falls_back(self):
+        with patch("httpx.head") as mock_head, patch("httpx.stream") as mock_stream:
+            mock_head.return_value = MagicMock(is_success=True, headers={})
+            mock_stream.return_value = _FakeStreamResponse(b"x" * 200, content_length=200)
+            assert _get_source_content_length("https://example.com/file") == 200
+
+
+class TestUploadFromUrlSmallFile:
+    def test_small_file_uses_inline(self):
+        client = _make_vol_client()
+        data = b"small" * 10  # well under 2MB
+
+        with patch("chalkcompute._volume._get_source_content_length", return_value=len(data)), \
+             patch("httpx.get") as mock_get:
+            mock_get.return_value = MagicMock(content=data)
+            _upload_from_url(client, "vol", "model.bin", "https://example.com/model")
+
+        client._stub.PutFile.assert_called_once()
+        req = client._stub.PutFile.call_args[0][0]
+        assert req.data == data
+        assert req.volume_name == "vol"
+        assert req.path == "model.bin"
+
+
+class TestUploadFromUrlMultipart:
+    def test_streaming_multipart_success(self):
+        client = _make_vol_client()
+        part_size = _PRESIGNED_PART_SIZE_BYTES
+        data = b"A" * (part_size + 100)  # slightly more than one part
+
+        _set_multipart_response(
+            client, "s3-stream-obj",
+            part_uris=["https://s3/part/1", "https://s3/part/2"],
+            completion_uri="https://s3/complete",
+        )
+
+        with patch("chalkcompute._volume._get_source_content_length", return_value=len(data)), \
+             patch("httpx.stream") as mock_stream, \
+             patch("httpx.put") as mock_put, \
+             patch("httpx.post") as mock_post:
+
+            mock_stream.return_value = _FakeStreamResponse(data)
+            mock_put.return_value = MagicMock(
+                status_code=200, is_success=True, headers={"ETag": '"e1"'},
+            )
+            mock_post.return_value = MagicMock(status_code=200, is_success=True)
+
+            _upload_from_url(client, "vol", "big.bin", "https://example.com/big")
+
+        assert mock_put.call_count == 2
+        assert mock_put.call_args_list[0][1]["content"] == data[:part_size]
+        assert mock_put.call_args_list[1][1]["content"] == data[part_size:]
+
+        assert mock_post.call_args[0][0] == "https://s3/complete"
+        assert b"e1" in mock_post.call_args[1]["content"]
+
+        req = client._stub.PutFile.call_args[0][0]
+        assert req.storage_object_id == "s3-stream-obj"
+
+    def test_multipart_retry_on_403(self):
+        import httpx as _httpx
+
+        client = _make_vol_client()
+        part_size = _PRESIGNED_PART_SIZE_BYTES
+        data = b"B" * (part_size + 50)
+
+        first = MagicMock(storage_object_id="old")
+        first.WhichOneof.return_value = "multipart"
+        first.multipart.signed_upload_uris = ["https://s3/p-old/1", "https://s3/p-old/2", "https://s3/c-old"]
+
+        second = MagicMock(storage_object_id="new")
+        second.WhichOneof.return_value = "multipart"
+        second.multipart.signed_upload_uris = ["https://s3/p-new/1", "https://s3/p-new/2", "https://s3/c-new"]
+
+        client._obj_stub.GetObjectUploadUri.side_effect = [first, second]
+
+        forbidden = MagicMock(status_code=403, is_success=False)
+        forbidden.raise_for_status.side_effect = _httpx.HTTPStatusError(
+            "403", request=MagicMock(), response=forbidden,
+        )
+
+        ok_resp = MagicMock(status_code=200, is_success=True, headers={"ETag": '"ok"'})
+
+        call_count = 0
+
+        def put_side_effect(*args: Any, **kwargs: Any) -> Any:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise _httpx.HTTPStatusError("403", request=MagicMock(), response=forbidden)
+            return ok_resp
+
+        with patch("chalkcompute._volume._get_source_content_length", return_value=len(data)), \
+             patch("httpx.stream") as mock_stream, \
+             patch("httpx.put", side_effect=put_side_effect), \
+             patch("httpx.post") as mock_post:
+
+            mock_stream.return_value = _FakeStreamResponse(data)
+            mock_post.return_value = MagicMock(status_code=200, is_success=True)
+
+            _upload_from_url(client, "vol", "retry.bin", "https://example.com/retry")
+
+        assert client._obj_stub.GetObjectUploadUri.call_count == 2
+        req = client._stub.PutFile.call_args[0][0]
+        assert req.storage_object_id == "new"
+
+
+class TestUploadFromUrlResumable:
+    def test_streaming_resumable_success(self):
+        client = _make_vol_client()
+        part_size = _PRESIGNED_PART_SIZE_BYTES
+        data = b"C" * (part_size + 200)
+
+        _set_resumable_response(client, "gcs-stream-obj", "https://gcs/signed")
+
+        init_resp = MagicMock(
+            is_success=True, status_code=200,
+            headers={"Location": "https://gcs/session/123"},
+        )
+        chunk_308 = MagicMock(status_code=308, is_success=True)
+        chunk_200 = MagicMock(status_code=200, is_success=True)
+
+        with patch("chalkcompute._volume._get_source_content_length", return_value=len(data)), \
+             patch("httpx.stream") as mock_stream, \
+             patch("httpx.post") as mock_post, \
+             patch("httpx.put") as mock_put:
+
+            mock_stream.return_value = _FakeStreamResponse(data)
+            mock_post.return_value = init_resp
+            mock_put.side_effect = [chunk_308, chunk_200]
+
+            _upload_from_url(client, "vol", "gcs.bin", "https://example.com/gcs")
+
+        mock_post.assert_called_once()
+        assert mock_put.call_count == 2
+
+        first_put = mock_put.call_args_list[0]
+        assert f"bytes 0-{part_size - 1}/{len(data)}" in first_put[1]["headers"]["Content-Range"]
+
+        second_put = mock_put.call_args_list[1]
+        assert f"bytes {part_size}-{len(data) - 1}/{len(data)}" in second_put[1]["headers"]["Content-Range"]
+
+        req = client._stub.PutFile.call_args[0][0]
+        assert req.storage_object_id == "gcs-stream-obj"
+
+
+class TestVolumePutFileFromUrl:
+    def test_method_delegates_and_chains(self):
+        client = _make_vol_client()
+        client._stub.GetVolume.return_value = pb.GetVolumeResponse(
+            volume=pb.VolumeInfo(name="test-vol")
+        )
+        vol = Volume("test-vol", client=client)
+
+        with patch("chalkcompute._volume._upload_from_url") as mock_upload:
+            result = vol.put_file_from_url("model.bin", "https://example.com/model")
+
+        mock_upload.assert_called_once_with(client, "test-vol", "model.bin", "https://example.com/model")
+        assert result is vol
+
+    def test_closed_volume_raises(self):
+        client = _make_vol_client()
+        client.close = MagicMock()
+        vol = Volume("test-vol", client=client)
+        vol.close()
+
+        with pytest.raises(VolumeClosedError):
+            vol.put_file_from_url("model.bin", "https://example.com/model")

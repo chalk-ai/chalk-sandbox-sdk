@@ -347,6 +347,30 @@ class Volume:
         self.put_file(path, Path(local_path).read_bytes())
         return self
 
+    @_instrumented("chalkcompute.volume.put_file_from_url")
+    def put_file_from_url(self, path: str, url: str) -> Volume:
+        """Upload a file from a remote URL into the volume.
+
+        Streams the source URL directly to the volume's object storage
+        without buffering the entire file in memory. Memory usage is bounded
+        to approximately 10 MB regardless of file size.
+
+        Parameters
+        ----------
+        path
+            Destination path within the volume.
+        url
+            Presigned download URL for the source file.
+
+        Returns
+        -------
+        Volume
+            ``self``, to allow chaining.
+        """
+        self._ensure_ready()
+        _upload_from_url(self._client, self._name, path, url)
+        return self
+
     def remove_file(self, path: str) -> Volume:
         """Remove a file from the volume.
 
@@ -1046,6 +1070,289 @@ def _upload_resumable(
             signed_uri = new_resp.resumable.signed_upload_uri
             continue
         put_resp.raise_for_status()
+
+
+# ---------------------------------------------------------------------------
+# Streaming URL-to-volume upload
+# ---------------------------------------------------------------------------
+
+_STREAM_CHUNK_SIZE: int = 65536
+
+
+def _get_source_content_length(url: str) -> int:
+    try:
+        head_resp = httpx.head(url, timeout=30, follow_redirects=True)
+        if head_resp.is_success and "content-length" in head_resp.headers:
+            return int(head_resp.headers["content-length"])
+    except httpx.HTTPError:
+        pass
+
+    with httpx.stream("GET", url, timeout=30, follow_redirects=True) as resp:
+        resp.raise_for_status()
+        if "content-length" in resp.headers:
+            return int(resp.headers["content-length"])
+
+    raise VolumeError(
+        "Cannot determine content length of source URL: "
+        "neither HEAD nor GET returned a Content-Length header"
+    )
+
+
+def _read_part_from_stream(
+    stream_iter: Iterator[bytes],
+    buf: bytearray,
+    part_size: int,
+) -> bytes | None:
+    """Read exactly *part_size* bytes (or fewer at EOF) from a streaming iterator.
+
+    Accumulates into *buf* (mutated in place). Returns the part bytes,
+    or ``None`` when the stream is exhausted and the buffer is empty.
+    """
+    for chunk in stream_iter:
+        buf.extend(chunk)
+        if len(buf) >= part_size:
+            part = bytes(buf[:part_size])
+            del buf[:part_size]
+            return part
+    if buf:
+        part = bytes(buf)
+        buf.clear()
+        return part
+    return None
+
+
+def _upload_from_url_multipart(
+    source_url: str,
+    content_size: int,
+    resp: pb.GetObjectUploadUriResponse,
+    refresh: Callable[[], pb.GetObjectUploadUriResponse],
+) -> str:
+    storage_object_id = resp.storage_object_id
+    all_uris = list(resp.multipart.signed_upload_uris)
+    part_uris = all_uris[:-1]
+    completion_uri = all_uris[-1]
+
+    etags: list[str] = []
+    part_idx = 0
+    bytes_uploaded = 0
+    refresh_count = 0
+
+    while part_idx < len(part_uris) or bytes_uploaded < content_size:
+        headers = {}
+        if bytes_uploaded > 0:
+            headers["Range"] = f"bytes={bytes_uploaded}-"
+
+        with httpx.stream(
+            "GET", source_url, headers=headers, timeout=httpx.Timeout(connect=30, read=300, write=300, pool=30), follow_redirects=True
+        ) as response:
+            response.raise_for_status()
+            buf = bytearray()
+            stream_iter = response.iter_bytes(chunk_size=_STREAM_CHUNK_SIZE)
+
+            while part_idx < len(part_uris):
+                part_data = _read_part_from_stream(stream_iter, buf, _PRESIGNED_PART_SIZE_BYTES)
+                if part_data is None:
+                    break
+
+                try:
+                    r = httpx.put(part_uris[part_idx], content=part_data, timeout=300)
+                    r.raise_for_status()
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code in (401, 403) and refresh_count < _PRESIGNED_MAX_RETRIES:
+                        refresh_count += 1
+                        logger.warning(
+                            "Streaming multipart upload: refreshing signed URLs (attempt %d/%d)",
+                            refresh_count,
+                            _PRESIGNED_MAX_RETRIES,
+                        )
+                        new_resp = refresh()
+                        storage_object_id = new_resp.storage_object_id
+                        all_uris = list(new_resp.multipart.signed_upload_uris)
+                        part_uris = all_uris[:-1]
+                        completion_uri = all_uris[-1]
+                        break
+                    raise
+
+                etags.append(r.headers.get("ETag", ""))
+                bytes_uploaded += len(part_data)
+                part_idx += 1
+
+            # Final (possibly smaller) part
+            if part_idx >= len(part_uris):
+                remaining = _read_part_from_stream(stream_iter, buf, _PRESIGNED_PART_SIZE_BYTES)
+                if remaining is not None:
+                    logger.warning(
+                        "Streaming multipart upload: source had more data than expected, ignoring trailing bytes"
+                    )
+                break
+        # If we broke out of the inner while due to retry, the outer loop re-opens the stream
+        if part_idx < len(part_uris) and refresh_count > 0:
+            continue
+        break
+
+    parts_xml = "".join(
+        f"<Part><PartNumber>{j + 1}</PartNumber><ETag>{etag}</ETag></Part>"
+        for j, etag in enumerate(etags)
+    )
+    body = f"<CompleteMultipartUpload>{parts_xml}</CompleteMultipartUpload>".encode()
+    complete_resp = httpx.post(
+        completion_uri,
+        content=body,
+        headers={"Content-Type": "application/xml"},
+        timeout=60,
+    )
+    complete_resp.raise_for_status()
+    logger.info(
+        "Streaming multipart upload complete: object=%s parts=%d refreshes=%d",
+        storage_object_id,
+        len(etags),
+        refresh_count,
+    )
+    return storage_object_id
+
+
+def _upload_from_url_resumable(
+    source_url: str,
+    content_size: int,
+    resp: pb.GetObjectUploadUriResponse,
+    refresh: Callable[[], pb.GetObjectUploadUriResponse],
+) -> str:
+    storage_object_id = resp.storage_object_id
+    signed_uri = resp.resumable.signed_upload_uri
+    refresh_count = 0
+
+    # Initiate resumable session
+    while True:
+        init = httpx.post(
+            signed_uri,
+            content=b"",
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Content-Length": "0",
+                "x-goog-resumable": "start",
+            },
+            timeout=30,
+        )
+        if not init.is_success:
+            if init.status_code in (401, 403) and refresh_count < _PRESIGNED_MAX_RETRIES:
+                refresh_count += 1
+                logger.warning(
+                    "Streaming resumable upload: refreshing signed URL (attempt %d/%d)",
+                    refresh_count,
+                    _PRESIGNED_MAX_RETRIES,
+                )
+                new_resp = refresh()
+                storage_object_id = new_resp.storage_object_id
+                signed_uri = new_resp.resumable.signed_upload_uri
+                continue
+            init.raise_for_status()
+        break
+
+    session_uri = init.headers.get("Location")
+    if not session_uri:
+        raise VolumeError("GCS resumable upload: missing Location header in initiation response")
+
+    offset = 0
+    with httpx.stream(
+        "GET", source_url, timeout=httpx.Timeout(connect=30, read=300, write=300, pool=30), follow_redirects=True
+    ) as response:
+        response.raise_for_status()
+        buf = bytearray()
+        stream_iter = response.iter_bytes(chunk_size=_STREAM_CHUNK_SIZE)
+
+        while True:
+            chunk_data = _read_part_from_stream(stream_iter, buf, _PRESIGNED_PART_SIZE_BYTES)
+            if chunk_data is None:
+                break
+
+            end = offset + len(chunk_data) - 1
+            put_resp = httpx.put(
+                session_uri,
+                content=chunk_data,
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "Content-Range": f"bytes {offset}-{end}/{content_size}",
+                },
+                timeout=600,
+            )
+            if put_resp.status_code in (200, 201):
+                break
+            if put_resp.status_code == 308:
+                offset += len(chunk_data)
+                continue
+            if put_resp.status_code in (401, 403) and refresh_count < _PRESIGNED_MAX_RETRIES:
+                refresh_count += 1
+                logger.warning(
+                    "Streaming resumable upload: refreshing signed URL (attempt %d/%d)",
+                    refresh_count,
+                    _PRESIGNED_MAX_RETRIES,
+                )
+                new_resp = refresh()
+                storage_object_id = new_resp.storage_object_id
+                signed_uri = new_resp.resumable.signed_upload_uri
+                break
+            put_resp.raise_for_status()
+
+    logger.info(
+        "Streaming resumable upload complete: object=%s refreshes=%d",
+        storage_object_id,
+        refresh_count,
+    )
+    return storage_object_id
+
+
+def _upload_from_url(
+    client: VolumeClient,
+    volume_name: str,
+    path: str,
+    source_url: str,
+) -> None:
+    content_size = _get_source_content_length(source_url)
+
+    if content_size <= _INLINE_THRESHOLD_BYTES:
+        data = httpx.get(source_url, timeout=300, follow_redirects=True).content
+        _put_file_inline(client, volume_name, path, data)
+        return
+
+    def _get_uri() -> pb.GetObjectUploadUriResponse:
+        return client._obj_stub.GetObjectUploadUri(
+            pb.GetObjectUploadUriRequest(
+                content_size=content_size,
+                part_size=_PRESIGNED_PART_SIZE_BYTES,
+            ),
+            metadata=client._metadata,
+        )
+
+    resp = _get_uri()
+    upload_type = resp.WhichOneof("upload")
+
+    if upload_type == "multipart":
+        storage_object_id = _upload_from_url_multipart(source_url, content_size, resp, _get_uri)
+    elif upload_type == "resumable":
+        storage_object_id = _upload_from_url_resumable(source_url, content_size, resp, _get_uri)
+    else:
+        raise VolumeError(f"Unsupported object-storage upload type: {upload_type!r}")
+
+    client._refresh()
+    try:
+        client._stub.PutFile(
+            pb.PutFileRequest(
+                volume_name=volume_name,
+                path=path,
+                storage_object_id=storage_object_id,
+            ),
+            metadata=client._metadata,
+        )
+    except grpc.RpcError as e:
+        _handle_rpc_error(e, volume_name)
+        raise
+    logger.info(
+        "Uploaded %s from URL (streaming %s, %d bytes, object=%s)",
+        path,
+        upload_type,
+        content_size,
+        storage_object_id,
+    )
 
 
 # ---------------------------------------------------------------------------
