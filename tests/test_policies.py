@@ -164,6 +164,7 @@ class TestTracingPolicy:
             TracingPolicy(sample_rate=True)  # type: ignore[arg-type]
 
     def test_bool_tracing_config_normalization(self):
+        assert normalize_remote_function_tracing(None) == TracingPolicy(sample_rate=1.0)
         assert normalize_remote_function_tracing(True) == TracingPolicy(sample_rate=1.0)
         assert normalize_remote_function_tracing(False).to_dict() == {
             "mode": "TRACING_MODE_ALWAYS_OFF"
@@ -355,7 +356,7 @@ class TestScheduleValidationFunction:
             "mode": "TRACING_MODE_ALWAYS_OFF"
         }
 
-    def test_tracing_config_omitted_by_default(
+    def test_tracing_config_included_by_default(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ):
@@ -374,7 +375,10 @@ class TestScheduleValidationFunction:
 
         fn.deploy()
 
-        assert "config" not in client.requests[0]
+        assert client.requests[0]["config"]["tracing"] == {
+            "mode": "TRACING_MODE_PARENT_BASED_TRACE_ID_RATIO",
+            "sampleRate": 1.0,
+        }
 
 
 class TestScheduleValidationClass:
