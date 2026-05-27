@@ -82,7 +82,7 @@ def test_function_decorator_passes_tracing(
     assert deployed[0]._tracing == TracingPolicy(sample_rate=1.0)
 
 
-def test_function_deploy_image_installs_lightweight_runtime_by_default(
+def test_function_deploy_image_installs_tracing_runtime_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(_STRIP_SOURCE_ENV_VAR, "0")
@@ -95,7 +95,7 @@ def test_function_deploy_image_installs_lightweight_runtime_by_default(
     image = fn._build_deploy_image()
 
     assert image.to_proto().steps[0].pip_install.packages == [
-        "chalk-remote-call-python",
+        "chalk-remote-call-python[tracing]",
         "chalkcompute==0.0.0",
     ]
 

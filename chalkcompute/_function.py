@@ -2284,11 +2284,9 @@ def function(
         (``version``, ``method_name``, ``qualified_name``) call
         :func:`~chalkcompute.bind_model` directly inside the function.
     tracing
-        Set ``True`` to turn on server-side remote-function tracing. Use
+        Server-side remote-function tracing is enabled by default. Use
         :class:`~chalkcompute.TracingPolicy` for sampling. Set ``False`` to
-        explicitly turn tracing off. When omitted, the server default is
-        parent-based always-off: sampled incoming parents are honored, but
-        untraced requests do not create new root traces.
+        explicitly turn tracing off.
 
     Examples
     --------
