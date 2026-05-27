@@ -1091,6 +1091,10 @@ class RemoteFunction:
         self._max_replicas = max_replicas
         self._shutdown_delay_seconds = shutdown_delay_seconds
         self._scaling_interval_seconds = scaling_interval_seconds
+        if target_cpu_utilization_percentage is not None and not (0 < target_cpu_utilization_percentage <= 100):
+            raise ValueError(
+                f"target_cpu_utilization_percentage must be between 1 and 100, got {target_cpu_utilization_percentage}"
+            )
         self._target_cpu_utilization_percentage = target_cpu_utilization_percentage
         self._target_queue_depth = target_queue_depth
         self._serialization_format: SerializationFormat = serialization_format
