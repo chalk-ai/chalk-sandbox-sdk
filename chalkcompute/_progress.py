@@ -33,7 +33,7 @@ _KIND_ICONS: dict[ResourceKind, str] = {
     "image": "📦",
     "volume": "💾",
     "secret": "🔑",
-    "container": "🐳",
+    "container": "",
     "function": "⚡",
     "class": "🏗️",
     "method": "  ↳",

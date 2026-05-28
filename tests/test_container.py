@@ -4,8 +4,9 @@ from typing import Any
 
 import pytest
 
-from chalkcompute import AllowedRoute, Container, NetworkPolicy, PortRange
+from chalkcompute import AllowedRoute, Container, Image, NetworkPolicy, PortRange
 from chalkcompute._container import ContainerSecurityPolicy, KernelPolicy
+from chalkcompute._progress import _KIND_ICONS
 
 
 class _Response:
@@ -131,7 +132,43 @@ def test_container_run_sends_tags() -> None:
         "env": "staging",
     }
 
-    
+
+def test_container_image_build_progress_uses_container_label(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import chalkcompute._progress as progress
+
+    calls: list[tuple[str, str, str, dict[str, Any]]] = []
+
+    def track_add(
+        key: str,
+        kind: str,
+        label: str,
+        **kwargs: Any,
+    ) -> None:
+        calls.append((key, kind, label, kwargs))
+
+    monkeypatch.setattr(progress, "progress_add", track_add)
+    monkeypatch.setattr(progress, "progress_done", lambda *args, **kwargs: None)
+    monkeypatch.setattr(progress, "progress_fail", lambda *args, **kwargs: None)
+    monkeypatch.setattr(progress, "progress_finish", lambda: None)
+    monkeypatch.setattr(Container, "_build_image", lambda self, **kwargs: "built:latest")
+
+    client = _Client()
+    container = Container(image=Image.base("ubuntu:latest"), name="build-progress-test")
+    container._client = client
+
+    container.run()
+
+    assert (
+        "image:build-progress-test",
+        "image",
+        "Building container",
+        {"parent": "container:build-progress-test"},
+    ) in calls
+    assert _KIND_ICONS["container"] == ""
+
+
 def test_lifetime_valid_formats_accepted() -> None:
     for lifetime in ["30s", "1.5s", "300s", "0.5s", "3600s"]:
         Container(image="ubuntu:latest", lifetime=lifetime)  # must not raise

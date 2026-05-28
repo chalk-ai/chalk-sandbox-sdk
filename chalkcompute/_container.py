@@ -591,7 +591,7 @@ class Container:
             # 1. Resolve image URI
             if isinstance(self._image, Image):
                 ikey = f"image:{container_name}"
-                progress_add(ikey, "image", "Building image", parent=ckey)
+                progress_add(ikey, "image", "Building container", parent=ckey)
                 logger.info("Building image from %r...", self._image)
                 self._built_image_uri = self._build_image(
                     poll_interval=poll_interval, timeout=build_timeout,
