@@ -26,7 +26,6 @@ Usage:
 
 from __future__ import annotations
 
-import os
 import queue
 import signal
 import time
@@ -553,11 +552,7 @@ class SandboxClient:
 
     @classmethod
     def from_env(cls, *, chalk_client: Any | None = None) -> SandboxClient:
-        """Create a ``SandboxClient`` from standard ``CHALK_*`` environment vars."""
-        if os.environ.get("CHALK_API_SERVER") is None:
-            raise ValueError(
-                "CHALK_API_SERVER must be set to construct SandboxClient from env"
-            )
+        """Create a ``SandboxClient`` from ambient Chalk credentials."""
 
         connect = ConnectClient(chalk_client=chalk_client)
         connect._ensure_auth()

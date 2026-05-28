@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 
 import grpc
 
+from chalkcompute._auth_config import active_environment_from_env, load_token
 from chalkcompute._remote_call_client import (
     RemoteCallClientUnavailable,
     ServiceAuthContext,
@@ -45,9 +46,10 @@ def service_auth_context_from_env() -> ServiceAuthContext | None:
 class ConnectClient:
     """Authenticated Connect-protocol (HTTP/JSON) client for Chalk APIs.
 
-    Environment variables (``CHALK_API_SERVER``, ``CHALK_CLIENT_ID``,
-    ``CHALK_CLIENT_SECRET``, ``CHALK_ENVIRONMENT_ID``) are read lazily on the
-    first RPC.
+    Ambient Chalk credentials are read lazily on the first RPC. This follows
+    ChalkPy's lookup order: explicit ``CHALK_*`` environment variables first,
+    then ``~/.chalk.yml`` credentials scoped to the current Chalk project or
+    the ``default`` token.
 
     Examples
     --------
@@ -103,13 +105,30 @@ class ConnectClient:
             }
             return
 
-        self._api_server = os.environ.get("CHALK_API_SERVER", "")
-        client_id = os.environ.get("CHALK_CLIENT_ID", "")
-        client_secret = os.environ.get("CHALK_CLIENT_SECRET", "")
+        token = (
+            None
+            if self._chalk_client is not None
+            else load_token(None, None, None, None)
+        )
+        self._api_server = (
+            token.apiServer
+            if token is not None
+            else os.environ.get("CHALK_API_SERVER", "")
+        )
+        client_id = (
+            token.clientId
+            if token is not None
+            else os.environ.get("CHALK_CLIENT_ID", "")
+        )
+        client_secret = (
+            token.clientSecret
+            if token is not None
+            else os.environ.get("CHALK_CLIENT_SECRET", "")
+        )
         requested_env = (
-            os.environ.get("CHALK_ENVIRONMENT_ID")
-            or os.environ.get("CHALK_ENVIRONMENT")
-            or ""
+            token.activeEnvironment
+            if token is not None
+            else active_environment_from_env() or ""
         )
 
         if self._chalk_client is not None:
@@ -124,12 +143,16 @@ class ConnectClient:
             if not client_secret:
                 client_secret = cc._client_secret or ""
             if not requested_env:
-                requested_env = getattr(cc, "_primary_environment", None) or getattr(cc, "_environment", None) or ""
+                requested_env = (
+                    getattr(cc, "_primary_environment", None)
+                    or getattr(cc, "_environment", None)
+                    or ""
+                )
 
-        if not self._api_server or not client_id:
+        if not self._api_server or not client_id or not client_secret:
             raise ConnectError(
                 "No Chalk credentials found. Set CHALK_CLIENT_ID/CHALK_CLIENT_SECRET "
-                "environment variables or pass a ChalkClient instance."
+                "environment variables, run `chalk login`, or pass a ChalkClient instance."
             )
 
         resp = httpx.post(
@@ -150,7 +173,9 @@ class ConnectClient:
         data = resp.json()
         self._access_token = data["access_token"]
         self._primary_environment = data.get("primary_environment")
-        self._grpc_engines = _string_map(data.get("grpc_engines"))
+        self._grpc_engines = _string_map(
+            data.get("grpc_engines") or data.get("engines"),
+        )
         self._environment_id_to_name = _string_map(data.get("environment_id_to_name"))
         self._env_id = self._resolve_environment_id(
             requested_env or self._primary_environment or ""

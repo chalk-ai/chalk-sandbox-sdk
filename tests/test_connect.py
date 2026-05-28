@@ -3,6 +3,7 @@ from typing import Any
 
 import pytest
 
+import chalkcompute._auth_config as _auth_config
 from chalkcompute import SandboxClient, _tracing
 from chalkcompute._connect import (
     ConnectClient,
@@ -130,6 +131,12 @@ class TestGrpcEngineTargetFromUrl:
 
 
 class TestConnectClientGrpcEngineTarget:
+    def setup_method(self) -> None:
+        _auth_config._load_global_config.cache_clear()
+
+    def teardown_method(self) -> None:
+        _auth_config._load_global_config.cache_clear()
+
     def test_uses_grpc_engine_from_token_response(self, monkeypatch):
         monkeypatch.setenv("CHALK_API_SERVER", "https://api.staging.chalk.dev")
         monkeypatch.setenv("CHALK_CLIENT_ID", "client-id")
@@ -173,6 +180,101 @@ class TestConnectClientGrpcEngineTarget:
 
         assert target == "localhost:50051"
         assert use_tls is False
+
+    def test_loads_default_token_from_chalk_login_config(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("CHALK_API_SERVER", raising=False)
+        monkeypatch.delenv("CHALK_CLIENT_ID", raising=False)
+        monkeypatch.delenv("CHALK_CLIENT_SECRET", raising=False)
+        monkeypatch.delenv("CHALK_ENVIRONMENT", raising=False)
+        monkeypatch.delenv("CHALK_ENVIRONMENT_ID", raising=False)
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        (tmp_path / ".chalk.yml").write_text(
+            """
+tokens:
+  default:
+    clientId: config-client
+    clientSecret: config-secret
+    apiServer: https://api.config.chalk.ai
+    activeEnvironment: Staging
+""",
+        )
+        posted: dict[str, Any] = {}
+
+        def fake_post(*args, **kwargs):
+            posted["args"] = args
+            posted["kwargs"] = kwargs
+            return _TokenResponse(
+                {
+                    "access_token": "token",
+                    "primary_environment": "env-primary",
+                    "grpc_engines": {"env-1": "engine.staging.chalk.dev:443"},
+                    "environment_id_to_name": {"env-1": "Staging"},
+                }
+            )
+
+        monkeypatch.setattr("httpx.post", fake_post)
+
+        client = ConnectClient()
+        client._ensure_auth()
+
+        assert posted["args"] == ("https://api.config.chalk.ai/v1/oauth/token",)
+        assert posted["kwargs"]["json"] == {
+            "client_id": "config-client",
+            "client_secret": "config-secret",
+            "grant_type": "client_credentials",
+        }
+        assert client._env_id == "env-1"
+
+    def test_loads_project_scoped_token_from_chalk_login_config(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        project_dir = tmp_path / "project"
+        work_dir = project_dir / "nested"
+        work_dir.mkdir(parents=True)
+        (project_dir / "chalk.yml").write_text("project: test\n")
+        monkeypatch.chdir(work_dir)
+        monkeypatch.delenv("CHALK_CLIENT_ID", raising=False)
+        monkeypatch.delenv("CHALK_CLIENT_SECRET", raising=False)
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(config_dir))
+        (config_dir / ".chalk.yml").write_text(
+            f"""
+tokens:
+  default:
+    clientId: default-client
+    clientSecret: default-secret
+    apiServer: https://api.default.chalk.ai
+  {str(project_dir)!r}:
+    clientId: project-client
+    clientSecret: project-secret
+    apiServer: https://api.project.chalk.ai
+    activeEnvironment: env-project
+""",
+        )
+        posted: dict[str, Any] = {}
+
+        def fake_post(*args, **kwargs):
+            posted["args"] = args
+            posted["kwargs"] = kwargs
+            return _TokenResponse(
+                {
+                    "access_token": "token",
+                    "primary_environment": "env-primary",
+                    "grpc_engines": {"env-project": "engine.chalk.ai:443"},
+                    "environment_id_to_name": {"env-project": "Project"},
+                }
+            )
+
+        monkeypatch.setattr("httpx.post", fake_post)
+
+        ConnectClient()._ensure_auth()
+
+        assert posted["args"] == ("https://api.project.chalk.ai/v1/oauth/token",)
+        assert posted["kwargs"]["json"]["client_id"] == "project-client"
+        assert posted["kwargs"]["json"]["client_secret"] == "project-secret"
 
 
 class TestConnectClientTracing:
