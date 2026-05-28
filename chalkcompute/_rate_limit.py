@@ -3,6 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+_VALID_PER_UNITS = frozenset({"second", "minute", "hour"})
+
+_PER_TO_PROTO = {
+    "second": "RATE_LIMIT_PER_SECOND",
+    "minute": "RATE_LIMIT_PER_MINUTE",
+    "hour": "RATE_LIMIT_PER_HOUR",
+}
+
 
 @dataclass
 class RateLimitPolicy:
@@ -22,8 +30,16 @@ class RateLimitPolicy:
     """Shared-bucket identifier. Functions using the same key share one
     limiter. Defaults to the function's qualified name if omitted."""
 
+    def __post_init__(self) -> None:
+        if self.rate <= 0:
+            raise ValueError(f"rate must be > 0, got {self.rate}")
+        if self.per not in _VALID_PER_UNITS:
+            raise ValueError(
+                f"per must be one of {sorted(_VALID_PER_UNITS)!r}, got {self.per!r}"
+            )
+
     def to_dict(self) -> dict[str, Any]:
-        d: dict[str, Any] = {"rate": self.rate, "per": self.per}
+        d: dict[str, Any] = {"rate": self.rate, "per": _PER_TO_PROTO[self.per]}
         if self.key is not None:
             d["key"] = self.key
         return d

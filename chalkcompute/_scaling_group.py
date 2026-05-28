@@ -149,6 +149,8 @@ class ScalingGroup:
         self._secrets: list[_Secret] = list(secrets or [])
         self._volumes: list[tuple[str, str]] = list(volumes or [])
         self._entrypoint = entrypoint
+        if not (1 <= port <= 65535):
+            raise ValueError(f"port must be in range 1–65535, got {port}")
         self._port = port
         self._protocol = protocol
         self._min_replicas = min_replicas
