@@ -23,6 +23,8 @@ from chalkcompute._remote_function_tracing import (
     normalize_remote_function_tracing,
 )
 from chalkcompute._retry import RetryPolicy
+from chalkcompute._scaling_group import ScalingGroup, ScalingGroupError
+from chalkcompute._image import Image
 
 
 class _FakeResponse:
@@ -70,23 +72,51 @@ class _CapturingClient:
 
 class TestRateLimitPolicyToDict:
     def test_rate_only_defaults_per_to_second(self):
-        assert RateLimitPolicy(rate=10).to_dict() == {"rate": 10, "per": "second"}
+        # User-visible default is "second"
+        assert RateLimitPolicy(rate=10).per == "second"
 
-    def test_custom_per_unit(self):
-        assert RateLimitPolicy(rate=100, per="minute").to_dict() == {
-            "rate": 100,
-            "per": "minute",
-        }
+    def test_to_dict_maps_per_to_proto_enum_name(self):
+        # Wire format must use the proto enum name so protojson doesn't silently
+        # discard the value as unknown (connect-go uses DiscardUnknown: true)
+        assert RateLimitPolicy(rate=10, per="second").to_dict()["per"] == "RATE_LIMIT_PER_SECOND"
+        assert RateLimitPolicy(rate=10, per="minute").to_dict()["per"] == "RATE_LIMIT_PER_MINUTE"
+        assert RateLimitPolicy(rate=10, per="hour").to_dict()["per"] == "RATE_LIMIT_PER_HOUR"
 
     def test_key_included_when_set(self):
         assert RateLimitPolicy(rate=5, per="hour", key="payments").to_dict() == {
             "rate": 5,
-            "per": "hour",
+            "per": "RATE_LIMIT_PER_HOUR",
             "key": "payments",
         }
 
     def test_key_omitted_when_none(self):
         assert "key" not in RateLimitPolicy(rate=1).to_dict()
+
+
+class TestRateLimitPolicyValidation:
+    def test_rate_zero_rejected(self):
+        with pytest.raises(ValueError, match="rate must be > 0"):
+            RateLimitPolicy(rate=0)
+
+    def test_rate_negative_rejected(self):
+        with pytest.raises(ValueError, match="rate must be > 0"):
+            RateLimitPolicy(rate=-1)
+
+    def test_invalid_per_rejected(self):
+        with pytest.raises(ValueError, match="per must be one of"):
+            RateLimitPolicy(rate=10, per="day")
+
+    def test_per_wrong_case_rejected(self):
+        with pytest.raises(ValueError, match="per must be one of"):
+            RateLimitPolicy(rate=10, per="SECOND")
+
+    def test_empty_per_rejected(self):
+        with pytest.raises(ValueError, match="per must be one of"):
+            RateLimitPolicy(rate=10, per="")
+
+    def test_valid_per_values_accepted(self):
+        for unit in ("second", "minute", "hour"):
+            RateLimitPolicy(rate=1, per=unit)
 
 
 class TestRateLimitPolicyFromIntOrPolicy:
@@ -440,3 +470,52 @@ class TestScheduleValidationClass:
             "0 * * * *",
             "0 * * * *",
         ]
+
+
+class _MethodCls:
+    @method
+    def run(self, x: int) -> int:
+        return x
+
+
+class TestRemoteClassReplicaValidation:
+    def test_min_greater_than_max_rejected(self):
+        with pytest.raises(ValueError, match="min_replicas.*must be.*max_replicas"):
+            RemoteClass(_MethodCls, min_replicas=5, max_replicas=2)
+
+    def test_max_zero_with_min_one_rejected(self):
+        with pytest.raises(ValueError, match="min_replicas.*must be.*max_replicas"):
+            RemoteClass(_MethodCls, min_replicas=1, max_replicas=0)
+
+    def test_negative_min_rejected(self):
+        with pytest.raises(ValueError, match="min_replicas must be >= 0"):
+            RemoteClass(_MethodCls, min_replicas=-1, max_replicas=1)
+
+    def test_negative_max_rejected(self):
+        with pytest.raises(ValueError, match="max_replicas must be >= 0"):
+            RemoteClass(_MethodCls, min_replicas=0, max_replicas=-1)
+
+    def test_equal_min_max_accepted(self):
+        RemoteClass(_MethodCls, min_replicas=2, max_replicas=2)
+
+    def test_min_less_than_max_accepted(self):
+        RemoteClass(_MethodCls, min_replicas=1, max_replicas=4)
+
+
+class TestScalingGroupPortValidation:
+    def test_negative_port_rejected(self):
+        with pytest.raises(ValueError, match="port must be in range"):
+            ScalingGroup(image=Image.debian_slim(), port=-1)
+
+    def test_zero_port_rejected(self):
+        with pytest.raises(ValueError, match="port must be in range"):
+            ScalingGroup(image=Image.debian_slim(), port=0)
+
+    def test_port_above_max_rejected(self):
+        with pytest.raises(ValueError, match="port must be in range"):
+            ScalingGroup(image=Image.debian_slim(), port=65536)
+
+    def test_valid_port_accepted(self):
+        ScalingGroup(image=Image.debian_slim(), port=8080)
+        ScalingGroup(image=Image.debian_slim(), port=1)
+        ScalingGroup(image=Image.debian_slim(), port=65535)
