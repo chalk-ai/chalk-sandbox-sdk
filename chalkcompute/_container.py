@@ -670,10 +670,13 @@ class Container:
                 spec["resources"] = resources
 
             if self._volumes:
-                driver = self._volume_driver or _resolve_driver(self._client)
-                self._volume_driver = driver
+                mount_type = (
+                    self._volume_driver.mount_type
+                    if self._volume_driver is not None
+                    else "versioned_chalkfs"
+                )
                 spec["volumes"] = [
-                    {"name": vol_name, "mountPath": mount_path, "type": driver.mount_type}
+                    {"name": vol_name, "mountPath": mount_path, "type": mount_type}
                     for vol_name, mount_path in self._volumes
                 ]
 

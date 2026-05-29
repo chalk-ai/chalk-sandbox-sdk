@@ -348,10 +348,13 @@ class ScalingGroup:
             container_spec["secretRefs"] = [s._to_proto_dict() for s in self._secrets]
 
         if self._volumes:
-            driver = self._volume_driver or _resolve_driver(self._client)
-            self._volume_driver = driver
+            mount_type = (
+                self._volume_driver.mount_type
+                if self._volume_driver is not None
+                else "versioned_chalkfs"
+            )
             container_spec["volumes"] = [
-                {"name": vol_name, "mountPath": mount_path, "type": driver.mount_type}
+                {"name": vol_name, "mountPath": mount_path, "type": mount_type}
                 for vol_name, mount_path in self._volumes
             ]
 
