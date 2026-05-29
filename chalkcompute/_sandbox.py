@@ -990,9 +990,11 @@ def _handle_rpc_error(e: grpc.RpcError, sandbox_id: str) -> None:
     )
 
 
-def _volume_mounts_to_proto(volumes: list[tuple[str, str]]) -> list[pb.VolumeMount]:
+def _volume_mounts_to_proto(
+    volumes: list[tuple[str, str]], *, mount_type: str = "versioned_chalkfs"
+) -> list[pb.VolumeMount]:
     return [
-        pb.VolumeMount(name=vol_name, mount_path=mount_path, type="chalkfs")
+        pb.VolumeMount(name=vol_name, mount_path=mount_path, type=mount_type)
         for vol_name, mount_path in volumes
     ]
 
