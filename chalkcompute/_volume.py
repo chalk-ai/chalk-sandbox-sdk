@@ -30,6 +30,7 @@ from typing import Any
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 import grpc
 import httpx
@@ -478,10 +479,33 @@ class Volume:
 
 
 _VolumeInfoList = list[VolumeInfo]
+_VolumeMountPairs = list[tuple[str, str]]
+
+
+class VolumeBackend(Protocol):
+    """Protocol for clients that can back container/sandbox volume mounts.
+
+    Implementations include the v1 ``VolumeClient`` (mount type ``chalkfs``)
+    and the v2 ``VersionedVolumeClient`` (mount type ``versioned_chalkfs``).
+    Container/scaling-group/function code uses this protocol so the same code
+    paths work against either backend.
+    """
+
+    mount_type: str
+
+    def upload_lazy_files(
+        self, image: Image, *, volume_prefix: str
+    ) -> "list[tuple[str, str]]": ...
+
+    def delete_volume(self, name: str) -> None: ...
+
+    def close(self) -> None: ...
 
 
 class VolumeClient:
     """Client for the Volume gRPC service."""
+
+    mount_type = "chalkfs"
 
     def __init__(
         self,
@@ -665,6 +689,27 @@ class VolumeClient:
         vol = Volume(name, client=self, create_if_missing=False)
         vol.reload()
         return vol
+
+    def upload_lazy_files(
+        self, image: Image, *, volume_prefix: str = "files"
+    ) -> _VolumeMountPairs:
+        """Upload an image's lazy local files into v1 volumes.
+
+        Backend-protocol entry point that mirrors
+        :func:`upload_lazy_files` at module scope.
+        """
+        return upload_lazy_files(self, image, volume_prefix=volume_prefix)
+
+    def delete_volume(self, name: str) -> None:
+        """Delete a volume by name."""
+        try:
+            self._stub.DeleteVolume(
+                pb.DeleteVolumeRequest(name=name),
+                metadata=self._metadata,
+            )
+        except grpc.RpcError as e:
+            _handle_rpc_error(e, name)
+            raise
 
     def list(self) -> _VolumeInfoList:
         """List all volumes.

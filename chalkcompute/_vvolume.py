@@ -5,6 +5,7 @@ from __future__ import annotations
 import builtins
 import datetime
 import logging
+import os
 import time
 import uuid
 from collections.abc import Generator, Iterator
@@ -19,6 +20,7 @@ import httpx
 from chalkcompute._connect import ConnectClient, grpc_target_from_url
 from chalkcompute._gen.chalk.volume.v2 import volume_pb2 as pb_v2
 from chalkcompute._gen.chalk.volume.v2 import volume_pb2_grpc as pb_v2_grpc
+from chalkcompute._image import Image
 from chalkcompute._tracing import traced
 from chalkcompute._volume import (
     FileInfo,
@@ -687,6 +689,8 @@ class VersionedVolume:
 class VersionedVolumeClient:
     """Client for the v2 versioned Volume gRPC service."""
 
+    mount_type = "versioned_chalkfs"
+
     def __init__(
         self,
         target: str = "localhost:50051",
@@ -751,6 +755,27 @@ class VersionedVolumeClient:
         vol = VersionedVolume(name, client=self, create_if_missing=False)
         vol.reload()
         return vol
+
+    def upload_lazy_files(
+        self, image: Image, *, volume_prefix: str = "files"
+    ) -> builtins.list[tuple[str, str]]:
+        """Upload an image's lazy local files into versioned volumes.
+
+        Backend-protocol entry point that mirrors
+        :func:`upload_lazy_files_versioned` at module scope.
+        """
+        return upload_lazy_files_versioned(self, image, volume_prefix=volume_prefix)
+
+    def delete_volume(self, name: str) -> None:
+        """Delete a versioned volume by name."""
+        try:
+            self._stub.DeleteVolume(
+                pb_v2.DeleteVolumeRequest(volume=pb_v2.VolumeRef(name=name)),
+                metadata=self._metadata,
+            )
+        except grpc.RpcError as e:
+            _handle_rpc_error(e, name)
+            raise
 
     def list(self, *, limit: int = 100) -> builtins.list[VolumeInfo]:
         volumes: list[VolumeInfo] = []
@@ -847,7 +872,9 @@ def _read_versioned_file_response(resp: pb_v2.GetFileResponse) -> bytes:
         chunks = sorted(resp.chunked.chunks, key=lambda c: c.offset)
         if not chunks:
             return b""
-        with ThreadPoolExecutor(max_workers=_transfer_worker_count(len(chunks))) as pool:
+        with ThreadPoolExecutor(
+            max_workers=_transfer_worker_count(len(chunks))
+        ) as pool:
             parts = list(pool.map(_read_versioned_chunk, chunks))
         return b"".join(parts)
     if content_type == "packed":
@@ -999,3 +1026,37 @@ class _VersionedBatchUpload:
         except Exception:
             self._files = files + self._files
             raise
+
+
+@traced("chalkcompute.upload_lazy_files_versioned")
+def upload_lazy_files_versioned(
+    client: VersionedVolumeClient,
+    image: Image,
+    *,
+    volume_prefix: str = "files",
+) -> list[tuple[str, str]]:
+    """Upload an image's lazy local files into versioned volumes.
+
+    Creates one versioned volume per destination directory and commits all
+    files for that directory as a single version. Returns the
+    ``(volume_name, mount_path)`` pairs needed to mount them with
+    ``type="versioned_chalkfs"`` in a container spec.
+    """
+    try:
+        dir_to_files = image.lazy_local_files_grouped_for_volume_mounts()
+    except ValueError as e:
+        raise VolumeError(str(e)) from e
+
+    if not dir_to_files:
+        return []
+
+    volumes: list[tuple[str, str]] = []
+    for dest_dir, files in dir_to_files.items():
+        vol = client.create(f"{volume_prefix}-{uuid.uuid4().hex[:12]}")
+        with vol.batch_upload() as batch:
+            for lf in files:
+                rel_path = os.path.relpath(lf.dest, dest_dir)
+                batch.put_file(rel_path, lf.src)
+        volumes.append((vol.name, dest_dir))
+
+    return volumes

@@ -52,6 +52,8 @@ from typing import TYPE_CHECKING, Any, Callable, TypeVar, overload
 from chalkcompute._connect import ConnectClient
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import _instrumented
+from chalkcompute._volume import VolumeBackend
+from chalkcompute._vvolume import VersionedVolumeClient
 from chalkcompute._function import (
     _CATALOG_SVC,
     _REMOTE_ENV_VAR,
@@ -593,6 +595,7 @@ class RemoteClass:
             raise ValueError(
                 f"min_replicas ({min_replicas}) must be <= max_replicas ({max_replicas})"
             )
+        self._volume_backend: VolumeBackend | None = None
         self._min_replicas = min_replicas
         self._max_replicas = max_replicas
         self._shutdown_delay_seconds = shutdown_delay_seconds
@@ -774,6 +777,7 @@ class RemoteClass:
         rc._env = {}
         rc._secrets = []
         rc._volumes = []
+        rc._volume_backend = None
         rc._min_replicas = 1
         rc._max_replicas = 1
         rc._shutdown_delay_seconds = None
@@ -913,7 +917,7 @@ class RemoteClass:
             deploy_image, temp_files = self._build_deploy_image()
 
             # 2. Build image + upload lazy files
-            image_uri, new_vols = _build_and_upload(
+            image_uri, new_vols, backend = _build_and_upload(
                 self._client,
                 deploy_image,
                 label=f"class '{self._class_name}'",
@@ -923,6 +927,7 @@ class RemoteClass:
                 progress_parent=ckey,
             )
             self._volumes += new_vols
+            self._volume_backend = backend
             _cleanup_temp_files(temp_files)
 
             # 3. Register each method as a function version
@@ -953,6 +958,11 @@ class RemoteClass:
                     memory=self._memory,
                     gpu=self._gpu,
                     volumes=self._volumes,
+                    mount_type=(
+                        backend.mount_type
+                        if backend is not None
+                        else VersionedVolumeClient.mount_type
+                    ),
                 )
 
                 # Resolve lazy secrets and add to container spec
@@ -1159,13 +1169,14 @@ class RemoteClass:
                 method_info.remote_function.delete()
                 method_info.remote_function = None
 
-        for vol_name, _ in self._volumes:
-            self._client.rpc(
-                "chalk.volume.v1.VolumeService",
-                "DeleteVolume",
-                {"name": vol_name},
+        if self._volumes:
+            backend = self._volume_backend or VersionedVolumeClient.from_connect(
+                self._client
             )
+            for vol_name, _ in self._volumes:
+                backend.delete_volume(vol_name)
         self._volumes = []
+        self._volume_backend = None
         self._deployed = False
 
     def refresh(self) -> dict[str, FunctionVersionInfo]:

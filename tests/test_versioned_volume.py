@@ -7,21 +7,21 @@ import grpc
 import pytest
 
 from chalkcompute._gen.chalk.volume.v2 import volume_pb2 as pb_v2
-from chalkcompute._vvolume import (
-    VersionedVolume,
-    VersionedVolumeClient,
-    _VERSIONED_INLINE_THRESHOLD_BYTES,
-    _read_versioned_file_response,
-)
 from chalkcompute._volume import (
     VolumeClosedError,
     VolumeError,
+)
+from chalkcompute._vvolume import (
+    _VERSIONED_INLINE_THRESHOLD_BYTES,
+    VersionedVolume,
+    VersionedVolumeClient,
+    _read_versioned_file_response,
 )
 
 
 def _make_client() -> Any:
     client = object.__new__(VersionedVolumeClient)
-    client._metadata = [("authorization", "Bearer test-token")]
+    client._metadata = (("authorization", "Bearer test-token"),)
     client._stub = MagicMock()
     client.close = MagicMock()
     return client
@@ -401,6 +401,19 @@ def test_at_version_reads_with_version_selector() -> None:
     req = client._stub.GetFile.call_args[0][0]
     assert req.volume.name == "models"
     assert req.selector.version_id == 7
+
+
+def test_at_version_zero_pins_to_initial_version() -> None:
+    client = _make_client()
+    _set_latest(client)
+    client._stub.GetFile.return_value = pb_v2.GetFileResponse(data=b"")
+    vol = VersionedVolume("models", client=client).at_version(0)
+
+    assert vol.read_file("model.bin") == b""
+
+    req = client._stub.GetFile.call_args[0][0]
+    assert req.selector.WhichOneof("selector") == "version_id"
+    assert req.selector.version_id == 0
 
 
 def test_at_version_is_read_only() -> None:
