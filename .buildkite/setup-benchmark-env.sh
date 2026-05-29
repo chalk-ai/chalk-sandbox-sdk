@@ -27,5 +27,5 @@ uv sync --locked --all-extras --reinstall-package chalkcompute
 
 echo "--- :python: Install chalkcompute-benchmark"
 CHALKCOMPUTE_BENCHMARK_DIR="$(mktemp -d)"
-git clone --depth 1 "git@github.com:chalk-ai/chalkcompute-benchmark.git" "$CHALKCOMPUTE_BENCHMARK_DIR"
+git clone --depth 1 "git@github.com:chalk-ai/chalk-compute-benchmark.git" "$CHALKCOMPUTE_BENCHMARK_DIR"
 uv pip install --no-deps "$CHALKCOMPUTE_BENCHMARK_DIR"
