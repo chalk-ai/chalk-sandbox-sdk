@@ -13,13 +13,21 @@ steps:
   #   1. Write a module that emits pyperf JSON to $CHALK_BENCHMARK_PYPERF_OUTPUT
   #   2. Add a step that sources setup-benchmark-env.sh then calls run-benchmark.sh
 
-  - label: ":bar_chart: Sandbox TTI"
+  - label: ":bar_chart: Sandbox TTI ({{matrix}})"
+    matrix:
+      - "staging/ftqa"
+      - "meta-ci"
     command: |
+      if [ "{{matrix}}" = "staging/ftqa" ]; then
+        export BENCHMARK_ENV_FILE=".env.enc"
+      else
+        export BENCHMARK_ENV_FILE=".env.{{matrix}}.enc"
+      fi
       source .buildkite/setup-benchmark-env.sh
       .buildkite/run-benchmark.sh \
-        --suite "Sandbox TTI Benchmarks" \
+        --suite "Sandbox TTI Benchmarks ({{matrix}})" \
         --case  "sandbox-tti" \
-        --tags  "sandbox,compute,tti" \
+        --tags  "sandbox,compute,tti,{{matrix}}" \
         -- uv run python -m sandbox_benchmark.pyperf_adapter \
           --mode all \
           --iterations 10 \
