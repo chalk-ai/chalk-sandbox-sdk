@@ -217,7 +217,8 @@ def test_mount_volume_sent_in_run_container_rpc() -> None:
 
     container.run()
 
-    _, _, body, _ = client.calls[0]
+    run_call = next(c for c in client.calls if c[1] == "RunContainer")
+    _, _, body, _ = run_call
     assert body["container"]["spec"]["volumes"] == [
         {"name": "my-volume", "mountPath": "/data", "type": "versioned_chalkfs"}
     ]

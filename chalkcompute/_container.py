@@ -29,6 +29,11 @@ from typing import TYPE_CHECKING, Any
 
 from chalkcompute._connect import ConnectClient
 from chalkcompute._volume import VolumeDriver, _resolve_driver
+from chalkcompute._volume_mounts import (
+    fetch_container_volume_types,
+    guard_volume_mounts,
+    preserve_existing_volume_types,
+)
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import _instrumented
 
@@ -679,6 +684,20 @@ class Container:
                     {"name": vol_name, "mountPath": mount_path, "type": mount_type}
                     for vol_name, mount_path in self._volumes
                 ]
+
+                # #4/#5: if a container with this name already exists, reuse its
+                # recorded mount type per volume name so a re-run can never flip
+                # a volume's type, then guard for same-request consistency.
+                existing_types = fetch_container_volume_types(
+                    self._client, _SVC, container_name
+                )
+                preserve_existing_volume_types(spec["volumes"], existing_types)
+                guard_volume_mounts(
+                    spec["volumes"],
+                    existing_types=existing_types,
+                    error_cls=ContainerError,
+                    owner=f"container '{container_name}'",
+                )
 
             if self._secrets:
                 spec["secretRefs"] = [s._to_proto_dict() for s in self._secrets]

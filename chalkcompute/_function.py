@@ -64,6 +64,11 @@ from chalkcompute._tracing import (
     remote_function_call_span,
 )
 from chalkcompute._volume import VolumeDriver, _resolve_driver
+from chalkcompute._volume_mounts import (
+    fetch_scaling_group_volume_types,
+    guard_volume_mounts,
+    preserve_existing_volume_types,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1448,6 +1453,24 @@ class RemoteFunction:
                 volumes=deploy_volumes,
                 mount_type=driver.mount_type if driver is not None else "versioned_chalkfs",
             )
+
+            # #4/#5: never change or conflict an existing volume's mount type.
+            # Read the current scaling group state (no-op on first deploy) so we
+            # can reuse the server's recorded type per volume name, then guard
+            # the outgoing mounts before sending the request.
+            outgoing_mounts = container_spec.get("volumes")
+            if outgoing_mounts:
+                existing_types = fetch_scaling_group_volume_types(
+                    self._client, _SG_SVC, sg_name
+                )
+                preserve_existing_volume_types(outgoing_mounts, existing_types)
+                guard_volume_mounts(
+                    outgoing_mounts,
+                    existing_types=existing_types,
+                    error_cls=FunctionError,
+                    owner=f"function '{self._explicit_name or self._func_name}'",
+                )
+
             scaling_spec: dict[str, Any] = {
                 "minReplicas": self._min_replicas,
                 "maxReplicas": self._max_replicas,

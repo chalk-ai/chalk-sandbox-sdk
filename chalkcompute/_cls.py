@@ -53,6 +53,11 @@ from chalkcompute._connect import ConnectClient
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import VolumeDriver, _resolve_driver
+from chalkcompute._volume_mounts import (
+    fetch_scaling_group_volume_types,
+    guard_volume_mounts,
+    preserve_existing_volume_types,
+)
 from chalkcompute._function import (
     _CATALOG_SVC,
     _REMOTE_ENV_VAR,
@@ -959,6 +964,22 @@ class RemoteClass:
                     volumes=self._volumes,
                     mount_type=driver.mount_type if driver is not None else "versioned_chalkfs",
                 )
+
+                # #4/#5: preserve any existing volume's recorded mount type for
+                # this method's scaling group and guard the outgoing mounts so a
+                # redeploy can never change or conflict a volume's type.
+                outgoing_mounts = container_spec.get("volumes")
+                if outgoing_mounts:
+                    existing_types = fetch_scaling_group_volume_types(
+                        self._client, _SG_SVC, sg_name
+                    )
+                    preserve_existing_volume_types(outgoing_mounts, existing_types)
+                    guard_volume_mounts(
+                        outgoing_mounts,
+                        existing_types=existing_types,
+                        error_cls=ClassError,
+                        owner=f"method '{func_name}'",
+                    )
 
                 # Resolve lazy secrets and add to container spec
                 if self._secrets:
