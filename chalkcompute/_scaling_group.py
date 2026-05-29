@@ -38,7 +38,13 @@ from typing import TYPE_CHECKING, Any
 from chalkcompute._connect import ConnectClient, build_image
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import _instrumented
-from chalkcompute._volume import VolumeDriver, _resolve_driver
+from chalkcompute._volume import (
+    _DEFAULT_MOUNT_TYPE,
+    VolumeDriver,
+    VolumeError,
+    VolumeMount,
+    _resolve_driver,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +153,12 @@ class ScalingGroup:
         self._gpu = gpu
         self._env = env or {}
         self._secrets: list[_Secret] = list(secrets or [])
-        self._volumes: list[tuple[str, str]] = list(volumes or [])
+        # Pre-attached volumes carry no type, so they adopt the default mount
+        # type once here; the type then travels on the volume into the request.
+        self._volumes: list[VolumeMount] = [
+            VolumeMount(name=name, mount_path=mount_path, type=_DEFAULT_MOUNT_TYPE)
+            for name, mount_path in (volumes or [])
+        ]
         self._volume_driver: VolumeDriver | None = None
         self._entrypoint = entrypoint
         if not (1 <= port <= 65535):
@@ -312,8 +323,8 @@ class ScalingGroup:
             self._volumes += driver.upload_lazy_files(
                 self._image, volume_prefix="sg-files",
             )
-            for vn, mp in self._volumes:
-                logger.info("  Volume created: %s (mount: %s)", vn, mp)
+            for v in self._volumes:
+                logger.info("  Volume created: %s (mount: %s)", v.name, v.mount_path)
 
         # 3. Build the ScalingGroupSpec
         sg_name = sanitize_dns_label(self._name or f"sg-{uuid.uuid4().hex[:8]}")
@@ -348,15 +359,13 @@ class ScalingGroup:
             container_spec["secretRefs"] = [s._to_proto_dict() for s in self._secrets]
 
         if self._volumes:
-            mount_type = (
-                self._volume_driver.mount_type
-                if self._volume_driver is not None
-                else "versioned_chalkfs"
-            )
-            container_spec["volumes"] = [
-                {"name": vol_name, "mountPath": mount_path, "type": mount_type}
-                for vol_name, mount_path in self._volumes
-            ]
+            for v in self._volumes:
+                if not v.type:
+                    raise VolumeError(
+                        f"Volume {v.name!r} mounted at {v.mount_path!r} has no "
+                        "mount type; refusing to guess one for the container spec"
+                    )
+            container_spec["volumes"] = [v.to_spec_dict() for v in self._volumes]
 
         scaling_spec: dict[str, Any] = {
             "minReplicas": self._min_replicas,
@@ -536,9 +545,11 @@ class ScalingGroup:
             self._scaling_group_info = None
 
         if self._volumes:
+            # Driver is used here only to perform the delete action, not to
+            # derive a mount type.
             driver = self._volume_driver or _resolve_driver(self._client)
-            for vol_name, _ in self._volumes:
-                driver.delete_volume(vol_name)
+            for v in self._volumes:
+                driver.delete_volume(v.name)
         self._volumes = []
         self._volume_driver = None
 

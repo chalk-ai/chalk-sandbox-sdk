@@ -114,6 +114,37 @@ class VolumeInfo:
     ref: str | None = None
 
 
+@dataclass(frozen=True)
+class VolumeMount:
+    """A volume to mount into a scaling group, with its mount type attached.
+
+    The mount ``type`` is a property of the volume, not of the request being
+    built or of a transient driver. Carrying it on the volume itself is the
+    single source of truth: every create/update request for a given scaling
+    group stamps the same type onto the same volume name, so the backend
+    ChalkScalingGroup CR does not flip-flop between ``chalkfs`` and
+    ``versioned_chalkfs`` and re-roll endlessly.
+
+    Attributes
+    ----------
+    name
+        Volume name.
+    mount_path
+        Absolute path inside the container where the volume is mounted.
+    type
+        Mount type: ``"chalkfs"`` (non-versioned) or ``"versioned_chalkfs"``
+        (versioned).
+    """
+
+    name: str
+    mount_path: str
+    type: str
+
+    def to_spec_dict(self) -> dict[str, str]:
+        """Render this mount as a container-spec ``volumes`` entry."""
+        return {"name": self.name, "mountPath": self.mount_path, "type": self.type}
+
+
 @dataclass
 class FileInfo:
     """Metadata about a file inside a volume.
@@ -497,7 +528,13 @@ class SimpleVolume:
 
 
 _VolumeInfoList = list[VolumeInfo]
-_VolumeMountPairs = list[tuple[str, str]]
+_VolumeMounts = list[VolumeMount]
+
+#: Mount type applied to base/pre-attached volumes the user supplies as
+#: ``(name, mount_path)`` without an explicit type. Kept in lockstep with the
+#: default backend chosen by :func:`_resolve_driver` (``versioned=True``), so a
+#: base volume and a freshly uploaded volume in the same request agree on type.
+_DEFAULT_MOUNT_TYPE = "versioned_chalkfs"
 
 
 class VolumeDriver(Protocol):
@@ -513,7 +550,7 @@ class VolumeDriver(Protocol):
 
     def upload_lazy_files(
         self, image: Image, *, volume_prefix: str
-    ) -> "list[tuple[str, str]]": ...
+    ) -> "list[VolumeMount]": ...
 
     def delete_volume(self, name: str) -> None: ...
 
@@ -790,7 +827,7 @@ class VolumeClient:
     @_instrumented("chalkcompute.volume.upload_lazy_files")
     def upload_lazy_files(
         self, image: Image, *, volume_prefix: str = "files"
-    ) -> _VolumeMountPairs:
+    ) -> _VolumeMounts:
         """Upload an image's lazy local files into v1 volumes.
 
         Creates one volume per destination directory and uploads each
@@ -805,9 +842,11 @@ class VolumeClient:
 
         Returns
         -------
-        list of tuple of (str, str)
-            ``(volume_name, mount_path)`` pairs ready to mount with
-            ``type="chalkfs"`` in a container spec.
+        list of VolumeMount
+            One :class:`VolumeMount` per created volume. Each carries its own
+            mount type (``"chalkfs"`` for this v1 backend), so callers mount it
+            with the type that travels on the volume rather than re-deriving a
+            type at the request-building site.
         """
         try:
             dir_to_files = image.lazy_local_files_grouped_for_volume_mounts()
@@ -820,7 +859,7 @@ class VolumeClient:
                 self, vol_name, os.path.relpath(lf.dest, dest_dir), content,
             )
 
-        volumes: _VolumeMountPairs = []
+        volumes: _VolumeMounts = []
         for dest_dir, files in dir_to_files.items():
             vol = self.create(f"{volume_prefix}-{uuid.uuid4().hex[:12]}")
             with ThreadPoolExecutor(max_workers=_UPLOAD_MAX_WORKERS) as pool:
@@ -828,7 +867,9 @@ class VolumeClient:
                     pool.submit(_put, vol.name, lf, dest_dir) for lf in files
                 ):
                     fut.result()
-            volumes.append((vol.name, dest_dir))
+            volumes.append(
+                VolumeMount(name=vol.name, mount_path=dest_dir, type=self.mount_type)
+            )
         return volumes
 
     def delete_volume(self, name: str) -> None:

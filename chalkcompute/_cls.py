@@ -52,7 +52,12 @@ from typing import TYPE_CHECKING, Any, Callable, TypeVar, overload
 from chalkcompute._connect import ConnectClient
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import _instrumented
-from chalkcompute._volume import VolumeDriver, _resolve_driver
+from chalkcompute._volume import (
+    _DEFAULT_MOUNT_TYPE,
+    VolumeDriver,
+    VolumeMount,
+    _resolve_driver,
+)
 from chalkcompute._function import (
     _CATALOG_SVC,
     _REMOTE_ENV_VAR,
@@ -585,7 +590,13 @@ class RemoteClass:
         self._gpu = gpu
         self._env = env or {}
         self._secrets: list[_Secret] = list(secrets or [])
-        self._volumes: list[tuple[str, str]] = list(volumes or [])
+        # Pre-attached volumes carry no type, so they adopt the default mount
+        # type once here; the type then travels on the volume into every
+        # per-method deploy request rather than being re-derived per request.
+        self._volumes: list[VolumeMount] = [
+            VolumeMount(name=name, mount_path=mount_path, type=_DEFAULT_MOUNT_TYPE)
+            for name, mount_path in (volumes or [])
+        ]
         if min_replicas < 0:
             raise ValueError(f"min_replicas must be >= 0, got {min_replicas}")
         if max_replicas < 0:
@@ -957,7 +968,6 @@ class RemoteClass:
                     memory=self._memory,
                     gpu=self._gpu,
                     volumes=self._volumes,
-                    mount_type=driver.mount_type if driver is not None else "versioned_chalkfs",
                 )
 
                 # Resolve lazy secrets and add to container spec
@@ -1165,9 +1175,11 @@ class RemoteClass:
                 method_info.remote_function = None
 
         if self._volumes:
+            # Driver is used here only to perform the delete action, not to
+            # derive a mount type.
             driver = self._volume_driver or _resolve_driver(self._client)
-            for vol_name, _ in self._volumes:
-                driver.delete_volume(vol_name)
+            for v in self._volumes:
+                driver.delete_volume(v.name)
         self._volumes = []
         self._volume_driver = None
         self._deployed = False

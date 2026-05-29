@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     import httpx
 
     from chalkcompute._image import Image
+    from chalkcompute._volume import VolumeMount
 
 
 class ConnectError(Exception):
@@ -393,7 +394,7 @@ def build_image_with_volumes(
     poll_interval: float = 0.5,
     timeout: float = 600.0,
     volume_prefix: str = "files",
-) -> tuple[str, list[tuple[str, str]]]:
+) -> tuple[str, list[VolumeMount]]:
     """Build an ``Image`` and upload any lazy local files to volumes.
 
     Combines :func:`build_image` (build via ``CustomImageService``) with
@@ -416,21 +417,22 @@ def build_image_with_volumes(
 
     Returns
     -------
-    tuple[str, list[tuple[str, str]]]
+    tuple[str, list[VolumeMount]]
         ``(image_uri, volumes)`` where ``volumes`` is a list of
-        ``(volume_name, mount_path)`` pairs to attach to a container spec.
+        :class:`VolumeMount`, each carrying its own mount type, ready to
+        attach to a container spec.
 
     Raises
     ------
     ConnectError
         If the build fails or times out.
     """
-    from chalkcompute._volume import VolumeClient
+    from chalkcompute._volume import VolumeClient, VolumeMount
 
     image_uri = build_image(
         client, image, poll_interval=poll_interval, timeout=timeout,
     )
-    volumes: list[tuple[str, str]] = []
+    volumes: list[VolumeMount] = []
     if image.lazy_local_files:
         volumes = VolumeClient.from_connect(client).upload_lazy_files(
             image, volume_prefix=volume_prefix,
@@ -443,7 +445,7 @@ def build_image_with_volumes_from_spec(
     *,
     volume_prefix: str = "files",
     chalk_client: Any | None = None,
-) -> tuple[str, list[tuple[str, str]]]:
+) -> tuple[str, list[VolumeMount]]:
     """Build an Image and upload lazy files. Authenticates via env vars."""
     client = ConnectClient(chalk_client=chalk_client)
     return build_image_with_volumes(client, image, volume_prefix=volume_prefix)

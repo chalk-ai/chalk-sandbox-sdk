@@ -528,7 +528,11 @@ class TestUploadLazyFiles:
         mock_upload.assert_called_once()
         assert mock_upload.call_args[0][1] == "test-vol-abc"
         assert mock_upload.call_args[0][3] == b"hello"
-        assert volumes == [("test-vol-abc", "/app")]
+        from chalkcompute._volume import VolumeMount
+
+        assert volumes == [
+            VolumeMount(name="test-vol-abc", mount_path="/app", type="chalkfs")
+        ]
 
     def test_empty_image_returns_early(self):
         from chalkcompute._image import Image

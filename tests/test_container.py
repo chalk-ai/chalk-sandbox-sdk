@@ -204,7 +204,12 @@ def test_mount_volume_appends_and_chains() -> None:
         .mount_volume("vol-a", "/data")
         .mount_volume("vol-b", "/scratch")
     )
-    assert c._volumes == [("vol-a", "/data"), ("vol-b", "/scratch")]
+    from chalkcompute._volume import VolumeMount
+
+    assert c._volumes == [
+        VolumeMount(name="vol-a", mount_path="/data", type="versioned_chalkfs"),
+        VolumeMount(name="vol-b", mount_path="/scratch", type="versioned_chalkfs"),
+    ]
 
 
 def test_mount_volume_sent_in_run_container_rpc() -> None:
