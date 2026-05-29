@@ -236,3 +236,13 @@ steps:
       automatic:
         - exit_status: -1
           limit: 2
+
+  - wait: ~
+    continue_on_failure: true
+
+  - label: ":bar_chart: Trigger sandbox benchmarks"
+    trigger: "chalk-sandbox-sdk-sandbox-benchmark"
+    async: true
+    build:
+      branch: "${BUILDKITE_BRANCH}"
+      commit: "${BUILDKITE_COMMIT}"

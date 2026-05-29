@@ -1,0 +1,42 @@
+on:
+  push:
+    branches:
+      - main
+
+env:
+  UV_VERSION: "0.11.14"
+  BENCHMARK_RESULTS_URL: "https://benchmark-results-server-290587571767.us-central1.run.app"
+  ARTIFACT_GCS_BUCKET: "chalk-ci-artifact-cache"
+
+steps:
+  # To add a new benchmark:
+  #   1. Write a module that emits pyperf JSON to $CHALK_BENCHMARK_PYPERF_OUTPUT
+  #   2. Add a step that sources setup-benchmark-env.sh then calls run-benchmark.sh
+
+  - label: ":bar_chart: Sandbox TTI ({{matrix}})"
+    matrix:
+      - "staging/ftqa"
+      - "meta-ci"
+    command: |
+      if [ "{{matrix}}" = "staging/ftqa" ]; then
+        export BENCHMARK_ENV_FILE=".env.enc"
+      else
+        export BENCHMARK_ENV_FILE=".env.{{matrix}}.enc"
+      fi
+      source .buildkite/setup-benchmark-env.sh
+      .buildkite/run-benchmark.sh \
+        --suite "Sandbox TTI Benchmarks ({{matrix}})" \
+        --case  "sandbox-tti" \
+        --tags  "sandbox,compute,tti,{{matrix}}" \
+        -- uv run python -m sandbox_benchmark.pyperf_adapter \
+          --mode all \
+          --iterations 10 \
+          --min-success-rate 1.0 \
+          --max-p95-ms 30000
+    agents:
+      queue: default
+    timeout_in_minutes: 60
+    retry:
+      automatic:
+        - exit_status: -1
+          limit: 2
