@@ -28,8 +28,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from chalkcompute._connect import ConnectClient
-from chalkcompute._volume import VolumeBackend
-from chalkcompute._vvolume import VersionedVolumeClient
+from chalkcompute._volume import VolumeDriver, _resolve_driver
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import _instrumented
 
@@ -306,7 +305,7 @@ class Container:
         self._volumes: list[tuple[str, str]] = list(volumes or [])
         if port is not None and not (1 <= port <= 65535):
             raise ValueError(f"port must be between 1 and 65535, got {port!r}")
-        self._volume_backend: VolumeBackend | None = None
+        self._volume_driver: VolumeDriver | None = None
         self._port = port
         self._entrypoint = entrypoint
         if lifetime is not None:
@@ -426,7 +425,7 @@ class Container:
         c._env = {}
         c._secrets = []
         c._volumes = []
-        c._volume_backend = None
+        c._volume_driver = None
         c._port = None
         c._entrypoint = None
         c._lifetime = None
@@ -617,9 +616,9 @@ class Container:
                 )
                 logger.info("Uploading %d local file(s) to volume(s)...", len(lazy_files))
                 assert isinstance(self._image, Image)
-                backend = VersionedVolumeClient.from_connect(self._client)
-                self._volume_backend = backend
-                self._volumes += backend.upload_lazy_files(
+                driver = _resolve_driver(self._client)
+                self._volume_driver = driver
+                self._volumes += driver.upload_lazy_files(
                     self._image, volume_prefix="container-files",
                 )
                 for vn, mp in self._volumes:
@@ -671,13 +670,10 @@ class Container:
                 spec["resources"] = resources
 
             if self._volumes:
-                mount_type = (
-                    self._volume_backend.mount_type
-                    if self._volume_backend is not None
-                    else VersionedVolumeClient.mount_type
-                )
+                driver = self._volume_driver or _resolve_driver(self._client)
+                self._volume_driver = driver
                 spec["volumes"] = [
-                    {"name": vol_name, "mountPath": mount_path, "type": mount_type}
+                    {"name": vol_name, "mountPath": mount_path, "type": driver.mount_type}
                     for vol_name, mount_path in self._volumes
                 ]
 
@@ -912,11 +908,11 @@ class Container:
             self._container_info = None
 
         if self._volumes:
-            backend = self._volume_backend or VersionedVolumeClient.from_connect(self._client)
+            driver = self._volume_driver or _resolve_driver(self._client)
             for vol_name, _ in self._volumes:
-                backend.delete_volume(vol_name)
+                driver.delete_volume(vol_name)
         self._volumes = []
-        self._volume_backend = None
+        self._volume_driver = None
 
         if self._upserted_secret_names:
             from chalkcompute._secret import delete_secrets

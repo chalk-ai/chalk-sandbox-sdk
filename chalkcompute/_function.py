@@ -63,8 +63,7 @@ from chalkcompute._tracing import (
     current_trace_metadata,
     remote_function_call_span,
 )
-from chalkcompute._volume import VolumeBackend
-from chalkcompute._vvolume import VersionedVolumeClient
+from chalkcompute._volume import VolumeDriver, _resolve_driver
 
 logger = logging.getLogger(__name__)
 
@@ -717,7 +716,7 @@ def _build_and_upload(
     poll_interval: float,
     build_timeout: float,
     progress_parent: str | None = None,
-) -> tuple[str, list[tuple[str, str]], VolumeBackend | None]:
+) -> tuple[str, list[tuple[str, str]], VolumeDriver | None]:
     """Build the container image and upload lazy local files.
 
     Parameters
@@ -755,7 +754,7 @@ def _build_and_upload(
     progress_done(ikey)
 
     new_volumes: list[tuple[str, str]] = []
-    backend: VolumeBackend | None = None
+    driver: VolumeDriver | None = None
     if deploy_image.lazy_local_files:
         vkey = f"upload:{label}"
         progress_add(
@@ -765,12 +764,12 @@ def _build_and_upload(
             parent=progress_parent,
         )
         logger.info("Uploading %d local file(s)...", len(deploy_image.lazy_local_files))
-        backend = VersionedVolumeClient.from_connect(client)
-        new_volumes = backend.upload_lazy_files(
+        driver = _resolve_driver(client)
+        new_volumes = driver.upload_lazy_files(
             deploy_image, volume_prefix=volume_prefix,
         )
         progress_done(vkey)
-    return image_uri, new_volumes, backend
+    return image_uri, new_volumes, driver
 
 
 def _cleanup_temp_files(paths: list[str]) -> None:
@@ -798,7 +797,7 @@ def _make_container_spec(
     memory: str | None,
     gpu: str | None,
     volumes: list[tuple[str, str]],
-    mount_type: str = VersionedVolumeClient.mount_type,
+    mount_type: str = "versioned_chalkfs",
 ) -> dict[str, Any]:
     """Build a container spec dict for ``CreateExternalFunctionVersion``.
 
@@ -1126,7 +1125,7 @@ class RemoteFunction:
             raise ValueError(
                 f"min_replicas ({min_replicas}) must be <= max_replicas ({max_replicas})"
             )
-        self._volume_backend: VolumeBackend | None = None
+        self._volume_driver: VolumeDriver | None = None
         self._min_replicas = min_replicas
         self._max_replicas = max_replicas
         self._shutdown_delay_seconds = shutdown_delay_seconds
@@ -1303,7 +1302,7 @@ class RemoteFunction:
         f._secrets = []
         f._base_volumes = []
         f._volumes = []
-        f._volume_backend = None
+        f._volume_driver = None
         f._min_replicas = 1
         f._max_replicas = 1
         f._shutdown_delay_seconds = None
@@ -1413,7 +1412,7 @@ class RemoteFunction:
             deploy_image = self._build_deploy_image()
 
             # 2. Build image + upload lazy files
-            image_uri, new_vols, backend = _build_and_upload(
+            image_uri, new_vols, driver = _build_and_upload(
                 self._client,
                 deploy_image,
                 label=f"function '{self._func_name}'",
@@ -1427,7 +1426,7 @@ class RemoteFunction:
                 *new_vols,
             ]
             self._volumes = deploy_volumes
-            self._volume_backend = backend
+            self._volume_driver = driver
             _cleanup_temp_files(getattr(self, "_temp_files", []))
             self._temp_files = []
 
@@ -1447,11 +1446,7 @@ class RemoteFunction:
                 memory=self._memory,
                 gpu=self._gpu,
                 volumes=deploy_volumes,
-                mount_type=(
-                    backend.mount_type
-                    if backend is not None
-                    else VersionedVolumeClient.mount_type
-                ),
+                mount_type=driver.mount_type if driver is not None else "versioned_chalkfs",
             )
             scaling_spec: dict[str, Any] = {
                 "minReplicas": self._min_replicas,

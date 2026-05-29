@@ -194,8 +194,6 @@ def test_closed_volume_operations_raise() -> None:
     with pytest.raises(VolumeClosedError):
         vol.latest_version()
     with pytest.raises(VolumeClosedError):
-        vol.sync()
-    with pytest.raises(VolumeClosedError):
         vol.delete()
     with pytest.raises(VolumeClosedError):
         vol.at_version(7)

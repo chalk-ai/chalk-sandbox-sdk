@@ -47,7 +47,23 @@ _VERSIONED_BATCH_MAX_FILES: int = 200
 
 @dataclass
 class VersionInfo:
-    """Metadata for an immutable versioned volume snapshot."""
+    """Metadata for an immutable versioned volume snapshot.
+
+    Attributes
+    ----------
+    id
+        Stable identifier of this version.
+    sequence_number
+        Monotonic position of this version on its ref.
+    parent_id
+        Version this one was committed against, if any.
+    created_at
+        Server-side commit timestamp.
+    ref
+        Ref this version was committed on, if known.
+    index_id
+        Server-side content index identifier, if exposed.
+    """
 
     id: int
     sequence_number: int = 0
@@ -58,13 +74,28 @@ class VersionInfo:
 
     @property
     def version_id(self) -> int:
-        """Alias for the protobuf field name."""
+        """Alias for the protobuf ``version_id`` field name."""
         return self.id
 
 
 @dataclass
 class CommitStatus:
-    """Result of a versioned volume commit."""
+    """Result of a versioned volume commit attempt.
+
+    Attributes
+    ----------
+    commit_id
+        Client-generated id used to look up commit progress.
+    result
+        Commit outcome (``"committed"``, ``"pending"``,
+        ``"rebase_required"``, ``"aborted"``, or ``"unspecified"``).
+    version
+        The new version on success, or ``None`` otherwise.
+    latest_version
+        The newest known version, useful when a rebase is required.
+    created_at
+        Server-side timestamp for the commit attempt.
+    """
 
     commit_id: str
     result: str
@@ -77,9 +108,25 @@ class VersionedVolume:
     """A handle to a versioned volume using the v2 volume service.
 
     Versioned volumes expose immutable snapshots behind mutable refs. The
-    Python API supports direct file writes, reads, listing, and version lookup.
-    Mounting versioned volumes into containers or sandboxes is intentionally
-    not wired up yet.
+    Python API supports direct file writes, reads, listing, and version
+    lookup. Each write produces a new immutable version; the ``main`` ref
+    (or a caller-provided ref) advances to point at the latest committed
+    version.
+
+    Examples
+    --------
+    Write a file, advance the ref, and read the result back:
+
+    >>> from chalkcompute import VersionedVolume
+    >>> with VersionedVolume("models") as vol:
+    ...     vol.put_file("config.yaml", b"lr: 0.01\\n")
+    ...     vol.read_file("config.yaml")
+    b'lr: 0.01\\n'
+
+    Pin a handle to a previous version and read from it:
+
+    >>> previous = vol.at_version(vol.versions()[-2].id)
+    >>> _ = previous.read_file("config.yaml")
     """
 
     def __init__(
@@ -91,6 +138,26 @@ class VersionedVolume:
         ref: str = "main",
         create_if_missing: bool = True,
     ) -> None:
+        """Initialize a versioned volume handle.
+
+        Parameters
+        ----------
+        name
+            Volume name.
+        client
+            Optional :class:`VersionedVolumeClient`. If ``None``, one is
+            constructed from a default :class:`ConnectClient`.
+        version_id
+            If set, pin this handle to a specific immutable version. Such
+            handles are read-only; mutating operations raise
+            :class:`VolumeError`.
+        ref
+            Mutable ref to read/write through (defaults to ``"main"``).
+        create_if_missing
+            If ``True`` (the default), the volume is created on first
+            access if it does not already exist. Ignored when
+            ``version_id`` is set.
+        """
         self._client = client or VersionedVolumeClient.from_connect(ConnectClient())
         self._name = name
         self._version_id = version_id
@@ -102,14 +169,23 @@ class VersionedVolume:
 
     @property
     def name(self) -> str:
+        """Volume name."""
         return self._name
 
     @property
     def version_id(self) -> int | None:
+        """Pinned version id, or ``None`` for a ref-tracking handle."""
         return self._version_id
 
     @property
     def info(self) -> VolumeInfo:
+        """Cached volume metadata, fetched on first access.
+
+        Returns
+        -------
+        VolumeInfo
+            Metadata for this volume.
+        """
         self._raise_if_closed()
         if self._info is None:
             self.reload()
@@ -118,6 +194,18 @@ class VersionedVolume:
 
     @property
     def version(self) -> VersionInfo:
+        """Cached version metadata for the current ref or pinned version.
+
+        Returns
+        -------
+        VersionInfo
+            The version this handle currently points at.
+
+        Raises
+        ------
+        VolumeError
+            If the volume has no version yet (newly created, no commits).
+        """
         self._raise_if_closed()
         if self._version is None:
             self.reload()
@@ -126,6 +214,13 @@ class VersionedVolume:
         return self._version
 
     def reload(self) -> VolumeInfo:
+        """Refresh volume and version metadata from the server.
+
+        Returns
+        -------
+        VolumeInfo
+            Fresh metadata for this volume.
+        """
         self._info, self._version = self._fetch_info()
         return self._info
 
@@ -173,6 +268,18 @@ class VersionedVolume:
 
     @traced("chalkcompute.versioned_volume.read_file")
     def read_file(self, path: str) -> bytes:
+        """Read a file's contents at the current version.
+
+        Parameters
+        ----------
+        path
+            File path within the volume.
+
+        Returns
+        -------
+        bytes
+            The raw file bytes.
+        """
         self._ensure_ready()
         try:
             resp = self._client._stub.GetFile(
@@ -198,20 +305,77 @@ class VersionedVolume:
 
     @traced("chalkcompute.versioned_volume.put_file")
     def put_file(self, path: str, data: bytes | str) -> VersionedVolume:
+        """Write a file, committing a new version on the current ref.
+
+        Small payloads are committed inline; large payloads are chunked
+        and uploaded to object storage before the commit completes.
+
+        Parameters
+        ----------
+        path
+            Destination path within the volume.
+        data
+            File contents (``bytes`` or ``str``).
+
+        Returns
+        -------
+        VersionedVolume
+            ``self``, to allow chaining.
+        """
         if isinstance(data, str):
             data = data.encode("utf-8")
         self._commit_files([(path, data)])
         return self
 
     def put_file_from_path(self, path: str, local_path: str | Path) -> VersionedVolume:
+        """Upload a local file into the volume.
+
+        Parameters
+        ----------
+        path
+            Destination path within the volume.
+        local_path
+            Local file to read and upload.
+
+        Returns
+        -------
+        VersionedVolume
+            ``self``, to allow chaining.
+        """
         self.put_file(path, Path(local_path).read_bytes())
         return self
 
     def remove_file(self, path: str) -> VersionedVolume:
+        """Remove a file, committing a new version on the current ref.
+
+        Parameters
+        ----------
+        path
+            File path within the volume.
+
+        Returns
+        -------
+        VersionedVolume
+            ``self``, to allow chaining.
+        """
         self._commit_removes([path])
         return self
 
     def listdir(self, prefix: str = "", *, recursive: bool = True) -> list[FileInfo]:
+        """List files at the current version.
+
+        Parameters
+        ----------
+        prefix
+            Only return entries under this directory prefix.
+        recursive
+            If ``True`` (the default), descend into subdirectories.
+
+        Returns
+        -------
+        list of FileInfo
+            One entry per matching file or directory.
+        """
         self._ensure_ready()
         files = self._listdir_page_all(prefix)
         if not recursive:
@@ -249,6 +413,18 @@ class VersionedVolume:
         return out
 
     def iterdir(self, prefix: str = "") -> Iterator[FileInfo]:
+        """Iterate over files at the current version.
+
+        Parameters
+        ----------
+        prefix
+            Only return entries under this directory prefix.
+
+        Yields
+        ------
+        FileInfo
+            One entry per matching file or directory.
+        """
         yield from self.listdir(prefix)
 
     @contextmanager
@@ -257,6 +433,27 @@ class VersionedVolume:
         *,
         max_files_per_commit: int = _VERSIONED_BATCH_MAX_FILES,
     ) -> Generator[_VersionedBatchUpload, None, None]:
+        """Context manager that commits staged writes as one version.
+
+        Files staged within the block are bundled into a single commit
+        when the block exits (or when ``max_files_per_commit`` is reached).
+
+        Parameters
+        ----------
+        max_files_per_commit
+            Maximum files per commit before flushing automatically.
+
+        Yields
+        ------
+        _VersionedBatchUpload
+            A batch handle with ``put`` / ``put_file`` methods.
+
+        Examples
+        --------
+        >>> with vol.batch_upload() as batch:
+        ...     batch.put("a.txt", b"hello")
+        ...     batch.put("b.txt", b"world")
+        """
         self._raise_if_closed()
         self._ensure_mutable()
         if max_files_per_commit <= 0:
@@ -269,6 +466,18 @@ class VersionedVolume:
         batch._flush()
 
     def versions(self, *, limit: int = 100) -> list[VersionInfo]:
+        """List all versions of this volume.
+
+        Parameters
+        ----------
+        limit
+            Page size used when traversing the server-side cursor.
+
+        Returns
+        -------
+        list of VersionInfo
+            One entry per immutable version, ordered by the server.
+        """
         self._ensure_ready()
         versions: list[VersionInfo] = []
         cursor = ""
@@ -291,6 +500,18 @@ class VersionedVolume:
                 return versions
 
     def latest_version(self) -> VersionInfo:
+        """Fetch the latest committed version on this handle's ref.
+
+        Returns
+        -------
+        VersionInfo
+            The version currently pointed at by the ref.
+
+        Raises
+        ------
+        VolumeError
+            If the volume has no committed versions yet.
+        """
         self._ensure_ready()
         try:
             resp = self._client._stub.GetVolume(
@@ -316,6 +537,21 @@ class VersionedVolume:
         return self._version
 
     def at_version(self, version_id: int) -> VersionedVolume:
+        """Return a read-only handle pinned to a specific version.
+
+        Mutating operations on the returned handle raise
+        :class:`VolumeError`.
+
+        Parameters
+        ----------
+        version_id
+            The immutable version to pin to.
+
+        Returns
+        -------
+        VersionedVolume
+            A new handle pointing at ``version_id``.
+        """
         self._raise_if_closed()
         volume = VersionedVolume(
             self._name,
@@ -327,16 +563,15 @@ class VersionedVolume:
         volume._info = self._info
         return volume
 
-    def sync(self) -> VersionInfo:
-        """Return the latest ref version.
-
-        VersionedVolume does not mount into containers yet, so there are no
-        external filesystem writes for this method to flush.
-        """
-        return self.latest_version()
-
     @traced("chalkcompute.versioned_volume.delete")
     def delete(self) -> None:
+        """Delete this volume and all of its versions.
+
+        Raises
+        ------
+        VolumeError
+            If called on a version-pinned (read-only) handle.
+        """
         self._ensure_mutable()
         self._ensure_ready()
         try:
@@ -666,16 +901,21 @@ class VersionedVolume:
             raise VolumeError("VersionedVolume.at_version(...) handles are read-only")
 
     def close(self) -> None:
-        """Close the underlying client used by this VersionedVolume."""
+        """Close the underlying client used by this VersionedVolume.
+
+        Safe to call multiple times.
+        """
         if not self._closed:
             self._client.close()
         self._closed = True
 
     def __enter__(self) -> VersionedVolume:
+        """Enter a context that closes the volume on exit."""
         self._raise_if_closed()
         return self
 
     def __exit__(self, *_args: object) -> None:
+        """Close the volume on context exit."""
         self.close()
 
     def __repr__(self) -> str:
@@ -687,7 +927,12 @@ class VersionedVolume:
 
 
 class VersionedVolumeClient:
-    """Client for the v2 versioned Volume gRPC service."""
+    """Client for the v2 versioned Volume gRPC service.
+
+    Satisfies the :class:`VolumeDriver` protocol with
+    ``mount_type = "versioned_chalkfs"``, so container/sandbox lazy-file
+    mounts go through the versioned backend by default.
+    """
 
     mount_type = "versioned_chalkfs"
 
@@ -699,6 +944,20 @@ class VersionedVolumeClient:
         metadata: _GrpcMetadata | None = None,
         options: _GrpcOptions | None = None,
     ) -> None:
+        """Initialize the gRPC client.
+
+        Parameters
+        ----------
+        target
+            gRPC server address (e.g. ``"localhost:50051"``).
+        credentials
+            Optional TLS/SSL channel credentials. If ``None``, uses an
+            insecure channel.
+        metadata
+            Optional default metadata sent with every RPC.
+        options
+            Optional gRPC channel options.
+        """
         self._target = target
         self._metadata = tuple(metadata) if metadata else ()
         if credentials is not None:
@@ -709,6 +968,20 @@ class VersionedVolumeClient:
 
     @classmethod
     def from_connect(cls, connect: ConnectClient) -> VersionedVolumeClient:
+        """Create a client from an authenticated :class:`ConnectClient`.
+
+        Parameters
+        ----------
+        connect
+            An authenticated ``ConnectClient``. Auth is ensured
+            automatically if not already done.
+
+        Returns
+        -------
+        VersionedVolumeClient
+            A new client with TLS credentials and metadata derived from the
+            ``ConnectClient``'s token and environment.
+        """
         connect._ensure_auth()
         host, use_tls = grpc_target_from_url(connect._api_server or "")
         return cls(
@@ -726,16 +999,31 @@ class VersionedVolumeClient:
         )
 
     def __enter__(self) -> VersionedVolumeClient:
+        """Enter a context that closes the channel on exit."""
         return self
 
     def __exit__(self, *_args: object) -> None:
+        """Close the gRPC channel on context exit."""
         self.close()
 
     def close(self) -> None:
+        """Close the underlying gRPC channel."""
         self._channel.close()
 
     @traced("chalkcompute.versioned_volume.create")
     def create(self, name: str) -> VersionedVolume:
+        """Create a new named versioned volume.
+
+        Parameters
+        ----------
+        name
+            Name for the new volume.
+
+        Returns
+        -------
+        VersionedVolume
+            A handle to the newly created volume.
+        """
         try:
             resp = self._stub.CreateVolume(
                 pb_v2.CreateVolumeRequest(name=name),
@@ -749,25 +1037,86 @@ class VersionedVolumeClient:
         return vol
 
     def from_name(self, name: str) -> VersionedVolume:
+        """Return a handle by name without validating that it exists.
+
+        Parameters
+        ----------
+        name
+            Name of the existing volume.
+
+        Returns
+        -------
+        VersionedVolume
+            A handle that fetches metadata lazily on first use.
+        """
         return VersionedVolume(name, client=self, create_if_missing=False)
 
     def lookup(self, name: str) -> VersionedVolume:
+        """Look up a volume by name, verifying it exists.
+
+        Parameters
+        ----------
+        name
+            Name of the volume.
+
+        Returns
+        -------
+        VersionedVolume
+            A handle with metadata pre-fetched.
+
+        Raises
+        ------
+        VolumeNotFoundError
+            If the volume does not exist.
+        """
         vol = VersionedVolume(name, client=self, create_if_missing=False)
         vol.reload()
         return vol
 
+    @traced("chalkcompute.versioned_volume.upload_lazy_files")
     def upload_lazy_files(
         self, image: Image, *, volume_prefix: str = "files"
     ) -> builtins.list[tuple[str, str]]:
         """Upload an image's lazy local files into versioned volumes.
 
-        Backend-protocol entry point that mirrors
-        :func:`upload_lazy_files_versioned` at module scope.
+        Creates one versioned volume per destination directory and commits
+        all files for that directory as a single version.
+
+        Parameters
+        ----------
+        image
+            Image whose lazy local files should be uploaded.
+        volume_prefix
+            Prefix used when naming the generated volumes.
+
+        Returns
+        -------
+        list of tuple of (str, str)
+            ``(volume_name, mount_path)`` pairs ready to mount with
+            ``type="versioned_chalkfs"`` in a container spec.
         """
-        return upload_lazy_files_versioned(self, image, volume_prefix=volume_prefix)
+        try:
+            dir_to_files = image.lazy_local_files_grouped_for_volume_mounts()
+        except ValueError as e:
+            raise VolumeError(str(e)) from e
+
+        volumes: builtins.list[tuple[str, str]] = []
+        for dest_dir, files in dir_to_files.items():
+            vol = self.create(f"{volume_prefix}-{uuid.uuid4().hex[:12]}")
+            with vol.batch_upload() as batch:
+                for lf in files:
+                    batch.put_file(os.path.relpath(lf.dest, dest_dir), lf.src)
+            volumes.append((vol.name, dest_dir))
+        return volumes
 
     def delete_volume(self, name: str) -> None:
-        """Delete a versioned volume by name."""
+        """Delete a versioned volume by name.
+
+        Parameters
+        ----------
+        name
+            Volume to delete.
+        """
         try:
             self._stub.DeleteVolume(
                 pb_v2.DeleteVolumeRequest(volume=pb_v2.VolumeRef(name=name)),
@@ -778,6 +1127,18 @@ class VersionedVolumeClient:
             raise
 
     def list(self, *, limit: int = 100) -> builtins.list[VolumeInfo]:
+        """List all volumes the caller has access to.
+
+        Parameters
+        ----------
+        limit
+            Page size used when traversing the server-side cursor.
+
+        Returns
+        -------
+        list of VolumeInfo
+            One entry per volume.
+        """
         volumes: list[VolumeInfo] = []
         cursor = ""
         while True:
@@ -998,12 +1359,30 @@ class _VersionedBatchUpload:
         self._files: list[tuple[str, bytes]] = []
 
     def put(self, path: str, data: bytes | str) -> None:
+        """Stage a file for the next commit.
+
+        Parameters
+        ----------
+        path
+            Destination path within the volume.
+        data
+            File contents (``bytes`` or ``str``).
+        """
         if isinstance(data, str):
             data = data.encode("utf-8")
         self._files.append((path, data))
         self._flush_if_needed()
 
     def put_file(self, path: str, local_path: str | Path) -> None:
+        """Stage a local file for the next commit.
+
+        Parameters
+        ----------
+        path
+            Destination path within the volume.
+        local_path
+            Local file to read.
+        """
         self._files.append((path, Path(local_path).read_bytes()))
         self._flush_if_needed()
 
@@ -1028,35 +1407,3 @@ class _VersionedBatchUpload:
             raise
 
 
-@traced("chalkcompute.upload_lazy_files_versioned")
-def upload_lazy_files_versioned(
-    client: VersionedVolumeClient,
-    image: Image,
-    *,
-    volume_prefix: str = "files",
-) -> list[tuple[str, str]]:
-    """Upload an image's lazy local files into versioned volumes.
-
-    Creates one versioned volume per destination directory and commits all
-    files for that directory as a single version. Returns the
-    ``(volume_name, mount_path)`` pairs needed to mount them with
-    ``type="versioned_chalkfs"`` in a container spec.
-    """
-    try:
-        dir_to_files = image.lazy_local_files_grouped_for_volume_mounts()
-    except ValueError as e:
-        raise VolumeError(str(e)) from e
-
-    if not dir_to_files:
-        return []
-
-    volumes: list[tuple[str, str]] = []
-    for dest_dir, files in dir_to_files.items():
-        vol = client.create(f"{volume_prefix}-{uuid.uuid4().hex[:12]}")
-        with vol.batch_upload() as batch:
-            for lf in files:
-                rel_path = os.path.relpath(lf.dest, dest_dir)
-                batch.put_file(rel_path, lf.src)
-        volumes.append((vol.name, dest_dir))
-
-    return volumes
