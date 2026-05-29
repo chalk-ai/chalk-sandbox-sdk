@@ -51,6 +51,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "ModelNotDeployedError": ("chalkcompute._model", "ModelNotDeployedError"),
     # _connect.py
     "ConnectClient": ("chalkcompute._connect", "ConnectClient"),
+    "chalk_client_from_env": ("chalkcompute._connect", "chalk_client_from_env"),
     "build_image": ("chalkcompute._connect", "build_image_from_spec"),
     "build_image_with_volumes": (
         "chalkcompute._connect",

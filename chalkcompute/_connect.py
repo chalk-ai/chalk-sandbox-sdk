@@ -43,6 +43,56 @@ def service_auth_context_from_env() -> ServiceAuthContext | None:
         return None
 
 
+def _exchange_service_auth(
+    service_auth: ServiceAuthContext,
+) -> tuple[str, str, str]:
+    import httpx
+
+    api_server = service_auth.auth_endpoint.rstrip("/")
+    resp = httpx.post(
+        f"{api_server}/chalk.server.v1.AuthService/GetInternalWorkingToken",
+        json={
+            "requestedPermissions": list(service_auth.requested_permissions),
+        },
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {service_auth.exchange_token}",
+            "Content-Type": "application/json",
+            "X-Chalk-Server": "go-api",
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    access_token = data.get("accessToken") or data["access_token"]
+    return api_server, access_token, service_auth.environment_id
+
+
+def chalk_client_from_env(**kwargs: Any) -> Any:
+    """Create a ``chalk.client.ChalkClient`` from ambient Chalk credentials.
+
+    In remote-function service-auth environments, this exchanges the ambient
+    exchange token for a short-lived working token and injects it into the
+    returned ``ChalkClient``. Outside that environment, this falls back to
+    ChalkPy's normal credential resolution.
+    """
+    from chalk.client import ChalkClient
+
+    service_auth = service_auth_context_from_env()
+    additional_headers = dict(kwargs.pop("additional_headers", {}) or {})
+    if service_auth is None:
+        return ChalkClient(additional_headers=additional_headers or None, **kwargs)
+
+    if "Authorization" in additional_headers or "authorization" in additional_headers:
+        return ChalkClient(additional_headers=additional_headers, **kwargs)
+
+    api_server, access_token, environment_id = _exchange_service_auth(service_auth)
+    additional_headers["Authorization"] = f"Bearer {access_token}"
+    kwargs.setdefault("api_server", api_server)
+    kwargs.setdefault("environment", environment_id)
+    return ChalkClient(additional_headers=additional_headers, **kwargs)
+
+
 class ConnectClient:
     """Authenticated Connect-protocol (HTTP/JSON) client for Chalk APIs.
 
@@ -75,27 +125,11 @@ class ConnectClient:
         if self._access_token is not None:
             return
 
-        import httpx
-
         service_auth = service_auth_context_from_env()
         if service_auth is not None:
-            self._api_server = service_auth.auth_endpoint.rstrip("/")
-            resp = httpx.post(
-                f"{self._api_server}/chalk.server.v1.AuthService/GetInternalWorkingToken",
-                json={
-                    "requestedPermissions": list(service_auth.requested_permissions),
-                },
-                headers={
-                    "Accept": "application/json",
-                    "Authorization": f"Bearer {service_auth.exchange_token}",
-                    "Content-Type": "application/json",
-                    "X-Chalk-Server": "go-api",
-                },
-                timeout=30,
+            self._api_server, self._access_token, self._env_id = _exchange_service_auth(
+                service_auth
             )
-            resp.raise_for_status()
-            data = resp.json()
-            self._access_token = data.get("accessToken") or data["access_token"]
             self._env_id = self._resolve_environment_id(service_auth.environment_id)
             self._headers = {
                 "Content-Type": "application/json",
@@ -104,6 +138,8 @@ class ConnectClient:
                 "X-Chalk-Server": "go-api",
             }
             return
+
+        import httpx
 
         token = (
             None
