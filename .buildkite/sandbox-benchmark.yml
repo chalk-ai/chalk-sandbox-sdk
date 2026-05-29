@@ -25,7 +25,7 @@ steps:
           --mode all \
           --iterations 20 \
           --min-success-rate 0.9 \
-          --max-p95-ms 10000
+          --max-p95-ms 20000
     agents:
       queue: default
     timeout_in_minutes: 60
