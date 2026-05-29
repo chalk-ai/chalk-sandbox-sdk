@@ -7,7 +7,7 @@ on:
 env:
   UV_VERSION: "0.11.14"
   BENCHMARK_RESULTS_URL: "https://benchmark-results-server-290587571767.us-central1.run.app"
-  BENCHMARK_REPORTER_IMAGE: "us-central1-docker.pkg.dev/chalk-artifacts/docker/benchmark-reporter:latest"
+  ARTIFACT_GCS_BUCKET: "chalk-ci-artifact-cache"
 
 steps:
   # To add a new benchmark:

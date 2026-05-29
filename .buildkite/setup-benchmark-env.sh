@@ -25,9 +25,6 @@ source .buildkite/install-uv.sh
 echo "--- :python: Sync dependencies"
 uv sync --locked --all-extras --reinstall-package chalkcompute
 
-echo "--- :docker: Authenticate to GAR"
-gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
-
 echo "--- :python: Install chalkcompute-benchmark"
 CHALKCOMPUTE_BENCHMARK_DIR="$(mktemp -d)"
 git clone --depth 1 "git@github.com:chalk-ai/chalk-compute-benchmark.git" "$CHALKCOMPUTE_BENCHMARK_DIR"

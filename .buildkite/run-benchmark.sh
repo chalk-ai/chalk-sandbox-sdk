@@ -34,7 +34,15 @@ if [[ -z "$SUITE_NAME" || -z "$CASE_NAME" || ${#BENCHMARK_CMD[@]} -eq 0 ]]; then
 fi
 
 : "${BENCHMARK_RESULTS_URL:?must be set}"
-: "${BENCHMARK_REPORTER_IMAGE:?must be set}"
+
+# Download benchmark-runner binary from GCS
+BENCHMARK_RUNNER="/tmp/benchmark-runner"
+if [[ ! -x "$BENCHMARK_RUNNER" ]]; then
+  echo "--- :rust: Download benchmark-runner"
+  ARTIFACT_BUCKET="${ARTIFACT_GCS_BUCKET:-chalk-ci-artifact-cache}"
+  gcloud storage cp "gs://${ARTIFACT_BUCKET}/benchmark_runner/latest/benchmark-runner" "$BENCHMARK_RUNNER"
+  chmod +x "$BENCHMARK_RUNNER"
+fi
 
 PYPERF_OUTPUT="$(mktemp /tmp/benchmark-XXXXXX.json)"
 export CHALK_BENCHMARK_PYPERF_OUTPUT="$PYPERF_OUTPUT"
@@ -51,7 +59,7 @@ fi
 UPLOAD_ARGS=(
   --mode upload-json
   --format pyperf
-  --input-json-file /results/results.json
+  --input-json-file "$PYPERF_OUTPUT"
   --suite-name "$SUITE_NAME"
   --case-name "$CASE_NAME"
   --results-url "$BENCHMARK_RESULTS_URL"
@@ -61,10 +69,7 @@ UPLOAD_ARGS=(
 [[ -n "$TAGS" ]] && UPLOAD_ARGS+=(--tags "$TAGS")
 
 echo "--- :rocket: Upload results: ${CASE_NAME}"
-docker run --rm \
-  -v "${PYPERF_OUTPUT}:/results/results.json:ro" \
-  "${BENCHMARK_REPORTER_IMAGE}" \
-  "${UPLOAD_ARGS[@]}"
+"$BENCHMARK_RUNNER" "${UPLOAD_ARGS[@]}"
 
 rm -f "$PYPERF_OUTPUT"
 
