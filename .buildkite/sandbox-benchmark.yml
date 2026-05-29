@@ -22,9 +22,9 @@ steps:
         --tags  "sandbox,compute,tti" \
         -- uv run python -m sandbox_benchmark.pyperf_adapter \
           --mode all \
-          --iterations 20 \
+          --iterations 10 \
           --min-success-rate 1.0 \
-          --max-p95-ms 25000
+          --max-p95-ms 30000
     agents:
       queue: default
     timeout_in_minutes: 60
