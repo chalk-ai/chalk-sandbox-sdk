@@ -242,6 +242,7 @@ steps:
 
   - label: ":bar_chart: Trigger sandbox benchmarks"
     trigger: "chalk-sandbox-sdk-sandbox-benchmark"
+    async: true
     build:
       branch: "${BUILDKITE_BRANCH}"
       commit: "${BUILDKITE_COMMIT}"
