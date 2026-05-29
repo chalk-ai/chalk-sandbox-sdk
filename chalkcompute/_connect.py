@@ -427,7 +427,7 @@ def build_image_with_volumes(
     ConnectError
         If the build fails or times out.
     """
-    from chalkcompute._volume import VolumeClient, VolumeMount
+    from chalkcompute._volume import VolumeClient
 
     image_uri = build_image(
         client, image, poll_interval=poll_interval, timeout=timeout,

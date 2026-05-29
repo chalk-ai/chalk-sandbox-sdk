@@ -29,11 +29,11 @@ from typing import TYPE_CHECKING, Any
 
 from chalkcompute._connect import ConnectClient
 from chalkcompute._volume import (
-    _DEFAULT_MOUNT_TYPE,
     VolumeDriver,
     VolumeError,
     VolumeMount,
     _resolve_driver,
+    resolve_referenced_volume_type,
 )
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import _instrumented
@@ -301,7 +301,7 @@ class Container:
                     raise ValueError(f"env values must be strings, got {v!r} for key {k!r}")
         self._env = dict(env) if env else {}
         self._secrets = list(secrets or [])
-        base_volumes: list[VolumeMount] = []
+        referenced_volumes: list[tuple[str, str]] = []
         if volumes is not None:
             for item in volumes:
                 if not (isinstance(item, (tuple, list)) and len(item) == 2 and all(isinstance(s, str) for s in item)):
@@ -309,12 +309,14 @@ class Container:
                         f"Each volumes entry must be a (name, mount_path) string tuple, got {item!r}. "
                         f"Example: volumes=[('my-volume', '/data')]"
                     )
-                # Pre-attached volumes carry no type, so they adopt the default
-                # mount type once here; the type then travels on the volume.
-                base_volumes.append(
-                    VolumeMount(name=item[0], mount_path=item[1], type=_DEFAULT_MOUNT_TYPE)
-                )
-        self._volumes: list[VolumeMount] = base_volumes
+                # User-referenced volumes carry no type of their own; their
+                # backend (hence mount type) is resolved at run() time via
+                # resolve_referenced_volume_type, not defaulted here.
+                referenced_volumes.append((item[0], item[1]))
+        self._referenced_volumes: list[tuple[str, str]] = referenced_volumes
+        # Populated at run() time: referenced volumes (typed by lookup) plus
+        # any freshly uploaded volumes (typed by the upload driver).
+        self._volumes: list[VolumeMount] = []
         if port is not None and not (1 <= port <= 65535):
             raise ValueError(f"port must be between 1 and 65535, got {port!r}")
         self._volume_driver: VolumeDriver | None = None
@@ -330,7 +332,7 @@ class Container:
                     f"Invalid lifetime {lifetime!r}. "
                     "Use a protobuf duration string (e.g. '30s', '1.5s', '300s')."
                 )
-            if _parsed_lifetime.seconds == 0 and _parsed_lifetime.nanos == 0:  # ty: ignore[unresolved-attribute]
+            if _parsed_lifetime.seconds == 0 and _parsed_lifetime.nanos == 0:
                 raise ValueError(
                     f"Invalid lifetime {lifetime!r}: lifetime must be greater than 0 "
                     "(e.g. '30s', '5m')."
@@ -436,6 +438,7 @@ class Container:
         c._gpu = None
         c._env = {}
         c._secrets = []
+        c._referenced_volumes = []
         c._volumes = []
         c._volume_driver = None
         c._port = None
@@ -516,9 +519,9 @@ class Container:
         ...     .run()
         ... )
         """
-        self._volumes.append(
-            VolumeMount(name=name, mount_path=mount_path, type=_DEFAULT_MOUNT_TYPE)
-        )
+        # Referenced volume: its mount type is resolved from the backend at
+        # run() time, not defaulted here.
+        self._referenced_volumes.append((name, mount_path))
         return self
 
     # -- Lifecycle -------------------------------------------------------------
@@ -617,7 +620,18 @@ class Container:
             else:
                 self._built_image_uri = self._image
 
-            # 2. Upload lazy local files to a volume (if any)
+            # 2a. Resolve each user-referenced volume's real mount type from
+            # its backend instead of defaulting; a missing volume fails run().
+            self._volumes = [
+                VolumeMount(
+                    name=name,
+                    mount_path=mount_path,
+                    type=resolve_referenced_volume_type(self._client, name),
+                )
+                for name, mount_path in self._referenced_volumes
+            ]
+
+            # 2b. Upload lazy local files to a volume (if any)
             lazy_files = (
                 self._image.lazy_local_files if isinstance(self._image, Image) else set()
             )

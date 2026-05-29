@@ -1074,6 +1074,29 @@ class VersionedVolumeClient:
         vol.reload()
         return vol
 
+    def exists(self, name: str) -> bool:
+        """Return whether a versioned (v2) volume with ``name`` exists.
+
+        Probes ``GetVolume`` with a name-only :class:`VolumeRef` and the
+        default version selector (newest version on ``main``). ``NOT_FOUND``
+        maps to ``False``; any other RPC error propagates so a transient
+        failure is never mistaken for "absent".
+        """
+        try:
+            self._stub.GetVolume(
+                pb_v2.GetVolumeRequest(
+                    volume=pb_v2.VolumeRef(name=name),
+                    selector=pb_v2.VersionSelector(),
+                ),
+                metadata=self._metadata,
+            )
+        except grpc.RpcError as e:
+            code = getattr(e, "code", lambda: None)()
+            if code == grpc.StatusCode.NOT_FOUND:
+                return False
+            raise
+        return True
+
     @traced("chalkcompute.versioned_volume.upload_lazy_files")
     def upload_lazy_files(
         self, image: Image, *, volume_prefix: str = "files"

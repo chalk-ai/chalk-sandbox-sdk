@@ -39,11 +39,11 @@ from chalkcompute._connect import ConnectClient, build_image
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
-    _DEFAULT_MOUNT_TYPE,
     VolumeDriver,
     VolumeError,
     VolumeMount,
     _resolve_driver,
+    resolve_referenced_volume_type,
 )
 
 logger = logging.getLogger(__name__)
@@ -153,12 +153,16 @@ class ScalingGroup:
         self._gpu = gpu
         self._env = env or {}
         self._secrets: list[_Secret] = list(secrets or [])
-        # Pre-attached volumes carry no type, so they adopt the default mount
-        # type once here; the type then travels on the volume into the request.
-        self._volumes: list[VolumeMount] = [
-            VolumeMount(name=name, mount_path=mount_path, type=_DEFAULT_MOUNT_TYPE)
-            for name, mount_path in (volumes or [])
+        # User-referenced volumes carry no type of their own; their backend
+        # (and thus mount type) is resolved at deploy time via
+        # resolve_referenced_volume_type. Store the raw (name, mount_path)
+        # references here and never default their type.
+        self._referenced_volumes: list[tuple[str, str]] = [
+            (name, mount_path) for name, mount_path in (volumes or [])
         ]
+        # Populated at deploy time: referenced volumes (typed by lookup) plus
+        # any freshly uploaded volumes (typed by the upload driver).
+        self._volumes: list[VolumeMount] = []
         self._volume_driver: VolumeDriver | None = None
         self._entrypoint = entrypoint
         if not (1 <= port <= 65535):
@@ -249,6 +253,7 @@ class ScalingGroup:
         sg._gpu = None
         sg._env = {}
         sg._secrets = []
+        sg._referenced_volumes = []
         sg._volumes = []
         sg._volume_driver = None
         sg._entrypoint = None
@@ -311,7 +316,18 @@ class ScalingGroup:
         else:
             self._built_image_uri = self._image
 
-        # 2. Upload lazy local files to volumes (if any)
+        # 2a. Resolve the real mount type of each user-referenced volume from
+        # its backend, instead of defaulting. A missing volume fails the deploy.
+        self._volumes = [
+            VolumeMount(
+                name=name,
+                mount_path=mount_path,
+                type=resolve_referenced_volume_type(self._client, name),
+            )
+            for name, mount_path in self._referenced_volumes
+        ]
+
+        # 2b. Upload lazy local files to volumes (if any)
         lazy_files = (
             self._image.lazy_local_files if isinstance(self._image, Image) else set()
         )

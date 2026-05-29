@@ -530,12 +530,6 @@ class SimpleVolume:
 _VolumeInfoList = list[VolumeInfo]
 _VolumeMounts = list[VolumeMount]
 
-#: Mount type applied to base/pre-attached volumes the user supplies as
-#: ``(name, mount_path)`` without an explicit type. Kept in lockstep with the
-#: default backend chosen by :func:`_resolve_driver` (``versioned=True``), so a
-#: base volume and a freshly uploaded volume in the same request agree on type.
-_DEFAULT_MOUNT_TYPE = "versioned_chalkfs"
-
 
 class VolumeDriver(Protocol):
     """Internal protocol for clients that back container/sandbox mounts.
@@ -554,6 +548,8 @@ class VolumeDriver(Protocol):
 
     def delete_volume(self, name: str) -> None: ...
 
+    def exists(self, name: str) -> bool: ...
+
     def close(self) -> None: ...
 
 
@@ -571,6 +567,56 @@ def _resolve_driver(
 
         return VersionedVolumeClient.from_connect(connect)
     return VolumeClient.from_connect(connect)
+
+
+def resolve_referenced_volume_type(connect: ConnectClient, name: str) -> str:
+    """Return the actual mount type of an existing volume by probing the
+    versioned (v2) service first, then non-versioned (v1).
+
+    A user-referenced volume (supplied as a ``(name, mount_path)`` tuple)
+    has no type of its own at construction time. Its mount type is a property
+    of the backend that actually stores it, so we look it up at deploy time
+    instead of stamping a hardcoded default. Defaulting here is exactly the
+    bug this avoids: a non-versioned ``chalkfs`` volume sent as
+    ``versioned_chalkfs`` cannot be mounted by the versioned FUSE sidecar.
+
+    Parameters
+    ----------
+    connect
+        Authenticated client reused for both probes.
+    name
+        Name of the existing volume to classify.
+
+    Returns
+    -------
+    str
+        ``"versioned_chalkfs"`` if the volume lives in the v2 service, or
+        ``"chalkfs"`` if it lives only in the v1 service.
+
+    Raises
+    ------
+    VolumeError
+        If the volume is not found in either service. We never fall back to a
+        default mount type for a referenced volume.
+    grpc.RpcError
+        Propagated for any non-``NOT_FOUND`` probe failure (auth, transport,
+        etc.), so a transient error is never silently treated as "absent".
+    """
+    from chalkcompute._vvolume import VersionedVolumeClient
+
+    v2 = VersionedVolumeClient.from_connect(connect)
+    if v2.exists(name):
+        return v2.mount_type
+
+    v1 = VolumeClient.from_connect(connect)
+    if v1.exists(name):
+        return v1.mount_type
+
+    raise VolumeError(
+        f"Referenced volume {name!r} was not found in the versioned "
+        f"(v2) or non-versioned (v1) volume service; cannot determine its "
+        f"mount type. Check the volume name, or create it before referencing it."
+    )
 
 
 def make_volume(
@@ -823,6 +869,25 @@ class VolumeClient:
         vol = SimpleVolume(name, client=self, create_if_missing=False)
         vol.reload()
         return vol
+
+    def exists(self, name: str) -> bool:
+        """Return whether a non-versioned (v1) volume with ``name`` exists.
+
+        Probes ``GetVolume`` and maps ``NOT_FOUND`` to ``False``. Any other
+        RPC error propagates: callers resolving a referenced volume's type
+        must not silently treat an auth/transport failure as "absent".
+        """
+        try:
+            self._stub.GetVolume(
+                pb.GetVolumeRequest(name=name),
+                metadata=self._metadata,
+            )
+        except grpc.RpcError as e:
+            code = getattr(e, "code", lambda: None)()
+            if code == grpc.StatusCode.NOT_FOUND:
+                return False
+            raise
+        return True
 
     @_instrumented("chalkcompute.volume.upload_lazy_files")
     def upload_lazy_files(

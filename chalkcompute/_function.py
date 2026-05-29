@@ -64,11 +64,11 @@ from chalkcompute._tracing import (
     remote_function_call_span,
 )
 from chalkcompute._volume import (
-    _DEFAULT_MOUNT_TYPE,
     VolumeDriver,
     VolumeError,
     VolumeMount,
     _resolve_driver,
+    resolve_referenced_volume_type,
 )
 
 logger = logging.getLogger(__name__)
@@ -1128,7 +1128,7 @@ class RemoteFunction:
 
             self._env[MODELS_ENV_VAR] = encode_models_env(models)
         self._secrets: list[_Secret] = list(secrets or [])
-        base_volumes: list[VolumeMount] = []
+        referenced_volumes: list[tuple[str, str]] = []
         if volumes is not None:
             for item in volumes:
                 if not (isinstance(item, (tuple, list)) and len(item) == 2 and all(isinstance(s, str) for s in item)):
@@ -1136,16 +1136,16 @@ class RemoteFunction:
                         f"Each volumes entry must be a (name, mount_path) string tuple, got {item!r}. "
                         f"Example: volumes=[('my-volume', '/data')]"
                     )
-                # Base/pre-attached volumes have no type of their own, so they
-                # adopt the default mount type (kept in lockstep with the
-                # default upload backend). Doing this once at construction time
-                # makes the type a property of the stored volume rather than
-                # something each deploy request re-derives.
-                base_volumes.append(
-                    VolumeMount(name=item[0], mount_path=item[1], type=_DEFAULT_MOUNT_TYPE)
-                )
-        self._base_volumes: list[VolumeMount] = base_volumes
-        self._volumes: list[VolumeMount] = list(self._base_volumes)
+                # User-referenced volumes have no type of their own at
+                # construction time. Their backend (hence mount type) is
+                # resolved at deploy time via resolve_referenced_volume_type,
+                # not defaulted here: a non-versioned chalkfs volume must not
+                # be sent as versioned_chalkfs.
+                referenced_volumes.append((item[0], item[1]))
+        self._referenced_volumes: list[tuple[str, str]] = referenced_volumes
+        # Populated at deploy time: referenced volumes (typed by lookup) plus
+        # any freshly uploaded volumes (typed by the upload driver).
+        self._volumes: list[VolumeMount] = []
         if min_replicas < 0:
             raise ValueError(f"min_replicas must be >= 0, got {min_replicas}")
         if max_replicas < 0:
@@ -1329,7 +1329,7 @@ class RemoteFunction:
         f._gpu = None
         f._env = {}
         f._secrets = []
-        f._base_volumes = []
+        f._referenced_volumes = []
         f._volumes = []
         f._volume_driver = None
         f._min_replicas = 1
@@ -1450,8 +1450,18 @@ class RemoteFunction:
                 build_timeout=build_timeout,
                 progress_parent=fkey,
             )
+            # Resolve each user-referenced volume's real mount type from its
+            # backend instead of defaulting; a missing volume fails the deploy.
+            referenced_volumes = [
+                VolumeMount(
+                    name=name,
+                    mount_path=mount_path,
+                    type=resolve_referenced_volume_type(self._client, name),
+                )
+                for name, mount_path in getattr(self, "_referenced_volumes", [])
+            ]
             deploy_volumes = [
-                *getattr(self, "_base_volumes", []),
+                *referenced_volumes,
                 *new_vols,
             ]
             self._volumes = deploy_volumes

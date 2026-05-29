@@ -53,10 +53,10 @@ from chalkcompute._connect import ConnectClient
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
-    _DEFAULT_MOUNT_TYPE,
     VolumeDriver,
     VolumeMount,
     _resolve_driver,
+    resolve_referenced_volume_type,
 )
 from chalkcompute._function import (
     _CATALOG_SVC,
@@ -590,13 +590,16 @@ class RemoteClass:
         self._gpu = gpu
         self._env = env or {}
         self._secrets: list[_Secret] = list(secrets or [])
-        # Pre-attached volumes carry no type, so they adopt the default mount
-        # type once here; the type then travels on the volume into every
-        # per-method deploy request rather than being re-derived per request.
-        self._volumes: list[VolumeMount] = [
-            VolumeMount(name=name, mount_path=mount_path, type=_DEFAULT_MOUNT_TYPE)
-            for name, mount_path in (volumes or [])
+        # User-referenced volumes carry no type of their own; their backend
+        # (hence mount type) is resolved once at deploy time via
+        # resolve_referenced_volume_type, then travels on each per-method
+        # deploy request. Never defaulted here.
+        self._referenced_volumes: list[tuple[str, str]] = [
+            (vol_name, mount_path) for vol_name, mount_path in (volumes or [])
         ]
+        # Populated at deploy time: referenced volumes (typed by lookup) plus
+        # any freshly uploaded volumes (typed by the upload driver).
+        self._volumes: list[VolumeMount] = []
         if min_replicas < 0:
             raise ValueError(f"min_replicas must be >= 0, got {min_replicas}")
         if max_replicas < 0:
@@ -786,6 +789,7 @@ class RemoteClass:
         rc._gpu = None
         rc._env = {}
         rc._secrets = []
+        rc._referenced_volumes = []
         rc._volumes = []
         rc._volume_driver = None
         rc._min_replicas = 1
@@ -936,7 +940,18 @@ class RemoteClass:
                 build_timeout=build_timeout,
                 progress_parent=ckey,
             )
-            self._volumes += new_vols
+            # Resolve each user-referenced volume's real mount type from its
+            # backend instead of defaulting; a missing volume fails the deploy.
+            # Resolved once here, then reused across every per-method spec.
+            referenced_volumes = [
+                VolumeMount(
+                    name=name,
+                    mount_path=mount_path,
+                    type=resolve_referenced_volume_type(self._client, name),
+                )
+                for name, mount_path in self._referenced_volumes
+            ]
+            self._volumes = [*referenced_volumes, *new_vols]
             self._volume_driver = driver
             _cleanup_temp_files(temp_files)
 
