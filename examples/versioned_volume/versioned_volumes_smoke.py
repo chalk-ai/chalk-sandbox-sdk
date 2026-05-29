@@ -123,9 +123,6 @@ def main() -> None:
                 local_path.write_text("uploaded from a local path\n")
                 volume.put_file_from_path(LOCAL_NOTES_PATH, local_path)
 
-            synced = volume.sync()
-            print(f"\nSynced latest version: {synced.id}")
-
             before_remove = volume.latest_version()
             print(f"Snapshot before removal: {before_remove.id}")
 
