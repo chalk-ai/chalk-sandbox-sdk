@@ -1,0 +1,35 @@
+on:
+  pull_request: {}
+  push:
+    branches:
+      - main
+
+env:
+  UV_VERSION: "0.11.14"
+  BENCHMARK_RESULTS_URL: "https://benchmark-results-server-290587571767.us-central1.run.app"
+  BENCHMARK_REPORTER_IMAGE: "us-central1-docker.pkg.dev/chalk-artifacts/docker/benchmark-reporter:latest"
+
+steps:
+  # To add a new benchmark:
+  #   1. Write a module that emits pyperf JSON to $CHALK_BENCHMARK_PYPERF_OUTPUT
+  #   2. Add a step that sources setup-benchmark-env.sh then calls run-benchmark.sh
+
+  - label: ":bar_chart: Sandbox TTI"
+    command: |
+      source .buildkite/setup-benchmark-env.sh
+      .buildkite/run-benchmark.sh \
+        --suite "Sandbox TTI Benchmarks" \
+        --case  "sandbox-tti" \
+        --tags  "sandbox,compute,tti" \
+        -- uv run python -m sandbox_benchmark.pyperf_adapter \
+          --mode all \
+          --iterations 20 \
+          --min-success-rate 0.9 \
+          --max-p95-ms 10000
+    agents:
+      queue: default
+    timeout_in_minutes: 60
+    retry:
+      automatic:
+        - exit_status: -1
+          limit: 2
