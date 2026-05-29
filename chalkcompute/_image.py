@@ -3,7 +3,7 @@ Declarative image builder for Chalk sandboxes.
 
 Build container images using a fluent API:
 
-    from chalkcompute import Image
+    from chalkcompute import Image, Sandbox
 
     img = (
         Image.debian_slim()
@@ -13,7 +13,7 @@ Build container images using a fluent API:
         .env({"PROJECT_ROOT": "/home/user/app"})
     )
 
-    sandbox = client.create(image=img)
+    sandbox = Sandbox(image=img).run()
 
 The image specification is serialized as a protobuf ImageSpec and transmitted
 to the sandbox service, which builds and caches the image before starting the

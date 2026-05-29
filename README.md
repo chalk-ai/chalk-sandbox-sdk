@@ -11,12 +11,10 @@ pip install grpcio protobuf
 ## Quick start
 
 ```python
-from sandbox import SandboxClient
-
-client = SandboxClient("localhost:50051")
+from chalkcompute import Sandbox
 
 # Create a sandbox from a pre-built image
-sandbox = client.create(image="ubuntu:latest")
+sandbox = Sandbox(image="ubuntu:latest").run()
 
 # Run a command
 result = sandbox.exec("echo", "hello world")
@@ -34,10 +32,7 @@ The image spec is serialized as protobuf and transmitted to the sandbox service,
 which builds and caches the image before starting the container.
 
 ```python
-from sandbox import SandboxClient
-from image import Image
-
-client = SandboxClient("localhost:50051")
+from chalkcompute import Image, Sandbox
 
 # Build a data-science image declaratively
 img = (
@@ -50,7 +45,7 @@ img = (
     .env({"PYTHONDONTWRITEBYTECODE": "1"})
 )
 
-sandbox = client.create(image=img)
+sandbox = Sandbox(image=img).run()
 result = sandbox.exec("python", "-c", "import pandas; print(pandas.__version__)")
 print(result.stdout_text)
 ```
@@ -106,20 +101,22 @@ img = (
 Each builder method returns a new `Image`, so intermediate images can be shared:
 
 ```python
+from chalkcompute import Image, Sandbox
+
 base = Image.debian_slim().pip_install(["requests"])
 
 # Two different images that share the same base
 api_image = base.pip_install(["flask"]).workdir("/api")
 worker_image = base.pip_install(["celery"]).workdir("/worker")
 
-api_sandbox = client.create(image=api_image)
-worker_sandbox = client.create(image=worker_image)
+api_sandbox = Sandbox(image=api_image).run()
+worker_sandbox = Sandbox(image=worker_image).run()
 ```
 
 ## Connecting
 
 ```python
-from sandbox import SandboxClient
+from chalkcompute import SandboxClient
 import grpc
 
 # Insecure (local dev)
@@ -137,24 +134,28 @@ with SandboxClient("localhost:50051") as client:
 ## Sandbox lifecycle
 
 ```python
+from chalkcompute import Sandbox, SandboxClient
+
 # Create with resource limits
-sandbox = client.create(
+sandbox = Sandbox(
     image="ubuntu:latest",
     cpu="2",
     memory="4Gi",
     env={"DEBIAN_FRONTEND": "noninteractive"},
-)
+).run()
+
+client = SandboxClient.from_env()
 
 # List all sandboxes
 for info in client.list():
-    print(f"{info.id} {info.state} {info.name}")
+    print(f"{info.id} {info.status} {info.name}")
 
 # Get a handle to an existing sandbox by ID
 sandbox = client.get(id="550e8400-e29b-41d4-a716-446655440000")
 
 # Fetch info from server
-print(sandbox.info.state)
-sandbox.refresh()  # force re-fetch
+info = sandbox.refresh()  # force re-fetch
+print(info.status)
 
 # Terminate
 sandbox.terminate()
@@ -232,10 +233,9 @@ result = sandbox.exec(
 ### Clone a GitHub repo into a sandbox
 
 ```python
-from sandbox import SandboxClient
+from chalkcompute import Sandbox
 
-client = SandboxClient("localhost:50051")
-sandbox = client.create(image="ubuntu:latest")
+sandbox = Sandbox(image="ubuntu:latest").run()
 
 # Install git
 sandbox.exec("apt-get", "update")
@@ -259,17 +259,16 @@ else:
 [OpenCode](https://github.com/opencode-ai/opencode) is a terminal-based AI coding agent. You can run it inside a sandbox to give it an isolated environment to work in.
 
 ```python
-from sandbox import SandboxClient
+from chalkcompute import Sandbox
 
-client = SandboxClient("localhost:50051")
-sandbox = client.create(
+sandbox = Sandbox(
     image="ubuntu:latest",
     cpu="2",
     memory="4Gi",
     env={
         "ANTHROPIC_API_KEY": "sk-ant-...",
     },
-)
+).run()
 
 # Install dependencies
 sandbox.exec("apt-get", "update")
@@ -312,7 +311,9 @@ for event in process.output():
 ### Long-running build with real-time output
 
 ```python
-sandbox = client.create(image="node:25-trixie-slim")
+from chalkcompute import Sandbox
+
+sandbox = Sandbox(image="node:25-trixie-slim").run()
 
 sandbox.exec("git", "clone", "https://github.com/your-org/frontend.git", "/app")
 sandbox.exec("npm", "install", workdir="/app")
