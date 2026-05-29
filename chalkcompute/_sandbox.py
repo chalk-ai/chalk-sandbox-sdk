@@ -2,12 +2,10 @@
 Python SDK for the Sandbox gRPC Service.
 
 Usage:
-    from chalkcompute import SandboxClient
-
-    client = SandboxClient("localhost:50051")
+    from chalkcompute import Sandbox
 
     # Create a sandbox
-    sandbox = client.create(image="ubuntu:latest")
+    sandbox = Sandbox(image="ubuntu:latest").run()
     print(f"Created sandbox: {sandbox.id}")
 
     # Execute a command and inspect its output
@@ -30,8 +28,8 @@ import queue
 import signal
 import time
 from collections.abc import Iterator
-from typing import Any
 from dataclasses import dataclass, field
+from typing import Any
 
 import grpc
 
@@ -39,6 +37,7 @@ from chalkcompute._connect import ConnectClient, grpc_target_from_url, raise_for
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as pb
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2_grpc as pb_grpc
 from chalkcompute._image import Image
+from chalkcompute._naming import validate_dns_label
 from chalkcompute._tracing import _instrumented
 
 # Aliases defined before SandboxClient, which has a ``.list()`` method that
@@ -288,18 +287,18 @@ class ExecProcess:
 
 
 class Sandbox:
-    """A handle to a sandbox instance.
+    """A managed sandbox backed by the Chalk ``SandboxService``.
 
-    Obtain instances from :meth:`SandboxClient.create` or
-    :meth:`SandboxClient.get`.  Use :meth:`exec` to run commands and
-    :meth:`terminate` to shut the sandbox down when you're done.
+    Configure a sandbox with ``Sandbox(image=...)`` and call :meth:`run` to
+    create it. Use :meth:`exec` to run commands and :meth:`terminate` to shut
+    the sandbox down when you're done.
 
     Examples
     --------
-    >>> from chalkcompute import SandboxClient, Image
-    >>> sandbox = SandboxClient().create(
+    >>> from chalkcompute import Sandbox, Image
+    >>> sandbox = Sandbox(
     ...     image=Image.debian_slim().pip_install(["numpy"]),
-    ... )
+    ... ).run()
     >>> result = sandbox.exec(
     ...     "python",
     ...     "-c",
@@ -310,20 +309,137 @@ class Sandbox:
     >>> sandbox.terminate()
     """
 
-    def __init__(self, client: SandboxClient, sandbox_id: str) -> None:
-        self._client = client
-        self._id = sandbox_id
+    def __init__(
+        self,
+        *,
+        image: str | Image | None = None,
+        name: str | None = None,
+        cpu: str | None = None,
+        memory: str | None = None,
+        env: dict[str, str] | None = None,
+        volumes: list[tuple[str, str]] | None = None,
+        chalk_client: Any | None = None,
+        sandbox_client: SandboxClient | None = None,
+        client: Any | None = None,
+        sandbox_id: str | None = None,
+    ) -> None:
+        """Configure a sandbox to be created by :meth:`run`.
+
+        Parameters
+        ----------
+        image
+            Container image to use, either a string reference such as
+            ``"ubuntu:latest"`` or a declarative :class:`Image`.
+        name
+            Optional DNS-safe sandbox name.
+        cpu
+            Optional CPU limit, for example ``"2"`` or ``"500m"``.
+        memory
+            Optional memory limit, for example ``"4Gi"`` or ``"512Mi"``.
+        env
+            Optional environment variables to set in the sandbox.
+        volumes
+            Optional ``(volume_name, mount_path)`` pairs to mount into the
+            sandbox.
+
+        Examples
+        --------
+        >>> sandbox = Sandbox(image="ubuntu:latest").run()
+        """
+        self._client: Any | None = None
+        self._id: str | None = None
         self._info: SandboxInfo | None = None
         self._terminated = False
 
+        self._image: str | Image | None = None
+        self._name: str | None = None
+        self._cpu: str | None = None
+        self._memory: str | None = None
+        self._env: dict[str, str] = {}
+        self._volumes: list[tuple[str, str]] = []
+        self._chalk_client: Any | None = None
+
+        if client is not None or sandbox_id is not None:
+            if (
+                image is not None
+                or name is not None
+                or cpu is not None
+                or memory is not None
+                or env is not None
+                or volumes is not None
+                or chalk_client is not None
+                or sandbox_client is not None
+            ):
+                raise TypeError(
+                    "Sandbox(client=..., sandbox_id=...) cannot be combined with "
+                    "Sandbox(image=...) configuration arguments"
+                )
+            if client is None or sandbox_id is None:
+                raise TypeError(
+                    "Sandbox(client=..., sandbox_id=...) requires both arguments"
+                )
+            self._client = client
+            self._id = sandbox_id
+            return
+
+        if image is None:
+            raise TypeError("Sandbox() missing required keyword-only argument: 'image'")
+        if not isinstance(image, (str, Image)):
+            raise TypeError(
+                f"image must be an Image or image reference string, got {image!r}"
+            )
+        if name is not None:
+            validate_dns_label(name)
+        if cpu is not None and not isinstance(cpu, str):
+            raise TypeError(f"cpu must be a string such as '2' or '500m', got {cpu!r}")
+        if memory is not None and not isinstance(memory, str):
+            raise TypeError(
+                f"memory must be a string such as '2Gi' or '512Mi', got {memory!r}"
+            )
+        if env is not None:
+            for k, v in env.items():
+                if not isinstance(k, str) or not k:
+                    raise ValueError(f"env keys must be non-empty strings, got {k!r}")
+                if not isinstance(v, str):
+                    raise ValueError(
+                        f"env values must be strings, got {v!r} for key {k!r}"
+                    )
+        if volumes is not None:
+            for item in volumes:
+                if not (
+                    isinstance(item, (tuple, list))
+                    and len(item) == 2
+                    and all(isinstance(s, str) for s in item)
+                ):
+                    raise ValueError(
+                        f"Each volumes entry must be a (name, mount_path) string tuple, got {item!r}. "
+                        f"Example: volumes=[('my-volume', '/data')]"
+                    )
+
+        self._client = sandbox_client
+        self._image = image
+        self._name = name
+        self._cpu = cpu
+        self._memory = memory
+        self._env = dict(env) if env else {}
+        self._volumes = [(name, mount_path) for name, mount_path in volumes or []]
+        self._chalk_client = chalk_client
+
     @property
-    def id(self) -> str:
+    def id(self) -> str | None:
+        """Opaque sandbox identifier assigned by the service.
+
+        ``None`` until :meth:`run` has created the sandbox.
+        """
         return self._id
 
     @property
-    def info(self) -> SandboxInfo:
-        """Get sandbox info, fetching from server if needed."""
-        if self._info is None:
+    def info(self) -> SandboxInfo | None:
+        """The most recently fetched :class:`SandboxInfo` snapshot.
+
+        ``None`` until the sandbox has been started or attached to.
+        """
+        if self._info is None and self._id is not None:
             self._info = self._fetch_info()
         return self._info
 
@@ -333,15 +449,96 @@ class Sandbox:
         return self._info
 
     def _fetch_info(self) -> SandboxInfo:
+        client = self._require_client()
+        sandbox_id = self._require_started()
         try:
-            resp = self._client._stub.GetSandbox(
-                pb.GetSandboxRequest(sandbox_id=self._id),
-                metadata=self._client._metadata,
+            resp = client._stub.GetSandbox(
+                pb.GetSandboxRequest(sandbox_id=sandbox_id),
+                metadata=client._metadata,
             )
         except grpc.RpcError as e:
-            _handle_rpc_error(e, self._id)
+            _handle_rpc_error(e, sandbox_id)
             raise
         return _pb_to_sandbox_info(resp.sandbox)
+
+    def mount_volume(self, name: str, mount_path: str) -> Sandbox:
+        """Mount a named volume into the sandbox.
+
+        Must be called before :meth:`run`. Returns ``self`` for chaining.
+
+        Examples
+        --------
+        >>> from chalkcompute import Sandbox
+        >>> sandbox = (
+        ...     Sandbox(image="ubuntu:latest")
+        ...     .mount_volume("my-data", "/data")
+        ...     .run()
+        ... )
+        """
+        self._volumes.append((name, mount_path))
+        return self
+
+    @_instrumented("chalkcompute.sandbox.run")
+    def run(
+        self,
+        *,
+        wait: bool = True,
+        poll_interval: float = 0.5,
+        timeout: float = 600.0,
+    ) -> Sandbox:
+        """Create the sandbox and optionally wait until it is ready.
+
+        Parameters
+        ----------
+        wait
+            If ``True``, poll until the sandbox is ready (default ``True``).
+        poll_interval
+            Seconds between readiness polls.
+        timeout
+            Maximum seconds to wait for the sandbox to become ready.
+
+        Returns
+        -------
+        Sandbox
+            ``self``, to allow chaining.
+        """
+        if self._id is not None:
+            raise SandboxError(
+                "Sandbox is already running. Call .terminate() before calling .run() again."
+            )
+        if self._image is None:
+            raise SandboxError("Sandbox has no image configured.")
+
+        client = self._client
+        if client is None:
+            client = SandboxClient.from_env(chalk_client=self._chalk_client)
+
+        sandbox = client.create(
+            self._image,
+            name=self._name,
+            cpu=self._cpu,
+            memory=self._memory,
+            env=self._env or None,
+            volumes=_volume_mounts_to_proto(self._volumes) if self._volumes else None,
+            wait=wait,
+            poll_interval=poll_interval,
+            timeout=timeout,
+        )
+        self._client = client
+        self._id = sandbox._id
+        self._info = sandbox._info
+        self._terminated = False
+        return self
+
+    def _require_client(self) -> Any:
+        if self._client is None:
+            raise SandboxError("Sandbox is not running. Call .run() first.")
+        return self._client
+
+    def _require_started(self) -> str:
+        if self._id is None:
+            raise SandboxError("Sandbox is not running. Call .run() first.")
+        return self._id
 
     @_instrumented("chalkcompute.sandbox.exec")
     def exec(
@@ -372,6 +569,7 @@ class Sandbox:
         ExecResult
             Result with stdout/stderr and exit code.
         """
+        self._require_started()
         process = self.exec_start(
             command,
             *args,
@@ -411,6 +609,7 @@ class Sandbox:
             Events for process start, stdout/stderr output, process exit,
             and errors.
         """
+        self._require_started()
         process = self.exec_start(
             command,
             *args,
@@ -451,8 +650,10 @@ class Sandbox:
         ExecProcess
             Handle for interacting with the running process.
         """
+        client = self._require_client()
+        sandbox_id = self._require_started()
         init = pb.ExecInit(
-            sandbox_id=self._id,
+            sandbox_id=sandbox_id,
             command=command,
             args=list(args),
         )
@@ -476,17 +677,17 @@ class Sandbox:
                 yield req
 
         try:
-            response_iterator = self._client._stub.Exec(
-                request_iterator(), metadata=self._client._metadata
+            response_iterator = client._stub.Exec(
+                request_iterator(), metadata=client._metadata
             )
         except grpc.RpcError as e:
-            _handle_rpc_error(e, self._id)
+            _handle_rpc_error(e, sandbox_id)
             raise
 
         return ExecProcess(
             _request_queue=request_queue,
             _response_iterator=response_iterator,
-            _sandbox_id=self._id,
+            _sandbox_id=sandbox_id,
         )
 
     @_instrumented("chalkcompute.sandbox.terminate")
@@ -500,15 +701,20 @@ class Sandbox:
         """
         if self._terminated:
             return
-        req = pb.TerminateSandboxRequest(sandbox_id=self._id)
+        client = self._require_client()
+        sandbox_id = self._require_started()
+        req = pb.TerminateSandboxRequest(sandbox_id=sandbox_id)
         if grace_period_seconds is not None:
             req.grace_period_seconds = grace_period_seconds
         try:
-            self._client._stub.TerminateSandbox(req, metadata=self._client._metadata)
+            client._stub.TerminateSandbox(req, metadata=client._metadata)
         except grpc.RpcError as e:
-            _handle_rpc_error(e, self._id)
+            _handle_rpc_error(e, sandbox_id)
             raise
         self._terminated = True
+        if self._image is not None:
+            self._id = None
+            self._info = None
 
 
 # ---------------------------------------------------------------------------
@@ -650,12 +856,12 @@ class SandboxClient:
 
         resp = self._stub.CreateSandbox(req, metadata=self._metadata)
         info = _pb_to_sandbox_info(resp.sandbox)
-        sandbox = Sandbox(self, info.id)
+        sandbox = Sandbox(client=self, sandbox_id=info.id)
         sandbox._info = info
 
         if wait and info.status in ("building", "connecting"):
             sandbox._info = self._poll_until_ready(
-                sandbox.id,
+                info.id,
                 poll_interval=poll_interval,
                 timeout=timeout,
             )
@@ -711,7 +917,7 @@ class SandboxClient:
         Sandbox
             A sandbox handle.
         """
-        return Sandbox(self, id)
+        return Sandbox(client=self, sandbox_id=id)
 
     def list(self) -> _SandboxInfoList:
         """List all sandboxes.
@@ -782,6 +988,13 @@ def _handle_rpc_error(e: grpc.RpcError, sandbox_id: str) -> None:
             ),
         },
     )
+
+
+def _volume_mounts_to_proto(volumes: list[tuple[str, str]]) -> list[pb.VolumeMount]:
+    return [
+        pb.VolumeMount(name=vol_name, mount_path=mount_path, type="chalkfs")
+        for vol_name, mount_path in volumes
+    ]
 
 
 def connect(target: str = "localhost:50051", **kwargs) -> SandboxClient:
