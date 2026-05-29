@@ -24,7 +24,7 @@ steps:
         -- uv run python -m sandbox_benchmark.pyperf_adapter \
           --mode all \
           --iterations 20 \
-          --min-success-rate 0.9 \
+          --min-success-rate 1.0 \
           --max-p95-ms 20000
     agents:
       queue: default
