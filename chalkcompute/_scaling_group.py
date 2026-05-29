@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Any
 from chalkcompute._connect import ConnectClient, build_image
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import _instrumented
-from chalkcompute._volume import VolumeClient, upload_lazy_files
+from chalkcompute._volume import VolumeDriver, _resolve_driver
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +148,7 @@ class ScalingGroup:
         self._env = env or {}
         self._secrets: list[_Secret] = list(secrets or [])
         self._volumes: list[tuple[str, str]] = list(volumes or [])
+        self._volume_driver: VolumeDriver | None = None
         self._entrypoint = entrypoint
         if not (1 <= port <= 65535):
             raise ValueError(f"port must be in range 1–65535, got {port}")
@@ -238,6 +239,7 @@ class ScalingGroup:
         sg._env = {}
         sg._secrets = []
         sg._volumes = []
+        sg._volume_driver = None
         sg._entrypoint = None
         sg._port = 8080
         sg._protocol = "http"
@@ -305,10 +307,10 @@ class ScalingGroup:
         if lazy_files:
             logger.info("Uploading %d local file(s) to volume(s)...", len(lazy_files))
             assert isinstance(self._image, Image)
-            self._volumes += upload_lazy_files(
-                VolumeClient.from_connect(self._client),
-                self._image,
-                volume_prefix="sg-files",
+            driver = _resolve_driver(self._client)
+            self._volume_driver = driver
+            self._volumes += driver.upload_lazy_files(
+                self._image, volume_prefix="sg-files",
             )
             for vn, mp in self._volumes:
                 logger.info("  Volume created: %s (mount: %s)", vn, mp)
@@ -346,8 +348,10 @@ class ScalingGroup:
             container_spec["secretRefs"] = [s._to_proto_dict() for s in self._secrets]
 
         if self._volumes:
+            driver = self._volume_driver or _resolve_driver(self._client)
+            self._volume_driver = driver
             container_spec["volumes"] = [
-                {"name": vol_name, "mountPath": mount_path, "type": "chalkfs"}
+                {"name": vol_name, "mountPath": mount_path, "type": driver.mount_type}
                 for vol_name, mount_path in self._volumes
             ]
 
@@ -528,11 +532,12 @@ class ScalingGroup:
             self._scaling_group_id = None
             self._scaling_group_info = None
 
-        for vol_name, _ in self._volumes:
-            self._client.rpc(
-                "chalk.volume.v1.VolumeService", "DeleteVolume", {"name": vol_name}
-            )
+        if self._volumes:
+            driver = self._volume_driver or _resolve_driver(self._client)
+            for vol_name, _ in self._volumes:
+                driver.delete_volume(vol_name)
         self._volumes = []
+        self._volume_driver = None
 
     def refresh(self) -> ScalingGroupInfo:
         """Fetch latest scaling-group status from the server.

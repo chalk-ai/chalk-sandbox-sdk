@@ -314,7 +314,7 @@ class VolumeMount(_message.Message):
     ) -> None: ...
 
 class CreateSandboxRequest(_message.Message):
-    __slots__ = ("image", "image_spec", "resource_limits", "env", "name", "volumes")
+    __slots__ = ("image", "image_spec", "resource_limits", "env", "name", "volumes", "runtime", "entrypoint")
     class EnvEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -329,12 +329,16 @@ class CreateSandboxRequest(_message.Message):
     ENV_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
     VOLUMES_FIELD_NUMBER: _ClassVar[int]
+    RUNTIME_FIELD_NUMBER: _ClassVar[int]
+    ENTRYPOINT_FIELD_NUMBER: _ClassVar[int]
     image: str
     image_spec: ImageSpec
     resource_limits: ResourceLimits
     env: _containers.ScalarMap[str, str]
     name: str
     volumes: _containers.RepeatedCompositeFieldContainer[VolumeMount]
+    runtime: str
+    entrypoint: _containers.RepeatedScalarFieldContainer[str]
     def __init__(
         self,
         image: _Optional[str] = ...,
@@ -343,6 +347,8 @@ class CreateSandboxRequest(_message.Message):
         env: _Optional[_Mapping[str, str]] = ...,
         name: _Optional[str] = ...,
         volumes: _Optional[_Iterable[_Union[VolumeMount, _Mapping]]] = ...,
+        runtime: _Optional[str] = ...,
+        entrypoint: _Optional[_Iterable[str]] = ...,
     ) -> None: ...
 
 class ResourceLimits(_message.Message):

@@ -70,17 +70,19 @@ UPLOADED_OBJECT_KIND_CHUNK: UploadedObjectKind
 UPLOADED_OBJECT_KIND_PACK: UploadedObjectKind
 
 class VolumeInfo(_message.Message):
-    __slots__ = ("volume_id", "name", "created_at", "access_mode", "ref")
+    __slots__ = ("volume_id", "name", "created_at", "access_mode", "ref", "object_store_uri")
     VOLUME_ID_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
     CREATED_AT_FIELD_NUMBER: _ClassVar[int]
     ACCESS_MODE_FIELD_NUMBER: _ClassVar[int]
     REF_FIELD_NUMBER: _ClassVar[int]
+    OBJECT_STORE_URI_FIELD_NUMBER: _ClassVar[int]
     volume_id: str
     name: str
     created_at: _timestamp_pb2.Timestamp
     access_mode: VolumeAccessMode
     ref: str
+    object_store_uri: str
     def __init__(
         self,
         volume_id: _Optional[str] = ...,
@@ -88,30 +90,42 @@ class VolumeInfo(_message.Message):
         created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
         access_mode: _Optional[_Union[VolumeAccessMode, str]] = ...,
         ref: _Optional[str] = ...,
+        object_store_uri: _Optional[str] = ...,
     ) -> None: ...
 
+class VolumeRef(_message.Message):
+    __slots__ = ("volume_id", "name")
+    VOLUME_ID_FIELD_NUMBER: _ClassVar[int]
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    volume_id: str
+    name: str
+    def __init__(self, volume_id: _Optional[str] = ..., name: _Optional[str] = ...) -> None: ...
+
 class VersionInfo(_message.Message):
-    __slots__ = ("version_id", "parent_id", "created_at", "ref", "index_id", "root_inode_id")
+    __slots__ = ("version_id", "sequence_number", "parent_id", "created_at", "ref", "primary_pack_id", "commit_id")
     VERSION_ID_FIELD_NUMBER: _ClassVar[int]
+    SEQUENCE_NUMBER_FIELD_NUMBER: _ClassVar[int]
     PARENT_ID_FIELD_NUMBER: _ClassVar[int]
     CREATED_AT_FIELD_NUMBER: _ClassVar[int]
     REF_FIELD_NUMBER: _ClassVar[int]
-    INDEX_ID_FIELD_NUMBER: _ClassVar[int]
-    ROOT_INODE_ID_FIELD_NUMBER: _ClassVar[int]
+    PRIMARY_PACK_ID_FIELD_NUMBER: _ClassVar[int]
+    COMMIT_ID_FIELD_NUMBER: _ClassVar[int]
     version_id: int
+    sequence_number: int
     parent_id: int
     created_at: _timestamp_pb2.Timestamp
     ref: str
-    index_id: str
-    root_inode_id: int
+    primary_pack_id: str
+    commit_id: str
     def __init__(
         self,
         version_id: _Optional[int] = ...,
+        sequence_number: _Optional[int] = ...,
         parent_id: _Optional[int] = ...,
         created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
         ref: _Optional[str] = ...,
-        index_id: _Optional[str] = ...,
-        root_inode_id: _Optional[int] = ...,
+        primary_pack_id: _Optional[str] = ...,
+        commit_id: _Optional[str] = ...,
     ) -> None: ...
 
 class VersionSelector(_message.Message):
@@ -433,18 +447,37 @@ class DirentMove(_message.Message):
         self, to: _Optional[_Union[DirentIdentifier, _Mapping]] = ..., child_ino: _Optional[int] = ..., **kwargs
     ) -> None: ...
 
+class InodeMetaUpdate(_message.Message):
+    __slots__ = ("ino", "metadata")
+    INO_FIELD_NUMBER: _ClassVar[int]
+    METADATA_FIELD_NUMBER: _ClassVar[int]
+    ino: int
+    metadata: FileMetadata
+    def __init__(
+        self, ino: _Optional[int] = ..., metadata: _Optional[_Union[FileMetadata, _Mapping]] = ...
+    ) -> None: ...
+
 class InodeDeltaList(_message.Message):
-    __slots__ = ("updated_inodes", "updated_dirents", "removed_inodes", "removed_dirents", "moved_dirents")
+    __slots__ = (
+        "updated_inodes",
+        "updated_dirents",
+        "removed_inodes",
+        "removed_dirents",
+        "moved_dirents",
+        "meta_only_updates",
+    )
     UPDATED_INODES_FIELD_NUMBER: _ClassVar[int]
     UPDATED_DIRENTS_FIELD_NUMBER: _ClassVar[int]
     REMOVED_INODES_FIELD_NUMBER: _ClassVar[int]
     REMOVED_DIRENTS_FIELD_NUMBER: _ClassVar[int]
     MOVED_DIRENTS_FIELD_NUMBER: _ClassVar[int]
+    META_ONLY_UPDATES_FIELD_NUMBER: _ClassVar[int]
     updated_inodes: _containers.RepeatedCompositeFieldContainer[InodeEntry]
     updated_dirents: _containers.RepeatedCompositeFieldContainer[DirentEntry]
     removed_inodes: _containers.RepeatedScalarFieldContainer[int]
     removed_dirents: _containers.RepeatedCompositeFieldContainer[DirentIdentifier]
     moved_dirents: _containers.RepeatedCompositeFieldContainer[DirentMove]
+    meta_only_updates: _containers.RepeatedCompositeFieldContainer[InodeMetaUpdate]
     def __init__(
         self,
         updated_inodes: _Optional[_Iterable[_Union[InodeEntry, _Mapping]]] = ...,
@@ -452,6 +485,22 @@ class InodeDeltaList(_message.Message):
         removed_inodes: _Optional[_Iterable[int]] = ...,
         removed_dirents: _Optional[_Iterable[_Union[DirentIdentifier, _Mapping]]] = ...,
         moved_dirents: _Optional[_Iterable[_Union[DirentMove, _Mapping]]] = ...,
+        meta_only_updates: _Optional[_Iterable[_Union[InodeMetaUpdate, _Mapping]]] = ...,
+    ) -> None: ...
+
+class VersionDiff(_message.Message):
+    __slots__ = ("added", "modified", "removed")
+    ADDED_FIELD_NUMBER: _ClassVar[int]
+    MODIFIED_FIELD_NUMBER: _ClassVar[int]
+    REMOVED_FIELD_NUMBER: _ClassVar[int]
+    added: _containers.RepeatedScalarFieldContainer[str]
+    modified: _containers.RepeatedScalarFieldContainer[str]
+    removed: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(
+        self,
+        added: _Optional[_Iterable[str]] = ...,
+        modified: _Optional[_Iterable[str]] = ...,
+        removed: _Optional[_Iterable[str]] = ...,
     ) -> None: ...
 
 class UploadedObjectReference(_message.Message):
@@ -491,39 +540,58 @@ class UploadURLItem(_message.Message):
     ) -> None: ...
 
 class CommitIntent(_message.Message):
-    __slots__ = ("volume_name", "commit_id", "ref", "base_version_id", "uploaded_object_references", "author")
-    VOLUME_NAME_FIELD_NUMBER: _ClassVar[int]
+    __slots__ = (
+        "volume",
+        "commit_id",
+        "ref",
+        "base_version_id",
+        "base_sequence_number",
+        "uploaded_object_references",
+        "author",
+        "path_deltas",
+        "inode_deltas",
+    )
+    VOLUME_FIELD_NUMBER: _ClassVar[int]
     COMMIT_ID_FIELD_NUMBER: _ClassVar[int]
     REF_FIELD_NUMBER: _ClassVar[int]
     BASE_VERSION_ID_FIELD_NUMBER: _ClassVar[int]
+    BASE_SEQUENCE_NUMBER_FIELD_NUMBER: _ClassVar[int]
     UPLOADED_OBJECT_REFERENCES_FIELD_NUMBER: _ClassVar[int]
     AUTHOR_FIELD_NUMBER: _ClassVar[int]
-    volume_name: str
+    PATH_DELTAS_FIELD_NUMBER: _ClassVar[int]
+    INODE_DELTAS_FIELD_NUMBER: _ClassVar[int]
+    volume: VolumeRef
     commit_id: str
     ref: str
     base_version_id: int
+    base_sequence_number: int
     uploaded_object_references: _containers.RepeatedCompositeFieldContainer[UploadedObjectReference]
     author: str
+    path_deltas: PathDeltaList
+    inode_deltas: InodeDeltaList
     def __init__(
         self,
-        volume_name: _Optional[str] = ...,
+        volume: _Optional[_Union[VolumeRef, _Mapping]] = ...,
         commit_id: _Optional[str] = ...,
         ref: _Optional[str] = ...,
         base_version_id: _Optional[int] = ...,
+        base_sequence_number: _Optional[int] = ...,
         uploaded_object_references: _Optional[_Iterable[_Union[UploadedObjectReference, _Mapping]]] = ...,
         author: _Optional[str] = ...,
+        path_deltas: _Optional[_Union[PathDeltaList, _Mapping]] = ...,
+        inode_deltas: _Optional[_Union[InodeDeltaList, _Mapping]] = ...,
     ) -> None: ...
 
 class CommitStatus(_message.Message):
-    __slots__ = ("volume_name", "commit_id", "result", "version", "latest_version", "created_at", "intent")
-    VOLUME_NAME_FIELD_NUMBER: _ClassVar[int]
+    __slots__ = ("volume", "commit_id", "result", "version", "latest_version", "created_at", "intent")
+    VOLUME_FIELD_NUMBER: _ClassVar[int]
     COMMIT_ID_FIELD_NUMBER: _ClassVar[int]
     RESULT_FIELD_NUMBER: _ClassVar[int]
     VERSION_FIELD_NUMBER: _ClassVar[int]
     LATEST_VERSION_FIELD_NUMBER: _ClassVar[int]
     CREATED_AT_FIELD_NUMBER: _ClassVar[int]
     INTENT_FIELD_NUMBER: _ClassVar[int]
-    volume_name: str
+    volume: VolumeRef
     commit_id: str
     result: CommitResult
     version: VersionInfo
@@ -532,7 +600,7 @@ class CommitStatus(_message.Message):
     intent: CommitIntent
     def __init__(
         self,
-        volume_name: _Optional[str] = ...,
+        volume: _Optional[_Union[VolumeRef, _Mapping]] = ...,
         commit_id: _Optional[str] = ...,
         result: _Optional[_Union[CommitResult, str]] = ...,
         version: _Optional[_Union[VersionInfo, _Mapping]] = ...,
@@ -554,13 +622,15 @@ class CreateVolumeResponse(_message.Message):
     def __init__(self, volume: _Optional[_Union[VolumeInfo, _Mapping]] = ...) -> None: ...
 
 class GetVolumeRequest(_message.Message):
-    __slots__ = ("name", "selector")
-    NAME_FIELD_NUMBER: _ClassVar[int]
+    __slots__ = ("volume", "selector")
+    VOLUME_FIELD_NUMBER: _ClassVar[int]
     SELECTOR_FIELD_NUMBER: _ClassVar[int]
-    name: str
+    volume: VolumeRef
     selector: VersionSelector
     def __init__(
-        self, name: _Optional[str] = ..., selector: _Optional[_Union[VersionSelector, _Mapping]] = ...
+        self,
+        volume: _Optional[_Union[VolumeRef, _Mapping]] = ...,
+        selector: _Optional[_Union[VersionSelector, _Mapping]] = ...,
     ) -> None: ...
 
 class GetVolumeResponse(_message.Message):
@@ -583,36 +653,49 @@ class ListVolumesRequest(_message.Message):
     cursor: str
     def __init__(self, limit: _Optional[int] = ..., cursor: _Optional[str] = ...) -> None: ...
 
+class ListedVolume(_message.Message):
+    __slots__ = ("name", "created_at")
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    CREATED_AT_FIELD_NUMBER: _ClassVar[int]
+    name: str
+    created_at: _timestamp_pb2.Timestamp
+    def __init__(
+        self, name: _Optional[str] = ..., created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...
+    ) -> None: ...
+
 class ListVolumesResponse(_message.Message):
     __slots__ = ("volumes", "next_cursor")
     VOLUMES_FIELD_NUMBER: _ClassVar[int]
     NEXT_CURSOR_FIELD_NUMBER: _ClassVar[int]
-    volumes: _containers.RepeatedCompositeFieldContainer[VolumeInfo]
+    volumes: _containers.RepeatedCompositeFieldContainer[ListedVolume]
     next_cursor: str
     def __init__(
-        self, volumes: _Optional[_Iterable[_Union[VolumeInfo, _Mapping]]] = ..., next_cursor: _Optional[str] = ...
+        self, volumes: _Optional[_Iterable[_Union[ListedVolume, _Mapping]]] = ..., next_cursor: _Optional[str] = ...
     ) -> None: ...
 
 class DeleteVolumeRequest(_message.Message):
-    __slots__ = ("name",)
-    NAME_FIELD_NUMBER: _ClassVar[int]
-    name: str
-    def __init__(self, name: _Optional[str] = ...) -> None: ...
+    __slots__ = ("volume",)
+    VOLUME_FIELD_NUMBER: _ClassVar[int]
+    volume: VolumeRef
+    def __init__(self, volume: _Optional[_Union[VolumeRef, _Mapping]] = ...) -> None: ...
 
 class DeleteVolumeResponse(_message.Message):
     __slots__ = ()
     def __init__(self) -> None: ...
 
 class ListVolumeVersionsRequest(_message.Message):
-    __slots__ = ("volume_name", "limit", "cursor")
-    VOLUME_NAME_FIELD_NUMBER: _ClassVar[int]
+    __slots__ = ("volume", "limit", "cursor")
+    VOLUME_FIELD_NUMBER: _ClassVar[int]
     LIMIT_FIELD_NUMBER: _ClassVar[int]
     CURSOR_FIELD_NUMBER: _ClassVar[int]
-    volume_name: str
+    volume: VolumeRef
     limit: int
     cursor: str
     def __init__(
-        self, volume_name: _Optional[str] = ..., limit: _Optional[int] = ..., cursor: _Optional[str] = ...
+        self,
+        volume: _Optional[_Union[VolumeRef, _Mapping]] = ...,
+        limit: _Optional[int] = ...,
+        cursor: _Optional[str] = ...,
     ) -> None: ...
 
 class ListVolumeVersionsResponse(_message.Message):
@@ -626,19 +709,10 @@ class ListVolumeVersionsResponse(_message.Message):
     ) -> None: ...
 
 class CommitVersionRequest(_message.Message):
-    __slots__ = ("intent", "path_deltas", "inode_deltas")
+    __slots__ = ("intent",)
     INTENT_FIELD_NUMBER: _ClassVar[int]
-    PATH_DELTAS_FIELD_NUMBER: _ClassVar[int]
-    INODE_DELTAS_FIELD_NUMBER: _ClassVar[int]
     intent: CommitIntent
-    path_deltas: PathDeltaList
-    inode_deltas: InodeDeltaList
-    def __init__(
-        self,
-        intent: _Optional[_Union[CommitIntent, _Mapping]] = ...,
-        path_deltas: _Optional[_Union[PathDeltaList, _Mapping]] = ...,
-        inode_deltas: _Optional[_Union[InodeDeltaList, _Mapping]] = ...,
-    ) -> None: ...
+    def __init__(self, intent: _Optional[_Union[CommitIntent, _Mapping]] = ...) -> None: ...
 
 class CommitVersionResponse(_message.Message):
     __slots__ = ("status",)
@@ -647,29 +721,45 @@ class CommitVersionResponse(_message.Message):
     def __init__(self, status: _Optional[_Union[CommitStatus, _Mapping]] = ...) -> None: ...
 
 class GetCommitStatusRequest(_message.Message):
-    __slots__ = ("volume_name", "commit_id")
-    VOLUME_NAME_FIELD_NUMBER: _ClassVar[int]
+    __slots__ = ("volume", "commit_id", "include_diff")
+    VOLUME_FIELD_NUMBER: _ClassVar[int]
     COMMIT_ID_FIELD_NUMBER: _ClassVar[int]
-    volume_name: str
+    INCLUDE_DIFF_FIELD_NUMBER: _ClassVar[int]
+    volume: VolumeRef
     commit_id: str
-    def __init__(self, volume_name: _Optional[str] = ..., commit_id: _Optional[str] = ...) -> None: ...
+    include_diff: bool
+    def __init__(
+        self,
+        volume: _Optional[_Union[VolumeRef, _Mapping]] = ...,
+        commit_id: _Optional[str] = ...,
+        include_diff: bool = ...,
+    ) -> None: ...
 
 class GetCommitStatusResponse(_message.Message):
-    __slots__ = ("status",)
+    __slots__ = ("status", "diff")
     STATUS_FIELD_NUMBER: _ClassVar[int]
+    DIFF_FIELD_NUMBER: _ClassVar[int]
     status: CommitStatus
-    def __init__(self, status: _Optional[_Union[CommitStatus, _Mapping]] = ...) -> None: ...
+    diff: VersionDiff
+    def __init__(
+        self,
+        status: _Optional[_Union[CommitStatus, _Mapping]] = ...,
+        diff: _Optional[_Union[VersionDiff, _Mapping]] = ...,
+    ) -> None: ...
 
 class AllocateInodeRangeRequest(_message.Message):
-    __slots__ = ("volume_name", "count", "mount_id")
-    VOLUME_NAME_FIELD_NUMBER: _ClassVar[int]
+    __slots__ = ("volume", "count", "mount_id")
+    VOLUME_FIELD_NUMBER: _ClassVar[int]
     COUNT_FIELD_NUMBER: _ClassVar[int]
     MOUNT_ID_FIELD_NUMBER: _ClassVar[int]
-    volume_name: str
+    volume: VolumeRef
     count: int
     mount_id: str
     def __init__(
-        self, volume_name: _Optional[str] = ..., count: _Optional[int] = ..., mount_id: _Optional[str] = ...
+        self,
+        volume: _Optional[_Union[VolumeRef, _Mapping]] = ...,
+        count: _Optional[int] = ...,
+        mount_id: _Optional[str] = ...,
     ) -> None: ...
 
 class AllocateInodeRangeResponse(_message.Message):
@@ -681,14 +771,14 @@ class AllocateInodeRangeResponse(_message.Message):
     def __init__(self, first_ino: _Optional[int] = ..., count: _Optional[int] = ...) -> None: ...
 
 class RequestUploadURLsRequest(_message.Message):
-    __slots__ = ("volume_name", "objects")
-    VOLUME_NAME_FIELD_NUMBER: _ClassVar[int]
+    __slots__ = ("volume", "objects")
+    VOLUME_FIELD_NUMBER: _ClassVar[int]
     OBJECTS_FIELD_NUMBER: _ClassVar[int]
-    volume_name: str
+    volume: VolumeRef
     objects: _containers.RepeatedCompositeFieldContainer[UploadedObjectReference]
     def __init__(
         self,
-        volume_name: _Optional[str] = ...,
+        volume: _Optional[_Union[VolumeRef, _Mapping]] = ...,
         objects: _Optional[_Iterable[_Union[UploadedObjectReference, _Mapping]]] = ...,
     ) -> None: ...
 
@@ -699,14 +789,14 @@ class RequestUploadURLsResponse(_message.Message):
     def __init__(self, urls: _Optional[_Iterable[_Union[UploadURLItem, _Mapping]]] = ...) -> None: ...
 
 class ListFilesRequest(_message.Message):
-    __slots__ = ("volume_name", "path", "recursive", "limit", "cursor", "selector")
-    VOLUME_NAME_FIELD_NUMBER: _ClassVar[int]
+    __slots__ = ("volume", "path", "recursive", "limit", "cursor", "selector")
+    VOLUME_FIELD_NUMBER: _ClassVar[int]
     PATH_FIELD_NUMBER: _ClassVar[int]
     RECURSIVE_FIELD_NUMBER: _ClassVar[int]
     LIMIT_FIELD_NUMBER: _ClassVar[int]
     CURSOR_FIELD_NUMBER: _ClassVar[int]
     SELECTOR_FIELD_NUMBER: _ClassVar[int]
-    volume_name: str
+    volume: VolumeRef
     path: str
     recursive: bool
     limit: int
@@ -714,7 +804,7 @@ class ListFilesRequest(_message.Message):
     selector: VersionSelector
     def __init__(
         self,
-        volume_name: _Optional[str] = ...,
+        volume: _Optional[_Union[VolumeRef, _Mapping]] = ...,
         path: _Optional[str] = ...,
         recursive: bool = ...,
         limit: _Optional[int] = ...,
@@ -738,18 +828,18 @@ class ListFilesResponse(_message.Message):
     ) -> None: ...
 
 class GetFileRequest(_message.Message):
-    __slots__ = ("volume_name", "path", "selector", "if_none_match")
-    VOLUME_NAME_FIELD_NUMBER: _ClassVar[int]
+    __slots__ = ("volume", "path", "selector", "if_none_match")
+    VOLUME_FIELD_NUMBER: _ClassVar[int]
     PATH_FIELD_NUMBER: _ClassVar[int]
     SELECTOR_FIELD_NUMBER: _ClassVar[int]
     IF_NONE_MATCH_FIELD_NUMBER: _ClassVar[int]
-    volume_name: str
+    volume: VolumeRef
     path: str
     selector: VersionSelector
     if_none_match: str
     def __init__(
         self,
-        volume_name: _Optional[str] = ...,
+        volume: _Optional[_Union[VolumeRef, _Mapping]] = ...,
         path: _Optional[str] = ...,
         selector: _Optional[_Union[VersionSelector, _Mapping]] = ...,
         if_none_match: _Optional[str] = ...,

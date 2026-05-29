@@ -12,14 +12,13 @@ import pytest
 from chalkcompute._connect import ConnectClient
 from chalkcompute._gen.chalk.volume.v1 import volume_pb2 as pb
 from chalkcompute._volume import (
-    Volume,
+    SimpleVolume as Volume,
     VolumeClosedError,
     VolumeClient,
     _INLINE_THRESHOLD_BYTES,
     _read_file_bytes,
     _put_file_presigned,
     _upload_bytes,
-    upload_lazy_files,
 )
 
 
@@ -523,7 +522,7 @@ class TestUploadLazyFiles:
         client.create = MagicMock(return_value=mock_vol)
 
         with patch("chalkcompute._volume._upload_bytes") as mock_upload:
-            volumes = upload_lazy_files(client, image)
+            volumes = client.upload_lazy_files(image)
 
         client.create.assert_called_once()
         mock_upload.assert_called_once()
@@ -540,5 +539,5 @@ class TestUploadLazyFiles:
         client = _make_vol_client()
         client.create = MagicMock()
 
-        assert upload_lazy_files(client, image) == []
+        assert client.upload_lazy_files(image) == []
         client.create.assert_not_called()

@@ -26,10 +26,11 @@ import logging
 import os
 import uuid
 from collections.abc import Callable, Generator, Iterator
-from typing import Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Protocol
 
 import grpc
 import httpx
@@ -108,6 +109,9 @@ class VolumeInfo:
 
     name: str
     created_at: datetime.datetime | None = None
+    volume_id: str | None = None
+    access_mode: str | None = None
+    ref: str | None = None
 
 
 @dataclass
@@ -127,6 +131,12 @@ class FileInfo:
     path: str
     size: int
     updated_at: datetime.datetime | None = None
+    kind: str | None = None
+    hash: str | None = None
+    mode: int | None = None
+    uid: int | None = None
+    gid: int | None = None
+    nlink: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +147,7 @@ class FileInfo:
 class _BatchUpload:
     """Accumulates put_file operations and executes them on exit."""
 
-    def __init__(self, volume: Volume) -> None:
+    def __init__(self, volume: SimpleVolume) -> None:
         self._volume = volume
         self._files: list[tuple[str, bytes]] = []
 
@@ -178,8 +188,11 @@ class _BatchUpload:
 # ---------------------------------------------------------------------------
 
 
-class Volume:
+class SimpleVolume:
     """A handle to a named volume, providing file operations.
+
+    The v1 implementation: a flat, path-keyed object store with no version
+    history. For snapshot/version semantics use :class:`VersionedVolume`.
 
     Volumes are persistent storage backed by object storage. Obtain an
     instance via :meth:`VolumeClient.create` or :meth:`VolumeClient.get`.
@@ -303,7 +316,7 @@ class Volume:
         return _read_file_bytes(self._client, self._name, path)
 
     @_instrumented("chalkcompute.volume.put_file")
-    def put_file(self, path: str, data: bytes | str) -> Volume:
+    def put_file(self, path: str, data: bytes | str) -> SimpleVolume:
         """Write a file into the volume.
 
         Small files (<= ``_INLINE_THRESHOLD_BYTES``) are uploaded via gRPC
@@ -329,7 +342,7 @@ class Volume:
         _upload_bytes(self._client, self._name, path, data)
         return self
 
-    def put_file_from_path(self, path: str, local_path: str | Path) -> Volume:
+    def put_file_from_path(self, path: str, local_path: str | Path) -> SimpleVolume:
         """Upload a local file into the volume.
 
         Parameters
@@ -347,7 +360,7 @@ class Volume:
         self.put_file(path, Path(local_path).read_bytes())
         return self
 
-    def remove_file(self, path: str) -> Volume:
+    def remove_file(self, path: str) -> SimpleVolume:
         """Remove a file from the volume.
 
         Parameters
@@ -452,7 +465,22 @@ class Volume:
             self._client.close()
         self._closed = True
 
-    def __enter__(self) -> Volume:
+    # -- Versioned-volume API stubs --------------------------------------------
+    # The v1 backend has no version history. These exist so the generic
+    # ``Volume`` factory can return either backend and code can program against
+    # a single interface; callers using the v1 backend explicitly opt out of
+    # version-aware operations.
+
+    def versions(self, *, limit: int = 100) -> list:
+        raise NotImplementedError("SimpleVolume has no version history")
+
+    def latest_version(self):
+        raise NotImplementedError("SimpleVolume has no version history")
+
+    def at_version(self, version_id: int) -> SimpleVolume:
+        raise NotImplementedError("SimpleVolume has no version history")
+
+    def __enter__(self) -> SimpleVolume:
         self._raise_if_closed()
         return self
 
@@ -460,7 +488,7 @@ class Volume:
         self.close()
 
     def __repr__(self) -> str:
-        return f"Volume(name={self._name!r})"
+        return f"SimpleVolume(name={self._name!r})"
 
 
 # ---------------------------------------------------------------------------
@@ -469,10 +497,112 @@ class Volume:
 
 
 _VolumeInfoList = list[VolumeInfo]
+_VolumeMountPairs = list[tuple[str, str]]
+
+
+class VolumeDriver(Protocol):
+    """Internal protocol for clients that back container/sandbox mounts.
+
+    Satisfied by both :class:`VolumeClient` (mount type ``chalkfs``) and
+    :class:`VersionedVolumeClient` (mount type ``versioned_chalkfs``). Not
+    re-exported from ``chalkcompute`` — internal callers obtain a backend
+    via :func:`_resolve_driver`.
+    """
+
+    mount_type: str
+
+    def upload_lazy_files(
+        self, image: Image, *, volume_prefix: str
+    ) -> "list[tuple[str, str]]": ...
+
+    def delete_volume(self, name: str) -> None: ...
+
+    def close(self) -> None: ...
+
+
+def _resolve_driver(
+    connect: ConnectClient, *, versioned: bool = True
+) -> VolumeDriver:
+    """Build a :class:`VolumeDriver` for ``connect``.
+
+    Defaults to the versioned (v2) backend. Centralizes the v1/v2 dispatch
+    so callers (Container, ScalingGroup, RemoteFunction, RemoteClass) don't
+    branch on backend type inline.
+    """
+    if versioned:
+        from chalkcompute._vvolume import VersionedVolumeClient
+
+        return VersionedVolumeClient.from_connect(connect)
+    return VolumeClient.from_connect(connect)
+
+
+def make_volume(
+    name: str,
+    *,
+    versioned: bool = True,
+    client: object | None = None,
+    version_id: int | None = None,
+    ref: str = "main",
+    create_if_missing: bool = True,
+):
+    """Construct a volume handle (re-exported as :data:`chalkcompute.Volume`).
+
+    Defaults to a versioned (v2) volume; pass ``versioned=False`` for the
+    path-keyed :class:`SimpleVolume` backend, which raises
+    ``NotImplementedError`` for version-aware operations.
+
+    Parameters
+    ----------
+    name
+        Volume name.
+    versioned
+        If ``True`` (the default), return a :class:`VersionedVolume`.
+        Otherwise return a :class:`SimpleVolume`.
+    client
+        Optional pre-constructed client matching the chosen backend.
+    version_id
+        Pin a versioned handle to an immutable version. Versioned only.
+    ref
+        Mutable ref to read/write through. Versioned only.
+    create_if_missing
+        If ``True``, create the volume on first access if absent.
+
+    Returns
+    -------
+    VersionedVolume or SimpleVolume
+        A handle for the requested backend.
+
+    Raises
+    ------
+    ValueError
+        If ``version_id`` or a non-default ``ref`` is supplied with
+        ``versioned=False``.
+    """
+    if versioned:
+        from chalkcompute._vvolume import VersionedVolume, VersionedVolumeClient
+
+        return VersionedVolume(
+            name,
+            client=client if isinstance(client, VersionedVolumeClient) else None,
+            version_id=version_id,
+            ref=ref,
+            create_if_missing=create_if_missing,
+        )
+    if version_id is not None or ref != "main":
+        raise ValueError(
+            "version_id and ref are only supported for versioned volumes"
+        )
+    return SimpleVolume(
+        name,
+        client=client if isinstance(client, VolumeClient) else None,
+        create_if_missing=create_if_missing,
+    )
 
 
 class VolumeClient:
     """Client for the Volume gRPC service."""
+
+    mount_type = "chalkfs"
 
     def __init__(
         self,
@@ -588,7 +718,7 @@ class VolumeClient:
         self._channel.close()
 
     @_instrumented("chalkcompute.volume.create")
-    def create(self, name: str) -> Volume:
+    def create(self, name: str) -> SimpleVolume:
         """Create a new named volume.
 
         If the volume already exists on the server, behavior depends on the
@@ -613,11 +743,11 @@ class VolumeClient:
             _handle_rpc_error(e, name)
             raise
         info = _pb_to_volume_info(resp.volume)
-        vol = Volume(info.name, client=self, create_if_missing=False)
+        vol = SimpleVolume(info.name, client=self, create_if_missing=False)
         vol._info = info
         return vol
 
-    def from_name(self, name: str) -> Volume:
+    def from_name(self, name: str) -> SimpleVolume:
         """Get a ``Volume`` handle by name.
 
         Does not validate the volume exists until you call a method on it.
@@ -633,9 +763,9 @@ class VolumeClient:
         Volume
             A volume handle.
         """
-        return Volume(name, client=self, create_if_missing=False)
+        return SimpleVolume(name, client=self, create_if_missing=False)
 
-    def lookup(self, name: str) -> Volume:
+    def lookup(self, name: str) -> SimpleVolume:
         """Look up a volume by name, verifying it exists.
 
         Parameters
@@ -653,9 +783,64 @@ class VolumeClient:
         VolumeNotFoundError
             If the volume does not exist.
         """
-        vol = Volume(name, client=self, create_if_missing=False)
+        vol = SimpleVolume(name, client=self, create_if_missing=False)
         vol.reload()
         return vol
+
+    @_instrumented("chalkcompute.volume.upload_lazy_files")
+    def upload_lazy_files(
+        self, image: Image, *, volume_prefix: str = "files"
+    ) -> _VolumeMountPairs:
+        """Upload an image's lazy local files into v1 volumes.
+
+        Creates one volume per destination directory and uploads each
+        file through the inline-vs-presigned router.
+
+        Parameters
+        ----------
+        image
+            Image whose lazy local files should be uploaded.
+        volume_prefix
+            Prefix used when naming the generated volumes.
+
+        Returns
+        -------
+        list of tuple of (str, str)
+            ``(volume_name, mount_path)`` pairs ready to mount with
+            ``type="chalkfs"`` in a container spec.
+        """
+        try:
+            dir_to_files = image.lazy_local_files_grouped_for_volume_mounts()
+        except ValueError as e:
+            raise VolumeError(str(e)) from e
+
+        def _put(vol_name: str, lf: LazyLocalFile, dest_dir: str) -> None:
+            content = Path(lf.src).read_bytes()
+            _upload_bytes(
+                self, vol_name, os.path.relpath(lf.dest, dest_dir), content,
+            )
+
+        volumes: _VolumeMountPairs = []
+        for dest_dir, files in dir_to_files.items():
+            vol = self.create(f"{volume_prefix}-{uuid.uuid4().hex[:12]}")
+            with ThreadPoolExecutor(max_workers=_UPLOAD_MAX_WORKERS) as pool:
+                for fut in as_completed(
+                    pool.submit(_put, vol.name, lf, dest_dir) for lf in files
+                ):
+                    fut.result()
+            volumes.append((vol.name, dest_dir))
+        return volumes
+
+    def delete_volume(self, name: str) -> None:
+        """Delete a volume by name."""
+        try:
+            self._stub.DeleteVolume(
+                pb.DeleteVolumeRequest(name=name),
+                metadata=self._metadata,
+            )
+        except grpc.RpcError as e:
+            _handle_rpc_error(e, name)
+            raise
 
     def list(self) -> _VolumeInfoList:
         """List all volumes.
@@ -1046,68 +1231,6 @@ def _upload_resumable(
             signed_uri = new_resp.resumable.signed_upload_uri
             continue
         put_resp.raise_for_status()
-
-
-# ---------------------------------------------------------------------------
-# Lazy local file upload
-# ---------------------------------------------------------------------------
-
-
-@_instrumented("chalkcompute.upload_lazy_files")
-def upload_lazy_files(
-    client: VolumeClient,
-    image: Image,
-    *,
-    volume_prefix: str = "files",
-) -> list[tuple[str, str]]:
-    """Upload an image's lazy local files to volumes.
-
-    Creates one volume per destination directory, uploads all files using the
-    shared ``_upload_bytes`` router (gRPC inline for small files, presigned
-    object-storage for large ones), and returns the ``(volume_name, mount_path)``
-    pairs needed to mount them in a container spec.
-
-    Parameters
-    ----------
-    client
-        Authenticated VolumeClient (gRPC).
-    image
-        The image whose lazy local files should be uploaded.
-    volume_prefix
-        Prefix for the generated volume names.
-
-    Returns
-    -------
-    list[tuple[str, str]]
-        Pairs of ``(volume_name, mount_path)`` for each created volume.
-    """
-    try:
-        dir_to_files = image.lazy_local_files_grouped_for_volume_mounts()
-    except ValueError as e:
-        raise VolumeError(str(e)) from e
-
-    if not dir_to_files:
-        return []
-
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    def _put_file(vol_name: str, lf: LazyLocalFile, dest_dir: str) -> None:
-        content = Path(lf.src).read_bytes()
-        rel_path = os.path.relpath(lf.dest, dest_dir)
-        _upload_bytes(client, vol_name, rel_path, content)
-
-    volumes: list[tuple[str, str]] = []
-    for dest_dir, files in dir_to_files.items():
-        vol = client.create(f"{volume_prefix}-{uuid.uuid4().hex[:12]}")
-
-        with ThreadPoolExecutor(max_workers=_UPLOAD_MAX_WORKERS) as pool:
-            futures = [pool.submit(_put_file, vol.name, lf, dest_dir) for lf in files]
-            for fut in as_completed(futures):
-                fut.result()
-
-        volumes.append((vol.name, dest_dir))
-
-    return volumes
 
 
 # ---------------------------------------------------------------------------

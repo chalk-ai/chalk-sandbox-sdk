@@ -57,13 +57,17 @@ from chalkcompute._secret import Secret as Secret
 from chalkcompute._tracing import span as span
 from chalkcompute._tracing import traced as traced
 from chalkcompute._volume import FileInfo as FileInfo
-from chalkcompute._volume import Volume as Volume
+from chalkcompute._volume import SimpleVolume as SimpleVolume
 from chalkcompute._volume import VolumeClient as VolumeClient
+from chalkcompute._volume import make_volume as Volume
 from chalkcompute._volume import VolumeClosedError as VolumeClosedError
 from chalkcompute._volume import VolumeError as VolumeError
 from chalkcompute._volume import VolumeFileNotFoundError as VolumeFileNotFoundError
 from chalkcompute._volume import VolumeInfo as VolumeInfo
 from chalkcompute._volume import VolumeNotFoundError as VolumeNotFoundError
+from chalkcompute._vvolume import VersionInfo as VersionInfo
+from chalkcompute._vvolume import VersionedVolume as VersionedVolume
+from chalkcompute._vvolume import VersionedVolumeClient as VersionedVolumeClient
 
 __all__ = [
     "Container",
@@ -124,10 +128,14 @@ __all__ = [
     "ScalingGroupInfo",
     "FileInfo",
     "Volume",
+    "SimpleVolume",
     "VolumeClient",
     "VolumeClosedError",
     "VolumeError",
     "VolumeFileNotFoundError",
     "VolumeInfo",
     "VolumeNotFoundError",
+    "VersionInfo",
+    "VersionedVolume",
+    "VersionedVolumeClient",
 ]
