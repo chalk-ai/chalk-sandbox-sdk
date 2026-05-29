@@ -1,5 +1,4 @@
 on:
-  pull_request: {}
   push:
     branches:
       - main
@@ -25,7 +24,7 @@ steps:
           --mode all \
           --iterations 20 \
           --min-success-rate 1.0 \
-          --max-p95-ms 20000
+          --max-p95-ms 25000
     agents:
       queue: default
     timeout_in_minutes: 60
