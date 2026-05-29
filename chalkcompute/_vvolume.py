@@ -61,8 +61,8 @@ class VersionInfo:
         Server-side commit timestamp.
     ref
         Ref this version was committed on, if known.
-    index_id
-        Server-side content index identifier, if exposed.
+    commit_id
+        Client-supplied commit identifier that produced this version.
     """
 
     id: int
@@ -70,7 +70,7 @@ class VersionInfo:
     parent_id: int | None = None
     created_at: datetime.datetime | None = None
     ref: str | None = None
-    index_id: str | None = None
+    commit_id: str | None = None
 
     @property
     def version_id(self) -> int:
@@ -1183,7 +1183,7 @@ def _pb_v2_to_version_info(info: pb_v2.VersionInfo) -> VersionInfo:
         parent_id=parent_id,
         created_at=created_at,
         ref=info.ref or None,
-        index_id=info.index_id or None,
+        commit_id=info.commit_id or None,
     )
 
 

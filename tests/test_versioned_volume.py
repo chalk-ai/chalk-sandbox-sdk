@@ -49,7 +49,7 @@ def _version(version_id: int = 10, sequence_number: int = 20) -> pb_v2.VersionIn
         version_id=version_id,
         sequence_number=sequence_number,
         ref="main",
-        index_id=f"idx-{version_id}",
+        commit_id=f"commit-{version_id}",
     )
 
 
