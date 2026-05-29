@@ -1,7 +1,4 @@
-on:
-  push:
-    branches:
-      - main
+on: {} # Triggered by integration-tests pipeline only
 
 env:
   UV_VERSION: "0.11.14"
