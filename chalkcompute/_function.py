@@ -1086,6 +1086,7 @@ class RemoteFunction:
         tracing: TracingPolicyConfig | None = None,
         models: typing.Mapping[str, Any] | None = None,
         chalk_client: Any | None = None,
+        chalk_auth: bool = True,
     ) -> None:
         self._func = func
         self._func_name = getattr(func, "__name__", "anonymous")
@@ -1181,6 +1182,7 @@ class RemoteFunction:
             QueuePolicy.from_int_or_policy(quota) if quota is not None else None
         )
         self._tracing = normalize_remote_function_tracing(tracing)
+        self._chalk_auth = chalk_auth
 
         # Set after .deploy()
         self._version_info: FunctionVersionInfo | None = None
@@ -1480,6 +1482,21 @@ class RemoteFunction:
                         self._secrets, self._client
                     )
                     self._secrets = resolved
+
+            # 5b'. Inject ambient Chalk credentials so `ChalkClient()` works
+            # inside the function without explicit `Secret.from_local_env`
+            # declarations. Skipped per-name when the user has already
+            # declared an equivalent env var.
+            if self._chalk_auth:
+                from chalkcompute._secret import resolve_ambient_chalk_secrets
+
+                ambient_refs, _ = resolve_ambient_chalk_secrets(
+                    self._secrets, self._env, self._client
+                )
+                if ambient_refs:
+                    self._secrets = [*self._secrets, *ambient_refs]
+
+            if self._secrets:
                 container_spec["secretRefs"] = [
                     s._to_proto_dict() for s in self._secrets
                 ]
@@ -2129,6 +2146,7 @@ def function(
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
     tracing: TracingPolicyConfig | None = None,
+    chalk_auth: bool = True,
 ) -> RemoteFunction | _NoOpFunction: ...
 
 
@@ -2160,6 +2178,7 @@ def function(
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
     tracing: TracingPolicyConfig | None = None,
+    chalk_auth: bool = True,
 ) -> Callable[..., RemoteFunction | _NoOpFunction]:
     ...
 
@@ -2193,6 +2212,7 @@ def function(
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
     tracing: TracingPolicyConfig | None = None,
+    chalk_auth: bool = True,
 ) -> Callable[..., RemoteFunction | _NoOpFunction] | RemoteFunction | _NoOpFunction:
     """Decorator that deploys a function as a versioned remote function.
 
@@ -2296,6 +2316,15 @@ def function(
         Server-side remote-function tracing is enabled by default. Use
         :class:`~chalkcompute.TracingPolicy` for sampling. Set ``False`` to
         explicitly turn tracing off.
+    chalk_auth
+        When ``True`` (default), the user's ambient Chalk credentials
+        (``CHALK_CLIENT_ID``, ``CHALK_CLIENT_SECRET``, ``CHALK_API_SERVER``,
+        ``CHALK_ENVIRONMENT_ID``) are discovered locally — from environment
+        variables or ``~/.chalk.yml`` — and injected into the function's
+        runtime as Chalk secrets so ``ChalkClient()`` inside the function
+        works without explicit ``Secret.from_local_env(...)`` declarations.
+        Names already covered by ``secrets`` or ``env`` are not overridden.
+        Set ``False`` to skip auto-injection entirely.
 
     Examples
     --------
@@ -2337,6 +2366,7 @@ def function(
             schedule=schedule,
             tracing=tracing,
             models=models,
+            chalk_auth=chalk_auth,
         )
         f.deploy()
         return f
