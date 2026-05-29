@@ -40,7 +40,8 @@ PYPERF_OUTPUT="$(mktemp /tmp/benchmark-XXXXXX.json)"
 export CHALK_BENCHMARK_PYPERF_OUTPUT="$PYPERF_OUTPUT"
 
 echo "--- :bar_chart: Run benchmark: ${CASE_NAME}"
-"${BENCHMARK_CMD[@]}"
+BENCHMARK_EXIT=0
+"${BENCHMARK_CMD[@]}" || BENCHMARK_EXIT=$?
 
 if [[ ! -s "$PYPERF_OUTPUT" ]]; then
   echo "Benchmark produced no output at $PYPERF_OUTPUT" >&2
@@ -66,3 +67,5 @@ docker run --rm \
   "${UPLOAD_ARGS[@]}"
 
 rm -f "$PYPERF_OUTPUT"
+
+exit "$BENCHMARK_EXIT"
