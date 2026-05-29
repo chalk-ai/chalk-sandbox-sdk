@@ -43,6 +43,8 @@ class Permission(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     PERMISSION_ENVIRONMENT_CREATE: _ClassVar[Permission]
     PERMISSION_INTERNAL_DATAPLANE_STATUS_UPDATE: _ClassVar[Permission]
     PERMISSION_INTERNAL_WORKING_TOKEN_EXCHANGE: _ClassVar[Permission]
+    PERMISSION_BILLING_WRITE: _ClassVar[Permission]
+    PERMISSION_QUERY_OFFLINE_READ: _ClassVar[Permission]
 
 PERMISSION_UNSPECIFIED: Permission
 PERMISSION_INSECURE_UNAUTHENTICATED: Permission
@@ -79,6 +81,8 @@ PERMISSION_INFRASTRUCTURE_WRITE: Permission
 PERMISSION_ENVIRONMENT_CREATE: Permission
 PERMISSION_INTERNAL_DATAPLANE_STATUS_UPDATE: Permission
 PERMISSION_INTERNAL_WORKING_TOKEN_EXCHANGE: Permission
+PERMISSION_BILLING_WRITE: Permission
+PERMISSION_QUERY_OFFLINE_READ: Permission
 DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
 description: _descriptor.FieldDescriptor
 SLUG_FIELD_NUMBER: _ClassVar[int]
@@ -87,3 +91,5 @@ PERMISSION_FIELD_NUMBER: _ClassVar[int]
 permission: _descriptor.FieldDescriptor
 TEAM_PERMISSION_FIELD_NUMBER: _ClassVar[int]
 team_permission: _descriptor.FieldDescriptor
+ADDITIONAL_PERMISSIONS_LIST_FIELD_NUMBER: _ClassVar[int]
+additional_permissions_list: _descriptor.FieldDescriptor
