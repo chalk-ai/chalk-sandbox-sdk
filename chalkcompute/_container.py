@@ -279,6 +279,7 @@ class Container:
         network_policy: NetworkPolicy | None = None,
         tags: dict[str, str] | None = None,
         chalk_client: Any | None = None,
+        chalk_auth: bool = True,
     ) -> None:
         self._image = image
         if name is not None:
@@ -342,6 +343,8 @@ class Container:
         self._security_policy = security_policy
         self._network_policy = network_policy
         self._tags: dict[str, str] = dict(tags or {})
+
+        self._chalk_auth = chalk_auth
 
         # Set after .run()
         self._built_image_uri: str | None = None
@@ -664,6 +667,20 @@ class Container:
                 self._upserted_secret_names = upserted
                 logger.info("Upserted %d secret(s) from local environment.", len(upserted))
                 progress_done(skey, detail=f"{len(upserted)} secret(s)")
+
+            # 3b. Inject ambient Chalk credentials (CHALK_CLIENT_ID etc.) so
+            # `ChalkClient()` works inside the container without explicit
+            # `Secret.from_local_env(...)` declarations. Skipped per-name when
+            # the user has already declared an equivalent env var.
+            if self._chalk_auth:
+                from chalkcompute._secret import resolve_ambient_chalk_secrets
+
+                ambient_refs, ambient_upserted = resolve_ambient_chalk_secrets(
+                    self._secrets, self._env, self._client
+                )
+                if ambient_refs:
+                    self._secrets = [*self._secrets, *ambient_refs]
+                    self._upserted_secret_names.extend(ambient_upserted)
 
             # 4. Build the ContainerService spec
             spec: dict[str, Any] = {

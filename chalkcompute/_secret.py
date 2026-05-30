@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 _SECRETS_SVC = "chalk.server.v1.EnvironmentSecretsService"
+
+_AMBIENT_CHALK_ENV_VARS = (
+    "CHALK_CLIENT_ID",
+    "CHALK_CLIENT_SECRET",
+    "CHALK_API_SERVER",
+    "CHALK_ENVIRONMENT_ID",
+)
 
 
 @dataclass(frozen=True)
@@ -319,6 +329,98 @@ def _upsert_secret(client: Any, name: str, value: str) -> None:
     )
     if resp.status_code != 200:
         raise RuntimeError(f"Failed to upsert secret {name!r}: {resp.text}")
+
+
+def _container_env_names_covered(
+    existing_secrets: list[Secret],
+    existing_env: dict[str, str] | None,
+) -> set[str]:
+    """Names that the user has already arranged to set inside the container.
+
+    Used by ``resolve_ambient_chalk_secrets`` to avoid duplicating an env var
+    the user already specified explicitly (via ``Secret`` or ``env={...}``).
+    """
+    covered: set[str] = set()
+    if existing_env:
+        covered.update(existing_env.keys())
+    for s in existing_secrets:
+        if s._env_var_name is not None:
+            covered.add(s._env_var_name)
+        elif s._local_env_var is not None:
+            covered.add(s._local_env_var)
+        if s._secret_name is not None and not s._aliases:
+            covered.add(s._secret_name)
+        for src, dst in s._aliases.items():
+            covered.add(dst or src)
+    return covered
+
+
+def resolve_ambient_chalk_secrets(
+    existing_secrets: list[Secret],
+    existing_env: dict[str, str] | None,
+    client: Any,
+) -> tuple[list[Secret], list[str]]:
+    """Resolve ambient Chalk credentials and upsert them as Chalk secrets.
+
+    Reads credentials with the same precedence as the local SDK (PR #160):
+    explicit ``CHALK_*`` environment variables, falling back to
+    ``~/.chalk.yml`` scoped to the current Chalk project. Each non-None
+    value is upserted via ``EnvironmentSecretsService.UpsertSecret`` and
+    returned as a ``Secret.from_env(...)`` reference.
+
+    Names the user has already covered via an explicit ``Secret`` or
+    ``env={...}`` are skipped, so the user's declarations always win.
+
+    Parameters
+    ----------
+    existing_secrets
+        Already-resolved (non-lazy) secrets the user provided.
+    existing_env
+        The container's ``env`` mapping, if any.
+    client
+        Connect client used to upsert secrets.
+
+    Returns
+    -------
+    tuple[list[Secret], list[str]]
+        ``(new_secret_refs, upserted_secret_names)`` — refs to append to the
+        container's secret list, and the names of newly upserted secrets
+        for cleanup tracking.
+    """
+    from chalkcompute._auth_config import load_token
+
+    token = load_token(None, None, None, None)
+    if token is None:
+        logger.warning(
+            "No ambient Chalk credentials found; ChalkClient() inside the "
+            "container will fail unless you set CHALK_CLIENT_ID / "
+            "CHALK_CLIENT_SECRET / CHALK_API_SERVER explicitly, run "
+            "`chalk login`, or pass chalk_auth=False to suppress this warning."
+        )
+        return [], []
+
+    name_to_value: dict[str, str | None] = {
+        "CHALK_CLIENT_ID": token.clientId,
+        "CHALK_CLIENT_SECRET": token.clientSecret,
+        "CHALK_API_SERVER": token.apiServer,
+        "CHALK_ENVIRONMENT_ID": token.activeEnvironment,
+    }
+
+    covered = _container_env_names_covered(existing_secrets, existing_env)
+
+    new_refs: list[Secret] = []
+    upserted: list[str] = []
+    for name in _AMBIENT_CHALK_ENV_VARS:
+        if name in covered:
+            continue
+        value = name_to_value.get(name)
+        if value is None:
+            continue
+        _upsert_secret(client, name, value)
+        upserted.append(name)
+        new_refs.append(Secret.from_env(name))
+
+    return new_refs, upserted
 
 
 def delete_secrets(client: Any, names: list[str]) -> None:
