@@ -28,7 +28,13 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from chalkcompute._connect import ConnectClient
-from chalkcompute._volume import VolumeDriver, _resolve_driver
+from chalkcompute._volume import (
+    VolumeDriver,
+    VolumeError,
+    VolumeMount,
+    _resolve_driver,
+    resolve_referenced_volume_type,
+)
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import _instrumented
 
@@ -295,6 +301,7 @@ class Container:
                     raise ValueError(f"env values must be strings, got {v!r} for key {k!r}")
         self._env = dict(env) if env else {}
         self._secrets = list(secrets or [])
+        referenced_volumes: list[tuple[str, str]] = []
         if volumes is not None:
             for item in volumes:
                 if not (isinstance(item, (tuple, list)) and len(item) == 2 and all(isinstance(s, str) for s in item)):
@@ -302,7 +309,14 @@ class Container:
                         f"Each volumes entry must be a (name, mount_path) string tuple, got {item!r}. "
                         f"Example: volumes=[('my-volume', '/data')]"
                     )
-        self._volumes: list[tuple[str, str]] = list(volumes or [])
+                # User-referenced volumes carry no type of their own; their
+                # backend (hence mount type) is resolved at run() time via
+                # resolve_referenced_volume_type, not defaulted here.
+                referenced_volumes.append((item[0], item[1]))
+        self._referenced_volumes: list[tuple[str, str]] = referenced_volumes
+        # Populated at run() time: referenced volumes (typed by lookup) plus
+        # any freshly uploaded volumes (typed by the upload driver).
+        self._volumes: list[VolumeMount] = []
         if port is not None and not (1 <= port <= 65535):
             raise ValueError(f"port must be between 1 and 65535, got {port!r}")
         self._volume_driver: VolumeDriver | None = None
@@ -318,7 +332,7 @@ class Container:
                     f"Invalid lifetime {lifetime!r}. "
                     "Use a protobuf duration string (e.g. '30s', '1.5s', '300s')."
                 )
-            if _parsed_lifetime.seconds == 0 and _parsed_lifetime.nanos == 0:  # ty: ignore[unresolved-attribute]
+            if _parsed_lifetime.seconds == 0 and _parsed_lifetime.nanos == 0:
                 raise ValueError(
                     f"Invalid lifetime {lifetime!r}: lifetime must be greater than 0 "
                     "(e.g. '30s', '5m')."
@@ -424,6 +438,7 @@ class Container:
         c._gpu = None
         c._env = {}
         c._secrets = []
+        c._referenced_volumes = []
         c._volumes = []
         c._volume_driver = None
         c._port = None
@@ -504,7 +519,9 @@ class Container:
         ...     .run()
         ... )
         """
-        self._volumes.append((name, mount_path))
+        # Referenced volume: its mount type is resolved from the backend at
+        # run() time, not defaulted here.
+        self._referenced_volumes.append((name, mount_path))
         return self
 
     # -- Lifecycle -------------------------------------------------------------
@@ -603,7 +620,18 @@ class Container:
             else:
                 self._built_image_uri = self._image
 
-            # 2. Upload lazy local files to a volume (if any)
+            # 2a. Resolve each user-referenced volume's real mount type from
+            # its backend instead of defaulting; a missing volume fails run().
+            self._volumes = [
+                VolumeMount(
+                    name=name,
+                    mount_path=mount_path,
+                    type=resolve_referenced_volume_type(self._client, name),
+                )
+                for name, mount_path in self._referenced_volumes
+            ]
+
+            # 2b. Upload lazy local files to a volume (if any)
             lazy_files = (
                 self._image.lazy_local_files if isinstance(self._image, Image) else set()
             )
@@ -621,8 +649,8 @@ class Container:
                 self._volumes += driver.upload_lazy_files(
                     self._image, volume_prefix="container-files",
                 )
-                for vn, mp in self._volumes:
-                    logger.info("  Volume created: %s (mount: %s)", vn, mp)
+                for v in self._volumes:
+                    logger.info("  Volume created: %s (mount: %s)", v.name, v.mount_path)
                 progress_done(vkey)
 
             # 3. Resolve lazy secrets (from_local_env / from_local_env_file)
@@ -670,15 +698,13 @@ class Container:
                 spec["resources"] = resources
 
             if self._volumes:
-                mount_type = (
-                    self._volume_driver.mount_type
-                    if self._volume_driver is not None
-                    else "versioned_chalkfs"
-                )
-                spec["volumes"] = [
-                    {"name": vol_name, "mountPath": mount_path, "type": mount_type}
-                    for vol_name, mount_path in self._volumes
-                ]
+                for v in self._volumes:
+                    if not v.type:
+                        raise VolumeError(
+                            f"Volume {v.name!r} mounted at {v.mount_path!r} has no "
+                            "mount type; refusing to guess one for the container spec"
+                        )
+                spec["volumes"] = [v.to_spec_dict() for v in self._volumes]
 
             if self._secrets:
                 spec["secretRefs"] = [s._to_proto_dict() for s in self._secrets]
@@ -911,9 +937,11 @@ class Container:
             self._container_info = None
 
         if self._volumes:
+            # Driver is used here only to perform the delete action, not to
+            # derive a mount type.
             driver = self._volume_driver or _resolve_driver(self._client)
-            for vol_name, _ in self._volumes:
-                driver.delete_volume(vol_name)
+            for v in self._volumes:
+                driver.delete_volume(v.name)
         self._volumes = []
         self._volume_driver = None
 

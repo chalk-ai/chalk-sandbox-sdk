@@ -27,6 +27,7 @@ from chalkcompute._volume import (
     VolumeClosedError,
     VolumeError,
     VolumeInfo,
+    VolumeMount,
     _GrpcMetadata,
     _GrpcOptions,
     _handle_rpc_error,
@@ -1073,10 +1074,33 @@ class VersionedVolumeClient:
         vol.reload()
         return vol
 
+    def exists(self, name: str) -> bool:
+        """Return whether a versioned (v2) volume with ``name`` exists.
+
+        Probes ``GetVolume`` with a name-only :class:`VolumeRef` and the
+        default version selector (newest version on ``main``). ``NOT_FOUND``
+        maps to ``False``; any other RPC error propagates so a transient
+        failure is never mistaken for "absent".
+        """
+        try:
+            self._stub.GetVolume(
+                pb_v2.GetVolumeRequest(
+                    volume=pb_v2.VolumeRef(name=name),
+                    selector=pb_v2.VersionSelector(),
+                ),
+                metadata=self._metadata,
+            )
+        except grpc.RpcError as e:
+            code = getattr(e, "code", lambda: None)()
+            if code == grpc.StatusCode.NOT_FOUND:
+                return False
+            raise
+        return True
+
     @traced("chalkcompute.versioned_volume.upload_lazy_files")
     def upload_lazy_files(
         self, image: Image, *, volume_prefix: str = "files"
-    ) -> builtins.list[tuple[str, str]]:
+    ) -> builtins.list[VolumeMount]:
         """Upload an image's lazy local files into versioned volumes.
 
         Creates one versioned volume per destination directory and commits
@@ -1091,22 +1115,26 @@ class VersionedVolumeClient:
 
         Returns
         -------
-        list of tuple of (str, str)
-            ``(volume_name, mount_path)`` pairs ready to mount with
-            ``type="versioned_chalkfs"`` in a container spec.
+        list of VolumeMount
+            One :class:`VolumeMount` per created volume. Each carries its own
+            mount type (``"versioned_chalkfs"`` for this v2 backend), so callers
+            mount it with the type that travels on the volume rather than
+            re-deriving a type at the request-building site.
         """
         try:
             dir_to_files = image.lazy_local_files_grouped_for_volume_mounts()
         except ValueError as e:
             raise VolumeError(str(e)) from e
 
-        volumes: builtins.list[tuple[str, str]] = []
+        volumes: builtins.list[VolumeMount] = []
         for dest_dir, files in dir_to_files.items():
             vol = self.create(f"{volume_prefix}-{uuid.uuid4().hex[:12]}")
             with vol.batch_upload() as batch:
                 for lf in files:
                     batch.put_file(os.path.relpath(lf.dest, dest_dir), lf.src)
-            volumes.append((vol.name, dest_dir))
+            volumes.append(
+                VolumeMount(name=vol.name, mount_path=dest_dir, type=self.mount_type)
+            )
         return volumes
 
     def delete_volume(self, name: str) -> None:

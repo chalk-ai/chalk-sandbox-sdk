@@ -38,7 +38,13 @@ from typing import TYPE_CHECKING, Any
 from chalkcompute._connect import ConnectClient, build_image
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 from chalkcompute._tracing import _instrumented
-from chalkcompute._volume import VolumeDriver, _resolve_driver
+from chalkcompute._volume import (
+    VolumeDriver,
+    VolumeError,
+    VolumeMount,
+    _resolve_driver,
+    resolve_referenced_volume_type,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +153,16 @@ class ScalingGroup:
         self._gpu = gpu
         self._env = env or {}
         self._secrets: list[_Secret] = list(secrets or [])
-        self._volumes: list[tuple[str, str]] = list(volumes or [])
+        # User-referenced volumes carry no type of their own; their backend
+        # (and thus mount type) is resolved at deploy time via
+        # resolve_referenced_volume_type. Store the raw (name, mount_path)
+        # references here and never default their type.
+        self._referenced_volumes: list[tuple[str, str]] = [
+            (name, mount_path) for name, mount_path in (volumes or [])
+        ]
+        # Populated at deploy time: referenced volumes (typed by lookup) plus
+        # any freshly uploaded volumes (typed by the upload driver).
+        self._volumes: list[VolumeMount] = []
         self._volume_driver: VolumeDriver | None = None
         self._entrypoint = entrypoint
         if not (1 <= port <= 65535):
@@ -238,6 +253,7 @@ class ScalingGroup:
         sg._gpu = None
         sg._env = {}
         sg._secrets = []
+        sg._referenced_volumes = []
         sg._volumes = []
         sg._volume_driver = None
         sg._entrypoint = None
@@ -300,7 +316,18 @@ class ScalingGroup:
         else:
             self._built_image_uri = self._image
 
-        # 2. Upload lazy local files to volumes (if any)
+        # 2a. Resolve the real mount type of each user-referenced volume from
+        # its backend, instead of defaulting. A missing volume fails the deploy.
+        self._volumes = [
+            VolumeMount(
+                name=name,
+                mount_path=mount_path,
+                type=resolve_referenced_volume_type(self._client, name),
+            )
+            for name, mount_path in self._referenced_volumes
+        ]
+
+        # 2b. Upload lazy local files to volumes (if any)
         lazy_files = (
             self._image.lazy_local_files if isinstance(self._image, Image) else set()
         )
@@ -312,8 +339,8 @@ class ScalingGroup:
             self._volumes += driver.upload_lazy_files(
                 self._image, volume_prefix="sg-files",
             )
-            for vn, mp in self._volumes:
-                logger.info("  Volume created: %s (mount: %s)", vn, mp)
+            for v in self._volumes:
+                logger.info("  Volume created: %s (mount: %s)", v.name, v.mount_path)
 
         # 3. Build the ScalingGroupSpec
         sg_name = sanitize_dns_label(self._name or f"sg-{uuid.uuid4().hex[:8]}")
@@ -348,15 +375,13 @@ class ScalingGroup:
             container_spec["secretRefs"] = [s._to_proto_dict() for s in self._secrets]
 
         if self._volumes:
-            mount_type = (
-                self._volume_driver.mount_type
-                if self._volume_driver is not None
-                else "versioned_chalkfs"
-            )
-            container_spec["volumes"] = [
-                {"name": vol_name, "mountPath": mount_path, "type": mount_type}
-                for vol_name, mount_path in self._volumes
-            ]
+            for v in self._volumes:
+                if not v.type:
+                    raise VolumeError(
+                        f"Volume {v.name!r} mounted at {v.mount_path!r} has no "
+                        "mount type; refusing to guess one for the container spec"
+                    )
+            container_spec["volumes"] = [v.to_spec_dict() for v in self._volumes]
 
         scaling_spec: dict[str, Any] = {
             "minReplicas": self._min_replicas,
@@ -536,9 +561,11 @@ class ScalingGroup:
             self._scaling_group_info = None
 
         if self._volumes:
+            # Driver is used here only to perform the delete action, not to
+            # derive a mount type.
             driver = self._volume_driver or _resolve_driver(self._client)
-            for vol_name, _ in self._volumes:
-                driver.delete_volume(vol_name)
+            for v in self._volumes:
+                driver.delete_volume(v.name)
         self._volumes = []
         self._volume_driver = None
 

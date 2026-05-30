@@ -204,10 +204,17 @@ def test_mount_volume_appends_and_chains() -> None:
         .mount_volume("vol-a", "/data")
         .mount_volume("vol-b", "/scratch")
     )
-    assert c._volumes == [("vol-a", "/data"), ("vol-b", "/scratch")]
+    # Referenced volumes carry no type until deploy time; they are stored as
+    # raw (name, mount_path) references and typed by a backend lookup in run().
+    assert c._referenced_volumes == [
+        ("vol-a", "/data"),
+        ("vol-b", "/scratch"),
+    ]
 
 
 def test_mount_volume_sent_in_run_container_rpc() -> None:
+    from unittest.mock import patch
+
     client = _Client()
     container = (
         Container(image="ubuntu:latest", name="vol-test")
@@ -215,9 +222,16 @@ def test_mount_volume_sent_in_run_container_rpc() -> None:
     )
     container._client = client
 
-    container.run()
+    # The referenced volume's type comes from a backend lookup at run() time;
+    # here the backend reports a non-versioned (chalkfs) volume.
+    with patch(
+        "chalkcompute._container.resolve_referenced_volume_type",
+        return_value="chalkfs",
+    ) as resolve:
+        container.run()
 
+    resolve.assert_called_once_with(client, "my-volume")
     _, _, body, _ = client.calls[0]
     assert body["container"]["spec"]["volumes"] == [
-        {"name": "my-volume", "mountPath": "/data", "type": "versioned_chalkfs"}
+        {"name": "my-volume", "mountPath": "/data", "type": "chalkfs"}
     ]

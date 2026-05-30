@@ -114,6 +114,37 @@ class VolumeInfo:
     ref: str | None = None
 
 
+@dataclass(frozen=True)
+class VolumeMount:
+    """A volume to mount into a scaling group, with its mount type attached.
+
+    The mount ``type`` is a property of the volume, not of the request being
+    built or of a transient driver. Carrying it on the volume itself is the
+    single source of truth: every create/update request for a given scaling
+    group stamps the same type onto the same volume name, so the backend
+    ChalkScalingGroup CR does not flip-flop between ``chalkfs`` and
+    ``versioned_chalkfs`` and re-roll endlessly.
+
+    Attributes
+    ----------
+    name
+        Volume name.
+    mount_path
+        Absolute path inside the container where the volume is mounted.
+    type
+        Mount type: ``"chalkfs"`` (non-versioned) or ``"versioned_chalkfs"``
+        (versioned).
+    """
+
+    name: str
+    mount_path: str
+    type: str
+
+    def to_spec_dict(self) -> dict[str, str]:
+        """Render this mount as a container-spec ``volumes`` entry."""
+        return {"name": self.name, "mountPath": self.mount_path, "type": self.type}
+
+
 @dataclass
 class FileInfo:
     """Metadata about a file inside a volume.
@@ -497,7 +528,7 @@ class SimpleVolume:
 
 
 _VolumeInfoList = list[VolumeInfo]
-_VolumeMountPairs = list[tuple[str, str]]
+_VolumeMounts = list[VolumeMount]
 
 
 class VolumeDriver(Protocol):
@@ -513,9 +544,11 @@ class VolumeDriver(Protocol):
 
     def upload_lazy_files(
         self, image: Image, *, volume_prefix: str
-    ) -> "list[tuple[str, str]]": ...
+    ) -> "list[VolumeMount]": ...
 
     def delete_volume(self, name: str) -> None: ...
+
+    def exists(self, name: str) -> bool: ...
 
     def close(self) -> None: ...
 
@@ -534,6 +567,56 @@ def _resolve_driver(
 
         return VersionedVolumeClient.from_connect(connect)
     return VolumeClient.from_connect(connect)
+
+
+def resolve_referenced_volume_type(connect: ConnectClient, name: str) -> str:
+    """Return the actual mount type of an existing volume by probing the
+    versioned (v2) service first, then non-versioned (v1).
+
+    A user-referenced volume (supplied as a ``(name, mount_path)`` tuple)
+    has no type of its own at construction time. Its mount type is a property
+    of the backend that actually stores it, so we look it up at deploy time
+    instead of stamping a hardcoded default. Defaulting here is exactly the
+    bug this avoids: a non-versioned ``chalkfs`` volume sent as
+    ``versioned_chalkfs`` cannot be mounted by the versioned FUSE sidecar.
+
+    Parameters
+    ----------
+    connect
+        Authenticated client reused for both probes.
+    name
+        Name of the existing volume to classify.
+
+    Returns
+    -------
+    str
+        ``"versioned_chalkfs"`` if the volume lives in the v2 service, or
+        ``"chalkfs"`` if it lives only in the v1 service.
+
+    Raises
+    ------
+    VolumeError
+        If the volume is not found in either service. We never fall back to a
+        default mount type for a referenced volume.
+    grpc.RpcError
+        Propagated for any non-``NOT_FOUND`` probe failure (auth, transport,
+        etc.), so a transient error is never silently treated as "absent".
+    """
+    from chalkcompute._vvolume import VersionedVolumeClient
+
+    v2 = VersionedVolumeClient.from_connect(connect)
+    if v2.exists(name):
+        return v2.mount_type
+
+    v1 = VolumeClient.from_connect(connect)
+    if v1.exists(name):
+        return v1.mount_type
+
+    raise VolumeError(
+        f"Referenced volume {name!r} was not found in the versioned "
+        f"(v2) or non-versioned (v1) volume service; cannot determine its "
+        f"mount type. Check the volume name, or create it before referencing it."
+    )
 
 
 def make_volume(
@@ -787,10 +870,29 @@ class VolumeClient:
         vol.reload()
         return vol
 
+    def exists(self, name: str) -> bool:
+        """Return whether a non-versioned (v1) volume with ``name`` exists.
+
+        Probes ``GetVolume`` and maps ``NOT_FOUND`` to ``False``. Any other
+        RPC error propagates: callers resolving a referenced volume's type
+        must not silently treat an auth/transport failure as "absent".
+        """
+        try:
+            self._stub.GetVolume(
+                pb.GetVolumeRequest(name=name),
+                metadata=self._metadata,
+            )
+        except grpc.RpcError as e:
+            code = getattr(e, "code", lambda: None)()
+            if code == grpc.StatusCode.NOT_FOUND:
+                return False
+            raise
+        return True
+
     @_instrumented("chalkcompute.volume.upload_lazy_files")
     def upload_lazy_files(
         self, image: Image, *, volume_prefix: str = "files"
-    ) -> _VolumeMountPairs:
+    ) -> _VolumeMounts:
         """Upload an image's lazy local files into v1 volumes.
 
         Creates one volume per destination directory and uploads each
@@ -805,9 +907,11 @@ class VolumeClient:
 
         Returns
         -------
-        list of tuple of (str, str)
-            ``(volume_name, mount_path)`` pairs ready to mount with
-            ``type="chalkfs"`` in a container spec.
+        list of VolumeMount
+            One :class:`VolumeMount` per created volume. Each carries its own
+            mount type (``"chalkfs"`` for this v1 backend), so callers mount it
+            with the type that travels on the volume rather than re-deriving a
+            type at the request-building site.
         """
         try:
             dir_to_files = image.lazy_local_files_grouped_for_volume_mounts()
@@ -820,7 +924,7 @@ class VolumeClient:
                 self, vol_name, os.path.relpath(lf.dest, dest_dir), content,
             )
 
-        volumes: _VolumeMountPairs = []
+        volumes: _VolumeMounts = []
         for dest_dir, files in dir_to_files.items():
             vol = self.create(f"{volume_prefix}-{uuid.uuid4().hex[:12]}")
             with ThreadPoolExecutor(max_workers=_UPLOAD_MAX_WORKERS) as pool:
@@ -828,7 +932,9 @@ class VolumeClient:
                     pool.submit(_put, vol.name, lf, dest_dir) for lf in files
                 ):
                     fut.result()
-            volumes.append((vol.name, dest_dir))
+            volumes.append(
+                VolumeMount(name=vol.name, mount_path=dest_dir, type=self.mount_type)
+            )
         return volumes
 
     def delete_volume(self, name: str) -> None:
