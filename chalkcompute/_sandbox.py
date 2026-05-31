@@ -24,6 +24,7 @@ Usage:
 
 from __future__ import annotations
 
+import datetime
 import queue
 import signal
 import time
@@ -32,8 +33,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import grpc
+from google.protobuf import timestamp_pb2
 
-from chalkcompute._connect import ConnectClient, grpc_target_from_url, raise_for_grpc_error
+from chalkcompute._connect import (
+    ConnectClient,
+    grpc_target_from_url,
+    raise_for_grpc_error,
+)
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as pb
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2_grpc as pb_grpc
 from chalkcompute._image import Image
@@ -44,6 +50,8 @@ from chalkcompute._tracing import _instrumented
 # would otherwise shadow the builtin ``list`` in class-scope name resolution.
 _GrpcMetadata = list[tuple[str, str]]
 _VolumeMountList = list[pb.VolumeMount]
+_CoercedKnowledgeCutoff = tuple[int, int]
+_KnowledgeCutoffArg = datetime.datetime | str
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +114,9 @@ class SandboxInfo:
 
     build_id: str | None = None
     """Optional identifier of the image build associated with this sandbox."""
+
+    knowledge_cutoff: datetime.datetime | None = None
+    """Optional upper bound on the freshness of data the sandboxed agent can fetch."""
 
 
 @dataclass
@@ -318,6 +329,7 @@ class Sandbox:
         memory: str | None = None,
         env: dict[str, str] | None = None,
         volumes: list[tuple[str, str]] | None = None,
+        knowledge_cutoff: _KnowledgeCutoffArg | None = None,
         chalk_client: Any | None = None,
         sandbox_client: SandboxClient | None = None,
         client: Any | None = None,
@@ -341,6 +353,10 @@ class Sandbox:
         volumes
             Optional ``(volume_name, mount_path)`` pairs to mount into the
             sandbox.
+        knowledge_cutoff
+            Optional upper bound on the freshness of data the sandboxed agent
+            can fetch. Accepts a timezone-aware ``datetime``, a naive
+            ``datetime`` interpreted as UTC, or an RFC3339 timestamp string.
 
         Examples
         --------
@@ -357,6 +373,7 @@ class Sandbox:
         self._memory: str | None = None
         self._env: dict[str, str] = {}
         self._volumes: list[tuple[str, str]] = []
+        self._knowledge_cutoff: _KnowledgeCutoffArg | None = None
         self._chalk_client: Any | None = None
 
         if client is not None or sandbox_id is not None:
@@ -367,6 +384,7 @@ class Sandbox:
                 or memory is not None
                 or env is not None
                 or volumes is not None
+                or knowledge_cutoff is not None
                 or chalk_client is not None
                 or sandbox_client is not None
             ):
@@ -423,6 +441,9 @@ class Sandbox:
         self._memory = memory
         self._env = dict(env) if env else {}
         self._volumes = [(name, mount_path) for name, mount_path in volumes or []]
+        if knowledge_cutoff is not None:
+            _coerce_knowledge_cutoff(knowledge_cutoff)
+        self._knowledge_cutoff = knowledge_cutoff
         self._chalk_client = chalk_client
 
     @property
@@ -520,6 +541,7 @@ class Sandbox:
             memory=self._memory,
             env=self._env or None,
             volumes=_volume_mounts_to_proto(self._volumes) if self._volumes else None,
+            knowledge_cutoff=self._knowledge_cutoff,
             wait=wait,
             poll_interval=poll_interval,
             timeout=timeout,
@@ -795,6 +817,7 @@ class SandboxClient:
         memory: str | None = None,
         env: dict[str, str] | None = None,
         volumes: _VolumeMountList | None = None,
+        knowledge_cutoff: _KnowledgeCutoffArg | None = None,
         wait: bool = True,
         poll_interval: float = 0.5,
         timeout: float = 600.0,
@@ -821,6 +844,10 @@ class SandboxClient:
             Optional environment variables.
         volumes
             Optional list of ``VolumeMount`` protos to attach.
+        knowledge_cutoff
+            Optional upper bound on the freshness of data the sandboxed agent
+            can fetch. Accepts a timezone-aware ``datetime``, a naive
+            ``datetime`` interpreted as UTC, or an RFC3339 timestamp string.
         wait
             If ``True``, poll until the sandbox is ready (default ``True``).
         poll_interval
@@ -853,6 +880,10 @@ class SandboxClient:
                 req.env[k] = v
         if volumes is not None:
             req.volumes.extend(volumes)
+        if knowledge_cutoff is not None:
+            seconds, nanos = _coerce_knowledge_cutoff(knowledge_cutoff)
+            req.knowledge_cutoff.seconds = seconds
+            req.knowledge_cutoff.nanos = nanos
 
         resp = self._stub.CreateSandbox(req, metadata=self._metadata)
         info = _pb_to_sandbox_info(resp.sandbox)
@@ -945,8 +976,39 @@ def _pb_to_sandbox_info(info: pb.SandboxInfo) -> SandboxInfo:
         created_at=info.created_at,
         name=info.name if info.HasField("name") else None,
         build_id=info.build_id if info.HasField("build_id") else None,
+        knowledge_cutoff=(
+            info.knowledge_cutoff.ToDatetime(tzinfo=datetime.timezone.utc)
+            if info.HasField("knowledge_cutoff")
+            else None
+        ),
     )
 
+
+def _coerce_knowledge_cutoff(value: _KnowledgeCutoffArg) -> _CoercedKnowledgeCutoff:
+    if isinstance(value, datetime.datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=datetime.timezone.utc)
+        else:
+            value = value.astimezone(datetime.timezone.utc)
+        timestamp = getattr(timestamp_pb2, "Timestamp")()
+        timestamp.FromDatetime(value)
+        return timestamp.seconds, timestamp.nanos
+
+    if isinstance(value, str):
+        timestamp = getattr(timestamp_pb2, "Timestamp")()
+        try:
+            timestamp.FromJsonString(value)
+        except ValueError as e:
+            raise ValueError(
+                "knowledge_cutoff must be an RFC3339 timestamp string, "
+                "for example '2025-01-01T00:00:00Z'"
+            ) from e
+        return timestamp.seconds, timestamp.nanos
+
+    raise TypeError(
+        "knowledge_cutoff must be a datetime or RFC3339 timestamp string, "
+        f"got {value!r}"
+    )
 
 def _response_to_event(response: pb.ExecResponse) -> ExecEvent:
     msg_type = response.WhichOneof("message")
