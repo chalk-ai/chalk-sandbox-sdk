@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import datetime as _dt
 import functools
 import inspect
 import linecache
@@ -87,8 +88,10 @@ if TYPE_CHECKING:
 
 SerializationFormat = typing.Literal["pyarrow"]
 F = TypeVar("F", bound=Callable[..., Any])
+KnowledgeCutoff = str | _dt.datetime
 
 _REMOTE_ENV_VAR = "_CHALK_REMOTE_FUNCTION"
+_REQUEST_TIMESTAMP_HEADER = "x-chalk-request-timestamp"
 # When enabled, mount the local SDK project and pip-install at container start.
 _LOCAL_COPY_ENV_VAR = "CHALK_FUNCTION_LOCAL_SDK_COPY"
 # When set to a local wheel path, mount that wheel and pip-install it at
@@ -450,6 +453,24 @@ def _has_running_event_loop() -> bool:
     except RuntimeError:
         return False
     return True
+
+
+def _format_knowledge_cutoff(value: KnowledgeCutoff) -> str:
+    if isinstance(value, str):
+        if not value:
+            raise ValueError("knowledge cutoff must be a non-empty string")
+        return value
+
+    if not isinstance(value, _dt.datetime):
+        raise TypeError(
+            "knowledge cutoff must be a datetime.datetime or ISO timestamp string"
+        )
+
+    if value.tzinfo is None or value.utcoffset() is None:
+        value = value.replace(tzinfo=_dt.timezone.utc)
+    else:
+        value = value.astimezone(_dt.timezone.utc)
+    return value.isoformat()
 
 
 async def _run_in_worker_thread(
@@ -1274,6 +1295,7 @@ class RemoteFunction:
         self._call_stub: Any = None
         self._remote_call_client: Any = None
         self._queue_call_client: Any = None
+        self._knowledge_cutoff: str | None = None
 
         self._client = ConnectClient(chalk_client=chalk_client)
 
@@ -1404,6 +1426,7 @@ class RemoteFunction:
         f._call_stub = None
         f._remote_call_client = None
         f._queue_call_client = None
+        f._knowledge_cutoff = None
         f._client = ConnectClient(chalk_client=chalk_client)
         return f
 
@@ -1810,6 +1833,12 @@ class RemoteFunction:
             metadata.append(("x-chalk-deployment-type", "function-queue"))
         return metadata
 
+    def _per_call_metadata(self) -> list[tuple[str, str]]:
+        metadata = current_trace_metadata()
+        if self._knowledge_cutoff is not None:
+            metadata.append((_REQUEST_TIMESTAMP_HEADER, self._knowledge_cutoff))
+        return metadata
+
     def _ensure_remote_call_client(self, *, queue: bool = False) -> Any:
         attr = "_queue_call_client" if queue else "_remote_call_client"
         client = getattr(self, attr)
@@ -1876,7 +1905,7 @@ class RemoteFunction:
         from chalkcompute._remote_call_client import RemoteCallClientUnavailable
 
         function_name = self._queue_function_name()
-        metadata = current_trace_metadata()
+        metadata = self._per_call_metadata()
         try:
             client = self._ensure_remote_call_client(queue=False)
         except RemoteCallClientUnavailable:
@@ -1985,7 +2014,7 @@ class RemoteFunction:
             },
         }
 
-        trace_metadata = current_trace_metadata()
+        trace_metadata = self._per_call_metadata()
         rpc_kwargs: dict[str, Any] = {"timeout": 300}
         if trace_metadata:
             rpc_kwargs["extra_headers"] = dict(trace_metadata)
@@ -2010,6 +2039,17 @@ class RemoteFunction:
             raise FunctionError("No featherStream in CallExternalFunction response")
 
         return base64.b64decode(feather_b64)
+
+    def with_knowledge_cutoff(self, knowledge_cutoff: KnowledgeCutoff) -> RemoteFunction:
+        """Return a call-scoped function handle with an overridden request time.
+
+        The returned handle shares this function's deployment and clients but sends
+        ``x-chalk-request-timestamp`` on subsequent calls and deferred enqueues.
+        """
+        clone = self.__class__.__new__(self.__class__)
+        clone.__dict__ = self.__dict__.copy()
+        clone._knowledge_cutoff = _format_knowledge_cutoff(knowledge_cutoff)
+        return clone
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """Call the remote function via gRPC or the API server.
@@ -2062,7 +2102,7 @@ class RemoteFunction:
             call_id = client.enqueue(
                 function_name,
                 feather_bytes,
-                metadata=current_trace_metadata(),
+                metadata=self._per_call_metadata(),
             )
         return FunctionCallHandle(self, call_id)
 
