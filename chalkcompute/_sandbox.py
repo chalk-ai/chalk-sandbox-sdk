@@ -341,7 +341,7 @@ class Sandbox:
         ----------
         image
             Container image to use, either a string reference such as
-            ``"ubuntu:latest"`` or a declarative :class:`Image`.
+            ``"python:3.14-slim-trixie"`` or a declarative :class:`Image`.
         name
             Optional DNS-safe sandbox name.
         cpu
@@ -363,7 +363,16 @@ class Sandbox:
 
         Examples
         --------
-        >>> sandbox = Sandbox(image="ubuntu:latest").run()
+        >>> from chalkcompute import Image, Sandbox
+        >>> image = (
+        ...     Image.debian_slim("3.14.5")
+        ...     .run_commands("echo ready > /tmp/example.txt")
+        ... )
+        >>> sandbox = Sandbox(image=image).run()
+        >>> result = sandbox.exec("cat", "/tmp/example.txt")
+        >>> result.stdout_text
+        'ready\\n'
+        >>> sandbox.terminate()
         """
         self._client: Any | None = None
         self._id: str | None = None
