@@ -2,6 +2,9 @@
 
 import pytest
 
+from chalkcompute import Container, Image, ScalingGroup
+from chalkcompute._cls import RemoteClass, method
+from chalkcompute._function import RemoteFunction
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label
 
 
@@ -133,3 +136,67 @@ class TestSanitizeDnsLabel:
         # "ab-cd" truncated to 3 would be "ab-", should strip to "ab"
         result = sanitize_dns_label("ab-cd", max_length=3)
         assert result == "ab"
+
+
+# ---------------------------------------------------------------------------
+# Call-site preprocessing — uppercase letters in user-supplied names are
+# lowercased before validation, but other illegal characters are still rejected.
+# ---------------------------------------------------------------------------
+
+class TestCallSiteLowercasing:
+    def test_container_lowercases_uppercase_name(self) -> None:
+        c = Container(image=Image("alpine:3.20"), name="Adder")
+        assert c._name == "adder"
+
+    def test_container_lowercases_mixed_case_name(self) -> None:
+        c = Container(image=Image("alpine:3.20"), name="MyContainer")
+        assert c._name == "mycontainer"
+
+    def test_container_rejects_underscore(self) -> None:
+        with pytest.raises(ValueError):
+            Container(image=Image("alpine:3.20"), name="my_container")
+
+    def test_container_rejects_special_chars(self) -> None:
+        with pytest.raises(ValueError):
+            Container(image=Image("alpine:3.20"), name="bad!name")
+
+    def test_scaling_group_lowercases_uppercase_name(self) -> None:
+        sg = ScalingGroup(image=Image("alpine:3.20"), name="MyGroup")
+        assert sg._name == "mygroup"
+
+    def test_scaling_group_rejects_underscore(self) -> None:
+        with pytest.raises(ValueError):
+            ScalingGroup(image=Image("alpine:3.20"), name="my_group")
+
+    def test_function_lowercases_uppercase_name(self) -> None:
+        def my_func() -> None:
+            pass
+
+        f = RemoteFunction(my_func, name="MyFunc")
+        assert f._explicit_name == "myfunc"
+        assert f._func_name == "myfunc"
+
+    def test_function_rejects_underscore(self) -> None:
+        def my_func() -> None:
+            pass
+
+        with pytest.raises(ValueError):
+            RemoteFunction(my_func, name="my_func")
+
+    def test_cls_lowercases_uppercase_name(self) -> None:
+        class Foo:
+            @method()
+            def run(self) -> None:
+                pass
+
+        c = RemoteClass(Foo, name="MyCls")
+        assert c._explicit_name == "mycls"
+
+    def test_cls_rejects_underscore(self) -> None:
+        class Foo:
+            @method()
+            def run(self) -> None:
+                pass
+
+        with pytest.raises(ValueError):
+            RemoteClass(Foo, name="my_cls")

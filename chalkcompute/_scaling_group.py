@@ -146,6 +146,7 @@ class ScalingGroup:
     ) -> None:
         self._image = image
         if name is not None:
+            name = name.lower()
             validate_dns_label(name)
         self._name = name
         self._cpu = cpu

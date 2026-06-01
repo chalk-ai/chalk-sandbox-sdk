@@ -1110,6 +1110,7 @@ class RemoteFunction:
         self._func = func
         self._func_name = getattr(func, "__name__", "anonymous")
         if name is not None:
+            name = name.lower()
             validate_dns_label(name)
         self._explicit_name = name
         self._image = image
