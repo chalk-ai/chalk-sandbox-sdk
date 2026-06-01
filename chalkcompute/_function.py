@@ -2263,7 +2263,11 @@ def function(
     secrets
         List of :class:`~chalkcompute.Secret` references to inject.
     volumes
-        List of ``(name, mount_path)`` tuples for persistent storage.
+        List of ``(volume_name, mount_path)`` tuples for persistent storage.
+        ``volume_name`` is the name of the Chalk volume to attach.
+        ``mount_path`` is the absolute filesystem path where that volume is
+        available inside each function replica, such as ``"/data"``. Files read
+        or written under the mount path are backed by the named volume.
     min_replicas
         Minimum number of replicas.
     max_replicas

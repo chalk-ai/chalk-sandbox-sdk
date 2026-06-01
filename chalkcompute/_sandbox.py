@@ -352,7 +352,10 @@ class Sandbox:
             Optional environment variables to set in the sandbox.
         volumes
             Optional ``(volume_name, mount_path)`` pairs to mount into the
-            sandbox.
+            sandbox. ``volume_name`` is the name of the Chalk volume to attach.
+            ``mount_path`` is the absolute filesystem path where that volume is
+            available inside the sandbox, such as ``"/data"``. Files read or
+            written under the mount path are backed by the named volume.
         knowledge_cutoff
             Optional upper bound on the freshness of data the sandboxed agent
             can fetch. Accepts a timezone-aware ``datetime``, a naive
@@ -486,6 +489,10 @@ class Sandbox:
         """Mount a named volume into the sandbox.
 
         Must be called before :meth:`run`. Returns ``self`` for chaining.
+
+        ``name`` is the Chalk volume name to attach. ``mount_path`` is the
+        absolute filesystem path where the volume is available inside the
+        sandbox, such as ``"/data"``.
 
         Examples
         --------
