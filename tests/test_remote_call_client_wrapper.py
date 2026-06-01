@@ -110,4 +110,4 @@ def test_legacy_native_drops_per_call_metadata_once(
         ("call_ipc", "handler", b"in"),
         ("enqueue", "pkg.fn", b"in"),
     ]
-    assert caplog.text.count("tracing metadata was dropped") == 1
+    assert caplog.text.count("does not support per-call metadata") == 1

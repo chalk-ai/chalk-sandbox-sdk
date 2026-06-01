@@ -608,6 +608,7 @@ class FunctionCallHandle:
     ) -> None:
         self._function = function
         self._call_id = call_id
+        self._func_name = function._func_name
         self._is_async = bool(getattr(function, "_is_async", False))
         self._cursor = ""
         self._poll_count = 0
@@ -656,6 +657,11 @@ class FunctionCallHandle:
         self._cursor = ""
         self._poll_count = 0
 
+    def _timeout_error(self, last_status: str) -> TimeoutError:
+        return TimeoutError(
+            f"Remote call {self._call_id} ({self._func_name!r}) timed out "
+            f"(last status: {last_status})"
+        )
     def get(self, timeout: float | None = None) -> Any:
         if _has_running_event_loop():
             return self._async_get(timeout)
@@ -670,8 +676,10 @@ class FunctionCallHandle:
             # attempt are discarded, so resubmitting after partial output is safe
             # for get() (unlike stream(), which has already yielded to a caller).
             chunks: list[bytes] = []
+            last_status = "unknown"
             while True:
                 result = self.poll()
+                last_status = result.status_name
                 chunks.extend(result.chunks)
 
                 if result.is_failed:
@@ -684,7 +692,7 @@ class FunctionCallHandle:
                     return self._function._materialize_result_chunks(chunks)
 
                 if deadline is not None and time.monotonic() >= deadline:
-                    raise TimeoutError(f"Remote call {self._call_id} timed out")
+                    raise self._timeout_error(last_status)
 
             attempt += 1
             time.sleep(self._retry_delay(attempt - 1))
@@ -693,20 +701,23 @@ class FunctionCallHandle:
     async def _async_get(self, timeout: float | None = None) -> Any:
         return await _run_in_worker_thread(self._sync_get, timeout)
 
-    def stream(self) -> Any:
+    def stream(self, timeout: float | None = None) -> Any:
         if self._is_async:
-            return self._async_stream()
-        return self._sync_stream()
+            return self._async_stream(timeout)
+        return self._sync_stream(timeout)
 
-    def _sync_stream(self) -> Any:
+    def _sync_stream(self, timeout: float | None = None) -> Any:
         import pyarrow as pa
 
+        deadline = None if timeout is None else time.monotonic() + timeout
         attempt = 1
         yielded_any = False
 
         while True:
+            last_status = "unknown"
             while True:
                 result = self.poll()
+                last_status = result.status_name
                 for chunk in result.chunks:
                     reader = pa.ipc.open_stream(pa.BufferReader(chunk))
                     for batch in reader:
@@ -725,19 +736,25 @@ class FunctionCallHandle:
                 if result.is_completed:
                     return
 
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise self._timeout_error(last_status)
+
             attempt += 1
             time.sleep(self._retry_delay(attempt - 1))
             self._resubmit()
 
-    async def _async_stream(self) -> Any:
+    async def _async_stream(self, timeout: float | None = None) -> Any:
         import pyarrow as pa
 
+        deadline = None if timeout is None else time.monotonic() + timeout
         attempt = 1
         yielded_any = False
 
         while True:
+            last_status = "unknown"
             while True:
                 result = await asyncio.to_thread(self.poll)
+                last_status = result.status_name
                 for chunk in result.chunks:
                     reader = pa.ipc.open_stream(pa.BufferReader(chunk))
                     for batch in reader:
@@ -752,6 +769,9 @@ class FunctionCallHandle:
 
                 if result.is_completed:
                     return
+
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise self._timeout_error(last_status)
 
             attempt += 1
             await asyncio.sleep(self._retry_delay(attempt - 1))
