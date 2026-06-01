@@ -1389,8 +1389,8 @@ class RemoteFunction:
                 self._image,
                 remote_call_runtime_package=self._remote_call_runtime_package(),
             )
-            .add_local_file(source_file, "/app/user_module.py")
-            .add_local_file(shim_path, "/app/handler.py")
+            .add_local_file(source_file, "/app/user_module.py", strategy="copy")
+            .add_local_file(shim_path, "/app/handler.py", strategy="copy")
             .env({"PYTHONPATH": "/app", _REMOTE_ENV_VAR: "1"})
         )
 

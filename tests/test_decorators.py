@@ -100,6 +100,28 @@ def test_function_deploy_image_installs_tracing_runtime_by_default(
     ]
 
 
+def test_function_deploy_image_copies_generated_source_files(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(_STRIP_SOURCE_ENV_VAR, "0")
+
+    def add(x: int, y: int) -> int:
+        return x + y
+
+    fn = RemoteFunction(add)
+
+    image = fn._build_deploy_image()
+    add_file_dests = [
+        step.add_file.destination
+        for step in image.to_proto().steps
+        if step.WhichOneof("step") == "add_file"
+    ]
+
+    assert image.lazy_local_files == set()
+    assert "/app/user_module.py" in add_file_dests
+    assert "/app/handler.py" in add_file_dests
+
+
 def test_function_deploy_image_installs_tracing_runtime_when_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -250,6 +272,33 @@ def test_cls_uncalled_decorator_noops_in_remote_env(
 
     assert isinstance(Adder, _NoOpClass)
     assert Adder.add(1, 2) == 3
+
+
+def test_class_deploy_image_copies_generated_source_files(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(_STRIP_SOURCE_ENV_VAR, "0")
+
+    class Adder:
+        @method
+        def add(self, x: int, y: int) -> int:
+            return x + y
+
+    rc = RemoteClass(Adder)
+    image, temp_files = rc._build_deploy_image()
+    try:
+        add_file_dests = [
+            step.add_file.destination
+            for step in image.to_proto().steps
+            if step.WhichOneof("step") == "add_file"
+        ]
+    finally:
+        for temp_file in temp_files:
+            Path(temp_file).unlink(missing_ok=True)
+
+    assert image.lazy_local_files == set()
+    assert "/app/user_module.py" in add_file_dests
+    assert "/app/handler_add.py" in add_file_dests
 
 
 def test_function_source_strip_handles_uncalled_direct_import() -> None:
