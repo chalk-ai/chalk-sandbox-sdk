@@ -2040,7 +2040,9 @@ class RemoteFunction:
 
         return base64.b64decode(feather_b64)
 
-    def with_knowledge_cutoff(self, knowledge_cutoff: KnowledgeCutoff) -> RemoteFunction:
+    def with_knowledge_cutoff(
+        self, knowledge_cutoff: KnowledgeCutoff
+    ) -> RemoteFunction:
         """Return a call-scoped function handle with an overridden request time.
 
         The returned handle shares this function's deployment and clients but sends
