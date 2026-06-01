@@ -1,11 +1,14 @@
 import asyncio
 import base64
+from datetime import datetime, timezone
 
 import pyarrow as pa
 import pytest
 
 from chalkcompute._function import FunctionVersionInfo, RemoteFunction
 from chalkcompute._remote_call_client import RemoteCallPollResult, ServiceAuthContext
+
+REQUEST_TIMESTAMP_HEADER = "x-chalk-request-timestamp"
 
 
 def _result_ipc(values: list[object]) -> bytes:
@@ -362,6 +365,41 @@ def test_defer_injects_trace_metadata(monkeypatch) -> None:
     assert client.enqueues[0][0] == "catalog-add"
 
 
+def test_with_knowledge_cutoff_injects_direct_call_header() -> None:
+    FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
+
+    fn = _remote_function()
+    cutoff = datetime(2026, 5, 1, 12, 30, 45, tzinfo=timezone.utc)
+
+    assert fn.with_knowledge_cutoff(cutoff)(41) == 42
+    assert (REQUEST_TIMESTAMP_HEADER, "2026-05-01T12:30:45+00:00") in (
+        FakeRemoteCallClient.instances[0].calls[0][2]
+    )
+
+
+def test_with_knowledge_cutoff_injects_defer_header_without_mutating_original() -> None:
+    FakeRemoteCallClient.poll_results = [
+        RemoteCallPollResult(
+            status=3,
+            status_name="completed",
+            chunks=[_result_ipc([99])],
+            cursor="",
+            error_message=None,
+            poll_count=0,
+        ),
+    ]
+
+    fn = _remote_function()
+    cutoff_fn = fn.with_knowledge_cutoff("2026-05-01T12:30:45Z")
+
+    handle = cutoff_fn.defer(98)
+
+    assert handle.get() == 99
+    client = FakeRemoteCallClient.instances[0]
+    assert (REQUEST_TIMESTAMP_HEADER, "2026-05-01T12:30:45Z") in client.enqueues[0][2]
+    assert fn._knowledge_cutoff is None
+
+
 def test_api_rpc_call_propagates_remote_trace_headers(monkeypatch) -> None:
     monkeypatch.setattr(
         "chalkcompute._function.current_trace_metadata",
@@ -378,6 +416,19 @@ def test_api_rpc_call_propagates_remote_trace_headers(monkeypatch) -> None:
     assert args[2]["remoteCallRequest"]["name"] == "catalog-add"
     assert kwargs["extra_headers"] == {
         "traceparent": "trace-id",
+    }
+
+
+def test_api_rpc_call_propagates_knowledge_cutoff_header() -> None:
+    fn = _remote_function().with_knowledge_cutoff("2026-05-01T12:30:45Z")
+    client = RpcConnectClient()
+    fn._client = client
+
+    assert fn._call_via_api_rpc(b"request-ipc") == b"response-ipc"
+
+    _, kwargs = client.rpc_calls[0]
+    assert kwargs["extra_headers"] == {
+        REQUEST_TIMESTAMP_HEADER: "2026-05-01T12:30:45Z",
     }
 
 
