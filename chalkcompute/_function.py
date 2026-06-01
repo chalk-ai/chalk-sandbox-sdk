@@ -40,7 +40,15 @@ import time
 import typing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Protocol, overload, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Protocol,
+    TypeVar,
+    overload,
+    runtime_checkable,
+)
 
 from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import (
@@ -78,6 +86,7 @@ if TYPE_CHECKING:
     from chalkcompute._secret import Secret as _Secret
 
 SerializationFormat = typing.Literal["pyarrow"]
+F = TypeVar("F", bound=Callable[..., Any])
 
 _REMOTE_ENV_VAR = "_CHALK_REMOTE_FUNCTION"
 # When enabled, mount the local SDK project and pip-install at container start.
@@ -559,6 +568,32 @@ class FunctionCallHandle:
                 return
 
 
+async def _gather_async(
+    handles: list[FunctionCallHandle],
+    *,
+    timeout: float | None = None,
+) -> list[Any]:
+    return list(
+        await asyncio.gather(*(handle.get(timeout=timeout) for handle in handles))
+    )
+
+
+def gather(
+    handles: typing.Iterable[FunctionCallHandle],
+    *,
+    timeout: float | None = None,
+) -> Any:
+    """Wait for deferred function calls concurrently and return results in order.
+
+    In synchronous code this blocks and returns ``list[Any]``. Inside a running
+    event loop it returns an awaitable, matching :meth:`FunctionCallHandle.get`.
+    """
+    handle_list = list(handles)
+    if _has_running_event_loop():
+        return _gather_async(handle_list, timeout=timeout)
+    return asyncio.run(_gather_async(handle_list, timeout=timeout))
+
+
 def _source_text_for_deploy(source_file: str) -> str:
     try:
         return Path(source_file).read_text()
@@ -772,9 +807,10 @@ def _build_and_upload(
             parent=progress_parent,
         )
         logger.info("Uploading %d local file(s)...", len(deploy_image.lazy_local_files))
-        driver = _resolve_driver(client)
+        driver = _resolve_driver(client, versioned=True)
         new_volumes = driver.upload_lazy_files(
-            deploy_image, volume_prefix=volume_prefix,
+            deploy_image,
+            volume_prefix=volume_prefix,
         )
         progress_done(vkey)
     return image_uri, new_volumes, driver
@@ -1116,7 +1152,9 @@ class RemoteFunction:
         if cpu is not None and not isinstance(cpu, str):
             raise TypeError(f"cpu must be a string such as '2' or '500m', got {cpu!r}")
         if memory is not None and not isinstance(memory, str):
-            raise TypeError(f"memory must be a string such as '2Gi' or '512Mi', got {memory!r}")
+            raise TypeError(
+                f"memory must be a string such as '2Gi' or '512Mi', got {memory!r}"
+            )
         if gpu is not None and not isinstance(gpu, str):
             raise TypeError(f"gpu must be a string such as 'nvidia-l4', got {gpu!r}")
         self._cpu = cpu
@@ -1131,7 +1169,11 @@ class RemoteFunction:
         referenced_volumes: list[tuple[str, str]] = []
         if volumes is not None:
             for item in volumes:
-                if not (isinstance(item, (tuple, list)) and len(item) == 2 and all(isinstance(s, str) for s in item)):
+                if not (
+                    isinstance(item, (tuple, list))
+                    and len(item) == 2
+                    and all(isinstance(s, str) for s in item)
+                ):
                     raise ValueError(
                         f"Each volumes entry must be a (name, mount_path) string tuple, got {item!r}. "
                         f"Example: volumes=[('my-volume', '/data')]"
@@ -1159,7 +1201,9 @@ class RemoteFunction:
         self._max_replicas = max_replicas
         self._shutdown_delay_seconds = shutdown_delay_seconds
         self._scaling_interval_seconds = scaling_interval_seconds
-        if target_cpu_utilization_percentage is not None and not (0 < target_cpu_utilization_percentage <= 100):
+        if target_cpu_utilization_percentage is not None and not (
+            0 < target_cpu_utilization_percentage <= 100
+        ):
             raise ValueError(
                 f"target_cpu_utilization_percentage must be between 1 and 100, got {target_cpu_utilization_percentage}"
             )
@@ -1238,7 +1282,9 @@ class RemoteFunction:
     # -- Alternate constructors ------------------------------------------------
 
     @classmethod
-    def from_id(cls, version_id: str, *, chalk_client: Any | None = None) -> RemoteFunction:
+    def from_id(
+        cls, version_id: str, *, chalk_client: Any | None = None
+    ) -> RemoteFunction:
         """Attach to an existing function version by ID.
 
         Parameters
@@ -2198,8 +2244,7 @@ def function(
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
     tracing: TracingPolicyConfig | None = None,
-) -> Callable[..., RemoteFunction | _NoOpFunction]:
-    ...
+) -> Callable[..., RemoteFunction | _NoOpFunction]: ...
 
 
 def function(
