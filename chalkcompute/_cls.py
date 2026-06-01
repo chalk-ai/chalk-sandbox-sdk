@@ -852,7 +852,7 @@ class RemoteClass:
             temp_files.append(source_file)
 
         deploy_image = _make_base_image(self._image).add_local_file(
-            source_file, "/app/user_module.py"
+            source_file, "/app/user_module.py", strategy="copy"
         )
 
         # Precompute has-self flags for lifecycle hooks
@@ -880,7 +880,7 @@ class RemoteClass:
             shim_path = _write_temp(shim_content)
             temp_files.append(shim_path)
             deploy_image = deploy_image.add_local_file(
-                shim_path, f"/app/handler_{method_info.name}.py"
+                shim_path, f"/app/handler_{method_info.name}.py", strategy="copy"
             )
 
         deploy_image = deploy_image.env({"PYTHONPATH": "/app", _REMOTE_ENV_VAR: "1"})
@@ -1409,7 +1409,11 @@ def cls(
     secrets
         List of :class:`~chalkcompute.Secret` references to inject.
     volumes
-        List of ``(name, mount_path)`` tuples for persistent storage.
+        List of ``(volume_name, mount_path)`` tuples for persistent storage.
+        ``volume_name`` is the name of the Chalk volume to attach.
+        ``mount_path`` is the absolute filesystem path where that volume is
+        available inside each class replica, such as ``"/data"``. Files read or
+        written under the mount path are backed by the named volume.
     min_replicas
         Minimum number of replicas per method.
     max_replicas

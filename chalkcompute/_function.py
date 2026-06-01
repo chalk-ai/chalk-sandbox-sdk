@@ -1389,8 +1389,8 @@ class RemoteFunction:
                 self._image,
                 remote_call_runtime_package=self._remote_call_runtime_package(),
             )
-            .add_local_file(source_file, "/app/user_module.py")
-            .add_local_file(shim_path, "/app/handler.py")
+            .add_local_file(source_file, "/app/user_module.py", strategy="copy")
+            .add_local_file(shim_path, "/app/handler.py", strategy="copy")
             .env({"PYTHONPATH": "/app", _REMOTE_ENV_VAR: "1"})
         )
 
@@ -2263,7 +2263,11 @@ def function(
     secrets
         List of :class:`~chalkcompute.Secret` references to inject.
     volumes
-        List of ``(name, mount_path)`` tuples for persistent storage.
+        List of ``(volume_name, mount_path)`` tuples for persistent storage.
+        ``volume_name`` is the name of the Chalk volume to attach.
+        ``mount_path`` is the absolute filesystem path where that volume is
+        available inside each function replica, such as ``"/data"``. Files read
+        or written under the mount path are backed by the named volume.
     min_replicas
         Minimum number of replicas.
     max_replicas
