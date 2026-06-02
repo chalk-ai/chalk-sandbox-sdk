@@ -28,16 +28,20 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from chalkcompute._connect import ConnectClient
-from chalkcompute._naming import sanitize_dns_label, validate_dns_label, validate_env
+from chalkcompute._naming import (
+    sanitize_dns_label,
+    validate_dns_label,
+    validate_env,
+)
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
     VolumeDriver,
     VolumeError,
     VolumeMount,
-    _resolve_driver,
     cleanup_owned_volumes,
     resolve_referenced_volume_type,
 )
+from chalkcompute._vvolume import VersionedVolumeClient
 
 logger = logging.getLogger(__name__)
 
@@ -670,10 +674,11 @@ class Container:
                     parent=ckey,
                 )
                 logger.info(
-                    "Uploading %d local file(s) to volume(s)...", len(lazy_files)
+                    "Uploading %d local file(s) to volume(s)...",
+                    len(lazy_files),
                 )
                 assert isinstance(self._image, Image)
-                driver = _resolve_driver(self._client)
+                driver = VersionedVolumeClient.from_connect(self._client)
                 self._volume_driver = driver
                 self._volumes += driver.upload_lazy_files(
                     self._image,
@@ -695,7 +700,8 @@ class Container:
                 self._secrets = resolved
                 self._upserted_secret_names = upserted
                 logger.info(
-                    "Upserted %d secret(s) from local environment.", len(upserted)
+                    "Upserted %d secret(s) from local environment.",
+                    len(upserted),
                 )
                 progress_done(skey, detail=f"{len(upserted)} secret(s)")
 
@@ -820,8 +826,7 @@ class Container:
             time.sleep(poll_interval)
         status = self._container_info.status if self._container_info else "unknown"
         raise ContainerError(
-            f"Container {self._container_id} timed out after {timeout}s "
-            f"(last status: {status})"
+            f"Container {self._container_id} timed out after {timeout}s (last status: {status})"
         )
 
     def _wait_for_volume_files(
@@ -984,7 +989,9 @@ class Container:
         if self._volumes:
             # Driver is used here only to perform the delete action, not to
             # derive a mount type.
-            driver = self._volume_driver or _resolve_driver(self._client)
+            driver = self._volume_driver or VersionedVolumeClient.from_connect(
+                self._client
+            )
             cleanup_owned_volumes(driver, self._volumes, self._referenced_volumes)
         self._volumes = []
         self._volume_driver = None

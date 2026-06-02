@@ -86,10 +86,10 @@ from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
     VolumeDriver,
     VolumeMount,
-    _resolve_driver,
     cleanup_owned_volumes,
     resolve_referenced_volume_type,
 )
+from chalkcompute._vvolume import VersionedVolumeClient
 
 if TYPE_CHECKING:
     from chalkcompute._image import Image as _Image
@@ -237,9 +237,7 @@ class _BoundRemoteMethod:
     def _remote(self) -> RemoteFunction:
         if self._remote_function is None:
             if self._resolve_remote is None:
-                raise ClassError(
-                    f"Method '{self._name}' is not deployed. Call .deploy() first."
-                )
+                raise ClassError(f"Method '{self._name}' is not deployed. Call .deploy() first.")
             self._remote_function = self._resolve_remote()
         return self._remote_function
 
@@ -714,22 +712,14 @@ class RemoteClass:
             schedule,
             owner=f"Class '{self._class_name}' schedule",
         )
-        self._retries = (
-            RetryPolicy.from_int_or_policy(retries) if retries is not None else None
-        )
+        self._retries = RetryPolicy.from_int_or_policy(retries) if retries is not None else None
         self._rate_limit = (
-            RateLimitPolicy.from_int_or_policy(rate_limit)
-            if rate_limit is not None
-            else None
+            RateLimitPolicy.from_int_or_policy(rate_limit) if rate_limit is not None else None
         )
         self._concurrency = (
-            ConcurrencyPolicy.from_int_or_policy(concurrency)
-            if concurrency is not None
-            else None
+            ConcurrencyPolicy.from_int_or_policy(concurrency) if concurrency is not None else None
         )
-        self._quota = (
-            QueuePolicy.from_int_or_policy(quota) if quota is not None else None
-        )
+        self._quota = QueuePolicy.from_int_or_policy(quota) if quota is not None else None
 
         self._client = ConnectClient(chalk_client=chalk_client)
         self._deployed = False
@@ -757,9 +747,7 @@ class RemoteClass:
                 self._after_name = attr_name
 
         if not self._methods:
-            raise ClassError(
-                f"Class {user_cls.__name__} has no @method decorated methods"
-            )
+            raise ClassError(f"Class {user_cls.__name__} has no @method decorated methods")
 
         if self._schedule is not None:
             for mname, mi in self._methods.items():
@@ -769,9 +757,7 @@ class RemoteClass:
                         f"Scheduled method '{self._class_name}.{mname}' cannot have "
                         f"inputs: {', '.join(input_names)}"
                     )
-                if inspect.isgeneratorfunction(mi.func) or inspect.isasyncgenfunction(
-                    mi.func
-                ):
+                if inspect.isgeneratorfunction(mi.func) or inspect.isasyncgenfunction(mi.func):
                     raise ClassError(
                         f"Scheduled method '{self._class_name}.{mname}' cannot be a "
                         f"generator; scheduled invocations have no caller to consume "
@@ -780,9 +766,7 @@ class RemoteClass:
 
         if max_batching_size is not None:
             for mname, mi in self._methods.items():
-                if inspect.isgeneratorfunction(mi.func) or inspect.isasyncgenfunction(
-                    mi.func
-                ):
+                if inspect.isgeneratorfunction(mi.func) or inspect.isasyncgenfunction(mi.func):
                     raise ClassError(
                         f"Method '{self._class_name}.{mname}' is a generator; "
                         f"generators are not supported with max_batching_size. "
@@ -959,14 +943,8 @@ class RemoteClass:
         )
 
         # Precompute has-self flags for lifecycle hooks
-        before_func = (
-            self._user_cls.__dict__.get(self._before_name)
-            if self._before_name
-            else None
-        )
-        after_func = (
-            self._user_cls.__dict__.get(self._after_name) if self._after_name else None
-        )
+        before_func = self._user_cls.__dict__.get(self._before_name) if self._before_name else None
+        after_func = self._user_cls.__dict__.get(self._after_name) if self._after_name else None
 
         # Generate one handler shim per method
         for method_info in self._methods.values():
@@ -1063,9 +1041,7 @@ class RemoteClass:
             for method_info in self._methods.values():
                 input_schema, output_schema = _build_method_schemas(method_info.func)
 
-                func_name = (
-                    f"{self._explicit_name or self._class_name}.{method_info.name}"
-                )
+                func_name = f"{self._explicit_name or self._class_name}.{method_info.name}"
                 sg_name = sanitize_dns_label(func_name)
 
                 mkey = f"method:{func_name}"
@@ -1093,13 +1069,9 @@ class RemoteClass:
                     from chalkcompute._secret import resolve_lazy_secrets
 
                     if any(s.is_lazy for s in self._secrets):
-                        resolved, _upserted = resolve_lazy_secrets(
-                            self._secrets, self._client
-                        )
+                        resolved, _upserted = resolve_lazy_secrets(self._secrets, self._client)
                         self._secrets = resolved
-                    container_spec["secretRefs"] = [
-                        s._to_proto_dict() for s in self._secrets
-                    ]
+                    container_spec["secretRefs"] = [s._to_proto_dict() for s in self._secrets]
 
                 scaling_spec: dict[str, Any] = {
                     "minReplicas": self._min_replicas,
@@ -1164,8 +1136,7 @@ class RemoteClass:
                 if resp.status_code != 200:
                     progress_fail(mkey)
                     raise ClassBuildError(
-                        f"CreateExternalFunctionVersion failed for "
-                        f"'{func_name}': {resp.text}"
+                        f"CreateExternalFunctionVersion failed for '{func_name}': {resp.text}"
                     )
 
                 data = resp.json()
@@ -1189,14 +1160,10 @@ class RemoteClass:
                 rf._version_info = version_info
                 rf._web_url = web_url
                 rf._port = port
-                rf._input_field_names = _extract_field_names(
-                    efv.get("inputArrowSchema")
-                )
+                rf._input_field_names = _extract_field_names(efv.get("inputArrowSchema"))
                 method_info.remote_function = rf
 
-                logger.info(
-                    "  %s v%s (id=%s)", func_name, version_info.version, version_info.id
-                )
+                logger.info("  %s v%s (id=%s)", func_name, version_info.version, version_info.id)
                 progress_done(mkey)
 
                 if sg_status != "Running":
@@ -1295,7 +1262,7 @@ class RemoteClass:
         if self._volumes:
             # Driver is used here only to perform the delete action, not to
             # derive a mount type.
-            driver = self._volume_driver or _resolve_driver(self._client)
+            driver = self._volume_driver or VersionedVolumeClient.from_connect(self._client)
             cleanup_owned_volumes(driver, self._volumes, self._referenced_volumes)
         self._volumes = []
         self._volume_driver = None
@@ -1325,9 +1292,7 @@ class RemoteClass:
         if name in methods:
             mi = methods[name]
             if mi.remote_function is None:
-                raise ClassError(
-                    f"Method '{name}' not deployed yet. Call .deploy() first."
-                )
+                raise ClassError(f"Method '{name}' not deployed yet. Call .deploy() first.")
             return _BoundRemoteMethod(
                 name,
                 local_callable=self._local_method(name),
@@ -1388,18 +1353,14 @@ class _NoOpClass:
 
     def _resolve_method(self, name: str) -> RemoteFunction:
         if name not in self._remote_methods:
-            self._remote_methods[name] = RemoteFunction.from_name(
-                f"{self._registered_name}.{name}"
-            )
+            self._remote_methods[name] = RemoteFunction.from_name(f"{self._registered_name}.{name}")
         return self._remote_methods[name]
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
             raise AttributeError(name)
         attr = getattr(self._instance, name)
-        marked = getattr(
-            type(self._instance).__dict__.get(name), _CHALK_METHOD_MARKER, False
-        )
+        marked = getattr(type(self._instance).__dict__.get(name), _CHALK_METHOD_MARKER, False)
         if marked:
             return _BoundRemoteMethod(
                 name,

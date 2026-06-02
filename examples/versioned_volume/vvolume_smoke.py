@@ -50,10 +50,7 @@ def _print_versions(volume: VersionedVolume) -> None:
     print("\nVersions:")
     for version in volume.versions():
         print(
-            "  - "
-            f"id={version.id} "
-            f"sequence={version.sequence_number} "
-            f"ref={version.ref or '<none>'}"
+            f"  - id={version.id} sequence={version.sequence_number} ref={version.ref or '<none>'}"
         )
 
 
@@ -114,10 +111,7 @@ def main() -> None:
             previous = volume.at_version(before_remove.id)
             previous_eval = previous.read_file(EVAL_PATH)
             assert previous_eval == eval_csv
-            print(
-                "Read deleted file from previous version: "
-                f"{previous_eval.decode().strip()!r}"
-            )
+            print(f"Read deleted file from previous version: {previous_eval.decode().strip()!r}")
 
             try:
                 previous.put_file("data/should-fail.txt", b"immutable")
@@ -137,15 +131,12 @@ def main() -> None:
 
                 looked_up = client.lookup(volume_name)
                 print(
-                    "lookup info: "
-                    f"name={looked_up.info.name} volume_id={looked_up.info.volume_id}"
+                    f"lookup info: name={looked_up.info.name} volume_id={looked_up.info.volume_id}"
                 )
 
         finally:
             if keep_volume:
-                print(
-                    f"\nKeeping volume because KEEP_VERSIONED_VOLUME=1: {volume_name}"
-                )
+                print(f"\nKeeping volume because KEEP_VERSIONED_VOLUME=1: {volume_name}")
             else:
                 log.info("Deleting versioned volume %s", volume_name)
                 volume.delete()

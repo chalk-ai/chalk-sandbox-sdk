@@ -535,38 +535,19 @@ class VolumeDriver(Protocol):
     """Internal protocol for clients that back container/sandbox mounts.
 
     Satisfied by both :class:`VolumeClient` (mount type ``chalkfs``) and
-    :class:`VersionedVolumeClient` (mount type ``versioned_chalkfs``). Not
-    re-exported from ``chalkcompute`` — internal callers obtain a backend
-    via :func:`_resolve_driver`.
+    :class:`VersionedVolumeClient` (mount type ``versioned_chalkfs``).
+    Not re-exported from ``chalkcompute``.
     """
 
     mount_type: str
 
-    def upload_lazy_files(
-        self, image: Image, *, volume_prefix: str
-    ) -> "list[VolumeMount]": ...
+    def upload_lazy_files(self, image: Image, *, volume_prefix: str) -> "list[VolumeMount]": ...
 
     def delete_volume(self, name: str) -> None: ...
 
     def exists(self, name: str) -> bool: ...
 
     def close(self) -> None: ...
-
-
-def _resolve_driver(
-    connect: ConnectClient, *, versioned: bool = True
-) -> VolumeDriver:
-    """Build a :class:`VolumeDriver` for ``connect``.
-
-    Defaults to the versioned (v2) backend. Centralizes the v1/v2 dispatch
-    so callers (Container, ScalingGroup, RemoteFunction, RemoteClass) don't
-    branch on backend type inline.
-    """
-    if versioned:
-        from chalkcompute._vvolume import VersionedVolumeClient
-
-        return VersionedVolumeClient.from_connect(connect)
-    return VolumeClient.from_connect(connect)
 
 
 def resolve_referenced_volume_type(connect: ConnectClient, name: str) -> str:
@@ -624,14 +605,12 @@ def cleanup_owned_volumes(
     all_volumes: Iterable[VolumeMount],
     referenced_volumes: Iterable[tuple[str, str]],
 ) -> None:
-    """Delete only volumes the SDK created — never user-referenced ones.
+    """Delete only volumes the SDK created; never user-referenced ones.
 
-    Container/ScalingGroup/RemoteClass lifecycles store both kinds in a
-    single ``self._volumes`` list: user-referenced volumes (passed via
-    ``volumes=[(name, path)]``) plus volumes the SDK uploaded for lazy
-    local files. The user owns the lifecycle of referenced volumes, so
-    cleanup must skip them — otherwise stopping a container deletes the
-    caller's data.
+    ``all_volumes`` contains both volumes the SDK uploaded (e.g. for an
+    image's lazy local files) and volumes the caller referenced via
+    ``volumes=[(name, path)]``. Caller-referenced volumes are owned by
+    the caller and must outlive this lifecycle.
     """
     referenced_names = {name for name, _ in referenced_volumes}
     for v in all_volumes:
@@ -693,9 +672,7 @@ def make_volume(
             create_if_missing=create_if_missing,
         )
     if version_id is not None or ref != "main":
-        raise ValueError(
-            "version_id and ref are only supported for versioned volumes"
-        )
+        raise ValueError("version_id and ref are only supported for versioned volumes")
     return SimpleVolume(
         name,
         client=client if isinstance(client, VolumeClient) else None,
@@ -911,9 +888,7 @@ class VolumeClient:
         return True
 
     @_instrumented("chalkcompute.volume.upload_lazy_files")
-    def upload_lazy_files(
-        self, image: Image, *, volume_prefix: str = "files"
-    ) -> _VolumeMounts:
+    def upload_lazy_files(self, image: Image, *, volume_prefix: str = "files") -> _VolumeMounts:
         """Upload an image's lazy local files into v1 volumes.
 
         Creates one volume per destination directory and uploads each
@@ -942,20 +917,19 @@ class VolumeClient:
         def _put(vol_name: str, lf: LazyLocalFile, dest_dir: str) -> None:
             content = Path(lf.src).read_bytes()
             _upload_bytes(
-                self, vol_name, os.path.relpath(lf.dest, dest_dir), content,
+                self,
+                vol_name,
+                os.path.relpath(lf.dest, dest_dir),
+                content,
             )
 
         volumes: _VolumeMounts = []
         for dest_dir, files in dir_to_files.items():
             vol = self.create(f"{volume_prefix}-{uuid.uuid4().hex[:12]}")
             with ThreadPoolExecutor(max_workers=_UPLOAD_MAX_WORKERS) as pool:
-                for fut in as_completed(
-                    pool.submit(_put, vol.name, lf, dest_dir) for lf in files
-                ):
+                for fut in as_completed(pool.submit(_put, vol.name, lf, dest_dir) for lf in files):
                     fut.result()
-            volumes.append(
-                VolumeMount(name=vol.name, mount_path=dest_dir, type=self.mount_type)
-            )
+            volumes.append(VolumeMount(name=vol.name, mount_path=dest_dir, type=self.mount_type))
         return volumes
 
     def delete_volume(self, name: str) -> None:
@@ -1055,9 +1029,7 @@ def _read_file_from_signed_uri(signed_download_uri: str) -> bytes:
         raise VolumeError(f"Signed file download failed: {e}") from e
 
 
-def _upload_bytes(
-    client: VolumeClient, volume_name: str, path: str, data: bytes
-) -> None:
+def _upload_bytes(client: VolumeClient, volume_name: str, path: str, data: bytes) -> None:
     """Upload a file using the appropriate transport.
 
     Files at or below ``_INLINE_THRESHOLD_BYTES`` are sent via gRPC inline
@@ -1081,9 +1053,7 @@ def _upload_bytes(
         _put_file_presigned(client, volume_name, path, data)
 
 
-def _put_file_inline(
-    client: VolumeClient, volume_name: str, path: str, data: bytes
-) -> None:
+def _put_file_inline(client: VolumeClient, volume_name: str, path: str, data: bytes) -> None:
     """Upload a file via gRPC inline ``PutFile(data=...)``.
 
     Parameters
@@ -1108,9 +1078,7 @@ def _put_file_inline(
     logger.info("Uploaded %s (inline, %d bytes)", path, len(data))
 
 
-def _put_file_presigned(
-    client: VolumeClient, volume_name: str, path: str, data: bytes
-) -> None:
+def _put_file_presigned(client: VolumeClient, volume_name: str, path: str, data: bytes) -> None:
     """Upload a file via a presigned object-storage URL.
 
     Uses the gRPC ``DataPlaneObjectStorageServiceStub`` for
@@ -1212,9 +1180,7 @@ def _upload_multipart(
 
     def _put_part(i: int) -> tuple[int, str]:
         """Upload part *i* and return ``(index, etag)``."""
-        chunk = data[
-            i * _PRESIGNED_PART_SIZE_BYTES : (i + 1) * _PRESIGNED_PART_SIZE_BYTES
-        ]
+        chunk = data[i * _PRESIGNED_PART_SIZE_BYTES : (i + 1) * _PRESIGNED_PART_SIZE_BYTES]
         r = httpx.put(part_uris[i], content=chunk, timeout=300)
         if r.status_code in (401, 403):
             r.raise_for_status()
@@ -1230,10 +1196,7 @@ def _upload_multipart(
                     etags_by_index[i] = etag
             break
         except httpx.HTTPStatusError as e:
-            if (
-                e.response.status_code in (401, 403)
-                and refresh_count < _PRESIGNED_MAX_RETRIES
-            ):
+            if e.response.status_code in (401, 403) and refresh_count < _PRESIGNED_MAX_RETRIES:
                 refresh_count += 1
                 logger.warning(
                     "Multipart upload: refreshing signed URLs (attempt %d/%d)",
@@ -1308,10 +1271,7 @@ def _upload_resumable(
             timeout=30,
         )
         if not init.is_success:
-            if (
-                init.status_code in (401, 403)
-                and refresh_count < _PRESIGNED_MAX_RETRIES
-            ):
+            if init.status_code in (401, 403) and refresh_count < _PRESIGNED_MAX_RETRIES:
                 refresh_count += 1
                 logger.warning(
                     "Resumable upload: refreshing signed URL (attempt %d/%d)",
@@ -1343,10 +1303,7 @@ def _upload_resumable(
                 refresh_count,
             )
             return storage_object_id
-        if (
-            put_resp.status_code in (401, 403)
-            and refresh_count < _PRESIGNED_MAX_RETRIES
-        ):
+        if put_resp.status_code in (401, 403) and refresh_count < _PRESIGNED_MAX_RETRIES:
             refresh_count += 1
             logger.warning(
                 "Resumable upload: refreshing signed URL (attempt %d/%d)",
