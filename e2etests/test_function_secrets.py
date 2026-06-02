@@ -34,7 +34,7 @@ def _call_with_retry(
 ) -> object:
     for attempt in range(retries):
         try:
-            return fn(*args)
+            return fn.remote(*args)
         except RuntimeError as e:
             if "Unavailable" in str(e) and attempt < retries - 1:
                 logging.info("Call attempt %d failed (Unavailable), retrying in %.0fs...", attempt + 1, delay)

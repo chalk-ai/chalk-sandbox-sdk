@@ -37,7 +37,7 @@ from chalkcompute._connect import ConnectClient, grpc_target_from_url, raise_for
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as pb
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2_grpc as pb_grpc
 from chalkcompute._image import Image
-from chalkcompute._naming import validate_dns_label
+from chalkcompute._naming import validate_dns_label, validate_env
 from chalkcompute._tracing import _instrumented
 
 # Aliases defined before SandboxClient, which has a ``.list()`` method that
@@ -396,14 +396,7 @@ class Sandbox:
             raise TypeError(
                 f"memory must be a string such as '2Gi' or '512Mi', got {memory!r}"
             )
-        if env is not None:
-            for k, v in env.items():
-                if not isinstance(k, str) or not k:
-                    raise ValueError(f"env keys must be non-empty strings, got {k!r}")
-                if not isinstance(v, str):
-                    raise ValueError(
-                        f"env values must be strings, got {v!r} for key {k!r}"
-                    )
+        validate_env(env)
         if volumes is not None:
             for item in volumes:
                 if not (
@@ -659,6 +652,7 @@ class Sandbox:
         )
         if workdir is not None:
             init.workdir = workdir
+        validate_env(env)
         if env is not None:
             for k, v in env.items():
                 init.env[k] = v
@@ -848,6 +842,7 @@ class SandboxClient:
             if memory is not None:
                 limits.memory = memory
             req.resource_limits.CopyFrom(limits)
+        validate_env(env)
         if env is not None:
             for k, v in env.items():
                 req.env[k] = v

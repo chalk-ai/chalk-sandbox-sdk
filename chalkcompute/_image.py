@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Literal
 
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as pb
+from chalkcompute._naming import validate_env
 
 logger = logging.getLogger(__name__)
 
@@ -624,6 +625,7 @@ class Image:
         ...     })
         ... )
         """
+        validate_env(variables)
         new = self._copy()
         new._env.update(variables)
         return new

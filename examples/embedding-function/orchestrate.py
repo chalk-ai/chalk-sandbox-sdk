@@ -14,5 +14,5 @@ def orchestrate(texts: list[str]) -> list[list[float]]:
     import chalkcompute
 
     embed = chalkcompute.RemoteFunction.from_name("embed-test")
-    embeddings = [embed(text) for text in texts]
+    embeddings = [embed.remote(text) for text in texts]
     return embeddings

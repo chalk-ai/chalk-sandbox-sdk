@@ -2,7 +2,7 @@
 
 import pytest
 
-from chalkcompute._naming import sanitize_dns_label, validate_dns_label
+from chalkcompute._naming import sanitize_dns_label, validate_dns_label, validate_env
 
 
 # ---------------------------------------------------------------------------
@@ -133,3 +133,45 @@ class TestSanitizeDnsLabel:
         # "ab-cd" truncated to 3 would be "ab-", should strip to "ab"
         result = sanitize_dns_label("ab-cd", max_length=3)
         assert result == "ab"
+
+
+# ---------------------------------------------------------------------------
+# validate_env
+# ---------------------------------------------------------------------------
+
+class TestValidateEnv:
+    def test_none_is_accepted(self):
+        validate_env(None)
+
+    def test_empty_is_accepted(self):
+        validate_env({})
+
+    def test_valid_string_mapping(self):
+        validate_env({"FOO": "bar", "PORT": "8080"})
+
+    def test_none_value_rejected_with_helpful_message(self):
+        # The os.getenv("X")-of-an-unset-var case that produced the opaque
+        # server-side "invalid value for string field value: null".
+        with pytest.raises(TypeError) as exc_info:
+            validate_env({"OPENAI_API_KEY": None})
+        message = str(exc_info.value)
+        assert "OPENAI_API_KEY" in message
+        assert "os.getenv" in message
+
+    def test_non_string_value_rejected(self):
+        with pytest.raises(TypeError, match="PORT"):
+            validate_env({"PORT": 8080})
+
+    def test_reports_all_bad_values(self):
+        with pytest.raises(TypeError) as exc_info:
+            validate_env({"A": None, "B": 1, "C": "ok"})
+        message = str(exc_info.value)
+        assert "A" in message and "B" in message
+
+    def test_non_string_key_rejected(self):
+        with pytest.raises(ValueError, match="non-empty"):
+            validate_env({1: "v"})
+
+    def test_empty_key_rejected(self):
+        with pytest.raises(ValueError, match="non-empty"):
+            validate_env({"": "v"})

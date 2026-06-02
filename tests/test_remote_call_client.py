@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pyarrow as pa
 import pytest
 
-from chalkcompute._function import FunctionVersionInfo, RemoteFunction
+from chalkcompute._function import FunctionError, FunctionVersionInfo, RemoteFunction
 from chalkcompute._remote_call_client import RemoteCallPollResult, ServiceAuthContext
 
 REQUEST_TIMESTAMP_HEADER = "x-chalk-request-timestamp"
@@ -167,12 +167,32 @@ def _async_remote_function() -> RemoteFunction:
     return fn
 
 
+def test_calling_runs_local_function_in_process_without_wire_call() -> None:
+    # If __call__ went over the wire this fake would hand back 999; the local
+    # body returns x + 1, and no RemoteCallClient should be constructed.
+    FakeRemoteCallClient.direct_response_chunks = [_result_ipc([999])]
+    FakeRemoteCallClient.instances.clear()
+
+    fn = _remote_function()
+
+    assert fn(41) == 42
+    assert FakeRemoteCallClient.instances == []
+
+
+def test_calling_handle_without_local_func_raises() -> None:
+    fn = RemoteFunction._make_empty()
+    fn._func_name = "add"
+
+    with pytest.raises(FunctionError, match=r"\.remote\(\)"):
+        fn(1, 2)
+
+
 def test_direct_call_uses_native_client_and_catalog_function_name() -> None:
     FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
 
     fn = _remote_function()
 
-    assert fn(41) == 42
+    assert fn.remote(41) == 42
 
     client = FakeRemoteCallClient.instances[0]
     assert client.endpoint == "127.0.0.1:7777"
@@ -191,7 +211,7 @@ def test_sync_direct_call_can_be_awaited_in_async_context() -> None:
     fn = _remote_function()
 
     async def call() -> int:
-        return await fn(41)
+        return await fn.remote(41)
 
     assert asyncio.run(call()) == 42
 
@@ -201,7 +221,7 @@ def test_async_direct_call_can_be_used_synchronously() -> None:
 
     fn = _async_remote_function()
 
-    assert fn(41) == 42
+    assert fn.remote(41) == 42
 
 
 def test_direct_call_uses_service_auth_from_environment(monkeypatch) -> None:
@@ -220,7 +240,7 @@ def test_direct_call_uses_service_auth_from_environment(monkeypatch) -> None:
     fn = _remote_function()
     fn._client = ServiceAuthOnlyConnectClient()
 
-    assert fn(41) == 42
+    assert fn.remote(41) == 42
 
     client = FakeRemoteCallClient.instances[0]
     assert ("authorization", "Bearer access-token") not in client.metadata
@@ -247,8 +267,8 @@ def test_direct_call_injects_fresh_trace_metadata_on_cached_client(monkeypatch) 
 
     fn = _remote_function()
 
-    assert fn(41) == 42
-    assert fn(41) == 42
+    assert fn.remote(41) == 42
+    assert fn.remote(41) == 42
 
     assert len(FakeRemoteCallClient.instances) == 1
     assert (
@@ -263,6 +283,155 @@ def test_direct_call_injects_fresh_trace_metadata_on_cached_client(monkeypatch) 
         key == "x-chalk-function-name"
         for key, _ in FakeRemoteCallClient.instances[0].calls[0][2]
     )
+
+
+async def _no_sleep(_seconds) -> None:
+    return None
+
+
+def _err(exc_type: str, message: str) -> str:
+    """Build a failed-call error payload as the queue surfaces it (flattened
+    chalk.common.v1.ChalkError -> JSON ``{"exc_type", "message"}``)."""
+    import json
+
+    return json.dumps({"exc_type": exc_type, "message": message})
+
+
+def _poll(status_name, *, chunks=None, error_message=None):
+    status = {"pending": 1, "running": 2, "completed": 3, "failed": 4}[status_name]
+    return RemoteCallPollResult(
+        status=status,
+        status_name=status_name,
+        chunks=chunks or [],
+        cursor="",
+        error_message=error_message,
+        poll_count=0,
+    )
+
+
+def test_deferred_get_retries_transient_failure_then_succeeds(monkeypatch) -> None:
+    monkeypatch.setattr("chalkcompute._function.time.sleep", lambda _s: None)
+    FakeRemoteCallClient.poll_results = [
+        _poll("failed", error_message=_err("ProxyError", "CallFunction RPC failed")),
+        _poll("completed", chunks=[_result_ipc([99])]),
+    ]
+
+    fn = _remote_function()
+    handle = fn.defer(98)
+
+    assert handle.get(timeout=60) == 99
+    # One initial enqueue + one resubmit after the transient failure.
+    client = FakeRemoteCallClient.instances[0]
+    assert len(client.enqueues) == 2
+    assert all(_read_input(e[1]) == {"x": [98]} for e in client.enqueues)
+
+
+def test_deferred_get_does_not_retry_genuine_user_error(monkeypatch) -> None:
+    monkeypatch.setattr("chalkcompute._function.time.sleep", lambda _s: None)
+    # The in-pod runtime wraps a user handler exception as RuntimeError; its
+    # message mentions the original error but the exc_type is not infra.
+    FakeRemoteCallClient.poll_results = [
+        _poll(
+            "failed",
+            error_message=_err(
+                "RuntimeError",
+                "Exception raised during handler execution: ValueError: bad input",
+            ),
+        ),
+    ]
+
+    fn = _remote_function()
+    handle = fn.defer(98)
+
+    with pytest.raises(FunctionError, match="bad input"):
+        handle.get(timeout=60)
+    # Non-transient error: enqueued once, never resubmitted.
+    assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
+
+
+def test_deferred_get_does_not_retry_unstructured_error(monkeypatch) -> None:
+    monkeypatch.setattr("chalkcompute._function.time.sleep", lambda _s: None)
+    # A plain (non-JSON) error string can't be positively classified as infra,
+    # so it is conservatively treated as non-retryable — even though it mentions
+    # "ProxyError" in free text.
+    FakeRemoteCallClient.poll_results = [
+        _poll("failed", error_message="ProxyError: CallFunction RPC failed"),
+    ]
+
+    fn = _remote_function()
+    handle = fn.defer(98)
+
+    with pytest.raises(FunctionError):
+        handle.get(timeout=60)
+    assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
+
+
+def test_deferred_get_stops_retrying_after_max_attempts(monkeypatch) -> None:
+    monkeypatch.setattr("chalkcompute._function.time.sleep", lambda _s: None)
+    transient = lambda: _poll(
+        "failed", error_message=_err("ProxyError", "connection reset")
+    )
+    FakeRemoteCallClient.poll_results = [transient(), transient(), transient()]
+
+    fn = _remote_function()
+    handle = fn.defer(98)  # default _max_attempts == 3
+
+    with pytest.raises(FunctionError, match="connection reset"):
+        handle.get(timeout=60)
+    # 3 attempts total -> initial enqueue + 2 resubmissions.
+    assert len(FakeRemoteCallClient.instances[0].enqueues) == 3
+
+
+def test_sync_stream_retries_when_failure_precedes_any_output(monkeypatch) -> None:
+    monkeypatch.setattr("chalkcompute._function.time.sleep", lambda _s: None)
+    FakeRemoteCallClient.poll_results = [
+        _poll("failed", error_message=_err("ProxyError", "CallFunction RPC failed")),
+        _poll("running", chunks=[_result_ipc([0])]),
+        _poll("completed", chunks=[_result_ipc([1])]),
+    ]
+
+    fn = _remote_function()
+    handle = fn.defer(3)
+
+    batches = [b.column("result").to_pylist() for b in handle.stream()]
+    assert batches == [[0], [1]]
+    assert len(FakeRemoteCallClient.instances[0].enqueues) == 2
+
+
+def test_sync_stream_does_not_retry_after_yielding(monkeypatch) -> None:
+    monkeypatch.setattr("chalkcompute._function.time.sleep", lambda _s: None)
+    FakeRemoteCallClient.poll_results = [
+        _poll("running", chunks=[_result_ipc([0])]),
+        _poll("failed", error_message=_err("ProxyError", "CallFunction RPC failed")),
+    ]
+
+    fn = _remote_function()
+    handle = fn.defer(3)
+
+    collected = []
+    with pytest.raises(FunctionError, match="CallFunction RPC failed"):
+        for batch in handle.stream():
+            collected.append(batch.column("result").to_pylist())
+    # The first batch reached the caller, so the stream is not restarted.
+    assert collected == [[0]]
+    assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
+
+
+def test_async_stream_retries_when_failure_precedes_any_output(monkeypatch) -> None:
+    monkeypatch.setattr("chalkcompute._function.asyncio.sleep", _no_sleep)
+    FakeRemoteCallClient.poll_results = [
+        _poll("failed", error_message=_err("ProxyError", "CallFunction RPC failed")),
+        _poll("completed", chunks=[_result_ipc([0])]),
+    ]
+
+    fn = _async_remote_function()
+    handle = fn.defer(3)
+
+    async def _collect() -> list[list[int]]:
+        return [b.column("result").to_pylist() async for b in handle.stream()]
+
+    assert asyncio.run(_collect()) == [[0]]
+    assert len(FakeRemoteCallClient.instances[0].enqueues) == 2
 
 
 def test_defer_get_and_purge_use_queue_client() -> None:
@@ -371,7 +540,7 @@ def test_with_knowledge_cutoff_injects_direct_call_header() -> None:
     fn = _remote_function()
     cutoff = datetime(2026, 5, 1, 12, 30, 45, tzinfo=timezone.utc)
 
-    assert fn.with_knowledge_cutoff(cutoff)(41) == 42
+    assert fn.with_knowledge_cutoff(cutoff).remote(41) == 42
     assert (REQUEST_TIMESTAMP_HEADER, "2026-05-01T12:30:45+00:00") in (
         FakeRemoteCallClient.instances[0].calls[0][2]
     )

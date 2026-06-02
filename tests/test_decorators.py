@@ -193,6 +193,58 @@ def test_function_noop_preserves_function_kind_introspection(
     assert inspect.iscoroutinefunction(inspect.unwrap(coro))
 
 
+def test_noop_function_remote_and_defer_resolve_deployed_sibling_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(_REMOTE_ENV_VAR, "1")
+
+    class _FakeBound:
+        def __init__(self) -> None:
+            self.remote_calls: list[tuple] = []
+            self.defer_calls: list[tuple] = []
+            self.cutoffs: list[Any] = []
+
+        def remote(self, *a: Any, **kw: Any) -> str:
+            self.remote_calls.append((a, kw))
+            return "remote-result"
+
+        def defer(self, *a: Any, **kw: Any) -> str:
+            self.defer_calls.append((a, kw))
+            return "handle"
+
+        def with_knowledge_cutoff(self, cutoff: Any) -> "_FakeBound":
+            self.cutoffs.append(cutoff)
+            return self
+
+    bound = _FakeBound()
+    resolved: list[str] = []
+
+    def fake_from_name(name: str, **_: Any) -> _FakeBound:
+        resolved.append(name)
+        return bound
+
+    monkeypatch.setattr(RemoteFunction, "from_name", staticmethod(fake_from_name))
+
+    @function(name="add-svc")
+    def add(x: int, y: int) -> int:
+        return x + y
+
+    assert isinstance(add, _NoOpFunction)
+    # __call__ runs the local body in-process, never resolving a sibling.
+    assert add(1, 2) == 3
+    assert resolved == []
+
+    # .remote() / .defer() / .with_knowledge_cutoff() resolve the deployed
+    # function lazily, using the *registered* name, and cache the handle.
+    assert add.remote(1, 2) == "remote-result"
+    assert add.defer(1, 2) == "handle"
+    assert add.with_knowledge_cutoff("2026-01-01T00:00:00Z") is bound
+    assert resolved == ["add-svc"]  # resolved once, then cached
+    assert bound.remote_calls == [((1, 2), {})]
+    assert bound.defer_calls == [((1, 2), {})]
+    assert bound.cutoffs == ["2026-01-01T00:00:00Z"]
+
+
 def test_class_decorators_accept_called_and_uncalled_forms(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -277,6 +329,86 @@ def test_cls_uncalled_decorator_noops_in_remote_env(
 
     assert isinstance(Adder, _NoOpClass)
     assert Adder.add(1, 2) == 3
+
+
+def test_noop_class_method_remote_and_defer_resolve_deployed_sibling_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(_REMOTE_ENV_VAR, "1")
+
+    class _FakeBound:
+        def __init__(self) -> None:
+            self.remote_calls: list[tuple] = []
+            self.defer_calls: list[tuple] = []
+
+        def remote(self, *a: Any, **kw: Any) -> str:
+            self.remote_calls.append((a, kw))
+            return "remote-result"
+
+        def defer(self, *a: Any, **kw: Any) -> str:
+            self.defer_calls.append((a, kw))
+            return "handle"
+
+    bound = _FakeBound()
+    resolved: list[str] = []
+
+    def fake_from_name(name: str, **_: Any) -> _FakeBound:
+        resolved.append(name)
+        return bound
+
+    monkeypatch.setattr(RemoteFunction, "from_name", staticmethod(fake_from_name))
+
+    @cls(name="adder-svc")
+    class Adder:
+        @method
+        def add(self, x: int, y: int) -> int:
+            return x + y
+
+    assert isinstance(Adder, _NoOpClass)
+    # __call__ runs the local method body in-process; no sibling resolved.
+    assert Adder.add(1, 2) == 3
+    assert resolved == []
+
+    # .remote()/.defer() resolve the deployed method lazily, by "<class>.<method>",
+    # using the registered class name. The proxy is cached on the class, so two
+    # separate attribute accesses share one resolution.
+    assert Adder.add.remote(1, 2) == "remote-result"
+    assert Adder.add.defer(1, 2) == "handle"
+    assert resolved == ["adder-svc.add"]
+    assert bound.remote_calls == [((1, 2), {})]
+    assert bound.defer_calls == [((1, 2), {})]
+
+
+def test_remote_class_method_call_is_local_remote_is_wire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RemoteClass, "deploy", lambda self, **_: self)
+
+    @cls
+    class Adder:
+        @method
+        def add(self, x: int, y: int) -> int:
+            return x + y
+
+    # Stand in a deployed RemoteFunction proxy for the 'add' method.
+    class _FakeRF:
+        def __init__(self) -> None:
+            self.remote_calls: list[tuple] = []
+
+        def remote(self, *a: Any, **kw: Any) -> int:
+            self.remote_calls.append((a, kw))
+            return 999
+
+    fake_rf = _FakeRF()
+    Adder._methods["add"].remote_function = fake_rf  # type: ignore[assignment]
+
+    # __call__ runs the local body in-process (3), not the wire proxy (999).
+    assert Adder.add(2, 1) == 3
+    assert fake_rf.remote_calls == []
+
+    # .remote() dispatches to the proxy.
+    assert Adder.add.remote(2, 1) == 999
+    assert fake_rf.remote_calls == [((2, 1), {})]
 
 
 def test_function_source_strip_handles_uncalled_direct_import() -> None:
@@ -426,3 +558,48 @@ def test_class_source_strip_handles_uncalled_direct_imports() -> None:
     namespace: dict[str, Any] = {}
     exec(stripped, namespace)
     assert namespace["Adder"]().add(1, 2) == 3
+
+
+def test_function_rejects_none_env_value() -> None:
+    """A ``None`` env value (e.g. os.getenv of an unset var) fails fast.
+
+    Without this guard the ``None`` reaches the server as JSON ``null`` and is
+    rejected with an opaque ``invalid value for string field value: null``.
+    """
+    with pytest.raises(TypeError) as exc_info:
+
+        @function(env={"OPENAI_API_KEY": None})  # type: ignore[dict-item]
+        def fn(x: int) -> int:
+            return x
+
+    message = str(exc_info.value)
+    assert "OPENAI_API_KEY" in message
+    assert "os.getenv" in message
+
+
+def test_function_rejects_non_string_env_value() -> None:
+    with pytest.raises(TypeError) as exc_info:
+
+        @function(env={"PORT": 8080})  # type: ignore[dict-item]
+        def fn(x: int) -> int:
+            return x
+
+    assert "PORT" in str(exc_info.value)
+
+
+def test_function_accepts_string_env_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deployed: list[RemoteFunction] = []
+
+    def fake_deploy(self: RemoteFunction, **_: Any) -> RemoteFunction:
+        deployed.append(self)
+        return self
+
+    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
+
+    @function(env={"OPENAI_API_KEY": "sk-test"})
+    def fn(x: int) -> int:
+        return x
+
+    assert deployed[0]._env["OPENAI_API_KEY"] == "sk-test"
