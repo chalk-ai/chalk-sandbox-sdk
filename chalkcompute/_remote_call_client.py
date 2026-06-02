@@ -48,11 +48,11 @@ class RemoteCallPollResult:
 
     @property
     def is_completed(self) -> bool:
-        return self.status_name == "completed"
+        return self.status_name.lower() == "completed"
 
     @property
     def is_failed(self) -> bool:
-        return self.status_name == "failed"
+        return self.status_name.lower() == "failed"
 
 
 class RemoteCallClient:
@@ -119,18 +119,29 @@ class RemoteCallClient:
                 poll_backoff_multiplier,
                 max_message_size,
             )
-        self._supports_per_call_metadata: bool | None = None
+        self._supports_per_call_metadata: bool = self._detect_per_call_metadata_support()
 
-    def _warn_per_call_metadata_unsupported(self) -> None:
+    def _detect_per_call_metadata_support(self) -> bool:
+        """Return True if the native extension's call_ipc accepts a metadata arg."""
         global _warned_per_call_metadata_unsupported
-        if _warned_per_call_metadata_unsupported:
-            return
-        _warned_per_call_metadata_unsupported = True
-        logger.warning(
-            "Remote function tracing metadata was dropped because the installed "
-            "chalkcompute._remote_call_native extension does not support per-call "
-            "metadata. Rebuild or reinstall chalkcompute to enable nested remote-call tracing."
-        )
+        import inspect
+
+        try:
+            sig = inspect.signature(self._inner.call_ipc)
+            supported = len(sig.parameters) >= 3
+        except (ValueError, TypeError):
+            # Can't introspect — assume capable; a TypeError on the real call
+            # will surface naturally.
+            supported = True
+
+        if not supported and not _warned_per_call_metadata_unsupported:
+            _warned_per_call_metadata_unsupported = True
+            logger.warning(
+                "chalkcompute._remote_call_native does not support per-call "
+                "metadata. Rebuild or reinstall chalkcompute to enable "
+                "nested remote-call tracing."
+            )
+        return supported
 
     def call_ipc(
         self,
@@ -138,16 +149,9 @@ class RemoteCallClient:
         input_ipc: bytes,
         metadata: Sequence[tuple[str, str]] = (),
     ) -> list[bytes]:
-        if not metadata or self._supports_per_call_metadata is False:
-            return list(self._inner.call_ipc(name, input_ipc))
-        try:
-            chunks = list(self._inner.call_ipc(name, input_ipc, list(metadata)))
-            self._supports_per_call_metadata = True
-            return chunks
-        except TypeError:
-            self._supports_per_call_metadata = False
-            self._warn_per_call_metadata_unsupported()
-            return list(self._inner.call_ipc(name, input_ipc))
+        if metadata and self._supports_per_call_metadata:
+            return list(self._inner.call_ipc(name, input_ipc, list(metadata)))
+        return list(self._inner.call_ipc(name, input_ipc))
 
     def enqueue(
         self,
@@ -155,16 +159,9 @@ class RemoteCallClient:
         input_ipc: bytes,
         metadata: Sequence[tuple[str, str]] = (),
     ) -> str:
-        if not metadata or self._supports_per_call_metadata is False:
-            return str(self._inner.enqueue(name, input_ipc))
-        try:
-            call_id = str(self._inner.enqueue(name, input_ipc, list(metadata)))
-            self._supports_per_call_metadata = True
-            return call_id
-        except TypeError:
-            self._supports_per_call_metadata = False
-            self._warn_per_call_metadata_unsupported()
-            return str(self._inner.enqueue(name, input_ipc))
+        if metadata and self._supports_per_call_metadata:
+            return str(self._inner.enqueue(name, input_ipc, list(metadata)))
+        return str(self._inner.enqueue(name, input_ipc))
 
     def poll_next(
         self,
