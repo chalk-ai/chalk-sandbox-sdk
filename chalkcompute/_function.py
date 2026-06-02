@@ -802,13 +802,125 @@ def _source_file_for_deploy(func: Callable[..., Any]) -> str:
     return inspect.getfile(inspect.unwrap(func))
 
 
-def _prepare_source_file(source_file: str) -> tuple[str, bool]:
+def _chalkcompute_bound_names(source: str) -> set[str]:
+    """Names that ``source`` binds to chalkcompute via import.
+
+    Covers both ``import chalkcompute [as x]`` (binds the root module name) and
+    ``from chalkcompute[.sub] import a, b as c`` (binds the imported symbols).
+    """
+    names: set[str] = set()
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return names
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "chalkcompute" or alias.name.startswith(
+                    "chalkcompute."
+                ):
+                    names.add((alias.asname or alias.name).split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if module == "chalkcompute" or module.startswith("chalkcompute."):
+                for alias in node.names:
+                    if alias.name != "*":  # can't enumerate names from a star import
+                        names.add(alias.asname or alias.name)
+    return names
+
+
+def _loaded_names_in_functions(source: str, entrypoints: set[str]) -> set[str]:
+    """Bare names read (``Load`` context) inside the bodies of ``entrypoints``.
+
+    Scopes the analysis to the function/method definitions actually deployed,
+    rather than the whole module — a single source file can define several
+    functions plus helpers, and a dangling reference in a *different* function's
+    body does not affect the function being deployed here.
+    """
+    used: set[str] = set()
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return used
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name in entrypoints
+        ):
+            for child in ast.walk(node):
+                if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load):
+                    used.add(child.id)
+    return used
+
+
+def _assert_stripped_source_self_contained(
+    original_source: str,
+    stripped_source: str,
+    *,
+    label: str,
+    entrypoints: set[str],
+) -> None:
+    """Fail fast if stripping chalkcompute left dangling references in the body.
+
+    In strip mode the SDK is not installed in the deploy image and chalkcompute
+    imports/decorators are removed from the source. If a deployed entrypoint's
+    body still *uses* a name that a now-removed chalkcompute import had bound,
+    and nothing rebinds it (e.g. an inner ``import chalkcompute`` that survives
+    stripping), the deployed module raises ``NameError`` at call time. Surface
+    that here, at deploy, with an actionable message instead of an opaque
+    container-side error.
+
+    Only the bodies of ``entrypoints`` (the deployed function / class methods)
+    are inspected; unrelated functions sharing the same source file are ignored.
+    """
+    if not entrypoints:
+        return
+    bound_before = _chalkcompute_bound_names(original_source)
+    bound_after = _chalkcompute_bound_names(stripped_source)
+    used = _loaded_names_in_functions(stripped_source, entrypoints)
+    dangling = sorted((bound_before - bound_after) & used)
+    if not dangling:
+        return
+    names = ", ".join(repr(n) for n in dangling)
+    raise FunctionBuildError(
+        f"{label} references chalkcompute ({names}) but is being deployed in "
+        f"strip mode (CHALK_FUNCTION_STRIP_SOURCE, or a 0.0.0 source checkout), "
+        f"which removes the chalkcompute SDK from the image and strips its "
+        f"imports from the source — the deployed code would fail with NameError "
+        f"at call time.\n"
+        f"To make nested chalkcompute calls work, deploy from an environment "
+        f"with a published chalkcompute installed (so strip mode is off and the "
+        f"SDK is installed and importable), or set CHALK_FUNCTION_LOCAL_SDK_COPY=1 "
+        f"with CHALK_FUNCTION_STRIP_SOURCE=0 to mount the local SDK. For a "
+        f"@chalkcompute.function you may instead install chalkcompute in the "
+        f"image and import it inside the function body (an inner import survives "
+        f"stripping):\n"
+        f'    @chalkcompute.function(image=Image.debian_slim().pip_install(["chalkcompute>=2.1.0"]))\n'
+        f"    def my_fn(...):\n"
+        f"        import chalkcompute\n"
+        f"        ..."
+    )
+
+
+def _prepare_source_file(
+    source_file: str,
+    *,
+    label: str | None = None,
+    entrypoints: set[str] | None = None,
+) -> tuple[str, bool]:
     """Return the source file path to deploy, optionally stripping chalkcompute.
 
     Parameters
     ----------
     source_file
         Path to the original user source file.
+    label
+        Human-readable identifier (e.g. function name) used in the strip-mode
+        guard error; defaults to the source file path.
+    entrypoints
+        Names of the deployed function(s) whose bodies the strip-mode guard
+        inspects for dangling chalkcompute references. When ``None`` the guard
+        is skipped (caller didn't supply an entrypoint to scope to).
 
     Returns
     -------
@@ -824,6 +936,12 @@ def _prepare_source_file(source_file: str) -> tuple[str, bool]:
 
     source = _source_text_for_deploy(source_file)
     stripped = _strip_chalkcompute_from_source(source)
+    _assert_stripped_source_self_contained(
+        source,
+        stripped,
+        label=label or f"Function source {source_file!r}",
+        entrypoints=entrypoints or set(),
+    )
     return _write_temp(stripped), True
 
 
@@ -1630,7 +1748,9 @@ class RemoteFunction:
             Declarative image ready to be built.
         """
         source_file, source_is_temp = _prepare_source_file(
-            _source_file_for_deploy(self._func)
+            _source_file_for_deploy(self._func),
+            label=f"Function {self._func_name!r}",
+            entrypoints={self._func_name},
         )
 
         from chalkcompute._model import MODELS_ENV_VAR

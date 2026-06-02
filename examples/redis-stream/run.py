@@ -87,7 +87,7 @@ def start_worker() -> chalkcompute.Container:
     """Start the worker container with Redis + chalkcompute installed."""
     worker_image = (
         chalkcompute.Image.debian_slim()
-        .pip_install(["redis", "chalkcompute"])
+        .pip_install(["redis"])
         .add_local_file(
             os.path.join(EXAMPLE_DIR, "worker.py"),
             "/app/worker.py",
