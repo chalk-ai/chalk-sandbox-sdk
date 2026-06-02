@@ -32,6 +32,10 @@ test *args:
 ruff:
     uv run --with ruff ruff check chalkcompute/ --exclude chalkcompute/_gen/
 
+# Run ruff formatter
+format:
+    uv run --with ruff ruff format .
+
 # Build a zoekt full-text index of the current codebase into .zoekt-index/
 zoekt-index:
     #!/usr/bin/env bash
