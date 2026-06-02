@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pyarrow as pa
 import pytest
 
-from chalkcompute._function import FunctionVersionInfo, RemoteFunction
+from chalkcompute._function import FunctionError, FunctionVersionInfo, RemoteFunction
 from chalkcompute._remote_call_client import RemoteCallPollResult, ServiceAuthContext
 
 REQUEST_TIMESTAMP_HEADER = "x-chalk-request-timestamp"
@@ -167,12 +167,32 @@ def _async_remote_function() -> RemoteFunction:
     return fn
 
 
+def test_calling_runs_local_function_in_process_without_wire_call() -> None:
+    # If __call__ went over the wire this fake would hand back 999; the local
+    # body returns x + 1, and no RemoteCallClient should be constructed.
+    FakeRemoteCallClient.direct_response_chunks = [_result_ipc([999])]
+    FakeRemoteCallClient.instances.clear()
+
+    fn = _remote_function()
+
+    assert fn(41) == 42
+    assert FakeRemoteCallClient.instances == []
+
+
+def test_calling_handle_without_local_func_raises() -> None:
+    fn = RemoteFunction._make_empty()
+    fn._func_name = "add"
+
+    with pytest.raises(FunctionError, match=r"\.remote\(\)"):
+        fn(1, 2)
+
+
 def test_direct_call_uses_native_client_and_catalog_function_name() -> None:
     FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
 
     fn = _remote_function()
 
-    assert fn(41) == 42
+    assert fn.remote(41) == 42
 
     client = FakeRemoteCallClient.instances[0]
     assert client.endpoint == "127.0.0.1:7777"
@@ -191,7 +211,7 @@ def test_sync_direct_call_can_be_awaited_in_async_context() -> None:
     fn = _remote_function()
 
     async def call() -> int:
-        return await fn(41)
+        return await fn.remote(41)
 
     assert asyncio.run(call()) == 42
 
@@ -201,7 +221,7 @@ def test_async_direct_call_can_be_used_synchronously() -> None:
 
     fn = _async_remote_function()
 
-    assert fn(41) == 42
+    assert fn.remote(41) == 42
 
 
 def test_direct_call_uses_service_auth_from_environment(monkeypatch) -> None:
@@ -220,7 +240,7 @@ def test_direct_call_uses_service_auth_from_environment(monkeypatch) -> None:
     fn = _remote_function()
     fn._client = ServiceAuthOnlyConnectClient()
 
-    assert fn(41) == 42
+    assert fn.remote(41) == 42
 
     client = FakeRemoteCallClient.instances[0]
     assert ("authorization", "Bearer access-token") not in client.metadata
@@ -247,8 +267,8 @@ def test_direct_call_injects_fresh_trace_metadata_on_cached_client(monkeypatch) 
 
     fn = _remote_function()
 
-    assert fn(41) == 42
-    assert fn(41) == 42
+    assert fn.remote(41) == 42
+    assert fn.remote(41) == 42
 
     assert len(FakeRemoteCallClient.instances) == 1
     assert (
@@ -371,7 +391,7 @@ def test_with_knowledge_cutoff_injects_direct_call_header() -> None:
     fn = _remote_function()
     cutoff = datetime(2026, 5, 1, 12, 30, 45, tzinfo=timezone.utc)
 
-    assert fn.with_knowledge_cutoff(cutoff)(41) == 42
+    assert fn.with_knowledge_cutoff(cutoff).remote(41) == 42
     assert (REQUEST_TIMESTAMP_HEADER, "2026-05-01T12:30:45+00:00") in (
         FakeRemoteCallClient.instances[0].calls[0][2]
     )

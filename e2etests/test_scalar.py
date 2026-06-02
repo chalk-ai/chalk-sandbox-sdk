@@ -16,7 +16,7 @@ from e2etests.conftest import _deploy_script, needs_staging
 
 
 async def _await_call(fn, *args):
-    return await fn(*args)
+    return await fn.remote(*args)
 
 
 async def _await_get(handle, *, timeout=None):
@@ -37,7 +37,7 @@ class TestSyncScalar:
     def test_direct_call(self):
         """Sync scalar calls work in sync and async contexts."""
         fn = chalkcompute.RemoteFunction.from_name("add")
-        assert fn(1, 10) == 11
+        assert fn.remote(1, 10) == 11
         assert asyncio.run(_await_call(fn, 2, 20)) == 22
 
     def test_defer_get(self):
@@ -55,7 +55,7 @@ class TestSyncScalar:
         n = 10
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=n) as pool:
-            futures = [pool.submit(fn, i, i * 10) for i in range(1, n + 1)]
+            futures = [pool.submit(fn.remote, i, i * 10) for i in range(1, n + 1)]
             results = [f.result() for f in futures]
 
         expected = [i + i * 10 for i in range(1, n + 1)]
@@ -103,7 +103,7 @@ class TestAsyncScalar:
         """Async scalar calls work in sync and async contexts."""
         fn = chalkcompute.RemoteFunction.from_name("async_add")
 
-        assert fn(3, 30) == 33
+        assert fn.remote(3, 30) == 33
         assert asyncio.run(_await_call(fn, 4, 40)) == 44
 
     def test_defer_get(self):

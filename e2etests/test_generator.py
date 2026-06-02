@@ -20,7 +20,7 @@ class TestSyncGenerator:
     def test_direct_call_iterates(self):
         """for x in fn(5) yields 5 chunks."""
         fn = chalkcompute.RemoteFunction.from_name("count_up")
-        chunks = [batch.column("result").to_pylist() for batch in fn(5)]
+        chunks = [batch.column("result").to_pylist() for batch in fn.remote(5)]
         assert chunks == [[0], [1], [2], [3], [4]]
 
     def test_defer_stream(self):
@@ -43,11 +43,11 @@ class TestAsyncGenerator:
         _deploy_script("generator", "deploy_async.py")
 
     def test_direct_call_async_iterates(self):
-        """async for x in fn(5) yields 5 chunks."""
+        """async for x in fn.remote(5) yields 5 chunks."""
         fn = chalkcompute.RemoteFunction.from_name("async_count_up")
 
         async def _collect() -> list[list[int]]:
-            return [batch.column("result").to_pylist() async for batch in fn(5)]
+            return [batch.column("result").to_pylist() async for batch in fn.remote(5)]
 
         assert asyncio.run(_collect()) == [[0], [1], [2], [3], [4]]
 

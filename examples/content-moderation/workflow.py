@@ -41,7 +41,7 @@ def classify_image_activity(image_url: str) -> dict:
     import chalkcompute
 
     classify = chalkcompute.RemoteFunction.from_name("classify-image")
-    return json.loads(classify(image_url))
+    return json.loads(classify.remote(image_url))
 
 
 @activity.defn
@@ -52,7 +52,7 @@ def policy_check_activity(image_url: str) -> dict:
     import chalkcompute
 
     policy = chalkcompute.RemoteFunction.from_name("policy-check")
-    return json.loads(policy(image_url))
+    return json.loads(policy.remote(image_url))
 
 
 @workflow.defn

@@ -57,7 +57,7 @@ def main() -> None:
                 log.info("Received message %s: %s", msg_id, text[:80])
 
                 try:
-                    result = respond(text)
+                    result = respond.remote(text)
                     log.info("Got response for %s (len=%d)", msg_id, len(str(result)))
 
                     safe_id = msg_id.replace("-", "_")

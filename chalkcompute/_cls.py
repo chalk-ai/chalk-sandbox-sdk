@@ -18,7 +18,8 @@ Usage:
         def on_shutdown(self) -> None:
             print("Adder stopped")
 
-    result = Adder.add(1, 2)
+    result = Adder.add.remote(1, 2)   # wire call to the deployed method
+    local = Adder.add(1, 2)           # runs the method body in-process
     print(result)
     Adder.delete()
 
@@ -33,8 +34,11 @@ Or imperatively:
 
     rc = RemoteClass(Adder)
     rc.deploy().wait_ready()
-    print(rc.add(1, 2))
+    print(rc.add.remote(1, 2))
     rc.delete()
+
+``Adder.add(...)`` always runs the local method body in-process;
+``Adder.add.remote(...)`` and ``Adder.add.defer(...)`` are the wire calls.
 """
 
 from __future__ import annotations
@@ -186,6 +190,84 @@ class _MethodInfo:
     name: str
     func: Callable
     remote_function: RemoteFunction | None = field(default=None, repr=False)
+
+
+class _BoundRemoteMethod:
+    """A deployed ``@method``, as returned by attribute access on a remote class.
+
+    Calling it (``Adder.add(1, 2)``) runs the local method body in-process —
+    it does **not** dispatch to the deployed method. ``.remote()`` and
+    ``.defer()`` are the wire calls; ``.with_knowledge_cutoff()`` returns a
+    call-scoped handle. Unknown attributes (``version_info``, ``web_url``,
+    ``poll``, ``purge``, ``stream`` …) proxy to the backing
+    :class:`~chalkcompute.RemoteFunction`.
+
+    Parameters
+    ----------
+    name
+        Method name (used in error messages).
+    local_callable
+        The bound method to run in-process for ``__call__``, or ``None`` when
+        there is no local implementation (e.g. a ``from_name`` handle).
+    remote_function
+        The deployed :class:`RemoteFunction` proxy, when already resolved.
+    resolve_remote
+        Zero-arg callable that lazily resolves the proxy by name. Used inside a
+        container so a method can reach its deployed sibling without an explicit
+        ``RemoteFunction.from_name(...)``.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        local_callable: Callable[..., Any] | None = None,
+        remote_function: RemoteFunction | None = None,
+        resolve_remote: Callable[[], RemoteFunction] | None = None,
+    ) -> None:
+        self._name = name
+        self._local_callable = local_callable
+        self._remote_function = remote_function
+        self._resolve_remote = resolve_remote
+
+    def _remote(self) -> RemoteFunction:
+        if self._remote_function is None:
+            if self._resolve_remote is None:
+                raise ClassError(
+                    f"Method '{self._name}' is not deployed. Call .deploy() first."
+                )
+            self._remote_function = self._resolve_remote()
+        return self._remote_function
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        """Invoke the underlying method locally, in-process."""
+        if self._local_callable is None:
+            raise ClassError(
+                f"Method '{self._name}' has no local implementation to run "
+                f"in-process (the class was attached via from_name). Use "
+                f".remote() for a synchronous wire call, or .defer() to enqueue one."
+            )
+        return self._local_callable(*args, **kwargs)
+
+    def remote(self, *args: Any, **kwargs: Any) -> Any:
+        """Invoke the deployed method over the wire."""
+        return self._remote().remote(*args, **kwargs)
+
+    def defer(self, *args: Any, **kwargs: Any) -> Any:
+        """Enqueue a wire call and return a handle immediately."""
+        return self._remote().defer(*args, **kwargs)
+
+    def with_knowledge_cutoff(self, knowledge_cutoff: Any) -> RemoteFunction:
+        """Return a call-scoped remote handle with an overridden request time."""
+        return self._remote().with_knowledge_cutoff(knowledge_cutoff)
+
+    def __getattr__(self, attr: str) -> Any:
+        # Delegate everything else (version_info, web_url, poll, purge, stream …)
+        # to the backing RemoteFunction. Private names never delegate, both to
+        # avoid recursion during __init__ and because they are implementation.
+        if attr.startswith("_"):
+            raise AttributeError(attr)
+        return getattr(self._remote(), attr)
 
 
 # ---------------------------------------------------------------------------
@@ -642,6 +724,8 @@ class RemoteClass:
 
         self._client = ConnectClient(chalk_client=chalk_client)
         self._deployed = False
+        # Lazily-built local instance for in-process __call__ on methods.
+        self._local_instance_cache: Any = None
 
         # Scan the class for markers
         self._methods: dict[str, _MethodInfo] = {}
@@ -809,6 +893,7 @@ class RemoteClass:
         rc._quota = None
         rc._client = ConnectClient(chalk_client=chalk_client)
         rc._deployed = False
+        rc._local_instance_cache = None
         rc._methods = {}
         rc._before_name = None
         rc._after_name = None
@@ -1226,8 +1311,24 @@ class RemoteClass:
                 raise ClassError(
                     f"Method '{name}' not deployed yet. Call .deploy() first."
                 )
-            return mi.remote_function
+            return _BoundRemoteMethod(
+                name,
+                local_callable=self._local_method(name),
+                remote_function=mi.remote_function,
+            )
         raise AttributeError(f"'{type(self).__name__}' has no attribute '{name}'")
+
+    def _local_method(self, name: str) -> Callable[..., Any] | None:
+        """Return the bound method to run in-process, or ``None`` if unavailable.
+
+        ``from_name`` handles have no local class (``_user_cls is None``); their
+        methods can only be reached over the wire via ``.remote()`` / ``.defer()``.
+        """
+        if self._user_cls is None:
+            return None
+        if self._local_instance_cache is None:
+            self._local_instance_cache = self._user_cls()
+        return getattr(self._local_instance_cache, name)
 
     # -- Properties ------------------------------------------------------------
 
@@ -1251,17 +1352,44 @@ class RemoteClass:
 
 
 class _NoOpClass:
-    """Wraps a class so that lifecycle methods are no-ops.
+    """The decorated class as seen *inside* a deployed container (``_REMOTE_ENV_VAR``).
 
-    Returned by the ``cls()`` decorator when running inside the container
-    (``_REMOTE_ENV_VAR``), so calls like ``Adder.deploy()`` don't raise.
+    Lifecycle methods (``deploy``, ``wait_ready`` …) are no-ops. Accessing a
+    ``@method`` returns a :class:`_BoundRemoteMethod`: calling it runs the local
+    method in-process, while ``.remote()`` / ``.defer()`` dispatch to the
+    deployed method (resolved lazily by name) — so a method can invoke a
+    sibling without an explicit ``RemoteClass.from_name(...)``. Non-method
+    attributes pass through to the local instance unchanged.
     """
 
-    def __init__(self, user_cls: type) -> None:
+    def __init__(self, user_cls: type, *, name: str | None = None) -> None:
         self._instance = user_cls()
+        self._registered_name = name or user_cls.__name__
+        # Deployed-method proxies, resolved once by name and shared across the
+        # fresh _BoundRemoteMethod handed out on each attribute access.
+        self._remote_methods: dict[str, RemoteFunction] = {}
+
+    def _resolve_method(self, name: str) -> RemoteFunction:
+        if name not in self._remote_methods:
+            self._remote_methods[name] = RemoteFunction.from_name(
+                f"{self._registered_name}.{name}"
+            )
+        return self._remote_methods[name]
 
     def __getattr__(self, name: str) -> Any:
-        return getattr(self._instance, name)
+        if name.startswith("_"):
+            raise AttributeError(name)
+        attr = getattr(self._instance, name)
+        marked = getattr(
+            type(self._instance).__dict__.get(name), _CHALK_METHOD_MARKER, False
+        )
+        if marked:
+            return _BoundRemoteMethod(
+                name,
+                local_callable=attr,
+                resolve_remote=lambda: self._resolve_method(name),
+            )
+        return attr
 
     def __call__(self) -> _NoOpClass:
         """Behave like a zero-arg constructor in remote handler imports.
@@ -1390,7 +1518,10 @@ def cls(
        the deploy image for unreleased feature iteration.
 
     **Remotely** (inside the container):
-    The decorator is a no-op — returns an instance of the class.
+    Lifecycle methods become no-ops. Accessing a ``@method`` runs the local
+    method body in-process when called; ``.remote()`` / ``.defer()`` dispatch to
+    the deployed method (resolved lazily by name), so a method can invoke a
+    sibling without ``RemoteClass.from_name(...)``.
 
     Parameters
     ----------
@@ -1467,7 +1598,7 @@ def cls(
 
     def decorator(user_cls: type) -> RemoteClass | _NoOpClass:
         if os.environ.get(_REMOTE_ENV_VAR):
-            return _NoOpClass(user_cls)
+            return _NoOpClass(user_cls, name=name)
 
         rc = RemoteClass(
             user_cls,

@@ -21,10 +21,11 @@ Tests run both **locally** and via **Buildkite** (PR-triggered). Credentials are
 ```
 just env        # decrypt .env.enc to .env (needed for local runs)
 uv run python -m pytest <test_file> -v   # run tests locally
-just ci-run     # push + print Buildkite build link
 ```
 
 All tests are expected to pass in both environments.
+
+**Never run `just ci-run`.** It pushes and kicks off a Buildkite build; leave that to the human. Run tests locally instead.
 
 
 Use 
