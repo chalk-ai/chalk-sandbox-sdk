@@ -32,6 +32,7 @@ import asyncio
 import datetime as _dt
 import functools
 import inspect
+import json
 import linecache
 import logging
 import os
@@ -503,15 +504,83 @@ async def _run_in_worker_thread(
     return await future
 
 
+# Exception "kind" values that mark a transient, infra-level failure originating
+# *outside* the user's handler — a dropped proxy/queue connection rather than an
+# exception raised by the function body. Safe to retry by resubmitting the call.
+#
+# A failed call's ``error_message`` is a JSON-encoded ``chalk.common.v1.ChalkError``
+# flattened to ``{"exc_type": <ChalkException.kind>, "message": ...}``. We classify
+# on the discrete ``exc_type`` rather than substring-matching the free-text message,
+# so a user error whose message merely mentions an infra term is not misclassified,
+# and rewording the message can't silently flip retry behavior. The in-pod runtime
+# wraps every user-handler failure as RuntimeError/ValueError/TypeError, so those
+# kinds are (correctly) absent here and never retried.
+#
+# Confirmed from observed engine output: the function proxy reports
+# ``{"exc_type": "ProxyError", "message": "CallFunction RPC failed"}`` when it
+# cannot reach or stream from the function pod. Extend this set as additional
+# infra kinds are confirmed against the engine's error taxonomy.
+_RETRYABLE_EXC_TYPES = frozenset(
+    {
+        "ProxyError",
+    }
+)
+# Total attempts (initial + retries) for a deferred call that fails transiently
+# before any result is observed. Overridable per-handle for testing.
+_STREAM_MAX_ATTEMPTS = 3
+# Base delay for exponential backoff between resubmissions, in seconds.
+_STREAM_RETRY_BASE_DELAY = 0.5
+
+
+def _failed_call_exc_type(error_message: str | None) -> str | None:
+    """Extract the structured exception kind from a failed call's error payload.
+
+    The queue surfaces a failed call's error as a JSON string of the form
+    ``{"exc_type": ..., "message": ...}`` — a flattened
+    ``chalk.common.v1.ChalkError`` whose ``exception.kind`` becomes ``exc_type``.
+    Returns ``None`` when the payload is missing or not that structured shape.
+    """
+    if not error_message:
+        return None
+    try:
+        payload = json.loads(error_message)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    exc_type = payload.get("exc_type")
+    return exc_type if isinstance(exc_type, str) else None
+
+
+def _is_transient_call_error(error_message: str | None) -> bool:
+    """Whether a failed call is a retryable infra blip, by its structured exc_type.
+
+    Unknown or unstructured errors are treated as non-retryable, so retry stays
+    conservative: we never resubmit a call we can't positively classify as infra.
+    """
+    return _failed_call_exc_type(error_message) in _RETRYABLE_EXC_TYPES
+
+
 class FunctionCallHandle:
     """Handle returned by :meth:`RemoteFunction.defer`."""
 
-    def __init__(self, function: RemoteFunction, call_id: str) -> None:
+    def __init__(
+        self,
+        function: RemoteFunction,
+        call_id: str,
+        *,
+        request_bytes: bytes | None = None,
+    ) -> None:
         self._function = function
         self._call_id = call_id
         self._is_async = bool(getattr(function, "_is_async", False))
         self._cursor = ""
         self._poll_count = 0
+        # The serialized request, retained so the call can be resubmitted after
+        # a transient failure. ``None`` disables retry (the call cannot be
+        # reconstructed, e.g. a handle built without its request payload).
+        self._request_bytes = request_bytes
+        self._max_attempts = _STREAM_MAX_ATTEMPTS
 
     @property
     def call_id(self) -> str:
@@ -527,6 +596,31 @@ class FunctionCallHandle:
         self._poll_count = result.poll_count
         return result
 
+    def _can_retry(self, attempt: int, message: str | None) -> bool:
+        """Whether a transient failure on ``attempt`` is worth resubmitting."""
+        return (
+            attempt < self._max_attempts
+            and self._request_bytes is not None
+            and _is_transient_call_error(message)
+        )
+
+    def _retry_delay(self, retry_index: int) -> float:
+        """Exponential backoff (seconds) before the ``retry_index``-th retry."""
+        return _STREAM_RETRY_BASE_DELAY * (2 ** (retry_index - 1))
+
+    def _resubmit(self) -> None:
+        """Re-enqueue the original request and reset poll state to the new call."""
+        assert self._request_bytes is not None  # guarded by _can_retry
+        new_call_id = self._function._enqueue(self._request_bytes)
+        logger.warning(
+            "Remote call %s failed transiently; resubmitted as %s",
+            self._call_id,
+            new_call_id,
+        )
+        self._call_id = new_call_id
+        self._cursor = ""
+        self._poll_count = 0
+
     def get(self, timeout: float | None = None) -> Any:
         if _has_running_event_loop():
             return self._async_get(timeout)
@@ -534,21 +628,32 @@ class FunctionCallHandle:
 
     def _sync_get(self, timeout: float | None = None) -> Any:
         deadline = None if timeout is None else time.monotonic() + timeout
-        chunks: list[bytes] = []
+        attempt = 1
 
         while True:
-            result = self.poll()
-            chunks.extend(result.chunks)
+            # Each attempt re-collects from scratch; partial chunks from a failed
+            # attempt are discarded, so resubmitting after partial output is safe
+            # for get() (unlike stream(), which has already yielded to a caller).
+            chunks: list[bytes] = []
+            while True:
+                result = self.poll()
+                chunks.extend(result.chunks)
 
-            if result.is_failed:
-                message = result.error_message or "Remote call failed"
-                raise FunctionError(message)
+                if result.is_failed:
+                    message = result.error_message or "Remote call failed"
+                    if self._can_retry(attempt, message):
+                        break
+                    raise FunctionError(message)
 
-            if result.is_completed:
-                return self._function._materialize_result_chunks(chunks)
+                if result.is_completed:
+                    return self._function._materialize_result_chunks(chunks)
 
-            if deadline is not None and time.monotonic() >= deadline:
-                raise TimeoutError(f"Remote call {self._call_id} timed out")
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError(f"Remote call {self._call_id} timed out")
+
+            attempt += 1
+            time.sleep(self._retry_delay(attempt - 1))
+            self._resubmit()
 
     async def _async_get(self, timeout: float | None = None) -> Any:
         return await _run_in_worker_thread(self._sync_get, timeout)
@@ -561,36 +666,61 @@ class FunctionCallHandle:
     def _sync_stream(self) -> Any:
         import pyarrow as pa
 
+        attempt = 1
+        yielded_any = False
+
         while True:
-            result = self.poll()
-            for chunk in result.chunks:
-                reader = pa.ipc.open_stream(pa.BufferReader(chunk))
-                for batch in reader:
-                    yield batch
+            while True:
+                result = self.poll()
+                for chunk in result.chunks:
+                    reader = pa.ipc.open_stream(pa.BufferReader(chunk))
+                    for batch in reader:
+                        yielded_any = True
+                        yield batch
 
-            if result.is_failed:
-                message = result.error_message or "Remote call failed"
-                raise FunctionError(message)
+                if result.is_failed:
+                    message = result.error_message or "Remote call failed"
+                    # Once any batch has reached the caller the stream cannot be
+                    # cleanly restarted (it would replay from the beginning), so
+                    # only retry a failure that happened before the first yield.
+                    if not yielded_any and self._can_retry(attempt, message):
+                        break
+                    raise FunctionError(message)
 
-            if result.is_completed:
-                return
+                if result.is_completed:
+                    return
+
+            attempt += 1
+            time.sleep(self._retry_delay(attempt - 1))
+            self._resubmit()
 
     async def _async_stream(self) -> Any:
         import pyarrow as pa
 
+        attempt = 1
+        yielded_any = False
+
         while True:
-            result = await asyncio.to_thread(self.poll)
-            for chunk in result.chunks:
-                reader = pa.ipc.open_stream(pa.BufferReader(chunk))
-                for batch in reader:
-                    yield batch
+            while True:
+                result = await asyncio.to_thread(self.poll)
+                for chunk in result.chunks:
+                    reader = pa.ipc.open_stream(pa.BufferReader(chunk))
+                    for batch in reader:
+                        yielded_any = True
+                        yield batch
 
-            if result.is_failed:
-                message = result.error_message or "Remote call failed"
-                raise FunctionError(message)
+                if result.is_failed:
+                    message = result.error_message or "Remote call failed"
+                    if not yielded_any and self._can_retry(attempt, message):
+                        break
+                    raise FunctionError(message)
 
-            if result.is_completed:
-                return
+                if result.is_completed:
+                    return
+
+            attempt += 1
+            await asyncio.sleep(self._retry_delay(attempt - 1))
+            await asyncio.to_thread(self._resubmit)
 
 
 async def _gather_async(
@@ -2121,18 +2251,27 @@ class RemoteFunction:
             return results[0]
         return results
 
-    def defer(self, *args: Any, **kwargs: Any) -> FunctionCallHandle:
-        """Enqueue this function call and return a handle immediately."""
-        feather_bytes = self._serialize_call_args(*args, **kwargs)
+    def _enqueue(self, feather_bytes: bytes) -> str:
+        """Enqueue a pre-serialized call payload and return its call id.
+
+        Shared by :meth:`defer` and :meth:`FunctionCallHandle` resubmission, so a
+        retried call goes through the exact same queue path (fresh per-call
+        metadata included).
+        """
         function_name = self._queue_function_name()
         with remote_function_call_span(function_name, "queue"):
             client = self._ensure_remote_call_client(queue=True)
-            call_id = client.enqueue(
+            return client.enqueue(
                 function_name,
                 feather_bytes,
                 metadata=self._per_call_metadata(),
             )
-        return FunctionCallHandle(self, call_id)
+
+    def defer(self, *args: Any, **kwargs: Any) -> FunctionCallHandle:
+        """Enqueue this function call and return a handle immediately."""
+        feather_bytes = self._serialize_call_args(*args, **kwargs)
+        call_id = self._enqueue(feather_bytes)
+        return FunctionCallHandle(self, call_id, request_bytes=feather_bytes)
 
     def poll(
         self,
