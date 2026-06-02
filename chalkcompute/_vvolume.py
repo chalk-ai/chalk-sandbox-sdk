@@ -1433,5 +1433,3 @@ class _VersionedBatchUpload:
         except Exception:
             self._files = files + self._files
             raise
-
-

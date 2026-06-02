@@ -1,17 +1,3 @@
-#!/usr/bin/env -S uv run --script
-#
-# /// script
-# requires-python = ">=3.11"
-# dependencies = [
-#   "blake3",
-#   "grpcio>=1.60.0",
-#   "httpx>=0.25.0",
-#   "opentelemetry-api>=1.20.0",
-#   "protobuf>=4.25.0",
-#   "python-dotenv",
-# ]
-# ///
-
 """Versioned Volume SDK example.
 
 This mirrors the Python SDK flow from the volume documentation, using
@@ -35,9 +21,6 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from dotenv import load_dotenv
-
-# Prefer the local SDK checkout when running from this repo.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from chalkcompute import (
@@ -46,8 +29,6 @@ from chalkcompute import (
     VersionedVolumeClient,
     VolumeError,
 )
-
-load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)

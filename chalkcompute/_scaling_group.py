@@ -43,6 +43,7 @@ from chalkcompute._volume import (
     VolumeError,
     VolumeMount,
     _resolve_driver,
+    cleanup_owned_volumes,
     resolve_referenced_volume_type,
 )
 
@@ -186,7 +187,9 @@ class ScalingGroup:
     # -- Alternate constructors ------------------------------------------------
 
     @classmethod
-    def from_id(cls, scaling_group_id: str, *, chalk_client: Any | None = None) -> ScalingGroup:
+    def from_id(
+        cls, scaling_group_id: str, *, chalk_client: Any | None = None
+    ) -> ScalingGroup:
         """Attach to an existing scaling group by ID.
 
         Parameters
@@ -338,7 +341,8 @@ class ScalingGroup:
             driver = _resolve_driver(self._client)
             self._volume_driver = driver
             self._volumes += driver.upload_lazy_files(
-                self._image, volume_prefix="sg-files",
+                self._image,
+                volume_prefix="sg-files",
             )
             for v in self._volumes:
                 logger.info("  Volume created: %s (mount: %s)", v.name, v.mount_path)
@@ -565,8 +569,7 @@ class ScalingGroup:
             # Driver is used here only to perform the delete action, not to
             # derive a mount type.
             driver = self._volume_driver or _resolve_driver(self._client)
-            for v in self._volumes:
-                driver.delete_volume(v.name)
+            cleanup_owned_volumes(driver, self._volumes, self._referenced_volumes)
         self._volumes = []
         self._volume_driver = None
 

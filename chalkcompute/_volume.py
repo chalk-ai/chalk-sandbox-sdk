@@ -25,7 +25,7 @@ import hashlib
 import logging
 import os
 import uuid
-from collections.abc import Callable, Generator, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -617,6 +617,27 @@ def resolve_referenced_volume_type(connect: ConnectClient, name: str) -> str:
         f"(v2) or non-versioned (v1) volume service; cannot determine its "
         f"mount type. Check the volume name, or create it before referencing it."
     )
+
+
+def cleanup_owned_volumes(
+    driver: VolumeDriver,
+    all_volumes: Iterable[VolumeMount],
+    referenced_volumes: Iterable[tuple[str, str]],
+) -> None:
+    """Delete only volumes the SDK created — never user-referenced ones.
+
+    Container/ScalingGroup/RemoteClass lifecycles store both kinds in a
+    single ``self._volumes`` list: user-referenced volumes (passed via
+    ``volumes=[(name, path)]``) plus volumes the SDK uploaded for lazy
+    local files. The user owns the lifecycle of referenced volumes, so
+    cleanup must skip them — otherwise stopping a container deletes the
+    caller's data.
+    """
+    referenced_names = {name for name, _ in referenced_volumes}
+    for v in all_volumes:
+        if v.name in referenced_names:
+            continue
+        driver.delete_volume(v.name)
 
 
 def make_volume(

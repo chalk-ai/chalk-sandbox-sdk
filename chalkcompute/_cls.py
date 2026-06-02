@@ -54,15 +54,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, TypeVar, overload
 
+from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import ConnectClient
-from chalkcompute._naming import sanitize_dns_label, validate_dns_label, validate_env
-from chalkcompute._tracing import _instrumented
-from chalkcompute._volume import (
-    VolumeDriver,
-    VolumeMount,
-    _resolve_driver,
-    resolve_referenced_volume_type,
-)
 from chalkcompute._function import (
     _CATALOG_SVC,
     _REMOTE_ENV_VAR,
@@ -85,10 +78,18 @@ from chalkcompute._function import (
     _source_text_for_deploy,
     _write_temp,
 )
-from chalkcompute._concurrency import ConcurrencyPolicy
+from chalkcompute._naming import sanitize_dns_label, validate_dns_label, validate_env
 from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._retry import RetryPolicy
+from chalkcompute._tracing import _instrumented
+from chalkcompute._volume import (
+    VolumeDriver,
+    VolumeMount,
+    _resolve_driver,
+    cleanup_owned_volumes,
+    resolve_referenced_volume_type,
+)
 
 if TYPE_CHECKING:
     from chalkcompute._image import Image as _Image
@@ -1295,8 +1296,7 @@ class RemoteClass:
             # Driver is used here only to perform the delete action, not to
             # derive a mount type.
             driver = self._volume_driver or _resolve_driver(self._client)
-            for v in self._volumes:
-                driver.delete_volume(v.name)
+            cleanup_owned_volumes(driver, self._volumes, self._referenced_volumes)
         self._volumes = []
         self._volume_driver = None
         self._deployed = False
