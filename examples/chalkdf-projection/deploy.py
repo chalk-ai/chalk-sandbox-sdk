@@ -68,7 +68,10 @@ def main() -> None:
     print(f"+ chalk container stop --name {CONTAINER_NAME}")
     subprocess.run(
         ["chalk", "container", "stop", "--name", CONTAINER_NAME],
-        check=False, text=True, capture_output=True, env=env,
+        check=False,
+        text=True,
+        capture_output=True,
+        env=env,
     )
 
     # Encode the script as base64 to avoid shell escaping issues
@@ -80,32 +83,60 @@ def main() -> None:
         + "').decode())\""
     )
 
-    print(f"+ chalk container run --image python:3.14-slim-trixie --name {CONTAINER_NAME} ...")
+    print(
+        f"+ chalk container run --image python:3.14-slim-trixie --name {CONTAINER_NAME} ..."
+    )
     result = subprocess.run(
         [
-            "chalk", "container", "run",
-            "--image", "python:3.14-slim-trixie",
-            "--name", CONTAINER_NAME,
-            "--entrypoint", f"bash,-c,{shell_cmd}",
-            "--lifetime", "5m",
+            "chalk",
+            "container",
+            "run",
+            "--image",
+            "python:3.14-slim-trixie",
+            "--name",
+            CONTAINER_NAME,
+            "--entrypoint",
+            f"bash,-c,{shell_cmd}",
+            "--lifetime",
+            "5m",
         ],
-        check=False, text=True, capture_output=True, env=env,
+        check=False,
+        text=True,
+        capture_output=True,
+        env=env,
     )
     print(result.stdout)
     if result.stderr:
         print(result.stderr, file=sys.stderr)
     if result.returncode != 0:
-        print(f"chalk container run failed with exit code {result.returncode}", file=sys.stderr)
+        print(
+            f"chalk container run failed with exit code {result.returncode}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    print(f"\nContainer '{CONTAINER_NAME}' started. Waiting 60s for pip install + run...\n")
+    print(
+        f"\nContainer '{CONTAINER_NAME}' started. Waiting 60s for pip install + run...\n"
+    )
     time.sleep(60)
 
     # Fetch logs
-    print(f"+ chalk logs --query pod_name:chalk-container-{CONTAINER_NAME} --start-time 5m ago")
+    print(
+        f"+ chalk logs --query pod_name:chalk-container-{CONTAINER_NAME} --start-time 5m ago"
+    )
     logs_result = subprocess.run(
-        ["chalk", "logs", "--query", f"pod_name:chalk-container-{CONTAINER_NAME}", "--start-time", "5m ago"],
-        check=False, text=True, capture_output=True, env=env,
+        [
+            "chalk",
+            "logs",
+            "--query",
+            f"pod_name:chalk-container-{CONTAINER_NAME}",
+            "--start-time",
+            "5m ago",
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=env,
     )
     print(logs_result.stdout)
     if logs_result.stderr:

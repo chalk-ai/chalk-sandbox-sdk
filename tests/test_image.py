@@ -46,7 +46,9 @@ class TestImageFromDockerfile:
     """Test Image.from_dockerfile() constructor."""
 
     def test_simple_dockerfile(self) -> None:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".Dockerfile", delete=False) as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".Dockerfile", delete=False
+        ) as f:
             f.write("FROM python:3.14\nRUN pip install requests\nEXPOSE 8080\n")
             f.flush()
             img = Image.from_dockerfile(f.name)
@@ -59,8 +61,12 @@ class TestImageFromDockerfile:
         ]
 
     def test_dockerfile_with_comments(self) -> None:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".Dockerfile", delete=False) as f:
-            f.write("# Build stage\nFROM alpine:3.23\n# Install deps\nRUN apk add git\n")
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".Dockerfile", delete=False
+        ) as f:
+            f.write(
+                "# Build stage\nFROM alpine:3.23\n# Install deps\nRUN apk add git\n"
+            )
             f.flush()
             img = Image.from_dockerfile(f.name)
         spec = img.to_proto()
@@ -69,7 +75,9 @@ class TestImageFromDockerfile:
 
     def test_dockerfile_chaining(self) -> None:
         """from_dockerfile images can be further extended."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".Dockerfile", delete=False) as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".Dockerfile", delete=False
+        ) as f:
             f.write("FROM python:3.14\nRUN echo base\n")
             f.flush()
             img = Image.from_dockerfile(f.name).pip_install(["numpy"])
@@ -139,7 +147,9 @@ class TestImageRunCommands:
         assert spec.steps[0].run_commands.commands == ["apk add git"]
 
     def test_multiple_commands(self) -> None:
-        img = Image.base("alpine").run_commands("apt-get update", "apt-get install -y git")
+        img = Image.base("alpine").run_commands(
+            "apt-get update", "apt-get install -y git"
+        )
         spec = img.to_proto()
         assert spec.steps[0].run_commands.commands == [
             "apt-get update",
@@ -185,7 +195,9 @@ class TestImageAddFile:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write("print('hello')")
             f.flush()
-            img = Image.debian_slim().add_local_file(f.name, "/app/main.py", strategy="copy")
+            img = Image.debian_slim().add_local_file(
+                f.name, "/app/main.py", strategy="copy"
+            )
         step = img.to_proto().steps[0].add_file
         assert step.destination == "/app/main.py"
         assert step.content == b"print('hello')"
@@ -195,7 +207,9 @@ class TestImageAddFile:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False) as f:
             f.write("#!/bin/bash\necho hi")
             f.flush()
-            img = Image.debian_slim().add_local_file(f.name, "/app/run.sh", mode=0o755, strategy="copy")
+            img = Image.debian_slim().add_local_file(
+                f.name, "/app/run.sh", mode=0o755, strategy="copy"
+            )
         step = img.to_proto().steps[0].add_file
         assert step.mode == 0o755
 
@@ -227,18 +241,24 @@ class TestAddLocalFileEagerValidation:
 
     def test_nested_dest_accepted(self) -> None:
         """A3: /app/foo.py is valid and should not raise."""
-        img = Image.debian_slim().add_local_file(__file__, "/app/foo.py", strategy="volume")
+        img = Image.debian_slim().add_local_file(
+            __file__, "/app/foo.py", strategy="volume"
+        )
         assert any(lf.dest == "/app/foo.py" for lf in img.lazy_local_files)
 
     def test_nonexistent_src_raises_immediately(self) -> None:
         """A5: a missing source file should raise FileNotFoundError at construction."""
         with pytest.raises(FileNotFoundError, match="not found"):
-            Image.debian_slim().add_local_file("/no/such/file.py", "/app/file.py", strategy="volume")
+            Image.debian_slim().add_local_file(
+                "/no/such/file.py", "/app/file.py", strategy="volume"
+            )
 
     def test_copy_strategy_unaffected(self) -> None:
         """strategy='copy' already raised FileNotFoundError; behaviour must not change."""
         with pytest.raises((FileNotFoundError, OSError)):
-            Image.debian_slim().add_local_file("/no/such/file.py", "/app/file.py", strategy="copy")
+            Image.debian_slim().add_local_file(
+                "/no/such/file.py", "/app/file.py", strategy="copy"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -259,108 +279,139 @@ class TestAddLocalDirExclude:
 
     def _collect_dests(self, src: str, exclude: list[str]) -> set[str]:
         """Run add_local_dir(strategy='copy') and return the set of destinations."""
-        img = Image.debian_slim().add_local_dir(src, "/app", strategy="copy", exclude=exclude)
+        img = Image.debian_slim().add_local_dir(
+            src, "/app", strategy="copy", exclude=exclude
+        )
         return {s.add_file.destination for s in img.to_proto().steps}
 
     def test_venv_deeply_nested_excluded(self) -> None:
         """'.venv/**' must exclude files at arbitrary depth under .venv/."""
         with tempfile.TemporaryDirectory() as d:
-            self._make_tree(d, [
-                "main.py",
-                ".venv/pyvenv.cfg",
-                ".venv/lib/python3.14/site-packages/rich/pretty.py",
-                ".venv/lib/python3.14/site-packages/requests/__init__.py",
-            ])
+            self._make_tree(
+                d,
+                [
+                    "main.py",
+                    ".venv/pyvenv.cfg",
+                    ".venv/lib/python3.14/site-packages/rich/pretty.py",
+                    ".venv/lib/python3.14/site-packages/requests/__init__.py",
+                ],
+            )
             dests = self._collect_dests(d, [".venv/**"])
         assert dests == {"/app/main.py"}
 
     def test_named_dot_venv_deeply_nested_excluded(self) -> None:
         """'.*_venv/**' must exclude local SDK dev virtualenv directories."""
         with tempfile.TemporaryDirectory() as d:
-            self._make_tree(d, [
-                "main.py",
-                ".rene_venv/pyvenv.cfg",
-                ".rene_venv/lib/python3.11/site-packages/pyarrow/__init__.py",
-            ])
+            self._make_tree(
+                d,
+                [
+                    "main.py",
+                    ".rene_venv/pyvenv.cfg",
+                    ".rene_venv/lib/python3.11/site-packages/pyarrow/__init__.py",
+                ],
+            )
             dests = self._collect_dests(d, [".*_venv/**"])
         assert dests == {"/app/main.py"}
 
     def test_dunder_pycache_anywhere(self) -> None:
         """'**/__pycache__/**' must exclude __pycache__ at any depth."""
         with tempfile.TemporaryDirectory() as d:
-            self._make_tree(d, [
-                "app.py",
-                "__pycache__/app.cpython-314.pyc",
-                "pkg/__pycache__/mod.cpython-314.pyc",
-                "pkg/sub/__pycache__/deep.cpython-314.pyc",
-            ])
+            self._make_tree(
+                d,
+                [
+                    "app.py",
+                    "__pycache__/app.cpython-314.pyc",
+                    "pkg/__pycache__/mod.cpython-314.pyc",
+                    "pkg/sub/__pycache__/deep.cpython-314.pyc",
+                ],
+            )
             dests = self._collect_dests(d, ["**/__pycache__/**"])
         assert dests == {"/app/app.py"}
 
     def test_star_pyc_anywhere(self) -> None:
         """'**/*.pyc' must exclude .pyc files at any depth."""
         with tempfile.TemporaryDirectory() as d:
-            self._make_tree(d, [
-                "app.py",
-                "root.pyc",
-                "pkg/mod.pyc",
-                "pkg/sub/deep.pyc",
-            ])
+            self._make_tree(
+                d,
+                [
+                    "app.py",
+                    "root.pyc",
+                    "pkg/mod.pyc",
+                    "pkg/sub/deep.pyc",
+                ],
+            )
             dests = self._collect_dests(d, ["**/*.pyc"])
         assert dests == {"/app/app.py"}
 
     def test_prefix_wildcard_dir(self) -> None:
         """'bazel-*/**' must exclude contents of any bazel-* directory."""
         with tempfile.TemporaryDirectory() as d:
-            self._make_tree(d, [
-                "BUILD",
-                "bazel-bin/pkg/lib.so",
-                "bazel-out/k8/bin/main",
-            ])
+            self._make_tree(
+                d,
+                [
+                    "BUILD",
+                    "bazel-bin/pkg/lib.so",
+                    "bazel-out/k8/bin/main",
+                ],
+            )
             dests = self._collect_dests(d, ["bazel-*/**"])
         assert dests == {"/app/BUILD"}
 
     def test_multiple_excludes_combined(self) -> None:
         """Multiple patterns work together (mirrors DEFAULT_EXCLUDES subset)."""
         with tempfile.TemporaryDirectory() as d:
-            self._make_tree(d, [
-                "src/main.py",
-                "src/util.py",
-                ".venv/lib/python3.14/site-packages/rich/pretty.py",
-                ".git/objects/abc123",
-                ".git/HEAD",
-                "src/__pycache__/main.cpython-314.pyc",
-                "bazel-bin/pkg/lib.so",
-                ".cache/something",
-            ])
-            dests = self._collect_dests(d, [
-                ".cache/**",
-                ".git/**",
-                "**/__pycache__/**",
-                "**/*.pyc",
-                "bazel-*/**",
-                ".venv/**",
-            ])
+            self._make_tree(
+                d,
+                [
+                    "src/main.py",
+                    "src/util.py",
+                    ".venv/lib/python3.14/site-packages/rich/pretty.py",
+                    ".git/objects/abc123",
+                    ".git/HEAD",
+                    "src/__pycache__/main.cpython-314.pyc",
+                    "bazel-bin/pkg/lib.so",
+                    ".cache/something",
+                ],
+            )
+            dests = self._collect_dests(
+                d,
+                [
+                    ".cache/**",
+                    ".git/**",
+                    "**/__pycache__/**",
+                    "**/*.pyc",
+                    "bazel-*/**",
+                    ".venv/**",
+                ],
+            )
         assert dests == {"/app/src/main.py", "/app/src/util.py"}
 
     def test_no_excludes_includes_everything(self) -> None:
         with tempfile.TemporaryDirectory() as d:
-            self._make_tree(d, [
-                "a.py",
-                ".venv/lib/foo.py",
-                "__pycache__/a.pyc",
-            ])
+            self._make_tree(
+                d,
+                [
+                    "a.py",
+                    ".venv/lib/foo.py",
+                    "__pycache__/a.pyc",
+                ],
+            )
             dests = self._collect_dests(d, [])
         assert len(dests) == 3
 
     def test_exclude_with_volume_strategy(self) -> None:
         """Exclude patterns also apply with strategy='volume'."""
         with tempfile.TemporaryDirectory() as d:
-            self._make_tree(d, [
-                "app.py",
-                ".venv/lib/python3.14/site-packages/pkg/mod.py",
-            ])
-            img = Image.debian_slim().add_local_dir(d, "/app", strategy="volume", exclude=[".venv/**"])
+            self._make_tree(
+                d,
+                [
+                    "app.py",
+                    ".venv/lib/python3.14/site-packages/pkg/mod.py",
+                ],
+            )
+            img = Image.debian_slim().add_local_dir(
+                d, "/app", strategy="volume", exclude=[".venv/**"]
+            )
         lazy_dests = {lf.dest for lf in img.lazy_local_files}
         assert len(lazy_dests) == 1
         assert any("app.py" in d for d in lazy_dests)
@@ -368,12 +419,15 @@ class TestAddLocalDirExclude:
     def test_star_does_not_cross_directories(self) -> None:
         """'*.pyc' only matches root-level .pyc, not nested ones."""
         with tempfile.TemporaryDirectory() as d:
-            self._make_tree(d, [
-                "app.py",
-                "root.pyc",
-                "pkg/nested.pyc",
-                "pkg/sub/deep.pyc",
-            ])
+            self._make_tree(
+                d,
+                [
+                    "app.py",
+                    "root.pyc",
+                    "pkg/nested.pyc",
+                    "pkg/sub/deep.pyc",
+                ],
+            )
             dests = self._collect_dests(d, ["*.pyc"])
         # Only root.pyc excluded; nested .pyc files are kept
         assert dests == {"/app/app.py", "/app/pkg/nested.pyc", "/app/pkg/sub/deep.pyc"}
@@ -381,23 +435,29 @@ class TestAddLocalDirExclude:
     def test_doublestar_crosses_directories(self) -> None:
         """'**/*.pyc' matches .pyc at any depth including root."""
         with tempfile.TemporaryDirectory() as d:
-            self._make_tree(d, [
-                "app.py",
-                "root.pyc",
-                "pkg/nested.pyc",
-                "pkg/sub/deep.pyc",
-            ])
+            self._make_tree(
+                d,
+                [
+                    "app.py",
+                    "root.pyc",
+                    "pkg/nested.pyc",
+                    "pkg/sub/deep.pyc",
+                ],
+            )
             dests = self._collect_dests(d, ["**/*.pyc"])
         assert dests == {"/app/app.py"}
 
     def test_venv_only_matches_root_venv(self) -> None:
         """'.venv/**' excludes root .venv only, not a nested one."""
         with tempfile.TemporaryDirectory() as d:
-            self._make_tree(d, [
-                "app.py",
-                ".venv/lib/foo.py",
-                "projects/other/.venv/lib/bar.py",
-            ])
+            self._make_tree(
+                d,
+                [
+                    "app.py",
+                    ".venv/lib/foo.py",
+                    "projects/other/.venv/lib/bar.py",
+                ],
+            )
             dests = self._collect_dests(d, [".venv/**"])
         # Root .venv excluded, nested .venv kept
         assert dests == {"/app/app.py", "/app/projects/other/.venv/lib/bar.py"}
@@ -423,29 +483,37 @@ class TestChalkignore:
         (Path(root) / filename).write_text(content)
 
     def _collect_dests(self, src: str, exclude: list[str] | None = None) -> set[str]:
-        img = Image.debian_slim().add_local_dir(src, "/app", strategy="copy", exclude=exclude)
+        img = Image.debian_slim().add_local_dir(
+            src, "/app", strategy="copy", exclude=exclude
+        )
         return {s.add_file.destination for s in img.to_proto().steps}
 
     def test_git_dir_always_excluded(self) -> None:
         """.git/** is excluded even without any ignore file."""
         with tempfile.TemporaryDirectory() as d:
-            self._make_tree(d, [
-                "main.py",
-                ".git/HEAD",
-                ".git/objects/abc123",
-            ])
+            self._make_tree(
+                d,
+                [
+                    "main.py",
+                    ".git/HEAD",
+                    ".git/objects/abc123",
+                ],
+            )
             dests = self._collect_dests(d)
         assert dests == {"/app/main.py"}
 
     def test_chalkignore_excludes_files(self) -> None:
         """Patterns in .chalkignore are respected."""
         with tempfile.TemporaryDirectory() as d:
-            self._make_tree(d, [
-                "main.py",
-                "data/big.csv",
-                "data/small.csv",
-                "src/app.py",
-            ])
+            self._make_tree(
+                d,
+                [
+                    "main.py",
+                    "data/big.csv",
+                    "data/small.csv",
+                    "src/app.py",
+                ],
+            )
             self._write_ignore(d, ".chalkignore", "data/**\n")
             dests = self._collect_dests(d)
         assert dests == {"/app/main.py", "/app/src/app.py"}
@@ -453,11 +521,14 @@ class TestChalkignore:
     def test_gitignore_excludes_files(self) -> None:
         """Patterns in .gitignore are also respected."""
         with tempfile.TemporaryDirectory() as d:
-            self._make_tree(d, [
-                "main.py",
-                "__pycache__/main.cpython-314.pyc",
-                ".venv/lib/foo.py",
-            ])
+            self._make_tree(
+                d,
+                [
+                    "main.py",
+                    "__pycache__/main.cpython-314.pyc",
+                    ".venv/lib/foo.py",
+                ],
+            )
             self._write_ignore(d, ".gitignore", "**/__pycache__/**\n.venv/**\n")
             dests = self._collect_dests(d)
         # .gitignore itself is a regular file and is included.
@@ -466,11 +537,14 @@ class TestChalkignore:
     def test_chalkignore_negation_overrides_gitignore(self) -> None:
         """A ! pattern in .chalkignore can un-ignore a .gitignore match."""
         with tempfile.TemporaryDirectory() as d:
-            self._make_tree(d, [
-                "main.py",
-                "logs/debug.log",
-                "logs/important.log",
-            ])
+            self._make_tree(
+                d,
+                [
+                    "main.py",
+                    "logs/debug.log",
+                    "logs/important.log",
+                ],
+            )
             self._write_ignore(d, ".gitignore", "logs/**\n")
             self._write_ignore(d, ".chalkignore", "!logs/important.log\n")
             dests = self._collect_dests(d)
@@ -479,11 +553,18 @@ class TestChalkignore:
     def test_chalkignore_comments_and_blanks(self) -> None:
         """Comments and blank lines in .chalkignore are ignored."""
         with tempfile.TemporaryDirectory() as d:
-            self._make_tree(d, [
-                "main.py",
-                "tmp/scratch.txt",
-            ])
-            self._write_ignore(d, ".chalkignore", "# This is a comment\n\ntmp/**\n\n# Another comment\n")
+            self._make_tree(
+                d,
+                [
+                    "main.py",
+                    "tmp/scratch.txt",
+                ],
+            )
+            self._write_ignore(
+                d,
+                ".chalkignore",
+                "# This is a comment\n\ntmp/**\n\n# Another comment\n",
+            )
             dests = self._collect_dests(d)
         assert dests == {"/app/main.py"}
 
@@ -499,22 +580,28 @@ class TestChalkignore:
     def test_no_ignore_files_no_implicit_excludes(self) -> None:
         """Without ignore files, only .git/** is excluded (no other implicit excludes)."""
         with tempfile.TemporaryDirectory() as d:
-            self._make_tree(d, [
-                "main.py",
-                ".venv/lib/foo.py",
-                "__pycache__/a.pyc",
-            ])
+            self._make_tree(
+                d,
+                [
+                    "main.py",
+                    ".venv/lib/foo.py",
+                    "__pycache__/a.pyc",
+                ],
+            )
             dests = self._collect_dests(d)
         assert len(dests) == 3
 
     def test_combined_with_exclude_param(self) -> None:
         """Programmatic exclude works alongside ignore files."""
         with tempfile.TemporaryDirectory() as d:
-            self._make_tree(d, [
-                "main.py",
-                "data/big.csv",
-                "tmp/scratch.txt",
-            ])
+            self._make_tree(
+                d,
+                [
+                    "main.py",
+                    "data/big.csv",
+                    "tmp/scratch.txt",
+                ],
+            )
             self._write_ignore(d, ".chalkignore", "tmp/**\n")
             dests = self._collect_dests(d, exclude=["data/**"])
         assert dests == {"/app/main.py"}
@@ -522,10 +609,13 @@ class TestChalkignore:
     def test_chalkignore_with_volume_strategy(self) -> None:
         """Ignore files also apply with strategy='volume'."""
         with tempfile.TemporaryDirectory() as d:
-            self._make_tree(d, [
-                "app.py",
-                "data/big.csv",
-            ])
+            self._make_tree(
+                d,
+                [
+                    "app.py",
+                    "data/big.csv",
+                ],
+            )
             self._write_ignore(d, ".chalkignore", "data/**\n")
             img = Image.debian_slim().add_local_dir(d, "/app", strategy="volume")
         lazy_dests = {lf.dest for lf in img.lazy_local_files}
@@ -535,10 +625,13 @@ class TestChalkignore:
     def test_chalkignore_escaped_hash(self) -> None:
         """A line starting with \\# matches a literal # filename."""
         with tempfile.TemporaryDirectory() as d:
-            self._make_tree(d, [
-                "main.py",
-                "#notes.txt",
-            ])
+            self._make_tree(
+                d,
+                [
+                    "main.py",
+                    "#notes.txt",
+                ],
+            )
             self._write_ignore(d, ".chalkignore", "\\#notes.txt\n")
             dests = self._collect_dests(d)
         assert dests == {"/app/main.py"}
@@ -546,11 +639,14 @@ class TestChalkignore:
     def test_gitignore_and_chalkignore_combined(self) -> None:
         """Both .gitignore and .chalkignore patterns are combined."""
         with tempfile.TemporaryDirectory() as d:
-            self._make_tree(d, [
-                "main.py",
-                "__pycache__/mod.pyc",
-                "data/big.csv",
-            ])
+            self._make_tree(
+                d,
+                [
+                    "main.py",
+                    "__pycache__/mod.pyc",
+                    "data/big.csv",
+                ],
+            )
             self._write_ignore(d, ".gitignore", "**/__pycache__/**\n")
             self._write_ignore(d, ".chalkignore", "data/**\n")
             dests = self._collect_dests(d)
@@ -559,14 +655,17 @@ class TestChalkignore:
     def test_nested_gitignore(self) -> None:
         """A .gitignore in a subdirectory applies only within that subtree."""
         with tempfile.TemporaryDirectory() as d:
-            self._make_tree(d, [
-                "main.py",
-                "root.log",
-                "src/app.py",
-                "src/debug.log",
-                "src/lib/util.py",
-                "src/lib/trace.log",
-            ])
+            self._make_tree(
+                d,
+                [
+                    "main.py",
+                    "root.log",
+                    "src/app.py",
+                    "src/debug.log",
+                    "src/lib/util.py",
+                    "src/lib/trace.log",
+                ],
+            )
             # Root .gitignore does NOT ignore .log files.
             # src/.gitignore ignores *.log only under src/ (root level only, not **).
             self._write_ignore(d, "src/.gitignore", "*.log\n")
@@ -587,29 +686,40 @@ class TestChalkignore:
     def test_nested_gitignore_doublestar(self) -> None:
         """A nested .gitignore with ** crosses directories within its subtree."""
         with tempfile.TemporaryDirectory() as d:
-            self._make_tree(d, [
-                "main.py",
-                "root.log",
-                "src/app.py",
-                "src/debug.log",
-                "src/lib/trace.log",
-            ])
+            self._make_tree(
+                d,
+                [
+                    "main.py",
+                    "root.log",
+                    "src/app.py",
+                    "src/debug.log",
+                    "src/lib/trace.log",
+                ],
+            )
             self._write_ignore(d, "src/.gitignore", "**/*.log\n")
             dests = self._collect_dests(d)
         # root.log is NOT excluded (outside src/ domain).
         # src/debug.log and src/lib/trace.log ARE excluded.
         # src/.gitignore is a regular file, included.
-        assert dests == {"/app/main.py", "/app/root.log", "/app/src/app.py", "/app/src/.gitignore"}
+        assert dests == {
+            "/app/main.py",
+            "/app/root.log",
+            "/app/src/app.py",
+            "/app/src/.gitignore",
+        }
 
     def test_nested_chalkignore(self) -> None:
         """A .chalkignore in a subdirectory also works with domain scoping."""
         with tempfile.TemporaryDirectory() as d:
-            self._make_tree(d, [
-                "main.py",
-                "data/raw/big.csv",
-                "data/raw/small.csv",
-                "data/processed/clean.csv",
-            ])
+            self._make_tree(
+                d,
+                [
+                    "main.py",
+                    "data/raw/big.csv",
+                    "data/raw/small.csv",
+                    "data/processed/clean.csv",
+                ],
+            )
             self._write_ignore(d, "data/.chalkignore", "raw/**\n")
             dests = self._collect_dests(d)
         assert dests == {"/app/main.py", "/app/data/processed/clean.csv"}
@@ -617,11 +727,14 @@ class TestChalkignore:
     def test_nested_negation_overrides_parent(self) -> None:
         """A nested .chalkignore can negate a root .gitignore pattern."""
         with tempfile.TemporaryDirectory() as d:
-            self._make_tree(d, [
-                "main.py",
-                "build/output.o",
-                "build/important/keep.o",
-            ])
+            self._make_tree(
+                d,
+                [
+                    "main.py",
+                    "build/output.o",
+                    "build/important/keep.o",
+                ],
+            )
             self._write_ignore(d, ".gitignore", "build/**\n")
             self._write_ignore(d, "build/important/.chalkignore", "!*.o\n")
             dests = self._collect_dests(d)
@@ -648,12 +761,15 @@ class TestVolumeGrouping:
     def test_add_local_dir_single_volume(self) -> None:
         """All files from one add_local_dir call should produce one volume group."""
         with tempfile.TemporaryDirectory() as d:
-            self._make_tree(d, [
-                "main.py",
-                "pkg/__init__.py",
-                "pkg/sub/deep.py",
-                "lib/utils.py",
-            ])
+            self._make_tree(
+                d,
+                [
+                    "main.py",
+                    "pkg/__init__.py",
+                    "pkg/sub/deep.py",
+                    "lib/utils.py",
+                ],
+            )
             img = Image.debian_slim().add_local_dir(d, "/workspace", strategy="volume")
         groups = img.lazy_local_files_grouped_for_volume_mounts()
         assert list(groups.keys()) == ["/workspace"]
@@ -713,7 +829,9 @@ class TestImageDockerfileCommands:
     """Test dockerfile_commands builder."""
 
     def test_raw_commands(self) -> None:
-        img = Image.base("alpine").dockerfile_commands(["EXPOSE 8080", "LABEL maintainer=test"])
+        img = Image.base("alpine").dockerfile_commands(
+            ["EXPOSE 8080", "LABEL maintainer=test"]
+        )
         step = img.to_proto().steps[0].dockerfile_commands
         assert step.commands == ["EXPOSE 8080", "LABEL maintainer=test"]
 
@@ -747,7 +865,12 @@ class TestImageRepr:
         assert "alpine" in r
 
     def test_repr_with_steps(self) -> None:
-        img = Image.debian_slim().pip_install(["requests"]).workdir("/app").env({"K": "V"})
+        img = (
+            Image.debian_slim()
+            .pip_install(["requests"])
+            .workdir("/app")
+            .env({"K": "V"})
+        )
         r = repr(img)
         assert "steps=1" in r
         assert "/app" in r

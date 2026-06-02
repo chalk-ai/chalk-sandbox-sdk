@@ -57,12 +57,9 @@ DEFAULT_GITHUB_REPO = "chalk-ai/chalk-sandbox-sdk"
 # once. Subsequent `Container.run()` calls reuse the cached image, skipping the
 # apt-get and opencode install entirely.
 
-OPENCODE_IMAGE = (
-    Image.debian_slim()
-    .run_commands(
-        "apt-get update -qq && apt-get install -y -qq curl git 2>&1",
-        "curl -fsSL https://opencode.ai/install | bash 2>&1",
-    )
+OPENCODE_IMAGE = Image.debian_slim().run_commands(
+    "apt-get update -qq && apt-get install -y -qq curl git 2>&1",
+    "curl -fsSL https://opencode.ai/install | bash 2>&1",
 )
 
 
@@ -72,6 +69,7 @@ OPENCODE_IMAGE = (
 # provided it's injected via `GIT_ASKPASS` so the credential doesn't appear in logs.
 # We also upload your local `~/.config/opencode/opencode.json` if it exists, carrying
 # over model preferences and provider keys without re-configuring inside the container.
+
 
 def clone_repo(container: Container, repo: str, ref: str, token: str | None) -> None:
     log.info("Cloning %s@%s into /root/code...", repo, ref)
@@ -102,7 +100,8 @@ def clone_repo(container: Container, repo: str, ref: str, token: str | None) -> 
         content = config_path.read_text()
         container.exec("bash", "-c", "mkdir -p /root/.config/opencode")
         container.exec(
-            "bash", "-c",
+            "bash",
+            "-c",
             f"cat > /root/.config/opencode/opencode.json << 'EOFCONFIG'\n{content}\nEOFCONFIG",
         )
 
@@ -113,16 +112,19 @@ def clone_repo(container: Container, repo: str, ref: str, token: str | None) -> 
 # `/tmp/opencode.log`. We then poll the HTTP endpoint every 2 seconds (up to 2 minutes)
 # to confirm it's reachable before printing the URL — so the link we hand back is live.
 
+
 def start_server(container: Container) -> None:
     log.info("Stopping placeholder HTTP server on port %d...", OPENCODE_PORT)
     container.exec(
-        "bash", "-c",
+        "bash",
+        "-c",
         "kill $(cat /tmp/http_server.pid 2>/dev/null) 2>/dev/null; rm -f /tmp/http_server.pid; true",
     )
 
     log.info("Starting opencode server on port %d...", OPENCODE_PORT)
     container.exec(
-        "bash", "-c",
+        "bash",
+        "-c",
         f"nohup {OPENCODE_BIN} serve --hostname=0.0.0.0 --port={OPENCODE_PORT}"
         f" --log-level=DEBUG > /tmp/opencode.log 2>&1 &",
     )
@@ -130,7 +132,8 @@ def start_server(container: Container) -> None:
     log.info("Waiting for opencode to be ready...")
     for attempt in range(60):
         result = container.exec(
-            "bash", "-c",
+            "bash",
+            "-c",
             f"curl -s http://localhost:{OPENCODE_PORT} > /dev/null 2>&1; echo $?",
         )
         if result.stdout_text.strip() == "0":
@@ -152,7 +155,9 @@ def _print_access_info(container: Container, password: str | None) -> None:
         password_prefix = f"OPENCODE_SERVER_PASSWORD={password} " if password else ""
         print(f"  TUI:     {password_prefix}opencode attach {web_url}")
     else:
-        log.warning("No web_url returned; container is running but port may not be publicly reachable.")
+        log.warning(
+            "No web_url returned; container is running but port may not be publicly reachable."
+        )
         print(f"  Container ID: {container.id}")
     print("-----------------------------\n")
 
@@ -162,6 +167,7 @@ def _print_access_info(container: Container, password: str | None) -> None:
 # `main()` starts the container, runs the three setup steps in order, then prints
 # access info and sleeps until the timeout or Ctrl-C. The `finally` block guarantees
 # the container is stopped regardless of how we exit — no orphaned containers.
+
 
 def main(
     container_name: str,
@@ -186,7 +192,8 @@ def main(
             env=env,
             port=OPENCODE_PORT,
             entrypoint=[
-                "bash", "-c",
+                "bash",
+                "-c",
                 f"python3 -m http.server {OPENCODE_PORT} --bind 0.0.0.0 &>/dev/null & echo $! > /tmp/http_server.pid; tail -f /dev/null",
             ],
         ).run()
@@ -215,19 +222,45 @@ def _parse_timeout(value: str) -> int:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Launch OpenCode server in a Chalk container")
-    parser.add_argument("--timeout", type=str, default="12",
-                        help="Server lifetime (e.g. 2h, 90m). Bare number treated as hours. Default: 12")
-    parser.add_argument("--name", type=str, default=f"opencode-server-{uuid.uuid4().hex[:8]}",
-                        help="Container name. Default: opencode-server-<random>")
-    parser.add_argument("--password", type=str, default=os.environ.get("OPENCODE_SERVER_PASSWORD"),
-                        help="OpenCode server password. Default: $OPENCODE_SERVER_PASSWORD")
-    parser.add_argument("--github-repo", type=str, default=DEFAULT_GITHUB_REPO,
-                        help=f"GitHub repo to clone (owner/repo). Default: {DEFAULT_GITHUB_REPO}")
-    parser.add_argument("--github-ref", type=str, default=os.environ.get("GITHUB_REF", "main"),
-                        help="Git branch, tag, or SHA to check out. Default: $GITHUB_REF or main")
-    parser.add_argument("--github-token", type=str, default=os.environ.get("GITHUB_TOKEN"),
-                        help="GitHub PAT for private repos. Tip: use $(gh auth token)")
+    parser = argparse.ArgumentParser(
+        description="Launch OpenCode server in a Chalk container"
+    )
+    parser.add_argument(
+        "--timeout",
+        type=str,
+        default="12",
+        help="Server lifetime (e.g. 2h, 90m). Bare number treated as hours. Default: 12",
+    )
+    parser.add_argument(
+        "--name",
+        type=str,
+        default=f"opencode-server-{uuid.uuid4().hex[:8]}",
+        help="Container name. Default: opencode-server-<random>",
+    )
+    parser.add_argument(
+        "--password",
+        type=str,
+        default=os.environ.get("OPENCODE_SERVER_PASSWORD"),
+        help="OpenCode server password. Default: $OPENCODE_SERVER_PASSWORD",
+    )
+    parser.add_argument(
+        "--github-repo",
+        type=str,
+        default=DEFAULT_GITHUB_REPO,
+        help=f"GitHub repo to clone (owner/repo). Default: {DEFAULT_GITHUB_REPO}",
+    )
+    parser.add_argument(
+        "--github-ref",
+        type=str,
+        default=os.environ.get("GITHUB_REF", "main"),
+        help="Git branch, tag, or SHA to check out. Default: $GITHUB_REF or main",
+    )
+    parser.add_argument(
+        "--github-token",
+        type=str,
+        default=os.environ.get("GITHUB_TOKEN"),
+        help="GitHub PAT for private repos. Tip: use $(gh auth token)",
+    )
 
     args = parser.parse_args()
     main(

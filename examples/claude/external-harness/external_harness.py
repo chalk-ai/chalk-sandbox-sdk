@@ -92,6 +92,7 @@ _CONTAINERS: dict[str, Container] = {}
 # The tool returns the chosen name so the model can use it in subsequent
 # `exec_in_container` calls.
 
+
 @tool(
     "start_container",
     (
@@ -111,11 +112,18 @@ async def start_container(args: dict[str, Any]) -> dict[str, Any]:
 
     if name in _CONTAINERS:
         return {
-            "content": [{"type": "text", "text": f"Container '{name}' is already running."}],
+            "content": [
+                {"type": "text", "text": f"Container '{name}' is already running."}
+            ],
             "isError": True,
         }
 
-    log.info("Starting container name=%s base_image=%s pip=%s", name, base_image, pip_packages)
+    log.info(
+        "Starting container name=%s base_image=%s pip=%s",
+        name,
+        base_image,
+        pip_packages,
+    )
 
     image = Image.base(base_image)
     if pip_packages:
@@ -131,7 +139,10 @@ async def start_container(args: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "content": [
-            {"type": "text", "text": f"Started container '{name}' from base_image='{base_image}'."}
+            {
+                "type": "text",
+                "text": f"Started container '{name}' from base_image='{base_image}'.",
+            }
         ]
     }
 
@@ -164,7 +175,10 @@ async def exec_in_container(args: dict[str, Any]) -> dict[str, Any]:
     if container is None:
         return {
             "content": [
-                {"type": "text", "text": f"No container named '{name}'. Call start_container first."}
+                {
+                    "type": "text",
+                    "text": f"No container named '{name}'. Call start_container first.",
+                }
             ],
             "isError": True,
         }
@@ -188,6 +202,7 @@ async def exec_in_container(args: dict[str, Any]) -> dict[str, Any]:
 # `UserMessage` (containing tool results), and a final `ResultMessage`. We
 # render each so the conversation is legible from the terminal — every
 # text block, tool call, and tool result is one line.
+
 
 def _render_message(msg: Any) -> None:
     if isinstance(msg, AssistantMessage):
@@ -220,6 +235,7 @@ def _render_message(msg: Any) -> None:
 # so the demo runs end-to-end non-interactively. In a production harness
 # you would likely keep the default `acceptEdits` mode and supply a
 # `permission_callback` to gate destructive actions.
+
 
 async def run_demo() -> None:
     server = create_sdk_mcp_server(

@@ -362,7 +362,7 @@ DECISIVE_PROBES: list[Probe] = [
         command=(
             "sh",
             "-lc",
-            "for p in /dev/kcore /dev/mem /dev/port; do [ -e \"$p\" ] && echo \"$p\"; done",
+            'for p in /dev/kcore /dev/mem /dev/port; do [ -e "$p" ] && echo "$p"; done',
         ),
         evaluator="no_host_devices",
     ),
@@ -554,8 +554,8 @@ def render_probe_runner_script(probes: list[Probe]) -> str:
         "trap cleanup EXIT",
         "",
         "run_probe() {",
-        "  local probe_name=\"$1\"",
-        "  local probe_file_base=\"$2\"",
+        '  local probe_name="$1"',
+        '  local probe_file_base="$2"',
         "  shift",
         "  shift",
         '  local stdout_file="$results_dir/$probe_file_base.stdout"',
@@ -564,13 +564,13 @@ def render_probe_runner_script(probes: list[Probe]) -> str:
         "  local exit_code",
         '  "$@" >"$stdout_file" 2>"$stderr_file"',
         '  printf "%s\\n" "$?" >"$exit_code_file"',
-        '  exit_code=$(tr -d \'\\n\' < "$exit_code_file")',
+        "  exit_code=$(tr -d '\\n' < \"$exit_code_file\")",
         "  jq -c -n "
         '--arg name "$probe_name" '
         '--rawfile stdout "$stdout_file" '
         '--rawfile stderr "$stderr_file" '
         '--argjson exit_code "$exit_code" '
-        '\'{name: $name, exit_code: $exit_code, stdout: $stdout, stderr: $stderr}\'',
+        "'{name: $name, exit_code: $exit_code, stdout: $stdout, stderr: $stderr}'",
         "}",
         "",
     ]
@@ -632,7 +632,9 @@ def run_probes(container: Container, probes: list[Probe]) -> list[ProbeResult]:
 
     if result.exit_code != 0:
         output = combined_output(result.stdout_text, result.stderr_text)
-        raise RuntimeError(f"batched probe runner failed: {compact(output or 'no output')}")
+        raise RuntimeError(
+            f"batched probe runner failed: {compact(output or 'no output')}"
+        )
 
     return parse_probe_results(result.stdout_text, probes)
 
@@ -732,7 +734,9 @@ def main() -> int:
         for result in results:
             print_probe(result, verbose=args.verbose)
         print_summary(results)
-        return 1 if any(not r.probe.is_info and r.status == "FAIL" for r in results) else 0
+        return (
+            1 if any(not r.probe.is_info and r.status == "FAIL" for r in results) else 0
+        )
 
     if args.container_id and args.container_name:
         raise SystemExit("pass only one of --container-id or --container-name")
@@ -744,7 +748,11 @@ def main() -> int:
         container = Container.from_name(args.container_name)
     else:
         image: Image | str = args.image if args.image else build_image()
-        policy = ContainerSecurityPolicy(kernel_policy=KernelPolicy.RESTRICTED) if args.restricted else None
+        policy = (
+            ContainerSecurityPolicy(kernel_policy=KernelPolicy.RESTRICTED)
+            if args.restricted
+            else None
+        )
         container = Container(image=image, name=args.name, security_policy=policy)
         container.run()
         created_container = True

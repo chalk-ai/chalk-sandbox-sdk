@@ -50,6 +50,7 @@ def hello_vol(auth_headers: dict[str, str]) -> Iterator[str]:
 # Tests
 # ---------------------------------------------------------------------------
 
+
 @needs_staging
 def test_file_readable_in_container(hello_vol: str) -> None:
     """A file uploaded to a volume is visible at the mount path inside a container."""

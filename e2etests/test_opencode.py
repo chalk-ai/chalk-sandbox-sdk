@@ -75,8 +75,8 @@ def test_server_responds_on_localhost(opencode_container: Container) -> None:
 def test_public_web_url_is_accessible(opencode_container: Container) -> None:
     """The container's public web URL responds to requests from outside the container."""
     web_url = opencode_container.info.web_url if opencode_container.info else None
-    assert web_url, "No web_url returned — the container port may not be publicly exposed"
-    resp = httpx.get(web_url, timeout=15, follow_redirects=True)
-    assert resp.status_code < 500, (
-        f"Server at {web_url} returned {resp.status_code}"
+    assert web_url, (
+        "No web_url returned — the container port may not be publicly exposed"
     )
+    resp = httpx.get(web_url, timeout=15, follow_redirects=True)
+    assert resp.status_code < 500, f"Server at {web_url} returned {resp.status_code}"

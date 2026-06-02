@@ -52,7 +52,9 @@ result = container.exec("python", "--version")
 print(result.stdout_text)
 
 print("=== cowsay ===")
-result = container.exec("python", "-c", "import cowsay; cowsay.cow('Hello from Chalk!')")
+result = container.exec(
+    "python", "-c", "import cowsay; cowsay.cow('Hello from Chalk!')"
+)
 print(result.stdout_text)
 
 print("=== volume: ls /data ===")

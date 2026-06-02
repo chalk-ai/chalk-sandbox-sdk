@@ -57,7 +57,9 @@ class TestAsyncGenerator:
 
         async def _collect() -> list[list[int]]:
             handle = fn.defer(3)
-            return [batch.column("result").to_pylist() async for batch in handle.stream()]
+            return [
+                batch.column("result").to_pylist() async for batch in handle.stream()
+            ]
 
         assert asyncio.run(_collect()) == [[0], [1], [2]]
 

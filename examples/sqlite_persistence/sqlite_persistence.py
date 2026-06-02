@@ -65,6 +65,7 @@ image = Image.debian_slim()
 # production workflow you would use the `chalk volume create` CLI or the
 # VolumeClient SDK directly.
 
+
 def create_volume() -> None:
     """Create the shared volume (idempotent)."""
     c = Container._make_empty()
@@ -144,6 +145,7 @@ except Exception as e:
 
 # ## Putting it all together
 
+
 def main() -> None:
     create_volume()
 
@@ -157,11 +159,7 @@ def main() -> None:
         # readers. This proves the data persists on the volume independently of
         # the container that wrote it.
         print("\n=== Starting writer container ===")
-        writer = (
-            Container(image=image)
-            .mount_volume(VOLUME_NAME, MOUNT_PATH)
-            .run()
-        )
+        writer = Container(image=image).mount_volume(VOLUME_NAME, MOUNT_PATH).run()
 
         wait_for_file(writer, MOUNT_PATH)
         result = writer.exec("python3", "-c", WRITE_SCRIPT, timeout_secs=30)
@@ -178,16 +176,8 @@ def main() -> None:
         # Two independent containers mount the same volume and each query the
         # database. Both should see all three rows.
         print("=== Starting reader containers ===")
-        reader_a = (
-            Container(image=image)
-            .mount_volume(VOLUME_NAME, MOUNT_PATH)
-            .run()
-        )
-        reader_b = (
-            Container(image=image)
-            .mount_volume(VOLUME_NAME, MOUNT_PATH)
-            .run()
-        )
+        reader_a = Container(image=image).mount_volume(VOLUME_NAME, MOUNT_PATH).run()
+        reader_b = Container(image=image).mount_volume(VOLUME_NAME, MOUNT_PATH).run()
 
         for reader_name, reader in [("reader-a", reader_a), ("reader-b", reader_b)]:
             wait_for_file(reader, DB_PATH)

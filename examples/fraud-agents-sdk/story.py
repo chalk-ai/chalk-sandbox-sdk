@@ -1,7 +1,7 @@
 """KYC fraud investigator on Chalk Compute.
 
-    uv run python story.py case-fraud
-    uv run python story.py case-legit
+uv run python story.py case-fraud
+uv run python story.py case-legit
 """
 
 import asyncio
@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 import sys
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from chalkcompute import Container, Image, Volume
 
@@ -49,6 +50,7 @@ even if the name matches.
 
 Return a Verdict with specific signals (file + field + observation).
 """
+
 
 class Verdict(BaseModel):
     risk: Literal["low", "medium", "high"]
@@ -93,7 +95,9 @@ async def main(case: str) -> None:
     @function_tool
     def bash(thought: str, command: str) -> str:
         """Run a bash command in /workspace. `thought` is one sentence shown to the user explaining why you're running this command."""
-        return format_result(container.exec("bash", "-lc", f"cd {WORKSPACE} && {command}"))
+        return format_result(
+            container.exec("bash", "-lc", f"cd {WORKSPACE} && {command}")
+        )
 
     agent = Agent(
         name="kyc-fraud-investigator",

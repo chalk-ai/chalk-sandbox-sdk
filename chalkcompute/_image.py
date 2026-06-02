@@ -414,7 +414,9 @@ class Image:
         ... )
         """
         if strategy not in ("copy", "volume"):
-            raise ValueError(f"invalid strategy {strategy!r}, must be 'copy' or 'volume'")
+            raise ValueError(
+                f"invalid strategy {strategy!r}, must be 'copy' or 'volume'"
+            )
         new = self._copy()
         if strategy == "volume":
             _validate_lazy_local_file_destination(dest)
@@ -551,7 +553,9 @@ class Image:
             file_dest = os.path.join(dest, str(rel))
             if strategy == "volume":
                 new._lazy_local_files.add(
-                    LazyLocalFile(src=str(file_path.resolve()), dest=file_dest, mount_root=dest)
+                    LazyLocalFile(
+                        src=str(file_path.resolve()), dest=file_dest, mount_root=dest
+                    )
                 )
             else:
                 content = file_path.read_bytes()
@@ -823,7 +827,9 @@ class Image:
         return "".join(parts)
 
 
-def _validate_lazy_local_file_destination(dest: str, *, mount_root: str | None = None) -> None:
+def _validate_lazy_local_file_destination(
+    dest: str, *, mount_root: str | None = None
+) -> None:
     dest_dir = mount_root or str(Path(dest).parent)
     if dest_dir == "/":
         raise ValueError(

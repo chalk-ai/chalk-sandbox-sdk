@@ -7,11 +7,13 @@ and projects a derived column.
 import pyarrow as pa
 from chalkdf import DataFrame
 
-table = pa.table({
-    "user_id": [1, 2, 3],
-    "distance_km": [0.5, 1.2, 3.7],
-    "active": [True, False, True],
-})
+table = pa.table(
+    {
+        "user_id": [1, 2, 3],
+        "distance_km": [0.5, 1.2, 3.7],
+        "active": [True, False, True],
+    }
+)
 
 df = DataFrame(table)
 print("Input:")

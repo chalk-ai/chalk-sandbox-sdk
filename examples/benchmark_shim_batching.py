@@ -181,7 +181,8 @@ def _benchmark_mode(
 
     single_call = lambda: process_batches(encoded_events[0], single_handler, None, {})
     serial_workload = lambda: [
-        process_batches(ipc_bytes, single_handler, None, {}) for ipc_bytes in encoded_events
+        process_batches(ipc_bytes, single_handler, None, {})
+        for ipc_bytes in encoded_events
     ]
     batched_workload = lambda: process_batches_coalesced(
         encoded_events,

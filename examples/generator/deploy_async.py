@@ -1,6 +1,6 @@
 """Deploy the async generator function.
 
-    uv run python examples/generator/deploy_async.py
+uv run python examples/generator/deploy_async.py
 """
 
 from __future__ import annotations

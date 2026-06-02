@@ -1,6 +1,6 @@
 """Deploy a model that loads config from a chalkfs volume.
 
-    uv run python examples/model/deploy_volume.py
+uv run python examples/model/deploy_volume.py
 """
 
 from __future__ import annotations

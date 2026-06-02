@@ -162,7 +162,7 @@ def is_excluded(rel_path: str, patterns: list[IgnorePattern]) -> bool:
             prefix = p.domain + "/"
             if not rel_path.startswith(prefix):
                 continue
-            match_path = rel_path[len(prefix):]
+            match_path = rel_path[len(prefix) :]
         else:
             match_path = rel_path
         if _match_exclude(match_path, p.pattern):

@@ -430,12 +430,16 @@ def build_image_with_volumes(
     from chalkcompute._volume import VolumeClient
 
     image_uri = build_image(
-        client, image, poll_interval=poll_interval, timeout=timeout,
+        client,
+        image,
+        poll_interval=poll_interval,
+        timeout=timeout,
     )
     volumes: list[VolumeMount] = []
     if image.lazy_local_files:
         volumes = VolumeClient.from_connect(client).upload_lazy_files(
-            image, volume_prefix=volume_prefix,
+            image,
+            volume_prefix=volume_prefix,
         )
     return image_uri, volumes
 

@@ -78,9 +78,18 @@ class TestRateLimitPolicyToDict:
     def test_to_dict_maps_per_to_proto_enum_name(self):
         # Wire format must use the proto enum name so protojson doesn't silently
         # discard the value as unknown (connect-go uses DiscardUnknown: true)
-        assert RateLimitPolicy(rate=10, per="second").to_dict()["per"] == "RATE_LIMIT_PER_SECOND"
-        assert RateLimitPolicy(rate=10, per="minute").to_dict()["per"] == "RATE_LIMIT_PER_MINUTE"
-        assert RateLimitPolicy(rate=10, per="hour").to_dict()["per"] == "RATE_LIMIT_PER_HOUR"
+        assert (
+            RateLimitPolicy(rate=10, per="second").to_dict()["per"]
+            == "RATE_LIMIT_PER_SECOND"
+        )
+        assert (
+            RateLimitPolicy(rate=10, per="minute").to_dict()["per"]
+            == "RATE_LIMIT_PER_MINUTE"
+        )
+        assert (
+            RateLimitPolicy(rate=10, per="hour").to_dict()["per"]
+            == "RATE_LIMIT_PER_HOUR"
+        )
 
     def test_key_included_when_set(self):
         assert RateLimitPolicy(rate=5, per="hour", key="payments").to_dict() == {

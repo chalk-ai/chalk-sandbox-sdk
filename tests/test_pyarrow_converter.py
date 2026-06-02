@@ -52,12 +52,14 @@ class TestRichToArrowSchema:
         assert proto.columns[3].arrow_type.HasField("bool")
 
     def test_temporal_types(self):
-        proto = rich_to_arrow_schema({
-            "ts": datetime,
-            "d": date,
-            "t": time,
-            "dur": timedelta,
-        })
+        proto = rich_to_arrow_schema(
+            {
+                "ts": datetime,
+                "d": date,
+                "t": time,
+                "dur": timedelta,
+            }
+        )
         assert proto.columns[0].arrow_type.HasField("timestamp")
         assert proto.columns[0].arrow_type.timestamp.timezone == "UTC"
         assert proto.columns[1].arrow_type.HasField("date64")
@@ -69,10 +71,12 @@ class TestRichToArrowSchema:
         assert proto.columns[0].arrow_type.HasField("large_binary")
 
     def test_optional_nullable(self):
-        proto = rich_to_arrow_schema({
-            "required": int,
-            "optional": typing.Optional[int],
-        })
+        proto = rich_to_arrow_schema(
+            {
+                "required": int,
+                "optional": typing.Optional[int],
+            }
+        )
         assert proto.columns[0].nullable is False
         assert proto.columns[0].arrow_type.HasField("int64")
         assert proto.columns[1].nullable is True
@@ -116,15 +120,17 @@ class TestRichToArrowSchema:
         assert proto.columns[0].arrow_type.HasField("large_utf8")
 
     def test_special_types(self):
-        proto = rich_to_arrow_schema({
-            "d": decimal.Decimal,
-            "u": uuid.UUID,
-            "ip4": ipaddress.IPv4Address,
-            "ip6": ipaddress.IPv6Address,
-        })
+        proto = rich_to_arrow_schema(
+            {
+                "d": decimal.Decimal,
+                "u": uuid.UUID,
+                "ip4": ipaddress.IPv4Address,
+                "ip6": ipaddress.IPv6Address,
+            }
+        )
         assert proto.columns[0].arrow_type.HasField("large_utf8")  # Decimal
         assert proto.columns[1].arrow_type.HasField("large_utf8")  # UUID
-        assert proto.columns[2].arrow_type.HasField("uint32")      # IPv4
+        assert proto.columns[2].arrow_type.HasField("uint32")  # IPv4
         assert proto.columns[3].arrow_type.HasField("large_utf8")  # IPv6
 
 

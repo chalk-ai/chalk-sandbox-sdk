@@ -112,7 +112,9 @@ class TestVolumeConstructor:
             volume=pb.VolumeInfo(name="my-data"),
         )
 
-        with patch.object(VolumeClient, "from_connect", return_value=client) as from_connect:
+        with patch.object(
+            VolumeClient, "from_connect", return_value=client
+        ) as from_connect:
             vol = Volume("my-data")
 
         assert vol.name == "my-data"
@@ -247,7 +249,9 @@ class TestVolumeClientFromConnect:
             volume=pb.VolumeInfo(name="test-vol"),
         )
 
-        with patch.object(VolumeClient, "from_connect", return_value=client) as from_connect:
+        with patch.object(
+            VolumeClient, "from_connect", return_value=client
+        ) as from_connect:
             vol = Volume("test-vol")
 
         assert vol._client is client
@@ -289,7 +293,9 @@ class TestReadRouting:
         assert req.volume_name == "vol"
         assert req.path == "file.txt"
         assert req.get_signed_uri is True
-        mock_get.assert_called_once_with("https://storage.example.com/file", timeout=300)
+        mock_get.assert_called_once_with(
+            "https://storage.example.com/file", timeout=300
+        )
 
     def test_inline_data_falls_back_without_http(self):
         client = _make_vol_client()
@@ -332,7 +338,8 @@ class TestUploadRouting:
 
         with patch("httpx.post") as mock_post, patch("httpx.put") as mock_put:
             mock_post.return_value = MagicMock(
-                status_code=200, is_success=True,
+                status_code=200,
+                is_success=True,
                 headers={"Location": "https://session/"},
             )
             mock_put.return_value = MagicMock(status_code=200, is_success=True)
@@ -366,7 +373,8 @@ class TestPresignedResumable:
 
         with patch("httpx.post") as mock_post, patch("httpx.put") as mock_put:
             mock_post.return_value = MagicMock(
-                status_code=200, is_success=True,
+                status_code=200,
+                is_success=True,
                 headers={"Location": "https://session/"},
             )
             mock_put.return_value = MagicMock(status_code=200, is_success=True)
@@ -392,8 +400,11 @@ class TestPresignedResumable:
         with patch("httpx.post") as mock_post, patch("httpx.put") as mock_put:
             mock_post.side_effect = [
                 MagicMock(status_code=401, is_success=False),
-                MagicMock(status_code=200, is_success=True,
-                          headers={"Location": "https://session/"}),
+                MagicMock(
+                    status_code=200,
+                    is_success=True,
+                    headers={"Location": "https://session/"},
+                ),
             ]
             mock_put.return_value = MagicMock(status_code=200, is_success=True)
 
@@ -409,7 +420,8 @@ class TestPresignedResumable:
 
         with patch("httpx.post") as mock_post, patch("httpx.put") as mock_put:
             mock_post.return_value = MagicMock(
-                status_code=200, is_success=True,
+                status_code=200,
+                is_success=True,
                 headers={"Location": "https://session/"},
             )
             mock_put.return_value = MagicMock(status_code=200, is_success=True)
@@ -429,14 +441,19 @@ class TestPresignedResumable:
 class TestPresignedMultipart:
     def test_success(self):
         client = _make_vol_client()
-        _set_multipart_response(client, "s3-obj",
-                                part_uris=["https://s3/part/1"],
-                                completion_uri="https://s3/complete")
+        _set_multipart_response(
+            client,
+            "s3-obj",
+            part_uris=["https://s3/part/1"],
+            completion_uri="https://s3/complete",
+        )
         data = b"D" * (_INLINE_THRESHOLD_BYTES + 1)
 
         with patch("httpx.put") as mock_put, patch("httpx.post") as mock_post:
             mock_put.return_value = MagicMock(
-                status_code=200, is_success=True, headers={"ETag": '"abc"'},
+                status_code=200,
+                is_success=True,
+                headers={"ETag": '"abc"'},
             )
             mock_post.return_value = MagicMock(status_code=200, is_success=True)
 
@@ -463,7 +480,9 @@ class TestPresignedMultipart:
 
         forbidden = MagicMock(status_code=403, is_success=False)
         forbidden.raise_for_status.side_effect = _httpx.HTTPStatusError(
-            "403", request=MagicMock(), response=forbidden,
+            "403",
+            request=MagicMock(),
+            response=forbidden,
         )
 
         with patch("httpx.put") as mock_put, patch("httpx.post") as mock_post:
@@ -490,14 +509,19 @@ class TestPresignedMultipart:
 
         with patch("httpx.put") as mock_put, patch("httpx.post") as mock_post:
             mock_put.return_value = MagicMock(
-                status_code=200, is_success=True, headers={"ETag": '"abc"'},
+                status_code=200,
+                is_success=True,
+                headers={"ETag": '"abc"'},
             )
             mock_post.return_value = MagicMock(status_code=200, is_success=True)
 
             with caplog.at_level(logging.INFO, logger="chalkcompute._volume"):
                 _put_file_presigned(client, "vol", "archive.tar", data)
 
-        assert "Multipart upload complete: object=s3-obj parts=1 refreshes=0" in caplog.text
+        assert (
+            "Multipart upload complete: object=s3-obj parts=1 refreshes=0"
+            in caplog.text
+        )
         assert "Uploaded archive.tar (presigned multipart" in caplog.text
 
 

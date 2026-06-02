@@ -106,4 +106,6 @@ if __name__ == "__main__":
         info.version,
         info.id,
     )
-    log.info("the platform will invoke this function every minute — watch %s", SLACK_CHANNEL)
+    log.info(
+        "the platform will invoke this function every minute — watch %s", SLACK_CHANNEL
+    )

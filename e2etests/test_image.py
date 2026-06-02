@@ -23,7 +23,9 @@ def _poll_until_ready(sandbox_id: str, headers: dict[str, str]) -> dict:
     """Poll GetSandbox until the sandbox reaches 'ready' or 'error' state."""
     deadline = time.monotonic() + POLL_TIMEOUT
     while True:
-        resp = _connect_rpc(_SANDBOX_SVC, "GetSandbox", {"sandboxId": sandbox_id}, headers)
+        resp = _connect_rpc(
+            _SANDBOX_SVC, "GetSandbox", {"sandboxId": sandbox_id}, headers
+        )
         assert resp.status_code == 200, f"GetSandbox failed: {resp.text}"
         data = resp.json()
         state = data.get("sandbox", {}).get("state", "")
@@ -50,7 +52,9 @@ def test_list_sandboxes(auth_headers: dict[str, str]) -> None:
 
 
 @needs_staging
-@pytest.mark.skip(reason="Sandbox pod connectivity is flaky in staging — sandbox enters error/timeout after image build")
+@pytest.mark.skip(
+    reason="Sandbox pod connectivity is flaky in staging — sandbox enters error/timeout after image build"
+)
 def test_create_sandbox_with_debian_image(auth_headers: dict[str, str]) -> None:
     """Create a sandbox with a debian_slim ImageSpec using async polling."""
     img = (
@@ -87,11 +91,15 @@ def test_create_sandbox_with_debian_image(auth_headers: dict[str, str]) -> None:
     else:
         assert state == "ready", f"Unexpected state: {state}"
 
-    _connect_rpc(_SANDBOX_SVC, "TerminateSandbox", {"sandboxId": sandbox_id}, auth_headers)
+    _connect_rpc(
+        _SANDBOX_SVC, "TerminateSandbox", {"sandboxId": sandbox_id}, auth_headers
+    )
 
 
 @needs_staging
-@pytest.mark.skip(reason="Sandbox pod connectivity is flaky in staging — 504 gateway timeout")
+@pytest.mark.skip(
+    reason="Sandbox pod connectivity is flaky in staging — 504 gateway timeout"
+)
 def test_create_sandbox_with_plain_image(auth_headers: dict[str, str]) -> None:
     """Create a sandbox with a plain image string and poll until ready."""
     body = {
@@ -117,7 +125,9 @@ def test_create_sandbox_with_plain_image(auth_headers: dict[str, str]) -> None:
         assert state == "ready", f"Unexpected state: {state}"
 
     print(f"Sandbox {sandbox_id} is ready")
-    _connect_rpc(_SANDBOX_SVC, "TerminateSandbox", {"sandboxId": sandbox_id}, auth_headers)
+    _connect_rpc(
+        _SANDBOX_SVC, "TerminateSandbox", {"sandboxId": sandbox_id}, auth_headers
+    )
 
 
 @needs_staging
@@ -132,7 +142,9 @@ def test_build_custom_image(auth_headers: dict[str, str]) -> None:
     spec_dict = MessageToDict(img.to_proto())
     body = {"imageSpec": spec_dict}
 
-    resp = _connect_rpc(_CUSTOM_IMAGE_SVC, "BuildCustomImage", body, auth_headers, timeout=600)
+    resp = _connect_rpc(
+        _CUSTOM_IMAGE_SVC, "BuildCustomImage", body, auth_headers, timeout=600
+    )
     assert resp.status_code == 200, f"BuildCustomImage failed: {resp.text}"
 
     data = resp.json()
@@ -143,7 +155,9 @@ def test_build_custom_image(auth_headers: dict[str, str]) -> None:
     build_id = data["buildId"]
 
     # Query the build by ID
-    get_resp = _connect_rpc(_CUSTOM_IMAGE_SVC, "GetCustomImage", {"buildId": build_id}, auth_headers)
+    get_resp = _connect_rpc(
+        _CUSTOM_IMAGE_SVC, "GetCustomImage", {"buildId": build_id}, auth_headers
+    )
     assert get_resp.status_code == 200, f"GetCustomImage failed: {get_resp.text}"
 
     get_data = get_resp.json()

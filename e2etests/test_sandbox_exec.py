@@ -125,7 +125,9 @@ def test_exec_ls(grpc_client: SandboxClient, sandbox_id: str) -> None:
     assert exit_code == 0, f"ls exited with code {exit_code}"
     # A Linux container root should have standard directories
     for expected_dir in ("bin", "etc", "usr", "tmp"):
-        assert expected_dir in stdout, f"Expected '{expected_dir}' in ls output: {stdout}"
+        assert expected_dir in stdout, (
+            f"Expected '{expected_dir}' in ls output: {stdout}"
+        )
 
 
 @needs_staging

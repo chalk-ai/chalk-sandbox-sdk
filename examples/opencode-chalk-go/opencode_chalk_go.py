@@ -56,12 +56,9 @@ MOUNT_PATH = "/root/code"
 # We start from a Go image so the LSP and build tools work out of the box,
 # then layer on curl + opencode.
 
-OPENCODE_GO_IMAGE = (
-    Image.base("golang:1.26-trixie")
-    .run_commands(
-        "apt-get update -qq && apt-get install -y -qq curl git 2>&1",
-        "curl -fsSL https://opencode.ai/install | bash 2>&1",
-    )
+OPENCODE_GO_IMAGE = Image.base("golang:1.26-trixie").run_commands(
+    "apt-get update -qq && apt-get install -y -qq curl git 2>&1",
+    "curl -fsSL https://opencode.ai/install | bash 2>&1",
 )
 
 
@@ -69,7 +66,8 @@ def start_server(container: Container) -> None:
     """Kill the placeholder HTTP server and start opencode serve."""
     log.info("Stopping placeholder HTTP server on port %d...", OPENCODE_PORT)
     container.exec(
-        "bash", "-c",
+        "bash",
+        "-c",
         "kill $(cat /tmp/http_server.pid 2>/dev/null) 2>/dev/null; "
         "rm -f /tmp/http_server.pid; true",
     )
@@ -77,7 +75,8 @@ def start_server(container: Container) -> None:
     log.info("Starting opencode server on port %d...", OPENCODE_PORT)
     # Write a launcher script so the exec returns immediately
     container.exec(
-        "bash", "-c",
+        "bash",
+        "-c",
         "cat > /tmp/start_opencode.sh << 'SCRIPT'\n"
         "#!/bin/bash\n"
         f"cd {MOUNT_PATH}\n"
@@ -87,7 +86,8 @@ def start_server(container: Container) -> None:
         timeout_secs=10,
     )
     container.exec(
-        "bash", "-c",
+        "bash",
+        "-c",
         "nohup /tmp/start_opencode.sh > /tmp/opencode.log 2>&1 &",
         timeout_secs=10,
     )
@@ -95,7 +95,8 @@ def start_server(container: Container) -> None:
     log.info("Waiting for opencode to be ready...")
     for attempt in range(60):
         result = container.exec(
-            "bash", "-c",
+            "bash",
+            "-c",
             f"curl -s http://localhost:{OPENCODE_PORT} > /dev/null 2>&1; echo $?",
             timeout_secs=10,
         )
@@ -129,7 +130,8 @@ def main(
         port=OPENCODE_PORT,
         volumes=[(VOLUME_NAME, MOUNT_PATH)],
         entrypoint=[
-            "bash", "-c",
+            "bash",
+            "-c",
             f"python3 -m http.server {OPENCODE_PORT} --bind 0.0.0.0 "
             f"&>/dev/null & echo $! > /tmp/http_server.pid; tail -f /dev/null",
         ],
@@ -179,16 +181,20 @@ if __name__ == "__main__":
         description="Launch OpenCode on chalk-go in a Chalk container",
     )
     parser.add_argument(
-        "--timeout", type=str, default="12",
+        "--timeout",
+        type=str,
+        default="12",
         help="Server lifetime (e.g. 2h, 90m). Bare number = hours. Default: 12",
     )
     parser.add_argument(
-        "--name", type=str,
+        "--name",
+        type=str,
         default=f"opencode-chalk-go-{uuid.uuid4().hex[:8]}",
         help="Container name",
     )
     parser.add_argument(
-        "--password", type=str,
+        "--password",
+        type=str,
         default=os.environ.get("OPENCODE_SERVER_PASSWORD"),
         help="OpenCode server password",
     )

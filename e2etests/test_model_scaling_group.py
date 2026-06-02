@@ -19,7 +19,12 @@ from chalk.client import ChalkClient
 from chalkcompute._connect import grpc_target_from_url
 from chalkcompute._remote_call_client import RemoteCallClient
 
-from e2etests.conftest import CHALK_ENVIRONMENT_ID, _deploy_script, _get_access_token, needs_staging
+from e2etests.conftest import (
+    CHALK_ENVIRONMENT_ID,
+    _deploy_script,
+    _get_access_token,
+    needs_staging,
+)
 
 SG_NAME = "e2e-trivial-double-sg"
 VOLUME_SG_NAME = "e2e-volume-triple-sg"
@@ -36,7 +41,9 @@ def _wait_for_ready_replicas(client: ChalkClient, sg_name: str, timeout: float) 
             groups = client.list_scaling_groups()
             for sg in groups.scalingGroups:
                 if sg.name == sg_name and sg.readyReplicas and sg.readyReplicas > 0:
-                    assert sg.webUrl, f"Scaling group {sg_name} ready but missing webUrl"
+                    assert sg.webUrl, (
+                        f"Scaling group {sg_name} ready but missing webUrl"
+                    )
                     web_url = sg.webUrl
                     break
         if web_url is not None:
@@ -135,7 +142,9 @@ class TestModelWithVolume:
     def setup_class(cls):
         _deploy_script("model", "deploy_volume.py")
         client = ChalkClient(environment=CHALK_ENVIRONMENT_ID)
-        cls._web_url = _wait_for_ready_replicas(client, VOLUME_SG_NAME, READINESS_TIMEOUT)
+        cls._web_url = _wait_for_ready_replicas(
+            client, VOLUME_SG_NAME, READINESS_TIMEOUT
+        )
 
     @classmethod
     def teardown_class(cls):

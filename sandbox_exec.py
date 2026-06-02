@@ -14,10 +14,16 @@ from sandbox import SandboxClient
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Execute a command in a sandbox and stream output")
-    parser.add_argument("--target", required=True, help="gRPC target (e.g., localhost:50051)")
+    parser = argparse.ArgumentParser(
+        description="Execute a command in a sandbox and stream output"
+    )
+    parser.add_argument(
+        "--target", required=True, help="gRPC target (e.g., localhost:50051)"
+    )
     parser.add_argument("--sandbox-id", required=True, help="Sandbox ID")
-    parser.add_argument("--exec", required=True, dest="command", help="Command to execute")
+    parser.add_argument(
+        "--exec", required=True, dest="command", help="Command to execute"
+    )
     parser.add_argument("--workdir", help="Working directory")
     parser.add_argument("--timeout", type=int, help="Timeout in seconds")
     args = parser.parse_args()
@@ -30,7 +36,8 @@ def main() -> None:
     command_args = parts[1:] if len(parts) > 1 else []
 
     for event in sandbox.exec_stream(
-        command, *command_args,
+        command,
+        *command_args,
         timeout_secs=args.timeout,
         workdir=args.workdir,
     ):

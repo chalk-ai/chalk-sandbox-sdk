@@ -36,7 +36,9 @@ async def main() -> None:
 
     result = await handle.result()
 
-    print(f"\nStage 1 (ResNet): top_label={result.top_label}  confidence={result.top_confidence}")
+    print(
+        f"\nStage 1 (ResNet): top_label={result.top_label}  confidence={result.top_confidence}"
+    )
     if result.policy_scores is None:
         print("Stage 2 (CLIP):  skipped (stage 1 was decisive)")
     else:

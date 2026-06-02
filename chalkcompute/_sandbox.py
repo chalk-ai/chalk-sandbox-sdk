@@ -33,7 +33,11 @@ from typing import Any
 
 import grpc
 
-from chalkcompute._connect import ConnectClient, grpc_target_from_url, raise_for_grpc_error
+from chalkcompute._connect import (
+    ConnectClient,
+    grpc_target_from_url,
+    raise_for_grpc_error,
+)
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as pb
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2_grpc as pb_grpc
 from chalkcompute._image import Image
@@ -1015,7 +1019,9 @@ if __name__ == "__main__":
 
     print("Listing sandboxes:")
     for sandbox_info in client.list():
-        print(f"  - {sandbox_info.id} ({sandbox_info.status}) {sandbox_info.name or ''}")
+        print(
+            f"  - {sandbox_info.id} ({sandbox_info.status}) {sandbox_info.name or ''}"
+        )
 
     sandboxes = client.list()
     if sandboxes:

@@ -69,11 +69,17 @@ if "CHALK_ENVIRONMENT_ID" in chalk_env:
 if container.info is not None:
     logs_result = subprocess.run(
         [
-            "chalk", "logs",
-            "--query", f"pod_name:{container.info.pod_name}",
-            "--start-time", "10m ago",
+            "chalk",
+            "logs",
+            "--query",
+            f"pod_name:{container.info.pod_name}",
+            "--start-time",
+            "10m ago",
         ],
-        check=False, text=True, capture_output=True, env=chalk_env,
+        check=False,
+        text=True,
+        capture_output=True,
+        env=chalk_env,
     )
     print(logs_result.stdout)
     if logs_result.stderr:
