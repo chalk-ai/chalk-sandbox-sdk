@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import linecache
 import textwrap
 from pathlib import Path
@@ -164,6 +165,32 @@ def test_function_uncalled_decorator_noops_in_remote_env(
 
     assert isinstance(add, _NoOpFunction)
     assert add(1, 2) == 3
+
+
+def test_function_noop_preserves_function_kind_introspection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(_REMOTE_ENV_VAR, "1")
+
+    @function
+    def gen():
+        yield "tick"
+
+    @function
+    async def agen():
+        yield "tick"
+
+    @function
+    async def coro():
+        return "tick"
+
+    assert isinstance(gen, _NoOpFunction)
+    assert inspect.isgeneratorfunction(gen)
+    assert inspect.isgeneratorfunction(inspect.unwrap(gen))
+    assert inspect.isasyncgenfunction(agen)
+    assert inspect.isasyncgenfunction(inspect.unwrap(agen))
+    assert inspect.iscoroutinefunction(coro)
+    assert inspect.iscoroutinefunction(inspect.unwrap(coro))
 
 
 def test_class_decorators_accept_called_and_uncalled_forms(
