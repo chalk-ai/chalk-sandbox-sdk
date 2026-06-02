@@ -334,7 +334,8 @@ def _generate_handler_shim(
 
             from user_module import {func_name}
 
-            _is_coroutine = inspect.iscoroutinefunction({func_name})
+            _target = inspect.unwrap({func_name})
+            _is_coroutine = inspect.iscoroutinefunction(_target)
 
 
             def _flatten_events(events):
@@ -381,9 +382,10 @@ def _generate_handler_shim(
 
         from user_module import {func_name}
 
-        _is_sync_gen = inspect.isgeneratorfunction({func_name})
-        _is_async_gen = inspect.isasyncgenfunction({func_name})
-        _is_coroutine = inspect.iscoroutinefunction({func_name}) and not _is_async_gen
+        _target = inspect.unwrap({func_name})
+        _is_sync_gen = inspect.isgeneratorfunction(_target)
+        _is_async_gen = inspect.isasyncgenfunction(_target)
+        _is_coroutine = inspect.iscoroutinefunction(_target) and not _is_async_gen
 
 
         def handler(event, context):

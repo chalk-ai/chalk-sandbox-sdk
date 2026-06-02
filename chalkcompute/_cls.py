@@ -428,7 +428,8 @@ def _generate_class_handler_shim(
     if batched:
         parts += [
             "",
-            f"_is_coroutine = inspect.iscoroutinefunction({method_caller}.{method_name})",
+            f"_target = inspect.unwrap({method_caller}.{method_name})",
+            "_is_coroutine = inspect.iscoroutinefunction(_target)",
             "",
             "",
             "def handler(events, contexts):",
@@ -460,9 +461,10 @@ def _generate_class_handler_shim(
     else:
         parts += [
             "",
-            f"_is_sync_gen = inspect.isgeneratorfunction({method_caller}.{method_name})",
-            f"_is_async_gen = inspect.isasyncgenfunction({method_caller}.{method_name})",
-            f"_is_coroutine = inspect.iscoroutinefunction({method_caller}.{method_name}) and not _is_async_gen",
+            f"_target = inspect.unwrap({method_caller}.{method_name})",
+            "_is_sync_gen = inspect.isgeneratorfunction(_target)",
+            "_is_async_gen = inspect.isasyncgenfunction(_target)",
+            "_is_coroutine = inspect.iscoroutinefunction(_target) and not _is_async_gen",
             "",
             "",
             "def handler(event, context):",
