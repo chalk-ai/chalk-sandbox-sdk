@@ -74,6 +74,7 @@ from chalkcompute._function import (
     _build_and_upload,
     _callable_input_names,
     _cleanup_temp_files,
+    _entrypoint_source,
     _extract_field_names,
     _is_chalkcompute_decorator,
     _local_install_entrypoint,
@@ -937,16 +938,14 @@ class RemoteClass:
         if _should_strip_source():
             source = _source_text_for_deploy(source_file)
             stripped = _strip_chalkcompute_from_class_source(source)
-            method_names = set(self._methods)
-            if self._before_name:
-                method_names.add(self._before_name)
-            if self._after_name:
-                method_names.add(self._after_name)
+            entrypoint_sources: list[str] = []
+            for method_info in self._methods.values():
+                entrypoint_sources.extend(_entrypoint_source(method_info.func))
             _assert_stripped_source_self_contained(
                 source,
                 stripped,
                 label=f"Class {self._class_name!r}",
-                entrypoints=method_names,
+                entrypoint_sources=entrypoint_sources,
             )
             source_file = _write_temp(stripped)
             temp_files.append(source_file)

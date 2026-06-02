@@ -611,11 +611,18 @@ def test_function_accepts_string_env_values(
 # ---------------------------------------------------------------------------
 
 
-def _strip_and_guard(source: str, entrypoints: set[str] = frozenset({"fn"})) -> None:
-    """Strip a function source and run the self-contained guard on the result."""
+def _strip_and_guard(source: str, entrypoint_sources: list[str] | None = None) -> None:
+    """Strip a function source and run the self-contained guard on the result.
+
+    ``fn`` is defined at module top level in these fixtures, so passing the whole
+    source as the lone entrypoint lets the guard pick up ``fn``'s body.
+    """
     stripped = _strip_chalkcompute_from_source(source)
     _assert_stripped_source_self_contained(
-        source, stripped, label="Function 'fn'", entrypoints=set(entrypoints)
+        source,
+        stripped,
+        label="Function 'fn'",
+        entrypoint_sources=entrypoint_sources or [source],
     )
 
 
@@ -698,7 +705,15 @@ def test_strip_guard_rejects_class_method_referencing_chalkcompute() -> None:
         """
     )
     stripped = _strip_chalkcompute_from_class_source(source)
+    # The method body is the entrypoint; pass it dedented as its own snippet
+    # (the cls strip removes even inner imports, so any chalkcompute use dangles).
+    method_src = textwrap.dedent(
+        """
+        def m(self) -> int:
+            return chalkcompute.RemoteFunction.from_name("x").remote(1)
+        """
+    )
     with pytest.raises(FunctionBuildError, match="chalkcompute"):
         _assert_stripped_source_self_contained(
-            source, stripped, label="Class 'C'", entrypoints={"m"}
+            source, stripped, label="Class 'C'", entrypoint_sources=[method_src]
         )
