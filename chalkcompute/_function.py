@@ -95,6 +95,7 @@ KnowledgeCutoff = str | _dt.datetime
 
 _REMOTE_ENV_VAR = "_CHALK_REMOTE_FUNCTION"
 _REQUEST_TIMESTAMP_HEADER = "x-chalk-request-timestamp"
+_NO_ARGS_SENTINEL_COLUMN = "__chalk_no_args__"
 # When enabled, mount the local SDK project and pip-install at container start.
 _LOCAL_COPY_ENV_VAR = "CHALK_FUNCTION_LOCAL_SDK_COPY"
 # When set to a local wheel path, mount that wheel and pip-install it at
@@ -108,6 +109,27 @@ _STRIP_SOURCE_ENV_VAR = "CHALK_FUNCTION_STRIP_SOURCE"
 # RPC instead of connecting directly to the scaling group's web URL.
 _CALL_VIA_API_ENV_VAR = "CHALK_FUNCTION_CALL_VIA_API"
 _LOCAL_SDK_MOUNT = "/tmp/sdk"
+_LOCAL_SDK_COPY_EXCLUDES = [
+    "tests/**",
+    "e2etests/**",
+    "examples/**",
+    ".venv/**",
+    ".*_venv/**",
+    "venv/**",
+    "**/__pycache__/**",
+    "**/target/**",
+]
+_LOCAL_SDK_RUNTIME_PACKAGES = [
+    "grpcio>=1.60.0",
+    "protobuf>=4.25.0",
+    "httpx>=0.25.0",
+    "blake3>=1.0.0",
+    "pyyaml>=6.0.0",
+    "opentelemetry-api>=1.20.0",
+    "opentelemetry-sdk>=1.20.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.20.0",
+    "rich>=13.0.0",
+]
 _CATALOG_SVC = "chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService"
 _SG_SVC = "chalk.scalinggroup.v1.ScalingGroupManagerService"
 
@@ -339,13 +361,19 @@ def _generate_handler_shim(
 
             from user_module import {func_name}
 
-            _is_coroutine = inspect.iscoroutinefunction({func_name})
+            _NO_ARGS_SENTINEL_COLUMN = {_NO_ARGS_SENTINEL_COLUMN!r}
+            _target = inspect.unwrap({func_name})
+            _is_coroutine = inspect.iscoroutinefunction(_target)
 
 
             def _flatten_events(events):
                 work = []
                 for ci, event in enumerate(events):
-                    columns = {{k: v.to_pylist() for k, v in event.items()}}
+                    columns = {{
+                        k: v.to_pylist()
+                        for k, v in event.items()
+                        if k != _NO_ARGS_SENTINEL_COLUMN
+                    }}
                     n = len(next(iter(columns.values()))) if columns else 1
                     for ri in range(n):
                         work.append((ci, ri, {{k: v[ri] for k, v in columns.items()}}))
@@ -386,12 +414,19 @@ def _generate_handler_shim(
 
         from user_module import {func_name}
 
-        _is_sync_gen = inspect.isgeneratorfunction({func_name})
-        _is_async_gen = inspect.isasyncgenfunction({func_name})
-        _is_coroutine = inspect.iscoroutinefunction({func_name}) and not _is_async_gen
+        _NO_ARGS_SENTINEL_COLUMN = {_NO_ARGS_SENTINEL_COLUMN!r}
+        _target = inspect.unwrap({func_name})
+        _is_sync_gen = inspect.isgeneratorfunction(_target)
+        _is_async_gen = inspect.isasyncgenfunction(_target)
+        _is_coroutine = inspect.iscoroutinefunction(_target) and not _is_async_gen
 
 
         def handler(event, context):
+            event = {{
+                k: v
+                for k, v in event.items()
+                if k != _NO_ARGS_SENTINEL_COLUMN
+            }}
             n = len(next(iter(event.values()))) if event else 1
             if _is_sync_gen:
                 def _gen():
@@ -827,15 +862,18 @@ def _local_install_entrypoint(handler_cmd: list[str]) -> list[str]:
     from chalkcompute._image import _ARCHIVE_CHUNK_PREFIX, ARCHIVE_NAME
 
     d = _LOCAL_SDK_MOUNT
-    # Reassemble chunked archive, extract, then pip install.
-    cat_parts = f"cat {d}/{_ARCHIVE_CHUNK_PREFIX}* > {d}/{ARCHIVE_NAME}"
-    extract = f"tar xzf {d}/{ARCHIVE_NAME} -C {d}"
-    install = f"python -m pip install {d}"
+    extract_dir = "/tmp/chalkcompute-sdk-src"
+    archive_path = f"/tmp/{ARCHIVE_NAME}"
+    # Reassemble from the mounted volume, but extract onto local pod storage.
+    # The mounted file volume is optimized for uploaded inputs, not tar writes.
+    cat_parts = f"cat {d}/{_ARCHIVE_CHUNK_PREFIX}* > {archive_path}"
+    extract = f"rm -rf {extract_dir}; mkdir -p {extract_dir}; tar xzf {archive_path} -C {extract_dir}"
+    activate = f"export PYTHONPATH={extract_dir}:$PYTHONPATH"
     command = " ".join(shlex.quote(part) for part in handler_cmd)
     return [
         "sh",
         "-c",
-        f"set -eux; {cat_parts}; {extract}; {install}; exec {command}",
+        f"set -eux; {cat_parts}; {extract}; {activate}; exec {command}",
     ]
 
 
@@ -872,19 +910,20 @@ def _make_base_image(
         image = base.add_local_file(str(path), f"{_LOCAL_SDK_MOUNT}/{path.name}")
     elif local_copy:
         # Mount the local SDK project via volume; the entrypoint will
-        # extract the tar and pip-install before starting the handler.
+        # extract the tar and put it on PYTHONPATH before starting the handler.
         project_root = Path(__file__).resolve().parent.parent
-        image = base.add_local_dir(
-            str(project_root),
-            _LOCAL_SDK_MOUNT,
-            exclude=[
-                "tests/**",
-                "e2etests/**",
-                "examples/**",
-                ".venv/**",
-                "**/target/**",
-            ],
-            archive=True,
+        image = (
+            base.pip_install(
+                [
+                    remote_call_runtime_package,
+                    *_LOCAL_SDK_RUNTIME_PACKAGES,
+                ]
+            ).add_local_dir(
+                str(project_root),
+                _LOCAL_SDK_MOUNT,
+                exclude=_LOCAL_SDK_COPY_EXCLUDES,
+                archive=True,
+            )
         )
     elif strip_source:
         # Source is stripped of chalkcompute references — only install the
@@ -901,6 +940,16 @@ def _make_base_image(
         )
 
     return image
+
+
+def _preserve_functionlike_metadata(wrapper: Any, func: Callable) -> None:
+    """Expose enough function metadata for inspect's function-kind checks."""
+    code = getattr(func, "__code__", None)
+    if code is None:
+        return
+    setattr(wrapper, "__code__", code)
+    setattr(wrapper, "__defaults__", getattr(func, "__defaults__", None))
+    setattr(wrapper, "__kwdefaults__", getattr(func, "__kwdefaults__", None))
 
 
 def _build_and_upload(
@@ -1438,6 +1487,7 @@ class RemoteFunction:
         self._client = ConnectClient(chalk_client=chalk_client)
 
         functools.update_wrapper(self, func)
+        _preserve_functionlike_metadata(self, func)
 
     # -- Alternate constructors ------------------------------------------------
 
@@ -2093,9 +2143,13 @@ class RemoteFunction:
 
         arrays = []
         names = []
-        for param_name, value in arguments.items():
-            arrays.append(pa.array([value]))
-            names.append(param_name)
+        if arguments:
+            for param_name, value in arguments.items():
+                arrays.append(pa.array([value]))
+                names.append(param_name)
+        else:
+            arrays.append(pa.array([True]))
+            names.append(_NO_ARGS_SENTINEL_COLUMN)
         batch = pa.record_batch(arrays, names=names)
 
         sink = pa.BufferOutputStream()
@@ -2371,6 +2425,7 @@ class _NoOpFunction:
         self._registered_name = name or getattr(func, "__name__", "anonymous")
         self._remote: RemoteFunction | None = None
         functools.update_wrapper(self, func)
+        _preserve_functionlike_metadata(self, func)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return self._func(*args, **kwargs)

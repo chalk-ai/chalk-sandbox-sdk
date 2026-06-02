@@ -274,6 +274,17 @@ class TestAddLocalDirExclude:
             dests = self._collect_dests(d, [".venv/**"])
         assert dests == {"/app/main.py"}
 
+    def test_named_dot_venv_deeply_nested_excluded(self) -> None:
+        """'.*_venv/**' must exclude local SDK dev virtualenv directories."""
+        with tempfile.TemporaryDirectory() as d:
+            self._make_tree(d, [
+                "main.py",
+                ".rene_venv/pyvenv.cfg",
+                ".rene_venv/lib/python3.11/site-packages/pyarrow/__init__.py",
+            ])
+            dests = self._collect_dests(d, [".*_venv/**"])
+        assert dests == {"/app/main.py"}
+
     def test_dunder_pycache_anywhere(self) -> None:
         """'**/__pycache__/**' must exclude __pycache__ at any depth."""
         with tempfile.TemporaryDirectory() as d:

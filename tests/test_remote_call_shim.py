@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import sys
 import types
 
@@ -11,7 +12,12 @@ import pytest
 from chalk_remote_call.arrow_utils import decode_ipc_stream, encode_record_batch
 
 from chalkcompute._cls import _generate_class_handler_shim
-from chalkcompute._function import _generate_handler_shim
+from chalkcompute._function import (
+    _NO_ARGS_SENTINEL_COLUMN,
+    _NoOpFunction,
+    _generate_handler_shim,
+    RemoteFunction,
+)
 
 
 def _install_user_module(**attrs) -> None:
@@ -67,6 +73,16 @@ class TestGenerateHandlerShimNormal:
         event = {"n": pa.array([2, 3])}
         assert list(ns["handler"](event, {})) == [0, 1, 0, 1, 2]
 
+    def test_sync_generator_streams_when_wrapped_by_remote_noop(self):
+        def expand(n: int):
+            for i in range(n):
+                yield i
+
+        _install_user_module(expand=_NoOpFunction(expand))
+        ns = _load_shim(_generate_handler_shim("expand"))
+        event = {"n": pa.array([2, 3])}
+        assert list(ns["handler"](event, {})) == [0, 1, 0, 1, 2]
+
     def test_async_coroutine(self):
         async def add(x: int, y: int) -> int:
             return x + y
@@ -90,6 +106,42 @@ class TestGenerateHandlerShimNormal:
             return [item async for item in agen]
 
         assert asyncio.run(_collect()) == [0, 1, 0, 1, 2]
+
+    def test_async_generator_streams_when_wrapped_by_remote_noop(self):
+        async def expand(n: int):
+            for i in range(n):
+                yield i
+
+        _install_user_module(expand=_NoOpFunction(expand))
+        ns = _load_shim(_generate_handler_shim("expand"))
+        event = {"n": pa.array([2, 3])}
+        agen = ns["handler"](event, {})
+
+        async def _collect():
+            return [item async for item in agen]
+
+        assert asyncio.run(_collect()) == [0, 1, 0, 1, 2]
+
+    def test_no_arg_sync_generator_ignores_sentinel_column(self):
+        def items():
+            yield "a"
+            yield "b"
+
+        _install_user_module(items=_NoOpFunction(items))
+        ns = _load_shim(_generate_handler_shim("items"))
+        event = {_NO_ARGS_SENTINEL_COLUMN: pa.array([True])}
+
+        assert list(ns["handler"](event, {})) == ["a", "b"]
+
+    def test_no_arg_call_serializes_one_sentinel_row(self):
+        def ping() -> str:
+            return "pong"
+
+        fn = RemoteFunction(ping)
+        batches = decode_ipc_stream(fn._serialize_call_args())
+
+        assert len(batches) == 1
+        assert batches[0].to_pydict() == {_NO_ARGS_SENTINEL_COLUMN: [True]}
 
 
 class TestGenerateHandlerShimBatched:
@@ -260,6 +312,27 @@ class TestGenerateClassHandlerShimNormal:
         ns = _load_shim(src)
         assert list(ns["handler"]({"n": pa.array([2, 3])}, {})) == [0, 1, 0, 1, 2]
 
+    def test_wrapped_sync_generator_method(self):
+        def wrapper(fn):
+            @functools.wraps(fn)
+            def inner(self, n: int):
+                return fn(self, n)
+
+            return inner
+
+        class G:
+            @wrapper
+            def expand(self, n: int):
+                for i in range(n):
+                    yield i
+
+        _install_user_module(G=G)
+        src = _generate_class_handler_shim(
+            "G", "expand", True, None, False, None, False
+        )
+        ns = _load_shim(src)
+        assert list(ns["handler"]({"n": pa.array([2, 3])}, {})) == [0, 1, 0, 1, 2]
+
     def test_before_hook_is_defined_as_on_startup(self):
         class Stateful:
             def __init__(self):
@@ -416,6 +489,20 @@ class TestShimViaRemoteCallLib:
         payloads = process_batches(ipc_bytes, ns["handler"], None, {})
         # Each yielded value is encoded as a separate chunk.
         assert _decode_result_column(payloads) == [[0], [1], [0], [1], [2]]
+
+    def test_no_arg_sync_generator_streams_from_sentinel_call(self):
+        from chalk_remote_call.servicer import process_batches
+
+        def items():
+            yield "a"
+            yield "b"
+
+        fn = RemoteFunction(items)
+        _install_user_module(items=_NoOpFunction(items))
+        ns = _load_shim(_generate_handler_shim("items"))
+
+        payloads = process_batches(fn._serialize_call_args(), ns["handler"], None, {})
+        assert _decode_result_column(payloads) == [["a"], ["b"]]
 
     def test_class_method_roundtrip(self):
         from chalk_remote_call.servicer import process_batches
