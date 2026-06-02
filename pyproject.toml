@@ -44,6 +44,13 @@ dev = [
     "pytest>=9.0.2",
 ]
 
+[tool.ruff]
+extend-exclude = ["chalkcompute/_gen"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F"]
+ignore = ["E501"]
+
 [tool.ty.environment]
 python = ".venv"
 

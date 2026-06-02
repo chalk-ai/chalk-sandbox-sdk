@@ -28,20 +28,26 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from chalkcompute._connect import ConnectClient
+from chalkcompute._naming import (
+    sanitize_dns_label,
+    validate_dns_label,
+    validate_env,
+)
+from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
     VolumeDriver,
     VolumeError,
     VolumeMount,
-    _resolve_driver,
+    cleanup_owned_volumes,
     resolve_referenced_volume_type,
 )
-from chalkcompute._naming import sanitize_dns_label, validate_dns_label, validate_env
-from chalkcompute._tracing import _instrumented
+from chalkcompute._vvolume import VersionedVolumeClient
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+
     from chalkcompute._image import Image as _Image
     from chalkcompute._secret import Secret
 
@@ -52,6 +58,7 @@ _IMAGE_SVC = "chalk.sandbox.v1.CustomImageService"
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
+
 
 class ContainerError(Exception):
     """Base exception for Container errors."""
@@ -64,6 +71,7 @@ class ImageBuildError(ContainerError):
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class ExecResult:
@@ -233,6 +241,7 @@ class ContainerInfo:
 # Container
 # ---------------------------------------------------------------------------
 
+
 class Container:
     """A managed container backed by the Chalk ``ContainerService``.
 
@@ -287,7 +296,9 @@ class Container:
         if cpu is not None and not isinstance(cpu, str):
             raise TypeError(f"cpu must be a string such as '2' or '500m', got {cpu!r}")
         if memory is not None and not isinstance(memory, str):
-            raise TypeError(f"memory must be a string such as '2Gi' or '512Mi', got {memory!r}")
+            raise TypeError(
+                f"memory must be a string such as '2Gi' or '512Mi', got {memory!r}"
+            )
         if gpu is not None and not isinstance(gpu, str):
             raise TypeError(f"gpu must be a string such as 'nvidia-l4', got {gpu!r}")
         self._cpu = cpu
@@ -299,7 +310,11 @@ class Container:
         referenced_volumes: list[tuple[str, str]] = []
         if volumes is not None:
             for item in volumes:
-                if not (isinstance(item, (tuple, list)) and len(item) == 2 and all(isinstance(s, str) for s in item)):
+                if not (
+                    isinstance(item, (tuple, list))
+                    and len(item) == 2
+                    and all(isinstance(s, str) for s in item)
+                ):
                     raise ValueError(
                         f"Each volumes entry must be a (name, mount_path) string tuple, got {item!r}. "
                         f"Example: volumes=[('my-volume', '/data')]"
@@ -320,6 +335,7 @@ class Container:
         if lifetime is not None:
             from google.protobuf import duration_pb2
             from google.protobuf.json_format import Parse, ParseError
+
             try:
                 _parsed_lifetime = Parse(f'"{lifetime}"', duration_pb2.Duration())  # ty: ignore[unresolved-attribute]
             except ParseError:
@@ -349,7 +365,9 @@ class Container:
     # -- Alternate constructors ------------------------------------------------
 
     @classmethod
-    def from_id(cls, container_id: str, *, chalk_client: Any | None = None) -> Container:
+    def from_id(
+        cls, container_id: str, *, chalk_client: Any | None = None
+    ) -> Container:
         """Attach to an existing container by ID.
 
         Parameters
@@ -421,7 +439,10 @@ class Container:
         resp = c._client.rpc(_SVC, "ListContainers", {})
         if resp.status_code != 200:
             raise ContainerError(f"ListContainers failed: {resp.text}")
-        return [_parse_container_response(item) for item in resp.json().get("containers", [])]
+        return [
+            _parse_container_response(item)
+            for item in resp.json().get("containers", [])
+        ]
 
     @classmethod
     def _make_empty(cls, *, chalk_client: Any | None = None) -> Container:
@@ -453,7 +474,10 @@ class Container:
     # -- Image building (Container uses BuildCustomImage with retries) ---------
 
     def _build_image(
-        self, *, poll_interval: float = 0.5, timeout: float = 600.0,
+        self,
+        *,
+        poll_interval: float = 0.5,
+        timeout: float = 600.0,
     ) -> str:
         """Build the ``Image`` spec via ``CustomImageService`` and return the URI.
 
@@ -480,8 +504,10 @@ class Container:
         assert isinstance(self._image, Image)
         try:
             return build_image(
-                self._client, self._image,
-                poll_interval=poll_interval, timeout=timeout,
+                self._client,
+                self._image,
+                poll_interval=poll_interval,
+                timeout=timeout,
             )
         except ConnectError as e:
             raise ImageBuildError(str(e)) from e
@@ -586,20 +612,24 @@ class Container:
         >>> c.stop()
         """
         if self._container_id is not None:
-            raise ContainerError("Container is already running. Call .stop() before calling .run() again.")
+            raise ContainerError(
+                "Container is already running. Call .stop() before calling .run() again."
+            )
 
+        from chalkcompute._image import Image
         from chalkcompute._progress import (
             progress_add,
             progress_done,
             progress_fail,
             progress_finish,
         )
-        from chalkcompute._image import Image
 
-        container_name = sanitize_dns_label(self._name or f"container-{uuid.uuid4().hex[:8]}")
+        container_name = sanitize_dns_label(
+            self._name or f"container-{uuid.uuid4().hex[:8]}"
+        )
         self._name = container_name
         ckey = f"container:{container_name}"
-        progress_add(ckey, "container", f"Container \"{container_name}\"")
+        progress_add(ckey, "container", f'Container "{container_name}"')
 
         try:
             # 1. Resolve image URI
@@ -608,10 +638,13 @@ class Container:
                 progress_add(ikey, "image", "Building image", parent=ckey)
                 logger.info("Building image from %r...", self._image)
                 self._built_image_uri = self._build_image(
-                    poll_interval=poll_interval, timeout=build_timeout,
+                    poll_interval=poll_interval,
+                    timeout=build_timeout,
                 )
                 logger.info("Image built: %s", self._built_image_uri)
-                progress_done(ikey, detail="cached" if self._built_image_uri else "built")
+                progress_done(
+                    ikey, detail="cached" if self._built_image_uri else "built"
+                )
             else:
                 self._built_image_uri = self._image
 
@@ -628,24 +661,33 @@ class Container:
 
             # 2b. Upload lazy local files to a volume (if any)
             lazy_files = (
-                self._image.lazy_local_files if isinstance(self._image, Image) else set()
+                self._image.lazy_local_files
+                if isinstance(self._image, Image)
+                else set()
             )
             if lazy_files:
                 vkey = f"volume:{container_name}"
                 progress_add(
-                    vkey, "volume",
+                    vkey,
+                    "volume",
                     f"Uploading {len(lazy_files)} file(s)",
                     parent=ckey,
                 )
-                logger.info("Uploading %d local file(s) to volume(s)...", len(lazy_files))
+                logger.info(
+                    "Uploading %d local file(s) to volume(s)...",
+                    len(lazy_files),
+                )
                 assert isinstance(self._image, Image)
-                driver = _resolve_driver(self._client)
+                driver = VersionedVolumeClient.from_connect(self._client)
                 self._volume_driver = driver
                 self._volumes += driver.upload_lazy_files(
-                    self._image, volume_prefix="container-files",
+                    self._image,
+                    volume_prefix="container-files",
                 )
                 for v in self._volumes:
-                    logger.info("  Volume created: %s (mount: %s)", v.name, v.mount_path)
+                    logger.info(
+                        "  Volume created: %s (mount: %s)", v.name, v.mount_path
+                    )
                 progress_done(vkey)
 
             # 3. Resolve lazy secrets (from_local_env / from_local_env_file)
@@ -657,7 +699,10 @@ class Container:
                 resolved, upserted = resolve_lazy_secrets(self._secrets, self._client)
                 self._secrets = resolved
                 self._upserted_secret_names = upserted
-                logger.info("Upserted %d secret(s) from local environment.", len(upserted))
+                logger.info(
+                    "Upserted %d secret(s) from local environment.",
+                    len(upserted),
+                )
                 progress_done(skey, detail=f"{len(upserted)} secret(s)")
 
             # 4. Build the ContainerService spec
@@ -706,7 +751,10 @@ class Container:
 
             logger.info("Starting container '%s'...", container_name)
             resp = self._client.rpc(
-                _SVC, "RunContainer", {"container": {"spec": spec}}, timeout=60,
+                _SVC,
+                "RunContainer",
+                {"container": {"spec": spec}},
+                timeout=60,
             )
             if resp.status_code != 200:
                 raise ContainerError(f"RunContainer failed: {resp.text}")
@@ -716,7 +764,8 @@ class Container:
             self._container_id = self._container_info.id
             logger.info(
                 "Container created: %s (status=%s)",
-                self._container_id, self._container_info.status,
+                self._container_id,
+                self._container_info.status,
             )
 
             # 5. Poll until Running
@@ -725,7 +774,8 @@ class Container:
 
                 progress_update(ckey, detail="booting")
                 self._poll_until_running(
-                    poll_interval=poll_interval, timeout=ready_timeout,
+                    poll_interval=poll_interval,
+                    timeout=ready_timeout,
                 )
 
             # 6. Wait for ChalkFS volume files to become visible
@@ -747,7 +797,10 @@ class Container:
         return self
 
     def _poll_until_running(
-        self, *, poll_interval: float, timeout: float,
+        self,
+        *,
+        poll_interval: float,
+        timeout: float,
     ) -> None:
         assert self._container_id is not None
         deadline = time.monotonic() + timeout
@@ -773,12 +826,14 @@ class Container:
             time.sleep(poll_interval)
         status = self._container_info.status if self._container_info else "unknown"
         raise ContainerError(
-            f"Container {self._container_id} timed out after {timeout}s "
-            f"(last status: {status})"
+            f"Container {self._container_id} timed out after {timeout}s (last status: {status})"
         )
 
     def _wait_for_volume_files(
-        self, *, timeout: float = 120.0, poll_interval: float = 0.5,
+        self,
+        *,
+        timeout: float = 120.0,
+        poll_interval: float = 0.5,
     ) -> None:
         """Poll until at least one uploaded file is visible in the ChalkFS mount.
 
@@ -934,9 +989,10 @@ class Container:
         if self._volumes:
             # Driver is used here only to perform the delete action, not to
             # derive a mount type.
-            driver = self._volume_driver or _resolve_driver(self._client)
-            for v in self._volumes:
-                driver.delete_volume(v.name)
+            driver = self._volume_driver or VersionedVolumeClient.from_connect(
+                self._client
+            )
+            cleanup_owned_volumes(driver, self._volumes, self._referenced_volumes)
         self._volumes = []
         self._volume_driver = None
 
@@ -1004,6 +1060,7 @@ class Container:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _parse_container_response(data: dict) -> ContainerInfo:
     return ContainerInfo(

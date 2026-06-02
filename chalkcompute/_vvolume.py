@@ -241,11 +241,7 @@ class VersionedVolume:
                 _handle_rpc_error(e, self._name)
                 raise
         else:
-            version = (
-                _pb_v2_to_version_info(resp.version)
-                if resp.HasField("version")
-                else None
-            )
+            version = _pb_v2_to_version_info(resp.version) if resp.HasField("version") else None
             return _pb_v2_to_volume_info(resp.volume), version
 
         try:
@@ -391,9 +387,7 @@ class VersionedVolume:
         out = list(files)
         seen_dirs = {prefix.strip("/")}
         queue = [
-            f.path
-            for f in files
-            if f.kind == "directory" and f.path.strip("/") not in seen_dirs
+            f.path for f in files if f.kind == "directory" and f.path.strip("/") not in seen_dirs
         ]
         while queue:
             directory = queue.pop(0).strip("/")
@@ -674,9 +668,7 @@ class VersionedVolume:
                 )
                 return status.version
             if status.result != "rebase_required":
-                raise VolumeError(
-                    f"Versioned volume commit {commit_id} returned {status.result}"
-                )
+                raise VolumeError(f"Versioned volume commit {commit_id} returned {status.result}")
             latest = status.latest_version.id if status.latest_version else None
             logger.warning(
                 "Versioned volume %s commit=%s requires rebase (latest=%s)",
@@ -708,9 +700,7 @@ class VersionedVolume:
                 raise
             status = _pb_v2_to_commit_status(resp.status)
         if status.result == "pending":
-            raise VolumeError(
-                f"Timed out waiting for versioned volume commit {status.commit_id}"
-            )
+            raise VolumeError(f"Timed out waiting for versioned volume commit {status.commit_id}")
         if poll_count:
             logger.info(
                 "Versioned volume commit %s reached %s after %d polls",
@@ -810,9 +800,7 @@ class VersionedVolume:
             _handle_rpc_error(e, self._name)
             raise
         if len(resp.urls) != len(chunks):
-            raise VolumeError(
-                "Versioned volume upload URL response length did not match chunks"
-            )
+            raise VolumeError("Versioned volume upload URL response length did not match chunks")
 
         chunk_refs: list[pb_v2.ChunkRef] = []
         uploaded_refs: list[pb_v2.UploadedObjectReference] = []
@@ -850,9 +838,7 @@ class VersionedVolume:
                 )
             )
         if upload_jobs:
-            with ThreadPoolExecutor(
-                max_workers=_transfer_worker_count(len(upload_jobs))
-            ) as pool:
+            with ThreadPoolExecutor(max_workers=_transfer_worker_count(len(upload_jobs))) as pool:
                 list(pool.map(_put_versioned_chunk_job, upload_jobs))
         logger.info(
             "Uploaded versioned chunks (%d uploaded, %d reused)",
@@ -921,9 +907,7 @@ class VersionedVolume:
 
     def __repr__(self) -> str:
         if self._version_id is not None:
-            return (
-                f"VersionedVolume(name={self._name!r}, version_id={self._version_id!r})"
-            )
+            return f"VersionedVolume(name={self._name!r}, version_id={self._version_id!r})"
         return f"VersionedVolume(name={self._name!r}, ref={self._ref!r})"
 
 
@@ -1132,9 +1116,7 @@ class VersionedVolumeClient:
             with vol.batch_upload() as batch:
                 for lf in files:
                     batch.put_file(os.path.relpath(lf.dest, dest_dir), lf.src)
-            volumes.append(
-                VolumeMount(name=vol.name, mount_path=dest_dir, type=self.mount_type)
-            )
+            volumes.append(VolumeMount(name=vol.name, mount_path=dest_dir, type=self.mount_type))
         return volumes
 
     def delete_volume(self, name: str) -> None:
@@ -1236,13 +1218,9 @@ def _pb_v2_to_commit_status(status: pb_v2.CommitStatus) -> CommitStatus:
     created_at = None
     if status.HasField("created_at"):
         created_at = status.created_at.ToDatetime(tzinfo=datetime.timezone.utc)
-    version = (
-        _pb_v2_to_version_info(status.version) if status.HasField("version") else None
-    )
+    version = _pb_v2_to_version_info(status.version) if status.HasField("version") else None
     latest_version = (
-        _pb_v2_to_version_info(status.latest_version)
-        if status.HasField("latest_version")
-        else None
+        _pb_v2_to_version_info(status.latest_version) if status.HasField("latest_version") else None
     )
     return CommitStatus(
         commit_id=status.commit_id,
@@ -1261,9 +1239,7 @@ def _read_versioned_file_response(resp: pb_v2.GetFileResponse) -> bytes:
         chunks = sorted(resp.chunked.chunks, key=lambda c: c.offset)
         if not chunks:
             return b""
-        with ThreadPoolExecutor(
-            max_workers=_transfer_worker_count(len(chunks))
-        ) as pool:
+        with ThreadPoolExecutor(max_workers=_transfer_worker_count(len(chunks))) as pool:
             parts = list(pool.map(_read_versioned_chunk, chunks))
         return b"".join(parts)
     if content_type == "packed":
@@ -1276,9 +1252,7 @@ def _read_versioned_file_response(resp: pb_v2.GetFileResponse) -> bytes:
     raise VolumeError(f"Unsupported versioned file response type: {content_type!r}")
 
 
-def _read_range_from_signed_uri(
-    signed_download_uri: str, offset: int, size: int
-) -> bytes:
+def _read_range_from_signed_uri(signed_download_uri: str, offset: int, size: int) -> bytes:
     headers = {"Range": f"bytes={offset}-{offset + size - 1}"}
     try:
         resp = httpx.get(signed_download_uri, headers=headers, timeout=300)
@@ -1319,9 +1293,7 @@ def _put_versioned_chunk(signed_upload_uri: str, data: bytes) -> None:
     except httpx.TimeoutException as e:
         raise VolumeError(f"Timed out uploading signed chunk URL: {e}") from e
     except httpx.HTTPStatusError as e:
-        raise VolumeError(
-            f"Signed chunk upload failed with status {e.response.status_code}"
-        ) from e
+        raise VolumeError(f"Signed chunk upload failed with status {e.response.status_code}") from e
     except httpx.HTTPError as e:
         raise VolumeError(f"Signed chunk upload failed: {e}") from e
 
@@ -1433,5 +1405,3 @@ class _VersionedBatchUpload:
         except Exception:
             self._files = files + self._files
             raise
-
-
