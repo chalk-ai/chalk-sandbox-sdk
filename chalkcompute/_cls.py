@@ -43,6 +43,7 @@ import ast
 import inspect
 import logging
 import os
+import textwrap
 import time
 import typing
 from dataclasses import dataclass, field
@@ -426,76 +427,78 @@ def _generate_class_handler_shim(
 
     method_caller = "_instance" if method_has_self else class_name
     if batched:
-        parts += [
-            "",
-            f"_target = inspect.unwrap({method_caller}.{method_name})",
-            "_is_coroutine = inspect.iscoroutinefunction(_target)",
-            "",
-            "",
-            "def handler(events, contexts):",
-            "    if _is_coroutine:",
-            "        import asyncio",
-            "        async def _run_all():",
-            "            results = []",
-            "            for event in events:",
-            "                columns = {k: v.to_pylist() for k, v in event.items()}",
-            "                n = len(next(iter(columns.values())))",
-            "                per_caller = []",
-            "                for i in range(n):",
-            "                    kwargs = {k: v[i] for k, v in columns.items()}",
-            f"                    per_caller.append(await {method_caller}.{method_name}(**kwargs))",
-            "                results.append(per_caller)",
-            "            return results",
-            "        return asyncio.run(_run_all())",
-            "    results = []",
-            "    for event in events:",
-            "        columns = {k: v.to_pylist() for k, v in event.items()}",
-            "        n = len(next(iter(columns.values())))",
-            "        per_caller = []",
-            "        for i in range(n):",
-            "            kwargs = {k: v[i] for k, v in columns.items()}",
-            f"            per_caller.append({method_caller}.{method_name}(**kwargs))",
-            "        results.append(per_caller)",
-            "    return results",
-        ]
+        parts.append(
+            textwrap.dedent(f"""\
+            _target = inspect.unwrap({method_caller}.{method_name})
+            _is_coroutine = inspect.iscoroutinefunction(_target)
+
+
+            def handler(events, contexts):
+                if _is_coroutine:
+                    import asyncio
+                    async def _run_all():
+                        results = []
+                        for event in events:
+                            columns = {{k: v.to_pylist() for k, v in event.items()}}
+                            n = len(next(iter(columns.values())))
+                            per_caller = []
+                            for i in range(n):
+                                kwargs = {{k: v[i] for k, v in columns.items()}}
+                                per_caller.append(await {method_caller}.{method_name}(**kwargs))
+                            results.append(per_caller)
+                        return results
+                    return asyncio.run(_run_all())
+                results = []
+                for event in events:
+                    columns = {{k: v.to_pylist() for k, v in event.items()}}
+                    n = len(next(iter(columns.values())))
+                    per_caller = []
+                    for i in range(n):
+                        kwargs = {{k: v[i] for k, v in columns.items()}}
+                        per_caller.append({method_caller}.{method_name}(**kwargs))
+                    results.append(per_caller)
+                return results
+            """).rstrip()
+        )
     else:
-        parts += [
-            "",
-            f"_target = inspect.unwrap({method_caller}.{method_name})",
-            "_is_sync_gen = inspect.isgeneratorfunction(_target)",
-            "_is_async_gen = inspect.isasyncgenfunction(_target)",
-            "_is_coroutine = inspect.iscoroutinefunction(_target) and not _is_async_gen",
-            "",
-            "",
-            "def handler(event, context):",
-            "    n = len(next(iter(event.values())))",
-            "    if _is_sync_gen:",
-            "        def _gen():",
-            "            for i in range(n):",
-            "                kwargs = {k: v[i].as_py() for k, v in event.items()}",
-            f"                yield from {method_caller}.{method_name}(**kwargs)",
-            "        return _gen()",
-            "    elif _is_async_gen:",
-            "        async def _agen():",
-            "            for i in range(n):",
-            "                kwargs = {k: v[i].as_py() for k, v in event.items()}",
-            f"                async for item in {method_caller}.{method_name}(**kwargs):",
-            "                    yield item",
-            "        return _agen()",
-            "    elif _is_coroutine:",
-            "        import asyncio",
-            "        results = []",
-            "        for i in range(n):",
-            "            kwargs = {k: v[i].as_py() for k, v in event.items()}",
-            f"            results.append(asyncio.run({method_caller}.{method_name}(**kwargs)))",
-            "        return results",
-            "    else:",
-            "        results = []",
-            "        for i in range(n):",
-            "            kwargs = {k: v[i].as_py() for k, v in event.items()}",
-            f"            results.append({method_caller}.{method_name}(**kwargs))",
-            "        return results",
-        ]
+        parts.append(
+            textwrap.dedent(f"""\
+            _target = inspect.unwrap({method_caller}.{method_name})
+            _is_sync_gen = inspect.isgeneratorfunction(_target)
+            _is_async_gen = inspect.isasyncgenfunction(_target)
+            _is_coroutine = inspect.iscoroutinefunction(_target) and not _is_async_gen
+
+
+            def handler(event, context):
+                n = len(next(iter(event.values())))
+                if _is_sync_gen:
+                    def _gen():
+                        for i in range(n):
+                            kwargs = {{k: v[i].as_py() for k, v in event.items()}}
+                            yield from {method_caller}.{method_name}(**kwargs)
+                    return _gen()
+                elif _is_async_gen:
+                    async def _agen():
+                        for i in range(n):
+                            kwargs = {{k: v[i].as_py() for k, v in event.items()}}
+                            async for item in {method_caller}.{method_name}(**kwargs):
+                                yield item
+                    return _agen()
+                elif _is_coroutine:
+                    import asyncio
+                    results = []
+                    for i in range(n):
+                        kwargs = {{k: v[i].as_py() for k, v in event.items()}}
+                        results.append(asyncio.run({method_caller}.{method_name}(**kwargs)))
+                    return results
+                else:
+                    results = []
+                    for i in range(n):
+                        kwargs = {{k: v[i].as_py() for k, v in event.items()}}
+                        results.append({method_caller}.{method_name}(**kwargs))
+                    return results
+            """).rstrip()
+        )
 
     return "\n".join(parts) + "\n"
 
