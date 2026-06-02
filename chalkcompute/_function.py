@@ -852,6 +852,33 @@ def _cleanup_temp_files(paths: list[str]) -> None:
             pass
 
 
+def _validate_env(env: dict[str, str]) -> None:
+    """Validate that an ``env`` mapping has only string keys and values.
+
+    The container spec carries ``env`` into the ``envVars`` proto field, which
+    is a ``map<string, string>``. A non-string value (most commonly ``None``
+    from ``os.getenv("X")`` when ``X`` is unset) serializes to JSON ``null`` and
+    is rejected server-side with an opaque
+    ``invalid value for string field value: null`` error. Catch it here with a
+    message that points at the offending key and the usual cause.
+    """
+    bad = {
+        k: v
+        for k, v in env.items()
+        if not isinstance(k, str) or not isinstance(v, str)
+    }
+    if bad:
+        offenders = ", ".join(
+            f"{k!r}: {type(v).__name__}" for k, v in sorted(bad.items(), key=str)
+        )
+        raise TypeError(
+            "env keys and values must be strings; got non-string for "
+            f"{{{offenders}}}. A common cause is passing os.getenv('X') for an "
+            "unset variable (which returns None) — set the variable, supply a "
+            "string default, or pass it as a Secret instead."
+        )
+
+
 def _make_container_spec(
     *,
     name: str,
@@ -1182,6 +1209,7 @@ class RemoteFunction:
         self._memory = memory
         self._gpu = gpu
         self._env = dict(env) if env else {}
+        _validate_env(self._env)
         if models:
             from chalkcompute._model import MODELS_ENV_VAR, encode_models_env
 

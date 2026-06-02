@@ -399,3 +399,48 @@ def test_class_source_strip_handles_uncalled_direct_imports() -> None:
     namespace: dict[str, Any] = {}
     exec(stripped, namespace)
     assert namespace["Adder"]().add(1, 2) == 3
+
+
+def test_function_rejects_none_env_value() -> None:
+    """A ``None`` env value (e.g. os.getenv of an unset var) fails fast.
+
+    Without this guard the ``None`` reaches the server as JSON ``null`` and is
+    rejected with an opaque ``invalid value for string field value: null``.
+    """
+    with pytest.raises(TypeError) as exc_info:
+
+        @function(env={"OPENAI_API_KEY": None})  # type: ignore[dict-item]
+        def fn(x: int) -> int:
+            return x
+
+    message = str(exc_info.value)
+    assert "OPENAI_API_KEY" in message
+    assert "os.getenv" in message
+
+
+def test_function_rejects_non_string_env_value() -> None:
+    with pytest.raises(TypeError) as exc_info:
+
+        @function(env={"PORT": 8080})  # type: ignore[dict-item]
+        def fn(x: int) -> int:
+            return x
+
+    assert "PORT" in str(exc_info.value)
+
+
+def test_function_accepts_string_env_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deployed: list[RemoteFunction] = []
+
+    def fake_deploy(self: RemoteFunction, **_: Any) -> RemoteFunction:
+        deployed.append(self)
+        return self
+
+    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
+
+    @function(env={"OPENAI_API_KEY": "sk-test"})
+    def fn(x: int) -> int:
+        return x
+
+    assert deployed[0]._env["OPENAI_API_KEY"] == "sk-test"
