@@ -54,3 +54,11 @@ def test_gather_returns_awaitable_in_async_context() -> None:
 
 def test_gather_empty_iterable() -> None:
     assert chalkcompute.gather([]) == []
+
+
+def test_gather_rejects_non_handles_with_helpful_message() -> None:
+    # A common mistake: gather(fn.remote(x) ...) passes results, not handles.
+    import pytest
+
+    with pytest.raises(TypeError, match="use .defer"):
+        chalkcompute.gather([_AsyncHandle("ok"), [1.0, 2.0, 3.0]])

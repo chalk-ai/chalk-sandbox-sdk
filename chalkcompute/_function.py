@@ -779,6 +779,14 @@ def gather(
     event loop it returns an awaitable, matching :meth:`FunctionCallHandle.get`.
     """
     handle_list = list(handles)
+    for i, handle in enumerate(handle_list):
+        if not callable(getattr(handle, "get", None)):
+            raise TypeError(
+                f"gather() expects deferred-call handles from .defer(), but item "
+                f"{i} is a {type(handle).__name__}. .remote() runs the call and "
+                f"returns its result, not a handle — use .defer() to fan out, e.g. "
+                f"gather(fn.defer(x) for x in xs)."
+            )
     if _has_running_event_loop():
         return _gather_async(handle_list, timeout=timeout)
     return asyncio.run(_gather_async(handle_list, timeout=timeout))
