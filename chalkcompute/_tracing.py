@@ -262,6 +262,9 @@ def traced(arg: str | F | None = None) -> Callable[[F], F] | F:
             return _decorate_traced(cast(F, arg), None)
         raise TypeError("traced expects a callable, a span name, or no argument")
 
+    if isinstance(arg, str) and not arg.strip():
+        raise ValueError("span name cannot be empty")
+
     def decorator(func: F) -> F:
         return _decorate_traced(func, arg)
 
