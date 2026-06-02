@@ -14,6 +14,18 @@ Linear project: "Sandbox Devx/capabilities" — https://linear.app/chalk-ai/proj
 - `image.py` — Declarative image builder with lazy local file support (`add_local_file`, `add_local_dir`)
 - `volume.py` — Volume SDK client backed by `VolumeService`
 
+### Shared spec fields — change every surface
+
+Several concepts (`env`, `secrets`, `volumes`, `cpu`/`memory`/`gpu`, image
+config) are accepted by **multiple** entry points: functions (`_function.py`),
+classes (`_cls.py`), containers (`_container.py`), scaling groups
+(`_scaling_group.py`), sandboxes (`_sandbox.py` — including per-`exec` calls),
+and images (`_image.py`). When you add validation, normalization, or behavior
+for one of these, apply it to **all** of them — ideally via a shared helper in
+a leaf module like `_naming.py` (e.g. `validate_env`) so the logic can't drift.
+Grep for the field name across `chalkcompute/` before assuming one call site is
+the only one.
+
 ## Testing
 
 Tests run both **locally** and via **Buildkite** (PR-triggered). Credentials are SOPS-encrypted in `.env.enc`.

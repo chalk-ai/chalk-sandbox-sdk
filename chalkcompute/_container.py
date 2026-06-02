@@ -35,7 +35,7 @@ from chalkcompute._volume import (
     _resolve_driver,
     resolve_referenced_volume_type,
 )
-from chalkcompute._naming import sanitize_dns_label, validate_dns_label
+from chalkcompute._naming import sanitize_dns_label, validate_dns_label, validate_env
 from chalkcompute._tracing import _instrumented
 
 logger = logging.getLogger(__name__)
@@ -293,12 +293,7 @@ class Container:
         self._cpu = cpu
         self._memory = memory
         self._gpu = gpu
-        if env is not None:
-            for k, v in env.items():
-                if not isinstance(k, str) or not k:
-                    raise ValueError(f"env keys must be non-empty strings, got {k!r}")
-                if not isinstance(v, str):
-                    raise ValueError(f"env values must be strings, got {v!r} for key {k!r}")
+        validate_env(env)
         self._env = dict(env) if env else {}
         self._secrets = list(secrets or [])
         referenced_volumes: list[tuple[str, str]] = []

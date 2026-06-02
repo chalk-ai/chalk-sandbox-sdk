@@ -60,7 +60,7 @@ from chalkcompute._connect import (
     grpc_target_from_url,
     service_auth_context_from_env,
 )
-from chalkcompute._naming import sanitize_dns_label, validate_dns_label
+from chalkcompute._naming import sanitize_dns_label, validate_dns_label, validate_env
 from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._remote_function_tracing import (
@@ -1189,6 +1189,7 @@ class RemoteFunction:
         self._memory = memory
         self._gpu = gpu
         self._env = dict(env) if env else {}
+        validate_env(self._env)
         if models:
             from chalkcompute._model import MODELS_ENV_VAR, encode_models_env
 

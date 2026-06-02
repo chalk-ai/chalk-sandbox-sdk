@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from chalkcompute._connect import ConnectClient, build_image
-from chalkcompute._naming import sanitize_dns_label, validate_dns_label
+from chalkcompute._naming import sanitize_dns_label, validate_dns_label, validate_env
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
     VolumeDriver,
@@ -151,6 +151,7 @@ class ScalingGroup:
         self._cpu = cpu
         self._memory = memory
         self._gpu = gpu
+        validate_env(env)
         self._env = env or {}
         self._secrets: list[_Secret] = list(secrets or [])
         # User-referenced volumes carry no type of their own; their backend
