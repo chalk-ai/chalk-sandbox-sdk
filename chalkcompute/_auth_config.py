@@ -152,11 +152,7 @@ def load_token(
             activeEnvironment=active_environment,
         )
 
-    global_cfg = (
-        _load_global_config_uncached()
-        if skip_cache
-        else _load_global_config()
-    )
+    global_cfg = _load_global_config_uncached() if skip_cache else _load_global_config()
     if global_cfg is None:
         return None
 
@@ -186,7 +182,9 @@ def _load_project_config_at_path(filename: Path) -> ProjectSettings | None:
     except OSError:
         return None
     except ValueError as exc:
-        raise ValueError(f"Failed to load project config from {filename}: {exc}") from exc
+        raise ValueError(
+            f"Failed to load project config from {filename}: {exc}"
+        ) from exc
 
 
 def load_project_config() -> ProjectSettings | None:

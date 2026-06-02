@@ -145,7 +145,9 @@ def bind_model(
     web_url = _resolve_web_url(client, name, version=version)
 
     target, use_tls = grpc_target_from_url(web_url)
-    creds = GrpcChannelCredentials.SSL() if use_tls else GrpcChannelCredentials.Insecure()
+    creds = (
+        GrpcChannelCredentials.SSL() if use_tls else GrpcChannelCredentials.Insecure()
+    )
     metadata = _auth_metadata(client)
 
     supplier = RemoteCallClientSupplier.from_grpc_host(target, creds, metadata)

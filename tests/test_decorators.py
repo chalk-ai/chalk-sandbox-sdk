@@ -11,7 +11,12 @@ import pytest
 from chalkcompute import traced
 from chalkcompute._cls import RemoteClass, _NoOpClass, after, before, cls, method
 from chalkcompute._cls import _strip_chalkcompute_from_class_source
-from chalkcompute._function import FunctionBuildError, RemoteFunction, _NoOpFunction, function
+from chalkcompute._function import (
+    FunctionBuildError,
+    RemoteFunction,
+    _NoOpFunction,
+    function,
+)
 from chalkcompute._function import (
     _REMOTE_ENV_VAR,
     _STRIP_SOURCE_ENV_VAR,

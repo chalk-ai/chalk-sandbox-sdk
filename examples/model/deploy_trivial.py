@@ -1,6 +1,6 @@
 """Deploy a trivial model to a scaling group for testing.
 
-    uv run python examples/model/deploy_trivial.py
+uv run python examples/model/deploy_trivial.py
 """
 
 from __future__ import annotations

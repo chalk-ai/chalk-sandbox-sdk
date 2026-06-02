@@ -96,6 +96,5 @@ def normalize_remote_function_tracing(
     if isinstance(tracing, TracingPolicy):
         return tracing
     raise TypeError(
-        "tracing must be a bool or TracingPolicy, "
-        f"got {type(tracing).__name__}"
+        f"tracing must be a bool or TracingPolicy, got {type(tracing).__name__}"
     )

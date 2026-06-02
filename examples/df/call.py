@@ -19,6 +19,7 @@ from chalkdf import Remote
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
 
+
 async def main() -> None:
     remote = Remote()
     fn = remote.function("df-groupby-sum", output_type=pa.int64())

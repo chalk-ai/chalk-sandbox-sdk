@@ -25,7 +25,13 @@ def _add(serialized_file: bytes) -> None:
     DESCRIPTOR_POOL.AddSerializedFile(serialized_file)
 
 
-for _module in (descriptor_pb2, duration_pb2, field_mask_pb2, struct_pb2, timestamp_pb2):
+for _module in (
+    descriptor_pb2,
+    duration_pb2,
+    field_mask_pb2,
+    struct_pb2,
+    timestamp_pb2,
+):
     _add(cast(bytes, _module.DESCRIPTOR.serialized_pb))
 
 del _module

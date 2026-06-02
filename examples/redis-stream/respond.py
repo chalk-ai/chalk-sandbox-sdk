@@ -30,7 +30,10 @@ def respond(text: str) -> str:
     completion = client.chat.completions.create(
         model=MODEL,
         messages=[
-            {"role": "system", "content": "You are a helpful assistant. Respond concisely."},
+            {
+                "role": "system",
+                "content": "You are a helpful assistant. Respond concisely.",
+            },
             {"role": "user", "content": text},
         ],
         max_tokens=256,

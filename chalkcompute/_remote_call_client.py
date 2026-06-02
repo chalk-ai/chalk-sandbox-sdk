@@ -119,7 +119,9 @@ class RemoteCallClient:
                 poll_backoff_multiplier,
                 max_message_size,
             )
-        self._supports_per_call_metadata: bool = self._detect_per_call_metadata_support()
+        self._supports_per_call_metadata: bool = (
+            self._detect_per_call_metadata_support()
+        )
 
     def _detect_per_call_metadata_support(self) -> bool:
         """Return True if the native extension's call_ipc accepts a metadata arg."""

@@ -9,6 +9,7 @@ from chalkcompute._naming import sanitize_dns_label, validate_dns_label, validat
 # validate_dns_label
 # ---------------------------------------------------------------------------
 
+
 class TestValidateDnsLabel:
     def test_simple_valid(self):
         validate_dns_label("my-container")
@@ -58,6 +59,7 @@ class TestValidateDnsLabel:
 # ---------------------------------------------------------------------------
 # sanitize_dns_label
 # ---------------------------------------------------------------------------
+
 
 class TestSanitizeDnsLabel:
     def test_lowercase(self):
@@ -138,6 +140,7 @@ class TestSanitizeDnsLabel:
 # ---------------------------------------------------------------------------
 # validate_env
 # ---------------------------------------------------------------------------
+
 
 class TestValidateEnv:
     def test_none_is_accepted(self):

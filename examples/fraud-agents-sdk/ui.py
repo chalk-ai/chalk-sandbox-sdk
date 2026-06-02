@@ -22,7 +22,9 @@ def _truncate(s, n):
 
 
 def volume_creating(name):
-    console.print(f"[bold cyan]\\[volume][/] [green]{name}[/] [dim]→ uploading packet[/]")
+    console.print(
+        f"[bold cyan]\\[volume][/] [green]{name}[/] [dim]→ uploading packet[/]"
+    )
 
 
 def volume_added(name, size):
@@ -30,7 +32,9 @@ def volume_added(name, size):
 
 
 def build_starting():
-    console.print("[bold cyan]\\[build][/] building image + starting investigator container...")
+    console.print(
+        "[bold cyan]\\[build][/] building image + starting investigator container..."
+    )
 
 
 def container_started(container):
@@ -99,7 +103,16 @@ def tool_output(item):
     parsed = _try_json(body)
     if parsed is not None:
         pretty = json.dumps(parsed, indent=2, ensure_ascii=False)
-        console.print(Syntax(pretty, "json", theme="ansi_dark", background_color="default", word_wrap=True, padding=(0, 4)))
+        console.print(
+            Syntax(
+                pretty,
+                "json",
+                theme="ansi_dark",
+                background_color="default",
+                word_wrap=True,
+                padding=(0, 4),
+            )
+        )
         return
     lines = body.splitlines()
     if len(lines) <= 5 and len(body) <= 200:
@@ -107,7 +120,7 @@ def tool_output(item):
             console.print(f"    [dim]{line}[/]", highlight=False)
     else:
         first = next((l for l in lines if l.strip()), "")[:80]
-        console.print(f"    [dim]→ {len(lines)} lines: [italic]\"{first}…\"[/][/]")
+        console.print(f'    [dim]→ {len(lines)} lines: [italic]"{first}…"[/][/]')
 
 
 def verdict(v):

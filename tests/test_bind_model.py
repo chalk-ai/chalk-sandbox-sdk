@@ -15,7 +15,9 @@ from chalkcompute._model import (
 
 
 class _FakeResponse:
-    def __init__(self, status_code: int, payload: dict | None = None, text: str | None = None) -> None:
+    def __init__(
+        self, status_code: int, payload: dict | None = None, text: str | None = None
+    ) -> None:
         self.status_code = status_code
         self._payload = payload or {}
         self.text = text if text is not None else ""
@@ -41,7 +43,9 @@ class _FakeClient:
         try:
             return self._responses[(service, method)]
         except KeyError:
-            return _FakeResponse(status_code=500, text=f"no canned response for {service}/{method}")
+            return _FakeResponse(
+                status_code=500, text=f"no canned response for {service}/{method}"
+            )
 
     def _ensure_auth(self) -> None:
         pass
@@ -64,27 +68,49 @@ def _no_service_auth(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(model_module, "service_auth_context_from_env", lambda: None)
 
 
-def _sg_response(scaling_url: str = "https://qwen3-prod-test.example.chalk.dev") -> _FakeResponse:
-    return _FakeResponse(200, {"scalingGroup": {"name": "qwen3-prod-test", "webUrl": scaling_url, "status": "Available"}})
+def _sg_response(
+    scaling_url: str = "https://qwen3-prod-test.example.chalk.dev",
+) -> _FakeResponse:
+    return _FakeResponse(
+        200,
+        {
+            "scalingGroup": {
+                "name": "qwen3-prod-test",
+                "webUrl": scaling_url,
+                "status": "Available",
+            }
+        },
+    )
 
 
-def _ok_responses(scaling_url: str = "https://qwen3-prod-test.example.chalk.dev") -> dict[tuple[str, str], _FakeResponse]:
+def _ok_responses(
+    scaling_url: str = "https://qwen3-prod-test.example.chalk.dev",
+) -> dict[tuple[str, str], _FakeResponse]:
     """SG-first path: GetScalingGroup returns 200 with the URL."""
     return {
-        ("chalk.scalinggroup.v1.ScalingGroupManagerService", "GetScalingGroup"): _sg_response(scaling_url),
+        (
+            "chalk.scalinggroup.v1.ScalingGroupManagerService",
+            "GetScalingGroup",
+        ): _sg_response(scaling_url),
     }
 
 
-def _model_fallback_responses(scaling_url: str = "https://qwen3-prod-test.example.chalk.dev") -> dict[tuple[str, str], _FakeResponse]:
+def _model_fallback_responses(
+    scaling_url: str = "https://qwen3-prod-test.example.chalk.dev",
+) -> dict[tuple[str, str], _FakeResponse]:
     """Fallback path: SG lookup 404s; resolution goes through model registry."""
     return {
-        ("chalk.scalinggroup.v1.ScalingGroupManagerService", "GetScalingGroup"): _FakeResponse(404, text='{"code":"not_found"}'),
+        (
+            "chalk.scalinggroup.v1.ScalingGroupManagerService",
+            "GetScalingGroup",
+        ): _FakeResponse(404, text='{"code":"not_found"}'),
         ("chalk.server.v1.ModelRegistryService", "GetModel"): _FakeResponse(
             200, {"model": {"latestModelVersion": {"version": 7}}}
         ),
-        ("chalk.modeldeployment.v1.ModelDeploymentService", "ListModelScalingGroups"): _FakeResponse(
-            200, {"scalingGroups": [{"webUrl": scaling_url}]}
-        ),
+        (
+            "chalk.modeldeployment.v1.ModelDeploymentService",
+            "ListModelScalingGroups",
+        ): _FakeResponse(200, {"scalingGroups": [{"webUrl": scaling_url}]}),
     }
 
 
@@ -178,9 +204,10 @@ def test_missing_name_raises_not_found(_no_service_auth):
     # Both SG and model registry return 404.
     client = _FakeClient(
         {
-            ("chalk.scalinggroup.v1.ScalingGroupManagerService", "GetScalingGroup"): _FakeResponse(
-                404, text='{"code":"not_found"}'
-            ),
+            (
+                "chalk.scalinggroup.v1.ScalingGroupManagerService",
+                "GetScalingGroup",
+            ): _FakeResponse(404, text='{"code":"not_found"}'),
             ("chalk.server.v1.ModelRegistryService", "GetModel"): _FakeResponse(
                 404, text='{"code":"not_found"}'
             ),
@@ -193,9 +220,9 @@ def test_missing_name_raises_not_found(_no_service_auth):
 
 def test_model_without_scaling_group_raises(_no_service_auth):
     responses = _model_fallback_responses()
-    responses[("chalk.modeldeployment.v1.ModelDeploymentService", "ListModelScalingGroups")] = _FakeResponse(
-        200, {"scalingGroups": []}
-    )
+    responses[
+        ("chalk.modeldeployment.v1.ModelDeploymentService", "ListModelScalingGroups")
+    ] = _FakeResponse(200, {"scalingGroups": []})
     client = _FakeClient(responses)
 
     with pytest.raises(ModelNotDeployedError):
@@ -205,7 +232,10 @@ def test_model_without_scaling_group_raises(_no_service_auth):
 def test_sg_with_missing_weburl_raises(_no_service_auth):
     client = _FakeClient(
         {
-            ("chalk.scalinggroup.v1.ScalingGroupManagerService", "GetScalingGroup"): _FakeResponse(
+            (
+                "chalk.scalinggroup.v1.ScalingGroupManagerService",
+                "GetScalingGroup",
+            ): _FakeResponse(
                 200, {"scalingGroup": {"name": "qwen3-prod-test", "status": "Pending"}}
             ),
         }
@@ -215,7 +245,9 @@ def test_sg_with_missing_weburl_raises(_no_service_auth):
         bind_model("qwen3-prod-test", output_type=pa.string(), client=client)
 
 
-def test_encode_models_env_round_trips_via_apply(_no_service_auth, monkeypatch: pytest.MonkeyPatch):
+def test_encode_models_env_round_trips_via_apply(
+    _no_service_auth, monkeypatch: pytest.MonkeyPatch
+):
     from chalkcompute._model import MODELS_ENV_VAR, encode_models_env
 
     encoded = encode_models_env(
@@ -276,7 +308,9 @@ def test_generate_handler_shim_skips_bootstrap_by_default():
     assert "apply_models_from_env" not in shim
 
 
-def test_remote_function_models_arg_sets_env_var_and_flags_shim(monkeypatch: pytest.MonkeyPatch):
+def test_remote_function_models_arg_sets_env_var_and_flags_shim(
+    monkeypatch: pytest.MonkeyPatch,
+):
     import os
 
     # Avoid touching the real chalkcompute deploy path / API server.
@@ -302,9 +336,10 @@ def test_remote_function_models_arg_sets_env_var_and_flags_shim(monkeypatch: pyt
 def test_unexpected_rpc_error_raises_model_error(_no_service_auth):
     client = _FakeClient(
         {
-            ("chalk.scalinggroup.v1.ScalingGroupManagerService", "GetScalingGroup"): _FakeResponse(
-                500, text='{"code":"internal"}'
-            )
+            (
+                "chalk.scalinggroup.v1.ScalingGroupManagerService",
+                "GetScalingGroup",
+            ): _FakeResponse(500, text='{"code":"internal"}')
         }
     )
 

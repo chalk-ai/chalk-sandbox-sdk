@@ -187,7 +187,9 @@ class ScalingGroup:
     # -- Alternate constructors ------------------------------------------------
 
     @classmethod
-    def from_id(cls, scaling_group_id: str, *, chalk_client: Any | None = None) -> ScalingGroup:
+    def from_id(
+        cls, scaling_group_id: str, *, chalk_client: Any | None = None
+    ) -> ScalingGroup:
         """Attach to an existing scaling group by ID.
 
         Parameters
@@ -209,7 +211,9 @@ class ScalingGroup:
         resp = sg._client.rpc(_SVC, "GetScalingGroup", {"id": scaling_group_id})
         if resp.status_code != 200:
             raise ScalingGroupError(f"GetScalingGroup failed: {resp.text}")
-        sg._scaling_group_info = _parse_scaling_group_response(resp.json()["scalingGroup"])
+        sg._scaling_group_info = _parse_scaling_group_response(
+            resp.json()["scalingGroup"]
+        )
         sg._scaling_group_id = sg._scaling_group_info.id
         return sg
 
@@ -236,7 +240,9 @@ class ScalingGroup:
         resp = sg._client.rpc(_SVC, "GetScalingGroup", {"name": name})
         if resp.status_code != 200:
             raise ScalingGroupError(f"GetScalingGroup failed: {resp.text}")
-        sg._scaling_group_info = _parse_scaling_group_response(resp.json()["scalingGroup"])
+        sg._scaling_group_info = _parse_scaling_group_response(
+            resp.json()["scalingGroup"]
+        )
         sg._scaling_group_id = sg._scaling_group_info.id
         sg._name = name
         return sg
@@ -326,7 +332,9 @@ class ScalingGroup:
         ]
 
         # 2b. Upload lazy local files to volumes (if any)
-        lazy_files = self._image.lazy_local_files if isinstance(self._image, Image) else set()
+        lazy_files = (
+            self._image.lazy_local_files if isinstance(self._image, Image) else set()
+        )
         if lazy_files:
             logger.info("Uploading %d local file(s) to volume(s)...", len(lazy_files))
             assert isinstance(self._image, Image)
@@ -389,7 +397,9 @@ class ScalingGroup:
         if self._scaling_interval_seconds is not None:
             scaling_spec["windowSeconds"] = self._scaling_interval_seconds
         if self._target_cpu_utilization_percentage is not None:
-            scaling_spec["targetCpuUtilizationPercentage"] = self._target_cpu_utilization_percentage
+            scaling_spec["targetCpuUtilizationPercentage"] = (
+                self._target_cpu_utilization_percentage
+            )
 
         spec: dict[str, Any] = {
             "containerSpec": container_spec,
@@ -428,7 +438,9 @@ class ScalingGroup:
         assert self._scaling_group_id is not None
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            resp = self._client.rpc(_SVC, "GetScalingGroup", {"id": self._scaling_group_id})
+            resp = self._client.rpc(
+                _SVC, "GetScalingGroup", {"id": self._scaling_group_id}
+            )
             if resp.status_code != 200:
                 raise ScalingGroupError(f"GetScalingGroup failed: {resp.text}")
             info = _parse_scaling_group_response(resp.json()["scalingGroup"])
@@ -490,7 +502,9 @@ class ScalingGroup:
                 "Scaling group has no web_url. Call .deploy() first or .refresh() to update."
             )
         url = f"{self._scaling_group_info.web_url}{path}"
-        return httpx.request(method, url, json=json, content=data, headers=headers, timeout=timeout)
+        return httpx.request(
+            method, url, json=json, content=data, headers=headers, timeout=timeout
+        )
 
     def wait_ready(
         self,
@@ -554,7 +568,9 @@ class ScalingGroup:
         if self._volumes:
             # Driver is used here only to perform the delete action, not to
             # derive a mount type.
-            driver = self._volume_driver or VersionedVolumeClient.from_connect(self._client)
+            driver = self._volume_driver or VersionedVolumeClient.from_connect(
+                self._client
+            )
             cleanup_owned_volumes(driver, self._volumes, self._referenced_volumes)
         self._volumes = []
         self._volume_driver = None
@@ -577,7 +593,9 @@ class ScalingGroup:
         resp = self._client.rpc(_SVC, "GetScalingGroup", {"id": self._scaling_group_id})
         if resp.status_code != 200:
             raise ScalingGroupError(f"GetScalingGroup failed: {resp.text}")
-        self._scaling_group_info = _parse_scaling_group_response(resp.json()["scalingGroup"])
+        self._scaling_group_info = _parse_scaling_group_response(
+            resp.json()["scalingGroup"]
+        )
         return self._scaling_group_info
 
     @property
@@ -599,7 +617,11 @@ class ScalingGroup:
         return self._scaling_group_info.web_url
 
     def __repr__(self) -> str:
-        status = self._scaling_group_info.status if self._scaling_group_info else "not deployed"
+        status = (
+            self._scaling_group_info.status
+            if self._scaling_group_info
+            else "not deployed"
+        )
         return f"ScalingGroup(name={self._name!r}, status={status})"
 
 

@@ -37,7 +37,11 @@ def _call_with_retry(
             return fn.remote(*args)
         except RuntimeError as e:
             if "Unavailable" in str(e) and attempt < retries - 1:
-                logging.info("Call attempt %d failed (Unavailable), retrying in %.0fs...", attempt + 1, delay)
+                logging.info(
+                    "Call attempt %d failed (Unavailable), retrying in %.0fs...",
+                    attempt + 1,
+                    delay,
+                )
                 time.sleep(delay)
             else:
                 raise
@@ -63,9 +67,7 @@ def test_function_secret_from_local_env() -> None:
         fn.wait_ready()
 
         result = _call_with_retry(fn, local_var)
-        assert result == secret_value, (
-            f"Expected {secret_value!r}, got {result!r}"
-        )
+        assert result == secret_value, f"Expected {secret_value!r}, got {result!r}"
     finally:
         del os.environ[local_var]
         if fn is not None:

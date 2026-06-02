@@ -1,6 +1,6 @@
 """Deploy a sync scalar function for testing.
 
-    uv run python examples/scalar/deploy_sync.py
+uv run python examples/scalar/deploy_sync.py
 """
 
 from __future__ import annotations

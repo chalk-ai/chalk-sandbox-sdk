@@ -54,10 +54,7 @@ def main() -> None:
         local_file = f.name
 
     try:
-        image = (
-            Image.debian_slim()
-            .add_local_file(local_file, "/app/hello.txt")
-        )
+        image = Image.debian_slim().add_local_file(local_file, "/app/hello.txt")
 
         # ## Launch the container
         #

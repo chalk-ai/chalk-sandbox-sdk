@@ -24,10 +24,14 @@ class FakeContainer:
     info = FakeInfo()
 
 
-def test_assert_container_metrics_skips_when_not_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_assert_container_metrics_skips_when_not_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls: list[Any] = []
     monkeypatch.delenv("CHALK_ASSERT_CONTAINER_METRICS", raising=False)
-    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(
+        "subprocess.run", lambda *args, **kwargs: calls.append((args, kwargs))
+    )
 
     assert_container_metrics(FakeContainer())  # type: ignore[arg-type]
 
@@ -92,7 +96,9 @@ def test_assert_container_metrics_retries_until_datapoint(
     sleeps: list[float] = []
 
     def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(next(responses)), stderr="")
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout=json.dumps(next(responses)), stderr=""
+        )
 
     monkeypatch.setenv("CHALK_ASSERT_CONTAINER_METRICS", "1")
     monkeypatch.setattr("subprocess.run", fake_run)
@@ -114,7 +120,9 @@ def test_assert_container_metrics_failure_mentions_container_identity(
         return subprocess.CompletedProcess(
             cmd,
             0,
-            stdout=json.dumps({"charts": [{"series": [{"points": [{"value": None}]}]}]}),
+            stdout=json.dumps(
+                {"charts": [{"series": [{"points": [{"value": None}]}]}]}
+            ),
             stderr="",
         )
 

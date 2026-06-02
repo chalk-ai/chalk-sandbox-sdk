@@ -11,7 +11,9 @@ from e2etests.conftest import _deploy_script, needs_staging
 
 pytestmark = pytest.mark.skip(reason="expensive — example-app integration smoke")
 
-TEST_IMAGE_URL = "https://images.pexels.com/photos/45201/kitty-cat-kitten-pet-45201.jpeg"
+TEST_IMAGE_URL = (
+    "https://images.pexels.com/photos/45201/kitty-cat-kitten-pet-45201.jpeg"
+)
 
 EXPECTED_POLICIES = {"violence", "adult", "weapon", "minor"}
 
@@ -47,7 +49,11 @@ def test_classify_identifies_known_image() -> None:
     result = json.loads(classify(TEST_IMAGE_URL))
 
     all_labels = [lbl["label"].lower() for lbl in result["labels"]]
-    cat_labels = [name for name in all_labels if "cat" in name or "tabby" in name or "egyptian" in name]
+    cat_labels = [
+        name
+        for name in all_labels
+        if "cat" in name or "tabby" in name or "egyptian" in name
+    ]
     assert len(cat_labels) > 0, f"Expected cat-related label, got: {all_labels}"
 
 

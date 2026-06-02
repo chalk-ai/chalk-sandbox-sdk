@@ -82,13 +82,9 @@ def test_container_run_sends_network_policy() -> None:
     container = Container(
         image="ubuntu:latest",
         name="network-test",
-        security_policy=ContainerSecurityPolicy(
-            kernel_policy=KernelPolicy.RESTRICTED
-        ),
+        security_policy=ContainerSecurityPolicy(kernel_policy=KernelPolicy.RESTRICTED),
         network_policy=NetworkPolicy(
-            allowed_routes=[
-                AllowedRoute(cidr="104.20.23.154/32", ports=[(443, 443)])
-            ]
+            allowed_routes=[AllowedRoute(cidr="104.20.23.154/32", ports=[(443, 443)])]
         ),
     )
     container._client = client
@@ -108,9 +104,7 @@ def test_container_run_sends_network_policy() -> None:
             }
         ]
     }
-    assert body["container"]["spec"]["securityPolicy"] == {
-        "kernelPolicy": "RESTRICTED"
-    }
+    assert body["container"]["spec"]["securityPolicy"] == {"kernelPolicy": "RESTRICTED"}
 
 
 def test_container_run_sends_tags() -> None:
@@ -131,7 +125,7 @@ def test_container_run_sends_tags() -> None:
         "env": "staging",
     }
 
-    
+
 def test_lifetime_valid_formats_accepted() -> None:
     for lifetime in ["30s", "1.5s", "300s", "0.5s", "3600s"]:
         Container(image="ubuntu:latest", lifetime=lifetime)  # must not raise
@@ -141,7 +135,8 @@ def test_lifetime_invalid_formats_rejected() -> None:
     for lifetime in ["not-a-duration", "5m", "2h", "30", "abc", ""]:
         with pytest.raises(ValueError, match="lifetime"):
             Container(image="ubuntu:latest", lifetime=lifetime)
-            
+
+
 def test_run_twice_raises_container_error() -> None:
     client = _Client()
     container = Container(image="ubuntu:latest", name="double-run-test")
@@ -150,6 +145,7 @@ def test_run_twice_raises_container_error() -> None:
     container.run()
 
     from chalkcompute._container import ContainerError
+
     with pytest.raises(ContainerError, match="already running"):
         container.run()
 
@@ -169,7 +165,9 @@ def test_stop_then_run_again_is_allowed() -> None:
     call_log: list[tuple[str, str]] = []
 
     class _TrackingClient(_Client):
-        def rpc(self, service: str, method: str, body: dict[str, Any], timeout: float = 30) -> Any:
+        def rpc(
+            self, service: str, method: str, body: dict[str, Any], timeout: float = 30
+        ) -> Any:
             call_log.append((service, method))
             if method == "StopContainer":
                 return _StopResponse()
@@ -216,9 +214,8 @@ def test_mount_volume_sent_in_run_container_rpc() -> None:
     from unittest.mock import patch
 
     client = _Client()
-    container = (
-        Container(image="ubuntu:latest", name="vol-test")
-        .mount_volume("my-volume", "/data")
+    container = Container(image="ubuntu:latest", name="vol-test").mount_volume(
+        "my-volume", "/data"
     )
     container._client = client
 

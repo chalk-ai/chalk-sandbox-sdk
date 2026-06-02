@@ -14,7 +14,9 @@ log = logging.getLogger(__name__)
 
 
 @chalkcompute.function(
-    image=chalkcompute.Image.debian_slim().pip_install(["chalkdf", "chalkpy[runtime]", "pyarrow"]),
+    image=chalkcompute.Image.debian_slim().pip_install(
+        ["chalkdf", "chalkpy[runtime]", "pyarrow"]
+    ),
 )
 def df_groupby_sum(n: int) -> int:
     from chalkdf import DataFrame

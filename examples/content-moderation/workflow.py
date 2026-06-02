@@ -76,21 +76,28 @@ class ModerationWorkflow:
         # Confident enough → auto-approve
         if top_confidence >= AUTO_APPROVE_THRESHOLD:
             return ModerationResult(
-                top_label=top_label, top_confidence=top_confidence,
-                policy_scores=None, decision="auto_approved", reviewed_by="model",
+                top_label=top_label,
+                top_confidence=top_confidence,
+                policy_scores=None,
+                decision="auto_approved",
+                reviewed_by="model",
             )
 
         # Confident enough the other way → auto-reject
         if top_confidence < AUTO_REJECT_THRESHOLD:
             return ModerationResult(
-                top_label=top_label, top_confidence=top_confidence,
-                policy_scores=None, decision="auto_rejected", reviewed_by="model",
+                top_label=top_label,
+                top_confidence=top_confidence,
+                policy_scores=None,
+                decision="auto_rejected",
+                reviewed_by="model",
             )
 
         # Borderline → Stage 2: CLIP zero-shot policy check
         workflow.logger.info(
             "Borderline stage-1 (label=%s confidence=%.2f) — running policy check",
-            top_label, top_confidence,
+            top_label,
+            top_confidence,
         )
         stage2 = await workflow.execute_activity(
             policy_check_activity,
@@ -102,15 +109,18 @@ class ModerationWorkflow:
         # No policy fired → auto-approve
         if max(policy_scores.values()) < POLICY_FLAG_THRESHOLD:
             return ModerationResult(
-                top_label=top_label, top_confidence=top_confidence,
-                policy_scores=policy_scores, decision="auto_approved",
+                top_label=top_label,
+                top_confidence=top_confidence,
+                policy_scores=policy_scores,
+                decision="auto_approved",
                 reviewed_by="policy_check",
             )
 
         # A policy fired → wait for a human reviewer
         workflow.logger.info(
             "Policy flagged — waiting for human review. max_policy=%s score=%.2f",
-            stage2["max_policy"], stage2["max_score"],
+            stage2["max_policy"],
+            stage2["max_score"],
         )
         try:
             await workflow.wait_condition(
@@ -124,8 +134,11 @@ class ModerationWorkflow:
             reviewed_by = "timeout"
 
         return ModerationResult(
-            top_label=top_label, top_confidence=top_confidence,
-            policy_scores=policy_scores, decision=decision, reviewed_by=reviewed_by,
+            top_label=top_label,
+            top_confidence=top_confidence,
+            policy_scores=policy_scores,
+            decision=decision,
+            reviewed_by=reviewed_by,
         )
 
     @workflow.signal

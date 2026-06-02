@@ -1,6 +1,6 @@
 """Deploy an async scalar function for testing.
 
-    uv run python examples/scalar/deploy_async.py
+uv run python examples/scalar/deploy_async.py
 """
 
 from __future__ import annotations

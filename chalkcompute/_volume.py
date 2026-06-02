@@ -258,7 +258,9 @@ class SimpleVolume:
     ) -> None:
         if not name or not name.strip():
             raise ValueError("volume name cannot be empty")
-        self._client = client or VolumeClient.from_connect(ConnectClient(chalk_client=chalk_client))
+        self._client = client or VolumeClient.from_connect(
+            ConnectClient(chalk_client=chalk_client)
+        )
         self._name = name
         self._info: VolumeInfo | None = None
         self._create_if_missing = create_if_missing
@@ -541,7 +543,9 @@ class VolumeDriver(Protocol):
 
     mount_type: str
 
-    def upload_lazy_files(self, image: Image, *, volume_prefix: str) -> "list[VolumeMount]": ...
+    def upload_lazy_files(
+        self, image: Image, *, volume_prefix: str
+    ) -> "list[VolumeMount]": ...
 
     def delete_volume(self, name: str) -> None: ...
 
@@ -888,7 +892,9 @@ class VolumeClient:
         return True
 
     @_instrumented("chalkcompute.volume.upload_lazy_files")
-    def upload_lazy_files(self, image: Image, *, volume_prefix: str = "files") -> _VolumeMounts:
+    def upload_lazy_files(
+        self, image: Image, *, volume_prefix: str = "files"
+    ) -> _VolumeMounts:
         """Upload an image's lazy local files into v1 volumes.
 
         Creates one volume per destination directory and uploads each
@@ -927,9 +933,13 @@ class VolumeClient:
         for dest_dir, files in dir_to_files.items():
             vol = self.create(f"{volume_prefix}-{uuid.uuid4().hex[:12]}")
             with ThreadPoolExecutor(max_workers=_UPLOAD_MAX_WORKERS) as pool:
-                for fut in as_completed(pool.submit(_put, vol.name, lf, dest_dir) for lf in files):
+                for fut in as_completed(
+                    pool.submit(_put, vol.name, lf, dest_dir) for lf in files
+                ):
                     fut.result()
-            volumes.append(VolumeMount(name=vol.name, mount_path=dest_dir, type=self.mount_type))
+            volumes.append(
+                VolumeMount(name=vol.name, mount_path=dest_dir, type=self.mount_type)
+            )
         return volumes
 
     def delete_volume(self, name: str) -> None:
@@ -1029,7 +1039,9 @@ def _read_file_from_signed_uri(signed_download_uri: str) -> bytes:
         raise VolumeError(f"Signed file download failed: {e}") from e
 
 
-def _upload_bytes(client: VolumeClient, volume_name: str, path: str, data: bytes) -> None:
+def _upload_bytes(
+    client: VolumeClient, volume_name: str, path: str, data: bytes
+) -> None:
     """Upload a file using the appropriate transport.
 
     Files at or below ``_INLINE_THRESHOLD_BYTES`` are sent via gRPC inline
@@ -1053,7 +1065,9 @@ def _upload_bytes(client: VolumeClient, volume_name: str, path: str, data: bytes
         _put_file_presigned(client, volume_name, path, data)
 
 
-def _put_file_inline(client: VolumeClient, volume_name: str, path: str, data: bytes) -> None:
+def _put_file_inline(
+    client: VolumeClient, volume_name: str, path: str, data: bytes
+) -> None:
     """Upload a file via gRPC inline ``PutFile(data=...)``.
 
     Parameters
@@ -1078,7 +1092,9 @@ def _put_file_inline(client: VolumeClient, volume_name: str, path: str, data: by
     logger.info("Uploaded %s (inline, %d bytes)", path, len(data))
 
 
-def _put_file_presigned(client: VolumeClient, volume_name: str, path: str, data: bytes) -> None:
+def _put_file_presigned(
+    client: VolumeClient, volume_name: str, path: str, data: bytes
+) -> None:
     """Upload a file via a presigned object-storage URL.
 
     Uses the gRPC ``DataPlaneObjectStorageServiceStub`` for
@@ -1180,7 +1196,9 @@ def _upload_multipart(
 
     def _put_part(i: int) -> tuple[int, str]:
         """Upload part *i* and return ``(index, etag)``."""
-        chunk = data[i * _PRESIGNED_PART_SIZE_BYTES : (i + 1) * _PRESIGNED_PART_SIZE_BYTES]
+        chunk = data[
+            i * _PRESIGNED_PART_SIZE_BYTES : (i + 1) * _PRESIGNED_PART_SIZE_BYTES
+        ]
         r = httpx.put(part_uris[i], content=chunk, timeout=300)
         if r.status_code in (401, 403):
             r.raise_for_status()
@@ -1196,7 +1214,10 @@ def _upload_multipart(
                     etags_by_index[i] = etag
             break
         except httpx.HTTPStatusError as e:
-            if e.response.status_code in (401, 403) and refresh_count < _PRESIGNED_MAX_RETRIES:
+            if (
+                e.response.status_code in (401, 403)
+                and refresh_count < _PRESIGNED_MAX_RETRIES
+            ):
                 refresh_count += 1
                 logger.warning(
                     "Multipart upload: refreshing signed URLs (attempt %d/%d)",
@@ -1271,7 +1292,10 @@ def _upload_resumable(
             timeout=30,
         )
         if not init.is_success:
-            if init.status_code in (401, 403) and refresh_count < _PRESIGNED_MAX_RETRIES:
+            if (
+                init.status_code in (401, 403)
+                and refresh_count < _PRESIGNED_MAX_RETRIES
+            ):
                 refresh_count += 1
                 logger.warning(
                     "Resumable upload: refreshing signed URL (attempt %d/%d)",
@@ -1303,7 +1327,10 @@ def _upload_resumable(
                 refresh_count,
             )
             return storage_object_id
-        if put_resp.status_code in (401, 403) and refresh_count < _PRESIGNED_MAX_RETRIES:
+        if (
+            put_resp.status_code in (401, 403)
+            and refresh_count < _PRESIGNED_MAX_RETRIES
+        ):
             refresh_count += 1
             logger.warning(
                 "Resumable upload: refreshing signed URL (attempt %d/%d)",

@@ -68,13 +68,21 @@ def main() -> None:
     print("\n=== Uploading file to volume ===")
     subprocess.run(
         [
-            "chalk", "volume", "put-file",
-            "--name", VOLUME_NAME,
-            "--path", FILE_PATH,
-            "--file", "-",
+            "chalk",
+            "volume",
+            "put-file",
+            "--name",
+            VOLUME_NAME,
+            "--path",
+            FILE_PATH,
+            "--file",
+            "-",
         ],
         input=FILE_CONTENT,
-        check=True, text=True, capture_output=True, env=env,
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
     )
     print(f"Uploaded '{FILE_PATH}' ({len(FILE_CONTENT)}B) to volume '{VOLUME_NAME}'")
 
@@ -89,14 +97,23 @@ def main() -> None:
     #    The volume is backed by ChalkFS (FUSE) and auto-syncs files from
     #    the volume service.
     print("\n=== Running container with mounted volume ===")
-    result = chalk([
-        "container", "run",
-        "--image", "python:3.14-slim-trixie",
-        "--name", CONTAINER_NAME,
-        f"--volume={VOLUME_NAME}:{MOUNT_PATH}",
-        "--entrypoint", f"bash,-c,sleep 10 && echo 'Files in {MOUNT_PATH}:' && ls -la {MOUNT_PATH}/ && echo '---' && cat {MOUNT_PATH}/{FILE_PATH}",
-        "--lifetime", "5m",
-    ], env, check=False)
+    result = chalk(
+        [
+            "container",
+            "run",
+            "--image",
+            "python:3.14-slim-trixie",
+            "--name",
+            CONTAINER_NAME,
+            f"--volume={VOLUME_NAME}:{MOUNT_PATH}",
+            "--entrypoint",
+            f"bash,-c,sleep 10 && echo 'Files in {MOUNT_PATH}:' && ls -la {MOUNT_PATH}/ && echo '---' && cat {MOUNT_PATH}/{FILE_PATH}",
+            "--lifetime",
+            "5m",
+        ],
+        env,
+        check=False,
+    )
     if result.returncode != 0:
         print(f"container run exited with code {result.returncode}", file=sys.stderr)
         sys.exit(1)
@@ -107,7 +124,13 @@ def main() -> None:
 
     print("\n=== Fetching container logs ===")
     chalk(
-        ["logs", "--query", f"pod_name:chalk-container-{CONTAINER_NAME}", "--start-time", "5m ago"],
+        [
+            "logs",
+            "--query",
+            f"pod_name:chalk-container-{CONTAINER_NAME}",
+            "--start-time",
+            "5m ago",
+        ],
         env,
         check=False,
     )

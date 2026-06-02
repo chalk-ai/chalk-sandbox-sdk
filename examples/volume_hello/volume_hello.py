@@ -45,6 +45,7 @@ FILE_CONTENT = "Hello from a Chalk volume!\n"
 # tokens from Chalk's OAuth endpoint. We fetch one token and share it across
 # all direct API calls; the Container client fetches its own token internally.
 
+
 def _get_token() -> str:
     resp = httpx.post(
         f"{os.environ['CHALK_API_SERVER']}/v1/oauth/token",
@@ -77,6 +78,7 @@ def _volume_rpc(method: str, body: dict, *, token: str) -> httpx.Response:
 # `CreateVolume` is idempotent — a 409 means the volume already exists, which
 # is fine. File data is transmitted as base64 in the JSON body.
 
+
 def create_volume(name: str, token: str) -> None:
     resp = _volume_rpc("CreateVolume", {"name": name}, token=token)
     if resp.status_code != 409:
@@ -104,6 +106,7 @@ def create_volume(name: str, token: str) -> None:
 #
 # `Container.stop()` also deletes volumes listed in `volumes`, so no separate
 # cleanup call is needed.
+
 
 def main() -> None:
     run_id = uuid.uuid4().hex[:8]

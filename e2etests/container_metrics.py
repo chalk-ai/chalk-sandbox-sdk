@@ -43,7 +43,9 @@ def assert_container_metrics(
     )
 
     if os.environ.get("CHALK_ASSERT_CONTAINER_METRICS") != "1":
-        print("Skipping container metrics assertion; CHALK_ASSERT_CONTAINER_METRICS != 1")
+        print(
+            "Skipping container metrics assertion; CHALK_ASSERT_CONTAINER_METRICS != 1"
+        )
         return
 
     if not pod_name:

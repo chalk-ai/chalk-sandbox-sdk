@@ -112,11 +112,15 @@ def main() -> None:
                         )
                     )
         except httpx.HTTPStatusError as e:
-            console.print(f"[bold red]Error:[/bold red] {e.response.status_code} - {e.response.text}")
+            console.print(
+                f"[bold red]Error:[/bold red] {e.response.status_code} - {e.response.text}"
+            )
             messages.pop()
             continue
         except httpx.ConnectError:
-            console.print("[bold red]Error:[/bold red] Cannot connect. Is the port-forward running?")
+            console.print(
+                "[bold red]Error:[/bold red] Cannot connect. Is the port-forward running?"
+            )
             messages.pop()
             continue
 

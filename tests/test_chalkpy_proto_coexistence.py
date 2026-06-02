@@ -61,13 +61,23 @@ def uv_bin() -> str:
 
 
 @pytest.mark.parametrize("chalkpy_version", CHALKPY_VERSIONS)
-@pytest.mark.parametrize("chalkpy_first", [True, False], ids=["chalkpy_first", "chalkcompute_first"])
+@pytest.mark.parametrize(
+    "chalkpy_first", [True, False], ids=["chalkpy_first", "chalkcompute_first"]
+)
 def test_chalkpy_chalkcompute_coexist(
     uv_bin: str, chalkpy_version: str, chalkpy_first: bool
 ) -> None:
     script = _import_script(chalkpy_first=chalkpy_first)
     result = subprocess.run(
-        [uv_bin, "run", "--with", f"chalkpy=={chalkpy_version}", "python", "-c", script],
+        [
+            uv_bin,
+            "run",
+            "--with",
+            f"chalkpy=={chalkpy_version}",
+            "python",
+            "-c",
+            script,
+        ],
         capture_output=True,
         text=True,
         timeout=180,

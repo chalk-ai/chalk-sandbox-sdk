@@ -12,7 +12,9 @@ def test_local_sdk_copy_extracts_archive_to_local_tmp(
     monkeypatch.delenv(_LOCAL_WHEEL_ENV_VAR, raising=False)
     monkeypatch.setenv("CHALK_FUNCTION_STRIP_SOURCE", "0")
 
-    entrypoint = _local_install_entrypoint(["chalk-remote-call", "--handler", "handler.handler"])
+    entrypoint = _local_install_entrypoint(
+        ["chalk-remote-call", "--handler", "handler.handler"]
+    )
 
     assert entrypoint[:2] == ["sh", "-c"]
     command = entrypoint[2]

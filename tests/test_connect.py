@@ -278,7 +278,9 @@ tokens:
 
 
 class TestConnectClientTracing:
-    def test_internal_configure_tracing_installs_parent_based_sampler(self, monkeypatch):
+    def test_internal_configure_tracing_installs_parent_based_sampler(
+        self, monkeypatch
+    ):
         rates: list[float] = []
         monkeypatch.setattr(_tracing, "_initialized", False)
         monkeypatch.setattr(_tracing, "_provider", None)
@@ -313,9 +315,7 @@ class TestConnectClientTracing:
         assert rates == [1.0]
         assert tracer.span_names == ["workflow"]
 
-    def test_span_leaves_exception_recording_to_otel_context_manager(
-        self, monkeypatch
-    ):
+    def test_span_leaves_exception_recording_to_otel_context_manager(self, monkeypatch):
         tracer = _Tracer()
         monkeypatch.setattr(_tracing, "_initialized", False)
         monkeypatch.setattr(_tracing, "_provider", None)

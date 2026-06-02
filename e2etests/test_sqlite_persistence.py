@@ -83,7 +83,9 @@ def _wait_for_path(container: Container, path: str, timeout: float = 120.0) -> N
     raise TimeoutError(f"{path} not visible after {timeout}s")
 
 
-def _wait_for_writable_mount(container: Container, path: str, timeout: float = 120.0) -> None:
+def _wait_for_writable_mount(
+    container: Container, path: str, timeout: float = 120.0
+) -> None:
     """Poll until *path* is a writable directory (ChalkFS FUSE mount ready)."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -97,11 +99,7 @@ def _wait_for_writable_mount(container: Container, path: str, timeout: float = 1
 @needs_staging
 def test_writer_creates_database(volume_name: str) -> None:
     """The writer container creates a SQLite DB on the volume."""
-    writer = (
-        Container(image=image)
-        .mount_volume(volume_name, MOUNT_PATH)
-        .run()
-    )
+    writer = Container(image=image).mount_volume(volume_name, MOUNT_PATH).run()
     try:
         _wait_for_writable_mount(writer, MOUNT_PATH)
         result = writer.exec("python3", "-c", WRITE_SCRIPT, timeout_secs=30)
@@ -115,11 +113,7 @@ def test_writer_creates_database(volume_name: str) -> None:
 def test_two_readers_see_same_data(volume_name: str) -> None:
     """Two reader containers independently query the same SQLite DB."""
     # --- Write phase ---
-    writer = (
-        Container(image=image)
-        .mount_volume(volume_name, MOUNT_PATH)
-        .run()
-    )
+    writer = Container(image=image).mount_volume(volume_name, MOUNT_PATH).run()
     try:
         _wait_for_writable_mount(writer, MOUNT_PATH)
         result = writer.exec("python3", "-c", WRITE_SCRIPT, timeout_secs=30)
@@ -128,16 +122,8 @@ def test_two_readers_see_same_data(volume_name: str) -> None:
         writer.stop()
 
     # --- Read phase (two independent containers) ---
-    reader_a = (
-        Container(image=image)
-        .mount_volume(volume_name, MOUNT_PATH)
-        .run()
-    )
-    reader_b = (
-        Container(image=image)
-        .mount_volume(volume_name, MOUNT_PATH)
-        .run()
-    )
+    reader_a = Container(image=image).mount_volume(volume_name, MOUNT_PATH).run()
+    reader_b = Container(image=image).mount_volume(volume_name, MOUNT_PATH).run()
     try:
         _wait_for_path(reader_a, DB_PATH)
         _wait_for_path(reader_b, DB_PATH)

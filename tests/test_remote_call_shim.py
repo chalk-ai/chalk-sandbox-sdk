@@ -278,9 +278,7 @@ class TestGenerateClassHandlerShimNormal:
                 return x * y
 
         _install_user_module(Mul=Mul)
-        src = _generate_class_handler_shim(
-            "Mul", "mul", True, None, False, None, False
-        )
+        src = _generate_class_handler_shim("Mul", "mul", True, None, False, None, False)
         ns = _load_shim(src)
         event = {"x": pa.array([2, 3]), "y": pa.array([10, 10])}
         assert ns["handler"](event, {}) == [20, 30]
@@ -458,7 +456,9 @@ class TestShimViaRemoteCallLib:
         _install_user_module(add=add)
         ns = _load_shim(_generate_handler_shim("add"))
 
-        ipc_bytes = _encode_event({"x": pa.array([1, 2, 3]), "y": pa.array([10, 20, 30])})
+        ipc_bytes = _encode_event(
+            {"x": pa.array([1, 2, 3]), "y": pa.array([10, 20, 30])}
+        )
         payloads = process_batches(ipc_bytes, ns["handler"], None, {})
         assert _decode_result_column(payloads) == [[11, 22, 33]]
 

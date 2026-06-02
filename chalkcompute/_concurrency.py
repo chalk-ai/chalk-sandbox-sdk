@@ -26,9 +26,7 @@ class ConcurrencyPolicy:
         return d
 
     @classmethod
-    def from_int_or_policy(
-        cls, value: int | ConcurrencyPolicy
-    ) -> ConcurrencyPolicy:
+    def from_int_or_policy(cls, value: int | ConcurrencyPolicy) -> ConcurrencyPolicy:
         if isinstance(value, bool):
             raise TypeError(f"Expected int or {cls.__name__}, got bool")
         if isinstance(value, int):

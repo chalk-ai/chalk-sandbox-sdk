@@ -152,9 +152,7 @@ def _v1_client_with_get(side_effect=None, found: bool = True) -> VolumeClient:
     if side_effect is not None:
         client._stub.GetVolume.side_effect = side_effect
     elif not found:
-        client._stub.GetVolume.side_effect = _FakeRpcError(
-            grpc.StatusCode.NOT_FOUND
-        )
+        client._stub.GetVolume.side_effect = _FakeRpcError(grpc.StatusCode.NOT_FOUND)
     return client
 
 
@@ -165,9 +163,7 @@ def _v2_client_with_get(side_effect=None, found: bool = True) -> VersionedVolume
     if side_effect is not None:
         client._stub.GetVolume.side_effect = side_effect
     elif not found:
-        client._stub.GetVolume.side_effect = _FakeRpcError(
-            grpc.StatusCode.NOT_FOUND
-        )
+        client._stub.GetVolume.side_effect = _FakeRpcError(grpc.StatusCode.NOT_FOUND)
     return client
 
 
@@ -230,7 +226,9 @@ def test_referenced_base_volume_in_deploy_uses_looked_up_type() -> None:
     # backend-looked-up type rather than a hardcoded default.
     from chalkcompute._scaling_group import ScalingGroup
 
-    sg = ScalingGroup(image="ubuntu:latest", name="sg-test", volumes=[("old-vol", "/data")])
+    sg = ScalingGroup(
+        image="ubuntu:latest", name="sg-test", volumes=[("old-vol", "/data")]
+    )
     # Stored as a raw reference, not yet typed.
     assert sg._referenced_volumes == [("old-vol", "/data")]
 

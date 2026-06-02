@@ -111,7 +111,9 @@ def main() -> None:
             previous = volume.at_version(before_remove.id)
             previous_eval = previous.read_file(EVAL_PATH)
             assert previous_eval == eval_csv
-            print(f"Read deleted file from previous version: {previous_eval.decode().strip()!r}")
+            print(
+                f"Read deleted file from previous version: {previous_eval.decode().strip()!r}"
+            )
 
             try:
                 previous.put_file("data/should-fail.txt", b"immutable")
@@ -136,7 +138,9 @@ def main() -> None:
 
         finally:
             if keep_volume:
-                print(f"\nKeeping volume because KEEP_VERSIONED_VOLUME=1: {volume_name}")
+                print(
+                    f"\nKeeping volume because KEEP_VERSIONED_VOLUME=1: {volume_name}"
+                )
             else:
                 log.info("Deleting versioned volume %s", volume_name)
                 volume.delete()

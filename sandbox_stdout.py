@@ -15,10 +15,16 @@ from sandbox import SandboxClient
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Execute a command interactively in a sandbox")
-    parser.add_argument("--target", required=True, help="gRPC target (e.g., localhost:50051)")
+    parser = argparse.ArgumentParser(
+        description="Execute a command interactively in a sandbox"
+    )
+    parser.add_argument(
+        "--target", required=True, help="gRPC target (e.g., localhost:50051)"
+    )
     parser.add_argument("--sandbox-id", required=True, help="Sandbox ID")
-    parser.add_argument("--exec", required=True, dest="command", help="Command to execute")
+    parser.add_argument(
+        "--exec", required=True, dest="command", help="Command to execute"
+    )
     args = parser.parse_args()
 
     client = SandboxClient(args.target)
