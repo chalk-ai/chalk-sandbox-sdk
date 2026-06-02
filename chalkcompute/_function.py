@@ -79,9 +79,9 @@ from chalkcompute._volume import (
     VolumeDriver,
     VolumeError,
     VolumeMount,
-    _resolve_driver,
     resolve_referenced_volume_type,
 )
+from chalkcompute._vvolume import VersionedVolumeClient
 
 logger = logging.getLogger(__name__)
 
@@ -662,6 +662,7 @@ class FunctionCallHandle:
             f"Remote call {self._call_id} ({self._func_name!r}) timed out "
             f"(last status: {last_status})"
         )
+
     def get(self, timeout: float | None = None) -> Any:
         if _has_running_event_loop():
             return self._async_get(timeout)
@@ -821,8 +822,7 @@ def _source_text_for_deploy(source_file: str) -> str:
             return "".join(cached_lines)
 
         raise FunctionBuildError(
-            f"Could not read source for {source_file!r} from disk or the "
-            "Python source cache."
+            f"Could not read source for {source_file!r} from disk or the Python source cache."
         ) from file_error
 
 
@@ -1072,18 +1072,16 @@ def _make_base_image(
         # Mount the local SDK project via volume; the entrypoint will
         # extract the tar and put it on PYTHONPATH before starting the handler.
         project_root = Path(__file__).resolve().parent.parent
-        image = (
-            base.pip_install(
-                [
-                    remote_call_runtime_package,
-                    *_LOCAL_SDK_RUNTIME_PACKAGES,
-                ]
-            ).add_local_dir(
-                str(project_root),
-                _LOCAL_SDK_MOUNT,
-                exclude=_LOCAL_SDK_COPY_EXCLUDES,
-                archive=True,
-            )
+        image = base.pip_install(
+            [
+                remote_call_runtime_package,
+                *_LOCAL_SDK_RUNTIME_PACKAGES,
+            ]
+        ).add_local_dir(
+            str(project_root),
+            _LOCAL_SDK_MOUNT,
+            exclude=_LOCAL_SDK_COPY_EXCLUDES,
+            archive=True,
         )
     elif strip_source:
         # Source is stripped of chalkcompute references — only install the
@@ -1171,7 +1169,7 @@ def _build_and_upload(
             parent=progress_parent,
         )
         logger.info("Uploading %d local file(s)...", len(deploy_image.lazy_local_files))
-        driver = _resolve_driver(client, versioned=True)
+        driver = VersionedVolumeClient.from_connect(client)
         new_volumes = driver.upload_lazy_files(
             deploy_image,
             volume_prefix=volume_prefix,
