@@ -802,13 +802,139 @@ def _source_file_for_deploy(func: Callable[..., Any]) -> str:
     return inspect.getfile(inspect.unwrap(func))
 
 
-def _prepare_source_file(source_file: str) -> tuple[str, bool]:
+def _chalkcompute_bound_names(source: str) -> set[str]:
+    """Names that ``source`` binds to chalkcompute via import.
+
+    Covers both ``import chalkcompute [as x]`` (binds the root module name) and
+    ``from chalkcompute[.sub] import a, b as c`` (binds the imported symbols).
+    """
+    names: set[str] = set()
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return names
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "chalkcompute" or alias.name.startswith(
+                    "chalkcompute."
+                ):
+                    names.add((alias.asname or alias.name).split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if module == "chalkcompute" or module.startswith("chalkcompute."):
+                for alias in node.names:
+                    if alias.name != "*":  # can't enumerate names from a star import
+                        names.add(alias.asname or alias.name)
+    return names
+
+
+def _loaded_names_in_bodies(entrypoint_sources: typing.Iterable[str]) -> set[str]:
+    """Bare names read (``Load`` context) inside the *bodies* of the given defs.
+
+    Each item in ``entrypoint_sources`` is the source of a single deployed
+    function/method (from :func:`inspect.getsource`). Only statements inside the
+    function body are inspected — the decorator list (which always references
+    chalkcompute) is skipped, and unrelated functions sharing the same module
+    are never considered.
+    """
+    used: set[str] = set()
+    for src in entrypoint_sources:
+        try:
+            tree = ast.parse(textwrap.dedent(src))
+        except (SyntaxError, IndentationError):
+            continue
+        for top in tree.body:
+            if isinstance(top, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for stmt in top.body:  # body only — skip decorators
+                    for node in ast.walk(stmt):
+                        if isinstance(node, ast.Name) and isinstance(
+                            node.ctx, ast.Load
+                        ):
+                            used.add(node.id)
+    return used
+
+
+def _assert_stripped_source_self_contained(
+    original_source: str,
+    stripped_source: str,
+    *,
+    label: str,
+    entrypoint_sources: typing.Sequence[str],
+) -> None:
+    """Fail fast if stripping chalkcompute left dangling references in the body.
+
+    In strip mode the SDK is not installed in the deploy image and chalkcompute
+    imports/decorators are removed from the source. If a deployed entrypoint's
+    body still *uses* a name that a now-removed chalkcompute import had bound,
+    and nothing rebinds it (e.g. an inner ``import chalkcompute`` that survives
+    stripping), the deployed module raises ``NameError`` at call time. Surface
+    that here, at deploy, with an actionable message instead of an opaque
+    container-side error.
+
+    Only the bodies in ``entrypoint_sources`` (the deployed function / class
+    methods) are inspected; unrelated functions in the same file are ignored.
+    """
+    if not entrypoint_sources:
+        return
+    bound_before = _chalkcompute_bound_names(original_source)
+    bound_after = _chalkcompute_bound_names(stripped_source)
+    used = _loaded_names_in_bodies(entrypoint_sources)
+    dangling = sorted((bound_before - bound_after) & used)
+    if not dangling:
+        return
+    names = ", ".join(repr(n) for n in dangling)
+    raise FunctionBuildError(
+        f"{label} references chalkcompute ({names}) but is being deployed in "
+        f"strip mode (CHALK_FUNCTION_STRIP_SOURCE, or a 0.0.0 source checkout), "
+        f"which removes the chalkcompute SDK from the image and strips its "
+        f"imports from the source — the deployed code would fail with NameError "
+        f"at call time.\n"
+        f"To make nested chalkcompute calls work, deploy from an environment "
+        f"with a published chalkcompute installed (so strip mode is off and the "
+        f"SDK is installed and importable), or set CHALK_FUNCTION_LOCAL_SDK_COPY=1 "
+        f"with CHALK_FUNCTION_STRIP_SOURCE=0 to mount the local SDK. For a "
+        f"@chalkcompute.function you may instead install chalkcompute in the "
+        f"image and import it inside the function body (an inner import survives "
+        f"stripping):\n"
+        f'    @chalkcompute.function(image=Image.debian_slim().pip_install(["chalkcompute>=2.1.0"]))\n'
+        f"    def my_fn(...):\n"
+        f"        import chalkcompute\n"
+        f"        ..."
+    )
+
+
+def _entrypoint_source(func: Callable[..., Any]) -> list[str]:
+    """Best-effort source of a single deployed callable, for the strip guard.
+
+    Returns ``[source]`` or ``[]`` when the source can't be recovered (e.g. a
+    dynamically-defined function), in which case the guard is simply skipped.
+    """
+    try:
+        return [inspect.getsource(inspect.unwrap(func))]
+    except (OSError, TypeError):
+        return []
+
+
+def _prepare_source_file(
+    source_file: str,
+    *,
+    label: str | None = None,
+    entrypoint_sources: typing.Sequence[str] | None = None,
+) -> tuple[str, bool]:
     """Return the source file path to deploy, optionally stripping chalkcompute.
 
     Parameters
     ----------
     source_file
         Path to the original user source file.
+    label
+        Human-readable identifier (e.g. function name) used in the strip-mode
+        guard error; defaults to the source file path.
+    entrypoint_sources
+        Source of the deployed function(s) whose bodies the strip-mode guard
+        inspects for dangling chalkcompute references. When empty/``None`` the
+        guard is skipped (caller supplied nothing to scope to).
 
     Returns
     -------
@@ -824,6 +950,12 @@ def _prepare_source_file(source_file: str) -> tuple[str, bool]:
 
     source = _source_text_for_deploy(source_file)
     stripped = _strip_chalkcompute_from_source(source)
+    _assert_stripped_source_self_contained(
+        source,
+        stripped,
+        label=label or f"Function source {source_file!r}",
+        entrypoint_sources=list(entrypoint_sources or []),
+    )
     return _write_temp(stripped), True
 
 
@@ -1630,7 +1762,9 @@ class RemoteFunction:
             Declarative image ready to be built.
         """
         source_file, source_is_temp = _prepare_source_file(
-            _source_file_for_deploy(self._func)
+            _source_file_for_deploy(self._func),
+            label=f"Function {self._func_name!r}",
+            entrypoint_sources=_entrypoint_source(self._func),
         )
 
         from chalkcompute._model import MODELS_ENV_VAR

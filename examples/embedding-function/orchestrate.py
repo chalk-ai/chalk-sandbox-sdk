@@ -7,8 +7,8 @@ log = logging.getLogger(__name__)
 
 
 @chalkcompute.function(
-    image=chalkcompute.Image.debian_slim().pip_install(["chalkcompute"]),
     name="orchestrate-test",
+    image=chalkcompute.Image.debian_slim().pip_install(["chalkcompute>=2.1.0"]),
 )
 def orchestrate(texts: list[str]) -> list[list[float]]:
     import chalkcompute

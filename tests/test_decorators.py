@@ -11,10 +11,11 @@ import pytest
 from chalkcompute import traced
 from chalkcompute._cls import RemoteClass, _NoOpClass, after, before, cls, method
 from chalkcompute._cls import _strip_chalkcompute_from_class_source
-from chalkcompute._function import RemoteFunction, _NoOpFunction, function
+from chalkcompute._function import FunctionBuildError, RemoteFunction, _NoOpFunction, function
 from chalkcompute._function import (
     _REMOTE_ENV_VAR,
     _STRIP_SOURCE_ENV_VAR,
+    _assert_stripped_source_self_contained,
     _source_file_for_deploy,
     _strip_chalkcompute_from_source,
 )
@@ -603,3 +604,116 @@ def test_function_accepts_string_env_values(
         return x
 
     assert deployed[0]._env["OPENAI_API_KEY"] == "sk-test"
+
+
+# ---------------------------------------------------------------------------
+# Strip-mode guard: nested chalkcompute references must survive stripping
+# ---------------------------------------------------------------------------
+
+
+def _strip_and_guard(source: str, entrypoint_sources: list[str] | None = None) -> None:
+    """Strip a function source and run the self-contained guard on the result.
+
+    ``fn`` is defined at module top level in these fixtures, so passing the whole
+    source as the lone entrypoint lets the guard pick up ``fn``'s body.
+    """
+    stripped = _strip_chalkcompute_from_source(source)
+    _assert_stripped_source_self_contained(
+        source,
+        stripped,
+        label="Function 'fn'",
+        entrypoint_sources=entrypoint_sources or [source],
+    )
+
+
+def test_strip_guard_rejects_dangling_module_reference() -> None:
+    source = textwrap.dedent(
+        """
+        import chalkcompute
+
+        @chalkcompute.function
+        def fn() -> int:
+            chalkcompute.gather([])
+            return 1
+        """
+    )
+    with pytest.raises(FunctionBuildError, match="chalkcompute"):
+        _strip_and_guard(source)
+
+
+def test_strip_guard_rejects_dangling_from_import_symbol() -> None:
+    source = textwrap.dedent(
+        """
+        from chalkcompute import function, gather
+
+        @function
+        def fn() -> int:
+            gather([])
+            return 1
+        """
+    )
+    with pytest.raises(FunctionBuildError, match="gather"):
+        _strip_and_guard(source)
+
+
+def test_strip_guard_allows_inner_import_that_survives_stripping() -> None:
+    # The orchestrate pattern: a top-level import + decorator are stripped, but
+    # the inner `import chalkcompute` survives and rebinds the name at runtime.
+    source = textwrap.dedent(
+        """
+        import chalkcompute
+
+        @chalkcompute.function(
+            image=chalkcompute.Image.debian_slim().pip_install(["chalkcompute>=2.1.0"]),
+        )
+        def fn() -> int:
+            import chalkcompute
+
+            other = chalkcompute.RemoteFunction.from_name("other")
+            return other.remote(1)
+        """
+    )
+    # Must not raise — the inner import keeps the body self-contained.
+    _strip_and_guard(source)
+
+
+def test_strip_guard_allows_function_with_no_chalkcompute_usage() -> None:
+    source = textwrap.dedent(
+        """
+        import chalkcompute
+
+        @chalkcompute.function
+        def fn(x: int) -> int:
+            return x + 1
+        """
+    )
+    _strip_and_guard(source)  # body references nothing from chalkcompute
+
+
+def test_strip_guard_rejects_class_method_referencing_chalkcompute() -> None:
+    # The cls strip removes *all* chalkcompute imports (including inner ones),
+    # so any nested chalkcompute use in a method dangles after stripping.
+    source = textwrap.dedent(
+        """
+        import chalkcompute
+
+        @chalkcompute.cls
+        class C:
+            @chalkcompute.method
+            def m(self) -> int:
+                return chalkcompute.RemoteFunction.from_name("x").remote(1)
+        """
+    )
+    stripped = _strip_chalkcompute_from_class_source(source)
+    # The method body is the entrypoint; pass it dedented as its own snippet
+    # (the cls strip removes even inner imports, so any chalkcompute use dangles).
+    method_src = textwrap.dedent(
+        """
+        def m(self) -> int:
+            return chalkcompute.RemoteFunction.from_name("x").remote(1)
+        """
+    )
+    with pytest.raises(FunctionBuildError, match="chalkcompute"):
+        _assert_stripped_source_self_contained(
+            source, stripped, label="Class 'C'", entrypoint_sources=[method_src]
+        )

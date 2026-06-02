@@ -55,7 +55,10 @@ def deploy_function() -> None:
     """Deploy the respond function (skip if already available)."""
     try:
         f = chalkcompute.RemoteFunction.from_name("respond")
-        log.info("'respond' function already deployed (v%d), skipping deploy", f._version_info.version)
+        log.info(
+            "'respond' function already deployed (v%d), skipping deploy",
+            f._version_info.version,
+        )
         return
     except chalkcompute.FunctionError:
         pass
@@ -87,7 +90,7 @@ def start_worker() -> chalkcompute.Container:
     """Start the worker container with Redis + chalkcompute installed."""
     worker_image = (
         chalkcompute.Image.debian_slim()
-        .pip_install(["redis", "chalkcompute"])
+        .pip_install(["redis", "chalkcompute>=2.1.0"])
         .add_local_file(
             os.path.join(EXAMPLE_DIR, "worker.py"),
             "/app/worker.py",
@@ -120,7 +123,8 @@ def publish_prompts(worker: chalkcompute.Container) -> None:
     for i, prompt in enumerate(PROMPTS):
         escaped = prompt.replace("'", "\\'")
         worker.exec(
-            "python", "-c",
+            "python",
+            "-c",
             (
                 "import redis, os; "
                 "r = redis.from_url(os.environ['REDIS_URL'], decode_responses=True); "
@@ -134,7 +138,8 @@ def publish_prompts(worker: chalkcompute.Container) -> None:
 def read_results(worker: chalkcompute.Container) -> None:
     """Read result files from /tmp/output via exec."""
     result = worker.exec(
-        "python", "-c",
+        "python",
+        "-c",
         (
             "import os, json; "
             f"d = '{OUTPUT_DIR}'; "
