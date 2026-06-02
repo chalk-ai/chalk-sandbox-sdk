@@ -8,7 +8,8 @@ Usage:
     def add(x: int, y: int) -> int:
         return x + y
 
-    result = add(1, 2)
+    local = add(1, 2)          # runs the Python body in-process
+    remote = add.remote(1, 2)  # wire call to the deployed function
 
 Or imperatively:
 
@@ -19,8 +20,9 @@ Or imperatively:
 
     f = RemoteFunction(add)
     f.deploy().wait_ready()
-    print(f(1, 2))
+    print(f.remote(1, 2))
     f.delete()
+
 """
 
 from __future__ import annotations
@@ -154,6 +156,8 @@ class DeployedFunction(Protocol):
     """Common interface for RemoteFunction and _NoOpFunction."""
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
+    def remote(self, *args: Any, **kwargs: Any) -> Any: ...
+    def defer(self, *args: Any, **kwargs: Any) -> FunctionCallHandle: ...
     def deploy(self, **kwargs: Any) -> DeployedFunction: ...
     def wait_ready(self, **kwargs: Any) -> DeployedFunction: ...
     def delete(self) -> None: ...
@@ -1113,7 +1117,7 @@ class RemoteFunction:
     ...     import numpy as np
     ...     return np.ones(8).tolist()
     >>> embed.deploy()
-    >>> embed("hello world")
+    >>> embed.remote("hello world")
     [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
     Imperative form, for constructing a ``RemoteFunction`` from an existing
@@ -1129,7 +1133,9 @@ class RemoteFunction:
     ...     max_replicas=2,
     ... )
     >>> fn.deploy()
-    >>> fn(7)
+    >>> fn.remote(7)
+    49
+    >>> fn(7)  # runs the local Python body in-process
     49
     """
 
@@ -1165,6 +1171,7 @@ class RemoteFunction:
         chalk_client: Any | None = None,
     ) -> None:
         self._func = func
+        self._has_local_func = True
         self._func_name = getattr(func, "__name__", "anonymous")
         if name is not None:
             validate_dns_label(name)
@@ -1389,6 +1396,7 @@ class RemoteFunction:
     def _make_empty(cls, *, chalk_client: Any | None = None) -> RemoteFunction:
         f = cls.__new__(cls)
         f._func = lambda *a, **kw: None  # type: ignore[assignment]
+        f._has_local_func = False
         f._func_name = "unknown"
         f._explicit_name = "unknown"
         f._image = None
@@ -2054,7 +2062,23 @@ class RemoteFunction:
         return clone
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        """Call the remote function via gRPC or the API server.
+        """Invoke the underlying Python function locally, in-process.
+
+        This runs the original function body in the current process — it does
+        **not** dispatch to the deployed remote function. Use :meth:`remote`
+        for a synchronous wire call, or :meth:`defer` to enqueue one and get a
+        handle back.
+        """
+        if not self._has_local_func:
+            raise FunctionError(
+                f"{self._func_name!r} was attached via from_name()/from_id() and "
+                f"has no local implementation to run in-process. Use .remote() "
+                f"for a synchronous wire call, or .defer() to enqueue one."
+            )
+        return self._func(*args, **kwargs)
+
+    def remote(self, *args: Any, **kwargs: Any) -> Any:
+        """Invoke the deployed remote function over the wire.
 
         Parameters
         ----------
@@ -2067,6 +2091,7 @@ class RemoteFunction:
         -------
         Any
             Scalar result for single-row calls, or a list of results otherwise.
+            For generator functions, returns an iterator of result batches.
         """
         if self._is_generator:
             return self.defer(*args, **kwargs).stream()
@@ -2193,19 +2218,39 @@ class RemoteFunction:
 
 
 class _NoOpFunction:
-    """Wraps a function so that lifecycle methods are no-ops.
+    """The decorated symbol as seen *inside* a deployed container.
 
-    Returned by the decorator when running inside the container
-    (_REMOTE_ENV_VAR), so calls like ``add.wait_ready()`` don't
-    raise AttributeError.
+    Calling it (``add(1, 2)``) runs the original Python body in-process, exactly
+    like a plain function. ``.remote()`` / ``.defer()`` dispatch to the deployed
+    remote function, resolved lazily by name — so a function can invoke a sibling
+    without an explicit ``RemoteFunction.from_name(...)``.
     """
 
-    def __init__(self, func: Callable) -> None:
+    def __init__(self, func: Callable, *, name: str | None = None) -> None:
         self._func = func
+        self._registered_name = name or getattr(func, "__name__", "anonymous")
+        self._remote: RemoteFunction | None = None
         functools.update_wrapper(self, func)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return self._func(*args, **kwargs)
+
+    def _bound(self) -> RemoteFunction:
+        """Lazily attach to the deployed function by its registered name."""
+        if self._remote is None:
+            self._remote = RemoteFunction.from_name(self._registered_name)
+        return self._remote
+
+    def remote(self, *args: Any, **kwargs: Any) -> Any:
+        return self._bound().remote(*args, **kwargs)
+
+    def defer(self, *args: Any, **kwargs: Any) -> FunctionCallHandle:
+        return self._bound().defer(*args, **kwargs)
+
+    def with_knowledge_cutoff(
+        self, knowledge_cutoff: KnowledgeCutoff
+    ) -> RemoteFunction:
+        return self._bound().with_knowledge_cutoff(knowledge_cutoff)
 
     def deploy(self, **_: Any) -> DeployedFunction:
         return self
@@ -2330,7 +2375,10 @@ def function(
        the deploy image for unreleased feature iteration.
 
     **Remotely** (inside the container):
-    The decorator is a no-op — returns the raw function unchanged.
+    Lifecycle methods become no-ops. Calling the symbol runs the local Python
+    body in-process; ``.remote()`` / ``.defer()`` dispatch to the deployed
+    function (resolved lazily by name), so a function can invoke a sibling
+    without ``RemoteFunction.from_name(...)``.
 
     Parameters
     ----------
@@ -2428,12 +2476,13 @@ def function(
     >>> @chalkcompute.function
     ... def add(x: int, y: int) -> int:
     ...     return x + y
-    >>> add(1, 2)
+    >>> add.remote(1, 2)   # wire call to the deployed function
+    >>> add(1, 2)          # runs the Python body in-process
     """
 
     def decorator(func: Callable) -> RemoteFunction | _NoOpFunction:
         if os.environ.get(_REMOTE_ENV_VAR):
-            return _NoOpFunction(func)
+            return _NoOpFunction(func, name=name)
 
         f = RemoteFunction(
             func,

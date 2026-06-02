@@ -26,4 +26,4 @@ def test_remote_function_registers_with_schedule() -> None:
     config = resp.json()["externalFunctionVersion"].get("config") or {}
     assert config.get("schedule") == "10m"
 
-    assert fn() is None
+    assert fn.remote() is None
