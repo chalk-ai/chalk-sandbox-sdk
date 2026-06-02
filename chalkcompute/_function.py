@@ -2187,11 +2187,9 @@ class RemoteFunction:
                 target, use_tls = self._client.grpc_engine_target()
             else:
                 if service_auth.grpc_engine is None:
-                    raise FunctionError(
-                        "CHALK_GRPC_ENGINE must be set to enqueue remote function "
-                        "calls with CHALK_REMOTE_AUTH_EXCHANGE_TOKEN"
-                    )
-                target, use_tls = service_auth.grpc_engine
+                    target, use_tls = self._client.grpc_engine_target()
+                else:
+                    target, use_tls = service_auth.grpc_engine
         else:
             target, use_tls = grpc_target_from_url(
                 self._web_url,

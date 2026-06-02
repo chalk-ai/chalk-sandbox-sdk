@@ -44,6 +44,40 @@ def service_auth_context_from_env() -> ServiceAuthContext | None:
         return None
 
 
+def chalk_client_from_env(
+    *,
+    api_server: str | None = None,
+    environment: str | None = None,
+    additional_headers: dict[str, str] | None = None,
+    **kwargs: Any,
+) -> Any:
+    from chalk.client import ChalkClient
+
+    headers = additional_headers
+    has_authorization = any(
+        key.lower() == "authorization" for key in headers or {}
+    )
+    service_auth = service_auth_context_from_env()
+    if service_auth is not None and not has_authorization:
+        client = ConnectClient()
+        client._ensure_auth()
+        assert client._access_token is not None
+        assert client._api_server is not None
+        headers = {
+            **(headers or {}),
+            "Authorization": f"Bearer {client._access_token}",
+        }
+        api_server = api_server or client._api_server
+        environment = environment or service_auth.environment_id
+
+    if api_server is not None:
+        kwargs["api_server"] = api_server
+    if environment is not None:
+        kwargs["environment"] = environment
+    kwargs["additional_headers"] = headers
+    return ChalkClient(**kwargs)
+
+
 class ConnectClient:
     """Authenticated Connect-protocol (HTTP/JSON) client for Chalk APIs.
 
@@ -97,6 +131,15 @@ class ConnectClient:
             resp.raise_for_status()
             data = resp.json()
             self._access_token = data.get("accessToken") or data["access_token"]
+            self._grpc_engines = _string_map(
+                data.get("grpcEngines")
+                or data.get("grpc_engines")
+                or data.get("engines"),
+            )
+            self._environment_id_to_name = _string_map(
+                data.get("environment_id_to_name")
+                or data.get("environmentIdToName"),
+            )
             self._env_id = self._resolve_environment_id(service_auth.environment_id)
             self._headers = {
                 "Content-Type": "application/json",

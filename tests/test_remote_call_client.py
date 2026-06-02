@@ -45,6 +45,11 @@ class ServiceAuthOnlyConnectClient:
         raise AssertionError("OAuth grpc engine discovery should not be used")
 
 
+class ServiceAuthDiscoveredEngineConnectClient:
+    def grpc_engine_target(self) -> tuple[str, bool]:
+        return "discovered-engine.chalk.test:443", True
+
+
 class RpcConnectClient(FakeConnectClient):
     def __init__(self) -> None:
         self.rpc_calls = []
@@ -639,6 +644,44 @@ def test_queue_call_uses_service_auth_engine_from_environment(monkeypatch) -> No
 
     client = FakeRemoteCallClient.instances[0]
     assert client.endpoint == "engine.chalk.test:443"
+    assert client.use_tls is True
+    assert ("x-chalk-env-id", "env-service-auth") in client.metadata
+    assert ("x-chalk-deployment-type", "function-queue") in client.metadata
+    assert client.kwargs["auth_endpoint"] == "https://api.chalk.test"
+    assert client.kwargs["exchange_token"] == "exchange-token"
+
+
+def test_queue_call_uses_service_auth_engine_from_token_response(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "chalkcompute._function.service_auth_context_from_env",
+        lambda: ServiceAuthContext(
+            auth_endpoint="https://api.chalk.test",
+            exchange_token="exchange-token",
+            environment_id="env-service-auth",
+            requested_permissions=(2, 3, 11),
+            grpc_engine=None,
+        ),
+    )
+    FakeRemoteCallClient.poll_results = [
+        RemoteCallPollResult(
+            status=3,
+            status_name="completed",
+            chunks=[_result_ipc([99])],
+            cursor="",
+            error_message=None,
+            poll_count=0,
+        ),
+    ]
+
+    fn = _remote_function()
+    fn._client = ServiceAuthDiscoveredEngineConnectClient()
+    handle = fn.defer(98)
+
+    assert handle.call_id == "call-1"
+    assert handle.get() == 99
+
+    client = FakeRemoteCallClient.instances[0]
+    assert client.endpoint == "discovered-engine.chalk.test:443"
     assert client.use_tls is True
     assert ("x-chalk-env-id", "env-service-auth") in client.metadata
     assert ("x-chalk-deployment-type", "function-queue") in client.metadata
