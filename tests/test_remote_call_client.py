@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import contextlib
 import contextvars
 from datetime import datetime, timezone
 
@@ -15,6 +16,7 @@ from chalkcompute._function import (
 from chalkcompute._remote_call_client import RemoteCallPollResult, ServiceAuthContext
 
 REQUEST_TIMESTAMP_HEADER = "x-chalk-request-timestamp"
+REQUEST_TRACING_HEADER = "x-chalk-remote-function-tracing"
 
 
 def _result_ipc(values: list[object]) -> bytes:
@@ -306,6 +308,90 @@ def test_direct_call_injects_fresh_trace_metadata_on_cached_client(monkeypatch) 
     )
 
 
+def test_with_tracing_on_sends_header_without_forcing_local_root(
+    monkeypatch,
+) -> None:
+    spans: list[tuple[str, str, bool]] = []
+
+    @contextlib.contextmanager
+    def fake_span(function_name: str, call_type: str, *, disabled: bool):
+        spans.append((function_name, call_type, disabled))
+        yield None
+
+    monkeypatch.setattr("chalkcompute._function.remote_function_call_span", fake_span)
+    monkeypatch.setattr(
+        "chalkcompute._function.current_trace_metadata",
+        lambda: [],
+    )
+    FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
+
+    fn = _remote_function()
+
+    assert fn.with_tracing(True).remote(41) == 42
+
+    assert spans == [("catalog-add", "direct", False)]
+    assert FakeRemoteCallClient.instances[0].calls[0][2] == [
+        (REQUEST_TRACING_HEADER, "on"),
+    ]
+
+
+def test_with_tracing_off_injects_header_without_trace_lookup(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "chalkcompute._function.current_trace_metadata",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("tracing off should not inspect current trace metadata")
+        ),
+    )
+    FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
+
+    fn = _remote_function()
+
+    assert fn.with_tracing(False).remote(41) == 42
+    assert FakeRemoteCallClient.instances[0].calls[0][2] == [
+        (REQUEST_TRACING_HEADER, "off"),
+    ]
+
+
+def test_with_tracing_handle_cannot_be_called_locally() -> None:
+    fn = _remote_function()
+
+    with pytest.raises(TypeError, match=r"\.remote\(\) or \.defer\(\)"):
+        fn.with_tracing(True)(41)
+
+
+def test_with_tracing_and_knowledge_cutoff_compose_in_either_order(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "chalkcompute._function.current_trace_metadata",
+        lambda: [("traceparent", "trace-id")],
+    )
+    FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
+
+    fn = _remote_function()
+
+    assert (
+        fn.with_tracing(True).with_knowledge_cutoff("2026-05-01T12:30:45Z").remote(41)
+        == 42
+    )
+    assert (
+        fn.with_knowledge_cutoff("2026-05-02T12:30:45Z").with_tracing(True).remote(41)
+        == 42
+    )
+
+    calls = [call for client in FakeRemoteCallClient.instances for call in client.calls]
+    assert calls[0][2] == [
+        ("traceparent", "trace-id"),
+        (REQUEST_TRACING_HEADER, "on"),
+        (REQUEST_TIMESTAMP_HEADER, "2026-05-01T12:30:45Z"),
+    ]
+    assert calls[1][2] == [
+        ("traceparent", "trace-id"),
+        (REQUEST_TRACING_HEADER, "on"),
+        (REQUEST_TIMESTAMP_HEADER, "2026-05-02T12:30:45Z"),
+    ]
+
+
 async def _no_sleep(_seconds) -> None:
     return None
 
@@ -555,6 +641,25 @@ def test_defer_injects_trace_metadata(monkeypatch) -> None:
     assert client.enqueues[0][0] == "catalog-add"
 
 
+def test_with_tracing_off_injects_defer_header_without_trace_lookup(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "chalkcompute._function.current_trace_metadata",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("tracing off should not inspect current trace metadata")
+        ),
+    )
+
+    fn = _remote_function()
+    handle = fn.with_tracing(False).defer(98)
+
+    assert handle.call_id == "call-1"
+    client = FakeRemoteCallClient.instances[0]
+    assert client.enqueues[0][2] == [(REQUEST_TRACING_HEADER, "off")]
+    assert client.enqueues[0][0] == "catalog-add"
+
+
 def test_with_knowledge_cutoff_injects_direct_call_header() -> None:
     FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
 
@@ -606,6 +711,30 @@ def test_api_rpc_call_propagates_remote_trace_headers(monkeypatch) -> None:
     assert args[2]["remoteCallRequest"]["name"] == "catalog-add"
     assert kwargs["extra_headers"] == {
         "traceparent": "trace-id",
+    }
+
+
+def test_api_rpc_call_propagates_request_tracing_header(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "chalkcompute._function.current_trace_metadata",
+        lambda: [("traceparent", "trace-id")],
+    )
+
+    fn = (
+        _remote_function()
+        .with_tracing(True)
+        .with_knowledge_cutoff("2026-05-01T12:30:45Z")
+    )
+    client = RpcConnectClient()
+    fn._client = client
+
+    assert fn._call_via_api_rpc(b"request-ipc") == b"response-ipc"
+
+    _, kwargs = client.rpc_calls[0]
+    assert kwargs["extra_headers"] == {
+        "traceparent": "trace-id",
+        REQUEST_TRACING_HEADER: "on",
+        REQUEST_TIMESTAMP_HEADER: "2026-05-01T12:30:45Z",
     }
 
 
