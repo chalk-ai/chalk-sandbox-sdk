@@ -1,4 +1,6 @@
 import contextlib
+import sys
+import types
 from typing import Any
 
 import pytest
@@ -7,6 +9,7 @@ import chalkcompute._auth_config as _auth_config
 from chalkcompute import SandboxClient, _tracing
 from chalkcompute._connect import (
     ConnectClient,
+    chalk_client_from_env,
     grpc_engine_target_from_url,
     grpc_target_from_url,
 )
@@ -131,6 +134,10 @@ class TestGrpcEngineTargetFromUrl:
 
 
 class TestConnectClientGrpcEngineTarget:
+    @pytest.fixture(autouse=True)
+    def disable_service_auth(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("chalkcompute._connect.resolve_service_auth_context", lambda: None)
+
     def setup_method(self) -> None:
         _auth_config._load_global_config.cache_clear()
 
@@ -237,8 +244,11 @@ tokens:
         work_dir.mkdir(parents=True)
         (project_dir / "chalk.yml").write_text("project: test\n")
         monkeypatch.chdir(work_dir)
+        monkeypatch.delenv("CHALK_API_SERVER", raising=False)
         monkeypatch.delenv("CHALK_CLIENT_ID", raising=False)
         monkeypatch.delenv("CHALK_CLIENT_SECRET", raising=False)
+        monkeypatch.delenv("CHALK_ENVIRONMENT", raising=False)
+        monkeypatch.delenv("CHALK_ENVIRONMENT_ID", raising=False)
         monkeypatch.setenv("XDG_CONFIG_HOME", str(config_dir))
         (config_dir / ".chalk.yml").write_text(
             f"""
@@ -501,6 +511,144 @@ class TestConnectClientServiceAuth:
         assert client._headers is not None
         assert client._headers["Authorization"] == "Bearer working-token"
         assert client._headers["X-Chalk-Env-Id"] == "env-1"
+
+    def test_uses_grpc_engine_from_exchange_token_response(self, monkeypatch):
+        monkeypatch.setattr(
+            "chalkcompute._connect.resolve_service_auth_context",
+            lambda: ServiceAuthContext(
+                auth_endpoint="https://api.chalk.test",
+                exchange_token="exchange-token",
+                environment_id="env-1",
+                requested_permissions=(2, 3, 11),
+                grpc_engine=None,
+            ),
+        )
+
+        def fake_post(*_args, **_kwargs):
+            return _TokenResponse(
+                {
+                    "accessToken": "working-token",
+                    "grpcEngines": {"env-1": "engine.chalk.test:443"},
+                    "environmentIdToName": {"env-1": "Staging"},
+                }
+            )
+
+        monkeypatch.setattr("httpx.post", fake_post)
+
+        target, use_tls = ConnectClient().grpc_engine_target()
+
+        assert target == "engine.chalk.test:443"
+        assert use_tls is True
+
+
+class _FakeChalkClient:
+    calls: list[dict[str, Any]] = []
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+        self.__class__.calls.append(kwargs)
+
+
+class TestChalkClientFromEnv:
+    @pytest.fixture(autouse=True)
+    def fake_chalkpy(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _FakeChalkClient.calls = []
+        chalk_mod = types.ModuleType("chalk")
+        client_mod = types.ModuleType("chalk.client")
+        client_mod.ChalkClient = _FakeChalkClient
+        chalk_mod.client = client_mod
+        monkeypatch.setitem(sys.modules, "chalk", chalk_mod)
+        monkeypatch.setitem(sys.modules, "chalk.client", client_mod)
+
+    def test_uses_service_auth_for_chalk_client(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "chalkcompute._connect.resolve_service_auth_context",
+            lambda: ServiceAuthContext(
+                auth_endpoint="https://api.chalk.test",
+                exchange_token="exchange-token",
+                environment_id="env-1",
+                requested_permissions=(2, 3, 11),
+                grpc_engine=None,
+            ),
+        )
+
+        posted: dict[str, Any] = {}
+
+        def fake_post(*args: Any, **kwargs: Any) -> _TokenResponse:
+            posted["args"] = args
+            posted["kwargs"] = kwargs
+            return _TokenResponse({"accessToken": "working-token"})
+
+        monkeypatch.setattr("httpx.post", fake_post)
+
+        client = chalk_client_from_env()
+
+        assert isinstance(client, _FakeChalkClient)
+        assert posted["args"] == (
+            "https://api.chalk.test/chalk.server.v1.AuthService/GetInternalWorkingToken",
+        )
+        assert _FakeChalkClient.calls == [
+            {
+                "api_server": "https://api.chalk.test",
+                "environment": "env-1",
+                "additional_headers": {"Authorization": "Bearer working-token"},
+            }
+        ]
+
+    def test_respects_explicit_authorization_header(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            "chalkcompute._connect.resolve_service_auth_context",
+            lambda: ServiceAuthContext(
+                auth_endpoint="https://api.chalk.test",
+                exchange_token="exchange-token",
+                environment_id="env-1",
+                requested_permissions=(2, 3, 11),
+                grpc_engine=None,
+            ),
+        )
+        posted = {"called": False}
+
+        def fake_post(*_args: Any, **_kwargs: Any) -> _TokenResponse:
+            posted["called"] = True
+            return _TokenResponse({"accessToken": "working-token"})
+
+        monkeypatch.setattr("httpx.post", fake_post)
+
+        client = chalk_client_from_env(
+            additional_headers={"Authorization": "Bearer explicit-token"},
+            environment="user-env",
+        )
+
+        assert isinstance(client, _FakeChalkClient)
+        assert posted["called"] is False
+        assert _FakeChalkClient.calls == [
+            {
+                "additional_headers": {"Authorization": "Bearer explicit-token"},
+                "environment": "user-env",
+            }
+        ]
+
+    def test_falls_back_without_service_auth(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            "chalkcompute._connect.resolve_service_auth_context",
+            lambda: None,
+        )
+
+        client = chalk_client_from_env(api_server="https://api.local.chalk.test")
+
+        assert isinstance(client, _FakeChalkClient)
+        assert _FakeChalkClient.calls == [
+            {
+                "api_server": "https://api.local.chalk.test",
+                "additional_headers": None,
+            }
+        ]
 
 
 class TestSandboxClientFromEnv:
