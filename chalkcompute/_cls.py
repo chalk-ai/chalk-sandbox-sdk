@@ -74,6 +74,7 @@ from chalkcompute._function import (
     _make_base_image,
     _make_container_spec,
     _normalize_schedule,
+    _remote_call_runtime_package_with_extras,
     _should_strip_source,
     _source_text_for_deploy,
     _write_temp,
@@ -81,6 +82,11 @@ from chalkcompute._function import (
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label, validate_env
 from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
+from chalkcompute._remote_function_tracing import (
+    TracingPolicyConfig,
+    normalize_remote_function_tracing,
+    remote_function_tracing_requires_runtime,
+)
 from chalkcompute._retry import RetryPolicy
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
@@ -264,6 +270,10 @@ class _BoundRemoteMethod:
     def with_knowledge_cutoff(self, knowledge_cutoff: Any) -> RemoteFunction:
         """Return a call-scoped remote handle with an overridden request time."""
         return self._remote().with_knowledge_cutoff(knowledge_cutoff)
+
+    def with_tracing(self, enabled: bool = True) -> RemoteFunction:
+        """Return a remote-call handle with request tracing forced on or off."""
+        return self._remote().with_tracing(enabled)
 
     def __getattr__(self, attr: str) -> Any:
         # Delegate everything else (version_info, web_url, poll, purge, stream …)
@@ -667,6 +677,7 @@ class RemoteClass:
         concurrency: int | ConcurrencyPolicy | None = None,
         quota: int | QueuePolicy | None = None,
         schedule: str | None = None,
+        tracing: TracingPolicyConfig | None = None,
         chalk_client: Any | None = None,
     ) -> None:
         self._user_cls = user_cls
@@ -730,6 +741,7 @@ class RemoteClass:
         self._quota = (
             QueuePolicy.from_int_or_policy(quota) if quota is not None else None
         )
+        self._tracing = normalize_remote_function_tracing(tracing)
 
         self._client = ConnectClient(chalk_client=chalk_client)
         self._deployed = False
@@ -900,6 +912,7 @@ class RemoteClass:
         rc._rate_limit = None
         rc._concurrency = None
         rc._quota = None
+        rc._tracing = None
         rc._client = ConnectClient(chalk_client=chalk_client)
         rc._deployed = False
         rc._local_instance_cache = None
@@ -954,9 +967,17 @@ class RemoteClass:
             source_file = _write_temp(_source_text_for_deploy(source_file))
             temp_files.append(source_file)
 
-        deploy_image = _make_base_image(self._image).add_local_file(
-            source_file, "/app/user_module.py"
+        extras = (
+            ["tracing"]
+            if remote_function_tracing_requires_runtime(self._tracing)
+            else []
         )
+        deploy_image = _make_base_image(
+            self._image,
+            remote_call_runtime_package=_remote_call_runtime_package_with_extras(
+                extras
+            ),
+        ).add_local_file(source_file, "/app/user_module.py")
 
         # Precompute has-self flags for lifecycle hooks
         before_func = (
@@ -1144,6 +1165,8 @@ class RemoteClass:
                     function_config["queue"] = self._quota.to_dict()
                 if self._schedule is not None:
                     function_config["schedule"] = self._schedule
+                if self._tracing is not None:
+                    function_config["tracing"] = self._tracing.to_dict()
 
                 logger.info("Registering method '%s'...", func_name)
                 create_request: dict[str, Any] = {
@@ -1465,6 +1488,7 @@ def cls(
     concurrency: int | ConcurrencyPolicy | None = None,
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
+    tracing: TracingPolicyConfig | None = None,
 ) -> RemoteClass | _NoOpClass: ...
 
 
@@ -1494,6 +1518,7 @@ def cls(
     concurrency: int | ConcurrencyPolicy | None = None,
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
+    tracing: TracingPolicyConfig | None = None,
 ) -> Callable[..., RemoteClass | _NoOpClass]: ...
 
 
@@ -1524,6 +1549,7 @@ def cls(
     concurrency: int | ConcurrencyPolicy | None = None,
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
+    tracing: TracingPolicyConfig | None = None,
 ) -> Callable[..., RemoteClass | _NoOpClass] | RemoteClass | _NoOpClass:
     """Decorator that deploys a class as versioned remote functions.
 
@@ -1612,6 +1638,10 @@ def cls(
     schedule
         Optional crontab or Chalk duration string applied to every no-input
         ``@method`` in the class (e.g. ``"0 * * * *"`` or ``"1h"``).
+    tracing
+        Server-side remote-method tracing follows parents by default but does
+        not start sampled roots. Use :class:`~chalkcompute.TracingPolicy` for
+        sampling. Set ``False`` to explicitly turn tracing off.
     """
 
     def decorator(user_cls: type) -> RemoteClass | _NoOpClass:
@@ -1643,6 +1673,7 @@ def cls(
             concurrency=concurrency,
             quota=quota,
             schedule=schedule,
+            tracing=tracing,
         )
         rc.deploy()
         return rc

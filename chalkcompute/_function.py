@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import contextvars
 import datetime as _dt
 import functools
 import inspect
@@ -65,9 +66,9 @@ from chalkcompute._naming import sanitize_dns_label, validate_dns_label, validat
 from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._remote_function_tracing import (
-    TracingPolicy,
     TracingPolicyConfig,
     normalize_remote_function_tracing,
+    remote_function_tracing_requires_runtime,
 )
 from chalkcompute._retry import RetryPolicy
 from chalkcompute._tracing import (
@@ -95,6 +96,9 @@ KnowledgeCutoff = str | _dt.datetime
 
 _REMOTE_ENV_VAR = "_CHALK_REMOTE_FUNCTION"
 _REQUEST_TIMESTAMP_HEADER = "x-chalk-request-timestamp"
+_REQUEST_TRACING_HEADER = "x-chalk-remote-function-tracing"
+_REQUEST_TRACING_ON = "on"
+_REQUEST_TRACING_OFF = "off"
 _NO_ARGS_SENTINEL_COLUMN = "__chalk_no_args__"
 # When enabled, mount the local SDK project and pip-install at container start.
 _LOCAL_COPY_ENV_VAR = "CHALK_FUNCTION_LOCAL_SDK_COPY"
@@ -181,6 +185,10 @@ class DeployedFunction(Protocol):
     def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
     def remote(self, *args: Any, **kwargs: Any) -> Any: ...
     def defer(self, *args: Any, **kwargs: Any) -> FunctionCallHandle: ...
+    def with_knowledge_cutoff(
+        self, knowledge_cutoff: KnowledgeCutoff
+    ) -> RemoteFunction: ...
+    def with_tracing(self, enabled: bool = True) -> RemoteFunction: ...
     def deploy(self, **kwargs: Any) -> DeployedFunction: ...
     def wait_ready(self, **kwargs: Any) -> DeployedFunction: ...
     def delete(self) -> None: ...
@@ -518,6 +526,7 @@ async def _run_in_worker_thread(
 ) -> Any:
     loop = asyncio.get_running_loop()
     future: asyncio.Future[Any] = loop.create_future()
+    context = contextvars.copy_context()
 
     def complete_with_result(value: Any) -> None:
         if not future.cancelled():
@@ -529,7 +538,7 @@ async def _run_in_worker_thread(
 
     def run() -> None:
         try:
-            value = func(*args, **kwargs)
+            value = context.run(func, *args, **kwargs)
         except BaseException as exc:
             loop.call_soon_threadsafe(complete_with_exception, exc)
         else:
@@ -1641,6 +1650,7 @@ class RemoteFunction:
         self._remote_call_client: Any = None
         self._queue_call_client: Any = None
         self._knowledge_cutoff: str | None = None
+        self._request_tracing: bool | None = None
 
         self._client = ConnectClient(chalk_client=chalk_client)
 
@@ -1774,6 +1784,7 @@ class RemoteFunction:
         f._remote_call_client = None
         f._queue_call_client = None
         f._knowledge_cutoff = None
+        f._request_tracing = None
         f._client = ConnectClient(chalk_client=chalk_client)
         return f
 
@@ -2036,7 +2047,7 @@ class RemoteFunction:
 
     def _remote_call_runtime_package(self) -> str:
         extras: list[str] = []
-        if isinstance(self._tracing, TracingPolicy):
+        if remote_function_tracing_requires_runtime(self._tracing):
             extras.append("tracing")
         return _remote_call_runtime_package_with_extras(extras)
 
@@ -2183,7 +2194,14 @@ class RemoteFunction:
         return metadata
 
     def _per_call_metadata(self) -> list[tuple[str, str]]:
-        metadata = current_trace_metadata()
+        metadata: list[tuple[str, str]] = []
+        if self._request_tracing is True:
+            metadata.extend(current_trace_metadata())
+            metadata.append((_REQUEST_TRACING_HEADER, _REQUEST_TRACING_ON))
+        elif self._request_tracing is False:
+            metadata.append((_REQUEST_TRACING_HEADER, _REQUEST_TRACING_OFF))
+        else:
+            metadata.extend(current_trace_metadata())
         if self._knowledge_cutoff is not None:
             metadata.append((_REQUEST_TIMESTAMP_HEADER, self._knowledge_cutoff))
         return metadata
@@ -2404,6 +2422,18 @@ class RemoteFunction:
         clone._knowledge_cutoff = _format_knowledge_cutoff(knowledge_cutoff)
         return clone
 
+    def with_tracing(self, enabled: bool = True) -> RemoteFunction:
+        """Return a remote-call handle with request tracing forced on or off.
+
+        The returned handle supports ``.remote()`` and ``.defer()`` but cannot
+        be called locally, because request tracing only applies to wire calls.
+        """
+        if not isinstance(enabled, bool):
+            raise TypeError("with_tracing expects a bool")
+        clone = _RemoteFunctionInvocationOptions(self)
+        clone._request_tracing = enabled
+        return clone
+
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """Invoke the underlying Python function locally, in-process.
 
@@ -2449,7 +2479,11 @@ class RemoteFunction:
         feather_bytes = self._serialize_call_args(*args, **kwargs)
         call_type = "api" if _should_call_via_api() else "direct"
 
-        with remote_function_call_span(self._queue_function_name(), call_type):
+        with remote_function_call_span(
+            self._queue_function_name(),
+            call_type,
+            disabled=self._request_tracing is False,
+        ):
             if _should_call_via_api():
                 response_bytes = self._call_via_api_rpc(feather_bytes)
                 results = self._decode_result_chunks([response_bytes])
@@ -2471,7 +2505,11 @@ class RemoteFunction:
         metadata included).
         """
         function_name = self._queue_function_name()
-        with remote_function_call_span(function_name, "queue"):
+        with remote_function_call_span(
+            function_name,
+            "queue",
+            disabled=self._request_tracing is False,
+        ):
             client = self._ensure_remote_call_client(queue=True)
             return client.enqueue(
                 function_name,
@@ -2564,6 +2602,18 @@ class RemoteFunction:
         return f"RemoteFunction({self._func_name!r}{v}, {deployed})"
 
 
+class _RemoteFunctionInvocationOptions(RemoteFunction):
+    """Remote-only derived handle that carries per-request call options."""
+
+    def __init__(self, base: RemoteFunction) -> None:
+        self.__dict__ = base.__dict__.copy()
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        raise TypeError(
+            "with_tracing() returns a remote-call handle. Use .remote() or .defer()."
+        )
+
+
 # ---------------------------------------------------------------------------
 # No-op wrapper
 # ---------------------------------------------------------------------------
@@ -2604,6 +2654,9 @@ class _NoOpFunction:
         self, knowledge_cutoff: KnowledgeCutoff
     ) -> RemoteFunction:
         return self._bound().with_knowledge_cutoff(knowledge_cutoff)
+
+    def with_tracing(self, enabled: bool = True) -> RemoteFunction:
+        return self._bound().with_tracing(enabled)
 
     def deploy(self, **_: Any) -> DeployedFunction:
         return self

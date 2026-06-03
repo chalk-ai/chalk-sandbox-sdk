@@ -136,7 +136,9 @@ class TestGrpcEngineTargetFromUrl:
 class TestConnectClientGrpcEngineTarget:
     @pytest.fixture(autouse=True)
     def disable_service_auth(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("chalkcompute._connect.resolve_service_auth_context", lambda: None)
+        monkeypatch.setattr(
+            "chalkcompute._connect.resolve_service_auth_context", lambda: None
+        )
 
     def setup_method(self) -> None:
         _auth_config._load_global_config.cache_clear()
@@ -408,6 +410,27 @@ class TestConnectClientTracing:
         with _tracing.remote_function_call_span("embed", "direct") as span:
             assert span is None
 
+    def test_remote_function_call_span_disabled_stays_cold(self, monkeypatch):
+        monkeypatch.setattr(
+            _tracing,
+            "has_current_trace_context",
+            lambda: (_ for _ in ()).throw(
+                AssertionError("disabled call should not inspect trace context")
+            ),
+        )
+        monkeypatch.setattr(
+            _tracing,
+            "get_tracer",
+            lambda: (_ for _ in ()).throw(
+                AssertionError("disabled call should not request a tracer")
+            ),
+        )
+
+        with _tracing.remote_function_call_span(
+            "embed", "direct", disabled=True
+        ) as span:
+            assert span is None
+
     def test_remote_call_span_leaves_exception_recording_to_otel_context_manager(
         self, monkeypatch
     ):
@@ -560,7 +583,9 @@ class TestChalkClientFromEnv:
         monkeypatch.setitem(sys.modules, "chalk", chalk_mod)
         monkeypatch.setitem(sys.modules, "chalk.client", client_mod)
 
-    def test_uses_service_auth_for_chalk_client(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_uses_service_auth_for_chalk_client(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr(
             "chalkcompute._connect.resolve_service_auth_context",
             lambda: ServiceAuthContext(

@@ -203,7 +203,9 @@ class TestTracingPolicy:
             TracingPolicy(sample_rate=True)  # type: ignore[arg-type]
 
     def test_bool_tracing_config_normalization(self):
-        assert normalize_remote_function_tracing(None) == TracingPolicy(sample_rate=1.0)
+        assert normalize_remote_function_tracing(None).to_dict() == {
+            "mode": "TRACING_MODE_PARENT_BASED_ALWAYS_OFF"
+        }
         assert normalize_remote_function_tracing(True) == TracingPolicy(sample_rate=1.0)
         assert normalize_remote_function_tracing(False).to_dict() == {
             "mode": "TRACING_MODE_ALWAYS_OFF"
@@ -415,8 +417,7 @@ class TestScheduleValidationFunction:
         fn.deploy()
 
         assert client.requests[0]["config"]["tracing"] == {
-            "mode": "TRACING_MODE_PARENT_BASED_TRACE_ID_RATIO",
-            "sampleRate": 1.0,
+            "mode": "TRACING_MODE_PARENT_BASED_ALWAYS_OFF",
         }
 
 
@@ -478,6 +479,46 @@ class TestScheduleValidationClass:
         assert [req["config"]["schedule"] for req in client.requests] == [
             "0 * * * *",
             "0 * * * *",
+        ]
+
+
+class TestClassTracingConfig:
+    def test_tracing_policy_is_sent_in_each_method_config(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        class Jobs:
+            @method
+            def hourly(self) -> None:
+                pass
+
+            @method
+            def daily(self) -> None:
+                pass
+
+        client = _CapturingClient()
+        rc = RemoteClass(Jobs, tracing=TracingPolicy(sample_rate=0.25))
+        rc._client = client  # type: ignore[assignment]
+        monkeypatch.setattr(
+            RemoteClass, "_build_deploy_image", lambda _: (object(), [])
+        )
+        monkeypatch.setattr(
+            cls_mod,
+            "_build_and_upload",
+            lambda *_, **__: ("image:test", [], None),
+        )
+
+        rc.deploy()
+
+        assert [req["config"]["tracing"] for req in client.requests] == [
+            {
+                "mode": "TRACING_MODE_PARENT_BASED_TRACE_ID_RATIO",
+                "sampleRate": 0.25,
+            },
+            {
+                "mode": "TRACING_MODE_PARENT_BASED_TRACE_ID_RATIO",
+                "sampleRate": 0.25,
+            },
         ]
 
 

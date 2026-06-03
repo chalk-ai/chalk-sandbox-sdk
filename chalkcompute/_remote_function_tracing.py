@@ -60,6 +60,10 @@ class _RemoteFunctionTracingPolicy:
             raise ValueError(f"{self.mode} tracing does not accept a sample_rate")
 
     @classmethod
+    def parentbased_always_off(cls) -> _RemoteFunctionTracingPolicy:
+        return cls(mode="parentbased_always_off")
+
+    @classmethod
     def always_off(cls) -> _RemoteFunctionTracingPolicy:
         return cls(mode="always_off")
 
@@ -82,11 +86,20 @@ def _validate_sample_rate(sample_rate: float) -> float:
 TracingPolicyConfig = bool | TracingPolicy
 
 
+def remote_function_tracing_requires_runtime(
+    tracing: TracingPolicy | _RemoteFunctionTracingPolicy | None,
+) -> bool:
+    return tracing is not None and not (
+        isinstance(tracing, _RemoteFunctionTracingPolicy)
+        and tracing.mode == "always_off"
+    )
+
+
 def normalize_remote_function_tracing(
     tracing: TracingPolicyConfig | None,
 ) -> TracingPolicy | _RemoteFunctionTracingPolicy | None:
     if tracing is None:
-        return TracingPolicy(sample_rate=1.0)
+        return _RemoteFunctionTracingPolicy.parentbased_always_off()
     if isinstance(tracing, bool):
         return (
             TracingPolicy(sample_rate=1.0)

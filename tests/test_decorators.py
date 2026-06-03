@@ -143,6 +143,35 @@ def test_function_deploy_image_installs_lightweight_runtime_when_tracing_off(
     ]
 
 
+@pytest.mark.parametrize(
+    ("tracing", "runtime_package"),
+    [
+        (None, "chalk-remote-call-python[tracing]"),
+        (False, "chalk-remote-call-python"),
+    ],
+)
+def test_class_deploy_image_uses_tracing_runtime_by_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    tracing: bool | None,
+    runtime_package: str,
+) -> None:
+    monkeypatch.setenv(_STRIP_SOURCE_ENV_VAR, "0")
+
+    class Adder:
+        @method
+        def add(self, x: int, y: int) -> int:
+            return x + y
+
+    rc = RemoteClass(Adder, tracing=tracing)
+
+    image, _ = rc._build_deploy_image()
+
+    assert image.to_proto().steps[0].pip_install.packages == [
+        runtime_package,
+        "chalkcompute==0.0.0",
+    ]
+
+
 def test_stripped_function_deploy_image_installs_tracing_runtime_when_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -209,6 +238,7 @@ def test_noop_function_remote_and_defer_resolve_deployed_sibling_by_name(
             self.remote_calls: list[tuple] = []
             self.defer_calls: list[tuple] = []
             self.cutoffs: list[Any] = []
+            self.tracing: list[bool] = []
 
         def remote(self, *a: Any, **kw: Any) -> str:
             self.remote_calls.append((a, kw))
@@ -220,6 +250,10 @@ def test_noop_function_remote_and_defer_resolve_deployed_sibling_by_name(
 
         def with_knowledge_cutoff(self, cutoff: Any) -> "_FakeBound":
             self.cutoffs.append(cutoff)
+            return self
+
+        def with_tracing(self, enabled: bool = True) -> "_FakeBound":
+            self.tracing.append(enabled)
             return self
 
     bound = _FakeBound()
@@ -245,10 +279,12 @@ def test_noop_function_remote_and_defer_resolve_deployed_sibling_by_name(
     assert add.remote(1, 2) == "remote-result"
     assert add.defer(1, 2) == "handle"
     assert add.with_knowledge_cutoff("2026-01-01T00:00:00Z") is bound
+    assert add.with_tracing(False) is bound
     assert resolved == ["add-svc"]  # resolved once, then cached
     assert bound.remote_calls == [((1, 2), {})]
     assert bound.defer_calls == [((1, 2), {})]
     assert bound.cutoffs == ["2026-01-01T00:00:00Z"]
+    assert bound.tracing == [False]
 
 
 def test_class_decorators_accept_called_and_uncalled_forms(
@@ -301,6 +337,27 @@ def test_class_decorators_accept_called_and_uncalled_forms(
     assert BareAdder._after_name == "shutdown"
 
 
+def test_cls_decorator_passes_tracing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deployed: list[RemoteClass] = []
+
+    def fake_deploy(self: RemoteClass, **_: Any) -> RemoteClass:
+        deployed.append(self)
+        return self
+
+    monkeypatch.setattr(RemoteClass, "deploy", fake_deploy)
+
+    @cls(tracing=True)
+    class TracedAdder:
+        @method
+        def add(self, x: int, y: int) -> int:
+            return x + y
+
+    assert isinstance(TracedAdder, RemoteClass)
+    assert deployed[0]._tracing == TracingPolicy(sample_rate=1.0)
+
+
 def test_cls_decorator_passes_schedule(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -346,6 +403,7 @@ def test_noop_class_method_remote_and_defer_resolve_deployed_sibling_by_name(
         def __init__(self) -> None:
             self.remote_calls: list[tuple] = []
             self.defer_calls: list[tuple] = []
+            self.tracing: list[bool] = []
 
         def remote(self, *a: Any, **kw: Any) -> str:
             self.remote_calls.append((a, kw))
@@ -354,6 +412,10 @@ def test_noop_class_method_remote_and_defer_resolve_deployed_sibling_by_name(
         def defer(self, *a: Any, **kw: Any) -> str:
             self.defer_calls.append((a, kw))
             return "handle"
+
+        def with_tracing(self, enabled: bool = True) -> "_FakeBound":
+            self.tracing.append(enabled)
+            return self
 
     bound = _FakeBound()
     resolved: list[str] = []
@@ -380,9 +442,11 @@ def test_noop_class_method_remote_and_defer_resolve_deployed_sibling_by_name(
     # separate attribute accesses share one resolution.
     assert Adder.add.remote(1, 2) == "remote-result"
     assert Adder.add.defer(1, 2) == "handle"
+    assert Adder.add.with_tracing(False) is bound
     assert resolved == ["adder-svc.add"]
     assert bound.remote_calls == [((1, 2), {})]
     assert bound.defer_calls == [((1, 2), {})]
+    assert bound.tracing == [False]
 
 
 def test_remote_class_method_call_is_local_remote_is_wire(
