@@ -1,11 +1,17 @@
 import asyncio
 import base64
+import contextvars
 from datetime import datetime, timezone
 
 import pyarrow as pa
 import pytest
 
-from chalkcompute._function import FunctionError, FunctionVersionInfo, RemoteFunction
+from chalkcompute._function import (
+    FunctionError,
+    FunctionVersionInfo,
+    RemoteFunction,
+    _run_in_worker_thread,
+)
 from chalkcompute._remote_call_client import RemoteCallPollResult, ServiceAuthContext
 
 REQUEST_TIMESTAMP_HEADER = "x-chalk-request-timestamp"
@@ -219,6 +225,16 @@ def test_sync_direct_call_can_be_awaited_in_async_context() -> None:
         return await fn.remote(41)
 
     assert asyncio.run(call()) == 42
+
+
+def test_worker_thread_preserves_contextvars_for_async_remote_calls() -> None:
+    request_id: contextvars.ContextVar[str] = contextvars.ContextVar("request_id")
+
+    async def call() -> str:
+        request_id.set("trace-context")
+        return await _run_in_worker_thread(lambda: request_id.get())
+
+    assert asyncio.run(call()) == "trace-context"
 
 
 def test_async_direct_call_can_be_used_synchronously() -> None:
