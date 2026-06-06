@@ -36,7 +36,6 @@ import json
 import linecache
 import logging
 import os
-import shlex
 import tempfile
 import textwrap
 import threading
@@ -61,6 +60,7 @@ from chalkcompute._connect import (
     grpc_target_from_url,
     service_auth_context_from_env,
 )
+from chalkcompute import _local_dev
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label, validate_env
 from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
@@ -96,40 +96,13 @@ KnowledgeCutoff = str | _dt.datetime
 _REMOTE_ENV_VAR = "_CHALK_REMOTE_FUNCTION"
 _REQUEST_TIMESTAMP_HEADER = "x-chalk-request-timestamp"
 _NO_ARGS_SENTINEL_COLUMN = "__chalk_no_args__"
-# When enabled, mount the local SDK project and pip-install at container start.
-_LOCAL_COPY_ENV_VAR = "CHALK_FUNCTION_LOCAL_SDK_COPY"
-# When set to a local wheel path, mount that wheel and pip-install it at
-# container start. This is useful for source checkouts with native extensions:
-# the wheel is built locally, while the remote pod only performs a fast install.
-_LOCAL_WHEEL_ENV_VAR = "CHALK_FUNCTION_LOCAL_SDK_WHEEL"
-# When enabled, strip chalkcompute references from user source instead of
-# mounting the local SDK.  Lighter-weight alternative to _LOCAL_COPY_ENV_VAR.
-_STRIP_SOURCE_ENV_VAR = "CHALK_FUNCTION_STRIP_SOURCE"
+_LOCAL_COPY_ENV_VAR = _local_dev._LOCAL_COPY_ENV_VAR
+_LOCAL_WHEEL_ENV_VAR = _local_dev._LOCAL_WHEEL_ENV_VAR
+_LOCAL_REMOTE_CALL_WHEEL_ENV_VAR = _local_dev._LOCAL_REMOTE_CALL_WHEEL_ENV_VAR
+_STRIP_SOURCE_ENV_VAR = _local_dev._STRIP_SOURCE_ENV_VAR
 # When enabled, route __call__ through the API server's CallExternalFunction
 # RPC instead of connecting directly to the scaling group's web URL.
 _CALL_VIA_API_ENV_VAR = "CHALK_FUNCTION_CALL_VIA_API"
-_LOCAL_SDK_MOUNT = "/tmp/sdk"
-_LOCAL_SDK_COPY_EXCLUDES = [
-    "tests/**",
-    "e2etests/**",
-    "examples/**",
-    ".venv/**",
-    ".*_venv/**",
-    "venv/**",
-    "**/__pycache__/**",
-    "**/target/**",
-]
-_LOCAL_SDK_RUNTIME_PACKAGES = [
-    "grpcio>=1.60.0",
-    "protobuf>=4.25.0",
-    "httpx>=0.25.0",
-    "blake3>=1.0.0",
-    "pyyaml>=6.0.0",
-    "opentelemetry-api>=1.20.0",
-    "opentelemetry-sdk>=1.20.0",
-    "opentelemetry-exporter-otlp-proto-grpc>=1.20.0",
-    "rich>=13.0.0",
-]
 _CATALOG_SVC = "chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService"
 _SG_SVC = "chalk.scalinggroup.v1.ScalingGroupManagerService"
 
@@ -471,16 +444,7 @@ def _write_temp(content: str) -> str:
 
 
 def _should_strip_source() -> bool:
-    if _STRIP_SOURCE_ENV_VAR in os.environ:
-        return os.environ[_STRIP_SOURCE_ENV_VAR] == "1"
-
-    from importlib.metadata import PackageNotFoundError
-    from importlib.metadata import version as _pkg_version
-
-    try:
-        return _pkg_version("chalkcompute") == "0.0.0"
-    except PackageNotFoundError:
-        return False
+    return _local_dev.should_strip_source()
 
 
 def _should_call_via_api() -> bool:
@@ -1005,36 +969,7 @@ def _local_install_entrypoint(handler_cmd: list[str]) -> list[str]:
     list of str
         Possibly-wrapped entrypoint command.
     """
-    strip_source = _should_strip_source()
-    wheel_path = os.environ.get(_LOCAL_WHEEL_ENV_VAR, "")
-    if wheel_path and not strip_source:
-        d = _LOCAL_SDK_MOUNT
-        wheel_name = shlex.quote(Path(wheel_path).name)
-        command = " ".join(shlex.quote(part) for part in handler_cmd)
-        return [
-            "sh",
-            "-c",
-            f"set -eux; python -m pip install {d}/{wheel_name}; exec {command}",
-        ]
-
-    if os.environ.get(_LOCAL_COPY_ENV_VAR, "") != "1" or strip_source:
-        return handler_cmd
-    from chalkcompute._image import _ARCHIVE_CHUNK_PREFIX, ARCHIVE_NAME
-
-    d = _LOCAL_SDK_MOUNT
-    extract_dir = "/tmp/chalkcompute-sdk-src"
-    archive_path = f"/tmp/{ARCHIVE_NAME}"
-    # Reassemble from the mounted volume, but extract onto local pod storage.
-    # The mounted file volume is optimized for uploaded inputs, not tar writes.
-    cat_parts = f"cat {d}/{_ARCHIVE_CHUNK_PREFIX}* > {archive_path}"
-    extract = f"rm -rf {extract_dir}; mkdir -p {extract_dir}; tar xzf {archive_path} -C {extract_dir}"
-    activate = f"export PYTHONPATH={extract_dir}:$PYTHONPATH"
-    command = " ".join(shlex.quote(part) for part in handler_cmd)
-    return [
-        "sh",
-        "-c",
-        f"set -eux; {cat_parts}; {extract}; {activate}; exec {command}",
-    ]
+    return _local_dev.wrap_entrypoint_for_local_dev(handler_cmd)
 
 
 _REMOTE_CALL_RUNTIME_PACKAGE = "chalk-remote-call-python"
@@ -1042,8 +977,16 @@ _REMOTE_CALL_RUNTIME_PACKAGE = "chalk-remote-call-python"
 
 def _remote_call_runtime_package_with_extras(extras: list[str]) -> str:
     if not extras:
-        return _REMOTE_CALL_RUNTIME_PACKAGE
-    return f"{_REMOTE_CALL_RUNTIME_PACKAGE}[{','.join(sorted(extras))}]"
+        package = _REMOTE_CALL_RUNTIME_PACKAGE
+    else:
+        package = f"{_REMOTE_CALL_RUNTIME_PACKAGE}[{','.join(sorted(extras))}]"
+
+    try:
+        from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
+        return f"{package}=={_pkg_version(_REMOTE_CALL_RUNTIME_PACKAGE)}"
+    except PackageNotFoundError:
+        return package
 
 
 def _make_base_image(
@@ -1054,50 +997,14 @@ def _make_base_image(
     """Create the base deploy image with SDK packages and optional local overlay."""
     from chalkcompute._image import Image
 
-    strip_source = _should_strip_source()
-    wheel_path = os.environ.get(_LOCAL_WHEEL_ENV_VAR, "")
-    local_wheel = bool(wheel_path) and not strip_source
-    local_copy = (
-        os.environ.get(_LOCAL_COPY_ENV_VAR, "") == "1"
-        and not local_wheel
-        and not strip_source
-    )
-
     base = user_image if user_image is not None else Image.debian_slim()
-
-    if local_wheel:
-        path = Path(wheel_path)
-        image = base.add_local_file(str(path), f"{_LOCAL_SDK_MOUNT}/{path.name}")
-    elif local_copy:
-        # Mount the local SDK project via volume; the entrypoint will
-        # extract the tar and put it on PYTHONPATH before starting the handler.
-        project_root = Path(__file__).resolve().parent.parent
-        image = base.pip_install(
-            [
-                remote_call_runtime_package,
-                *_LOCAL_SDK_RUNTIME_PACKAGES,
-            ]
-        ).add_local_dir(
-            str(project_root),
-            _LOCAL_SDK_MOUNT,
-            exclude=_LOCAL_SDK_COPY_EXCLUDES,
-            archive=True,
-        )
-    elif strip_source:
-        # Source is stripped of chalkcompute references — only install the
-        # RPC runtime, not chalkcompute itself.
-        image = base.pip_install([remote_call_runtime_package])
-    else:
-        from importlib.metadata import version as _pkg_version
-
-        image = base.pip_install(
-            [
-                remote_call_runtime_package,
-                f"chalkcompute=={_pkg_version('chalkcompute')}",
-            ]
-        )
-
-    return image
+    return typing.cast(
+        "_Image",
+        _local_dev.apply_local_dev_mounts(
+            base,
+            remote_call_runtime_package=remote_call_runtime_package,
+        ),
+    )
 
 
 def _preserve_functionlike_metadata(wrapper: Any, func: Callable) -> None:

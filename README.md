@@ -2,6 +2,10 @@
 
 Python SDK for the Chalk Sandbox gRPC service. Create sandboxes, execute commands, and stream output over bidirectional gRPC streams.
 
+Contributor note: for testing deployed functions against local `chalkcompute`
+or local `chalk-remote-call-python` changes, see
+`local-sdk-remote-call-testing.md`.
+
 ## Install
 
 ```

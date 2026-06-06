@@ -1,4 +1,7 @@
+import importlib
 import logging
+import types
+from pathlib import Path
 
 import pytest
 
@@ -111,3 +114,99 @@ def test_legacy_native_drops_per_call_metadata_once(
         ("enqueue", "pkg.fn", b"in"),
     ]
     assert caplog.text.count("does not support per-call metadata") == 1
+
+
+def test_find_native_extension_path_skips_local_overlay(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    overlay_root = tmp_path / "overlay"
+    site_packages_root = tmp_path / "site-packages"
+    overlay_package = overlay_root / "chalkcompute"
+    site_packages_package = site_packages_root / "chalkcompute"
+    overlay_package.mkdir(parents=True)
+    site_packages_package.mkdir(parents=True)
+    native_path = (
+        site_packages_package / "_remote_call_native.cpython-311-x86_64-linux-gnu.so"
+    )
+    native_path.write_bytes(b"")
+
+    monkeypatch.setattr(
+        remote_call_client,
+        "_PACKAGE_DIR",
+        overlay_package.resolve(),
+    )
+    monkeypatch.setattr(
+        remote_call_client.importlib.machinery,
+        "EXTENSION_SUFFIXES",
+        [".cpython-311-x86_64-linux-gnu.so"],
+    )
+
+    assert remote_call_client._find_native_extension_path(
+        [str(overlay_root), str(site_packages_root)]
+    ) == native_path
+
+
+def test_import_remote_call_native_falls_back_to_site_packages(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    overlay_root = tmp_path / "overlay"
+    site_packages_root = tmp_path / "site-packages"
+    overlay_package = overlay_root / "chalkcompute"
+    site_packages_package = site_packages_root / "chalkcompute"
+    overlay_package.mkdir(parents=True)
+    site_packages_package.mkdir(parents=True)
+    native_path = (
+        site_packages_package / "_remote_call_native.cpython-311-x86_64-linux-gnu.so"
+    )
+    native_path.write_bytes(b"not-a-real-extension")
+
+    monkeypatch.setattr(
+        remote_call_client,
+        "_PACKAGE_DIR",
+        overlay_package.resolve(),
+    )
+    monkeypatch.setattr(
+        remote_call_client.importlib.machinery,
+        "EXTENSION_SUFFIXES",
+        [".cpython-311-x86_64-linux-gnu.so"],
+    )
+    monkeypatch.setattr(
+        remote_call_client.sys,
+        "path",
+        [str(overlay_root), str(site_packages_root)],
+    )
+
+    def fake_import_module(name: str) -> types.ModuleType:
+        raise ImportError(f"missing {name}")
+
+    class FakeLoader:
+        def create_module(self, spec: importlib.machinery.ModuleSpec) -> None:
+            return None
+
+        def exec_module(self, module: types.ModuleType) -> None:
+            module.RemoteCallClient = LegacyNativeRemoteCallClient
+            module.resolve_service_auth_context = lambda: None
+            module.__file__ = str(native_path)
+
+    def fake_spec_from_file_location(name: str, location: Path):
+        assert name == "chalkcompute._remote_call_native"
+        assert Path(location) == native_path
+        return importlib.machinery.ModuleSpec(name=name, loader=FakeLoader())
+
+    monkeypatch.setattr(
+        remote_call_client.importlib,
+        "import_module",
+        fake_import_module,
+    )
+    monkeypatch.setattr(
+        remote_call_client.importlib.util,
+        "spec_from_file_location",
+        fake_spec_from_file_location,
+    )
+
+    module = remote_call_client._import_remote_call_native()
+
+    assert module.RemoteCallClient is LegacyNativeRemoteCallClient
+    assert module.__file__ == str(native_path)

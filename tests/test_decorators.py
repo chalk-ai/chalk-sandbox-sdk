@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import linecache
 import textwrap
+from importlib.metadata import version as pkg_version
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,11 @@ from chalkcompute._function import (
     _strip_chalkcompute_from_source,
 )
 from chalkcompute._remote_function_tracing import TracingPolicy
+
+
+def _remote_call_runtime(*, tracing: bool) -> str:
+    package = "chalk-remote-call-python[tracing]" if tracing else "chalk-remote-call-python"
+    return f"{package}=={pkg_version('chalk-remote-call-python')}"
 
 
 def test_function_decorator_accepts_called_and_uncalled_forms(
@@ -102,9 +108,11 @@ def test_function_deploy_image_installs_tracing_runtime_by_default(
     image = fn._build_deploy_image()
 
     assert image.to_proto().steps[0].pip_install.packages == [
-        "chalk-remote-call-python[tracing]",
+        _remote_call_runtime(tracing=True),
         "chalkcompute==0.0.0",
     ]
+    grouped = image.lazy_local_files_grouped_for_volume_mounts()
+    assert set(grouped) == {"/app"}
 
 
 def test_function_deploy_image_installs_tracing_runtime_when_enabled(
@@ -120,9 +128,11 @@ def test_function_deploy_image_installs_tracing_runtime_when_enabled(
     image = fn._build_deploy_image()
 
     assert image.to_proto().steps[0].pip_install.packages == [
-        "chalk-remote-call-python[tracing]",
+        _remote_call_runtime(tracing=True),
         "chalkcompute==0.0.0",
     ]
+    grouped = image.lazy_local_files_grouped_for_volume_mounts()
+    assert set(grouped) == {"/app"}
 
 
 def test_function_deploy_image_installs_lightweight_runtime_when_tracing_off(
@@ -138,9 +148,11 @@ def test_function_deploy_image_installs_lightweight_runtime_when_tracing_off(
     image = fn._build_deploy_image()
 
     assert image.to_proto().steps[0].pip_install.packages == [
-        "chalk-remote-call-python",
+        _remote_call_runtime(tracing=False),
         "chalkcompute==0.0.0",
     ]
+    grouped = image.lazy_local_files_grouped_for_volume_mounts()
+    assert set(grouped) == {"/app"}
 
 
 def test_stripped_function_deploy_image_installs_tracing_runtime_when_enabled(
@@ -156,7 +168,7 @@ def test_stripped_function_deploy_image_installs_tracing_runtime_when_enabled(
     image = fn._build_deploy_image()
 
     assert image.to_proto().steps[0].pip_install.packages == [
-        "chalk-remote-call-python[tracing]"
+        _remote_call_runtime(tracing=True)
     ]
 
 
