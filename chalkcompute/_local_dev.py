@@ -37,6 +37,24 @@ _LOCAL_SDK_RUNTIME_PACKAGES = [
 ]
 
 
+def running_in_function_pod() -> bool:
+    return bool(os.environ.get("_CHALK_REMOTE_FUNCTION"))
+
+
+def build_function_runtime_image(*, python_version: str = "3.11") -> object:
+    """Return the standard deploy image used for local function SDK testing."""
+    from chalkcompute._image import Image
+
+    return Image.debian_slim(python_version).pip_install(["chalkcompute==0.0.0"])
+
+
+def function_runtime_image_or_none(*, python_version: str = "3.11") -> object | None:
+    """Return the standard local-test runtime image unless already in the pod."""
+    if running_in_function_pod():
+        return None
+    return build_function_runtime_image(python_version=python_version)
+
+
 def should_strip_source() -> bool:
     if _STRIP_SOURCE_ENV_VAR in os.environ:
         return os.environ[_STRIP_SOURCE_ENV_VAR] == "1"
