@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import contextvars
 import datetime as _dt
 import functools
 import inspect
@@ -482,6 +483,7 @@ async def _run_in_worker_thread(
 ) -> Any:
     loop = asyncio.get_running_loop()
     future: asyncio.Future[Any] = loop.create_future()
+    context = contextvars.copy_context()
 
     def complete_with_result(value: Any) -> None:
         if not future.cancelled():
@@ -493,7 +495,7 @@ async def _run_in_worker_thread(
 
     def run() -> None:
         try:
-            value = func(*args, **kwargs)
+            value = context.run(func, *args, **kwargs)
         except BaseException as exc:
             loop.call_soon_threadsafe(complete_with_exception, exc)
         else:
