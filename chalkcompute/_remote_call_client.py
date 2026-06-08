@@ -3,17 +3,84 @@
 from __future__ import annotations
 
 import importlib
+import importlib.machinery
+import importlib.util
 import logging
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Sequence
 
 logger = logging.getLogger(__name__)
+
+_PACKAGE_DIR = Path(__file__).resolve().parent
+
+
+def _find_native_extension_path(
+    search_paths: Sequence[str] | None = None,
+) -> Path | None:
+    paths = sys.path if search_paths is None else search_paths
+    for raw_path in paths:
+        try:
+            package_dir = (Path(raw_path) if raw_path else Path.cwd()).resolve() / (
+                "chalkcompute"
+            )
+        except OSError:
+            continue
+        if package_dir == _PACKAGE_DIR:
+            continue
+        for suffix in importlib.machinery.EXTENSION_SUFFIXES:
+            candidate = package_dir / f"_remote_call_native{suffix}"
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def _load_native_extension_from_path(native_path: Path) -> Any:
+    spec = importlib.util.spec_from_file_location(
+        "chalkcompute._remote_call_native",
+        native_path,
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"could not load native remote-call extension from {native_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    previous_module = sys.modules.get(spec.name)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        if previous_module is None:
+            sys.modules.pop(spec.name, None)
+        else:
+            sys.modules[spec.name] = previous_module
+        raise
+    return module
+
+
+def _import_remote_call_native() -> Any:
+    try:
+        return importlib.import_module("chalkcompute._remote_call_native")
+    except ImportError as exc:
+        native_path = _find_native_extension_path()
+        if native_path is None:
+            raise
+        logger.info(
+            "Falling back to native remote-call extension from %s",
+            native_path,
+        )
+        try:
+            return _load_native_extension_from_path(native_path)
+        except Exception as fallback_exc:
+            raise ImportError(
+                f"failed to load chalkcompute._remote_call_native from {native_path}"
+            ) from fallback_exc
 
 _NativeRemoteCallClient: Any | None
 _NATIVE_IMPORT_ERROR: ImportError | None
 _remote_call_native: Any | None = None
 try:
-    _remote_call_native = importlib.import_module("chalkcompute._remote_call_native")
+    _remote_call_native = _import_remote_call_native()
 except ImportError as exc:  # pragma: no cover - exercised in source checkouts
     _NativeRemoteCallClient = None
     _NATIVE_IMPORT_ERROR = exc

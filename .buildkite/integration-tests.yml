@@ -192,6 +192,7 @@ steps:
 
       echo "--- :zap: Deploy and test scalar functions"
       CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest e2etests/test_scalar.py -v -s --tb=short
+
     agents:
       queue: default
     timeout_in_minutes: 20

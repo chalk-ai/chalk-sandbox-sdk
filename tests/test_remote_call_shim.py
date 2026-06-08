@@ -490,6 +490,20 @@ class TestShimViaRemoteCallLib:
         # Each yielded value is encoded as a separate chunk.
         assert _decode_result_column(payloads) == [[0], [1], [0], [1], [2]]
 
+    def test_async_generator_streams_per_yield(self):
+        from chalk_remote_call.servicer import process_batches
+
+        async def expand(n: int):
+            for i in range(n):
+                yield i
+
+        _install_user_module(expand=expand)
+        ns = _load_shim(_generate_handler_shim("expand"))
+
+        ipc_bytes = _encode_event({"n": pa.array([2, 3])})
+        payloads = process_batches(ipc_bytes, ns["handler"], None, {})
+        assert _decode_result_column(payloads) == [[0], [1], [0], [1], [2]]
+
     def test_no_arg_sync_generator_streams_from_sentinel_call(self):
         from chalk_remote_call.servicer import process_batches
 
