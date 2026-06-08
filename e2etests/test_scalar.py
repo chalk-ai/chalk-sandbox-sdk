@@ -33,6 +33,7 @@ class TestSyncScalar:
     @classmethod
     def setup_class(cls):
         _deploy_script("scalar", "deploy_sync.py")
+        _deploy_script("scalar", "deploy_nested_gather.py")
 
     def test_direct_call(self):
         """Sync scalar calls work in sync and async contexts."""
@@ -86,6 +87,21 @@ class TestSyncScalar:
         print(f"\n  {n} calls in {elapsed:.2f}s ({throughput:.1f} calls/s)")
         # Just ensure it completes — no hard assertion on speed
         assert elapsed < 120, f"Took too long: {elapsed:.1f}s"
+
+    def test_nested_gather_uses_function_queue_without_env_vars(self) -> None:
+        fn = chalkcompute.RemoteFunction.from_name("nested_gather_add")
+        assert fn.remote([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]) == [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+        ]
 
 
 # ---------------------------------------------------------------------------
