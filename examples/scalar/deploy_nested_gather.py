@@ -9,8 +9,13 @@ import logging
 
 import chalkcompute
 
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+log = logging.getLogger(__name__)
 
-@chalkcompute.function()
+
+@chalkcompute.function(
+    image=chalkcompute.Image.debian_slim().pip_install(["chalkcompute>=2.1.3"]),
+)
 def nested_gather_add(values: list[int]) -> list[int]:
     """Fan out deferred calls from inside a remote function and gather them."""
     from datetime import datetime, timezone
