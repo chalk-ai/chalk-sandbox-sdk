@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 
 
 @chalkcompute.function(
-    image=chalkcompute.Image.debian_slim().pip_install(["chalkcompute>=2.1.3"]),
+    image=chalkcompute.Image.debian_slim("3.11").pip_install(["chalkcompute>=2.1.3"]),
 )
 def nested_gather_add(values: list[int]) -> list[int]:
     """Fan out deferred calls from inside a remote function and gather them."""
