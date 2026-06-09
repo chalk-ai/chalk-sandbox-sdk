@@ -18,8 +18,8 @@ from chalk.scalinggroup import AutoScalingSpec, ScalingGroupResourceRequest
 
 c = ChalkClient(environment=os.environ.get("CHALK_ENVIRONMENT_ID"))
 
-MODEL_NAME = "e2e-volume-triple"
-SG_NAME = "e2e-volume-triple-sg"
+MODEL_NAME = "ex-volume-triple"
+SG_NAME = "ex-volume-triple-sg"
 HANDLER_PATH = os.path.join(os.path.dirname(__file__), "handler_with_volume.py")
 
 image = (

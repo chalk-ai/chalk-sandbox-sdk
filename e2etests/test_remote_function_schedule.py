@@ -13,7 +13,7 @@ def test_remote_function_registers_with_schedule() -> None:
     in the catalog, and exercise the no-input invoke path."""
     _deploy_script("scheduled-function", "heartbeat.py")
 
-    fn = chalkcompute.RemoteFunction.from_name("heartbeat")
+    fn = chalkcompute.RemoteFunction.from_name("ex-heartbeat")
     assert fn.version_info is not None
 
     resp = fn._client.rpc(

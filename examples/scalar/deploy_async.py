@@ -12,7 +12,7 @@ import chalkcompute
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 
-@chalkcompute.function
+@chalkcompute.function(name="ex-async-add")
 async def async_add(a: int, b: int) -> int:
     """Simple async addition."""
     return a + b

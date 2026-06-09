@@ -37,13 +37,13 @@ class TestSyncScalar:
 
     def test_direct_call(self):
         """Sync scalar calls work in sync and async contexts."""
-        fn = chalkcompute.RemoteFunction.from_name("add")
+        fn = chalkcompute.RemoteFunction.from_name("ex-add")
         assert fn.remote(1, 10) == 11
         assert asyncio.run(_await_call(fn, 2, 20)) == 22
 
     def test_defer_get(self):
         """Sync scalar defer/get works in sync and async contexts."""
-        fn = chalkcompute.RemoteFunction.from_name("add")
+        fn = chalkcompute.RemoteFunction.from_name("ex-add")
         handle = fn.defer(2, 20)
         assert handle.get(timeout=60) == 22
 
@@ -52,7 +52,7 @@ class TestSyncScalar:
 
     def test_concurrent_calls(self):
         """Fire 10 calls in parallel, verify all return correct results."""
-        fn = chalkcompute.RemoteFunction.from_name("add")
+        fn = chalkcompute.RemoteFunction.from_name("ex-add")
         n = 10
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=n) as pool:
@@ -64,7 +64,7 @@ class TestSyncScalar:
 
     def test_concurrent_defer_calls(self):
         """Fire 10 deferred calls, verify all return correct results."""
-        fn = chalkcompute.RemoteFunction.from_name("add")
+        fn = chalkcompute.RemoteFunction.from_name("ex-add")
         n = 10
 
         handles = [fn.defer(i, i * 10) for i in range(1, n + 1)]
@@ -75,7 +75,7 @@ class TestSyncScalar:
 
     def test_throughput(self):
         """Fire 20 rapid calls and measure throughput."""
-        fn = chalkcompute.RemoteFunction.from_name("add")
+        fn = chalkcompute.RemoteFunction.from_name("ex-add")
         n = 20
 
         start = time.monotonic()
@@ -117,14 +117,14 @@ class TestAsyncScalar:
 
     def test_direct_call(self):
         """Async scalar calls work in sync and async contexts."""
-        fn = chalkcompute.RemoteFunction.from_name("async_add")
+        fn = chalkcompute.RemoteFunction.from_name("ex-async-add")
 
         assert fn.remote(3, 30) == 33
         assert asyncio.run(_await_call(fn, 4, 40)) == 44
 
     def test_defer_get(self):
         """Async scalar defer/get works in sync and async contexts."""
-        fn = chalkcompute.RemoteFunction.from_name("async_add")
+        fn = chalkcompute.RemoteFunction.from_name("ex-async-add")
         handle = fn.defer(5, 50)
         assert handle.get(timeout=60) == 55
 
@@ -141,6 +141,6 @@ class TestAsyncScalar:
 class TestTimeout:
     def test_defer_get_with_timeout(self):
         """handle.get(timeout=30) succeeds for a real function."""
-        fn = chalkcompute.RemoteFunction.from_name("add")
+        fn = chalkcompute.RemoteFunction.from_name("ex-add")
         handle = fn.defer(1, 1)
         assert handle.get(timeout=30) == 2
