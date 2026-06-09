@@ -15,8 +15,8 @@ from chalk.scalinggroup import AutoScalingSpec, ScalingGroupResourceRequest
 
 c = ChalkClient(environment=os.environ.get("CHALK_ENVIRONMENT_ID"))
 
-MODEL_NAME = "e2e-trivial-double"
-SG_NAME = "e2e-trivial-double-sg"
+MODEL_NAME = "ex-trivial-double"
+SG_NAME = "ex-trivial-double-sg"
 HANDLER_PATH = os.path.join(os.path.dirname(__file__), "handler.py")
 
 image = (

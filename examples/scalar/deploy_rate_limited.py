@@ -17,6 +17,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 
 @chalkcompute.function(
+    name="ex-add-rate-limited",
     rate_limit=RateLimitPolicy(rate=5, per="second"),
 )
 def add_rate_limited(a: int, b: int) -> int:

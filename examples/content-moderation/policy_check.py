@@ -32,6 +32,7 @@ BENIGN_ALTERNATIVES = [
 
 
 @chalkcompute.function(
+    name="ex-policy-check",
     image=(
         chalkcompute.Image.debian_slim()
         .run_commands(

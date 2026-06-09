@@ -30,7 +30,7 @@ class TestRateLimit:
         With 5 req/s, the consumer can only process 5 per second,
         so 20 calls should take at least 3s (ceil(20/5) - 1 = 3).
         """
-        fn = chalkcompute.RemoteFunction.from_name("add-rate-limited")
+        fn = chalkcompute.RemoteFunction.from_name("ex-add-rate-limited")
         n = 20
 
         # Enqueue all at once
@@ -61,7 +61,7 @@ class TestRateLimit:
 
     def test_rate_limit_correctness_under_load(self):
         """All results are correct even under rate limiting."""
-        fn = chalkcompute.RemoteFunction.from_name("add-rate-limited")
+        fn = chalkcompute.RemoteFunction.from_name("ex-add-rate-limited")
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
             futures = [pool.submit(fn, i, i * 10) for i in range(1, 11)]
@@ -88,7 +88,7 @@ class TestConcurrencyLimit:
         With unlimited concurrency, 6 × 1s-sleep calls would take ~1s (all parallel).
         With max_concurrent=2, only 2 run at a time: ceil(6/2) × 1s = 3s minimum.
         """
-        fn = chalkcompute.RemoteFunction.from_name("slow-add")
+        fn = chalkcompute.RemoteFunction.from_name("ex-slow-add")
         n = 6
 
         handles = [fn.defer(i, 1) for i in range(n)]
@@ -112,7 +112,7 @@ class TestConcurrencyLimit:
 
     def test_concurrency_limit_correctness(self):
         """All results are correct even under concurrency limiting."""
-        fn = chalkcompute.RemoteFunction.from_name("slow-add")
+        fn = chalkcompute.RemoteFunction.from_name("ex-slow-add")
 
         handles = [fn.defer(i, i) for i in range(1, 5)]
         results = [h.get(timeout=120) for h in handles]

@@ -17,7 +17,7 @@ def test_orchestrate() -> None:
     _deploy_script("embedding-function", "embed.py")
     _deploy_script("embedding-function", "orchestrate.py")
 
-    orchestrate = chalkcompute.RemoteFunction.from_name("orchestrate-test")
+    orchestrate = chalkcompute.RemoteFunction.from_name("ex-orchestrate")
     embeddings = orchestrate.remote(["Hello", "world!"])
 
     assert len(embeddings) == 2, f"Expected 2 embeddings, got {len(embeddings)}"
@@ -35,7 +35,7 @@ def test_embed_direct_call() -> None:
     """Deploy embed, then call it directly from a local client."""
     _deploy_script("embedding-function", "embed.py")
 
-    fn = chalkcompute.RemoteFunction.from_name("embed-test")
+    fn = chalkcompute.RemoteFunction.from_name("ex-embed")
     embedding = fn.remote("hello")
 
     assert isinstance(embedding, list), f"Expected list, got {type(embedding).__name__}"
@@ -50,7 +50,7 @@ def test_async_embed_direct_call() -> None:
     _deploy_script("embedding-function", "embed_async.py")
 
     async def _run() -> list[float]:
-        fn = chalkcompute.RemoteFunction.from_name("async_embed")
+        fn = chalkcompute.RemoteFunction.from_name("ex-async-embed")
         return await fn.remote("hello")
 
     embedding = asyncio.run(_run())

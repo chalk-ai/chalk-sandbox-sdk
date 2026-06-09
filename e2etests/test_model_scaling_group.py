@@ -26,8 +26,8 @@ from e2etests.conftest import (
     needs_staging,
 )
 
-SG_NAME = "e2e-trivial-double-sg"
-VOLUME_SG_NAME = "e2e-volume-triple-sg"
+SG_NAME = "ex-trivial-double-sg"
+VOLUME_SG_NAME = "ex-volume-triple-sg"
 READINESS_TIMEOUT = 180
 READINESS_POLL_INTERVAL = 5
 

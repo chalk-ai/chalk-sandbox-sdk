@@ -11,6 +11,7 @@ MODEL_NAME = "microsoft/resnet-50"
 
 
 @chalkcompute.function(
+    name="ex-classify-image",
     image=(
         chalkcompute.Image.debian_slim()
         .run_commands(
