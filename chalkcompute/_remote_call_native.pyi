@@ -41,4 +41,85 @@ class RemoteCallClient:
     def purge_function(self, function_name: str) -> int: ...
     def purge_all(self) -> dict[str, int]: ...
 
+class VolumeRpcError(RuntimeError): ...
+
+class VersionedVolumeNativeClient:
+    def __init__(
+        self,
+        endpoint: str,
+        token: str,
+        env_id: str | None = None,
+        commit_author: str | None = None,
+        extra_headers: Sequence[tuple[str, str]] | None = None,
+        chalk_server: str | None = None,
+    ) -> None: ...
+    def upload(
+        self,
+        volume: str,
+        source: Any,
+        config: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]: ...
+    def download_bytes(
+        self,
+        volume: str,
+        path: str,
+        version_id: int | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> bytes: ...
+    def download_to_file(
+        self,
+        volume: str,
+        remote_path: str,
+        local_path: Any,
+        version_id: int | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> None: ...
+    def download_to_directory(
+        self,
+        volume: str,
+        local_dir: Any,
+        version_id: int | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> None: ...
+    def remove_files(
+        self,
+        volume: str,
+        paths: Sequence[tuple[str, bool]],
+        max_commit_retries: int = 3,
+    ) -> dict[str, Any]: ...
+    def create_volume(self, name: str) -> dict[str, Any]: ...
+    def get_volume(
+        self,
+        name: str,
+        version_id: int | None = None,
+        ref_name: str | None = None,
+    ) -> dict[str, Any]: ...
+    def list_volumes(
+        self,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> dict[str, Any]: ...
+    def delete_volume(self, name: str) -> None: ...
+    def list_volume_versions(
+        self,
+        name: str,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> dict[str, Any]: ...
+    def list_files(
+        self,
+        volume: str,
+        path: str | None = None,
+        version_id: int | None = None,
+        ref_name: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> dict[str, Any]: ...
+    def get_commit_status(self, volume: str, commit_id: str) -> dict[str, Any]: ...
+
+def configure_volume_client_logging(
+    level: str = "info",
+    logger_name: str = "chalk.volume.client",
+) -> bool: ...
+
 def resolve_service_auth_context() -> dict[str, Any] | None: ...

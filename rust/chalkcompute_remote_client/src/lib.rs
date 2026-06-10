@@ -299,5 +299,6 @@ fn grpc_engine_target_from_url(url: &str) -> (String, bool) {
 fn _remote_call_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRemoteCallClient>()?;
     m.add_function(wrap_pyfunction!(resolve_service_auth_context, m)?)?;
+    chalk_volume_client::register_volume_bindings(m)?;
     Ok(())
 }
