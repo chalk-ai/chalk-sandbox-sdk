@@ -8,7 +8,7 @@ env:
   UV_VERSION: "0.11.14"
 
 steps:
-  - label: ":pytest: Integration tests ({{matrix}})"
+  - label: ":docker: Compute integration tests ({{matrix}})"
     matrix:
       - "staging/ftqa"
       - "meta-ci"
@@ -43,8 +43,45 @@ steps:
       echo "--- :python: Sync dependencies"
       uv sync --locked --all-extras --reinstall-package chalkcompute
 
-      echo "--- :pytest: Run integration tests ($$CHALK_API_SERVER)"
-      uv run python -m pytest e2etests/test_image.py e2etests/test_sandbox_exec.py e2etests/test_volume.py e2etests/test_versioned_volume.py e2etests/test_container.py -v -s --tb=short
+      echo "--- :pytest: Run core integration tests ($$CHALK_API_SERVER)"
+      uv run python -m pytest e2etests/test_image.py e2etests/test_sandbox_exec.py e2etests/test_container.py -v -s --tb=short
+    agents:
+      queue: default
+    timeout_in_minutes: 15
+    retry:
+      automatic:
+        - exit_status: -1
+          limit: 2
+
+  - label: ":floppy_disk: Storage integration tests ({{matrix}})"
+    matrix:
+      - "staging/ftqa"
+      - "meta-ci"
+    command: |
+      set -euo pipefail
+      unset VIRTUAL_ENV
+
+      echo "--- :gear: Install sops"
+      SOPS_VERSION=3.9.4
+      curl -fsSL "https://github.com/getsops/sops/releases/download/v$${SOPS_VERSION}/sops-v$${SOPS_VERSION}.linux.amd64" -o /tmp/sops
+      chmod +x /tmp/sops
+
+      echo "--- :key: Decrypt secrets"
+      if [ "{{matrix}}" = "staging/ftqa" ]; then ENV_FILE=".env.enc"; else ENV_FILE=".env.{{matrix}}.enc"; fi
+      /tmp/sops --input-type dotenv --output-type dotenv -d "$$ENV_FILE" > /tmp/test.env
+      set -a
+      source /tmp/test.env
+      set +a
+      rm /tmp/test.env
+      export CHALK_ACTIVE_ENVIRONMENT="$$CHALK_ENVIRONMENT_ID"
+
+      echo "--- :python: Install uv"
+      source .buildkite/install-uv.sh
+      echo "--- :python: Sync dependencies"
+      uv sync --locked --all-extras --reinstall-package chalkcompute
+
+      echo "--- :card_file_box: Run volume service integration tests ($$CHALK_API_SERVER)"
+      uv run python -m pytest e2etests/test_volume.py e2etests/test_versioned_volume.py -v -s --tb=short
     agents:
       queue: default
     timeout_in_minutes: 15
