@@ -13,15 +13,15 @@ steps:
     command: |
       set -euo pipefail
       unset VIRTUAL_ENV
-      echo "--- :python: Install uv"
+      echo "--- :python: Bootstrap toolchain"
       source .buildkite/install-uv.sh
-      echo "--- :python: Sync dependencies"
+      echo "--- :package: Sync locked dependencies"
       uv sync --locked --all-extras
-      echo "--- :ruff: Check formatting"
+      echo "--- :sparkles: Ruff format gate"
       uv run --with ruff ruff format --check chalkcompute tests e2etests
-      echo "--- :ruff: Run lint"
+      echo "--- :rotating_light: Ruff lint gate"
       uv run --with ruff ruff check chalkcompute tests e2etests
-      echo "--- :mag: Run ty"
+      echo "--- :mag: Ty type gate"
       uv run --with ty ty check chalkcompute/ --exclude chalkcompute/_gen/
     agents:
       queue: default
@@ -31,11 +31,11 @@ steps:
     command: |
       set -euo pipefail
       unset VIRTUAL_ENV
-      echo "--- :python: Install uv"
+      echo "--- :python: Bootstrap toolchain"
       source .buildkite/install-uv.sh
-      echo "--- :python: Sync dependencies"
+      echo "--- :package: Sync locked dependencies"
       uv sync --locked --all-extras
-      echo "--- :pytest: Run unit tests"
+      echo "--- :pytest: Unit test gate"
       uv run python -m pytest tests/ -v --tb=short
     agents:
       queue: default
