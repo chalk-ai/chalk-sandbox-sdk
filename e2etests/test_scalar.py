@@ -23,6 +23,23 @@ async def _await_get(handle, *, timeout=None):
     return await handle.get(timeout=timeout)
 
 
+def _function_or_deploy(name: str, *deploy_scripts: str):
+    """Return a deployed function, redeploying examples if the catalog is stale."""
+    try:
+        fn = chalkcompute.RemoteFunction.from_name(name)
+        if fn.web_url:
+            return fn
+    except chalkcompute.FunctionError:
+        pass
+
+    for script in deploy_scripts:
+        _deploy_script("scalar", script)
+
+    fn = chalkcompute.RemoteFunction.from_name(name)
+    assert fn.web_url, f"{name} should be deployed before this test"
+    return fn
+
+
 # ---------------------------------------------------------------------------
 # Sync scalar
 # ---------------------------------------------------------------------------
@@ -33,7 +50,6 @@ class TestSyncScalar:
     @classmethod
     def setup_class(cls):
         _deploy_script("scalar", "deploy_sync.py")
-        _deploy_script("scalar", "deploy_nested_gather.py")
 
     def test_direct_call(self):
         """Sync scalar calls work in sync and async contexts."""
@@ -89,7 +105,11 @@ class TestSyncScalar:
         assert elapsed < 120, f"Took too long: {elapsed:.1f}s"
 
     def test_nested_gather_uses_function_queue_without_env_vars(self) -> None:
-        fn = chalkcompute.RemoteFunction.from_name("nested_gather_add")
+        fn = _function_or_deploy(
+            "ex-nested-gather-add",
+            "deploy_sync.py",
+            "deploy_nested_gather.py",
+        )
         assert fn.remote([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]) == [
             1,
             2,
