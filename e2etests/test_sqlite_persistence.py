@@ -4,7 +4,6 @@ Proves that a SQLite database written by one container is readable by two
 independent containers that mount the same volume.
 """
 
-import os
 import time
 import uuid
 

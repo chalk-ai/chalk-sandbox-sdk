@@ -389,9 +389,10 @@ def test_deferred_get_does_not_retry_unstructured_error(monkeypatch) -> None:
 
 def test_deferred_get_stops_retrying_after_max_attempts(monkeypatch) -> None:
     monkeypatch.setattr("chalkcompute._function.time.sleep", lambda _s: None)
-    transient = lambda: _poll(
-        "failed", error_message=_err("ProxyError", "connection reset")
-    )
+
+    def transient():
+        return _poll("failed", error_message=_err("ProxyError", "connection reset"))
+
     FakeRemoteCallClient.poll_results = [transient(), transient(), transient()]
 
     fn = _remote_function()

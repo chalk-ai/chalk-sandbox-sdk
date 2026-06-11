@@ -29,7 +29,9 @@ from chalkcompute._remote_function_tracing import TracingPolicy
 
 
 def _remote_call_runtime(*, tracing: bool) -> str:
-    package = "chalk-remote-call-python[tracing]" if tracing else "chalk-remote-call-python"
+    package = (
+        "chalk-remote-call-python[tracing]" if tracing else "chalk-remote-call-python"
+    )
     return f"{package}=={pkg_version('chalk-remote-call-python')}"
 
 

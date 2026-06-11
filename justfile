@@ -6,6 +6,7 @@ default:
 
 buildkite_org := "chalk"
 buildkite_pipeline := "chalk-sandbox-sdk-integration-tests"
+ruff_paths := "chalkcompute tests e2etests"
 
 # Decrypt .env.enc to .env (or .env.<name>.enc to .env.<name> if name given)
 env name="":
@@ -50,11 +51,15 @@ test *args:
 
 # Run ruff linter
 ruff:
-    uv run --with ruff ruff check chalkcompute/ --exclude chalkcompute/_gen/
+    uv run --with ruff ruff check {{ruff_paths}}
 
 # Run ruff formatter
 format:
-    uv run --with ruff ruff format .
+    uv run --with ruff ruff format {{ruff_paths}}
+
+# Check ruff formatting
+format-check:
+    uv run --with ruff ruff format --check {{ruff_paths}}
 
 # Build a zoekt full-text index of the current codebase into .zoekt-index/
 zoekt-index:

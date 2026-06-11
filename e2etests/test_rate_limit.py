@@ -103,7 +103,7 @@ class TestConcurrencyLimit:
 
         # Verify concurrency limiting: 6 calls × 1s sleep / 2 concurrent = 3s min
         print(f"\n  Concurrency-limited: {n} calls in {elapsed:.2f}s")
-        print(f"  Expected >= 3s (6 calls / 2 concurrent × 1s each)")
+        print("  Expected >= 3s (6 calls / 2 concurrent × 1s each)")
 
         assert elapsed >= 2.5, (
             f"Concurrency limiting not working: {n} calls completed in {elapsed:.1f}s "
