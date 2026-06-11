@@ -36,22 +36,20 @@ _VERSIONED_COMMIT_MAX_REBASE_RETRIES: int = 3
 _VERSIONED_TRANSFER_MAX_WORKERS: int = 32
 _VERSIONED_BATCH_MAX_FILES: int = 200
 
-_remote_call_native: Any | None
+_native: Any | None
 _NativeVersionedVolumeClient: Any | None
 _NativeVolumeRpcError: type[BaseException] | None
 _NATIVE_IMPORT_ERROR: ImportError | None
 try:
-    _remote_call_native = importlib.import_module("chalkcompute._remote_call_native")
-except ImportError as exc:  # pragma: no cover - exercised in source checkouts
-    _remote_call_native = None
+    _native = importlib.import_module("chalkcompute._native")
+except ImportError as exc:
+    _native = None
     _NativeVersionedVolumeClient = None
     _NativeVolumeRpcError = None
     _NATIVE_IMPORT_ERROR = exc
 else:
-    _NativeVersionedVolumeClient = getattr(
-        _remote_call_native, "VersionedVolumeNativeClient", None
-    )
-    _NativeVolumeRpcError = getattr(_remote_call_native, "VolumeRpcError", None)
+    _NativeVersionedVolumeClient = getattr(_native, "VersionedVolumeNativeClient", None)
+    _NativeVolumeRpcError = getattr(_native, "VolumeRpcError", None)
     _NATIVE_IMPORT_ERROR = None
 
 
@@ -578,7 +576,9 @@ class VersionedVolume:
         )
         return self._update_version_from_statuses(statuses)
 
-    def _update_version_from_statuses(self, statuses: list[CommitStatus]) -> VersionInfo:
+    def _update_version_from_statuses(
+        self, statuses: list[CommitStatus]
+    ) -> VersionInfo:
         committed = [status for status in statuses if status.version is not None]
         if not committed:
             raise VolumeError("Versioned volume commit returned no committed version")
@@ -629,7 +629,9 @@ class VersionedVolume:
         if self._version_id is not None:
             raise VolumeError("VersionedVolume.at_version(...) handles are read-only")
         if self._ref and self._ref != "main":
-            raise VolumeError("Versioned volume writes currently support only ref='main'")
+            raise VolumeError(
+                "Versioned volume writes currently support only ref='main'"
+            )
 
     def close(self) -> None:
         """Close the underlying client used by this VersionedVolume.
@@ -663,9 +665,6 @@ class VersionedVolumeClient:
     Satisfies the :class:`VolumeDriver` protocol with
     ``mount_type = "versioned_chalkfs"``, so container/sandbox lazy-file
     mounts go through the versioned backend by default.
-
-    The implementation is backed by ``chalkcompute._remote_call_native``'s
-    PyO3 volume client, which delegates transfer and commit logic to Rust.
     """
 
     mount_type = "versioned_chalkfs"
@@ -713,8 +712,7 @@ class VersionedVolumeClient:
         """
         if _NativeVersionedVolumeClient is None:
             raise VolumeError(
-                "versioned volumes require the native "
-                "chalkcompute._remote_call_native extension"
+                "versioned volumes require the native chalkcompute._native extension"
             ) from _NATIVE_IMPORT_ERROR
         del options
         if metadata is not None:
@@ -722,9 +720,7 @@ class VersionedVolumeClient:
                 "Bearer "
             )
             env_id = env_id or _metadata_value(metadata, "x-chalk-env-id") or None
-            chalk_server = (
-                _metadata_value(metadata, "x-chalk-server") or chalk_server
-            )
+            chalk_server = _metadata_value(metadata, "x-chalk-server") or chalk_server
         endpoint = _native_endpoint(endpoint, use_tls=credentials is not None)
         self._endpoint = endpoint
         self._token = token
@@ -1050,7 +1046,9 @@ class VersionedVolumeClient:
     ) -> None:
         self._raise_if_closed()
         try:
-            self._inner.download_to_file(volume, remote_path, local_path, version_id, None)
+            self._inner.download_to_file(
+                volume, remote_path, local_path, version_id, None
+            )
         except _native_error_types() as exc:
             _raise_volume_error(exc, volume)
 
@@ -1205,7 +1203,9 @@ def _read_versioned_file_response(resp: pb_v2.GetFileResponse) -> bytes:
         chunks = sorted(resp.chunked.chunks, key=lambda c: c.offset)
         if not chunks:
             return b""
-        return b"".join(_read_file_from_signed_uri(c.signed_download_uri) for c in chunks)
+        return b"".join(
+            _read_file_from_signed_uri(c.signed_download_uri) for c in chunks
+        )
     if content_type == "packed":
         pack = resp.packed.pack
         data = _read_file_from_signed_uri(pack.signed_download_uri)

@@ -38,14 +38,17 @@ class LegacyNativeRemoteCallClient:
 def legacy_native_client() -> None:
     LegacyNativeRemoteCallClient.calls = []
     LegacyNativeRemoteCallClient.method_calls = []
-    with patch.object(
-        remote_call_client,
-        "_warned_per_call_metadata_unsupported",
-        False,
-    ), patch.object(
-        remote_call_client,
-        "_NativeRemoteCallClient",
-        LegacyNativeRemoteCallClient,
+    with (
+        patch.object(
+            remote_call_client,
+            "_warned_per_call_metadata_unsupported",
+            False,
+        ),
+        patch.object(
+            remote_call_client,
+            "_NativeRemoteCallClient",
+            LegacyNativeRemoteCallClient,
+        ),
     ):
         yield
 
@@ -126,26 +129,30 @@ def test_find_native_extension_path_skips_local_overlay(
     site_packages_package = site_packages_root / "chalkcompute"
     overlay_package.mkdir(parents=True)
     site_packages_package.mkdir(parents=True)
-    native_path = (
-        site_packages_package / "_remote_call_native.cpython-311-x86_64-linux-gnu.so"
-    )
+    native_path = site_packages_package / "_native.cpython-311-x86_64-linux-gnu.so"
     native_path.write_bytes(b"")
 
-    with patch.object(
-        remote_call_client,
-        "_PACKAGE_DIR",
-        overlay_package.resolve(),
-    ), patch.object(
-        remote_call_client.importlib.machinery,
-        "EXTENSION_SUFFIXES",
-        [".cpython-311-x86_64-linux-gnu.so"],
+    with (
+        patch.object(
+            remote_call_client,
+            "_PACKAGE_DIR",
+            overlay_package.resolve(),
+        ),
+        patch.object(
+            remote_call_client.importlib.machinery,
+            "EXTENSION_SUFFIXES",
+            [".cpython-311-x86_64-linux-gnu.so"],
+        ),
     ):
-        assert remote_call_client._find_native_extension_path(
-            [str(overlay_root), str(site_packages_root)]
-        ) == native_path
+        assert (
+            remote_call_client._find_native_extension_path(
+                [str(overlay_root), str(site_packages_root)]
+            )
+            == native_path
+        )
 
 
-def test_import_remote_call_native_falls_back_to_site_packages(
+def test_import_native_falls_back_to_site_packages(
     tmp_path: Path,
 ) -> None:
     overlay_root = tmp_path / "overlay"
@@ -154,9 +161,7 @@ def test_import_remote_call_native_falls_back_to_site_packages(
     site_packages_package = site_packages_root / "chalkcompute"
     overlay_package.mkdir(parents=True)
     site_packages_package.mkdir(parents=True)
-    native_path = (
-        site_packages_package / "_remote_call_native.cpython-311-x86_64-linux-gnu.so"
-    )
+    native_path = site_packages_package / "_native.cpython-311-x86_64-linux-gnu.so"
     native_path.write_bytes(b"not-a-real-extension")
 
     def fake_import_module(name: str) -> types.ModuleType:
@@ -172,32 +177,38 @@ def test_import_remote_call_native_falls_back_to_site_packages(
             module.__file__ = str(native_path)
 
     def fake_spec_from_file_location(name: str, location: Path):
-        assert name == "chalkcompute._remote_call_native"
+        assert name == "chalkcompute._native"
         assert Path(location) == native_path
         return importlib.machinery.ModuleSpec(name=name, loader=FakeLoader())
 
-    with patch.object(
-        remote_call_client,
-        "_PACKAGE_DIR",
-        overlay_package.resolve(),
-    ), patch.object(
-        remote_call_client.importlib.machinery,
-        "EXTENSION_SUFFIXES",
-        [".cpython-311-x86_64-linux-gnu.so"],
-    ), patch.object(
-        remote_call_client.sys,
-        "path",
-        [str(overlay_root), str(site_packages_root)],
-    ), patch.object(
-        remote_call_client.importlib,
-        "import_module",
-        fake_import_module,
-    ), patch.object(
-        remote_call_client.importlib.util,
-        "spec_from_file_location",
-        fake_spec_from_file_location,
+    with (
+        patch.object(
+            remote_call_client,
+            "_PACKAGE_DIR",
+            overlay_package.resolve(),
+        ),
+        patch.object(
+            remote_call_client.importlib.machinery,
+            "EXTENSION_SUFFIXES",
+            [".cpython-311-x86_64-linux-gnu.so"],
+        ),
+        patch.object(
+            remote_call_client.sys,
+            "path",
+            [str(overlay_root), str(site_packages_root)],
+        ),
+        patch.object(
+            remote_call_client.importlib,
+            "import_module",
+            fake_import_module,
+        ),
+        patch.object(
+            remote_call_client.importlib.util,
+            "spec_from_file_location",
+            fake_spec_from_file_location,
+        ),
     ):
-        module = remote_call_client._import_remote_call_native()
+        module = remote_call_client._import_native()
 
     assert module.RemoteCallClient is LegacyNativeRemoteCallClient
     assert module.__file__ == str(native_path)

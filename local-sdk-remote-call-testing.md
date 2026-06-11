@@ -134,18 +134,18 @@ the pod should have 4 containers total:
 3. the `/tmp/sdk` chalkfs mount container
 4. the `/tmp/remote-call-wheel` chalkfs mount container
 
-## Native Remote Call Client
+## Native Client Extension
 
-Nested `.defer()` calls require the native remote-call client extension:
+Nested `.defer()` calls require the shared native client extension:
 
 ```text
-chalkcompute/_remote_call_native*.so
+chalkcompute/_native*.so
 ```
 
 The local SDK source archive contains Python files, but it does not contain a
 Linux native extension built for the pod's Python version. If the local source
 overlay shadows the installed `chalkcompute` package, importing
-`chalkcompute._remote_call_native` can fail.
+`chalkcompute._native` can fail.
 
 For testing, the runtime image should still install a packaged `chalkcompute`
 wheel so the native extension exists in site-packages, while the local source
@@ -171,7 +171,7 @@ The source-overlay support needs a fallback in `chalkcompute/_remote_call_client
 The normal import:
 
 ```python
-importlib.import_module("chalkcompute._remote_call_native")
+importlib.import_module("chalkcompute._native")
 ```
 
 fails when `/tmp/chalkcompute-sdk-src/chalkcompute` shadows the installed
@@ -180,9 +180,9 @@ extension file.
 
 The fallback should:
 
-1. Try the normal `chalkcompute._remote_call_native` import first.
+1. Try the normal `chalkcompute._native` import first.
 2. If that fails, scan `sys.path` entries other than the local source package for
-   `chalkcompute/_remote_call_native{EXTENSION_SUFFIX}`.
+   `chalkcompute/_native{EXTENSION_SUFFIX}`.
 3. Load the first matching extension via `importlib.util.spec_from_file_location`.
 4. Keep using that module for `RemoteCallClient` and
    `resolve_service_auth_context`.
@@ -196,7 +196,7 @@ In the verified pod, this meant Python source came from:
 while the native extension came from:
 
 ```text
-/usr/local/lib/python*/site-packages/chalkcompute/_remote_call_native*.so
+/usr/local/lib/python*/site-packages/chalkcompute/_native*.so
 ```
 
 ## Build Helper For `chalk-remote-call-python`
@@ -232,7 +232,7 @@ python -c 'import inspect, chalkcompute._function as f; src = inspect.getsource(
 Check whether the native client extension can be imported:
 
 ```bash
-python -c 'import chalkcompute._remote_call_native as n; print(n.__file__)'
+python -c 'import chalkcompute._native as n; print(n.__file__)'
 ```
 
 For the source-overlay case, run those checks under the same `PYTHONPATH` that

@@ -64,7 +64,9 @@ def _not_found() -> RuntimeError:
     return RuntimeError("not_found", "missing")
 
 
-def test_client_from_connect_uses_connect_http_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_client_from_connect_uses_connect_http_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     native = MagicMock()
     monkeypatch.setattr(vv, "_NativeVersionedVolumeClient", native)
     connect = MagicMock()
@@ -158,7 +160,9 @@ def test_put_file_delegates_to_native_upload(monkeypatch: pytest.MonkeyPatch) ->
             "max_commit_retries": _VERSIONED_COMMIT_MAX_REBASE_RETRIES,
         },
     )
-    assert vol.version == VersionInfo(id=11, sequence_number=21, ref="main", commit_id="commit-11")
+    assert vol.version == VersionInfo(
+        id=11, sequence_number=21, ref="main", commit_id="commit-11"
+    )
 
 
 def test_batch_upload_microbatches_by_file_count(
@@ -363,5 +367,7 @@ def test_dict_commit_status_conversion() -> None:
     assert vv._dict_to_commit_status(_status_dict()) == CommitStatus(
         commit_id="commit-1",
         result="committed",
-        version=VersionInfo(id=11, sequence_number=21, ref="main", commit_id="commit-11"),
+        version=VersionInfo(
+            id=11, sequence_number=21, ref="main", commit_id="commit-11"
+        ),
     )

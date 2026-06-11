@@ -23,7 +23,7 @@ from chalkcompute._remote_function_tracing import (
     normalize_remote_function_tracing,
 )
 from chalkcompute._retry import RetryPolicy
-from chalkcompute._scaling_group import ScalingGroup, ScalingGroupError
+from chalkcompute._scaling_group import ScalingGroup
 from chalkcompute._image import Image
 
 

@@ -136,7 +136,9 @@ class TestGrpcEngineTargetFromUrl:
 class TestConnectClientGrpcEngineTarget:
     @pytest.fixture(autouse=True)
     def disable_service_auth(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("chalkcompute._connect.resolve_service_auth_context", lambda: None)
+        monkeypatch.setattr(
+            "chalkcompute._connect.resolve_service_auth_context", lambda: None
+        )
 
     def setup_method(self) -> None:
         _auth_config._load_global_config.cache_clear()
@@ -560,7 +562,9 @@ class TestChalkClientFromEnv:
         monkeypatch.setitem(sys.modules, "chalk", chalk_mod)
         monkeypatch.setitem(sys.modules, "chalk.client", client_mod)
 
-    def test_uses_service_auth_for_chalk_client(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_uses_service_auth_for_chalk_client(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr(
             "chalkcompute._connect.resolve_service_auth_context",
             lambda: ServiceAuthContext(

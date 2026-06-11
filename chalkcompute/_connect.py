@@ -54,9 +54,7 @@ def chalk_client_from_env(
     from chalk.client import ChalkClient
 
     headers = additional_headers
-    has_authorization = any(
-        key.lower() == "authorization" for key in headers or {}
-    )
+    has_authorization = any(key.lower() == "authorization" for key in headers or {})
     service_auth = service_auth_context_from_env()
     if service_auth is not None and not has_authorization:
         client = ConnectClient()
@@ -137,8 +135,7 @@ class ConnectClient:
                 or data.get("engines"),
             )
             self._environment_id_to_name = _string_map(
-                data.get("environment_id_to_name")
-                or data.get("environmentIdToName"),
+                data.get("environment_id_to_name") or data.get("environmentIdToName"),
             )
             self._env_id = self._resolve_environment_id(service_auth.environment_id)
             self._headers = {

@@ -1,12 +1,12 @@
 [package]
-name = "chalkcompute_remote_client"
+name = "chalkcompute_native"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.77"
 publish = false
 
 [lib]
-name = "_remote_call_native"
+name = "_native"
 crate-type = ["cdylib"]
 
 [dependencies]

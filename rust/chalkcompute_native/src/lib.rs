@@ -15,7 +15,7 @@ const SERVICE_AUTH_ENDPOINT_ENV_VAR: &str = "CHALK_API_SERVER";
 const SERVICE_AUTH_ENVIRONMENT_ENV_VAR: &str = "CHALK_ENVIRONMENT_ID";
 const SERVICE_AUTH_GRPC_ENGINE_ENV_VAR: &str = "CHALK_GRPC_ENGINE";
 
-#[pyclass(name = "RemoteCallClient", module = "chalkcompute._remote_call_native")]
+#[pyclass(name = "RemoteCallClient", module = "chalkcompute._native")]
 struct PyRemoteCallClient {
     inner: BlockingRemoteCallClient,
 }
@@ -296,7 +296,7 @@ fn grpc_engine_target_from_url(url: &str) -> (String, bool) {
 }
 
 #[pymodule]
-fn _remote_call_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRemoteCallClient>()?;
     m.add_function(wrap_pyfunction!(resolve_service_auth_context, m)?)?;
     chalk_volume_client::register_volume_bindings(m)?;

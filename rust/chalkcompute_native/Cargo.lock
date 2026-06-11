@@ -264,7 +264,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "chalkcompute_remote_client"
+name = "chalkcompute_native"
 version = "0.1.0"
 dependencies = [
  "bytes",

@@ -29,8 +29,8 @@ exclude = ["examples/", ".env*", ".sops.yaml", "e2etests/", "test_*", "*.enc"]
 packages = ["chalkcompute"]
 
 [tool.maturin]
-manifest-path = "rust/chalkcompute_remote_client/Cargo.toml"
-module-name = "chalkcompute._remote_call_native"
+manifest-path = "rust/chalkcompute_native/Cargo.toml"
+module-name = "chalkcompute._native"
 python-source = "."
 include = ["chalkcompute/**", "README.md"]
 exclude = ["examples/", ".env*", ".sops.yaml", "e2etests/", "test_*", "*.enc"]

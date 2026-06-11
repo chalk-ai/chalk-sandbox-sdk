@@ -9,6 +9,22 @@ env:
   UV_VERSION: "0.11.14"
 
 steps:
+  - label: ":ruff: Format and lint"
+    command: |
+      set -euo pipefail
+      unset VIRTUAL_ENV
+      echo "--- :python: Install uv"
+      source .buildkite/install-uv.sh
+      echo "--- :python: Sync dependencies"
+      uv sync --locked --all-extras
+      echo "--- :ruff: Check formatting"
+      uv run --with ruff ruff format --check chalkcompute tests e2etests
+      echo "--- :ruff: Run lint"
+      uv run --with ruff ruff check chalkcompute tests e2etests
+    agents:
+      queue: default
+    timeout_in_minutes: 5
+
   - label: ":mag: ty type check"
     command: |
       set -euo pipefail
