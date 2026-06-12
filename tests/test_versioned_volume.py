@@ -189,6 +189,22 @@ def test_batch_upload_microbatches_by_file_count(
     assert [call.args[2]["batch_size"] for call in calls] == [2, 2, 1]
 
 
+def test_batch_upload_creates_missing_volume_before_flush(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.side_effect = _not_found()
+    client._inner.create_volume.return_value = {"volume": _volume_dict()}
+    client._inner.upload.return_value = [_status_dict()]
+    vol = VersionedVolume("models", client=client)
+
+    with vol.batch_upload() as batch:
+        batch.put("data/train.csv", "id,label\n")
+
+    client._inner.create_volume.assert_called_once_with("models")
+    client._inner.upload.assert_called_once()
+
+
 def test_batch_upload_rejects_invalid_microbatch_size(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

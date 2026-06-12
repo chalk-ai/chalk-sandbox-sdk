@@ -4,7 +4,6 @@ This note describes the recommended developer workflow for testing local
 changes in:
 
 - `chalkcompute` in this repo
-- `chalk-remote-call-python` in the sibling repo
 
 inside a deployed remote function, especially for nested remote calls such as:
 
@@ -21,14 +20,14 @@ def call_defer() -> int:
 There are two developer-facing modes that are worth supporting well:
 
 1. Local `chalkcompute` Python source overlay
-2. Local `chalk-remote-call-python` Linux wheel override
+2. Local `chalkcompute` Linux wheel override
 
 The current recommended deploy env for testing both together is:
 
 ```bash
 just local-fn-deploy \
   examples/scalar/deploy_sync.py \
-  /abs/path/to/chalk_remote_call_python-...whl
+  /abs/path/to/chalkcompute-...linux_x86_64.whl
 ```
 
 Important: all env vars must be part of the same shell command. If the wheel
@@ -38,19 +37,19 @@ not receive it.
 Use:
 
 ```bash
-just local-fn-env /abs/path/to/chalk_remote_call_python-...whl
+just local-fn-env /abs/path/to/chalkcompute-...linux_x86_64.whl
 ```
 
 to print the raw env block,
 
 ```bash
-just local-fn-deploy examples/scalar/deploy_sync.py /abs/path/to/chalk_remote_call_python-...whl
+just local-fn-deploy examples/scalar/deploy_sync.py /abs/path/to/chalkcompute-...linux_x86_64.whl
 ```
 
 to run a deploy script with the recommended local-dev env, and:
 
 ```bash
-just remote-call-wheel-build ../chalk-remote-call-python 3.11
+just sdk-wheel-build
 ```
 
 to build a Linux wheel from macOS or Linux via Docker.
@@ -94,45 +93,40 @@ Expected import path in the pod:
 /tmp/chalkcompute-sdk-src/chalkcompute/__init__.py
 ```
 
-## Local Remote-Call Wheel Override (`CHALK_FUNCTION_REMOTE_CALL_WHEEL`)
+## Local SDK Wheel Override (`CHALK_FUNCTION_LOCAL_SDK_WHEEL`)
 
-The local remote-call wheel should be built for Linux and mounted into the pod
-as a separate lazy-file volume. At startup the wrapper should:
+The local `chalkcompute` wheel should be built for Linux and mounted into the
+pod as a separate lazy-file volume. At startup the wrapper should:
 
-1. `pip install --force-reinstall` the mounted wheel
-2. extract the local SDK archive into `/tmp/chalkcompute-sdk-src`
-3. prepend that path to `PYTHONPATH`
-4. `exec chalk-remote-call --handler ...`
+1. `pip install` the mounted wheel
+2. `exec chalk-remote-call --handler ...`
 
 Expected pod signals:
 
 - extra chalkfs volume container for `/app`
-- extra chalkfs volume container for `/tmp/remote-call-wheel`
 - extra chalkfs volume container for `/tmp/sdk`
 - wrapped main command like:
 
 ```sh
-sh -c 'set -eux; python -m pip install --force-reinstall /tmp/remote-call-wheel/...; ...; exec chalk-remote-call --handler handler.handler'
+sh -c 'set -eux; python -m pip install /tmp/sdk/chalkcompute-...whl; exec chalk-remote-call --handler handler.handler'
 ```
 
 - startup logs showing:
 
 ```text
-Successfully installed chalk-remote-call-python-0.0.0
+Successfully installed chalkcompute-0.0.0
 ```
 
-When all three local pieces are enabled:
+When the local wheel is enabled:
 
 - function source + generated handler under `/app`
-- local `chalkcompute` source under `/tmp/sdk`
-- local `chalk-remote-call-python` wheel under `/tmp/remote-call-wheel`
+- local `chalkcompute` wheel under `/tmp/sdk`
 
-the pod should have 4 containers total:
+the pod should have 3 containers total:
 
 1. the main function container
 2. the `/app` chalkfs mount container
 3. the `/tmp/sdk` chalkfs mount container
-4. the `/tmp/remote-call-wheel` chalkfs mount container
 
 ## Native Client Extension
 
@@ -199,20 +193,20 @@ while the native extension came from:
 /usr/local/lib/python*/site-packages/chalkcompute/_native*.so
 ```
 
-## Build Helper For `chalk-remote-call-python`
+## Build Helper For `chalkcompute_native`
 
-Most developers build the remote-call wheel on macOS, but the deploy needs a
-Linux wheel. The helper script in this repo wraps Docker so the same command
-works from macOS or Linux:
+Most developers build local wheels on macOS, but the deploy needs a Linux
+`chalkcompute` wheel containing `chalkcompute._native`. The helper script in
+this repo wraps Docker so the same command works from macOS or Linux:
 
 ```bash
-just remote-call-wheel-build ../chalk-remote-call-python 3.11
+just sdk-wheel-build
 ```
 
 That builds the wheel in a Linux container and copies the result into:
 
 ```text
-../chalk-remote-call-python/dist/linux-local/
+dist/linux-local/
 ```
 
 ## Useful Pod Checks
@@ -242,10 +236,10 @@ the entrypoint uses:
 PYTHONPATH=/tmp/chalkcompute-sdk-src:$PYTHONPATH python -c '...'
 ```
 
-Check whether the local remote-call wheel was actually installed:
+Check whether the local SDK wheel was actually installed:
 
 ```bash
-python -c 'import importlib.metadata as m; print(m.version("chalk-remote-call-python"))'
+python -c 'import importlib.metadata as m; print(m.version("chalkcompute"))'
 ```
 
 Check the pod command shape:

@@ -3,30 +3,30 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Build a Linux chalk-remote-call-python wheel, even from macOS, using Docker.
+Build a Linux Python wheel, even from macOS, using Docker.
 
 Usage:
-  scripts/build_remote_call_linux_wheel.sh [--repo PATH] [--python 3.11] [--platform linux/amd64] [--out-dir dist/linux-local]
+  scripts/build_linux_wheel.sh [--repo PATH] [--python 3.11] [--platform linux/amd64] [--out-dir dist/linux-local]
 
 Options:
-  --repo PATH        Path to the chalk-remote-call-python repo.
-                     Default: ../chalk-remote-call-python
-  --python VERSION   Python version to build against.
-                     Default: 3.11
-  --platform VALUE   Docker target platform.
-                     Default: linux/amd64
-  --out-dir PATH     Output directory inside the remote-call repo.
-                     Default: dist/linux-local
-  --help             Show this message.
+  --repo PATH            Path to the Python package repo to build.
+                         Default: .
+  --python VERSION       Python version to build against.
+                         Default: 3.11
+  --platform VALUE       Docker target platform.
+                         Default: linux/amd64
+  --out-dir PATH         Output directory inside the built repo.
+                         Default: dist/linux-local
+  --help                 Show this message.
 
 Notes:
   - This script requires Docker.
   - On macOS, Docker Desktop must support the requested Linux platform.
-  - The resulting wheel is intended for remote function pods, not local macOS use.
+  - The resulting wheel is intended for Linux remote function pods, not local macOS use.
 EOF
 }
 
-repo_path="../chalk-remote-call-python"
+repo_path="."
 python_version="3.11"
 docker_platform="linux/amd64"
 out_dir="dist/linux-local"
