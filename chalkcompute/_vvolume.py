@@ -438,6 +438,7 @@ class VersionedVolume:
         self._ensure_mutable()
         if max_files_per_commit <= 0:
             raise ValueError("max_files_per_commit must be positive")
+        self._ensure_ready()
         batch = _VersionedBatchUpload(
             self,
             max_files_per_commit=max_files_per_commit,

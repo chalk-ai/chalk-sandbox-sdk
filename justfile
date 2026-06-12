@@ -21,25 +21,24 @@ encrypt name="":
 sync:
     uv sync --all-extras
 
-# Build a Linux chalk-remote-call-python wheel via Docker.
+# Build a Linux chalkcompute wheel with chalkcompute_native via Docker.
 # Example:
-#   just remote-call-wheel-build ../chalk-remote-call-python 3.11
-remote-call-wheel-build repo="../chalk-remote-call-python" python="3.11" platform="linux/amd64" out_dir="dist/linux-local":
-    ./scripts/build_remote_call_linux_wheel.sh --repo {{repo}} --python {{python}} --platform {{platform}} --out-dir {{out_dir}}
+#   just sdk-wheel-build
+sdk-wheel-build python="3.11" platform="linux/amd64" out_dir="dist/linux-local":
+    ./scripts/build_linux_wheel.sh --repo . --python {{python}} --platform {{platform}} --out-dir {{out_dir}}
 
 # Print the recommended env vars for deploying a function against local SDK code.
 # Example:
-#   just local-fn-env /abs/path/to/chalk_remote_call_python-...whl
-local-fn-env remote_call_wheel="":
+#   just local-fn-env /abs/path/to/chalkcompute-...whl
+local-fn-env sdk_wheel="":
     @echo "CHALK_FUNCTION_STRIP_SOURCE=0"
-    @echo "CHALK_FUNCTION_LOCAL_SDK_COPY=1"
-    @if [ -n "{{remote_call_wheel}}" ]; then echo "CHALK_FUNCTION_REMOTE_CALL_WHEEL={{remote_call_wheel}}"; fi
+    @if [ -n "{{sdk_wheel}}" ]; then echo "CHALK_FUNCTION_LOCAL_SDK_WHEEL={{sdk_wheel}}"; else echo "CHALK_FUNCTION_LOCAL_SDK_COPY=1"; fi
 
 # Run a deploy script with the recommended local-dev env vars.
 # Example:
-#   just local-fn-deploy examples/scalar/deploy_sync.py ../chalk-remote-call-python/dist/linux-local/chalk_remote_call_python-0.0.0-cp311-cp311-linux_x86_64.whl
-local-fn-deploy script remote_call_wheel="" use_uv="1":
-    ./scripts/run_local_fn_deploy.sh --script {{script}} {{ if remote_call_wheel != "" { "--remote-call-wheel " + remote_call_wheel } else { "" } }} {{ if use_uv == "1" { "--uv-run" } else { "" } }}
+#   just local-fn-deploy examples/scalar/deploy_sync.py dist/linux-local/chalkcompute-0.0.0-cp311-cp311-linux_x86_64.whl
+local-fn-deploy script sdk_wheel="" use_uv="1":
+    ./scripts/run_local_fn_deploy.sh --script {{script}} {{ if sdk_wheel != "" { "--sdk-wheel " + sdk_wheel } else { "" } }} {{ if use_uv == "1" { "--uv-run" } else { "" } }}
 
 # Run ty type checker
 ty:

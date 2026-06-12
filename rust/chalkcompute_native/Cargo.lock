@@ -194,16 +194,6 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 [[package]]
 name = "chalk-protos"
 version = "0.1.0"
-source = "git+https://github.com/chalk-ai/chalk-private.git?rev=2ef7d177ce8e9a97d49b0f7533b6aa7b5293e07b#2ef7d177ce8e9a97d49b0f7533b6aa7b5293e07b"
-dependencies = [
- "prost",
- "prost-build",
- "prost-types",
-]
-
-[[package]]
-name = "chalk-protos"
-version = "0.1.0"
 source = "git+https://github.com/chalk-ai/chalk-private.git?rev=7f9bba64eaaca359d3180cb22a2ff550c3df6481#7f9bba64eaaca359d3180cb22a2ff550c3df6481"
 dependencies = [
  "prost",
@@ -211,6 +201,16 @@ dependencies = [
  "prost-types",
  "tonic",
  "tonic-build",
+]
+
+[[package]]
+name = "chalk-protos"
+version = "0.1.0"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=ef50079a181b10d5a52ae6a2f3f9a7051664e9fe#ef50079a181b10d5a52ae6a2f3f9a7051664e9fe"
+dependencies = [
+ "prost",
+ "prost-build",
+ "prost-types",
 ]
 
 [[package]]
@@ -246,11 +246,11 @@ dependencies = [
 [[package]]
 name = "chalk_volume_client"
 version = "0.1.0"
-source = "git+https://github.com/chalk-ai/chalk-private.git?rev=2ef7d177ce8e9a97d49b0f7533b6aa7b5293e07b#2ef7d177ce8e9a97d49b0f7533b6aa7b5293e07b"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=ef50079a181b10d5a52ae6a2f3f9a7051664e9fe#ef50079a181b10d5a52ae6a2f3f9a7051664e9fe"
 dependencies = [
  "blake3",
  "bytes",
- "chalk-protos 0.1.0 (git+https://github.com/chalk-ai/chalk-private.git?rev=2ef7d177ce8e9a97d49b0f7533b6aa7b5293e07b)",
+ "chalk-protos 0.1.0 (git+https://github.com/chalk-ai/chalk-private.git?rev=ef50079a181b10d5a52ae6a2f3f9a7051664e9fe)",
  "futures-util",
  "log",
  "prost",
