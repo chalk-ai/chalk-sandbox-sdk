@@ -35,8 +35,6 @@ steps:
           --max-p95-ms 30000
     agents:
       queue: default
-    soft_fail:
-      - exit_status: 1
     timeout_in_minutes: 60
     retry:
       automatic:
