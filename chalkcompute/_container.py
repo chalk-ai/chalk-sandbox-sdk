@@ -115,6 +115,11 @@ class KernelPolicy(Enum):
     OPEN = "OPEN"
 
 
+class ComputeClass(Enum):
+    K8S = "COMPUTE_CLASS_K8S"
+    HOST = "COMPUTE_CLASS_HOST"
+
+
 @dataclass
 class ContainerSecurityPolicy:
     """Security policy settings for a container.
@@ -286,6 +291,7 @@ class Container:
         enable_ssh: bool = False,
         security_policy: ContainerSecurityPolicy | None = None,
         network_policy: NetworkPolicy | None = None,
+        compute_class: ComputeClass | None = None,
         tags: dict[str, str] | None = None,
         chalk_client: Any | None = None,
     ) -> None:
@@ -352,6 +358,7 @@ class Container:
         self._enable_ssh = enable_ssh
         self._security_policy = security_policy
         self._network_policy = network_policy
+        self._compute_class = compute_class
         self._tags: dict[str, str] = dict(tags or {})
 
         # Set after .run()
@@ -724,6 +731,8 @@ class Container:
                 spec["securityPolicy"] = self._security_policy.to_dict()
             if self._network_policy is not None:
                 spec["networkPolicy"] = self._network_policy.to_dict()
+            if self._compute_class is not None:
+                spec["computeClass"] = self._compute_class.value
             if self._tags:
                 spec["tags"] = dict(self._tags)
 
