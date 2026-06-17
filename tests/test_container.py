@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from chalkcompute import AllowedRoute, Container, NetworkPolicy, PortRange
+from chalkcompute import AllowedRoute, Container, ComputeClass, NetworkPolicy, PortRange
 from chalkcompute._container import ContainerSecurityPolicy, KernelPolicy
 
 
@@ -232,3 +232,29 @@ def test_mount_volume_sent_in_run_container_rpc() -> None:
     assert body["container"]["spec"]["volumes"] == [
         {"name": "my-volume", "mountPath": "/data", "type": "chalkfs"}
     ]
+
+
+def test_container_run_sends_compute_class() -> None:
+    client = _Client()
+    container = Container(
+        image="ubuntu:latest",
+        name="host-container",
+        compute_class=ComputeClass.HOST,
+    )
+    container._client = client
+
+    container.run()
+
+    _, _, body, _ = client.calls[0]
+    assert body["container"]["spec"]["computeClass"] == "COMPUTE_CLASS_HOST"
+
+
+def test_container_run_omits_compute_class_when_unset() -> None:
+    client = _Client()
+    container = Container(image="ubuntu:latest", name="default-container")
+    container._client = client
+
+    container.run()
+
+    _, _, body, _ = client.calls[0]
+    assert "computeClass" not in body["container"]["spec"]

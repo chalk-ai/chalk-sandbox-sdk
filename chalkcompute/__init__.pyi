@@ -18,6 +18,7 @@ from chalkcompute._container import ContainerInfo as ContainerInfo
 from chalkcompute._container import ContainerSecurityPolicy as ContainerSecurityPolicy
 from chalkcompute._container import ExecResult as ContainerExecResult
 from chalkcompute._container import ImageBuildError as ImageBuildError
+from chalkcompute._container import ComputeClass as ComputeClass
 from chalkcompute._container import KernelPolicy as KernelPolicy
 from chalkcompute._container import NetworkPolicy as NetworkPolicy
 from chalkcompute._container import PortRange as PortRange
@@ -78,6 +79,7 @@ __all__ = [
     "ContainerExecResult",
     "AllowedRoute",
     "ImageBuildError",
+    "ComputeClass",
     "KernelPolicy",
     "NetworkPolicy",
     "PortRange",
