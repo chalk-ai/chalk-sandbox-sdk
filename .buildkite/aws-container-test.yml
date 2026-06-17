@@ -1,0 +1,18 @@
+on:
+  pull_request: {}
+  push:
+    branches:
+      - main
+      - "**"
+
+steps:
+  - label: ":construction: AWS container test placeholder"
+    command: |
+      set -euo pipefail
+      echo "--- :construction: Placeholder pipeline"
+      echo "This temporary pipeline intentionally skips AWS container tests."
+      echo "It is registered in Buildkite, but no aws-container-test pipeline is defined as of yet."
+      echo "TODO: implement this workflow or remove the Buildkite pipeline trigger."
+    agents:
+      queue: default
+    timeout_in_minutes: 1
