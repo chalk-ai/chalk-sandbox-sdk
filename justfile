@@ -23,9 +23,9 @@ sync:
 
 # Build a Linux chalkcompute wheel with chalkcompute_native via Docker.
 # Example:
-#   just sdk-wheel-build
-sdk-wheel-build python="3.11" platform="linux/amd64" out_dir="dist/linux-local":
-    ./scripts/build_linux_wheel.sh --repo . --python {{python}} --platform {{platform}} --out-dir {{out_dir}}
+#   just remote-call-wheel-build ../chalk-remote-call-python 3.11
+remote-call-wheel-build repo="../chalk-remote-call-python" python="3.11" platform="linux/amd64" out_dir="dist/linux-local" chalk_private="../chalk-private":
+    ./scripts/build_remote_call_linux_wheel.sh --repo {{repo}} --python {{python}} --platform {{platform}} --out-dir {{out_dir}} --chalk-private {{chalk_private}}
 
 # Print the recommended env vars for deploying a function against local SDK code.
 # Example:

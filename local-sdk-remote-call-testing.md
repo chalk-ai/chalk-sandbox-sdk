@@ -209,6 +209,10 @@ That builds the wheel in a Linux container and copies the result into:
 dist/linux-local/
 ```
 
+The helper defaults `--chalk-private` to `../chalk-private` and rewrites the
+private git dependency URL inside the container so Rust dependencies can resolve
+from your local checkout instead of requiring GitHub auth in Docker.
+
 ## Useful Pod Checks
 
 Check whether the pod is using the local source overlay:
