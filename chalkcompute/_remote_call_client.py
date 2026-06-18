@@ -30,7 +30,7 @@ def _find_native_extension_path(
         if package_dir == _PACKAGE_DIR:
             continue
         for suffix in importlib.machinery.EXTENSION_SUFFIXES:
-            candidate = package_dir / f"_remote_call_native{suffix}"
+            candidate = package_dir / f"_native{suffix}"
             if candidate.is_file():
                 return candidate
     return None
@@ -38,11 +38,11 @@ def _find_native_extension_path(
 
 def _load_native_extension_from_path(native_path: Path) -> Any:
     spec = importlib.util.spec_from_file_location(
-        "chalkcompute._remote_call_native",
+        "chalkcompute._native",
         native_path,
     )
     if spec is None or spec.loader is None:
-        raise ImportError(f"could not load native remote-call extension from {native_path}")
+        raise ImportError(f"could not load native extension from {native_path}")
 
     module = importlib.util.module_from_spec(spec)
     previous_module = sys.modules.get(spec.name)
@@ -58,34 +58,35 @@ def _load_native_extension_from_path(native_path: Path) -> Any:
     return module
 
 
-def _import_remote_call_native() -> Any:
+def _import_native() -> Any:
     try:
-        return importlib.import_module("chalkcompute._remote_call_native")
-    except ImportError as exc:
+        return importlib.import_module("chalkcompute._native")
+    except ImportError:
         native_path = _find_native_extension_path()
         if native_path is None:
             raise
         logger.info(
-            "Falling back to native remote-call extension from %s",
+            "Falling back to native extension from %s",
             native_path,
         )
         try:
             return _load_native_extension_from_path(native_path)
         except Exception as fallback_exc:
             raise ImportError(
-                f"failed to load chalkcompute._remote_call_native from {native_path}"
+                f"failed to load chalkcompute._native from {native_path}"
             ) from fallback_exc
+
 
 _NativeRemoteCallClient: Any | None
 _NATIVE_IMPORT_ERROR: ImportError | None
-_remote_call_native: Any | None = None
+_native: Any | None = None
 try:
-    _remote_call_native = _import_remote_call_native()
+    _native = _import_native()
 except ImportError as exc:  # pragma: no cover - exercised in source checkouts
     _NativeRemoteCallClient = None
     _NATIVE_IMPORT_ERROR = exc
 else:
-    _NativeRemoteCallClient = getattr(_remote_call_native, "RemoteCallClient")
+    _NativeRemoteCallClient = getattr(_native, "RemoteCallClient")
     _NATIVE_IMPORT_ERROR = None
 
 _warned_per_call_metadata_unsupported = False
@@ -144,7 +145,7 @@ class RemoteCallClient:
         if _NativeRemoteCallClient is None:
             raise RemoteCallClientUnavailable(
                 "chalkcompute remote calls require the native "
-                "chalkcompute._remote_call_native extension"
+                "chalkcompute._native extension"
             ) from _NATIVE_IMPORT_ERROR
 
         auth_kwargs = (
@@ -174,7 +175,7 @@ class RemoteCallClient:
         except TypeError as exc:
             if any(value is not None for value in auth_kwargs):
                 raise RemoteCallClientUnavailable(
-                    "chalkcompute._remote_call_native is too old for service-auth "
+                    "chalkcompute._native is too old for service-auth "
                     "remote calls; rebuild/reinstall the local chalkcompute package"
                 ) from exc
             self._inner = _NativeRemoteCallClient(
@@ -206,7 +207,7 @@ class RemoteCallClient:
         if not supported and not _warned_per_call_metadata_unsupported:
             _warned_per_call_metadata_unsupported = True
             logger.warning(
-                "chalkcompute._remote_call_native does not support per-call "
+                "chalkcompute._native does not support per-call "
                 "metadata. Rebuild or reinstall chalkcompute to enable "
                 "nested remote-call tracing."
             )
@@ -262,13 +263,13 @@ def resolve_service_auth_context() -> ServiceAuthContext | None:
     if _NativeRemoteCallClient is None:
         raise RemoteCallClientUnavailable(
             "chalkcompute service-auth environment resolution requires the "
-            "native chalkcompute._remote_call_native extension"
+            "native chalkcompute._native extension"
         ) from _NATIVE_IMPORT_ERROR
 
-    resolver = getattr(_remote_call_native, "resolve_service_auth_context", None)
+    resolver = getattr(_native, "resolve_service_auth_context", None)
     if resolver is None:
         raise RemoteCallClientUnavailable(
-            "chalkcompute._remote_call_native is too old for service-auth "
+            "chalkcompute._native is too old for service-auth "
             "environment resolution; rebuild/reinstall the local chalkcompute package"
         )
 

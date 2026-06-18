@@ -77,7 +77,11 @@ class LocalDeployConfig:
 
     @property
     def should_mount_sdk_source(self) -> bool:
-        return self.sdk_copy_enabled and self.sdk_wheel_path is None and not self.strip_source
+        return (
+            self.sdk_copy_enabled
+            and self.sdk_wheel_path is None
+            and not self.strip_source
+        )
 
     @property
     def should_install_sdk_wheel(self) -> bool:
@@ -87,7 +91,9 @@ class LocalDeployConfig:
 def resolve_local_deploy_config() -> LocalDeployConfig:
     strip_source = should_strip_source()
     sdk_wheel_path = os.environ.get(_LOCAL_WHEEL_ENV_VAR, "") or None
-    remote_call_wheel_path = os.environ.get(_LOCAL_REMOTE_CALL_WHEEL_ENV_VAR, "") or None
+    remote_call_wheel_path = (
+        os.environ.get(_LOCAL_REMOTE_CALL_WHEEL_ENV_VAR, "") or None
+    )
     sdk_copy_enabled = os.environ.get(_LOCAL_COPY_ENV_VAR, "") == "1"
     return LocalDeployConfig(
         strip_source=strip_source,

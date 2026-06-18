@@ -6,11 +6,11 @@ usage() {
 Run a function deploy script with the recommended local-dev env vars.
 
 Usage:
-  scripts/run_local_fn_deploy.sh --script examples/scalar/deploy_sync.py [--remote-call-wheel /abs/path.whl] [--python .venv/bin/python] [--uv-run]
+  scripts/run_local_fn_deploy.sh --script examples/scalar/deploy_sync.py [--sdk-wheel /abs/path.whl] [--python .venv/bin/python] [--uv-run]
 
 Options:
   --script PATH           Python deploy script to run.
-  --remote-call-wheel     Optional Linux chalk-remote-call-python wheel path.
+  --sdk-wheel             Optional Linux chalkcompute wheel path.
   --python PATH           Python interpreter to run when not using uv.
                           Default: .venv/bin/python
   --uv-run                Run through "uv run python" instead of a direct interpreter.
@@ -21,13 +21,13 @@ Options:
 Examples:
   scripts/run_local_fn_deploy.sh \
       --script examples/scalar/deploy_sync.py \
-      --remote-call-wheel ../chalk-remote-call-python/dist/linux-local/chalk_remote_call_python-0.0.0-cp311-cp311-linux_x86_64.whl \
+      --sdk-wheel dist/linux-local/chalkcompute-0.0.0-cp311-cp311-linux_x86_64.whl \
       --uv-run
 EOF
 }
 
 script_path=""
-remote_call_wheel=""
+sdk_wheel=""
 python_bin=".venv/bin/python"
 use_uv_run=0
 use_local_sdk=1
@@ -39,8 +39,8 @@ while [[ $# -gt 0 ]]; do
             script_path="$2"
             shift 2
             ;;
-        --remote-call-wheel)
-            remote_call_wheel="$2"
+        --sdk-wheel)
+            sdk_wheel="$2"
             shift 2
             ;;
         --python)
@@ -82,8 +82,8 @@ if [[ ! -f "$script_path" ]]; then
     exit 1
 fi
 
-if [[ -n "$remote_call_wheel" && ! -f "$remote_call_wheel" ]]; then
-    echo "Remote-call wheel not found: $remote_call_wheel" >&2
+if [[ -n "$sdk_wheel" && ! -f "$sdk_wheel" ]]; then
+    echo "SDK wheel not found: $sdk_wheel" >&2
     exit 1
 fi
 
@@ -94,19 +94,21 @@ else
     unset CHALK_FUNCTION_LOCAL_SDK_COPY || true
 fi
 
-if [[ -n "$remote_call_wheel" ]]; then
-    export CHALK_FUNCTION_REMOTE_CALL_WHEEL="$(cd "$(dirname "$remote_call_wheel")" && pwd)/$(basename "$remote_call_wheel")"
+if [[ -n "$sdk_wheel" ]]; then
+    export CHALK_FUNCTION_LOCAL_SDK_WHEEL="$(cd "$(dirname "$sdk_wheel")" && pwd)/$(basename "$sdk_wheel")"
 else
-    unset CHALK_FUNCTION_REMOTE_CALL_WHEEL || true
+    unset CHALK_FUNCTION_LOCAL_SDK_WHEEL || true
 fi
+
+unset CHALK_FUNCTION_REMOTE_CALL_WHEEL || true
 
 echo "Deploy env:"
 echo "  CHALK_FUNCTION_STRIP_SOURCE=${CHALK_FUNCTION_STRIP_SOURCE}"
 if [[ "${CHALK_FUNCTION_LOCAL_SDK_COPY:-}" == "1" ]]; then
     echo "  CHALK_FUNCTION_LOCAL_SDK_COPY=1"
 fi
-if [[ -n "${CHALK_FUNCTION_REMOTE_CALL_WHEEL:-}" ]]; then
-    echo "  CHALK_FUNCTION_REMOTE_CALL_WHEEL=${CHALK_FUNCTION_REMOTE_CALL_WHEEL}"
+if [[ -n "${CHALK_FUNCTION_LOCAL_SDK_WHEEL:-}" ]]; then
+    echo "  CHALK_FUNCTION_LOCAL_SDK_WHEEL=${CHALK_FUNCTION_LOCAL_SDK_WHEEL}"
 fi
 
 if [[ "$use_uv_run" == "1" ]]; then

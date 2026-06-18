@@ -14,6 +14,7 @@ log = logging.getLogger(__name__)
 
 
 @chalkcompute.function(
+    name="ex-nested-gather-add",
     image=chalkcompute.Image.debian_slim("3.11").pip_install(["chalkcompute>=2.1.3"]),
 )
 def nested_gather_add(values: list[int]) -> list[int]:
@@ -22,7 +23,7 @@ def nested_gather_add(values: list[int]) -> list[int]:
 
     import chalkcompute
 
-    add = chalkcompute.RemoteFunction.from_name("add")
+    add = chalkcompute.RemoteFunction.from_name("ex-add")
     return chalkcompute.gather(
         [
             add.with_knowledge_cutoff(datetime.now(timezone.utc)).defer(1, value)

@@ -158,12 +158,12 @@ def _v1_client_with_get(side_effect=None, found: bool = True) -> VolumeClient:
 
 def _v2_client_with_get(side_effect=None, found: bool = True) -> VersionedVolumeClient:
     client = object.__new__(VersionedVolumeClient)
-    client._metadata = []
-    client._stub = MagicMock()
     if side_effect is not None:
-        client._stub.GetVolume.side_effect = side_effect
+        client.exists = MagicMock(side_effect=side_effect)
     elif not found:
-        client._stub.GetVolume.side_effect = _FakeRpcError(grpc.StatusCode.NOT_FOUND)
+        client.exists = MagicMock(return_value=False)
+    else:
+        client.exists = MagicMock(return_value=True)
     return client
 
 
@@ -177,6 +177,7 @@ def test_resolve_referenced_type_versioned_when_in_v2() -> None:
     ):
         assert resolve_referenced_volume_type(connect, "vol") == "versioned_chalkfs"
     # v2 hit short-circuits; v1 is never probed.
+    v2.exists.assert_called_once_with("vol")
     v1._stub.GetVolume.assert_not_called()
 
 
@@ -189,7 +190,7 @@ def test_resolve_referenced_type_chalkfs_when_only_in_v1() -> None:
         patch.object(VolumeClient, "from_connect", return_value=v1),
     ):
         assert resolve_referenced_volume_type(connect, "vol") == "chalkfs"
-    v2._stub.GetVolume.assert_called_once()
+    v2.exists.assert_called_once_with("vol")
     v1._stub.GetVolume.assert_called_once()
 
 
@@ -203,6 +204,7 @@ def test_resolve_referenced_type_raises_when_in_neither() -> None:
     ):
         with pytest.raises(VolumeError, match="missing-vol"):
             resolve_referenced_volume_type(connect, "missing-vol")
+    v2.exists.assert_called_once_with("missing-vol")
 
 
 def test_resolve_referenced_type_propagates_non_not_found() -> None:
@@ -218,6 +220,7 @@ def test_resolve_referenced_type_propagates_non_not_found() -> None:
     ):
         with pytest.raises(grpc.RpcError):
             resolve_referenced_volume_type(connect, "vol")
+    v2.exists.assert_called_once_with("vol")
     v1._stub.GetVolume.assert_not_called()
 
 

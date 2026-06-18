@@ -89,7 +89,8 @@ class TestSyncScalar:
         assert elapsed < 120, f"Took too long: {elapsed:.1f}s"
 
     def test_nested_gather_uses_function_queue_without_env_vars(self) -> None:
-        fn = chalkcompute.RemoteFunction.from_name("nested_gather_add")
+        fn = chalkcompute.RemoteFunction.from_name("ex-nested-gather-add")
+        assert fn.web_url, "ex-nested-gather-add should be deployed before this test"
         assert fn.remote([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]) == [
             1,
             2,

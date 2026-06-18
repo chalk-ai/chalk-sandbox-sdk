@@ -15,8 +15,7 @@ from chalkcompute._local_dev import (
 )
 
 
-def test_local_sdk_copy_extracts_archive_to_local_tmp(
-) -> None:
+def test_local_sdk_copy_extracts_archive_to_local_tmp() -> None:
     with patch.dict(os.environ, {}, clear=False):
         os.environ[_LOCAL_COPY_ENV_VAR] = "1"
         os.environ.pop(_LOCAL_WHEEL_ENV_VAR, None)
@@ -115,8 +114,7 @@ def test_function_runtime_image_or_none_returns_none_inside_pod() -> None:
         assert function_runtime_image_or_none() is None
 
 
-def test_function_runtime_image_or_none_builds_image_outside_pod(
-) -> None:
+def test_function_runtime_image_or_none_builds_image_outside_pod() -> None:
     with patch.dict(os.environ, {}, clear=False):
         os.environ.pop("_CHALK_REMOTE_FUNCTION", None)
         image = function_runtime_image_or_none()
