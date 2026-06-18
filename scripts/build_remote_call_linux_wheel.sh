@@ -6,11 +6,14 @@ usage() {
 Build a Linux chalk-remote-call-python wheel, even from macOS, using Docker.
 
 Usage:
-  scripts/build_remote_call_linux_wheel.sh [--repo PATH] [--python 3.11] [--platform linux/amd64] [--out-dir dist/linux-local]
+  scripts/build_remote_call_linux_wheel.sh [--repo PATH] [--chalk-private PATH] [--python 3.11] [--platform linux/amd64] [--out-dir dist/linux-local]
 
 Options:
   --repo PATH        Path to the chalk-remote-call-python repo.
                      Default: ../chalk-remote-call-python
+  --chalk-private    Path to the local chalk-private checkout used for Rust git
+                     dependencies.
+                     Default: ../chalk-private
   --python VERSION   Python version to build against.
                      Default: 3.11
   --platform VALUE   Docker target platform.
@@ -27,6 +30,7 @@ EOF
 }
 
 repo_path="../chalk-remote-call-python"
+chalk_private_path="../chalk-private"
 python_version="3.11"
 docker_platform="linux/amd64"
 out_dir="dist/linux-local"
@@ -35,6 +39,10 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --repo)
             repo_path="$2"
+            shift 2
+            ;;
+        --chalk-private)
+            chalk_private_path="$2"
             shift 2
             ;;
         --python)
@@ -72,12 +80,19 @@ if [[ ! -f "$repo_path/pyproject.toml" ]]; then
     exit 1
 fi
 
+chalk_private_path="$(cd "$chalk_private_path" && pwd)"
+if [[ ! -d "$chalk_private_path/.git" ]]; then
+    echo "No git checkout found at chalk-private path: $chalk_private_path" >&2
+    exit 1
+fi
+
 repo_name="$(basename "$repo_path")"
 tmp_out="$(mktemp -d)"
 trap 'rm -rf "$tmp_out"' EXIT
 
 echo "Building Linux wheel for $repo_name"
 echo "  repo:      $repo_path"
+echo "  private:   $chalk_private_path"
 echo "  python:    $python_version"
 echo "  platform:  $docker_platform"
 echo "  out dir:   $out_dir"
@@ -85,15 +100,17 @@ echo "  out dir:   $out_dir"
 docker run --rm \
     --platform "$docker_platform" \
     -v "$repo_path:/src" \
+    -v "$chalk_private_path:/chalk-private" \
     -v "$tmp_out:/out" \
     "python:${python_version}-slim" \
     bash -lc "
         set -euo pipefail
         export DEBIAN_FRONTEND=noninteractive
         apt-get update
-        apt-get install -y --no-install-recommends build-essential ca-certificates curl git
+        apt-get install -y --no-install-recommends build-essential ca-certificates curl git pkg-config libssl-dev libsasl2-dev protobuf-compiler libprotobuf-dev
         curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal
         . /root/.cargo/env
+        git config --global url.file:///chalk-private/.insteadOf https://github.com/chalk-ai/chalk-private.git
         python -m pip install --upgrade pip build setuptools wheel setuptools-rust
         cd /src
         python -m build --wheel --outdir /out
