@@ -67,7 +67,9 @@ from chalkcompute._volume import VolumeError as VolumeError
 from chalkcompute._volume import VolumeFileNotFoundError as VolumeFileNotFoundError
 from chalkcompute._volume import VolumeInfo as VolumeInfo
 from chalkcompute._volume import VolumeNotFoundError as VolumeNotFoundError
-from chalkcompute._volume import resolve_referenced_volume_type as resolve_referenced_volume_type
+from chalkcompute._volume import (
+    resolve_referenced_volume_type as resolve_referenced_volume_type,
+)
 from chalkcompute._vvolume import VersionInfo as VersionInfo
 from chalkcompute._vvolume import VersionedVolume as VersionedVolume
 from chalkcompute._vvolume import VersionedVolumeClient as VersionedVolumeClient
