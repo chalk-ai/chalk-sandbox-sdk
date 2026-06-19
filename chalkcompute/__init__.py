@@ -93,6 +93,10 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "VolumeFileNotFoundError": ("chalkcompute._volume", "VolumeFileNotFoundError"),
     "VolumeInfo": ("chalkcompute._volume", "VolumeInfo"),
     "VolumeNotFoundError": ("chalkcompute._volume", "VolumeNotFoundError"),
+    "resolve_referenced_volume_type": (
+        "chalkcompute._volume",
+        "resolve_referenced_volume_type",
+    ),
     # _vvolume.py
     "VersionInfo": ("chalkcompute._vvolume", "VersionInfo"),
     "VersionedVolume": ("chalkcompute._vvolume", "VersionedVolume"),
