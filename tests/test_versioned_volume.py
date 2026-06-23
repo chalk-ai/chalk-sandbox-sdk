@@ -13,9 +13,14 @@ from chalkcompute._vvolume import (
     VersionInfo,
     VersionedVolume,
     VersionedVolumeClient,
+    _VERSIONED_CHUNK_MAX_RETRIES,
+    _VERSIONED_CHUNK_CONCURRENCY,
     _VERSIONED_CHUNK_SIZE_BYTES,
     _VERSIONED_COMMIT_MAX_REBASE_RETRIES,
+    _VERSIONED_FILE_CONCURRENCY,
     _VERSIONED_INLINE_THRESHOLD_BYTES,
+    _VERSIONED_MAX_PACK_BYTES,
+    _VERSIONED_RATE_LIMIT_MAX_RETRIES,
     _read_versioned_file_response,
 )
 
@@ -156,7 +161,12 @@ def test_put_file_delegates_to_native_upload(monkeypatch: pytest.MonkeyPatch) ->
         {
             "chunk_size": _VERSIONED_CHUNK_SIZE_BYTES,
             "inline_threshold": _VERSIONED_INLINE_THRESHOLD_BYTES,
+            "max_pack_bytes": _VERSIONED_MAX_PACK_BYTES,
+            "file_concurrency": _VERSIONED_FILE_CONCURRENCY,
+            "chunk_concurrency": _VERSIONED_CHUNK_CONCURRENCY,
             "batch_size": 1,
+            "max_chunk_retries": _VERSIONED_CHUNK_MAX_RETRIES,
+            "max_rate_limit_retries": _VERSIONED_RATE_LIMIT_MAX_RETRIES,
             "max_commit_retries": _VERSIONED_COMMIT_MAX_REBASE_RETRIES,
         },
     )

@@ -32,8 +32,13 @@ logger = logging.getLogger(__name__)
 
 _VERSIONED_INLINE_THRESHOLD_BYTES: int = 4 * 1024
 _VERSIONED_CHUNK_SIZE_BYTES: int = 8 * 1024 * 1024
+_VERSIONED_MAX_PACK_BYTES: int = 64 * 1024 * 1024
 _VERSIONED_COMMIT_MAX_REBASE_RETRIES: int = 3
 _VERSIONED_TRANSFER_MAX_WORKERS: int = 32
+_VERSIONED_FILE_CONCURRENCY: int = _VERSIONED_TRANSFER_MAX_WORKERS
+_VERSIONED_CHUNK_CONCURRENCY: int = _VERSIONED_TRANSFER_MAX_WORKERS
+_VERSIONED_CHUNK_MAX_RETRIES: int = 3
+_VERSIONED_RATE_LIMIT_MAX_RETRIES: int = 8
 _VERSIONED_BATCH_MAX_FILES: int = 200
 
 _native: Any | None
@@ -1001,7 +1006,12 @@ class VersionedVolumeClient:
         config = {
             "chunk_size": _VERSIONED_CHUNK_SIZE_BYTES,
             "inline_threshold": _VERSIONED_INLINE_THRESHOLD_BYTES,
+            "max_pack_bytes": _VERSIONED_MAX_PACK_BYTES,
+            "file_concurrency": _VERSIONED_FILE_CONCURRENCY,
+            "chunk_concurrency": _VERSIONED_CHUNK_CONCURRENCY,
             "batch_size": batch_size,
+            "max_chunk_retries": _VERSIONED_CHUNK_MAX_RETRIES,
+            "max_rate_limit_retries": _VERSIONED_RATE_LIMIT_MAX_RETRIES,
             "max_commit_retries": _VERSIONED_COMMIT_MAX_REBASE_RETRIES,
         }
         try:
