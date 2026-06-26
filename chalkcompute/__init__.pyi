@@ -56,6 +56,7 @@ from chalkcompute._scaling_group import ScalingGroupBuildError as ScalingGroupBu
 from chalkcompute._scaling_group import ScalingGroupError as ScalingGroupError
 from chalkcompute._scaling_group import ScalingGroupInfo as ScalingGroupInfo
 from chalkcompute._secret import Secret as Secret
+from chalkcompute._secret import resolve_lazy_secrets as resolve_lazy_secrets
 from chalkcompute._tracing import span as span
 from chalkcompute._tracing import traced as traced
 from chalkcompute._volume import FileInfo as FileInfo
@@ -118,6 +119,7 @@ __all__ = [
     "Image",
     "LazyLocalFile",
     "Secret",
+    "resolve_lazy_secrets",
     "ExecError",
     "ExecEvent",
     "ExecProcess",
