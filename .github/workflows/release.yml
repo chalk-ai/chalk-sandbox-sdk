@@ -360,3 +360,33 @@ jobs:
         with:
           packages-dir: dist/
           skip-existing: true
+
+  notify:
+    name: "Notify #proj-compute"
+    needs: [build-linux, build-macos, verify-built-wheels, publish]
+    # Run for every release outcome (success or failure), regardless of upstream
+    # job status. Skipped for build-only workflow_dispatch runs to avoid noise.
+    if: always() && github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Compute overall status
+        id: status
+        run: |
+          if ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}; then
+            echo "emoji=:x:" >> "$GITHUB_OUTPUT"
+            echo "verb=failed" >> "$GITHUB_OUTPUT"
+          else
+            echo "emoji=:green-check:" >> "$GITHUB_OUTPUT"
+            echo "verb=succeeded" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Send Slack notification
+        uses: slackapi/slack-github-action@v2.1.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: "#proj-compute"
+            text: "${{ steps.status.outputs.emoji }} chalkcompute release `${{ github.ref_name }}` ${{ steps.status.outputs.verb }}. <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View workflow run>"
