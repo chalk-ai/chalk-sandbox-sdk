@@ -66,6 +66,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "LazyLocalFile": ("chalkcompute._image", "LazyLocalFile"),
     # _secret.py
     "Secret": ("chalkcompute._secret", "Secret"),
+    "resolve_lazy_secrets": ("chalkcompute._secret", "resolve_lazy_secrets"),
     # _sandbox.py
     "ExecError": ("chalkcompute._sandbox", "ExecError"),
     "ExecEvent": ("chalkcompute._sandbox", "ExecEvent"),
