@@ -159,4 +159,4 @@ PRERELEASE_FLAG=""
 if [[ "$NEXT_TAG" == *rc* ]]; then
     PRERELEASE_FLAG="--prerelease"
 fi
-confirm "Submit to GitHub (Y/n)?" && echo "Submitting..." && gh release create "${NEXT_TAG}" --generate-notes ${PRERELEASE_FLAG}
+confirm "Submit to GitHub (y/N)?" && echo "Submitting..." && gh release create "${NEXT_TAG}" --generate-notes ${PRERELEASE_FLAG}
