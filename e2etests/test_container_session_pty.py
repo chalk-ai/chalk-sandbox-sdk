@@ -39,9 +39,11 @@ def _pty_until(session: ContainerSession, expected: str) -> str:
                 pytest.fail(
                     f"Session {session.id} exited before pty output contained {expected!r}: {text!r}"
                 )
-            case ContainerSession.OutputEvent(
-                stream=ContainerSession.OutputEvent.Stream.PTY_OUTPUT,
-            ) as output:
+            case (
+                ContainerSession.OutputEvent(
+                    stream=ContainerSession.OutputEvent.Stream.PTY_OUTPUT,
+                ) as output
+            ):
                 text += output.text
                 if expected in text:
                     return text
@@ -127,7 +129,7 @@ def test_pty_multi_client(host_container: Container) -> None:
         "stty echo; printf 'ready\\n'; "
         "while IFS= read -r line; do "
         "printf 'line:%s\\n' \"$line\"; "
-        "[ \"$line\" = done ] && exit 0; "
+        '[ "$line" = done ] && exit 0; '
         "done",
         pty=True,
         timeout_secs=10,

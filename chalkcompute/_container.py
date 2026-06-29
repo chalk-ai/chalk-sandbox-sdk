@@ -1636,9 +1636,7 @@ def _pb_to_session_info(
         workdir=new_process.workdir if new_process.HasField("workdir") else None,
         env=dict(new_process.env),
         timeout_secs=(
-            new_process.timeout_secs
-            if new_process.HasField("timeout_secs")
-            else None
+            new_process.timeout_secs if new_process.HasField("timeout_secs") else None
         ),
         pty=new_process.HasField("pty_info"),
         status=_pb_to_session_status(info.process_status),

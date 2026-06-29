@@ -140,9 +140,11 @@ def test_session_reattach(
     session.write("one\n")
     first_output = next_event(
         session,
-        lambda event: isinstance(event, ContainerSession.OutputEvent)
-        and event.stream is ContainerSession.OutputEvent.Stream.STDOUT
-        and event.text == "first:one\n",
+        lambda event: (
+            isinstance(event, ContainerSession.OutputEvent)
+            and event.stream is ContainerSession.OutputEvent.Stream.STDOUT
+            and event.text == "first:one\n"
+        ),
     )
     assert isinstance(first_output, ContainerSession.OutputEvent)
     assert first_output.text == "first:one\n"
