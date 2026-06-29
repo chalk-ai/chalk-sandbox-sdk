@@ -8,7 +8,10 @@ from google.protobuf import descriptor as _descriptor
 from google.protobuf import descriptor_pool as _descriptor_pool
 from google.protobuf import symbol_database as _symbol_database
 from google.protobuf.internal import builder as _builder
-from chalkcompute._proto_pool import DESCRIPTOR_POOL as _DESCRIPTOR_POOL, SYMBOL_DATABASE as _SYMBOL_DATABASE
+from chalkcompute._proto_pool import (
+    DESCRIPTOR_POOL as _DESCRIPTOR_POOL,
+    SYMBOL_DATABASE as _SYMBOL_DATABASE,
+)
 # @@protoc_insertion_point(imports)
 
 _sym_db = _SYMBOL_DATABASE
@@ -26,7 +29,9 @@ DESCRIPTOR = _DESCRIPTOR_POOL.AddSerializedFile(
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
-_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, "buf.validate.validate_pb2", _globals)
+_builder.BuildTopDescriptorsAndMessages(
+    DESCRIPTOR, "buf.validate.validate_pb2", _globals
+)
 if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["DESCRIPTOR"]._options = None
     _globals[
@@ -59,15 +64,11 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_FLOATRULES"].fields_by_name["not_in"]._options = None
     _globals["_FLOATRULES"].fields_by_name[
         "not_in"
-    ]._serialized_options = (
-        b"\302H]\n[\n\014float.not_in\032Kthis in rules.not_in ? 'must not be in list %s'.format([rules.not_in]) : ''"
-    )
+    ]._serialized_options = b"\302H]\n[\n\014float.not_in\032Kthis in rules.not_in ? 'must not be in list %s'.format([rules.not_in]) : ''"
     _globals["_FLOATRULES"].fields_by_name["finite"]._options = None
     _globals["_FLOATRULES"].fields_by_name[
         "finite"
-    ]._serialized_options = (
-        b"\302H\\\nZ\n\014float.finite\032Jrules.finite ? (this.isNan() || this.isInf() ? 'must be finite' : '') : ''"
-    )
+    ]._serialized_options = b"\302H\\\nZ\n\014float.finite\032Jrules.finite ? (this.isNan() || this.isInf() ? 'must be finite' : '') : ''"
     _globals["_FLOATRULES"].fields_by_name["example"]._options = None
     _globals["_FLOATRULES"].fields_by_name[
         "example"
@@ -99,15 +100,11 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_DOUBLERULES"].fields_by_name["not_in"]._options = None
     _globals["_DOUBLERULES"].fields_by_name[
         "not_in"
-    ]._serialized_options = (
-        b"\302H^\n\\\n\rdouble.not_in\032Kthis in rules.not_in ? 'must not be in list %s'.format([rules.not_in]) : ''"
-    )
+    ]._serialized_options = b"\302H^\n\\\n\rdouble.not_in\032Kthis in rules.not_in ? 'must not be in list %s'.format([rules.not_in]) : ''"
     _globals["_DOUBLERULES"].fields_by_name["finite"]._options = None
     _globals["_DOUBLERULES"].fields_by_name[
         "finite"
-    ]._serialized_options = (
-        b"\302H]\n[\n\rdouble.finite\032Jrules.finite ? (this.isNan() || this.isInf() ? 'must be finite' : '') : ''"
-    )
+    ]._serialized_options = b"\302H]\n[\n\rdouble.finite\032Jrules.finite ? (this.isNan() || this.isInf() ? 'must be finite' : '') : ''"
     _globals["_DOUBLERULES"].fields_by_name["example"]._options = None
     _globals["_DOUBLERULES"].fields_by_name[
         "example"
@@ -139,9 +136,7 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_INT32RULES"].fields_by_name["not_in"]._options = None
     _globals["_INT32RULES"].fields_by_name[
         "not_in"
-    ]._serialized_options = (
-        b"\302H]\n[\n\014int32.not_in\032Kthis in rules.not_in ? 'must not be in list %s'.format([rules.not_in]) : ''"
-    )
+    ]._serialized_options = b"\302H]\n[\n\014int32.not_in\032Kthis in rules.not_in ? 'must not be in list %s'.format([rules.not_in]) : ''"
     _globals["_INT32RULES"].fields_by_name["example"]._options = None
     _globals["_INT32RULES"].fields_by_name[
         "example"
@@ -173,9 +168,7 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_INT64RULES"].fields_by_name["not_in"]._options = None
     _globals["_INT64RULES"].fields_by_name[
         "not_in"
-    ]._serialized_options = (
-        b"\302H]\n[\n\014int64.not_in\032Kthis in rules.not_in ? 'must not be in list %s'.format([rules.not_in]) : ''"
-    )
+    ]._serialized_options = b"\302H]\n[\n\014int64.not_in\032Kthis in rules.not_in ? 'must not be in list %s'.format([rules.not_in]) : ''"
     _globals["_INT64RULES"].fields_by_name["example"]._options = None
     _globals["_INT64RULES"].fields_by_name[
         "example"
@@ -207,9 +200,7 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_UINT32RULES"].fields_by_name["not_in"]._options = None
     _globals["_UINT32RULES"].fields_by_name[
         "not_in"
-    ]._serialized_options = (
-        b"\302H^\n\\\n\ruint32.not_in\032Kthis in rules.not_in ? 'must not be in list %s'.format([rules.not_in]) : ''"
-    )
+    ]._serialized_options = b"\302H^\n\\\n\ruint32.not_in\032Kthis in rules.not_in ? 'must not be in list %s'.format([rules.not_in]) : ''"
     _globals["_UINT32RULES"].fields_by_name["example"]._options = None
     _globals["_UINT32RULES"].fields_by_name[
         "example"
@@ -241,9 +232,7 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_UINT64RULES"].fields_by_name["not_in"]._options = None
     _globals["_UINT64RULES"].fields_by_name[
         "not_in"
-    ]._serialized_options = (
-        b"\302H^\n\\\n\ruint64.not_in\032Kthis in rules.not_in ? 'must not be in list %s'.format([rules.not_in]) : ''"
-    )
+    ]._serialized_options = b"\302H^\n\\\n\ruint64.not_in\032Kthis in rules.not_in ? 'must not be in list %s'.format([rules.not_in]) : ''"
     _globals["_UINT64RULES"].fields_by_name["example"]._options = None
     _globals["_UINT64RULES"].fields_by_name[
         "example"
@@ -275,9 +264,7 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_SINT32RULES"].fields_by_name["not_in"]._options = None
     _globals["_SINT32RULES"].fields_by_name[
         "not_in"
-    ]._serialized_options = (
-        b"\302H^\n\\\n\rsint32.not_in\032Kthis in rules.not_in ? 'must not be in list %s'.format([rules.not_in]) : ''"
-    )
+    ]._serialized_options = b"\302H^\n\\\n\rsint32.not_in\032Kthis in rules.not_in ? 'must not be in list %s'.format([rules.not_in]) : ''"
     _globals["_SINT32RULES"].fields_by_name["example"]._options = None
     _globals["_SINT32RULES"].fields_by_name[
         "example"
@@ -309,9 +296,7 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_SINT64RULES"].fields_by_name["not_in"]._options = None
     _globals["_SINT64RULES"].fields_by_name[
         "not_in"
-    ]._serialized_options = (
-        b"\302H^\n\\\n\rsint64.not_in\032Kthis in rules.not_in ? 'must not be in list %s'.format([rules.not_in]) : ''"
-    )
+    ]._serialized_options = b"\302H^\n\\\n\rsint64.not_in\032Kthis in rules.not_in ? 'must not be in list %s'.format([rules.not_in]) : ''"
     _globals["_SINT64RULES"].fields_by_name["example"]._options = None
     _globals["_SINT64RULES"].fields_by_name[
         "example"
@@ -343,9 +328,7 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_FIXED32RULES"].fields_by_name["not_in"]._options = None
     _globals["_FIXED32RULES"].fields_by_name[
         "not_in"
-    ]._serialized_options = (
-        b"\302H_\n]\n\016fixed32.not_in\032Kthis in rules.not_in ? 'must not be in list %s'.format([rules.not_in]) : ''"
-    )
+    ]._serialized_options = b"\302H_\n]\n\016fixed32.not_in\032Kthis in rules.not_in ? 'must not be in list %s'.format([rules.not_in]) : ''"
     _globals["_FIXED32RULES"].fields_by_name["example"]._options = None
     _globals["_FIXED32RULES"].fields_by_name[
         "example"
@@ -377,9 +360,7 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_FIXED64RULES"].fields_by_name["not_in"]._options = None
     _globals["_FIXED64RULES"].fields_by_name[
         "not_in"
-    ]._serialized_options = (
-        b"\302H_\n]\n\016fixed64.not_in\032Kthis in rules.not_in ? 'must not be in list %s'.format([rules.not_in]) : ''"
-    )
+    ]._serialized_options = b"\302H_\n]\n\016fixed64.not_in\032Kthis in rules.not_in ? 'must not be in list %s'.format([rules.not_in]) : ''"
     _globals["_FIXED64RULES"].fields_by_name["example"]._options = None
     _globals["_FIXED64RULES"].fields_by_name[
         "example"
@@ -463,9 +444,7 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_STRINGRULES"].fields_by_name["len"]._options = None
     _globals["_STRINGRULES"].fields_by_name[
         "len"
-    ]._serialized_options = (
-        b"\302Ha\n_\n\nstring.len\032Quint(this.size()) != rules.len ? 'must be %s characters'.format([rules.len]) : ''"
-    )
+    ]._serialized_options = b"\302Ha\n_\n\nstring.len\032Quint(this.size()) != rules.len ? 'must be %s characters'.format([rules.len]) : ''"
     _globals["_STRINGRULES"].fields_by_name["min_len"]._options = None
     _globals["_STRINGRULES"].fields_by_name[
         "min_len"
@@ -513,9 +492,7 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_STRINGRULES"].fields_by_name["not_in"]._options = None
     _globals["_STRINGRULES"].fields_by_name[
         "not_in"
-    ]._serialized_options = (
-        b"\302H^\n\\\n\rstring.not_in\032Kthis in rules.not_in ? 'must not be in list %s'.format([rules.not_in]) : ''"
-    )
+    ]._serialized_options = b"\302H^\n\\\n\rstring.not_in\032Kthis in rules.not_in ? 'must not be in list %s'.format([rules.not_in]) : ''"
     _globals["_STRINGRULES"].fields_by_name["email"]._options = None
     _globals["_STRINGRULES"].fields_by_name[
         "email"
@@ -543,9 +520,7 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_STRINGRULES"].fields_by_name["uri_ref"]._options = None
     _globals["_STRINGRULES"].fields_by_name[
         "uri_ref"
-    ]._serialized_options = (
-        b"\302HT\nR\n\016string.uri_ref\022\035must be a valid URI Reference\032!!rules.uri_ref || this.isUriRef()"
-    )
+    ]._serialized_options = b"\302HT\nR\n\016string.uri_ref\022\035must be a valid URI Reference\032!!rules.uri_ref || this.isUriRef()"
     _globals["_STRINGRULES"].fields_by_name["address"]._options = None
     _globals["_STRINGRULES"].fields_by_name[
         "address"
@@ -613,9 +588,7 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_BYTESRULES"].fields_by_name["len"]._options = None
     _globals["_BYTESRULES"].fields_by_name[
         "len"
-    ]._serialized_options = (
-        b"\302H[\nY\n\tbytes.len\032Luint(this.size()) != rules.len ? 'must be %s bytes'.format([rules.len]) : ''"
-    )
+    ]._serialized_options = b"\302H[\nY\n\tbytes.len\032Luint(this.size()) != rules.len ? 'must be %s bytes'.format([rules.len]) : ''"
     _globals["_BYTESRULES"].fields_by_name["min_len"]._options = None
     _globals["_BYTESRULES"].fields_by_name[
         "min_len"
@@ -647,9 +620,7 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_BYTESRULES"].fields_by_name["not_in"]._options = None
     _globals["_BYTESRULES"].fields_by_name[
         "not_in"
-    ]._serialized_options = (
-        b"\302H]\n[\n\014bytes.not_in\032Kthis in rules.not_in ? 'must not be in list %s'.format([rules.not_in]) : ''"
-    )
+    ]._serialized_options = b"\302H]\n[\n\014bytes.not_in\032Kthis in rules.not_in ? 'must not be in list %s'.format([rules.not_in]) : ''"
     _globals["_BYTESRULES"].fields_by_name["ip"]._options = None
     _globals["_BYTESRULES"].fields_by_name[
         "ip"
@@ -681,9 +652,7 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_ENUMRULES"].fields_by_name["not_in"]._options = None
     _globals["_ENUMRULES"].fields_by_name[
         "not_in"
-    ]._serialized_options = (
-        b"\302H\\\nZ\n\013enum.not_in\032Kthis in rules.not_in ? 'must not be in list %s'.format([rules.not_in]) : ''"
-    )
+    ]._serialized_options = b"\302H\\\nZ\n\013enum.not_in\032Kthis in rules.not_in ? 'must not be in list %s'.format([rules.not_in]) : ''"
     _globals["_ENUMRULES"].fields_by_name["example"]._options = None
     _globals["_ENUMRULES"].fields_by_name[
         "example"
@@ -771,9 +740,7 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_TIMESTAMPRULES"].fields_by_name["lt_now"]._options = None
     _globals["_TIMESTAMPRULES"].fields_by_name[
         "lt_now"
-    ]._serialized_options = (
-        b"\302HQ\nO\n\020timestamp.lt_now\032;(rules.lt_now && this > now) ? 'must be less than now' : ''"
-    )
+    ]._serialized_options = b"\302HQ\nO\n\020timestamp.lt_now\032;(rules.lt_now && this > now) ? 'must be less than now' : ''"
     _globals["_TIMESTAMPRULES"].fields_by_name["gt"]._options = None
     _globals["_TIMESTAMPRULES"].fields_by_name[
         "gt"
@@ -785,9 +752,7 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_TIMESTAMPRULES"].fields_by_name["gt_now"]._options = None
     _globals["_TIMESTAMPRULES"].fields_by_name[
         "gt_now"
-    ]._serialized_options = (
-        b"\302HT\nR\n\020timestamp.gt_now\032>(rules.gt_now && this < now) ? 'must be greater than now' : ''"
-    )
+    ]._serialized_options = b"\302HT\nR\n\020timestamp.gt_now\032>(rules.gt_now && this < now) ? 'must be greater than now' : ''"
     _globals["_TIMESTAMPRULES"].fields_by_name["within"]._options = None
     _globals["_TIMESTAMPRULES"].fields_by_name[
         "within"

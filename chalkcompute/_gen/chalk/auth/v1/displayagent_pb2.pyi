@@ -1,4 +1,6 @@
-from chalkcompute._gen.chalk.auth.v1 import featurepermission_pb2 as _featurepermission_pb2
+from chalkcompute._gen.chalk.auth.v1 import (
+    featurepermission_pb2 as _featurepermission_pb2,
+)
 from chalkcompute._gen.chalk.auth.v1 import permissions_pb2 as _permissions_pb2
 from google.protobuf import timestamp_pb2 as _timestamp_pb2
 from google.protobuf.internal import containers as _containers
@@ -21,11 +23,19 @@ class DisplayPermission(_message.Message):
     name: str
     permission: _permissions_pb2.Permission
     def __init__(
-        self, name: _Optional[str] = ..., permission: _Optional[_Union[_permissions_pb2.Permission, str]] = ...
+        self,
+        name: _Optional[str] = ...,
+        permission: _Optional[_Union[_permissions_pb2.Permission, str]] = ...,
     ) -> None: ...
 
 class DisplayEnvironmentPermissions(_message.Message):
-    __slots__ = ("environment_id", "environment_name", "project_id", "project_name", "permissions")
+    __slots__ = (
+        "environment_id",
+        "environment_name",
+        "project_id",
+        "project_name",
+        "permissions",
+    )
     ENVIRONMENT_ID_FIELD_NUMBER: _ClassVar[int]
     ENVIRONMENT_NAME_FIELD_NUMBER: _ClassVar[int]
     PROJECT_ID_FIELD_NUMBER: _ClassVar[int]
@@ -69,7 +79,9 @@ class DisplayUserAgent(_message.Message):
     client_id: str
     user_id: str
     team_id: str
-    permissions_by_environment: _containers.RepeatedCompositeFieldContainer[DisplayEnvironmentPermissions]
+    permissions_by_environment: _containers.RepeatedCompositeFieldContainer[
+        DisplayEnvironmentPermissions
+    ]
     impersonated: bool
     name: str
     email: str
@@ -80,12 +92,16 @@ class DisplayUserAgent(_message.Message):
         client_id: _Optional[str] = ...,
         user_id: _Optional[str] = ...,
         team_id: _Optional[str] = ...,
-        permissions_by_environment: _Optional[_Iterable[_Union[DisplayEnvironmentPermissions, _Mapping]]] = ...,
+        permissions_by_environment: _Optional[
+            _Iterable[_Union[DisplayEnvironmentPermissions, _Mapping]]
+        ] = ...,
         impersonated: bool = ...,
         name: _Optional[str] = ...,
         email: _Optional[str] = ...,
         team_name: _Optional[str] = ...,
-        customer_claims: _Optional[_Iterable[_Union[DisplayCustomClaim, _Mapping]]] = ...,
+        customer_claims: _Optional[
+            _Iterable[_Union[DisplayCustomClaim, _Mapping]]
+        ] = ...,
     ) -> None: ...
 
 class DisplayCustomClaim(_message.Message):
@@ -94,7 +110,9 @@ class DisplayCustomClaim(_message.Message):
     VALUES_FIELD_NUMBER: _ClassVar[int]
     key: str
     values: _containers.RepeatedScalarFieldContainer[str]
-    def __init__(self, key: _Optional[str] = ..., values: _Optional[_Iterable[str]] = ...) -> None: ...
+    def __init__(
+        self, key: _Optional[str] = ..., values: _Optional[_Iterable[str]] = ...
+    ) -> None: ...
 
 class DisplayServiceTokenAgent(_message.Message):
     __slots__ = (
@@ -153,10 +171,16 @@ class DisplayServiceTokenAgent(_message.Message):
         team_name: _Optional[str] = ...,
         project_name: _Optional[str] = ...,
         environment_name: _Optional[str] = ...,
-        customer_claims: _Optional[_Iterable[_Union[DisplayCustomClaim, _Mapping]]] = ...,
-        feature_permissions: _Optional[_Union[_featurepermission_pb2.FeaturePermissions, _Mapping]] = ...,
+        customer_claims: _Optional[
+            _Iterable[_Union[DisplayCustomClaim, _Mapping]]
+        ] = ...,
+        feature_permissions: _Optional[
+            _Union[_featurepermission_pb2.FeaturePermissions, _Mapping]
+        ] = ...,
         created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
-        team_permissions: _Optional[_Iterable[_Union[DisplayPermission, _Mapping]]] = ...,
+        team_permissions: _Optional[
+            _Iterable[_Union[DisplayPermission, _Mapping]]
+        ] = ...,
     ) -> None: ...
 
 class DisplayEngineAgent(_message.Message):
@@ -207,7 +231,13 @@ class DisplayMetadataServiceAgent(_message.Message):
     def __init__(self) -> None: ...
 
 class DisplayAgent(_message.Message):
-    __slots__ = ("user_agent", "service_token_agent", "engine_agent", "tenant_agent", "metadata_service_agent")
+    __slots__ = (
+        "user_agent",
+        "service_token_agent",
+        "engine_agent",
+        "tenant_agent",
+        "metadata_service_agent",
+    )
     USER_AGENT_FIELD_NUMBER: _ClassVar[int]
     SERVICE_TOKEN_AGENT_FIELD_NUMBER: _ClassVar[int]
     ENGINE_AGENT_FIELD_NUMBER: _ClassVar[int]
@@ -221,8 +251,12 @@ class DisplayAgent(_message.Message):
     def __init__(
         self,
         user_agent: _Optional[_Union[DisplayUserAgent, _Mapping]] = ...,
-        service_token_agent: _Optional[_Union[DisplayServiceTokenAgent, _Mapping]] = ...,
+        service_token_agent: _Optional[
+            _Union[DisplayServiceTokenAgent, _Mapping]
+        ] = ...,
         engine_agent: _Optional[_Union[DisplayEngineAgent, _Mapping]] = ...,
         tenant_agent: _Optional[_Union[DisplayTenantAgent, _Mapping]] = ...,
-        metadata_service_agent: _Optional[_Union[DisplayMetadataServiceAgent, _Mapping]] = ...,
+        metadata_service_agent: _Optional[
+            _Union[DisplayMetadataServiceAgent, _Mapping]
+        ] = ...,
     ) -> None: ...

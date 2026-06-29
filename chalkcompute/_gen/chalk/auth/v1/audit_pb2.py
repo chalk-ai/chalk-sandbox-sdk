@@ -8,7 +8,10 @@ from google.protobuf import descriptor as _descriptor
 from google.protobuf import descriptor_pool as _descriptor_pool
 from google.protobuf import symbol_database as _symbol_database
 from google.protobuf.internal import builder as _builder
-from chalkcompute._proto_pool import DESCRIPTOR_POOL as _DESCRIPTOR_POOL, SYMBOL_DATABASE as _SYMBOL_DATABASE
+from chalkcompute._proto_pool import (
+    DESCRIPTOR_POOL as _DESCRIPTOR_POOL,
+    SYMBOL_DATABASE as _SYMBOL_DATABASE,
+)
 # @@protoc_insertion_point(imports)
 
 _sym_db = _SYMBOL_DATABASE

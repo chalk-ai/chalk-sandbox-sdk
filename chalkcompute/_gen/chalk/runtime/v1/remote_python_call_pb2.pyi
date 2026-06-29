@@ -35,7 +35,9 @@ class CallFunctionRequest(_message.Message):
     FEATHER_STREAM_FIELD_NUMBER: _ClassVar[int]
     name: str
     feather_stream: bytes
-    def __init__(self, name: _Optional[str] = ..., feather_stream: _Optional[bytes] = ...) -> None: ...
+    def __init__(
+        self, name: _Optional[str] = ..., feather_stream: _Optional[bytes] = ...
+    ) -> None: ...
 
 class CallFunctionResponse(_message.Message):
     __slots__ = ("feather_stream",)
@@ -49,7 +51,11 @@ class RemoteCallArgs(_message.Message):
     STORAGE_OBJECT_ID_FIELD_NUMBER: _ClassVar[int]
     feather_bytes: bytes
     storage_object_id: str
-    def __init__(self, feather_bytes: _Optional[bytes] = ..., storage_object_id: _Optional[str] = ...) -> None: ...
+    def __init__(
+        self,
+        feather_bytes: _Optional[bytes] = ...,
+        storage_object_id: _Optional[str] = ...,
+    ) -> None: ...
 
 class EnqueueRemoteCallRequest(_message.Message):
     __slots__ = ("name", "args")
@@ -57,7 +63,11 @@ class EnqueueRemoteCallRequest(_message.Message):
     ARGS_FIELD_NUMBER: _ClassVar[int]
     name: str
     args: RemoteCallArgs
-    def __init__(self, name: _Optional[str] = ..., args: _Optional[_Union[RemoteCallArgs, _Mapping]] = ...) -> None: ...
+    def __init__(
+        self,
+        name: _Optional[str] = ...,
+        args: _Optional[_Union[RemoteCallArgs, _Mapping]] = ...,
+    ) -> None: ...
 
 class EnqueueRemoteCallResponse(_message.Message):
     __slots__ = ("call_id",)
@@ -71,7 +81,9 @@ class PollRemoteCallRequest(_message.Message):
     CURSOR_FIELD_NUMBER: _ClassVar[int]
     call_id: str
     cursor: str
-    def __init__(self, call_id: _Optional[str] = ..., cursor: _Optional[str] = ...) -> None: ...
+    def __init__(
+        self, call_id: _Optional[str] = ..., cursor: _Optional[str] = ...
+    ) -> None: ...
 
 class PollRemoteCallResponse(_message.Message):
     __slots__ = ("status", "results", "cursor", "errors")
@@ -88,7 +100,9 @@ class PollRemoteCallResponse(_message.Message):
         status: _Optional[_Union[RemoteCallStatus, str]] = ...,
         results: _Optional[_Iterable[_Union[CallFunctionResponse, _Mapping]]] = ...,
         cursor: _Optional[str] = ...,
-        errors: _Optional[_Iterable[_Union[_chalk_error_pb2.ChalkError, _Mapping]]] = ...,
+        errors: _Optional[
+            _Iterable[_Union[_chalk_error_pb2.ChalkError, _Mapping]]
+        ] = ...,
     ) -> None: ...
 
 class PurgeQueueRequest(_message.Message):
@@ -97,7 +111,9 @@ class PurgeQueueRequest(_message.Message):
     ALL_FIELD_NUMBER: _ClassVar[int]
     function_name: str
     all: bool
-    def __init__(self, function_name: _Optional[str] = ..., all: bool = ...) -> None: ...
+    def __init__(
+        self, function_name: _Optional[str] = ..., all: bool = ...
+    ) -> None: ...
 
 class PurgeQueueResponse(_message.Message):
     __slots__ = ("items_removed_by_function",)
@@ -107,14 +123,25 @@ class PurgeQueueResponse(_message.Message):
         VALUE_FIELD_NUMBER: _ClassVar[int]
         key: str
         value: int
-        def __init__(self, key: _Optional[str] = ..., value: _Optional[int] = ...) -> None: ...
+        def __init__(
+            self, key: _Optional[str] = ..., value: _Optional[int] = ...
+        ) -> None: ...
 
     ITEMS_REMOVED_BY_FUNCTION_FIELD_NUMBER: _ClassVar[int]
     items_removed_by_function: _containers.ScalarMap[str, int]
-    def __init__(self, items_removed_by_function: _Optional[_Mapping[str, int]] = ...) -> None: ...
+    def __init__(
+        self, items_removed_by_function: _Optional[_Mapping[str, int]] = ...
+    ) -> None: ...
 
 class FunctionCallInfo(_message.Message):
-    __slots__ = ("call_id", "function_name", "enqueued_at", "status", "result_summary", "trace_id")
+    __slots__ = (
+        "call_id",
+        "function_name",
+        "enqueued_at",
+        "status",
+        "result_summary",
+        "trace_id",
+    )
     CALL_ID_FIELD_NUMBER: _ClassVar[int]
     FUNCTION_NAME_FIELD_NUMBER: _ClassVar[int]
     ENQUEUED_AT_FIELD_NUMBER: _ClassVar[int]
@@ -143,13 +170,46 @@ class GetRecentCallsRequest(_message.Message):
     LIMIT_FIELD_NUMBER: _ClassVar[int]
     function_name: str
     limit: int
-    def __init__(self, function_name: _Optional[str] = ..., limit: _Optional[int] = ...) -> None: ...
+    def __init__(
+        self, function_name: _Optional[str] = ..., limit: _Optional[int] = ...
+    ) -> None: ...
 
 class GetRecentCallsResponse(_message.Message):
     __slots__ = ("calls",)
     CALLS_FIELD_NUMBER: _ClassVar[int]
     calls: _containers.RepeatedCompositeFieldContainer[FunctionCallInfo]
-    def __init__(self, calls: _Optional[_Iterable[_Union[FunctionCallInfo, _Mapping]]] = ...) -> None: ...
+    def __init__(
+        self, calls: _Optional[_Iterable[_Union[FunctionCallInfo, _Mapping]]] = ...
+    ) -> None: ...
+
+class GetCallResultsRequest(_message.Message):
+    __slots__ = ("call_ids",)
+    CALL_IDS_FIELD_NUMBER: _ClassVar[int]
+    call_ids: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, call_ids: _Optional[_Iterable[str]] = ...) -> None: ...
+
+class CallResult(_message.Message):
+    __slots__ = ("call_id", "response", "error_message")
+    CALL_ID_FIELD_NUMBER: _ClassVar[int]
+    RESPONSE_FIELD_NUMBER: _ClassVar[int]
+    ERROR_MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    call_id: str
+    response: PollRemoteCallResponse
+    error_message: str
+    def __init__(
+        self,
+        call_id: _Optional[str] = ...,
+        response: _Optional[_Union[PollRemoteCallResponse, _Mapping]] = ...,
+        error_message: _Optional[str] = ...,
+    ) -> None: ...
+
+class GetCallResultsResponse(_message.Message):
+    __slots__ = ("results",)
+    RESULTS_FIELD_NUMBER: _ClassVar[int]
+    results: _containers.RepeatedCompositeFieldContainer[CallResult]
+    def __init__(
+        self, results: _Optional[_Iterable[_Union[CallResult, _Mapping]]] = ...
+    ) -> None: ...
 
 class GetCallCountRequest(_message.Message):
     __slots__ = ("function_name",)

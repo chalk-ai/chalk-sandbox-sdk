@@ -3,7 +3,9 @@
 
 import grpc
 
-from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as chalk_dot_sandbox_dot_v1_dot_service__pb2
+from chalkcompute._gen.chalk.sandbox.v1 import (
+    service_pb2 as chalk_dot_sandbox_dot_v1_dot_service__pb2,
+)
 
 
 class SandboxServiceStub(object):
@@ -108,7 +110,9 @@ def add_SandboxServiceServicer_to_server(servicer, server):
             response_serializer=chalk_dot_sandbox_dot_v1_dot_service__pb2.ListSandboxesResponse.SerializeToString,
         ),
     }
-    generic_handler = grpc.method_handlers_generic_handler("chalk.sandbox.v1.SandboxService", rpc_method_handlers)
+    generic_handler = grpc.method_handlers_generic_handler(
+        "chalk.sandbox.v1.SandboxService", rpc_method_handlers
+    )
     server.add_generic_rpc_handlers((generic_handler,))
 
 
@@ -291,6 +295,31 @@ class CustomImageServiceStub(object):
             request_serializer=chalk_dot_sandbox_dot_v1_dot_service__pb2.StreamCustomImageBuildUpdatesRequest.SerializeToString,
             response_deserializer=chalk_dot_sandbox_dot_v1_dot_service__pb2.StreamCustomImageBuildUpdatesResponse.FromString,
         )
+        self.ListCustomImageBuilds = channel.unary_unary(
+            "/chalk.sandbox.v1.CustomImageService/ListCustomImageBuilds",
+            request_serializer=chalk_dot_sandbox_dot_v1_dot_service__pb2.ListCustomImageBuildsRequest.SerializeToString,
+            response_deserializer=chalk_dot_sandbox_dot_v1_dot_service__pb2.ListCustomImageBuildsResponse.FromString,
+        )
+        self.GetCustomImageBuild = channel.unary_unary(
+            "/chalk.sandbox.v1.CustomImageService/GetCustomImageBuild",
+            request_serializer=chalk_dot_sandbox_dot_v1_dot_service__pb2.GetCustomImageBuildRequest.SerializeToString,
+            response_deserializer=chalk_dot_sandbox_dot_v1_dot_service__pb2.GetCustomImageBuildResponse.FromString,
+        )
+        self.GetCustomImageBuildLogs = channel.unary_unary(
+            "/chalk.sandbox.v1.CustomImageService/GetCustomImageBuildLogs",
+            request_serializer=chalk_dot_sandbox_dot_v1_dot_service__pb2.GetCustomImageBuildLogsRequest.SerializeToString,
+            response_deserializer=chalk_dot_sandbox_dot_v1_dot_service__pb2.GetCustomImageBuildLogsResponse.FromString,
+        )
+        self.GetCustomImageBuildWorkflow = channel.unary_unary(
+            "/chalk.sandbox.v1.CustomImageService/GetCustomImageBuildWorkflow",
+            request_serializer=chalk_dot_sandbox_dot_v1_dot_service__pb2.GetCustomImageBuildWorkflowRequest.SerializeToString,
+            response_deserializer=chalk_dot_sandbox_dot_v1_dot_service__pb2.GetCustomImageBuildWorkflowResponse.FromString,
+        )
+        self.GetCustomImageBuildUsage = channel.unary_unary(
+            "/chalk.sandbox.v1.CustomImageService/GetCustomImageBuildUsage",
+            request_serializer=chalk_dot_sandbox_dot_v1_dot_service__pb2.GetCustomImageBuildUsageRequest.SerializeToString,
+            response_deserializer=chalk_dot_sandbox_dot_v1_dot_service__pb2.GetCustomImageBuildUsageResponse.FromString,
+        )
 
 
 class CustomImageServiceServicer(object):
@@ -324,6 +353,51 @@ class CustomImageServiceServicer(object):
         context.set_details("Method not implemented!")
         raise NotImplementedError("Method not implemented!")
 
+    def ListCustomImageBuilds(self, request, context):
+        """ListCustomImageBuilds lists the custom images the calling environment
+        references (from the per-environment custom_image_refs index), newest first.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
+    def GetCustomImageBuild(self, request, context):
+        """GetCustomImageBuild returns a single referenced build, addressed by content
+        hash or build ID and authorized against the calling environment.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
+    def GetCustomImageBuildLogs(self, request, context):
+        """GetCustomImageBuildLogs returns a page of build logs for a referenced build,
+        authorized against the calling environment. Returns an Unimplemented error
+        for builders whose backend cannot serve logs.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
+    def GetCustomImageBuildWorkflow(self, request, context):
+        """GetCustomImageBuildWorkflow returns the underlying build workflow (the source
+        for the plan/DAG and step timeline) for a referenced build, authorized
+        against the calling environment. The workflow is unset for non-Argo backends,
+        pure registry cache hits, or builds whose workflow has been garbage-collected.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
+    def GetCustomImageBuildUsage(self, request, context):
+        """GetCustomImageBuildUsage returns the compute resources (containers, scaling
+        groups, and currently-live sandboxes) that reference a referenced build,
+        addressed by content hash or build ID and authorized against the calling
+        environment. The sandbox set reflects only currently-live sandboxes.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
 
 def add_CustomImageServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -347,8 +421,35 @@ def add_CustomImageServiceServicer_to_server(servicer, server):
             request_deserializer=chalk_dot_sandbox_dot_v1_dot_service__pb2.StreamCustomImageBuildUpdatesRequest.FromString,
             response_serializer=chalk_dot_sandbox_dot_v1_dot_service__pb2.StreamCustomImageBuildUpdatesResponse.SerializeToString,
         ),
+        "ListCustomImageBuilds": grpc.unary_unary_rpc_method_handler(
+            servicer.ListCustomImageBuilds,
+            request_deserializer=chalk_dot_sandbox_dot_v1_dot_service__pb2.ListCustomImageBuildsRequest.FromString,
+            response_serializer=chalk_dot_sandbox_dot_v1_dot_service__pb2.ListCustomImageBuildsResponse.SerializeToString,
+        ),
+        "GetCustomImageBuild": grpc.unary_unary_rpc_method_handler(
+            servicer.GetCustomImageBuild,
+            request_deserializer=chalk_dot_sandbox_dot_v1_dot_service__pb2.GetCustomImageBuildRequest.FromString,
+            response_serializer=chalk_dot_sandbox_dot_v1_dot_service__pb2.GetCustomImageBuildResponse.SerializeToString,
+        ),
+        "GetCustomImageBuildLogs": grpc.unary_unary_rpc_method_handler(
+            servicer.GetCustomImageBuildLogs,
+            request_deserializer=chalk_dot_sandbox_dot_v1_dot_service__pb2.GetCustomImageBuildLogsRequest.FromString,
+            response_serializer=chalk_dot_sandbox_dot_v1_dot_service__pb2.GetCustomImageBuildLogsResponse.SerializeToString,
+        ),
+        "GetCustomImageBuildWorkflow": grpc.unary_unary_rpc_method_handler(
+            servicer.GetCustomImageBuildWorkflow,
+            request_deserializer=chalk_dot_sandbox_dot_v1_dot_service__pb2.GetCustomImageBuildWorkflowRequest.FromString,
+            response_serializer=chalk_dot_sandbox_dot_v1_dot_service__pb2.GetCustomImageBuildWorkflowResponse.SerializeToString,
+        ),
+        "GetCustomImageBuildUsage": grpc.unary_unary_rpc_method_handler(
+            servicer.GetCustomImageBuildUsage,
+            request_deserializer=chalk_dot_sandbox_dot_v1_dot_service__pb2.GetCustomImageBuildUsageRequest.FromString,
+            response_serializer=chalk_dot_sandbox_dot_v1_dot_service__pb2.GetCustomImageBuildUsageResponse.SerializeToString,
+        ),
     }
-    generic_handler = grpc.method_handlers_generic_handler("chalk.sandbox.v1.CustomImageService", rpc_method_handlers)
+    generic_handler = grpc.method_handlers_generic_handler(
+        "chalk.sandbox.v1.CustomImageService", rpc_method_handlers
+    )
     server.add_generic_rpc_handlers((generic_handler,))
 
 
@@ -462,6 +563,151 @@ class CustomImageService(object):
             "/chalk.sandbox.v1.CustomImageService/StreamCustomImageBuildUpdates",
             chalk_dot_sandbox_dot_v1_dot_service__pb2.StreamCustomImageBuildUpdatesRequest.SerializeToString,
             chalk_dot_sandbox_dot_v1_dot_service__pb2.StreamCustomImageBuildUpdatesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
+
+    @staticmethod
+    def ListCustomImageBuilds(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/chalk.sandbox.v1.CustomImageService/ListCustomImageBuilds",
+            chalk_dot_sandbox_dot_v1_dot_service__pb2.ListCustomImageBuildsRequest.SerializeToString,
+            chalk_dot_sandbox_dot_v1_dot_service__pb2.ListCustomImageBuildsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
+
+    @staticmethod
+    def GetCustomImageBuild(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/chalk.sandbox.v1.CustomImageService/GetCustomImageBuild",
+            chalk_dot_sandbox_dot_v1_dot_service__pb2.GetCustomImageBuildRequest.SerializeToString,
+            chalk_dot_sandbox_dot_v1_dot_service__pb2.GetCustomImageBuildResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
+
+    @staticmethod
+    def GetCustomImageBuildLogs(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/chalk.sandbox.v1.CustomImageService/GetCustomImageBuildLogs",
+            chalk_dot_sandbox_dot_v1_dot_service__pb2.GetCustomImageBuildLogsRequest.SerializeToString,
+            chalk_dot_sandbox_dot_v1_dot_service__pb2.GetCustomImageBuildLogsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
+
+    @staticmethod
+    def GetCustomImageBuildWorkflow(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/chalk.sandbox.v1.CustomImageService/GetCustomImageBuildWorkflow",
+            chalk_dot_sandbox_dot_v1_dot_service__pb2.GetCustomImageBuildWorkflowRequest.SerializeToString,
+            chalk_dot_sandbox_dot_v1_dot_service__pb2.GetCustomImageBuildWorkflowResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
+
+    @staticmethod
+    def GetCustomImageBuildUsage(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/chalk.sandbox.v1.CustomImageService/GetCustomImageBuildUsage",
+            chalk_dot_sandbox_dot_v1_dot_service__pb2.GetCustomImageBuildUsageRequest.SerializeToString,
+            chalk_dot_sandbox_dot_v1_dot_service__pb2.GetCustomImageBuildUsageResponse.FromString,
             options,
             channel_credentials,
             insecure,

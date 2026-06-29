@@ -8,14 +8,21 @@ from google.protobuf import descriptor as _descriptor
 from google.protobuf import descriptor_pool as _descriptor_pool
 from google.protobuf import symbol_database as _symbol_database
 from google.protobuf.internal import builder as _builder
-from chalkcompute._proto_pool import DESCRIPTOR_POOL as _DESCRIPTOR_POOL, SYMBOL_DATABASE as _SYMBOL_DATABASE
+from chalkcompute._proto_pool import (
+    DESCRIPTOR_POOL as _DESCRIPTOR_POOL,
+    SYMBOL_DATABASE as _SYMBOL_DATABASE,
+)
 # @@protoc_insertion_point(imports)
 
 _sym_db = _SYMBOL_DATABASE
 
 
-from chalkcompute._gen.chalk.auth.v1 import featurepermission_pb2 as chalk_dot_auth_dot_v1_dot_featurepermission__pb2
-from chalkcompute._gen.chalk.auth.v1 import permissions_pb2 as chalk_dot_auth_dot_v1_dot_permissions__pb2
+from chalkcompute._gen.chalk.auth.v1 import (
+    featurepermission_pb2 as chalk_dot_auth_dot_v1_dot_featurepermission__pb2,
+)
+from chalkcompute._gen.chalk.auth.v1 import (
+    permissions_pb2 as chalk_dot_auth_dot_v1_dot_permissions__pb2,
+)
 from google.protobuf import timestamp_pb2 as google_dot_protobuf_dot_timestamp__pb2
 
 
@@ -25,14 +32,18 @@ DESCRIPTOR = _DESCRIPTOR_POOL.AddSerializedFile(
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
-_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, "chalk.auth.v1.displayagent_pb2", _globals)
+_builder.BuildTopDescriptorsAndMessages(
+    DESCRIPTOR, "chalk.auth.v1.displayagent_pb2", _globals
+)
 if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["DESCRIPTOR"]._options = None
     _globals[
         "DESCRIPTOR"
     ]._serialized_options = b"\n\021com.chalk.auth.v1B\021DisplayagentProtoP\001Z\016auth/v1;authv1\242\002\003CAX\252\002\rChalk.Auth.V1\312\002\rChalk\\Auth\\V1\342\002\031Chalk\\Auth\\V1\\GPBMetadata\352\002\017Chalk::Auth::V1"
     _globals["_DISPLAYUSERAGENT"].fields_by_name["client_id"]._options = None
-    _globals["_DISPLAYUSERAGENT"].fields_by_name["client_id"]._serialized_options = b"\030\001"
+    _globals["_DISPLAYUSERAGENT"].fields_by_name[
+        "client_id"
+    ]._serialized_options = b"\030\001"
     _globals["_DISPLAYPERMISSION"]._serialized_start = 156
     _globals["_DISPLAYPERMISSION"]._serialized_end = 254
     _globals["_DISPLAYENVIRONMENTPERMISSIONS"]._serialized_start = 257

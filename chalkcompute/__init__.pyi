@@ -15,6 +15,7 @@ from chalkcompute._container import AllowedRoute as AllowedRoute
 from chalkcompute._container import Container as Container
 from chalkcompute._container import ContainerError as ContainerError
 from chalkcompute._container import ContainerInfo as ContainerInfo
+from chalkcompute._container import ContainerSession as ContainerSession
 from chalkcompute._container import ContainerSecurityPolicy as ContainerSecurityPolicy
 from chalkcompute._container import ExecResult as ContainerExecResult
 from chalkcompute._container import ImageBuildError as ImageBuildError
@@ -79,6 +80,7 @@ __all__ = [
     "Container",
     "ContainerError",
     "ContainerInfo",
+    "ContainerSession",
     "ContainerSecurityPolicy",
     "ContainerExecResult",
     "AllowedRoute",

@@ -8,13 +8,18 @@ from google.protobuf import descriptor as _descriptor
 from google.protobuf import descriptor_pool as _descriptor_pool
 from google.protobuf import symbol_database as _symbol_database
 from google.protobuf.internal import builder as _builder
-from chalkcompute._proto_pool import DESCRIPTOR_POOL as _DESCRIPTOR_POOL, SYMBOL_DATABASE as _SYMBOL_DATABASE
+from chalkcompute._proto_pool import (
+    DESCRIPTOR_POOL as _DESCRIPTOR_POOL,
+    SYMBOL_DATABASE as _SYMBOL_DATABASE,
+)
 # @@protoc_insertion_point(imports)
 
 _sym_db = _SYMBOL_DATABASE
 
 
-from chalkcompute._gen.chalk.utils.v1 import encoding_pb2 as chalk_dot_utils_dot_v1_dot_encoding__pb2
+from chalkcompute._gen.chalk.utils.v1 import (
+    encoding_pb2 as chalk_dot_utils_dot_v1_dot_encoding__pb2,
+)
 from google.protobuf import descriptor_pb2 as google_dot_protobuf_dot_descriptor__pb2
 
 
@@ -24,7 +29,9 @@ DESCRIPTOR = _DESCRIPTOR_POOL.AddSerializedFile(
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
-_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, "chalk.auth.v1.permissions_pb2", _globals)
+_builder.BuildTopDescriptorsAndMessages(
+    DESCRIPTOR, "chalk.auth.v1.permissions_pb2", _globals
+)
 if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["DESCRIPTOR"]._options = None
     _globals[
@@ -37,8 +44,12 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_PERMISSION"].values_by_name["PERMISSION_UNSPECIFIED"]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_UNSPECIFIED"
-    ]._serialized_options = b"\312>%Default value -- should never be set.\322>\013unspecified"
-    _globals["_PERMISSION"].values_by_name["PERMISSION_INSECURE_UNAUTHENTICATED"]._options = None
+    ]._serialized_options = (
+        b"\312>%Default value -- should never be set.\322>\013unspecified"
+    )
+    _globals["_PERMISSION"].values_by_name[
+        "PERMISSION_INSECURE_UNAUTHENTICATED"
+    ]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_INSECURE_UNAUTHENTICATED"
     ]._serialized_options = b"\312>\030Unauthenticated endpoint\322>\010insecure"
@@ -54,10 +65,14 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_QUERY_OFFLINE"
     ]._serialized_options = b"\312>\027Query offline features.\322>\rquery.offline"
-    _globals["_PERMISSION"].values_by_name["PERMISSION_MONITORING_CREATE"]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_MONITORING_CREATE"
-    ]._serialized_options = b"\312>\033Create a new chart or alert\322>\021monitoring.create"
+    ]._options = None
+    _globals["_PERMISSION"].values_by_name[
+        "PERMISSION_MONITORING_CREATE"
+    ]._serialized_options = (
+        b"\312>\033Create a new chart or alert\322>\021monitoring.create"
+    )
     _globals["_PERMISSION"].values_by_name["PERMISSION_MONITORING_READ"]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_MONITORING_READ"
@@ -65,7 +80,9 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_PERMISSION"].values_by_name["PERMISSION_TEAM_ADD"]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_TEAM_ADD"
-    ]._serialized_options = b"\312>%Add team members to your organization\322>\010team.add"
+    ]._serialized_options = (
+        b"\312>%Add team members to your organization\322>\010team.add"
+    )
     _globals["_PERMISSION"].values_by_name["PERMISSION_TEAM_DELETE"]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_TEAM_DELETE"
@@ -73,15 +90,21 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_PERMISSION"].values_by_name["PERMISSION_TEAM_LIST"]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_TEAM_LIST"
-    ]._serialized_options = b"\312>)See the team members in your organization\322>\tteam.list"
+    ]._serialized_options = (
+        b"\312>)See the team members in your organization\322>\tteam.list"
+    )
     _globals["_PERMISSION"].values_by_name["PERMISSION_TEAM_ADMIN"]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_TEAM_ADMIN"
-    ]._serialized_options = b"\312>6Configure authentication options for your organization\322>\nteam.admin"
+    ]._serialized_options = (
+        b"\312>6Configure authentication options for your organization\322>\nteam.admin"
+    )
     _globals["_PERMISSION"].values_by_name["PERMISSION_DEPLOY_READ"]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_DEPLOY_READ"
-    ]._serialized_options = b"\312>#Read information about deployments.\322>\013deploy.read"
+    ]._serialized_options = (
+        b"\312>#Read information about deployments.\322>\013deploy.read"
+    )
     _globals["_PERMISSION"].values_by_name["PERMISSION_DEPLOY_CREATE"]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_DEPLOY_CREATE"
@@ -89,11 +112,15 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_PERMISSION"].values_by_name["PERMISSION_DEPLOY_PREVIEW"]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_DEPLOY_PREVIEW"
-    ]._serialized_options = b"\312>\037Create a new branch deployment.\322>\016deploy.preview"
+    ]._serialized_options = (
+        b"\312>\037Create a new branch deployment.\322>\016deploy.preview"
+    )
     _globals["_PERMISSION"].values_by_name["PERMISSION_DEPLOY_REDEPLOY"]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_DEPLOY_REDEPLOY"
-    ]._serialized_options = b"\312> Redeploy an existing deployment.\322>\017deploy.redeploy"
+    ]._serialized_options = (
+        b"\312> Redeploy an existing deployment.\322>\017deploy.redeploy"
+    )
     _globals["_PERMISSION"].values_by_name["PERMISSION_LOGS_LIST"]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_LOGS_LIST"
@@ -109,7 +136,9 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_PERMISSION"].values_by_name["PERMISSION_SECRETS_WRITE"]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_SECRETS_WRITE"
-    ]._serialized_options = b"\312>(Create, modify, or delete secret values.\322>\rsecrets.write"
+    ]._serialized_options = (
+        b"\312>(Create, modify, or delete secret values.\322>\rsecrets.write"
+    )
     _globals["_PERMISSION"].values_by_name["PERMISSION_SECRETS_DECRYPT"]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_SECRETS_DECRYPT"
@@ -121,17 +150,19 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_PERMISSION"].values_by_name["PERMISSION_TOKENS_WRITE"]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_TOKENS_WRITE"
-    ]._serialized_options = b"\312>)Create, modify, or delete service tokens.\322>\014tokens.write"
+    ]._serialized_options = (
+        b"\312>)Create, modify, or delete service tokens.\322>\014tokens.write"
+    )
     _globals["_PERMISSION"].values_by_name["PERMISSION_TOKENS_LIST"]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_TOKENS_LIST"
-    ]._serialized_options = (
-        b"\312>CList the service tokens and see client ids, but not client secrets.\322>\013tokens.list"
-    )
+    ]._serialized_options = b"\312>CList the service tokens and see client ids, but not client secrets.\322>\013tokens.list"
     _globals["_PERMISSION"].values_by_name["PERMISSION_MIGRATE_READ"]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_MIGRATE_READ"
-    ]._serialized_options = b'\312>"View information about migrations.\322>\014migrate.read'
+    ]._serialized_options = (
+        b'\312>"View information about migrations.\322>\014migrate.read'
+    )
     _globals["_PERMISSION"].values_by_name["PERMISSION_MIGRATE_PLAN"]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_MIGRATE_PLAN"
@@ -139,7 +170,9 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_PERMISSION"].values_by_name["PERMISSION_MIGRATE_EXECUTE"]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_MIGRATE_EXECUTE"
-    ]._serialized_options = b"\312>\031Execute a migration plan.\322>\017migrate.execute"
+    ]._serialized_options = (
+        b"\312>\031Execute a migration plan.\322>\017migrate.execute"
+    )
     _globals["_PERMISSION"].values_by_name["PERMISSION_PROJECT_CREATE"]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_PROJECT_CREATE"
@@ -152,37 +185,55 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_BILLING_READ"
     ]._serialized_options = b"\312>\030Read billing information\322>\014billing.read"
-    _globals["_PERMISSION"].values_by_name["PERMISSION_AUTH_SERVICE_MANAGER"]._options = None
+    _globals["_PERMISSION"].values_by_name[
+        "PERMISSION_AUTH_SERVICE_MANAGER"
+    ]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_AUTH_SERVICE_MANAGER"
     ]._serialized_options = b"\312>\023Manage Auth Service\322>\024auth_service.manager"
-    _globals["_PERMISSION"].values_by_name["PERMISSION_INFRASTRUCTURE_READ"]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_INFRASTRUCTURE_READ"
-    ]._serialized_options = b"\312>\035Read infrastructure workflows\322>\023infrastructure.read"
-    _globals["_PERMISSION"].values_by_name["PERMISSION_INFRASTRUCTURE_WRITE"]._options = None
+    ]._options = None
+    _globals["_PERMISSION"].values_by_name[
+        "PERMISSION_INFRASTRUCTURE_READ"
+    ]._serialized_options = (
+        b"\312>\035Read infrastructure workflows\322>\023infrastructure.read"
+    )
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_INFRASTRUCTURE_WRITE"
-    ]._serialized_options = b"\312>*Approve or cancel infrastructure workflows\322>\024infrastructure.write"
-    _globals["_PERMISSION"].values_by_name["PERMISSION_ENVIRONMENT_CREATE"]._options = None
+    ]._options = None
+    _globals["_PERMISSION"].values_by_name[
+        "PERMISSION_INFRASTRUCTURE_WRITE"
+    ]._serialized_options = (
+        b"\312>*Approve or cancel infrastructure workflows\322>\024infrastructure.write"
+    )
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_ENVIRONMENT_CREATE"
-    ]._serialized_options = b"\312>\036Create and manage environments\322>\022environment.create"
-    _globals["_PERMISSION"].values_by_name["PERMISSION_INTERNAL_DATAPLANE_STATUS_UPDATE"]._options = None
+    ]._options = None
+    _globals["_PERMISSION"].values_by_name[
+        "PERMISSION_ENVIRONMENT_CREATE"
+    ]._serialized_options = (
+        b"\312>\036Create and manage environments\322>\022environment.create"
+    )
+    _globals["_PERMISSION"].values_by_name[
+        "PERMISSION_INTERNAL_DATAPLANE_STATUS_UPDATE"
+    ]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_INTERNAL_DATAPLANE_STATUS_UPDATE"
     ]._serialized_options = b"\312>GUpdate container and scaling group status from the dataplane controller\322> internal.dataplane_status_update"
-    _globals["_PERMISSION"].values_by_name["PERMISSION_INTERNAL_WORKING_TOKEN_EXCHANGE"]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_INTERNAL_WORKING_TOKEN_EXCHANGE"
-    ]._serialized_options = (
-        b"\312>;Use an exchange token to obtain a short-lived working token\322>\037internal.working_token_exchange"
-    )
+    ]._options = None
+    _globals["_PERMISSION"].values_by_name[
+        "PERMISSION_INTERNAL_WORKING_TOKEN_EXCHANGE"
+    ]._serialized_options = b"\312>;Use an exchange token to obtain a short-lived working token\322>\037internal.working_token_exchange"
     _globals["_PERMISSION"].values_by_name["PERMISSION_BILLING_WRITE"]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_BILLING_WRITE"
     ]._serialized_options = b"\312>>Manage billing settings, payment methods, and credit purchases\322>\rbilling.write"
-    _globals["_PERMISSION"].values_by_name["PERMISSION_QUERY_OFFLINE_READ"]._options = None
+    _globals["_PERMISSION"].values_by_name[
+        "PERMISSION_QUERY_OFFLINE_READ"
+    ]._options = None
     _globals["_PERMISSION"].values_by_name[
         "PERMISSION_QUERY_OFFLINE_READ"
     ]._serialized_options = b"\312>UView offline query metadata (datasets, query plans, results) without running queries.\322>\022query.offline_read"

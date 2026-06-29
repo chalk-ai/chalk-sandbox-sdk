@@ -45,7 +45,9 @@ class Schema(_message.Message):
         VALUE_FIELD_NUMBER: _ClassVar[int]
         key: str
         value: str
-        def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
+        def __init__(
+            self, key: _Optional[str] = ..., value: _Optional[str] = ...
+        ) -> None: ...
 
     COLUMNS_FIELD_NUMBER: _ClassVar[int]
     METADATA_FIELD_NUMBER: _ClassVar[int]
@@ -65,7 +67,9 @@ class Field(_message.Message):
         VALUE_FIELD_NUMBER: _ClassVar[int]
         key: str
         value: str
-        def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
+        def __init__(
+            self, key: _Optional[str] = ..., value: _Optional[str] = ...
+        ) -> None: ...
 
     NAME_FIELD_NUMBER: _ClassVar[int]
     ARROW_TYPE_FIELD_NUMBER: _ClassVar[int]
@@ -98,7 +102,11 @@ class Timestamp(_message.Message):
     TIMEZONE_FIELD_NUMBER: _ClassVar[int]
     time_unit: TimeUnit
     timezone: str
-    def __init__(self, time_unit: _Optional[_Union[TimeUnit, str]] = ..., timezone: _Optional[str] = ...) -> None: ...
+    def __init__(
+        self,
+        time_unit: _Optional[_Union[TimeUnit, str]] = ...,
+        timezone: _Optional[str] = ...,
+    ) -> None: ...
 
 class Decimal(_message.Message):
     __slots__ = ("precision", "scale")
@@ -106,13 +114,17 @@ class Decimal(_message.Message):
     SCALE_FIELD_NUMBER: _ClassVar[int]
     precision: int
     scale: int
-    def __init__(self, precision: _Optional[int] = ..., scale: _Optional[int] = ...) -> None: ...
+    def __init__(
+        self, precision: _Optional[int] = ..., scale: _Optional[int] = ...
+    ) -> None: ...
 
 class List(_message.Message):
     __slots__ = ("field_type",)
     FIELD_TYPE_FIELD_NUMBER: _ClassVar[int]
     field_type: Field
-    def __init__(self, field_type: _Optional[_Union[Field, _Mapping]] = ...) -> None: ...
+    def __init__(
+        self, field_type: _Optional[_Union[Field, _Mapping]] = ...
+    ) -> None: ...
 
 class FixedSizeList(_message.Message):
     __slots__ = ("field_type", "list_size")
@@ -121,14 +133,18 @@ class FixedSizeList(_message.Message):
     field_type: Field
     list_size: int
     def __init__(
-        self, field_type: _Optional[_Union[Field, _Mapping]] = ..., list_size: _Optional[int] = ...
+        self,
+        field_type: _Optional[_Union[Field, _Mapping]] = ...,
+        list_size: _Optional[int] = ...,
     ) -> None: ...
 
 class Struct(_message.Message):
     __slots__ = ("sub_field_types",)
     SUB_FIELD_TYPES_FIELD_NUMBER: _ClassVar[int]
     sub_field_types: _containers.RepeatedCompositeFieldContainer[Field]
-    def __init__(self, sub_field_types: _Optional[_Iterable[_Union[Field, _Mapping]]] = ...) -> None: ...
+    def __init__(
+        self, sub_field_types: _Optional[_Iterable[_Union[Field, _Mapping]]] = ...
+    ) -> None: ...
 
 class Map(_message.Message):
     __slots__ = ("key_field", "item_field", "keys_sorted")
@@ -152,7 +168,9 @@ class ScalarListValue(_message.Message):
     arrow_data: bytes
     schema: Schema
     def __init__(
-        self, arrow_data: _Optional[bytes] = ..., schema: _Optional[_Union[Schema, _Mapping]] = ...
+        self,
+        arrow_data: _Optional[bytes] = ...,
+        schema: _Optional[_Union[Schema, _Mapping]] = ...,
     ) -> None: ...
 
 class ScalarTime32Value(_message.Message):
@@ -162,7 +180,9 @@ class ScalarTime32Value(_message.Message):
     time32_second_value: int
     time32_millisecond_value: int
     def __init__(
-        self, time32_second_value: _Optional[int] = ..., time32_millisecond_value: _Optional[int] = ...
+        self,
+        time32_second_value: _Optional[int] = ...,
+        time32_millisecond_value: _Optional[int] = ...,
     ) -> None: ...
 
 class ScalarTime64Value(_message.Message):
@@ -172,7 +192,9 @@ class ScalarTime64Value(_message.Message):
     time64_microsecond_value: int
     time64_nanosecond_value: int
     def __init__(
-        self, time64_microsecond_value: _Optional[int] = ..., time64_nanosecond_value: _Optional[int] = ...
+        self,
+        time64_microsecond_value: _Optional[int] = ...,
+        time64_nanosecond_value: _Optional[int] = ...,
     ) -> None: ...
 
 class ScalarTimestampValue(_message.Message):
@@ -220,7 +242,9 @@ class ScalarFixedSizeBinary(_message.Message):
     LENGTH_FIELD_NUMBER: _ClassVar[int]
     values: bytes
     length: int
-    def __init__(self, values: _Optional[bytes] = ..., length: _Optional[int] = ...) -> None: ...
+    def __init__(
+        self, values: _Optional[bytes] = ..., length: _Optional[int] = ...
+    ) -> None: ...
 
 class DecimalValue(_message.Message):
     __slots__ = ("value", "precision", "scale")
@@ -231,7 +255,10 @@ class DecimalValue(_message.Message):
     precision: int
     scale: int
     def __init__(
-        self, value: _Optional[bytes] = ..., precision: _Optional[int] = ..., scale: _Optional[int] = ...
+        self,
+        value: _Optional[bytes] = ...,
+        precision: _Optional[int] = ...,
+        scale: _Optional[int] = ...,
     ) -> None: ...
 
 class Extension(_message.Message):
@@ -241,7 +268,9 @@ class Extension(_message.Message):
     name: str
     storage_type: ArrowType
     def __init__(
-        self, name: _Optional[str] = ..., storage_type: _Optional[_Union[ArrowType, _Mapping]] = ...
+        self,
+        name: _Optional[str] = ...,
+        storage_type: _Optional[_Union[ArrowType, _Mapping]] = ...,
     ) -> None: ...
 
 class ExtensionValue(_message.Message):
@@ -397,7 +426,9 @@ class ScalarValue(_message.Message):
         map_value: _Optional[_Union[ScalarListValue, _Mapping]] = ...,
         binary_value: _Optional[bytes] = ...,
         large_binary_value: _Optional[bytes] = ...,
-        fixed_size_binary_value: _Optional[_Union[ScalarFixedSizeBinary, _Mapping]] = ...,
+        fixed_size_binary_value: _Optional[
+            _Union[ScalarFixedSizeBinary, _Mapping]
+        ] = ...,
         decimal128_value: _Optional[_Union[DecimalValue, _Mapping]] = ...,
         decimal256_value: _Optional[_Union[DecimalValue, _Mapping]] = ...,
         extension_value: _Optional[_Union[ExtensionValue, _Mapping]] = ...,

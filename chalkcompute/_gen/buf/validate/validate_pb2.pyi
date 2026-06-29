@@ -53,7 +53,10 @@ class Rule(_message.Message):
     message: str
     expression: str
     def __init__(
-        self, id: _Optional[str] = ..., message: _Optional[str] = ..., expression: _Optional[str] = ...
+        self,
+        id: _Optional[str] = ...,
+        message: _Optional[str] = ...,
+        expression: _Optional[str] = ...,
     ) -> None: ...
 
 class MessageRules(_message.Message):
@@ -77,7 +80,9 @@ class MessageOneofRule(_message.Message):
     REQUIRED_FIELD_NUMBER: _ClassVar[int]
     fields: _containers.RepeatedScalarFieldContainer[str]
     required: bool
-    def __init__(self, fields: _Optional[_Iterable[str]] = ..., required: bool = ...) -> None: ...
+    def __init__(
+        self, fields: _Optional[_Iterable[str]] = ..., required: bool = ...
+    ) -> None: ...
 
 class OneofRules(_message.Message):
     __slots__ = ("required",)
@@ -200,7 +205,9 @@ class PredefinedRules(_message.Message):
     __slots__ = ("cel",)
     CEL_FIELD_NUMBER: _ClassVar[int]
     cel: _containers.RepeatedCompositeFieldContainer[Rule]
-    def __init__(self, cel: _Optional[_Iterable[_Union[Rule, _Mapping]]] = ...) -> None: ...
+    def __init__(
+        self, cel: _Optional[_Iterable[_Union[Rule, _Mapping]]] = ...
+    ) -> None: ...
 
 class FloatRules(_message.Message):
     __slots__ = ("const", "lt", "lte", "gt", "gte", "not_in", "finite", "example")
@@ -575,7 +582,9 @@ class BoolRules(_message.Message):
     EXAMPLE_FIELD_NUMBER: _ClassVar[int]
     const: bool
     example: _containers.RepeatedScalarFieldContainer[bool]
-    def __init__(self, const: bool = ..., example: _Optional[_Iterable[bool]] = ...) -> None: ...
+    def __init__(
+        self, const: bool = ..., example: _Optional[_Iterable[bool]] = ...
+    ) -> None: ...
 
 class StringRules(_message.Message):
     __slots__ = (
@@ -907,12 +916,24 @@ class FieldMaskRules(_message.Message):
         self,
         const: _Optional[_Union[_field_mask_pb2.FieldMask, _Mapping]] = ...,
         not_in: _Optional[_Iterable[str]] = ...,
-        example: _Optional[_Iterable[_Union[_field_mask_pb2.FieldMask, _Mapping]]] = ...,
+        example: _Optional[
+            _Iterable[_Union[_field_mask_pb2.FieldMask, _Mapping]]
+        ] = ...,
         **kwargs,
     ) -> None: ...
 
 class TimestampRules(_message.Message):
-    __slots__ = ("const", "lt", "lte", "lt_now", "gt", "gte", "gt_now", "within", "example")
+    __slots__ = (
+        "const",
+        "lt",
+        "lte",
+        "lt_now",
+        "gt",
+        "gte",
+        "gt_now",
+        "within",
+        "example",
+    )
     Extensions: _python_message._ExtensionDict
     CONST_FIELD_NUMBER: _ClassVar[int]
     LT_FIELD_NUMBER: _ClassVar[int]
@@ -949,7 +970,9 @@ class Violations(_message.Message):
     __slots__ = ("violations",)
     VIOLATIONS_FIELD_NUMBER: _ClassVar[int]
     violations: _containers.RepeatedCompositeFieldContainer[Violation]
-    def __init__(self, violations: _Optional[_Iterable[_Union[Violation, _Mapping]]] = ...) -> None: ...
+    def __init__(
+        self, violations: _Optional[_Iterable[_Union[Violation, _Mapping]]] = ...
+    ) -> None: ...
 
 class Violation(_message.Message):
     __slots__ = ("field", "rule", "rule_id", "message", "for_key")
@@ -976,7 +999,9 @@ class FieldPath(_message.Message):
     __slots__ = ("elements",)
     ELEMENTS_FIELD_NUMBER: _ClassVar[int]
     elements: _containers.RepeatedCompositeFieldContainer[FieldPathElement]
-    def __init__(self, elements: _Optional[_Iterable[_Union[FieldPathElement, _Mapping]]] = ...) -> None: ...
+    def __init__(
+        self, elements: _Optional[_Iterable[_Union[FieldPathElement, _Mapping]]] = ...
+    ) -> None: ...
 
 class FieldPathElement(_message.Message):
     __slots__ = (
@@ -1015,9 +1040,15 @@ class FieldPathElement(_message.Message):
         self,
         field_number: _Optional[int] = ...,
         field_name: _Optional[str] = ...,
-        field_type: _Optional[_Union[_descriptor_pb2.FieldDescriptorProto.Type, str]] = ...,
-        key_type: _Optional[_Union[_descriptor_pb2.FieldDescriptorProto.Type, str]] = ...,
-        value_type: _Optional[_Union[_descriptor_pb2.FieldDescriptorProto.Type, str]] = ...,
+        field_type: _Optional[
+            _Union[_descriptor_pb2.FieldDescriptorProto.Type, str]
+        ] = ...,
+        key_type: _Optional[
+            _Union[_descriptor_pb2.FieldDescriptorProto.Type, str]
+        ] = ...,
+        value_type: _Optional[
+            _Union[_descriptor_pb2.FieldDescriptorProto.Type, str]
+        ] = ...,
         index: _Optional[int] = ...,
         bool_key: bool = ...,
         int_key: _Optional[int] = ...,

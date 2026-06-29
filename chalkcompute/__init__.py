@@ -13,6 +13,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "Container": ("chalkcompute._container", "Container"),
     "ContainerError": ("chalkcompute._container", "ContainerError"),
     "ContainerInfo": ("chalkcompute._container", "ContainerInfo"),
+    "ContainerSession": ("chalkcompute._container", "ContainerSession"),
     "ContainerSecurityPolicy": ("chalkcompute._container", "ContainerSecurityPolicy"),
     "ContainerExecResult": ("chalkcompute._container", "ExecResult"),
     "AllowedRoute": ("chalkcompute._container", "AllowedRoute"),

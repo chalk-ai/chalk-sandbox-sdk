@@ -1,4 +1,6 @@
-from chalkcompute._gen.chalk.auth.v1 import featurepermission_pb2 as _featurepermission_pb2
+from chalkcompute._gen.chalk.auth.v1 import (
+    featurepermission_pb2 as _featurepermission_pb2,
+)
 from chalkcompute._gen.chalk.auth.v1 import permissions_pb2 as _permissions_pb2
 from google.protobuf.internal import containers as _containers
 from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
@@ -40,8 +42,12 @@ class EnvironmentPermissions(_message.Message):
     customer_claims: _containers.RepeatedCompositeFieldContainer[CustomClaim]
     def __init__(
         self,
-        permissions: _Optional[_Iterable[_Union[_permissions_pb2.Permission, str]]] = ...,
-        feature_permissions: _Optional[_Union[_featurepermission_pb2.FeaturePermissions, _Mapping]] = ...,
+        permissions: _Optional[
+            _Iterable[_Union[_permissions_pb2.Permission, str]]
+        ] = ...,
+        feature_permissions: _Optional[
+            _Union[_featurepermission_pb2.FeaturePermissions, _Mapping]
+        ] = ...,
         customer_claims: _Optional[_Iterable[_Union[CustomClaim, _Mapping]]] = ...,
     ) -> None: ...
 
@@ -49,10 +55,22 @@ class TeamPermissions(_message.Message):
     __slots__ = ("permissions",)
     PERMISSIONS_FIELD_NUMBER: _ClassVar[int]
     permissions: _containers.RepeatedScalarFieldContainer[_permissions_pb2.Permission]
-    def __init__(self, permissions: _Optional[_Iterable[_Union[_permissions_pb2.Permission, str]]] = ...) -> None: ...
+    def __init__(
+        self,
+        permissions: _Optional[
+            _Iterable[_Union[_permissions_pb2.Permission, str]]
+        ] = ...,
+    ) -> None: ...
 
 class UserAgent(_message.Message):
-    __slots__ = ("client_id", "user_id", "team_id", "permissions_by_environment", "impersonated", "team_permissions")
+    __slots__ = (
+        "client_id",
+        "user_id",
+        "team_id",
+        "permissions_by_environment",
+        "impersonated",
+        "team_permissions",
+    )
     class PermissionsByEnvironmentEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -60,7 +78,9 @@ class UserAgent(_message.Message):
         key: str
         value: EnvironmentPermissions
         def __init__(
-            self, key: _Optional[str] = ..., value: _Optional[_Union[EnvironmentPermissions, _Mapping]] = ...
+            self,
+            key: _Optional[str] = ...,
+            value: _Optional[_Union[EnvironmentPermissions, _Mapping]] = ...,
         ) -> None: ...
 
     CLIENT_ID_FIELD_NUMBER: _ClassVar[int]
@@ -80,7 +100,9 @@ class UserAgent(_message.Message):
         client_id: _Optional[str] = ...,
         user_id: _Optional[str] = ...,
         team_id: _Optional[str] = ...,
-        permissions_by_environment: _Optional[_Mapping[str, EnvironmentPermissions]] = ...,
+        permissions_by_environment: _Optional[
+            _Mapping[str, EnvironmentPermissions]
+        ] = ...,
         impersonated: bool = ...,
         team_permissions: _Optional[_Union[TeamPermissions, _Mapping]] = ...,
     ) -> None: ...
@@ -91,7 +113,9 @@ class CustomClaim(_message.Message):
     VALUES_FIELD_NUMBER: _ClassVar[int]
     key: str
     values: _containers.RepeatedScalarFieldContainer[str]
-    def __init__(self, key: _Optional[str] = ..., values: _Optional[_Iterable[str]] = ...) -> None: ...
+    def __init__(
+        self, key: _Optional[str] = ..., values: _Optional[_Iterable[str]] = ...
+    ) -> None: ...
 
 class ServiceTokenAgent(_message.Message):
     __slots__ = (
@@ -122,18 +146,26 @@ class ServiceTokenAgent(_message.Message):
     custom_claims: _containers.RepeatedScalarFieldContainer[str]
     customer_claims: _containers.RepeatedCompositeFieldContainer[CustomClaim]
     feature_permissions: _featurepermission_pb2.FeaturePermissions
-    team_permissions: _containers.RepeatedScalarFieldContainer[_permissions_pb2.Permission]
+    team_permissions: _containers.RepeatedScalarFieldContainer[
+        _permissions_pb2.Permission
+    ]
     def __init__(
         self,
         id: _Optional[str] = ...,
         client_id: _Optional[str] = ...,
         team_id: _Optional[str] = ...,
         environment: _Optional[str] = ...,
-        permissions: _Optional[_Iterable[_Union[_permissions_pb2.Permission, str]]] = ...,
+        permissions: _Optional[
+            _Iterable[_Union[_permissions_pb2.Permission, str]]
+        ] = ...,
         custom_claims: _Optional[_Iterable[str]] = ...,
         customer_claims: _Optional[_Iterable[_Union[CustomClaim, _Mapping]]] = ...,
-        feature_permissions: _Optional[_Union[_featurepermission_pb2.FeaturePermissions, _Mapping]] = ...,
-        team_permissions: _Optional[_Iterable[_Union[_permissions_pb2.Permission, str]]] = ...,
+        feature_permissions: _Optional[
+            _Union[_featurepermission_pb2.FeaturePermissions, _Mapping]
+        ] = ...,
+        team_permissions: _Optional[
+            _Iterable[_Union[_permissions_pb2.Permission, str]]
+        ] = ...,
     ) -> None: ...
 
 class EngineAgent(_message.Message):
@@ -162,18 +194,27 @@ class MetadataServiceAgent(_message.Message):
     def __init__(self) -> None: ...
 
 class ExchangeTokenDetails(_message.Message):
-    __slots__ = ("requestable_permissions", "generation_number", "subject", "environment_id")
+    __slots__ = (
+        "requestable_permissions",
+        "generation_number",
+        "subject",
+        "environment_id",
+    )
     REQUESTABLE_PERMISSIONS_FIELD_NUMBER: _ClassVar[int]
     GENERATION_NUMBER_FIELD_NUMBER: _ClassVar[int]
     SUBJECT_FIELD_NUMBER: _ClassVar[int]
     ENVIRONMENT_ID_FIELD_NUMBER: _ClassVar[int]
-    requestable_permissions: _containers.RepeatedScalarFieldContainer[_permissions_pb2.Permission]
+    requestable_permissions: _containers.RepeatedScalarFieldContainer[
+        _permissions_pb2.Permission
+    ]
     generation_number: int
     subject: str
     environment_id: str
     def __init__(
         self,
-        requestable_permissions: _Optional[_Iterable[_Union[_permissions_pb2.Permission, str]]] = ...,
+        requestable_permissions: _Optional[
+            _Iterable[_Union[_permissions_pb2.Permission, str]]
+        ] = ...,
         generation_number: _Optional[int] = ...,
         subject: _Optional[str] = ...,
         environment_id: _Optional[str] = ...,
@@ -192,13 +233,21 @@ class TenantAgent(_message.Message):
     def __init__(
         self,
         team_id: _Optional[str] = ...,
-        permissions: _Optional[_Iterable[_Union[_permissions_pb2.Permission, str]]] = ...,
+        permissions: _Optional[
+            _Iterable[_Union[_permissions_pb2.Permission, str]]
+        ] = ...,
         environment_id: _Optional[str] = ...,
         exchange_token_details: _Optional[_Union[ExchangeTokenDetails, _Mapping]] = ...,
     ) -> None: ...
 
 class Agent(_message.Message):
-    __slots__ = ("user_agent", "service_token_agent", "engine_agent", "tenant_agent", "metadata_service_agent")
+    __slots__ = (
+        "user_agent",
+        "service_token_agent",
+        "engine_agent",
+        "tenant_agent",
+        "metadata_service_agent",
+    )
     USER_AGENT_FIELD_NUMBER: _ClassVar[int]
     SERVICE_TOKEN_AGENT_FIELD_NUMBER: _ClassVar[int]
     ENGINE_AGENT_FIELD_NUMBER: _ClassVar[int]

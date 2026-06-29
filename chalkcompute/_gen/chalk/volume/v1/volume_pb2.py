@@ -8,104 +8,136 @@ from google.protobuf import descriptor as _descriptor
 from google.protobuf import descriptor_pool as _descriptor_pool
 from google.protobuf import symbol_database as _symbol_database
 from google.protobuf.internal import builder as _builder
-from chalkcompute._proto_pool import DESCRIPTOR_POOL as _DESCRIPTOR_POOL, SYMBOL_DATABASE as _SYMBOL_DATABASE
+from chalkcompute._proto_pool import (
+    DESCRIPTOR_POOL as _DESCRIPTOR_POOL,
+    SYMBOL_DATABASE as _SYMBOL_DATABASE,
+)
 # @@protoc_insertion_point(imports)
 
 _sym_db = _SYMBOL_DATABASE
 
 
-from chalkcompute._gen.chalk.auth.v1 import permissions_pb2 as chalk_dot_auth_dot_v1_dot_permissions__pb2
+from chalkcompute._gen.chalk.auth.v1 import (
+    permissions_pb2 as chalk_dot_auth_dot_v1_dot_permissions__pb2,
+)
+from chalkcompute._gen.chalk.flags.v1 import (
+    flags_pb2 as chalk_dot_flags_dot_v1_dot_flags__pb2,
+)
 from google.protobuf import timestamp_pb2 as google_dot_protobuf_dot_timestamp__pb2
 
 
 DESCRIPTOR = _DESCRIPTOR_POOL.AddSerializedFile(
-    b'\n\x1c\x63halk/volume/v1/volume.proto\x12\x0f\x63halk.volume.v1\x1a\x1f\x63halk/auth/v1/permissions.proto\x1a\x1fgoogle/protobuf/timestamp.proto"[\n\nVolumeInfo\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x39\n\ncreated_at\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.TimestampR\tcreatedAt"m\n\x08\x46ileInfo\x12\x12\n\x04path\x18\x01 \x01(\tR\x04path\x12\x12\n\x04size\x18\x02 \x01(\x03R\x04size\x12\x39\n\nupdated_at\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.TimestampR\tupdatedAt")\n\x13\x43reateVolumeRequest\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name"K\n\x14\x43reateVolumeResponse\x12\x33\n\x06volume\x18\x01 \x01(\x0b\x32\x1b.chalk.volume.v1.VolumeInfoR\x06volume"&\n\x10GetVolumeRequest\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name"H\n\x11GetVolumeResponse\x12\x33\n\x06volume\x18\x01 \x01(\x0b\x32\x1b.chalk.volume.v1.VolumeInfoR\x06volume"P\n\x12ListVolumesRequest\x12\x1b\n\tpage_size\x18\x01 \x01(\x05R\x08pageSize\x12\x1d\n\npage_token\x18\x02 \x01(\tR\tpageToken"t\n\x13ListVolumesResponse\x12\x35\n\x07volumes\x18\x01 \x03(\x0b\x32\x1b.chalk.volume.v1.VolumeInfoR\x07volumes\x12&\n\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken")\n\x13\x44\x65leteVolumeRequest\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name"\x16\n\x14\x44\x65leteVolumeResponse"K\n\x10ListFilesRequest\x12\x1f\n\x0bvolume_name\x18\x01 \x01(\tR\nvolumeName\x12\x16\n\x06prefix\x18\x02 \x01(\tR\x06prefix"D\n\x11ListFilesResponse\x12/\n\x05\x66iles\x18\x01 \x03(\x0b\x32\x19.chalk.volume.v1.FileInfoR\x05\x66iles"\x83\x01\n\x0eGetFileRequest\x12\x1f\n\x0bvolume_name\x18\x01 \x01(\tR\nvolumeName\x12\x12\n\x04path\x18\x02 \x01(\tR\x04path\x12)\n\x0eget_signed_uri\x18\x03 \x01(\x08H\x00R\x0cgetSignedUri\x88\x01\x01\x42\x11\n\x0f_get_signed_uri"d\n\x0fGetFileResponse\x12\x14\n\x04\x64\x61ta\x18\x01 \x01(\x0cH\x00R\x04\x64\x61ta\x12\x30\n\x13signed_download_uri\x18\x02 \x01(\tH\x00R\x11signedDownloadUriB\t\n\x07\x63ontent"\x94\x01\n\x0ePutFileRequest\x12\x1f\n\x0bvolume_name\x18\x01 \x01(\tR\nvolumeName\x12\x12\n\x04path\x18\x02 \x01(\tR\x04path\x12\x14\n\x04\x64\x61ta\x18\x03 \x01(\x0cH\x00R\x04\x64\x61ta\x12,\n\x11storage_object_id\x18\x04 \x01(\tH\x00R\x0fstorageObjectIdB\t\n\x07\x63ontent"\x11\n\x0fPutFileResponse"H\n\x11RemoveFileRequest\x12\x1f\n\x0bvolume_name\x18\x01 \x01(\tR\nvolumeName\x12\x12\n\x04path\x18\x02 \x01(\tR\x04path"\x14\n\x12RemoveFileResponse"o\n\x19GetObjectUploadUriRequest\x12!\n\x0c\x63ontent_size\x18\x01 \x01(\x03R\x0b\x63ontentSize\x12\x12\n\x04hash\x18\x02 \x01(\tR\x04hash\x12\x1b\n\tpart_size\x18\x03 \x01(\x03R\x08partSize"?\n\x0fMultipartUpload\x12,\n\x12signed_upload_uris\x18\x01 \x03(\tR\x10signedUploadUris"=\n\x0fResumableUpload\x12*\n\x11signed_upload_uri\x18\x01 \x01(\tR\x0fsignedUploadUri"\x7f\n\x10\x41zureBlockUpload\x12&\n\x0fsigned_blob_uri\x18\x01 \x01(\tR\rsignedBlobUri\x12&\n\x0f\x62lock_id_prefix\x18\x02 \x01(\tR\rblockIdPrefix\x12\x1b\n\tpart_size\x18\x03 \x01(\x03R\x08partSize":\n\x0c\x44irectUpload\x12*\n\x11signed_upload_uri\x18\x01 \x01(\tR\x0fsignedUploadUri"\x9c\x02\n\x1aGetObjectUploadUriResponse\x12*\n\x11storage_object_id\x18\x01 \x01(\tR\x0fstorageObjectId\x12@\n\tmultipart\x18\x02 \x01(\x0b\x32 .chalk.volume.v1.MultipartUploadH\x00R\tmultipart\x12@\n\tresumable\x18\x03 \x01(\x0b\x32 .chalk.volume.v1.ResumableUploadH\x00R\tresumable\x12\x44\n\x0b\x61zure_block\x18\x04 \x01(\x0b\x32!.chalk.volume.v1.AzureBlockUploadH\x00R\nazureBlockB\x08\n\x06upload"I\n\x1bGetObjectDownloadUriRequest\x12*\n\x11storage_object_id\x18\x01 \x01(\tR\x0fstorageObjectId"N\n\x1cGetObjectDownloadUriResponse\x12.\n\x13signed_download_uri\x18\x01 \x01(\tR\x11signedDownloadUri2\x90\x02\n\x1d\x44\x61taPlaneObjectStorageService\x12r\n\x12GetObjectUploadUri\x12*.chalk.volume.v1.GetObjectUploadUriRequest\x1a+.chalk.volume.v1.GetObjectUploadUriResponse"\x03\x80}\x0c\x12{\n\x14GetObjectDownloadUri\x12,.chalk.volume.v1.GetObjectDownloadUriRequest\x1a-.chalk.volume.v1.GetObjectDownloadUriResponse"\x06\x90\x02\x01\x80}\x0b\x32\xf2\x05\n\rVolumeService\x12`\n\x0c\x43reateVolume\x12$.chalk.volume.v1.CreateVolumeRequest\x1a%.chalk.volume.v1.CreateVolumeResponse"\x03\x80}\x0c\x12Z\n\tGetVolume\x12!.chalk.volume.v1.GetVolumeRequest\x1a".chalk.volume.v1.GetVolumeResponse"\x06\x90\x02\x01\x80}\x0b\x12`\n\x0bListVolumes\x12#.chalk.volume.v1.ListVolumesRequest\x1a$.chalk.volume.v1.ListVolumesResponse"\x06\x90\x02\x01\x80}\x0b\x12`\n\x0c\x44\x65leteVolume\x12$.chalk.volume.v1.DeleteVolumeRequest\x1a%.chalk.volume.v1.DeleteVolumeResponse"\x03\x80}\x0e\x12Z\n\tListFiles\x12!.chalk.volume.v1.ListFilesRequest\x1a".chalk.volume.v1.ListFilesResponse"\x06\x90\x02\x01\x80}\x0b\x12T\n\x07GetFile\x12\x1f.chalk.volume.v1.GetFileRequest\x1a .chalk.volume.v1.GetFileResponse"\x06\x90\x02\x01\x80}\x0b\x12Q\n\x07PutFile\x12\x1f.chalk.volume.v1.PutFileRequest\x1a .chalk.volume.v1.PutFileResponse"\x03\x80}\x0c\x12Z\n\nRemoveFile\x12".chalk.volume.v1.RemoveFileRequest\x1a#.chalk.volume.v1.RemoveFileResponse"\x03\x80}\x0e\x42\x94\x01\n\x13\x63om.chalk.volume.v1B\x0bVolumeProtoP\x01Z\x12volume/v1;volumev1\xa2\x02\x03\x43VX\xaa\x02\x0f\x43halk.Volume.V1\xca\x02\x0f\x43halk\\Volume\\V1\xe2\x02\x1b\x43halk\\Volume\\V1\\GPBMetadata\xea\x02\x11\x43halk::Volume::V1b\x06proto3'
+    b'\n\x1c\x63halk/volume/v1/volume.proto\x12\x0f\x63halk.volume.v1\x1a\x1f\x63halk/auth/v1/permissions.proto\x1a\x1a\x63halk/flags/v1/flags.proto\x1a\x1fgoogle/protobuf/timestamp.proto"[\n\nVolumeInfo\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x39\n\ncreated_at\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.TimestampR\tcreatedAt"m\n\x08\x46ileInfo\x12\x12\n\x04path\x18\x01 \x01(\tR\x04path\x12\x12\n\x04size\x18\x02 \x01(\x03R\x04size\x12\x39\n\nupdated_at\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.TimestampR\tupdatedAt")\n\x13\x43reateVolumeRequest\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name"K\n\x14\x43reateVolumeResponse\x12\x33\n\x06volume\x18\x01 \x01(\x0b\x32\x1b.chalk.volume.v1.VolumeInfoR\x06volume"&\n\x10GetVolumeRequest\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name"H\n\x11GetVolumeResponse\x12\x33\n\x06volume\x18\x01 \x01(\x0b\x32\x1b.chalk.volume.v1.VolumeInfoR\x06volume"P\n\x12ListVolumesRequest\x12\x1b\n\tpage_size\x18\x01 \x01(\x05R\x08pageSize\x12\x1d\n\npage_token\x18\x02 \x01(\tR\tpageToken"t\n\x13ListVolumesResponse\x12\x35\n\x07volumes\x18\x01 \x03(\x0b\x32\x1b.chalk.volume.v1.VolumeInfoR\x07volumes\x12&\n\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken")\n\x13\x44\x65leteVolumeRequest\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name"\x16\n\x14\x44\x65leteVolumeResponse"K\n\x10ListFilesRequest\x12\x1f\n\x0bvolume_name\x18\x01 \x01(\tR\nvolumeName\x12\x16\n\x06prefix\x18\x02 \x01(\tR\x06prefix"D\n\x11ListFilesResponse\x12/\n\x05\x66iles\x18\x01 \x03(\x0b\x32\x19.chalk.volume.v1.FileInfoR\x05\x66iles"\x83\x01\n\x0eGetFileRequest\x12\x1f\n\x0bvolume_name\x18\x01 \x01(\tR\nvolumeName\x12\x12\n\x04path\x18\x02 \x01(\tR\x04path\x12)\n\x0eget_signed_uri\x18\x03 \x01(\x08H\x00R\x0cgetSignedUri\x88\x01\x01\x42\x11\n\x0f_get_signed_uri"d\n\x0fGetFileResponse\x12\x14\n\x04\x64\x61ta\x18\x01 \x01(\x0cH\x00R\x04\x64\x61ta\x12\x30\n\x13signed_download_uri\x18\x02 \x01(\tH\x00R\x11signedDownloadUriB\t\n\x07\x63ontent"\x94\x01\n\x0ePutFileRequest\x12\x1f\n\x0bvolume_name\x18\x01 \x01(\tR\nvolumeName\x12\x12\n\x04path\x18\x02 \x01(\tR\x04path\x12\x14\n\x04\x64\x61ta\x18\x03 \x01(\x0cH\x00R\x04\x64\x61ta\x12,\n\x11storage_object_id\x18\x04 \x01(\tH\x00R\x0fstorageObjectIdB\t\n\x07\x63ontent"\x11\n\x0fPutFileResponse"H\n\x11RemoveFileRequest\x12\x1f\n\x0bvolume_name\x18\x01 \x01(\tR\nvolumeName\x12\x12\n\x04path\x18\x02 \x01(\tR\x04path"\x14\n\x12RemoveFileResponse"o\n\x19GetObjectUploadUriRequest\x12!\n\x0c\x63ontent_size\x18\x01 \x01(\x03R\x0b\x63ontentSize\x12\x12\n\x04hash\x18\x02 \x01(\tR\x04hash\x12\x1b\n\tpart_size\x18\x03 \x01(\x03R\x08partSize"?\n\x0fMultipartUpload\x12,\n\x12signed_upload_uris\x18\x01 \x03(\tR\x10signedUploadUris"=\n\x0fResumableUpload\x12*\n\x11signed_upload_uri\x18\x01 \x01(\tR\x0fsignedUploadUri"\x7f\n\x10\x41zureBlockUpload\x12&\n\x0fsigned_blob_uri\x18\x01 \x01(\tR\rsignedBlobUri\x12&\n\x0f\x62lock_id_prefix\x18\x02 \x01(\tR\rblockIdPrefix\x12\x1b\n\tpart_size\x18\x03 \x01(\x03R\x08partSize":\n\x0c\x44irectUpload\x12*\n\x11signed_upload_uri\x18\x01 \x01(\tR\x0fsignedUploadUri"\x9c\x02\n\x1aGetObjectUploadUriResponse\x12*\n\x11storage_object_id\x18\x01 \x01(\tR\x0fstorageObjectId\x12@\n\tmultipart\x18\x02 \x01(\x0b\x32 .chalk.volume.v1.MultipartUploadH\x00R\tmultipart\x12@\n\tresumable\x18\x03 \x01(\x0b\x32 .chalk.volume.v1.ResumableUploadH\x00R\tresumable\x12\x44\n\x0b\x61zure_block\x18\x04 \x01(\x0b\x32!.chalk.volume.v1.AzureBlockUploadH\x00R\nazureBlockB\x08\n\x06upload"I\n\x1bGetObjectDownloadUriRequest\x12*\n\x11storage_object_id\x18\x01 \x01(\tR\x0fstorageObjectId"N\n\x1cGetObjectDownloadUriResponse\x12.\n\x13signed_download_uri\x18\x01 \x01(\tR\x11signedDownloadUri2\x90\x02\n\x1d\x44\x61taPlaneObjectStorageService\x12r\n\x12GetObjectUploadUri\x12*.chalk.volume.v1.GetObjectUploadUriRequest\x1a+.chalk.volume.v1.GetObjectUploadUriResponse"\x03\x80}\x0c\x12{\n\x14GetObjectDownloadUri\x12,.chalk.volume.v1.GetObjectDownloadUriRequest\x1a-.chalk.volume.v1.GetObjectDownloadUriResponse"\x06\x90\x02\x01\x80}\x0b\x32\xca\x06\n\rVolumeService\x12\xb7\x01\n\x0c\x43reateVolume\x12$.chalk.volume.v1.CreateVolumeRequest\x1a%.chalk.volume.v1.CreateVolumeResponse"Z\x80}\x0c\x92\xd3\x0eS\n\x16scaling_groups_enabled\x12\x39This action is not enabled. Please contact Chalk Support.\x12Z\n\tGetVolume\x12!.chalk.volume.v1.GetVolumeRequest\x1a".chalk.volume.v1.GetVolumeResponse"\x06\x90\x02\x01\x80}\x0b\x12`\n\x0bListVolumes\x12#.chalk.volume.v1.ListVolumesRequest\x1a$.chalk.volume.v1.ListVolumesResponse"\x06\x90\x02\x01\x80}\x0b\x12`\n\x0c\x44\x65leteVolume\x12$.chalk.volume.v1.DeleteVolumeRequest\x1a%.chalk.volume.v1.DeleteVolumeResponse"\x03\x80}\x0e\x12Z\n\tListFiles\x12!.chalk.volume.v1.ListFilesRequest\x1a".chalk.volume.v1.ListFilesResponse"\x06\x90\x02\x01\x80}\x0b\x12T\n\x07GetFile\x12\x1f.chalk.volume.v1.GetFileRequest\x1a .chalk.volume.v1.GetFileResponse"\x06\x90\x02\x01\x80}\x0b\x12Q\n\x07PutFile\x12\x1f.chalk.volume.v1.PutFileRequest\x1a .chalk.volume.v1.PutFileResponse"\x03\x80}\x0c\x12Z\n\nRemoveFile\x12".chalk.volume.v1.RemoveFileRequest\x1a#.chalk.volume.v1.RemoveFileResponse"\x03\x80}\x0e\x42\x94\x01\n\x13\x63om.chalk.volume.v1B\x0bVolumeProtoP\x01Z\x12volume/v1;volumev1\xa2\x02\x03\x43VX\xaa\x02\x0f\x43halk.Volume.V1\xca\x02\x0f\x43halk\\Volume\\V1\xe2\x02\x1b\x43halk\\Volume\\V1\\GPBMetadata\xea\x02\x11\x43halk::Volume::V1b\x06proto3'
 )
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
-_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, "chalk.volume.v1.volume_pb2", _globals)
+_builder.BuildTopDescriptorsAndMessages(
+    DESCRIPTOR, "chalk.volume.v1.volume_pb2", _globals
+)
 if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["DESCRIPTOR"]._options = None
     _globals[
         "DESCRIPTOR"
     ]._serialized_options = b"\n\023com.chalk.volume.v1B\013VolumeProtoP\001Z\022volume/v1;volumev1\242\002\003CVX\252\002\017Chalk.Volume.V1\312\002\017Chalk\\Volume\\V1\342\002\033Chalk\\Volume\\V1\\GPBMetadata\352\002\021Chalk::Volume::V1"
-    _globals["_DATAPLANEOBJECTSTORAGESERVICE"].methods_by_name["GetObjectUploadUri"]._options = None
-    _globals["_DATAPLANEOBJECTSTORAGESERVICE"].methods_by_name["GetObjectUploadUri"]._serialized_options = b"\200}\014"
-    _globals["_DATAPLANEOBJECTSTORAGESERVICE"].methods_by_name["GetObjectDownloadUri"]._options = None
+    _globals["_DATAPLANEOBJECTSTORAGESERVICE"].methods_by_name[
+        "GetObjectUploadUri"
+    ]._options = None
+    _globals["_DATAPLANEOBJECTSTORAGESERVICE"].methods_by_name[
+        "GetObjectUploadUri"
+    ]._serialized_options = b"\200}\014"
+    _globals["_DATAPLANEOBJECTSTORAGESERVICE"].methods_by_name[
+        "GetObjectDownloadUri"
+    ]._options = None
     _globals["_DATAPLANEOBJECTSTORAGESERVICE"].methods_by_name[
         "GetObjectDownloadUri"
     ]._serialized_options = b"\220\002\001\200}\013"
     _globals["_VOLUMESERVICE"].methods_by_name["CreateVolume"]._options = None
-    _globals["_VOLUMESERVICE"].methods_by_name["CreateVolume"]._serialized_options = b"\200}\014"
+    _globals["_VOLUMESERVICE"].methods_by_name[
+        "CreateVolume"
+    ]._serialized_options = b"\200}\014\222\323\016S\n\026scaling_groups_enabled\0229This action is not enabled. Please contact Chalk Support."
     _globals["_VOLUMESERVICE"].methods_by_name["GetVolume"]._options = None
-    _globals["_VOLUMESERVICE"].methods_by_name["GetVolume"]._serialized_options = b"\220\002\001\200}\013"
+    _globals["_VOLUMESERVICE"].methods_by_name[
+        "GetVolume"
+    ]._serialized_options = b"\220\002\001\200}\013"
     _globals["_VOLUMESERVICE"].methods_by_name["ListVolumes"]._options = None
-    _globals["_VOLUMESERVICE"].methods_by_name["ListVolumes"]._serialized_options = b"\220\002\001\200}\013"
+    _globals["_VOLUMESERVICE"].methods_by_name[
+        "ListVolumes"
+    ]._serialized_options = b"\220\002\001\200}\013"
     _globals["_VOLUMESERVICE"].methods_by_name["DeleteVolume"]._options = None
-    _globals["_VOLUMESERVICE"].methods_by_name["DeleteVolume"]._serialized_options = b"\200}\016"
+    _globals["_VOLUMESERVICE"].methods_by_name[
+        "DeleteVolume"
+    ]._serialized_options = b"\200}\016"
     _globals["_VOLUMESERVICE"].methods_by_name["ListFiles"]._options = None
-    _globals["_VOLUMESERVICE"].methods_by_name["ListFiles"]._serialized_options = b"\220\002\001\200}\013"
+    _globals["_VOLUMESERVICE"].methods_by_name[
+        "ListFiles"
+    ]._serialized_options = b"\220\002\001\200}\013"
     _globals["_VOLUMESERVICE"].methods_by_name["GetFile"]._options = None
-    _globals["_VOLUMESERVICE"].methods_by_name["GetFile"]._serialized_options = b"\220\002\001\200}\013"
+    _globals["_VOLUMESERVICE"].methods_by_name[
+        "GetFile"
+    ]._serialized_options = b"\220\002\001\200}\013"
     _globals["_VOLUMESERVICE"].methods_by_name["PutFile"]._options = None
-    _globals["_VOLUMESERVICE"].methods_by_name["PutFile"]._serialized_options = b"\200}\014"
+    _globals["_VOLUMESERVICE"].methods_by_name[
+        "PutFile"
+    ]._serialized_options = b"\200}\014"
     _globals["_VOLUMESERVICE"].methods_by_name["RemoveFile"]._options = None
-    _globals["_VOLUMESERVICE"].methods_by_name["RemoveFile"]._serialized_options = b"\200}\016"
-    _globals["_VOLUMEINFO"]._serialized_start = 115
-    _globals["_VOLUMEINFO"]._serialized_end = 206
-    _globals["_FILEINFO"]._serialized_start = 208
-    _globals["_FILEINFO"]._serialized_end = 317
-    _globals["_CREATEVOLUMEREQUEST"]._serialized_start = 319
-    _globals["_CREATEVOLUMEREQUEST"]._serialized_end = 360
-    _globals["_CREATEVOLUMERESPONSE"]._serialized_start = 362
-    _globals["_CREATEVOLUMERESPONSE"]._serialized_end = 437
-    _globals["_GETVOLUMEREQUEST"]._serialized_start = 439
-    _globals["_GETVOLUMEREQUEST"]._serialized_end = 477
-    _globals["_GETVOLUMERESPONSE"]._serialized_start = 479
-    _globals["_GETVOLUMERESPONSE"]._serialized_end = 551
-    _globals["_LISTVOLUMESREQUEST"]._serialized_start = 553
-    _globals["_LISTVOLUMESREQUEST"]._serialized_end = 633
-    _globals["_LISTVOLUMESRESPONSE"]._serialized_start = 635
-    _globals["_LISTVOLUMESRESPONSE"]._serialized_end = 751
-    _globals["_DELETEVOLUMEREQUEST"]._serialized_start = 753
-    _globals["_DELETEVOLUMEREQUEST"]._serialized_end = 794
-    _globals["_DELETEVOLUMERESPONSE"]._serialized_start = 796
-    _globals["_DELETEVOLUMERESPONSE"]._serialized_end = 818
-    _globals["_LISTFILESREQUEST"]._serialized_start = 820
-    _globals["_LISTFILESREQUEST"]._serialized_end = 895
-    _globals["_LISTFILESRESPONSE"]._serialized_start = 897
-    _globals["_LISTFILESRESPONSE"]._serialized_end = 965
-    _globals["_GETFILEREQUEST"]._serialized_start = 968
-    _globals["_GETFILEREQUEST"]._serialized_end = 1099
-    _globals["_GETFILERESPONSE"]._serialized_start = 1101
-    _globals["_GETFILERESPONSE"]._serialized_end = 1201
-    _globals["_PUTFILEREQUEST"]._serialized_start = 1204
-    _globals["_PUTFILEREQUEST"]._serialized_end = 1352
-    _globals["_PUTFILERESPONSE"]._serialized_start = 1354
-    _globals["_PUTFILERESPONSE"]._serialized_end = 1371
-    _globals["_REMOVEFILEREQUEST"]._serialized_start = 1373
-    _globals["_REMOVEFILEREQUEST"]._serialized_end = 1445
-    _globals["_REMOVEFILERESPONSE"]._serialized_start = 1447
-    _globals["_REMOVEFILERESPONSE"]._serialized_end = 1467
-    _globals["_GETOBJECTUPLOADURIREQUEST"]._serialized_start = 1469
-    _globals["_GETOBJECTUPLOADURIREQUEST"]._serialized_end = 1580
-    _globals["_MULTIPARTUPLOAD"]._serialized_start = 1582
-    _globals["_MULTIPARTUPLOAD"]._serialized_end = 1645
-    _globals["_RESUMABLEUPLOAD"]._serialized_start = 1647
-    _globals["_RESUMABLEUPLOAD"]._serialized_end = 1708
-    _globals["_AZUREBLOCKUPLOAD"]._serialized_start = 1710
-    _globals["_AZUREBLOCKUPLOAD"]._serialized_end = 1837
-    _globals["_DIRECTUPLOAD"]._serialized_start = 1839
-    _globals["_DIRECTUPLOAD"]._serialized_end = 1897
-    _globals["_GETOBJECTUPLOADURIRESPONSE"]._serialized_start = 1900
-    _globals["_GETOBJECTUPLOADURIRESPONSE"]._serialized_end = 2184
-    _globals["_GETOBJECTDOWNLOADURIREQUEST"]._serialized_start = 2186
-    _globals["_GETOBJECTDOWNLOADURIREQUEST"]._serialized_end = 2259
-    _globals["_GETOBJECTDOWNLOADURIRESPONSE"]._serialized_start = 2261
-    _globals["_GETOBJECTDOWNLOADURIRESPONSE"]._serialized_end = 2339
-    _globals["_DATAPLANEOBJECTSTORAGESERVICE"]._serialized_start = 2342
-    _globals["_DATAPLANEOBJECTSTORAGESERVICE"]._serialized_end = 2614
-    _globals["_VOLUMESERVICE"]._serialized_start = 2617
-    _globals["_VOLUMESERVICE"]._serialized_end = 3371
+    _globals["_VOLUMESERVICE"].methods_by_name[
+        "RemoveFile"
+    ]._serialized_options = b"\200}\016"
+    _globals["_VOLUMEINFO"]._serialized_start = 143
+    _globals["_VOLUMEINFO"]._serialized_end = 234
+    _globals["_FILEINFO"]._serialized_start = 236
+    _globals["_FILEINFO"]._serialized_end = 345
+    _globals["_CREATEVOLUMEREQUEST"]._serialized_start = 347
+    _globals["_CREATEVOLUMEREQUEST"]._serialized_end = 388
+    _globals["_CREATEVOLUMERESPONSE"]._serialized_start = 390
+    _globals["_CREATEVOLUMERESPONSE"]._serialized_end = 465
+    _globals["_GETVOLUMEREQUEST"]._serialized_start = 467
+    _globals["_GETVOLUMEREQUEST"]._serialized_end = 505
+    _globals["_GETVOLUMERESPONSE"]._serialized_start = 507
+    _globals["_GETVOLUMERESPONSE"]._serialized_end = 579
+    _globals["_LISTVOLUMESREQUEST"]._serialized_start = 581
+    _globals["_LISTVOLUMESREQUEST"]._serialized_end = 661
+    _globals["_LISTVOLUMESRESPONSE"]._serialized_start = 663
+    _globals["_LISTVOLUMESRESPONSE"]._serialized_end = 779
+    _globals["_DELETEVOLUMEREQUEST"]._serialized_start = 781
+    _globals["_DELETEVOLUMEREQUEST"]._serialized_end = 822
+    _globals["_DELETEVOLUMERESPONSE"]._serialized_start = 824
+    _globals["_DELETEVOLUMERESPONSE"]._serialized_end = 846
+    _globals["_LISTFILESREQUEST"]._serialized_start = 848
+    _globals["_LISTFILESREQUEST"]._serialized_end = 923
+    _globals["_LISTFILESRESPONSE"]._serialized_start = 925
+    _globals["_LISTFILESRESPONSE"]._serialized_end = 993
+    _globals["_GETFILEREQUEST"]._serialized_start = 996
+    _globals["_GETFILEREQUEST"]._serialized_end = 1127
+    _globals["_GETFILERESPONSE"]._serialized_start = 1129
+    _globals["_GETFILERESPONSE"]._serialized_end = 1229
+    _globals["_PUTFILEREQUEST"]._serialized_start = 1232
+    _globals["_PUTFILEREQUEST"]._serialized_end = 1380
+    _globals["_PUTFILERESPONSE"]._serialized_start = 1382
+    _globals["_PUTFILERESPONSE"]._serialized_end = 1399
+    _globals["_REMOVEFILEREQUEST"]._serialized_start = 1401
+    _globals["_REMOVEFILEREQUEST"]._serialized_end = 1473
+    _globals["_REMOVEFILERESPONSE"]._serialized_start = 1475
+    _globals["_REMOVEFILERESPONSE"]._serialized_end = 1495
+    _globals["_GETOBJECTUPLOADURIREQUEST"]._serialized_start = 1497
+    _globals["_GETOBJECTUPLOADURIREQUEST"]._serialized_end = 1608
+    _globals["_MULTIPARTUPLOAD"]._serialized_start = 1610
+    _globals["_MULTIPARTUPLOAD"]._serialized_end = 1673
+    _globals["_RESUMABLEUPLOAD"]._serialized_start = 1675
+    _globals["_RESUMABLEUPLOAD"]._serialized_end = 1736
+    _globals["_AZUREBLOCKUPLOAD"]._serialized_start = 1738
+    _globals["_AZUREBLOCKUPLOAD"]._serialized_end = 1865
+    _globals["_DIRECTUPLOAD"]._serialized_start = 1867
+    _globals["_DIRECTUPLOAD"]._serialized_end = 1925
+    _globals["_GETOBJECTUPLOADURIRESPONSE"]._serialized_start = 1928
+    _globals["_GETOBJECTUPLOADURIRESPONSE"]._serialized_end = 2212
+    _globals["_GETOBJECTDOWNLOADURIREQUEST"]._serialized_start = 2214
+    _globals["_GETOBJECTDOWNLOADURIREQUEST"]._serialized_end = 2287
+    _globals["_GETOBJECTDOWNLOADURIRESPONSE"]._serialized_start = 2289
+    _globals["_GETOBJECTDOWNLOADURIRESPONSE"]._serialized_end = 2367
+    _globals["_DATAPLANEOBJECTSTORAGESERVICE"]._serialized_start = 2370
+    _globals["_DATAPLANEOBJECTSTORAGESERVICE"]._serialized_end = 2642
+    _globals["_VOLUMESERVICE"]._serialized_start = 2645
+    _globals["_VOLUMESERVICE"]._serialized_end = 3487
 # @@protoc_insertion_point(module_scope)

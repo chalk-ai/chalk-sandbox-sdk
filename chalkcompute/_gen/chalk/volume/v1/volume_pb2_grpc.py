@@ -3,7 +3,9 @@
 
 import grpc
 
-from chalkcompute._gen.chalk.volume.v1 import volume_pb2 as chalk_dot_volume_dot_v1_dot_volume__pb2
+from chalkcompute._gen.chalk.volume.v1 import (
+    volume_pb2 as chalk_dot_volume_dot_v1_dot_volume__pb2,
+)
 
 
 class DataPlaneObjectStorageServiceStub(object):
@@ -271,7 +273,9 @@ def add_VolumeServiceServicer_to_server(servicer, server):
             response_serializer=chalk_dot_volume_dot_v1_dot_volume__pb2.RemoveFileResponse.SerializeToString,
         ),
     }
-    generic_handler = grpc.method_handlers_generic_handler("chalk.volume.v1.VolumeService", rpc_method_handlers)
+    generic_handler = grpc.method_handlers_generic_handler(
+        "chalk.volume.v1.VolumeService", rpc_method_handlers
+    )
     server.add_generic_rpc_handlers((generic_handler,))
 
 

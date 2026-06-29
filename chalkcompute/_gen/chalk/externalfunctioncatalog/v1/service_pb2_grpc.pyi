@@ -12,6 +12,8 @@ from chalkcompute._gen.chalk.externalfunctioncatalog.v1.service_pb2 import (
     CallExternalFunctionResponse,
     CreateExternalFunctionVersionRequest,
     CreateExternalFunctionVersionResponse,
+    DeleteExternalFunctionRequest,
+    DeleteExternalFunctionResponse,
     DeleteExternalFunctionVersionRequest,
     DeleteExternalFunctionVersionResponse,
     GetExternalFunctionVersionRequest,
@@ -48,6 +50,14 @@ class ExternalFunctionCatalogServiceStub:
         DeleteExternalFunctionVersionRequest,
         DeleteExternalFunctionVersionResponse,
     ]
+    DeleteExternalFunction: UnaryUnaryMultiCallable[
+        DeleteExternalFunctionRequest,
+        DeleteExternalFunctionResponse,
+    ]
+    """Deletes every version of a function: each version's scaling group is torn
+    down and the function schedule is removed, then all version rows are
+    soft-deleted for historical audit.
+    """
     ListExternalFunctions: UnaryUnaryMultiCallable[
         ListExternalFunctionsRequest,
         ListExternalFunctionsResponse,
@@ -86,6 +96,16 @@ class ExternalFunctionCatalogServiceServicer(metaclass=ABCMeta):
         request: DeleteExternalFunctionVersionRequest,
         context: ServicerContext,
     ) -> DeleteExternalFunctionVersionResponse: ...
+    @abstractmethod
+    def DeleteExternalFunction(
+        self,
+        request: DeleteExternalFunctionRequest,
+        context: ServicerContext,
+    ) -> DeleteExternalFunctionResponse:
+        """Deletes every version of a function: each version's scaling group is torn
+        down and the function schedule is removed, then all version rows are
+        soft-deleted for historical audit.
+        """
     @abstractmethod
     def ListExternalFunctions(
         self,
