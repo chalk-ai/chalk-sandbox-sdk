@@ -8,24 +8,34 @@ from google.protobuf import descriptor as _descriptor
 from google.protobuf import descriptor_pool as _descriptor_pool
 from google.protobuf import symbol_database as _symbol_database
 from google.protobuf.internal import builder as _builder
-from chalkcompute._proto_pool import DESCRIPTOR_POOL as _DESCRIPTOR_POOL, SYMBOL_DATABASE as _SYMBOL_DATABASE
+from chalkcompute._proto_pool import (
+    DESCRIPTOR_POOL as _DESCRIPTOR_POOL,
+    SYMBOL_DATABASE as _SYMBOL_DATABASE,
+)
 # @@protoc_insertion_point(imports)
 
 _sym_db = _SYMBOL_DATABASE
 
 
-from chalkcompute._gen.chalk.auth.v1 import permissions_pb2 as chalk_dot_auth_dot_v1_dot_permissions__pb2
+from chalkcompute._gen.chalk.auth.v1 import (
+    permissions_pb2 as chalk_dot_auth_dot_v1_dot_permissions__pb2,
+)
+from chalkcompute._gen.chalk.flags.v1 import (
+    flags_pb2 as chalk_dot_flags_dot_v1_dot_flags__pb2,
+)
 from google.protobuf import duration_pb2 as google_dot_protobuf_dot_duration__pb2
 from google.protobuf import timestamp_pb2 as google_dot_protobuf_dot_timestamp__pb2
 
 
 DESCRIPTOR = _DESCRIPTOR_POOL.AddSerializedFile(
-    b'\n chalk/container/v1/service.proto\x12\x12\x63halk.container.v1\x1a\x1f\x63halk/auth/v1/permissions.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto"v\n\x0eResourceLimits\x12\x15\n\x03\x63pu\x18\x01 \x01(\tH\x00R\x03\x63pu\x88\x01\x01\x12\x1b\n\x06memory\x18\x02 \x01(\tH\x01R\x06memory\x88\x01\x01\x12\x15\n\x03gpu\x18\x03 \x01(\tH\x02R\x03gpu\x88\x01\x01\x42\x06\n\x04_cpuB\t\n\x07_memoryB\x06\n\x04_gpu"\x87\x01\n\x0bVolumeMount\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n\nmount_path\x18\x02 \x01(\tR\tmountPath\x12\x12\n\x04type\x18\x03 \x01(\tR\x04type\x12"\n\nsize_limit\x18\x04 \x01(\tH\x00R\tsizeLimit\x88\x01\x01\x42\r\n\x0b_size_limit"\xa3\x02\n\tSecretRef\x12+\n\x10integration_name\x18\x01 \x01(\tH\x00R\x0fintegrationName\x12!\n\x0bsecret_name\x18\x02 \x01(\tH\x00R\nsecretName\x12\x12\n\x04keys\x18\x03 \x03(\tR\x04keys\x12\x44\n\x07\x61liases\x18\x04 \x03(\x0b\x32*.chalk.container.v1.SecretRef.AliasesEntryR\x07\x61liases\x12\x1b\n\x06prefix\x18\x05 \x01(\tH\x01R\x06prefix\x88\x01\x01\x1a:\n\x0c\x41liasesEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x02\x38\x01\x42\x08\n\x06sourceB\t\n\x07_prefix"\xc1\x08\n\x12\x43halkContainerSpec\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n\x05image\x18\x02 \x01(\tR\x05image\x12\x1e\n\nentrypoint\x18\x03 \x03(\tR\nentrypoint\x12\x44\n\x04tags\x18\x04 \x03(\x0b\x32\x30.chalk.container.v1.ChalkContainerSpec.TagsEntryR\x04tags\x12\x17\n\x04port\x18\x05 \x01(\x05H\x00R\x04port\x88\x01\x01\x12:\n\x08lifetime\x18\x06 \x01(\x0b\x32\x19.google.protobuf.DurationH\x01R\x08lifetime\x88\x01\x01\x12\x45\n\tresources\x18\x07 \x01(\x0b\x32".chalk.container.v1.ResourceLimitsH\x02R\tresources\x88\x01\x01\x12"\n\nenable_ssh\x18\x08 \x01(\x08H\x03R\tenableSsh\x88\x01\x01\x12N\n\x08\x65nv_vars\x18\t \x03(\x0b\x32\x33.chalk.container.v1.ChalkContainerSpec.EnvVarsEntryR\x07\x65nvVars\x12\x39\n\x07volumes\x18\n \x03(\x0b\x32\x1f.chalk.container.v1.VolumeMountR\x07volumes\x12\x1f\n\x08protocol\x18\x0b \x01(\tH\x04R\x08protocol\x88\x01\x01\x12\x1d\n\x07routing\x18\x0c \x01(\tH\x05R\x07routing\x88\x01\x01\x12+\n\x0e\x61uthentication\x18\r \x01(\tH\x06R\x0e\x61uthentication\x88\x01\x01\x12>\n\x0bsecret_refs\x18\x0e \x03(\x0b\x32\x1d.chalk.container.v1.SecretRefR\nsecretRefs\x12Y\n\x0fsecurity_policy\x18\x0f \x01(\x0b\x32+.chalk.container.v1.ContainerSecurityPolicyH\x07R\x0esecurityPolicy\x88\x01\x01\x12M\n\x0enetwork_policy\x18\x10 \x01(\x0b\x32!.chalk.container.v1.NetworkPolicyH\x08R\rnetworkPolicy\x88\x01\x01\x1a\x37\n\tTagsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x02\x38\x01\x1a:\n\x0c\x45nvVarsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x02\x38\x01\x42\x07\n\x05_portB\x0b\n\t_lifetimeB\x0c\n\n_resourcesB\r\n\x0b_enable_sshB\x0b\n\t_protocolB\n\n\x08_routingB\x11\n\x0f_authenticationB\x12\n\x10_security_policyB\x11\n\x0f_network_policy"w\n\x17\x43ontainerSecurityPolicy\x12J\n\rkernel_policy\x18\x01 \x01(\x0e\x32 .chalk.container.v1.KernelPolicyH\x00R\x0ckernelPolicy\x88\x01\x01\x42\x10\n\x0e_kernel_policy"X\n\rNetworkPolicy\x12G\n\x0e\x61llowed_routes\x18\x01 \x03(\x0b\x32 .chalk.container.v1.AllowedRouteR\rallowedRoutes"d\n\x0c\x41llowedRoute\x12\x14\n\x05route\x18\x01 \x01(\tR\x05route\x12>\n\x0bport_ranges\x18\x02 \x03(\x0b\x32\x1d.chalk.container.v1.PortRangeR\nportRanges"E\n\tPortRange\x12\x1d\n\nstart_port\x18\x01 \x01(\x05R\tstartPort\x12\x19\n\x08\x65nd_port\x18\x02 \x01(\x05R\x07\x65ndPort"N\n\x10\x43ontainerRequest\x12:\n\x04spec\x18\x01 \x01(\x0b\x32&.chalk.container.v1.ChalkContainerSpecR\x04spec"\x82\x01\n\x0bHealthCheck\x12\x18\n\x07healthy\x18\x01 \x01(\x08R\x07healthy\x12$\n\x0bstatus_code\x18\x02 \x01(\x05H\x00R\nstatusCode\x88\x01\x01\x12\x19\n\x05\x65rror\x18\x03 \x01(\tH\x01R\x05\x65rror\x88\x01\x01\x42\x0e\n\x0c_status_codeB\x08\n\x06_error"\xc7\x05\n\x11\x43ontainerResponse\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x12\x16\n\x06status\x18\x03 \x01(\tR\x06status\x12*\n\x0estatus_message\x18\x04 \x01(\tH\x00R\rstatusMessage\x88\x01\x01\x12:\n\x04spec\x18\x05 \x01(\x0b\x32&.chalk.container.v1.ChalkContainerSpecR\x04spec\x12\x39\n\ncreated_at\x18\x06 \x01(\x0b\x32\x1a.google.protobuf.TimestampR\tcreatedAt\x12>\n\nstopped_at\x18\x07 \x01(\x0b\x32\x1a.google.protobuf.TimestampH\x01R\tstoppedAt\x88\x01\x01\x12\x19\n\x08pod_name\x18\x08 \x01(\tR\x07podName\x12\x1c\n\x07web_url\x18\t \x01(\tH\x02R\x06webUrl\x88\x01\x01\x12+\n\x0fssh_private_key\x18\n \x01(\tH\x03R\rsshPrivateKey\x88\x01\x01\x12&\n\x0cssh_username\x18\x0b \x01(\tH\x04R\x0bsshUsername\x88\x01\x01\x12\x1e\n\x08ssh_host\x18\x0c \x01(\tH\x05R\x07sshHost\x88\x01\x01\x12\x1e\n\x08ssh_port\x18\r \x01(\x05H\x06R\x07sshPort\x88\x01\x01\x12G\n\x0chealth_check\x18\x0e \x01(\x0b\x32\x1f.chalk.container.v1.HealthCheckH\x07R\x0bhealthCheck\x88\x01\x01\x42\x11\n\x0f_status_messageB\r\n\x0b_stopped_atB\n\n\x08_web_urlB\x12\n\x10_ssh_private_keyB\x0f\n\r_ssh_usernameB\x0b\n\t_ssh_hostB\x0b\n\t_ssh_portB\x0f\n\r_health_check"Y\n\x13RunContainerRequest\x12\x42\n\tcontainer\x18\x01 \x01(\x0b\x32$.chalk.container.v1.ContainerRequestR\tcontainer"[\n\x14RunContainerResponse\x12\x43\n\tcontainer\x18\x01 \x01(\x0b\x32%.chalk.container.v1.ContainerResponseR\tcontainer"\xa4\x01\n\x14StopContainerRequest\x12\x13\n\x02id\x18\x01 \x01(\tH\x00R\x02id\x88\x01\x01\x12\x17\n\x04name\x18\x02 \x01(\tH\x01R\x04name\x88\x01\x01\x12\x35\n\x14grace_period_seconds\x18\x03 \x01(\x05H\x02R\x12gracePeriodSeconds\x88\x01\x01\x42\x05\n\x03_idB\x07\n\x05_nameB\x17\n\x15_grace_period_seconds"\\\n\x15StopContainerResponse\x12\x43\n\tcontainer\x18\x01 \x01(\x0b\x32%.chalk.container.v1.ContainerResponseR\tcontainer"S\n\x13GetContainerRequest\x12\x13\n\x02id\x18\x01 \x01(\tH\x00R\x02id\x88\x01\x01\x12\x17\n\x04name\x18\x02 \x01(\tH\x01R\x04name\x88\x01\x01\x42\x05\n\x03_idB\x07\n\x05_name"[\n\x14GetContainerResponse\x12\x43\n\tcontainer\x18\x01 \x01(\x0b\x32%.chalk.container.v1.ContainerResponseR\tcontainer"\x17\n\x15ListContainersRequest"_\n\x16ListContainersResponse\x12\x45\n\ncontainers\x18\x01 \x03(\x0b\x32%.chalk.container.v1.ContainerResponseR\ncontainers"\xd7\x01\n\x12\x45xecCommandRequest\x12\x13\n\x02id\x18\x01 \x01(\tH\x00R\x02id\x88\x01\x01\x12\x17\n\x04name\x18\x02 \x01(\tH\x01R\x04name\x88\x01\x01\x12\x18\n\x07\x63ommand\x18\x03 \x03(\tR\x07\x63ommand\x12\x38\n\x07timeout\x18\x04 \x01(\x0b\x32\x19.google.protobuf.DurationH\x02R\x07timeout\x88\x01\x01\x12\x19\n\x05stdin\x18\x05 \x01(\x0cH\x03R\x05stdin\x88\x01\x01\x42\x05\n\x03_idB\x07\n\x05_nameB\n\n\x08_timeoutB\x08\n\x06_stdin"b\n\x13\x45xecCommandResponse\x12\x16\n\x06stdout\x18\x01 \x01(\x0cR\x06stdout\x12\x16\n\x06stderr\x18\x02 \x01(\x0cR\x06stderr\x12\x1b\n\texit_code\x18\x03 \x01(\x05R\x08\x65xitCode"\x98\x01\n\x1cUpdateContainerStatusRequest\x12!\n\x0c\x63ontainer_id\x18\x01 \x01(\tR\x0b\x63ontainerId\x12\x16\n\x06status\x18\x02 \x01(\tR\x06status\x12*\n\x0estatus_message\x18\x03 \x01(\tH\x00R\rstatusMessage\x88\x01\x01\x42\x11\n\x0f_status_message"d\n\x1dUpdateContainerStatusResponse\x12\x43\n\tcontainer\x18\x01 \x01(\x0b\x32%.chalk.container.v1.ContainerResponseR\tcontainer"o\n!BatchUpdateContainerStatusRequest\x12J\n\x07updates\x18\x01 \x03(\x0b\x32\x30.chalk.container.v1.UpdateContainerStatusRequestR\x07updates"$\n"BatchUpdateContainerStatusResponse"Z\n\x0eGKEPodSnapshot\x12%\n\x0estorage_bucket\x18\x01 \x01(\tR\rstorageBucket\x12!\n\x0cstorage_path\x18\x02 \x01(\tR\x0bstoragePath"o\n\x15\x43ontainerSnapshotSpec\x12N\n\x10gke_pod_snapshot\x18\x01 \x01(\x0b\x32".chalk.container.v1.GKEPodSnapshotH\x00R\x0egkePodSnapshotB\x06\n\x04spec"\x8c\x04\n\x11\x43ontainerSnapshot\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12.\n\x13source_container_id\x18\x02 \x01(\tR\x11sourceContainerId\x12M\n\x0e\x63ontainer_spec\x18\x03 \x01(\x0b\x32&.chalk.container.v1.ChalkContainerSpecR\rcontainerSpec\x12N\n\rsnapshot_spec\x18\x04 \x01(\x0b\x32).chalk.container.v1.ContainerSnapshotSpecR\x0csnapshotSpec\x12\x16\n\x06status\x18\x05 \x01(\tR\x06status\x12*\n\x0estatus_message\x18\x06 \x01(\tH\x00R\rstatusMessage\x88\x01\x01\x12\x39\n\ncreated_at\x18\x07 \x01(\x0b\x32\x1a.google.protobuf.TimestampR\tcreatedAt\x12\x42\n\x0c\x63ompleted_at\x18\x08 \x01(\x0b\x32\x1a.google.protobuf.TimestampH\x01R\x0b\x63ompletedAt\x88\x01\x01\x12"\n\ncreated_by\x18\t \x01(\tH\x02R\tcreatedBy\x88\x01\x01\x42\x11\n\x0f_status_messageB\x0f\n\r_completed_atB\r\n\x0b_created_by"X\n\x18SnapshotContainerRequest\x12\x13\n\x02id\x18\x01 \x01(\tH\x00R\x02id\x88\x01\x01\x12\x17\n\x04name\x18\x02 \x01(\tH\x01R\x04name\x88\x01\x01\x42\x05\n\x03_idB\x07\n\x05_name"^\n\x19SnapshotContainerResponse\x12\x41\n\x08snapshot\x18\x01 \x01(\x0b\x32%.chalk.container.v1.ContainerSnapshotR\x08snapshot"-\n\x1bGetContainerSnapshotRequest\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id"a\n\x1cGetContainerSnapshotResponse\x12\x41\n\x08snapshot\x18\x01 \x01(\x0b\x32%.chalk.container.v1.ContainerSnapshotR\x08snapshot"l\n\x1dListContainerSnapshotsRequest\x12\x33\n\x13source_container_id\x18\x01 \x01(\tH\x00R\x11sourceContainerId\x88\x01\x01\x42\x16\n\x14_source_container_id"e\n\x1eListContainerSnapshotsResponse\x12\x43\n\tsnapshots\x18\x01 \x03(\x0b\x32%.chalk.container.v1.ContainerSnapshotR\tsnapshots"z\n\x11\x43ontainerTTYInput\x12\x12\n\x04\x64\x61ta\x18\x01 \x01(\x0cR\x04\x64\x61ta\x12\x46\n\x06resize\x18\x02 \x01(\x0b\x32).chalk.container.v1.ContainerTerminalSizeH\x00R\x06resize\x88\x01\x01\x42\t\n\x07_resize"?\n\x15\x43ontainerTerminalSize\x12\x12\n\x04rows\x18\x01 \x01(\rR\x04rows\x12\x12\n\x04\x63ols\x18\x02 \x01(\rR\x04\x63ols"\xc1\x01\n\x1e\x43reateContainerDebugTTYRequest\x12U\n\x0cinit_request\x18\x01 \x01(\x0b\x32\x30.chalk.container.v1.ContainerDebugTTYInitRequestH\x00R\x0binitRequest\x12=\n\x05input\x18\x02 \x01(\x0b\x32%.chalk.container.v1.ContainerTTYInputH\x00R\x05inputB\t\n\x07message"v\n\x1c\x43ontainerDebugTTYInitRequest\x12\x13\n\x02id\x18\x01 \x01(\tH\x00R\x02id\x88\x01\x01\x12\x17\n\x04name\x18\x02 \x01(\tH\x01R\x04name\x88\x01\x01\x12\x18\n\x07\x63ommand\x18\x03 \x03(\tR\x07\x63ommandB\x05\n\x03_idB\x07\n\x05_name"r\n\x1f\x43reateContainerDebugTTYResponse\x12\x12\n\x04\x64\x61ta\x18\x01 \x01(\x0cR\x04\x64\x61ta\x12\x19\n\x05\x65rror\x18\x02 \x01(\tH\x00R\x05\x65rror\x88\x01\x01\x12\x16\n\x06\x63losed\x18\x03 \x01(\x08R\x06\x63losedB\x08\n\x06_error*c\n\x0cKernelPolicy\x12\x1d\n\x19KERNEL_POLICY_UNSPECIFIED\x10\x00\x12\x1c\n\x18KERNEL_POLICY_RESTRICTED\x10\x01\x12\x16\n\x12KERNEL_POLICY_OPEN\x10\x02\x32\xc6\n\n\x10\x43ontainerService\x12\x66\n\x0cRunContainer\x12\'.chalk.container.v1.RunContainerRequest\x1a(.chalk.container.v1.RunContainerResponse"\x03\x80}\x0c\x12i\n\rStopContainer\x12(.chalk.container.v1.StopContainerRequest\x1a).chalk.container.v1.StopContainerResponse"\x03\x80}\x0e\x12\x66\n\x0cGetContainer\x12\'.chalk.container.v1.GetContainerRequest\x1a(.chalk.container.v1.GetContainerResponse"\x03\x80}\x0b\x12l\n\x0eListContainers\x12).chalk.container.v1.ListContainersRequest\x1a*.chalk.container.v1.ListContainersResponse"\x03\x80}\x0b\x12\x63\n\x0b\x45xecCommand\x12&.chalk.container.v1.ExecCommandRequest\x1a\'.chalk.container.v1.ExecCommandResponse"\x03\x80}\x0e\x12\x84\x01\n\x15UpdateContainerStatus\x12\x30.chalk.container.v1.UpdateContainerStatusRequest\x1a\x31.chalk.container.v1.UpdateContainerStatusResponse"\x06\x88\x02\x01\x80}\x0e\x12\x90\x01\n\x1a\x42\x61tchUpdateContainerStatus\x12\x35.chalk.container.v1.BatchUpdateContainerStatusRequest\x1a\x36.chalk.container.v1.BatchUpdateContainerStatusResponse"\x03\x80}!\x12u\n\x11SnapshotContainer\x12,.chalk.container.v1.SnapshotContainerRequest\x1a-.chalk.container.v1.SnapshotContainerResponse"\x03\x80}\x0c\x12~\n\x14GetContainerSnapshot\x12/.chalk.container.v1.GetContainerSnapshotRequest\x1a\x30.chalk.container.v1.GetContainerSnapshotResponse"\x03\x80}\x0b\x12\x84\x01\n\x16ListContainerSnapshots\x12\x31.chalk.container.v1.ListContainerSnapshotsRequest\x1a\x32.chalk.container.v1.ListContainerSnapshotsResponse"\x03\x80}\x0b\x12\x8b\x01\n\x17\x43reateContainerDebugTTY\x12\x32.chalk.container.v1.CreateContainerDebugTTYRequest\x1a\x33.chalk.container.v1.CreateContainerDebugTTYResponse"\x03\x80}\x0e(\x01\x30\x01\x42\xaa\x01\n\x16\x63om.chalk.container.v1B\x0cServiceProtoP\x01Z\x18\x63ontainer/v1;containerv1\xa2\x02\x03\x43\x43X\xaa\x02\x12\x43halk.Container.V1\xca\x02\x12\x43halk\\Container\\V1\xe2\x02\x1e\x43halk\\Container\\V1\\GPBMetadata\xea\x02\x14\x43halk::Container::V1b\x06proto3'
+    b'\n chalk/container/v1/service.proto\x12\x12\x63halk.container.v1\x1a\x1f\x63halk/auth/v1/permissions.proto\x1a\x1a\x63halk/flags/v1/flags.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto"v\n\x0eResourceLimits\x12\x15\n\x03\x63pu\x18\x01 \x01(\tH\x00R\x03\x63pu\x88\x01\x01\x12\x1b\n\x06memory\x18\x02 \x01(\tH\x01R\x06memory\x88\x01\x01\x12\x15\n\x03gpu\x18\x03 \x01(\tH\x02R\x03gpu\x88\x01\x01\x42\x06\n\x04_cpuB\t\n\x07_memoryB\x06\n\x04_gpu"\x87\x01\n\x0bVolumeMount\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n\nmount_path\x18\x02 \x01(\tR\tmountPath\x12\x12\n\x04type\x18\x03 \x01(\tR\x04type\x12"\n\nsize_limit\x18\x04 \x01(\tH\x00R\tsizeLimit\x88\x01\x01\x42\r\n\x0b_size_limit"\xa3\x02\n\tSecretRef\x12+\n\x10integration_name\x18\x01 \x01(\tH\x00R\x0fintegrationName\x12!\n\x0bsecret_name\x18\x02 \x01(\tH\x00R\nsecretName\x12\x12\n\x04keys\x18\x03 \x03(\tR\x04keys\x12\x44\n\x07\x61liases\x18\x04 \x03(\x0b\x32*.chalk.container.v1.SecretRef.AliasesEntryR\x07\x61liases\x12\x1b\n\x06prefix\x18\x05 \x01(\tH\x01R\x06prefix\x88\x01\x01\x1a:\n\x0c\x41liasesEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x02\x38\x01\x42\x08\n\x06sourceB\t\n\x07_prefix"\x9f\t\n\x12\x43halkContainerSpec\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n\x05image\x18\x02 \x01(\tR\x05image\x12\x1e\n\nentrypoint\x18\x03 \x03(\tR\nentrypoint\x12\x44\n\x04tags\x18\x04 \x03(\x0b\x32\x30.chalk.container.v1.ChalkContainerSpec.TagsEntryR\x04tags\x12\x17\n\x04port\x18\x05 \x01(\x05H\x00R\x04port\x88\x01\x01\x12:\n\x08lifetime\x18\x06 \x01(\x0b\x32\x19.google.protobuf.DurationH\x01R\x08lifetime\x88\x01\x01\x12\x45\n\tresources\x18\x07 \x01(\x0b\x32".chalk.container.v1.ResourceLimitsH\x02R\tresources\x88\x01\x01\x12"\n\nenable_ssh\x18\x08 \x01(\x08H\x03R\tenableSsh\x88\x01\x01\x12N\n\x08\x65nv_vars\x18\t \x03(\x0b\x32\x33.chalk.container.v1.ChalkContainerSpec.EnvVarsEntryR\x07\x65nvVars\x12\x39\n\x07volumes\x18\n \x03(\x0b\x32\x1f.chalk.container.v1.VolumeMountR\x07volumes\x12\x1f\n\x08protocol\x18\x0b \x01(\tH\x04R\x08protocol\x88\x01\x01\x12\x1d\n\x07routing\x18\x0c \x01(\tH\x05R\x07routing\x88\x01\x01\x12+\n\x0e\x61uthentication\x18\r \x01(\tH\x06R\x0e\x61uthentication\x88\x01\x01\x12>\n\x0bsecret_refs\x18\x0e \x03(\x0b\x32\x1d.chalk.container.v1.SecretRefR\nsecretRefs\x12Y\n\x0fsecurity_policy\x18\x0f \x01(\x0b\x32+.chalk.container.v1.ContainerSecurityPolicyH\x07R\x0esecurityPolicy\x88\x01\x01\x12M\n\x0enetwork_policy\x18\x10 \x01(\x0b\x32!.chalk.container.v1.NetworkPolicyH\x08R\rnetworkPolicy\x88\x01\x01\x12J\n\rcompute_class\x18\x11 \x01(\x0e\x32 .chalk.container.v1.ComputeClassH\tR\x0c\x63omputeClass\x88\x01\x01\x1a\x37\n\tTagsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x02\x38\x01\x1a:\n\x0c\x45nvVarsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x02\x38\x01\x42\x07\n\x05_portB\x0b\n\t_lifetimeB\x0c\n\n_resourcesB\r\n\x0b_enable_sshB\x0b\n\t_protocolB\n\n\x08_routingB\x11\n\x0f_authenticationB\x12\n\x10_security_policyB\x11\n\x0f_network_policyB\x10\n\x0e_compute_class"w\n\x17\x43ontainerSecurityPolicy\x12J\n\rkernel_policy\x18\x01 \x01(\x0e\x32 .chalk.container.v1.KernelPolicyH\x00R\x0ckernelPolicy\x88\x01\x01\x42\x10\n\x0e_kernel_policy"X\n\rNetworkPolicy\x12G\n\x0e\x61llowed_routes\x18\x01 \x03(\x0b\x32 .chalk.container.v1.AllowedRouteR\rallowedRoutes"d\n\x0c\x41llowedRoute\x12\x14\n\x05route\x18\x01 \x01(\tR\x05route\x12>\n\x0bport_ranges\x18\x02 \x03(\x0b\x32\x1d.chalk.container.v1.PortRangeR\nportRanges"E\n\tPortRange\x12\x1d\n\nstart_port\x18\x01 \x01(\x05R\tstartPort\x12\x19\n\x08\x65nd_port\x18\x02 \x01(\x05R\x07\x65ndPort"N\n\x10\x43ontainerRequest\x12:\n\x04spec\x18\x01 \x01(\x0b\x32&.chalk.container.v1.ChalkContainerSpecR\x04spec"\x82\x01\n\x0bHealthCheck\x12\x18\n\x07healthy\x18\x01 \x01(\x08R\x07healthy\x12$\n\x0bstatus_code\x18\x02 \x01(\x05H\x00R\nstatusCode\x88\x01\x01\x12\x19\n\x05\x65rror\x18\x03 \x01(\tH\x01R\x05\x65rror\x88\x01\x01\x42\x0e\n\x0c_status_codeB\x08\n\x06_error"\xc7\x05\n\x11\x43ontainerResponse\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x12\x16\n\x06status\x18\x03 \x01(\tR\x06status\x12*\n\x0estatus_message\x18\x04 \x01(\tH\x00R\rstatusMessage\x88\x01\x01\x12:\n\x04spec\x18\x05 \x01(\x0b\x32&.chalk.container.v1.ChalkContainerSpecR\x04spec\x12\x39\n\ncreated_at\x18\x06 \x01(\x0b\x32\x1a.google.protobuf.TimestampR\tcreatedAt\x12>\n\nstopped_at\x18\x07 \x01(\x0b\x32\x1a.google.protobuf.TimestampH\x01R\tstoppedAt\x88\x01\x01\x12\x19\n\x08pod_name\x18\x08 \x01(\tR\x07podName\x12\x1c\n\x07web_url\x18\t \x01(\tH\x02R\x06webUrl\x88\x01\x01\x12+\n\x0fssh_private_key\x18\n \x01(\tH\x03R\rsshPrivateKey\x88\x01\x01\x12&\n\x0cssh_username\x18\x0b \x01(\tH\x04R\x0bsshUsername\x88\x01\x01\x12\x1e\n\x08ssh_host\x18\x0c \x01(\tH\x05R\x07sshHost\x88\x01\x01\x12\x1e\n\x08ssh_port\x18\r \x01(\x05H\x06R\x07sshPort\x88\x01\x01\x12G\n\x0chealth_check\x18\x0e \x01(\x0b\x32\x1f.chalk.container.v1.HealthCheckH\x07R\x0bhealthCheck\x88\x01\x01\x42\x11\n\x0f_status_messageB\r\n\x0b_stopped_atB\n\n\x08_web_urlB\x12\n\x10_ssh_private_keyB\x0f\n\r_ssh_usernameB\x0b\n\t_ssh_hostB\x0b\n\t_ssh_portB\x0f\n\r_health_check"Y\n\x13RunContainerRequest\x12\x42\n\tcontainer\x18\x01 \x01(\x0b\x32$.chalk.container.v1.ContainerRequestR\tcontainer"[\n\x14RunContainerResponse\x12\x43\n\tcontainer\x18\x01 \x01(\x0b\x32%.chalk.container.v1.ContainerResponseR\tcontainer"\xa4\x01\n\x14StopContainerRequest\x12\x13\n\x02id\x18\x01 \x01(\tH\x00R\x02id\x88\x01\x01\x12\x17\n\x04name\x18\x02 \x01(\tH\x01R\x04name\x88\x01\x01\x12\x35\n\x14grace_period_seconds\x18\x03 \x01(\x05H\x02R\x12gracePeriodSeconds\x88\x01\x01\x42\x05\n\x03_idB\x07\n\x05_nameB\x17\n\x15_grace_period_seconds"\\\n\x15StopContainerResponse\x12\x43\n\tcontainer\x18\x01 \x01(\x0b\x32%.chalk.container.v1.ContainerResponseR\tcontainer"S\n\x13GetContainerRequest\x12\x13\n\x02id\x18\x01 \x01(\tH\x00R\x02id\x88\x01\x01\x12\x17\n\x04name\x18\x02 \x01(\tH\x01R\x04name\x88\x01\x01\x42\x05\n\x03_idB\x07\n\x05_name"[\n\x14GetContainerResponse\x12\x43\n\tcontainer\x18\x01 \x01(\x0b\x32%.chalk.container.v1.ContainerResponseR\tcontainer"d\n\x15ListContainersRequest\x12\x1b\n\x06\x63ursor\x18\x01 \x01(\tH\x00R\x06\x63ursor\x88\x01\x01\x12\x19\n\x05limit\x18\x02 \x01(\x05H\x01R\x05limit\x88\x01\x01\x42\t\n\x07_cursorB\x08\n\x06_limit"\x95\x01\n\x16ListContainersResponse\x12\x45\n\ncontainers\x18\x01 \x03(\x0b\x32%.chalk.container.v1.ContainerResponseR\ncontainers\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01\x42\x0e\n\x0c_next_cursor"\xd7\x01\n\x12\x45xecCommandRequest\x12\x13\n\x02id\x18\x01 \x01(\tH\x00R\x02id\x88\x01\x01\x12\x17\n\x04name\x18\x02 \x01(\tH\x01R\x04name\x88\x01\x01\x12\x18\n\x07\x63ommand\x18\x03 \x03(\tR\x07\x63ommand\x12\x38\n\x07timeout\x18\x04 \x01(\x0b\x32\x19.google.protobuf.DurationH\x02R\x07timeout\x88\x01\x01\x12\x19\n\x05stdin\x18\x05 \x01(\x0cH\x03R\x05stdin\x88\x01\x01\x42\x05\n\x03_idB\x07\n\x05_nameB\n\n\x08_timeoutB\x08\n\x06_stdin"b\n\x13\x45xecCommandResponse\x12\x16\n\x06stdout\x18\x01 \x01(\x0cR\x06stdout\x12\x16\n\x06stderr\x18\x02 \x01(\x0cR\x06stderr\x12\x1b\n\texit_code\x18\x03 \x01(\x05R\x08\x65xitCode"\xc0\x04\n\x0eSessionRequest\x12\x41\n\x0bnew_process\x18\x01 \x01(\x0b\x32\x1e.chalk.container.v1.NewProcessH\x00R\nnewProcess\x12J\n\x0e\x61ttach_session\x18\x02 \x01(\x0b\x32!.chalk.container.v1.AttachSessionH\x00R\rattachSession\x12J\n\x0e\x64\x65tach_session\x18\x03 \x01(\x0b\x32!.chalk.container.v1.DetachSessionH\x00R\rdetachSession\x12>\n\nstdin_data\x18\x04 \x01(\x0b\x32\x1d.chalk.container.v1.StdinDataH\x00R\tstdinData\x12;\n\tstdin_eof\x18\x05 \x01(\x0b\x32\x1c.chalk.container.v1.StdinEofH\x00R\x08stdinEof\x12;\n\x06signal\x18\x06 \x01(\x0b\x32!.chalk.container.v1.SessionSignalH\x00R\x06signal\x12\x38\n\x08pty_info\x18\x07 \x01(\x0b\x32\x1b.chalk.container.v1.PtyInfoH\x00R\x07ptyInfo\x12T\n\x12get_process_status\x18\x08 \x01(\x0b\x32$.chalk.container.v1.GetProcessStatusH\x00R\x10getProcessStatusB\t\n\x07\x63ommand"\xf2\x04\n\x0fSessionResponse\x12\x38\n\x05\x65rror\x18\x01 \x01(\x0b\x32 .chalk.container.v1.SessionErrorH\x00R\x05\x65rror\x12P\n\x10session_attached\x18\x02 \x01(\x0b\x32#.chalk.container.v1.SessionAttachedH\x00R\x0fsessionAttached\x12\x41\n\x0boutput_data\x18\x03 \x01(\x0b\x32\x1e.chalk.container.v1.OutputDataH\x00R\noutputData\x12J\n\x0eprocess_status\x18\x04 \x01(\x0b\x32!.chalk.container.v1.ProcessStatusH\x00R\rprocessStatus\x12J\n\x0eprocess_exited\x18\x06 \x01(\x0b\x32!.chalk.container.v1.ProcessExitedH\x00R\rprocessExited\x12P\n\x10session_detached\x18\x07 \x01(\x0b\x32#.chalk.container.v1.SessionDetachedH\x00R\x0fsessionDetached\x12J\n\x0eprocess_failed\x18\x08 \x01(\x0b\x32!.chalk.container.v1.ProcessFailedH\x00R\rprocessFailed\x12Q\n\x11process_timed_out\x18\t \x01(\x0b\x32#.chalk.container.v1.ProcessTimedOutH\x00R\x0fprocessTimedOutB\x07\n\x05\x65vent"<\n\x0cSessionError\x12\x12\n\x04\x63ode\x18\x01 \x01(\tR\x04\x63ode\x12\x18\n\x07message\x18\x02 \x01(\tR\x07message"\xfe\x02\n\nNewProcess\x12!\n\x0c\x63ontainer_id\x18\x01 \x01(\tR\x0b\x63ontainerId\x12\x18\n\x07\x63ommand\x18\x02 \x01(\tR\x07\x63ommand\x12\x12\n\x04\x61rgs\x18\x03 \x03(\tR\x04\x61rgs\x12\x1d\n\x07workdir\x18\x04 \x01(\tH\x00R\x07workdir\x88\x01\x01\x12\x39\n\x03\x65nv\x18\x05 \x03(\x0b\x32\'.chalk.container.v1.NewProcess.EnvEntryR\x03\x65nv\x12&\n\x0ctimeout_secs\x18\x06 \x01(\x04H\x01R\x0btimeoutSecs\x88\x01\x01\x12;\n\x08pty_info\x18\x07 \x01(\x0b\x32\x1b.chalk.container.v1.PtyInfoH\x02R\x07ptyInfo\x88\x01\x01\x1a\x36\n\x08\x45nvEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x02\x38\x01\x42\n\n\x08_workdirB\x0f\n\r_timeout_secsB\x0b\n\t_pty_info"1\n\x07PtyInfo\x12\x12\n\x04\x63ols\x18\x01 \x01(\rR\x04\x63ols\x12\x12\n\x04rows\x18\x02 \x01(\rR\x04rows"\x9b\x01\n\rAttachSession\x12!\n\x0c\x63ontainer_id\x18\x01 \x01(\tR\x0b\x63ontainerId\x12\x1d\n\nsession_id\x18\x02 \x01(\tR\tsessionId\x12;\n\x08pty_info\x18\x03 \x01(\x0b\x32\x1b.chalk.container.v1.PtyInfoH\x00R\x07ptyInfo\x88\x01\x01\x42\x0b\n\t_pty_info"0\n\x0fSessionAttached\x12\x1d\n\nsession_id\x18\x01 \x01(\tR\tsessionId"\x0f\n\rDetachSession"\x11\n\x0fSessionDetached"\x1f\n\tStdinData\x12\x12\n\x04\x64\x61ta\x18\x01 \x01(\x0cR\x04\x64\x61ta"\n\n\x08StdinEof"\'\n\rSessionSignal\x12\x16\n\x06signal\x18\x01 \x01(\x05R\x06signal"\xbe\x01\n\nOutputData\x12=\n\x06stream\x18\x01 \x01(\x0e\x32%.chalk.container.v1.OutputData.StreamR\x06stream\x12\x12\n\x04\x64\x61ta\x18\x02 \x01(\x0cR\x04\x64\x61ta"]\n\x06Stream\x12\x16\n\x12STREAM_UNSPECIFIED\x10\x00\x12\x11\n\rSTREAM_STDOUT\x10\x01\x12\x11\n\rSTREAM_STDERR\x10\x02\x12\x15\n\x11STREAM_PTY_OUTPUT\x10\x03"\x12\n\x10GetProcessStatus"\x9f\x01\n\rProcessStatus\x12\x36\n\x05state\x18\x01 \x01(\x0e\x32 .chalk.container.v1.ProcessStateR\x05state\x12 \n\texit_code\x18\x02 \x01(\x05H\x00R\x08\x65xitCode\x88\x01\x01\x12\x1b\n\x06signal\x18\x03 \x01(\x05H\x01R\x06signal\x88\x01\x01\x42\x0c\n\n_exit_codeB\t\n\x07_signal"g\n\rProcessExited\x12 \n\texit_code\x18\x01 \x01(\x05H\x00R\x08\x65xitCode\x88\x01\x01\x12\x1b\n\x06signal\x18\x02 \x01(\x05H\x01R\x06signal\x88\x01\x01\x42\x0c\n\n_exit_codeB\t\n\x07_signal")\n\rProcessFailed\x12\x18\n\x07message\x18\x01 \x01(\tR\x07message"i\n\x0fProcessTimedOut\x12 \n\texit_code\x18\x01 \x01(\x05H\x00R\x08\x65xitCode\x88\x01\x01\x12\x1b\n\x06signal\x18\x02 \x01(\x05H\x01R\x06signal\x88\x01\x01\x42\x0c\n\n_exit_codeB\t\n\x07_signal"\xb7\x01\n\x0bSessionInfo\x12\x1d\n\nsession_id\x18\x01 \x01(\tR\tsessionId\x12?\n\x0bnew_process\x18\x02 \x01(\x0b\x32\x1e.chalk.container.v1.NewProcessR\nnewProcess\x12H\n\x0eprocess_status\x18\x03 \x01(\x0b\x32!.chalk.container.v1.ProcessStatusR\rprocessStatus"U\n\x11GetSessionRequest\x12!\n\x0c\x63ontainer_id\x18\x01 \x01(\tR\x0b\x63ontainerId\x12\x1d\n\nsession_id\x18\x02 \x01(\tR\tsessionId"O\n\x12GetSessionResponse\x12\x39\n\x07session\x18\x01 \x01(\x0b\x32\x1f.chalk.container.v1.SessionInfoR\x07session"8\n\x13ListSessionsRequest\x12!\n\x0c\x63ontainer_id\x18\x01 \x01(\tR\x0b\x63ontainerId"S\n\x14ListSessionsResponse\x12;\n\x08sessions\x18\x01 \x03(\x0b\x32\x1f.chalk.container.v1.SessionInfoR\x08sessions",\n\x11\x43ontainerHostInfo\x12\x17\n\x07host_id\x18\x01 \x01(\tR\x06hostId"\xef\x01\n\x1cUpdateContainerStatusRequest\x12!\n\x0c\x63ontainer_id\x18\x01 \x01(\tR\x0b\x63ontainerId\x12\x16\n\x06status\x18\x02 \x01(\tR\x06status\x12*\n\x0estatus_message\x18\x03 \x01(\tH\x00R\rstatusMessage\x88\x01\x01\x12G\n\thost_info\x18\x04 \x01(\x0b\x32%.chalk.container.v1.ContainerHostInfoH\x01R\x08hostInfo\x88\x01\x01\x42\x11\n\x0f_status_messageB\x0c\n\n_host_info"d\n\x1dUpdateContainerStatusResponse\x12\x43\n\tcontainer\x18\x01 \x01(\x0b\x32%.chalk.container.v1.ContainerResponseR\tcontainer"o\n!BatchUpdateContainerStatusRequest\x12J\n\x07updates\x18\x01 \x03(\x0b\x32\x30.chalk.container.v1.UpdateContainerStatusRequestR\x07updates"$\n"BatchUpdateContainerStatusResponse"Z\n\x0eGKEPodSnapshot\x12%\n\x0estorage_bucket\x18\x01 \x01(\tR\rstorageBucket\x12!\n\x0cstorage_path\x18\x02 \x01(\tR\x0bstoragePath"o\n\x15\x43ontainerSnapshotSpec\x12N\n\x10gke_pod_snapshot\x18\x01 \x01(\x0b\x32".chalk.container.v1.GKEPodSnapshotH\x00R\x0egkePodSnapshotB\x06\n\x04spec"\x8c\x04\n\x11\x43ontainerSnapshot\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12.\n\x13source_container_id\x18\x02 \x01(\tR\x11sourceContainerId\x12M\n\x0e\x63ontainer_spec\x18\x03 \x01(\x0b\x32&.chalk.container.v1.ChalkContainerSpecR\rcontainerSpec\x12N\n\rsnapshot_spec\x18\x04 \x01(\x0b\x32).chalk.container.v1.ContainerSnapshotSpecR\x0csnapshotSpec\x12\x16\n\x06status\x18\x05 \x01(\tR\x06status\x12*\n\x0estatus_message\x18\x06 \x01(\tH\x00R\rstatusMessage\x88\x01\x01\x12\x39\n\ncreated_at\x18\x07 \x01(\x0b\x32\x1a.google.protobuf.TimestampR\tcreatedAt\x12\x42\n\x0c\x63ompleted_at\x18\x08 \x01(\x0b\x32\x1a.google.protobuf.TimestampH\x01R\x0b\x63ompletedAt\x88\x01\x01\x12"\n\ncreated_by\x18\t \x01(\tH\x02R\tcreatedBy\x88\x01\x01\x42\x11\n\x0f_status_messageB\x0f\n\r_completed_atB\r\n\x0b_created_by"X\n\x18SnapshotContainerRequest\x12\x13\n\x02id\x18\x01 \x01(\tH\x00R\x02id\x88\x01\x01\x12\x17\n\x04name\x18\x02 \x01(\tH\x01R\x04name\x88\x01\x01\x42\x05\n\x03_idB\x07\n\x05_name"^\n\x19SnapshotContainerResponse\x12\x41\n\x08snapshot\x18\x01 \x01(\x0b\x32%.chalk.container.v1.ContainerSnapshotR\x08snapshot"-\n\x1bGetContainerSnapshotRequest\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id"a\n\x1cGetContainerSnapshotResponse\x12\x41\n\x08snapshot\x18\x01 \x01(\x0b\x32%.chalk.container.v1.ContainerSnapshotR\x08snapshot"\xb9\x01\n\x1dListContainerSnapshotsRequest\x12\x33\n\x13source_container_id\x18\x01 \x01(\tH\x00R\x11sourceContainerId\x88\x01\x01\x12\x1b\n\x06\x63ursor\x18\x02 \x01(\tH\x01R\x06\x63ursor\x88\x01\x01\x12\x19\n\x05limit\x18\x03 \x01(\x05H\x02R\x05limit\x88\x01\x01\x42\x16\n\x14_source_container_idB\t\n\x07_cursorB\x08\n\x06_limit"\x9b\x01\n\x1eListContainerSnapshotsResponse\x12\x43\n\tsnapshots\x18\x01 \x03(\x0b\x32%.chalk.container.v1.ContainerSnapshotR\tsnapshots\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01\x42\x0e\n\x0c_next_cursor"z\n\x11\x43ontainerTTYInput\x12\x12\n\x04\x64\x61ta\x18\x01 \x01(\x0cR\x04\x64\x61ta\x12\x46\n\x06resize\x18\x02 \x01(\x0b\x32).chalk.container.v1.ContainerTerminalSizeH\x00R\x06resize\x88\x01\x01\x42\t\n\x07_resize"?\n\x15\x43ontainerTerminalSize\x12\x12\n\x04rows\x18\x01 \x01(\rR\x04rows\x12\x12\n\x04\x63ols\x18\x02 \x01(\rR\x04\x63ols"\xc1\x01\n\x1e\x43reateContainerDebugTTYRequest\x12U\n\x0cinit_request\x18\x01 \x01(\x0b\x32\x30.chalk.container.v1.ContainerDebugTTYInitRequestH\x00R\x0binitRequest\x12=\n\x05input\x18\x02 \x01(\x0b\x32%.chalk.container.v1.ContainerTTYInputH\x00R\x05inputB\t\n\x07message"v\n\x1c\x43ontainerDebugTTYInitRequest\x12\x13\n\x02id\x18\x01 \x01(\tH\x00R\x02id\x88\x01\x01\x12\x17\n\x04name\x18\x02 \x01(\tH\x01R\x04name\x88\x01\x01\x12\x18\n\x07\x63ommand\x18\x03 \x03(\tR\x07\x63ommandB\x05\n\x03_idB\x07\n\x05_name"r\n\x1f\x43reateContainerDebugTTYResponse\x12\x12\n\x04\x64\x61ta\x18\x01 \x01(\x0cR\x04\x64\x61ta\x12\x19\n\x05\x65rror\x18\x02 \x01(\tH\x00R\x05\x65rror\x88\x01\x01\x12\x16\n\x06\x63losed\x18\x03 \x01(\x08R\x06\x63losedB\x08\n\x06_error*\\\n\x0c\x43omputeClass\x12\x1d\n\x19\x43OMPUTE_CLASS_UNSPECIFIED\x10\x00\x12\x15\n\x11\x43OMPUTE_CLASS_K8S\x10\x01\x12\x16\n\x12\x43OMPUTE_CLASS_HOST\x10\x02*c\n\x0cKernelPolicy\x12\x1d\n\x19KERNEL_POLICY_UNSPECIFIED\x10\x00\x12\x1c\n\x18KERNEL_POLICY_RESTRICTED\x10\x01\x12\x16\n\x12KERNEL_POLICY_OPEN\x10\x02*\x99\x01\n\x0cProcessState\x12\x1d\n\x19PROCESS_STATE_UNSPECIFIED\x10\x00\x12\x19\n\x15PROCESS_STATE_RUNNING\x10\x01\x12\x18\n\x14PROCESS_STATE_EXITED\x10\x03\x12\x18\n\x14PROCESS_STATE_FAILED\x10\x04\x12\x1b\n\x17PROCESS_STATE_TIMED_OUT\x10\x05\x32\x9d\x0e\n\x10\x43ontainerService\x12\xbd\x01\n\x0cRunContainer\x12\'.chalk.container.v1.RunContainerRequest\x1a(.chalk.container.v1.RunContainerResponse"Z\x80}\x0c\x92\xd3\x0eS\n\x16scaling_groups_enabled\x12\x39This action is not enabled. Please contact Chalk Support.\x12i\n\rStopContainer\x12(.chalk.container.v1.StopContainerRequest\x1a).chalk.container.v1.StopContainerResponse"\x03\x80}\x0e\x12\x66\n\x0cGetContainer\x12\'.chalk.container.v1.GetContainerRequest\x1a(.chalk.container.v1.GetContainerResponse"\x03\x80}\x0b\x12l\n\x0eListContainers\x12).chalk.container.v1.ListContainersRequest\x1a*.chalk.container.v1.ListContainersResponse"\x03\x80}\x0b\x12\x63\n\x0b\x45xecCommand\x12&.chalk.container.v1.ExecCommandRequest\x1a\'.chalk.container.v1.ExecCommandResponse"\x03\x80}\x0e\x12[\n\x07Session\x12".chalk.container.v1.SessionRequest\x1a#.chalk.container.v1.SessionResponse"\x03\x80}\x0e(\x01\x30\x01\x12`\n\nGetSession\x12%.chalk.container.v1.GetSessionRequest\x1a&.chalk.container.v1.GetSessionResponse"\x03\x80}\x0b\x12\x66\n\x0cListSessions\x12\'.chalk.container.v1.ListSessionsRequest\x1a(.chalk.container.v1.ListSessionsResponse"\x03\x80}\x0b\x12\x84\x01\n\x15UpdateContainerStatus\x12\x30.chalk.container.v1.UpdateContainerStatusRequest\x1a\x31.chalk.container.v1.UpdateContainerStatusResponse"\x06\x88\x02\x01\x80}\x0e\x12\x90\x01\n\x1a\x42\x61tchUpdateContainerStatus\x12\x35.chalk.container.v1.BatchUpdateContainerStatusRequest\x1a\x36.chalk.container.v1.BatchUpdateContainerStatusResponse"\x03\x80}!\x12\xcc\x01\n\x11SnapshotContainer\x12,.chalk.container.v1.SnapshotContainerRequest\x1a-.chalk.container.v1.SnapshotContainerResponse"Z\x80}\x0c\x92\xd3\x0eS\n\x16scaling_groups_enabled\x12\x39This action is not enabled. Please contact Chalk Support.\x12~\n\x14GetContainerSnapshot\x12/.chalk.container.v1.GetContainerSnapshotRequest\x1a\x30.chalk.container.v1.GetContainerSnapshotResponse"\x03\x80}\x0b\x12\x84\x01\n\x16ListContainerSnapshots\x12\x31.chalk.container.v1.ListContainerSnapshotsRequest\x1a\x32.chalk.container.v1.ListContainerSnapshotsResponse"\x03\x80}\x0b\x12\x8b\x01\n\x17\x43reateContainerDebugTTY\x12\x32.chalk.container.v1.CreateContainerDebugTTYRequest\x1a\x33.chalk.container.v1.CreateContainerDebugTTYResponse"\x03\x80}\x0e(\x01\x30\x01\x42\xaa\x01\n\x16\x63om.chalk.container.v1B\x0cServiceProtoP\x01Z\x18\x63ontainer/v1;containerv1\xa2\x02\x03\x43\x43X\xaa\x02\x12\x43halk.Container.V1\xca\x02\x12\x43halk\\Container\\V1\xe2\x02\x1e\x43halk\\Container\\V1\\GPBMetadata\xea\x02\x14\x43halk::Container::V1b\x06proto3'
 )
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
-_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, "chalk.container.v1.service_pb2", _globals)
+_builder.BuildTopDescriptorsAndMessages(
+    DESCRIPTOR, "chalk.container.v1.service_pb2", _globals
+)
 if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["DESCRIPTOR"]._options = None
     _globals[
@@ -37,116 +47,216 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_CHALKCONTAINERSPEC_TAGSENTRY"]._serialized_options = b"8\001"
     _globals["_CHALKCONTAINERSPEC_ENVVARSENTRY"]._options = None
     _globals["_CHALKCONTAINERSPEC_ENVVARSENTRY"]._serialized_options = b"8\001"
+    _globals["_NEWPROCESS_ENVENTRY"]._options = None
+    _globals["_NEWPROCESS_ENVENTRY"]._serialized_options = b"8\001"
     _globals["_CONTAINERSERVICE"].methods_by_name["RunContainer"]._options = None
-    _globals["_CONTAINERSERVICE"].methods_by_name["RunContainer"]._serialized_options = b"\200}\014"
+    _globals["_CONTAINERSERVICE"].methods_by_name[
+        "RunContainer"
+    ]._serialized_options = b"\200}\014\222\323\016S\n\026scaling_groups_enabled\0229This action is not enabled. Please contact Chalk Support."
     _globals["_CONTAINERSERVICE"].methods_by_name["StopContainer"]._options = None
-    _globals["_CONTAINERSERVICE"].methods_by_name["StopContainer"]._serialized_options = b"\200}\016"
+    _globals["_CONTAINERSERVICE"].methods_by_name[
+        "StopContainer"
+    ]._serialized_options = b"\200}\016"
     _globals["_CONTAINERSERVICE"].methods_by_name["GetContainer"]._options = None
-    _globals["_CONTAINERSERVICE"].methods_by_name["GetContainer"]._serialized_options = b"\200}\013"
+    _globals["_CONTAINERSERVICE"].methods_by_name[
+        "GetContainer"
+    ]._serialized_options = b"\200}\013"
     _globals["_CONTAINERSERVICE"].methods_by_name["ListContainers"]._options = None
-    _globals["_CONTAINERSERVICE"].methods_by_name["ListContainers"]._serialized_options = b"\200}\013"
+    _globals["_CONTAINERSERVICE"].methods_by_name[
+        "ListContainers"
+    ]._serialized_options = b"\200}\013"
     _globals["_CONTAINERSERVICE"].methods_by_name["ExecCommand"]._options = None
-    _globals["_CONTAINERSERVICE"].methods_by_name["ExecCommand"]._serialized_options = b"\200}\016"
-    _globals["_CONTAINERSERVICE"].methods_by_name["UpdateContainerStatus"]._options = None
+    _globals["_CONTAINERSERVICE"].methods_by_name[
+        "ExecCommand"
+    ]._serialized_options = b"\200}\016"
+    _globals["_CONTAINERSERVICE"].methods_by_name["Session"]._options = None
+    _globals["_CONTAINERSERVICE"].methods_by_name[
+        "Session"
+    ]._serialized_options = b"\200}\016"
+    _globals["_CONTAINERSERVICE"].methods_by_name["GetSession"]._options = None
+    _globals["_CONTAINERSERVICE"].methods_by_name[
+        "GetSession"
+    ]._serialized_options = b"\200}\013"
+    _globals["_CONTAINERSERVICE"].methods_by_name["ListSessions"]._options = None
+    _globals["_CONTAINERSERVICE"].methods_by_name[
+        "ListSessions"
+    ]._serialized_options = b"\200}\013"
+    _globals["_CONTAINERSERVICE"].methods_by_name[
+        "UpdateContainerStatus"
+    ]._options = None
     _globals["_CONTAINERSERVICE"].methods_by_name[
         "UpdateContainerStatus"
     ]._serialized_options = b"\210\002\001\200}\016"
-    _globals["_CONTAINERSERVICE"].methods_by_name["BatchUpdateContainerStatus"]._options = None
-    _globals["_CONTAINERSERVICE"].methods_by_name["BatchUpdateContainerStatus"]._serialized_options = b"\200}!"
+    _globals["_CONTAINERSERVICE"].methods_by_name[
+        "BatchUpdateContainerStatus"
+    ]._options = None
+    _globals["_CONTAINERSERVICE"].methods_by_name[
+        "BatchUpdateContainerStatus"
+    ]._serialized_options = b"\200}!"
     _globals["_CONTAINERSERVICE"].methods_by_name["SnapshotContainer"]._options = None
-    _globals["_CONTAINERSERVICE"].methods_by_name["SnapshotContainer"]._serialized_options = b"\200}\014"
-    _globals["_CONTAINERSERVICE"].methods_by_name["GetContainerSnapshot"]._options = None
-    _globals["_CONTAINERSERVICE"].methods_by_name["GetContainerSnapshot"]._serialized_options = b"\200}\013"
-    _globals["_CONTAINERSERVICE"].methods_by_name["ListContainerSnapshots"]._options = None
-    _globals["_CONTAINERSERVICE"].methods_by_name["ListContainerSnapshots"]._serialized_options = b"\200}\013"
-    _globals["_CONTAINERSERVICE"].methods_by_name["CreateContainerDebugTTY"]._options = None
-    _globals["_CONTAINERSERVICE"].methods_by_name["CreateContainerDebugTTY"]._serialized_options = b"\200}\016"
-    _globals["_KERNELPOLICY"]._serialized_start = 6478
-    _globals["_KERNELPOLICY"]._serialized_end = 6577
-    _globals["_RESOURCELIMITS"]._serialized_start = 154
-    _globals["_RESOURCELIMITS"]._serialized_end = 272
-    _globals["_VOLUMEMOUNT"]._serialized_start = 275
-    _globals["_VOLUMEMOUNT"]._serialized_end = 410
-    _globals["_SECRETREF"]._serialized_start = 413
-    _globals["_SECRETREF"]._serialized_end = 704
-    _globals["_SECRETREF_ALIASESENTRY"]._serialized_start = 625
-    _globals["_SECRETREF_ALIASESENTRY"]._serialized_end = 683
-    _globals["_CHALKCONTAINERSPEC"]._serialized_start = 707
-    _globals["_CHALKCONTAINERSPEC"]._serialized_end = 1796
-    _globals["_CHALKCONTAINERSPEC_TAGSENTRY"]._serialized_start = 1547
-    _globals["_CHALKCONTAINERSPEC_TAGSENTRY"]._serialized_end = 1602
-    _globals["_CHALKCONTAINERSPEC_ENVVARSENTRY"]._serialized_start = 1604
-    _globals["_CHALKCONTAINERSPEC_ENVVARSENTRY"]._serialized_end = 1662
-    _globals["_CONTAINERSECURITYPOLICY"]._serialized_start = 1798
-    _globals["_CONTAINERSECURITYPOLICY"]._serialized_end = 1917
-    _globals["_NETWORKPOLICY"]._serialized_start = 1919
-    _globals["_NETWORKPOLICY"]._serialized_end = 2007
-    _globals["_ALLOWEDROUTE"]._serialized_start = 2009
-    _globals["_ALLOWEDROUTE"]._serialized_end = 2109
-    _globals["_PORTRANGE"]._serialized_start = 2111
-    _globals["_PORTRANGE"]._serialized_end = 2180
-    _globals["_CONTAINERREQUEST"]._serialized_start = 2182
-    _globals["_CONTAINERREQUEST"]._serialized_end = 2260
-    _globals["_HEALTHCHECK"]._serialized_start = 2263
-    _globals["_HEALTHCHECK"]._serialized_end = 2393
-    _globals["_CONTAINERRESPONSE"]._serialized_start = 2396
-    _globals["_CONTAINERRESPONSE"]._serialized_end = 3107
-    _globals["_RUNCONTAINERREQUEST"]._serialized_start = 3109
-    _globals["_RUNCONTAINERREQUEST"]._serialized_end = 3198
-    _globals["_RUNCONTAINERRESPONSE"]._serialized_start = 3200
-    _globals["_RUNCONTAINERRESPONSE"]._serialized_end = 3291
-    _globals["_STOPCONTAINERREQUEST"]._serialized_start = 3294
-    _globals["_STOPCONTAINERREQUEST"]._serialized_end = 3458
-    _globals["_STOPCONTAINERRESPONSE"]._serialized_start = 3460
-    _globals["_STOPCONTAINERRESPONSE"]._serialized_end = 3552
-    _globals["_GETCONTAINERREQUEST"]._serialized_start = 3554
-    _globals["_GETCONTAINERREQUEST"]._serialized_end = 3637
-    _globals["_GETCONTAINERRESPONSE"]._serialized_start = 3639
-    _globals["_GETCONTAINERRESPONSE"]._serialized_end = 3730
-    _globals["_LISTCONTAINERSREQUEST"]._serialized_start = 3732
-    _globals["_LISTCONTAINERSREQUEST"]._serialized_end = 3755
-    _globals["_LISTCONTAINERSRESPONSE"]._serialized_start = 3757
-    _globals["_LISTCONTAINERSRESPONSE"]._serialized_end = 3852
-    _globals["_EXECCOMMANDREQUEST"]._serialized_start = 3855
-    _globals["_EXECCOMMANDREQUEST"]._serialized_end = 4070
-    _globals["_EXECCOMMANDRESPONSE"]._serialized_start = 4072
-    _globals["_EXECCOMMANDRESPONSE"]._serialized_end = 4170
-    _globals["_UPDATECONTAINERSTATUSREQUEST"]._serialized_start = 4173
-    _globals["_UPDATECONTAINERSTATUSREQUEST"]._serialized_end = 4325
-    _globals["_UPDATECONTAINERSTATUSRESPONSE"]._serialized_start = 4327
-    _globals["_UPDATECONTAINERSTATUSRESPONSE"]._serialized_end = 4427
-    _globals["_BATCHUPDATECONTAINERSTATUSREQUEST"]._serialized_start = 4429
-    _globals["_BATCHUPDATECONTAINERSTATUSREQUEST"]._serialized_end = 4540
-    _globals["_BATCHUPDATECONTAINERSTATUSRESPONSE"]._serialized_start = 4542
-    _globals["_BATCHUPDATECONTAINERSTATUSRESPONSE"]._serialized_end = 4578
-    _globals["_GKEPODSNAPSHOT"]._serialized_start = 4580
-    _globals["_GKEPODSNAPSHOT"]._serialized_end = 4670
-    _globals["_CONTAINERSNAPSHOTSPEC"]._serialized_start = 4672
-    _globals["_CONTAINERSNAPSHOTSPEC"]._serialized_end = 4783
-    _globals["_CONTAINERSNAPSHOT"]._serialized_start = 4786
-    _globals["_CONTAINERSNAPSHOT"]._serialized_end = 5310
-    _globals["_SNAPSHOTCONTAINERREQUEST"]._serialized_start = 5312
-    _globals["_SNAPSHOTCONTAINERREQUEST"]._serialized_end = 5400
-    _globals["_SNAPSHOTCONTAINERRESPONSE"]._serialized_start = 5402
-    _globals["_SNAPSHOTCONTAINERRESPONSE"]._serialized_end = 5496
-    _globals["_GETCONTAINERSNAPSHOTREQUEST"]._serialized_start = 5498
-    _globals["_GETCONTAINERSNAPSHOTREQUEST"]._serialized_end = 5543
-    _globals["_GETCONTAINERSNAPSHOTRESPONSE"]._serialized_start = 5545
-    _globals["_GETCONTAINERSNAPSHOTRESPONSE"]._serialized_end = 5642
-    _globals["_LISTCONTAINERSNAPSHOTSREQUEST"]._serialized_start = 5644
-    _globals["_LISTCONTAINERSNAPSHOTSREQUEST"]._serialized_end = 5752
-    _globals["_LISTCONTAINERSNAPSHOTSRESPONSE"]._serialized_start = 5754
-    _globals["_LISTCONTAINERSNAPSHOTSRESPONSE"]._serialized_end = 5855
-    _globals["_CONTAINERTTYINPUT"]._serialized_start = 5857
-    _globals["_CONTAINERTTYINPUT"]._serialized_end = 5979
-    _globals["_CONTAINERTERMINALSIZE"]._serialized_start = 5981
-    _globals["_CONTAINERTERMINALSIZE"]._serialized_end = 6044
-    _globals["_CREATECONTAINERDEBUGTTYREQUEST"]._serialized_start = 6047
-    _globals["_CREATECONTAINERDEBUGTTYREQUEST"]._serialized_end = 6240
-    _globals["_CONTAINERDEBUGTTYINITREQUEST"]._serialized_start = 6242
-    _globals["_CONTAINERDEBUGTTYINITREQUEST"]._serialized_end = 6360
-    _globals["_CREATECONTAINERDEBUGTTYRESPONSE"]._serialized_start = 6362
-    _globals["_CREATECONTAINERDEBUGTTYRESPONSE"]._serialized_end = 6476
-    _globals["_CONTAINERSERVICE"]._serialized_start = 6580
-    _globals["_CONTAINERSERVICE"]._serialized_end = 7930
+    _globals["_CONTAINERSERVICE"].methods_by_name[
+        "SnapshotContainer"
+    ]._serialized_options = b"\200}\014\222\323\016S\n\026scaling_groups_enabled\0229This action is not enabled. Please contact Chalk Support."
+    _globals["_CONTAINERSERVICE"].methods_by_name[
+        "GetContainerSnapshot"
+    ]._options = None
+    _globals["_CONTAINERSERVICE"].methods_by_name[
+        "GetContainerSnapshot"
+    ]._serialized_options = b"\200}\013"
+    _globals["_CONTAINERSERVICE"].methods_by_name[
+        "ListContainerSnapshots"
+    ]._options = None
+    _globals["_CONTAINERSERVICE"].methods_by_name[
+        "ListContainerSnapshots"
+    ]._serialized_options = b"\200}\013"
+    _globals["_CONTAINERSERVICE"].methods_by_name[
+        "CreateContainerDebugTTY"
+    ]._options = None
+    _globals["_CONTAINERSERVICE"].methods_by_name[
+        "CreateContainerDebugTTY"
+    ]._serialized_options = b"\200}\016"
+    _globals["_COMPUTECLASS"]._serialized_start = 10161
+    _globals["_COMPUTECLASS"]._serialized_end = 10253
+    _globals["_KERNELPOLICY"]._serialized_start = 10255
+    _globals["_KERNELPOLICY"]._serialized_end = 10354
+    _globals["_PROCESSSTATE"]._serialized_start = 10357
+    _globals["_PROCESSSTATE"]._serialized_end = 10510
+    _globals["_RESOURCELIMITS"]._serialized_start = 182
+    _globals["_RESOURCELIMITS"]._serialized_end = 300
+    _globals["_VOLUMEMOUNT"]._serialized_start = 303
+    _globals["_VOLUMEMOUNT"]._serialized_end = 438
+    _globals["_SECRETREF"]._serialized_start = 441
+    _globals["_SECRETREF"]._serialized_end = 732
+    _globals["_SECRETREF_ALIASESENTRY"]._serialized_start = 653
+    _globals["_SECRETREF_ALIASESENTRY"]._serialized_end = 711
+    _globals["_CHALKCONTAINERSPEC"]._serialized_start = 735
+    _globals["_CHALKCONTAINERSPEC"]._serialized_end = 1918
+    _globals["_CHALKCONTAINERSPEC_TAGSENTRY"]._serialized_start = 1651
+    _globals["_CHALKCONTAINERSPEC_TAGSENTRY"]._serialized_end = 1706
+    _globals["_CHALKCONTAINERSPEC_ENVVARSENTRY"]._serialized_start = 1708
+    _globals["_CHALKCONTAINERSPEC_ENVVARSENTRY"]._serialized_end = 1766
+    _globals["_CONTAINERSECURITYPOLICY"]._serialized_start = 1920
+    _globals["_CONTAINERSECURITYPOLICY"]._serialized_end = 2039
+    _globals["_NETWORKPOLICY"]._serialized_start = 2041
+    _globals["_NETWORKPOLICY"]._serialized_end = 2129
+    _globals["_ALLOWEDROUTE"]._serialized_start = 2131
+    _globals["_ALLOWEDROUTE"]._serialized_end = 2231
+    _globals["_PORTRANGE"]._serialized_start = 2233
+    _globals["_PORTRANGE"]._serialized_end = 2302
+    _globals["_CONTAINERREQUEST"]._serialized_start = 2304
+    _globals["_CONTAINERREQUEST"]._serialized_end = 2382
+    _globals["_HEALTHCHECK"]._serialized_start = 2385
+    _globals["_HEALTHCHECK"]._serialized_end = 2515
+    _globals["_CONTAINERRESPONSE"]._serialized_start = 2518
+    _globals["_CONTAINERRESPONSE"]._serialized_end = 3229
+    _globals["_RUNCONTAINERREQUEST"]._serialized_start = 3231
+    _globals["_RUNCONTAINERREQUEST"]._serialized_end = 3320
+    _globals["_RUNCONTAINERRESPONSE"]._serialized_start = 3322
+    _globals["_RUNCONTAINERRESPONSE"]._serialized_end = 3413
+    _globals["_STOPCONTAINERREQUEST"]._serialized_start = 3416
+    _globals["_STOPCONTAINERREQUEST"]._serialized_end = 3580
+    _globals["_STOPCONTAINERRESPONSE"]._serialized_start = 3582
+    _globals["_STOPCONTAINERRESPONSE"]._serialized_end = 3674
+    _globals["_GETCONTAINERREQUEST"]._serialized_start = 3676
+    _globals["_GETCONTAINERREQUEST"]._serialized_end = 3759
+    _globals["_GETCONTAINERRESPONSE"]._serialized_start = 3761
+    _globals["_GETCONTAINERRESPONSE"]._serialized_end = 3852
+    _globals["_LISTCONTAINERSREQUEST"]._serialized_start = 3854
+    _globals["_LISTCONTAINERSREQUEST"]._serialized_end = 3954
+    _globals["_LISTCONTAINERSRESPONSE"]._serialized_start = 3957
+    _globals["_LISTCONTAINERSRESPONSE"]._serialized_end = 4106
+    _globals["_EXECCOMMANDREQUEST"]._serialized_start = 4109
+    _globals["_EXECCOMMANDREQUEST"]._serialized_end = 4324
+    _globals["_EXECCOMMANDRESPONSE"]._serialized_start = 4326
+    _globals["_EXECCOMMANDRESPONSE"]._serialized_end = 4424
+    _globals["_SESSIONREQUEST"]._serialized_start = 4427
+    _globals["_SESSIONREQUEST"]._serialized_end = 5003
+    _globals["_SESSIONRESPONSE"]._serialized_start = 5006
+    _globals["_SESSIONRESPONSE"]._serialized_end = 5632
+    _globals["_SESSIONERROR"]._serialized_start = 5634
+    _globals["_SESSIONERROR"]._serialized_end = 5694
+    _globals["_NEWPROCESS"]._serialized_start = 5697
+    _globals["_NEWPROCESS"]._serialized_end = 6079
+    _globals["_NEWPROCESS_ENVENTRY"]._serialized_start = 5983
+    _globals["_NEWPROCESS_ENVENTRY"]._serialized_end = 6037
+    _globals["_PTYINFO"]._serialized_start = 6081
+    _globals["_PTYINFO"]._serialized_end = 6130
+    _globals["_ATTACHSESSION"]._serialized_start = 6133
+    _globals["_ATTACHSESSION"]._serialized_end = 6288
+    _globals["_SESSIONATTACHED"]._serialized_start = 6290
+    _globals["_SESSIONATTACHED"]._serialized_end = 6338
+    _globals["_DETACHSESSION"]._serialized_start = 6340
+    _globals["_DETACHSESSION"]._serialized_end = 6355
+    _globals["_SESSIONDETACHED"]._serialized_start = 6357
+    _globals["_SESSIONDETACHED"]._serialized_end = 6374
+    _globals["_STDINDATA"]._serialized_start = 6376
+    _globals["_STDINDATA"]._serialized_end = 6407
+    _globals["_STDINEOF"]._serialized_start = 6409
+    _globals["_STDINEOF"]._serialized_end = 6419
+    _globals["_SESSIONSIGNAL"]._serialized_start = 6421
+    _globals["_SESSIONSIGNAL"]._serialized_end = 6460
+    _globals["_OUTPUTDATA"]._serialized_start = 6463
+    _globals["_OUTPUTDATA"]._serialized_end = 6653
+    _globals["_OUTPUTDATA_STREAM"]._serialized_start = 6560
+    _globals["_OUTPUTDATA_STREAM"]._serialized_end = 6653
+    _globals["_GETPROCESSSTATUS"]._serialized_start = 6655
+    _globals["_GETPROCESSSTATUS"]._serialized_end = 6673
+    _globals["_PROCESSSTATUS"]._serialized_start = 6676
+    _globals["_PROCESSSTATUS"]._serialized_end = 6835
+    _globals["_PROCESSEXITED"]._serialized_start = 6837
+    _globals["_PROCESSEXITED"]._serialized_end = 6940
+    _globals["_PROCESSFAILED"]._serialized_start = 6942
+    _globals["_PROCESSFAILED"]._serialized_end = 6983
+    _globals["_PROCESSTIMEDOUT"]._serialized_start = 6985
+    _globals["_PROCESSTIMEDOUT"]._serialized_end = 7090
+    _globals["_SESSIONINFO"]._serialized_start = 7093
+    _globals["_SESSIONINFO"]._serialized_end = 7276
+    _globals["_GETSESSIONREQUEST"]._serialized_start = 7278
+    _globals["_GETSESSIONREQUEST"]._serialized_end = 7363
+    _globals["_GETSESSIONRESPONSE"]._serialized_start = 7365
+    _globals["_GETSESSIONRESPONSE"]._serialized_end = 7444
+    _globals["_LISTSESSIONSREQUEST"]._serialized_start = 7446
+    _globals["_LISTSESSIONSREQUEST"]._serialized_end = 7502
+    _globals["_LISTSESSIONSRESPONSE"]._serialized_start = 7504
+    _globals["_LISTSESSIONSRESPONSE"]._serialized_end = 7587
+    _globals["_CONTAINERHOSTINFO"]._serialized_start = 7589
+    _globals["_CONTAINERHOSTINFO"]._serialized_end = 7633
+    _globals["_UPDATECONTAINERSTATUSREQUEST"]._serialized_start = 7636
+    _globals["_UPDATECONTAINERSTATUSREQUEST"]._serialized_end = 7875
+    _globals["_UPDATECONTAINERSTATUSRESPONSE"]._serialized_start = 7877
+    _globals["_UPDATECONTAINERSTATUSRESPONSE"]._serialized_end = 7977
+    _globals["_BATCHUPDATECONTAINERSTATUSREQUEST"]._serialized_start = 7979
+    _globals["_BATCHUPDATECONTAINERSTATUSREQUEST"]._serialized_end = 8090
+    _globals["_BATCHUPDATECONTAINERSTATUSRESPONSE"]._serialized_start = 8092
+    _globals["_BATCHUPDATECONTAINERSTATUSRESPONSE"]._serialized_end = 8128
+    _globals["_GKEPODSNAPSHOT"]._serialized_start = 8130
+    _globals["_GKEPODSNAPSHOT"]._serialized_end = 8220
+    _globals["_CONTAINERSNAPSHOTSPEC"]._serialized_start = 8222
+    _globals["_CONTAINERSNAPSHOTSPEC"]._serialized_end = 8333
+    _globals["_CONTAINERSNAPSHOT"]._serialized_start = 8336
+    _globals["_CONTAINERSNAPSHOT"]._serialized_end = 8860
+    _globals["_SNAPSHOTCONTAINERREQUEST"]._serialized_start = 8862
+    _globals["_SNAPSHOTCONTAINERREQUEST"]._serialized_end = 8950
+    _globals["_SNAPSHOTCONTAINERRESPONSE"]._serialized_start = 8952
+    _globals["_SNAPSHOTCONTAINERRESPONSE"]._serialized_end = 9046
+    _globals["_GETCONTAINERSNAPSHOTREQUEST"]._serialized_start = 9048
+    _globals["_GETCONTAINERSNAPSHOTREQUEST"]._serialized_end = 9093
+    _globals["_GETCONTAINERSNAPSHOTRESPONSE"]._serialized_start = 9095
+    _globals["_GETCONTAINERSNAPSHOTRESPONSE"]._serialized_end = 9192
+    _globals["_LISTCONTAINERSNAPSHOTSREQUEST"]._serialized_start = 9195
+    _globals["_LISTCONTAINERSNAPSHOTSREQUEST"]._serialized_end = 9380
+    _globals["_LISTCONTAINERSNAPSHOTSRESPONSE"]._serialized_start = 9383
+    _globals["_LISTCONTAINERSNAPSHOTSRESPONSE"]._serialized_end = 9538
+    _globals["_CONTAINERTTYINPUT"]._serialized_start = 9540
+    _globals["_CONTAINERTTYINPUT"]._serialized_end = 9662
+    _globals["_CONTAINERTERMINALSIZE"]._serialized_start = 9664
+    _globals["_CONTAINERTERMINALSIZE"]._serialized_end = 9727
+    _globals["_CREATECONTAINERDEBUGTTYREQUEST"]._serialized_start = 9730
+    _globals["_CREATECONTAINERDEBUGTTYREQUEST"]._serialized_end = 9923
+    _globals["_CONTAINERDEBUGTTYINITREQUEST"]._serialized_start = 9925
+    _globals["_CONTAINERDEBUGTTYINITREQUEST"]._serialized_end = 10043
+    _globals["_CREATECONTAINERDEBUGTTYRESPONSE"]._serialized_start = 10045
+    _globals["_CREATECONTAINERDEBUGTTYRESPONSE"]._serialized_end = 10159
+    _globals["_CONTAINERSERVICE"]._serialized_start = 10513
+    _globals["_CONTAINERSERVICE"]._serialized_end = 12334
 # @@protoc_insertion_point(module_scope)

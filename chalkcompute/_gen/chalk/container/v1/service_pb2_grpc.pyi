@@ -18,12 +18,18 @@ from chalkcompute._gen.chalk.container.v1.service_pb2 import (
     GetContainerResponse,
     GetContainerSnapshotRequest,
     GetContainerSnapshotResponse,
+    GetSessionRequest,
+    GetSessionResponse,
     ListContainerSnapshotsRequest,
     ListContainerSnapshotsResponse,
     ListContainersRequest,
     ListContainersResponse,
+    ListSessionsRequest,
+    ListSessionsResponse,
     RunContainerRequest,
     RunContainerResponse,
+    SessionRequest,
+    SessionResponse,
     SnapshotContainerRequest,
     SnapshotContainerResponse,
     StopContainerRequest,
@@ -69,6 +75,21 @@ class ContainerServiceStub:
         ExecCommandResponse,
     ]
     """ExecCommand executes a command in a running container"""
+    Session: StreamStreamMultiCallable[
+        SessionRequest,
+        SessionResponse,
+    ]
+    """Session establishes a bidirectional command session in a running container"""
+    GetSession: UnaryUnaryMultiCallable[
+        GetSessionRequest,
+        GetSessionResponse,
+    ]
+    """GetSession retrieves information about a command session"""
+    ListSessions: UnaryUnaryMultiCallable[
+        ListSessionsRequest,
+        ListSessionsResponse,
+    ]
+    """ListSessions lists command sessions for a container"""
     UpdateContainerStatus: UnaryUnaryMultiCallable[
         UpdateContainerStatusRequest,
         UpdateContainerStatusResponse,
@@ -143,6 +164,27 @@ class ContainerServiceServicer(metaclass=ABCMeta):
     ) -> ExecCommandResponse:
         """ExecCommand executes a command in a running container"""
     @abstractmethod
+    def Session(
+        self,
+        request_iterator: Iterator[SessionRequest],
+        context: ServicerContext,
+    ) -> Iterator[SessionResponse]:
+        """Session establishes a bidirectional command session in a running container"""
+    @abstractmethod
+    def GetSession(
+        self,
+        request: GetSessionRequest,
+        context: ServicerContext,
+    ) -> GetSessionResponse:
+        """GetSession retrieves information about a command session"""
+    @abstractmethod
+    def ListSessions(
+        self,
+        request: ListSessionsRequest,
+        context: ServicerContext,
+    ) -> ListSessionsResponse:
+        """ListSessions lists command sessions for a container"""
+    @abstractmethod
     def UpdateContainerStatus(
         self,
         request: UpdateContainerStatusRequest,
@@ -191,4 +233,6 @@ class ContainerServiceServicer(metaclass=ABCMeta):
         Responses contain output data from the TTY stdout/stderr
         """
 
-def add_ContainerServiceServicer_to_server(servicer: ContainerServiceServicer, server: Server) -> None: ...
+def add_ContainerServiceServicer_to_server(
+    servicer: ContainerServiceServicer, server: Server
+) -> None: ...

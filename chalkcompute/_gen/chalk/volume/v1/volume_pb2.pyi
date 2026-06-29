@@ -1,4 +1,5 @@
 from chalkcompute._gen.chalk.auth.v1 import permissions_pb2 as _permissions_pb2
+from chalkcompute._gen.chalk.flags.v1 import flags_pb2 as _flags_pb2
 from google.protobuf import timestamp_pb2 as _timestamp_pb2
 from google.protobuf.internal import containers as _containers
 from google.protobuf import descriptor as _descriptor
@@ -20,7 +21,9 @@ class VolumeInfo(_message.Message):
     name: str
     created_at: _timestamp_pb2.Timestamp
     def __init__(
-        self, name: _Optional[str] = ..., created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...
+        self,
+        name: _Optional[str] = ...,
+        created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
     ) -> None: ...
 
 class FileInfo(_message.Message):
@@ -48,7 +51,9 @@ class CreateVolumeResponse(_message.Message):
     __slots__ = ("volume",)
     VOLUME_FIELD_NUMBER: _ClassVar[int]
     volume: VolumeInfo
-    def __init__(self, volume: _Optional[_Union[VolumeInfo, _Mapping]] = ...) -> None: ...
+    def __init__(
+        self, volume: _Optional[_Union[VolumeInfo, _Mapping]] = ...
+    ) -> None: ...
 
 class GetVolumeRequest(_message.Message):
     __slots__ = ("name",)
@@ -60,7 +65,9 @@ class GetVolumeResponse(_message.Message):
     __slots__ = ("volume",)
     VOLUME_FIELD_NUMBER: _ClassVar[int]
     volume: VolumeInfo
-    def __init__(self, volume: _Optional[_Union[VolumeInfo, _Mapping]] = ...) -> None: ...
+    def __init__(
+        self, volume: _Optional[_Union[VolumeInfo, _Mapping]] = ...
+    ) -> None: ...
 
 class ListVolumesRequest(_message.Message):
     __slots__ = ("page_size", "page_token")
@@ -68,7 +75,9 @@ class ListVolumesRequest(_message.Message):
     PAGE_TOKEN_FIELD_NUMBER: _ClassVar[int]
     page_size: int
     page_token: str
-    def __init__(self, page_size: _Optional[int] = ..., page_token: _Optional[str] = ...) -> None: ...
+    def __init__(
+        self, page_size: _Optional[int] = ..., page_token: _Optional[str] = ...
+    ) -> None: ...
 
 class ListVolumesResponse(_message.Message):
     __slots__ = ("volumes", "next_page_token")
@@ -77,7 +86,9 @@ class ListVolumesResponse(_message.Message):
     volumes: _containers.RepeatedCompositeFieldContainer[VolumeInfo]
     next_page_token: str
     def __init__(
-        self, volumes: _Optional[_Iterable[_Union[VolumeInfo, _Mapping]]] = ..., next_page_token: _Optional[str] = ...
+        self,
+        volumes: _Optional[_Iterable[_Union[VolumeInfo, _Mapping]]] = ...,
+        next_page_token: _Optional[str] = ...,
     ) -> None: ...
 
 class DeleteVolumeRequest(_message.Message):
@@ -96,13 +107,17 @@ class ListFilesRequest(_message.Message):
     PREFIX_FIELD_NUMBER: _ClassVar[int]
     volume_name: str
     prefix: str
-    def __init__(self, volume_name: _Optional[str] = ..., prefix: _Optional[str] = ...) -> None: ...
+    def __init__(
+        self, volume_name: _Optional[str] = ..., prefix: _Optional[str] = ...
+    ) -> None: ...
 
 class ListFilesResponse(_message.Message):
     __slots__ = ("files",)
     FILES_FIELD_NUMBER: _ClassVar[int]
     files: _containers.RepeatedCompositeFieldContainer[FileInfo]
-    def __init__(self, files: _Optional[_Iterable[_Union[FileInfo, _Mapping]]] = ...) -> None: ...
+    def __init__(
+        self, files: _Optional[_Iterable[_Union[FileInfo, _Mapping]]] = ...
+    ) -> None: ...
 
 class GetFileRequest(_message.Message):
     __slots__ = ("volume_name", "path", "get_signed_uri")
@@ -113,7 +128,10 @@ class GetFileRequest(_message.Message):
     path: str
     get_signed_uri: bool
     def __init__(
-        self, volume_name: _Optional[str] = ..., path: _Optional[str] = ..., get_signed_uri: bool = ...
+        self,
+        volume_name: _Optional[str] = ...,
+        path: _Optional[str] = ...,
+        get_signed_uri: bool = ...,
     ) -> None: ...
 
 class GetFileResponse(_message.Message):
@@ -122,7 +140,9 @@ class GetFileResponse(_message.Message):
     SIGNED_DOWNLOAD_URI_FIELD_NUMBER: _ClassVar[int]
     data: bytes
     signed_download_uri: str
-    def __init__(self, data: _Optional[bytes] = ..., signed_download_uri: _Optional[str] = ...) -> None: ...
+    def __init__(
+        self, data: _Optional[bytes] = ..., signed_download_uri: _Optional[str] = ...
+    ) -> None: ...
 
 class PutFileRequest(_message.Message):
     __slots__ = ("volume_name", "path", "data", "storage_object_id")
@@ -152,7 +172,9 @@ class RemoveFileRequest(_message.Message):
     PATH_FIELD_NUMBER: _ClassVar[int]
     volume_name: str
     path: str
-    def __init__(self, volume_name: _Optional[str] = ..., path: _Optional[str] = ...) -> None: ...
+    def __init__(
+        self, volume_name: _Optional[str] = ..., path: _Optional[str] = ...
+    ) -> None: ...
 
 class RemoveFileResponse(_message.Message):
     __slots__ = ()
@@ -167,7 +189,10 @@ class GetObjectUploadUriRequest(_message.Message):
     hash: str
     part_size: int
     def __init__(
-        self, content_size: _Optional[int] = ..., hash: _Optional[str] = ..., part_size: _Optional[int] = ...
+        self,
+        content_size: _Optional[int] = ...,
+        hash: _Optional[str] = ...,
+        part_size: _Optional[int] = ...,
     ) -> None: ...
 
 class MultipartUpload(_message.Message):

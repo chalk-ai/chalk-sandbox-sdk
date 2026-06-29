@@ -24,4 +24,8 @@ class AuditOptions(_message.Message):
     DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
     level: AuditLevel
     description: str
-    def __init__(self, level: _Optional[_Union[AuditLevel, str]] = ..., description: _Optional[str] = ...) -> None: ...
+    def __init__(
+        self,
+        level: _Optional[_Union[AuditLevel, str]] = ...,
+        description: _Optional[str] = ...,
+    ) -> None: ...

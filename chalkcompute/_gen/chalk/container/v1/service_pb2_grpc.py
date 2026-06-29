@@ -3,7 +3,9 @@
 
 import grpc
 
-from chalkcompute._gen.chalk.container.v1 import service_pb2 as chalk_dot_container_dot_v1_dot_service__pb2
+from chalkcompute._gen.chalk.container.v1 import (
+    service_pb2 as chalk_dot_container_dot_v1_dot_service__pb2,
+)
 
 
 class ContainerServiceStub(object):
@@ -39,6 +41,21 @@ class ContainerServiceStub(object):
             "/chalk.container.v1.ContainerService/ExecCommand",
             request_serializer=chalk_dot_container_dot_v1_dot_service__pb2.ExecCommandRequest.SerializeToString,
             response_deserializer=chalk_dot_container_dot_v1_dot_service__pb2.ExecCommandResponse.FromString,
+        )
+        self.Session = channel.stream_stream(
+            "/chalk.container.v1.ContainerService/Session",
+            request_serializer=chalk_dot_container_dot_v1_dot_service__pb2.SessionRequest.SerializeToString,
+            response_deserializer=chalk_dot_container_dot_v1_dot_service__pb2.SessionResponse.FromString,
+        )
+        self.GetSession = channel.unary_unary(
+            "/chalk.container.v1.ContainerService/GetSession",
+            request_serializer=chalk_dot_container_dot_v1_dot_service__pb2.GetSessionRequest.SerializeToString,
+            response_deserializer=chalk_dot_container_dot_v1_dot_service__pb2.GetSessionResponse.FromString,
+        )
+        self.ListSessions = channel.unary_unary(
+            "/chalk.container.v1.ContainerService/ListSessions",
+            request_serializer=chalk_dot_container_dot_v1_dot_service__pb2.ListSessionsRequest.SerializeToString,
+            response_deserializer=chalk_dot_container_dot_v1_dot_service__pb2.ListSessionsResponse.FromString,
         )
         self.UpdateContainerStatus = channel.unary_unary(
             "/chalk.container.v1.ContainerService/UpdateContainerStatus",
@@ -101,6 +118,24 @@ class ContainerServiceServicer(object):
 
     def ExecCommand(self, request, context):
         """ExecCommand executes a command in a running container"""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
+    def Session(self, request_iterator, context):
+        """Session establishes a bidirectional command session in a running container"""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
+    def GetSession(self, request, context):
+        """GetSession retrieves information about a command session"""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
+    def ListSessions(self, request, context):
+        """ListSessions lists command sessions for a container"""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details("Method not implemented!")
         raise NotImplementedError("Method not implemented!")
@@ -175,6 +210,21 @@ def add_ContainerServiceServicer_to_server(servicer, server):
             request_deserializer=chalk_dot_container_dot_v1_dot_service__pb2.ExecCommandRequest.FromString,
             response_serializer=chalk_dot_container_dot_v1_dot_service__pb2.ExecCommandResponse.SerializeToString,
         ),
+        "Session": grpc.stream_stream_rpc_method_handler(
+            servicer.Session,
+            request_deserializer=chalk_dot_container_dot_v1_dot_service__pb2.SessionRequest.FromString,
+            response_serializer=chalk_dot_container_dot_v1_dot_service__pb2.SessionResponse.SerializeToString,
+        ),
+        "GetSession": grpc.unary_unary_rpc_method_handler(
+            servicer.GetSession,
+            request_deserializer=chalk_dot_container_dot_v1_dot_service__pb2.GetSessionRequest.FromString,
+            response_serializer=chalk_dot_container_dot_v1_dot_service__pb2.GetSessionResponse.SerializeToString,
+        ),
+        "ListSessions": grpc.unary_unary_rpc_method_handler(
+            servicer.ListSessions,
+            request_deserializer=chalk_dot_container_dot_v1_dot_service__pb2.ListSessionsRequest.FromString,
+            response_serializer=chalk_dot_container_dot_v1_dot_service__pb2.ListSessionsResponse.SerializeToString,
+        ),
         "UpdateContainerStatus": grpc.unary_unary_rpc_method_handler(
             servicer.UpdateContainerStatus,
             request_deserializer=chalk_dot_container_dot_v1_dot_service__pb2.UpdateContainerStatusRequest.FromString,
@@ -206,7 +256,9 @@ def add_ContainerServiceServicer_to_server(servicer, server):
             response_serializer=chalk_dot_container_dot_v1_dot_service__pb2.CreateContainerDebugTTYResponse.SerializeToString,
         ),
     }
-    generic_handler = grpc.method_handlers_generic_handler("chalk.container.v1.ContainerService", rpc_method_handlers)
+    generic_handler = grpc.method_handlers_generic_handler(
+        "chalk.container.v1.ContainerService", rpc_method_handlers
+    )
     server.add_generic_rpc_handlers((generic_handler,))
 
 
@@ -349,6 +401,93 @@ class ContainerService(object):
             "/chalk.container.v1.ContainerService/ExecCommand",
             chalk_dot_container_dot_v1_dot_service__pb2.ExecCommandRequest.SerializeToString,
             chalk_dot_container_dot_v1_dot_service__pb2.ExecCommandResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
+
+    @staticmethod
+    def Session(
+        request_iterator,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.stream_stream(
+            request_iterator,
+            target,
+            "/chalk.container.v1.ContainerService/Session",
+            chalk_dot_container_dot_v1_dot_service__pb2.SessionRequest.SerializeToString,
+            chalk_dot_container_dot_v1_dot_service__pb2.SessionResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
+
+    @staticmethod
+    def GetSession(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/chalk.container.v1.ContainerService/GetSession",
+            chalk_dot_container_dot_v1_dot_service__pb2.GetSessionRequest.SerializeToString,
+            chalk_dot_container_dot_v1_dot_service__pb2.GetSessionResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
+
+    @staticmethod
+    def ListSessions(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/chalk.container.v1.ContainerService/ListSessions",
+            chalk_dot_container_dot_v1_dot_service__pb2.ListSessionsRequest.SerializeToString,
+            chalk_dot_container_dot_v1_dot_service__pb2.ListSessionsResponse.FromString,
             options,
             channel_credentials,
             insecure,

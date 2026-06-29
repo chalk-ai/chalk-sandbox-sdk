@@ -38,5 +38,8 @@ class NestedChange(_message.Message):
     previous_value: str
     new_value: str
     def __init__(
-        self, path: _Optional[str] = ..., previous_value: _Optional[str] = ..., new_value: _Optional[str] = ...
+        self,
+        path: _Optional[str] = ...,
+        previous_value: _Optional[str] = ...,
+        new_value: _Optional[str] = ...,
     ) -> None: ...

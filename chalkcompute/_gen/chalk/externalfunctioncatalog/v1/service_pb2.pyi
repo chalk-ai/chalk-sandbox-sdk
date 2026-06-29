@@ -1,6 +1,9 @@
 from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2 as _arrow_pb2
 from chalkcompute._gen.chalk.auth.v1 import permissions_pb2 as _permissions_pb2
-from chalkcompute._gen.chalk.runtime.v1 import remote_python_call_pb2 as _remote_python_call_pb2
+from chalkcompute._gen.chalk.flags.v1 import flags_pb2 as _flags_pb2
+from chalkcompute._gen.chalk.runtime.v1 import (
+    remote_python_call_pb2 as _remote_python_call_pb2,
+)
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb2 as _service_pb2
 from google.protobuf import struct_pb2 as _struct_pb2
 from google.protobuf import timestamp_pb2 as _timestamp_pb2
@@ -37,16 +40,34 @@ class TracingMode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     TRACING_MODE_PARENT_BASED_TRACE_ID_RATIO: _ClassVar[TracingMode]
     TRACING_MODE_ALWAYS_OFF: _ClassVar[TracingMode]
 
-class ExternalFunctionScheduledRunStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+class ExternalFunctionScheduledRunStatus(
+    int, metaclass=_enum_type_wrapper.EnumTypeWrapper
+):
     __slots__ = ()
-    EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_UNSPECIFIED: _ClassVar[ExternalFunctionScheduledRunStatus]
-    EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_SCHEDULED: _ClassVar[ExternalFunctionScheduledRunStatus]
-    EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_RUNNING: _ClassVar[ExternalFunctionScheduledRunStatus]
-    EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_COMPLETED: _ClassVar[ExternalFunctionScheduledRunStatus]
-    EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_FAILED: _ClassVar[ExternalFunctionScheduledRunStatus]
-    EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_CANCELED: _ClassVar[ExternalFunctionScheduledRunStatus]
-    EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_NOT_READY: _ClassVar[ExternalFunctionScheduledRunStatus]
-    EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_WAITING: _ClassVar[ExternalFunctionScheduledRunStatus]
+    EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_UNSPECIFIED: _ClassVar[
+        ExternalFunctionScheduledRunStatus
+    ]
+    EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_SCHEDULED: _ClassVar[
+        ExternalFunctionScheduledRunStatus
+    ]
+    EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_RUNNING: _ClassVar[
+        ExternalFunctionScheduledRunStatus
+    ]
+    EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_COMPLETED: _ClassVar[
+        ExternalFunctionScheduledRunStatus
+    ]
+    EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_FAILED: _ClassVar[
+        ExternalFunctionScheduledRunStatus
+    ]
+    EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_CANCELED: _ClassVar[
+        ExternalFunctionScheduledRunStatus
+    ]
+    EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_NOT_READY: _ClassVar[
+        ExternalFunctionScheduledRunStatus
+    ]
+    EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_WAITING: _ClassVar[
+        ExternalFunctionScheduledRunStatus
+    ]
 
 RATE_LIMIT_PER_UNSPECIFIED: RateLimitPer
 RATE_LIMIT_PER_SECOND: RateLimitPer
@@ -68,7 +89,13 @@ EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_NOT_READY: ExternalFunctionScheduledRunSt
 EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_WAITING: ExternalFunctionScheduledRunStatus
 
 class RetryPolicy(_message.Message):
-    __slots__ = ("max_retries", "initial_backoff_ms", "backoff_multiplier", "max_backoff_ms", "key")
+    __slots__ = (
+        "max_retries",
+        "initial_backoff_ms",
+        "backoff_multiplier",
+        "max_backoff_ms",
+        "key",
+    )
     MAX_RETRIES_FIELD_NUMBER: _ClassVar[int]
     INITIAL_BACKOFF_MS_FIELD_NUMBER: _ClassVar[int]
     BACKOFF_MULTIPLIER_FIELD_NUMBER: _ClassVar[int]
@@ -97,7 +124,10 @@ class RateLimitPolicy(_message.Message):
     per: RateLimitPer
     key: str
     def __init__(
-        self, rate: _Optional[int] = ..., per: _Optional[_Union[RateLimitPer, str]] = ..., key: _Optional[str] = ...
+        self,
+        rate: _Optional[int] = ...,
+        per: _Optional[_Union[RateLimitPer, str]] = ...,
+        key: _Optional[str] = ...,
     ) -> None: ...
 
 class ConcurrencyPolicy(_message.Message):
@@ -106,7 +136,9 @@ class ConcurrencyPolicy(_message.Message):
     KEY_FIELD_NUMBER: _ClassVar[int]
     max_concurrent: int
     key: str
-    def __init__(self, max_concurrent: _Optional[int] = ..., key: _Optional[str] = ...) -> None: ...
+    def __init__(
+        self, max_concurrent: _Optional[int] = ..., key: _Optional[str] = ...
+    ) -> None: ...
 
 class QueuePolicy(_message.Message):
     __slots__ = ("max_items", "key")
@@ -114,7 +146,9 @@ class QueuePolicy(_message.Message):
     KEY_FIELD_NUMBER: _ClassVar[int]
     max_items: int
     key: str
-    def __init__(self, max_items: _Optional[int] = ..., key: _Optional[str] = ...) -> None: ...
+    def __init__(
+        self, max_items: _Optional[int] = ..., key: _Optional[str] = ...
+    ) -> None: ...
 
 class TracingPolicy(_message.Message):
     __slots__ = ("mode", "sample_rate")
@@ -123,7 +157,9 @@ class TracingPolicy(_message.Message):
     mode: TracingMode
     sample_rate: float
     def __init__(
-        self, mode: _Optional[_Union[TracingMode, str]] = ..., sample_rate: _Optional[float] = ...
+        self,
+        mode: _Optional[_Union[TracingMode, str]] = ...,
+        sample_rate: _Optional[float] = ...,
     ) -> None: ...
 
 class FunctionConfig(_message.Message):
@@ -145,7 +181,9 @@ class FunctionConfig(_message.Message):
         VALUE_FIELD_NUMBER: _ClassVar[int]
         key: str
         value: str
-        def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
+        def __init__(
+            self, key: _Optional[str] = ..., value: _Optional[str] = ...
+        ) -> None: ...
 
     SERIALIZATION_FORMAT_FIELD_NUMBER: _ClassVar[int]
     OPTIONS_FIELD_NUMBER: _ClassVar[int]
@@ -225,7 +263,13 @@ class ExternalFunctionVersion(_message.Message):
     ) -> None: ...
 
 class CreateExternalFunctionVersionRequest(_message.Message):
-    __slots__ = ("function_name", "input_arrow_schema", "output_arrow_schema", "spec", "config")
+    __slots__ = (
+        "function_name",
+        "input_arrow_schema",
+        "output_arrow_schema",
+        "spec",
+        "config",
+    )
     FUNCTION_NAME_FIELD_NUMBER: _ClassVar[int]
     INPUT_ARROW_SCHEMA_FIELD_NUMBER: _ClassVar[int]
     OUTPUT_ARROW_SCHEMA_FIELD_NUMBER: _ClassVar[int]
@@ -253,8 +297,12 @@ class CreateExternalFunctionVersionResponse(_message.Message):
     scaling_group: _service_pb2.ScalingGroupResponse
     def __init__(
         self,
-        external_function_version: _Optional[_Union[ExternalFunctionVersion, _Mapping]] = ...,
-        scaling_group: _Optional[_Union[_service_pb2.ScalingGroupResponse, _Mapping]] = ...,
+        external_function_version: _Optional[
+            _Union[ExternalFunctionVersion, _Mapping]
+        ] = ...,
+        scaling_group: _Optional[
+            _Union[_service_pb2.ScalingGroupResponse, _Mapping]
+        ] = ...,
     ) -> None: ...
 
 class ExternalFunctionVersionKey(_message.Message):
@@ -263,7 +311,9 @@ class ExternalFunctionVersionKey(_message.Message):
     VERSION_FIELD_NUMBER: _ClassVar[int]
     function_name: str
     version: int
-    def __init__(self, function_name: _Optional[str] = ..., version: _Optional[int] = ...) -> None: ...
+    def __init__(
+        self, function_name: _Optional[str] = ..., version: _Optional[int] = ...
+    ) -> None: ...
 
 class GetExternalFunctionVersionRequest(_message.Message):
     __slots__ = ("id", "key", "include_scaling_group", "include_active_schedule")
@@ -293,8 +343,12 @@ class GetExternalFunctionVersionResponse(_message.Message):
     active_schedule: ActiveSchedule
     def __init__(
         self,
-        external_function_version: _Optional[_Union[ExternalFunctionVersion, _Mapping]] = ...,
-        scaling_group: _Optional[_Union[_service_pb2.ScalingGroupResponse, _Mapping]] = ...,
+        external_function_version: _Optional[
+            _Union[ExternalFunctionVersion, _Mapping]
+        ] = ...,
+        scaling_group: _Optional[
+            _Union[_service_pb2.ScalingGroupResponse, _Mapping]
+        ] = ...,
         active_schedule: _Optional[_Union[ActiveSchedule, _Mapping]] = ...,
     ) -> None: ...
 
@@ -330,19 +384,27 @@ class ListExternalFunctionVersionsEntry(_message.Message):
     scaling_group: _service_pb2.ScalingGroupResponse
     def __init__(
         self,
-        external_function_version: _Optional[_Union[ExternalFunctionVersion, _Mapping]] = ...,
-        scaling_group: _Optional[_Union[_service_pb2.ScalingGroupResponse, _Mapping]] = ...,
+        external_function_version: _Optional[
+            _Union[ExternalFunctionVersion, _Mapping]
+        ] = ...,
+        scaling_group: _Optional[
+            _Union[_service_pb2.ScalingGroupResponse, _Mapping]
+        ] = ...,
     ) -> None: ...
 
 class ListExternalFunctionVersionsResponse(_message.Message):
     __slots__ = ("entries", "next_cursor")
     ENTRIES_FIELD_NUMBER: _ClassVar[int]
     NEXT_CURSOR_FIELD_NUMBER: _ClassVar[int]
-    entries: _containers.RepeatedCompositeFieldContainer[ListExternalFunctionVersionsEntry]
+    entries: _containers.RepeatedCompositeFieldContainer[
+        ListExternalFunctionVersionsEntry
+    ]
     next_cursor: str
     def __init__(
         self,
-        entries: _Optional[_Iterable[_Union[ListExternalFunctionVersionsEntry, _Mapping]]] = ...,
+        entries: _Optional[
+            _Iterable[_Union[ListExternalFunctionVersionsEntry, _Mapping]]
+        ] = ...,
         next_cursor: _Optional[str] = ...,
     ) -> None: ...
 
@@ -353,10 +415,22 @@ class DeleteExternalFunctionVersionRequest(_message.Message):
     id: str
     key: ExternalFunctionVersionKey
     def __init__(
-        self, id: _Optional[str] = ..., key: _Optional[_Union[ExternalFunctionVersionKey, _Mapping]] = ...
+        self,
+        id: _Optional[str] = ...,
+        key: _Optional[_Union[ExternalFunctionVersionKey, _Mapping]] = ...,
     ) -> None: ...
 
 class DeleteExternalFunctionVersionResponse(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class DeleteExternalFunctionRequest(_message.Message):
+    __slots__ = ("function_name",)
+    FUNCTION_NAME_FIELD_NUMBER: _ClassVar[int]
+    function_name: str
+    def __init__(self, function_name: _Optional[str] = ...) -> None: ...
+
+class DeleteExternalFunctionResponse(_message.Message):
     __slots__ = ()
     def __init__(self) -> None: ...
 
@@ -391,7 +465,9 @@ class ExternalFunctionSummary(_message.Message):
         latest_scaling_group_name: _Optional[str] = ...,
         latest_updated_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
         config: _Optional[_Union[FunctionConfig, _Mapping]] = ...,
-        scaling_group: _Optional[_Union[_service_pb2.ScalingGroupResponse, _Mapping]] = ...,
+        scaling_group: _Optional[
+            _Union[_service_pb2.ScalingGroupResponse, _Mapping]
+        ] = ...,
         active_schedule: _Optional[_Union[ActiveSchedule, _Mapping]] = ...,
     ) -> None: ...
 
@@ -421,7 +497,9 @@ class ListExternalFunctionsResponse(_message.Message):
     next_cursor: str
     def __init__(
         self,
-        functions: _Optional[_Iterable[_Union[ExternalFunctionSummary, _Mapping]]] = ...,
+        functions: _Optional[
+            _Iterable[_Union[ExternalFunctionSummary, _Mapping]]
+        ] = ...,
         next_cursor: _Optional[str] = ...,
     ) -> None: ...
 
@@ -434,7 +512,10 @@ class ListExternalFunctionScheduledRunsRequest(_message.Message):
     cursor: str
     limit: int
     def __init__(
-        self, function_name: _Optional[str] = ..., cursor: _Optional[str] = ..., limit: _Optional[int] = ...
+        self,
+        function_name: _Optional[str] = ...,
+        cursor: _Optional[str] = ...,
+        limit: _Optional[int] = ...,
     ) -> None: ...
 
 class ExternalFunctionScheduledRun(_message.Message):
@@ -446,7 +527,9 @@ class ExternalFunctionScheduledRun(_message.Message):
         key: str
         value: _struct_pb2.Value
         def __init__(
-            self, key: _Optional[str] = ..., value: _Optional[_Union[_struct_pb2.Value, _Mapping]] = ...
+            self,
+            key: _Optional[str] = ...,
+            value: _Optional[_Union[_struct_pb2.Value, _Mapping]] = ...,
         ) -> None: ...
 
     ID_FIELD_NUMBER: _ClassVar[int]
@@ -473,26 +556,43 @@ class ListExternalFunctionScheduledRunsResponse(_message.Message):
     next_cursor: str
     def __init__(
         self,
-        runs: _Optional[_Iterable[_Union[ExternalFunctionScheduledRun, _Mapping]]] = ...,
+        runs: _Optional[
+            _Iterable[_Union[ExternalFunctionScheduledRun, _Mapping]]
+        ] = ...,
         next_cursor: _Optional[str] = ...,
     ) -> None: ...
 
 class CallExternalFunctionRequest(_message.Message):
-    __slots__ = ("function", "remote_call_request")
+    __slots__ = ("function", "remote_call_request", "enqueue_remote_call_request")
     FUNCTION_FIELD_NUMBER: _ClassVar[int]
     REMOTE_CALL_REQUEST_FIELD_NUMBER: _ClassVar[int]
+    ENQUEUE_REMOTE_CALL_REQUEST_FIELD_NUMBER: _ClassVar[int]
     function: ExternalFunctionVersionKey
     remote_call_request: _remote_python_call_pb2.CallFunctionRequest
+    enqueue_remote_call_request: _remote_python_call_pb2.EnqueueRemoteCallRequest
     def __init__(
         self,
         function: _Optional[_Union[ExternalFunctionVersionKey, _Mapping]] = ...,
-        remote_call_request: _Optional[_Union[_remote_python_call_pb2.CallFunctionRequest, _Mapping]] = ...,
+        remote_call_request: _Optional[
+            _Union[_remote_python_call_pb2.CallFunctionRequest, _Mapping]
+        ] = ...,
+        enqueue_remote_call_request: _Optional[
+            _Union[_remote_python_call_pb2.EnqueueRemoteCallRequest, _Mapping]
+        ] = ...,
     ) -> None: ...
 
 class CallExternalFunctionResponse(_message.Message):
-    __slots__ = ("remote_call_response",)
+    __slots__ = ("remote_call_response", "enqueue_remote_call_response")
     REMOTE_CALL_RESPONSE_FIELD_NUMBER: _ClassVar[int]
+    ENQUEUE_REMOTE_CALL_RESPONSE_FIELD_NUMBER: _ClassVar[int]
     remote_call_response: _remote_python_call_pb2.CallFunctionResponse
+    enqueue_remote_call_response: _remote_python_call_pb2.EnqueueRemoteCallResponse
     def __init__(
-        self, remote_call_response: _Optional[_Union[_remote_python_call_pb2.CallFunctionResponse, _Mapping]] = ...
+        self,
+        remote_call_response: _Optional[
+            _Union[_remote_python_call_pb2.CallFunctionResponse, _Mapping]
+        ] = ...,
+        enqueue_remote_call_response: _Optional[
+            _Union[_remote_python_call_pb2.EnqueueRemoteCallResponse, _Mapping]
+        ] = ...,
     ) -> None: ...

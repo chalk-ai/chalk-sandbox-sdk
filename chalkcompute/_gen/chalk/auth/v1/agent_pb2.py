@@ -8,14 +8,21 @@ from google.protobuf import descriptor as _descriptor
 from google.protobuf import descriptor_pool as _descriptor_pool
 from google.protobuf import symbol_database as _symbol_database
 from google.protobuf.internal import builder as _builder
-from chalkcompute._proto_pool import DESCRIPTOR_POOL as _DESCRIPTOR_POOL, SYMBOL_DATABASE as _SYMBOL_DATABASE
+from chalkcompute._proto_pool import (
+    DESCRIPTOR_POOL as _DESCRIPTOR_POOL,
+    SYMBOL_DATABASE as _SYMBOL_DATABASE,
+)
 # @@protoc_insertion_point(imports)
 
 _sym_db = _SYMBOL_DATABASE
 
 
-from chalkcompute._gen.chalk.auth.v1 import featurepermission_pb2 as chalk_dot_auth_dot_v1_dot_featurepermission__pb2
-from chalkcompute._gen.chalk.auth.v1 import permissions_pb2 as chalk_dot_auth_dot_v1_dot_permissions__pb2
+from chalkcompute._gen.chalk.auth.v1 import (
+    featurepermission_pb2 as chalk_dot_auth_dot_v1_dot_featurepermission__pb2,
+)
+from chalkcompute._gen.chalk.auth.v1 import (
+    permissions_pb2 as chalk_dot_auth_dot_v1_dot_permissions__pb2,
+)
 
 
 DESCRIPTOR = _DESCRIPTOR_POOL.AddSerializedFile(
@@ -35,7 +42,9 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_USERAGENT"].fields_by_name["client_id"]._options = None
     _globals["_USERAGENT"].fields_by_name["client_id"]._serialized_options = b"\030\001"
     _globals["_SERVICETOKENAGENT"].fields_by_name["custom_claims"]._options = None
-    _globals["_SERVICETOKENAGENT"].fields_by_name["custom_claims"]._serialized_options = b"\030\001"
+    _globals["_SERVICETOKENAGENT"].fields_by_name[
+        "custom_claims"
+    ]._serialized_options = b"\030\001"
     _globals["_AGENTKIND"]._serialized_start = 2443
     _globals["_AGENTKIND"]._serialized_end = 2612
     _globals["_ENVIRONMENTPERMISSIONS"]._serialized_start = 117
