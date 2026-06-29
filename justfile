@@ -48,6 +48,10 @@ ty:
 test *args:
     uv run python -m pytest tests/ {{args}}
 
+# Run container sessions e2e tests
+test-sessions-e2e:
+    uv run python -m pytest e2etests/test_container_sessions.py e2etests/test_container_session_pty.py -v -s --tb=short
+
 # Run ruff linter
 ruff:
     uv run --with ruff ruff check {{ruff_paths}}
