@@ -21,13 +21,24 @@ from __future__ import annotations
 import base64
 import ipaddress
 import logging
+import queue
 import time
 import uuid
+from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
-from chalkcompute._connect import ConnectClient
+import grpc
+
+from chalkcompute._connect import (
+    ConnectClient,
+    grpc_target_from_url,
+    raise_for_grpc_error,
+)
+from chalkcompute._gen.chalk.container.v1 import service_pb2 as pb
+from chalkcompute._gen.chalk.container.v1 import service_pb2_grpc as pb_grpc
 from chalkcompute._naming import (
     sanitize_dns_label,
     validate_dns_label,
@@ -242,6 +253,461 @@ class ContainerInfo:
     """Optional URL exposing the container's port, if one is published."""
 
 
+@dataclass
+class ContainerSession:
+    """Interactive handle to a persistent command session in a container."""
+
+    @dataclass
+    class Status:
+        """Current process state for a persistent container session."""
+
+        class State(Enum):
+            UNSPECIFIED = "unspecified"
+            RUNNING = "running"
+            EXITED = "exited"
+            FAILED = "failed"
+            TIMED_OUT = "timed_out"
+
+        state: State
+        """Process lifecycle state."""
+
+        exit_code: int | None = None
+        """Exit code when the process exited or timed out with one."""
+
+        signal: int | None = None
+        """Signal number when the process was terminated by a signal."""
+
+    @dataclass
+    class Info:
+        """Metadata about a persistent command session in a container."""
+
+        id: str
+        """Opaque session identifier assigned by the service."""
+
+        container_id: str
+        """Container that owns this session."""
+
+        command: str
+        """Command binary or script used to start the session."""
+
+        args: list[str]
+        """Arguments passed to ``command``."""
+
+        workdir: str | None
+        """Working directory used for the process, if one was provided."""
+
+        env: dict[str, str]
+        """Environment overrides used for the process."""
+
+        timeout_secs: int | None
+        """Process timeout in seconds, if one was provided."""
+
+        pty: bool
+        """Whether the session was started or attached with a pty."""
+
+        status: ContainerSession.Status
+        """Latest process status reported by the service."""
+
+    class Event:
+        """Base class for events from a persistent container session stream."""
+
+    @dataclass(frozen=True)
+    class UnknownEvent(Event):
+        """Unknown event kind returned by the service."""
+
+    @dataclass(frozen=True)
+    class AttachedEvent(Event):
+        """The stream attached to a session."""
+
+        session_id: str
+
+    @dataclass(frozen=True)
+    class OutputEvent(Event):
+        """Output emitted by the session process."""
+
+        class Stream(Enum):
+            STDOUT = "stdout"
+            STDERR = "stderr"
+            PTY_OUTPUT = "pty_output"
+
+        stream: Stream
+        data: bytes
+
+        @property
+        def text(self) -> str:
+            return self.data.decode("utf-8", errors="replace")
+
+    @dataclass(frozen=True)
+    class StatusUpdateEvent(Event):
+        """The latest process status."""
+
+        status: ContainerSession.Status
+
+    @dataclass(frozen=True)
+    class ExitedEvent(Event):
+        """The session process exited."""
+
+        status: ContainerSession.Status
+
+    @dataclass(frozen=True)
+    class DetachedEvent(Event):
+        """This stream detached from the session."""
+
+    @dataclass(frozen=True)
+    class FailedEvent(Event):
+        """The session process failed before producing an exit status."""
+
+        message: str
+
+    @dataclass(frozen=True)
+    class TimedOutEvent(Event):
+        """The session process timed out."""
+
+        status: ContainerSession.Status
+
+    @dataclass(frozen=True)
+    class ErrorEvent(Event):
+        """The session stream returned an API error."""
+
+        code: str
+        message: str | None = None
+
+        @property
+        def error(self) -> str:
+            if self.message:
+                return f"{self.code}: {self.message}"
+            return self.code
+
+    @dataclass
+    class Result:
+        """Result returned after a session process finishes."""
+
+        session_id: str
+        exit_code: int | None = None
+        signal: int | None = None
+        timed_out: bool = False
+        failed: bool = False
+        failure_message: str | None = None
+        error: str | None = None
+
+        @property
+        def ok(self) -> bool:
+            return (
+                self.exit_code == 0
+                and not self.timed_out
+                and not self.failed
+                and self.error is None
+            )
+
+    _client: ContainerSessionClient = field(repr=False)
+    _container_id: str = field(repr=False)
+    _request_queue: queue.Queue[pb.SessionRequest | None] = field(repr=False)
+    _response_iterator: Iterator[pb.SessionResponse] = field(repr=False)
+    _pending_events: deque[ContainerSession.Event] = field(
+        default_factory=deque,
+        repr=False,
+    )
+    _id: str = ""
+    _closed_requests: bool = field(default=False, repr=False)
+    _detached: bool = field(default=False, repr=False)
+
+    @property
+    def id(self) -> str:
+        """Opaque session identifier assigned by the service."""
+        return self._id
+
+    def write(self, data: str | bytes) -> None:
+        """Write data to the session process's stdin."""
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        self._send(pb.SessionRequest(stdin_data=pb.StdinData(data=data)))
+
+    def close_stdin(self) -> None:
+        """Signal EOF on stdin."""
+        self._send(pb.SessionRequest(stdin_eof=pb.StdinEof()))
+
+    def signal(self, signum: int) -> None:
+        """Send a signal to the session process."""
+        self._send(pb.SessionRequest(signal=pb.SessionSignal(signal=signum)))
+
+    def resize(self, cols: int, rows: int) -> None:
+        """Resize the session pty."""
+        self._send(pb.SessionRequest(pty_info=_make_pty_info(cols, rows)))
+
+    def status(self) -> ContainerSession.Status:
+        """Fetch the latest process status for this session."""
+        return self._client.get_session(self._container_id, self._id).status
+
+    def detach(self) -> None:
+        """Detach this stream from the session without stopping the process."""
+        if self._detached:
+            return
+        self._send(pb.SessionRequest(detach_session=pb.DetachSession()))
+        for event in self.events():
+            match event:
+                case ContainerSession.DetachedEvent():
+                    self._detached = True
+                    self._close_request_stream()
+                    return
+                case ContainerSession.ErrorEvent() as error:
+                    self._close_request_stream()
+                    raise ContainerError(f"Session detach failed: {error.error}")
+                case (
+                    ContainerSession.ExitedEvent()
+                    | ContainerSession.FailedEvent()
+                    | ContainerSession.TimedOutEvent()
+                ):
+                    self._close_request_stream()
+                    return
+        self._detached = True
+        self._close_request_stream()
+
+    def events(self) -> Iterator[ContainerSession.Event]:
+        """Iterate over events from this session stream."""
+        while self._pending_events:
+            event = self._pending_events.popleft()
+            yield event
+            match event:
+                case ContainerSession.ErrorEvent():
+                    return
+                case (
+                    ContainerSession.DetachedEvent()
+                    | ContainerSession.ExitedEvent()
+                    | ContainerSession.FailedEvent()
+                    | ContainerSession.TimedOutEvent()
+                ):
+                    self._close_request_stream()
+                    return
+
+        try:
+            for response in self._response_iterator:
+                event = _pb_to_session_event(response)
+                match event:
+                    case ContainerSession.AttachedEvent(session_id=session_id):
+                        self._id = session_id
+                yield event
+                match event:
+                    case ContainerSession.ErrorEvent():
+                        return
+                    case (
+                        ContainerSession.DetachedEvent()
+                        | ContainerSession.ExitedEvent()
+                        | ContainerSession.FailedEvent()
+                        | ContainerSession.TimedOutEvent()
+                    ):
+                        self._close_request_stream()
+                        return
+        except grpc.RpcError as e:
+            _handle_container_grpc_error(e, self._container_id, self._id)
+
+    def wait(self) -> ContainerSession.Result:
+        """Wait for the session process to finish."""
+        exit_code: int | None = None
+        signal: int | None = None
+        timed_out = False
+        failed = False
+        failure_message: str | None = None
+        error_message: str | None = None
+
+        for event in self.events():
+            match event:
+                case ContainerSession.ExitedEvent(status=status):
+                    exit_code = status.exit_code
+                    signal = status.signal
+                    break
+                case ContainerSession.TimedOutEvent(status=status):
+                    exit_code = status.exit_code
+                    signal = status.signal
+                    timed_out = True
+                    break
+                case ContainerSession.FailedEvent(message=message):
+                    failed = True
+                    failure_message = message
+                    break
+                case ContainerSession.ErrorEvent() as error:
+                    error_message = error.error
+                    break
+
+        self._close_request_stream()
+        return ContainerSession.Result(
+            session_id=self._id,
+            exit_code=exit_code,
+            signal=signal,
+            timed_out=timed_out,
+            failed=failed,
+            failure_message=failure_message,
+            error=error_message,
+        )
+
+    def _await_attached(self) -> None:
+        for response in self._response_iterator:
+            event = _pb_to_session_event(response)
+            match event:
+                case ContainerSession.AttachedEvent(session_id=session_id):
+                    self._id = session_id
+                    return
+                case ContainerSession.ErrorEvent() as error:
+                    self._close_request_stream()
+                    raise ContainerError(f"Session failed: {error.error}")
+                case _:
+                    self._pending_events.append(event)
+        self._close_request_stream()
+        raise ContainerError("Session stream ended before the session was attached")
+
+    def _send(self, request: pb.SessionRequest) -> None:
+        if self._closed_requests:
+            raise ContainerError("Session stream is closed")
+        self._request_queue.put(request)
+
+    def _close_request_stream(self) -> None:
+        if not self._closed_requests:
+            self._request_queue.put(None)
+            self._closed_requests = True
+
+
+class ContainerSessionClient:
+    """Internal gRPC client for container sessions."""
+
+    def __init__(
+        self,
+        target: str,
+        *,
+        credentials: grpc.ChannelCredentials | None,
+        metadata: list[tuple[str, str]],
+    ) -> None:
+        self._target = target
+        self._metadata = metadata
+        if credentials is not None:
+            self._channel = grpc.secure_channel(target, credentials)
+        else:
+            self._channel = grpc.insecure_channel(target)
+        self._stub = pb_grpc.ContainerServiceStub(self._channel)
+
+    @classmethod
+    def from_connect(cls, connect: ConnectClient) -> ContainerSessionClient:
+        connect._ensure_auth()
+        target, use_tls = grpc_target_from_url(connect._api_server or "")
+        return cls(
+            target,
+            credentials=grpc.ssl_channel_credentials() if use_tls else None,
+            metadata=[
+                ("authorization", f"Bearer {connect._access_token}"),
+                ("x-chalk-env-id", connect._env_id or ""),
+                ("x-chalk-server", "go-api"),
+            ],
+        )
+
+    def close(self) -> None:
+        self._channel.close()
+
+    def new_session(
+        self,
+        container_id: str,
+        command: str,
+        *args: str,
+        timeout_secs: int | None = None,
+        workdir: str | None = None,
+        env: dict[str, str] | None = None,
+        pty: bool | tuple[int, int] = False,
+    ) -> ContainerSession:
+        validate_env(env)
+        process = pb.NewProcess(
+            container_id=container_id,
+            command=command,
+            args=list(args),
+        )
+        if workdir is not None:
+            process.workdir = workdir
+        if env is not None:
+            for key, value in env.items():
+                process.env[key] = value
+        if timeout_secs is not None:
+            process.timeout_secs = timeout_secs
+        pty_info = _coerce_pty_info(pty)
+        if pty_info is not None:
+            process.pty_info.CopyFrom(pty_info)
+
+        return self._start_session(
+            container_id,
+            pb.SessionRequest(new_process=process),
+        )
+
+    def attach_session(
+        self,
+        container_id: str,
+        session_id: str,
+        *,
+        pty: bool | tuple[int, int] = False,
+    ) -> ContainerSession:
+        attach = pb.AttachSession(container_id=container_id, session_id=session_id)
+        pty_info = _coerce_pty_info(pty)
+        if pty_info is not None:
+            attach.pty_info.CopyFrom(pty_info)
+        return self._start_session(
+            container_id,
+            pb.SessionRequest(attach_session=attach),
+        )
+
+    def get_session(
+        self,
+        container_id: str,
+        session_id: str,
+    ) -> ContainerSession.Info:
+        try:
+            resp = self._stub.GetSession(
+                pb.GetSessionRequest(container_id=container_id, session_id=session_id),
+                metadata=self._metadata,
+            )
+        except grpc.RpcError as e:
+            _handle_container_grpc_error(e, container_id, session_id)
+        return _pb_to_session_info(container_id, resp.session)
+
+    def list_sessions(self, container_id: str) -> list[ContainerSession.Info]:
+        try:
+            resp = self._stub.ListSessions(
+                pb.ListSessionsRequest(container_id=container_id),
+                metadata=self._metadata,
+            )
+        except grpc.RpcError as e:
+            _handle_container_grpc_error(e, container_id)
+        return [_pb_to_session_info(container_id, session) for session in resp.sessions]
+
+    def _start_session(
+        self,
+        container_id: str,
+        initial_request: pb.SessionRequest,
+    ) -> ContainerSession:
+        request_queue: queue.Queue[pb.SessionRequest | None] = queue.Queue()
+        request_queue.put(initial_request)
+
+        def request_iterator() -> Iterator[pb.SessionRequest]:
+            while True:
+                request = request_queue.get()
+                if request is None:
+                    return
+                yield request
+
+        try:
+            response_iterator = self._stub.Session(
+                request_iterator(),
+                metadata=self._metadata,
+            )
+        except grpc.RpcError as e:
+            _handle_container_grpc_error(e, container_id)
+
+        session = ContainerSession(
+            _client=self,
+            _container_id=container_id,
+            _request_queue=request_queue,
+            _response_iterator=response_iterator,
+        )
+        try:
+            session._await_attached()
+        except grpc.RpcError as e:
+            _handle_container_grpc_error(e, container_id)
+        return session
+
+
 # ---------------------------------------------------------------------------
 # Container
 # ---------------------------------------------------------------------------
@@ -368,6 +834,7 @@ class Container:
         self._upserted_secret_names: list[str] = []
 
         self._client = ConnectClient(chalk_client=chalk_client)
+        self._session_client: ContainerSessionClient | None = None
 
     # -- Alternate constructors ------------------------------------------------
 
@@ -476,6 +943,7 @@ class Container:
         c._container_info = None
         c._upserted_secret_names = []
         c._client = ConnectClient(chalk_client=chalk_client)
+        c._session_client = None
         return c
 
     # -- Image building (Container uses BuildCustomImage with retries) ---------
@@ -976,6 +1444,67 @@ class Container:
 
         raise ContainerError(f"ExecCommand failed after {_retries} retries")
 
+    @_instrumented("chalkcompute.container.new_session")
+    def new_session(
+        self,
+        command: str,
+        *args: str,
+        timeout_secs: int | None = None,
+        workdir: str | None = None,
+        env: dict[str, str] | None = None,
+        pty: bool | tuple[int, int] = False,
+    ) -> ContainerSession:
+        """Start a persistent command session in the running container.
+
+        The returned :class:`ContainerSession` can stream output, accept stdin,
+        detach, and later be reattached with :meth:`attach_session`.
+        """
+        container_id = self._require_container_id()
+        return self._get_session_client().new_session(
+            container_id,
+            command,
+            *args,
+            timeout_secs=timeout_secs,
+            workdir=workdir,
+            env=env,
+            pty=pty,
+        )
+
+    @_instrumented("chalkcompute.container.attach_session")
+    def attach_session(
+        self,
+        session_id: str,
+        *,
+        pty: bool | tuple[int, int] = False,
+    ) -> ContainerSession:
+        """Attach a new stream to an existing persistent session."""
+        container_id = self._require_container_id()
+        return self._get_session_client().attach_session(
+            container_id,
+            session_id,
+            pty=pty,
+        )
+
+    def get_session(self, session_id: str) -> ContainerSession.Info:
+        """Fetch metadata for a persistent session owned by this container."""
+        container_id = self._require_container_id()
+        return self._get_session_client().get_session(container_id, session_id)
+
+    def list_sessions(self) -> list[ContainerSession.Info]:
+        """List persistent sessions owned by this container."""
+        container_id = self._require_container_id()
+        return self._get_session_client().list_sessions(container_id)
+
+    def _require_container_id(self) -> str:
+        if self._container_id is None:
+            raise ContainerError("Container is not running. Call .run() first.")
+        return self._container_id
+
+    def _get_session_client(self) -> ContainerSessionClient:
+        if self._session_client is None:
+            self._session_client = ContainerSessionClient.from_connect(self._client)
+        return self._session_client
+
     @_instrumented("chalkcompute.container.stop")
     def stop(self, grace_period_seconds: int | None = None) -> None:
         """Stop the container and clean up temporary volumes and secrets.
@@ -994,6 +1523,10 @@ class Container:
             self._client.rpc(_SVC, "StopContainer", body)
             self._container_id = None
             self._container_info = None
+
+        if self._session_client is not None:
+            self._session_client.close()
+            self._session_client = None
 
         if self._volumes:
             # Driver is used here only to perform the delete action, not to
@@ -1079,6 +1612,167 @@ def _parse_container_response(data: dict) -> ContainerInfo:
         pod_name=data.get("podName", ""),
         web_url=data.get("webUrl"),
     )
+
+
+def _process_states() -> dict[int, ContainerSession.Status.State]:
+    return {
+        pb.PROCESS_STATE_RUNNING: ContainerSession.Status.State.RUNNING,
+        pb.PROCESS_STATE_EXITED: ContainerSession.Status.State.EXITED,
+        pb.PROCESS_STATE_FAILED: ContainerSession.Status.State.FAILED,
+        pb.PROCESS_STATE_TIMED_OUT: ContainerSession.Status.State.TIMED_OUT,
+    }
+
+
+def _pb_to_session_info(
+    container_id: str,
+    info: pb.SessionInfo,
+) -> ContainerSession.Info:
+    new_process = info.new_process
+    return ContainerSession.Info(
+        id=info.session_id,
+        container_id=container_id,
+        command=new_process.command,
+        args=list(new_process.args),
+        workdir=new_process.workdir if new_process.HasField("workdir") else None,
+        env=dict(new_process.env),
+        timeout_secs=(
+            new_process.timeout_secs
+            if new_process.HasField("timeout_secs")
+            else None
+        ),
+        pty=new_process.HasField("pty_info"),
+        status=_pb_to_session_status(info.process_status),
+    )
+
+
+def _pb_to_session_status(status: pb.ProcessStatus) -> ContainerSession.Status:
+    return ContainerSession.Status(
+        state=_process_states().get(
+            status.state,
+            ContainerSession.Status.State.UNSPECIFIED,
+        ),
+        exit_code=status.exit_code if status.HasField("exit_code") else None,
+        signal=status.signal if status.HasField("signal") else None,
+    )
+
+
+def _pb_to_session_event(response: pb.SessionResponse) -> ContainerSession.Event:
+    match response.WhichOneof("event"):
+        case "session_attached":
+            return ContainerSession.AttachedEvent(
+                session_id=response.session_attached.session_id,
+            )
+        case "output_data":
+            output = response.output_data
+            match output.stream:
+                case pb.OutputData.STREAM_STDERR:
+                    return ContainerSession.OutputEvent(
+                        stream=ContainerSession.OutputEvent.Stream.STDERR,
+                        data=output.data,
+                    )
+                case pb.OutputData.STREAM_PTY_OUTPUT:
+                    return ContainerSession.OutputEvent(
+                        stream=ContainerSession.OutputEvent.Stream.PTY_OUTPUT,
+                        data=output.data,
+                    )
+            return ContainerSession.OutputEvent(
+                stream=ContainerSession.OutputEvent.Stream.STDOUT,
+                data=output.data,
+            )
+        case "process_status":
+            return ContainerSession.StatusUpdateEvent(
+                status=_pb_to_session_status(response.process_status),
+            )
+        case "process_exited":
+            status = _ended_process_status(
+                ContainerSession.Status.State.EXITED,
+                response.process_exited,
+            )
+            return ContainerSession.ExitedEvent(status=status)
+        case "session_detached":
+            return ContainerSession.DetachedEvent()
+        case "process_failed":
+            return ContainerSession.FailedEvent(
+                message=response.process_failed.message,
+            )
+        case "process_timed_out":
+            status = _ended_process_status(
+                ContainerSession.Status.State.TIMED_OUT,
+                response.process_timed_out,
+            )
+            return ContainerSession.TimedOutEvent(status=status)
+        case "error":
+            return ContainerSession.ErrorEvent(
+                code=response.error.code,
+                message=response.error.message,
+            )
+        case _:
+            return ContainerSession.UnknownEvent()
+
+
+def _ended_process_status(
+    state: ContainerSession.Status.State,
+    process_end: pb.ProcessExited | pb.ProcessTimedOut,
+) -> ContainerSession.Status:
+    return ContainerSession.Status(
+        state=state,
+        exit_code=process_end.exit_code if process_end.HasField("exit_code") else None,
+        signal=process_end.signal if process_end.HasField("signal") else None,
+    )
+
+
+def _coerce_pty_info(pty: bool | tuple[int, int]) -> pb.PtyInfo | None:
+    if pty is False:
+        return None
+    if pty is True:
+        return _make_pty_info(80, 24)
+    if isinstance(pty, tuple) and len(pty) == 2:
+        cols, rows = pty
+        return _make_pty_info(cols, rows)
+    raise TypeError("pty must be False, True, or a (cols, rows) tuple")
+
+
+def _make_pty_info(cols: int, rows: int) -> pb.PtyInfo:
+    _validate_pty_dimension(cols, "cols")
+    _validate_pty_dimension(rows, "rows")
+    return pb.PtyInfo(cols=cols, rows=rows)
+
+
+def _validate_pty_dimension(value: int, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if value < 1:
+        raise ValueError(f"{name} must be at least 1")
+
+
+def _handle_container_grpc_error(
+    e: grpc.RpcError,
+    container_id: str,
+    session_id: str | None = None,
+) -> NoReturn:
+    target = f"session {session_id}" if session_id else f"container {container_id}"
+    if isinstance(e, grpc.Call):
+        raise_for_grpc_error(
+            e,
+            {
+                grpc.StatusCode.NOT_FOUND: (
+                    ContainerError,
+                    f"{target} not found",
+                ),
+                grpc.StatusCode.FAILED_PRECONDITION: (
+                    ContainerError,
+                    f"{target} is not ready for container sessions",
+                ),
+                grpc.StatusCode.UNIMPLEMENTED: (
+                    ContainerError,
+                    "Container sessions are not implemented by this server",
+                ),
+            },
+        )
+        details = e.details()
+    else:
+        details = str(e)
+    raise ContainerError(f"Container session RPC failed: {details}") from e
 
 
 def _coerce_port_range(port_range: PortRangeInput) -> PortRange:
