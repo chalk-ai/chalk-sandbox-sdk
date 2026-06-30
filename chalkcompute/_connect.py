@@ -363,6 +363,10 @@ def build_image(
     ConnectError
         If the build fails or times out.
     """
+    image_uri = image.as_image_uri_if_possible()
+    if image_uri is not None:
+        return image_uri
+
     from google.protobuf.json_format import MessageToDict
 
     spec_dict = MessageToDict(image.to_proto())

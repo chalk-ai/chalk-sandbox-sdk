@@ -38,6 +38,7 @@ from chalkcompute._connect import (
     grpc_target_from_url,
     raise_for_grpc_error,
 )
+from chalkcompute._container import NetworkPolicy
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as pb
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2_grpc as pb_grpc
 from chalkcompute._image import Image
@@ -322,6 +323,7 @@ class Sandbox:
         memory: str | None = None,
         env: dict[str, str] | None = None,
         volumes: list[tuple[str, str]] | None = None,
+        network_policy: NetworkPolicy | None = None,
         chalk_client: Any | None = None,
         sandbox_client: SandboxClient | None = None,
         client: Any | None = None,
@@ -345,6 +347,9 @@ class Sandbox:
         volumes
             Optional ``(volume_name, mount_path)`` pairs to mount into the
             sandbox.
+        network_policy
+            Optional network egress policy. Reuses the same
+            :class:`NetworkPolicy` type accepted by :class:`Container`.
 
         Examples
         --------
@@ -361,6 +366,7 @@ class Sandbox:
         self._memory: str | None = None
         self._env: dict[str, str] = {}
         self._volumes: list[tuple[str, str]] = []
+        self._network_policy: NetworkPolicy | None = None
         self._chalk_client: Any | None = None
 
         if client is not None or sandbox_id is not None:
@@ -371,6 +377,7 @@ class Sandbox:
                 or memory is not None
                 or env is not None
                 or volumes is not None
+                or network_policy is not None
                 or chalk_client is not None
                 or sandbox_client is not None
             ):
@@ -413,6 +420,9 @@ class Sandbox:
                         f"Example: volumes=[('my-volume', '/data')]"
                     )
 
+        if network_policy is not None and not isinstance(network_policy, NetworkPolicy):
+            raise TypeError("network_policy must be a NetworkPolicy")
+
         self._client = sandbox_client
         self._image = image
         self._name = name
@@ -420,6 +430,7 @@ class Sandbox:
         self._memory = memory
         self._env = dict(env) if env else {}
         self._volumes = [(name, mount_path) for name, mount_path in volumes or []]
+        self._network_policy = network_policy
         self._chalk_client = chalk_client
 
     @property
@@ -517,6 +528,7 @@ class Sandbox:
             memory=self._memory,
             env=self._env or None,
             volumes=_volume_mounts_to_proto(self._volumes) if self._volumes else None,
+            network_policy=self._network_policy,
             wait=wait,
             poll_interval=poll_interval,
             timeout=timeout,
@@ -793,6 +805,7 @@ class SandboxClient:
         memory: str | None = None,
         env: dict[str, str] | None = None,
         volumes: _VolumeMountList | None = None,
+        network_policy: NetworkPolicy | None = None,
         wait: bool = True,
         poll_interval: float = 0.5,
         timeout: float = 600.0,
@@ -819,6 +832,9 @@ class SandboxClient:
             Optional environment variables.
         volumes
             Optional list of ``VolumeMount`` protos to attach.
+        network_policy
+            Optional network egress policy. Reuses the same ``NetworkPolicy``
+            type accepted by containers.
         wait
             If ``True``, poll until the sandbox is ready (default ``True``).
         poll_interval
@@ -832,9 +848,16 @@ class SandboxClient:
         Sandbox
             A sandbox handle.
         """
+        if network_policy is not None and not isinstance(network_policy, NetworkPolicy):
+            raise TypeError("network_policy must be a NetworkPolicy")
+
         req = pb.CreateSandboxRequest()
         if isinstance(image, Image):
-            req.image_spec.CopyFrom(image.to_proto())
+            image_uri = image.as_image_uri_if_possible()
+            if image_uri is not None:
+                req.image = image_uri
+            else:
+                req.image_spec.CopyFrom(image.to_proto())
         else:
             req.image = image
         if name is not None:
@@ -852,6 +875,10 @@ class SandboxClient:
                 req.env[k] = v
         if volumes is not None:
             req.volumes.extend(volumes)
+        if network_policy is not None:
+            from google.protobuf.json_format import ParseDict
+
+            ParseDict(network_policy.to_dict(), req.network_policy)
 
         resp = self._stub.CreateSandbox(req, metadata=self._metadata)
         info = _pb_to_sandbox_info(resp.sandbox)
