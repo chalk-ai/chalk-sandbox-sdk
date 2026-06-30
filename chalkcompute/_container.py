@@ -27,7 +27,7 @@ from collections import deque
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import grpc
 
@@ -367,12 +367,16 @@ class NetworkPolicy:
 
         if isinstance(allowed_hosts, Mapping):
             for host, rules in allowed_hosts.items():
+                if not isinstance(host, str):
+                    raise TypeError("allowed_hosts entries must be strings")
                 self._validate_host(host)
                 if isinstance(rules, NetworkPolicy.Rule):
                     raise TypeError(
                         "allowed_hosts values must be lists of NetworkPolicy.Rule"
                     )
-                self.allowed_hosts[host] = list(rules)
+                self.allowed_hosts[host] = list(
+                    cast(Iterable[NetworkPolicy.Rule], rules)
+                )
                 for rule in self.allowed_hosts[host]:
                     if not isinstance(rule, NetworkPolicy.Rule):
                         raise TypeError(
