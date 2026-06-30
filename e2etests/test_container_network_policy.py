@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+import time
 import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -19,6 +20,8 @@ HTTP_CONNECT_TIMEOUT = 20
 HTTP_MAX_TIME = 60
 DENY_HTTP_CONNECT_TIMEOUT = 2
 DENY_HTTP_MAX_TIME = 5
+POLICY_READY_DOMAIN = "example.com"
+POLICY_READY_URL = "http://" + POLICY_READY_DOMAIN + "/__chalk-policy-ready__"
 LOCAL_ECHO_PORT = 8080
 LOCAL_ECHO_ENTRYPOINT = f"""set -e
 PYTHON=$(command -v python3 || command -v python)
@@ -119,6 +122,11 @@ FORWARDING_POLICY_CASE_NAMES = [
     "transform-rules",
     "rule-combinations",
 ]
+ROUTE_BLOCK_READY_CASE_NAMES = {
+    "denyall",
+    "subnets-only",
+    "deny-route-over-allowed-route",
+}
 NON_FORWARDING_POLICY_CASE_NAMES = [
     case_name
     for case_name in POLICY_CASE_NAMES
@@ -276,6 +284,9 @@ def _run_policy_case(case: PolicyCase) -> list[str]:
         local_echo=case.local_echo,
     )
     try:
+        print(f"[{case.name}] waiting for policy readiness", flush=True)
+        _wait_for_network_policy_ready(container, case.name)
+        print(f"[{case.name}] policy ready", flush=True)
         if case.local_echo:
             _wait_for_local_echo(container)
         print(f"[{case.name}] running {len(case.probes)} probes", flush=True)
@@ -329,6 +340,98 @@ def _stop_quietly(container: Container) -> None:
         container.stop()
     except ContainerError:
         pass
+
+
+def _wait_for_network_policy_ready(container: Container, case_name: str) -> None:
+    deadline = time.monotonic() + 60
+    last_stdout = ""
+    last_stderr = ""
+    while True:
+        try:
+            dns_result = container.exec(
+                "dig",
+                "+time=1",
+                "+tries=1",
+                "+short",
+                "A",
+                POLICY_READY_DOMAIN,
+                timeout_secs=5,
+            )
+        except ContainerError as exc:
+            last_stdout = ""
+            last_stderr = str(exc)
+        else:
+            last_stdout = dns_result.stdout_text.strip()
+            last_stderr = dns_result.stderr_text.strip()
+            if dns_result.exit_code == 0 and last_stdout:
+                break
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                "policy readiness DNS check did not resolve "
+                + POLICY_READY_DOMAIN
+                + ": stdout="
+                + repr(last_stdout)
+                + " stderr="
+                + repr(last_stderr)
+            )
+        time.sleep(0.5)
+
+    if case_name == "allowall":
+        return
+
+    deadline = time.monotonic() + 60
+    last_exit_code: int | None = None
+    last_status: str | None = None
+    last_body = ""
+    last_stderr = ""
+    route_block_ready = case_name in ROUTE_BLOCK_READY_CASE_NAMES
+    while True:
+        try:
+            http_result = container.exec(
+                "curl",
+                "-4",
+                "-sS",
+                "--connect-timeout",
+                "1",
+                "--max-time",
+                "2",
+                "-w",
+                "\n%{http_code}",
+                POLICY_READY_URL,
+                timeout_secs=7,
+            )
+        except ContainerError as exc:
+            last_exit_code = None
+            last_status = None
+            last_body = ""
+            last_stderr = str(exc)
+        else:
+            body, separator, status = http_result.stdout_text.rpartition("\n")
+            last_exit_code = http_result.exit_code
+            last_status = status.strip() if separator else None
+            last_body = body[:600]
+            last_stderr = http_result.stderr_text.strip()
+            if last_status == "403" or (
+                route_block_ready
+                and last_status == "000"
+                and last_exit_code not in {0, 28}
+            ):
+                return
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                "policy readiness HTTP check did not return "
+                + ("a fast route block for " if route_block_ready else "403 for ")
+                + POLICY_READY_URL
+                + ": exit="
+                + repr(last_exit_code)
+                + " status="
+                + repr(last_status)
+                + " stderr="
+                + repr(last_stderr)
+                + " body="
+                + repr(last_body)
+            )
+        time.sleep(0.5)
 
 
 def _wait_for_local_echo(container: Container) -> None:
