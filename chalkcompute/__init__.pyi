@@ -11,7 +11,6 @@ from chalkcompute._connect import build_image_from_spec as build_image
 from chalkcompute._connect import (
     build_image_with_volumes_from_spec as build_image_with_volumes,
 )
-from chalkcompute._container import AllowedRoute as AllowedRoute
 from chalkcompute._container import Container as Container
 from chalkcompute._container import ContainerError as ContainerError
 from chalkcompute._container import ContainerInfo as ContainerInfo
@@ -22,7 +21,6 @@ from chalkcompute._container import ImageBuildError as ImageBuildError
 from chalkcompute._container import ComputeClass as ComputeClass
 from chalkcompute._container import KernelPolicy as KernelPolicy
 from chalkcompute._container import NetworkPolicy as NetworkPolicy
-from chalkcompute._container import PortRange as PortRange
 from chalkcompute._function import DeployedFunction as DeployedFunction
 from chalkcompute._function import FunctionBuildError as FunctionBuildError
 from chalkcompute._function import FunctionCallHandle as FunctionCallHandle
@@ -83,12 +81,10 @@ __all__ = [
     "ContainerSession",
     "ContainerSecurityPolicy",
     "ContainerExecResult",
-    "AllowedRoute",
     "ImageBuildError",
     "ComputeClass",
     "KernelPolicy",
     "NetworkPolicy",
-    "PortRange",
     "RemoteClass",
     "ClassError",
     "ClassBuildError",
