@@ -795,6 +795,24 @@ class Image:
 
     # -- Serialization ---------------------------------------------------------
 
+    def as_image_uri_if_possible(self) -> str | None:
+        """Return the image URI when no custom build is needed.
+
+        A bare ``Image.base(...)`` or ``Image.debian_slim()`` is equivalent to
+        its base image string. Once the image carries build steps, lazy files,
+        or image config, callers must keep sending the full image spec.
+        """
+        if (
+            self._steps
+            or self._entrypoint
+            or self._cmd
+            or self._workdir is not None
+            or self._env
+            or self._lazy_local_files
+        ):
+            return None
+        return self._base_image
+
     def to_proto(self) -> pb.ImageSpec:
         """Serialize this image definition to a protobuf ``ImageSpec``.
 
