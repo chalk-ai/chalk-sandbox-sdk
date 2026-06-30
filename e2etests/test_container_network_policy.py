@@ -338,7 +338,7 @@ def _run_netshoot_container(
 def _stop_quietly(container: Container) -> None:
     try:
         container.stop()
-    except ContainerError:
+    except Exception:
         pass
 
 
