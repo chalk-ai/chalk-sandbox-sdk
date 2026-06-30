@@ -1,6 +1,7 @@
 from chalkcompute._gen.chalk.argo.v1 import workflow_pb2 as _workflow_pb2
 from chalkcompute._gen.chalk.auth.v1 import permissions_pb2 as _permissions_pb2
 from chalkcompute._gen.chalk.common.v1 import log_pb2 as _log_pb2
+from chalkcompute._gen.chalk.container.v1 import service_pb2 as _service_pb2
 from chalkcompute._gen.chalk.flags.v1 import flags_pb2 as _flags_pb2
 from google.protobuf import timestamp_pb2 as _timestamp_pb2
 from google.protobuf.internal import containers as _containers
@@ -362,6 +363,7 @@ class CreateSandboxRequest(_message.Message):
         "runtime",
         "entrypoint",
         "knowledge_cutoff",
+        "network_policy",
     )
     class EnvEntry(_message.Message):
         __slots__ = ("key", "value")
@@ -382,6 +384,7 @@ class CreateSandboxRequest(_message.Message):
     RUNTIME_FIELD_NUMBER: _ClassVar[int]
     ENTRYPOINT_FIELD_NUMBER: _ClassVar[int]
     KNOWLEDGE_CUTOFF_FIELD_NUMBER: _ClassVar[int]
+    NETWORK_POLICY_FIELD_NUMBER: _ClassVar[int]
     image: str
     image_spec: ImageSpec
     resource_limits: ResourceLimits
@@ -391,6 +394,7 @@ class CreateSandboxRequest(_message.Message):
     runtime: str
     entrypoint: _containers.RepeatedScalarFieldContainer[str]
     knowledge_cutoff: _timestamp_pb2.Timestamp
+    network_policy: _service_pb2.NetworkPolicy
     def __init__(
         self,
         image: _Optional[str] = ...,
@@ -402,6 +406,7 @@ class CreateSandboxRequest(_message.Message):
         runtime: _Optional[str] = ...,
         entrypoint: _Optional[_Iterable[str]] = ...,
         knowledge_cutoff: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
+        network_policy: _Optional[_Union[_service_pb2.NetworkPolicy, _Mapping]] = ...,
     ) -> None: ...
 
 class ResourceLimits(_message.Message):
