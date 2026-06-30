@@ -19,13 +19,12 @@ destination path's common ancestor.
 from __future__ import annotations
 
 import base64
-import ipaddress
 import logging
 import queue
 import time
 import uuid
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, NoReturn
@@ -57,8 +56,6 @@ from chalkcompute._vvolume import VersionedVolumeClient
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
-
     from chalkcompute._image import Image as _Image
     from chalkcompute._secret import Secret
 
@@ -145,92 +142,271 @@ class ContainerSecurityPolicy:
         return {"kernelPolicy": self.kernel_policy.value}
 
 
-@dataclass
-class PortRange:
-    """Inclusive destination port range for a network policy route."""
-
-    start_port: int
-    """Inclusive start port. Must be between 1 and 65535."""
-
-    end_port: int | None = None
-    """Inclusive end port. Defaults to ``start_port``."""
-
-    def __post_init__(self) -> None:
-        if self.end_port is None:
-            self.end_port = self.start_port
-        _validate_port_range(self.start_port, self.end_port)
-
-    def to_dict(self) -> dict[str, int]:
-        assert self.end_port is not None
-        return {"startPort": self.start_port, "endPort": self.end_port}
+_PortRangeInput = tuple[int, int] | int
 
 
-PortRangeInput = PortRange | tuple[int, int] | int
+class NetworkPolicy:
+    """Network egress policy for a container.
 
-
-@dataclass(init=False)
-class AllowedRoute:
-    """Allowed destination CIDR and optional destination port ranges.
-
-    Empty ``port_ranges`` means all destination ports for the route.
+    For HOST containers, missing and empty policies deny application egress
+    unless allowed routes or hosts are configured.
     """
 
-    route: str
-    """Destination CIDR, e.g. ``"10.0.0.0/8"``."""
+    @dataclass(init=False)
+    class Route:
+        """Allowed destination CIDR and optional destination port ranges."""
 
-    port_ranges: list[PortRange]
-    """Destination port ranges allowed for this route."""
+        route: str
+        """Destination CIDR, e.g. ``"10.0.0.0/8"``."""
+
+        ports: list[tuple[int, int]]
+        """Destination port ranges. Empty means all ports."""
+
+        def __init__(
+            self,
+            route: str,
+            *,
+            ports: Iterable[_PortRangeInput] | None = None,
+        ) -> None:
+            if not isinstance(route, str):
+                raise TypeError("route must be a string")
+            if not route:
+                raise ValueError("route must not be empty")
+            self.route = route
+            self.ports = [_coerce_port_range(port) for port in ports or []]
+
+        def to_dict(self) -> dict[str, Any]:
+            body: dict[str, Any] = {"route": self.route}
+            if self.ports:
+                body["portRanges"] = [
+                    {"startPort": start_port, "endPort": end_port}
+                    for start_port, end_port in self.ports
+                ]
+            return body
+
+    @dataclass
+    class Matcher:
+        """String matcher for path, query-string, or header values."""
+
+        exact: str | None = None
+        starts_with: str | None = None
+        regex: str | None = None
+
+        def __post_init__(self) -> None:
+            values = [
+                self.exact is not None,
+                self.starts_with is not None,
+                self.regex is not None,
+            ]
+            if sum(values) != 1:
+                raise ValueError("set exactly one of exact, starts_with, or regex")
+            for name, value in (
+                ("exact", self.exact),
+                ("starts_with", self.starts_with),
+                ("regex", self.regex),
+            ):
+                if value is not None and not isinstance(value, str):
+                    raise TypeError(f"{name} must be a string")
+
+        def to_dict(self) -> dict[str, str]:
+            if self.exact is not None:
+                return {"exact": self.exact}
+            if self.starts_with is not None:
+                return {"startsWith": self.starts_with}
+            assert self.regex is not None
+            return {"regex": self.regex}
+
+    @dataclass
+    class KeyValueMatcher:
+        """Matcher for a query-string or header entry."""
+
+        key: NetworkPolicy.Matcher
+        value: NetworkPolicy.Matcher | None = None
+
+        def __post_init__(self) -> None:
+            if not isinstance(self.key, NetworkPolicy.Matcher):
+                raise TypeError("key must be a NetworkPolicy.Matcher")
+            if self.value is not None and not isinstance(
+                self.value, NetworkPolicy.Matcher
+            ):
+                raise TypeError("value must be a NetworkPolicy.Matcher")
+
+        def to_dict(self) -> dict[str, Any]:
+            body: dict[str, Any] = {"key": self.key.to_dict()}
+            if self.value is not None:
+                body["value"] = self.value.to_dict()
+            return body
+
+    @dataclass
+    class Match:
+        """Request matcher for host policy rules."""
+
+        path: NetworkPolicy.Matcher | None = None
+        methods: list[str] = field(default_factory=list)
+        query_strings: list[NetworkPolicy.KeyValueMatcher] = field(default_factory=list)
+        headers: list[NetworkPolicy.KeyValueMatcher] = field(default_factory=list)
+
+        def __post_init__(self) -> None:
+            if self.path is not None and not isinstance(
+                self.path, NetworkPolicy.Matcher
+            ):
+                raise TypeError("path must be a NetworkPolicy.Matcher")
+            if isinstance(self.methods, str):
+                raise TypeError("methods must be a list of strings")
+            self.methods = list(self.methods or [])
+            for method in self.methods:
+                if not isinstance(method, str):
+                    raise TypeError("methods must be a list of strings")
+            self.query_strings = list(self.query_strings or [])
+            for matcher in self.query_strings:
+                if not isinstance(matcher, NetworkPolicy.KeyValueMatcher):
+                    raise TypeError(
+                        "query_strings must be a list of NetworkPolicy.KeyValueMatcher"
+                    )
+            self.headers = list(self.headers or [])
+            for matcher in self.headers:
+                if not isinstance(matcher, NetworkPolicy.KeyValueMatcher):
+                    raise TypeError(
+                        "headers must be a list of NetworkPolicy.KeyValueMatcher"
+                    )
+
+        def to_dict(self) -> dict[str, Any]:
+            body: dict[str, Any] = {}
+            if self.path is not None:
+                body["path"] = self.path.to_dict()
+            if self.methods:
+                body["method"] = list(self.methods)
+            if self.query_strings:
+                body["queryString"] = [
+                    matcher.to_dict() for matcher in self.query_strings
+                ]
+            if self.headers:
+                body["headers"] = [matcher.to_dict() for matcher in self.headers]
+            return body
+
+    @dataclass
+    class Transformer:
+        """Request transform for a host policy rule."""
+
+        headers: dict[str, str] = field(default_factory=dict)
+
+        def __post_init__(self) -> None:
+            self.headers = dict(self.headers or {})
+            for key, value in self.headers.items():
+                if not isinstance(key, str) or not isinstance(value, str):
+                    raise TypeError("headers must be a dict[str, str]")
+
+        def to_dict(self) -> dict[str, Any]:
+            return {"headers": dict(self.headers)}
+
+    @dataclass
+    class Rule:
+        """Host policy rule for matching, transforming, or forwarding requests."""
+
+        transforms: list[NetworkPolicy.Transformer] = field(default_factory=list)
+        match: NetworkPolicy.Match | None = None
+        forward_url: str | None = None
+
+        def __post_init__(self) -> None:
+            self.transforms = list(self.transforms or [])
+            for transformer in self.transforms:
+                if not isinstance(transformer, NetworkPolicy.Transformer):
+                    raise TypeError(
+                        "transforms must be a list of NetworkPolicy.Transformer"
+                    )
+            if self.match is not None and not isinstance(
+                self.match, NetworkPolicy.Match
+            ):
+                raise TypeError("match must be a NetworkPolicy.Match")
+            if self.forward_url is not None and not isinstance(self.forward_url, str):
+                raise TypeError("forward_url must be a string")
+
+        def to_dict(self) -> dict[str, Any]:
+            body: dict[str, Any] = {}
+            if self.transforms:
+                body["transform"] = [
+                    transformer.to_dict() for transformer in self.transforms
+                ]
+            if self.match is not None:
+                body["match"] = self.match.to_dict()
+            if self.forward_url is not None:
+                body["forwardUrl"] = self.forward_url
+            return body
+
+    allowed_routes: list[Route]
+    """Allowed destination routes and their permitted destination ports."""
+
+    denied_routes: list[str]
+    """Destination CIDRs to deny before evaluating allowed routes or hosts."""
+
+    allowed_hosts: dict[str, list[Rule]]
+    """Host patterns mapped to request rules. Empty rule lists allow the host."""
 
     def __init__(
         self,
-        route: str | None = None,
-        port_ranges: Iterable[PortRangeInput] | None = None,
         *,
-        cidr: str | None = None,
-        ports: Iterable[PortRangeInput] | None = None,
+        allowed_routes: Iterable[Route] | None = None,
+        denied_routes: Iterable[str] | None = None,
+        allowed_hosts: Iterable[str] | Mapping[str, Iterable[Rule]] | None = None,
     ) -> None:
-        if route is None:
-            route = cidr
-        elif cidr is not None and cidr != route:
-            raise ValueError("Pass only one of route or cidr")
-        if route is None:
-            raise ValueError("route is required")
-        if port_ranges is not None and ports is not None:
-            raise ValueError("Pass only one of port_ranges or ports")
+        self.allowed_routes = list(allowed_routes or [])
+        for route in self.allowed_routes:
+            if not isinstance(route, NetworkPolicy.Route):
+                raise TypeError("allowed_routes must be a list of NetworkPolicy.Route")
 
-        ipaddress.ip_network(route)
-        self.route = route
-        self.port_ranges = [
-            _coerce_port_range(port_range)
-            for port_range in (port_ranges if port_ranges is not None else ports or [])
-        ]
+        if isinstance(denied_routes, str):
+            raise TypeError("denied_routes must be a list of strings")
+        self.denied_routes = list(denied_routes or [])
+        for route in self.denied_routes:
+            if not isinstance(route, str):
+                raise TypeError("denied_routes must be a list of strings")
+
+        self.allowed_hosts = {}
+        if allowed_hosts is None:
+            return
+
+        if isinstance(allowed_hosts, Mapping):
+            for host, rules in allowed_hosts.items():
+                self._validate_host(host)
+                if isinstance(rules, NetworkPolicy.Rule):
+                    raise TypeError(
+                        "allowed_hosts values must be lists of NetworkPolicy.Rule"
+                    )
+                self.allowed_hosts[host] = list(rules)
+                for rule in self.allowed_hosts[host]:
+                    if not isinstance(rule, NetworkPolicy.Rule):
+                        raise TypeError(
+                            "allowed_hosts values must be lists of NetworkPolicy.Rule"
+                        )
+            return
+
+        if isinstance(allowed_hosts, str):
+            raise TypeError("allowed_hosts must be a list of strings or a dict")
+        for host in allowed_hosts:
+            self._validate_host(host)
+            self.allowed_hosts[host] = []
 
     def to_dict(self) -> dict[str, Any]:
-        body: dict[str, Any] = {"route": self.route}
-        if self.port_ranges:
-            body["portRanges"] = [
-                port_range.to_dict() for port_range in self.port_ranges
-            ]
-        return body
-
-
-@dataclass
-class NetworkPolicy:
-    """Network egress allowlist for a container.
-
-    A missing policy leaves networking unrestricted for backwards compatibility.
-    A present policy allows only its ``allowed_routes``.
-    """
-
-    allowed_routes: list[AllowedRoute] = field(default_factory=list)
-    """Allowed destination routes and their permitted destination ports."""
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
+        body: dict[str, Any] = {
             "allowedRoutes": [
                 allowed_route.to_dict() for allowed_route in self.allowed_routes
             ]
         }
+        if self.denied_routes:
+            body["deniedRoutes"] = list(self.denied_routes)
+        if self.allowed_hosts:
+            body["allowedHosts"] = {
+                host: {"rules": [rule.to_dict() for rule in rules]}
+                for host, rules in self.allowed_hosts.items()
+            }
+        return body
+
+    @staticmethod
+    def _validate_host(host: str) -> None:
+        if not isinstance(host, str):
+            raise TypeError("allowed_hosts entries must be strings")
+        if not host:
+            raise ValueError("allowed_hosts entries must not be empty")
 
 
 @dataclass
@@ -1773,15 +1949,15 @@ def _handle_container_grpc_error(
     raise ContainerError(f"Container session RPC failed: {details}") from e
 
 
-def _coerce_port_range(port_range: PortRangeInput) -> PortRange:
-    if isinstance(port_range, PortRange):
-        return port_range
+def _coerce_port_range(port_range: _PortRangeInput) -> tuple[int, int]:
     if isinstance(port_range, int) and not isinstance(port_range, bool):
-        return PortRange(port_range)
+        _validate_port_range(port_range, port_range)
+        return port_range, port_range
     if isinstance(port_range, tuple) and len(port_range) == 2:
         start_port, end_port = port_range
-        return PortRange(start_port, end_port)
-    raise TypeError("port ranges must be PortRange, int, or (start_port, end_port)")
+        _validate_port_range(start_port, end_port)
+        return start_port, end_port
+    raise TypeError("ports must be integers or (start_port, end_port) tuples")
 
 
 def _validate_port_range(start_port: int, end_port: int) -> None:

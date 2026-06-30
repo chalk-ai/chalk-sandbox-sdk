@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from chalkcompute import AllowedRoute, Container, ComputeClass, NetworkPolicy, PortRange
+from chalkcompute import Container, ComputeClass, NetworkPolicy
 from chalkcompute._container import ContainerSecurityPolicy, KernelPolicy
 
 
@@ -43,11 +43,11 @@ def test_network_policy_serializes_allowed_routes() -> None:
 
     policy = NetworkPolicy(
         allowed_routes=[
-            AllowedRoute(
-                cidr="104.20.23.154/32",
-                ports=[443, (8000, 9000), PortRange(10000, 10001)],
+            NetworkPolicy.Route(
+                "104.20.23.154/32",
+                ports=[443, (8000, 9000), (10000, 10001)],
             ),
-            AllowedRoute(route="10.0.0.0/8"),
+            NetworkPolicy.Route("10.0.0.0/8"),
         ]
     )
 
@@ -66,25 +66,52 @@ def test_network_policy_serializes_allowed_routes() -> None:
     }
 
 
-def test_network_policy_validates_cidr_and_ports() -> None:
+def test_network_policy_validates_ports_and_matchers() -> None:
     with pytest.raises(ValueError):
-        AllowedRoute(cidr="not-a-cidr")
-
-    with pytest.raises(ValueError):
-        PortRange(0)
+        NetworkPolicy.Route("")
 
     with pytest.raises(ValueError):
-        PortRange(2000, 1000)
+        NetworkPolicy.Route("10.0.0.0/8", ports=[0])
+
+    with pytest.raises(ValueError):
+        NetworkPolicy.Route("10.0.0.0/8", ports=[(2000, 1000)])
+
+    with pytest.raises(ValueError):
+        NetworkPolicy.Matcher()
+
+    with pytest.raises(ValueError):
+        NetworkPolicy.Matcher(exact="x", regex="x")
 
 
-def test_container_run_sends_network_policy() -> None:
+def test_host_container_run_sends_network_policy() -> None:
     client = _Client()
     container = Container(
         image="ubuntu:latest",
         name="network-test",
+        compute_class=ComputeClass.HOST,
         security_policy=ContainerSecurityPolicy(kernel_policy=KernelPolicy.RESTRICTED),
         network_policy=NetworkPolicy(
-            allowed_routes=[AllowedRoute(cidr="104.20.23.154/32", ports=[(443, 443)])]
+            allowed_routes=[NetworkPolicy.Route("104.20.23.154/32", ports=[443])],
+            denied_routes=["169.254.0.0/16"],
+            allowed_hosts={
+                "api.example.com": [
+                    NetworkPolicy.Rule(
+                        match=NetworkPolicy.Match(
+                            path=NetworkPolicy.Matcher(starts_with="/v1/"),
+                            methods=["GET"],
+                            headers=[
+                                NetworkPolicy.KeyValueMatcher(
+                                    key=NetworkPolicy.Matcher(exact="x-api-key")
+                                )
+                            ],
+                        ),
+                        transforms=[
+                            NetworkPolicy.Transformer(headers={"x-added": "yes"})
+                        ],
+                        forward_url="https://proxy.example.com/api",
+                    )
+                ]
+            },
         ),
     )
     container._client = client
@@ -102,9 +129,54 @@ def test_container_run_sends_network_policy() -> None:
                 "route": "104.20.23.154/32",
                 "portRanges": [{"startPort": 443, "endPort": 443}],
             }
-        ]
+        ],
+        "allowedHosts": {
+            "api.example.com": {
+                "rules": [
+                    {
+                        "transform": [{"headers": {"x-added": "yes"}}],
+                        "match": {
+                            "path": {"startsWith": "/v1/"},
+                            "method": ["GET"],
+                            "headers": [{"key": {"exact": "x-api-key"}}],
+                        },
+                        "forwardUrl": "https://proxy.example.com/api",
+                    }
+                ]
+            }
+        },
+        "deniedRoutes": ["169.254.0.0/16"],
     }
     assert body["container"]["spec"]["securityPolicy"] == {"kernelPolicy": "RESTRICTED"}
+    assert body["container"]["spec"]["computeClass"] == "COMPUTE_CLASS_HOST"
+
+
+def test_host_container_network_policy_accepts_allowed_hosts_list() -> None:
+    client = _Client()
+    container = Container(
+        image="ubuntu:latest",
+        name="host-list-network-test",
+        compute_class=ComputeClass.HOST,
+        network_policy=NetworkPolicy(
+            allowed_hosts=[
+                "api.openai.com",
+                "*.anthropic.com",
+            ],
+        ),
+    )
+    container._client = client
+
+    container.run()
+
+    _, _, body, _ = client.calls[0]
+    assert body["container"]["spec"]["networkPolicy"] == {
+        "allowedRoutes": [],
+        "allowedHosts": {
+            "api.openai.com": {"rules": []},
+            "*.anthropic.com": {"rules": []},
+        },
+    }
+    assert body["container"]["spec"]["computeClass"] == "COMPUTE_CLASS_HOST"
 
 
 def test_container_run_sends_tags() -> None:
