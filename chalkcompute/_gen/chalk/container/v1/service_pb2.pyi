@@ -216,11 +216,30 @@ class ContainerSecurityPolicy(_message.Message):
     ) -> None: ...
 
 class NetworkPolicy(_message.Message):
-    __slots__ = ("allowed_routes",)
+    __slots__ = ("allowed_routes", "denied_routes", "allowed_hosts")
+    class AllowedHostsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: NetworkPolicyRuleList
+        def __init__(
+            self,
+            key: _Optional[str] = ...,
+            value: _Optional[_Union[NetworkPolicyRuleList, _Mapping]] = ...,
+        ) -> None: ...
+
     ALLOWED_ROUTES_FIELD_NUMBER: _ClassVar[int]
+    DENIED_ROUTES_FIELD_NUMBER: _ClassVar[int]
+    ALLOWED_HOSTS_FIELD_NUMBER: _ClassVar[int]
     allowed_routes: _containers.RepeatedCompositeFieldContainer[AllowedRoute]
+    denied_routes: _containers.RepeatedScalarFieldContainer[str]
+    allowed_hosts: _containers.MessageMap[str, NetworkPolicyRuleList]
     def __init__(
-        self, allowed_routes: _Optional[_Iterable[_Union[AllowedRoute, _Mapping]]] = ...
+        self,
+        allowed_routes: _Optional[_Iterable[_Union[AllowedRoute, _Mapping]]] = ...,
+        denied_routes: _Optional[_Iterable[str]] = ...,
+        allowed_hosts: _Optional[_Mapping[str, NetworkPolicyRuleList]] = ...,
     ) -> None: ...
 
 class AllowedRoute(_message.Message):
@@ -243,6 +262,96 @@ class PortRange(_message.Message):
     end_port: int
     def __init__(
         self, start_port: _Optional[int] = ..., end_port: _Optional[int] = ...
+    ) -> None: ...
+
+class NetworkPolicyRuleList(_message.Message):
+    __slots__ = ("rules",)
+    RULES_FIELD_NUMBER: _ClassVar[int]
+    rules: _containers.RepeatedCompositeFieldContainer[NetworkPolicyRule]
+    def __init__(
+        self, rules: _Optional[_Iterable[_Union[NetworkPolicyRule, _Mapping]]] = ...
+    ) -> None: ...
+
+class NetworkPolicyRule(_message.Message):
+    __slots__ = ("transform", "match", "forward_url")
+    TRANSFORM_FIELD_NUMBER: _ClassVar[int]
+    MATCH_FIELD_NUMBER: _ClassVar[int]
+    FORWARD_URL_FIELD_NUMBER: _ClassVar[int]
+    transform: _containers.RepeatedCompositeFieldContainer[NetworkTransformer]
+    match: NetworkPolicyMatch
+    forward_url: str
+    def __init__(
+        self,
+        transform: _Optional[_Iterable[_Union[NetworkTransformer, _Mapping]]] = ...,
+        match: _Optional[_Union[NetworkPolicyMatch, _Mapping]] = ...,
+        forward_url: _Optional[str] = ...,
+    ) -> None: ...
+
+class NetworkTransformer(_message.Message):
+    __slots__ = ("headers",)
+    class HeadersEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: str
+        def __init__(
+            self, key: _Optional[str] = ..., value: _Optional[str] = ...
+        ) -> None: ...
+
+    HEADERS_FIELD_NUMBER: _ClassVar[int]
+    headers: _containers.ScalarMap[str, str]
+    def __init__(self, headers: _Optional[_Mapping[str, str]] = ...) -> None: ...
+
+class NetworkPolicyMatch(_message.Message):
+    __slots__ = ("path", "method", "query_string", "headers")
+    PATH_FIELD_NUMBER: _ClassVar[int]
+    METHOD_FIELD_NUMBER: _ClassVar[int]
+    QUERY_STRING_FIELD_NUMBER: _ClassVar[int]
+    HEADERS_FIELD_NUMBER: _ClassVar[int]
+    path: NetworkPolicyMatcher
+    method: _containers.RepeatedScalarFieldContainer[str]
+    query_string: _containers.RepeatedCompositeFieldContainer[
+        NetworkPolicyKeyValueMatcher
+    ]
+    headers: _containers.RepeatedCompositeFieldContainer[NetworkPolicyKeyValueMatcher]
+    def __init__(
+        self,
+        path: _Optional[_Union[NetworkPolicyMatcher, _Mapping]] = ...,
+        method: _Optional[_Iterable[str]] = ...,
+        query_string: _Optional[
+            _Iterable[_Union[NetworkPolicyKeyValueMatcher, _Mapping]]
+        ] = ...,
+        headers: _Optional[
+            _Iterable[_Union[NetworkPolicyKeyValueMatcher, _Mapping]]
+        ] = ...,
+    ) -> None: ...
+
+class NetworkPolicyKeyValueMatcher(_message.Message):
+    __slots__ = ("key", "value")
+    KEY_FIELD_NUMBER: _ClassVar[int]
+    VALUE_FIELD_NUMBER: _ClassVar[int]
+    key: NetworkPolicyMatcher
+    value: NetworkPolicyMatcher
+    def __init__(
+        self,
+        key: _Optional[_Union[NetworkPolicyMatcher, _Mapping]] = ...,
+        value: _Optional[_Union[NetworkPolicyMatcher, _Mapping]] = ...,
+    ) -> None: ...
+
+class NetworkPolicyMatcher(_message.Message):
+    __slots__ = ("exact", "starts_with", "regex")
+    EXACT_FIELD_NUMBER: _ClassVar[int]
+    STARTS_WITH_FIELD_NUMBER: _ClassVar[int]
+    REGEX_FIELD_NUMBER: _ClassVar[int]
+    exact: str
+    starts_with: str
+    regex: str
+    def __init__(
+        self,
+        exact: _Optional[str] = ...,
+        starts_with: _Optional[str] = ...,
+        regex: _Optional[str] = ...,
     ) -> None: ...
 
 class ContainerRequest(_message.Message):
