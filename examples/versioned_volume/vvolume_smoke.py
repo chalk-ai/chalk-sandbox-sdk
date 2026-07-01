@@ -16,12 +16,9 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 import tempfile
 import uuid
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from chalkcompute import (
     ConnectClient,

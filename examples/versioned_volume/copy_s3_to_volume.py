@@ -1,3 +1,7 @@
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["boto3", "chalkcompute"]
+# ///
 """Copy object-store bucket contents into a VersionedVolume.
 
 Works with AWS S3 and any S3-compatible provider (Google Cloud Storage,
@@ -31,7 +35,6 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -39,7 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+import boto3
 
 from chalkcompute import VersionedVolume
 
@@ -59,15 +62,6 @@ def _build_s3_client(
     region_name: str | None = None,
 ) -> Any:
     """Return a boto3 S3 client, optionally aimed at an S3-compatible endpoint."""
-    try:
-        import boto3
-    except ImportError:
-        print(
-            "error: boto3 is required — install with: pip install boto3",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
     kwargs: dict = {}
     if endpoint_url:
         kwargs["endpoint_url"] = endpoint_url

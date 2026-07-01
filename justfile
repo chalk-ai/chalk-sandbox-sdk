@@ -21,24 +21,32 @@ encrypt name="":
 sync:
     uv sync --all-extras
 
+# Build the native chalkcompute._native extension into the local venv.
+# Required for VersionedVolume APIs (and the examples that use them).
+native *args="--release":
+    uv run --with maturin maturin develop {{ args }}
+
 # Build a Linux chalkcompute wheel with chalkcompute_native via Docker.
 # Example:
-#   just remote-call-wheel-build ../chalk-remote-call-python 3.11
-remote-call-wheel-build repo="../chalk-remote-call-python" python="3.11" platform="linux/amd64" out_dir="dist/linux-local" chalk_private="../chalk-private":
-    ./scripts/build_remote_call_linux_wheel.sh --repo {{repo}} --python {{python}} --platform {{platform}} --out-dir {{out_dir}} --chalk-private {{chalk_private}}
+
+# just remote-call-wheel-build ../chalk-remote-call-python 3.11
+sdk-wheel-build repo="../chalk-remote-call-python" python="3.11" platform="linux/amd64" out_dir="dist/linux-local" chalk_private="../chalk-private":
+    ./scripts/build_linux_wheel.sh --repo {{ repo }} --python {{ python }} --platform {{ platform }} --out-dir {{ out_dir }} --chalk-private {{ chalk_private }}
 
 # Print the recommended env vars for deploying a function against local SDK code.
 # Example:
-#   just local-fn-env /abs/path/to/chalkcompute-...whl
+
+# just local-fn-env /abs/path/to/chalkcompute-...whl
 local-fn-env sdk_wheel="":
     @echo "CHALK_FUNCTION_STRIP_SOURCE=0"
-    @if [ -n "{{sdk_wheel}}" ]; then echo "CHALK_FUNCTION_LOCAL_SDK_WHEEL={{sdk_wheel}}"; else echo "CHALK_FUNCTION_LOCAL_SDK_COPY=1"; fi
+    @if [ -n "{{ sdk_wheel }}" ]; then echo "CHALK_FUNCTION_LOCAL_SDK_WHEEL={{ sdk_wheel }}"; else echo "CHALK_FUNCTION_LOCAL_SDK_COPY=1"; fi
 
 # Run a deploy script with the recommended local-dev env vars.
 # Example:
-#   just local-fn-deploy examples/scalar/deploy_sync.py dist/linux-local/chalkcompute-0.0.0-cp311-cp311-linux_x86_64.whl
+
+# just local-fn-deploy examples/scalar/deploy_sync.py dist/linux-local/chalkcompute-0.0.0-cp311-cp311-linux_x86_64.whl
 local-fn-deploy script sdk_wheel="" use_uv="1":
-    ./scripts/run_local_fn_deploy.sh --script {{script}} {{ if sdk_wheel != "" { "--sdk-wheel " + sdk_wheel } else { "" } }} {{ if use_uv == "1" { "--uv-run" } else { "" } }}
+    ./scripts/run_local_fn_deploy.sh --script {{ script }} {{ if sdk_wheel != "" { "--sdk-wheel " + sdk_wheel } else { "" } }} {{ if use_uv == "1" { "--uv-run" } else { "" } }}
 
 # Run ty type checker
 ty:
@@ -46,19 +54,19 @@ ty:
 
 # Run unit tests
 test *args:
-    uv run python -m pytest tests/ {{args}}
+    uv run python -m pytest tests/ {{ args }}
 
 # Run ruff linter
 ruff:
-    uv run --with ruff ruff check {{ruff_paths}}
+    uv run --with ruff ruff check {{ ruff_paths }}
 
 # Run ruff formatter
 format:
-    uv run --with ruff ruff format {{ruff_paths}}
+    uv run --with ruff ruff format {{ ruff_paths }}
 
 # Check ruff formatting
 format-check:
-    uv run --with ruff ruff format --check {{ruff_paths}}
+    uv run --with ruff ruff format --check {{ ruff_paths }}
 
 # Build a zoekt full-text index of the current codebase into .zoekt-index/
 zoekt-index:
@@ -84,6 +92,7 @@ zoekt-index:
 #           just zoekt-search -l 'def run file:py'   (filenames only)
 #           just zoekt-search 'has_many file:py'     (scope by filename regex)
 #           just zoekt-search -jsonl 'DataFrame'     (JSON output)
+
 # Search the zoekt index of this codebase (zoekt flags must precede the query).
 zoekt-search +args:
     #!/usr/bin/env bash
