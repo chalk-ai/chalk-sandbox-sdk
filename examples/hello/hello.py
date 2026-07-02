@@ -2,7 +2,10 @@
 #
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["chalkcompute"]
+#
+# [tool.uv.sources]
+# chalkcompute = { path = "../..", editable = true }
 # ///
 """
 Minimal example: spin up a Debian container, run a few commands, tear it down.

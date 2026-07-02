@@ -2,7 +2,10 @@
 #
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["chalkcompute"]
+#
+# [tool.uv.sources]
+# chalkcompute = { path = "../..", editable = true }
 # ///
 """
 Deploy Gemma 3 4B on a GPU via vLLM, served as an OpenAI-compatible API.
