@@ -187,9 +187,28 @@ class RemoteCallClient:
                 poll_backoff_multiplier,
                 max_message_size,
             )
+        self._closed = False
         self._supports_per_call_metadata: bool = (
             self._detect_per_call_metadata_support()
         )
+
+    def _inner_or_raise(self) -> Any:
+        if self._closed:
+            raise RuntimeError("RemoteCallClient is closed")
+        return self._inner
+
+    def close(self) -> None:
+        """Release the underlying native client, if one is still attached."""
+        if self._closed:
+            return
+        inner = self._inner
+        close = getattr(inner, "close", None)
+        try:
+            if callable(close):
+                close()
+        finally:
+            self._inner = None
+            self._closed = True
 
     def _detect_per_call_metadata_support(self) -> bool:
         """Return True if the native extension's call_ipc accepts a metadata arg."""
@@ -197,7 +216,7 @@ class RemoteCallClient:
         import inspect
 
         try:
-            sig = inspect.signature(self._inner.call_ipc)
+            sig = inspect.signature(self._inner_or_raise().call_ipc)
             supported = len(sig.parameters) >= 3
         except (ValueError, TypeError):
             # Can't introspect — assume capable; a TypeError on the real call
@@ -220,8 +239,8 @@ class RemoteCallClient:
         metadata: Sequence[tuple[str, str]] = (),
     ) -> list[bytes]:
         if metadata and self._supports_per_call_metadata:
-            return list(self._inner.call_ipc(name, input_ipc, list(metadata)))
-        return list(self._inner.call_ipc(name, input_ipc))
+            return list(self._inner_or_raise().call_ipc(name, input_ipc, list(metadata)))
+        return list(self._inner_or_raise().call_ipc(name, input_ipc))
 
     def enqueue(
         self,
@@ -230,8 +249,8 @@ class RemoteCallClient:
         metadata: Sequence[tuple[str, str]] = (),
     ) -> str:
         if metadata and self._supports_per_call_metadata:
-            return str(self._inner.enqueue(name, input_ipc, list(metadata)))
-        return str(self._inner.enqueue(name, input_ipc))
+            return str(self._inner_or_raise().enqueue(name, input_ipc, list(metadata)))
+        return str(self._inner_or_raise().enqueue(name, input_ipc))
 
     def poll_next(
         self,
@@ -239,7 +258,7 @@ class RemoteCallClient:
         cursor: str = "",
         poll_count: int = 0,
     ) -> RemoteCallPollResult:
-        raw = self._inner.poll_next(call_id, cursor, poll_count)
+        raw = self._inner_or_raise().poll_next(call_id, cursor, poll_count)
         return RemoteCallPollResult(
             status=int(raw["status"]),
             status_name=str(raw["status_name"]),
@@ -250,13 +269,13 @@ class RemoteCallClient:
         )
 
     def get_result_chunks(self, call_id: str) -> list[bytes]:
-        return list(self._inner.get_result_chunks(call_id))
+        return list(self._inner_or_raise().get_result_chunks(call_id))
 
     def purge_function(self, function_name: str) -> int:
-        return int(self._inner.purge_function(function_name))
+        return int(self._inner_or_raise().purge_function(function_name))
 
     def purge_all(self) -> dict[str, int]:
-        return {str(k): int(v) for k, v in self._inner.purge_all().items()}
+        return {str(k): int(v) for k, v in self._inner_or_raise().purge_all().items()}
 
 
 def resolve_service_auth_context() -> ServiceAuthContext | None:
