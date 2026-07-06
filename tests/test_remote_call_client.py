@@ -344,9 +344,7 @@ def test_direct_call_refreshes_and_retries_on_goaway_stale_client() -> None:
 
 def test_direct_call_drops_non_retryable_stale_client_for_next_call() -> None:
     FakeRemoteCallClient.call_ipc_errors = [
-        RuntimeError(
-            "gRPC status: status: Unavailable, message: connection refused"
-        )
+        RuntimeError("gRPC status: status: Unavailable, message: connection refused")
     ]
     FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
 

@@ -239,7 +239,9 @@ class RemoteCallClient:
         metadata: Sequence[tuple[str, str]] = (),
     ) -> list[bytes]:
         if metadata and self._supports_per_call_metadata:
-            return list(self._inner_or_raise().call_ipc(name, input_ipc, list(metadata)))
+            return list(
+                self._inner_or_raise().call_ipc(name, input_ipc, list(metadata))
+            )
         return list(self._inner_or_raise().call_ipc(name, input_ipc))
 
     def enqueue(
