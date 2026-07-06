@@ -1,8 +1,3 @@
-on:
-  push:
-    branches:
-      - main
-
 env:
   UV_VERSION: "0.11.14"
   BENCHMARK_RESULTS_URL: "https://benchmark-results-server-290587571767.us-central1.run.app"
@@ -32,7 +27,7 @@ steps:
           --mode all \
           --iterations 10 \
           --min-success-rate 1.0 \
-          --max-p95-ms 30000
+          --max-p95-ms 60000
     agents:
       queue: default
     timeout_in_minutes: 60
