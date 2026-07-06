@@ -70,9 +70,7 @@ TRANSFORM_DOMAIN = "transform." + INTERNAL_FIXTURE_SUFFIX
 FORWARD_DOMAIN = "forward." + INTERNAL_FIXTURE_SUFFIX
 MATCH_FORWARD_DOMAIN = "match-forward." + INTERNAL_FIXTURE_SUFFIX
 TRANSFORM_FORWARD_DOMAIN = "transform-forward." + INTERNAL_FIXTURE_SUFFIX
-MATCH_TRANSFORM_FORWARD_DOMAIN = (
-    "match-transform-forward." + INTERNAL_FIXTURE_SUFFIX
-)
+MATCH_TRANSFORM_FORWARD_DOMAIN = "match-transform-forward." + INTERNAL_FIXTURE_SUFFIX
 
 DOMAIN_ALLOW_PATTERNS = [
     ALLOWED_EXACT_DOMAIN,
@@ -847,10 +845,7 @@ def _juked_destination_probes(juked_destination_ip: str) -> list[HttpProbe]:
             "allowed_domain",
             True,
             "http://" + JUKED_DESTINATION_DOMAIN + "/",
-            connect_to=JUKED_DESTINATION_DOMAIN
-            + ":80:"
-            + juked_destination_ip
-            + ":80",
+            connect_to=JUKED_DESTINATION_DOMAIN + ":80:" + juked_destination_ip + ":80",
         ),
         _http_probe(
             "https_juked_destination_1",
