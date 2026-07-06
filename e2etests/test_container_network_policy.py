@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ipaddress
 import socket
 import time
 import traceback
@@ -13,15 +12,19 @@ from dataclasses import dataclass
 import pytest
 
 from chalkcompute import ComputeClass, Container, ContainerError, NetworkPolicy
-from e2etests.conftest import needs_staging
+from e2etests.conftest import CHALK_API_SERVER, needs_staging
 
 NETSHOOT_IMAGE = "nicolaka/netshoot:latest"
 HTTP_CONNECT_TIMEOUT = 20
 HTTP_MAX_TIME = 60
 DENY_HTTP_CONNECT_TIMEOUT = 2
 DENY_HTTP_MAX_TIME = 5
-POLICY_READY_DOMAIN = "example.com"
-POLICY_READY_URL = "http://" + POLICY_READY_DOMAIN + "/__chalk-policy-ready__"
+if ".meta.ci.chalk.dev" in CHALK_API_SERVER:
+    INTERNAL_FIXTURE_SUFFIX = "netpol-e2e.demo.internal.aws.chalk.dev"
+else:
+    INTERNAL_FIXTURE_SUFFIX = "staging.internal.gcp.chalk.dev"
+POLICY_READY_DOMAIN = "policy-ready." + INTERNAL_FIXTURE_SUFFIX
+POLICY_READY_URL = "http://" + POLICY_READY_DOMAIN + "/status/200"
 LOCAL_ECHO_PORT = 8080
 LOCAL_ECHO_ENTRYPOINT = f"""set -e
 PYTHON=$(command -v python3 || command -v python)
@@ -49,55 +52,36 @@ PY
 sleep 600
 """
 
+CIDR_ALLOWED_DOMAIN = "cidr-allowed." + INTERNAL_FIXTURE_SUFFIX
+CIDR_BLOCKED_DOMAIN = "cidr-blocked." + INTERNAL_FIXTURE_SUFFIX
+HOST_ROUTE_DENIED_DOMAIN = "host-route-denied." + INTERNAL_FIXTURE_SUFFIX
+
+ALLOWED_EXACT_DOMAIN = "allowed." + INTERNAL_FIXTURE_SUFFIX
+ALLOWED_WILDCARD_SUFFIX = "allowed-wildcard." + INTERNAL_FIXTURE_SUFFIX
+ALLOWED_WILDCARD_CHILD_DOMAIN = "child." + ALLOWED_WILDCARD_SUFFIX
+BLOCKED_DOMAIN = "blocked." + INTERNAL_FIXTURE_SUFFIX
+
+DOMAIN_FRONTING_SNI = "fronting-allowed." + INTERNAL_FIXTURE_SUFFIX
+DOMAIN_FRONTING_BLOCKED_HOST = "fronting-blocked." + INTERNAL_FIXTURE_SUFFIX
+JUKED_DESTINATION_DOMAIN = "juked." + INTERNAL_FIXTURE_SUFFIX
+
+MATCH_DOMAIN = "match." + INTERNAL_FIXTURE_SUFFIX
+TRANSFORM_DOMAIN = "transform." + INTERNAL_FIXTURE_SUFFIX
+FORWARD_DOMAIN = "forward." + INTERNAL_FIXTURE_SUFFIX
+MATCH_FORWARD_DOMAIN = "match-forward." + INTERNAL_FIXTURE_SUFFIX
+TRANSFORM_FORWARD_DOMAIN = "transform-forward." + INTERNAL_FIXTURE_SUFFIX
+MATCH_TRANSFORM_FORWARD_DOMAIN = (
+    "match-transform-forward." + INTERNAL_FIXTURE_SUFFIX
+)
+
 DOMAIN_ALLOW_PATTERNS = [
-    "google.com",
-    "*.google.com",
-    "wikipedia.org",
-    "*.wikipedia.org",
-    "chalk.ai",
-    "*.example.com",
+    ALLOWED_EXACT_DOMAIN,
+    "*." + ALLOWED_WILDCARD_SUFFIX,
 ]
 ALLOWED_DOMAINS = [
-    "google.com",
-    "www.google.com",
-    "wikipedia.org",
-    "en.wikipedia.org",
-    "chalk.ai",
-    "www.example.com",
+    ALLOWED_EXACT_DOMAIN,
+    ALLOWED_WILDCARD_CHILD_DOMAIN,
 ]
-BLOCKED_DOMAIN_CANDIDATES = [
-    "example.com",
-    "example.net",
-    "one.one.one.one",
-    "registry.npmjs.org",
-]
-ALLOWED_CIDR_SOURCES = [
-    {"host": "example.org", "prefix": 32},
-    {"host": "www.python.org", "prefix": 24},
-    {"host": "www.w3.org", "prefix": 32},
-]
-BLOCKED_CIDR_SOURCES = [
-    {"host": "example.net", "prefix": 32},
-    {"host": "one.one.one.one", "prefix": 24},
-    {"host": "registry.npmjs.org", "prefix": 32},
-]
-DENIED_ALLOWED_HOST_CANDIDATES = [
-    "www.wikipedia.org",
-    "www.cloudflare.com",
-    "www.microsoft.com",
-]
-
-DOMAIN_FRONTING_SNI = "google.com"
-DOMAIN_FRONTING_BLOCKED_HOST = "example.net"
-JUKED_DESTINATION_DOMAIN = "www.wikipedia.org"
-JUKED_DESTINATION_IP = "192.0.2.123"
-MATCH_DOMAIN = "example.com"
-TRANSFORM_DOMAIN = "transform.test"
-FORWARD_DOMAIN = "forward.test"
-MATCH_FORWARD_DOMAIN = "match-forward.test"
-TRANSFORM_FORWARD_DOMAIN = "transform-forward.test"
-MATCH_TRANSFORM_FORWARD_DOMAIN = "match-transform-forward.test"
-TRANSFORM_CONNECT_IP = "198.19.160.10"
 TRANSFORM_HEADER_VALUE = "transformed-by-envoy"
 TRANSFORM_OVERWRITE_VALUE = "overwritten-by-envoy"
 FORWARD_HEADER_VALUE = "forwarded-by-envoy"
@@ -126,6 +110,7 @@ ROUTE_BLOCK_READY_CASE_NAMES = {
     "denyall",
     "subnets-only",
     "deny-route-over-allowed-route",
+    "deny-route-over-allowed-host",
 }
 NON_FORWARDING_POLICY_CASE_NAMES = [
     case_name
@@ -148,6 +133,8 @@ class PolicyTargets:
     denied_allowed_cidr_probes: list[CidrProbe]
     denied_allowed_host_probe: CidrProbe
     blocked_domains: list[str]
+    juked_destination_ip: str
+    transform_connect_ip: str
 
 
 @dataclass(frozen=True)
@@ -194,30 +181,36 @@ class ProbeRecord:
 
 @pytest.fixture(scope="module")
 def policy_targets() -> PolicyTargets:
-    allowed_cidr_probes = _build_cidr_probes(ALLOWED_CIDR_SOURCES)
-    allowed_networks = [
-        ipaddress.ip_network(probe.cidr) for probe in allowed_cidr_probes
-    ]
-    allowed_domain_networks = _resolve_domain_networks(ALLOWED_DOMAINS)
-    blocked_domains = _filter_blocked_domains(allowed_networks)
-    blocked_cidr_probes = _build_cidr_probes(
-        BLOCKED_CIDR_SOURCES,
-        allowed_networks + allowed_domain_networks,
-    )
-    _assert_no_allowed_denied_overlap(allowed_cidr_probes, blocked_cidr_probes)
-    denied_allowed_cidr_probes = blocked_cidr_probes[:1]
-    blocked_networks = [
-        ipaddress.ip_network(probe.cidr) for probe in blocked_cidr_probes
-    ]
-    denied_allowed_host_probe = _build_denied_allowed_host_probe(
-        allowed_networks + blocked_networks
-    )
+    allowed_cidr_probe = _resolve_cidr_probe(CIDR_ALLOWED_DOMAIN)
+    blocked_cidr_probe = _resolve_cidr_probe(CIDR_BLOCKED_DOMAIN)
+    denied_allowed_host_probe = _resolve_cidr_probe(HOST_ROUTE_DENIED_DOMAIN)
+    fixture_ips = {
+        allowed_cidr_probe.target,
+        blocked_cidr_probe.target,
+        denied_allowed_host_probe.target,
+    }
+    if len(fixture_ips) != 3:
+        raise RuntimeError(
+            "internal network-policy CIDR fixtures must resolve to distinct IPv4 "
+            "addresses: "
+            + ", ".join(
+                [
+                    allowed_cidr_probe.host + "=" + allowed_cidr_probe.target,
+                    blocked_cidr_probe.host + "=" + blocked_cidr_probe.target,
+                    denied_allowed_host_probe.host
+                    + "="
+                    + denied_allowed_host_probe.target,
+                ]
+            )
+        )
     return PolicyTargets(
-        allowed_cidr_probes=allowed_cidr_probes,
-        blocked_cidr_probes=blocked_cidr_probes,
-        denied_allowed_cidr_probes=denied_allowed_cidr_probes,
+        allowed_cidr_probes=[allowed_cidr_probe],
+        blocked_cidr_probes=[blocked_cidr_probe],
+        denied_allowed_cidr_probes=[blocked_cidr_probe],
         denied_allowed_host_probe=denied_allowed_host_probe,
-        blocked_domains=blocked_domains,
+        blocked_domains=[BLOCKED_DOMAIN],
+        juked_destination_ip=blocked_cidr_probe.target,
+        transform_connect_ip=denied_allowed_host_probe.target,
     )
 
 
@@ -628,7 +621,7 @@ def _build_policy_case(
         return PolicyCase(
             name,
             NetworkPolicy(allowed_hosts=[JUKED_DESTINATION_DOMAIN]),
-            _juked_destination_probes(),
+            _juked_destination_probes(targets.juked_destination_ip),
         )
     if name == "domain-fronting":
         return PolicyCase(
@@ -667,21 +660,21 @@ def _build_policy_case(
         return PolicyCase(
             name,
             _forward_policy(),
-            _forward_probes(),
+            _forward_probes(targets.transform_connect_ip),
             local_echo=True,
         )
     if name == "transform-rules":
         return PolicyCase(
             name,
             _transform_policy(),
-            _transform_probes(),
+            _transform_probes(targets.transform_connect_ip),
             local_echo=True,
         )
     if name == "rule-combinations":
         return PolicyCase(
             name,
             _rule_combinations_policy(),
-            _rule_combination_probes(),
+            _rule_combination_probes(targets.transform_connect_ip),
             local_echo=True,
         )
     raise ValueError(f"unknown policy case: {name}")
@@ -846,7 +839,7 @@ def _cidr_http_probes(
     ]
 
 
-def _juked_destination_probes() -> list[HttpProbe]:
+def _juked_destination_probes(juked_destination_ip: str) -> list[HttpProbe]:
     return [
         _http_probe(
             "http_juked_destination_1",
@@ -854,7 +847,10 @@ def _juked_destination_probes() -> list[HttpProbe]:
             "allowed_domain",
             True,
             "http://" + JUKED_DESTINATION_DOMAIN + "/",
-            connect_to=JUKED_DESTINATION_DOMAIN + ":80:" + JUKED_DESTINATION_IP + ":80",
+            connect_to=JUKED_DESTINATION_DOMAIN
+            + ":80:"
+            + juked_destination_ip
+            + ":80",
         ),
         _http_probe(
             "https_juked_destination_1",
@@ -864,7 +860,7 @@ def _juked_destination_probes() -> list[HttpProbe]:
             "https://" + JUKED_DESTINATION_DOMAIN + "/",
             connect_to=JUKED_DESTINATION_DOMAIN
             + ":443:"
-            + JUKED_DESTINATION_IP
+            + juked_destination_ip
             + ":443",
         ),
     ]
@@ -1213,7 +1209,7 @@ def _transform_policy() -> NetworkPolicy:
     )
 
 
-def _transform_probes() -> list[HttpProbe]:
+def _transform_probes(transform_connect_ip: str) -> list[HttpProbe]:
     probes = []
     for scheme in ("http", "https"):
         base = scheme + "://" + TRANSFORM_DOMAIN
@@ -1225,7 +1221,11 @@ def _transform_probes() -> list[HttpProbe]:
                 "transformed",
                 True,
                 base + "/chalk-transform/add",
-                connect_to=_fake_domain_connect_to(TRANSFORM_DOMAIN, scheme),
+                connect_to=_domain_connect_to(
+                    TRANSFORM_DOMAIN,
+                    scheme,
+                    transform_connect_ip,
+                ),
                 pass_mode="body_contains",
                 body_contains="x-chalk-transform: " + TRANSFORM_HEADER_VALUE,
             ),
@@ -1236,7 +1236,11 @@ def _transform_probes() -> list[HttpProbe]:
                 True,
                 base + "/chalk-transform/overwrite",
                 header="x-chalk-overwrite: client-value",
-                connect_to=_fake_domain_connect_to(TRANSFORM_DOMAIN, scheme),
+                connect_to=_domain_connect_to(
+                    TRANSFORM_DOMAIN,
+                    scheme,
+                    transform_connect_ip,
+                ),
                 pass_mode="body_contains",
                 body_contains="x-chalk-overwrite: " + TRANSFORM_OVERWRITE_VALUE,
             ),
@@ -1254,7 +1258,7 @@ def _forward_policy() -> NetworkPolicy:
     )
 
 
-def _forward_probes() -> list[HttpProbe]:
+def _forward_probes(transform_connect_ip: str) -> list[HttpProbe]:
     probes = []
     for scheme in ("http", "https"):
         probes.append(
@@ -1265,7 +1269,11 @@ def _forward_probes() -> list[HttpProbe]:
                 True,
                 scheme + "://" + FORWARD_DOMAIN + "/chalk-forward",
                 header="x-chalk-forward: " + FORWARD_HEADER_VALUE,
-                connect_to=_fake_domain_connect_to(FORWARD_DOMAIN, scheme),
+                connect_to=_domain_connect_to(
+                    FORWARD_DOMAIN,
+                    scheme,
+                    transform_connect_ip,
+                ),
                 pass_mode="body_contains",
                 body_contains="x-chalk-forward: " + FORWARD_HEADER_VALUE,
             )
@@ -1323,7 +1331,7 @@ def _rule_combinations_policy() -> NetworkPolicy:
     )
 
 
-def _rule_combination_probes() -> list[HttpProbe]:
+def _rule_combination_probes(transform_connect_ip: str) -> list[HttpProbe]:
     probes = [
         _http_probe(
             "http_combo_match_transform_allowed",
@@ -1331,7 +1339,11 @@ def _rule_combination_probes() -> list[HttpProbe]:
             "combo_match_transform",
             True,
             "http://" + TRANSFORM_DOMAIN + "/chalk-combo/match-transform",
-            connect_to=_fake_domain_connect_to(TRANSFORM_DOMAIN, "http"),
+            connect_to=_domain_connect_to(
+                TRANSFORM_DOMAIN,
+                "http",
+                transform_connect_ip,
+            ),
             pass_mode="body_contains",
             body_contains="x-chalk-transform: " + TRANSFORM_HEADER_VALUE,
         ),
@@ -1341,7 +1353,11 @@ def _rule_combination_probes() -> list[HttpProbe]:
             "blocked_combo",
             False,
             "http://" + TRANSFORM_DOMAIN + "/chalk-combo/match-transform-blocked",
-            connect_to=_fake_domain_connect_to(TRANSFORM_DOMAIN, "http"),
+            connect_to=_domain_connect_to(
+                TRANSFORM_DOMAIN,
+                "http",
+                transform_connect_ip,
+            ),
         ),
     ]
 
@@ -1354,7 +1370,11 @@ def _rule_combination_probes() -> list[HttpProbe]:
                 True,
                 scheme + "://" + MATCH_FORWARD_DOMAIN + "/chalk-combo/match-forward",
                 header="x-chalk-forward: " + FORWARD_HEADER_VALUE,
-                connect_to=_fake_domain_connect_to(MATCH_FORWARD_DOMAIN, scheme),
+                connect_to=_domain_connect_to(
+                    MATCH_FORWARD_DOMAIN,
+                    scheme,
+                    transform_connect_ip,
+                ),
                 pass_mode="body_contains",
                 body_contains="x-chalk-forward: " + FORWARD_HEADER_VALUE,
             ),
@@ -1367,7 +1387,11 @@ def _rule_combination_probes() -> list[HttpProbe]:
                 + "://"
                 + MATCH_FORWARD_DOMAIN
                 + "/chalk-combo/match-forward-blocked",
-                connect_to=_fake_domain_connect_to(MATCH_FORWARD_DOMAIN, scheme),
+                connect_to=_domain_connect_to(
+                    MATCH_FORWARD_DOMAIN,
+                    scheme,
+                    transform_connect_ip,
+                ),
             ),
             _http_probe(
                 scheme + "_combo_transform_forward",
@@ -1378,7 +1402,11 @@ def _rule_combination_probes() -> list[HttpProbe]:
                 + "://"
                 + TRANSFORM_FORWARD_DOMAIN
                 + "/chalk-combo/transform-forward",
-                connect_to=_fake_domain_connect_to(TRANSFORM_FORWARD_DOMAIN, scheme),
+                connect_to=_domain_connect_to(
+                    TRANSFORM_FORWARD_DOMAIN,
+                    scheme,
+                    transform_connect_ip,
+                ),
                 pass_mode="body_contains",
                 body_contains="x-chalk-transform: " + TRANSFORM_HEADER_VALUE,
             ),
@@ -1388,9 +1416,10 @@ def _rule_combination_probes() -> list[HttpProbe]:
                 "combo_match_transform_forward",
                 True,
                 scheme + "://" + MATCH_TRANSFORM_FORWARD_DOMAIN + "/chalk-combo/all",
-                connect_to=_fake_domain_connect_to(
+                connect_to=_domain_connect_to(
                     MATCH_TRANSFORM_FORWARD_DOMAIN,
                     scheme,
+                    transform_connect_ip,
                 ),
                 pass_mode="body_contains",
                 body_contains="x-chalk-transform: " + TRANSFORM_HEADER_VALUE,
@@ -1404,9 +1433,10 @@ def _rule_combination_probes() -> list[HttpProbe]:
                 + "://"
                 + MATCH_TRANSFORM_FORWARD_DOMAIN
                 + "/chalk-combo/all-blocked",
-                connect_to=_fake_domain_connect_to(
+                connect_to=_domain_connect_to(
                     MATCH_TRANSFORM_FORWARD_DOMAIN,
                     scheme,
+                    transform_connect_ip,
                 ),
             ),
         ]
@@ -1417,108 +1447,14 @@ def _local_echo_url() -> str:
     return "http://127.0.0.1:" + str(LOCAL_ECHO_PORT) + "/headers"
 
 
-def _fake_domain_connect_to(domain: str, scheme: str) -> str:
+def _domain_connect_to(domain: str, scheme: str, target: str) -> str:
     port = "443" if scheme == "https" else "80"
-    return domain + ":" + port + ":" + TRANSFORM_CONNECT_IP + ":" + port
+    return domain + ":" + port + ":" + target + ":" + port
 
 
-def _build_cidr_probes(
-    sources: list[dict[str, int | str]],
-    excluded_networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network]
-    | None = None,
-) -> list[CidrProbe]:
-    excluded_networks = excluded_networks or []
-    probes = []
-    for source in sources:
-        selected_target = None
-        selected_network = None
-        for target in _resolve_ipv4_candidates(str(source["host"])):
-            network = ipaddress.ip_network(
-                target + "/" + str(source["prefix"]),
-                strict=False,
-            )
-            if not any(network.overlaps(excluded) for excluded in excluded_networks):
-                selected_target = target
-                selected_network = network
-                break
-        if selected_target is None or selected_network is None:
-            raise RuntimeError(
-                "could not find a non-overlapping IPv4 address for "
-                + str(source["host"])
-            )
-        probes.append(
-            CidrProbe(
-                cidr=str(selected_network),
-                target=selected_target,
-                host=str(source["host"]),
-            )
-        )
-    return probes
-
-
-def _resolve_domain_networks(
-    domains: list[str],
-) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
-    networks = []
-    for domain in domains:
-        for address in _resolve_ipv4_candidates(domain):
-            networks.append(ipaddress.ip_network(address + "/32", strict=False))
-    return networks
-
-
-def _build_denied_allowed_host_probe(
-    excluded_networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network],
-) -> CidrProbe:
-    for host in DENIED_ALLOWED_HOST_CANDIDATES:
-        for target in _resolve_ipv4_candidates(host):
-            network = ipaddress.ip_network(target + "/32", strict=False)
-            if any(network.overlaps(excluded) for excluded in excluded_networks):
-                continue
-            return CidrProbe(cidr=str(network), target=target, host=host)
-    raise RuntimeError(
-        "could not find a non-overlapping IPv4 address for denied allowed-host probe"
-    )
-
-
-def _filter_blocked_domains(
-    allowed_networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network],
-) -> list[str]:
-    domains = [
-        domain
-        for domain in BLOCKED_DOMAIN_CANDIDATES
-        if not _domain_resolves_inside_networks(domain, allowed_networks)
-    ]
-    if not domains:
-        raise RuntimeError("all blocked domain candidates resolve into allowed CIDRs")
-    return domains
-
-
-def _domain_resolves_inside_networks(
-    domain: str,
-    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network],
-) -> bool:
-    for address in _resolve_ipv4_candidates(domain):
-        ip = ipaddress.ip_address(address)
-        if any(ip in network for network in networks):
-            return True
-    return False
-
-
-def _assert_no_allowed_denied_overlap(
-    allowed: list[CidrProbe],
-    blocked: list[CidrProbe],
-) -> None:
-    allowed_networks = [ipaddress.ip_network(probe.cidr) for probe in allowed]
-    blocked_networks = [ipaddress.ip_network(probe.cidr) for probe in blocked]
-    for allowed_network in allowed_networks:
-        for blocked_network in blocked_networks:
-            if allowed_network.overlaps(blocked_network):
-                raise RuntimeError(
-                    "allowed CIDR "
-                    + str(allowed_network)
-                    + " overlaps blocked CIDR "
-                    + str(blocked_network)
-                )
+def _resolve_cidr_probe(host: str) -> CidrProbe:
+    target = _resolve_ipv4_candidates(host)[0]
+    return CidrProbe(cidr=target + "/32", target=target, host=host)
 
 
 def _resolve_ipv4_candidates(host: str) -> list[str]:
