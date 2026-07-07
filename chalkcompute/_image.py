@@ -43,6 +43,7 @@ _ARCHIVE_CHUNK_PREFIX = "_archive.part."
 # PutFile payload is base64-encoded, so keep raw chunks under ~6 MB
 # to stay well within typical HTTP body limits after encoding (~8 MB).
 _ARCHIVE_CHUNK_SIZE = 6 * 1024 * 1024
+_COPY_FILE_SIZE_LIMIT_BYTES = 6 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -388,7 +389,8 @@ class Image:
             - ``0o400`` (``r--------``) — immutable/read-only files the
               workload must not mutate.
         strategy
-            ``"copy"`` inlines the file contents into the image spec.
+            ``"copy"`` inlines the file contents into the image spec and
+            rejects files larger than 6 MiB.
             ``"volume"`` (default) defers the file as a lazy reference
             to be mounted at sandbox start.
 
@@ -429,7 +431,9 @@ class Image:
                 LazyLocalFile(src=str(src_path), dest=dest, mode=mode)
             )
         else:
-            content = Path(src).read_bytes()
+            src_path = Path(src)
+            _validate_copy_file_size(src_path)
+            content = src_path.read_bytes()
             step = pb.AddFileStep(destination=dest, content=content)
             if mode is not None:
                 step.mode = mode
@@ -464,7 +468,8 @@ class Image:
         dest
             Absolute destination directory in the image.
         strategy
-            ``"copy"`` inlines all file contents into the image spec.
+            ``"copy"`` inlines all file contents into the image spec and
+            rejects any included file larger than 6 MiB.
             ``"volume"`` (default) defers each file as a lazy reference
             to be mounted at sandbox start.
         exclude
@@ -558,6 +563,7 @@ class Image:
                     )
                 )
             else:
+                _validate_copy_file_size(file_path)
                 content = file_path.read_bytes()
                 new._steps.append(
                     pb.BuildStep(
@@ -855,4 +861,15 @@ def _validate_lazy_local_file_destination(
             f"like {dest!r}; mounting a volume at '/' is not supported. "
             "Use strategy='copy' or place files under a subdirectory "
             "(for example '/app/app.py')."
+        )
+
+
+def _validate_copy_file_size(path: Path) -> None:
+    """Reject files too large to inline safely into an image spec."""
+    size = path.stat().st_size
+    if size > _COPY_FILE_SIZE_LIMIT_BYTES:
+        limit_mib = _COPY_FILE_SIZE_LIMIT_BYTES // (1024 * 1024)
+        raise ValueError(
+            f"{path} is {size} bytes, which exceeds the {limit_mib} MiB "
+            "limit for strategy='copy'. Use strategy='volume' for larger files."
         )

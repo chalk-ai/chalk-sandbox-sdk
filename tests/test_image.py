@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from chalkcompute import Image
+from chalkcompute._image import _COPY_FILE_SIZE_LIMIT_BYTES
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +214,21 @@ class TestImageAddFile:
         step = img.to_proto().steps[0].add_file
         assert step.mode == 0o755
 
+    def test_add_local_file_copy_allows_limit_sized_file(self, tmp_path: Path) -> None:
+        src = tmp_path / "limit.bin"
+        src.write_bytes(b"x" * _COPY_FILE_SIZE_LIMIT_BYTES)
+
+        img = Image.debian_slim().add_local_file(str(src), "/app/limit.bin", strategy="copy")
+
+        assert len(img.to_proto().steps[0].add_file.content) == _COPY_FILE_SIZE_LIMIT_BYTES
+
+    def test_add_local_file_copy_rejects_large_file(self, tmp_path: Path) -> None:
+        src = tmp_path / "large.bin"
+        src.write_bytes(b"x" * (_COPY_FILE_SIZE_LIMIT_BYTES + 1))
+
+        with pytest.raises(ValueError, match="strategy='copy'.*strategy='volume'"):
+            Image.debian_slim().add_local_file(str(src), "/app/large.bin", strategy="copy")
+
     def test_add_local_dir(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             (Path(d) / "a.py").write_text("a")
@@ -224,6 +240,13 @@ class TestImageAddFile:
         dests = [s.add_file.destination for s in spec.steps]
         assert "/app/a.py" in dests
         assert "/app/sub/b.py" in dests
+
+    def test_add_local_dir_copy_rejects_large_file(self, tmp_path: Path) -> None:
+        (tmp_path / "small.py").write_text("print('ok')")
+        (tmp_path / "large.bin").write_bytes(b"x" * (_COPY_FILE_SIZE_LIMIT_BYTES + 1))
+
+        with pytest.raises(ValueError, match="large\\.bin.*strategy='copy'.*strategy='volume'"):
+            Image.debian_slim().add_local_dir(str(tmp_path), "/app", strategy="copy")
 
 
 # ---------------------------------------------------------------------------
