@@ -92,6 +92,7 @@ if TYPE_CHECKING:
 
 SerializationFormat = typing.Literal["pyarrow"]
 F = TypeVar("F", bound=Callable[..., Any])
+_RemoteCallResult = TypeVar("_RemoteCallResult")
 KnowledgeCutoff = str | _dt.datetime
 
 _REMOTE_ENV_VAR = "_CHALK_REMOTE_FUNCTION"
@@ -503,6 +504,89 @@ async def _run_in_worker_thread(
 
     threading.Thread(target=run, daemon=True).start()
     return await future
+
+
+def _remote_call_error_message(error: BaseException) -> str:
+    """Return a best-effort transport error string without assuming error type."""
+    details = None
+    details_fn = getattr(error, "details", None)
+    if callable(details_fn):
+        try:
+            details = details_fn()
+        except Exception:
+            details = None
+    message = str(error)
+    if details:
+        message = f"{message} {details}"
+    return message
+
+
+def _is_stale_remote_call_error_message(message: str | None) -> bool:
+    if not message:
+        return False
+    lower = message.lower()
+    if "transport error:" in lower:
+        return True
+    if "grpc status:" not in lower and "rpcerror" not in lower:
+        return False
+    return any(
+        marker in lower
+        for marker in (
+            "unavailable",
+            "fd shutdown",
+            "goaway",
+            "connection reset",
+            "connection refused",
+            "delayed connect error",
+            "upstream connect error",
+            "broken pipe",
+            "connection closed",
+        )
+    )
+
+
+def _is_retryable_stale_remote_call_error_message(message: str | None) -> bool:
+    if not message:
+        return False
+    lower = message.lower()
+    return "fd shutdown" in lower or "goaway" in lower
+
+
+def _is_stale_remote_call_error(error: BaseException) -> bool:
+    try:
+        import grpc
+    except ImportError:  # pragma: no cover - grpc is a runtime dependency
+        return _is_stale_remote_call_error_message(_remote_call_error_message(error))
+
+    if isinstance(error, grpc.RpcError):
+        code_fn = getattr(error, "code", None)
+        if callable(code_fn):
+            try:
+                if code_fn() == grpc.StatusCode.UNAVAILABLE:
+                    return True
+            except Exception:
+                pass
+        try:
+            if grpc.StatusCode.UNAVAILABLE.name in _remote_call_error_message(error):
+                return True
+        except Exception:
+            pass
+    return _is_stale_remote_call_error_message(_remote_call_error_message(error))
+
+
+def _is_retryable_stale_remote_call_error(error: BaseException) -> bool:
+    return _is_retryable_stale_remote_call_error_message(
+        _remote_call_error_message(error)
+    )
+
+
+def _should_retry_stale_remote_call(
+    retry_stale: bool | Callable[[BaseException], bool],
+    error: BaseException,
+) -> bool:
+    if callable(retry_stale):
+        return retry_stale(error)
+    return retry_stale
 
 
 # Exception "kind" values that mark a transient, infra-level failure originating
@@ -2042,6 +2126,94 @@ class RemoteFunction:
 
     # -- Call ------------------------------------------------------------------
 
+    @staticmethod
+    def _remote_call_client_is_closed(client: Any) -> bool:
+        return bool(
+            getattr(client, "_closed", False) or getattr(client, "closed", False)
+        )
+
+    @staticmethod
+    def _close_remote_call_client(client: Any) -> None:
+        close = getattr(client, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                logger.debug("Failed to close remote-call client", exc_info=True)
+
+    def _drop_remote_call_clients(
+        self,
+        *,
+        direct: bool = True,
+        queue: bool = True,
+    ) -> None:
+        """Drop cached local call transports without touching server resources."""
+        if direct:
+            client = self._remote_call_client
+            self._remote_call_client = None
+            if client is not None:
+                self._close_remote_call_client(client)
+
+            channel = self._call_channel
+            self._call_stub = None
+            self._call_channel = None
+            if channel is not None:
+                self._close_remote_call_client(channel)
+
+        if queue:
+            client = self._queue_call_client
+            self._queue_call_client = None
+            if client is not None:
+                self._close_remote_call_client(client)
+
+    def _drop_remote_call_client(self, *, queue: bool) -> None:
+        self._drop_remote_call_clients(direct=not queue, queue=queue)
+
+    def _with_remote_call_transport(
+        self,
+        *,
+        queue: bool,
+        operation: str,
+        call: Callable[[], _RemoteCallResult],
+        retry_stale: bool | Callable[[BaseException], bool] = False,
+        stale_result: Callable[[_RemoteCallResult], bool] | None = None,
+    ) -> _RemoteCallResult:
+        for attempt in range(2):
+            try:
+                result = call()
+            except Exception as exc:
+                if not _is_stale_remote_call_error(exc):
+                    raise
+                self._drop_remote_call_client(queue=queue)
+                if attempt == 0 and _should_retry_stale_remote_call(retry_stale, exc):
+                    logger.info(
+                        "Detected stale remote-call client during %s for %r; "
+                        "refreshing and retrying",
+                        operation,
+                        self._queue_function_name(),
+                    )
+                    continue
+                raise
+
+            if stale_result is not None and stale_result(result):
+                self._drop_remote_call_client(queue=queue)
+                if attempt == 0:
+                    logger.info(
+                        "Detected stale remote-call result during %s for %r; "
+                        "refreshing and retrying",
+                        operation,
+                        self._queue_function_name(),
+                    )
+                    continue
+                raise FunctionError(
+                    f"Remote call {operation} failed after refreshing stale client"
+                )
+            return result
+
+        raise FunctionError(
+            f"Remote call {operation} failed after refreshing stale client"
+        )
+
     def _ensure_call_stub(self) -> None:
         """Lazily create the gRPC channel and stub for calling the remote function.
 
@@ -2100,8 +2272,10 @@ class RemoteFunction:
     def _ensure_remote_call_client(self, *, queue: bool = False) -> Any:
         attr = "_queue_call_client" if queue else "_remote_call_client"
         client = getattr(self, attr)
-        if client is not None:
+        if client is not None and not self._remote_call_client_is_closed(client):
             return client
+        if client is not None:
+            setattr(self, attr, None)
 
         if self._web_url is None:
             raise FunctionError("Function is not deployed. Call .deploy() first.")
@@ -2157,11 +2331,14 @@ class RemoteFunction:
         responses = list(self._call_stub.CallFunction(requests(), metadata=metadata))
         return [resp.feather_stream for resp in responses]
 
-    def _call_direct_chunks(self, feather_bytes: bytes) -> list[bytes]:
+    def _call_direct_chunks_once(
+        self,
+        feather_bytes: bytes,
+        function_name: str,
+        metadata: list[tuple[str, str]],
+    ) -> list[bytes]:
         from chalkcompute._remote_call_client import RemoteCallClientUnavailable
 
-        function_name = self._queue_function_name()
-        metadata = self._per_call_metadata()
         try:
             client = self._ensure_remote_call_client(queue=False)
         except RemoteCallClientUnavailable:
@@ -2175,6 +2352,20 @@ class RemoteFunction:
                 fallback_metadata,
             )
         return client.call_ipc(function_name, feather_bytes, metadata=metadata)
+
+    def _call_direct_chunks(self, feather_bytes: bytes) -> list[bytes]:
+        function_name = self._queue_function_name()
+        metadata = self._per_call_metadata()
+        return self._with_remote_call_transport(
+            queue=False,
+            operation="direct call",
+            retry_stale=_is_retryable_stale_remote_call_error,
+            call=lambda: self._call_direct_chunks_once(
+                feather_bytes,
+                function_name,
+                metadata,
+            ),
+        )
 
     def _queue_function_name(self) -> str:
         if self._version_info is not None and self._version_info.function_name:
@@ -2381,11 +2572,14 @@ class RemoteFunction:
         """
         function_name = self._queue_function_name()
         with remote_function_call_span(function_name, "queue"):
-            client = self._ensure_remote_call_client(queue=True)
-            return client.enqueue(
-                function_name,
-                feather_bytes,
-                metadata=self._per_call_metadata(),
+            return self._with_remote_call_transport(
+                queue=True,
+                operation="enqueue",
+                call=lambda: self._ensure_remote_call_client(queue=True).enqueue(
+                    function_name,
+                    feather_bytes,
+                    metadata=self._per_call_metadata(),
+                ),
             )
 
     def defer(self, *args: Any, **kwargs: Any) -> FunctionCallHandle:
@@ -2402,13 +2596,31 @@ class RemoteFunction:
         poll_count: int = 0,
     ) -> Any:
         """Poll a deferred call once."""
-        client = self._ensure_remote_call_client(queue=True)
-        return client.poll_next(call_id, cursor, poll_count)
+        return self._with_remote_call_transport(
+            queue=True,
+            operation="poll",
+            retry_stale=True,
+            stale_result=lambda result: _is_stale_remote_call_error_message(
+                result.error_message
+            ),
+            call=lambda: self._ensure_remote_call_client(queue=True).poll_next(
+                call_id,
+                cursor,
+                poll_count,
+            ),
+        )
 
     def purge(self) -> int:
         """Drop pending queued calls for this function."""
-        client = self._ensure_remote_call_client(queue=True)
-        return int(client.purge_function(self._queue_function_name()))
+        return int(
+            self._with_remote_call_transport(
+                queue=True,
+                operation="purge",
+                call=lambda: self._ensure_remote_call_client(queue=True).purge_function(
+                    self._queue_function_name()
+                ),
+            )
+        )
 
     # -- Management ------------------------------------------------------------
 
@@ -2423,6 +2635,7 @@ class RemoteFunction:
             )
             self._version_info = None
             self._web_url = None
+            self._drop_remote_call_clients()
 
     def refresh(self) -> FunctionVersionInfo:
         """Fetch latest function version info from the server.
@@ -2439,6 +2652,8 @@ class RemoteFunction:
         """
         if self._version_info is None:
             raise FunctionError("No function version — call .deploy() first.")
+        old_web_url = self._web_url
+        old_port = self._port
         resp = self._client.rpc(
             _CATALOG_SVC,
             "GetExternalFunctionVersion",
@@ -2457,6 +2672,9 @@ class RemoteFunction:
         sg = data.get("scalingGroup")
         if sg:
             self._web_url = sg.get("webUrl")
+            self._port = sg.get("port", self._port)
+        if self._web_url != old_web_url or self._port != old_port:
+            self._drop_remote_call_clients(direct=True, queue=False)
         return self._version_info
 
     @property

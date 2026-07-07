@@ -86,6 +86,10 @@ class FakeRemoteCallClient:
     instances: list["FakeRemoteCallClient"] = []
     direct_response_chunks: list[bytes] = []
     poll_results: list[RemoteCallPollResult] = []
+    call_ipc_errors: list[BaseException] = []
+    enqueue_errors: list[BaseException] = []
+    poll_errors: list[BaseException] = []
+    purge_errors: list[BaseException] = []
 
     def __init__(
         self, endpoint: str, *, metadata, use_tls: bool | None, **kwargs
@@ -97,7 +101,11 @@ class FakeRemoteCallClient:
         self.calls: list[tuple[str, bytes, list[tuple[str, str]]]] = []
         self.enqueues: list[tuple[str, bytes, list[tuple[str, str]]]] = []
         self.purges: list[str] = []
+        self.closed = False
         FakeRemoteCallClient.instances.append(self)
+
+    def close(self) -> None:
+        self.closed = True
 
     def call_ipc(
         self,
@@ -105,6 +113,8 @@ class FakeRemoteCallClient:
         input_ipc: bytes,
         metadata=(),
     ) -> list[bytes]:
+        if self.call_ipc_errors:
+            raise self.call_ipc_errors.pop(0)
         self.calls.append((name, input_ipc, list(metadata)))
         return list(self.direct_response_chunks)
 
@@ -114,6 +124,8 @@ class FakeRemoteCallClient:
         input_ipc: bytes,
         metadata=(),
     ) -> str:
+        if self.enqueue_errors:
+            raise self.enqueue_errors.pop(0)
         self.enqueues.append((name, input_ipc, list(metadata)))
         return "call-1"
 
@@ -124,9 +136,13 @@ class FakeRemoteCallClient:
         poll_count: int = 0,
     ) -> RemoteCallPollResult:
         assert call_id == "call-1"
+        if self.poll_errors:
+            raise self.poll_errors.pop(0)
         return self.poll_results.pop(0)
 
     def purge_function(self, function_name: str) -> int:
+        if self.purge_errors:
+            raise self.purge_errors.pop(0)
         self.purges.append(function_name)
         return 7
 
@@ -138,6 +154,10 @@ def reset_fake_client(monkeypatch):
     FakeRemoteCallClient.instances = []
     FakeRemoteCallClient.direct_response_chunks = []
     FakeRemoteCallClient.poll_results = []
+    FakeRemoteCallClient.call_ipc_errors = []
+    FakeRemoteCallClient.enqueue_errors = []
+    FakeRemoteCallClient.poll_errors = []
+    FakeRemoteCallClient.purge_errors = []
     monkeypatch.setattr(remote_call_client, "RemoteCallClient", FakeRemoteCallClient)
     monkeypatch.setattr(
         "chalkcompute._function.service_auth_context_from_env", lambda: None
@@ -304,6 +324,41 @@ def test_direct_call_injects_fresh_trace_metadata_on_cached_client(monkeypatch) 
         key == "x-chalk-function-name"
         for key, _ in FakeRemoteCallClient.instances[0].calls[0][2]
     )
+
+
+def test_direct_call_refreshes_and_retries_on_goaway_stale_client() -> None:
+    FakeRemoteCallClient.call_ipc_errors = [
+        RuntimeError('gRPC status: status: Unavailable, message: "GOAWAY"')
+    ]
+    FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
+
+    fn = _remote_function()
+
+    assert fn.remote(41) == 42
+
+    assert len(FakeRemoteCallClient.instances) == 2
+    assert FakeRemoteCallClient.instances[0].closed is True
+    assert FakeRemoteCallClient.instances[1].calls[0][0] == "catalog-add"
+    assert _read_input(FakeRemoteCallClient.instances[1].calls[0][1]) == {"x": [41]}
+
+
+def test_direct_call_drops_non_retryable_stale_client_for_next_call() -> None:
+    FakeRemoteCallClient.call_ipc_errors = [
+        RuntimeError("gRPC status: status: Unavailable, message: connection refused")
+    ]
+    FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
+
+    fn = _remote_function()
+
+    with pytest.raises(RuntimeError, match="connection refused"):
+        fn.remote(41)
+
+    assert len(FakeRemoteCallClient.instances) == 1
+    assert FakeRemoteCallClient.instances[0].closed is True
+    assert fn._remote_call_client is None
+
+    assert fn.remote(41) == 42
+    assert len(FakeRemoteCallClient.instances) == 2
 
 
 async def _no_sleep(_seconds) -> None:
@@ -491,6 +546,36 @@ def test_defer_get_and_purge_use_queue_client() -> None:
     assert _read_input(client.enqueues[0][1]) == {"x": [98]}
     assert client.enqueues[0][2] == []
     assert client.purges == ["catalog-add"]
+
+
+def test_poll_refreshes_stale_queue_client_and_retries() -> None:
+    FakeRemoteCallClient.poll_results = [
+        RemoteCallPollResult(
+            status=4,
+            status_name="failed",
+            chunks=[],
+            cursor="",
+            error_message='gRPC status: status: Unavailable, message: "GOAWAY"',
+            poll_count=0,
+        ),
+        RemoteCallPollResult(
+            status=3,
+            status_name="completed",
+            chunks=[_result_ipc([99])],
+            cursor="",
+            error_message=None,
+            poll_count=0,
+        ),
+    ]
+
+    fn = _remote_function()
+    handle = fn.defer(98)
+
+    assert handle.get() == 99
+
+    assert len(FakeRemoteCallClient.instances) == 2
+    assert FakeRemoteCallClient.instances[0].closed is True
+    assert FakeRemoteCallClient.instances[1].endpoint == "engine.chalk.test:443"
 
 
 def test_deferred_get_can_be_awaited_in_async_context() -> None:
@@ -704,3 +789,25 @@ def test_queue_call_uses_service_auth_engine_from_token_response(monkeypatch) ->
     assert ("x-chalk-deployment-type", "function-queue") in client.metadata
     assert client.kwargs["auth_endpoint"] == "https://api.chalk.test"
     assert client.kwargs["exchange_token"] == "exchange-token"
+
+
+def test_delete_drops_cached_call_clients() -> None:
+    FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
+
+    fn = _remote_function()
+    fn._client = RpcConnectClient()
+
+    assert fn.remote(41) == 42
+    handle = fn.defer(98)
+    assert handle.call_id == "call-1"
+
+    direct_client = FakeRemoteCallClient.instances[0]
+    queue_client = FakeRemoteCallClient.instances[1]
+
+    fn.delete()
+
+    assert direct_client.closed is True
+    assert queue_client.closed is True
+    assert fn._remote_call_client is None
+    assert fn._queue_call_client is None
+    assert fn._version_info is None
