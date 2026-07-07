@@ -29,7 +29,7 @@ steps:
       chalk metrics snapshot --help
 
       echo "--- :key: Decrypt secrets"
-      if [ "{{matrix}}" = "staging/ftqa" ]; then ENV_FILE=".env.enc"; else ENV_FILE=".env.{{matrix}}.enc"; fi
+      source .buildkite/select-env-file.sh "{{matrix}}"
       /tmp/sops --input-type dotenv --output-type dotenv -d "$$ENV_FILE" > /tmp/test.env
       set -a
       source /tmp/test.env
@@ -73,7 +73,7 @@ steps:
       chalk version
 
       echo "--- :key: Decrypt secrets"
-      if [ "{{matrix}}" = "staging/ftqa" ]; then ENV_FILE=".env.enc"; else ENV_FILE=".env.{{matrix}}.enc"; fi
+      source .buildkite/select-env-file.sh "{{matrix}}"
       /tmp/sops --input-type dotenv --output-type dotenv -d "$$ENV_FILE" > /tmp/test.env
       set -a
       source /tmp/test.env
@@ -116,7 +116,7 @@ steps:
       chalk version
 
       echo "--- :key: Decrypt secrets"
-      if [ "{{matrix}}" = "staging/ftqa" ]; then ENV_FILE=".env.enc"; else ENV_FILE=".env.{{matrix}}.enc"; fi
+      source .buildkite/select-env-file.sh "{{matrix}}"
       /tmp/sops --input-type dotenv --output-type dotenv -d "$$ENV_FILE" > /tmp/test.env
       set -a
       source /tmp/test.env
@@ -153,7 +153,7 @@ steps:
       chmod +x /tmp/sops
 
       echo "--- :key: Decrypt secrets"
-      if [ "{{matrix}}" = "staging/ftqa" ]; then ENV_FILE=".env.enc"; else ENV_FILE=".env.{{matrix}}.enc"; fi
+      source .buildkite/select-env-file.sh "{{matrix}}"
       /tmp/sops --input-type dotenv --output-type dotenv -d "$$ENV_FILE" > /tmp/test.env
       set -a
       source /tmp/test.env
@@ -190,7 +190,7 @@ steps:
       chmod +x /tmp/sops
 
       echo "--- :key: Decrypt secrets"
-      if [ "{{matrix}}" = "staging/ftqa" ]; then ENV_FILE=".env.enc"; else ENV_FILE=".env.{{matrix}}.enc"; fi
+      source .buildkite/select-env-file.sh "{{matrix}}"
       /tmp/sops --input-type dotenv --output-type dotenv -d "$$ENV_FILE" > /tmp/test.env
       set -a
       source /tmp/test.env
@@ -226,7 +226,7 @@ steps:
       chmod +x /tmp/sops
 
       echo "--- :key: Decrypt secrets"
-      if [ "{{matrix}}" = "staging/ftqa" ]; then ENV_FILE=".env.enc"; else ENV_FILE=".env.{{matrix}}.enc"; fi
+      source .buildkite/select-env-file.sh "{{matrix}}"
       /tmp/sops --input-type dotenv --output-type dotenv -d "$$ENV_FILE" > /tmp/test.env
       set -a
       source /tmp/test.env
@@ -265,7 +265,7 @@ steps:
       chmod +x /tmp/sops
 
       echo "--- :key: Decrypt secrets"
-      if [ "{{matrix}}" = "staging/ftqa" ]; then ENV_FILE=".env.enc"; else ENV_FILE=".env.{{matrix}}.enc"; fi
+      source .buildkite/select-env-file.sh "{{matrix}}"
       /tmp/sops --input-type dotenv --output-type dotenv -d "$$ENV_FILE" > /tmp/test.env
       set -a
       source /tmp/test.env
@@ -301,7 +301,7 @@ steps:
       chmod +x /tmp/sops
 
       echo "--- :key: Decrypt secrets"
-      if [ "{{matrix}}" = "staging/ftqa" ]; then ENV_FILE=".env.enc"; else ENV_FILE=".env.{{matrix}}.enc"; fi
+      source .buildkite/select-env-file.sh "{{matrix}}"
       /tmp/sops --input-type dotenv --output-type dotenv -d "$$ENV_FILE" > /tmp/test.env
       set -a
       source /tmp/test.env
@@ -338,7 +338,7 @@ steps:
       chmod +x /tmp/sops
 
       echo "--- :key: Decrypt secrets"
-      if [ "{{matrix}}" = "staging/ftqa" ]; then ENV_FILE=".env.enc"; else ENV_FILE=".env.{{matrix}}.enc"; fi
+      source .buildkite/select-env-file.sh "{{matrix}}"
       /tmp/sops --input-type dotenv --output-type dotenv -d "$$ENV_FILE" > /tmp/test.env
       set -a
       source /tmp/test.env
@@ -370,3 +370,5 @@ steps:
     build:
       branch: "${BUILDKITE_BRANCH}"
       commit: "${BUILDKITE_COMMIT}"
+      env:
+        CHALK_TARGET_ENV: "${CHALK_TARGET_ENV:-}"
