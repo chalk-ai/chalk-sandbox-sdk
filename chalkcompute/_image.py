@@ -43,10 +43,10 @@ _ARCHIVE_CHUNK_PREFIX = "_archive.part."
 # PutFile payload is base64-encoded, so keep raw chunks under ~6 MB
 # to stay well within typical HTTP body limits after encoding (~8 MB).
 _ARCHIVE_CHUNK_SIZE = 6 * 1024 * 1024
-# Copy content is base64-embedded in the generated Dockerfile and Argo Workflow.
-# Keep the raw payload small enough to leave headroom under Kubernetes object limits.
-_COPY_FILE_SIZE_LIMIT_BYTES = 1 * 1024 * 1024
-_COPY_TOTAL_SIZE_LIMIT_BYTES = 1 * 1024 * 1024
+# Copy content is base64-embedded on one generated Dockerfile line. A 32 KiB
+# raw budget leaves headroom under Kaniko's 65,535-byte line limit.
+_COPY_FILE_SIZE_LIMIT_BYTES = 32 * 1024
+_COPY_TOTAL_SIZE_LIMIT_BYTES = 32 * 1024
 
 
 @dataclass(frozen=True)
@@ -393,8 +393,8 @@ class Image:
               workload must not mutate.
         strategy
             ``"copy"`` inlines the file contents into the image spec and
-            rejects files larger than 1 MiB or additions that would make
-            the image's total copied content exceed 1 MiB.
+            rejects files larger than 32 KiB or additions that would make
+            the image's total copied content exceed 32 KiB.
             ``"volume"`` (default) defers the file as a lazy reference
             to be mounted at sandbox start.
 
@@ -483,8 +483,8 @@ class Image:
             Absolute destination directory in the image.
         strategy
             ``"copy"`` inlines all file contents into the image spec and
-            rejects files larger than 1 MiB or additions that would make
-            the image's total copied content exceed 1 MiB.
+            rejects files larger than 32 KiB or additions that would make
+            the image's total copied content exceed 32 KiB.
             ``"volume"`` (default) defers each file as a lazy reference
             to be mounted at sandbox start.
         exclude
@@ -895,10 +895,10 @@ def _read_copy_file(path: Path) -> bytes:
     with path.open("rb") as file:
         content = file.read(_COPY_FILE_SIZE_LIMIT_BYTES + 1)
     if len(content) > _COPY_FILE_SIZE_LIMIT_BYTES:
-        limit_mib = _COPY_FILE_SIZE_LIMIT_BYTES // (1024 * 1024)
         raise ValueError(
             f"{path} is at least {len(content)} bytes, which exceeds the "
-            f"{limit_mib} MiB per-file limit for strategy='copy'. "
+            f"{_format_size_limit(_COPY_FILE_SIZE_LIMIT_BYTES)} per-file limit "
+            "for strategy='copy'. "
             "Use strategy='volume' for larger files."
         )
     return content
@@ -919,10 +919,19 @@ def _validate_copy_total_size(
     """Return the new copied-content size or reject an oversized image spec."""
     total_size = current_size + added_size
     if total_size > _COPY_TOTAL_SIZE_LIMIT_BYTES:
-        limit_mib = _COPY_TOTAL_SIZE_LIMIT_BYTES // (1024 * 1024)
         raise ValueError(
             f"adding {path} would inline {total_size} bytes, which exceeds the "
-            f"{limit_mib} MiB total limit for strategy='copy'. "
+            f"{_format_size_limit(_COPY_TOTAL_SIZE_LIMIT_BYTES)} total limit "
+            "for strategy='copy'. "
             "Use strategy='volume' for larger files or directories."
         )
     return total_size
+
+
+def _format_size_limit(size: int) -> str:
+    """Format a byte limit using the largest exact binary unit."""
+    if size % (1024 * 1024) == 0:
+        return f"{size // (1024 * 1024)} MiB"
+    if size % 1024 == 0:
+        return f"{size // 1024} KiB"
+    return f"{size} bytes"
