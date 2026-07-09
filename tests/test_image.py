@@ -9,7 +9,10 @@ from pathlib import Path
 import pytest
 
 from chalkcompute import Image
-from chalkcompute._image import _COPY_FILE_SIZE_LIMIT_BYTES
+from chalkcompute._image import (
+    _COPY_FILE_SIZE_LIMIT_BYTES,
+    _COPY_TOTAL_SIZE_LIMIT_BYTES,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +232,52 @@ class TestImageAddFile:
         with pytest.raises(ValueError, match="strategy='copy'.*strategy='volume'"):
             Image.debian_slim().add_local_file(str(src), "/app/large.bin", strategy="copy")
 
+    def test_add_local_file_copy_allows_exact_total_across_calls(
+        self, tmp_path: Path
+    ) -> None:
+        first_size = _COPY_TOTAL_SIZE_LIMIT_BYTES // 2
+        second_size = _COPY_TOTAL_SIZE_LIMIT_BYTES - first_size
+        first = tmp_path / "first.bin"
+        second = tmp_path / "second.bin"
+        first.write_bytes(b"a" * first_size)
+        second.write_bytes(b"b" * second_size)
+
+        img = (
+            Image.debian_slim()
+            .add_local_file(str(first), "/app/first.bin", strategy="copy")
+            .add_local_file(str(second), "/app/second.bin", strategy="copy")
+        )
+
+        assert sum(len(step.add_file.content) for step in img.to_proto().steps) == (
+            _COPY_TOTAL_SIZE_LIMIT_BYTES
+        )
+
+    def test_add_local_file_copy_rejects_aggregate_over_limit(
+        self, tmp_path: Path
+    ) -> None:
+        first_size = _COPY_TOTAL_SIZE_LIMIT_BYTES // 2
+        second_size = _COPY_TOTAL_SIZE_LIMIT_BYTES - first_size + 1
+        first = tmp_path / "first.bin"
+        second = tmp_path / "second.bin"
+        first.write_bytes(b"a" * first_size)
+        second.write_bytes(b"b" * second_size)
+        img = Image.debian_slim().add_local_file(
+            str(first), "/app/first.bin", strategy="copy"
+        )
+
+        with pytest.raises(ValueError, match="second\\.bin.*total limit.*strategy='volume'"):
+            img.add_local_file(str(second), "/app/second.bin", strategy="copy")
+
+    def test_add_local_file_volume_allows_large_file(self, tmp_path: Path) -> None:
+        src = tmp_path / "large.bin"
+        src.write_bytes(b"x" * (_COPY_FILE_SIZE_LIMIT_BYTES + 1))
+
+        img = Image.debian_slim().add_local_file(
+            str(src), "/app/large.bin", strategy="volume"
+        )
+
+        assert {file.dest for file in img.lazy_local_files} == {"/app/large.bin"}
+
     def test_add_local_dir(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             (Path(d) / "a.py").write_text("a")
@@ -246,6 +295,16 @@ class TestImageAddFile:
         (tmp_path / "large.bin").write_bytes(b"x" * (_COPY_FILE_SIZE_LIMIT_BYTES + 1))
 
         with pytest.raises(ValueError, match="large\\.bin.*strategy='copy'.*strategy='volume'"):
+            Image.debian_slim().add_local_dir(str(tmp_path), "/app", strategy="copy")
+
+    def test_add_local_dir_copy_rejects_aggregate_over_limit(
+        self, tmp_path: Path
+    ) -> None:
+        part_size = _COPY_TOTAL_SIZE_LIMIT_BYTES // 2 + 1
+        (tmp_path / "a.bin").write_bytes(b"a" * part_size)
+        (tmp_path / "b.bin").write_bytes(b"b" * part_size)
+
+        with pytest.raises(ValueError, match="b\\.bin.*total limit.*strategy='volume'"):
             Image.debian_slim().add_local_dir(str(tmp_path), "/app", strategy="copy")
 
 
