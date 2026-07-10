@@ -13,11 +13,7 @@ steps:
       - "staging/ftqa"
       - "meta-ci"
     command: |
-      if [ "{{matrix}}" = "staging/ftqa" ]; then
-        export BENCHMARK_ENV_FILE=".env.enc"
-      else
-        export BENCHMARK_ENV_FILE=".env.{{matrix}}.enc"
-      fi
+      source .buildkite/select-env-file.sh "{{matrix}}"
       source .buildkite/setup-benchmark-env.sh
       .buildkite/run-benchmark.sh \
         --suite "Sandbox TTI Benchmarks ({{matrix}})" \

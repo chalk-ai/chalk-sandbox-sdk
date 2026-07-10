@@ -18,6 +18,7 @@ class LegacyNativeRemoteCallClient:
     method_calls: list[tuple[object, ...]] = []
 
     def __init__(self, *args: object) -> None:
+        self.closed = False
         self.calls.append(args)
         if len(args) > 7:
             raise TypeError(
@@ -32,6 +33,9 @@ class LegacyNativeRemoteCallClient:
     def enqueue(self, name: str, input_ipc: bytes) -> str:
         self.method_calls.append(("enqueue", name, input_ipc))
         return "call-1"
+
+    def close(self) -> None:
+        self.closed = True
 
 
 @pytest.fixture(autouse=True)
@@ -118,6 +122,18 @@ def test_legacy_native_drops_per_call_metadata_once(
         ("enqueue", "pkg.fn", b"in"),
     ]
     assert caplog.text.count("does not support per-call metadata") == 1
+
+
+def test_close_releases_native_client() -> None:
+    client = RemoteCallClient("remote.chalk.test:443")
+    inner = client._inner
+
+    client.close()
+    client.close()
+
+    assert inner.closed is True
+    assert client._closed is True
+    assert client._inner is None
 
 
 def test_find_native_extension_path_skips_local_overlay(

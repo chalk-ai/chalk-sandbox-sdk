@@ -189,6 +189,7 @@ class RemoteCallClient:
                 poll_backoff_multiplier,
                 max_message_size,
             )
+        self._closed = False
         self._supports_per_call_metadata: bool = (
             self._detect_per_call_metadata_support()
         )
@@ -199,13 +200,31 @@ class RemoteCallClient:
             (time.monotonic() - start) * 1000,
         )
 
+    def _inner_or_raise(self) -> Any:
+        if self._closed:
+            raise RuntimeError("RemoteCallClient is closed")
+        return self._inner
+
+    def close(self) -> None:
+        """Release the underlying native client, if one is still attached."""
+        if self._closed:
+            return
+        inner = self._inner
+        close = getattr(inner, "close", None)
+        try:
+            if callable(close):
+                close()
+        finally:
+            self._inner = None
+            self._closed = True
+
     def _detect_per_call_metadata_support(self) -> bool:
         """Return True if the native extension's call_ipc accepts a metadata arg."""
         global _warned_per_call_metadata_unsupported
         import inspect
 
         try:
-            sig = inspect.signature(self._inner.call_ipc)
+            sig = inspect.signature(self._inner_or_raise().call_ipc)
             supported = len(sig.parameters) >= 3
         except (ValueError, TypeError):
             # Can't introspect — assume capable; a TypeError on the real call
@@ -229,9 +248,11 @@ class RemoteCallClient:
     ) -> list[bytes]:
         start = time.monotonic()
         if metadata and self._supports_per_call_metadata:
-            chunks = list(self._inner.call_ipc(name, input_ipc, list(metadata)))
+            chunks = list(
+                self._inner_or_raise().call_ipc(name, input_ipc, list(metadata))
+            )
         else:
-            chunks = list(self._inner.call_ipc(name, input_ipc))
+            chunks = list(self._inner_or_raise().call_ipc(name, input_ipc))
         logger.debug(
             "RemoteCallClient call_ipc function=%s request_bytes=%d chunks=%d elapsed_ms=%.1f",
             name,
@@ -249,9 +270,11 @@ class RemoteCallClient:
     ) -> str:
         start = time.monotonic()
         if metadata and self._supports_per_call_metadata:
-            call_id = str(self._inner.enqueue(name, input_ipc, list(metadata)))
+            call_id = str(
+                self._inner_or_raise().enqueue(name, input_ipc, list(metadata))
+            )
         else:
-            call_id = str(self._inner.enqueue(name, input_ipc))
+            call_id = str(self._inner_or_raise().enqueue(name, input_ipc))
         logger.debug(
             "RemoteCallClient enqueue function=%s request_bytes=%d elapsed_ms=%.1f",
             name,
@@ -267,7 +290,7 @@ class RemoteCallClient:
         poll_count: int = 0,
     ) -> RemoteCallPollResult:
         start = time.monotonic()
-        raw = self._inner.poll_next(call_id, cursor, poll_count)
+        raw = self._inner_or_raise().poll_next(call_id, cursor, poll_count)
         result = RemoteCallPollResult(
             status=int(raw["status"]),
             status_name=str(raw["status_name"]),
@@ -286,13 +309,13 @@ class RemoteCallClient:
         return result
 
     def get_result_chunks(self, call_id: str) -> list[bytes]:
-        return list(self._inner.get_result_chunks(call_id))
+        return list(self._inner_or_raise().get_result_chunks(call_id))
 
     def purge_function(self, function_name: str) -> int:
-        return int(self._inner.purge_function(function_name))
+        return int(self._inner_or_raise().purge_function(function_name))
 
     def purge_all(self) -> dict[str, int]:
-        return {str(k): int(v) for k, v in self._inner.purge_all().items()}
+        return {str(k): int(v) for k, v in self._inner_or_raise().purge_all().items()}
 
 
 def resolve_service_auth_context() -> ServiceAuthContext | None:
