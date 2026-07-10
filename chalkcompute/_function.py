@@ -460,6 +460,29 @@ def _has_running_event_loop() -> bool:
     return True
 
 
+def _replica_count(value: Any) -> int:
+    if value is None:
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _scaling_group_is_ready(
+    sg: dict[str, Any], *, require_ready_replicas: bool = True
+) -> bool:
+    status = sg.get("status", "")
+    if not require_ready_replicas:
+        return status in ("Running", "Available", "ScaledToZero")
+    if status not in ("Running", "Available"):
+        return False
+    return (
+        _replica_count(sg.get("readyReplicas")) > 0
+        and _replica_count(sg.get("availableReplicas")) > 0
+    )
+
+
 def _format_knowledge_cutoff(value: KnowledgeCutoff) -> str:
     if isinstance(value, str):
         if not value:
@@ -1912,10 +1935,8 @@ class RemoteFunction:
             if sg_data:
                 self._web_url = sg_data.get("webUrl")
                 self._port = sg_data.get("port", 6666)
-                sg_status = sg_data.get("status", "")
             else:
                 self._port = 6666
-                sg_status = ""
 
             logger.info(
                 "Function version created: %s v%s (id=%s)",
@@ -1925,13 +1946,20 @@ class RemoteFunction:
             )
             progress_done(rkey)
 
-            # 7. Poll scaling group until running
-            if sg_status != "Running":
+            # 7. Poll until the backing pod is actually ready to serve.
+            if not (
+                sg_data
+                and _scaling_group_is_ready(
+                    sg_data,
+                    require_ready_replicas=self._min_replicas > 0,
+                )
+            ):
                 progress_update(fkey, detail="waiting for ready")
-                self._poll_until_running(
+                self._poll_until_ready(
                     sg_name=self._version_info.scaling_group_name,
                     poll_interval=poll_interval,
                     timeout=ready_timeout,
+                    require_ready_replicas=self._min_replicas > 0,
                 )
 
             progress_done(fkey, detail="ready")
@@ -1949,14 +1977,19 @@ class RemoteFunction:
             extras.append("tracing")
         return _remote_call_runtime_package_with_extras(extras)
 
-    def _poll_until_running(
+    def _poll_until_ready(
         self,
         *,
         sg_name: str,
         poll_interval: float,
         timeout: float,
+        require_ready_replicas: bool = True,
     ) -> None:
         deadline = time.monotonic() + timeout
+        status = "unknown"
+        status_message = ""
+        ready_replicas = 0
+        available_replicas = 0
         while time.monotonic() < deadline:
             resp = self._client.rpc(
                 _SG_SVC,
@@ -1978,7 +2011,9 @@ class RemoteFunction:
                 available_replicas,
                 status_message or "",
             )
-            if status in ("Running", "Available"):
+            if _scaling_group_is_ready(
+                sg, require_ready_replicas=require_ready_replicas
+            ):
                 return
             if status in ("Failed", "Error"):
                 message = f"Scaling group {sg_name} entered {status} state"
@@ -1986,7 +2021,11 @@ class RemoteFunction:
                     message = f"{message}: {status_message}"
                 raise FunctionError(message)
             time.sleep(poll_interval)
-        message = f"Scaling group {sg_name} timed out after {timeout}s"
+        message = (
+            f"Scaling group {sg_name} not ready after {timeout}s "
+            f"(status={status}, ready={ready_replicas}, "
+            f"available={available_replicas})"
+        )
         if status_message:
             message = f"{message}: {status_message}"
         raise FunctionError(message)
@@ -2030,9 +2069,7 @@ class RemoteFunction:
             self._web_url = sg.get("webUrl")
             if status in ("Failed", "Error"):
                 raise FunctionError(f"Scaling group {sg_name} entered {status} state")
-            ready = sg.get("readyReplicas", 0)
-            available = sg.get("availableReplicas", 0)
-            if status in ("Running", "Available") and ready > 0 and available > 0:
+            if _scaling_group_is_ready(sg):
                 return self
             time.sleep(poll_interval)
 

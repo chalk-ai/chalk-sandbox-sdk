@@ -7,6 +7,7 @@ import importlib.machinery
 import importlib.util
 import logging
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -155,6 +156,7 @@ class RemoteCallClient:
             auth_rpc_timeout_ms,
             auth_retry_interval_ms,
         )
+        start = time.monotonic()
         try:
             self._inner = _NativeRemoteCallClient(
                 endpoint,
@@ -190,6 +192,12 @@ class RemoteCallClient:
         self._supports_per_call_metadata: bool = (
             self._detect_per_call_metadata_support()
         )
+        logger.debug(
+            "RemoteCallClient connected endpoint=%s use_tls=%s elapsed_ms=%.1f",
+            endpoint,
+            use_tls,
+            (time.monotonic() - start) * 1000,
+        )
 
     def _detect_per_call_metadata_support(self) -> bool:
         """Return True if the native extension's call_ipc accepts a metadata arg."""
@@ -219,9 +227,19 @@ class RemoteCallClient:
         input_ipc: bytes,
         metadata: Sequence[tuple[str, str]] = (),
     ) -> list[bytes]:
+        start = time.monotonic()
         if metadata and self._supports_per_call_metadata:
-            return list(self._inner.call_ipc(name, input_ipc, list(metadata)))
-        return list(self._inner.call_ipc(name, input_ipc))
+            chunks = list(self._inner.call_ipc(name, input_ipc, list(metadata)))
+        else:
+            chunks = list(self._inner.call_ipc(name, input_ipc))
+        logger.debug(
+            "RemoteCallClient call_ipc function=%s request_bytes=%d chunks=%d elapsed_ms=%.1f",
+            name,
+            len(input_ipc),
+            len(chunks),
+            (time.monotonic() - start) * 1000,
+        )
+        return chunks
 
     def enqueue(
         self,
@@ -229,9 +247,18 @@ class RemoteCallClient:
         input_ipc: bytes,
         metadata: Sequence[tuple[str, str]] = (),
     ) -> str:
+        start = time.monotonic()
         if metadata and self._supports_per_call_metadata:
-            return str(self._inner.enqueue(name, input_ipc, list(metadata)))
-        return str(self._inner.enqueue(name, input_ipc))
+            call_id = str(self._inner.enqueue(name, input_ipc, list(metadata)))
+        else:
+            call_id = str(self._inner.enqueue(name, input_ipc))
+        logger.debug(
+            "RemoteCallClient enqueue function=%s request_bytes=%d elapsed_ms=%.1f",
+            name,
+            len(input_ipc),
+            (time.monotonic() - start) * 1000,
+        )
+        return call_id
 
     def poll_next(
         self,
@@ -239,8 +266,9 @@ class RemoteCallClient:
         cursor: str = "",
         poll_count: int = 0,
     ) -> RemoteCallPollResult:
+        start = time.monotonic()
         raw = self._inner.poll_next(call_id, cursor, poll_count)
-        return RemoteCallPollResult(
+        result = RemoteCallPollResult(
             status=int(raw["status"]),
             status_name=str(raw["status_name"]),
             chunks=list(raw["chunks"]),
@@ -248,6 +276,14 @@ class RemoteCallClient:
             error_message=raw["error_message"],
             poll_count=int(raw["poll_count"]),
         )
+        logger.debug(
+            "RemoteCallClient poll_next call_id=%s status=%s chunks=%d elapsed_ms=%.1f",
+            call_id,
+            result.status_name,
+            len(result.chunks),
+            (time.monotonic() - start) * 1000,
+        )
+        return result
 
     def get_result_chunks(self, call_id: str) -> list[bytes]:
         return list(self._inner.get_result_chunks(call_id))

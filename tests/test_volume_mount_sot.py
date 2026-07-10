@@ -246,6 +246,8 @@ def test_referenced_base_volume_in_deploy_uses_looked_up_type() -> None:
     info = MagicMock()
     info.id = "sg-1"
     info.status = "Running"
+    info.ready_replicas = 1
+    info.available_replicas = 1
 
     with (
         patch(
