@@ -43,8 +43,9 @@ _ARCHIVE_CHUNK_PREFIX = "_archive.part."
 # PutFile payload is base64-encoded, so keep raw chunks under ~6 MB
 # to stay well within typical HTTP body limits after encoding (~8 MB).
 _ARCHIVE_CHUNK_SIZE = 6 * 1024 * 1024
-# Copy content is base64-embedded on one generated Dockerfile line. A 32 KiB
-# raw budget leaves headroom under Kaniko's 65,535-byte line limit.
+# Copy content is base64-embedded into the image spec and generated Dockerfile.
+# A 32 KiB raw budget stays under Argo object-size pressure after encoding and
+# leaves headroom under Kaniko's 65,535-byte Dockerfile line limit.
 _COPY_FILE_SIZE_LIMIT_BYTES = 32 * 1024
 _COPY_TOTAL_SIZE_LIMIT_BYTES = 32 * 1024
 
