@@ -43,6 +43,11 @@ _ARCHIVE_CHUNK_PREFIX = "_archive.part."
 # PutFile payload is base64-encoded, so keep raw chunks under ~6 MB
 # to stay well within typical HTTP body limits after encoding (~8 MB).
 _ARCHIVE_CHUNK_SIZE = 6 * 1024 * 1024
+# Copy content is base64-embedded into the image spec and generated Dockerfile.
+# A 32 KiB raw budget stays under Argo object-size pressure after encoding and
+# leaves headroom under Kaniko's 65,535-byte Dockerfile line limit.
+_COPY_FILE_SIZE_LIMIT_BYTES = 32 * 1024
+_COPY_TOTAL_SIZE_LIMIT_BYTES = 32 * 1024
 
 
 @dataclass(frozen=True)
@@ -388,7 +393,9 @@ class Image:
             - ``0o400`` (``r--------``) — immutable/read-only files the
               workload must not mutate.
         strategy
-            ``"copy"`` inlines the file contents into the image spec.
+            ``"copy"`` inlines the file contents into the image spec and
+            rejects files larger than 32 KiB or additions that would make
+            the image's total copied content exceed 32 KiB.
             ``"volume"`` (default) defers the file as a lazy reference
             to be mounted at sandbox start.
 
@@ -396,6 +403,12 @@ class Image:
         -------
         Image
             A new ``Image`` with the file registered for inclusion.
+
+        Raises
+        ------
+        ValueError
+            If ``strategy="copy"`` exceeds the per-file or total copied-content
+            limit.
 
         Examples
         --------
@@ -429,7 +442,13 @@ class Image:
                 LazyLocalFile(src=str(src_path), dest=dest, mode=mode)
             )
         else:
-            content = Path(src).read_bytes()
+            src_path = Path(src)
+            content = _read_copy_file(src_path)
+            _validate_copy_total_size(
+                current_size=_inline_copy_size(new._steps),
+                added_size=len(content),
+                path=src_path,
+            )
             step = pb.AddFileStep(destination=dest, content=content)
             if mode is not None:
                 step.mode = mode
@@ -464,7 +483,9 @@ class Image:
         dest
             Absolute destination directory in the image.
         strategy
-            ``"copy"`` inlines all file contents into the image spec.
+            ``"copy"`` inlines all file contents into the image spec and
+            rejects files larger than 32 KiB or additions that would make
+            the image's total copied content exceed 32 KiB.
             ``"volume"`` (default) defers each file as a lazy reference
             to be mounted at sandbox start.
         exclude
@@ -480,6 +501,12 @@ class Image:
         -------
         Image
             A new ``Image`` with the directory registered for inclusion.
+
+        Raises
+        ------
+        ValueError
+            If ``strategy="copy"`` exceeds the per-file or total copied-content
+            limit.
 
         Examples
         --------
@@ -548,6 +575,7 @@ class Image:
                     )
             return new
 
+        copy_size = _inline_copy_size(new._steps)
         for file_path in _iter_files():
             rel = file_path.relative_to(src_path)
             file_dest = os.path.join(dest, str(rel))
@@ -558,7 +586,12 @@ class Image:
                     )
                 )
             else:
-                content = file_path.read_bytes()
+                content = _read_copy_file(file_path)
+                copy_size = _validate_copy_total_size(
+                    current_size=copy_size,
+                    added_size=len(content),
+                    path=file_path,
+                )
                 new._steps.append(
                     pb.BuildStep(
                         add_file=pb.AddFileStep(destination=file_dest, content=content)
@@ -856,3 +889,48 @@ def _validate_lazy_local_file_destination(
             "Use strategy='copy' or place files under a subdirectory "
             "(for example '/app/app.py')."
         )
+
+
+def _read_copy_file(path: Path) -> bytes:
+    """Read a file only when its actual content fits the copy-file budget."""
+    with path.open("rb") as file:
+        content = file.read(_COPY_FILE_SIZE_LIMIT_BYTES + 1)
+    if len(content) > _COPY_FILE_SIZE_LIMIT_BYTES:
+        raise ValueError(
+            f"{path} is at least {len(content)} bytes, which exceeds the "
+            f"{_format_size_limit(_COPY_FILE_SIZE_LIMIT_BYTES)} per-file limit "
+            "for strategy='copy'. "
+            "Use strategy='volume' for larger files."
+        )
+    return content
+
+
+def _inline_copy_size(steps: Sequence[pb.BuildStep]) -> int:
+    """Return the raw bytes already embedded by copy-based add-file steps."""
+    return sum(
+        len(step.add_file.content)
+        for step in steps
+        if step.WhichOneof("step") == "add_file"
+    )
+
+
+def _validate_copy_total_size(*, current_size: int, added_size: int, path: Path) -> int:
+    """Return the new copied-content size or reject an oversized image spec."""
+    total_size = current_size + added_size
+    if total_size > _COPY_TOTAL_SIZE_LIMIT_BYTES:
+        raise ValueError(
+            f"adding {path} would inline {total_size} bytes, which exceeds the "
+            f"{_format_size_limit(_COPY_TOTAL_SIZE_LIMIT_BYTES)} total limit "
+            "for strategy='copy'. "
+            "Use strategy='volume' for larger files or directories."
+        )
+    return total_size
+
+
+def _format_size_limit(size: int) -> str:
+    """Format a byte limit using the largest exact binary unit."""
+    if size % (1024 * 1024) == 0:
+        return f"{size // (1024 * 1024)} MiB"
+    if size % 1024 == 0:
+        return f"{size // 1024} KiB"
+    return f"{size} bytes"
