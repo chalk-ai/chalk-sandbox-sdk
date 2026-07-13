@@ -110,13 +110,13 @@ def test_build_function_runtime_image_uses_standard_local_sdk_base() -> None:
 
 
 def test_function_runtime_image_or_none_returns_none_inside_pod() -> None:
-    with patch.dict(os.environ, {"_CHALK_REMOTE_FUNCTION": "1"}, clear=False):
+    with patch.dict(os.environ, {"CHALK_REMOTE_FUNCTION": "1"}, clear=False):
         assert function_runtime_image_or_none() is None
 
 
 def test_function_runtime_image_or_none_builds_image_outside_pod() -> None:
     with patch.dict(os.environ, {}, clear=False):
-        os.environ.pop("_CHALK_REMOTE_FUNCTION", None)
+        os.environ.pop("CHALK_REMOTE_FUNCTION", None)
         image = function_runtime_image_or_none()
 
     assert image is not None

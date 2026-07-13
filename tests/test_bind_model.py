@@ -313,8 +313,8 @@ def test_remote_function_models_arg_sets_env_var_and_flags_shim(
     import os
 
     # Avoid touching the real chalkcompute deploy path / API server.
-    monkeypatch.setenv("_CHALK_REMOTE_FUNCTION", "")
-    monkeypatch.delenv("_CHALK_REMOTE_FUNCTION", raising=False)
+    monkeypatch.setenv("CHALK_REMOTE_FUNCTION", "")
+    monkeypatch.delenv("CHALK_REMOTE_FUNCTION", raising=False)
     monkeypatch.setenv("CHALK_API_SERVER", "https://api.example.invalid")
     monkeypatch.setenv("CHALK_CLIENT_ID", "x")
     monkeypatch.setenv("CHALK_CLIENT_SECRET", "x")
