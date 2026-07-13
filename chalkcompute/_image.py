@@ -913,9 +913,7 @@ def _inline_copy_size(steps: Sequence[pb.BuildStep]) -> int:
     )
 
 
-def _validate_copy_total_size(
-    *, current_size: int, added_size: int, path: Path
-) -> int:
+def _validate_copy_total_size(*, current_size: int, added_size: int, path: Path) -> int:
     """Return the new copied-content size or reject an oversized image spec."""
     total_size = current_size + added_size
     if total_size > _COPY_TOTAL_SIZE_LIMIT_BYTES:

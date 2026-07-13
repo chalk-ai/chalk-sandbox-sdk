@@ -221,9 +221,13 @@ class TestImageAddFile:
         src = tmp_path / "limit.bin"
         src.write_bytes(b"x" * _COPY_FILE_SIZE_LIMIT_BYTES)
 
-        img = Image.debian_slim().add_local_file(str(src), "/app/limit.bin", strategy="copy")
+        img = Image.debian_slim().add_local_file(
+            str(src), "/app/limit.bin", strategy="copy"
+        )
 
-        assert len(img.to_proto().steps[0].add_file.content) == _COPY_FILE_SIZE_LIMIT_BYTES
+        assert (
+            len(img.to_proto().steps[0].add_file.content) == _COPY_FILE_SIZE_LIMIT_BYTES
+        )
 
     def test_add_local_file_copy_rejects_large_file(self, tmp_path: Path) -> None:
         src = tmp_path / "large.bin"
@@ -233,7 +237,9 @@ class TestImageAddFile:
             ValueError,
             match="32 KiB per-file limit.*strategy='copy'.*strategy='volume'",
         ):
-            Image.debian_slim().add_local_file(str(src), "/app/large.bin", strategy="copy")
+            Image.debian_slim().add_local_file(
+                str(src), "/app/large.bin", strategy="copy"
+            )
 
     def test_add_local_file_copy_allows_exact_total_across_calls(
         self, tmp_path: Path
