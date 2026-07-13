@@ -74,6 +74,7 @@ from chalkcompute._function import (
     _make_base_image,
     _make_container_spec,
     _normalize_schedule,
+    _scaling_group_is_ready,
     _should_strip_source,
     _source_text_for_deploy,
     _write_temp,
@@ -1179,7 +1180,6 @@ class RemoteClass:
                 sg_data = data.get("scalingGroup")
                 web_url = sg_data.get("webUrl") if sg_data else None
                 port = sg_data.get("port", 6666) if sg_data else 6666
-                sg_status = sg_data.get("status", "") if sg_data else ""
 
                 # Build a RemoteFunction proxy for calling this method
                 rf = RemoteFunction._make_empty()
@@ -1198,17 +1198,24 @@ class RemoteClass:
                 )
                 progress_done(mkey)
 
-                if sg_status != "Running":
+                if not (
+                    sg_data
+                    and _scaling_group_is_ready(
+                        sg_data,
+                        require_ready_replicas=self._min_replicas > 0,
+                    )
+                ):
                     sg_names.append(version_info.scaling_group_name)
 
-            # 5. Poll scaling groups until running
+            # 5. Poll scaling groups until their backing pods can serve.
             if sg_names:
                 progress_update(ckey, detail="waiting for ready")
             for sg_name in sg_names:
-                self._poll_until_running(
+                self._poll_until_ready(
                     sg_name=sg_name,
                     poll_interval=poll_interval,
                     timeout=ready_timeout,
+                    require_ready_replicas=self._min_replicas > 0,
                 )
 
             self._deployed = True
@@ -1221,20 +1228,26 @@ class RemoteClass:
 
         return self
 
-    def _poll_until_running(
+    def _poll_until_ready(
         self,
         *,
         sg_name: str,
         poll_interval: float,
         timeout: float,
+        require_ready_replicas: bool = True,
     ) -> None:
         deadline = time.monotonic() + timeout
+        status = "unknown"
+        ready_replicas = 0
+        available_replicas = 0
         while time.monotonic() < deadline:
             resp = self._client.rpc(_SG_SVC, "GetScalingGroup", {"name": sg_name})
             if resp.status_code != 200:
                 raise ClassError(f"GetScalingGroup failed: {resp.text}")
             sg = resp.json()["scalingGroup"]
             status = sg.get("status", "")
+            ready_replicas = sg.get("readyReplicas", 0)
+            available_replicas = sg.get("availableReplicas", 0)
 
             # Update the web_url on the corresponding RemoteFunction
             web_url = sg.get("webUrl")
@@ -1247,13 +1260,25 @@ class RemoteClass:
                 ):
                     rf._web_url = web_url
 
-            logger.info("  poll %s: status=%s", sg_name, status)
-            if status in ("Running", "Available"):
+            logger.info(
+                "  poll %s: status=%s ready=%s available=%s",
+                sg_name,
+                status,
+                ready_replicas,
+                available_replicas,
+            )
+            if _scaling_group_is_ready(
+                sg, require_ready_replicas=require_ready_replicas
+            ):
                 return
             if status in ("Failed", "Error"):
                 raise ClassError(f"Scaling group {sg_name} entered {status} state")
             time.sleep(poll_interval)
-        raise ClassError(f"Scaling group {sg_name} timed out after {timeout}s")
+        raise ClassError(
+            f"Scaling group {sg_name} not ready after {timeout}s "
+            f"(status={status}, ready={ready_replicas}, "
+            f"available={available_replicas})"
+        )
 
     def wait_ready(
         self,

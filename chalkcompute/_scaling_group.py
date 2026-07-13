@@ -293,7 +293,8 @@ class ScalingGroup:
         build_timeout
             Maximum seconds to wait for the image build to complete.
         ready_timeout
-            Maximum seconds to wait for the scaling group to reach ``Running``.
+            Maximum seconds to wait for the scaling group to have at least one
+            ready and available replica.
 
         Returns
         -------
@@ -420,23 +421,29 @@ class ScalingGroup:
             self._scaling_group_info.status,
         )
 
-        # 4. Poll until Running
-        if self._scaling_group_info.status != "Running":
-            self._poll_until_running(
+        # 4. Poll until the backing pod is actually ready to serve.
+        if not _scaling_group_info_is_ready(
+            self._scaling_group_info,
+            require_ready_replicas=self._min_replicas > 0,
+        ):
+            self._poll_until_ready(
                 poll_interval=poll_interval,
                 timeout=ready_timeout,
+                require_ready_replicas=self._min_replicas > 0,
             )
 
         return self
 
-    def _poll_until_running(
+    def _poll_until_ready(
         self,
         *,
         poll_interval: float,
         timeout: float,
+        require_ready_replicas: bool = True,
     ) -> None:
         assert self._scaling_group_id is not None
         deadline = time.monotonic() + timeout
+        info = self._scaling_group_info
         while time.monotonic() < deadline:
             resp = self._client.rpc(
                 _SVC, "GetScalingGroup", {"id": self._scaling_group_id}
@@ -445,16 +452,28 @@ class ScalingGroup:
                 raise ScalingGroupError(f"GetScalingGroup failed: {resp.text}")
             info = _parse_scaling_group_response(resp.json()["scalingGroup"])
             self._scaling_group_info = info
-            logger.info("  poll: status=%s", info.status)
-            if info.status in ("Running", "Available"):
+            logger.info(
+                "  poll: status=%s ready=%s available=%s",
+                info.status,
+                info.ready_replicas,
+                info.available_replicas,
+            )
+            if _scaling_group_info_is_ready(
+                info,
+                require_ready_replicas=require_ready_replicas,
+            ):
                 return
             if info.status in ("Failed", "Error"):
                 raise ScalingGroupError(
                     f"Scaling group {self._scaling_group_id} entered {info.status} state"
                 )
             time.sleep(poll_interval)
+        status = info.status if info else "unknown"
+        ready = info.ready_replicas if info else 0
+        available = info.available_replicas if info else 0
         raise ScalingGroupError(
-            f"Scaling group {self._scaling_group_id} timed out after {timeout}s"
+            f"Scaling group {self._scaling_group_id} not ready after {timeout}s "
+            f"(status={status}, ready={ready}, available={available})"
         )
 
     @_instrumented("chalkcompute.scaling_group.call")
@@ -542,11 +561,7 @@ class ScalingGroup:
                 raise ScalingGroupError(
                     f"Scaling group {self._scaling_group_id} entered {info.status} state"
                 )
-            if (
-                info.status in ("Running", "Available")
-                and info.ready_replicas > 0
-                and info.available_replicas > 0
-            ):
+            if _scaling_group_info_is_ready(info):
                 return self
             time.sleep(poll_interval)
 
@@ -639,3 +654,13 @@ def _parse_scaling_group_response(data: dict) -> ScalingGroupInfo:
         ready_replicas=data.get("readyReplicas", 0),
         available_replicas=data.get("availableReplicas", 0),
     )
+
+
+def _scaling_group_info_is_ready(
+    info: ScalingGroupInfo, *, require_ready_replicas: bool = True
+) -> bool:
+    if not require_ready_replicas:
+        return info.status in ("Running", "Available", "ScaledToZero")
+    if info.status not in ("Running", "Available"):
+        return False
+    return info.ready_replicas > 0 and info.available_replicas > 0

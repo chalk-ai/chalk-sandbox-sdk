@@ -65,6 +65,8 @@ class _CapturingClient:
                     "status": "Running",
                     "webUrl": "http://127.0.0.1",
                     "port": 6666,
+                    "readyReplicas": 1,
+                    "availableReplicas": 1,
                 },
             }
         )
