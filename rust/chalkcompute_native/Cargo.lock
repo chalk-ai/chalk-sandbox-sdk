@@ -193,8 +193,8 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "chalk-protos"
-version = "0.1.0"
-source = "git+https://github.com/chalk-ai/chalk-private.git?rev=7f9bba64eaaca359d3180cb22a2ff550c3df6481#7f9bba64eaaca359d3180cb22a2ff550c3df6481"
+version = "0.0.0"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=49c04ac2c42#49c04ac2c4200b0fdcb69961548df97a12474b51"
 dependencies = [
  "prost",
  "prost-build",
@@ -215,11 +215,11 @@ dependencies = [
 
 [[package]]
 name = "chalk_remote_call_client"
-version = "0.1.0"
-source = "git+https://github.com/chalk-ai/chalk-private.git?rev=7f9bba64eaaca359d3180cb22a2ff550c3df6481#7f9bba64eaaca359d3180cb22a2ff550c3df6481"
+version = "0.0.0"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=49c04ac2c42#49c04ac2c4200b0fdcb69961548df97a12474b51"
 dependencies = [
  "bytes",
- "chalk-protos 0.1.0 (git+https://github.com/chalk-ai/chalk-private.git?rev=7f9bba64eaaca359d3180cb22a2ff550c3df6481)",
+ "chalk-protos 0.0.0",
  "chalk_service_auth",
  "secrecy",
  "thiserror 1.0.69",
@@ -231,11 +231,11 @@ dependencies = [
 
 [[package]]
 name = "chalk_service_auth"
-version = "0.1.0"
-source = "git+https://github.com/chalk-ai/chalk-private.git?rev=7f9bba64eaaca359d3180cb22a2ff550c3df6481#7f9bba64eaaca359d3180cb22a2ff550c3df6481"
+version = "0.0.0"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=49c04ac2c42#49c04ac2c4200b0fdcb69961548df97a12474b51"
 dependencies = [
  "anyhow",
- "chalk-protos 0.1.0 (git+https://github.com/chalk-ai/chalk-private.git?rev=7f9bba64eaaca359d3180cb22a2ff550c3df6481)",
+ "chalk-protos 0.0.0",
  "secrecy",
  "tokio",
  "tokio-util",
@@ -251,7 +251,7 @@ dependencies = [
  "async-trait",
  "blake3",
  "bytes",
- "chalk-protos 0.1.0 (git+https://github.com/chalk-ai/chalk-private.git?rev=e018542c51c2186f05a8f47f4001fe32fd1e46e1)",
+ "chalk-protos 0.1.0",
  "futures-util",
  "log",
  "prost",
