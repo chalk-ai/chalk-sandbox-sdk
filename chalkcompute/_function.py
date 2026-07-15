@@ -95,7 +95,7 @@ F = TypeVar("F", bound=Callable[..., Any])
 _RemoteCallResult = TypeVar("_RemoteCallResult")
 KnowledgeCutoff = str | _dt.datetime
 
-_REMOTE_ENV_VAR = "_CHALK_REMOTE_FUNCTION"
+_REMOTE_ENV_VAR = "CHALK_REMOTE_FUNCTION"
 _REQUEST_TIMESTAMP_HEADER = "x-chalk-request-timestamp"
 _NO_ARGS_SENTINEL_COLUMN = "__chalk_no_args__"
 _LOCAL_COPY_ENV_VAR = _local_dev._LOCAL_COPY_ENV_VAR

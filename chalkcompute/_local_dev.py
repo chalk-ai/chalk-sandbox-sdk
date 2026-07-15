@@ -38,7 +38,7 @@ _LOCAL_SDK_RUNTIME_PACKAGES = [
 
 
 def running_in_function_pod() -> bool:
-    return bool(os.environ.get("_CHALK_REMOTE_FUNCTION"))
+    return bool(os.environ.get("CHALK_REMOTE_FUNCTION"))
 
 
 def build_function_runtime_image(*, python_version: str = "3.11") -> object:
