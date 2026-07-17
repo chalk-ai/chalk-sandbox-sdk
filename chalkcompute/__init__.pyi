@@ -37,6 +37,10 @@ from chalkcompute._model import ModelNotFoundError as ModelNotFoundError
 from chalkcompute._model import bind_model as bind_model
 from chalkcompute._quota import QueuePolicy as QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy as RateLimitPolicy
+from chalkcompute._remote_call_client import RemoteCallClient as RemoteCallClient
+from chalkcompute._remote_call_client import (
+    RemoteCallClientUnavailable as RemoteCallClientUnavailable,
+)
 from chalkcompute._remote_function_tracing import TracingPolicy as TracingPolicy
 from chalkcompute._retry import RetryPolicy as RetryPolicy
 from chalkcompute._sandbox import ExecError as ExecError
@@ -105,6 +109,8 @@ __all__ = [
     "QueuePolicy",
     "TracingPolicy",
     "function",
+    "RemoteCallClient",
+    "RemoteCallClientUnavailable",
     "bind_model",
     "ModelError",
     "ModelNotFoundError",

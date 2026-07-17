@@ -45,6 +45,12 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "TracingPolicy",
     ),
     "function": ("chalkcompute._function", "function"),
+    # _remote_call_client.py
+    "RemoteCallClient": ("chalkcompute._remote_call_client", "RemoteCallClient"),
+    "RemoteCallClientUnavailable": (
+        "chalkcompute._remote_call_client",
+        "RemoteCallClientUnavailable",
+    ),
     # _model.py
     "bind_model": ("chalkcompute._model", "bind_model"),
     "ModelError": ("chalkcompute._model", "ModelError"),
