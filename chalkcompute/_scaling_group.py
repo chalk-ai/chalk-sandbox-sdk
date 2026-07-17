@@ -430,15 +430,18 @@ class ScalingGroup:
             )
             if resp.status_code != 200:
                 raise ScalingGroupError(f"CreateScalingGroup failed: {resp.text}")
+
+            data = resp.json()
+            self._scaling_group_info = _parse_scaling_group_response(
+                data["scalingGroup"]
+            )
+            self._scaling_group_id = self._scaling_group_info.id
         except BaseException:
-            # If the scaling group never got created, nothing will ever call
-            # .delete(), so reclaim any secrets upserted above.
+            # Nothing calls .delete() unless _scaling_group_id got set, so
+            # reclaim any secrets upserted above.
             self._cleanup_upserted_secrets(best_effort=True)
             raise
 
-        data = resp.json()
-        self._scaling_group_info = _parse_scaling_group_response(data["scalingGroup"])
-        self._scaling_group_id = self._scaling_group_info.id
         logger.info(
             "Scaling group created: %s (status=%s)",
             self._scaling_group_id,
