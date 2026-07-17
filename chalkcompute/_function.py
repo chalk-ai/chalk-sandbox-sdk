@@ -89,6 +89,7 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from chalkcompute._image import Image as _Image
     from chalkcompute._secret import Secret as _Secret
+    from chalkcompute._secret import SecretScope as _SecretScope
 
 SerializationFormat = typing.Literal["pyarrow"]
 F = TypeVar("F", bound=Callable[..., Any])
@@ -1641,6 +1642,11 @@ class RemoteFunction:
         self._version_info: FunctionVersionInfo | None = None
         self._web_url: str | None = None
         self._port: int = 8080
+        self._upserted_secret_names: list[str] = []
+        self._upserted_secret_scope: _SecretScope | None = None
+        # Pre-resolution secrets, restored on cleanup so a later .deploy() on
+        # the same object re-upserts instead of referencing deleted secrets.
+        self._original_secrets: list[_Secret] | None = None
 
         # Input field names (populated from API response for from_id/from_name)
         self._input_field_names: list[str] = []
@@ -1782,6 +1788,9 @@ class RemoteFunction:
         f._version_info = None
         f._web_url = None
         f._port = 6666
+        f._upserted_secret_names = []
+        f._upserted_secret_scope = None
+        f._original_secrets = None
         f._input_field_names = []
         f._is_generator = False
         f._is_async = False
@@ -1945,13 +1954,18 @@ class RemoteFunction:
 
             # 5b. Resolve lazy secrets and add to container spec
             if self._secrets:
-                from chalkcompute._secret import resolve_lazy_secrets
+                from chalkcompute._secret import SecretScope, resolve_lazy_secrets
 
                 if any(s.is_lazy for s in self._secrets):
-                    resolved, _upserted = resolve_lazy_secrets(
-                        self._secrets, self._client
+                    scope = SecretScope.function(self._explicit_name or self._func_name)
+                    original_secrets = list(self._secrets)
+                    resolved, upserted = resolve_lazy_secrets(
+                        self._secrets, self._client, scope=scope
                     )
                     self._secrets = resolved
+                    self._original_secrets = original_secrets
+                    self._upserted_secret_names = upserted
+                    self._upserted_secret_scope = scope
                 container_spec["secretRefs"] = [
                     s._to_proto_dict() for s in self._secrets
                 ]
@@ -2049,11 +2063,36 @@ class RemoteFunction:
             progress_done(fkey, detail="ready")
         except BaseException:
             progress_fail(fkey)
+            # If no version got registered, nothing will ever call .delete(),
+            # so reclaim any secrets upserted earlier in this deploy. Once a
+            # version exists, .delete() owns cleanup.
+            if self._version_info is None:
+                self._cleanup_upserted_secrets(best_effort=True)
             raise
         finally:
             progress_finish()
 
         return self
+
+    def _cleanup_upserted_secrets(self, *, best_effort: bool) -> None:
+        """Delete secrets upserted by deploy and restore lazy secret refs."""
+        if self._upserted_secret_names:
+            from chalkcompute._secret import (
+                delete_secrets,
+                delete_secrets_best_effort,
+            )
+
+            deleter = delete_secrets_best_effort if best_effort else delete_secrets
+            deleter(
+                self._client,
+                self._upserted_secret_names,
+                self._upserted_secret_scope,
+            )
+        self._upserted_secret_names = []
+        self._upserted_secret_scope = None
+        if self._original_secrets is not None:
+            self._secrets = self._original_secrets
+            self._original_secrets = None
 
     def _remote_call_runtime_package(self) -> str:
         extras: list[str] = []
@@ -2663,7 +2702,7 @@ class RemoteFunction:
 
     @_instrumented("chalkcompute.function.delete")
     def delete(self) -> None:
-        """Delete this function version."""
+        """Delete this function version and clean up secrets it upserted."""
         if self._version_info is not None:
             self._client.rpc(
                 _CATALOG_SVC,
@@ -2673,6 +2712,8 @@ class RemoteFunction:
             self._version_info = None
             self._web_url = None
             self._drop_remote_call_clients()
+
+        self._cleanup_upserted_secrets(best_effort=False)
 
     def refresh(self) -> FunctionVersionInfo:
         """Fetch latest function version info from the server.

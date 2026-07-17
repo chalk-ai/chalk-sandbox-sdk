@@ -54,6 +54,7 @@ if TYPE_CHECKING:
 
     from chalkcompute._image import Image as _Image
     from chalkcompute._secret import Secret as _Secret
+    from chalkcompute._secret import SecretScope as _SecretScope
 
 _SVC = "chalk.scalinggroup.v1.ScalingGroupManagerService"
 
@@ -181,6 +182,11 @@ class ScalingGroup:
         self._built_image_uri: str | None = None
         self._scaling_group_id: str | None = None
         self._scaling_group_info: ScalingGroupInfo | None = None
+        self._upserted_secret_names: list[str] = []
+        self._upserted_secret_scope: _SecretScope | None = None
+        # Pre-resolution secrets, restored on cleanup so a later .deploy() on
+        # the same object re-upserts instead of referencing deleted secrets.
+        self._original_secrets: list[_Secret] | None = None
 
         self._client = ConnectClient(chalk_client=chalk_client)
 
@@ -271,6 +277,9 @@ class ScalingGroup:
         sg._built_image_uri = None
         sg._scaling_group_id = None
         sg._scaling_group_info = None
+        sg._upserted_secret_names = []
+        sg._upserted_secret_scope = None
+        sg._original_secrets = None
         sg._client = ConnectClient(chalk_client=chalk_client)
         return sg
 
@@ -373,44 +382,59 @@ class ScalingGroup:
             container_spec["resources"] = resources
 
         if self._secrets:
-            from chalkcompute._secret import resolve_lazy_secrets
+            from chalkcompute._secret import SecretScope, resolve_lazy_secrets
 
             if any(s.is_lazy for s in self._secrets):
-                resolved, _ = resolve_lazy_secrets(self._secrets, self._client)
+                scope = SecretScope.scaling_group(sg_name)
+                original_secrets = list(self._secrets)
+                resolved, upserted = resolve_lazy_secrets(
+                    self._secrets, self._client, scope=scope
+                )
                 self._secrets = resolved
+                self._original_secrets = original_secrets
+                self._upserted_secret_names = upserted
+                self._upserted_secret_scope = scope
             container_spec["secretRefs"] = [s._to_proto_dict() for s in self._secrets]
 
-        if self._volumes:
-            for v in self._volumes:
-                if not v.type:
-                    raise VolumeError(
-                        f"Volume {v.name!r} mounted at {v.mount_path!r} has no "
-                        "mount type; refusing to guess one for the container spec"
-                    )
-            container_spec["volumes"] = [v.to_spec_dict() for v in self._volumes]
+        try:
+            if self._volumes:
+                for v in self._volumes:
+                    if not v.type:
+                        raise VolumeError(
+                            f"Volume {v.name!r} mounted at {v.mount_path!r} has no "
+                            "mount type; refusing to guess one for the container spec"
+                        )
+                container_spec["volumes"] = [v.to_spec_dict() for v in self._volumes]
 
-        scaling_spec: dict[str, Any] = {
-            "minReplicas": self._min_replicas,
-            "maxReplicas": self._max_replicas,
-        }
-        if self._shutdown_delay_seconds is not None:
-            scaling_spec["shutdownDelaySeconds"] = self._shutdown_delay_seconds
-        if self._scaling_interval_seconds is not None:
-            scaling_spec["windowSeconds"] = self._scaling_interval_seconds
-        if self._target_cpu_utilization_percentage is not None:
-            scaling_spec["targetCpuUtilizationPercentage"] = (
-                self._target_cpu_utilization_percentage
+            scaling_spec: dict[str, Any] = {
+                "minReplicas": self._min_replicas,
+                "maxReplicas": self._max_replicas,
+            }
+            if self._shutdown_delay_seconds is not None:
+                scaling_spec["shutdownDelaySeconds"] = self._shutdown_delay_seconds
+            if self._scaling_interval_seconds is not None:
+                scaling_spec["windowSeconds"] = self._scaling_interval_seconds
+            if self._target_cpu_utilization_percentage is not None:
+                scaling_spec["targetCpuUtilizationPercentage"] = (
+                    self._target_cpu_utilization_percentage
+                )
+
+            spec: dict[str, Any] = {
+                "containerSpec": container_spec,
+                "scalingSpec": scaling_spec,
+            }
+
+            logger.info("Deploying scaling group '%s'...", sg_name)
+            resp = self._client.rpc(
+                _SVC, "CreateScalingGroup", {"spec": spec}, timeout=60
             )
-
-        spec: dict[str, Any] = {
-            "containerSpec": container_spec,
-            "scalingSpec": scaling_spec,
-        }
-
-        logger.info("Deploying scaling group '%s'...", sg_name)
-        resp = self._client.rpc(_SVC, "CreateScalingGroup", {"spec": spec}, timeout=60)
-        if resp.status_code != 200:
-            raise ScalingGroupError(f"CreateScalingGroup failed: {resp.text}")
+            if resp.status_code != 200:
+                raise ScalingGroupError(f"CreateScalingGroup failed: {resp.text}")
+        except BaseException:
+            # If the scaling group never got created, nothing will ever call
+            # .delete(), so reclaim any secrets upserted above.
+            self._cleanup_upserted_secrets(best_effort=True)
+            raise
 
         data = resp.json()
         self._scaling_group_info = _parse_scaling_group_response(data["scalingGroup"])
@@ -574,7 +598,7 @@ class ScalingGroup:
 
     @_instrumented("chalkcompute.scaling_group.delete")
     def delete(self) -> None:
-        """Delete the scaling group and clean up associated volumes."""
+        """Delete the scaling group and clean up associated volumes and secrets."""
         if self._scaling_group_id is not None:
             self._client.rpc(_SVC, "DeleteScalingGroup", {"id": self._scaling_group_id})
             self._scaling_group_id = None
@@ -589,6 +613,28 @@ class ScalingGroup:
             cleanup_owned_volumes(driver, self._volumes, self._referenced_volumes)
         self._volumes = []
         self._volume_driver = None
+
+        self._cleanup_upserted_secrets(best_effort=False)
+
+    def _cleanup_upserted_secrets(self, *, best_effort: bool) -> None:
+        """Delete secrets upserted by deploy and restore lazy secret refs."""
+        if self._upserted_secret_names:
+            from chalkcompute._secret import (
+                delete_secrets,
+                delete_secrets_best_effort,
+            )
+
+            deleter = delete_secrets_best_effort if best_effort else delete_secrets
+            deleter(
+                self._client,
+                self._upserted_secret_names,
+                self._upserted_secret_scope,
+            )
+        self._upserted_secret_names = []
+        self._upserted_secret_scope = None
+        if self._original_secrets is not None:
+            self._secrets = self._original_secrets
+            self._original_secrets = None
 
     def refresh(self) -> ScalingGroupInfo:
         """Fetch latest scaling-group status from the server.

@@ -95,6 +95,7 @@ from chalkcompute._vvolume import VersionedVolumeClient
 if TYPE_CHECKING:
     from chalkcompute._image import Image as _Image
     from chalkcompute._secret import Secret as _Secret
+    from chalkcompute._secret import SecretScope as _SecretScope
 
 logger = logging.getLogger(__name__)
 
@@ -734,6 +735,11 @@ class RemoteClass:
 
         self._client = ConnectClient(chalk_client=chalk_client)
         self._deployed = False
+        self._upserted_secret_names: list[str] = []
+        self._upserted_secret_scope: _SecretScope | None = None
+        # Pre-resolution secrets, restored on cleanup so a later .deploy() on
+        # the same object re-upserts instead of referencing deleted secrets.
+        self._original_secrets: list[_Secret] | None = None
         # Lazily-built local instance for in-process __call__ on methods.
         self._local_instance_cache: Any = None
 
@@ -903,6 +909,9 @@ class RemoteClass:
         rc._quota = None
         rc._client = ConnectClient(chalk_client=chalk_client)
         rc._deployed = False
+        rc._upserted_secret_names = []
+        rc._upserted_secret_scope = None
+        rc._original_secrets = None
         rc._local_instance_cache = None
         rc._methods = {}
         rc._before_name = None
@@ -1089,15 +1098,28 @@ class RemoteClass:
                     volumes=self._volumes,
                 )
 
-                # Resolve lazy secrets and add to container spec
+                # Resolve lazy secrets and add to container spec. Secrets are
+                # shared by every method, so they are scoped to the class (one
+                # FUNCTION scope) and upserted only on the first iteration —
+                # after that none are lazy.
                 if self._secrets:
-                    from chalkcompute._secret import resolve_lazy_secrets
+                    from chalkcompute._secret import (
+                        SecretScope,
+                        resolve_lazy_secrets,
+                    )
 
                     if any(s.is_lazy for s in self._secrets):
-                        resolved, _upserted = resolve_lazy_secrets(
-                            self._secrets, self._client
+                        scope = SecretScope.function(
+                            self._explicit_name or self._class_name
+                        )
+                        original_secrets = list(self._secrets)
+                        resolved, upserted = resolve_lazy_secrets(
+                            self._secrets, self._client, scope=scope
                         )
                         self._secrets = resolved
+                        self._original_secrets = original_secrets
+                        self._upserted_secret_names = upserted
+                        self._upserted_secret_scope = scope
                     container_spec["secretRefs"] = [
                         s._to_proto_dict() for s in self._secrets
                     ]
@@ -1222,11 +1244,36 @@ class RemoteClass:
             progress_done(ckey, detail="ready")
         except BaseException:
             progress_fail(ckey)
+            # If no method got registered, nothing will ever call .delete(),
+            # so reclaim any secrets upserted earlier in this deploy. Once a
+            # function version exists, .delete() owns cleanup.
+            if all(mi.remote_function is None for mi in self._methods.values()):
+                self._cleanup_upserted_secrets(best_effort=True)
             raise
         finally:
             progress_finish()
 
         return self
+
+    def _cleanup_upserted_secrets(self, *, best_effort: bool) -> None:
+        """Delete secrets upserted by deploy and restore lazy secret refs."""
+        if self._upserted_secret_names:
+            from chalkcompute._secret import (
+                delete_secrets,
+                delete_secrets_best_effort,
+            )
+
+            deleter = delete_secrets_best_effort if best_effort else delete_secrets
+            deleter(
+                self._client,
+                self._upserted_secret_names,
+                self._upserted_secret_scope,
+            )
+        self._upserted_secret_names = []
+        self._upserted_secret_scope = None
+        if self._original_secrets is not None:
+            self._secrets = self._original_secrets
+            self._original_secrets = None
 
     def _poll_until_ready(
         self,
@@ -1310,7 +1357,7 @@ class RemoteClass:
 
     @_instrumented("chalkcompute.cls.delete")
     def delete(self) -> None:
-        """Delete all function versions and clean up volumes."""
+        """Delete all function versions and clean up volumes and secrets."""
         for method_info in self._methods.values():
             if method_info.remote_function is not None:
                 method_info.remote_function.delete()
@@ -1325,6 +1372,7 @@ class RemoteClass:
             cleanup_owned_volumes(driver, self._volumes, self._referenced_volumes)
         self._volumes = []
         self._volume_driver = None
+        self._cleanup_upserted_secrets(best_effort=False)
         self._deployed = False
 
     def refresh(self) -> dict[str, FunctionVersionInfo]:

@@ -143,9 +143,9 @@ def test_container_add_local_dir() -> None:
 
 
 @needs_staging
-@pytest.mark.skip(reason="need to make chalk secrets scoped")
 def test_container_secret_from_env() -> None:
     """Secret.from_env() injects a Chalk secret as an env var into the container."""
+    from chalkcompute import SecretScope
     from chalkcompute._connect import ConnectClient
 
     client = ConnectClient()
@@ -153,11 +153,15 @@ def test_container_secret_from_env() -> None:
     secret_value = f"secret-value-{uuid.uuid4().hex[:8]}"
     _SECRETS_SVC = "chalk.server.v1.EnvironmentSecretsService"
 
-    # Create a test secret in the environment
+    # Create a test secret scoped to the container so it never leaks into
+    # unrelated deployments. Servers without scoped-secret support ignore
+    # the scope field.
+    container_name = f"test-secret-{uuid.uuid4().hex[:8]}"
+    scope = SecretScope.sandbox(container_name)._to_proto_dict()
     resp = client.rpc(
         _SECRETS_SVC,
         "UpsertSecret",
-        {"name": secret_name, "config": {"literal": secret_value}},
+        {"name": secret_name, "config": {"literal": secret_value}, "scope": scope},
     )
     assert resp.status_code == 200, f"UpsertSecret failed: {resp.text}"
 
@@ -165,7 +169,7 @@ def test_container_secret_from_env() -> None:
         img = Image.debian_slim()
         c = Container(
             image=img,
-            name=f"test-secret-{uuid.uuid4().hex[:8]}",
+            name=container_name,
             secrets=[Secret.from_env(secret_name)],
         )
         try:
@@ -179,11 +183,10 @@ def test_container_secret_from_env() -> None:
             c.stop()
     finally:
         # Clean up the test secret
-        client.rpc(_SECRETS_SVC, "DeleteSecret", {"name": secret_name})
+        client.rpc(_SECRETS_SVC, "DeleteSecret", {"name": secret_name, "scope": scope})
 
 
 @needs_staging
-@pytest.mark.skip(reason="need to make chalk secrets scoped")
 def test_container_secret_from_local_env() -> None:
     """Secret.from_local_env() reads a local env var and injects it into the container."""
     local_var = f"TEST_LOCAL_SECRET_{uuid.uuid4().hex[:8].upper()}"
@@ -211,7 +214,6 @@ def test_container_secret_from_local_env() -> None:
 
 
 @needs_staging
-@pytest.mark.skip(reason="need to make chalk secrets scoped")
 def test_container_secret_from_local_env_file() -> None:
     """Secret.from_local_env_file() reads a .env file and injects vars into the container."""
     suffix = uuid.uuid4().hex[:8].upper()
