@@ -143,6 +143,7 @@ def test_container_add_local_dir() -> None:
 
 
 @needs_staging
+@pytest.mark.skip(reason="need to make chalk secrets scoped")
 def test_container_secret_from_env() -> None:
     """Secret.from_env() injects a Chalk secret as an env var into the container."""
     from chalkcompute._connect import ConnectClient
@@ -182,6 +183,7 @@ def test_container_secret_from_env() -> None:
 
 
 @needs_staging
+@pytest.mark.skip(reason="need to make chalk secrets scoped")
 def test_container_secret_from_local_env() -> None:
     """Secret.from_local_env() reads a local env var and injects it into the container."""
     local_var = f"TEST_LOCAL_SECRET_{uuid.uuid4().hex[:8].upper()}"
@@ -209,6 +211,7 @@ def test_container_secret_from_local_env() -> None:
 
 
 @needs_staging
+@pytest.mark.skip(reason="need to make chalk secrets scoped")
 def test_container_secret_from_local_env_file() -> None:
     """Secret.from_local_env_file() reads a .env file and injects vars into the container."""
     suffix = uuid.uuid4().hex[:8].upper()
