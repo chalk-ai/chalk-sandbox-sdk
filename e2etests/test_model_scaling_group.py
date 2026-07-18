@@ -127,13 +127,12 @@ class TestModelScalingGroup:
 
 @needs_staging
 class TestModelWithVolume:
-    """Tests model deployment with a chalkfs volume-mounted config.
+    """Tests model deployment with image-baked artifacts.
 
-    The handler loads a config.json from /app/artifacts (the canonical
-    volume mount path) at startup and uses its "factor" field to multiply
-    inputs. This validates the full volume flow: upload_model_to_volume
-    with chalk_handler_volume_name, automatic volume detection in
-    _ensure_model_image, and runtime loading from the mount.
+    The handler loads a config.json from /app/artifacts at startup and
+    uses its "factor" field to multiply inputs.  The config is baked
+    into the container image via ``add_local_file`` during the build,
+    matching the container-image deployment pattern from the docs.
     """
 
     _web_url: str
