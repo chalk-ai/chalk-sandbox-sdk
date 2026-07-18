@@ -1,4 +1,4 @@
-"""Deploy a trivial model to a scaling group for testing.
+"""Deploy a @model_handler that doubles inputs.
 
 uv run python examples/model/deploy_trivial.py
 """
@@ -7,47 +7,42 @@ from __future__ import annotations
 
 import os
 
-import pyarrow as pa
-from chalkcompute import Image
+import numpy as np
+import pandas as pd
+from sklearn.linear_model import LinearRegression
 
 from chalk.client import ChalkClient
+from chalk.ml.model_handler import model_handler
 from chalk.scalinggroup import AutoScalingSpec, ScalingGroupResourceRequest
 
 c = ChalkClient(environment=os.environ.get("CHALK_ENVIRONMENT_ID"))
 
 MODEL_NAME = "ex-trivial-double"
 SG_NAME = "ex-trivial-double-sg"
-HANDLER_PATH = os.path.join(os.path.dirname(__file__), "handler.py")
 
-image = (
-    Image.debian_slim("3.11")
-    .pip_install(["chalk-remote-call-python", "pyarrow"])
-    .add_local_file(HANDLER_PATH, "/app/handler.py", strategy="copy")
-    .env({"PYTHONPATH": "/app"})
-    .workdir("/app")
-    .entrypoint(
-        [
-            "chalk-remote-call",
-            "--handler",
-            "handler.handler",
-            "--port",
-            "8080",
-        ]
-    )
-)
+
+@model_handler
+class DoublingModel:
+    def predict(self, df):
+        return pd.DataFrame({"y": self.model.predict(df.to_pandas())})
+
+
+X_train = np.array([[1.0], [2.0], [3.0], [4.0], [5.0]])
+y_train = X_train.ravel() * 2.0
+model = LinearRegression().fit(X_train, y_train)
 
 v = c.register_model_version(
     name=MODEL_NAME,
-    input_schema={"x": pa.float64()},
-    output_schema={"y": pa.float64()},
-    model_image=image,
+    model=DoublingModel(model=model),
+    input_schema={"x": float},
+    output_schema={"y": float},
+    dependencies=["scikit-learn", "pandas"],
 )
 
 c.deploy_model_version_to_scaling_group(
     name=SG_NAME,
     model_name=MODEL_NAME,
     model_version=v.model_version,
-    handler="handler.handler",
     scaling=AutoScalingSpec(
         min_replicas=1,
         max_replicas=1,
