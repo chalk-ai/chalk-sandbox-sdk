@@ -10,15 +10,12 @@ from __future__ import annotations
 
 import time
 
-import numpy as np
-import pandas as pd
 import pyarrow as pa
 from pyarrow import ipc
 
 from chalk.client import ChalkClient
 from chalk.ml.model_handler import model_handler
 from chalk.scalinggroup import AutoScalingSpec, ScalingGroupResourceRequest
-from chalkcompute import Image
 from chalkcompute._connect import grpc_target_from_url
 from chalkcompute._remote_call_client import RemoteCallClient
 
@@ -99,6 +96,8 @@ class DoublingModel:
     """Multiplies input ``x`` by 2.0 using a trained linear model."""
 
     def predict(self, df):
+        import pandas as pd
+
         return pd.DataFrame({"y": self.model.predict(df.to_pandas())})
 
 
@@ -107,6 +106,8 @@ class TriplingModel:
     """Multiplies input ``x`` by 3.0 using a trained linear model."""
 
     def predict(self, df):
+        import pandas as pd
+
         return pd.DataFrame({"y": self.model.predict(df.to_pandas())})
 
 
@@ -120,10 +121,11 @@ class TestModelScalingGroup:
     def setup_class(cls):
         client = ChalkClient(environment=CHALK_ENVIRONMENT_ID)
 
+        import numpy as np
+        from sklearn.linear_model import LinearRegression
+
         X_train = np.array([[1.0], [2.0], [3.0], [4.0], [5.0]])
         y_train = X_train.ravel() * 2.0
-
-        from sklearn.linear_model import LinearRegression
 
         model = LinearRegression().fit(X_train, y_train)
 
@@ -194,10 +196,11 @@ class TestModelWithArtifacts:
     def setup_class(cls):
         client = ChalkClient(environment=CHALK_ENVIRONMENT_ID)
 
+        import numpy as np
+        from sklearn.linear_model import LinearRegression
+
         X_train = np.array([[1.0], [2.0], [3.0], [4.0], [5.0]])
         y_train = X_train.ravel() * 3.0
-
-        from sklearn.linear_model import LinearRegression
 
         model = LinearRegression().fit(X_train, y_train)
 
