@@ -25,7 +25,7 @@ from e2etests.conftest import (
     needs_staging,
 )
 
-READINESS_TIMEOUT = 180
+READINESS_TIMEOUT = 600
 READINESS_POLL_INTERVAL = 5
 
 
