@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import logging
 import os
 from dataclasses import dataclass, field
 from typing import Any
 
 _SECRETS_SVC = "chalk.server.v1.EnvironmentSecretsService"
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -23,7 +20,9 @@ class SecretScope:
     passing a scope is always safe.
 
     ``ref`` is the consumer's name, not an id. Reusing a name whose previous
-    scoped secret was never cleaned up revives it on the next upsert.
+    scoped secret was never cleaned up revives it on the next upsert; an
+    uncleaned secret is otherwise garbage-collected server-side once its
+    scope stops resolving.
 
     Construct instances via the factory methods rather than instantiating
     directly.
@@ -311,50 +310,47 @@ def resolve_lazy_secrets(
         The Connect client used to upsert secrets remotely.
     scope
         Owning scope for the upserted secrets. When set, secrets belong to
-        that consumer instead of the whole environment; pass the same scope
-        to :func:`delete_secrets` at teardown.
+        that consumer instead of the whole environment. Cleanup is
+        server-owned: stopping/deleting the consumer cascades cleanup of its
+        scoped secrets, and an orphan sweep reclaims secrets whose consumer
+        never materialized (~24h grace window).
 
     Returns
     -------
     tuple[list[Secret], list[str]]
         The resolved secrets (lazy ones replaced with ``from_env`` equivalents)
-        and the names of secrets that were upserted for cleanup purposes.
+        and the names of secrets that were upserted.
 
     Raises
     ------
     ValueError
-        If a referenced local environment variable is not set.
+        If a referenced local environment variable is not set. Any secrets
+        already upserted before the failure are left in place for the
+        server-side orphan sweep to reclaim.
     """
     resolved: list[Secret] = []
     upserted_names: list[str] = []
 
-    try:
-        for secret in secrets:
-            if secret._local_env_var is not None:
-                local_var = secret._local_env_var
-                value = os.environ.get(local_var)
-                if value is None:
-                    raise ValueError(
-                        f"Local environment variable {local_var!r} is not set"
-                    )
-                remote_name = secret._env_var_name or local_var
-                _upsert_secret(client, remote_name, value, scope)
-                upserted_names.append(remote_name)
-                resolved.append(Secret.from_env(remote_name))
+    for secret in secrets:
+        if secret._local_env_var is not None:
+            local_var = secret._local_env_var
+            value = os.environ.get(local_var)
+            if value is None:
+                raise ValueError(f"Local environment variable {local_var!r} is not set")
+            remote_name = secret._env_var_name or local_var
+            _upsert_secret(client, remote_name, value, scope)
+            upserted_names.append(remote_name)
+            resolved.append(Secret.from_env(remote_name))
 
-            elif secret._local_env_file is not None:
-                env_vars = _parse_env_file(secret._local_env_file)
-                for name, value in env_vars.items():
-                    _upsert_secret(client, name, value, scope)
-                    upserted_names.append(name)
-                    resolved.append(Secret.from_env(name))
+        elif secret._local_env_file is not None:
+            env_vars = _parse_env_file(secret._local_env_file)
+            for name, value in env_vars.items():
+                _upsert_secret(client, name, value, scope)
+                upserted_names.append(name)
+                resolved.append(Secret.from_env(name))
 
-            else:
-                resolved.append(secret)
-    except BaseException:
-        # Raising here means the caller never gets `upserted_names` back.
-        delete_secrets_best_effort(client, upserted_names, scope)
-        raise
+        else:
+            resolved.append(secret)
 
     return resolved, upserted_names
 
@@ -386,56 +382,3 @@ def _upsert_secret(
     resp = client.rpc(_SECRETS_SVC, "UpsertSecret", body)
     if resp.status_code != 200:
         raise RuntimeError(f"Failed to upsert secret {name!r}: {resp.text}")
-
-
-def delete_secrets(
-    client: Any, names: list[str], scope: SecretScope | None = None
-) -> None:
-    """Delete secrets by name via ``EnvironmentSecretsService``.
-
-    Parameters
-    ----------
-    client
-        Connect client used for the RPC.
-    names
-        Names of secrets to delete.
-    scope
-        Scope the secrets were upserted with. A scoped delete removes only
-        the scope's own secret (or grant), never the environment-wide secret
-        of the same name.
-
-    Raises
-    ------
-    RuntimeError
-        If any DeleteSecret RPC fails. All names are attempted regardless of
-        earlier failures; the error is raised after the full pass.
-    """
-    failures: list[str] = []
-    for name in names:
-        body: dict[str, Any] = {"name": name}
-        if scope is not None:
-            body["scope"] = scope._to_proto_dict()
-        resp = client.rpc(_SECRETS_SVC, "DeleteSecret", body)
-        if resp.status_code != 200:
-            failures.append(f"{name!r}: {resp.text}")
-    if failures:
-        raise RuntimeError(f"Failed to delete secret(s): {'; '.join(failures)}")
-
-
-def delete_secrets_best_effort(
-    client: Any, names: list[str], scope: SecretScope | None = None
-) -> None:
-    """Delete secrets, logging instead of raising on failure.
-
-    Intended for failure paths where cleanup must not mask the original error.
-    """
-    if not names:
-        return
-    try:
-        delete_secrets(client, names, scope)
-    except Exception:
-        logger.warning(
-            "Failed to clean up upserted secret(s) %s; they may need manual deletion.",
-            names,
-            exc_info=True,
-        )

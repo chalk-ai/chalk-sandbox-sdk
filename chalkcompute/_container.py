@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from chalkcompute._image import Image as _Image
-    from chalkcompute._secret import Secret, SecretScope
+    from chalkcompute._secret import Secret
 
 _SVC = "chalk.container.v1.ContainerService"
 _IMAGE_SVC = "chalk.sandbox.v1.CustomImageService"
@@ -1011,11 +1011,6 @@ class Container:
         self._built_image_uri: str | None = None
         self._container_id: str | None = None
         self._container_info: ContainerInfo | None = None
-        self._upserted_secret_names: list[str] = []
-        self._upserted_secret_scope: SecretScope | None = None
-        # Pre-resolution secrets, restored on cleanup so a later .run() on the
-        # same object re-upserts instead of referencing deleted secrets.
-        self._original_secrets: list[Secret] | None = None
 
         self._client = ConnectClient(chalk_client=chalk_client)
         self._session_client: ContainerSessionClient | None = None
@@ -1125,9 +1120,6 @@ class Container:
         c._built_image_uri = None
         c._container_id = None
         c._container_info = None
-        c._upserted_secret_names = []
-        c._upserted_secret_scope = None
-        c._original_secrets = None
         c._client = ConnectClient(chalk_client=chalk_client)
         c._session_client = None
         return c
@@ -1351,21 +1343,20 @@ class Container:
                     )
                 progress_done(vkey)
 
-            # 3. Resolve lazy secrets (from_local_env / from_local_env_file)
+            # 3. Resolve lazy secrets (from_local_env / from_local_env_file).
+            # Resolved into a local, not self._secrets, so a later .run() on
+            # the same object (after .stop() tears down the scoped secrets
+            # server-side) re-upserts instead of referencing deleted secrets.
+            resolved_secrets = self._secrets
             if any(s.is_lazy for s in self._secrets):
                 skey = f"secret:{container_name}"
                 progress_add(skey, "secret", "Resolving secrets", parent=ckey)
                 from chalkcompute._secret import SecretScope, resolve_lazy_secrets
 
                 scope = SecretScope.sandbox(container_name)
-                original_secrets = list(self._secrets)
-                resolved, upserted = resolve_lazy_secrets(
+                resolved_secrets, upserted = resolve_lazy_secrets(
                     self._secrets, self._client, scope=scope
                 )
-                self._secrets = resolved
-                self._original_secrets = original_secrets
-                self._upserted_secret_names = upserted
-                self._upserted_secret_scope = scope
                 logger.info(
                     "Upserted %d secret(s) from local environment.",
                     len(upserted),
@@ -1415,8 +1406,8 @@ class Container:
                         )
                 spec["volumes"] = [v.to_spec_dict() for v in self._volumes]
 
-            if self._secrets:
-                spec["secretRefs"] = [s._to_proto_dict() for s in self._secrets]
+            if resolved_secrets:
+                spec["secretRefs"] = [s._to_proto_dict() for s in resolved_secrets]
 
             logger.info("Starting container '%s'...", container_name)
             resp = self._client.rpc(
@@ -1459,36 +1450,11 @@ class Container:
             progress_done(ckey, detail="running")
         except BaseException:
             progress_fail(ckey)
-            # If the container never got created, nothing will ever call
-            # .stop(), so reclaim any secrets upserted earlier in this run.
-            # Once a container id exists, .stop() owns cleanup.
-            if self._container_id is None:
-                self._cleanup_upserted_secrets(best_effort=True)
             raise
         finally:
             progress_finish()
 
         return self
-
-    def _cleanup_upserted_secrets(self, *, best_effort: bool) -> None:
-        """Delete secrets upserted by this run and restore lazy secret refs."""
-        if self._upserted_secret_names:
-            from chalkcompute._secret import (
-                delete_secrets,
-                delete_secrets_best_effort,
-            )
-
-            deleter = delete_secrets_best_effort if best_effort else delete_secrets
-            deleter(
-                self._client,
-                self._upserted_secret_names,
-                self._upserted_secret_scope,
-            )
-        self._upserted_secret_names = []
-        self._upserted_secret_scope = None
-        if self._original_secrets is not None:
-            self._secrets = self._original_secrets
-            self._original_secrets = None
 
     def _poll_until_running(
         self,
@@ -1724,7 +1690,10 @@ class Container:
 
     @_instrumented("chalkcompute.container.stop")
     def stop(self, grace_period_seconds: int | None = None) -> None:
-        """Stop the container and clean up temporary volumes and secrets.
+        """Stop the container and clean up temporary volumes.
+
+        Scoped secrets upserted for this container are cleaned up server-side
+        as part of ``StopContainer``.
 
         Parameters
         ----------
@@ -1754,8 +1723,6 @@ class Container:
             cleanup_owned_volumes(driver, self._volumes, self._referenced_volumes)
         self._volumes = []
         self._volume_driver = None
-
-        self._cleanup_upserted_secrets(best_effort=False)
 
     def refresh(self) -> ContainerInfo:
         """Fetch latest container status from the server.

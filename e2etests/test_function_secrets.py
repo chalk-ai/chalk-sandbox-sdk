@@ -49,6 +49,13 @@ def _call_with_retry(
 
 
 @needs_staging
+@pytest.mark.skip(
+    reason=(
+        "FUNCTION-scoped secrets don't resolve yet: CreateExternalFunctionVersion's "
+        "secret_refs resolution wasn't updated for scope in chalk-private#38787 "
+        "(only Container/ScalingGroup hydration was); fix is landing server-side."
+    )
+)
 def test_function_secret_from_local_env() -> None:
     """Secret.from_local_env() injects a local env var into a deployed function."""
     local_var = f"TEST_FN_SECRET_{uuid.uuid4().hex[:8].upper()}"

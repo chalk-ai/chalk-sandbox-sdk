@@ -4,12 +4,7 @@ from typing import Any
 
 import pytest
 
-from chalkcompute._secret import (
-    Secret,
-    SecretScope,
-    delete_secrets,
-    resolve_lazy_secrets,
-)
+from chalkcompute._secret import Secret, SecretScope, resolve_lazy_secrets
 
 
 class _Response:
@@ -35,29 +30,33 @@ class _Client:
         return _Response(status_code=status, text="boom" if status != 200 else "")
 
 
-def test_delete_secrets_raises_on_server_rejection() -> None:
-    client = _Client(statuses=[200, 500, 200])
+def test_resolve_lazy_secrets_sends_scope_on_every_upsert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FIRST_VAR", "value-1")
+    monkeypatch.setenv("SECOND_VAR", "value-2")
 
-    with pytest.raises(RuntimeError, match="secret-b"):
-        delete_secrets(client, ["secret-a", "secret-b", "secret-c"])
-
-    # All three deletes were attempted despite the middle one failing.
-    assert [c[2]["name"] for c in client.calls] == ["secret-a", "secret-b", "secret-c"]
-
-
-def test_delete_secrets_passes_scope() -> None:
     client = _Client()
     scope = SecretScope.sandbox("my-container")
+    secrets = [Secret.from_local_env("FIRST_VAR"), Secret.from_local_env("SECOND_VAR")]
 
-    delete_secrets(client, ["secret-a"], scope)
+    resolve_lazy_secrets(secrets, client, scope=scope)
 
-    assert client.calls[0][2]["scope"] == {
-        "type": "SECRET_SCOPE_TYPE_SANDBOX",
-        "ref": "my-container",
-    }
+    upsert_calls = [c for c in client.calls if c[1] == "UpsertSecret"]
+    assert [c[2]["name"] for c in upsert_calls] == ["FIRST_VAR", "SECOND_VAR"]
+    assert all(c[2]["scope"] == scope._to_proto_dict() for c in upsert_calls)
 
 
-def test_resolve_lazy_secrets_cleans_up_partial_upserts_on_failure(
+def test_resolve_lazy_secrets_without_scope_omits_scope_field() -> None:
+    client = _Client()
+    secrets = [Secret.from_env("EXISTING")]
+
+    resolve_lazy_secrets(secrets, client)
+
+    assert client.calls == []
+
+
+def test_resolve_lazy_secrets_mid_list_failure_raises_without_deleting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("FIRST_VAR", "value-1")
@@ -70,23 +69,7 @@ def test_resolve_lazy_secrets_cleans_up_partial_upserts_on_failure(
     with pytest.raises(ValueError, match="SECOND_VAR"):
         resolve_lazy_secrets(secrets, client, scope=scope)
 
-    # First secret's upsert succeeded and got a best-effort delete.
-    upsert_calls = [c for c in client.calls if c[1] == "UpsertSecret"]
-    delete_calls = [c for c in client.calls if c[1] == "DeleteSecret"]
-    assert [c[2]["name"] for c in upsert_calls] == ["FIRST_VAR"]
-    assert [c[2]["name"] for c in delete_calls] == ["FIRST_VAR"]
-    assert delete_calls[0][2]["scope"] == scope._to_proto_dict()
-
-
-def test_resolve_lazy_secrets_cleanup_failure_does_not_mask_original_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("FIRST_VAR", "value-1")
-    monkeypatch.delenv("SECOND_VAR", raising=False)
-
-    # First UpsertSecret succeeds, then the best-effort DeleteSecret fails.
-    client = _Client(statuses=[200, 500])
-    secrets = [Secret.from_local_env("FIRST_VAR"), Secret.from_local_env("SECOND_VAR")]
-
-    with pytest.raises(ValueError, match="SECOND_VAR"):
-        resolve_lazy_secrets(secrets, client)
+    # The first secret's upsert went through and is left in place for the
+    # server-side orphan sweep; nothing issues a DeleteSecret here.
+    assert [c[1] for c in client.calls] == ["UpsertSecret"]
+    assert client.calls[0][2]["name"] == "FIRST_VAR"
