@@ -194,6 +194,16 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 [[package]]
 name = "chalk-protos"
 version = "0.0.0"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=352f453f47fe11eac9a80d1e237f76992230dbc0#352f453f47fe11eac9a80d1e237f76992230dbc0"
+dependencies = [
+ "prost",
+ "prost-build",
+ "prost-types",
+]
+
+[[package]]
+name = "chalk-protos"
+version = "0.0.0"
 source = "git+https://github.com/chalk-ai/chalk-private.git?rev=49c04ac2c42#49c04ac2c4200b0fdcb69961548df97a12474b51"
 dependencies = [
  "prost",
@@ -204,22 +214,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "chalk-protos"
-version = "0.1.0"
-source = "git+https://github.com/chalk-ai/chalk-private.git?rev=e018542c51c2186f05a8f47f4001fe32fd1e46e1#e018542c51c2186f05a8f47f4001fe32fd1e46e1"
-dependencies = [
- "prost",
- "prost-build",
- "prost-types",
-]
-
-[[package]]
 name = "chalk_remote_call_client"
 version = "0.0.0"
 source = "git+https://github.com/chalk-ai/chalk-private.git?rev=49c04ac2c42#49c04ac2c4200b0fdcb69961548df97a12474b51"
 dependencies = [
  "bytes",
- "chalk-protos 0.0.0",
+ "chalk-protos 0.0.0 (git+https://github.com/chalk-ai/chalk-private.git?rev=49c04ac2c42)",
  "chalk_service_auth",
  "secrecy",
  "thiserror 1.0.69",
@@ -235,7 +235,7 @@ version = "0.0.0"
 source = "git+https://github.com/chalk-ai/chalk-private.git?rev=49c04ac2c42#49c04ac2c4200b0fdcb69961548df97a12474b51"
 dependencies = [
  "anyhow",
- "chalk-protos 0.0.0",
+ "chalk-protos 0.0.0 (git+https://github.com/chalk-ai/chalk-private.git?rev=49c04ac2c42)",
  "secrecy",
  "tokio",
  "tokio-util",
@@ -245,13 +245,12 @@ dependencies = [
 
 [[package]]
 name = "chalk_volume_client"
-version = "0.1.0"
-source = "git+https://github.com/chalk-ai/chalk-private.git?rev=e018542c51c2186f05a8f47f4001fe32fd1e46e1#e018542c51c2186f05a8f47f4001fe32fd1e46e1"
+version = "0.0.0"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=352f453f47fe11eac9a80d1e237f76992230dbc0#352f453f47fe11eac9a80d1e237f76992230dbc0"
 dependencies = [
- "async-trait",
  "blake3",
  "bytes",
- "chalk-protos 0.1.0",
+ "chalk-protos 0.0.0 (git+https://github.com/chalk-ai/chalk-private.git?rev=352f453f47fe11eac9a80d1e237f76992230dbc0)",
  "futures-util",
  "log",
  "prost",
@@ -259,6 +258,8 @@ dependencies = [
  "pyo3",
  "pyo3-build-config",
  "reqwest",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "uuid",
@@ -673,7 +674,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "tokio",
  "tower-service",
  "tracing",
@@ -1180,7 +1181,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls 0.23.40",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -1217,9 +1218,9 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1594,6 +1595,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
 dependencies = [
  "serde_core",
+ "serde_derive",
 ]
 
 [[package]]
