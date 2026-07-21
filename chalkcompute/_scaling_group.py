@@ -374,8 +374,8 @@ class ScalingGroup:
 
         if self._secrets:
             # Resolved into a local, not self._secrets, so a later .deploy()
-            # on the same object re-upserts instead of referencing deleted
-            # secrets.
+            # on the same object re-upserts instead of reusing a stale
+            # resolution.
             resolved_secrets = self._secrets
             if any(s.is_lazy for s in self._secrets):
                 from chalkcompute._secret import SecretScope, resolve_lazy_secrets
@@ -582,11 +582,7 @@ class ScalingGroup:
 
     @_instrumented("chalkcompute.scaling_group.delete")
     def delete(self) -> None:
-        """Delete the scaling group and clean up associated volumes.
-
-        Scoped secrets upserted for this scaling group are cleaned up
-        server-side as part of ``DeleteScalingGroup``.
-        """
+        """Delete the scaling group and clean up associated volumes."""
         if self._scaling_group_id is not None:
             self._client.rpc(_SVC, "DeleteScalingGroup", {"id": self._scaling_group_id})
             self._scaling_group_id = None

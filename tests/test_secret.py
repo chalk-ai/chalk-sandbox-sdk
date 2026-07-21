@@ -69,7 +69,7 @@ def test_resolve_lazy_secrets_mid_list_failure_raises_without_deleting(
     with pytest.raises(ValueError, match="SECOND_VAR"):
         resolve_lazy_secrets(secrets, client, scope=scope)
 
-    # The first secret's upsert went through and is left in place for the
-    # server-side orphan sweep; nothing issues a DeleteSecret here.
+    # The first secret's upsert went through and is left in place; nothing
+    # issues a DeleteSecret here.
     assert [c[1] for c in client.calls] == ["UpsertSecret"]
     assert client.calls[0][2]["name"] == "FIRST_VAR"

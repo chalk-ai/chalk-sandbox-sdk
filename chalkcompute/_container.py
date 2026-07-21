@@ -1345,8 +1345,7 @@ class Container:
 
             # 3. Resolve lazy secrets (from_local_env / from_local_env_file).
             # Resolved into a local, not self._secrets, so a later .run() on
-            # the same object (after .stop() tears down the scoped secrets
-            # server-side) re-upserts instead of referencing deleted secrets.
+            # the same object re-upserts instead of reusing a stale resolution.
             resolved_secrets = self._secrets
             if any(s.is_lazy for s in self._secrets):
                 skey = f"secret:{container_name}"
@@ -1691,9 +1690,6 @@ class Container:
     @_instrumented("chalkcompute.container.stop")
     def stop(self, grace_period_seconds: int | None = None) -> None:
         """Stop the container and clean up temporary volumes.
-
-        Scoped secrets upserted for this container are cleaned up server-side
-        as part of ``StopContainer``.
 
         Parameters
         ----------

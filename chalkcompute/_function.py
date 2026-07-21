@@ -1945,7 +1945,7 @@ class RemoteFunction:
 
             # 5b. Resolve lazy secrets and add to container spec. Resolved
             # into a local, not self._secrets, so a later .deploy() on the
-            # same object re-upserts instead of referencing deleted secrets.
+            # same object re-upserts instead of reusing a stale resolution.
             if self._secrets:
                 from chalkcompute._secret import SecretScope, resolve_lazy_secrets
 
@@ -2666,11 +2666,7 @@ class RemoteFunction:
 
     @_instrumented("chalkcompute.function.delete")
     def delete(self) -> None:
-        """Delete this function version.
-
-        Deleting the last version of a function cleans up its scoped secrets
-        server-side.
-        """
+        """Delete this function version."""
         if self._version_info is not None:
             self._client.rpc(
                 _CATALOG_SVC,

@@ -1063,7 +1063,7 @@ class RemoteClass:
             # self._secrets: they're shared by every method (one FUNCTION
             # scope for the class), and keeping self._secrets as the user's
             # lazy originals means a later .deploy() on the same object
-            # re-upserts instead of referencing deleted secrets.
+            # re-upserts instead of reusing a stale resolution.
             resolved_secrets = self._secrets
             if self._secrets and any(s.is_lazy for s in self._secrets):
                 from chalkcompute._secret import SecretScope, resolve_lazy_secrets

@@ -15,14 +15,10 @@ class SecretScope:
 
     Secrets upserted with a scope belong to that consumer (a sandbox, scaling
     group, or function) rather than to the whole environment: they are never
-    rendered into unrelated deployments, and deleting them affects only the
-    owning scope. Servers that predate scoped secrets ignore the field, so
-    passing a scope is always safe.
+    rendered into unrelated deployments.
 
-    ``ref`` is the consumer's name, not an id. Reusing a name whose previous
-    scoped secret was never cleaned up revives it on the next upsert; an
-    uncleaned secret is otherwise garbage-collected server-side once its
-    scope stops resolving.
+    ``ref`` is the consumer's name, not an id. Reusing a name revives its
+    previous scoped secret on the next upsert.
 
     Construct instances via the factory methods rather than instantiating
     directly.
@@ -310,10 +306,7 @@ def resolve_lazy_secrets(
         The Connect client used to upsert secrets remotely.
     scope
         Owning scope for the upserted secrets. When set, secrets belong to
-        that consumer instead of the whole environment. Cleanup is
-        server-owned: stopping/deleting the consumer cascades cleanup of its
-        scoped secrets, and an orphan sweep reclaims secrets whose consumer
-        never materialized (~24h grace window).
+        that consumer instead of the whole environment.
 
     Returns
     -------
@@ -325,8 +318,7 @@ def resolve_lazy_secrets(
     ------
     ValueError
         If a referenced local environment variable is not set. Any secrets
-        already upserted before the failure are left in place for the
-        server-side orphan sweep to reclaim.
+        already upserted before the failure are not rolled back.
     """
     resolved: list[Secret] = []
     upserted_names: list[str] = []
