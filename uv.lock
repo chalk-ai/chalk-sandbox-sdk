@@ -567,7 +567,7 @@ wheels = [
 
 [[package]]
 name = "chalkpy"
-version = "2.154.2"
+version = "2.154.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "chalkpy-rs" },
@@ -587,9 +587,9 @@ dependencies = [
     { name = "rich" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4a/85/1b40245e3955a14a9f68e58629265998289251879f2dfda7baba85246dc5/chalkpy-2.154.2.tar.gz", hash = "sha256:ef8fd9a708b15220c1d498c7e9a2cae4966374e06042001028b5f1f15136ec8a", size = 1848851, upload-time = "2026-07-17T01:04:41.854Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/35/7f/eecb666d1faedb53a8a4e8a45b26fd2cc2337bcb48c593cc6b3a505ebf81/chalkpy-2.154.7.tar.gz", hash = "sha256:913a61f54f2368bece5a7d7659886477eaa6426c9d29477da337ba8553715779", size = 1853781, upload-time = "2026-07-20T22:09:25.197Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ce/5a/4a28a1b6718f2417c0755fc8fc785407a86903fa07ed25edc7b52aebfc8a/chalkpy-2.154.2-py3-none-any.whl", hash = "sha256:3817a4e81c2614ae6ab73032715ba6263ac18711fc534fd128eb6a2c197718c3", size = 2353585, upload-time = "2026-07-17T01:04:37.941Z" },
+    { url = "https://files.pythonhosted.org/packages/c9/f3/d6df6e99277e305b91f0babc741b32314b542a8c5b84b81f39cd38136479/chalkpy-2.154.7-py3-none-any.whl", hash = "sha256:a171a671323b29ad3aec72309a97267713cd0fbc282d14495519a36badd0c2e6", size = 2359233, upload-time = "2026-07-20T22:09:22.543Z" },
 ]
 
 [package.optional-dependencies]
