@@ -2283,22 +2283,16 @@ class RemoteFunction:
             self._call_channel = grpc.insecure_channel(target)
         self._call_stub = call_grpc.RemoteCallServiceStub(self._call_channel)
 
-    def _remote_call_metadata(self, *, queue: bool) -> list[tuple[str, str]]:
+    def _remote_call_metadata(self) -> list[tuple[str, str]]:
         service_auth = service_auth_context_from_env()
         if service_auth is not None:
-            metadata = [("x-chalk-env-id", service_auth.environment_id)]
-            if queue:
-                metadata.append(("x-chalk-deployment-type", "function-queue"))
-            return metadata
+            return [("x-chalk-env-id", service_auth.environment_id)]
 
         self._client._ensure_auth()
-        metadata = [
+        return [
             ("authorization", f"Bearer {self._client._access_token}"),
             ("x-chalk-env-id", self._client._env_id or ""),
         ]
-        if queue:
-            metadata.append(("x-chalk-deployment-type", "function-queue"))
-        return metadata
 
     def _per_call_metadata(self) -> list[tuple[str, str]]:
         metadata = current_trace_metadata()
@@ -2335,7 +2329,7 @@ class RemoteFunction:
             )
         client = RemoteCallClient(
             target,
-            metadata=self._remote_call_metadata(queue=queue),
+            metadata=self._remote_call_metadata(),
             use_tls=use_tls,
             auth_endpoint=service_auth.auth_endpoint if service_auth else None,
             exchange_token=service_auth.exchange_token if service_auth else None,
@@ -2380,7 +2374,7 @@ class RemoteFunction:
             client = self._ensure_remote_call_client(queue=False)
         except RemoteCallClientUnavailable:
             fallback_metadata = [
-                *self._remote_call_metadata(queue=False),
+                *self._remote_call_metadata(),
                 *metadata,
             ]
             return self._call_direct_chunks_python_grpc(

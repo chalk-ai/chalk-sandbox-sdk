@@ -228,9 +228,10 @@ def test_direct_call_uses_native_client_and_catalog_function_name() -> None:
     client = FakeRemoteCallClient.instances[0]
     assert client.endpoint == "127.0.0.1:7777"
     assert client.use_tls is False
-    assert ("authorization", "Bearer access-token") in client.metadata
-    assert ("x-chalk-env-id", "env-id") in client.metadata
-    assert ("x-chalk-deployment-type", "function-queue") not in client.metadata
+    assert client.metadata == [
+        ("authorization", "Bearer access-token"),
+        ("x-chalk-env-id", "env-id"),
+    ]
     assert client.calls[0][0] == "catalog-add"
     assert _read_input(client.calls[0][1]) == {"x": [41]}
     assert client.calls[0][2] == []
@@ -541,7 +542,10 @@ def test_defer_get_and_purge_use_queue_client() -> None:
     client = FakeRemoteCallClient.instances[0]
     assert client.endpoint == "engine.chalk.test:443"
     assert client.use_tls is True
-    assert ("x-chalk-deployment-type", "function-queue") in client.metadata
+    assert client.metadata == [
+        ("authorization", "Bearer access-token"),
+        ("x-chalk-env-id", "env-id"),
+    ]
     assert client.enqueues[0][0] == "catalog-add"
     assert _read_input(client.enqueues[0][1]) == {"x": [98]}
     assert client.enqueues[0][2] == []
@@ -747,8 +751,7 @@ def test_queue_call_uses_service_auth_engine_from_environment(monkeypatch) -> No
     client = FakeRemoteCallClient.instances[0]
     assert client.endpoint == "engine.chalk.test:443"
     assert client.use_tls is True
-    assert ("x-chalk-env-id", "env-service-auth") in client.metadata
-    assert ("x-chalk-deployment-type", "function-queue") in client.metadata
+    assert client.metadata == [("x-chalk-env-id", "env-service-auth")]
     assert client.kwargs["auth_endpoint"] == "https://api.chalk.test"
     assert client.kwargs["exchange_token"] == "exchange-token"
 
@@ -785,8 +788,7 @@ def test_queue_call_uses_service_auth_engine_from_token_response(monkeypatch) ->
     client = FakeRemoteCallClient.instances[0]
     assert client.endpoint == "discovered-engine.chalk.test:443"
     assert client.use_tls is True
-    assert ("x-chalk-env-id", "env-service-auth") in client.metadata
-    assert ("x-chalk-deployment-type", "function-queue") in client.metadata
+    assert client.metadata == [("x-chalk-env-id", "env-service-auth")]
     assert client.kwargs["auth_endpoint"] == "https://api.chalk.test"
     assert client.kwargs["exchange_token"] == "exchange-token"
 
