@@ -1059,6 +1059,20 @@ class RemoteClass:
             self._volume_driver = driver
             _cleanup_temp_files(temp_files)
 
+            # Resolve lazy secrets once, into a local rather than
+            # self._secrets: they're shared by every method (one FUNCTION
+            # scope for the class), and keeping self._secrets as the user's
+            # lazy originals means a later .deploy() on the same object
+            # re-upserts instead of reusing a stale resolution.
+            resolved_secrets = self._secrets
+            if self._secrets and any(s.is_lazy for s in self._secrets):
+                from chalkcompute._secret import SecretScope, resolve_lazy_secrets
+
+                scope = SecretScope.function(self._explicit_name or self._class_name)
+                resolved_secrets, _upserted = resolve_lazy_secrets(
+                    self._secrets, self._client, scope=scope
+                )
+
             # 3. Register each method as a function version
             sg_names: list[str] = []
             for method_info in self._methods.values():
@@ -1089,17 +1103,9 @@ class RemoteClass:
                     volumes=self._volumes,
                 )
 
-                # Resolve lazy secrets and add to container spec
-                if self._secrets:
-                    from chalkcompute._secret import resolve_lazy_secrets
-
-                    if any(s.is_lazy for s in self._secrets):
-                        resolved, _upserted = resolve_lazy_secrets(
-                            self._secrets, self._client
-                        )
-                        self._secrets = resolved
+                if resolved_secrets:
                     container_spec["secretRefs"] = [
-                        s._to_proto_dict() for s in self._secrets
+                        s._to_proto_dict() for s in resolved_secrets
                     ]
 
                 scaling_spec: dict[str, Any] = {

@@ -373,12 +373,20 @@ class ScalingGroup:
             container_spec["resources"] = resources
 
         if self._secrets:
-            from chalkcompute._secret import resolve_lazy_secrets
-
+            # Resolved into a local, not self._secrets, so a later .deploy()
+            # on the same object re-upserts instead of reusing a stale
+            # resolution.
+            resolved_secrets = self._secrets
             if any(s.is_lazy for s in self._secrets):
-                resolved, _ = resolve_lazy_secrets(self._secrets, self._client)
-                self._secrets = resolved
-            container_spec["secretRefs"] = [s._to_proto_dict() for s in self._secrets]
+                from chalkcompute._secret import SecretScope, resolve_lazy_secrets
+
+                scope = SecretScope.scaling_group(sg_name)
+                resolved_secrets, _upserted = resolve_lazy_secrets(
+                    self._secrets, self._client, scope=scope
+                )
+            container_spec["secretRefs"] = [
+                s._to_proto_dict() for s in resolved_secrets
+            ]
 
         if self._volumes:
             for v in self._volumes:

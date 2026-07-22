@@ -1943,17 +1943,20 @@ class RemoteFunction:
                 "scalingSpec": scaling_spec,
             }
 
-            # 5b. Resolve lazy secrets and add to container spec
+            # 5b. Resolve lazy secrets and add to container spec. Resolved
+            # into a local, not self._secrets, so a later .deploy() on the
+            # same object re-upserts instead of reusing a stale resolution.
             if self._secrets:
-                from chalkcompute._secret import resolve_lazy_secrets
+                from chalkcompute._secret import SecretScope, resolve_lazy_secrets
 
+                resolved_secrets = self._secrets
                 if any(s.is_lazy for s in self._secrets):
-                    resolved, _upserted = resolve_lazy_secrets(
-                        self._secrets, self._client
+                    scope = SecretScope.function(self._explicit_name or self._func_name)
+                    resolved_secrets, _upserted = resolve_lazy_secrets(
+                        self._secrets, self._client, scope=scope
                     )
-                    self._secrets = resolved
                 container_spec["secretRefs"] = [
-                    s._to_proto_dict() for s in self._secrets
+                    s._to_proto_dict() for s in resolved_secrets
                 ]
 
             # 5c. Build function-level config

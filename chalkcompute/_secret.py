@@ -10,6 +10,53 @@ _SECRETS_SVC = "chalk.server.v1.EnvironmentSecretsService"
 
 
 @dataclass(frozen=True)
+class SecretScope:
+    """The owning scope for secrets the SDK creates on a consumer's behalf.
+
+    Secrets upserted with a scope belong to that consumer (a sandbox, scaling
+    group, or function) rather than to the whole environment: they are never
+    rendered into unrelated deployments.
+
+    ``ref`` is the consumer's name, not an id. Reusing a name revives its
+    previous scoped secret on the next upsert.
+
+    Construct instances via the factory methods rather than instantiating
+    directly.
+
+    Examples
+    --------
+    >>> SecretScope.sandbox("my-container")
+    >>> SecretScope.scaling_group("my-scaling-group")
+    >>> SecretScope.function("my_function")
+    """
+
+    _type: str = field(repr=False)
+    _ref: str = field(repr=False)
+
+    @classmethod
+    def sandbox(cls, ref: str) -> SecretScope:
+        """Scope secrets to a sandbox/container, identified by its name."""
+        return cls(_type="SECRET_SCOPE_TYPE_SANDBOX", _ref=ref)
+
+    @classmethod
+    def scaling_group(cls, ref: str) -> SecretScope:
+        """Scope secrets to a scaling group, identified by its name."""
+        return cls(_type="SECRET_SCOPE_TYPE_SCALING_GROUP", _ref=ref)
+
+    @classmethod
+    def function(cls, ref: str) -> SecretScope:
+        """Scope secrets to a remote function or class, identified by its name."""
+        return cls(_type="SECRET_SCOPE_TYPE_FUNCTION", _ref=ref)
+
+    def _to_proto_dict(self) -> dict[str, str]:
+        """Serialize to the dict shape expected by the ``SecretScope`` protobuf."""
+        return {"type": self._type, "ref": self._ref}
+
+    def __repr__(self) -> str:
+        return f"SecretScope(type={self._type!r}, ref={self._ref!r})"
+
+
+@dataclass(frozen=True)
 class Secret:
     """A reference to a Chalk secret or integration to inject as env vars.
 
@@ -244,6 +291,7 @@ def _parse_env_file(path: str) -> dict[str, str]:
 def resolve_lazy_secrets(
     secrets: list[Secret],
     client: Any,
+    scope: SecretScope | None = None,
 ) -> tuple[list[Secret], list[str]]:
     """Resolve lazy secrets into concrete secrets.
 
@@ -256,17 +304,21 @@ def resolve_lazy_secrets(
         The list of secret references, possibly including lazy ones.
     client
         The Connect client used to upsert secrets remotely.
+    scope
+        Owning scope for the upserted secrets. When set, secrets belong to
+        that consumer instead of the whole environment.
 
     Returns
     -------
     tuple[list[Secret], list[str]]
         The resolved secrets (lazy ones replaced with ``from_env`` equivalents)
-        and the names of secrets that were upserted for cleanup purposes.
+        and the names of secrets that were upserted.
 
     Raises
     ------
     ValueError
-        If a referenced local environment variable is not set.
+        If a referenced local environment variable is not set. Any secrets
+        already upserted before the failure are not rolled back.
     """
     resolved: list[Secret] = []
     upserted_names: list[str] = []
@@ -278,14 +330,14 @@ def resolve_lazy_secrets(
             if value is None:
                 raise ValueError(f"Local environment variable {local_var!r} is not set")
             remote_name = secret._env_var_name or local_var
-            _upsert_secret(client, remote_name, value)
+            _upsert_secret(client, remote_name, value, scope)
             upserted_names.append(remote_name)
             resolved.append(Secret.from_env(remote_name))
 
         elif secret._local_env_file is not None:
             env_vars = _parse_env_file(secret._local_env_file)
             for name, value in env_vars.items():
-                _upsert_secret(client, name, value)
+                _upsert_secret(client, name, value, scope)
                 upserted_names.append(name)
                 resolved.append(Secret.from_env(name))
 
@@ -295,7 +347,9 @@ def resolve_lazy_secrets(
     return resolved, upserted_names
 
 
-def _upsert_secret(client: Any, name: str, value: str) -> None:
+def _upsert_secret(
+    client: Any, name: str, value: str, scope: SecretScope | None
+) -> None:
     """Upsert a secret via ``EnvironmentSecretsService``.
 
     Parameters
@@ -306,30 +360,17 @@ def _upsert_secret(client: Any, name: str, value: str) -> None:
         Name of the secret to upsert.
     value
         Literal secret value.
+    scope
+        Owning scope for the secret, or ``None`` for environment-wide.
 
     Raises
     ------
     RuntimeError
         If the upsert RPC fails.
     """
-    resp = client.rpc(
-        _SECRETS_SVC,
-        "UpsertSecret",
-        {"name": name, "config": {"literal": value}},
-    )
+    body: dict[str, Any] = {"name": name, "config": {"literal": value}}
+    if scope is not None:
+        body["scope"] = scope._to_proto_dict()
+    resp = client.rpc(_SECRETS_SVC, "UpsertSecret", body)
     if resp.status_code != 200:
         raise RuntimeError(f"Failed to upsert secret {name!r}: {resp.text}")
-
-
-def delete_secrets(client: Any, names: list[str]) -> None:
-    """Delete secrets by name via ``EnvironmentSecretsService``.
-
-    Parameters
-    ----------
-    client
-        Connect client used for the RPC.
-    names
-        Names of secrets to delete.
-    """
-    for name in names:
-        client.rpc(_SECRETS_SVC, "DeleteSecret", {"name": name})
