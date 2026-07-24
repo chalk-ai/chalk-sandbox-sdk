@@ -22,6 +22,11 @@ from chalkcompute._remote_call_client import (
     resolve_service_auth_context,
 )
 from chalkcompute._tracing import _instrumented
+from chalkcompute._web_identity import (
+    WebIdentityTokenError,
+    read_web_identity_token,
+    web_identity_token_file_from_env,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +60,13 @@ def chalk_client_from_env(
 
     headers = additional_headers
     has_authorization = any(key.lower() == "authorization" for key in headers or {})
-    service_auth = service_auth_context_from_env()
+    # Web-identity rotation is implemented by this SDK's own transports.
+    # A ChalkClient built here would cache the injected header indefinitely.
+    service_auth = (
+        None
+        if web_identity_token_file_from_env() is not None
+        else service_auth_context_from_env()
+    )
     if service_auth is not None and not has_authorization:
         client = ConnectClient()
         client._ensure_auth()
@@ -79,10 +90,10 @@ def chalk_client_from_env(
 class ConnectClient:
     """Authenticated Connect-protocol (HTTP/JSON) client for Chalk APIs.
 
-    Ambient Chalk credentials are read lazily on the first RPC. This follows
-    ChalkPy's lookup order: explicit ``CHALK_*`` environment variables first,
-    then ``~/.chalk.yml`` credentials scoped to the current Chalk project or
-    the ``default`` token.
+    Ambient Chalk credentials are read lazily. A JWT configured through
+    ``CHALK_WEB_IDENTITY_TOKEN_FILE`` takes precedence and is re-read before
+    each request so rotation is observed. Otherwise, service auth or ChalkPy's
+    client credentials and ``~/.chalk.yml`` lookup are used.
 
     Examples
     --------
@@ -105,6 +116,29 @@ class ConnectClient:
         self._chalk_client = chalk_client
 
     def _ensure_auth(self) -> None:
+        identity_token_file = web_identity_token_file_from_env()
+        if identity_token_file is not None:
+            try:
+                identity = read_web_identity_token(identity_token_file)
+            except WebIdentityTokenError as exc:
+                raise ConnectError(str(exc)) from exc
+            requested_env = active_environment_from_env()
+            self._api_server = (
+                os.environ.get("CHALK_API_SERVER") or "https://api.chalk.ai"
+            ).rstrip("/")
+            self._access_token = identity.value
+            self._env_id = requested_env or identity.environment_id
+            self._headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {identity.value}",
+                "X-Chalk-Env-Id": self._env_id,
+                "X-Chalk-Server": "go-api",
+            }
+            self._grpc_engines = {}
+            self._environment_id_to_name = {}
+            self._primary_environment = None
+            return
+
         if self._access_token is not None:
             return
 
@@ -258,6 +292,16 @@ class ConnectClient:
         if not self._env_id:
             raise ConnectError("No Chalk environment selected")
 
+        if web_identity_token_file_from_env() is not None:
+            query_server = os.environ.get("CHALK_GRPC_ENGINE", "").strip()
+            if not query_server:
+                raise ConnectError(
+                    "CHALK_GRPC_ENGINE must be set for queued function calls when "
+                    "CHALK_WEB_IDENTITY_TOKEN_FILE is used because Chalk identity "
+                    "JWTs do not contain gRPC engine routing"
+                )
+            return grpc_engine_target_from_url(query_server)
+
         query_server = self._grpc_engines.get(self._env_id)
         if not query_server:
             available = ", ".join(sorted(self._grpc_engines)) or "none"
@@ -267,6 +311,19 @@ class ConnectClient:
             )
 
         return grpc_engine_target_from_url(query_server)
+
+    def _grpc_metadata(self) -> list[tuple[str, str]]:
+        """Return current gRPC metadata, re-reading rotating identity files."""
+        self._ensure_auth()
+        return [
+            ("authorization", f"Bearer {self._access_token}"),
+            ("x-chalk-env-id", self._env_id or ""),
+            ("x-chalk-server", "go-api"),
+        ]
+
+    def _uses_web_identity_token(self) -> bool:
+        """Return whether rotating web-identity authentication is configured."""
+        return web_identity_token_file_from_env() is not None
 
     def rpc(
         self,

@@ -754,9 +754,11 @@ class ContainerSessionClient:
         *,
         credentials: grpc.ChannelCredentials | None,
         metadata: list[tuple[str, str]],
+        _connect: ConnectClient | None = None,
     ) -> None:
         self._target = target
-        self._metadata = metadata
+        self._static_metadata = metadata
+        self._connect = _connect
         if credentials is not None:
             self._channel = grpc.secure_channel(target, credentials)
         else:
@@ -770,12 +772,24 @@ class ContainerSessionClient:
         return cls(
             target,
             credentials=grpc.ssl_channel_credentials() if use_tls else None,
-            metadata=[
-                ("authorization", f"Bearer {connect._access_token}"),
-                ("x-chalk-env-id", connect._env_id or ""),
-                ("x-chalk-server", "go-api"),
-            ],
+            metadata=connect._grpc_metadata(),
+            _connect=(
+                connect
+                if getattr(connect, "_uses_web_identity_token", lambda: False)()
+                is True
+                else None
+            ),
         )
+
+    @property
+    def _metadata(self) -> list[tuple[str, str]]:
+        if self._connect is not None:
+            return self._connect._grpc_metadata()
+        return self._static_metadata
+
+    @_metadata.setter
+    def _metadata(self, value: list[tuple[str, str]]) -> None:
+        self._static_metadata = value
 
     def close(self) -> None:
         self._channel.close()

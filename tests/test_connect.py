@@ -1,4 +1,6 @@
 import contextlib
+import base64
+import json
 import sys
 import types
 from typing import Any
@@ -8,6 +10,7 @@ import pytest
 import chalkcompute._auth_config as _auth_config
 from chalkcompute import SandboxClient, _tracing
 from chalkcompute._connect import (
+    ConnectError,
     ConnectClient,
     chalk_client_from_env,
     grpc_engine_target_from_url,
@@ -85,6 +88,17 @@ class _OtelContext:
 class _TraceApi:
     class SpanKind:
         CLIENT = object()
+
+
+def _identity_jwt(environment_id: str, *, subject: str = "workload") -> str:
+    def encode(value: object) -> str:
+        raw = json.dumps(value, separators=(",", ":")).encode()
+        return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+    return (
+        f"{encode({'alg': 'none', 'typ': 'JWT'})}."
+        f"{encode({'environment_id': environment_id, 'sub': subject})}.signature"
+    )
 
 
 class TestGrpcTargetFromUrl:
@@ -287,6 +301,141 @@ tokens:
         assert posted["args"] == ("https://api.project.chalk.ai/v1/oauth/token",)
         assert posted["kwargs"]["json"]["client_id"] == "project-client"
         assert posted["kwargs"]["json"]["client_secret"] == "project-secret"
+
+
+class TestConnectClientWebIdentity:
+    def test_uses_identity_jwt_without_exchanging_credentials(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        token = _identity_jwt("env-identity")
+        token_file = tmp_path / "identity.jwt"
+        token_file.write_text(token)
+        monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(token_file))
+        monkeypatch.setenv("CHALK_API_SERVER", "https://api.identity.chalk.test/")
+        monkeypatch.setenv("CHALK_CLIENT_ID", "ignored")
+        monkeypatch.setenv("CHALK_CLIENT_SECRET", "ignored")
+        monkeypatch.setattr(
+            "chalkcompute._connect.resolve_service_auth_context",
+            lambda: (_ for _ in ()).throw(
+                AssertionError("identity auth must take precedence over service auth")
+            ),
+        )
+        monkeypatch.setattr(
+            "httpx.post",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("identity JWTs must not be exchanged")
+            ),
+        )
+
+        client = ConnectClient()
+        client._ensure_auth()
+
+        assert client._api_server == "https://api.identity.chalk.test"
+        assert client._access_token == token
+        assert client._env_id == "env-identity"
+        assert client._headers == {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+            "X-Chalk-Env-Id": "env-identity",
+            "X-Chalk-Server": "go-api",
+        }
+
+    def test_rereads_rotated_token_and_claims(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        token_file = tmp_path / "identity.jwt"
+        first = _identity_jwt("env-one", subject="one")
+        second = _identity_jwt("env-two", subject="two")
+        token_file.write_text(first)
+        monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(token_file))
+
+        client = ConnectClient()
+        first_metadata = client._grpc_metadata()
+        token_file.write_text(second)
+        second_metadata = client._grpc_metadata()
+
+        assert ("authorization", f"Bearer {first}") in first_metadata
+        assert ("x-chalk-env-id", "env-one") in first_metadata
+        assert ("authorization", f"Bearer {second}") in second_metadata
+        assert ("x-chalk-env-id", "env-two") in second_metadata
+
+    def test_explicit_environment_overrides_jwt_claim(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        token_file = tmp_path / "identity.jwt"
+        token_file.write_text(_identity_jwt("env-from-jwt"))
+        monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(token_file))
+        monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-explicit")
+
+        client = ConnectClient()
+        client._ensure_auth()
+
+        assert client._env_id == "env-explicit"
+
+    @pytest.mark.parametrize(
+        ("contents", "message"),
+        [
+            ("", "is empty"),
+            ("not-a-jwt", "is malformed"),
+            (
+                "e30.bm90LWpzb24.signature",
+                "invalid payload",
+            ),
+        ],
+    )
+    def test_reports_invalid_identity_file(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+        contents: str,
+        message: str,
+    ) -> None:
+        token_file = tmp_path / "identity.jwt"
+        token_file.write_text(contents)
+        monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(token_file))
+
+        with pytest.raises(ConnectError, match=message):
+            ConnectClient()._ensure_auth()
+
+    def test_uses_explicit_grpc_engine(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        token_file = tmp_path / "identity.jwt"
+        token_file.write_text(_identity_jwt("env-identity"))
+        monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(token_file))
+        monkeypatch.setenv("CHALK_GRPC_ENGINE", "localhost:50051")
+
+        assert ConnectClient().grpc_engine_target() == ("localhost:50051", False)
+
+    def test_requires_grpc_engine_for_queued_calls(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        token_file = tmp_path / "identity.jwt"
+        token_file.write_text(_identity_jwt("env-identity"))
+        monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(token_file))
+        monkeypatch.delenv("CHALK_GRPC_ENGINE", raising=False)
+
+        with pytest.raises(ConnectError, match="CHALK_GRPC_ENGINE must be set"):
+            ConnectClient().grpc_engine_target()
+
+    def test_sandbox_metadata_observes_rotation(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        token_file = tmp_path / "identity.jwt"
+        first = _identity_jwt("env-one", subject="one")
+        second = _identity_jwt("env-two", subject="two")
+        token_file.write_text(first)
+        monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(token_file))
+        monkeypatch.setenv("CHALK_API_SERVER", "http://localhost:18080")
+
+        client = SandboxClient.from_env()
+        try:
+            assert ("authorization", f"Bearer {first}") in (client._metadata or [])
+            token_file.write_text(second)
+            assert ("authorization", f"Bearer {second}") in (client._metadata or [])
+            assert ("x-chalk-env-id", "env-two") in (client._metadata or [])
+        finally:
+            client.close()
 
 
 class TestConnectClientTracing:

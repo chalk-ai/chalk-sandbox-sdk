@@ -731,13 +731,17 @@ class VersionedVolumeClient:
         self._endpoint = endpoint
         self._token = token
         self._env_id = env_id
+        self._commit_author = commit_author
+        self._extra_headers = builtins.list(extra_headers or [])
+        self._chalk_server = chalk_server
+        self._connect: ConnectClient | None = None
         self._closed = False
         self._inner = _NativeVersionedVolumeClient(
             endpoint,
             token,
             env_id,
             commit_author,
-            extra_headers or [],
+            self._extra_headers,
             chalk_server,
         )
 
@@ -762,11 +766,51 @@ class VersionedVolumeClient:
         # native client derives a chalk:{environment}:agent:{agent_id} URN
         # from the credentials so dashboard commit history links back to
         # the authoring agent.
-        return cls(
+        client = cls(
             connect._api_server or "",
             token=connect._access_token or "",
             env_id=connect._env_id or None,
             chalk_server="go-api",
+        )
+        if (
+            getattr(connect, "_uses_web_identity_token", lambda: False)()
+            is True
+        ):
+            client._connect = connect
+        return client
+
+    @property
+    def _inner(self) -> Any:
+        self._sync_web_identity_auth()
+        return self._native_inner
+
+    @_inner.setter
+    def _inner(self, value: Any) -> None:
+        self._native_inner = value
+
+    def _sync_web_identity_auth(self) -> None:
+        """Recreate the native client after an identity-token rotation."""
+        connect = getattr(self, "_connect", None)
+        if connect is None:
+            return
+        connect._ensure_auth()
+        token = connect._access_token or ""
+        env_id = connect._env_id or None
+        if token == self._token and env_id == self._env_id:
+            return
+        if _NativeVersionedVolumeClient is None:
+            raise VolumeError(
+                "versioned volumes require the native chalkcompute._native extension"
+            ) from _NATIVE_IMPORT_ERROR
+        self._token = token
+        self._env_id = env_id
+        self._native_inner = _NativeVersionedVolumeClient(
+            self._endpoint,
+            token,
+            env_id,
+            self._commit_author,
+            self._extra_headers,
+            self._chalk_server,
         )
 
     def __enter__(self) -> VersionedVolumeClient:
