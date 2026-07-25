@@ -9,6 +9,11 @@ _setup_logging()
 # Keep top-level imports lazy so `import chalkcompute` does not eagerly import
 # the grpc/protobuf/client modules. Update `__init__.pyi` when adding exports.
 _LAZY_MAP: dict[str, tuple[str, str]] = {
+    # _artifact.py
+    "Artifact": ("chalkcompute._artifact", "Artifact"),
+    "ArtifactClient": ("chalkcompute._artifact", "ArtifactClient"),
+    "ArtifactError": ("chalkcompute._artifact", "ArtifactError"),
+    "ArtifactNotFoundError": ("chalkcompute._artifact", "ArtifactNotFoundError"),
     # _container.py
     "Container": ("chalkcompute._container", "Container"),
     "ContainerError": ("chalkcompute._container", "ContainerError"),
@@ -78,6 +83,8 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "ExecEvent": ("chalkcompute._sandbox", "ExecEvent"),
     "ExecProcess": ("chalkcompute._sandbox", "ExecProcess"),
     "ExecResult": ("chalkcompute._sandbox", "ExecResult"),
+    "PythonExecution": ("chalkcompute._sandbox", "PythonExecution"),
+    "PythonSkippedArtifact": ("chalkcompute._sandbox", "PythonSkippedArtifact"),
     "Sandbox": ("chalkcompute._sandbox", "Sandbox"),
     "SandboxBuildError": ("chalkcompute._sandbox", "SandboxBuildError"),
     "SandboxClient": ("chalkcompute._sandbox", "SandboxClient"),
