@@ -28,26 +28,35 @@ from typing import Any
 
 import grpc
 
-from chalkcompute._connect import ConnectClient, grpc_target_from_url
+from chalkcompute._connect import (
+    ConnectClient,
+    grpc_target_from_url,
+    raise_for_grpc_error,
+)
 from chalkcompute._gen.chalk.artifactstore.v1 import service_pb2 as pb
 from chalkcompute._gen.chalk.artifactstore.v1 import service_pb2_grpc as pb_grpc
 from chalkcompute._tracing import _instrumented
 
+# Aliases defined before ArtifactClient, which has a ``.list()`` method that
+# would otherwise shadow the builtin ``list`` in class-scope name resolution.
 _GrpcMetadata = list[tuple[str, str]]
+_StrList = list[str]
 
-_KIND_TO_PROTO: dict[str, int] = {
+_KIND_TO_PROTO: dict[str, pb.ArtifactKind] = {
     "file": pb.ARTIFACT_KIND_FILE,
     "chart": pb.ARTIFACT_KIND_CHART,
     "html": pb.ARTIFACT_KIND_HTML,
     "image": pb.ARTIFACT_KIND_IMAGE,
 }
-_KIND_FROM_PROTO: dict[int, str] = {v: k for k, v in _KIND_TO_PROTO.items()}
+_KIND_FROM_PROTO: dict[pb.ArtifactKind, str] = {v: k for k, v in _KIND_TO_PROTO.items()}
 
-_PRODUCER_TO_PROTO: dict[str, int] = {
+_PRODUCER_TO_PROTO: dict[str, pb.ArtifactProducer] = {
     "user": pb.ARTIFACT_PRODUCER_USER,
     "system": pb.ARTIFACT_PRODUCER_SYSTEM,
 }
-_PRODUCER_FROM_PROTO: dict[int, str] = {v: k for k, v in _PRODUCER_TO_PROTO.items()}
+_PRODUCER_FROM_PROTO: dict[pb.ArtifactProducer, str] = {
+    v: k for k, v in _PRODUCER_TO_PROTO.items()
+}
 
 
 class ArtifactError(Exception):
@@ -244,7 +253,7 @@ class ArtifactClient:
                 pb.CreateArtifactRequest(artifact=spec), metadata=self._metadata
             )
         except grpc.RpcError as e:
-            _raise_artifact_error(e, name)
+            _handle_artifact_rpc_error(e, name)
             raise
         return _artifact_from_proto(resp.artifact, self)
 
@@ -256,7 +265,7 @@ class ArtifactClient:
                 pb.GetArtifactRequest(artifact_id=artifact_id), metadata=self._metadata
             )
         except grpc.RpcError as e:
-            _raise_artifact_error(e, artifact_id)
+            _handle_artifact_rpc_error(e, artifact_id)
             raise
         return _artifact_from_proto(resp.artifact, self)
 
@@ -264,8 +273,8 @@ class ArtifactClient:
     def list(
         self,
         *,
-        kinds: list[str] | None = None,
-        producers: list[str] | None = None,
+        kinds: _StrList | None = None,
+        producers: _StrList | None = None,
         sandbox_id: str | None = None,
         limit: int | None = None,
     ) -> Iterator[Artifact]:
@@ -286,7 +295,7 @@ class ArtifactClient:
             try:
                 resp = self._stub.ListArtifacts(req, metadata=self._metadata)
             except grpc.RpcError as e:
-                _raise_artifact_error(e, "list")
+                _handle_artifact_rpc_error(e, "list")
                 raise
             for msg in resp.artifacts:
                 yield _artifact_from_proto(msg, self)
@@ -309,7 +318,7 @@ class ArtifactClient:
             ):
                 chunks.append(frame.data)
         except grpc.RpcError as e:
-            _raise_artifact_error(e, artifact_id)
+            _handle_artifact_rpc_error(e, artifact_id)
             raise
         return b"".join(chunks)
 
@@ -322,12 +331,22 @@ class ArtifactClient:
                 metadata=self._metadata,
             )
         except grpc.RpcError as e:
-            _raise_artifact_error(e, artifact_id)
+            _handle_artifact_rpc_error(e, artifact_id)
             raise
 
 
-def _raise_artifact_error(e: grpc.RpcError, subject: str) -> None:
-    code = e.code() if callable(getattr(e, "code", None)) else None
-    if code == grpc.StatusCode.NOT_FOUND:
-        raise ArtifactNotFoundError(f"artifact not found: {subject}") from e
-    raise ArtifactError(f"artifact request failed for {subject}: {e}") from e
+def _handle_artifact_rpc_error(e: grpc.RpcError, subject: str) -> None:
+    """Translate mapped gRPC status codes to typed artifact errors.
+
+    Unmapped codes return so the caller re-raises the original gRPC error,
+    matching the sandbox/volume client convention.
+    """
+    raise_for_grpc_error(
+        e,
+        {
+            grpc.StatusCode.NOT_FOUND: (
+                ArtifactNotFoundError,
+                f"Artifact not found: {subject}",
+            ),
+        },
+    )
