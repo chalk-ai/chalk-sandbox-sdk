@@ -33,7 +33,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from chalkcompute._connect import ConnectClient, build_image
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label, validate_env
@@ -74,6 +74,68 @@ class ScalingGroupBuildError(ScalingGroupError):
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ReadinessProbe:
+    """Continuous readiness check for a scaling-group replica."""
+
+    _kind: Literal["http", "grpc"]
+    _value: str | None
+    period_seconds: int | None = None
+    timeout_seconds: int | None = None
+    failure_threshold: int | None = None
+
+    @classmethod
+    def http(
+        cls,
+        path: str | None = None,
+        *,
+        period_seconds: int | None = None,
+        timeout_seconds: int | None = None,
+        failure_threshold: int | None = None,
+    ) -> ReadinessProbe:
+        """Create an HTTP GET readiness probe."""
+        return cls(
+            _kind="http",
+            _value=path,
+            period_seconds=period_seconds,
+            timeout_seconds=timeout_seconds,
+            failure_threshold=failure_threshold,
+        )
+
+    @classmethod
+    def grpc(
+        cls,
+        service: str | None = None,
+        *,
+        period_seconds: int | None = None,
+        timeout_seconds: int | None = None,
+        failure_threshold: int | None = None,
+    ) -> ReadinessProbe:
+        """Create a standard gRPC health-check readiness probe."""
+        return cls(
+            _kind="grpc",
+            _value=service,
+            period_seconds=period_seconds,
+            timeout_seconds=timeout_seconds,
+            failure_threshold=failure_threshold,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        check = (
+            {}
+            if self._value is None
+            else {"path" if self._kind == "http" else "service": self._value}
+        )
+        body: dict[str, Any] = {self._kind: check}
+        if self.period_seconds is not None:
+            body["periodSeconds"] = self.period_seconds
+        if self.timeout_seconds is not None:
+            body["timeoutSeconds"] = self.timeout_seconds
+        if self.failure_threshold is not None:
+            body["failureThreshold"] = self.failure_threshold
+        return body
 
 
 @dataclass
@@ -140,6 +202,7 @@ class ScalingGroup:
         protocol: str = "http",
         min_replicas: int = 1,
         max_replicas: int = 1,
+        readiness_probe: ReadinessProbe | None = None,
         shutdown_delay_seconds: int | None = None,
         scaling_interval_seconds: int | None = None,
         target_cpu_utilization_percentage: int | None = None,
@@ -173,6 +236,7 @@ class ScalingGroup:
         self._protocol = protocol
         self._min_replicas = min_replicas
         self._max_replicas = max_replicas
+        self._readiness_probe = readiness_probe
         self._shutdown_delay_seconds = shutdown_delay_seconds
         self._scaling_interval_seconds = scaling_interval_seconds
         self._target_cpu_utilization_percentage = target_cpu_utilization_percentage
@@ -265,6 +329,7 @@ class ScalingGroup:
         sg._protocol = "http"
         sg._min_replicas = 1
         sg._max_replicas = 1
+        sg._readiness_probe = None
         sg._shutdown_delay_seconds = None
         sg._scaling_interval_seconds = None
         sg._target_cpu_utilization_percentage = None
@@ -361,6 +426,8 @@ class ScalingGroup:
             container_spec["entrypoint"] = self._entrypoint
         if self._env:
             container_spec["envVars"] = self._env
+        if self._readiness_probe is not None:
+            container_spec["readinessProbe"] = self._readiness_probe.to_dict()
 
         resources: dict[str, str] = {}
         if self._cpu:

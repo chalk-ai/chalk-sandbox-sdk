@@ -97,6 +97,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "ScalingGroupBuildError": ("chalkcompute._scaling_group", "ScalingGroupBuildError"),
     "ScalingGroupError": ("chalkcompute._scaling_group", "ScalingGroupError"),
     "ScalingGroupInfo": ("chalkcompute._scaling_group", "ScalingGroupInfo"),
+    "ReadinessProbe": ("chalkcompute._scaling_group", "ReadinessProbe"),
     # _volume.py
     "FileInfo": ("chalkcompute._volume", "FileInfo"),
     "Volume": ("chalkcompute._volume", "make_volume"),

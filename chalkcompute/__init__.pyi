@@ -64,6 +64,7 @@ from chalkcompute._scaling_group import ScalingGroup as ScalingGroup
 from chalkcompute._scaling_group import ScalingGroupBuildError as ScalingGroupBuildError
 from chalkcompute._scaling_group import ScalingGroupError as ScalingGroupError
 from chalkcompute._scaling_group import ScalingGroupInfo as ScalingGroupInfo
+from chalkcompute._scaling_group import ReadinessProbe as ReadinessProbe
 from chalkcompute._secret import Secret as Secret
 from chalkcompute._secret import SecretScope as SecretScope
 from chalkcompute._secret import resolve_lazy_secrets as resolve_lazy_secrets
@@ -153,6 +154,7 @@ __all__ = [
     "ScalingGroupBuildError",
     "ScalingGroupError",
     "ScalingGroupInfo",
+    "ReadinessProbe",
     "FileInfo",
     "Volume",
     "SimpleVolume",
