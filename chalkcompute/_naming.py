@@ -7,6 +7,8 @@ from collections.abc import Mapping
 
 _DNS_LABEL_RE = re.compile(r"^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$")
 
+MAX_DNS_LABEL = 63
+
 
 def validate_dns_label(name: str) -> None:
     """Validate that ``name`` is a well-formed DNS label.
@@ -29,6 +31,24 @@ def validate_dns_label(name: str) -> None:
             f"Invalid name {name!r}: must be a valid DNS label "
             "(lowercase letters, digits, and hyphens only, 1-63 chars, "
             "must start with a letter and end with an alphanumeric character)."
+        )
+
+
+def routable_hostname_label(environment_id: str, name: str) -> str:
+    """Return the `<environment_id>-<name>` label of a function's routable hostname."""
+    return f"{environment_id}-{name}"
+
+
+def validate_routable_hostname(environment_id: str, name: str) -> None:
+    """Raise ValueError if the derived `<environment_id>-<name>` label exceeds MAX_DNS_LABEL."""
+    label = routable_hostname_label(environment_id, name)
+    if len(label) > MAX_DNS_LABEL:
+        budget = MAX_DNS_LABEL - len(environment_id) - 1
+        raise ValueError(
+            f"Function name {name!r} is too long to deploy to environment "
+            f"{environment_id!r}: its routable hostname label {label!r} is "
+            f"{len(label)} characters, over the {MAX_DNS_LABEL}-character DNS "
+            f"limit. Shorten the name to at most {budget} characters."
         )
 
 

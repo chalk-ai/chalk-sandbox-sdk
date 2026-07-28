@@ -62,7 +62,12 @@ from chalkcompute._connect import (
     service_auth_context_from_env,
 )
 from chalkcompute import _local_dev
-from chalkcompute._naming import sanitize_dns_label, validate_dns_label, validate_env
+from chalkcompute._naming import (
+    sanitize_dns_label,
+    validate_dns_label,
+    validate_env,
+    validate_routable_hostname,
+)
 from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._remote_function_tracing import (
@@ -1869,6 +1874,11 @@ class RemoteFunction:
 
         fkey = f"function:{self._func_name}"
         progress_add(fkey, "function", f'Function "{self._func_name}"')
+
+        _deploy_name = self._explicit_name or self._func_name
+        _env_id = getattr(self._client, "_env_id", None)
+        if _env_id:
+            validate_routable_hostname(_env_id, _deploy_name)
 
         try:
             # 1. Build deploy image
