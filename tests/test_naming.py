@@ -150,11 +150,11 @@ class TestSanitizeDnsLabel:
 
 class TestValidateRoutableHostname:
     def test_short_name_accepted(self):
-        validate_routable_hostname("luxr-prod", "my-func")
+        validate_routable_hostname("test-env", "my-func")
 
     def test_bare_name_valid_but_derived_label_overflows(self):
-        env = "luxr-prod"
-        name = "a" + "b" * 54  # 55: valid bare name, but 'luxr-prod-' + it = 65 > 63
+        env = "test-env"
+        name = "a" + "b" * 54  # 55: valid bare name, but 'test-env-' + it = 64 > 63
         validate_dns_label(name)
         assert len(f"{env}-{name}") > MAX_DNS_LABEL
         with pytest.raises(ValueError):
@@ -174,9 +174,9 @@ class TestValidateRoutableHostname:
 
     def test_error_message_is_actionable(self):
         with pytest.raises(ValueError) as exc_info:
-            validate_routable_hostname("luxr-prod", "x" * 60)
+            validate_routable_hostname("test-env", "x" * 60)
         message = str(exc_info.value)
-        assert "luxr-prod" in message
+        assert "test-env" in message
         assert str(MAX_DNS_LABEL) in message
         assert "Shorten" in message
 
