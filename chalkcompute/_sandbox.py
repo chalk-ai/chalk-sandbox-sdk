@@ -783,8 +783,7 @@ class SandboxClient:
             metadata=connect._grpc_metadata(),
             _connect=(
                 connect
-                if getattr(connect, "_uses_web_identity_token", lambda: False)()
-                is True
+                if getattr(connect, "_uses_web_identity_token", lambda: False)() is True
                 else None
             ),
         )

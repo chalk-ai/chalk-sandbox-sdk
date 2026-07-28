@@ -772,10 +772,7 @@ class VersionedVolumeClient:
             env_id=connect._env_id or None,
             chalk_server="go-api",
         )
-        if (
-            getattr(connect, "_uses_web_identity_token", lambda: False)()
-            is True
-        ):
+        if getattr(connect, "_uses_web_identity_token", lambda: False)() is True:
             client._connect = connect
         return client
 

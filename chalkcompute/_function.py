@@ -2294,12 +2294,9 @@ class RemoteFunction:
 
     def _remote_call_metadata(self, *, queue: bool) -> list[tuple[str, str]]:
         uses_web_identity = (
-            getattr(self._client, "_uses_web_identity_token", lambda: False)()
-            is True
+            getattr(self._client, "_uses_web_identity_token", lambda: False)() is True
         )
-        service_auth = (
-            None if uses_web_identity else service_auth_context_from_env()
-        )
+        service_auth = None if uses_web_identity else service_auth_context_from_env()
         if service_auth is not None:
             metadata = [("x-chalk-env-id", service_auth.environment_id)]
             if queue:
@@ -2323,12 +2320,9 @@ class RemoteFunction:
 
     def _ensure_remote_call_client(self, *, queue: bool = False) -> Any:
         attr = "_queue_call_client" if queue else "_remote_call_client"
-        token_attr = (
-            "_queue_call_auth_token" if queue else "_remote_call_auth_token"
-        )
+        token_attr = "_queue_call_auth_token" if queue else "_remote_call_auth_token"
         uses_web_identity = (
-            getattr(self._client, "_uses_web_identity_token", lambda: False)()
-            is True
+            getattr(self._client, "_uses_web_identity_token", lambda: False)() is True
         )
         current_token: str | None = None
         if uses_web_identity:
@@ -2337,8 +2331,7 @@ class RemoteFunction:
 
         client = getattr(self, attr)
         token_matches = (
-            not uses_web_identity
-            or getattr(self, token_attr, None) == current_token
+            not uses_web_identity or getattr(self, token_attr, None) == current_token
         )
         if (
             client is not None
@@ -2355,9 +2348,7 @@ class RemoteFunction:
 
         from chalkcompute._remote_call_client import RemoteCallClient
 
-        service_auth = (
-            None if uses_web_identity else service_auth_context_from_env()
-        )
+        service_auth = None if uses_web_identity else service_auth_context_from_env()
         if queue:
             if service_auth is None:
                 target, use_tls = self._client.grpc_engine_target()

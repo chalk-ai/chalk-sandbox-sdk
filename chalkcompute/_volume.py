@@ -758,8 +758,7 @@ class VolumeClient:
             ],
             _connect=(
                 connect
-                if getattr(connect, "_uses_web_identity_token", lambda: False)()
-                is True
+                if getattr(connect, "_uses_web_identity_token", lambda: False)() is True
                 else None
             ),
         )
