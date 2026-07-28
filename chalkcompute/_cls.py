@@ -874,7 +874,7 @@ class RemoteClass:
     @classmethod
     def _make_empty(cls, name: str, *, chalk_client: Any | None = None) -> RemoteClass:
         rc = cls.__new__(cls)
-        rc._user_cls = None  # type: ignore[assignment]
+        rc._user_cls = None  # ty: ignore[invalid-assignment]
         rc._class_name = name
         rc._explicit_name = name
         rc._image = None
