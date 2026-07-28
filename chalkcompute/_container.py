@@ -1100,7 +1100,7 @@ class Container:
     @classmethod
     def _make_empty(cls, *, chalk_client: Any | None = None) -> Container:
         c = cls.__new__(cls)
-        c._image = None  # type: ignore[assignment]
+        c._image = None  # ty: ignore[invalid-assignment]
         c._name = None
         c._cpu = None
         c._memory = None

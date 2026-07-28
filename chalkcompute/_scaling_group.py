@@ -314,7 +314,7 @@ class ScalingGroup:
     @classmethod
     def _make_empty(cls, *, chalk_client: Any | None = None) -> ScalingGroup:
         sg = cls.__new__(cls)
-        sg._image = None  # type: ignore[assignment]
+        sg._image = None  # ty: ignore[invalid-assignment]
         sg._name = None
         sg._cpu = None
         sg._memory = None
