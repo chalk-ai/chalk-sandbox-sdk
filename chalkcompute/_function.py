@@ -1874,8 +1874,9 @@ class RemoteFunction:
         fkey = f"function:{self._func_name}"
         progress_add(fkey, "function", f'Function "{self._func_name}"')
 
-        # Fail fast on the hostname-length limit (needs env_id) before the build.
-        self._client._ensure_auth()
+        # Fail fast on the hostname-length limit before the expensive build.
+        # Uses whatever env_id is already resolved (skips if unauthenticated;
+        # the server enforces the limit regardless) — never forces auth here.
         sg_name = sanitize_dns_label(self._explicit_name or self._func_name)
         validate_dns_label(sg_name, self._client._env_id)
 
