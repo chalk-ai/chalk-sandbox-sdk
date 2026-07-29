@@ -158,21 +158,21 @@ class TestValidateDnsLabelWithEnvironment:
 
     def test_bare_name_valid_but_derived_label_overflows(self):
         env = "test-env"
-        name = "a" + "b" * 54  # 55: valid bare name, but 'test-env-' + it = 64 > 63
-        validate_dns_label(name)  # bare name alone is fine
-        assert len(f"{env}-{name}") > MAX_DNS_LABEL
+        name = "a" + "b" * 54
+        validate_dns_label(name)
+        assert len(f"{env}-{name}") >= MAX_DNS_LABEL
         with pytest.raises(ValueError):
             validate_dns_label(name, env)
 
     def test_boundary_at_max(self):
         env = "env"
-        name = "a" * (MAX_DNS_LABEL - len(env) - 1)  # label == 63
-        assert len(f"{env}-{name}") == MAX_DNS_LABEL
+        name = "a" * (MAX_DNS_LABEL - len(env) - 2)
+        assert len(f"{env}-{name}") == MAX_DNS_LABEL - 1
         validate_dns_label(name, env)
 
     def test_one_over_boundary_rejected(self):
         env = "env"
-        name = "a" * (MAX_DNS_LABEL - len(env))  # label == 64
+        name = "a" * (MAX_DNS_LABEL - len(env) - 1)
         with pytest.raises(ValueError):
             validate_dns_label(name, env)
 
