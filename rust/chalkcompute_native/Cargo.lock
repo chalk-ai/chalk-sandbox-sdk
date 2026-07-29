@@ -194,16 +194,6 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 [[package]]
 name = "chalk-protos"
 version = "0.0.0"
-source = "git+https://github.com/chalk-ai/chalk-private.git?rev=0485685866aad3e0386a8358719f114067d9cf90#0485685866aad3e0386a8358719f114067d9cf90"
-dependencies = [
- "prost",
- "prost-build",
- "prost-types",
-]
-
-[[package]]
-name = "chalk-protos"
-version = "0.0.0"
 source = "git+https://github.com/chalk-ai/chalk-private.git?rev=49c04ac2c42#49c04ac2c4200b0fdcb69961548df97a12474b51"
 dependencies = [
  "prost",
@@ -211,6 +201,16 @@ dependencies = [
  "prost-types",
  "tonic",
  "tonic-build",
+]
+
+[[package]]
+name = "chalk-protos"
+version = "0.0.0"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=cc43e6212a28bb01202c8758113bcba48b56247f#cc43e6212a28bb01202c8758113bcba48b56247f"
+dependencies = [
+ "prost",
+ "prost-build",
+ "prost-types",
 ]
 
 [[package]]
@@ -246,11 +246,11 @@ dependencies = [
 [[package]]
 name = "chalk_volume_client"
 version = "0.0.0"
-source = "git+https://github.com/chalk-ai/chalk-private.git?rev=0485685866aad3e0386a8358719f114067d9cf90#0485685866aad3e0386a8358719f114067d9cf90"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=cc43e6212a28bb01202c8758113bcba48b56247f#cc43e6212a28bb01202c8758113bcba48b56247f"
 dependencies = [
  "blake3",
  "bytes",
- "chalk-protos 0.0.0 (git+https://github.com/chalk-ai/chalk-private.git?rev=0485685866aad3e0386a8358719f114067d9cf90)",
+ "chalk-protos 0.0.0 (git+https://github.com/chalk-ai/chalk-private.git?rev=cc43e6212a28bb01202c8758113bcba48b56247f)",
  "futures-util",
  "log",
  "prost",
@@ -674,7 +674,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "tokio",
  "tower-service",
  "tracing",
@@ -1181,7 +1181,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls 0.23.40",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -1218,7 +1218,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "tracing",
  "windows-sys 0.59.0",
 ]
