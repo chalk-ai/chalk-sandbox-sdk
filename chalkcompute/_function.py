@@ -66,7 +66,6 @@ from chalkcompute._naming import (
     sanitize_dns_label,
     validate_dns_label,
     validate_env,
-    validate_routable_hostname,
 )
 from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
@@ -1875,10 +1874,10 @@ class RemoteFunction:
         fkey = f"function:{self._func_name}"
         progress_add(fkey, "function", f'Function "{self._func_name}"')
 
-        _deploy_name = self._explicit_name or self._func_name
-        _env_id = getattr(self._client, "_env_id", None)
-        if _env_id:
-            validate_routable_hostname(_env_id, _deploy_name)
+        # Resolve auth up front so the environment id — which prefixes the
+        # function's routable hostname — is known before we validate the
+        # deployed name's length below.
+        self._client._ensure_auth()
 
         try:
             # 1. Build deploy image
@@ -1917,6 +1916,9 @@ class RemoteFunction:
             input_schema_proto, output_schema_proto = _build_schemas(self._func)
 
             sg_name = sanitize_dns_label(self._explicit_name or self._func_name)
+            # Validate the name the server actually routes on (post-sanitize),
+            # combined with the resolved environment id.
+            validate_dns_label(sg_name, self._client._env_id)
 
             handler_cmd = ["chalk-remote-call", "--handler", "handler.handler"]
 

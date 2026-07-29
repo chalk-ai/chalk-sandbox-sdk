@@ -10,21 +10,31 @@ _DNS_LABEL_RE = re.compile(r"^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$")
 MAX_DNS_LABEL = 63
 
 
-def validate_dns_label(name: str) -> None:
-    """Validate that ``name`` is a well-formed DNS label.
+def validate_dns_label(name: str, environment_id: str | None = None) -> None:
+    """Validate that ``name`` is a well-formed, routable DNS label.
 
-    Must be 1–63 chars, lowercase letters/digits/hyphens only, and must
-    start with a letter and end with an alphanumeric character.
+    ``name`` must be 1–63 chars, lowercase letters/digits/hyphens only, and
+    must start with a letter and end with an alphanumeric character.
+
+    When ``environment_id`` is given, also check that the routable hostname
+    label the server derives — ``<environment_id>-<name>`` — fits within
+    ``MAX_DNS_LABEL``. That label is a single DNS label (RFC 1123), so a
+    function whose derived label exceeds 63 chars deploys successfully but
+    fails to route at invoke time; we catch it here instead.
 
     Parameters
     ----------
     name
         Name to validate.
+    environment_id
+        Environment the name will be deployed to. When provided, the combined
+        ``<environment_id>-<name>`` length is checked against ``MAX_DNS_LABEL``.
 
     Raises
     ------
     ValueError
-        If the name is not a valid DNS label.
+        If the name is not a valid DNS label, or the derived
+        ``<environment_id>-<name>`` label exceeds ``MAX_DNS_LABEL``.
     """
     if not _DNS_LABEL_RE.match(name):
         raise ValueError(
@@ -32,24 +42,17 @@ def validate_dns_label(name: str) -> None:
             "(lowercase letters, digits, and hyphens only, 1-63 chars, "
             "must start with a letter and end with an alphanumeric character)."
         )
-
-
-def routable_hostname_label(environment_id: str, name: str) -> str:
-    """Return the `<environment_id>-<name>` label of a function's routable hostname."""
-    return f"{environment_id}-{name}"
-
-
-def validate_routable_hostname(environment_id: str, name: str) -> None:
-    """Raise ValueError if the derived `<environment_id>-<name>` label exceeds MAX_DNS_LABEL."""
-    label = routable_hostname_label(environment_id, name)
-    if len(label) > MAX_DNS_LABEL:
-        budget = MAX_DNS_LABEL - len(environment_id) - 1
-        raise ValueError(
-            f"Function name {name!r} is too long to deploy to environment "
-            f"{environment_id!r}: its routable hostname label {label!r} is "
-            f"{len(label)} characters, over the {MAX_DNS_LABEL}-character DNS "
-            f"limit. Shorten the name to at most {budget} characters."
-        )
+    if environment_id:
+        label = f"{environment_id}-{name}"
+        if len(label) > MAX_DNS_LABEL:
+            budget = MAX_DNS_LABEL - len(environment_id) - 1
+            raise ValueError(
+                f"Function name {name!r} is too long to deploy to environment "
+                f"{environment_id!r}: its routable hostname label {label!r} is "
+                f"{len(label)} characters, over the {MAX_DNS_LABEL}-character DNS "
+                f"limit (invocations would fail to route). Shorten the name to at "
+                f"most {budget} characters."
+            )
 
 
 def sanitize_dns_label(name: str, max_length: int = 63) -> str:

@@ -7,7 +7,6 @@ from chalkcompute._naming import (
     sanitize_dns_label,
     validate_dns_label,
     validate_env,
-    validate_routable_hostname,
 )
 
 
@@ -144,37 +143,42 @@ class TestSanitizeDnsLabel:
 
 
 # ---------------------------------------------------------------------------
-# validate_routable_hostname
+# validate_dns_label with an environment_id (routable hostname length)
 # ---------------------------------------------------------------------------
 
 
-class TestValidateRoutableHostname:
+class TestValidateDnsLabelWithEnvironment:
     def test_short_name_accepted(self):
-        validate_routable_hostname("test-env", "my-func")
+        validate_dns_label("my-func", "test-env")
+
+    def test_no_environment_skips_length_check(self):
+        # Without an env id, only the bare-name shape is validated.
+        name = "a" + "b" * 54  # valid bare name
+        validate_dns_label(name)
 
     def test_bare_name_valid_but_derived_label_overflows(self):
         env = "test-env"
         name = "a" + "b" * 54  # 55: valid bare name, but 'test-env-' + it = 64 > 63
-        validate_dns_label(name)
+        validate_dns_label(name)  # bare name alone is fine
         assert len(f"{env}-{name}") > MAX_DNS_LABEL
         with pytest.raises(ValueError):
-            validate_routable_hostname(env, name)
+            validate_dns_label(name, env)
 
     def test_boundary_at_max(self):
         env = "env"
         name = "a" * (MAX_DNS_LABEL - len(env) - 1)  # label == 63
         assert len(f"{env}-{name}") == MAX_DNS_LABEL
-        validate_routable_hostname(env, name)
+        validate_dns_label(name, env)
 
     def test_one_over_boundary_rejected(self):
         env = "env"
         name = "a" * (MAX_DNS_LABEL - len(env))  # label == 64
         with pytest.raises(ValueError):
-            validate_routable_hostname(env, name)
+            validate_dns_label(name, env)
 
     def test_error_message_is_actionable(self):
         with pytest.raises(ValueError) as exc_info:
-            validate_routable_hostname("test-env", "x" * 60)
+            validate_dns_label("x" * 60, "test-env")
         message = str(exc_info.value)
         assert "test-env" in message
         assert str(MAX_DNS_LABEL) in message
