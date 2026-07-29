@@ -23,10 +23,14 @@ class _Response:
 class _RemoteFunctionReadinessClient:
     def __init__(self) -> None:
         self.methods: list[str] = []
+        self._env_id: str | None = None
         self.polls = [
             {"status": "Running", "readyReplicas": 0, "availableReplicas": 0},
             {"status": "Running", "readyReplicas": 1, "availableReplicas": 1},
         ]
+
+    def _ensure_auth(self) -> None:
+        pass
 
     def rpc(
         self,
@@ -71,6 +75,7 @@ class _RemoteFunctionReadinessClient:
 class _RemoteFunctionScaledToZeroClient(_RemoteFunctionReadinessClient):
     def __init__(self) -> None:
         self.methods: list[str] = []
+        self._env_id: str | None = None
         self.polls = [
             {"status": "ScaledToZero", "readyReplicas": None, "availableReplicas": None}
         ]

@@ -7,7 +7,8 @@ from collections.abc import Mapping
 
 _DNS_LABEL_RE = re.compile(r"^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$")
 
-MAX_DNS_LABEL = 64  # exclusive: a DNS label must be shorter than this (RFC 1123 caps it at 63)
+# Exclusive bound: a DNS label must be shorter than this (RFC 1123 caps it at 63).
+MAX_DNS_LABEL = 64
 
 
 def validate_dns_label(name: str, environment_id: str | None = None) -> None:
@@ -39,15 +40,14 @@ def validate_dns_label(name: str, environment_id: str | None = None) -> None:
     if not environment_id:
         return
     label = f"{environment_id}-{name}"
-    if len(label) < MAX_DNS_LABEL:
-        return
-    budget = MAX_DNS_LABEL - len(environment_id) - 2
-    raise ValueError(
-        f"Function name {name!r} is too long: with the {environment_id!r} "
-        f"environment prefix its routable hostname is {len(label)} chars; a DNS "
-        f"label must be under {MAX_DNS_LABEL} chars. Shorten the name to at most "
-        f"{budget} characters."
-    )
+    if len(label) >= MAX_DNS_LABEL:
+        budget = MAX_DNS_LABEL - len(environment_id) - 2
+        raise ValueError(
+            f"Function name {name!r} is too long: with the {environment_id!r} "
+            f"environment prefix its routable hostname is {len(label)} chars; a DNS "
+            f"label must be under {MAX_DNS_LABEL} chars. Shorten the name to at most "
+            f"{budget} characters."
+        )
 
 
 def sanitize_dns_label(name: str, max_length: int = 63) -> str:

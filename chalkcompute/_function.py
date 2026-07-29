@@ -1874,8 +1874,10 @@ class RemoteFunction:
         fkey = f"function:{self._func_name}"
         progress_add(fkey, "function", f'Function "{self._func_name}"')
 
-        # Populate env_id (the routable-hostname prefix) before validating below.
+        # Fail fast on the hostname-length limit (needs env_id) before the build.
         self._client._ensure_auth()
+        sg_name = sanitize_dns_label(self._explicit_name or self._func_name)
+        validate_dns_label(sg_name, self._client._env_id)
 
         try:
             # 1. Build deploy image
@@ -1912,9 +1914,6 @@ class RemoteFunction:
 
             # 3. Register function version
             input_schema_proto, output_schema_proto = _build_schemas(self._func)
-
-            sg_name = sanitize_dns_label(self._explicit_name or self._func_name)
-            validate_dns_label(sg_name, self._client._env_id)
 
             handler_cmd = ["chalk-remote-call", "--handler", "handler.handler"]
 
