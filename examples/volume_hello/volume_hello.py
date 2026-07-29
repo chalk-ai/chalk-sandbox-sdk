@@ -110,31 +110,17 @@ def create_volume(name: str, token: str) -> None:
 
 def main() -> None:
     run_id = uuid.uuid4().hex[:8]
-<<<<<<< Updated upstream
     vol_name = f"hello-vol-{run_id}"
-=======
-    vol_name = "ariscoolvolume"
-    container_name = f"hello-container-{run_id}"
->>>>>>> Stashed changes
 
-    # token = _get_token()
-    # create_volume(vol_name, token)
+    token = _get_token()
+    create_volume(vol_name, token)
 
-<<<<<<< Updated upstream
-=======
-    env: dict[str, str] = {}
-    # if client_id := os.environ.get("CHALK_CLIENT_ID"):
-    #     env["CHALK_CLIENT_ID"] = client_id
-    # if client_secret := os.environ.get("CHALK_CLIENT_SECRET"):
-    #     env["CHALK_CLIENT_SECRET"] = client_secret
-
->>>>>>> Stashed changes
     container = Container(
         image="python:3.14-slim-trixie",
         volumes=[(vol_name, MOUNT_PATH)],
     )
-    # try:
-    container.run()
+    try:
+        container.run()
 
         # ## Step 3 — Read the file from inside the container
         #
@@ -142,16 +128,16 @@ def main() -> None:
         # so `/mnt/data/hello.txt` appears as an ordinary filesystem path — no
         # special client or protocol needed inside the container.
 
-    #     result = container.exec("cat", f"{MOUNT_PATH}/{FILE_NAME}")
-    #     if result.exit_code != 0:
-    #         raise RuntimeError(
-    #             f"cat failed (exit {result.exit_code}): {result.stderr_text}"
-    #         )
-    #     print(f"\nRead from container: {result.stdout_text.strip()!r}")
+        result = container.exec("cat", f"{MOUNT_PATH}/{FILE_NAME}")
+        if result.exit_code != 0:
+            raise RuntimeError(
+                f"cat failed (exit {result.exit_code}): {result.stderr_text}"
+            )
+        print(f"\nRead from container: {result.stdout_text.strip()!r}")
 
-    # finally:
-    #     log.info("Stopping container and cleaning up volume...")
-    #     container.stop()
+    finally:
+        log.info("Stopping container and cleaning up volume...")
+        container.stop()
 
 
 if __name__ == "__main__":
