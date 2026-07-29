@@ -64,11 +64,15 @@ from chalkcompute._naming import (
     validate_env,
 )
 from chalkcompute._image_build import normalize_image_volumes
-from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
 from chalkcompute._remote_function_tracing import (
     TracingPolicyConfig,
     merge_workload_tracing_env,
     normalize_workload_tracing,
+)
+from chalkcompute._rpc import (
+    RPC_READ_MAX_BYTES,
+    rpc_interceptors,
+    suppress_rpc_tracing,
 )
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
@@ -803,7 +807,9 @@ class Container:
         """
         c = cls._make_empty(chalk_client=chalk_client)
         c._container_info = _get_container_info(
-            c._client, container_pb.GetContainerRequest(id=container_id)
+            c._client,
+            container_pb.GetContainerRequest(id=container_id),
+            trace=True,
         )
         c._container_id = c._container_info.id
         return c
@@ -829,7 +835,9 @@ class Container:
         """
         c = cls._make_empty(chalk_client=chalk_client)
         c._container_info = _get_container_info(
-            c._client, container_pb.GetContainerRequest(name=name)
+            c._client,
+            container_pb.GetContainerRequest(name=name),
+            trace=True,
         )
         c._container_id = c._container_info.id
         c._name = name
@@ -1161,6 +1169,9 @@ class Container:
                 raise ContainerError("RunContainer returned no container")
             self._container_info = _parse_container_response(resp.container)
             self._container_id = self._container_info.id
+            from chalkcompute._tracing import set_current_span_attribute
+
+            set_current_span_attribute("container.id", self._container_id)
             logger.info(
                 "Container created: %s (status=%s)",
                 self._container_id,
@@ -1194,6 +1205,8 @@ class Container:
         timeout: float,
     ) -> None:
         assert self._container_id is not None
+        from chalkcompute._tracing import set_current_span_attribute
+
         deadline = time.monotonic() + timeout
         request = container_pb.GetContainerRequest(id=self._container_id)
         status_log = _StatusLogger(
@@ -1201,13 +1214,26 @@ class Container:
             f"Container {self._container_id}",
             progress_key=f"container:{self._name}",
         )
+        poll_count = 0
         while time.monotonic() < deadline:
-            info = _get_container_info(self._client, request)
+            trace_poll = poll_count == 0
+            poll_count += 1
+            try:
+                info = _get_container_info(
+                    self._client,
+                    request,
+                    trace=trace_poll,
+                )
+            except BaseException:
+                set_current_span_attribute("chalk.poll_count", poll_count)
+                raise
             self._container_info = info
             status_log.update(info.status)
             if info.status == "Running":
+                set_current_span_attribute("chalk.poll_count", poll_count)
                 return
             if info.status in ("Failed", "Succeeded"):
+                set_current_span_attribute("chalk.poll_count", poll_count)
                 if info.status == "Succeeded" and self._lifetime is not None:
                     raise ContainerError(
                         f"Container {self._container_id} expired before becoming ready "
@@ -1218,6 +1244,7 @@ class Container:
                     f"Container {self._container_id} entered {info.status} state"
                 )
             time.sleep(poll_interval)
+        set_current_span_attribute("chalk.poll_count", poll_count)
         status = self._container_info.status if self._container_info else "unknown"
         raise ContainerError(
             f"Container {self._container_id} timed out after {timeout}s (last status: {status})"
@@ -1294,6 +1321,10 @@ class Container:
 
         if not command:
             raise ValueError("exec() requires a command")
+
+        from chalkcompute._tracing import set_current_span_attribute
+
+        set_current_span_attribute("container.id", self._container_id)
 
         response = self._get_session_client().exec_command(
             self._container_id,
@@ -1380,6 +1411,9 @@ class Container:
         if self._container_id is None:
             raise ContainerError("container has not been started; call .run() first")
         if self._container_id is not None:
+            from chalkcompute._tracing import set_current_span_attribute
+
+            set_current_span_attribute("container.id", self._container_id)
             request = container_pb.StopContainerRequest(id=self._container_id)
             if grace_period_seconds is not None:
                 request.grace_period_seconds = grace_period_seconds
@@ -1424,7 +1458,9 @@ class Container:
         if self._container_id is None:
             raise ContainerError("No container ID — call .run() first.")
         self._container_info = _get_container_info(
-            self._client, container_pb.GetContainerRequest(id=self._container_id)
+            self._client,
+            container_pb.GetContainerRequest(id=self._container_id),
+            trace=True,
         )
         return self._container_info
 
@@ -1482,11 +1518,17 @@ def _parse_container_response(
 def _get_container_info(
     client: ConnectClient,
     request: container_pb.GetContainerRequest,
+    *,
+    trace: bool,
 ) -> ContainerInfo:
     """Fetch a container via ``GetContainer`` and parse it, or raise ContainerError."""
     stub = client.stub(container_connect.ContainerServiceClientSync)
     try:
-        resp = client.call(stub.get_container, request)
+        if trace:
+            resp = client.call(stub.get_container, request)
+        else:
+            with suppress_rpc_tracing():
+                resp = client.call(stub.get_container, request)
     except ConnectRpcError as e:
         raise ContainerError(f"GetContainer failed: {rpc_error_message(e)}") from e
     if resp.container is None:

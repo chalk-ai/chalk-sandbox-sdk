@@ -506,6 +506,14 @@ def has_trace_metadata(metadata: list[tuple[str, str]]) -> bool:
     return any(key.lower() in _TRACE_CONTEXT_METADATA_KEYS for key, _ in metadata)
 
 
+def set_current_span_attribute(key: str, value: object) -> None:
+    """Set an attribute on the current span; no-op when tracing is not active."""
+    trace_api = _get_trace_api()
+    if trace_api is None:
+        return
+    trace_api.get_current_span().set_attribute(key, value)
+
+
 @contextlib.contextmanager
 def _span(name: str) -> Iterator[Any]:
     if _is_remote_tracing_off():

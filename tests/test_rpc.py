@@ -56,31 +56,43 @@ def test_rpc_span_contract(monkeypatch) -> None:
     assert span.status.status_code is StatusCode.UNSET
 
 
-def test_rpc_span_is_propagated_as_request_headers(monkeypatch) -> None:
+def test_rpc_span_injects_current_trace_metadata(monkeypatch) -> None:
+    interceptor, _exporter = _recording_interceptor(monkeypatch)
+    monkeypatch.setattr(
+        _rpc,
+        "current_trace_metadata",
+        lambda: [
+            ("traceparent", "00-trace-span-01"),
+            ("tracestate", "chalk=value"),
+        ],
+    )
+    ctx = _context()
+    ctx.request_headers["traceparent"] = "caller-value"
+
+    token = interceptor.on_start_sync(ctx)
+    interceptor.on_end_sync(token, ctx, None)
+
+    assert ctx.request_headers["traceparent"] == "00-trace-span-01"
+    assert ctx.request_headers["tracestate"] == "chalk=value"
+
+
+def test_suppress_rpc_tracing_skips_span_and_propagation(monkeypatch) -> None:
     interceptor, exporter = _recording_interceptor(monkeypatch)
+    monkeypatch.setattr(
+        _rpc,
+        "current_trace_metadata",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("suppressed RPC must not propagate trace metadata")
+        ),
+    )
     ctx = _context()
-    token = interceptor.on_start_sync(ctx)
-    traceparent = ctx.request_headers.get("traceparent")
+
+    with _rpc.suppress_rpc_tracing():
+        token = interceptor.on_start_sync(ctx)
     interceptor.on_end_sync(token, ctx, None)
 
-    (span,) = exporter.get_finished_spans()
-    assert traceparent is not None
-    _version, trace_id, span_id, flags = traceparent.split("-")
-    assert trace_id == format(span.context.trace_id, "032x")
-    assert span_id == format(span.context.span_id, "016x")
-    assert int(flags, 16) & 0x01, "sampled flag must be set"
-
-
-def test_rpc_without_tracing_adds_no_headers(monkeypatch) -> None:
-    from opentelemetry.trace import NoOpTracer
-
-    monkeypatch.setattr(_rpc, "get_tracer", lambda: NoOpTracer())
-    interceptor = _rpc.TracingInterceptor()
-    ctx = _context()
-    token = interceptor.on_start_sync(ctx)
-    interceptor.on_end_sync(token, ctx, None)
-
-    assert "traceparent" not in ctx.request_headers
+    assert token is None
+    assert exporter.get_finished_spans() == ()
 
 
 def test_rpc_span_marks_failed_calls_as_errors(monkeypatch) -> None:

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
-from contextlib import AbstractContextManager
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
@@ -15,13 +16,16 @@ from connectrpc.request import RequestContext
 from opentelemetry import propagate
 from opentelemetry.trace import Span, StatusCode
 
-from chalkcompute._tracing import get_tracer
+from chalkcompute._tracing import current_trace_metadata, get_tracer
 
 logger = logging.getLogger(__name__)
 
 _RPC_SPAN_NAME = "chalkcompute.rpc"
 _RPC_METHOD_ATTRIBUTE = "rpc.method"
 _RPC_RESPONSE_STATUS_CODE_ATTRIBUTE = "rpc.response.status_code"
+_RPC_TRACING_ENABLED: ContextVar[bool] = ContextVar(
+    "chalkcompute_rpc_tracing_enabled", default=True
+)
 
 # Match the historical grpcio max receive message size (100MB). Connect only
 # enforces a read limit; there is no client-side send-size knob.
@@ -43,6 +47,16 @@ class _SpanToken:
     span: Span
 
 
+@contextmanager
+def suppress_rpc_tracing() -> Iterator[None]:
+    """Disable client spans and trace propagation for RPCs in this context."""
+    token = _RPC_TRACING_ENABLED.set(False)
+    try:
+        yield
+    finally:
+        _RPC_TRACING_ENABLED.reset(token)
+
+
 class TracingInterceptor:
     """Emit one OpenTelemetry span around each synchronous RPC.
 
@@ -53,9 +67,15 @@ class TracingInterceptor:
     without tracing sends no extra headers.
     """
 
-    def on_start_sync(self, ctx: RequestContext[Any, Any]) -> _SpanToken:
+    def on_start_sync(self, ctx: RequestContext[Any, Any]) -> _SpanToken | None:
+        if not _RPC_TRACING_ENABLED.get():
+            return None
         context = get_tracer().start_as_current_span(_RPC_SPAN_NAME)
         span = context.__enter__()
+        # The RPC span is now current, so downstream services join it rather
+        # than becoming disconnected roots. Trace headers win over caller input.
+        for key, value in current_trace_metadata():
+            ctx.request_headers[key] = value
         span.set_attribute(
             _RPC_METHOD_ATTRIBUTE,
             f"{ctx.method.service_name}/{ctx.method.name}",
@@ -68,11 +88,13 @@ class TracingInterceptor:
 
     def on_end_sync(
         self,
-        token: _SpanToken,
+        token: _SpanToken | None,
         ctx: RequestContext[Any, Any],
         error: Exception | None,
     ) -> None:
         del ctx
+        if token is None:
+            return
         status = (
             "OK"
             if error is None
