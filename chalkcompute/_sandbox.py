@@ -33,12 +33,17 @@ from typing import Any
 
 import grpc
 
+from chalkcompute._artifact import Artifact, ArtifactClient, _artifact_from_proto
 from chalkcompute._connect import (
     ConnectClient,
     grpc_target_from_url,
     raise_for_grpc_error,
 )
 from chalkcompute._container import NetworkPolicy
+from chalkcompute._gen.chalk.sandbox.v1 import runtime_service_pb2 as runtime_pb
+from chalkcompute._gen.chalk.sandbox.v1 import (
+    runtime_service_pb2_grpc as runtime_pb_grpc,
+)
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as pb
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2_grpc as pb_grpc
 from chalkcompute._image import Image
@@ -186,6 +191,76 @@ class ExecEvent:
     @property
     def is_error(self) -> bool:
         return self.error_code is not None
+
+
+@dataclass
+class PythonSkippedArtifact:
+    """An artifact the execution produced but the server did not persist."""
+
+    name: str
+    """The artifact's declared name."""
+
+    reason: str
+    """Why the artifact was skipped (e.g. over the byte budget)."""
+
+    byte_size: int = 0
+    """Declared size of the skipped artifact, when known."""
+
+
+@dataclass
+class PythonExecution:
+    """Result of :meth:`Sandbox.execute_python`."""
+
+    execution_id: str
+    """Identifier of this execution; artifacts reference it in their origin."""
+
+    stdout: bytes
+    """Raw bytes the source wrote to standard output."""
+
+    stderr: bytes
+    """Raw bytes the source wrote to standard error."""
+
+    exit_code: int
+    """Exit code of the python process."""
+
+    outcome: str
+    """``"succeeded"``, ``"failed"``, ``"timed_out"``, or ``"interrupted"``."""
+
+    error_message: str = ""
+    """Failure detail when the execution failed outside the process's own exit."""
+
+    artifacts: list[Artifact] = field(default_factory=list)
+    """Artifacts persisted from this execution (captured charts, saved files)."""
+
+    skipped_artifacts: list[PythonSkippedArtifact] = field(default_factory=list)
+    """Artifacts the execution produced that were not persisted, with reasons."""
+
+    @property
+    def stdout_text(self) -> str:
+        """:attr:`stdout` decoded as UTF-8 (with ``errors="replace"``)."""
+        return self.stdout.decode("utf-8", errors="replace")
+
+    @property
+    def stderr_text(self) -> str:
+        """:attr:`stderr` decoded as UTF-8 (with ``errors="replace"``)."""
+        return self.stderr.decode("utf-8", errors="replace")
+
+    @property
+    def succeeded(self) -> bool:
+        return self.outcome == "succeeded"
+
+    @property
+    def charts(self) -> list[Artifact]:
+        """The chart artifacts captured from the execution's namespace."""
+        return [a for a in self.artifacts if a.kind == "chart"]
+
+
+_PYTHON_OUTCOME_NAMES: dict[int, str] = {
+    runtime_pb.PYTHON_EXECUTION_OUTCOME_SUCCEEDED: "succeeded",
+    runtime_pb.PYTHON_EXECUTION_OUTCOME_FAILED: "failed",
+    runtime_pb.PYTHON_EXECUTION_OUTCOME_TIMED_OUT: "timed_out",
+    runtime_pb.PYTHON_EXECUTION_OUTCOME_INTERRUPTED: "interrupted",
+}
 
 
 @dataclass
@@ -698,6 +773,126 @@ class Sandbox:
             _request_queue=request_queue,
             _response_iterator=response_iterator,
             _sandbox_id=sandbox_id,
+        )
+
+    @_instrumented("chalkcompute.sandbox.execute_python")
+    def execute_python(
+        self,
+        source: str,
+        *,
+        timeout_secs: int | None = None,
+        workdir: str | None = None,
+        env: dict[str, str] | None = None,
+        capture_charts: bool = True,
+        max_artifact_bytes: int | None = None,
+    ) -> PythonExecution:
+        """Run Python source in the sandbox with structured output capture.
+
+        The server wraps ``source`` in a capture harness that injects a
+        ``save_artifact(obj, *, name=None, kind=None, content_type=None)``
+        helper into the namespace and, after the source finishes, inspects the
+        namespace for plotly/altair figures bound to variables. Everything
+        saved or captured is persisted to the Chalk artifact store
+        server-side — the sandbox itself never receives credentials — and
+        returned as :class:`Artifact` handles.
+
+        Parameters
+        ----------
+        source
+            Python source to execute. Bare final expressions do not print;
+            charts are captured regardless of printing.
+        timeout_secs
+            Optional timeout in seconds for the python process.
+        workdir
+            Optional working directory inside the sandbox.
+        env
+            Optional environment variables for the process.
+        capture_charts
+            Inspect the namespace for plotly/altair figures after execution
+            (default ``True``).
+        max_artifact_bytes
+            Byte budget across all artifacts from this execution; artifacts
+            past it are reported in ``skipped_artifacts``.
+
+        Returns
+        -------
+        PythonExecution
+            Buffered stdout/stderr, exit status, and persisted artifacts.
+        """
+        client = self._require_client()
+        sandbox_id = self._require_started()
+        spec = runtime_pb.ExecutePythonSpec(
+            sandbox_id=sandbox_id,
+            source=source,
+            capture_charts=capture_charts,
+        )
+        if timeout_secs is not None:
+            spec.timeout_secs = timeout_secs
+        if workdir is not None:
+            spec.workdir = workdir
+        validate_env(env)
+        if env is not None:
+            for k, v in env.items():
+                spec.env[k] = v
+        if max_artifact_bytes is not None:
+            spec.max_artifact_bytes = max_artifact_bytes
+
+        def request_iterator() -> Iterator[runtime_pb.ExecutePythonRequest]:
+            yield runtime_pb.ExecutePythonRequest(spec=spec)
+
+        stub = runtime_pb_grpc.SandboxRuntimeServiceStub(client._channel)
+        artifact_client = ArtifactClient._from_channel(
+            client._channel, client._metadata
+        )
+
+        execution_id = ""
+        stdout: list[bytes] = []
+        stderr: list[bytes] = []
+        artifacts: list[Artifact] = []
+        exit_code = -1
+        outcome = "failed"
+        error_message = ""
+        skipped: list[PythonSkippedArtifact] = []
+        try:
+            for resp in stub.ExecutePython(
+                request_iterator(), metadata=client._metadata
+            ):
+                which = resp.WhichOneof("message")
+                if which == "started":
+                    execution_id = resp.started.execution_id
+                elif which == "output":
+                    if resp.output.stream == runtime_pb.PythonOutput.STREAM_STDERR:
+                        stderr.append(resp.output.data)
+                    else:
+                        stdout.append(resp.output.data)
+                elif which == "artifact":
+                    artifacts.append(
+                        _artifact_from_proto(resp.artifact, artifact_client)
+                    )
+                elif which == "completed":
+                    completed = resp.completed
+                    exit_code = completed.exit_code
+                    outcome = _PYTHON_OUTCOME_NAMES.get(completed.outcome, "failed")
+                    error_message = completed.error_message
+                    skipped = [
+                        PythonSkippedArtifact(
+                            name=s.name, reason=s.reason, byte_size=s.byte_size
+                        )
+                        for s in completed.skipped_artifacts
+                    ]
+        except grpc.RpcError as e:
+            _handle_rpc_error(e, sandbox_id)
+            raise
+
+        return PythonExecution(
+            execution_id=execution_id,
+            stdout=b"".join(stdout),
+            stderr=b"".join(stderr),
+            exit_code=exit_code,
+            outcome=outcome,
+            error_message=error_message,
+            artifacts=artifacts,
+            skipped_artifacts=skipped,
         )
 
     @_instrumented("chalkcompute.sandbox.terminate")

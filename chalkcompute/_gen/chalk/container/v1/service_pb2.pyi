@@ -131,6 +131,7 @@ class ChalkContainerSpec(_message.Message):
         "security_policy",
         "network_policy",
         "compute_class",
+        "startup_probe",
     )
     class TagsEntry(_message.Message):
         __slots__ = ("key", "value")
@@ -169,6 +170,7 @@ class ChalkContainerSpec(_message.Message):
     SECURITY_POLICY_FIELD_NUMBER: _ClassVar[int]
     NETWORK_POLICY_FIELD_NUMBER: _ClassVar[int]
     COMPUTE_CLASS_FIELD_NUMBER: _ClassVar[int]
+    STARTUP_PROBE_FIELD_NUMBER: _ClassVar[int]
     name: str
     image: str
     entrypoint: _containers.RepeatedScalarFieldContainer[str]
@@ -186,6 +188,7 @@ class ChalkContainerSpec(_message.Message):
     security_policy: ContainerSecurityPolicy
     network_policy: NetworkPolicy
     compute_class: ComputeClass
+    startup_probe: StartupProbe
     def __init__(
         self,
         name: _Optional[str] = ...,
@@ -205,7 +208,32 @@ class ChalkContainerSpec(_message.Message):
         security_policy: _Optional[_Union[ContainerSecurityPolicy, _Mapping]] = ...,
         network_policy: _Optional[_Union[NetworkPolicy, _Mapping]] = ...,
         compute_class: _Optional[_Union[ComputeClass, str]] = ...,
+        startup_probe: _Optional[_Union[StartupProbe, _Mapping]] = ...,
     ) -> None: ...
+
+class StartupProbe(_message.Message):
+    __slots__ = ("http", "grpc")
+    HTTP_FIELD_NUMBER: _ClassVar[int]
+    GRPC_FIELD_NUMBER: _ClassVar[int]
+    http: HttpProbe
+    grpc: GrpcProbe
+    def __init__(
+        self,
+        http: _Optional[_Union[HttpProbe, _Mapping]] = ...,
+        grpc: _Optional[_Union[GrpcProbe, _Mapping]] = ...,
+    ) -> None: ...
+
+class HttpProbe(_message.Message):
+    __slots__ = ("path",)
+    PATH_FIELD_NUMBER: _ClassVar[int]
+    path: str
+    def __init__(self, path: _Optional[str] = ...) -> None: ...
+
+class GrpcProbe(_message.Message):
+    __slots__ = ("method",)
+    METHOD_FIELD_NUMBER: _ClassVar[int]
+    method: str
+    def __init__(self, method: _Optional[str] = ...) -> None: ...
 
 class ContainerSecurityPolicy(_message.Message):
     __slots__ = ("kernel_policy",)
@@ -480,13 +508,18 @@ class StopContainerResponse(_message.Message):
     ) -> None: ...
 
 class GetContainerRequest(_message.Message):
-    __slots__ = ("id", "name")
+    __slots__ = ("id", "name", "include_stopped")
     ID_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
+    INCLUDE_STOPPED_FIELD_NUMBER: _ClassVar[int]
     id: str
     name: str
+    include_stopped: bool
     def __init__(
-        self, id: _Optional[str] = ..., name: _Optional[str] = ...
+        self,
+        id: _Optional[str] = ...,
+        name: _Optional[str] = ...,
+        include_stopped: bool = ...,
     ) -> None: ...
 
 class GetContainerResponse(_message.Message):
@@ -498,13 +531,18 @@ class GetContainerResponse(_message.Message):
     ) -> None: ...
 
 class ListContainersRequest(_message.Message):
-    __slots__ = ("cursor", "limit")
+    __slots__ = ("cursor", "limit", "include_stopped")
     CURSOR_FIELD_NUMBER: _ClassVar[int]
     LIMIT_FIELD_NUMBER: _ClassVar[int]
+    INCLUDE_STOPPED_FIELD_NUMBER: _ClassVar[int]
     cursor: str
     limit: int
+    include_stopped: bool
     def __init__(
-        self, cursor: _Optional[str] = ..., limit: _Optional[int] = ...
+        self,
+        cursor: _Optional[str] = ...,
+        limit: _Optional[int] = ...,
+        include_stopped: bool = ...,
     ) -> None: ...
 
 class ListContainersResponse(_message.Message):
