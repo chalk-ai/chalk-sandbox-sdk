@@ -954,7 +954,7 @@ class Container:
         tags: dict[str, str] | None = None,
         chalk_client: Any | None = None,
     ) -> None:
-        self._image = image
+        self._image: _Image | str | None = image
         if name is not None:
             validate_dns_label(name)
         self._name = name
@@ -1113,7 +1113,7 @@ class Container:
     @classmethod
     def _make_empty(cls, *, chalk_client: Any | None = None) -> Container:
         c = cls.__new__(cls)
-        c._image = None  # type: ignore[assignment]
+        c._image = None
         c._name = None
         c._cpu = None
         c._memory = None
