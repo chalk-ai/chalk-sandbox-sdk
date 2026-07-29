@@ -340,9 +340,11 @@ class TestConnectClientWebIdentity:
             "X-Chalk-Server": "go-api",
         }
 
-    def test_rereads_rotated_token_and_claims(
+    def test_rereads_rotated_token_and_claims_after_one_hour(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
     ) -> None:
+        now = [100.0]
+        monkeypatch.setattr("chalkcompute._connect.time.monotonic", lambda: now[0])
         token_file = tmp_path / "identity.jwt"
         first = _identity_jwt("env-one", subject="one")
         second = _identity_jwt("env-two", subject="two")
@@ -352,12 +354,36 @@ class TestConnectClientWebIdentity:
         client = ConnectClient()
         first_metadata = client._grpc_metadata()
         token_file.write_text(second)
-        second_metadata = client._grpc_metadata()
+        now[0] += 3599.0
+        cached_metadata = client._grpc_metadata()
+        now[0] += 1.0
+        refreshed_metadata = client._grpc_metadata()
 
         assert ("authorization", f"Bearer {first}") in first_metadata
         assert ("x-chalk-env-id", "env-one") in first_metadata
-        assert ("authorization", f"Bearer {second}") in second_metadata
-        assert ("x-chalk-env-id", "env-two") in second_metadata
+        assert ("authorization", f"Bearer {first}") in cached_metadata
+        assert ("x-chalk-env-id", "env-one") in cached_metadata
+        assert ("authorization", f"Bearer {second}") in refreshed_metadata
+        assert ("x-chalk-env-id", "env-two") in refreshed_metadata
+
+    def test_changing_identity_file_path_bypasses_cache(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        first_file = tmp_path / "first.jwt"
+        second_file = tmp_path / "second.jwt"
+        first = _identity_jwt("env-one", subject="one")
+        second = _identity_jwt("env-two", subject="two")
+        first_file.write_text(first)
+        second_file.write_text(second)
+        monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(first_file))
+
+        client = ConnectClient()
+        assert ("authorization", f"Bearer {first}") in client._grpc_metadata()
+
+        monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(second_file))
+
+        assert ("authorization", f"Bearer {second}") in client._grpc_metadata()
+        assert ("x-chalk-env-id", "env-two") in client._grpc_metadata()
 
     def test_explicit_environment_overrides_jwt_claim(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
@@ -432,6 +458,9 @@ class TestConnectClientWebIdentity:
         try:
             assert ("authorization", f"Bearer {first}") in (client._metadata or [])
             token_file.write_text(second)
+            assert client._connect is not None
+            assert client._connect._web_identity_cached_at is not None
+            client._connect._web_identity_cached_at -= 60 * 60
             assert ("authorization", f"Bearer {second}") in (client._metadata or [])
             assert ("x-chalk-env-id", "env-two") in (client._metadata or [])
         finally:

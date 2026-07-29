@@ -30,6 +30,8 @@ from chalkcompute._web_identity import (
 
 logger = logging.getLogger(__name__)
 
+_WEB_IDENTITY_CACHE_TTL_SECONDS = 60 * 60
+
 if TYPE_CHECKING:
     import httpx
 
@@ -91,9 +93,9 @@ class ConnectClient:
     """Authenticated Connect-protocol (HTTP/JSON) client for Chalk APIs.
 
     Ambient Chalk credentials are read lazily. A JWT configured through
-    ``CHALK_WEB_IDENTITY_TOKEN_FILE`` takes precedence and is re-read before
-    each request so rotation is observed. Otherwise, service auth or ChalkPy's
-    client credentials and ``~/.chalk.yml`` lookup are used.
+    ``CHALK_WEB_IDENTITY_TOKEN_FILE`` takes precedence and is cached for up to
+    one hour. Otherwise, service auth or ChalkPy's client credentials and
+    ``~/.chalk.yml`` lookup are used.
 
     Examples
     --------
@@ -114,10 +116,20 @@ class ConnectClient:
         self._environment_id_to_name: dict[str, str] = {}
         self._primary_environment: str | None = None
         self._chalk_client = chalk_client
+        self._web_identity_token_file: str | None = None
+        self._web_identity_cached_at: float | None = None
 
     def _ensure_auth(self) -> None:
         identity_token_file = web_identity_token_file_from_env()
         if identity_token_file is not None:
+            if (
+                identity_token_file == self._web_identity_token_file
+                and self._access_token is not None
+                and self._web_identity_cached_at is not None
+                and time.monotonic() - self._web_identity_cached_at
+                < _WEB_IDENTITY_CACHE_TTL_SECONDS
+            ):
+                return
             try:
                 identity = read_web_identity_token(identity_token_file)
             except WebIdentityTokenError as exc:
@@ -137,6 +149,8 @@ class ConnectClient:
             self._grpc_engines = {}
             self._environment_id_to_name = {}
             self._primary_environment = None
+            self._web_identity_token_file = identity_token_file
+            self._web_identity_cached_at = time.monotonic()
             return
 
         if self._access_token is not None:

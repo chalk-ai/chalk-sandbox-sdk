@@ -36,11 +36,7 @@ def web_identity_token_file_from_env() -> str | None:
 
 
 def read_web_identity_token(path: str) -> WebIdentityToken:
-    """Read and decode a Chalk identity JWT.
-
-    The file is deliberately opened on every call so atomic token-file
-    replacement and in-place rotation are both observed.
-    """
+    """Read and decode a Chalk identity JWT."""
     try:
         token = Path(path).read_text(encoding="utf-8").strip()
     except (OSError, UnicodeError) as exc:

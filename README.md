@@ -145,11 +145,12 @@ export CHALK_WEB_IDENTITY_TOKEN_FILE=/var/run/secrets/chalk/identity-token
 export CHALK_API_SERVER=https://api.chalk.ai
 ```
 
-The file is re-read before authenticated operations, so callers do not need to
-recreate clients when the token is replaced. The JWT's `environment_id` claim
-selects the environment unless `CHALK_ENVIRONMENT` or `CHALK_ENVIRONMENT_ID` is
-set explicitly. Queued function calls additionally require
-`CHALK_GRPC_ENGINE`, because identity JWTs do not contain engine-routing data.
+Each SDK client caches the token for up to one hour, then re-reads the file on
+its next authenticated operation. Changing the configured file path bypasses
+the cache. The JWT's `environment_id` claim selects the environment unless
+`CHALK_ENVIRONMENT` or `CHALK_ENVIRONMENT_ID` is set explicitly. Queued
+function calls additionally require `CHALK_GRPC_ENGINE`, because identity JWTs
+do not contain engine-routing data.
 
 ## Sandbox lifecycle
 
