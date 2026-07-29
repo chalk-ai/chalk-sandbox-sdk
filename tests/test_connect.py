@@ -90,15 +90,23 @@ class _TraceApi:
         CLIENT = object()
 
 
-def _identity_jwt(environment_id: str, *, subject: str = "workload") -> str:
+def _identity_jwt(
+    environment_id: str,
+    *,
+    subject: str = "workload",
+    expires_at: object | None = None,
+) -> str:
     def encode(value: object) -> str:
         raw = json.dumps(value, separators=(",", ":")).encode()
         return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
-    return (
-        f"{encode({'alg': 'none', 'typ': 'JWT'})}."
-        f"{encode({'environment_id': environment_id, 'sub': subject})}.signature"
-    )
+    claims: dict[str, object] = {
+        "environment_id": environment_id,
+        "sub": subject,
+    }
+    if expires_at is not None:
+        claims["exp"] = expires_at
+    return f"{encode({'alg': 'none', 'typ': 'JWT'})}.{encode(claims)}.signature"
 
 
 class TestGrpcTargetFromUrl:
@@ -343,10 +351,18 @@ class TestConnectClientWebIdentity:
     def test_rereads_rotated_token_and_claims_after_one_hour(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
     ) -> None:
-        now = [100.0]
-        monkeypatch.setattr("chalkcompute._connect.time.monotonic", lambda: now[0])
+        monotonic_now = [100.0]
+        wall_now = 1_000.0
+        monkeypatch.setattr(
+            "chalkcompute._connect.time.monotonic", lambda: monotonic_now[0]
+        )
+        monkeypatch.setattr("chalkcompute._connect.time.time", lambda: wall_now)
         token_file = tmp_path / "identity.jwt"
-        first = _identity_jwt("env-one", subject="one")
+        first = _identity_jwt(
+            "env-one",
+            subject="one",
+            expires_at=wall_now + 24 * 60 * 60,
+        )
         second = _identity_jwt("env-two", subject="two")
         token_file.write_text(first)
         monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(token_file))
@@ -354,9 +370,9 @@ class TestConnectClientWebIdentity:
         client = ConnectClient()
         first_metadata = client._grpc_metadata()
         token_file.write_text(second)
-        now[0] += 3599.0
+        monotonic_now[0] += 3599.0
         cached_metadata = client._grpc_metadata()
-        now[0] += 1.0
+        monotonic_now[0] += 1.0
         refreshed_metadata = client._grpc_metadata()
 
         assert ("authorization", f"Bearer {first}") in first_metadata
@@ -365,6 +381,33 @@ class TestConnectClientWebIdentity:
         assert ("x-chalk-env-id", "env-one") in cached_metadata
         assert ("authorization", f"Bearer {second}") in refreshed_metadata
         assert ("x-chalk-env-id", "env-two") in refreshed_metadata
+
+    def test_cache_uses_half_of_remaining_token_lifetime(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        monotonic_now = [100.0]
+        wall_now = 1_000.0
+        monkeypatch.setattr(
+            "chalkcompute._connect.time.monotonic", lambda: monotonic_now[0]
+        )
+        monkeypatch.setattr("chalkcompute._connect.time.time", lambda: wall_now)
+        token_file = tmp_path / "identity.jwt"
+        first = _identity_jwt(
+            "env-one",
+            subject="one",
+            expires_at=wall_now + 30 * 60,
+        )
+        second = _identity_jwt("env-two", subject="two")
+        token_file.write_text(first)
+        monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(token_file))
+
+        client = ConnectClient()
+        assert ("authorization", f"Bearer {first}") in client._grpc_metadata()
+        token_file.write_text(second)
+        monotonic_now[0] += 899.0
+        assert ("authorization", f"Bearer {first}") in client._grpc_metadata()
+        monotonic_now[0] += 1.0
+        assert ("authorization", f"Bearer {second}") in client._grpc_metadata()
 
     def test_changing_identity_file_path_bypasses_cache(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
@@ -397,6 +440,18 @@ class TestConnectClientWebIdentity:
         client._ensure_auth()
 
         assert client._env_id == "env-explicit"
+
+    def test_rejects_invalid_exp_claim(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        token_file = tmp_path / "identity.jwt"
+        token_file.write_text(
+            _identity_jwt("env-identity", expires_at="not-a-numeric-date")
+        )
+        monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(token_file))
+
+        with pytest.raises(ConnectError, match="invalid exp claim"):
+            ConnectClient()._ensure_auth()
 
     @pytest.mark.parametrize(
         ("contents", "message"),

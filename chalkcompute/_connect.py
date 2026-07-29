@@ -30,7 +30,7 @@ from chalkcompute._web_identity import (
 
 logger = logging.getLogger(__name__)
 
-_WEB_IDENTITY_CACHE_TTL_SECONDS = 60 * 60
+_WEB_IDENTITY_MAX_CACHE_TTL_SECONDS = 60 * 60
 
 if TYPE_CHECKING:
     import httpx
@@ -93,9 +93,9 @@ class ConnectClient:
     """Authenticated Connect-protocol (HTTP/JSON) client for Chalk APIs.
 
     Ambient Chalk credentials are read lazily. A JWT configured through
-    ``CHALK_WEB_IDENTITY_TOKEN_FILE`` takes precedence and is cached for up to
-    one hour. Otherwise, service auth or ChalkPy's client credentials and
-    ``~/.chalk.yml`` lookup are used.
+    ``CHALK_WEB_IDENTITY_TOKEN_FILE`` takes precedence and is cached for the
+    shorter of one hour or half its remaining lifetime. Otherwise, service
+    auth or ChalkPy's client credentials and ``~/.chalk.yml`` lookup are used.
 
     Examples
     --------
@@ -118,6 +118,7 @@ class ConnectClient:
         self._chalk_client = chalk_client
         self._web_identity_token_file: str | None = None
         self._web_identity_cached_at: float | None = None
+        self._web_identity_cache_ttl_seconds = _WEB_IDENTITY_MAX_CACHE_TTL_SECONDS
 
     def _ensure_auth(self) -> None:
         identity_token_file = web_identity_token_file_from_env()
@@ -127,7 +128,7 @@ class ConnectClient:
                 and self._access_token is not None
                 and self._web_identity_cached_at is not None
                 and time.monotonic() - self._web_identity_cached_at
-                < _WEB_IDENTITY_CACHE_TTL_SECONDS
+                < self._web_identity_cache_ttl_seconds
             ):
                 return
             try:
@@ -151,6 +152,14 @@ class ConnectClient:
             self._primary_environment = None
             self._web_identity_token_file = identity_token_file
             self._web_identity_cached_at = time.monotonic()
+            self._web_identity_cache_ttl_seconds = (
+                _WEB_IDENTITY_MAX_CACHE_TTL_SECONDS
+                if identity.expires_at is None
+                else min(
+                    _WEB_IDENTITY_MAX_CACHE_TTL_SECONDS,
+                    max(0.0, identity.expires_at - time.time()) / 2,
+                )
+            )
             return
 
         if self._access_token is not None:

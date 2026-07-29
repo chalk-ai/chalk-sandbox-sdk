@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,7 @@ class WebIdentityToken:
 
     value: str
     environment_id: str
+    expires_at: float | None
 
 
 def web_identity_token_file_from_env() -> str | None:
@@ -56,7 +58,25 @@ def read_web_identity_token(path: str) -> WebIdentityToken:
             f"JWT in {WEB_IDENTITY_TOKEN_FILE_ENV_VAR} file {path!r} "
             "has no non-empty environment_id claim"
         )
-    return WebIdentityToken(value=token, environment_id=environment_id)
+    expiration = claims.get("exp")
+    if expiration is None:
+        expires_at = None
+    elif (
+        isinstance(expiration, bool)
+        or not isinstance(expiration, (int, float))
+        or not math.isfinite(expiration)
+    ):
+        raise WebIdentityTokenError(
+            f"JWT in {WEB_IDENTITY_TOKEN_FILE_ENV_VAR} file {path!r} "
+            "has an invalid exp claim"
+        )
+    else:
+        expires_at = float(expiration)
+    return WebIdentityToken(
+        value=token,
+        environment_id=environment_id,
+        expires_at=expires_at,
+    )
 
 
 def _decode_jwt_claims(token: str, *, path: str) -> dict[str, Any]:
