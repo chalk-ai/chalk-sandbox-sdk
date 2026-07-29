@@ -62,7 +62,11 @@ from chalkcompute._connect import (
     service_auth_context_from_env,
 )
 from chalkcompute import _local_dev
-from chalkcompute._naming import sanitize_dns_label, validate_dns_label, validate_env
+from chalkcompute._naming import (
+    sanitize_dns_label,
+    validate_dns_label,
+    validate_env,
+)
 from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._remote_function_tracing import (
@@ -1870,6 +1874,12 @@ class RemoteFunction:
         fkey = f"function:{self._func_name}"
         progress_add(fkey, "function", f'Function "{self._func_name}"')
 
+        # Fail fast on the hostname-length limit before the expensive build.
+        # Uses whatever env_id is already resolved (skips if unauthenticated;
+        # the server enforces the limit regardless) — never forces auth here.
+        sg_name = sanitize_dns_label(self._explicit_name or self._func_name)
+        validate_dns_label(sg_name, self._client._env_id)
+
         try:
             # 1. Build deploy image
             deploy_image = self._build_deploy_image()
@@ -1905,8 +1915,6 @@ class RemoteFunction:
 
             # 3. Register function version
             input_schema_proto, output_schema_proto = _build_schemas(self._func)
-
-            sg_name = sanitize_dns_label(self._explicit_name or self._func_name)
 
             handler_cmd = ["chalk-remote-call", "--handler", "handler.handler"]
 

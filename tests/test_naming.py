@@ -2,7 +2,12 @@
 
 import pytest
 
-from chalkcompute._naming import sanitize_dns_label, validate_dns_label, validate_env
+from chalkcompute._naming import (
+    MAX_DNS_LABEL,
+    sanitize_dns_label,
+    validate_dns_label,
+    validate_env,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +140,49 @@ class TestSanitizeDnsLabel:
         # "ab-cd" truncated to 3 would be "ab-", should strip to "ab"
         result = sanitize_dns_label("ab-cd", max_length=3)
         assert result == "ab"
+
+
+# ---------------------------------------------------------------------------
+# validate_dns_label with an environment_id (routable hostname length)
+# ---------------------------------------------------------------------------
+
+
+class TestValidateDnsLabelWithEnvironment:
+    def test_short_name_accepted(self):
+        validate_dns_label("my-func", "test-env")
+
+    def test_no_environment_skips_length_check(self):
+        # Without an env id, only the bare-name shape is validated.
+        name = "a" + "b" * 54  # valid bare name
+        validate_dns_label(name)
+
+    def test_bare_name_valid_but_derived_label_overflows(self):
+        env = "test-env"
+        name = "a" + "b" * 54
+        validate_dns_label(name)
+        assert len(f"{env}-{name}") >= MAX_DNS_LABEL
+        with pytest.raises(ValueError):
+            validate_dns_label(name, env)
+
+    def test_boundary_at_max(self):
+        env = "env"
+        name = "a" * (MAX_DNS_LABEL - len(env) - 2)
+        assert len(f"{env}-{name}") == MAX_DNS_LABEL - 1
+        validate_dns_label(name, env)
+
+    def test_one_over_boundary_rejected(self):
+        env = "env"
+        name = "a" * (MAX_DNS_LABEL - len(env) - 1)
+        with pytest.raises(ValueError):
+            validate_dns_label(name, env)
+
+    def test_error_message_is_actionable(self):
+        with pytest.raises(ValueError) as exc_info:
+            validate_dns_label("x" * 60, "test-env")
+        message = str(exc_info.value)
+        assert "test-env" in message
+        assert str(MAX_DNS_LABEL) in message
+        assert "Shorten" in message
 
 
 # ---------------------------------------------------------------------------
