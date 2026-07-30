@@ -1205,8 +1205,9 @@ class Container:
         timeout: float,
     ) -> None:
         assert self._container_id is not None
-        from chalkcompute._tracing import set_current_span_attribute
+        from chalkcompute._tracing import get_tracer, set_current_span_attribute
 
+        tracer = get_tracer()
         deadline = time.monotonic() + timeout
         request = container_pb.GetContainerRequest(id=self._container_id)
         status_log = _StatusLogger(
@@ -1215,40 +1216,83 @@ class Container:
             progress_key=f"container:{self._name}",
         )
         poll_count = 0
-        while time.monotonic() < deadline:
-            trace_poll = poll_count == 0
-            poll_count += 1
-            try:
-                info = _get_container_info(
-                    self._client,
-                    request,
-                    trace=trace_poll,
+        total_request_seconds = 0.0
+        max_request_seconds = 0.0
+        sleep_seconds = 0.0
+        last_status: str | None = None
+
+        # One span covers the whole readiness wait. A span per poll would attach ~2/sec per
+        # container (~2k/sec across a 1000-container burst) to the boot trace, so instead the
+        # loop's cost is summarized as poll.* attributes here and each observed status change
+        # emits one short child span. Only the first poll propagates this trace downstream.
+        with tracer.start_as_current_span(
+            "chalkcompute.wait_until_running"
+        ) as wait_span:
+
+            def _record(final_status: str) -> None:
+                set_current_span_attribute("chalk.poll_count", poll_count)
+                wait_span.set_attribute("poll.count", poll_count)
+                wait_span.set_attribute(
+                    "poll.total_request_seconds", round(total_request_seconds, 4)
                 )
-            except BaseException:
-                set_current_span_attribute("chalk.poll_count", poll_count)
-                raise
-            self._container_info = info
-            status_log.update(info.status)
-            if info.status == "Running":
-                set_current_span_attribute("chalk.poll_count", poll_count)
-                return
-            if info.status in ("Failed", "Succeeded"):
-                set_current_span_attribute("chalk.poll_count", poll_count)
-                if info.status == "Succeeded" and self._lifetime is not None:
-                    raise ContainerError(
-                        f"Container {self._container_id} expired before becoming ready "
-                        f"(lifetime={self._lifetime!r}). The configured lifetime may be "
-                        f"shorter than pod scheduling time."
+                wait_span.set_attribute(
+                    "poll.max_request_seconds", round(max_request_seconds, 4)
+                )
+                wait_span.set_attribute("poll.sleep_seconds", round(sleep_seconds, 4))
+                wait_span.set_attribute("poll.final_status", final_status)
+
+            while time.monotonic() < deadline:
+                req_start = time.perf_counter()
+                try:
+                    info = _get_container_info(
+                        self._client,
+                        request,
+                        trace=(poll_count == 0),
                     )
-                raise ContainerError(
-                    f"Container {self._container_id} entered {info.status} state"
-                )
-            time.sleep(poll_interval)
-        set_current_span_attribute("chalk.poll_count", poll_count)
-        status = self._container_info.status if self._container_info else "unknown"
-        raise ContainerError(
-            f"Container {self._container_id} timed out after {timeout}s (last status: {status})"
-        )
+                except BaseException:
+                    poll_count += 1
+                    _record(last_status or "unknown")
+                    raise
+                req_seconds = time.perf_counter() - req_start
+                total_request_seconds += req_seconds
+                max_request_seconds = max(max_request_seconds, req_seconds)
+                poll_count += 1
+                self._container_info = info
+                status_log.update(info.status)
+                if info.status != last_status:
+                    with tracer.start_as_current_span(
+                        "chalkcompute.status_transition"
+                    ) as transition_span:
+                        transition_span.set_attribute(
+                            "container.status.from", last_status or "unknown"
+                        )
+                        transition_span.set_attribute(
+                            "container.status.to", info.status
+                        )
+                        transition_span.set_attribute("poll.count", poll_count)
+                    last_status = info.status
+                if info.status == "Running":
+                    _record(info.status)
+                    return
+                if info.status in ("Failed", "Succeeded"):
+                    _record(info.status)
+                    if info.status == "Succeeded" and self._lifetime is not None:
+                        raise ContainerError(
+                            f"Container {self._container_id} expired before becoming ready "
+                            f"(lifetime={self._lifetime!r}). The configured lifetime may be "
+                            f"shorter than pod scheduling time."
+                        )
+                    raise ContainerError(
+                        f"Container {self._container_id} entered {info.status} state"
+                    )
+                time.sleep(poll_interval)
+                sleep_seconds += poll_interval
+            _record(self._container_info.status if self._container_info else "unknown")
+            status = self._container_info.status if self._container_info else "unknown"
+            raise ContainerError(
+                f"Container {self._container_id} timed out after {timeout}s "
+                f"(last status: {status})"
+            )
 
     @_instrumented("chalkcompute.container.exec")
     def exec(
