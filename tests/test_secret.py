@@ -49,11 +49,27 @@ def test_resolve_lazy_secrets_sends_scope_on_every_upsert(
 
 def test_resolve_lazy_secrets_without_scope_omits_scope_field() -> None:
     client = _Client()
-    secrets = [Secret.from_env("EXISTING")]
+    secrets = [Secret.from_chalk_env("EXISTING")]
 
     resolve_lazy_secrets(secrets, client)
 
     assert client.calls == []
+
+
+def test_from_env_is_deprecated_alias_for_from_chalk_env() -> None:
+    with pytest.warns(DeprecationWarning, match="from_chalk_env"):
+        secret = Secret.from_env("MY_SECRET", alias="ALIASED")
+    assert secret == Secret.from_chalk_env("MY_SECRET", alias="ALIASED")
+
+
+def test_from_integration_is_deprecated_alias_for_from_chalk_integration() -> None:
+    with pytest.warns(DeprecationWarning, match="from_chalk_integration"):
+        secret = Secret.from_integration(
+            "prod_postgres", keys=["HOST"], aliases={"HOST": "DB_HOST"}, prefix="PG_"
+        )
+    assert secret == Secret.from_chalk_integration(
+        "prod_postgres", keys=["HOST"], aliases={"HOST": "DB_HOST"}, prefix="PG_"
+    )
 
 
 def test_resolve_lazy_secrets_mid_list_failure_raises_without_deleting(
