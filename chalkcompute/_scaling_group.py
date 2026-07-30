@@ -208,7 +208,7 @@ class ScalingGroup:
         target_cpu_utilization_percentage: int | None = None,
         chalk_client: Any | None = None,
     ) -> None:
-        self._image = image
+        self._image: _Image | str | None = image
         if name is not None:
             validate_dns_label(name)
         self._name = name
@@ -314,7 +314,7 @@ class ScalingGroup:
     @classmethod
     def _make_empty(cls, *, chalk_client: Any | None = None) -> ScalingGroup:
         sg = cls.__new__(cls)
-        sg._image = None  # ty: ignore[invalid-assignment]
+        sg._image = None
         sg._name = None
         sg._cpu = None
         sg._memory = None

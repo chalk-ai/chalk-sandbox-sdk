@@ -1660,6 +1660,8 @@ class RemoteFunction:
         self._call_stub: Any = None
         self._remote_call_client: Any = None
         self._queue_call_client: Any = None
+        self._remote_call_auth_token: str | None = None
+        self._queue_call_auth_token: str | None = None
         self._knowledge_cutoff: str | None = None
 
         self._client = ConnectClient(chalk_client=chalk_client)
@@ -1793,6 +1795,8 @@ class RemoteFunction:
         f._call_stub = None
         f._remote_call_client = None
         f._queue_call_client = None
+        f._remote_call_auth_token = None
+        f._queue_call_auth_token = None
         f._knowledge_cutoff = None
         f._client = ConnectClient(chalk_client=chalk_client)
         return f
@@ -2199,6 +2203,7 @@ class RemoteFunction:
         if direct:
             client = self._remote_call_client
             self._remote_call_client = None
+            self._remote_call_auth_token = None
             if client is not None:
                 self._close_remote_call_client(client)
 
@@ -2211,6 +2216,7 @@ class RemoteFunction:
         if queue:
             client = self._queue_call_client
             self._queue_call_client = None
+            self._queue_call_auth_token = None
             if client is not None:
                 self._close_remote_call_client(client)
 
@@ -2295,7 +2301,10 @@ class RemoteFunction:
         self._call_stub = call_grpc.RemoteCallServiceStub(self._call_channel)
 
     def _remote_call_metadata(self, *, queue: bool) -> list[tuple[str, str]]:
-        service_auth = service_auth_context_from_env()
+        uses_web_identity = (
+            getattr(self._client, "_uses_web_identity_token", lambda: False)() is True
+        )
+        service_auth = None if uses_web_identity else service_auth_context_from_env()
         if service_auth is not None:
             metadata = [("x-chalk-env-id", service_auth.environment_id)]
             if queue:
@@ -2319,10 +2328,27 @@ class RemoteFunction:
 
     def _ensure_remote_call_client(self, *, queue: bool = False) -> Any:
         attr = "_queue_call_client" if queue else "_remote_call_client"
+        token_attr = "_queue_call_auth_token" if queue else "_remote_call_auth_token"
+        uses_web_identity = (
+            getattr(self._client, "_uses_web_identity_token", lambda: False)() is True
+        )
+        current_token: str | None = None
+        if uses_web_identity:
+            self._client._ensure_auth()
+            current_token = self._client._access_token
+
         client = getattr(self, attr)
-        if client is not None and not self._remote_call_client_is_closed(client):
+        token_matches = (
+            not uses_web_identity or getattr(self, token_attr, None) == current_token
+        )
+        if (
+            client is not None
+            and not self._remote_call_client_is_closed(client)
+            and token_matches
+        ):
             return client
         if client is not None:
+            self._close_remote_call_client(client)
             setattr(self, attr, None)
 
         if self._web_url is None:
@@ -2330,7 +2356,7 @@ class RemoteFunction:
 
         from chalkcompute._remote_call_client import RemoteCallClient
 
-        service_auth = service_auth_context_from_env()
+        service_auth = None if uses_web_identity else service_auth_context_from_env()
         if queue:
             if service_auth is None:
                 target, use_tls = self._client.grpc_engine_target()
@@ -2356,6 +2382,7 @@ class RemoteFunction:
             initial_poll_delay_ms=5,
         )
         setattr(self, attr, client)
+        setattr(self, token_attr, current_token)
         return client
 
     def _call_direct_chunks_python_grpc(

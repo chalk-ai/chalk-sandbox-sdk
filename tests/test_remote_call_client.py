@@ -56,6 +56,11 @@ class ServiceAuthDiscoveredEngineConnectClient:
         return "discovered-engine.chalk.test:443", True
 
 
+class RotatingIdentityConnectClient(FakeConnectClient):
+    def _uses_web_identity_token(self) -> bool:
+        return True
+
+
 class RpcConnectClient(FakeConnectClient):
     def __init__(self) -> None:
         self.rpc_calls = []
@@ -713,6 +718,38 @@ def test_api_rpc_call_does_not_require_extra_headers_by_default() -> None:
     fn._client = OldStyleRpcConnectClient()
 
     assert fn._call_via_api_rpc(b"request-ipc") == b"response-ipc"
+
+
+def test_direct_call_rebuilds_client_after_identity_token_rotation(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "chalkcompute._function.service_auth_context_from_env",
+        lambda: ServiceAuthContext(
+            auth_endpoint="https://api.chalk.test",
+            exchange_token="must-not-be-used",
+            environment_id="service-env",
+            requested_permissions=(2, 3, 11),
+            grpc_engine=("service-engine:443", True),
+        ),
+    )
+    FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
+    fn = _remote_function()
+    connect = RotatingIdentityConnectClient()
+    fn._client = connect
+
+    assert fn.remote(41) == 42
+    first = FakeRemoteCallClient.instances[0]
+    connect._access_token = "rotated-token"
+    connect._env_id = "rotated-env"
+    assert fn.remote(42) == 42
+
+    assert first.closed is True
+    assert len(FakeRemoteCallClient.instances) == 2
+    second = FakeRemoteCallClient.instances[1]
+    assert ("authorization", "Bearer rotated-token") in second.metadata
+    assert ("x-chalk-env-id", "rotated-env") in second.metadata
+    assert second.kwargs["exchange_token"] is None
 
 
 def test_queue_call_uses_service_auth_engine_from_environment(monkeypatch) -> None:

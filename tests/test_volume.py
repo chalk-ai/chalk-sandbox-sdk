@@ -37,6 +37,11 @@ class MockConnect(ConnectClient):
         pass
 
 
+class RotatingIdentityConnect(MockConnect):
+    def _uses_web_identity_token(self) -> bool:
+        return True
+
+
 class FakeRpcError(grpc.RpcError):
     def __init__(self, code: grpc.StatusCode) -> None:
         self._code = code
@@ -241,6 +246,20 @@ class TestVolumeClientFromConnect:
 
         assert client._target == "api.chalk.ai:7443"
         client.close()
+
+    def test_metadata_observes_identity_token_rotation(self):
+        connect = RotatingIdentityConnect("https://api.chalk.ai")
+        client = VolumeClient.from_connect(connect)
+        try:
+            assert ("authorization", "Bearer token-123") in client._metadata
+
+            connect._access_token = "rotated-token"
+            connect._env_id = "rotated-env"
+
+            assert ("authorization", "Bearer rotated-token") in client._metadata
+            assert ("x-chalk-env-id", "rotated-env") in client._metadata
+        finally:
+            client.close()
 
     def test_from_connect_called_by_volume_init_default(self):
         client = _make_vol_client()

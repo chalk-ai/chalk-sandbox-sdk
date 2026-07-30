@@ -303,7 +303,10 @@ def _auth_metadata(client: ConnectClient) -> dict[str, str]:
     in-pod we forward the service-auth env context; otherwise we exchange an
     OAuth token via ``ConnectClient`` and attach it as a Bearer header.
     """
-    service_auth = service_auth_context_from_env()
+    uses_web_identity = (
+        getattr(client, "_uses_web_identity_token", lambda: False)() is True
+    )
+    service_auth = None if uses_web_identity else service_auth_context_from_env()
     if service_auth is not None:
         return {"x-chalk-env-id": service_auth.environment_id}
 
