@@ -144,7 +144,7 @@ def test_container_add_local_dir() -> None:
 
 @needs_staging
 def test_container_secret_from_env() -> None:
-    """Secret.from_env() injects a Chalk secret as an env var into the container."""
+    """Secret.from_chalk_env() injects a Chalk secret as an env var into the container."""
     from chalkcompute import SecretScope
     from chalkcompute._connect import ConnectClient
 
@@ -170,7 +170,7 @@ def test_container_secret_from_env() -> None:
         c = Container(
             image=img,
             name=container_name,
-            secrets=[Secret.from_env(secret_name)],
+            secrets=[Secret.from_chalk_env(secret_name)],
         )
         try:
             c.run()

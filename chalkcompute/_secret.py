@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -65,8 +66,8 @@ class Secret:
 
     Examples
     --------
-    >>> Secret.from_env("OPENAI_API_TOKEN")
-    >>> Secret.from_integration("prod_postgres")
+    >>> Secret.from_chalk_env("OPENAI_API_TOKEN")
+    >>> Secret.from_chalk_integration("prod_postgres")
     >>> Secret.from_local_env("OPENAI_API_KEY")
     >>> Secret.from_local_env("OPENAI_API_KEY", env_var_name="API_KEY")
     >>> Secret.from_local_env_file(".env")
@@ -84,7 +85,7 @@ class Secret:
     _env_var_name: str | None = field(default=None, repr=False)
 
     @classmethod
-    def from_env(
+    def from_chalk_env(
         cls,
         name: str,
         *,
@@ -120,7 +121,7 @@ class Secret:
         )
 
     @classmethod
-    def from_integration(
+    def from_chalk_integration(
         cls,
         name: str,
         *,
@@ -155,6 +156,50 @@ class Secret:
             _keys=list(keys or []),
             _aliases=dict(aliases or {}),
             _prefix=prefix,
+        )
+
+    @classmethod
+    def from_env(
+        cls,
+        name: str,
+        *,
+        alias: str | None = None,
+        prefix: str | None = None,
+    ) -> Secret:
+        """Deprecated alias for :meth:`from_chalk_env`.
+
+        .. deprecated::
+            Use :meth:`from_chalk_env` instead.
+        """
+        warnings.warn(
+            "Secret.from_env is deprecated; use Secret.from_chalk_env instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return cls.from_chalk_env(name, alias=alias, prefix=prefix)
+
+    @classmethod
+    def from_integration(
+        cls,
+        name: str,
+        *,
+        keys: list[str] | None = None,
+        aliases: dict[str, str] | None = None,
+        prefix: str | None = None,
+    ) -> Secret:
+        """Deprecated alias for :meth:`from_chalk_integration`.
+
+        .. deprecated::
+            Use :meth:`from_chalk_integration` instead.
+        """
+        warnings.warn(
+            "Secret.from_integration is deprecated; "
+            "use Secret.from_chalk_integration instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return cls.from_chalk_integration(
+            name, keys=keys, aliases=aliases, prefix=prefix
         )
 
     @classmethod
@@ -253,8 +298,8 @@ class Secret:
                 f"Secret.from_local_env({self._local_env_var!r}, env_var_name={name!r})"
             )
         if self._secret_name is not None:
-            return f"Secret.from_env({self._secret_name!r})"
-        return f"Secret.from_integration({self._integration_name!r})"
+            return f"Secret.from_chalk_env({self._secret_name!r})"
+        return f"Secret.from_chalk_integration({self._integration_name!r})"
 
 
 def _parse_env_file(path: str) -> dict[str, str]:
@@ -311,7 +356,7 @@ def resolve_lazy_secrets(
     Returns
     -------
     tuple[list[Secret], list[str]]
-        The resolved secrets (lazy ones replaced with ``from_env`` equivalents)
+        The resolved secrets (lazy ones replaced with ``from_chalk_env`` equivalents)
         and the names of secrets that were upserted.
 
     Raises
@@ -332,14 +377,14 @@ def resolve_lazy_secrets(
             remote_name = secret._env_var_name or local_var
             _upsert_secret(client, remote_name, value, scope)
             upserted_names.append(remote_name)
-            resolved.append(Secret.from_env(remote_name))
+            resolved.append(Secret.from_chalk_env(remote_name))
 
         elif secret._local_env_file is not None:
             env_vars = _parse_env_file(secret._local_env_file)
             for name, value in env_vars.items():
                 _upsert_secret(client, name, value, scope)
                 upserted_names.append(name)
-                resolved.append(Secret.from_env(name))
+                resolved.append(Secret.from_chalk_env(name))
 
         else:
             resolved.append(secret)
