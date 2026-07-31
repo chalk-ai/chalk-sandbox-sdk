@@ -29,6 +29,7 @@ import signal
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 import grpc
@@ -40,6 +41,7 @@ from chalkcompute._connect import (
     raise_for_grpc_error,
 )
 from chalkcompute._container import NetworkPolicy
+from chalkcompute._gen.chalk.container.v1 import service_pb2 as container_pb
 from chalkcompute._gen.chalk.sandbox.v1 import runtime_service_pb2 as runtime_pb
 from chalkcompute._gen.chalk.sandbox.v1 import (
     runtime_service_pb2_grpc as runtime_pb_grpc,
@@ -91,6 +93,13 @@ class ExecError(SandboxError):
     def __init__(self, code: str, message: str) -> None:
         self.code = code
         super().__init__(f"{code}: {message}")
+
+
+class RestartPolicy(Enum):
+    """Policy controlling whether a sandbox restarts after exiting."""
+
+    NEVER = "RESTART_POLICY_NEVER"
+    ALWAYS = "RESTART_POLICY_ALWAYS"
 
 
 # ---------------------------------------------------------------------------
@@ -399,6 +408,7 @@ class Sandbox:
         env: dict[str, str] | None = None,
         volumes: list[tuple[str, str]] | None = None,
         network_policy: NetworkPolicy | None = None,
+        restart_policy: RestartPolicy | None = None,
         chalk_client: Any | None = None,
         sandbox_client: SandboxClient | None = None,
         client: Any | None = None,
@@ -425,6 +435,9 @@ class Sandbox:
         network_policy
             Optional network egress policy. Reuses the same
             :class:`NetworkPolicy` type accepted by :class:`Container`.
+        restart_policy
+            Optional restart behavior. Use :attr:`RestartPolicy.NEVER` or
+            :attr:`RestartPolicy.ALWAYS`.
 
         Examples
         --------
@@ -442,6 +455,7 @@ class Sandbox:
         self._env: dict[str, str] = {}
         self._volumes: list[tuple[str, str]] = []
         self._network_policy: NetworkPolicy | None = None
+        self._restart_policy: RestartPolicy | None = None
         self._chalk_client: Any | None = None
 
         if client is not None or sandbox_id is not None:
@@ -453,6 +467,7 @@ class Sandbox:
                 or env is not None
                 or volumes is not None
                 or network_policy is not None
+                or restart_policy is not None
                 or chalk_client is not None
                 or sandbox_client is not None
             ):
@@ -497,6 +512,8 @@ class Sandbox:
 
         if network_policy is not None and not isinstance(network_policy, NetworkPolicy):
             raise TypeError("network_policy must be a NetworkPolicy")
+        if restart_policy is not None and not isinstance(restart_policy, RestartPolicy):
+            raise TypeError("restart_policy must be a RestartPolicy")
 
         self._client = sandbox_client
         self._image = image
@@ -506,6 +523,7 @@ class Sandbox:
         self._env = dict(env) if env else {}
         self._volumes = [(name, mount_path) for name, mount_path in volumes or []]
         self._network_policy = network_policy
+        self._restart_policy = restart_policy
         self._chalk_client = chalk_client
 
     @property
@@ -604,6 +622,7 @@ class Sandbox:
             env=self._env or None,
             volumes=_volume_mounts_to_proto(self._volumes) if self._volumes else None,
             network_policy=self._network_policy,
+            restart_policy=self._restart_policy,
             wait=wait,
             poll_interval=poll_interval,
             timeout=timeout,
@@ -1014,6 +1033,7 @@ class SandboxClient:
         env: dict[str, str] | None = None,
         volumes: _VolumeMountList | None = None,
         network_policy: NetworkPolicy | None = None,
+        restart_policy: RestartPolicy | None = None,
         wait: bool = True,
         poll_interval: float = 0.5,
         timeout: float = 600.0,
@@ -1043,6 +1063,9 @@ class SandboxClient:
         network_policy
             Optional network egress policy. Reuses the same ``NetworkPolicy``
             type accepted by containers.
+        restart_policy
+            Optional restart behavior. Use ``RestartPolicy.NEVER`` or
+            ``RestartPolicy.ALWAYS``.
         wait
             If ``True``, poll until the sandbox is ready (default ``True``).
         poll_interval
@@ -1058,6 +1081,8 @@ class SandboxClient:
         """
         if network_policy is not None and not isinstance(network_policy, NetworkPolicy):
             raise TypeError("network_policy must be a NetworkPolicy")
+        if restart_policy is not None and not isinstance(restart_policy, RestartPolicy):
+            raise TypeError("restart_policy must be a RestartPolicy")
 
         req = pb.CreateSandboxRequest()
         if isinstance(image, Image):
@@ -1087,6 +1112,12 @@ class SandboxClient:
             from google.protobuf.json_format import ParseDict
 
             ParseDict(network_policy.to_dict(), req.network_policy)
+        if restart_policy is not None:
+            req.restart_policy = (
+                container_pb.RESTART_POLICY_NEVER
+                if restart_policy is RestartPolicy.NEVER
+                else container_pb.RESTART_POLICY_ALWAYS
+            )
 
         resp = self._stub.CreateSandbox(req, metadata=self._metadata)
         info = _pb_to_sandbox_info(resp.sandbox)

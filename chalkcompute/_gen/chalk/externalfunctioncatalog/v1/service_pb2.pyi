@@ -5,6 +5,7 @@ from chalkcompute._gen.chalk.runtime.v1 import (
     remote_python_call_pb2 as _remote_python_call_pb2,
 )
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb2 as _service_pb2
+from chalkcompute._gen.chalk.volume.v2 import volume_pb2 as _volume_pb2
 from google.protobuf import struct_pb2 as _struct_pb2
 from google.protobuf import timestamp_pb2 as _timestamp_pb2
 from google.protobuf.internal import containers as _containers
@@ -269,17 +270,22 @@ class CreateExternalFunctionVersionRequest(_message.Message):
         "output_arrow_schema",
         "spec",
         "config",
+        "volume_commits",
     )
     FUNCTION_NAME_FIELD_NUMBER: _ClassVar[int]
     INPUT_ARROW_SCHEMA_FIELD_NUMBER: _ClassVar[int]
     OUTPUT_ARROW_SCHEMA_FIELD_NUMBER: _ClassVar[int]
     SPEC_FIELD_NUMBER: _ClassVar[int]
     CONFIG_FIELD_NUMBER: _ClassVar[int]
+    VOLUME_COMMITS_FIELD_NUMBER: _ClassVar[int]
     function_name: str
     input_arrow_schema: _arrow_pb2.Schema
     output_arrow_schema: _arrow_pb2.Schema
     spec: _service_pb2.ScalingGroupSpec
     config: FunctionConfig
+    volume_commits: _containers.RepeatedCompositeFieldContainer[
+        _volume_pb2.CommitIntent
+    ]
     def __init__(
         self,
         function_name: _Optional[str] = ...,
@@ -287,6 +293,9 @@ class CreateExternalFunctionVersionRequest(_message.Message):
         output_arrow_schema: _Optional[_Union[_arrow_pb2.Schema, _Mapping]] = ...,
         spec: _Optional[_Union[_service_pb2.ScalingGroupSpec, _Mapping]] = ...,
         config: _Optional[_Union[FunctionConfig, _Mapping]] = ...,
+        volume_commits: _Optional[
+            _Iterable[_Union[_volume_pb2.CommitIntent, _Mapping]]
+        ] = ...,
     ) -> None: ...
 
 class CreateExternalFunctionVersionResponse(_message.Message):
