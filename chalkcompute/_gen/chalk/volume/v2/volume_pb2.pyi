@@ -50,6 +50,11 @@ class UploadedObjectKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     UPLOADED_OBJECT_KIND_CHUNK: _ClassVar[UploadedObjectKind]
     UPLOADED_OBJECT_KIND_PACK: _ClassVar[UploadedObjectKind]
 
+class VolumeKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    VOLUME_KIND_UNSPECIFIED: _ClassVar[VolumeKind]
+    VOLUME_KIND_SOURCE_CODE: _ClassVar[VolumeKind]
+
 VOLUME_ACCESS_MODE_UNSPECIFIED: VolumeAccessMode
 VOLUME_ACCESS_MODE_READ_ONLY: VolumeAccessMode
 VOLUME_ACCESS_MODE_READ_WRITE: VolumeAccessMode
@@ -69,6 +74,8 @@ COMMIT_RESULT_ABORTED: CommitResult
 UPLOADED_OBJECT_KIND_UNSPECIFIED: UploadedObjectKind
 UPLOADED_OBJECT_KIND_CHUNK: UploadedObjectKind
 UPLOADED_OBJECT_KIND_PACK: UploadedObjectKind
+VOLUME_KIND_UNSPECIFIED: VolumeKind
+VOLUME_KIND_SOURCE_CODE: VolumeKind
 
 class VolumeInfo(_message.Message):
     __slots__ = (
@@ -676,10 +683,16 @@ class CommitStatus(_message.Message):
     ) -> None: ...
 
 class CreateVolumeRequest(_message.Message):
-    __slots__ = ("name",)
+    __slots__ = ("name", "volume_type")
     NAME_FIELD_NUMBER: _ClassVar[int]
+    VOLUME_TYPE_FIELD_NUMBER: _ClassVar[int]
     name: str
-    def __init__(self, name: _Optional[str] = ...) -> None: ...
+    volume_type: VolumeKind
+    def __init__(
+        self,
+        name: _Optional[str] = ...,
+        volume_type: _Optional[_Union[VolumeKind, str]] = ...,
+    ) -> None: ...
 
 class CreateVolumeResponse(_message.Message):
     __slots__ = ("volume",)
@@ -714,13 +727,18 @@ class GetVolumeResponse(_message.Message):
     ) -> None: ...
 
 class ListVolumesRequest(_message.Message):
-    __slots__ = ("limit", "cursor")
+    __slots__ = ("limit", "cursor", "name_prefix")
     LIMIT_FIELD_NUMBER: _ClassVar[int]
     CURSOR_FIELD_NUMBER: _ClassVar[int]
+    NAME_PREFIX_FIELD_NUMBER: _ClassVar[int]
     limit: int
     cursor: str
+    name_prefix: str
     def __init__(
-        self, limit: _Optional[int] = ..., cursor: _Optional[str] = ...
+        self,
+        limit: _Optional[int] = ...,
+        cursor: _Optional[str] = ...,
+        name_prefix: _Optional[str] = ...,
     ) -> None: ...
 
 class ListedVolume(_message.Message):

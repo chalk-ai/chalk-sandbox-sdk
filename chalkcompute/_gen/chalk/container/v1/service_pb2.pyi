@@ -22,6 +22,12 @@ class ComputeClass(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     COMPUTE_CLASS_K8S: _ClassVar[ComputeClass]
     COMPUTE_CLASS_HOST: _ClassVar[ComputeClass]
 
+class RestartPolicy(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    RESTART_POLICY_UNSPECIFIED: _ClassVar[RestartPolicy]
+    RESTART_POLICY_NEVER: _ClassVar[RestartPolicy]
+    RESTART_POLICY_ALWAYS: _ClassVar[RestartPolicy]
+
 class KernelPolicy(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     KERNEL_POLICY_UNSPECIFIED: _ClassVar[KernelPolicy]
@@ -39,6 +45,9 @@ class ProcessState(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
 COMPUTE_CLASS_UNSPECIFIED: ComputeClass
 COMPUTE_CLASS_K8S: ComputeClass
 COMPUTE_CLASS_HOST: ComputeClass
+RESTART_POLICY_UNSPECIFIED: RestartPolicy
+RESTART_POLICY_NEVER: RestartPolicy
+RESTART_POLICY_ALWAYS: RestartPolicy
 KERNEL_POLICY_UNSPECIFIED: KernelPolicy
 KERNEL_POLICY_RESTRICTED: KernelPolicy
 KERNEL_POLICY_OPEN: KernelPolicy
@@ -64,21 +73,24 @@ class ResourceLimits(_message.Message):
     ) -> None: ...
 
 class VolumeMount(_message.Message):
-    __slots__ = ("name", "mount_path", "type", "size_limit")
+    __slots__ = ("name", "mount_path", "type", "size_limit", "version_id")
     NAME_FIELD_NUMBER: _ClassVar[int]
     MOUNT_PATH_FIELD_NUMBER: _ClassVar[int]
     TYPE_FIELD_NUMBER: _ClassVar[int]
     SIZE_LIMIT_FIELD_NUMBER: _ClassVar[int]
+    VERSION_ID_FIELD_NUMBER: _ClassVar[int]
     name: str
     mount_path: str
     type: str
     size_limit: str
+    version_id: int
     def __init__(
         self,
         name: _Optional[str] = ...,
         mount_path: _Optional[str] = ...,
         type: _Optional[str] = ...,
         size_limit: _Optional[str] = ...,
+        version_id: _Optional[int] = ...,
     ) -> None: ...
 
 class SecretRef(_message.Message):
@@ -132,6 +144,8 @@ class ChalkContainerSpec(_message.Message):
         "network_policy",
         "compute_class",
         "startup_probe",
+        "readiness_probe",
+        "restart_policy",
     )
     class TagsEntry(_message.Message):
         __slots__ = ("key", "value")
@@ -171,6 +185,8 @@ class ChalkContainerSpec(_message.Message):
     NETWORK_POLICY_FIELD_NUMBER: _ClassVar[int]
     COMPUTE_CLASS_FIELD_NUMBER: _ClassVar[int]
     STARTUP_PROBE_FIELD_NUMBER: _ClassVar[int]
+    READINESS_PROBE_FIELD_NUMBER: _ClassVar[int]
+    RESTART_POLICY_FIELD_NUMBER: _ClassVar[int]
     name: str
     image: str
     entrypoint: _containers.RepeatedScalarFieldContainer[str]
@@ -189,6 +205,8 @@ class ChalkContainerSpec(_message.Message):
     network_policy: NetworkPolicy
     compute_class: ComputeClass
     startup_probe: StartupProbe
+    readiness_probe: ReadinessProbe
+    restart_policy: RestartPolicy
     def __init__(
         self,
         name: _Optional[str] = ...,
@@ -209,6 +227,8 @@ class ChalkContainerSpec(_message.Message):
         network_policy: _Optional[_Union[NetworkPolicy, _Mapping]] = ...,
         compute_class: _Optional[_Union[ComputeClass, str]] = ...,
         startup_probe: _Optional[_Union[StartupProbe, _Mapping]] = ...,
+        readiness_probe: _Optional[_Union[ReadinessProbe, _Mapping]] = ...,
+        restart_policy: _Optional[_Union[RestartPolicy, str]] = ...,
     ) -> None: ...
 
 class StartupProbe(_message.Message):
@@ -234,6 +254,39 @@ class GrpcProbe(_message.Message):
     METHOD_FIELD_NUMBER: _ClassVar[int]
     method: str
     def __init__(self, method: _Optional[str] = ...) -> None: ...
+
+class ReadinessProbe(_message.Message):
+    __slots__ = (
+        "http",
+        "grpc",
+        "period_seconds",
+        "timeout_seconds",
+        "failure_threshold",
+    )
+    HTTP_FIELD_NUMBER: _ClassVar[int]
+    GRPC_FIELD_NUMBER: _ClassVar[int]
+    PERIOD_SECONDS_FIELD_NUMBER: _ClassVar[int]
+    TIMEOUT_SECONDS_FIELD_NUMBER: _ClassVar[int]
+    FAILURE_THRESHOLD_FIELD_NUMBER: _ClassVar[int]
+    http: HttpProbe
+    grpc: GrpcHealthProbe
+    period_seconds: int
+    timeout_seconds: int
+    failure_threshold: int
+    def __init__(
+        self,
+        http: _Optional[_Union[HttpProbe, _Mapping]] = ...,
+        grpc: _Optional[_Union[GrpcHealthProbe, _Mapping]] = ...,
+        period_seconds: _Optional[int] = ...,
+        timeout_seconds: _Optional[int] = ...,
+        failure_threshold: _Optional[int] = ...,
+    ) -> None: ...
+
+class GrpcHealthProbe(_message.Message):
+    __slots__ = ("service",)
+    SERVICE_FIELD_NUMBER: _ClassVar[int]
+    service: str
+    def __init__(self, service: _Optional[str] = ...) -> None: ...
 
 class ContainerSecurityPolicy(_message.Message):
     __slots__ = ("kernel_policy",)
