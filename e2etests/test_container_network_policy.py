@@ -105,7 +105,6 @@ FORWARDING_POLICY_CASE_NAMES = [
     "rule-combinations",
 ]
 ROUTE_BLOCK_READY_CASE_NAMES = {
-    "denyall",
     "subnets-only",
     "deny-route-over-allowed-route",
     "deny-route-over-allowed-host",
@@ -334,6 +333,11 @@ def _stop_quietly(container: Container) -> None:
 
 
 def _wait_for_network_policy_ready(container: Container, case_name: str) -> None:
+    if case_name == "denyall":
+        # An empty policy disables HOST networking, so there is no DNS or HTTP
+        # policy proxy to wait for.
+        return
+
     deadline = time.monotonic() + 60
     last_stdout = ""
     last_stderr = ""
@@ -580,7 +584,11 @@ def _build_policy_case(
             _standard_policy_probes(targets, allow_all=True),
         )
     if name == "denyall":
-        return PolicyCase(name, NetworkPolicy(), _standard_policy_probes(targets))
+        return PolicyCase(
+            name,
+            NetworkPolicy(),
+            _standard_policy_probes(targets, dns_expected_ok=False),
+        )
     if name == "subnets-only":
         return PolicyCase(
             name,
@@ -683,12 +691,18 @@ def _standard_policy_probes(
     *,
     allowed_categories: set[str] | None = None,
     allow_all: bool = False,
+    dns_expected_ok: bool = True,
 ) -> list[DnsProbe | HttpProbe]:
     allowed_categories = allowed_categories or set()
     probes: list[DnsProbe | HttpProbe] = []
     for idx, domain in enumerate(ALLOWED_DOMAINS, 1):
         probes.append(
-            _dns_probe("dns_allowed_domain_" + str(idx), "allowed_domain", domain)
+            _dns_probe(
+                "dns_allowed_domain_" + str(idx),
+                "allowed_domain",
+                domain,
+                expected_ok=dns_expected_ok,
+            )
         )
         probes.append(
             _http_probe(
@@ -711,7 +725,12 @@ def _standard_policy_probes(
 
     for idx, domain in enumerate(targets.blocked_domains, 1):
         probes.append(
-            _dns_probe("dns_blocked_domain_" + str(idx), "blocked_domain", domain)
+            _dns_probe(
+                "dns_blocked_domain_" + str(idx),
+                "blocked_domain",
+                domain,
+                expected_ok=dns_expected_ok,
+            )
         )
         probes.append(
             _http_probe(
@@ -767,8 +786,19 @@ def _denied_allowed_cidr_probes(targets: PolicyTargets) -> list[HttpProbe]:
     return probes
 
 
-def _dns_probe(name: str, category: str, domain: str) -> DnsProbe:
-    return DnsProbe(name=name, category=category, expected_ok=True, domain=domain)
+def _dns_probe(
+    name: str,
+    category: str,
+    domain: str,
+    *,
+    expected_ok: bool = True,
+) -> DnsProbe:
+    return DnsProbe(
+        name=name,
+        category=category,
+        expected_ok=expected_ok,
+        domain=domain,
+    )
 
 
 def _http_probe(
