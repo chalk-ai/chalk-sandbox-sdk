@@ -9,7 +9,9 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Mapping
 from urllib.parse import urlparse
 
@@ -41,6 +43,170 @@ if TYPE_CHECKING:
 
 class ConnectError(Exception):
     """Raised by ConnectClient operations."""
+
+
+@dataclass(frozen=True)
+class _ServiceAuthCredentials:
+    api_server: str
+    exchange_token: str
+    requested_permissions: tuple[int, ...]
+    environment_id: str
+
+
+@dataclass(frozen=True)
+class _ClientCredentials:
+    api_server: str
+    client_id: str
+    client_secret: str
+    requested_environment: str
+
+
+@dataclass(frozen=True)
+class _AuthState:
+    """The result of a token exchange, shared process-wide."""
+
+    api_server: str
+    access_token: str
+    env_id: str
+    headers: dict[str, str]
+    grpc_engines: dict[str, str]
+    environment_id_to_name: dict[str, str]
+    primary_environment: str | None
+
+
+# A ConnectClient may now be shared across threads (see Container's ``client``
+# argument), and _ensure_auth updates seven attributes that callers read
+# together. The lock plus the build-then-apply split in _apply_auth_state keeps
+# a concurrent reader from observing a half-written token.
+#
+# Tokens are deliberately *not* cached process-wide. Doing so would collapse N
+# identical exchanges into one, but the SDK never reads ``expires_in``, so a
+# cached token would be held past its lifetime and a long-running process would
+# start seeing 401s. Since exchanges now go over the shared pool they cost a
+# request rather than a socket, which is cheap enough to leave alone.
+_auth_lock = threading.RLock()
+
+
+def _is_retry_safe_method(method: str) -> bool:
+    """Return whether re-issuing ``method`` is free of side effects.
+
+    Pooled connections can be closed by the load balancer mid-request, and the
+    client cannot tell whether the server processed the request first. Reads
+    are safe to repeat; writes are not, since a retried ``CreateContainer``
+    would leak a container. Chalk's Connect services follow the usual naming
+    convention, so the ``Get``/``List`` prefixes identify reads without a
+    hand-maintained list that would drift as methods are added.
+
+    ``GetOrBuildCustomImage`` is included by that rule and belongs there: it is
+    keyed on the image spec and returns the cached build when one exists.
+    """
+    return method.startswith(("Get", "List"))
+
+
+def _resolve_environment_id(
+    environment: str,
+    grpc_engines: Mapping[str, str],
+    environment_id_to_name: Mapping[str, str],
+) -> str:
+    if not environment:
+        return ""
+    if environment in grpc_engines or environment in environment_id_to_name:
+        return environment
+
+    lower_environment = environment.lower()
+    matches = [
+        env_id
+        for env_id, env_name in environment_id_to_name.items()
+        if env_name.lower() == lower_environment
+    ]
+    if len(matches) > 1:
+        raise ConnectError(
+            f"Multiple Chalk environments match {environment!r}: {matches}"
+        )
+    if len(matches) == 1:
+        return matches[0]
+    return environment
+
+
+def _exchange_token(
+    credentials: _ServiceAuthCredentials | _ClientCredentials,
+) -> _AuthState:
+    """Perform a token exchange and return the resulting auth state."""
+    from chalkcompute import _http
+
+    api_server = credentials.api_server
+    primary_environment: str | None = None
+
+    if isinstance(credentials, _ServiceAuthCredentials):
+        resp = _http.post(
+            f"{api_server}/chalk.server.v1.AuthService/GetInternalWorkingToken",
+            json={
+                "requestedPermissions": list(credentials.requested_permissions),
+            },
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {credentials.exchange_token}",
+                "Content-Type": "application/json",
+                "X-Chalk-Server": "go-api",
+            },
+            timeout=30,
+            retry_safe=True,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        access_token = data.get("accessToken") or data["access_token"]
+        grpc_engines = _string_map(
+            data.get("grpcEngines") or data.get("grpc_engines") or data.get("engines"),
+        )
+        environment_id_to_name = _string_map(
+            data.get("environment_id_to_name") or data.get("environmentIdToName"),
+        )
+        requested_environment = credentials.environment_id
+    else:
+        resp = _http.post(
+            f"{api_server}/v1/oauth/token",
+            json={
+                "client_id": credentials.client_id,
+                "client_secret": credentials.client_secret,
+                "grant_type": "client_credentials",
+            },
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "X-Chalk-Server": "go-api",
+            },
+            timeout=30,
+            retry_safe=True,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        access_token = data["access_token"]
+        primary_environment = data.get("primary_environment")
+        grpc_engines = _string_map(
+            data.get("grpc_engines") or data.get("engines"),
+        )
+        environment_id_to_name = _string_map(data.get("environment_id_to_name"))
+        requested_environment = (
+            credentials.requested_environment or primary_environment or ""
+        )
+
+    env_id = _resolve_environment_id(
+        requested_environment, grpc_engines, environment_id_to_name
+    )
+    return _AuthState(
+        api_server=api_server,
+        access_token=access_token,
+        env_id=env_id,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {access_token}",
+            "X-Chalk-Env-Id": env_id or "",
+            "X-Chalk-Server": "go-api",
+        },
+        grpc_engines=grpc_engines,
+        environment_id_to_name=environment_id_to_name,
+        primary_environment=primary_environment,
+    )
 
 
 def service_auth_context_from_env() -> ServiceAuthContext | None:
@@ -165,50 +331,29 @@ class ConnectClient:
         if self._access_token is not None:
             return
 
-        import httpx
+        with _auth_lock:
+            # Another thread may have authenticated this instance while we
+            # waited for the lock.
+            if self._access_token is not None:
+                return
+            self._apply_auth_state(_exchange_token(self._resolve_credentials()))
 
+    def _resolve_credentials(self) -> _ServiceAuthCredentials | _ClientCredentials:
         service_auth = service_auth_context_from_env()
         if service_auth is not None:
-            self._api_server = service_auth.auth_endpoint.rstrip("/")
-            resp = httpx.post(
-                f"{self._api_server}/chalk.server.v1.AuthService/GetInternalWorkingToken",
-                json={
-                    "requestedPermissions": list(service_auth.requested_permissions),
-                },
-                headers={
-                    "Accept": "application/json",
-                    "Authorization": f"Bearer {service_auth.exchange_token}",
-                    "Content-Type": "application/json",
-                    "X-Chalk-Server": "go-api",
-                },
-                timeout=30,
+            return _ServiceAuthCredentials(
+                api_server=service_auth.auth_endpoint.rstrip("/"),
+                exchange_token=service_auth.exchange_token,
+                requested_permissions=tuple(service_auth.requested_permissions),
+                environment_id=service_auth.environment_id,
             )
-            resp.raise_for_status()
-            data = resp.json()
-            self._access_token = data.get("accessToken") or data["access_token"]
-            self._grpc_engines = _string_map(
-                data.get("grpcEngines")
-                or data.get("grpc_engines")
-                or data.get("engines"),
-            )
-            self._environment_id_to_name = _string_map(
-                data.get("environment_id_to_name") or data.get("environmentIdToName"),
-            )
-            self._env_id = self._resolve_environment_id(service_auth.environment_id)
-            self._headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self._access_token}",
-                "X-Chalk-Env-Id": self._env_id or "",
-                "X-Chalk-Server": "go-api",
-            }
-            return
 
         token = (
             None
             if self._chalk_client is not None
             else load_token(None, None, None, None)
         )
-        self._api_server = (
+        api_server = (
             token.apiServer
             if token is not None
             else os.environ.get("CHALK_API_SERVER", "")
@@ -234,8 +379,8 @@ class ConnectClient:
             if cc._client_id is None or cc._client_secret is None:
                 if hasattr(cc, "_exchange_credentials"):
                     cc._exchange_credentials()
-            if not self._api_server:
-                self._api_server = cc._api_server or ""
+            if not api_server:
+                api_server = cc._api_server or ""
             if not client_id:
                 client_id = cc._client_id or ""
             if not client_secret:
@@ -247,67 +392,30 @@ class ConnectClient:
                     or ""
                 )
 
-        if not self._api_server or not client_id or not client_secret:
+        if not api_server or not client_id or not client_secret:
+            self._api_server = api_server or None
             raise ConnectError(
                 "No Chalk credentials found. Set CHALK_CLIENT_ID/CHALK_CLIENT_SECRET "
                 "environment variables, run `chalk login`, or pass a ChalkClient instance."
             )
 
-        resp = httpx.post(
-            f"{self._api_server}/v1/oauth/token",
-            json={
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "grant_type": "client_credentials",
-            },
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-                "X-Chalk-Server": "go-api",
-            },
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        self._access_token = data["access_token"]
-        self._primary_environment = data.get("primary_environment")
-        self._grpc_engines = _string_map(
-            data.get("grpc_engines") or data.get("engines"),
-        )
-        self._environment_id_to_name = _string_map(data.get("environment_id_to_name"))
-        self._env_id = self._resolve_environment_id(
-            requested_env or self._primary_environment or ""
+        return _ClientCredentials(
+            api_server=api_server,
+            client_id=client_id,
+            client_secret=client_secret,
+            requested_environment=requested_env or "",
         )
 
-        self._headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self._access_token}",
-            "X-Chalk-Env-Id": self._env_id or "",
-            "X-Chalk-Server": "go-api",
-        }
-
-    def _resolve_environment_id(self, environment: str) -> str:
-        if not environment:
-            return ""
-        if (
-            environment in self._grpc_engines
-            or environment in self._environment_id_to_name
-        ):
-            return environment
-
-        lower_environment = environment.lower()
-        matches = [
-            env_id
-            for env_id, env_name in self._environment_id_to_name.items()
-            if env_name.lower() == lower_environment
-        ]
-        if len(matches) > 1:
-            raise ConnectError(
-                f"Multiple Chalk environments match {environment!r}: {matches}"
-            )
-        if len(matches) == 1:
-            return matches[0]
-        return environment
+    def _apply_auth_state(self, state: _AuthState) -> None:
+        # Copied rather than aliased: the cached state is shared by every
+        # ConnectClient in the process and must stay immutable.
+        self._api_server = state.api_server
+        self._access_token = state.access_token
+        self._env_id = state.env_id
+        self._headers = dict(state.headers)
+        self._grpc_engines = dict(state.grpc_engines)
+        self._environment_id_to_name = dict(state.environment_id_to_name)
+        self._primary_environment = state.primary_environment
 
     def grpc_engine_target(self) -> tuple[str, bool]:
         """Return the active environment's gRPC engine target and TLS mode."""
@@ -355,6 +463,7 @@ class ConnectClient:
         body: dict[str, Any],
         timeout: float = 30,
         extra_headers: Mapping[str, str] | None = None,
+        retry_safe: bool | None = None,
     ) -> httpx.Response:
         """Make a Connect-protocol RPC call.
 
@@ -371,14 +480,17 @@ class ConnectClient:
         extra_headers
             Additional request headers. These are merged per call and do not
             mutate the client's cached auth headers.
+        retry_safe
+            Whether re-issuing this RPC is free of side effects, which decides
+            whether a mid-flight connection close is retried. Defaults to
+            :func:`_is_retry_safe_method`.
 
         Returns
         -------
         httpx.Response
             The raw HTTP response from the Connect endpoint.
         """
-        import httpx
-
+        from chalkcompute import _http
         from chalkcompute._tracing import get_tracer
 
         with get_tracer().start_as_current_span("chalkcompute.rpc") as span:
@@ -390,11 +502,14 @@ class ConnectClient:
             headers = self._headers
             if extra_headers:
                 headers = {**headers, **extra_headers}
-            resp = httpx.post(
+            resp = _http.post(
                 f"{self._api_server}/{service}/{method}",
                 json=body,
                 headers=headers,
                 timeout=timeout,
+                retry_safe=(
+                    _is_retry_safe_method(method) if retry_safe is None else retry_safe
+                ),
             )
             span.set_attribute("http.response.status_code", resp.status_code)
             if resp.status_code >= 400:

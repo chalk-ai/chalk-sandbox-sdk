@@ -2,6 +2,7 @@ import contextlib
 import base64
 import json
 import sys
+import time
 import types
 from typing import Any
 
@@ -174,7 +175,7 @@ class TestConnectClientGrpcEngineTarget:
         monkeypatch.setenv("CHALK_CLIENT_SECRET", "client-secret")
         monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-1")
         monkeypatch.setattr(
-            "httpx.post",
+            "chalkcompute._http.post",
             lambda *args, **kwargs: _TokenResponse(
                 {
                     "access_token": "token",
@@ -196,7 +197,7 @@ class TestConnectClientGrpcEngineTarget:
         monkeypatch.setenv("CHALK_CLIENT_SECRET", "client-secret")
         monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "staging")
         monkeypatch.setattr(
-            "httpx.post",
+            "chalkcompute._http.post",
             lambda *args, **kwargs: _TokenResponse(
                 {
                     "access_token": "token",
@@ -243,7 +244,7 @@ tokens:
                 }
             )
 
-        monkeypatch.setattr("httpx.post", fake_post)
+        monkeypatch.setattr("chalkcompute._http.post", fake_post)
 
         client = ConnectClient()
         client._ensure_auth()
@@ -302,7 +303,7 @@ tokens:
                 }
             )
 
-        monkeypatch.setattr("httpx.post", fake_post)
+        monkeypatch.setattr("chalkcompute._http.post", fake_post)
 
         ConnectClient()._ensure_auth()
 
@@ -329,7 +330,7 @@ class TestConnectClientWebIdentity:
             ),
         )
         monkeypatch.setattr(
-            "httpx.post",
+            "chalkcompute._http.post",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(
                 AssertionError("identity JWTs must not be exchanged")
             ),
@@ -682,7 +683,7 @@ class TestConnectClientTracing:
             "chalkcompute._tracing.current_trace_metadata",
             fail_current_trace_metadata,
         )
-        monkeypatch.setattr("httpx.post", fake_post)
+        monkeypatch.setattr("chalkcompute._http.post", fake_post)
 
         self._client(monkeypatch).rpc("svc", "Method", {})
 
@@ -697,7 +698,7 @@ class TestConnectClientTracing:
             posted["kwargs"] = kwargs
             return _RPCResponse()
 
-        monkeypatch.setattr("httpx.post", fake_post)
+        monkeypatch.setattr("chalkcompute._http.post", fake_post)
 
         client = self._client(monkeypatch)
         client.rpc(
@@ -733,7 +734,7 @@ class TestConnectClientServiceAuth:
             posted["kwargs"] = kwargs
             return _TokenResponse({"accessToken": "working-token"})
 
-        monkeypatch.setattr("httpx.post", fake_post)
+        monkeypatch.setattr("chalkcompute._http.post", fake_post)
 
         client = ConnectClient()
         client._ensure_auth()
@@ -768,7 +769,7 @@ class TestConnectClientServiceAuth:
                 }
             )
 
-        monkeypatch.setattr("httpx.post", fake_post)
+        monkeypatch.setattr("chalkcompute._http.post", fake_post)
 
         target, use_tls = ConnectClient().grpc_engine_target()
 
@@ -816,7 +817,7 @@ class TestChalkClientFromEnv:
             posted["kwargs"] = kwargs
             return _TokenResponse({"accessToken": "working-token"})
 
-        monkeypatch.setattr("httpx.post", fake_post)
+        monkeypatch.setattr("chalkcompute._http.post", fake_post)
 
         client = chalk_client_from_env()
 
@@ -852,7 +853,7 @@ class TestChalkClientFromEnv:
             posted["called"] = True
             return _TokenResponse({"accessToken": "working-token"})
 
-        monkeypatch.setattr("httpx.post", fake_post)
+        monkeypatch.setattr("chalkcompute._http.post", fake_post)
 
         client = chalk_client_from_env(
             additional_headers={"Authorization": "Bearer explicit-token"},
@@ -895,7 +896,7 @@ class TestSandboxClientFromEnv:
         monkeypatch.setenv("CHALK_CLIENT_SECRET", "client-secret")
         monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-1")
         monkeypatch.setattr(
-            "httpx.post",
+            "chalkcompute._http.post",
             lambda *args, **kwargs: _TokenResponse(
                 {
                     "access_token": "token",
@@ -910,3 +911,101 @@ class TestSandboxClientFromEnv:
             assert client._target == "localhost:18080"
         finally:
             client.close()
+
+
+class TestConnectClientAuthConcurrency:
+    """A ConnectClient may be shared across threads (Container's ``client``)."""
+
+    @pytest.fixture(autouse=True)
+    def disable_service_auth(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "chalkcompute._connect.resolve_service_auth_context", lambda: None
+        )
+        monkeypatch.delenv("CHALK_WEB_IDENTITY_TOKEN_FILE", raising=False)
+
+    @staticmethod
+    def _set_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CHALK_API_SERVER", "https://api.staging.chalk.dev")
+        monkeypatch.setenv("CHALK_CLIENT_ID", "client-id")
+        monkeypatch.setenv("CHALK_CLIENT_SECRET", "client-secret")
+        monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-1")
+
+    def test_concurrent_first_use_exchanges_one_token(self, monkeypatch):
+        import threading
+
+        self._set_credentials(monkeypatch)
+        exchanges: list[float] = []
+        start = threading.Barrier(8)
+
+        def fake_post(*args, **kwargs):
+            exchanges.append(time.monotonic())
+            # Widen the window a racing thread could slip through.
+            time.sleep(0.02)
+            return _TokenResponse(
+                {
+                    "access_token": "token",
+                    "primary_environment": "env-1",
+                    "environment_id_to_name": {"env-1": "Staging"},
+                }
+            )
+
+        monkeypatch.setattr("chalkcompute._http.post", fake_post)
+
+        client = ConnectClient()
+        errors: list[BaseException] = []
+
+        def authenticate() -> None:
+            try:
+                start.wait(timeout=5)
+                client._ensure_auth()
+            except BaseException as exc:  # noqa: BLE001 - surfaced below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=authenticate) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        assert errors == []
+        assert len(exchanges) == 1
+        assert client._access_token == "token"
+
+    def test_auth_state_is_never_observed_half_written(self, monkeypatch):
+        import threading
+
+        self._set_credentials(monkeypatch)
+
+        def fake_post(*args, **kwargs):
+            return _TokenResponse(
+                {
+                    "access_token": "token",
+                    "primary_environment": "env-1",
+                    "environment_id_to_name": {"env-1": "Staging"},
+                }
+            )
+
+        monkeypatch.setattr("chalkcompute._http.post", fake_post)
+
+        client = ConnectClient()
+        observations: list[tuple[object, object]] = []
+        stop = threading.Event()
+
+        def reader() -> None:
+            while not stop.is_set():
+                token = client._access_token
+                headers = client._headers
+                if token is not None:
+                    observations.append((token, headers))
+
+        watcher = threading.Thread(target=reader, daemon=True)
+        watcher.start()
+        client._ensure_auth()
+        stop.set()
+        watcher.join(timeout=5)
+
+        # A token is never visible without the headers that carry it.
+        assert all(
+            headers is not None and headers["Authorization"] == f"Bearer {token}"
+            for token, headers in observations
+        )

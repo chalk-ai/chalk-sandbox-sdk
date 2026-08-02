@@ -953,6 +953,7 @@ class Container:
         compute_class: ComputeClass | None = None,
         tags: dict[str, str] | None = None,
         chalk_client: Any | None = None,
+        client: ConnectClient | None = None,
     ) -> None:
         self._image: _Image | str | None = image
         if name is not None:
@@ -1025,14 +1026,21 @@ class Container:
         self._container_id: str | None = None
         self._container_info: ContainerInfo | None = None
 
-        self._client = ConnectClient(chalk_client=chalk_client)
+        # A caller-supplied client is shared deliberately: many containers
+        # driven together then perform one token exchange between them rather
+        # than one apiece. ConnectClient is safe to use from several threads.
+        self._client = client or ConnectClient(chalk_client=chalk_client)
         self._session_client: ContainerSessionClient | None = None
 
     # -- Alternate constructors ------------------------------------------------
 
     @classmethod
     def from_id(
-        cls, container_id: str, *, chalk_client: Any | None = None
+        cls,
+        container_id: str,
+        *,
+        chalk_client: Any | None = None,
+        client: ConnectClient | None = None,
     ) -> Container:
         """Attach to an existing container by ID.
 
@@ -1051,7 +1059,7 @@ class Container:
         ContainerError
             If the container cannot be found.
         """
-        c = cls._make_empty(chalk_client=chalk_client)
+        c = cls._make_empty(chalk_client=chalk_client, client=client)
         resp = c._client.rpc(_SVC, "GetContainer", {"id": container_id})
         if resp.status_code != 200:
             raise ContainerError(f"GetContainer failed: {resp.text}")
@@ -1060,7 +1068,13 @@ class Container:
         return c
 
     @classmethod
-    def from_name(cls, name: str, *, chalk_client: Any | None = None) -> Container:
+    def from_name(
+        cls,
+        name: str,
+        *,
+        chalk_client: Any | None = None,
+        client: ConnectClient | None = None,
+    ) -> Container:
         """Attach to an existing container by name.
 
         Parameters
@@ -1078,7 +1092,7 @@ class Container:
         ContainerError
             If the container cannot be found.
         """
-        c = cls._make_empty(chalk_client=chalk_client)
+        c = cls._make_empty(chalk_client=chalk_client, client=client)
         resp = c._client.rpc(_SVC, "GetContainer", {"name": name})
         if resp.status_code != 200:
             raise ContainerError(f"GetContainer failed: {resp.text}")
@@ -1088,7 +1102,9 @@ class Container:
         return c
 
     @classmethod
-    def list_all(cls, *, chalk_client: Any | None = None) -> list[ContainerInfo]:
+    def list_all(
+        cls, *, chalk_client: Any | None = None, client: ConnectClient | None = None
+    ) -> list[ContainerInfo]:
         """List all running containers in the current environment.
 
         Returns
@@ -1101,7 +1117,7 @@ class Container:
         ContainerError
             If the request fails.
         """
-        c = cls._make_empty(chalk_client=chalk_client)
+        c = cls._make_empty(chalk_client=chalk_client, client=client)
         resp = c._client.rpc(_SVC, "ListContainers", {})
         if resp.status_code != 200:
             raise ContainerError(f"ListContainers failed: {resp.text}")
@@ -1111,7 +1127,9 @@ class Container:
         ]
 
     @classmethod
-    def _make_empty(cls, *, chalk_client: Any | None = None) -> Container:
+    def _make_empty(
+        cls, *, chalk_client: Any | None = None, client: ConnectClient | None = None
+    ) -> Container:
         c = cls.__new__(cls)
         c._image = None
         c._name = None
@@ -1133,7 +1151,7 @@ class Container:
         c._built_image_uri = None
         c._container_id = None
         c._container_info = None
-        c._client = ConnectClient(chalk_client=chalk_client)
+        c._client = client or ConnectClient(chalk_client=chalk_client)
         c._session_client = None
         return c
 
