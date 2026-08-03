@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 import time
 from typing import TYPE_CHECKING, Any, Mapping
 from urllib.parse import urlparse
@@ -41,6 +42,29 @@ if TYPE_CHECKING:
 
 class ConnectError(Exception):
     """Raised by ConnectClient operations."""
+
+
+# A ConnectClient can be driven from several threads, and _ensure_auth updates
+# attributes that callers read together.  The lock collapses concurrent first
+# use into a single token exchange; _access_token being assigned last is what
+# keeps a reader from seeing a token without the headers that carry it.
+_auth_lock = threading.RLock()
+
+
+def _is_retry_safe_method(method: str) -> bool:
+    """Return whether re-issuing ``method`` is free of side effects.
+
+    Pooled connections can be closed by the load balancer mid-request, and the
+    client cannot tell whether the server processed the request first.  Reads
+    are safe to repeat; writes are not, since a retried ``CreateContainer``
+    would leak a container.  Chalk's Connect services follow the usual naming
+    convention, so the ``Get``/``List`` prefixes identify reads without a
+    hand-maintained list that would drift as methods are added.
+
+    ``GetOrBuildCustomImage`` is included by that rule and belongs there: it is
+    keyed on the image spec and returns the cached build when one exists.
+    """
+    return method.startswith(("Get", "List"))
 
 
 def service_auth_context_from_env() -> ServiceAuthContext | None:
@@ -165,12 +189,20 @@ class ConnectClient:
         if self._access_token is not None:
             return
 
-        import httpx
+        with _auth_lock:
+            self._exchange_token_locked()
+
+    def _exchange_token_locked(self) -> None:
+        # Another thread may have authenticated while we waited for the lock.
+        if self._access_token is not None:
+            return
+
+        from chalkcompute import _http
 
         service_auth = service_auth_context_from_env()
         if service_auth is not None:
             self._api_server = service_auth.auth_endpoint.rstrip("/")
-            resp = httpx.post(
+            resp = _http.post(
                 f"{self._api_server}/chalk.server.v1.AuthService/GetInternalWorkingToken",
                 json={
                     "requestedPermissions": list(service_auth.requested_permissions),
@@ -182,10 +214,11 @@ class ConnectClient:
                     "X-Chalk-Server": "go-api",
                 },
                 timeout=30,
+                retry_safe=True,
             )
             resp.raise_for_status()
             data = resp.json()
-            self._access_token = data.get("accessToken") or data["access_token"]
+            access_token = data.get("accessToken") or data["access_token"]
             self._grpc_engines = _string_map(
                 data.get("grpcEngines")
                 or data.get("grpc_engines")
@@ -197,10 +230,13 @@ class ConnectClient:
             self._env_id = self._resolve_environment_id(service_auth.environment_id)
             self._headers = {
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self._access_token}",
+                "Authorization": f"Bearer {access_token}",
                 "X-Chalk-Env-Id": self._env_id or "",
                 "X-Chalk-Server": "go-api",
             }
+            # Assigned last: _ensure_auth's early return keys off this, so a
+            # reader that sees a token sees everything else already written.
+            self._access_token = access_token
             return
 
         token = (
@@ -253,7 +289,7 @@ class ConnectClient:
                 "environment variables, run `chalk login`, or pass a ChalkClient instance."
             )
 
-        resp = httpx.post(
+        resp = _http.post(
             f"{self._api_server}/v1/oauth/token",
             json={
                 "client_id": client_id,
@@ -266,10 +302,11 @@ class ConnectClient:
                 "X-Chalk-Server": "go-api",
             },
             timeout=30,
+            retry_safe=True,
         )
         resp.raise_for_status()
         data = resp.json()
-        self._access_token = data["access_token"]
+        access_token = data["access_token"]
         self._primary_environment = data.get("primary_environment")
         self._grpc_engines = _string_map(
             data.get("grpc_engines") or data.get("engines"),
@@ -281,10 +318,12 @@ class ConnectClient:
 
         self._headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self._access_token}",
+            "Authorization": f"Bearer {access_token}",
             "X-Chalk-Env-Id": self._env_id or "",
             "X-Chalk-Server": "go-api",
         }
+        # Assigned last: see the note in the service-auth branch above.
+        self._access_token = access_token
 
     def _resolve_environment_id(self, environment: str) -> str:
         if not environment:
@@ -377,8 +416,7 @@ class ConnectClient:
         httpx.Response
             The raw HTTP response from the Connect endpoint.
         """
-        import httpx
-
+        from chalkcompute import _http
         from chalkcompute._tracing import get_tracer
 
         with get_tracer().start_as_current_span("chalkcompute.rpc") as span:
@@ -390,11 +428,12 @@ class ConnectClient:
             headers = self._headers
             if extra_headers:
                 headers = {**headers, **extra_headers}
-            resp = httpx.post(
+            resp = _http.post(
                 f"{self._api_server}/{service}/{method}",
                 json=body,
                 headers=headers,
                 timeout=timeout,
+                retry_safe=_is_retry_safe_method(method),
             )
             span.set_attribute("http.response.status_code", resp.status_code)
             if resp.status_code >= 400:
