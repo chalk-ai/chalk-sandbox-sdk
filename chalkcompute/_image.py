@@ -866,6 +866,24 @@ class Image:
             spec.env[k] = v
         return spec
 
+    @classmethod
+    def from_proto(cls, spec: pb.ImageSpec) -> Image:
+        """Reconstruct an ``Image`` from an ``ImageSpec`` (inverse of :meth:`to_proto`; volume files excluded)."""
+        img = cls(spec.base_image)
+        img._steps = list(spec.steps)
+        img._entrypoint = list(spec.entrypoint)
+        img._cmd = list(spec.cmd)
+        img._workdir = spec.workdir if spec.HasField("workdir") else None
+        img._env = dict(spec.env)
+        return img
+
+    @classmethod
+    def from_proto_bytes(cls, data: bytes) -> Image:
+        """Reconstruct an ``Image`` from a serialized ``ImageSpec`` byte string."""
+        spec = pb.ImageSpec()
+        spec.ParseFromString(data)
+        return cls.from_proto(spec)
+
     def __repr__(self) -> str:
         parts = [f"Image(base={self._base_image!r}"]
         if self._steps:

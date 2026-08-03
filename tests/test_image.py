@@ -1052,3 +1052,32 @@ class TestImageChaining:
         assert spec.env["APP"] == "test"
         assert list(spec.entrypoint) == ["python"]
         assert list(spec.cmd) == ["test.py"]
+
+
+class TestFromProto:
+    """Image.from_proto rehydrates an ImageSpec back into an Image."""
+
+    def test_round_trip_preserves_spec(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+            f.write("print('hi')\n")
+            copy_src = f.name
+
+        img = (
+            Image.debian_slim("3.12")
+            .pip_install(["torch", "transformers"])
+            .run_commands("huggingface-cli download org/model --local-dir /app/model")
+            .env({"HF_HOME": "/app/hf"})
+            .workdir("/app")
+            .add_local_file(copy_src, "/app/main.py", strategy="copy")
+        )
+
+        spec = img.to_proto()
+        rebuilt = Image.from_proto(spec)
+
+        assert rebuilt.to_proto() == spec
+
+    def test_round_trip_without_workdir(self):
+        img = Image.debian_slim().pip_install(["numpy"])
+        rebuilt = Image.from_proto(img.to_proto())
+        assert rebuilt.to_proto() == img.to_proto()
+        assert rebuilt._workdir is None  # pyright: ignore[reportPrivateUsage]
