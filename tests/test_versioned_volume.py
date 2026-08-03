@@ -163,7 +163,7 @@ def test_accepts_name_only_and_creates_missing_volume_lazily(
 
     from_connect.assert_called_once()
     assert vol.info.name == "models"
-    client._inner.create_volume.assert_called_once_with("models")
+    client._inner.create_volume.assert_called_once_with("models", None)
 
 
 def test_create_if_missing_false_propagates_not_found(
@@ -246,7 +246,7 @@ def test_batch_upload_creates_missing_volume_before_flush(
     with vol.batch_upload() as batch:
         batch.put("data/train.csv", "id,label\n")
 
-    client._inner.create_volume.assert_called_once_with("models")
+    client._inner.create_volume.assert_called_once_with("models", None)
     client._inner.upload.assert_called_once()
 
 
@@ -432,3 +432,66 @@ def test_dict_commit_status_conversion() -> None:
             id=11, sequence_number=21, ref="main", commit_id="commit-11"
         ),
     )
+
+
+def _lazy_image(tmp_path, dest: str = "/app/f.txt"):
+    from chalkcompute._image import Image, LazyLocalFile
+
+    src = tmp_path / "f.txt"
+    src.write_bytes(b"hi")
+    image = Image.base("python:3.14")
+    image._lazy_local_files = {LazyLocalFile(src=str(src), dest=dest)}
+    return image, src
+
+
+def test_stage_lazy_files_creates_source_code_volume_and_returns_intent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from pathlib import Path
+
+    image, src = _lazy_image(tmp_path)
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.side_effect = _not_found()
+    client._inner.create_volume.return_value = {"volume": _volume_dict("src-vol")}
+    intent = pb_v2.CommitIntent(
+        volume=pb_v2.VolumeRef(name="src-vol"), author="chalk:env:agent:a"
+    )
+    client._inner.staged_intent.return_value = intent.SerializeToString()
+
+    volumes, intents = client.stage_lazy_files(image, volume_name="fn-src-add")
+
+    client._inner.create_volume.assert_called_once_with("fn-src-add-app", "source_code")
+
+    (staged_name, source), _ = client._inner.stage.call_args
+    assert staged_name == "fn-src-add-app"
+    assert source == [("f.txt", Path(str(src)))]
+
+    assert intents == [{"volume": {"name": "src-vol"}, "author": "chalk:env:agent:a"}]
+    assert len(volumes) == 1
+    assert volumes[0].name == "fn-src-add-app"
+    assert volumes[0].mount_path == "/app"
+    assert volumes[0].type == "versioned_chalkfs"
+    # Nothing commits client-side: the intent lands via volume_commits.
+    client._inner.commit_staged.assert_not_called()
+    client._inner.upload.assert_not_called()
+
+
+def test_stage_lazy_files_reuses_volume_and_replaces_base_tree(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    image, _src = _lazy_image(tmp_path)
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.return_value = {
+        "volume": _volume_dict("fn-src-add-app"),
+        "version": _version_dict(),
+    }
+    intent = pb_v2.CommitIntent(volume=pb_v2.VolumeRef(name="fn-src-add-app"))
+    client._inner.staged_intent.return_value = intent.SerializeToString()
+
+    volumes, intents = client.stage_lazy_files(image, volume_name="fn-src-add")
+
+    client._inner.create_volume.assert_not_called()
+    assert volumes[0].name == "fn-src-add-app"
+    # A recursive root remove tells the server to build the version from
+    # an empty tree plus the upserts.
+    assert intents[0]["pathDeltas"]["removes"] == [{"path": "/", "recursive": True}]
