@@ -407,6 +407,7 @@ class Sandbox:
         memory: str | None = None,
         env: dict[str, str] | None = None,
         volumes: list[tuple[str, str]] | None = None,
+        entrypoint: list[str] | None = None,
         network_policy: NetworkPolicy | None = None,
         restart_policy: RestartPolicy | None = None,
         chalk_client: Any | None = None,
@@ -432,6 +433,8 @@ class Sandbox:
         volumes
             Optional ``(volume_name, mount_path)`` pairs to mount into the
             sandbox.
+        entrypoint
+            Optional command to run as the sandbox container's main process.
         network_policy
             Optional network egress policy. Reuses the same
             :class:`NetworkPolicy` type accepted by :class:`Container`.
@@ -454,6 +457,7 @@ class Sandbox:
         self._memory: str | None = None
         self._env: dict[str, str] = {}
         self._volumes: list[tuple[str, str]] = []
+        self._entrypoint: list[str] | None = None
         self._network_policy: NetworkPolicy | None = None
         self._restart_policy: RestartPolicy | None = None
         self._chalk_client: Any | None = None
@@ -466,6 +470,7 @@ class Sandbox:
                 or memory is not None
                 or env is not None
                 or volumes is not None
+                or entrypoint is not None
                 or network_policy is not None
                 or restart_policy is not None
                 or chalk_client is not None
@@ -522,6 +527,7 @@ class Sandbox:
         self._memory = memory
         self._env = dict(env) if env else {}
         self._volumes = [(name, mount_path) for name, mount_path in volumes or []]
+        self._entrypoint = list(entrypoint) if entrypoint is not None else None
         self._network_policy = network_policy
         self._restart_policy = restart_policy
         self._chalk_client = chalk_client
@@ -621,6 +627,7 @@ class Sandbox:
             memory=self._memory,
             env=self._env or None,
             volumes=_volume_mounts_to_proto(self._volumes) if self._volumes else None,
+            entrypoint=self._entrypoint,
             network_policy=self._network_policy,
             restart_policy=self._restart_policy,
             wait=wait,
@@ -1032,6 +1039,7 @@ class SandboxClient:
         memory: str | None = None,
         env: dict[str, str] | None = None,
         volumes: _VolumeMountList | None = None,
+        entrypoint: list[str] | None = None,
         network_policy: NetworkPolicy | None = None,
         restart_policy: RestartPolicy | None = None,
         wait: bool = True,
@@ -1060,6 +1068,8 @@ class SandboxClient:
             Optional environment variables.
         volumes
             Optional list of ``VolumeMount`` protos to attach.
+        entrypoint
+            Optional command to run as the sandbox container's main process.
         network_policy
             Optional network egress policy. Reuses the same ``NetworkPolicy``
             type accepted by containers.
@@ -1108,6 +1118,8 @@ class SandboxClient:
                 req.env[k] = v
         if volumes is not None:
             req.volumes.extend(volumes)
+        if entrypoint is not None:
+            req.entrypoint.extend(entrypoint)
         if network_policy is not None:
             from google.protobuf.json_format import ParseDict
 
