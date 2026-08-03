@@ -36,7 +36,9 @@ import grpc
 
 from chalkcompute._artifact import Artifact, ArtifactClient, _artifact_from_proto
 from chalkcompute._connect import (
+    ConnectError,
     ConnectClient,
+    build_image,
     grpc_target_from_url,
     raise_for_grpc_error,
 )
@@ -620,8 +622,16 @@ class Sandbox:
         if client is None:
             client = SandboxClient.from_env(chalk_client=self._chalk_client)
 
+        image = self._image
+        if isinstance(image, Image):
+            image = self._build_image(
+                client,
+                poll_interval=poll_interval,
+                timeout=timeout,
+            )
+
         sandbox = client.create(
-            self._image,
+            image,
             name=self._name,
             cpu=self._cpu,
             memory=self._memory,
@@ -947,6 +957,28 @@ class Sandbox:
             self._id = None
             self._info = None
 
+    def _build_image(
+        self,
+        client: SandboxClient,
+        *,
+        poll_interval: float,
+        timeout: float,
+    ) -> str:
+        """Build the configured image and return the resulting image URI."""
+        assert isinstance(self._image, Image)
+        connect = getattr(client, "_connect", None) or ConnectClient(
+            chalk_client=self._chalk_client
+        )
+        try:
+            return build_image(
+                connect,
+                self._image,
+                poll_interval=poll_interval,
+                timeout=timeout,
+            )
+        except ConnectError as e:
+            raise SandboxBuildError(str(e)) from e
+
 
 # ---------------------------------------------------------------------------
 # Client
@@ -1048,8 +1080,8 @@ class SandboxClient:
     ) -> Sandbox:
         """Create a new sandbox.
 
-        When ``image`` is an ``Image`` spec, the server builds it asynchronously
-        and returns a sandbox in the "building" state.  If ``wait`` is ``True``
+        If ``image`` is an ``Image`` spec, this method builds it first and sends
+        the resulting image URI to the sandbox service. If ``wait`` is ``True``
         (the default), this method polls ``GetSandbox`` until the sandbox
         reaches "ready" (or "error").
 
@@ -1094,15 +1126,14 @@ class SandboxClient:
         if restart_policy is not None and not isinstance(restart_policy, RestartPolicy):
             raise TypeError("restart_policy must be a RestartPolicy")
 
-        req = pb.CreateSandboxRequest()
         if isinstance(image, Image):
-            image_uri = image.as_image_uri_if_possible()
-            if image_uri is not None:
-                req.image = image_uri
-            else:
-                req.image_spec.CopyFrom(image.to_proto())
-        else:
-            req.image = image
+            image = self._build_image(
+                image,
+                poll_interval=poll_interval,
+                timeout=timeout,
+            )
+
+        req = pb.CreateSandboxRequest(image=image)
         if name is not None:
             req.name = name
         if cpu is not None or memory is not None:
@@ -1144,6 +1175,25 @@ class SandboxClient:
             )
 
         return sandbox
+
+    def _build_image(
+        self,
+        image: Image,
+        *,
+        poll_interval: float,
+        timeout: float,
+    ) -> str:
+        """Build an ``Image`` spec and return the resulting image URI."""
+        connect = self._connect or ConnectClient()
+        try:
+            return build_image(
+                connect,
+                image,
+                poll_interval=poll_interval,
+                timeout=timeout,
+            )
+        except ConnectError as e:
+            raise SandboxBuildError(str(e)) from e
 
     def _poll_until_ready(
         self,
