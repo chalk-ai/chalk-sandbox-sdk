@@ -825,9 +825,7 @@ class VersionedVolumeClient:
         self._closed = True
 
     @traced("chalkcompute.versioned_volume.create")
-    def create(
-        self, name: str, *, volume_type: str | None = None
-    ) -> VersionedVolume:
+    def create(self, name: str, *, volume_type: str | None = None) -> VersionedVolume:
         """Create a new named versioned volume.
 
         Parameters
