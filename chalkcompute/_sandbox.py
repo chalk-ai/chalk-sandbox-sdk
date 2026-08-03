@@ -986,6 +986,9 @@ class Sandbox:
 
 
 _SandboxInfoList = list[SandboxInfo]
+# Defined before SandboxClient, which has a ``.list()`` method that would
+# otherwise shadow the builtin ``list`` in class-scope name resolution.
+_StrList = list[str]
 
 
 class SandboxClient:
@@ -1071,7 +1074,7 @@ class SandboxClient:
         memory: str | None = None,
         env: dict[str, str] | None = None,
         volumes: _VolumeMountList | None = None,
-        entrypoint: list[str] | None = None,
+        entrypoint: _StrList | None = None,
         network_policy: NetworkPolicy | None = None,
         restart_policy: RestartPolicy | None = None,
         wait: bool = True,
