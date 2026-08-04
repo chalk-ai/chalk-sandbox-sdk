@@ -27,6 +27,7 @@ import logging
 import os
 import tarfile
 import tempfile
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -423,6 +424,7 @@ class Image:
         ...         "./entrypoint.sh",
         ...         "/app/entrypoint.sh",
         ...         mode=0o755,
+        ...         strategy="copy",
         ...     )
         ... )
         """
@@ -432,6 +434,13 @@ class Image:
             )
         new = self._copy()
         if strategy == "volume":
+            if mode is not None:
+                warnings.warn(
+                    "add_local_file: `mode` is ignored for strategy='volume' files "
+                    "(served as 0644); it is honored only for strategy='copy', which "
+                    "is limited to files <=32 KiB.",
+                    stacklevel=2,
+                )
             _validate_lazy_local_file_destination(dest)
             src_path = Path(src).resolve()
             if not src_path.exists():
@@ -865,6 +874,24 @@ class Image:
         for k, v in self._env.items():
             spec.env[k] = v
         return spec
+
+    @classmethod
+    def from_proto(cls, spec: pb.ImageSpec) -> Image:
+        """Reconstruct an ``Image`` from an ``ImageSpec`` (inverse of :meth:`to_proto`; volume files excluded)."""
+        img = cls(spec.base_image)
+        img._steps = list(spec.steps)
+        img._entrypoint = list(spec.entrypoint)
+        img._cmd = list(spec.cmd)
+        img._workdir = spec.workdir if spec.HasField("workdir") else None
+        img._env = dict(spec.env)
+        return img
+
+    @classmethod
+    def from_proto_bytes(cls, data: bytes) -> Image:
+        """Reconstruct an ``Image`` from a serialized ``ImageSpec`` byte string."""
+        spec = pb.ImageSpec()
+        spec.ParseFromString(data)
+        return cls.from_proto(spec)
 
     def __repr__(self) -> str:
         parts = [f"Image(base={self._base_image!r}"]
