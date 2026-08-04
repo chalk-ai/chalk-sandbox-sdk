@@ -27,6 +27,7 @@ import logging
 import os
 import tarfile
 import tempfile
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -423,6 +424,7 @@ class Image:
         ...         "./entrypoint.sh",
         ...         "/app/entrypoint.sh",
         ...         mode=0o755,
+        ...         strategy="copy",
         ...     )
         ... )
         """
@@ -432,6 +434,13 @@ class Image:
             )
         new = self._copy()
         if strategy == "volume":
+            if mode is not None:
+                warnings.warn(
+                    "add_local_file: `mode` is ignored for strategy='volume' files "
+                    "(served as 0644); it is honored only for strategy='copy', which "
+                    "is limited to files <=32 KiB.",
+                    stacklevel=2,
+                )
             _validate_lazy_local_file_destination(dest)
             src_path = Path(src).resolve()
             if not src_path.exists():
