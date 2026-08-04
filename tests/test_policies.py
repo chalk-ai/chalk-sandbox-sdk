@@ -41,6 +41,10 @@ class _FakeResponse:
 class _CapturingClient:
     def __init__(self) -> None:
         self.requests: list[dict[str, Any]] = []
+        self._env_id: str | None = None
+
+    def _ensure_auth(self) -> None:
+        pass
 
     def rpc(
         self,

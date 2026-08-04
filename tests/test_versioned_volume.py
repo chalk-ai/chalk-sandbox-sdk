@@ -95,6 +95,41 @@ def test_client_from_connect_uses_connect_http_endpoint(
     )
 
 
+def test_client_from_connect_rebuilds_after_identity_token_rotation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native = MagicMock()
+    monkeypatch.setattr(vv, "_NativeVersionedVolumeClient", native)
+
+    class RotatingConnect:
+        _api_server = "https://api.chalk.ai"
+        _access_token = "token-one"
+        _env_id = "env-one"
+
+        def _ensure_auth(self) -> None:
+            pass
+
+        def _uses_web_identity_token(self) -> bool:
+            return True
+
+    connect = RotatingConnect()
+    client = VersionedVolumeClient.from_connect(connect)  # type: ignore[arg-type]
+    connect._access_token = "token-two"
+    connect._env_id = "env-two"
+
+    _ = client._inner
+
+    assert native.call_count == 2
+    native.assert_called_with(
+        "https://api.chalk.ai",
+        "token-two",
+        "env-two",
+        None,
+        [],
+        "go-api",
+    )
+
+
 def test_accepts_explicit_client_and_gets_existing_volume_lazily(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

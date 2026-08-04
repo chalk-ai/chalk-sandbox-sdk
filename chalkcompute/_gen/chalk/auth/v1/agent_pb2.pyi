@@ -221,15 +221,23 @@ class ExchangeTokenDetails(_message.Message):
     ) -> None: ...
 
 class TenantAgent(_message.Message):
-    __slots__ = ("team_id", "permissions", "environment_id", "exchange_token_details")
+    __slots__ = (
+        "team_id",
+        "permissions",
+        "environment_id",
+        "exchange_token_details",
+        "cluster_id",
+    )
     TEAM_ID_FIELD_NUMBER: _ClassVar[int]
     PERMISSIONS_FIELD_NUMBER: _ClassVar[int]
     ENVIRONMENT_ID_FIELD_NUMBER: _ClassVar[int]
     EXCHANGE_TOKEN_DETAILS_FIELD_NUMBER: _ClassVar[int]
+    CLUSTER_ID_FIELD_NUMBER: _ClassVar[int]
     team_id: str
     permissions: _containers.RepeatedScalarFieldContainer[_permissions_pb2.Permission]
     environment_id: str
     exchange_token_details: ExchangeTokenDetails
+    cluster_id: str
     def __init__(
         self,
         team_id: _Optional[str] = ...,
@@ -238,6 +246,7 @@ class TenantAgent(_message.Message):
         ] = ...,
         environment_id: _Optional[str] = ...,
         exchange_token_details: _Optional[_Union[ExchangeTokenDetails, _Mapping]] = ...,
+        cluster_id: _Optional[str] = ...,
     ) -> None: ...
 
 class Agent(_message.Message):

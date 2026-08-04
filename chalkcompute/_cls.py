@@ -670,7 +670,7 @@ class RemoteClass:
         schedule: str | None = None,
         chalk_client: Any | None = None,
     ) -> None:
-        self._user_cls = user_cls
+        self._user_cls: type | None = user_cls
         self._class_name = user_cls.__name__
         if name is not None:
             validate_dns_label(name)
@@ -874,7 +874,7 @@ class RemoteClass:
     @classmethod
     def _make_empty(cls, name: str, *, chalk_client: Any | None = None) -> RemoteClass:
         rc = cls.__new__(cls)
-        rc._user_cls = None  # type: ignore[assignment]
+        rc._user_cls = None
         rc._class_name = name
         rc._explicit_name = name
         rc._image = None
@@ -911,9 +911,17 @@ class RemoteClass:
 
     # -- Image building --------------------------------------------------------
 
+    def _require_user_cls(self) -> type:
+        if self._user_cls is None:
+            raise ClassBuildError(
+                f"Class {self._class_name!r} has no local implementation to deploy"
+            )
+        return self._user_cls
+
     def _source_file_for_deploy(self) -> str:
+        user_cls = self._require_user_cls()
         try:
-            return inspect.getfile(self._user_cls)
+            return inspect.getfile(user_cls)
         except (OSError, TypeError) as class_error:
             for method_info in self._methods.values():
                 try:
@@ -932,6 +940,7 @@ class RemoteClass:
         tuple
             ``(Image, list_of_temp_file_paths)``.
         """
+        user_cls = self._require_user_cls()
         source_file = self._source_file_for_deploy()
 
         temp_files: list[str] = []
@@ -961,18 +970,16 @@ class RemoteClass:
 
         # Precompute has-self flags for lifecycle hooks
         before_func = (
-            self._user_cls.__dict__.get(self._before_name)
-            if self._before_name
-            else None
+            user_cls.__dict__.get(self._before_name) if self._before_name else None
         )
         after_func = (
-            self._user_cls.__dict__.get(self._after_name) if self._after_name else None
+            user_cls.__dict__.get(self._after_name) if self._after_name else None
         )
 
         # Generate one handler shim per method
         for method_info in self._methods.values():
             shim_content = _generate_class_handler_shim(
-                class_name=self._user_cls.__name__,
+                class_name=user_cls.__name__,
                 method_name=method_info.name,
                 method_has_self=_has_self(method_info.func),
                 before_name=self._before_name,
@@ -1059,6 +1066,20 @@ class RemoteClass:
             self._volume_driver = driver
             _cleanup_temp_files(temp_files)
 
+            # Resolve lazy secrets once, into a local rather than
+            # self._secrets: they're shared by every method (one FUNCTION
+            # scope for the class), and keeping self._secrets as the user's
+            # lazy originals means a later .deploy() on the same object
+            # re-upserts instead of reusing a stale resolution.
+            resolved_secrets = self._secrets
+            if self._secrets and any(s.is_lazy for s in self._secrets):
+                from chalkcompute._secret import SecretScope, resolve_lazy_secrets
+
+                scope = SecretScope.function(self._explicit_name or self._class_name)
+                resolved_secrets, _upserted = resolve_lazy_secrets(
+                    self._secrets, self._client, scope=scope
+                )
+
             # 3. Register each method as a function version
             sg_names: list[str] = []
             for method_info in self._methods.values():
@@ -1089,17 +1110,9 @@ class RemoteClass:
                     volumes=self._volumes,
                 )
 
-                # Resolve lazy secrets and add to container spec
-                if self._secrets:
-                    from chalkcompute._secret import resolve_lazy_secrets
-
-                    if any(s.is_lazy for s in self._secrets):
-                        resolved, _upserted = resolve_lazy_secrets(
-                            self._secrets, self._client
-                        )
-                        self._secrets = resolved
+                if resolved_secrets:
                     container_spec["secretRefs"] = [
-                        s._to_proto_dict() for s in self._secrets
+                        s._to_proto_dict() for s in resolved_secrets
                     ]
 
                 scaling_spec: dict[str, Any] = {

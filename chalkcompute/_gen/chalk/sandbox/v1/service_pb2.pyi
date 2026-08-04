@@ -335,21 +335,24 @@ class BuildCustomImageResponse(_message.Message):
     ) -> None: ...
 
 class VolumeMount(_message.Message):
-    __slots__ = ("name", "mount_path", "type", "size_limit")
+    __slots__ = ("name", "mount_path", "type", "size_limit", "version_id")
     NAME_FIELD_NUMBER: _ClassVar[int]
     MOUNT_PATH_FIELD_NUMBER: _ClassVar[int]
     TYPE_FIELD_NUMBER: _ClassVar[int]
     SIZE_LIMIT_FIELD_NUMBER: _ClassVar[int]
+    VERSION_ID_FIELD_NUMBER: _ClassVar[int]
     name: str
     mount_path: str
     type: str
     size_limit: str
+    version_id: int
     def __init__(
         self,
         name: _Optional[str] = ...,
         mount_path: _Optional[str] = ...,
         type: _Optional[str] = ...,
         size_limit: _Optional[str] = ...,
+        version_id: _Optional[int] = ...,
     ) -> None: ...
 
 class CreateSandboxRequest(_message.Message):
@@ -364,6 +367,7 @@ class CreateSandboxRequest(_message.Message):
         "entrypoint",
         "knowledge_cutoff",
         "network_policy",
+        "restart_policy",
     )
     class EnvEntry(_message.Message):
         __slots__ = ("key", "value")
@@ -385,6 +389,7 @@ class CreateSandboxRequest(_message.Message):
     ENTRYPOINT_FIELD_NUMBER: _ClassVar[int]
     KNOWLEDGE_CUTOFF_FIELD_NUMBER: _ClassVar[int]
     NETWORK_POLICY_FIELD_NUMBER: _ClassVar[int]
+    RESTART_POLICY_FIELD_NUMBER: _ClassVar[int]
     image: str
     image_spec: ImageSpec
     resource_limits: ResourceLimits
@@ -395,6 +400,7 @@ class CreateSandboxRequest(_message.Message):
     entrypoint: _containers.RepeatedScalarFieldContainer[str]
     knowledge_cutoff: _timestamp_pb2.Timestamp
     network_policy: _service_pb2.NetworkPolicy
+    restart_policy: _service_pb2.RestartPolicy
     def __init__(
         self,
         image: _Optional[str] = ...,
@@ -407,6 +413,7 @@ class CreateSandboxRequest(_message.Message):
         entrypoint: _Optional[_Iterable[str]] = ...,
         knowledge_cutoff: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
         network_policy: _Optional[_Union[_service_pb2.NetworkPolicy, _Mapping]] = ...,
+        restart_policy: _Optional[_Union[_service_pb2.RestartPolicy, str]] = ...,
     ) -> None: ...
 
 class ResourceLimits(_message.Message):
@@ -444,10 +451,14 @@ class TerminateSandboxResponse(_message.Message):
     def __init__(self) -> None: ...
 
 class GetSandboxRequest(_message.Message):
-    __slots__ = ("sandbox_id",)
+    __slots__ = ("sandbox_id", "include_terminated")
     SANDBOX_ID_FIELD_NUMBER: _ClassVar[int]
+    INCLUDE_TERMINATED_FIELD_NUMBER: _ClassVar[int]
     sandbox_id: str
-    def __init__(self, sandbox_id: _Optional[str] = ...) -> None: ...
+    include_terminated: bool
+    def __init__(
+        self, sandbox_id: _Optional[str] = ..., include_terminated: bool = ...
+    ) -> None: ...
 
 class GetSandboxResponse(_message.Message):
     __slots__ = ("sandbox",)
@@ -458,13 +469,24 @@ class GetSandboxResponse(_message.Message):
     ) -> None: ...
 
 class ListSandboxesRequest(_message.Message):
-    __slots__ = ("cursor", "limit")
+    __slots__ = ("cursor", "limit", "include_terminated", "states", "not_states")
     CURSOR_FIELD_NUMBER: _ClassVar[int]
     LIMIT_FIELD_NUMBER: _ClassVar[int]
+    INCLUDE_TERMINATED_FIELD_NUMBER: _ClassVar[int]
+    STATES_FIELD_NUMBER: _ClassVar[int]
+    NOT_STATES_FIELD_NUMBER: _ClassVar[int]
     cursor: str
     limit: int
+    include_terminated: bool
+    states: _containers.RepeatedScalarFieldContainer[str]
+    not_states: _containers.RepeatedScalarFieldContainer[str]
     def __init__(
-        self, cursor: _Optional[str] = ..., limit: _Optional[int] = ...
+        self,
+        cursor: _Optional[str] = ...,
+        limit: _Optional[int] = ...,
+        include_terminated: bool = ...,
+        states: _Optional[_Iterable[str]] = ...,
+        not_states: _Optional[_Iterable[str]] = ...,
     ) -> None: ...
 
 class ListSandboxesResponse(_message.Message):
@@ -480,19 +502,29 @@ class ListSandboxesResponse(_message.Message):
     ) -> None: ...
 
 class SandboxInfo(_message.Message):
-    __slots__ = ("id", "state", "created_at", "name", "build_id", "knowledge_cutoff")
+    __slots__ = (
+        "id",
+        "state",
+        "created_at",
+        "name",
+        "build_id",
+        "knowledge_cutoff",
+        "status_message",
+    )
     ID_FIELD_NUMBER: _ClassVar[int]
     STATE_FIELD_NUMBER: _ClassVar[int]
     CREATED_AT_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
     BUILD_ID_FIELD_NUMBER: _ClassVar[int]
     KNOWLEDGE_CUTOFF_FIELD_NUMBER: _ClassVar[int]
+    STATUS_MESSAGE_FIELD_NUMBER: _ClassVar[int]
     id: str
     state: str
     created_at: str
     name: str
     build_id: str
     knowledge_cutoff: _timestamp_pb2.Timestamp
+    status_message: str
     def __init__(
         self,
         id: _Optional[str] = ...,
@@ -501,6 +533,7 @@ class SandboxInfo(_message.Message):
         name: _Optional[str] = ...,
         build_id: _Optional[str] = ...,
         knowledge_cutoff: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
+        status_message: _Optional[str] = ...,
     ) -> None: ...
 
 class GetCustomImageRequest(_message.Message):
@@ -582,17 +615,26 @@ class StreamCustomImageBuildUpdatesResponse(_message.Message):
     ) -> None: ...
 
 class CustomImageBuildSummary(_message.Message):
-    __slots__ = ("content_hash", "image_ref", "created_at", "build_id", "status")
+    __slots__ = (
+        "content_hash",
+        "image_ref",
+        "created_at",
+        "build_id",
+        "status",
+        "base_image",
+    )
     CONTENT_HASH_FIELD_NUMBER: _ClassVar[int]
     IMAGE_REF_FIELD_NUMBER: _ClassVar[int]
     CREATED_AT_FIELD_NUMBER: _ClassVar[int]
     BUILD_ID_FIELD_NUMBER: _ClassVar[int]
     STATUS_FIELD_NUMBER: _ClassVar[int]
+    BASE_IMAGE_FIELD_NUMBER: _ClassVar[int]
     content_hash: str
     image_ref: str
     created_at: _timestamp_pb2.Timestamp
     build_id: str
     status: str
+    base_image: str
     def __init__(
         self,
         content_hash: _Optional[str] = ...,
@@ -600,6 +642,7 @@ class CustomImageBuildSummary(_message.Message):
         created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
         build_id: _Optional[str] = ...,
         status: _Optional[str] = ...,
+        base_image: _Optional[str] = ...,
     ) -> None: ...
 
 class ListCustomImageBuildsRequest(_message.Message):

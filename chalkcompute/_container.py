@@ -754,9 +754,11 @@ class ContainerSessionClient:
         *,
         credentials: grpc.ChannelCredentials | None,
         metadata: list[tuple[str, str]],
+        _connect: ConnectClient | None = None,
     ) -> None:
         self._target = target
-        self._metadata = metadata
+        self._static_metadata = metadata
+        self._connect = _connect
         if credentials is not None:
             self._channel = grpc.secure_channel(target, credentials)
         else:
@@ -770,12 +772,23 @@ class ContainerSessionClient:
         return cls(
             target,
             credentials=grpc.ssl_channel_credentials() if use_tls else None,
-            metadata=[
-                ("authorization", f"Bearer {connect._access_token}"),
-                ("x-chalk-env-id", connect._env_id or ""),
-                ("x-chalk-server", "go-api"),
-            ],
+            metadata=connect._grpc_metadata(),
+            _connect=(
+                connect
+                if getattr(connect, "_uses_web_identity_token", lambda: False)() is True
+                else None
+            ),
         )
+
+    @property
+    def _metadata(self) -> list[tuple[str, str]]:
+        if self._connect is not None:
+            return self._connect._grpc_metadata()
+        return self._static_metadata
+
+    @_metadata.setter
+    def _metadata(self, value: list[tuple[str, str]]) -> None:
+        self._static_metadata = value
 
     def close(self) -> None:
         self._channel.close()
@@ -941,7 +954,7 @@ class Container:
         tags: dict[str, str] | None = None,
         chalk_client: Any | None = None,
     ) -> None:
-        self._image = image
+        self._image: _Image | str | None = image
         if name is not None:
             validate_dns_label(name)
         self._name = name
@@ -1011,7 +1024,6 @@ class Container:
         self._built_image_uri: str | None = None
         self._container_id: str | None = None
         self._container_info: ContainerInfo | None = None
-        self._upserted_secret_names: list[str] = []
 
         self._client = ConnectClient(chalk_client=chalk_client)
         self._session_client: ContainerSessionClient | None = None
@@ -1101,7 +1113,7 @@ class Container:
     @classmethod
     def _make_empty(cls, *, chalk_client: Any | None = None) -> Container:
         c = cls.__new__(cls)
-        c._image = None  # type: ignore[assignment]
+        c._image = None
         c._name = None
         c._cpu = None
         c._memory = None
@@ -1121,7 +1133,6 @@ class Container:
         c._built_image_uri = None
         c._container_id = None
         c._container_info = None
-        c._upserted_secret_names = []
         c._client = ConnectClient(chalk_client=chalk_client)
         c._session_client = None
         return c
@@ -1345,15 +1356,19 @@ class Container:
                     )
                 progress_done(vkey)
 
-            # 3. Resolve lazy secrets (from_local_env / from_local_env_file)
+            # 3. Resolve lazy secrets (from_local_env / from_local_env_file).
+            # Resolved into a local, not self._secrets, so a later .run() on
+            # the same object re-upserts instead of reusing a stale resolution.
+            resolved_secrets = self._secrets
             if any(s.is_lazy for s in self._secrets):
                 skey = f"secret:{container_name}"
                 progress_add(skey, "secret", "Resolving secrets", parent=ckey)
-                from chalkcompute._secret import resolve_lazy_secrets
+                from chalkcompute._secret import SecretScope, resolve_lazy_secrets
 
-                resolved, upserted = resolve_lazy_secrets(self._secrets, self._client)
-                self._secrets = resolved
-                self._upserted_secret_names = upserted
+                scope = SecretScope.sandbox(container_name)
+                resolved_secrets, upserted = resolve_lazy_secrets(
+                    self._secrets, self._client, scope=scope
+                )
                 logger.info(
                     "Upserted %d secret(s) from local environment.",
                     len(upserted),
@@ -1403,8 +1418,8 @@ class Container:
                         )
                 spec["volumes"] = [v.to_spec_dict() for v in self._volumes]
 
-            if self._secrets:
-                spec["secretRefs"] = [s._to_proto_dict() for s in self._secrets]
+            if resolved_secrets:
+                spec["secretRefs"] = [s._to_proto_dict() for s in resolved_secrets]
 
             logger.info("Starting container '%s'...", container_name)
             resp = self._client.rpc(
@@ -1687,7 +1702,7 @@ class Container:
 
     @_instrumented("chalkcompute.container.stop")
     def stop(self, grace_period_seconds: int | None = None) -> None:
-        """Stop the container and clean up temporary volumes and secrets.
+        """Stop the container and clean up temporary volumes.
 
         Parameters
         ----------
@@ -1717,12 +1732,6 @@ class Container:
             cleanup_owned_volumes(driver, self._volumes, self._referenced_volumes)
         self._volumes = []
         self._volume_driver = None
-
-        if self._upserted_secret_names:
-            from chalkcompute._secret import delete_secrets
-
-            delete_secrets(self._client, self._upserted_secret_names)
-            self._upserted_secret_names = []
 
     def refresh(self) -> ContainerInfo:
         """Fetch latest container status from the server.

@@ -696,6 +696,7 @@ class VolumeClient:
         credentials: grpc.ChannelCredentials | None = None,
         metadata: _GrpcMetadata | None = None,
         options: _GrpcOptions | None = None,
+        _connect: ConnectClient | None = None,
     ) -> None:
         """Initialize the gRPC client.
 
@@ -713,7 +714,8 @@ class VolumeClient:
             Optional gRPC channel options.
         """
         self._target = target
-        self._metadata = tuple(metadata) if metadata else ()
+        self._static_metadata = tuple(metadata) if metadata else ()
+        self._connect = _connect
         self._chalk_client: Any | None = None
         if credentials is not None:
             self._channel = grpc.secure_channel(target, credentials, options=options)
@@ -754,6 +756,11 @@ class VolumeClient:
                 ("grpc.max_send_message_length", -1),
                 ("grpc.max_receive_message_length", -1),
             ],
+            _connect=(
+                connect
+                if getattr(connect, "_uses_web_identity_token", lambda: False)() is True
+                else None
+            ),
         )
         client._chalk_client = getattr(connect, "_chalk_client", None)
         return client
@@ -764,7 +771,9 @@ class VolumeClient:
         Creates a fresh ``ConnectClient``, fetches a new bearer token,
         and replaces the channel, stubs, and metadata in-place.
         """
-        connect = ConnectClient(chalk_client=getattr(self, "_chalk_client", None))
+        connect = self._connect or ConnectClient(
+            chalk_client=getattr(self, "_chalk_client", None)
+        )
         connect._ensure_auth()
         self._channel.close()
 
@@ -791,6 +800,17 @@ class VolumeClient:
             )
         self._stub = pb_grpc.VolumeServiceStub(self._channel)
         self._obj_stub = pb_grpc.DataPlaneObjectStorageServiceStub(self._channel)
+
+    @property
+    def _metadata(self) -> tuple[tuple[str, str], ...]:
+        connect = getattr(self, "_connect", None)
+        if connect is not None:
+            return tuple(connect._grpc_metadata())
+        return self._static_metadata
+
+    @_metadata.setter
+    def _metadata(self, value: Iterable[tuple[str, str]]) -> None:
+        self._static_metadata = tuple(value)
 
     def __enter__(self) -> VolumeClient:
         return self

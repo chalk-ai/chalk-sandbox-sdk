@@ -9,6 +9,11 @@ _setup_logging()
 # Keep top-level imports lazy so `import chalkcompute` does not eagerly import
 # the grpc/protobuf/client modules. Update `__init__.pyi` when adding exports.
 _LAZY_MAP: dict[str, tuple[str, str]] = {
+    # _artifact.py
+    "Artifact": ("chalkcompute._artifact", "Artifact"),
+    "ArtifactClient": ("chalkcompute._artifact", "ArtifactClient"),
+    "ArtifactError": ("chalkcompute._artifact", "ArtifactError"),
+    "ArtifactNotFoundError": ("chalkcompute._artifact", "ArtifactNotFoundError"),
     # _container.py
     "Container": ("chalkcompute._container", "Container"),
     "ContainerError": ("chalkcompute._container", "ContainerError"),
@@ -71,12 +76,16 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "LazyLocalFile": ("chalkcompute._image", "LazyLocalFile"),
     # _secret.py
     "Secret": ("chalkcompute._secret", "Secret"),
+    "SecretScope": ("chalkcompute._secret", "SecretScope"),
     "resolve_lazy_secrets": ("chalkcompute._secret", "resolve_lazy_secrets"),
     # _sandbox.py
     "ExecError": ("chalkcompute._sandbox", "ExecError"),
     "ExecEvent": ("chalkcompute._sandbox", "ExecEvent"),
     "ExecProcess": ("chalkcompute._sandbox", "ExecProcess"),
     "ExecResult": ("chalkcompute._sandbox", "ExecResult"),
+    "PythonExecution": ("chalkcompute._sandbox", "PythonExecution"),
+    "PythonSkippedArtifact": ("chalkcompute._sandbox", "PythonSkippedArtifact"),
+    "RestartPolicy": ("chalkcompute._sandbox", "RestartPolicy"),
     "Sandbox": ("chalkcompute._sandbox", "Sandbox"),
     "SandboxBuildError": ("chalkcompute._sandbox", "SandboxBuildError"),
     "SandboxClient": ("chalkcompute._sandbox", "SandboxClient"),
@@ -89,6 +98,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "ScalingGroupBuildError": ("chalkcompute._scaling_group", "ScalingGroupBuildError"),
     "ScalingGroupError": ("chalkcompute._scaling_group", "ScalingGroupError"),
     "ScalingGroupInfo": ("chalkcompute._scaling_group", "ScalingGroupInfo"),
+    "ReadinessProbe": ("chalkcompute._scaling_group", "ReadinessProbe"),
     # _volume.py
     "FileInfo": ("chalkcompute._volume", "FileInfo"),
     "Volume": ("chalkcompute._volume", "make_volume"),

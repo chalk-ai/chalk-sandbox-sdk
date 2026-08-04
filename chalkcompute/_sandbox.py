@@ -29,16 +29,25 @@ import signal
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 import grpc
 
+from chalkcompute._artifact import Artifact, ArtifactClient, _artifact_from_proto
 from chalkcompute._connect import (
+    ConnectError,
     ConnectClient,
+    build_image,
     grpc_target_from_url,
     raise_for_grpc_error,
 )
 from chalkcompute._container import NetworkPolicy
+from chalkcompute._gen.chalk.container.v1 import service_pb2 as container_pb
+from chalkcompute._gen.chalk.sandbox.v1 import runtime_service_pb2 as runtime_pb
+from chalkcompute._gen.chalk.sandbox.v1 import (
+    runtime_service_pb2_grpc as runtime_pb_grpc,
+)
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as pb
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb2_grpc as pb_grpc
 from chalkcompute._image import Image
@@ -86,6 +95,13 @@ class ExecError(SandboxError):
     def __init__(self, code: str, message: str) -> None:
         self.code = code
         super().__init__(f"{code}: {message}")
+
+
+class RestartPolicy(Enum):
+    """Policy controlling whether a sandbox restarts after exiting."""
+
+    NEVER = "RESTART_POLICY_NEVER"
+    ALWAYS = "RESTART_POLICY_ALWAYS"
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +202,76 @@ class ExecEvent:
     @property
     def is_error(self) -> bool:
         return self.error_code is not None
+
+
+@dataclass
+class PythonSkippedArtifact:
+    """An artifact the execution produced but the server did not persist."""
+
+    name: str
+    """The artifact's declared name."""
+
+    reason: str
+    """Why the artifact was skipped (e.g. over the byte budget)."""
+
+    byte_size: int = 0
+    """Declared size of the skipped artifact, when known."""
+
+
+@dataclass
+class PythonExecution:
+    """Result of :meth:`Sandbox.execute_python`."""
+
+    execution_id: str
+    """Identifier of this execution; artifacts reference it in their origin."""
+
+    stdout: bytes
+    """Raw bytes the source wrote to standard output."""
+
+    stderr: bytes
+    """Raw bytes the source wrote to standard error."""
+
+    exit_code: int
+    """Exit code of the python process."""
+
+    outcome: str
+    """``"succeeded"``, ``"failed"``, ``"timed_out"``, or ``"interrupted"``."""
+
+    error_message: str = ""
+    """Failure detail when the execution failed outside the process's own exit."""
+
+    artifacts: list[Artifact] = field(default_factory=list)
+    """Artifacts persisted from this execution (captured charts, saved files)."""
+
+    skipped_artifacts: list[PythonSkippedArtifact] = field(default_factory=list)
+    """Artifacts the execution produced that were not persisted, with reasons."""
+
+    @property
+    def stdout_text(self) -> str:
+        """:attr:`stdout` decoded as UTF-8 (with ``errors="replace"``)."""
+        return self.stdout.decode("utf-8", errors="replace")
+
+    @property
+    def stderr_text(self) -> str:
+        """:attr:`stderr` decoded as UTF-8 (with ``errors="replace"``)."""
+        return self.stderr.decode("utf-8", errors="replace")
+
+    @property
+    def succeeded(self) -> bool:
+        return self.outcome == "succeeded"
+
+    @property
+    def charts(self) -> list[Artifact]:
+        """The chart artifacts captured from the execution's namespace."""
+        return [a for a in self.artifacts if a.kind == "chart"]
+
+
+_PYTHON_OUTCOME_NAMES: dict[int, str] = {
+    runtime_pb.PYTHON_EXECUTION_OUTCOME_SUCCEEDED: "succeeded",
+    runtime_pb.PYTHON_EXECUTION_OUTCOME_FAILED: "failed",
+    runtime_pb.PYTHON_EXECUTION_OUTCOME_TIMED_OUT: "timed_out",
+    runtime_pb.PYTHON_EXECUTION_OUTCOME_INTERRUPTED: "interrupted",
+}
 
 
 @dataclass
@@ -323,7 +409,9 @@ class Sandbox:
         memory: str | None = None,
         env: dict[str, str] | None = None,
         volumes: list[tuple[str, str]] | None = None,
+        entrypoint: list[str] | None = None,
         network_policy: NetworkPolicy | None = None,
+        restart_policy: RestartPolicy | None = None,
         chalk_client: Any | None = None,
         sandbox_client: SandboxClient | None = None,
         client: Any | None = None,
@@ -347,9 +435,14 @@ class Sandbox:
         volumes
             Optional ``(volume_name, mount_path)`` pairs to mount into the
             sandbox.
+        entrypoint
+            Optional command to run as the sandbox container's main process.
         network_policy
             Optional network egress policy. Reuses the same
             :class:`NetworkPolicy` type accepted by :class:`Container`.
+        restart_policy
+            Optional restart behavior. Use :attr:`RestartPolicy.NEVER` or
+            :attr:`RestartPolicy.ALWAYS`.
 
         Examples
         --------
@@ -366,7 +459,9 @@ class Sandbox:
         self._memory: str | None = None
         self._env: dict[str, str] = {}
         self._volumes: list[tuple[str, str]] = []
+        self._entrypoint: list[str] | None = None
         self._network_policy: NetworkPolicy | None = None
+        self._restart_policy: RestartPolicy | None = None
         self._chalk_client: Any | None = None
 
         if client is not None or sandbox_id is not None:
@@ -377,7 +472,9 @@ class Sandbox:
                 or memory is not None
                 or env is not None
                 or volumes is not None
+                or entrypoint is not None
                 or network_policy is not None
+                or restart_policy is not None
                 or chalk_client is not None
                 or sandbox_client is not None
             ):
@@ -422,6 +519,8 @@ class Sandbox:
 
         if network_policy is not None and not isinstance(network_policy, NetworkPolicy):
             raise TypeError("network_policy must be a NetworkPolicy")
+        if restart_policy is not None and not isinstance(restart_policy, RestartPolicy):
+            raise TypeError("restart_policy must be a RestartPolicy")
 
         self._client = sandbox_client
         self._image = image
@@ -430,7 +529,9 @@ class Sandbox:
         self._memory = memory
         self._env = dict(env) if env else {}
         self._volumes = [(name, mount_path) for name, mount_path in volumes or []]
+        self._entrypoint = list(entrypoint) if entrypoint is not None else None
         self._network_policy = network_policy
+        self._restart_policy = restart_policy
         self._chalk_client = chalk_client
 
     @property
@@ -521,14 +622,24 @@ class Sandbox:
         if client is None:
             client = SandboxClient.from_env(chalk_client=self._chalk_client)
 
+        image = self._image
+        if isinstance(image, Image):
+            image = self._build_image(
+                client,
+                poll_interval=poll_interval,
+                timeout=timeout,
+            )
+
         sandbox = client.create(
-            self._image,
+            image,
             name=self._name,
             cpu=self._cpu,
             memory=self._memory,
             env=self._env or None,
             volumes=_volume_mounts_to_proto(self._volumes) if self._volumes else None,
+            entrypoint=self._entrypoint,
             network_policy=self._network_policy,
+            restart_policy=self._restart_policy,
             wait=wait,
             poll_interval=poll_interval,
             timeout=timeout,
@@ -700,6 +811,126 @@ class Sandbox:
             _sandbox_id=sandbox_id,
         )
 
+    @_instrumented("chalkcompute.sandbox.execute_python")
+    def execute_python(
+        self,
+        source: str,
+        *,
+        timeout_secs: int | None = None,
+        workdir: str | None = None,
+        env: dict[str, str] | None = None,
+        capture_charts: bool = True,
+        max_artifact_bytes: int | None = None,
+    ) -> PythonExecution:
+        """Run Python source in the sandbox with structured output capture.
+
+        The server wraps ``source`` in a capture harness that injects a
+        ``save_artifact(obj, *, name=None, kind=None, content_type=None)``
+        helper into the namespace and, after the source finishes, inspects the
+        namespace for plotly/altair figures bound to variables. Everything
+        saved or captured is persisted to the Chalk artifact store
+        server-side — the sandbox itself never receives credentials — and
+        returned as :class:`Artifact` handles.
+
+        Parameters
+        ----------
+        source
+            Python source to execute. Bare final expressions do not print;
+            charts are captured regardless of printing.
+        timeout_secs
+            Optional timeout in seconds for the python process.
+        workdir
+            Optional working directory inside the sandbox.
+        env
+            Optional environment variables for the process.
+        capture_charts
+            Inspect the namespace for plotly/altair figures after execution
+            (default ``True``).
+        max_artifact_bytes
+            Byte budget across all artifacts from this execution; artifacts
+            past it are reported in ``skipped_artifacts``.
+
+        Returns
+        -------
+        PythonExecution
+            Buffered stdout/stderr, exit status, and persisted artifacts.
+        """
+        client = self._require_client()
+        sandbox_id = self._require_started()
+        spec = runtime_pb.ExecutePythonSpec(
+            sandbox_id=sandbox_id,
+            source=source,
+            capture_charts=capture_charts,
+        )
+        if timeout_secs is not None:
+            spec.timeout_secs = timeout_secs
+        if workdir is not None:
+            spec.workdir = workdir
+        validate_env(env)
+        if env is not None:
+            for k, v in env.items():
+                spec.env[k] = v
+        if max_artifact_bytes is not None:
+            spec.max_artifact_bytes = max_artifact_bytes
+
+        def request_iterator() -> Iterator[runtime_pb.ExecutePythonRequest]:
+            yield runtime_pb.ExecutePythonRequest(spec=spec)
+
+        stub = runtime_pb_grpc.SandboxRuntimeServiceStub(client._channel)
+        artifact_client = ArtifactClient._from_channel(
+            client._channel, client._metadata
+        )
+
+        execution_id = ""
+        stdout: list[bytes] = []
+        stderr: list[bytes] = []
+        artifacts: list[Artifact] = []
+        exit_code = -1
+        outcome = "failed"
+        error_message = ""
+        skipped: list[PythonSkippedArtifact] = []
+        try:
+            for resp in stub.ExecutePython(
+                request_iterator(), metadata=client._metadata
+            ):
+                which = resp.WhichOneof("message")
+                if which == "started":
+                    execution_id = resp.started.execution_id
+                elif which == "output":
+                    if resp.output.stream == runtime_pb.PythonOutput.STREAM_STDERR:
+                        stderr.append(resp.output.data)
+                    else:
+                        stdout.append(resp.output.data)
+                elif which == "artifact":
+                    artifacts.append(
+                        _artifact_from_proto(resp.artifact, artifact_client)
+                    )
+                elif which == "completed":
+                    completed = resp.completed
+                    exit_code = completed.exit_code
+                    outcome = _PYTHON_OUTCOME_NAMES.get(completed.outcome, "failed")
+                    error_message = completed.error_message
+                    skipped = [
+                        PythonSkippedArtifact(
+                            name=s.name, reason=s.reason, byte_size=s.byte_size
+                        )
+                        for s in completed.skipped_artifacts
+                    ]
+        except grpc.RpcError as e:
+            _handle_rpc_error(e, sandbox_id)
+            raise
+
+        return PythonExecution(
+            execution_id=execution_id,
+            stdout=b"".join(stdout),
+            stderr=b"".join(stderr),
+            exit_code=exit_code,
+            outcome=outcome,
+            error_message=error_message,
+            artifacts=artifacts,
+            skipped_artifacts=skipped,
+        )
+
     @_instrumented("chalkcompute.sandbox.terminate")
     def terminate(self, grace_period_seconds: int | None = None) -> None:
         """Terminate this sandbox.
@@ -726,6 +957,28 @@ class Sandbox:
             self._id = None
             self._info = None
 
+    def _build_image(
+        self,
+        client: SandboxClient,
+        *,
+        poll_interval: float,
+        timeout: float,
+    ) -> str:
+        """Build the configured image and return the resulting image URI."""
+        assert isinstance(self._image, Image)
+        connect = getattr(client, "_connect", None) or ConnectClient(
+            chalk_client=self._chalk_client
+        )
+        try:
+            return build_image(
+                connect,
+                self._image,
+                poll_interval=poll_interval,
+                timeout=timeout,
+            )
+        except ConnectError as e:
+            raise SandboxBuildError(str(e)) from e
+
 
 # ---------------------------------------------------------------------------
 # Client
@@ -733,6 +986,9 @@ class Sandbox:
 
 
 _SandboxInfoList = list[SandboxInfo]
+# Defined before SandboxClient, which has a ``.list()`` method that would
+# otherwise shadow the builtin ``list`` in class-scope name resolution.
+_StrList = list[str]
 
 
 class SandboxClient:
@@ -744,6 +1000,7 @@ class SandboxClient:
         *,
         credentials: grpc.ChannelCredentials | None = None,
         metadata: _GrpcMetadata | None = None,
+        _connect: ConnectClient | None = None,
     ) -> None:
         """Initialize the gRPC client.
 
@@ -759,7 +1016,8 @@ class SandboxClient:
             Optional default metadata to send with every RPC call.
         """
         self._target = target
-        self._metadata = metadata
+        self._static_metadata = metadata
+        self._connect = _connect
         if credentials is not None:
             self._channel = grpc.secure_channel(target, credentials)
         else:
@@ -778,12 +1036,23 @@ class SandboxClient:
         return cls(
             host,
             credentials=grpc.ssl_channel_credentials() if use_tls else None,
-            metadata=[
-                ("authorization", f"Bearer {connect._access_token}"),
-                ("x-chalk-env-id", connect._env_id or ""),
-                ("x-chalk-server", "go-api"),
-            ],
+            metadata=connect._grpc_metadata(),
+            _connect=(
+                connect
+                if getattr(connect, "_uses_web_identity_token", lambda: False)() is True
+                else None
+            ),
         )
+
+    @property
+    def _metadata(self) -> _GrpcMetadata | None:
+        if self._connect is not None:
+            return self._connect._grpc_metadata()
+        return self._static_metadata
+
+    @_metadata.setter
+    def _metadata(self, value: _GrpcMetadata | None) -> None:
+        self._static_metadata = value
 
     def __enter__(self) -> SandboxClient:
         return self
@@ -805,15 +1074,17 @@ class SandboxClient:
         memory: str | None = None,
         env: dict[str, str] | None = None,
         volumes: _VolumeMountList | None = None,
+        entrypoint: _StrList | None = None,
         network_policy: NetworkPolicy | None = None,
+        restart_policy: RestartPolicy | None = None,
         wait: bool = True,
         poll_interval: float = 0.5,
         timeout: float = 600.0,
     ) -> Sandbox:
         """Create a new sandbox.
 
-        When ``image`` is an ``Image`` spec, the server builds it asynchronously
-        and returns a sandbox in the "building" state.  If ``wait`` is ``True``
+        If ``image`` is an ``Image`` spec, this method builds it first and sends
+        the resulting image URI to the sandbox service. If ``wait`` is ``True``
         (the default), this method polls ``GetSandbox`` until the sandbox
         reaches "ready" (or "error").
 
@@ -832,9 +1103,14 @@ class SandboxClient:
             Optional environment variables.
         volumes
             Optional list of ``VolumeMount`` protos to attach.
+        entrypoint
+            Optional command to run as the sandbox container's main process.
         network_policy
             Optional network egress policy. Reuses the same ``NetworkPolicy``
             type accepted by containers.
+        restart_policy
+            Optional restart behavior. Use ``RestartPolicy.NEVER`` or
+            ``RestartPolicy.ALWAYS``.
         wait
             If ``True``, poll until the sandbox is ready (default ``True``).
         poll_interval
@@ -850,16 +1126,17 @@ class SandboxClient:
         """
         if network_policy is not None and not isinstance(network_policy, NetworkPolicy):
             raise TypeError("network_policy must be a NetworkPolicy")
+        if restart_policy is not None and not isinstance(restart_policy, RestartPolicy):
+            raise TypeError("restart_policy must be a RestartPolicy")
 
-        req = pb.CreateSandboxRequest()
         if isinstance(image, Image):
-            image_uri = image.as_image_uri_if_possible()
-            if image_uri is not None:
-                req.image = image_uri
-            else:
-                req.image_spec.CopyFrom(image.to_proto())
-        else:
-            req.image = image
+            image = self._build_image(
+                image,
+                poll_interval=poll_interval,
+                timeout=timeout,
+            )
+
+        req = pb.CreateSandboxRequest(image=image)
         if name is not None:
             req.name = name
         if cpu is not None or memory is not None:
@@ -875,10 +1152,18 @@ class SandboxClient:
                 req.env[k] = v
         if volumes is not None:
             req.volumes.extend(volumes)
+        if entrypoint is not None:
+            req.entrypoint.extend(entrypoint)
         if network_policy is not None:
             from google.protobuf.json_format import ParseDict
 
             ParseDict(network_policy.to_dict(), req.network_policy)
+        if restart_policy is not None:
+            req.restart_policy = (
+                container_pb.RESTART_POLICY_NEVER
+                if restart_policy is RestartPolicy.NEVER
+                else container_pb.RESTART_POLICY_ALWAYS
+            )
 
         resp = self._stub.CreateSandbox(req, metadata=self._metadata)
         info = _pb_to_sandbox_info(resp.sandbox)
@@ -893,6 +1178,25 @@ class SandboxClient:
             )
 
         return sandbox
+
+    def _build_image(
+        self,
+        image: Image,
+        *,
+        poll_interval: float,
+        timeout: float,
+    ) -> str:
+        """Build an ``Image`` spec and return the resulting image URI."""
+        connect = self._connect or ConnectClient()
+        try:
+            return build_image(
+                connect,
+                image,
+                poll_interval=poll_interval,
+                timeout=timeout,
+            )
+        except ConnectError as e:
+            raise SandboxBuildError(str(e)) from e
 
     def _poll_until_ready(
         self,

@@ -7,28 +7,46 @@ from collections.abc import Mapping
 
 _DNS_LABEL_RE = re.compile(r"^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$")
 
+# Exclusive bound: a DNS label must be shorter than this (RFC 1123 caps it at 63).
+MAX_DNS_LABEL = 64
 
-def validate_dns_label(name: str) -> None:
+
+def validate_dns_label(name: str, environment_id: str | None = None) -> None:
     """Validate that ``name`` is a well-formed DNS label.
 
-    Must be 1–63 chars, lowercase letters/digits/hyphens only, and must
-    start with a letter and end with an alphanumeric character.
+    Must be 1–63 chars, lowercase letters/digits/hyphens only, starting with a
+    letter and ending alphanumeric. When ``environment_id`` is given, also check
+    that the derived ``<environment_id>-<name>`` routable hostname stays under
+    ``MAX_DNS_LABEL`` chars (over it, a function deploys but fails to route).
 
     Parameters
     ----------
     name
         Name to validate.
+    environment_id
+        Deploy target; when set, ``<environment_id>-<name>`` length is checked.
 
     Raises
     ------
     ValueError
-        If the name is not a valid DNS label.
+        If ``name`` isn't a valid DNS label, or the derived label is too long.
     """
     if not _DNS_LABEL_RE.match(name):
         raise ValueError(
             f"Invalid name {name!r}: must be a valid DNS label "
             "(lowercase letters, digits, and hyphens only, 1-63 chars, "
             "must start with a letter and end with an alphanumeric character)."
+        )
+    if not environment_id:
+        return
+    label = f"{environment_id}-{name}"
+    if len(label) >= MAX_DNS_LABEL:
+        budget = MAX_DNS_LABEL - len(environment_id) - 2
+        raise ValueError(
+            f"Function name {name!r} is too long: with the {environment_id!r} "
+            f"environment prefix its routable hostname is {len(label)} chars; a DNS "
+            f"label must be under {MAX_DNS_LABEL} chars. Shorten the name to at most "
+            f"{budget} characters."
         )
 
 

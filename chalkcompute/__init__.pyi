@@ -1,3 +1,7 @@
+from chalkcompute._artifact import Artifact as Artifact
+from chalkcompute._artifact import ArtifactClient as ArtifactClient
+from chalkcompute._artifact import ArtifactError as ArtifactError
+from chalkcompute._artifact import ArtifactNotFoundError as ArtifactNotFoundError
 from chalkcompute._cls import ClassBuildError as ClassBuildError
 from chalkcompute._cls import ClassError as ClassError
 from chalkcompute._cls import RemoteClass as RemoteClass
@@ -47,6 +51,9 @@ from chalkcompute._sandbox import ExecError as ExecError
 from chalkcompute._sandbox import ExecEvent as ExecEvent
 from chalkcompute._sandbox import ExecProcess as ExecProcess
 from chalkcompute._sandbox import ExecResult as ExecResult
+from chalkcompute._sandbox import PythonExecution as PythonExecution
+from chalkcompute._sandbox import PythonSkippedArtifact as PythonSkippedArtifact
+from chalkcompute._sandbox import RestartPolicy as RestartPolicy
 from chalkcompute._sandbox import Sandbox as Sandbox
 from chalkcompute._sandbox import SandboxBuildError as SandboxBuildError
 from chalkcompute._sandbox import SandboxClient as SandboxClient
@@ -58,7 +65,9 @@ from chalkcompute._scaling_group import ScalingGroup as ScalingGroup
 from chalkcompute._scaling_group import ScalingGroupBuildError as ScalingGroupBuildError
 from chalkcompute._scaling_group import ScalingGroupError as ScalingGroupError
 from chalkcompute._scaling_group import ScalingGroupInfo as ScalingGroupInfo
+from chalkcompute._scaling_group import ReadinessProbe as ReadinessProbe
 from chalkcompute._secret import Secret as Secret
+from chalkcompute._secret import SecretScope as SecretScope
 from chalkcompute._secret import resolve_lazy_secrets as resolve_lazy_secrets
 from chalkcompute._tracing import span as span
 from chalkcompute._tracing import traced as traced
@@ -79,6 +88,10 @@ from chalkcompute._vvolume import VersionedVolume as VersionedVolume
 from chalkcompute._vvolume import VersionedVolumeClient as VersionedVolumeClient
 
 __all__ = [
+    "Artifact",
+    "ArtifactClient",
+    "ArtifactError",
+    "ArtifactNotFoundError",
     "Container",
     "ContainerError",
     "ContainerInfo",
@@ -123,11 +136,15 @@ __all__ = [
     "Image",
     "LazyLocalFile",
     "Secret",
+    "SecretScope",
     "resolve_lazy_secrets",
     "ExecError",
     "ExecEvent",
     "ExecProcess",
     "ExecResult",
+    "PythonExecution",
+    "PythonSkippedArtifact",
+    "RestartPolicy",
     "Sandbox",
     "SandboxBuildError",
     "SandboxClient",
@@ -139,6 +156,7 @@ __all__ = [
     "ScalingGroupBuildError",
     "ScalingGroupError",
     "ScalingGroupInfo",
+    "ReadinessProbe",
     "FileInfo",
     "Volume",
     "SimpleVolume",

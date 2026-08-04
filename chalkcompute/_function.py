@@ -62,7 +62,11 @@ from chalkcompute._connect import (
     service_auth_context_from_env,
 )
 from chalkcompute import _local_dev
-from chalkcompute._naming import sanitize_dns_label, validate_dns_label, validate_env
+from chalkcompute._naming import (
+    sanitize_dns_label,
+    validate_dns_label,
+    validate_env,
+)
 from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._remote_function_tracing import (
@@ -1656,6 +1660,8 @@ class RemoteFunction:
         self._call_stub: Any = None
         self._remote_call_client: Any = None
         self._queue_call_client: Any = None
+        self._remote_call_auth_token: str | None = None
+        self._queue_call_auth_token: str | None = None
         self._knowledge_cutoff: str | None = None
 
         self._client = ConnectClient(chalk_client=chalk_client)
@@ -1789,6 +1795,8 @@ class RemoteFunction:
         f._call_stub = None
         f._remote_call_client = None
         f._queue_call_client = None
+        f._remote_call_auth_token = None
+        f._queue_call_auth_token = None
         f._knowledge_cutoff = None
         f._client = ConnectClient(chalk_client=chalk_client)
         return f
@@ -1870,6 +1878,12 @@ class RemoteFunction:
         fkey = f"function:{self._func_name}"
         progress_add(fkey, "function", f'Function "{self._func_name}"')
 
+        # Fail fast on the hostname-length limit before the expensive build.
+        # Uses whatever env_id is already resolved (skips if unauthenticated;
+        # the server enforces the limit regardless) — never forces auth here.
+        sg_name = sanitize_dns_label(self._explicit_name or self._func_name)
+        validate_dns_label(sg_name, self._client._env_id)
+
         try:
             # 1. Build deploy image
             deploy_image = self._build_deploy_image()
@@ -1906,8 +1920,6 @@ class RemoteFunction:
             # 3. Register function version
             input_schema_proto, output_schema_proto = _build_schemas(self._func)
 
-            sg_name = sanitize_dns_label(self._explicit_name or self._func_name)
-
             handler_cmd = ["chalk-remote-call", "--handler", "handler.handler"]
 
             container_spec = _make_container_spec(
@@ -1943,17 +1955,20 @@ class RemoteFunction:
                 "scalingSpec": scaling_spec,
             }
 
-            # 5b. Resolve lazy secrets and add to container spec
+            # 5b. Resolve lazy secrets and add to container spec. Resolved
+            # into a local, not self._secrets, so a later .deploy() on the
+            # same object re-upserts instead of reusing a stale resolution.
             if self._secrets:
-                from chalkcompute._secret import resolve_lazy_secrets
+                from chalkcompute._secret import SecretScope, resolve_lazy_secrets
 
+                resolved_secrets = self._secrets
                 if any(s.is_lazy for s in self._secrets):
-                    resolved, _upserted = resolve_lazy_secrets(
-                        self._secrets, self._client
+                    scope = SecretScope.function(self._explicit_name or self._func_name)
+                    resolved_secrets, _upserted = resolve_lazy_secrets(
+                        self._secrets, self._client, scope=scope
                     )
-                    self._secrets = resolved
                 container_spec["secretRefs"] = [
-                    s._to_proto_dict() for s in self._secrets
+                    s._to_proto_dict() for s in resolved_secrets
                 ]
 
             # 5c. Build function-level config
@@ -2188,6 +2203,7 @@ class RemoteFunction:
         if direct:
             client = self._remote_call_client
             self._remote_call_client = None
+            self._remote_call_auth_token = None
             if client is not None:
                 self._close_remote_call_client(client)
 
@@ -2200,6 +2216,7 @@ class RemoteFunction:
         if queue:
             client = self._queue_call_client
             self._queue_call_client = None
+            self._queue_call_auth_token = None
             if client is not None:
                 self._close_remote_call_client(client)
 
@@ -2284,7 +2301,10 @@ class RemoteFunction:
         self._call_stub = call_grpc.RemoteCallServiceStub(self._call_channel)
 
     def _remote_call_metadata(self) -> list[tuple[str, str]]:
-        service_auth = service_auth_context_from_env()
+        uses_web_identity = (
+            getattr(self._client, "_uses_web_identity_token", lambda: False)() is True
+        )
+        service_auth = None if uses_web_identity else service_auth_context_from_env()
         if service_auth is not None:
             return [("x-chalk-env-id", service_auth.environment_id)]
 
@@ -2302,10 +2322,27 @@ class RemoteFunction:
 
     def _ensure_remote_call_client(self, *, queue: bool = False) -> Any:
         attr = "_queue_call_client" if queue else "_remote_call_client"
+        token_attr = "_queue_call_auth_token" if queue else "_remote_call_auth_token"
+        uses_web_identity = (
+            getattr(self._client, "_uses_web_identity_token", lambda: False)() is True
+        )
+        current_token: str | None = None
+        if uses_web_identity:
+            self._client._ensure_auth()
+            current_token = self._client._access_token
+
         client = getattr(self, attr)
-        if client is not None and not self._remote_call_client_is_closed(client):
+        token_matches = (
+            not uses_web_identity or getattr(self, token_attr, None) == current_token
+        )
+        if (
+            client is not None
+            and not self._remote_call_client_is_closed(client)
+            and token_matches
+        ):
             return client
         if client is not None:
+            self._close_remote_call_client(client)
             setattr(self, attr, None)
 
         if self._web_url is None:
@@ -2313,7 +2350,7 @@ class RemoteFunction:
 
         from chalkcompute._remote_call_client import RemoteCallClient
 
-        service_auth = service_auth_context_from_env()
+        service_auth = None if uses_web_identity else service_auth_context_from_env()
         if queue:
             if service_auth is None:
                 target, use_tls = self._client.grpc_engine_target()
@@ -2339,6 +2376,7 @@ class RemoteFunction:
             initial_poll_delay_ms=5,
         )
         setattr(self, attr, client)
+        setattr(self, token_attr, current_token)
         return client
 
     def _call_direct_chunks_python_grpc(
