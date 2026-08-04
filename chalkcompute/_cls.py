@@ -1042,11 +1042,11 @@ class RemoteClass:
             deploy_image, temp_files = self._build_deploy_image()
 
             # 2. Build image + upload lazy files
-            image_uri, new_vols, driver = _build_and_upload(
+            image_uri, new_vols, driver, volume_commits = _build_and_upload(
                 self._client,
                 deploy_image,
                 label=f"class '{self._class_name}'",
-                volume_prefix="cls-files",
+                volume_name=f"cls-src-{self._explicit_name or self._class_name}",
                 poll_interval=poll_interval,
                 build_timeout=build_timeout,
                 progress_parent=ckey,
@@ -1168,6 +1168,8 @@ class RemoteClass:
                 }
                 if function_config:
                     create_request["config"] = function_config
+                if volume_commits:
+                    create_request["volumeCommits"] = volume_commits
 
                 resp = self._client.rpc(
                     _CATALOG_SVC,

@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
 
+from google.protobuf.json_format import MessageToDict
+
 from chalkcompute._connect import ConnectClient
 from chalkcompute._gen.chalk.volume.v2 import volume_pb2 as pb_v2
 from chalkcompute._image import Image
@@ -823,20 +825,23 @@ class VersionedVolumeClient:
         self._closed = True
 
     @traced("chalkcompute.versioned_volume.create")
-    def create(self, name: str) -> VersionedVolume:
+    def create(self, name: str, *, volume_type: str | None = None) -> VersionedVolume:
         """Create a new named versioned volume.
 
         Parameters
         ----------
         name
             Name for the new volume.
+        volume_type
+            Optional volume kind, e.g. ``"source_code"`` for volumes that
+            hold deployed function source files.
 
         Returns
         -------
         VersionedVolume
             A handle to the newly created volume.
         """
-        raw = self._create_volume(name)
+        raw = self._create_volume(name, volume_type=volume_type)
         vol = VersionedVolume(name, client=self, create_if_missing=False)
         vol._info = _dict_to_volume_info(raw["volume"])
         return vol
@@ -931,6 +936,76 @@ class VersionedVolumeClient:
             )
         return volumes
 
+    @traced("chalkcompute.versioned_volume.stage_lazy_files")
+    def stage_lazy_files(
+        self, image: Image, *, volume_name: str
+    ) -> tuple[builtins.list[VolumeMount], builtins.list[dict[str, Any]]]:
+        """Stage an image's lazy local files into source-code volumes.
+
+        Reuses (or creates, ``source_code``-kind) one stable versioned volume
+        per destination directory — named from ``volume_name`` — and uploads
+        the file bytes, but does **not** commit. Each staged upload is
+        returned as a ``chalk.volume.v2.CommitIntent`` JSON dict for
+        ``CreateExternalFunctionVersionRequest.volume_commits``: the server
+        commits the intent and stamps the resulting version_id onto the spec
+        volume with the matching name, so every replica is pinned to that
+        immutable snapshot.
+
+        On reused volumes the intent carries a recursive remove of root,
+        which the server applies as "replace the base tree": the committed
+        version is exactly the staged files, so redeploys never leak stale
+        files into new versions.
+
+        Parameters
+        ----------
+        image
+            Image whose lazy local files should be staged.
+        volume_name
+            Stable name for the volume, typically derived from the function
+            or class name so redeploys append versions to the same volume.
+            A per-directory suffix is added when the image spans multiple
+            destination directories.
+
+        Returns
+        -------
+        tuple of (list of VolumeMount, list of dict)
+            One mount and one commit-intent dict per volume.
+        """
+        from chalkcompute._naming import sanitize_dns_label
+
+        try:
+            dir_to_files = image.lazy_local_files_grouped_for_volume_mounts()
+        except ValueError as e:
+            raise VolumeError(str(e)) from e
+
+        volumes: builtins.list[VolumeMount] = []
+        intents: builtins.list[dict[str, Any]] = []
+        for dest_dir, files in dir_to_files.items():
+            name = sanitize_dns_label(f"{volume_name}-{dest_dir}")
+            existed = self.exists(name)
+            vol = (
+                self.from_name(name)
+                if existed
+                else self.create(name, volume_type="source_code")
+            )
+            source = [
+                (os.path.relpath(lf.dest, dest_dir), Path(lf.src)) for lf in files
+            ]
+            self._raise_if_closed()
+            try:
+                staged = self._inner.stage(vol.name, source)
+                intent_bytes = self._inner.staged_intent(vol.name, staged)
+            except _native_error_types() as exc:
+                _raise_volume_error(exc, vol.name)
+            intent = pb_v2.CommitIntent.FromString(bytes(intent_bytes))
+            if existed:
+                intent.path_deltas.removes.add(path="/", recursive=True)
+            intents.append(MessageToDict(intent))
+            volumes.append(
+                VolumeMount(name=vol.name, mount_path=dest_dir, type=self.mount_type)
+            )
+        return volumes, intents
+
     def delete_volume(self, name: str) -> None:
         """Delete a versioned volume by name.
 
@@ -971,10 +1046,12 @@ class VersionedVolumeClient:
         if self._closed:
             raise VolumeClosedError("VersionedVolumeClient is closed")
 
-    def _create_volume(self, name: str) -> dict[str, Any]:
+    def _create_volume(
+        self, name: str, *, volume_type: str | None = None
+    ) -> dict[str, Any]:
         self._raise_if_closed()
         try:
-            return dict(self._inner.create_volume(name))
+            return dict(self._inner.create_volume(name, volume_type))
         except _native_error_types() as exc:
             _raise_volume_error(exc, name)
 

@@ -323,7 +323,7 @@ class TestScheduleValidationFunction:
         monkeypatch.setattr(
             function_mod,
             "_build_and_upload",
-            lambda *_, **__: ("image:test", [], None),
+            lambda *_, **__: ("image:test", [], None, []),
         )
 
         fn.deploy()
@@ -344,7 +344,7 @@ class TestScheduleValidationFunction:
         monkeypatch.setattr(
             function_mod,
             "_build_and_upload",
-            lambda *_, **__: ("image:test", [], None),
+            lambda *_, **__: ("image:test", [], None, []),
         )
 
         fn.deploy()
@@ -368,7 +368,7 @@ class TestScheduleValidationFunction:
         monkeypatch.setattr(
             function_mod,
             "_build_and_upload",
-            lambda *_, **__: ("image:test", [], None),
+            lambda *_, **__: ("image:test", [], None, []),
         )
 
         fn.deploy()
@@ -392,7 +392,7 @@ class TestScheduleValidationFunction:
         monkeypatch.setattr(
             function_mod,
             "_build_and_upload",
-            lambda *_, **__: ("image:test", [], None),
+            lambda *_, **__: ("image:test", [], None, []),
         )
 
         fn.deploy()
@@ -415,7 +415,7 @@ class TestScheduleValidationFunction:
         monkeypatch.setattr(
             function_mod,
             "_build_and_upload",
-            lambda *_, **__: ("image:test", [], None),
+            lambda *_, **__: ("image:test", [], None, []),
         )
 
         fn.deploy()
@@ -476,7 +476,7 @@ class TestScheduleValidationClass:
         monkeypatch.setattr(
             cls_mod,
             "_build_and_upload",
-            lambda *_, **__: ("image:test", [], None),
+            lambda *_, **__: ("image:test", [], None, []),
         )
 
         rc.deploy()

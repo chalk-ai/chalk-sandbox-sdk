@@ -1135,12 +1135,18 @@ def _build_and_upload(
     deploy_image: _Image,
     *,
     label: str,
-    volume_prefix: str,
+    volume_name: str,
     poll_interval: float,
     build_timeout: float,
     progress_parent: str | None = None,
-) -> tuple[str, list[VolumeMount], VolumeDriver | None]:
-    """Build the container image and upload lazy local files.
+) -> tuple[str, list[VolumeMount], VolumeDriver | None, list[dict[str, Any]]]:
+    """Build the container image and stage lazy local files.
+
+    Lazy files are uploaded into ``source_code``-kind versioned volumes but
+    not committed: each staged upload is returned as a commit-intent dict for
+    ``CreateExternalFunctionVersionRequest.volume_commits``, so the server
+    commits atomically with the function version and pins the mount to the
+    resulting snapshot.
 
     Parameters
     ----------
@@ -1150,8 +1156,9 @@ def _build_and_upload(
         Declarative image to build.
     label
         Human-readable label used in progress output.
-    volume_prefix
-        Prefix for any new volumes created for lazy local files.
+    volume_name
+        Stable volume name for the lazy local files, derived from the
+        function or class name so redeploys reuse the same volume.
     poll_interval
         Seconds between build status polls.
     build_timeout
@@ -1161,10 +1168,11 @@ def _build_and_upload(
 
     Returns
     -------
-    tuple of (str, list of VolumeMount, VolumeDriver or None)
-        ``(image_uri, new_volumes, driver)``. The driver is returned only so
-        the caller can later delete the uploaded volumes; mount types live on
-        the returned :class:`VolumeMount` objects, never on the driver.
+    tuple of (str, list of VolumeMount, VolumeDriver or None, list of dict)
+        ``(image_uri, new_volumes, driver, volume_commits)``. The driver is
+        returned only so the caller can later delete the uploaded volumes;
+        mount types live on the returned :class:`VolumeMount` objects, never
+        on the driver.
     """
     from chalkcompute._progress import progress_add, progress_done
 
@@ -1180,6 +1188,7 @@ def _build_and_upload(
 
     new_volumes: list[VolumeMount] = []
     driver: VolumeDriver | None = None
+    volume_commits: list[dict[str, Any]] = []
     if deploy_image.lazy_local_files:
         vkey = f"upload:{label}"
         progress_add(
@@ -1189,13 +1198,14 @@ def _build_and_upload(
             parent=progress_parent,
         )
         logger.info("Uploading %d local file(s)...", len(deploy_image.lazy_local_files))
-        driver = VersionedVolumeClient.from_connect(client)
-        new_volumes = driver.upload_lazy_files(
+        vvclient = VersionedVolumeClient.from_connect(client)
+        driver = vvclient
+        new_volumes, volume_commits = vvclient.stage_lazy_files(
             deploy_image,
-            volume_prefix=volume_prefix,
+            volume_name=volume_name,
         )
         progress_done(vkey)
-    return image_uri, new_volumes, driver
+    return image_uri, new_volumes, driver, volume_commits
 
 
 def _cleanup_temp_files(paths: list[str]) -> None:
@@ -1889,11 +1899,11 @@ class RemoteFunction:
             deploy_image = self._build_deploy_image()
 
             # 2. Build image + upload lazy files
-            image_uri, new_vols, driver = _build_and_upload(
+            image_uri, new_vols, driver, volume_commits = _build_and_upload(
                 self._client,
                 deploy_image,
                 label=f"function '{self._func_name}'",
-                volume_prefix="fn-files",
+                volume_name=f"fn-src-{self._explicit_name or self._func_name}",
                 poll_interval=poll_interval,
                 build_timeout=build_timeout,
                 progress_parent=fkey,
@@ -2009,6 +2019,8 @@ class RemoteFunction:
             }
             if function_config:
                 create_request["config"] = function_config
+            if volume_commits:
+                create_request["volumeCommits"] = volume_commits
 
             resp = self._client.rpc(
                 _CATALOG_SVC,

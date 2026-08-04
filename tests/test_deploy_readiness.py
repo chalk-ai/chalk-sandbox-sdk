@@ -223,7 +223,7 @@ def test_remote_function_deploy_waits_for_ready_replicas(monkeypatch) -> None:
     monkeypatch.setattr(
         function_mod,
         "_build_and_upload",
-        lambda *_, **__: ("image:test", [], None),
+        lambda *_, **__: ("image:test", [], None, []),
     )
     monkeypatch.setattr(function_mod.time, "sleep", lambda _: None)
 
@@ -248,7 +248,7 @@ def test_remote_function_deploy_allows_zero_min_replicas(monkeypatch) -> None:
     monkeypatch.setattr(
         function_mod,
         "_build_and_upload",
-        lambda *_, **__: ("image:test", [], None),
+        lambda *_, **__: ("image:test", [], None, []),
     )
 
     fn.deploy(poll_interval=0, ready_timeout=10)
@@ -268,7 +268,7 @@ def test_remote_function_deploy_allows_scaled_to_zero(monkeypatch) -> None:
     monkeypatch.setattr(
         function_mod,
         "_build_and_upload",
-        lambda *_, **__: ("image:test", [], None),
+        lambda *_, **__: ("image:test", [], None, []),
     )
 
     fn.deploy(poll_interval=0, ready_timeout=10)
@@ -326,7 +326,7 @@ def test_remote_class_deploy_waits_for_ready_replicas(monkeypatch) -> None:
     monkeypatch.setattr(
         cls_mod,
         "_build_and_upload",
-        lambda *_, **__: ("image:test", [], None),
+        lambda *_, **__: ("image:test", [], None, []),
     )
     monkeypatch.setattr(cls_mod.time, "sleep", lambda _: None)
 
@@ -353,7 +353,7 @@ def test_remote_class_deploy_allows_zero_min_replicas(monkeypatch) -> None:
     monkeypatch.setattr(
         cls_mod,
         "_build_and_upload",
-        lambda *_, **__: ("image:test", [], None),
+        lambda *_, **__: ("image:test", [], None, []),
     )
 
     rc.deploy(poll_interval=0, ready_timeout=10)
@@ -375,9 +375,55 @@ def test_remote_class_deploy_allows_scaled_to_zero(monkeypatch) -> None:
     monkeypatch.setattr(
         cls_mod,
         "_build_and_upload",
-        lambda *_, **__: ("image:test", [], None),
+        lambda *_, **__: ("image:test", [], None, []),
     )
 
     rc.deploy(poll_interval=0, ready_timeout=10)
 
     assert client.methods == ["CreateExternalFunctionVersion", "GetScalingGroup"]
+
+
+class _RequestCapturingClient(_RemoteFunctionReadinessClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.requests: dict[str, dict[str, Any]] = {}
+
+    def rpc(
+        self,
+        service: str,
+        method: str,
+        request: dict[str, Any],
+        **kwargs: Any,
+    ) -> _Response:
+        self.requests[method] = request
+        return super().rpc(service, method, request, **kwargs)
+
+
+def test_remote_function_deploy_forwards_volume_commits(monkeypatch) -> None:
+    from chalkcompute._volume import VolumeMount
+
+    def add(x: int) -> int:
+        return x
+
+    client = _RequestCapturingClient()
+    fn = RemoteFunction(add, name="fn-commits")
+    fn._client = client  # type: ignore[assignment]
+
+    intent = {"volume": {"name": "fn-files-abc"}, "author": "chalk:env:agent:a"}
+    mount = VolumeMount(
+        name="fn-files-abc", mount_path="/app", type="versioned_chalkfs"
+    )
+    monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
+    monkeypatch.setattr(
+        function_mod,
+        "_build_and_upload",
+        lambda *_, **__: ("image:test", [mount], None, [intent]),
+    )
+    monkeypatch.setattr(function_mod.time, "sleep", lambda _: None)
+
+    fn.deploy(poll_interval=0, ready_timeout=10)
+
+    request = client.requests["CreateExternalFunctionVersion"]
+    assert request["volumeCommits"] == [intent]
+    mounts = request["spec"]["containerSpec"]["volumes"]
+    assert any(m["name"] == "fn-files-abc" for m in mounts)
