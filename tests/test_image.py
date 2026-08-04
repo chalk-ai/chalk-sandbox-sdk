@@ -221,7 +221,9 @@ class TestImageAddFile:
         src = tmp_path / "weights.bin"
         src.write_bytes(b"x")
         with pytest.warns(UserWarning, match="ignored for strategy='volume'"):
-            Image.debian_slim().add_local_file(str(src), "/data/weights.bin", mode=0o755)
+            Image.debian_slim().add_local_file(
+                str(src), "/data/weights.bin", mode=0o755
+            )
         import warnings as _w
 
         with _w.catch_warnings():
@@ -1098,4 +1100,6 @@ class TestFromProto:
         # silently dropped. If this fails, add the field to Image.from_proto/to_proto and here.
         handled = {"base_image", "steps", "entrypoint", "cmd", "workdir", "env"}
         fields = set(Image.debian_slim().to_proto().DESCRIPTOR.fields_by_name)
-        assert fields == handled, f"ImageSpec fields changed ({fields ^ handled}); update Image.from_proto/to_proto."
+        assert fields == handled, (
+            f"ImageSpec fields changed ({fields ^ handled}); update Image.from_proto/to_proto."
+        )
