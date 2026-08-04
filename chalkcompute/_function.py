@@ -109,6 +109,7 @@ _STRIP_SOURCE_ENV_VAR = _local_dev._STRIP_SOURCE_ENV_VAR
 # When enabled, route __call__ through the API server's CallExternalFunction
 # RPC instead of connecting directly to the scaling group's web URL.
 _CALL_VIA_API_ENV_VAR = "CHALK_FUNCTION_CALL_VIA_API"
+_DATAPLANE_API_SERVER_ENV_VAR = "CHALK_DATAPLANE_API_SERVER"
 _CATALOG_SVC = "chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService"
 _SG_SVC = "chalk.scalinggroup.v1.ScalingGroupManagerService"
 
@@ -2314,6 +2315,25 @@ class RemoteFunction:
             ("x-chalk-env-id", self._client._env_id or ""),
         ]
 
+    @staticmethod
+    def _dataplane_api_target(
+        engine_target: str,
+        use_tls: bool,
+    ) -> tuple[str, bool]:
+        override = os.environ.get(_DATAPLANE_API_SERVER_ENV_VAR, "").strip()
+        if override:
+            return grpc_target_from_url(override)
+
+        host, separator, port = engine_target.partition(":")
+        if "." not in host or host == "localhost" or host.replace(".", "").isdigit():
+            return engine_target, use_tls
+
+        _, gateway_domain = host.split(".", 1)
+        target = f"dataplane-api-server.{gateway_domain}"
+        if separator:
+            target = f"{target}:{port}"
+        return target, use_tls
+
     def _per_call_metadata(self) -> list[tuple[str, str]]:
         metadata = current_trace_metadata()
         if self._knowledge_cutoff is not None:
@@ -2359,6 +2379,7 @@ class RemoteFunction:
                     target, use_tls = self._client.grpc_engine_target()
                 else:
                     target, use_tls = service_auth.grpc_engine
+            target, use_tls = self._dataplane_api_target(target, use_tls)
         else:
             target, use_tls = grpc_target_from_url(
                 self._web_url,

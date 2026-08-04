@@ -545,7 +545,7 @@ def test_defer_get_and_purge_use_queue_client() -> None:
     assert fn.purge() == 7
 
     client = FakeRemoteCallClient.instances[0]
-    assert client.endpoint == "engine.chalk.test:443"
+    assert client.endpoint == "dataplane-api-server.chalk.test:443"
     assert client.use_tls is True
     assert client.metadata == [
         ("authorization", "Bearer access-token"),
@@ -584,7 +584,10 @@ def test_poll_refreshes_stale_queue_client_and_retries() -> None:
 
     assert len(FakeRemoteCallClient.instances) == 2
     assert FakeRemoteCallClient.instances[0].closed is True
-    assert FakeRemoteCallClient.instances[1].endpoint == "engine.chalk.test:443"
+    assert (
+        FakeRemoteCallClient.instances[1].endpoint
+        == "dataplane-api-server.chalk.test:443"
+    )
 
 
 def test_deferred_get_can_be_awaited_in_async_context() -> None:
@@ -786,11 +789,30 @@ def test_queue_call_uses_service_auth_engine_from_environment(monkeypatch) -> No
     assert handle.get() == 99
 
     client = FakeRemoteCallClient.instances[0]
-    assert client.endpoint == "engine.chalk.test:443"
+    assert client.endpoint == "dataplane-api-server.chalk.test:443"
     assert client.use_tls is True
     assert client.metadata == [("x-chalk-env-id", "env-service-auth")]
     assert client.kwargs["auth_endpoint"] == "https://api.chalk.test"
     assert client.kwargs["exchange_token"] == "exchange-token"
+
+
+def test_dataplane_api_target_preserves_local_target() -> None:
+    assert RemoteFunction._dataplane_api_target("localhost:50053", False) == (
+        "localhost:50053",
+        False,
+    )
+
+
+def test_dataplane_api_target_uses_explicit_override(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "CHALK_DATAPLANE_API_SERVER",
+        "https://custom-dataplane.chalk.test",
+    )
+
+    assert RemoteFunction._dataplane_api_target("engine.chalk.test:443", True) == (
+        "custom-dataplane.chalk.test:443",
+        True,
+    )
 
 
 def test_queue_call_uses_service_auth_engine_from_token_response(monkeypatch) -> None:
@@ -823,7 +845,7 @@ def test_queue_call_uses_service_auth_engine_from_token_response(monkeypatch) ->
     assert handle.get() == 99
 
     client = FakeRemoteCallClient.instances[0]
-    assert client.endpoint == "discovered-engine.chalk.test:443"
+    assert client.endpoint == "dataplane-api-server.chalk.test:443"
     assert client.use_tls is True
     assert client.metadata == [("x-chalk-env-id", "env-service-auth")]
     assert client.kwargs["auth_endpoint"] == "https://api.chalk.test"
