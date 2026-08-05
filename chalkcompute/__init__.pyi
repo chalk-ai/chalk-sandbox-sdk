@@ -81,6 +81,9 @@ from chalkcompute._volume import VolumeError as VolumeError
 from chalkcompute._volume import VolumeFileNotFoundError as VolumeFileNotFoundError
 from chalkcompute._volume import VolumeInfo as VolumeInfo
 from chalkcompute._volume import VolumeNotFoundError as VolumeNotFoundError
+from chalkcompute._volume import (
+    resolve_referenced_volume_type as resolve_referenced_volume_type,
+)
 
 # Back-compat aliases: all volumes are versioned, so the qualifier is gone from
 # the canonical names. Keep the old spellings importable.
@@ -167,6 +170,7 @@ __all__ = [
     "VolumeInfo",
     "VolumeNotFoundError",
     "VersionInfo",
+    "resolve_referenced_volume_type",
     "VersionedVolume",
     "VersionedVolumeClient",
 ]

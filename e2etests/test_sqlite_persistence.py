@@ -13,7 +13,7 @@ from chalkcompute import Container, Image, Volume
 from e2etests.conftest import needs_staging
 
 pytestmark = pytest.mark.skip(
-    reason="expensive — overlaps with test_volume_hello for the volume+container path"
+    reason="expensive — overlaps with test_volume for the volume+container path"
 )
 
 MOUNT_PATH = "/data"

@@ -110,6 +110,12 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "VolumeFileNotFoundError": ("chalkcompute._volume", "VolumeFileNotFoundError"),
     "VolumeInfo": ("chalkcompute._volume", "VolumeInfo"),
     "VolumeNotFoundError": ("chalkcompute._volume", "VolumeNotFoundError"),
+    # Imported by chalkpy's model-deploy path; every volume mounts as
+    # MOUNT_TYPE, so this only validates existence now.
+    "resolve_referenced_volume_type": (
+        "chalkcompute._volume",
+        "resolve_referenced_volume_type",
+    ),
     # Back-compat aliases: all volumes are versioned, so the qualifier is gone
     # from the canonical names. Keep the old spellings importable.
     "VersionedVolume": ("chalkcompute._volume", "Volume"),

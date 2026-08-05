@@ -1544,6 +1544,15 @@ def normalize_volume_refs(
     return refs
 
 
+def _require_volume_exists(connect: ConnectClient, name: str) -> None:
+    """Raise :class:`VolumeError` unless a volume named ``name`` exists."""
+    if not VolumeClient.from_connect(connect).exists(name):
+        raise VolumeError(
+            f"Referenced volume {name!r} was not found. "
+            f"Check the name, or create it before referencing it."
+        )
+
+
 def referenced_volume_mount(
     connect: ConnectClient, name: str, mount_path: str
 ) -> VolumeMount:
@@ -1553,12 +1562,18 @@ def referenced_volume_mount(
     and must already exist. Checking here turns a typo'd name into a deploy-time
     error instead of a container that mounts nothing.
     """
-    if not VolumeClient.from_connect(connect).exists(name):
-        raise VolumeError(
-            f"Referenced volume {name!r} was not found. "
-            f"Check the name, or create it before referencing it."
-        )
+    _require_volume_exists(connect, name)
     return VolumeMount(name=name, mount_path=mount_path)
+
+
+def resolve_referenced_volume_type(connect: ConnectClient, name: str) -> str:
+    """Return the mount type of an existing volume, or raise if it is absent.
+
+    Every volume mounts as :data:`MOUNT_TYPE`, so this no longer discriminates
+    between backends. Prefer :func:`referenced_volume_mount`.
+    """
+    _require_volume_exists(connect, name)
+    return MOUNT_TYPE
 
 
 def cleanup_owned_volumes(
