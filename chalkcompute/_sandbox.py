@@ -57,7 +57,7 @@ from chalkcompute._tracing import _instrumented
 # Aliases defined before SandboxClient, which has a ``.list()`` method that
 # would otherwise shadow the builtin ``list`` in class-scope name resolution.
 _GrpcMetadata = list[tuple[str, str]]
-_VolumeMountList = list[pb.VolumeMount]
+_VolumeList = list[tuple[str, str]]
 
 
 # ---------------------------------------------------------------------------
@@ -415,24 +415,24 @@ class ExecProcess:
 class Sandbox:
     """A managed sandbox backed by the Chalk ``SandboxService``.
 
-    Configure a sandbox with ``Sandbox(image=...)`` and call :meth:`run` to
-    create it. Use :meth:`exec` to run commands and :meth:`terminate` to shut
-    the sandbox down when you're done.
+    Create sandboxes with :meth:`SandboxClient.create`. Use :meth:`exec` to run
+    commands and :meth:`terminate` to shut the sandbox down when you're done.
 
     Examples
     --------
-    >>> from chalkcompute import Sandbox, Image
-    >>> sandbox = Sandbox(
-    ...     image=Image.debian_slim().pip_install(["numpy"]),
-    ... ).run()
-    >>> result = sandbox.exec(
-    ...     "python",
-    ...     "-c",
-    ...     "import numpy; print(numpy.__version__)",
-    ... )
+    >>> from chalkcompute import Image, SandboxClient
+    >>> with SandboxClient.from_env() as client:
+    ...     sandbox = client.create(
+    ...         Image.debian_slim().pip_install(["numpy"]),
+    ...     )
+    ...     result = sandbox.exec(
+    ...         "python",
+    ...         "-c",
+    ...         "import numpy; print(numpy.__version__)",
+    ...     )
+    ...     sandbox.terminate()
     >>> result.stdout_text.strip()
-    '1.26.4'
-    >>> sandbox.terminate()
+    '2.5.1'
     """
 
     def __init__(
@@ -479,9 +479,17 @@ class Sandbox:
             Optional restart behavior. Use :attr:`RestartPolicy.NEVER` or
             :attr:`RestartPolicy.ALWAYS`.
 
+        Notes
+        -----
+        Calling :meth:`run` without a client creates one from the environment.
+        Prefer creating a :class:`SandboxClient` explicitly and calling
+        :meth:`SandboxClient.create` instead of constructing a ``Sandbox``
+        directly.
+
         Examples
         --------
-        >>> sandbox = Sandbox(image="ubuntu:latest").run()
+        >>> with SandboxClient.from_env() as client:
+        ...     sandbox = client.create("ubuntu:latest")
         """
         self._client: Any | None = None
         self._id: str | None = None
@@ -665,23 +673,14 @@ class Sandbox:
                 timeout=timeout,
             )
 
-        sandbox = client.create(
+        client._instantiate(
+            self,
             image,
-            name=self._name,
-            cpu=self._cpu,
-            memory=self._memory,
-            env=self._env or None,
-            volumes=_volume_mounts_to_proto(self._volumes) if self._volumes else None,
-            entrypoint=self._entrypoint,
-            network_policy=self._network_policy,
-            restart_policy=self._restart_policy,
             wait=wait,
             poll_interval=poll_interval,
             timeout=timeout,
         )
         self._client = client
-        self._id = sandbox._id
-        self._info = sandbox._info
         self._terminated = False
         return self
 
@@ -1099,7 +1098,6 @@ class SandboxClient:
         """Close the gRPC channel."""
         self._channel.close()
 
-    @_instrumented("chalkcompute.sandbox.create")
     def create(
         self,
         image: str | Image,
@@ -1108,7 +1106,7 @@ class SandboxClient:
         cpu: str | None = None,
         memory: str | None = None,
         env: dict[str, str] | None = None,
-        volumes: _VolumeMountList | None = None,
+        volumes: _VolumeList | None = None,
         entrypoint: _StrList | None = None,
         network_policy: NetworkPolicy | None = None,
         restart_policy: RestartPolicy | None = None,
@@ -1137,7 +1135,8 @@ class SandboxClient:
         env
             Optional environment variables.
         volumes
-            Optional list of ``VolumeMount`` protos to attach.
+            Optional ``(volume_name, mount_path)`` pairs to mount into the
+            sandbox.
         entrypoint
             Optional command to run as the sandbox container's main process.
         network_policy
@@ -1149,7 +1148,7 @@ class SandboxClient:
         wait
             If ``True``, poll until the sandbox is ready (default ``True``).
         poll_interval
-            Seconds between ``GetSandbox`` polls (default 5).
+            Seconds between ``GetSandbox`` polls (default 0.5).
         timeout
             Maximum seconds to wait for the sandbox to become ready
             (default 600).
@@ -1159,54 +1158,62 @@ class SandboxClient:
         Sandbox
             A sandbox handle.
         """
-        if network_policy is not None and not isinstance(network_policy, NetworkPolicy):
-            raise TypeError("network_policy must be a NetworkPolicy")
-        if restart_policy is not None and not isinstance(restart_policy, RestartPolicy):
-            raise TypeError("restart_policy must be a RestartPolicy")
+        return Sandbox(
+            image=image,
+            name=name,
+            cpu=cpu,
+            memory=memory,
+            env=env,
+            volumes=volumes,
+            entrypoint=entrypoint,
+            network_policy=network_policy,
+            restart_policy=restart_policy,
+            sandbox_client=self,
+        ).run(wait=wait, poll_interval=poll_interval, timeout=timeout)
 
-        if isinstance(image, Image):
-            image = self._build_image(
-                image,
-                poll_interval=poll_interval,
-                timeout=timeout,
-            )
-
+    @_instrumented("chalkcompute.sandbox.create")
+    def _instantiate(
+        self,
+        sandbox: Sandbox,
+        image: str,
+        *,
+        wait: bool,
+        poll_interval: float,
+        timeout: float,
+    ) -> None:
         req = pb.CreateSandboxRequest(image=image)
-        if name is not None:
-            req.name = name
-        if cpu is not None or memory is not None:
+        if sandbox._name is not None:
+            req.name = sandbox._name
+        if sandbox._cpu is not None or sandbox._memory is not None:
             limits = pb.ResourceLimits()
-            if cpu is not None:
-                limits.cpu = cpu
-            if memory is not None:
-                limits.memory = memory
+            if sandbox._cpu is not None:
+                limits.cpu = sandbox._cpu
+            if sandbox._memory is not None:
+                limits.memory = sandbox._memory
             req.resource_limits.CopyFrom(limits)
-        validate_env(env)
-        if env is not None:
-            for k, v in env.items():
+        if sandbox._env:
+            for k, v in sandbox._env.items():
                 req.env[k] = v
-        if volumes is not None:
-            req.volumes.extend(volumes)
-        if entrypoint is not None:
-            req.entrypoint.extend(entrypoint)
-        if network_policy is not None:
+        if sandbox._volumes:
+            req.volumes.extend(_volume_mounts_to_proto(sandbox._volumes))
+        if sandbox._entrypoint is not None:
+            req.entrypoint.extend(sandbox._entrypoint)
+        if sandbox._network_policy is not None:
             from google.protobuf.json_format import ParseDict
 
-            ParseDict(network_policy.to_dict(), req.network_policy)
-        if restart_policy is not None:
+            ParseDict(sandbox._network_policy.to_dict(), req.network_policy)
+        if sandbox._restart_policy is not None:
             req.restart_policy = (
                 container_pb.RESTART_POLICY_NEVER
-                if restart_policy is RestartPolicy.NEVER
+                if sandbox._restart_policy is RestartPolicy.NEVER
                 else container_pb.RESTART_POLICY_ALWAYS
             )
 
         resp = self._stub.CreateSandbox(req, metadata=self._metadata)
         info = _pb_to_sandbox_info(resp.sandbox)
-        sandbox = Sandbox(client=self, sandbox_id=info.id)
-        sandbox._info = info
 
         if wait and info.status in ("building", "connecting"):
-            sandbox._info = self._poll_until_ready(
+            info = self._poll_until_ready(
                 info.id,
                 poll_interval=poll_interval,
                 timeout=timeout,
@@ -1218,26 +1225,8 @@ class SandboxClient:
                 f"Sandbox {info.id} was terminated during creation"
             )
 
-        return sandbox
-
-    def _build_image(
-        self,
-        image: Image,
-        *,
-        poll_interval: float,
-        timeout: float,
-    ) -> str:
-        """Build an ``Image`` spec and return the resulting image URI."""
-        connect = self._connect or ConnectClient()
-        try:
-            return build_image(
-                connect,
-                image,
-                poll_interval=poll_interval,
-                timeout=timeout,
-            )
-        except ConnectError as e:
-            raise SandboxBuildError(str(e)) from e
+        sandbox._id = info.id
+        sandbox._info = info
 
     def _poll_until_ready(
         self,
