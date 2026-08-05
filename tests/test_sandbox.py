@@ -16,10 +16,14 @@ class _RecordingSandboxClient:
         self.created_image: str | None = None
         self.create_kwargs: dict[str, object] | None = None
 
-    def create(self, image: str, **kwargs: object) -> Sandbox:
+    def _instantiate(self, sandbox: Sandbox, image: str, **kwargs: object) -> None:
         self.created_image = image
-        self.create_kwargs = kwargs
-        return Sandbox(client=self, sandbox_id="sandbox-123")
+        self.create_kwargs = {
+            **kwargs,
+            "cpu": sandbox._cpu,
+            "memory": sandbox._memory,
+        }
+        sandbox._id = "sandbox-123"
 
 
 def test_sandbox_run_builds_image_before_create() -> None:
