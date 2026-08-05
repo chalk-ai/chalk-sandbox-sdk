@@ -56,6 +56,7 @@ from chalkcompute._sandbox import PythonSkippedArtifact as PythonSkippedArtifact
 from chalkcompute._sandbox import RestartPolicy as RestartPolicy
 from chalkcompute._sandbox import Sandbox as Sandbox
 from chalkcompute._sandbox import SandboxBuildError as SandboxBuildError
+from chalkcompute._sandbox import SandboxCreationError as SandboxCreationError
 from chalkcompute._sandbox import SandboxClient as SandboxClient
 from chalkcompute._sandbox import SandboxError as SandboxError
 from chalkcompute._sandbox import SandboxInfo as SandboxInfo
@@ -147,6 +148,7 @@ __all__ = [
     "RestartPolicy",
     "Sandbox",
     "SandboxBuildError",
+    "SandboxCreationError",
     "SandboxClient",
     "SandboxError",
     "SandboxInfo",

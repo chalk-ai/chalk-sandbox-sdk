@@ -84,9 +84,41 @@ class SandboxTerminatedError(SandboxError):
 
 
 class SandboxBuildError(SandboxError):
-    """Raised when a sandbox image build fails."""
+    """Raised when a custom sandbox image build fails."""
 
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        sandbox_id: str | None = None,
+        status: str | None = None,
+        status_message: str | None = None,
+        build_id: str | None = None,
+    ) -> None:
+        self.sandbox_id = sandbox_id
+        self.status = status
+        self.status_message = status_message
+        self.build_id = build_id
+        super().__init__(message)
+
+
+class SandboxCreationError(SandboxError):
+    """Raised when sandbox creation or startup fails."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        sandbox_id: str | None = None,
+        status: str | None = None,
+        status_message: str | None = None,
+        build_id: str | None = None,
+    ) -> None:
+        self.sandbox_id = sandbox_id
+        self.status = status
+        self.status_message = status_message
+        self.build_id = build_id
+        super().__init__(message)
 
 
 class ExecError(SandboxError):
@@ -127,6 +159,9 @@ class SandboxInfo:
 
     build_id: str | None = None
     """Optional identifier of the image build associated with this sandbox."""
+
+    status_message: str | None = None
+    """Backend-provided explanation for the current lifecycle status."""
 
 
 @dataclass
@@ -1176,6 +1211,12 @@ class SandboxClient:
                 poll_interval=poll_interval,
                 timeout=timeout,
             )
+        elif wait and info.status == "error":
+            raise _sandbox_creation_error(info)
+        elif wait and info.status == "terminated":
+            raise SandboxTerminatedError(
+                f"Sandbox {info.id} was terminated during creation"
+            )
 
         return sandbox
 
@@ -1220,12 +1261,10 @@ class SandboxClient:
             if info.status == "ready":
                 return info
             if info.status == "error":
-                raise SandboxBuildError(
-                    f"Sandbox {sandbox_id} entered error state during image build"
-                )
+                raise _sandbox_creation_error(info)
             if info.status == "terminated":
                 raise SandboxTerminatedError(
-                    f"Sandbox {sandbox_id} was terminated during image build"
+                    f"Sandbox {sandbox_id} was terminated during creation"
                 )
             time.sleep(poll_interval)
         raise SandboxError(
@@ -1275,6 +1314,23 @@ def _pb_to_sandbox_info(info: pb.SandboxInfo) -> SandboxInfo:
         created_at=info.created_at,
         name=info.name if info.HasField("name") else None,
         build_id=info.build_id if info.HasField("build_id") else None,
+        status_message=(
+            info.status_message if info.HasField("status_message") else None
+        ),
+    )
+
+
+def _sandbox_creation_error(info: SandboxInfo) -> SandboxCreationError:
+    """Build a detailed error from the backend's sandbox status."""
+    message = f"Sandbox {info.id} entered {info.status} state during creation"
+    if info.status_message:
+        message = f"{message}: {info.status_message}"
+    return SandboxCreationError(
+        message,
+        sandbox_id=info.id,
+        status=info.status,
+        status_message=info.status_message,
+        build_id=info.build_id,
     )
 
 
