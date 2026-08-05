@@ -88,6 +88,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "RestartPolicy": ("chalkcompute._sandbox", "RestartPolicy"),
     "Sandbox": ("chalkcompute._sandbox", "Sandbox"),
     "SandboxBuildError": ("chalkcompute._sandbox", "SandboxBuildError"),
+    "SandboxCreationError": ("chalkcompute._sandbox", "SandboxCreationError"),
     "SandboxClient": ("chalkcompute._sandbox", "SandboxClient"),
     "SandboxError": ("chalkcompute._sandbox", "SandboxError"),
     "SandboxInfo": ("chalkcompute._sandbox", "SandboxInfo"),
