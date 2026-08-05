@@ -49,6 +49,7 @@ class UploadedObjectKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     UPLOADED_OBJECT_KIND_UNSPECIFIED: _ClassVar[UploadedObjectKind]
     UPLOADED_OBJECT_KIND_CHUNK: _ClassVar[UploadedObjectKind]
     UPLOADED_OBJECT_KIND_PACK: _ClassVar[UploadedObjectKind]
+    UPLOADED_OBJECT_KIND_INTENT: _ClassVar[UploadedObjectKind]
 
 class VolumeKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -74,6 +75,7 @@ COMMIT_RESULT_ABORTED: CommitResult
 UPLOADED_OBJECT_KIND_UNSPECIFIED: UploadedObjectKind
 UPLOADED_OBJECT_KIND_CHUNK: UploadedObjectKind
 UPLOADED_OBJECT_KIND_PACK: UploadedObjectKind
+UPLOADED_OBJECT_KIND_INTENT: UploadedObjectKind
 VOLUME_KIND_UNSPECIFIED: VolumeKind
 VOLUME_KIND_SOURCE_CODE: VolumeKind
 
@@ -600,6 +602,18 @@ class UploadURLItem(_message.Message):
         expires_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
     ) -> None: ...
 
+class CommitDeltasObject(_message.Message):
+    __slots__ = ("path_deltas", "inode_deltas")
+    PATH_DELTAS_FIELD_NUMBER: _ClassVar[int]
+    INODE_DELTAS_FIELD_NUMBER: _ClassVar[int]
+    path_deltas: PathDeltaList
+    inode_deltas: InodeDeltaList
+    def __init__(
+        self,
+        path_deltas: _Optional[_Union[PathDeltaList, _Mapping]] = ...,
+        inode_deltas: _Optional[_Union[InodeDeltaList, _Mapping]] = ...,
+    ) -> None: ...
+
 class CommitIntent(_message.Message):
     __slots__ = (
         "volume",
@@ -611,6 +625,7 @@ class CommitIntent(_message.Message):
         "author",
         "path_deltas",
         "inode_deltas",
+        "uploaded_deltas",
     )
     VOLUME_FIELD_NUMBER: _ClassVar[int]
     COMMIT_ID_FIELD_NUMBER: _ClassVar[int]
@@ -621,6 +636,7 @@ class CommitIntent(_message.Message):
     AUTHOR_FIELD_NUMBER: _ClassVar[int]
     PATH_DELTAS_FIELD_NUMBER: _ClassVar[int]
     INODE_DELTAS_FIELD_NUMBER: _ClassVar[int]
+    UPLOADED_DELTAS_FIELD_NUMBER: _ClassVar[int]
     volume: VolumeRef
     commit_id: str
     ref: str
@@ -632,6 +648,7 @@ class CommitIntent(_message.Message):
     author: str
     path_deltas: PathDeltaList
     inode_deltas: InodeDeltaList
+    uploaded_deltas: UploadedObjectReference
     def __init__(
         self,
         volume: _Optional[_Union[VolumeRef, _Mapping]] = ...,
@@ -645,6 +662,7 @@ class CommitIntent(_message.Message):
         author: _Optional[str] = ...,
         path_deltas: _Optional[_Union[PathDeltaList, _Mapping]] = ...,
         inode_deltas: _Optional[_Union[InodeDeltaList, _Mapping]] = ...,
+        uploaded_deltas: _Optional[_Union[UploadedObjectReference, _Mapping]] = ...,
     ) -> None: ...
 
 class CommitStatus(_message.Message):
@@ -727,18 +745,21 @@ class GetVolumeResponse(_message.Message):
     ) -> None: ...
 
 class ListVolumesRequest(_message.Message):
-    __slots__ = ("limit", "cursor", "name_prefix")
+    __slots__ = ("limit", "cursor", "name_prefix", "volume_kind")
     LIMIT_FIELD_NUMBER: _ClassVar[int]
     CURSOR_FIELD_NUMBER: _ClassVar[int]
     NAME_PREFIX_FIELD_NUMBER: _ClassVar[int]
+    VOLUME_KIND_FIELD_NUMBER: _ClassVar[int]
     limit: int
     cursor: str
     name_prefix: str
+    volume_kind: VolumeKind
     def __init__(
         self,
         limit: _Optional[int] = ...,
         cursor: _Optional[str] = ...,
         name_prefix: _Optional[str] = ...,
+        volume_kind: _Optional[_Union[VolumeKind, str]] = ...,
     ) -> None: ...
 
 class ListedVolume(_message.Message):

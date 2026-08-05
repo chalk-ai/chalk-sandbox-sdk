@@ -369,7 +369,7 @@ class NetworkPolicyRule(_message.Message):
     ) -> None: ...
 
 class NetworkTransformer(_message.Message):
-    __slots__ = ("headers",)
+    __slots__ = ("headers", "headers_secrets")
     class HeadersEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -380,9 +380,25 @@ class NetworkTransformer(_message.Message):
             self, key: _Optional[str] = ..., value: _Optional[str] = ...
         ) -> None: ...
 
+    class HeadersSecretsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: str
+        def __init__(
+            self, key: _Optional[str] = ..., value: _Optional[str] = ...
+        ) -> None: ...
+
     HEADERS_FIELD_NUMBER: _ClassVar[int]
+    HEADERS_SECRETS_FIELD_NUMBER: _ClassVar[int]
     headers: _containers.ScalarMap[str, str]
-    def __init__(self, headers: _Optional[_Mapping[str, str]] = ...) -> None: ...
+    headers_secrets: _containers.ScalarMap[str, str]
+    def __init__(
+        self,
+        headers: _Optional[_Mapping[str, str]] = ...,
+        headers_secrets: _Optional[_Mapping[str, str]] = ...,
+    ) -> None: ...
 
 class NetworkPolicyMatch(_message.Message):
     __slots__ = ("path", "method", "query_string", "headers")
@@ -584,18 +600,38 @@ class GetContainerResponse(_message.Message):
     ) -> None: ...
 
 class ListContainersRequest(_message.Message):
-    __slots__ = ("cursor", "limit", "include_stopped")
+    __slots__ = (
+        "cursor",
+        "limit",
+        "include_stopped",
+        "statuses",
+        "images",
+        "search",
+        "sort_ascending",
+    )
     CURSOR_FIELD_NUMBER: _ClassVar[int]
     LIMIT_FIELD_NUMBER: _ClassVar[int]
     INCLUDE_STOPPED_FIELD_NUMBER: _ClassVar[int]
+    STATUSES_FIELD_NUMBER: _ClassVar[int]
+    IMAGES_FIELD_NUMBER: _ClassVar[int]
+    SEARCH_FIELD_NUMBER: _ClassVar[int]
+    SORT_ASCENDING_FIELD_NUMBER: _ClassVar[int]
     cursor: str
     limit: int
     include_stopped: bool
+    statuses: _containers.RepeatedScalarFieldContainer[str]
+    images: _containers.RepeatedScalarFieldContainer[str]
+    search: str
+    sort_ascending: bool
     def __init__(
         self,
         cursor: _Optional[str] = ...,
         limit: _Optional[int] = ...,
         include_stopped: bool = ...,
+        statuses: _Optional[_Iterable[str]] = ...,
+        images: _Optional[_Iterable[str]] = ...,
+        search: _Optional[str] = ...,
+        sort_ascending: bool = ...,
     ) -> None: ...
 
 class ListContainersResponse(_message.Message):

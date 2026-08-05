@@ -303,20 +303,35 @@ class ArgoWorkflowStatus(_message.Message):
         ] = ...,
     ) -> None: ...
 
+class ArgoWorkflowBuild(_message.Message):
+    __slots__ = ("base_image", "image_destinations")
+    BASE_IMAGE_FIELD_NUMBER: _ClassVar[int]
+    IMAGE_DESTINATIONS_FIELD_NUMBER: _ClassVar[int]
+    base_image: str
+    image_destinations: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(
+        self,
+        base_image: _Optional[str] = ...,
+        image_destinations: _Optional[_Iterable[str]] = ...,
+    ) -> None: ...
+
 class ArgoWorkflow(_message.Message):
-    __slots__ = ("metadata", "status", "spec", "image_destinations")
+    __slots__ = ("metadata", "status", "spec", "image_destinations", "build")
     METADATA_FIELD_NUMBER: _ClassVar[int]
     STATUS_FIELD_NUMBER: _ClassVar[int]
     SPEC_FIELD_NUMBER: _ClassVar[int]
     IMAGE_DESTINATIONS_FIELD_NUMBER: _ClassVar[int]
+    BUILD_FIELD_NUMBER: _ClassVar[int]
     metadata: ArgoWorkflowMetadata
     status: ArgoWorkflowStatus
     spec: ArgoWorkflowSpec
     image_destinations: _containers.RepeatedScalarFieldContainer[str]
+    build: ArgoWorkflowBuild
     def __init__(
         self,
         metadata: _Optional[_Union[ArgoWorkflowMetadata, _Mapping]] = ...,
         status: _Optional[_Union[ArgoWorkflowStatus, _Mapping]] = ...,
         spec: _Optional[_Union[ArgoWorkflowSpec, _Mapping]] = ...,
         image_destinations: _Optional[_Iterable[str]] = ...,
+        build: _Optional[_Union[ArgoWorkflowBuild, _Mapping]] = ...,
     ) -> None: ...
