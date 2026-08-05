@@ -81,12 +81,11 @@ from chalkcompute._tracing import (
     remote_function_call_span,
 )
 from chalkcompute._volume import (
-    VolumeDriver,
-    VolumeError,
+    VolumeClient,
     VolumeMount,
-    resolve_referenced_volume_type,
+    normalize_volume_refs,
+    referenced_volume_mount,
 )
-from chalkcompute._vvolume import VersionedVolumeClient
 
 logger = logging.getLogger(__name__)
 
@@ -1139,7 +1138,7 @@ def _build_and_upload(
     poll_interval: float,
     build_timeout: float,
     progress_parent: str | None = None,
-) -> tuple[str, list[VolumeMount], VolumeDriver | None, list[dict[str, Any]]]:
+) -> tuple[str, list[VolumeMount], VolumeClient | None, list[dict[str, Any]]]:
     """Build the container image and stage lazy local files.
 
     Lazy files are uploaded into ``source_code``-kind versioned volumes but
@@ -1168,7 +1167,7 @@ def _build_and_upload(
 
     Returns
     -------
-    tuple of (str, list of VolumeMount, VolumeDriver or None, list of dict)
+    tuple of (str, list of VolumeMount, VolumeClient or None, list of dict)
         ``(image_uri, new_volumes, driver, volume_commits)``. The driver is
         returned only so the caller can later delete the uploaded volumes;
         mount types live on the returned :class:`VolumeMount` objects, never
@@ -1187,7 +1186,7 @@ def _build_and_upload(
     progress_done(ikey)
 
     new_volumes: list[VolumeMount] = []
-    driver: VolumeDriver | None = None
+    driver: VolumeClient | None = None
     volume_commits: list[dict[str, Any]] = []
     if deploy_image.lazy_local_files:
         vkey = f"upload:{label}"
@@ -1198,7 +1197,7 @@ def _build_and_upload(
             parent=progress_parent,
         )
         logger.info("Uploading %d local file(s)...", len(deploy_image.lazy_local_files))
-        vvclient = VersionedVolumeClient.from_connect(client)
+        vvclient = VolumeClient.from_connect(client)
         driver = vvclient
         new_volumes, volume_commits = vvclient.stage_lazy_files(
             deploy_image,
@@ -1253,21 +1252,12 @@ def _make_container_spec(
     gpu
         Optional GPU resource request.
     volumes
-        List of :class:`VolumeMount`. Each mount carries its own ``type``,
-        which is the value stamped into the request; the type is never
-        recomputed from a driver here.
+        List of :class:`VolumeMount`.
 
     Returns
     -------
     dict
         Container spec dictionary.
-
-    Raises
-    ------
-    VolumeError
-        If a volume is missing its mount type. After typed volumes flow from
-        upload/normalization the type is always known, so this guards against
-        an unexpected untyped volume rather than silently guessing one.
     """
     spec: dict[str, Any] = {
         "name": name,
@@ -1291,12 +1281,6 @@ def _make_container_spec(
     if resources:
         spec["resources"] = resources
     if volumes:
-        for v in volumes:
-            if not v.type:
-                raise VolumeError(
-                    f"Volume {v.name!r} mounted at {v.mount_path!r} has no mount "
-                    "type; refusing to guess one for the container spec"
-                )
         spec["volumes"] = [v.to_spec_dict() for v in volumes]
     return spec
 
@@ -1562,27 +1546,10 @@ class RemoteFunction:
 
             self._env[MODELS_ENV_VAR] = encode_models_env(models)
         self._secrets: list[_Secret] = list(secrets or [])
-        referenced_volumes: list[tuple[str, str]] = []
-        if volumes is not None:
-            for item in volumes:
-                if not (
-                    isinstance(item, (tuple, list))
-                    and len(item) == 2
-                    and all(isinstance(s, str) for s in item)
-                ):
-                    raise ValueError(
-                        f"Each volumes entry must be a (name, mount_path) string tuple, got {item!r}. "
-                        f"Example: volumes=[('my-volume', '/data')]"
-                    )
-                # User-referenced volumes have no type of their own at
-                # construction time. Their backend (hence mount type) is
-                # resolved at deploy time via resolve_referenced_volume_type,
-                # not defaulted here: a non-versioned chalkfs volume must not
-                # be sent as versioned_chalkfs.
-                referenced_volumes.append((item[0], item[1]))
-        self._referenced_volumes: list[tuple[str, str]] = referenced_volumes
-        # Populated at deploy time: referenced volumes (typed by lookup) plus
-        # any freshly uploaded volumes (typed by the upload driver).
+        # Existence is checked at deploy time, not here.
+        self._referenced_volumes: list[tuple[str, str]] = normalize_volume_refs(volumes)
+        # Populated at deploy time: referenced volumes plus any freshly
+        # uploaded volumes.
         self._volumes: list[VolumeMount] = []
         if min_replicas < 0:
             raise ValueError(f"min_replicas must be >= 0, got {min_replicas}")
@@ -1592,7 +1559,7 @@ class RemoteFunction:
             raise ValueError(
                 f"min_replicas ({min_replicas}) must be <= max_replicas ({max_replicas})"
             )
-        self._volume_driver: VolumeDriver | None = None
+        self._volume_driver: VolumeClient | None = None
         self._min_replicas = min_replicas
         self._max_replicas = max_replicas
         self._shutdown_delay_seconds = shutdown_delay_seconds
@@ -1908,14 +1875,9 @@ class RemoteFunction:
                 build_timeout=build_timeout,
                 progress_parent=fkey,
             )
-            # Resolve each user-referenced volume's real mount type from its
-            # backend instead of defaulting; a missing volume fails the deploy.
+            # A missing user-referenced volume fails the deploy.
             referenced_volumes = [
-                VolumeMount(
-                    name=name,
-                    mount_path=mount_path,
-                    type=resolve_referenced_volume_type(self._client, name),
-                )
+                referenced_volume_mount(self._client, name, mount_path)
                 for name, mount_path in getattr(self, "_referenced_volumes", [])
             ]
             deploy_volumes = [

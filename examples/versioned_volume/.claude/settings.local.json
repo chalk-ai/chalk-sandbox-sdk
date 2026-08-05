@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(python -c \"import ast; ast.parse\\(open\\('examples/versioned_volume/copy_s3_to_volume.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
-      "Bash(python3 -c \"import ast; ast.parse\\(open\\('examples/versioned_volume/copy_s3_to_volume.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
-      "Bash(just ty *)"
-    ]
-  }
-}

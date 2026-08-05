@@ -57,6 +57,14 @@ from chalkcompute._gen.chalk.sandbox.v2 import service_pb2_grpc as pb_grpc
 from chalkcompute._image import Image
 from chalkcompute._naming import validate_dns_label, validate_env
 from chalkcompute._tracing import _instrumented
+from chalkcompute._volume import (
+    MOUNT_TYPE,
+    VolumeClient,
+    VolumeMount,
+    cleanup_owned_volumes,
+    normalize_volume_refs,
+    referenced_volume_mount,
+)
 
 # Aliases defined before SandboxClient, which has a ``.list()`` method that
 # would otherwise shadow the builtin ``list`` in class-scope name resolution.
@@ -472,7 +480,8 @@ class Sandbox:
             Optional environment variables to set in the sandbox.
         volumes
             Optional ``(volume_name, mount_path)`` pairs to mount into the
-            sandbox.
+            sandbox. Each volume must already exist; :meth:`run` fails if one
+            is missing.
         entrypoint
             Optional command to run as the sandbox container's main process.
         network_policy
@@ -504,7 +513,12 @@ class Sandbox:
         self._cpu: str | None = None
         self._memory: str | None = None
         self._env: dict[str, str] = {}
-        self._volumes: list[tuple[str, str]] = []
+        # Existence is checked at run() time, not here.
+        self._referenced_volumes: list[tuple[str, str]] = []
+        # Populated at run() time: referenced volumes plus any freshly
+        # uploaded volumes.
+        self._volumes: list[VolumeMount] = []
+        self._volume_client: VolumeClient | None = None
         self._entrypoint: list[str] | None = None
         self._network_policy: NetworkPolicy | None = None
         self._restart_policy: RestartPolicy | None = None
@@ -551,18 +565,6 @@ class Sandbox:
                 f"memory must be a string such as '2Gi' or '512Mi', got {memory!r}"
             )
         validate_env(env)
-        if volumes is not None:
-            for item in volumes:
-                if not (
-                    isinstance(item, (tuple, list))
-                    and len(item) == 2
-                    and all(isinstance(s, str) for s in item)
-                ):
-                    raise ValueError(
-                        f"Each volumes entry must be a (name, mount_path) string tuple, got {item!r}. "
-                        f"Example: volumes=[('my-volume', '/data')]"
-                    )
-
         if network_policy is not None and not isinstance(network_policy, NetworkPolicy):
             raise TypeError("network_policy must be a NetworkPolicy")
         if restart_policy is not None and not isinstance(restart_policy, RestartPolicy):
@@ -574,7 +576,7 @@ class Sandbox:
         self._cpu = cpu
         self._memory = memory
         self._env = dict(env) if env else {}
-        self._volumes = [(name, mount_path) for name, mount_path in volumes or []]
+        self._referenced_volumes = normalize_volume_refs(volumes)
         self._entrypoint = list(entrypoint) if entrypoint is not None else None
         self._network_policy = network_policy
         self._restart_policy = restart_policy
@@ -630,7 +632,7 @@ class Sandbox:
         ...     .run()
         ... )
         """
-        self._volumes.append((name, mount_path))
+        self._referenced_volumes.append((name, mount_path))
         return self
 
     @_instrumented("chalkcompute.sandbox.run")
@@ -676,8 +678,27 @@ class Sandbox:
                 timeout=timeout,
             )
 
+<<<<<<< HEAD
         client._instantiate(
             self,
+=======
+        # A missing user-referenced volume fails run().
+        connect = self._connect_client(client)
+        self._volumes = [
+            referenced_volume_mount(connect, name, mount_path)
+            for name, mount_path in self._referenced_volumes
+        ]
+        # Upload the image's lazy local files (add_local_file / add_local_dir
+        # with the default strategy="volume") and mount them alongside.
+        if isinstance(self._image, Image) and self._image.lazy_local_files:
+            self._volume_client = VolumeClient.from_connect(connect)
+            self._volumes += self._volume_client.upload_lazy_files(
+                self._image,
+                volume_prefix="sandbox-files",
+            )
+
+        sandbox = client.create(
+>>>>>>> ff48e74 (Cleanup v1 volume)
             image,
             wait=wait,
             poll_interval=poll_interval,
@@ -990,9 +1011,24 @@ class Sandbox:
             _handle_rpc_error(e, sandbox_id)
             raise
         self._terminated = True
+        if self._volumes:
+            volume_client = self._volume_client or VolumeClient.from_connect(
+                self._connect_client(client)
+            )
+            cleanup_owned_volumes(
+                volume_client, self._volumes, self._referenced_volumes
+            )
+        self._volumes = []
+        self._volume_client = None
         if self._image is not None:
             self._id = None
             self._info = None
+
+    def _connect_client(self, client: SandboxClient) -> ConnectClient:
+        """Return the authenticated Connect client backing ``client``."""
+        return getattr(client, "_connect", None) or ConnectClient(
+            chalk_client=self._chalk_client
+        )
 
     def _build_image(
         self,
@@ -1003,9 +1039,7 @@ class Sandbox:
     ) -> str:
         """Build the configured image and return the resulting image URI."""
         assert isinstance(self._image, Image)
-        connect = getattr(client, "_connect", None) or ConnectClient(
-            chalk_client=self._chalk_client
-        )
+        connect = self._connect_client(client)
         try:
             return build_image(
                 connect,
@@ -1384,16 +1418,10 @@ def _handle_rpc_error(e: grpc.RpcError, sandbox_id: str) -> None:
     )
 
 
-def _volume_mounts_to_proto(
-    volumes: list[tuple[str, str]],
-) -> list[container_pb.VolumeMount]:
+def _volume_mounts_to_proto(volumes: list[VolumeMount]) -> list[pb.VolumeMount]:
     return [
-        container_pb.VolumeMount(
-            name=vol_name,
-            mount_path=mount_path,
-            type="versioned_chalkfs",
-        )
-        for vol_name, mount_path in volumes
+        pb.VolumeMount(name=v.name, mount_path=v.mount_path, type=MOUNT_TYPE)
+        for v in volumes
     ]
 
 

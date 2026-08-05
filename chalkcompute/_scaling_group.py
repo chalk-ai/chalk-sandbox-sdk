@@ -39,13 +39,12 @@ from chalkcompute._connect import ConnectClient, build_image, rpc_with_retries
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label, validate_env
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
-    VolumeDriver,
-    VolumeError,
+    VolumeClient,
     VolumeMount,
     cleanup_owned_volumes,
-    resolve_referenced_volume_type,
+    normalize_volume_refs,
+    referenced_volume_mount,
 )
-from chalkcompute._vvolume import VersionedVolumeClient
 
 logger = logging.getLogger(__name__)
 
@@ -218,17 +217,12 @@ class ScalingGroup:
         validate_env(env)
         self._env = env or {}
         self._secrets: list[_Secret] = list(secrets or [])
-        # User-referenced volumes carry no type of their own; their backend
-        # (and thus mount type) is resolved at deploy time via
-        # resolve_referenced_volume_type. Store the raw (name, mount_path)
-        # references here and never default their type.
-        self._referenced_volumes: list[tuple[str, str]] = [
-            (name, mount_path) for name, mount_path in (volumes or [])
-        ]
-        # Populated at deploy time: referenced volumes (typed by lookup) plus
-        # any freshly uploaded volumes (typed by the upload driver).
+        # Existence is checked at deploy time, not here.
+        self._referenced_volumes: list[tuple[str, str]] = normalize_volume_refs(volumes)
+        # Populated at deploy time: referenced volumes plus any freshly
+        # uploaded volumes.
         self._volumes: list[VolumeMount] = []
-        self._volume_driver: VolumeDriver | None = None
+        self._volume_driver: VolumeClient | None = None
         self._entrypoint = entrypoint
         if not (1 <= port <= 65535):
             raise ValueError(f"port must be in range 1–65535, got {port}")
@@ -386,14 +380,9 @@ class ScalingGroup:
         else:
             self._built_image_uri = self._image
 
-        # 2a. Resolve the real mount type of each user-referenced volume from
-        # its backend, instead of defaulting. A missing volume fails the deploy.
+        # 2a. A missing user-referenced volume fails the deploy.
         self._volumes = [
-            VolumeMount(
-                name=name,
-                mount_path=mount_path,
-                type=resolve_referenced_volume_type(self._client, name),
-            )
+            referenced_volume_mount(self._client, name, mount_path)
             for name, mount_path in self._referenced_volumes
         ]
 
@@ -404,7 +393,7 @@ class ScalingGroup:
         if lazy_files:
             logger.info("Uploading %d local file(s) to volume(s)...", len(lazy_files))
             assert isinstance(self._image, Image)
-            driver = VersionedVolumeClient.from_connect(self._client)
+            driver = VolumeClient.from_connect(self._client)
             self._volume_driver = driver
             self._volumes += driver.upload_lazy_files(
                 self._image,
@@ -456,12 +445,6 @@ class ScalingGroup:
             ]
 
         if self._volumes:
-            for v in self._volumes:
-                if not v.type:
-                    raise VolumeError(
-                        f"Volume {v.name!r} mounted at {v.mount_path!r} has no "
-                        "mount type; refusing to guess one for the container spec"
-                    )
             container_spec["volumes"] = [v.to_spec_dict() for v in self._volumes]
 
         scaling_spec: dict[str, Any] = {
@@ -661,9 +644,7 @@ class ScalingGroup:
         if self._volumes:
             # Driver is used here only to perform the delete action, not to
             # derive a mount type.
-            driver = self._volume_driver or VersionedVolumeClient.from_connect(
-                self._client
-            )
+            driver = self._volume_driver or VolumeClient.from_connect(self._client)
             cleanup_owned_volumes(driver, self._volumes, self._referenced_volumes)
         self._volumes = []
         self._volume_driver = None
