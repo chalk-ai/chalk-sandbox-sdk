@@ -409,6 +409,62 @@ class ConnectClient:
 # ---------------------------------------------------------------------------
 
 
+POLL_MAX_ATTEMPTS = 5
+"""Total attempts per poll RPC before a transient failure is raised."""
+
+
+def rpc_with_retries(
+    client: ConnectClient,
+    service: str,
+    method: str,
+    body: dict[str, Any],
+    *,
+    error_cls: type[Exception] = ConnectError,
+    max_attempts: int = POLL_MAX_ATTEMPTS,
+    retry_interval: float = 1.0,
+    timeout: float = 30,
+) -> httpx.Response:
+    """Call ``client.rpc``, retrying transient failures.
+
+    Status polls should temporarily survive transient failures
+    (``httpx.RequestError``, HTTP 429, or a 5xx response). Deterministic
+    client errors (other 4xx, e.g. 400/404) would fail identically on every
+    attempt, so they raise ``error_cls`` immediately. Each RPC call gets
+    ``max_attempts`` total attempts with ``retry_interval`` seconds between
+    them; ``error_cls`` is raised only when all attempts fail.
+
+    Returns
+    -------
+    httpx.Response
+        The first response with status 200.
+    """
+    import httpx
+
+    last_detail = ""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = client.rpc(service, method, body, timeout=timeout)
+        except httpx.RequestError as e:
+            last_detail = f"{type(e).__name__}: {e}"
+        else:
+            if resp.status_code == 200:
+                return resp
+            last_detail = f"HTTP {resp.status_code}: {resp.text}"
+            if resp.status_code != 429 and resp.status_code < 500:
+                raise error_cls(f"{method} failed: {last_detail}")
+        if attempt < max_attempts:
+            logger.warning(
+                "%s attempt %d/%d failed (%s); retrying in %.1fs",
+                method,
+                attempt,
+                max_attempts,
+                last_detail,
+                retry_interval,
+            )
+            time.sleep(retry_interval)
+    raise error_cls(f"{method} failed after {max_attempts} attempts: {last_detail}")
+
+
 @_instrumented("chalkcompute.build_image")
 def build_image(
     client: ConnectClient,
