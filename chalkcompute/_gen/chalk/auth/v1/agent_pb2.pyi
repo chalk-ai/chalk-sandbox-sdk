@@ -24,6 +24,7 @@ class AgentKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     AGENT_KIND_ENGINE: _ClassVar[AgentKind]
     AGENT_KIND_TENANT: _ClassVar[AgentKind]
     AGENT_KIND_METADATA_SERVICE: _ClassVar[AgentKind]
+    AGENT_KIND_SELF_HOSTED_LICENSE: _ClassVar[AgentKind]
 
 AGENT_KIND_UNSPECIFIED: AgentKind
 AGENT_KIND_USER: AgentKind
@@ -31,6 +32,7 @@ AGENT_KIND_SERVICE_TOKEN: AgentKind
 AGENT_KIND_ENGINE: AgentKind
 AGENT_KIND_TENANT: AgentKind
 AGENT_KIND_METADATA_SERVICE: AgentKind
+AGENT_KIND_SELF_HOSTED_LICENSE: AgentKind
 
 class EnvironmentPermissions(_message.Message):
     __slots__ = ("permissions", "feature_permissions", "customer_claims")
@@ -249,6 +251,21 @@ class TenantAgent(_message.Message):
         cluster_id: _Optional[str] = ...,
     ) -> None: ...
 
+class SelfHostedLicenseAgent(_message.Message):
+    __slots__ = ("id", "team_id", "name")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    TEAM_ID_FIELD_NUMBER: _ClassVar[int]
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    team_id: str
+    name: str
+    def __init__(
+        self,
+        id: _Optional[str] = ...,
+        team_id: _Optional[str] = ...,
+        name: _Optional[str] = ...,
+    ) -> None: ...
+
 class Agent(_message.Message):
     __slots__ = (
         "user_agent",
@@ -256,17 +273,20 @@ class Agent(_message.Message):
         "engine_agent",
         "tenant_agent",
         "metadata_service_agent",
+        "self_hosted_license_agent",
     )
     USER_AGENT_FIELD_NUMBER: _ClassVar[int]
     SERVICE_TOKEN_AGENT_FIELD_NUMBER: _ClassVar[int]
     ENGINE_AGENT_FIELD_NUMBER: _ClassVar[int]
     TENANT_AGENT_FIELD_NUMBER: _ClassVar[int]
     METADATA_SERVICE_AGENT_FIELD_NUMBER: _ClassVar[int]
+    SELF_HOSTED_LICENSE_AGENT_FIELD_NUMBER: _ClassVar[int]
     user_agent: UserAgent
     service_token_agent: ServiceTokenAgent
     engine_agent: EngineAgent
     tenant_agent: TenantAgent
     metadata_service_agent: MetadataServiceAgent
+    self_hosted_license_agent: SelfHostedLicenseAgent
     def __init__(
         self,
         user_agent: _Optional[_Union[UserAgent, _Mapping]] = ...,
@@ -274,4 +294,7 @@ class Agent(_message.Message):
         engine_agent: _Optional[_Union[EngineAgent, _Mapping]] = ...,
         tenant_agent: _Optional[_Union[TenantAgent, _Mapping]] = ...,
         metadata_service_agent: _Optional[_Union[MetadataServiceAgent, _Mapping]] = ...,
+        self_hosted_license_agent: _Optional[
+            _Union[SelfHostedLicenseAgent, _Mapping]
+        ] = ...,
     ) -> None: ...

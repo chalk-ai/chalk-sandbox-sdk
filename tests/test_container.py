@@ -106,7 +106,10 @@ def test_host_container_run_sends_network_policy() -> None:
                             ],
                         ),
                         transforms=[
-                            NetworkPolicy.Transformer(headers={"x-added": "yes"})
+                            NetworkPolicy.Transformer(
+                                headers={"x-added": "yes"},
+                                headers_secrets={"authorization": "API_TOKEN"},
+                            )
                         ],
                         forward_url="https://proxy.example.com/api",
                     )
@@ -134,7 +137,12 @@ def test_host_container_run_sends_network_policy() -> None:
             "api.example.com": {
                 "rules": [
                     {
-                        "transform": [{"headers": {"x-added": "yes"}}],
+                        "transform": [
+                            {
+                                "headers": {"x-added": "yes"},
+                                "headersSecrets": {"authorization": "API_TOKEN"},
+                            }
+                        ],
                         "match": {
                             "path": {"startsWith": "/v1/"},
                             "method": ["GET"],
