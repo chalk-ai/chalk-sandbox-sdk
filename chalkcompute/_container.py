@@ -289,15 +289,23 @@ class NetworkPolicy:
         """Request transform for a host policy rule."""
 
         headers: dict[str, str] = field(default_factory=dict)
+        headers_secrets: dict[str, str] = field(default_factory=dict)
 
         def __post_init__(self) -> None:
             self.headers = dict(self.headers or {})
             for key, value in self.headers.items():
                 if not isinstance(key, str) or not isinstance(value, str):
                     raise TypeError("headers must be a dict[str, str]")
+            self.headers_secrets = dict(self.headers_secrets or {})
+            for key, value in self.headers_secrets.items():
+                if not isinstance(key, str) or not isinstance(value, str):
+                    raise TypeError("headers_secrets must be a dict[str, str]")
 
         def to_dict(self) -> dict[str, Any]:
-            return {"headers": dict(self.headers)}
+            body: dict[str, Any] = {"headers": dict(self.headers)}
+            if self.headers_secrets:
+                body["headersSecrets"] = dict(self.headers_secrets)
+            return body
 
     @dataclass
     class Rule:
