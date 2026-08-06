@@ -35,7 +35,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
-from chalkcompute._connect import ConnectClient, build_image
+from chalkcompute._connect import ConnectClient, build_image, rpc_with_retries
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label, validate_env
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
@@ -520,11 +520,14 @@ class ScalingGroup:
         deadline = time.monotonic() + timeout
         info = self._scaling_group_info
         while time.monotonic() < deadline:
-            resp = self._client.rpc(
-                _SVC, "GetScalingGroup", {"id": self._scaling_group_id}
+            resp = rpc_with_retries(
+                self._client,
+                _SVC,
+                "GetScalingGroup",
+                {"id": self._scaling_group_id},
+                error_cls=ScalingGroupError,
+                retry_interval=poll_interval,
             )
-            if resp.status_code != 200:
-                raise ScalingGroupError(f"GetScalingGroup failed: {resp.text}")
             info = _parse_scaling_group_response(resp.json()["scalingGroup"])
             self._scaling_group_info = info
             logger.info(
