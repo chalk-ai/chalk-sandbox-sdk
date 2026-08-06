@@ -449,9 +449,9 @@ def rpc_with_retries(
         else:
             if resp.status_code == 200:
                 return resp
+            last_detail = f"HTTP {resp.status_code}: {resp.text}"
             if resp.status_code != 429 and resp.status_code < 500:
                 raise error_cls(f"{method} failed: {last_detail}")
-            last_detail = f"HTTP {resp.status_code}: {resp.text}"
         if attempt < max_attempts:
             logger.warning(
                 "%s attempt %d/%d failed (%s); retrying in %.1fs",
