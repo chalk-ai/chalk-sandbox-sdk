@@ -6,36 +6,13 @@ import pytest
 
 from chalkcompute import Container, ComputeClass, NetworkPolicy
 from chalkcompute._container import ContainerSecurityPolicy, KernelPolicy
+from chalkcompute._gen.chalk.container.v1 import service_pb2 as pb
+
+from ._fakes import FakeConnectClient
 
 
-class _Response:
-    status_code = 200
-    text = ""
-
-    def json(self) -> dict[str, Any]:
-        return {
-            "container": {
-                "id": "container-123",
-                "name": "network-test",
-                "status": "Running",
-                "podName": "pod-network-test",
-            }
-        }
-
-
-class _Client:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, str, dict[str, Any], float]] = []
-
-    def rpc(
-        self,
-        service: str,
-        method: str,
-        body: dict[str, Any],
-        timeout: float = 30,
-    ) -> _Response:
-        self.calls.append((service, method, body, timeout))
-        return _Response()
+def _run_container_calls(client: FakeConnectClient) -> list[Any]:
+    return [c for c in client.calls if c.method == "RunContainer"]
 
 
 def test_network_policy_serializes_allowed_routes() -> None:
@@ -89,7 +66,7 @@ def test_container_is_deprecated() -> None:
 
 
 def test_host_container_run_sends_network_policy() -> None:
-    client = _Client()
+    client = FakeConnectClient()
     container = Container(
         image="ubuntu:latest",
         name="network-test",
@@ -127,45 +104,36 @@ def test_host_container_run_sends_network_policy() -> None:
     container.run()
 
     assert len(client.calls) == 1
-    service, method, body, timeout = client.calls[0]
-    assert service == "chalk.container.v1.ContainerService"
-    assert method == "RunContainer"
-    assert timeout == 60
-    assert body["container"]["spec"]["networkPolicy"] == {
-        "allowedRoutes": [
-            {
-                "route": "104.20.23.154/32",
-                "portRanges": [{"startPort": 443, "endPort": 443}],
-            }
-        ],
-        "allowedHosts": {
-            "api.example.com": {
-                "rules": [
-                    {
-                        "transform": [
-                            {
-                                "headers": {"x-added": "yes"},
-                                "headersSecrets": {"authorization": "API_TOKEN"},
-                            }
-                        ],
-                        "match": {
-                            "path": {"startsWith": "/v1/"},
-                            "method": ["GET"],
-                            "headers": [{"key": {"exact": "x-api-key"}}],
-                        },
-                        "forwardUrl": "https://proxy.example.com/api",
-                    }
-                ]
-            }
-        },
-        "deniedRoutes": ["169.254.0.0/16"],
-    }
-    assert body["container"]["spec"]["securityPolicy"] == {"kernelPolicy": "RESTRICTED"}
-    assert body["container"]["spec"]["computeClass"] == "COMPUTE_CLASS_HOST"
+    call = client.calls[0]
+    assert call.method == "RunContainer"
+    assert call.timeout == 60
+    assert isinstance(call.request, pb.RunContainerRequest)
+    spec = call.request.container.spec
+
+    policy = spec.network_policy
+    assert len(policy.allowed_routes) == 1
+    assert policy.allowed_routes[0].route == "104.20.23.154/32"
+    assert [
+        (r.start_port, r.end_port) for r in policy.allowed_routes[0].port_ranges
+    ] == [(443, 443)]
+    assert list(policy.denied_routes) == ["169.254.0.0/16"]
+
+    assert set(policy.allowed_hosts) == {"api.example.com"}
+    (rule,) = policy.allowed_hosts["api.example.com"].rules
+    assert rule.forward_url == "https://proxy.example.com/api"
+    assert rule.match.path.starts_with == "/v1/"
+    assert list(rule.match.method) == ["GET"]
+    assert rule.match.headers[0].key.exact == "x-api-key"
+    (transform,) = rule.transform
+    assert dict(transform.headers) == {"x-added": "yes"}
+    assert dict(transform.headers_secrets) == {"authorization": "API_TOKEN"}
+
+    assert spec.security_policy.kernel_policy == pb.KERNEL_POLICY_RESTRICTED
+    assert spec.compute_class == pb.COMPUTE_CLASS_HOST
 
 
 def test_host_container_network_policy_accepts_allowed_hosts_list() -> None:
-    client = _Client()
+    client = FakeConnectClient()
     container = Container(
         image="ubuntu:latest",
         name="host-list-network-test",
@@ -181,19 +149,17 @@ def test_host_container_network_policy_accepts_allowed_hosts_list() -> None:
 
     container.run()
 
-    _, _, body, _ = client.calls[0]
-    assert body["container"]["spec"]["networkPolicy"] == {
-        "allowedRoutes": [],
-        "allowedHosts": {
-            "api.openai.com": {"rules": []},
-            "*.anthropic.com": {"rules": []},
-        },
-    }
-    assert body["container"]["spec"]["computeClass"] == "COMPUTE_CLASS_HOST"
+    spec = client.calls[0].request.container.spec
+    policy = spec.network_policy
+    assert len(policy.allowed_routes) == 0
+    assert set(policy.allowed_hosts) == {"api.openai.com", "*.anthropic.com"}
+    assert len(policy.allowed_hosts["api.openai.com"].rules) == 0
+    assert len(policy.allowed_hosts["*.anthropic.com"].rules) == 0
+    assert spec.compute_class == pb.COMPUTE_CLASS_HOST
 
 
 def test_container_run_sends_tags() -> None:
-    client = _Client()
+    client = FakeConnectClient()
     container = Container(
         image="ubuntu:latest",
         name="tagged-container",
@@ -204,11 +170,8 @@ def test_container_run_sends_tags() -> None:
     container.run()
 
     assert len(client.calls) == 1
-    _, _, body, _ = client.calls[0]
-    assert body["container"]["spec"]["tags"] == {
-        "team": "accounting",
-        "env": "staging",
-    }
+    spec = client.calls[0].request.container.spec
+    assert dict(spec.tags) == {"team": "accounting", "env": "staging"}
 
 
 def test_lifetime_valid_formats_accepted() -> None:
@@ -223,7 +186,7 @@ def test_lifetime_invalid_formats_rejected() -> None:
 
 
 def test_run_twice_raises_container_error() -> None:
-    client = _Client()
+    client = FakeConnectClient()
     container = Container(image="ubuntu:latest", name="double-run-test")
     container._client = client
 
@@ -234,31 +197,12 @@ def test_run_twice_raises_container_error() -> None:
     with pytest.raises(ContainerError, match="already running"):
         container.run()
 
-    assert len(client.calls) == 1  # second run() never reached the RPC
+    assert len(_run_container_calls(client)) == 1  # second run() never reached the RPC
 
 
 def test_stop_then_run_again_is_allowed() -> None:
     """stop() clears _container_id so a subsequent run() must succeed."""
-
-    class _StopResponse:
-        status_code = 200
-        text = ""
-
-        def json(self) -> dict[str, Any]:
-            return {}
-
-    call_log: list[tuple[str, str]] = []
-
-    class _TrackingClient(_Client):
-        def rpc(
-            self, service: str, method: str, body: dict[str, Any], timeout: float = 30
-        ) -> Any:
-            call_log.append((service, method))
-            if method == "StopContainer":
-                return _StopResponse()
-            return super().rpc(service, method, body, timeout)
-
-    client = _TrackingClient()
+    client = FakeConnectClient()
     container = Container(image="ubuntu:latest", name="restart-test")
     container._client = client
 
@@ -266,19 +210,21 @@ def test_stop_then_run_again_is_allowed() -> None:
     container.stop()
     container.run()  # must not raise
 
-    run_calls = [m for _, m in call_log if m == "RunContainer"]
-    assert len(run_calls) == 2
+    assert len(_run_container_calls(client)) == 2
+    assert [c.method for c in client.calls if c.method == "StopContainer"] == [
+        "StopContainer"
+    ]
 
 
 def test_container_run_omits_tags_when_unset() -> None:
-    client = _Client()
+    client = FakeConnectClient()
     container = Container(image="ubuntu:latest", name="untagged-container")
     container._client = client
 
     container.run()
 
-    _, _, body, _ = client.calls[0]
-    assert "tags" not in body["container"]["spec"]
+    spec = client.calls[0].request.container.spec
+    assert not spec.tags
 
 
 def test_mount_volume_appends_and_chains() -> None:
@@ -298,7 +244,7 @@ def test_mount_volume_appends_and_chains() -> None:
 def test_mount_volume_sent_in_run_container_rpc() -> None:
     from unittest.mock import patch
 
-    client = _Client()
+    client = FakeConnectClient()
     container = Container(image="ubuntu:latest", name="vol-test").mount_volume(
         "my-volume", "/data"
     )
@@ -314,14 +260,18 @@ def test_mount_volume_sent_in_run_container_rpc() -> None:
         container.run()
 
     resolve.assert_called_once_with(client, "my-volume", "/data")
-    _, _, body, _ = client.calls[0]
-    assert body["container"]["spec"]["volumes"] == [
-        {"name": "my-volume", "mountPath": "/data", "type": "versioned_chalkfs"}
-    ]
+    spec = client.calls[0].request.container.spec
+    assert len(spec.volumes) == 1
+    volume = spec.volumes[0]
+    assert (volume.name, volume.mount_path, volume.type) == (
+        "my-volume",
+        "/data",
+        "versioned_chalkfs",
+    )
 
 
 def test_container_run_sends_compute_class() -> None:
-    client = _Client()
+    client = FakeConnectClient()
     container = Container(
         image="ubuntu:latest",
         name="host-container",
@@ -331,16 +281,16 @@ def test_container_run_sends_compute_class() -> None:
 
     container.run()
 
-    _, _, body, _ = client.calls[0]
-    assert body["container"]["spec"]["computeClass"] == "COMPUTE_CLASS_HOST"
+    spec = client.calls[0].request.container.spec
+    assert spec.compute_class == pb.COMPUTE_CLASS_HOST
 
 
 def test_container_run_omits_compute_class_when_unset() -> None:
-    client = _Client()
+    client = FakeConnectClient()
     container = Container(image="ubuntu:latest", name="default-container")
     container._client = client
 
     container.run()
 
-    _, _, body, _ = client.calls[0]
-    assert "computeClass" not in body["container"]["spec"]
+    spec = client.calls[0].request.container.spec
+    assert spec.compute_class == pb.COMPUTE_CLASS_UNSPECIFIED

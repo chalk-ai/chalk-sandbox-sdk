@@ -10,7 +10,7 @@ import logging
 import os
 import re
 import time
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence, TypeVar
 from urllib.parse import urlparse
 
 import grpc
@@ -31,6 +31,9 @@ from chalkcompute._web_identity import (
 logger = logging.getLogger(__name__)
 
 _WEB_IDENTITY_MAX_CACHE_TTL_SECONDS = 60 * 60
+
+_StubT = TypeVar("_StubT")
+_RespT = TypeVar("_RespT")
 
 if TYPE_CHECKING:
     import httpx
@@ -119,6 +122,7 @@ class ConnectClient:
         self._web_identity_token_file: str | None = None
         self._web_identity_cached_at: float | None = None
         self._web_identity_cache_ttl_seconds = _WEB_IDENTITY_MAX_CACHE_TTL_SECONDS
+        self._stubs: dict[Any, tuple[grpc.Channel, Any]] = {}
 
     def _ensure_auth(self) -> None:
         identity_token_file = web_identity_token_file_from_env()
@@ -384,6 +388,62 @@ class ConnectClient:
                 "GetWorkloadIdentityToken returned a response without a token"
             )
         return token
+
+    def stub(self, stub_cls: Callable[[grpc.Channel], _StubT]) -> _StubT:
+        """Return a gRPC stub bound to the shared api-server channel.
+
+        Memoized per stub class; rebuilt automatically if the shared channel
+        registry handed back a new channel (e.g. after a fork). All stubs on
+        one target multiplex over a single HTTP/2 connection — this is the
+        CHA-10029 replacement for per-call ``httpx.post`` connections.
+        """
+        from chalkcompute._channel import get_channel
+
+        self._ensure_auth()
+        assert self._api_server is not None
+        target, use_tls = grpc_target_from_url(self._api_server)
+        channel = get_channel(target, use_tls)
+        cached = self._stubs.get(stub_cls)
+        if cached is not None and cached[0] is channel:
+            return cached[1]
+        stub = stub_cls(channel)
+        self._stubs[stub_cls] = (channel, stub)
+        return stub
+
+    def call(
+        self,
+        method: Callable[..., _RespT],
+        request: Any,
+        *,
+        timeout: float = 30.0,
+        extra_metadata: Sequence[tuple[str, str]] | None = None,
+    ) -> _RespT:
+        """Invoke a unary stub method with per-call auth metadata.
+
+        Metadata is rebuilt on every call via :meth:`_grpc_metadata`, so
+        rotating web-identity tokens are picked up without any caller effort.
+
+        Parameters
+        ----------
+        method
+            A bound stub method, e.g. ``client.stub(FooStub).GetFoo``.
+        request
+            The request protobuf message.
+        timeout
+            gRPC deadline in seconds.
+        extra_metadata
+            Additional per-call metadata pairs; keys are lowercased (gRPC
+            requires lowercase ASCII keys).
+
+        Raises
+        ------
+        grpc.RpcError
+            On any non-OK status; callers translate to typed errors.
+        """
+        metadata = self._grpc_metadata()
+        if extra_metadata:
+            metadata = [*metadata, *((k.lower(), v) for k, v in extra_metadata)]
+        return method(request, timeout=timeout, metadata=metadata)
 
     def rpc(
         self,
@@ -669,6 +729,15 @@ def build_image_with_volumes_from_spec(
     """Build an Image and upload lazy files. Authenticates via env vars."""
     client = ConnectClient(chalk_client=chalk_client)
     return build_image_with_volumes(client, image, volume_prefix=volume_prefix)
+
+
+def grpc_error_message(e: grpc.RpcError) -> str:
+    """Render a gRPC error as ``CODE: details`` for exception messages."""
+    try:
+        assert isinstance(e, grpc.Call)
+        return f"{e.code().name}: {e.details()}"
+    except Exception:  # noqa: BLE001 - defensive: fakes may not implement Call
+        return str(e)
 
 
 def raise_for_grpc_error(

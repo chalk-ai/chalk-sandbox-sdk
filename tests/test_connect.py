@@ -981,3 +981,60 @@ class TestSandboxClientFromEnv:
             assert client._target == "localhost:18080"
         finally:
             client.close()
+
+
+class TestStubAndCall:
+    """The gRPC transport seam: ConnectClient.stub() + ConnectClient.call()."""
+
+    def _authed_client(self) -> ConnectClient:
+        client = ConnectClient()
+        client._access_token = "tok1"
+        client._env_id = "env-1"
+        client._api_server = "http://localhost:50051"
+        return client
+
+    def test_call_rebuilds_metadata_per_call(self, monkeypatch) -> None:
+        monkeypatch.delenv("CHALK_WEB_IDENTITY_TOKEN_FILE", raising=False)
+        client = self._authed_client()
+        captured: list[tuple[Any, Any]] = []
+
+        def method(request: Any, timeout: Any = None, metadata: Any = None) -> str:
+            captured.append((timeout, metadata))
+            return "resp"
+
+        assert client.call(method, object(), timeout=12) == "resp"
+        client._access_token = "tok2"  # simulate token rotation
+        client.call(method, object())
+
+        assert captured[0][0] == 12
+        assert ("authorization", "Bearer tok1") in captured[0][1]
+        assert ("authorization", "Bearer tok2") in captured[1][1]
+        assert ("x-chalk-env-id", "env-1") in captured[1][1]
+
+    def test_call_lowercases_extra_metadata_keys(self, monkeypatch) -> None:
+        monkeypatch.delenv("CHALK_WEB_IDENTITY_TOKEN_FILE", raising=False)
+        client = self._authed_client()
+        captured: list[Any] = []
+
+        def method(request: Any, timeout: Any = None, metadata: Any = None) -> None:
+            captured.append(metadata)
+
+        client.call(method, object(), extra_metadata=[("X-Trace-Id", "t-1")])
+        assert ("x-trace-id", "t-1") in captured[0]
+
+    def test_stub_is_memoized_until_registry_resets(self, monkeypatch) -> None:
+        import chalkcompute._channel as channel_mod
+        from chalkcompute._gen.chalk.container.v1 import service_pb2_grpc as pb_grpc
+
+        monkeypatch.delenv("CHALK_WEB_IDENTITY_TOKEN_FILE", raising=False)
+        channel_mod.reset()
+        try:
+            client = self._authed_client()
+            first = client.stub(pb_grpc.ContainerServiceStub)
+            assert client.stub(pb_grpc.ContainerServiceStub) is first
+
+            # New channel in the registry (e.g. post-fork) -> stub is rebuilt.
+            channel_mod.reset()
+            assert client.stub(pb_grpc.ContainerServiceStub) is not first
+        finally:
+            channel_mod.reset()
