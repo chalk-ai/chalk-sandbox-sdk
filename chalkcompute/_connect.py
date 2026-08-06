@@ -426,10 +426,12 @@ def rpc_with_retries(
 ) -> httpx.Response:
     """Call ``client.rpc``, retrying transient failures.
 
-    Status polls should temporarily survive transient failures (``httpx.RequestError`` or a
-    non-200 response). Each RPC call gets ``max_attempts`` total attempts with
-    ``retry_interval`` seconds between them; ``error_cls`` is raised only when
-    all attempts fail.
+    Status polls should temporarily survive transient failures
+    (``httpx.RequestError``, HTTP 429, or a 5xx response). Deterministic
+    client errors (other 4xx, e.g. 400/404) would fail identically on every
+    attempt, so they raise ``error_cls`` immediately. Each RPC call gets
+    ``max_attempts`` total attempts with ``retry_interval`` seconds between
+    them; ``error_cls`` is raised only when all attempts fail.
 
     Returns
     -------
@@ -447,6 +449,8 @@ def rpc_with_retries(
         else:
             if resp.status_code == 200:
                 return resp
+            if resp.status_code != 429 and resp.status_code < 500:
+                raise error_cls(f"{method} failed: {last_detail}")
             last_detail = f"HTTP {resp.status_code}: {resp.text}"
         if attempt < max_attempts:
             logger.warning(
