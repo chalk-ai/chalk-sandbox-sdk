@@ -21,7 +21,6 @@ class FakeCall:
     method: str
     request: Any
     timeout: float
-    extra_metadata: tuple[tuple[str, str], ...] = ()
 
 
 class _FakeMethod:
@@ -83,14 +82,8 @@ class FakeConnectClient:
         request: Any,
         *,
         timeout: float = 30.0,
-        extra_metadata: Any = None,
     ) -> Any:
         self.calls.append(
-            FakeCall(
-                method=method.name,
-                request=request,
-                timeout=timeout,
-                extra_metadata=tuple(extra_metadata or ()),
-            )
+            FakeCall(method=method.name, request=request, timeout=timeout)
         )
         return self.handler(method.name, request)

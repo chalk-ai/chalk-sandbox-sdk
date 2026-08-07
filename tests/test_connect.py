@@ -1011,17 +1011,6 @@ class TestStubAndCall:
         assert ("authorization", "Bearer tok2") in captured[1][1]
         assert ("x-chalk-env-id", "env-1") in captured[1][1]
 
-    def test_call_lowercases_extra_metadata_keys(self, monkeypatch) -> None:
-        monkeypatch.delenv("CHALK_WEB_IDENTITY_TOKEN_FILE", raising=False)
-        client = self._authed_client()
-        captured: list[Any] = []
-
-        def method(request: Any, timeout: Any = None, metadata: Any = None) -> None:
-            captured.append(metadata)
-
-        client.call(method, object(), extra_metadata=[("X-Trace-Id", "t-1")])
-        assert ("x-trace-id", "t-1") in captured[0]
-
     def test_stubs_share_the_registry_channel(self, monkeypatch) -> None:
         import chalkcompute._channel as channel_mod
         from chalkcompute._gen.chalk.container.v1 import service_pb2_grpc as pb_grpc

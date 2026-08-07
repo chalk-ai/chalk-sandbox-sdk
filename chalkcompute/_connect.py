@@ -10,7 +10,7 @@ import logging
 import os
 import re
 import time
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Mapping, TypeVar
 from urllib.parse import urlparse
 
 import grpc
@@ -409,7 +409,6 @@ class ConnectClient:
         request: Any,
         *,
         timeout: float = 30.0,
-        extra_metadata: Sequence[tuple[str, str]] | None = None,
     ) -> _RespT:
         """Invoke a unary stub method with per-call auth metadata.
 
@@ -424,19 +423,13 @@ class ConnectClient:
             The request protobuf message.
         timeout
             gRPC deadline in seconds.
-        extra_metadata
-            Additional per-call metadata pairs; keys are lowercased (gRPC
-            requires lowercase ASCII keys).
 
         Raises
         ------
         grpc.RpcError
             On any non-OK status; callers translate to typed errors.
         """
-        metadata = self._grpc_metadata()
-        if extra_metadata:
-            metadata = [*metadata, *((k.lower(), v) for k, v in extra_metadata)]
-        return method(request, timeout=timeout, metadata=metadata)
+        return method(request, timeout=timeout, metadata=self._grpc_metadata())
 
     def rpc(
         self,
