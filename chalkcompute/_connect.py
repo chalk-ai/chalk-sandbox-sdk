@@ -348,6 +348,43 @@ class ConnectClient:
         """Return whether rotating web-identity authentication is configured."""
         return web_identity_token_file_from_env() is not None
 
+    def get_workload_identity_token(
+        self,
+        audience: str,
+        *,
+        timeout: float = 30,
+    ) -> str:
+        """Return a short-lived OIDC token for workload identity federation.
+
+        The token is scoped to the active Chalk environment and uses ``audience``
+        as its OIDC audience. Third parties can validate it against the Chalk
+        API server's ``/.well-known/jwks.json`` endpoint.
+
+        Parameters
+        ----------
+        audience
+            Audience expected by the workload identity provider.
+        timeout
+            Request timeout in seconds.
+        """
+        if not isinstance(audience, str) or not audience.strip():
+            raise ValueError("audience cannot be empty")
+
+        response = self.rpc(
+            "chalk.server.v1.AuthService",
+            "GetWorkloadIdentityToken",
+            {"audience": audience},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        data = response.json()
+        token = data.get("token")
+        if not isinstance(token, str) or not token:
+            raise ConnectError(
+                "GetWorkloadIdentityToken returned a response without a token"
+            )
+        return token
+
     def rpc(
         self,
         service: str,

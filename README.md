@@ -158,6 +158,22 @@ Changing the configured file path bypasses the cache. The JWT's
 require `CHALK_GRPC_ENGINE`, because identity JWTs do not contain engine-routing
 data.
 
+### Workload identity federation
+
+Use the authenticated Connect client to mint a short-lived OIDC token for a
+third-party workload identity provider. For example, with Snowflake configured
+to trust Chalk's issuer and JWKS:
+
+```python
+from chalkcompute import ConnectClient
+
+token = ConnectClient().get_workload_identity_token("snowflakecomputing.com")
+```
+
+The token is scoped to the active Chalk environment. Its audience is the value
+passed to `get_workload_identity_token`, and its signing key is published by the
+Chalk API server at `/.well-known/jwks.json`.
+
 ## Sandbox lifecycle
 
 ```python
