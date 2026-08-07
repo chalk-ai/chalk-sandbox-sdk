@@ -766,29 +766,42 @@ class ContainerSessionClient:
         credentials: grpc.ChannelCredentials | None,
         metadata: list[tuple[str, str]],
         _connect: ConnectClient | None = None,
+        _channel: grpc.Channel | None = None,
     ) -> None:
         self._target = target
         self._static_metadata = metadata
         self._connect = _connect
-        if credentials is not None:
+        if _channel is not None:
+            # Borrowed (shared registry) channel: not ours to close.
+            self._channel = _channel
+            self._owns_channel = False
+        elif credentials is not None:
             self._channel = grpc.secure_channel(target, credentials)
+            self._owns_channel = True
         else:
             self._channel = grpc.insecure_channel(target)
+            self._owns_channel = True
         self._stub = pb_grpc.SandboxProcessServiceStub(self._channel)
 
     @classmethod
     def from_connect(cls, connect: ConnectClient) -> ContainerSessionClient:
+        from chalkcompute._channel import get_channel
+
         connect._ensure_auth()
         target, use_tls = grpc_target_from_url(connect._api_server or "")
         return cls(
             target,
-            credentials=grpc.ssl_channel_credentials() if use_tls else None,
+            credentials=None,
             metadata=connect._grpc_metadata(),
             _connect=(
                 connect
                 if getattr(connect, "_uses_web_identity_token", lambda: False)() is True
                 else None
             ),
+            # Share the process-wide channel: exec is on the per-container hot
+            # path, and a dial per container is the connection scaling this
+            # SDK just moved away from (CHA-10029).
+            _channel=get_channel(target, use_tls),
         )
 
     @property
@@ -802,7 +815,8 @@ class ContainerSessionClient:
         self._static_metadata = value
 
     def close(self) -> None:
-        self._channel.close()
+        if self._owns_channel:
+            self._channel.close()
 
     def new_session(
         self,
@@ -1128,7 +1142,9 @@ class Container:
         c = cls._make_empty(chalk_client=chalk_client)
         stub = c._client.stub(container_pb_grpc.ContainerServiceStub)
         try:
-            resp = c._client.call(stub.ListContainers, container_pb.ListContainersRequest())
+            resp = c._client.call(
+                stub.ListContainers, container_pb.ListContainersRequest()
+            )
         except grpc.RpcError as e:
             raise ContainerError(
                 f"ListContainers failed: {grpc_error_message(e)}"
@@ -1798,7 +1814,9 @@ class Container:
 # ---------------------------------------------------------------------------
 
 
-def _parse_container_response(container: container_pb.ContainerResponse) -> ContainerInfo:
+def _parse_container_response(
+    container: container_pb.ContainerResponse,
+) -> ContainerInfo:
     return ContainerInfo(
         id=container.id,
         name=container.name,
