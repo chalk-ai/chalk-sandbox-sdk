@@ -678,10 +678,6 @@ class Sandbox:
                 timeout=timeout,
             )
 
-<<<<<<< HEAD
-        client._instantiate(
-            self,
-=======
         # A missing user-referenced volume fails run().
         connect = self._connect_client(client)
         self._volumes = [
@@ -697,8 +693,8 @@ class Sandbox:
                 volume_prefix="sandbox-files",
             )
 
-        sandbox = client.create(
->>>>>>> ff48e74 (Cleanup v1 volume)
+        client._instantiate(
+            self,
             image,
             wait=wait,
             poll_interval=poll_interval,
