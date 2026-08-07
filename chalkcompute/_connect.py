@@ -606,7 +606,7 @@ def build_image_with_volumes(
     ConnectError
         If the build fails or times out.
     """
-    from chalkcompute._vvolume import VersionedVolumeClient
+    from chalkcompute._volume import VolumeClient
 
     image_uri = build_image(
         client,
@@ -616,7 +616,7 @@ def build_image_with_volumes(
     )
     volumes: list[VolumeMount] = []
     if image.lazy_local_files:
-        volumes = VersionedVolumeClient.from_connect(client).upload_lazy_files(
+        volumes = VolumeClient.from_connect(client).upload_lazy_files(
             image,
             volume_prefix=volume_prefix,
         )

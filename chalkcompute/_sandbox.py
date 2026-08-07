@@ -1414,9 +1414,11 @@ def _handle_rpc_error(e: grpc.RpcError, sandbox_id: str) -> None:
     )
 
 
-def _volume_mounts_to_proto(volumes: list[VolumeMount]) -> list[pb.VolumeMount]:
+def _volume_mounts_to_proto(
+    volumes: list[VolumeMount],
+) -> list[container_pb.VolumeMount]:
     return [
-        pb.VolumeMount(name=v.name, mount_path=v.mount_path, type=MOUNT_TYPE)
+        container_pb.VolumeMount(name=v.name, mount_path=v.mount_path, type=MOUNT_TYPE)
         for v in volumes
     ]
 

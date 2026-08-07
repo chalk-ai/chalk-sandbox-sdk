@@ -22,6 +22,7 @@ class _RecordingSandboxClient:
             **kwargs,
             "cpu": sandbox._cpu,
             "memory": sandbox._memory,
+            "volumes": sandbox._volumes,
         }
         sandbox._id = "sandbox-123"
 
@@ -174,6 +175,7 @@ def test_sandbox_exec_uses_v2_process_service() -> None:
     assert stub.request.new_process.command == "echo"
     assert list(stub.request.new_process.args) == ["hello"]
 
+
 def test_sandbox_referenced_volume_is_existence_checked() -> None:
     from chalkcompute._volume import VolumeMount
 
@@ -193,7 +195,7 @@ def test_sandbox_referenced_volume_is_existence_checked() -> None:
     resolve.assert_called_once_with(client._connect, "my-data", "/data")
     assert client.create_kwargs is not None
     assert client.create_kwargs["volumes"] == [
-        VolumeMount(name="my-data", mount_path="/data", type="versioned_chalkfs")
+        VolumeMount(name="my-data", mount_path="/data")
     ]
 
 
@@ -249,7 +251,5 @@ def test_sandbox_uploads_lazy_local_files_to_a_volume(tmp_path) -> None:
     )
     assert client.create_kwargs is not None
     assert client.create_kwargs["volumes"] == [
-        VolumeMount(
-            name="sandbox-files-abc", mount_path="/app", type="versioned_chalkfs"
-        )
+        VolumeMount(name="sandbox-files-abc", mount_path="/app")
     ]
