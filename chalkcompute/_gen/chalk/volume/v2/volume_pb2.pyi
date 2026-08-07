@@ -120,6 +120,37 @@ class VolumeRef(_message.Message):
         self, volume_id: _Optional[str] = ..., name: _Optional[str] = ...
     ) -> None: ...
 
+class RefInfo(_message.Message):
+    __slots__ = (
+        "name",
+        "version_id",
+        "sequence_number",
+        "commit_id",
+        "updated_at",
+        "parent_version_id",
+    )
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    VERSION_ID_FIELD_NUMBER: _ClassVar[int]
+    SEQUENCE_NUMBER_FIELD_NUMBER: _ClassVar[int]
+    COMMIT_ID_FIELD_NUMBER: _ClassVar[int]
+    UPDATED_AT_FIELD_NUMBER: _ClassVar[int]
+    PARENT_VERSION_ID_FIELD_NUMBER: _ClassVar[int]
+    name: str
+    version_id: int
+    sequence_number: int
+    commit_id: str
+    updated_at: _timestamp_pb2.Timestamp
+    parent_version_id: int
+    def __init__(
+        self,
+        name: _Optional[str] = ...,
+        version_id: _Optional[int] = ...,
+        sequence_number: _Optional[int] = ...,
+        commit_id: _Optional[str] = ...,
+        updated_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
+        parent_version_id: _Optional[int] = ...,
+    ) -> None: ...
+
 class VersionInfo(_message.Message):
     __slots__ = (
         "version_id",
@@ -824,6 +855,59 @@ class ListVolumeVersionsResponse(_message.Message):
         versions: _Optional[_Iterable[_Union[VersionInfo, _Mapping]]] = ...,
         next_cursor: _Optional[str] = ...,
     ) -> None: ...
+
+class CreateRefRequest(_message.Message):
+    __slots__ = ("volume", "name", "from_version_id")
+    VOLUME_FIELD_NUMBER: _ClassVar[int]
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    FROM_VERSION_ID_FIELD_NUMBER: _ClassVar[int]
+    volume: VolumeRef
+    name: str
+    from_version_id: int
+    def __init__(
+        self,
+        volume: _Optional[_Union[VolumeRef, _Mapping]] = ...,
+        name: _Optional[str] = ...,
+        from_version_id: _Optional[int] = ...,
+    ) -> None: ...
+
+class CreateRefResponse(_message.Message):
+    __slots__ = ("ref",)
+    REF_FIELD_NUMBER: _ClassVar[int]
+    ref: RefInfo
+    def __init__(self, ref: _Optional[_Union[RefInfo, _Mapping]] = ...) -> None: ...
+
+class ListRefsRequest(_message.Message):
+    __slots__ = ("volume",)
+    VOLUME_FIELD_NUMBER: _ClassVar[int]
+    volume: VolumeRef
+    def __init__(
+        self, volume: _Optional[_Union[VolumeRef, _Mapping]] = ...
+    ) -> None: ...
+
+class ListRefsResponse(_message.Message):
+    __slots__ = ("refs",)
+    REFS_FIELD_NUMBER: _ClassVar[int]
+    refs: _containers.RepeatedCompositeFieldContainer[RefInfo]
+    def __init__(
+        self, refs: _Optional[_Iterable[_Union[RefInfo, _Mapping]]] = ...
+    ) -> None: ...
+
+class DeleteRefRequest(_message.Message):
+    __slots__ = ("volume", "name")
+    VOLUME_FIELD_NUMBER: _ClassVar[int]
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    volume: VolumeRef
+    name: str
+    def __init__(
+        self,
+        volume: _Optional[_Union[VolumeRef, _Mapping]] = ...,
+        name: _Optional[str] = ...,
+    ) -> None: ...
+
+class DeleteRefResponse(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
 
 class CommitVersionRequest(_message.Message):
     __slots__ = ("intent",)

@@ -25,6 +25,7 @@ class AgentKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     AGENT_KIND_TENANT: _ClassVar[AgentKind]
     AGENT_KIND_METADATA_SERVICE: _ClassVar[AgentKind]
     AGENT_KIND_SELF_HOSTED_LICENSE: _ClassVar[AgentKind]
+    AGENT_KIND_RESOURCE_SHARE: _ClassVar[AgentKind]
 
 AGENT_KIND_UNSPECIFIED: AgentKind
 AGENT_KIND_USER: AgentKind
@@ -33,6 +34,7 @@ AGENT_KIND_ENGINE: AgentKind
 AGENT_KIND_TENANT: AgentKind
 AGENT_KIND_METADATA_SERVICE: AgentKind
 AGENT_KIND_SELF_HOSTED_LICENSE: AgentKind
+AGENT_KIND_RESOURCE_SHARE: AgentKind
 
 class EnvironmentPermissions(_message.Message):
     __slots__ = ("permissions", "feature_permissions", "customer_claims")
@@ -266,6 +268,41 @@ class SelfHostedLicenseAgent(_message.Message):
         name: _Optional[str] = ...,
     ) -> None: ...
 
+class NotebookShareScope(_message.Message):
+    __slots__ = ("notebook_id",)
+    NOTEBOOK_ID_FIELD_NUMBER: _ClassVar[int]
+    notebook_id: str
+    def __init__(self, notebook_id: _Optional[str] = ...) -> None: ...
+
+class ResourceShareScope(_message.Message):
+    __slots__ = ("notebook",)
+    NOTEBOOK_FIELD_NUMBER: _ClassVar[int]
+    notebook: NotebookShareScope
+    def __init__(
+        self, notebook: _Optional[_Union[NotebookShareScope, _Mapping]] = ...
+    ) -> None: ...
+
+class ResourceShareAgent(_message.Message):
+    __slots__ = ("id", "team_id", "environment_id", "scope", "requires_authentication")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    TEAM_ID_FIELD_NUMBER: _ClassVar[int]
+    ENVIRONMENT_ID_FIELD_NUMBER: _ClassVar[int]
+    SCOPE_FIELD_NUMBER: _ClassVar[int]
+    REQUIRES_AUTHENTICATION_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    team_id: str
+    environment_id: str
+    scope: ResourceShareScope
+    requires_authentication: bool
+    def __init__(
+        self,
+        id: _Optional[str] = ...,
+        team_id: _Optional[str] = ...,
+        environment_id: _Optional[str] = ...,
+        scope: _Optional[_Union[ResourceShareScope, _Mapping]] = ...,
+        requires_authentication: bool = ...,
+    ) -> None: ...
+
 class Agent(_message.Message):
     __slots__ = (
         "user_agent",
@@ -274,6 +311,7 @@ class Agent(_message.Message):
         "tenant_agent",
         "metadata_service_agent",
         "self_hosted_license_agent",
+        "resource_share_agent",
     )
     USER_AGENT_FIELD_NUMBER: _ClassVar[int]
     SERVICE_TOKEN_AGENT_FIELD_NUMBER: _ClassVar[int]
@@ -281,12 +319,14 @@ class Agent(_message.Message):
     TENANT_AGENT_FIELD_NUMBER: _ClassVar[int]
     METADATA_SERVICE_AGENT_FIELD_NUMBER: _ClassVar[int]
     SELF_HOSTED_LICENSE_AGENT_FIELD_NUMBER: _ClassVar[int]
+    RESOURCE_SHARE_AGENT_FIELD_NUMBER: _ClassVar[int]
     user_agent: UserAgent
     service_token_agent: ServiceTokenAgent
     engine_agent: EngineAgent
     tenant_agent: TenantAgent
     metadata_service_agent: MetadataServiceAgent
     self_hosted_license_agent: SelfHostedLicenseAgent
+    resource_share_agent: ResourceShareAgent
     def __init__(
         self,
         user_agent: _Optional[_Union[UserAgent, _Mapping]] = ...,
@@ -297,4 +337,5 @@ class Agent(_message.Message):
         self_hosted_license_agent: _Optional[
             _Union[SelfHostedLicenseAgent, _Mapping]
         ] = ...,
+        resource_share_agent: _Optional[_Union[ResourceShareAgent, _Mapping]] = ...,
     ) -> None: ...
