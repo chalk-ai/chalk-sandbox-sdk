@@ -142,7 +142,6 @@ class ContainerSecurityPolicy:
     """Kernel hardening policy."""
 
     def to_dict(self) -> dict[str, Any]:
-        # Canonical proto enum name (KERNEL_POLICY_*), as ParseDict requires.
         return {"kernelPolicy": f"KERNEL_POLICY_{self.kernel_policy.value}"}
 
 
