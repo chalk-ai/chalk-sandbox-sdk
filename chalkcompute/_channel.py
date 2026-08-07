@@ -92,7 +92,6 @@ class _TracingInterceptor(grpc.UnaryUnaryClientInterceptor):
 _lock = threading.Lock()
 _channels: dict[tuple[str, bool], grpc.Channel] = {}
 _owner_pid: int | None = None
-_atexit_registered = False
 
 
 def get_channel(target: str, use_tls: bool) -> grpc.Channel:
@@ -101,7 +100,7 @@ def get_channel(target: str, use_tls: bool) -> grpc.Channel:
     Dials lazily (constructing a channel to an unreachable target is safe)
     and memoizes.
     """
-    global _owner_pid, _atexit_registered
+    global _owner_pid
     cache_key = (target, use_tls)
     with _lock:
         pid = os.getpid()
@@ -126,9 +125,6 @@ def get_channel(target: str, use_tls: bool) -> grpc.Channel:
             )
             channel = grpc.intercept_channel(base, _TracingInterceptor())
             _channels[cache_key] = channel
-            if not _atexit_registered:
-                atexit.register(close_all)
-                _atexit_registered = True
         return channel
 
 
@@ -142,3 +138,6 @@ def close_all() -> None:
                 except Exception:  # noqa: BLE001 - best-effort shutdown
                     logger.debug("error closing shared channel", exc_info=True)
         _channels.clear()
+
+
+atexit.register(close_all)
