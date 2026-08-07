@@ -46,6 +46,7 @@ class _CachedStub(NamedTuple):
     channel: grpc.Channel
     stub: Any
 
+
 if TYPE_CHECKING:
     import httpx
 
