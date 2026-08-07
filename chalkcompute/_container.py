@@ -798,9 +798,6 @@ class ContainerSessionClient:
                 if getattr(connect, "_uses_web_identity_token", lambda: False)() is True
                 else None
             ),
-            # Share the process-wide channel: exec is on the per-container hot
-            # path, and a dial per container is the connection scaling this
-            # SDK just moved away from (CHA-10029).
             _channel=get_channel(target, use_tls),
         )
 
@@ -1732,9 +1729,7 @@ class Container:
             try:
                 self._client.call(stub.StopContainer, request)
             except grpc.RpcError as e:
-                # Pre-gRPC behavior: StopContainer failures were silently
-                # ignored (the HTTP status was never checked). Keep cleanup
-                # going but surface the failure in logs.
+                # Log, don't raise: cleanup must proceed.
                 logger.warning(
                     "StopContainer for %s failed: %s",
                     self._container_id,

@@ -106,8 +106,7 @@ def get_channel(target: str, use_tls: bool) -> grpc.Channel:
     with _lock:
         pid = os.getpid()
         if _owner_pid != pid:
-            # Forked child: the cached channels' sockets belong to the parent.
-            # Drop the references without closing and re-dial lazily.
+            # Forked child: parent owns these sockets — drop without closing.
             if _owner_pid is not None:
                 logger.debug(
                     "pid changed (%s -> %s); dropping shared channels", _owner_pid, pid
