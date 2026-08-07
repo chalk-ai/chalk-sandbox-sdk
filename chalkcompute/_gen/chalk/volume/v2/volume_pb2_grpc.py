@@ -45,6 +45,21 @@ class VolumeServiceStub(object):
             request_serializer=chalk_dot_volume_dot_v2_dot_volume__pb2.ListVolumeVersionsRequest.SerializeToString,
             response_deserializer=chalk_dot_volume_dot_v2_dot_volume__pb2.ListVolumeVersionsResponse.FromString,
         )
+        self.CreateRef = channel.unary_unary(
+            "/chalk.volume.v2.VolumeService/CreateRef",
+            request_serializer=chalk_dot_volume_dot_v2_dot_volume__pb2.CreateRefRequest.SerializeToString,
+            response_deserializer=chalk_dot_volume_dot_v2_dot_volume__pb2.CreateRefResponse.FromString,
+        )
+        self.ListRefs = channel.unary_unary(
+            "/chalk.volume.v2.VolumeService/ListRefs",
+            request_serializer=chalk_dot_volume_dot_v2_dot_volume__pb2.ListRefsRequest.SerializeToString,
+            response_deserializer=chalk_dot_volume_dot_v2_dot_volume__pb2.ListRefsResponse.FromString,
+        )
+        self.DeleteRef = channel.unary_unary(
+            "/chalk.volume.v2.VolumeService/DeleteRef",
+            request_serializer=chalk_dot_volume_dot_v2_dot_volume__pb2.DeleteRefRequest.SerializeToString,
+            response_deserializer=chalk_dot_volume_dot_v2_dot_volume__pb2.DeleteRefResponse.FromString,
+        )
         self.CommitVersion = channel.unary_unary(
             "/chalk.volume.v2.VolumeService/CommitVersion",
             request_serializer=chalk_dot_volume_dot_v2_dot_volume__pb2.CommitVersionRequest.SerializeToString,
@@ -113,6 +128,24 @@ class VolumeServiceServicer(object):
         context.set_details("Method not implemented!")
         raise NotImplementedError("Method not implemented!")
 
+    def CreateRef(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
+    def ListRefs(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
+    def DeleteRef(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
     def CommitVersion(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -176,6 +209,21 @@ def add_VolumeServiceServicer_to_server(servicer, server):
             servicer.ListVolumeVersions,
             request_deserializer=chalk_dot_volume_dot_v2_dot_volume__pb2.ListVolumeVersionsRequest.FromString,
             response_serializer=chalk_dot_volume_dot_v2_dot_volume__pb2.ListVolumeVersionsResponse.SerializeToString,
+        ),
+        "CreateRef": grpc.unary_unary_rpc_method_handler(
+            servicer.CreateRef,
+            request_deserializer=chalk_dot_volume_dot_v2_dot_volume__pb2.CreateRefRequest.FromString,
+            response_serializer=chalk_dot_volume_dot_v2_dot_volume__pb2.CreateRefResponse.SerializeToString,
+        ),
+        "ListRefs": grpc.unary_unary_rpc_method_handler(
+            servicer.ListRefs,
+            request_deserializer=chalk_dot_volume_dot_v2_dot_volume__pb2.ListRefsRequest.FromString,
+            response_serializer=chalk_dot_volume_dot_v2_dot_volume__pb2.ListRefsResponse.SerializeToString,
+        ),
+        "DeleteRef": grpc.unary_unary_rpc_method_handler(
+            servicer.DeleteRef,
+            request_deserializer=chalk_dot_volume_dot_v2_dot_volume__pb2.DeleteRefRequest.FromString,
+            response_serializer=chalk_dot_volume_dot_v2_dot_volume__pb2.DeleteRefResponse.SerializeToString,
         ),
         "CommitVersion": grpc.unary_unary_rpc_method_handler(
             servicer.CommitVersion,
@@ -356,6 +404,93 @@ class VolumeService(object):
             "/chalk.volume.v2.VolumeService/ListVolumeVersions",
             chalk_dot_volume_dot_v2_dot_volume__pb2.ListVolumeVersionsRequest.SerializeToString,
             chalk_dot_volume_dot_v2_dot_volume__pb2.ListVolumeVersionsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
+
+    @staticmethod
+    def CreateRef(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/chalk.volume.v2.VolumeService/CreateRef",
+            chalk_dot_volume_dot_v2_dot_volume__pb2.CreateRefRequest.SerializeToString,
+            chalk_dot_volume_dot_v2_dot_volume__pb2.CreateRefResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
+
+    @staticmethod
+    def ListRefs(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/chalk.volume.v2.VolumeService/ListRefs",
+            chalk_dot_volume_dot_v2_dot_volume__pb2.ListRefsRequest.SerializeToString,
+            chalk_dot_volume_dot_v2_dot_volume__pb2.ListRefsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
+
+    @staticmethod
+    def DeleteRef(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/chalk.volume.v2.VolumeService/DeleteRef",
+            chalk_dot_volume_dot_v2_dot_volume__pb2.DeleteRefRequest.SerializeToString,
+            chalk_dot_volume_dot_v2_dot_volume__pb2.DeleteRefResponse.FromString,
             options,
             channel_credentials,
             insecure,

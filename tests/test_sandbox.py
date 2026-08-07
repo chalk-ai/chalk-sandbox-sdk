@@ -3,9 +3,9 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
-
 from chalkcompute import Image, Sandbox
-from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as pb
+from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb2 as process_pb
+from chalkcompute._gen.chalk.sandbox.v2 import service_pb2 as pb
 from chalkcompute._sandbox import SandboxClient, SandboxCreationError
 
 
@@ -62,8 +62,8 @@ class _Stub:
         return pb.CreateSandboxResponse(
             sandbox=pb.SandboxInfo(
                 id="sandbox-123",
-                state="ready",
-                created_at="2026-08-03T00:00:00Z",
+                status=pb.SANDBOX_STATUS_RUNNING,
+                created_at={"seconds": 1},
             )
         )
 
@@ -73,20 +73,18 @@ class _ErrorAfterBuildStub:
         return pb.CreateSandboxResponse(
             sandbox=pb.SandboxInfo(
                 id="sandbox-123",
-                state="building",
-                created_at="2026-08-03T00:00:00Z",
-                build_id="build-456",
+                status=pb.SANDBOX_STATUS_PENDING,
+                created_at={"seconds": 1},
             )
         )
 
     def GetSandbox(self, request: pb.GetSandboxRequest, **_kwargs: object):
-        assert request.sandbox_id == "sandbox-123"
+        assert request.id == "sandbox-123"
         return pb.GetSandboxResponse(
             sandbox=pb.SandboxInfo(
                 id="sandbox-123",
-                state="error",
-                created_at="2026-08-03T00:00:00Z",
-                build_id="build-456",
+                status=pb.SANDBOX_STATUS_FAILED,
+                created_at={"seconds": 1},
                 status_message="pod failed readiness probe: connection refused",
             )
         )
@@ -108,8 +106,7 @@ def test_sandbox_client_create_sends_image_uri_not_image_spec() -> None:
         client.close()
 
     assert stub.request is not None
-    assert stub.request.image == "registry/image:built"
-    assert stub.request.WhichOneof("image_source") == "image"
+    assert stub.request.spec.image == "registry/image:built"
     build.assert_called_once()
 
 
@@ -125,10 +122,54 @@ def test_sandbox_client_create_propagates_backend_error_details() -> None:
 
     error = exc_info.value
     assert str(error) == (
-        "Sandbox sandbox-123 entered error state during creation: "
+        "Sandbox sandbox-123 entered failed state during creation: "
         "pod failed readiness probe: connection refused"
     )
     assert error.sandbox_id == "sandbox-123"
-    assert error.status == "error"
+    assert error.status == "failed"
     assert error.status_message == "pod failed readiness probe: connection refused"
-    assert error.build_id == "build-456"
+    assert error.build_id is None
+
+
+class _ProcessStub:
+    def __init__(self) -> None:
+        self.request: process_pb.OpenSessionRequest | None = None
+
+    def OpenSession(self, requests, **_kwargs: object):
+        self.request = next(requests)
+        return iter(
+            [
+                process_pb.OpenSessionResponse(
+                    session_attached=process_pb.SessionAttached(
+                        session_id="session-123"
+                    )
+                ),
+                process_pb.OpenSessionResponse(
+                    output_data=process_pb.OutputData(
+                        stream=process_pb.OutputData.STREAM_STDOUT,
+                        data=b"hello\\n",
+                    )
+                ),
+                process_pb.OpenSessionResponse(
+                    process_exited=process_pb.ProcessExited(exit_code=0)
+                ),
+            ]
+        )
+
+
+def test_sandbox_exec_uses_v2_process_service() -> None:
+    client = SandboxClient()
+    stub = _ProcessStub()
+    client._process_stub = stub  # type: ignore[assignment]
+    try:
+        result = Sandbox(client=client, sandbox_id="sandbox-123").exec("echo", "hello")
+    finally:
+        client.close()
+
+    assert result.stdout == b"hello\\n"
+    assert result.stderr == b""
+    assert result.exit_code == 0
+    assert stub.request is not None
+    assert stub.request.new_process.sandbox_id == "sandbox-123"
+    assert stub.request.new_process.command == "echo"
+    assert list(stub.request.new_process.args) == ["hello"]

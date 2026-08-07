@@ -48,8 +48,12 @@ from chalkcompute._gen.chalk.sandbox.v1 import runtime_service_pb2 as runtime_pb
 from chalkcompute._gen.chalk.sandbox.v1 import (
     runtime_service_pb2_grpc as runtime_pb_grpc,
 )
-from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as pb
-from chalkcompute._gen.chalk.sandbox.v1 import service_pb2_grpc as pb_grpc
+from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb2 as process_pb
+from chalkcompute._gen.chalk.sandbox.v2 import (
+    process_service_pb2_grpc as process_pb_grpc,
+)
+from chalkcompute._gen.chalk.sandbox.v2 import service_pb2 as pb
+from chalkcompute._gen.chalk.sandbox.v2 import service_pb2_grpc as pb_grpc
 from chalkcompute._image import Image
 from chalkcompute._naming import validate_dns_label, validate_env
 from chalkcompute._tracing import _instrumented
@@ -180,9 +184,6 @@ class ExecResult:
     signal: int | None = None
     """Signal number that terminated the process, if any."""
 
-    pid: int | None = None
-    """PID of the process, if known."""
-
     error: str | None = None
     """Error string if execution failed."""
 
@@ -201,14 +202,14 @@ class ExecResult:
 class ExecEvent:
     """A single event from a streaming exec call."""
 
+    session_id: str | None = None
+    """V2 session identifier, set when the process session starts."""
+
     stdout: str | None = None
     """Stdout text chunk, if this event carries stdout output."""
 
     stderr: str | None = None
     """Stderr text chunk, if this event carries stderr output."""
-
-    pid: int | None = None
-    """PID of the started process, set on the process-started event."""
 
     exit_code: int | None = None
     """Exit code of the process, set on the process-exited event."""
@@ -224,7 +225,7 @@ class ExecEvent:
 
     @property
     def is_started(self) -> bool:
-        return self.pid is not None
+        return self.session_id is not None
 
     @property
     def is_output(self) -> bool:
@@ -314,11 +315,11 @@ class ExecProcess:
     """Handle to a running exec stream, allowing stdin writes and signal sends."""
 
     _request_queue: queue.Queue = field(repr=False)
-    _response_iterator: Iterator[pb.ExecResponse] = field(repr=False)
+    _response_iterator: Iterator[process_pb.OpenSessionResponse] = field(repr=False)
     _sandbox_id: str = field(repr=False)
 
-    pid: int | None = None
-    """PID of the running process once the server reports it."""
+    session_id: str | None = None
+    """V2 session identifier once the process session starts."""
 
     def write_stdin(self, data: str | bytes) -> None:
         """Send data to the process's stdin.
@@ -330,11 +331,15 @@ class ExecProcess:
         """
         if isinstance(data, str):
             data = data.encode("utf-8")
-        self._request_queue.put(pb.ExecRequest(stdin_data=pb.StdinData(data=data)))
+        self._request_queue.put(
+            process_pb.OpenSessionRequest(stdin_data=process_pb.StdinData(data=data))
+        )
 
     def close_stdin(self) -> None:
         """Signal EOF on stdin."""
-        self._request_queue.put(pb.ExecRequest(stdin_eof=pb.StdinEof()))
+        self._request_queue.put(
+            process_pb.OpenSessionRequest(stdin_eof=process_pb.StdinEof())
+        )
 
     def send_signal(self, sig: int = signal.SIGTERM) -> None:
         """Send a signal to the process.
@@ -344,7 +349,9 @@ class ExecProcess:
         sig
             Signal number to send. Defaults to ``SIGTERM``.
         """
-        self._request_queue.put(pb.ExecRequest(signal=pb.ExecSignal(signal=sig)))
+        self._request_queue.put(
+            process_pb.OpenSessionRequest(signal=process_pb.SessionSignal(signal=sig))
+        )
 
     def output(self) -> Iterator[ExecEvent]:
         """Iterate over output events from the process.
@@ -357,8 +364,8 @@ class ExecProcess:
         """
         for response in self._response_iterator:
             event = _response_to_event(response)
-            if event.pid is not None:
-                self.pid = event.pid
+            if event.session_id is not None:
+                self.session_id = event.session_id
             yield event
             if event.is_exited or event.is_error:
                 return
@@ -375,18 +382,15 @@ class ExecProcess:
         stderr_parts: list[bytes] = []
         exit_code: int | None = None
         exit_signal: int | None = None
-        pid: int | None = self.pid
         error: str | None = None
 
         for response in self._response_iterator:
-            msg_type = response.WhichOneof("message")
-            if msg_type == "process_started":
-                pid = response.process_started.pid
-            elif msg_type == "output_data":
+            msg_type = response.WhichOneof("event")
+            if msg_type == "output_data":
                 od = response.output_data
-                if od.stream == pb.OutputData.STREAM_STDOUT:
+                if od.stream == process_pb.OutputData.STREAM_STDOUT:
                     stdout_parts.append(od.data)
-                elif od.stream == pb.OutputData.STREAM_STDERR:
+                elif od.stream == process_pb.OutputData.STREAM_STDERR:
                     stderr_parts.append(od.data)
             elif msg_type == "process_exited":
                 pe = response.process_exited
@@ -402,7 +406,6 @@ class ExecProcess:
             stderr=b"".join(stderr_parts),
             exit_code=exit_code,
             signal=exit_signal,
-            pid=pid,
             error=error,
         )
 
@@ -605,7 +608,7 @@ class Sandbox:
         sandbox_id = self._require_started()
         try:
             resp = client._stub.GetSandbox(
-                pb.GetSandboxRequest(sandbox_id=sandbox_id),
+                pb.GetSandboxRequest(id=sandbox_id),
                 metadata=client._metadata,
             )
         except grpc.RpcError as e:
@@ -806,7 +809,7 @@ class Sandbox:
         """
         client = self._require_client()
         sandbox_id = self._require_started()
-        init = pb.ExecInit(
+        init = process_pb.NewProcess(
             sandbox_id=sandbox_id,
             command=command,
             args=list(args),
@@ -816,15 +819,15 @@ class Sandbox:
         validate_env(env)
         if env is not None:
             for k, v in env.items():
-                init.env[k] = v
+                init.env_vars[k] = v
         if timeout_secs is not None:
-            init.timeout_secs = timeout_secs
+            init.timeout.seconds = timeout_secs
 
-        request_queue: queue.Queue[pb.ExecRequest | None] = queue.Queue()
+        request_queue: queue.Queue[process_pb.OpenSessionRequest | None] = queue.Queue()
         # Send the init message first
-        request_queue.put(pb.ExecRequest(init=init))
+        request_queue.put(process_pb.OpenSessionRequest(new_process=init))
 
-        def request_iterator() -> Iterator[pb.ExecRequest]:
+        def request_iterator() -> Iterator[process_pb.OpenSessionRequest]:
             while True:
                 req = request_queue.get()
                 if req is None:
@@ -832,7 +835,7 @@ class Sandbox:
                 yield req
 
         try:
-            response_iterator = client._stub.Exec(
+            response_iterator = client._process_stub.OpenSession(
                 request_iterator(), metadata=client._metadata
             )
         except grpc.RpcError as e:
@@ -978,9 +981,9 @@ class Sandbox:
             return
         client = self._require_client()
         sandbox_id = self._require_started()
-        req = pb.TerminateSandboxRequest(sandbox_id=sandbox_id)
+        req = pb.TerminateSandboxRequest(id=sandbox_id)
         if grace_period_seconds is not None:
-            req.grace_period_seconds = grace_period_seconds
+            req.grace_period.seconds = grace_period_seconds
         try:
             client._stub.TerminateSandbox(req, metadata=client._metadata)
         except grpc.RpcError as e:
@@ -1057,6 +1060,7 @@ class SandboxClient:
         else:
             self._channel = grpc.insecure_channel(target)
         self._stub = pb_grpc.SandboxServiceStub(self._channel)
+        self._process_stub = process_pb_grpc.SandboxProcessServiceStub(self._channel)
 
     @classmethod
     def from_env(cls, *, chalk_client: Any | None = None) -> SandboxClient:
@@ -1181,44 +1185,46 @@ class SandboxClient:
         poll_interval: float,
         timeout: float,
     ) -> None:
-        req = pb.CreateSandboxRequest(image=image)
+        spec = container_pb.ChalkContainerSpec(image=image)
         if sandbox._name is not None:
-            req.name = sandbox._name
+            spec.name = sandbox._name
         if sandbox._cpu is not None or sandbox._memory is not None:
-            limits = pb.ResourceLimits()
+            limits = container_pb.ResourceLimits()
             if sandbox._cpu is not None:
                 limits.cpu = sandbox._cpu
             if sandbox._memory is not None:
                 limits.memory = sandbox._memory
-            req.resource_limits.CopyFrom(limits)
+            spec.resources.CopyFrom(limits)
         if sandbox._env:
             for k, v in sandbox._env.items():
-                req.env[k] = v
+                spec.env_vars[k] = v
         if sandbox._volumes:
-            req.volumes.extend(_volume_mounts_to_proto(sandbox._volumes))
+            spec.volumes.extend(_volume_mounts_to_proto(sandbox._volumes))
         if sandbox._entrypoint is not None:
-            req.entrypoint.extend(sandbox._entrypoint)
+            spec.entrypoint.extend(sandbox._entrypoint)
         if sandbox._network_policy is not None:
             from google.protobuf.json_format import ParseDict
 
-            ParseDict(sandbox._network_policy.to_dict(), req.network_policy)
+            ParseDict(sandbox._network_policy.to_dict(), spec.network_policy)
         if sandbox._restart_policy is not None:
-            req.restart_policy = (
+            spec.restart_policy = (
                 container_pb.RESTART_POLICY_NEVER
                 if sandbox._restart_policy is RestartPolicy.NEVER
                 else container_pb.RESTART_POLICY_ALWAYS
             )
 
-        resp = self._stub.CreateSandbox(req, metadata=self._metadata)
+        resp = self._stub.CreateSandbox(
+            pb.CreateSandboxRequest(spec=spec), metadata=self._metadata
+        )
         info = _pb_to_sandbox_info(resp.sandbox)
 
-        if wait and info.status in ("building", "connecting"):
+        if wait and info.status == "pending":
             info = self._poll_until_ready(
                 info.id,
                 poll_interval=poll_interval,
                 timeout=timeout,
             )
-        elif wait and info.status == "error":
+        elif wait and info.status in ("failed", "error", "unknown"):
             raise _sandbox_creation_error(info)
         elif wait and info.status == "terminated":
             raise SandboxTerminatedError(
@@ -1240,16 +1246,16 @@ class SandboxClient:
         while time.monotonic() < deadline:
             try:
                 resp = self._stub.GetSandbox(
-                    pb.GetSandboxRequest(sandbox_id=sandbox_id),
+                    pb.GetSandboxRequest(id=sandbox_id),
                     metadata=self._metadata,
                 )
             except grpc.RpcError as e:
                 _handle_rpc_error(e, sandbox_id)
                 raise
             info = _pb_to_sandbox_info(resp.sandbox)
-            if info.status == "ready":
+            if info.status == "running":
                 return info
-            if info.status == "error":
+            if info.status in ("failed", "error", "unknown"):
                 raise _sandbox_creation_error(info)
             if info.status == "terminated":
                 raise SandboxTerminatedError(
@@ -1297,12 +1303,12 @@ class SandboxClient:
 
 
 def _pb_to_sandbox_info(info: pb.SandboxInfo) -> SandboxInfo:
+    status = pb.SandboxStatus.Name(info.status).removeprefix("SANDBOX_STATUS_").lower()
     return SandboxInfo(
         id=info.id,
-        status=info.state,
-        created_at=info.created_at,
-        name=info.name if info.HasField("name") else None,
-        build_id=info.build_id if info.HasField("build_id") else None,
+        status=status,
+        created_at=info.created_at.ToJsonString(),
+        name=info.name or None,
         status_message=(
             info.status_message if info.HasField("status_message") else None
         ),
@@ -1323,16 +1329,16 @@ def _sandbox_creation_error(info: SandboxInfo) -> SandboxCreationError:
     )
 
 
-def _response_to_event(response: pb.ExecResponse) -> ExecEvent:
-    msg_type = response.WhichOneof("message")
-    if msg_type == "process_started":
-        return ExecEvent(pid=response.process_started.pid)
+def _response_to_event(response: process_pb.OpenSessionResponse) -> ExecEvent:
+    msg_type = response.WhichOneof("event")
+    if msg_type == "session_attached":
+        return ExecEvent(session_id=response.session_attached.session_id)
     elif msg_type == "output_data":
         od = response.output_data
         text = od.data.decode("utf-8", errors="replace")
-        if od.stream == pb.OutputData.STREAM_STDOUT:
+        if od.stream == process_pb.OutputData.STREAM_STDOUT:
             return ExecEvent(stdout=text)
-        elif od.stream == pb.OutputData.STREAM_STDERR:
+        elif od.stream == process_pb.OutputData.STREAM_STDERR:
             return ExecEvent(stderr=text)
         return ExecEvent(stdout=text)
     elif msg_type == "process_exited":
@@ -1340,6 +1346,19 @@ def _response_to_event(response: pb.ExecResponse) -> ExecEvent:
         return ExecEvent(
             exit_code=pe.exit_code if pe.HasField("exit_code") else None,
             exit_signal=pe.signal if pe.HasField("signal") else None,
+        )
+    elif msg_type == "process_timed_out":
+        pe = response.process_timed_out
+        return ExecEvent(
+            exit_code=pe.exit_code if pe.HasField("exit_code") else None,
+            exit_signal=pe.signal if pe.HasField("signal") else None,
+            error_code="timed_out",
+            error_message="Process timed out",
+        )
+    elif msg_type == "process_failed":
+        return ExecEvent(
+            error_code="process_failed",
+            error_message=response.process_failed.message,
         )
     elif msg_type == "error":
         return ExecEvent(
@@ -1365,9 +1384,15 @@ def _handle_rpc_error(e: grpc.RpcError, sandbox_id: str) -> None:
     )
 
 
-def _volume_mounts_to_proto(volumes: list[tuple[str, str]]) -> list[pb.VolumeMount]:
+def _volume_mounts_to_proto(
+    volumes: list[tuple[str, str]],
+) -> list[container_pb.VolumeMount]:
     return [
-        pb.VolumeMount(name=vol_name, mount_path=mount_path, type="versioned_chalkfs")
+        container_pb.VolumeMount(
+            name=vol_name,
+            mount_path=mount_path,
+            type="versioned_chalkfs",
+        )
         for vol_name, mount_path in volumes
     ]
 

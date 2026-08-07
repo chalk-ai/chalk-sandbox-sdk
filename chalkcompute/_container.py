@@ -18,11 +18,11 @@ destination path's common ancestor.
 
 from __future__ import annotations
 
-import base64
 import logging
 import queue
 import time
 import uuid
+import warnings
 from collections import deque
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
@@ -36,8 +36,10 @@ from chalkcompute._connect import (
     grpc_target_from_url,
     raise_for_grpc_error,
 )
-from chalkcompute._gen.chalk.container.v1 import service_pb2 as pb
-from chalkcompute._gen.chalk.container.v1 import service_pb2_grpc as pb_grpc
+from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb2 as pb
+from chalkcompute._gen.chalk.sandbox.v2 import (
+    process_service_pb2_grpc as pb_grpc,
+)
 from chalkcompute._naming import (
     sanitize_dns_label,
     validate_dns_label,
@@ -589,8 +591,8 @@ class ContainerSession:
 
     _client: ContainerSessionClient = field(repr=False)
     _container_id: str = field(repr=False)
-    _request_queue: queue.Queue[pb.SessionRequest | None] = field(repr=False)
-    _response_iterator: Iterator[pb.SessionResponse] = field(repr=False)
+    _request_queue: queue.Queue[pb.OpenSessionRequest | None] = field(repr=False)
+    _response_iterator: Iterator[pb.OpenSessionResponse] = field(repr=False)
     _pending_events: deque[ContainerSession.Event] = field(
         default_factory=deque,
         repr=False,
@@ -608,19 +610,19 @@ class ContainerSession:
         """Write data to the session process's stdin."""
         if isinstance(data, str):
             data = data.encode("utf-8")
-        self._send(pb.SessionRequest(stdin_data=pb.StdinData(data=data)))
+        self._send(pb.OpenSessionRequest(stdin_data=pb.StdinData(data=data)))
 
     def close_stdin(self) -> None:
         """Signal EOF on stdin."""
-        self._send(pb.SessionRequest(stdin_eof=pb.StdinEof()))
+        self._send(pb.OpenSessionRequest(stdin_eof=pb.StdinEof()))
 
     def signal(self, signum: int) -> None:
         """Send a signal to the session process."""
-        self._send(pb.SessionRequest(signal=pb.SessionSignal(signal=signum)))
+        self._send(pb.OpenSessionRequest(signal=pb.SessionSignal(signal=signum)))
 
     def resize(self, cols: int, rows: int) -> None:
         """Resize the session pty."""
-        self._send(pb.SessionRequest(pty_info=_make_pty_info(cols, rows)))
+        self._send(pb.OpenSessionRequest(resize_pty=_make_resize_pty(cols, rows)))
 
     def status(self) -> ContainerSession.Status:
         """Fetch the latest process status for this session."""
@@ -630,7 +632,7 @@ class ContainerSession:
         """Detach this stream from the session without stopping the process."""
         if self._detached:
             return
-        self._send(pb.SessionRequest(detach_session=pb.DetachSession()))
+        self._send(pb.OpenSessionRequest(detach_session=pb.DetachSession()))
         for event in self.events():
             match event:
                 case ContainerSession.DetachedEvent():
@@ -742,7 +744,7 @@ class ContainerSession:
         self._close_request_stream()
         raise ContainerError("Session stream ended before the session was attached")
 
-    def _send(self, request: pb.SessionRequest) -> None:
+    def _send(self, request: pb.OpenSessionRequest) -> None:
         if self._closed_requests:
             raise ContainerError("Session stream is closed")
         self._request_queue.put(request)
@@ -771,7 +773,7 @@ class ContainerSessionClient:
             self._channel = grpc.secure_channel(target, credentials)
         else:
             self._channel = grpc.insecure_channel(target)
-        self._stub = pb_grpc.ContainerServiceStub(self._channel)
+        self._stub = pb_grpc.SandboxProcessServiceStub(self._channel)
 
     @classmethod
     def from_connect(cls, connect: ConnectClient) -> ContainerSessionClient:
@@ -813,7 +815,7 @@ class ContainerSessionClient:
     ) -> ContainerSession:
         validate_env(env)
         process = pb.NewProcess(
-            container_id=container_id,
+            sandbox_id=container_id,
             command=command,
             args=list(args),
         )
@@ -821,16 +823,16 @@ class ContainerSessionClient:
             process.workdir = workdir
         if env is not None:
             for key, value in env.items():
-                process.env[key] = value
+                process.env_vars[key] = value
         if timeout_secs is not None:
-            process.timeout_secs = timeout_secs
+            process.timeout.seconds = timeout_secs
         pty_info = _coerce_pty_info(pty)
         if pty_info is not None:
             process.pty_info.CopyFrom(pty_info)
 
         return self._start_session(
             container_id,
-            pb.SessionRequest(new_process=process),
+            pb.OpenSessionRequest(new_process=process),
         )
 
     def attach_session(
@@ -840,13 +842,13 @@ class ContainerSessionClient:
         *,
         pty: bool | tuple[int, int] = False,
     ) -> ContainerSession:
-        attach = pb.AttachSession(container_id=container_id, session_id=session_id)
+        attach = pb.AttachSession(sandbox_id=container_id, session_id=session_id)
         pty_info = _coerce_pty_info(pty)
         if pty_info is not None:
             attach.pty_info.CopyFrom(pty_info)
         return self._start_session(
             container_id,
-            pb.SessionRequest(attach_session=attach),
+            pb.OpenSessionRequest(attach_session=attach),
         )
 
     def get_session(
@@ -856,7 +858,7 @@ class ContainerSessionClient:
     ) -> ContainerSession.Info:
         try:
             resp = self._stub.GetSession(
-                pb.GetSessionRequest(container_id=container_id, session_id=session_id),
+                pb.GetSessionRequest(sandbox_id=container_id, session_id=session_id),
                 metadata=self._metadata,
             )
         except grpc.RpcError as e:
@@ -866,22 +868,42 @@ class ContainerSessionClient:
     def list_sessions(self, container_id: str) -> list[ContainerSession.Info]:
         try:
             resp = self._stub.ListSessions(
-                pb.ListSessionsRequest(container_id=container_id),
+                pb.ListSessionsRequest(sandbox_id=container_id),
                 metadata=self._metadata,
             )
         except grpc.RpcError as e:
             _handle_container_grpc_error(e, container_id)
         return [_pb_to_session_info(container_id, session) for session in resp.sessions]
 
+    def exec_command(
+        self,
+        container_id: str,
+        command: str,
+        *args: str,
+        timeout_secs: int | None = None,
+    ) -> pb.ExecCommandResponse:
+        request = pb.ExecCommandRequest(
+            sandbox_id=container_id,
+            command=command,
+            args=args,
+        )
+        if timeout_secs is not None:
+            request.timeout.seconds = timeout_secs
+        try:
+            return self._stub.ExecCommand(request, metadata=self._metadata)
+        except grpc.RpcError as e:
+            _handle_container_grpc_error(e, container_id)
+            raise
+
     def _start_session(
         self,
         container_id: str,
-        initial_request: pb.SessionRequest,
+        initial_request: pb.OpenSessionRequest,
     ) -> ContainerSession:
-        request_queue: queue.Queue[pb.SessionRequest | None] = queue.Queue()
+        request_queue: queue.Queue[pb.OpenSessionRequest | None] = queue.Queue()
         request_queue.put(initial_request)
 
-        def request_iterator() -> Iterator[pb.SessionRequest]:
+        def request_iterator() -> Iterator[pb.OpenSessionRequest]:
             while True:
                 request = request_queue.get()
                 if request is None:
@@ -889,7 +911,7 @@ class ContainerSessionClient:
                 yield request
 
         try:
-            response_iterator = self._stub.Session(
+            response_iterator = self._stub.OpenSession(
                 request_iterator(),
                 metadata=self._metadata,
             )
@@ -962,6 +984,13 @@ class Container:
         tags: dict[str, str] | None = None,
         chalk_client: Any | None = None,
     ) -> None:
+        warnings.warn(
+            "`Container` is deprecated. Use `Sandbox` instead; it is the "
+            "supported API for creating, managing, and executing commands in "
+            "sandboxes.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self._image: _Image | str | None = image
         if name is not None:
             validate_dns_label(name)
@@ -1010,7 +1039,10 @@ class Container:
             from google.protobuf.json_format import Parse, ParseError
 
             try:
-                _parsed_lifetime = Parse(f'"{lifetime}"', duration_pb2.Duration())  # ty: ignore[unresolved-attribute]
+                _parsed_lifetime = Parse(
+                    f'"{lifetime}"',
+                    duration_pb2.Duration(),  # ty: ignore[unresolved-attribute]
+                )
             except ParseError:
                 raise ValueError(
                     f"Invalid lifetime {lifetime!r}. "
@@ -1617,35 +1649,20 @@ class Container:
         if self._container_id is None:
             raise ContainerError("Container is not running. Call .run() first.")
 
-        body: dict[str, Any] = {
-            "id": self._container_id,
-            "command": list(command),
-        }
-        if timeout_secs is not None:
-            body["timeout"] = f"{timeout_secs}s"
+        if not command:
+            raise ValueError("exec() requires a command")
 
-        # Add buffer so the HTTP connection outlives the in-container exec
-        # timeout rather than racing it.
-        rpc_timeout = (timeout_secs + 10) if timeout_secs is not None else 30
-
-        # TODO(CHA-8630): Remove retry loop once the API reports accurate
-        # Running status (container may not be exec-ready immediately).
-        for attempt in range(_retries + 1):
-            resp = self._client.rpc(_SVC, "ExecCommand", body, timeout=rpc_timeout)
-            if resp.status_code == 200:
-                data = resp.json()
-                stdout_b64 = data.get("stdout", "")
-                stderr_b64 = data.get("stderr", "")
-                return ExecResult(
-                    stdout=base64.b64decode(stdout_b64) if stdout_b64 else b"",
-                    stderr=base64.b64decode(stderr_b64) if stderr_b64 else b"",
-                    exit_code=data.get("exitCode", 0),
-                )
-            if "container not found" not in resp.text or attempt >= _retries:
-                raise ContainerError(f"ExecCommand failed: {resp.text}")
-            time.sleep(_retry_delay)
-
-        raise ContainerError(f"ExecCommand failed after {_retries} retries")
+        response = self._get_session_client().exec_command(
+            self._container_id,
+            command[0],
+            *command[1:],
+            timeout_secs=timeout_secs,
+        )
+        return ExecResult(
+            stdout=response.stdout,
+            stderr=response.stderr,
+            exit_code=response.exit_code,
+        )
 
     @_instrumented("chalkcompute.container.new_session")
     def new_session(
@@ -1831,9 +1848,9 @@ def _pb_to_session_info(
         command=new_process.command,
         args=list(new_process.args),
         workdir=new_process.workdir if new_process.HasField("workdir") else None,
-        env=dict(new_process.env),
+        env=dict(new_process.env_vars),
         timeout_secs=(
-            new_process.timeout_secs if new_process.HasField("timeout_secs") else None
+            new_process.timeout.seconds if new_process.HasField("timeout") else None
         ),
         pty=new_process.HasField("pty_info"),
         status=_pb_to_session_status(info.process_status),
@@ -1851,7 +1868,7 @@ def _pb_to_session_status(status: pb.ProcessStatus) -> ContainerSession.Status:
     )
 
 
-def _pb_to_session_event(response: pb.SessionResponse) -> ContainerSession.Event:
+def _pb_to_session_event(response: pb.OpenSessionResponse) -> ContainerSession.Event:
     match response.WhichOneof("event"):
         case "session_attached":
             return ContainerSession.AttachedEvent(
@@ -1931,6 +1948,12 @@ def _make_pty_info(cols: int, rows: int) -> pb.PtyInfo:
     _validate_pty_dimension(cols, "cols")
     _validate_pty_dimension(rows, "rows")
     return pb.PtyInfo(cols=cols, rows=rows)
+
+
+def _make_resize_pty(cols: int, rows: int) -> pb.ResizePty:
+    _validate_pty_dimension(cols, "cols")
+    _validate_pty_dimension(rows, "rows")
+    return pb.ResizePty(cols=cols, rows=rows)
 
 
 def _validate_pty_dimension(value: int, name: str) -> None:

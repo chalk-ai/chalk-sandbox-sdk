@@ -83,6 +83,11 @@ def test_network_policy_validates_ports_and_matchers() -> None:
         NetworkPolicy.Matcher(exact="x", regex="x")
 
 
+def test_container_is_deprecated() -> None:
+    with pytest.warns(DeprecationWarning, match="Use `Sandbox` instead"):
+        Container(image="ubuntu:latest")
+
+
 def test_host_container_run_sends_network_policy() -> None:
     client = _Client()
     container = Container(
