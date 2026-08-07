@@ -34,6 +34,18 @@ class _RPCResponse:
     status_code = 200
 
 
+class _WorkloadIdentityTokenResponse:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self._payload = payload
+        self.raise_for_status_called = False
+
+    def raise_for_status(self) -> None:
+        self.raise_for_status_called = True
+
+    def json(self) -> dict[str, Any]:
+        return self._payload
+
+
 class _SpanContext:
     is_valid = True
 
@@ -520,6 +532,65 @@ class TestConnectClientWebIdentity:
             assert ("x-chalk-env-id", "env-two") in (client._metadata or [])
         finally:
             client.close()
+
+
+class TestConnectClientWorkloadIdentityToken:
+    def test_requests_token_for_audience(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        response = _WorkloadIdentityTokenResponse({"token": "snowflake-jwt"})
+        request: dict[str, Any] = {}
+        client = ConnectClient()
+
+        def fake_rpc(
+            service: str,
+            method: str,
+            body: dict[str, Any],
+            timeout: float = 30,
+            **_kwargs: Any,
+        ) -> _WorkloadIdentityTokenResponse:
+            request.update(
+                service=service,
+                method=method,
+                body=body,
+                timeout=timeout,
+            )
+            return response
+
+        monkeypatch.setattr(client, "rpc", fake_rpc)
+
+        token = client.get_workload_identity_token(
+            "snowflakecomputing.com",
+            timeout=12,
+        )
+
+        assert token == "snowflake-jwt"
+        assert response.raise_for_status_called is True
+        assert request == {
+            "service": "chalk.server.v1.AuthService",
+            "method": "GetWorkloadIdentityToken",
+            "body": {"audience": "snowflakecomputing.com"},
+            "timeout": 12,
+        }
+
+    @pytest.mark.parametrize("audience", ["", "   "])
+    def test_rejects_empty_audience(self, audience: str) -> None:
+        with pytest.raises(ValueError, match="audience cannot be empty"):
+            ConnectClient().get_workload_identity_token(audience)
+
+    @pytest.mark.parametrize("payload", [{}, {"token": ""}, {"token": 123}])
+    def test_rejects_response_without_token(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        payload: dict[str, Any],
+    ) -> None:
+        client = ConnectClient()
+        monkeypatch.setattr(
+            client,
+            "rpc",
+            lambda *_args, **_kwargs: _WorkloadIdentityTokenResponse(payload),
+        )
+
+        with pytest.raises(ConnectError, match="response without a token"):
+            client.get_workload_identity_token("snowflakecomputing.com")
 
 
 class TestConnectClientTracing:
