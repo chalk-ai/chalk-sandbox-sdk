@@ -1,7 +1,8 @@
-"""Shared Connect-protocol client for Chalk API services.
+"""Shared authenticated client for Chalk API services.
 
-Provides auth (OAuth token exchange), Connect-protocol RPC dispatch,
-and image build polling.
+Provides auth (OAuth token exchange), RPC dispatch — gRPC over a shared
+channel via ``stub()``/``call()``, plus the legacy Connect-protocol
+(HTTP/JSON) ``rpc()`` — and image build polling.
 """
 
 from __future__ import annotations
@@ -94,7 +95,15 @@ def chalk_client_from_env(
 
 
 class ConnectClient:
-    """Authenticated Connect-protocol (HTTP/JSON) client for Chalk APIs.
+    """Authenticated RPC client for Chalk APIs.
+
+    Two transports share this client's auth:
+
+    - :meth:`stub` / :meth:`call` — gRPC over a process-wide shared HTTP/2
+      channel (see ``_channel.py``). The preferred transport; new call sites
+      should use it.
+    - :meth:`rpc` — legacy Connect-protocol (HTTP/JSON), one connection per
+      call. Remaining services migrate off it incrementally (CHA-10029).
 
     Ambient Chalk credentials are read lazily. A JWT configured through
     ``CHALK_WEB_IDENTITY_TOKEN_FILE`` takes precedence and is cached for the
@@ -104,11 +113,8 @@ class ConnectClient:
     Examples
     --------
     >>> client = ConnectClient()
-    >>> resp = client.rpc(
-    ...     "chalk.container.v1.ContainerService",
-    ...     "GetContainer",
-    ...     {"id": "..."},
-    ... )
+    >>> stub = client.stub(ContainerServiceStub)
+    >>> resp = client.call(stub.GetContainer, pb.GetContainerRequest(id="..."))
     """
 
     def __init__(self, chalk_client: Any | None = None) -> None:
