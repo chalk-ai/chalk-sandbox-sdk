@@ -450,6 +450,7 @@ class Sandbox:
         entrypoint: list[str] | None = None,
         network_policy: NetworkPolicy | None = None,
         restart_policy: RestartPolicy | None = None,
+        chalk_identity: bool = False,
         chalk_client: Any | None = None,
         sandbox_client: SandboxClient | None = None,
         client: Any | None = None,
@@ -481,6 +482,10 @@ class Sandbox:
         restart_policy
             Optional restart behavior. Use :attr:`RestartPolicy.NEVER` or
             :attr:`RestartPolicy.ALWAYS`.
+        chalk_identity
+            Whether to give the sandbox a platform-managed Chalk identity.
+            The identity is exposed inside the sandbox through the standard
+            ``CHALK_WEB_IDENTITY_TOKEN_FILE`` environment variable.
 
         Notes
         -----
@@ -508,6 +513,7 @@ class Sandbox:
         self._entrypoint: list[str] | None = None
         self._network_policy: NetworkPolicy | None = None
         self._restart_policy: RestartPolicy | None = None
+        self._chalk_identity = False
         self._chalk_client: Any | None = None
 
         if client is not None or sandbox_id is not None:
@@ -521,6 +527,7 @@ class Sandbox:
                 or entrypoint is not None
                 or network_policy is not None
                 or restart_policy is not None
+                or chalk_identity
                 or chalk_client is not None
                 or sandbox_client is not None
             ):
@@ -567,6 +574,8 @@ class Sandbox:
             raise TypeError("network_policy must be a NetworkPolicy")
         if restart_policy is not None and not isinstance(restart_policy, RestartPolicy):
             raise TypeError("restart_policy must be a RestartPolicy")
+        if not isinstance(chalk_identity, bool):
+            raise TypeError("chalk_identity must be a bool")
 
         self._client = sandbox_client
         self._image = image
@@ -578,6 +587,7 @@ class Sandbox:
         self._entrypoint = list(entrypoint) if entrypoint is not None else None
         self._network_policy = network_policy
         self._restart_policy = restart_policy
+        self._chalk_identity = chalk_identity
         self._chalk_client = chalk_client
 
     @property
@@ -1114,6 +1124,7 @@ class SandboxClient:
         entrypoint: _StrList | None = None,
         network_policy: NetworkPolicy | None = None,
         restart_policy: RestartPolicy | None = None,
+        chalk_identity: bool = False,
         wait: bool = True,
         poll_interval: float = 0.5,
         timeout: float = 600.0,
@@ -1149,6 +1160,10 @@ class SandboxClient:
         restart_policy
             Optional restart behavior. Use ``RestartPolicy.NEVER`` or
             ``RestartPolicy.ALWAYS``.
+        chalk_identity
+            Whether to give the sandbox a platform-managed Chalk identity.
+            The identity is exposed inside the sandbox through the standard
+            ``CHALK_WEB_IDENTITY_TOKEN_FILE`` environment variable.
         wait
             If ``True``, poll until the sandbox is ready (default ``True``).
         poll_interval
@@ -1172,6 +1187,7 @@ class SandboxClient:
             entrypoint=entrypoint,
             network_policy=network_policy,
             restart_policy=restart_policy,
+            chalk_identity=chalk_identity,
             sandbox_client=self,
         ).run(wait=wait, poll_interval=poll_interval, timeout=timeout)
 
@@ -1212,6 +1228,8 @@ class SandboxClient:
                 if sandbox._restart_policy is RestartPolicy.NEVER
                 else container_pb.RESTART_POLICY_ALWAYS
             )
+        if sandbox._chalk_identity:
+            spec.chalk_workload_identity.CopyFrom(container_pb.ChalkWorkloadIdentity())
 
         resp = self._stub.CreateSandbox(
             pb.CreateSandboxRequest(spec=spec), metadata=self._metadata
