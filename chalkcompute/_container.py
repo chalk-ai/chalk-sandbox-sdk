@@ -1131,7 +1131,9 @@ class Container:
         try:
             resp = c._client.call(stub.ListContainers, container_pb.ListContainersRequest())
         except grpc.RpcError as e:
-            raise ContainerError(f"ListContainers failed: {grpc_error_message(e)}") from e
+            raise ContainerError(
+                f"ListContainers failed: {grpc_error_message(e)}"
+            ) from e
         return [_parse_container_response(item) for item in resp.containers]
 
     @classmethod
@@ -1805,7 +1807,6 @@ def _parse_container_response(container: container_pb.ContainerResponse) -> Cont
         name=container.name,
         status=container.status,
         pod_name=container.pod_name,
-        # Preserve pre-gRPC semantics: absent in proto3 is "", callers expect None.
         web_url=container.web_url or None,
     )
 

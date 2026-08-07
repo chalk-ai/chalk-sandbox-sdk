@@ -10,7 +10,7 @@ import logging
 import os
 import re
 import time
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Mapping, NamedTuple, Sequence, TypeVar
 from urllib.parse import urlparse
 
 import grpc
@@ -34,6 +34,17 @@ _WEB_IDENTITY_MAX_CACHE_TTL_SECONDS = 60 * 60
 
 _StubT = TypeVar("_StubT")
 _RespT = TypeVar("_RespT")
+
+
+class _CachedStub(NamedTuple):
+    """A memoized gRPC stub plus the channel it was built on.
+
+    The channel is kept so ``ConnectClient.stub`` can detect when the shared
+    registry handed back a different channel (e.g. after a fork) and rebuild.
+    """
+
+    channel: grpc.Channel
+    stub: Any
 
 if TYPE_CHECKING:
     import httpx
@@ -122,7 +133,7 @@ class ConnectClient:
         self._web_identity_token_file: str | None = None
         self._web_identity_cached_at: float | None = None
         self._web_identity_cache_ttl_seconds = _WEB_IDENTITY_MAX_CACHE_TTL_SECONDS
-        self._stubs: dict[Any, tuple[grpc.Channel, Any]] = {}
+        self._stubs: dict[Any, _CachedStub] = {}
 
     def _ensure_auth(self) -> None:
         identity_token_file = web_identity_token_file_from_env()
@@ -394,8 +405,7 @@ class ConnectClient:
 
         Memoized per stub class; rebuilt automatically if the shared channel
         registry handed back a new channel (e.g. after a fork). All stubs on
-        one target multiplex over a single HTTP/2 connection — this is the
-        CHA-10029 replacement for per-call ``httpx.post`` connections.
+        one target multiplex over a single HTTP/2 connection.
         """
         from chalkcompute._channel import get_channel
 
@@ -404,10 +414,10 @@ class ConnectClient:
         target, use_tls = grpc_target_from_url(self._api_server)
         channel = get_channel(target, use_tls)
         cached = self._stubs.get(stub_cls)
-        if cached is not None and cached[0] is channel:
-            return cached[1]
+        if cached is not None and cached.channel is channel:
+            return cached.stub
         stub = stub_cls(channel)
-        self._stubs[stub_cls] = (channel, stub)
+        self._stubs[stub_cls] = _CachedStub(channel=channel, stub=stub)
         return stub
 
     def call(

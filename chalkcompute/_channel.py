@@ -2,8 +2,7 @@
 
 Every unary RPC in the SDK multiplexes over one long-lived HTTP/2 channel per
 ``(target, tls)`` pair instead of opening a TCP+TLS connection per call
-(CHA-10029: the per-call ``httpx.post`` transport exhausted file descriptors
-under parallelism because connection count tracked in-flight RPC count).
+
 grpc-python's C-core channel is thread-safe for concurrent sync callers, so
 worker threads share it directly.
 
@@ -27,9 +26,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Transparent retries for transient connection loss (e.g. an LB draining a
-# backend). Applies to every method on the channel; anything beyond
-# UNAVAILABLE stays the caller's responsibility.
+# Transparent retries for transient connection loss.
 _SERVICE_CONFIG = json.dumps(
     {
         "methodConfig": [
@@ -117,13 +114,19 @@ def get_channel(target: str, use_tls: bool, *, key: str = "default") -> grpc.Cha
             # Forked child: the cached channels' sockets belong to the parent.
             # Drop the references without closing and re-dial lazily.
             if _owner_pid is not None:
-                logger.debug("pid changed (%s -> %s); dropping shared channels", _owner_pid, pid)
+                logger.debug(
+                    "pid changed (%s -> %s); dropping shared channels", _owner_pid, pid
+                )
             _channels.clear()
             _owner_pid = pid
         channel = _channels.get(cache_key)
         if channel is None:
             base = (
-                grpc.secure_channel(target, grpc.ssl_channel_credentials(), options=default_channel_options())
+                grpc.secure_channel(
+                    target,
+                    grpc.ssl_channel_credentials(),
+                    options=default_channel_options(),
+                )
                 if use_tls
                 else grpc.insecure_channel(target, options=default_channel_options())
             )
