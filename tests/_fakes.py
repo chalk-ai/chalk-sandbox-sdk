@@ -11,46 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-import grpc
-
 from chalkcompute._gen.chalk.container.v1 import service_pb2 as container_pb
-
-
-class FakeRpcError(grpc.RpcError, grpc.Call):
-    """A gRPC error with a controllable status code and details."""
-
-    def __init__(
-        self,
-        code: grpc.StatusCode = grpc.StatusCode.INTERNAL,
-        details: str = "fake error",
-    ) -> None:
-        self._code = code
-        self._details = details
-
-    def code(self) -> grpc.StatusCode:
-        return self._code
-
-    def details(self) -> str:
-        return self._details
-
-    # grpc.Call abstract surface not exercised by tests
-    def initial_metadata(self):  # pragma: no cover
-        return []
-
-    def trailing_metadata(self):  # pragma: no cover
-        return []
-
-    def is_active(self):  # pragma: no cover
-        return False
-
-    def time_remaining(self):  # pragma: no cover
-        return None
-
-    def cancel(self):  # pragma: no cover
-        return False
-
-    def add_callback(self, callback):  # pragma: no cover
-        return False
 
 
 @dataclass

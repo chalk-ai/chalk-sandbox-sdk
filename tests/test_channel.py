@@ -12,9 +12,9 @@ from chalkcompute._channel import default_channel_options, get_channel
 
 @pytest.fixture(autouse=True)
 def _clean_registry():
-    channel_mod.reset()
+    channel_mod.close_all()
     yield
-    channel_mod.reset()
+    channel_mod.close_all()
 
 
 def test_same_key_returns_same_channel() -> None:
@@ -32,12 +32,6 @@ def test_distinct_targets_get_distinct_channels() -> None:
 def test_tls_flag_is_part_of_the_key() -> None:
     a = get_channel("localhost:50051", False)
     b = get_channel("localhost:50051", True)
-    assert a is not b
-
-
-def test_key_isolates_channels_on_same_target() -> None:
-    a = get_channel("localhost:50051", False)
-    b = get_channel("localhost:50051", False, key="volume")
     assert a is not b
 
 

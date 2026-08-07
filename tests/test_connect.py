@@ -1022,19 +1022,17 @@ class TestStubAndCall:
         client.call(method, object(), extra_metadata=[("X-Trace-Id", "t-1")])
         assert ("x-trace-id", "t-1") in captured[0]
 
-    def test_stub_is_memoized_until_registry_resets(self, monkeypatch) -> None:
+    def test_stubs_share_the_registry_channel(self, monkeypatch) -> None:
         import chalkcompute._channel as channel_mod
         from chalkcompute._gen.chalk.container.v1 import service_pb2_grpc as pb_grpc
 
         monkeypatch.delenv("CHALK_WEB_IDENTITY_TOKEN_FILE", raising=False)
-        channel_mod.reset()
+        channel_mod.close_all()
         try:
             client = self._authed_client()
-            first = client.stub(pb_grpc.ContainerServiceStub)
-            assert client.stub(pb_grpc.ContainerServiceStub) is first
-
-            # New channel in the registry (e.g. post-fork) -> stub is rebuilt.
-            channel_mod.reset()
-            assert client.stub(pb_grpc.ContainerServiceStub) is not first
+            client.stub(pb_grpc.ContainerServiceStub)
+            client.stub(pb_grpc.ContainerServiceStub)
+            # Both stubs were built on the one registry channel for the target.
+            assert len(channel_mod._channels) == 1
         finally:
-            channel_mod.reset()
+            channel_mod.close_all()

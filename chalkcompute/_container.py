@@ -1437,8 +1437,6 @@ class Container:
                 spec["secretRefs"] = [s._to_proto_dict() for s in resolved_secrets]
 
             logger.info("Starting container '%s'...", container_name)
-            # The spec dict mirrors ChalkContainerSpec json_names exactly, so
-            # ParseDict reuses every to_dict() helper unchanged.
             request = container_pb.RunContainerRequest()
             json_format.ParseDict(spec, request.container.spec)
             stub = self._client.stub(container_pb_grpc.ContainerServiceStub)

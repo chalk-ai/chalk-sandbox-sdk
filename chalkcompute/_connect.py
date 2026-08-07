@@ -10,7 +10,7 @@ import logging
 import os
 import re
 import time
-from typing import TYPE_CHECKING, Any, Callable, Mapping, NamedTuple, Sequence, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence, TypeVar
 from urllib.parse import urlparse
 
 import grpc
@@ -34,17 +34,6 @@ _WEB_IDENTITY_MAX_CACHE_TTL_SECONDS = 60 * 60
 
 _StubT = TypeVar("_StubT")
 _RespT = TypeVar("_RespT")
-
-
-class _CachedStub(NamedTuple):
-    """A memoized gRPC stub plus the channel it was built on.
-
-    The channel is kept so ``ConnectClient.stub`` can detect when the shared
-    registry handed back a different channel (e.g. after a fork) and rebuild.
-    """
-
-    channel: grpc.Channel
-    stub: Any
 
 
 if TYPE_CHECKING:
@@ -134,7 +123,6 @@ class ConnectClient:
         self._web_identity_token_file: str | None = None
         self._web_identity_cached_at: float | None = None
         self._web_identity_cache_ttl_seconds = _WEB_IDENTITY_MAX_CACHE_TTL_SECONDS
-        self._stubs: dict[Any, _CachedStub] = {}
 
     def _ensure_auth(self) -> None:
         identity_token_file = web_identity_token_file_from_env()
@@ -404,22 +392,16 @@ class ConnectClient:
     def stub(self, stub_cls: Callable[[grpc.Channel], _StubT]) -> _StubT:
         """Return a gRPC stub bound to the shared api-server channel.
 
-        Memoized per stub class; rebuilt automatically if the shared channel
-        registry handed back a new channel (e.g. after a fork). All stubs on
-        one target multiplex over a single HTTP/2 connection.
+        All stubs on one target multiplex over a single HTTP/2 connection.
+        Stubs are cheap to construct and not cached; the channel is the
+        expensive resource and the registry owns it.
         """
         from chalkcompute._channel import get_channel
 
         self._ensure_auth()
         assert self._api_server is not None
         target, use_tls = grpc_target_from_url(self._api_server)
-        channel = get_channel(target, use_tls)
-        cached = self._stubs.get(stub_cls)
-        if cached is not None and cached.channel is channel:
-            return cached.stub
-        stub = stub_cls(channel)
-        self._stubs[stub_cls] = _CachedStub(channel=channel, stub=stub)
-        return stub
+        return stub_cls(get_channel(target, use_tls))
 
     def call(
         self,
@@ -744,11 +726,8 @@ def build_image_with_volumes_from_spec(
 
 def grpc_error_message(e: grpc.RpcError) -> str:
     """Render a gRPC error as ``CODE: details`` for exception messages."""
-    try:
-        assert isinstance(e, grpc.Call)
-        return f"{e.code().name}: {e.details()}"
-    except Exception:  # noqa: BLE001 - defensive: fakes may not implement Call
-        return str(e)
+    assert isinstance(e, grpc.Call)
+    return f"{e.code().name}: {e.details()}"
 
 
 def raise_for_grpc_error(

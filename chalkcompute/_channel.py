@@ -17,12 +17,9 @@ import json
 import logging
 import os
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import grpc
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 
@@ -93,21 +90,19 @@ class _TracingInterceptor(grpc.UnaryUnaryClientInterceptor):
 
 
 _lock = threading.Lock()
-_channels: dict[tuple[str, bool, str], grpc.Channel] = {}
+_channels: dict[tuple[str, bool], grpc.Channel] = {}
 _owner_pid: int | None = None
 _atexit_registered = False
 
 
-def get_channel(target: str, use_tls: bool, *, key: str = "default") -> grpc.Channel:
-    """Return the process-wide shared channel for ``(target, use_tls, key)``.
+def get_channel(target: str, use_tls: bool) -> grpc.Channel:
+    """Return the process-wide shared channel for ``(target, use_tls)``.
 
-    Dials lazily (constructing a channel to an unreachable target is safe) and
-    memoizes. ``key`` gives callers with divergent needs — e.g. bulk streaming
-    that shouldn't share HTTP/2 flow control with latency-sensitive unary
-    calls — a dedicated channel on the same target.
+    Dials lazily (constructing a channel to an unreachable target is safe)
+    and memoizes.
     """
     global _owner_pid, _atexit_registered
-    cache_key = (target, use_tls, key)
+    cache_key = (target, use_tls)
     with _lock:
         pid = os.getpid()
         if _owner_pid != pid:
@@ -148,8 +143,3 @@ def close_all() -> None:
                 except Exception:  # noqa: BLE001 - best-effort shutdown
                     logger.debug("error closing shared channel", exc_info=True)
         _channels.clear()
-
-
-def reset() -> None:
-    """Test hook: drop all cached channels (closing the ones we own)."""
-    close_all()
