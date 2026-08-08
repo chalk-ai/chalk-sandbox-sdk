@@ -1,0 +1,1 @@
+- Add `target_gpu_utilization_percentage` to `ScalingGroup`, `@function`, and `@cls`, autoscaling on DCGM-reported GPU utilization. Requires `gpu` and `min_replicas >= 1`.

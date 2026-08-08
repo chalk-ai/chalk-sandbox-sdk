@@ -146,6 +146,7 @@ class ChalkContainerSpec(_message.Message):
         "startup_probe",
         "readiness_probe",
         "restart_policy",
+        "chalk_workload_identity",
     )
     class TagsEntry(_message.Message):
         __slots__ = ("key", "value")
@@ -187,6 +188,7 @@ class ChalkContainerSpec(_message.Message):
     STARTUP_PROBE_FIELD_NUMBER: _ClassVar[int]
     READINESS_PROBE_FIELD_NUMBER: _ClassVar[int]
     RESTART_POLICY_FIELD_NUMBER: _ClassVar[int]
+    CHALK_WORKLOAD_IDENTITY_FIELD_NUMBER: _ClassVar[int]
     name: str
     image: str
     entrypoint: _containers.RepeatedScalarFieldContainer[str]
@@ -207,6 +209,7 @@ class ChalkContainerSpec(_message.Message):
     startup_probe: StartupProbe
     readiness_probe: ReadinessProbe
     restart_policy: RestartPolicy
+    chalk_workload_identity: ChalkWorkloadIdentity
     def __init__(
         self,
         name: _Optional[str] = ...,
@@ -229,6 +232,9 @@ class ChalkContainerSpec(_message.Message):
         startup_probe: _Optional[_Union[StartupProbe, _Mapping]] = ...,
         readiness_probe: _Optional[_Union[ReadinessProbe, _Mapping]] = ...,
         restart_policy: _Optional[_Union[RestartPolicy, str]] = ...,
+        chalk_workload_identity: _Optional[
+            _Union[ChalkWorkloadIdentity, _Mapping]
+        ] = ...,
     ) -> None: ...
 
 class StartupProbe(_message.Message):
@@ -1215,3 +1221,7 @@ class CreateContainerDebugTTYResponse(_message.Message):
         error: _Optional[str] = ...,
         closed: bool = ...,
     ) -> None: ...
+
+class ChalkWorkloadIdentity(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...

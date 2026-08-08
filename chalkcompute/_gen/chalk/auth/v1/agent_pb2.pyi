@@ -16,6 +16,13 @@ from typing import (
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
+class ExchangeTokenKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    EXCHANGE_TOKEN_KIND_UNSPECIFIED: _ClassVar[ExchangeTokenKind]
+    EXCHANGE_TOKEN_KIND_INTERNAL_SERVICE: _ClassVar[ExchangeTokenKind]
+    EXCHANGE_TOKEN_KIND_USER: _ClassVar[ExchangeTokenKind]
+    EXCHANGE_TOKEN_KIND_SERVICE_TOKEN: _ClassVar[ExchangeTokenKind]
+
 class AgentKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     AGENT_KIND_UNSPECIFIED: _ClassVar[AgentKind]
@@ -27,6 +34,10 @@ class AgentKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     AGENT_KIND_SELF_HOSTED_LICENSE: _ClassVar[AgentKind]
     AGENT_KIND_RESOURCE_SHARE: _ClassVar[AgentKind]
 
+EXCHANGE_TOKEN_KIND_UNSPECIFIED: ExchangeTokenKind
+EXCHANGE_TOKEN_KIND_INTERNAL_SERVICE: ExchangeTokenKind
+EXCHANGE_TOKEN_KIND_USER: ExchangeTokenKind
+EXCHANGE_TOKEN_KIND_SERVICE_TOKEN: ExchangeTokenKind
 AGENT_KIND_UNSPECIFIED: AgentKind
 AGENT_KIND_USER: AgentKind
 AGENT_KIND_SERVICE_TOKEN: AgentKind
@@ -203,17 +214,20 @@ class ExchangeTokenDetails(_message.Message):
         "generation_number",
         "subject",
         "environment_id",
+        "kind",
     )
     REQUESTABLE_PERMISSIONS_FIELD_NUMBER: _ClassVar[int]
     GENERATION_NUMBER_FIELD_NUMBER: _ClassVar[int]
     SUBJECT_FIELD_NUMBER: _ClassVar[int]
     ENVIRONMENT_ID_FIELD_NUMBER: _ClassVar[int]
+    KIND_FIELD_NUMBER: _ClassVar[int]
     requestable_permissions: _containers.RepeatedScalarFieldContainer[
         _permissions_pb2.Permission
     ]
     generation_number: int
     subject: str
     environment_id: str
+    kind: ExchangeTokenKind
     def __init__(
         self,
         requestable_permissions: _Optional[
@@ -222,6 +236,7 @@ class ExchangeTokenDetails(_message.Message):
         generation_number: _Optional[int] = ...,
         subject: _Optional[str] = ...,
         environment_id: _Optional[str] = ...,
+        kind: _Optional[_Union[ExchangeTokenKind, str]] = ...,
     ) -> None: ...
 
 class TenantAgent(_message.Message):

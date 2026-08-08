@@ -658,6 +658,7 @@ class RemoteClass:
         shutdown_delay_seconds: int | None = None,
         scaling_interval_seconds: int | None = None,
         target_cpu_utilization_percentage: int | None = None,
+        target_gpu_utilization_percentage: int | None = None,
         target_queue_depth: int | None = None,
         serialization_format: SerializationFormat = "pyarrow",
         options: dict[str, str] | None = None,
@@ -706,6 +707,22 @@ class RemoteClass:
         self._shutdown_delay_seconds = shutdown_delay_seconds
         self._scaling_interval_seconds = scaling_interval_seconds
         self._target_cpu_utilization_percentage = target_cpu_utilization_percentage
+        if target_gpu_utilization_percentage is not None:
+            if not (0 < target_gpu_utilization_percentage <= 100):
+                raise ValueError(
+                    f"target_gpu_utilization_percentage must be between 1 and 100, got {target_gpu_utilization_percentage}"
+                )
+            if gpu is None:
+                raise ValueError(
+                    "target_gpu_utilization_percentage requires gpu to be set"
+                )
+            # The utilization series only exists while replicas do, so a group that
+            # may reach zero would deactivate and never see a sample to scale back up.
+            if min_replicas < 1:
+                raise ValueError(
+                    f"target_gpu_utilization_percentage requires min_replicas >= 1, got {min_replicas}"
+                )
+        self._target_gpu_utilization_percentage = target_gpu_utilization_percentage
         self._target_queue_depth = target_queue_depth
         self._serialization_format: SerializationFormat = serialization_format
         self._options = options or {}
@@ -891,6 +908,7 @@ class RemoteClass:
         rc._shutdown_delay_seconds = None
         rc._scaling_interval_seconds = None
         rc._target_cpu_utilization_percentage = None
+        rc._target_gpu_utilization_percentage = None
         rc._target_queue_depth = None
         rc._serialization_format = "pyarrow"
         rc._options = {}
@@ -1127,6 +1145,10 @@ class RemoteClass:
                     scaling_spec["targetCpuUtilizationPercentage"] = (
                         self._target_cpu_utilization_percentage
                     )
+                if self._target_gpu_utilization_percentage is not None:
+                    scaling_spec["gpuUtilizationTrigger"] = {
+                        "targetUtilizationPercentage": self._target_gpu_utilization_percentage
+                    }
                 if self._target_queue_depth is not None:
                     scaling_spec["functionQueueDepthTrigger"] = {
                         "functionName": func_name,
@@ -1495,6 +1517,7 @@ def cls(
     shutdown_delay_seconds: int | None = None,
     scaling_interval_seconds: int | None = None,
     target_cpu_utilization_percentage: int | None = None,
+    target_gpu_utilization_percentage: int | None = None,
     target_queue_depth: int | None = None,
     serialization_format: SerializationFormat = "pyarrow",
     options: dict[str, str] | None = None,
@@ -1524,6 +1547,7 @@ def cls(
     shutdown_delay_seconds: int | None = None,
     scaling_interval_seconds: int | None = None,
     target_cpu_utilization_percentage: int | None = None,
+    target_gpu_utilization_percentage: int | None = None,
     target_queue_depth: int | None = None,
     serialization_format: SerializationFormat = "pyarrow",
     options: dict[str, str] | None = None,
@@ -1554,6 +1578,7 @@ def cls(
     shutdown_delay_seconds: int | None = None,
     scaling_interval_seconds: int | None = None,
     target_cpu_utilization_percentage: int | None = None,
+    target_gpu_utilization_percentage: int | None = None,
     target_queue_depth: int | None = None,
     serialization_format: SerializationFormat = "pyarrow",
     options: dict[str, str] | None = None,
@@ -1611,6 +1636,11 @@ def cls(
         decisions. Defaults to 60s on the server.
     target_cpu_utilization_percentage
         Target CPU utilization percentage (0-100) that drives autoscaling.
+    target_gpu_utilization_percentage
+        Target GPU utilization percentage (1-100) that drives autoscaling, read
+        from DCGM. Requires ``gpu`` and ``min_replicas >= 1``: the utilization
+        series exists only while replicas do, so this trigger cannot scale a
+        group up from zero.
     target_queue_depth
         Target pending-request queue depth per replica. When set, the
         autoscaler scales on each method's own queue depth.
@@ -1673,6 +1703,7 @@ def cls(
             shutdown_delay_seconds=shutdown_delay_seconds,
             scaling_interval_seconds=scaling_interval_seconds,
             target_cpu_utilization_percentage=target_cpu_utilization_percentage,
+            target_gpu_utilization_percentage=target_gpu_utilization_percentage,
             target_queue_depth=target_queue_depth,
             serialization_format=serialization_format,
             options=options,
