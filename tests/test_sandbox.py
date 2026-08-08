@@ -110,6 +110,40 @@ def test_sandbox_client_create_sends_image_uri_not_image_spec() -> None:
     build.assert_called_once()
 
 
+def test_sandbox_client_create_can_request_chalk_identity() -> None:
+    client = SandboxClient()
+    stub = _Stub()
+    client._stub = stub  # type: ignore[assignment]
+    try:
+        client.create("python:3.14-slim", chalk_identity=True, wait=False)
+    finally:
+        client.close()
+
+    assert stub.request is not None
+    assert stub.request.spec.HasField("chalk_workload_identity")
+
+
+def test_sandbox_client_create_omits_chalk_identity_by_default() -> None:
+    client = SandboxClient()
+    stub = _Stub()
+    client._stub = stub  # type: ignore[assignment]
+    try:
+        client.create("python:3.14-slim", wait=False)
+    finally:
+        client.close()
+
+    assert stub.request is not None
+    assert not stub.request.spec.HasField("chalk_workload_identity")
+
+
+def test_sandbox_rejects_non_bool_chalk_identity() -> None:
+    with pytest.raises(TypeError, match="chalk_identity must be a bool"):
+        Sandbox(
+            image="python:3.14-slim",
+            chalk_identity="yes",  # type: ignore[arg-type]
+        )
+
+
 def test_sandbox_client_create_propagates_backend_error_details() -> None:
     client = SandboxClient()
     client._stub = _ErrorAfterBuildStub()  # type: ignore[assignment]

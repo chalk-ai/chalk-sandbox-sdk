@@ -183,6 +183,7 @@ sandbox = client.create(
     cpu="2",
     memory="4Gi",
     env={"DEBIAN_FRONTEND": "noninteractive"},
+    chalk_identity=True,
 )
 
 # List all sandboxes
@@ -200,6 +201,11 @@ print(info.status)
 sandbox.terminate()
 existing_sandbox.terminate(grace_period_seconds=30)
 ```
+
+Set `chalk_identity=True` to give the sandbox a platform-managed Chalk
+identity. The sandbox receives `CHALK_WEB_IDENTITY_TOKEN_FILE` and the Chalk
+API/environment settings it needs to authenticate without caller credentials
+being copied into the workload.
 
 ## Executing commands
 
