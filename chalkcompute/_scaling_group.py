@@ -206,6 +206,7 @@ class ScalingGroup:
         shutdown_delay_seconds: int | None = None,
         scaling_interval_seconds: int | None = None,
         target_cpu_utilization_percentage: int | None = None,
+        target_gpu_utilization_percentage: int | None = None,
         chalk_client: Any | None = None,
     ) -> None:
         self._image: _Image | str | None = image
@@ -240,6 +241,24 @@ class ScalingGroup:
         self._shutdown_delay_seconds = shutdown_delay_seconds
         self._scaling_interval_seconds = scaling_interval_seconds
         self._target_cpu_utilization_percentage = target_cpu_utilization_percentage
+        if target_gpu_utilization_percentage is not None:
+            if not (1 <= target_gpu_utilization_percentage <= 100):
+                raise ValueError(
+                    "target_gpu_utilization_percentage must be in range 1-100, "
+                    f"got {target_gpu_utilization_percentage}"
+                )
+            if gpu is None:
+                raise ValueError(
+                    "target_gpu_utilization_percentage requires gpu to be set"
+                )
+            # The utilization series only exists while replicas do, so a group that
+            # may reach zero would deactivate and never see a sample to scale back up.
+            if min_replicas < 1:
+                raise ValueError(
+                    "target_gpu_utilization_percentage requires min_replicas >= 1, "
+                    f"got {min_replicas}"
+                )
+        self._target_gpu_utilization_percentage = target_gpu_utilization_percentage
 
         # Set after .deploy()
         self._built_image_uri: str | None = None
@@ -333,6 +352,7 @@ class ScalingGroup:
         sg._shutdown_delay_seconds = None
         sg._scaling_interval_seconds = None
         sg._target_cpu_utilization_percentage = None
+        sg._target_gpu_utilization_percentage = None
         sg._built_image_uri = None
         sg._scaling_group_id = None
         sg._scaling_group_info = None
@@ -476,6 +496,10 @@ class ScalingGroup:
             scaling_spec["targetCpuUtilizationPercentage"] = (
                 self._target_cpu_utilization_percentage
             )
+        if self._target_gpu_utilization_percentage is not None:
+            scaling_spec["gpuUtilizationTrigger"] = {
+                "targetUtilizationPercentage": self._target_gpu_utilization_percentage
+            }
 
         spec: dict[str, Any] = {
             "containerSpec": container_spec,
