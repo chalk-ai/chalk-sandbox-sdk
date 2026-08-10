@@ -5,7 +5,7 @@ Exercises:
   - Registering a model version with that image
   - Deploying to a scaling group
   - Calling the deployed model over gRPC and verifying output
-  - Uploading model artifacts to a chalkfs volume and loading at runtime
+  - Uploading model artifacts to a volume and loading at runtime
 """
 
 from __future__ import annotations
@@ -127,7 +127,7 @@ class TestModelScalingGroup:
 
 @needs_staging
 class TestModelWithVolume:
-    """Tests model deployment with a chalkfs volume-mounted config.
+    """Tests model deployment with a volume-mounted config.
 
     The handler loads a config.json from /app/artifacts (the canonical
     volume mount path) at startup and uses its "factor" field to multiply

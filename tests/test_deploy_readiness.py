@@ -410,9 +410,7 @@ def test_remote_function_deploy_forwards_volume_commits(monkeypatch) -> None:
     fn._client = client  # type: ignore[assignment]
 
     intent = {"volume": {"name": "fn-files-abc"}, "author": "chalk:env:agent:a"}
-    mount = VolumeMount(
-        name="fn-files-abc", mount_path="/app", type="versioned_chalkfs"
-    )
+    mount = VolumeMount(name="fn-files-abc", mount_path="/app")
     monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
     monkeypatch.setattr(
         function_mod,

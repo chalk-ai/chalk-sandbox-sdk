@@ -102,22 +102,24 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "ReadinessProbe": ("chalkcompute._scaling_group", "ReadinessProbe"),
     # _volume.py
     "FileInfo": ("chalkcompute._volume", "FileInfo"),
-    "Volume": ("chalkcompute._volume", "make_volume"),
-    "SimpleVolume": ("chalkcompute._volume", "SimpleVolume"),
+    "VersionInfo": ("chalkcompute._volume", "VersionInfo"),
+    "Volume": ("chalkcompute._volume", "Volume"),
     "VolumeClient": ("chalkcompute._volume", "VolumeClient"),
     "VolumeClosedError": ("chalkcompute._volume", "VolumeClosedError"),
     "VolumeError": ("chalkcompute._volume", "VolumeError"),
     "VolumeFileNotFoundError": ("chalkcompute._volume", "VolumeFileNotFoundError"),
     "VolumeInfo": ("chalkcompute._volume", "VolumeInfo"),
     "VolumeNotFoundError": ("chalkcompute._volume", "VolumeNotFoundError"),
+    # Imported by chalkpy's model-deploy path; every volume mounts as
+    # MOUNT_TYPE, so this only validates existence now.
     "resolve_referenced_volume_type": (
         "chalkcompute._volume",
         "resolve_referenced_volume_type",
     ),
-    # _vvolume.py
-    "VersionInfo": ("chalkcompute._vvolume", "VersionInfo"),
-    "VersionedVolume": ("chalkcompute._vvolume", "VersionedVolume"),
-    "VersionedVolumeClient": ("chalkcompute._vvolume", "VersionedVolumeClient"),
+    # Back-compat aliases: all volumes are versioned, so the qualifier is gone
+    # from the canonical names. Keep the old spellings importable.
+    "VersionedVolume": ("chalkcompute._volume", "Volume"),
+    "VersionedVolumeClient": ("chalkcompute._volume", "VolumeClient"),
 }
 
 

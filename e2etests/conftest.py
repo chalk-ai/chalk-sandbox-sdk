@@ -100,7 +100,7 @@ def _connect_rpc(
     Parameters
     ----------
     service
-        Fully-qualified service name (e.g. ``"chalk.volume.v1.VolumeService"``).
+        Fully-qualified service name (e.g. ``"chalk.container.v1.ContainerService"``).
     method
         RPC method name on that service.
     """

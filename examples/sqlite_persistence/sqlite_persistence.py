@@ -36,7 +36,7 @@ from dotenv import load_dotenv
 # We import from the SDK at the repo root.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
-from chalkcompute import Container, Image  # noqa: E402
+from chalkcompute import Container, Image, Volume  # noqa: E402
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "../../.env"))
 
@@ -61,26 +61,18 @@ image = Image.debian_slim()
 
 # ## Helper: create the volume
 #
-# We use the Container's internal volume RPC to create the volume. In a
-# production workflow you would use the `chalk volume create` CLI or the
-# VolumeClient SDK directly.
+# `Volume(...)` creates the volume on first access if it is missing.
 
 
 def create_volume() -> None:
     """Create the shared volume (idempotent)."""
-    c = Container._make_empty()
-    c._ensure_auth()
-    resp = c._volume_rpc("CreateVolume", {"name": VOLUME_NAME})
-    if resp.status_code != 200 and "already exists" not in resp.text:
-        raise RuntimeError(f"CreateVolume failed: {resp.text}")
+    Volume(VOLUME_NAME).reload()
     print(f"Volume '{VOLUME_NAME}' ready.")
 
 
 def delete_volume() -> None:
     """Delete the shared volume."""
-    c = Container._make_empty()
-    c._ensure_auth()
-    c._volume_rpc("DeleteVolume", {"name": VOLUME_NAME})
+    Volume(VOLUME_NAME, create_if_missing=False).delete()
     print(f"Volume '{VOLUME_NAME}' deleted.")
 
 

@@ -304,18 +304,19 @@ def test_mount_volume_sent_in_run_container_rpc() -> None:
     )
     container._client = client
 
-    # The referenced volume's type comes from a backend lookup at run() time;
-    # here the backend reports a non-versioned (chalkfs) volume.
+    # A referenced volume must exist at run() time.
+    from chalkcompute._volume import VolumeMount
+
     with patch(
-        "chalkcompute._container.resolve_referenced_volume_type",
-        return_value="chalkfs",
+        "chalkcompute._container.referenced_volume_mount",
+        return_value=VolumeMount(name="my-volume", mount_path="/data"),
     ) as resolve:
         container.run()
 
-    resolve.assert_called_once_with(client, "my-volume")
+    resolve.assert_called_once_with(client, "my-volume", "/data")
     _, _, body, _ = client.calls[0]
     assert body["container"]["spec"]["volumes"] == [
-        {"name": "my-volume", "mountPath": "/data", "type": "chalkfs"}
+        {"name": "my-volume", "mountPath": "/data", "type": "versioned_chalkfs"}
     ]
 
 

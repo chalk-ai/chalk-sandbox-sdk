@@ -47,13 +47,12 @@ from chalkcompute._naming import (
 )
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
-    VolumeDriver,
-    VolumeError,
+    VolumeClient,
     VolumeMount,
     cleanup_owned_volumes,
-    resolve_referenced_volume_type,
+    normalize_volume_refs,
+    referenced_volume_mount,
 )
-from chalkcompute._vvolume import VersionedVolumeClient
 
 logger = logging.getLogger(__name__)
 
@@ -1009,29 +1008,14 @@ class Container:
         validate_env(env)
         self._env = dict(env) if env else {}
         self._secrets = list(secrets or [])
-        referenced_volumes: list[tuple[str, str]] = []
-        if volumes is not None:
-            for item in volumes:
-                if not (
-                    isinstance(item, (tuple, list))
-                    and len(item) == 2
-                    and all(isinstance(s, str) for s in item)
-                ):
-                    raise ValueError(
-                        f"Each volumes entry must be a (name, mount_path) string tuple, got {item!r}. "
-                        f"Example: volumes=[('my-volume', '/data')]"
-                    )
-                # User-referenced volumes carry no type of their own; their
-                # backend (hence mount type) is resolved at run() time via
-                # resolve_referenced_volume_type, not defaulted here.
-                referenced_volumes.append((item[0], item[1]))
-        self._referenced_volumes: list[tuple[str, str]] = referenced_volumes
-        # Populated at run() time: referenced volumes (typed by lookup) plus
-        # any freshly uploaded volumes (typed by the upload driver).
+        # Existence is checked at run() time, not here.
+        self._referenced_volumes: list[tuple[str, str]] = normalize_volume_refs(volumes)
+        # Populated at run() time: referenced volumes plus any freshly
+        # uploaded volumes.
         self._volumes: list[VolumeMount] = []
         if port is not None and not (1 <= port <= 65535):
             raise ValueError(f"port must be between 1 and 65535, got {port!r}")
-        self._volume_driver: VolumeDriver | None = None
+        self._volume_driver: VolumeClient | None = None
         self._port = port
         self._entrypoint = entrypoint
         if lifetime is not None:
@@ -1354,14 +1338,9 @@ class Container:
             else:
                 self._built_image_uri = self._image
 
-            # 2a. Resolve each user-referenced volume's real mount type from
-            # its backend instead of defaulting; a missing volume fails run().
+            # 2a. A missing user-referenced volume fails run().
             self._volumes = [
-                VolumeMount(
-                    name=name,
-                    mount_path=mount_path,
-                    type=resolve_referenced_volume_type(self._client, name),
-                )
+                referenced_volume_mount(self._client, name, mount_path)
                 for name, mount_path in self._referenced_volumes
             ]
 
@@ -1384,7 +1363,7 @@ class Container:
                     len(lazy_files),
                 )
                 assert isinstance(self._image, Image)
-                driver = VersionedVolumeClient.from_connect(self._client)
+                driver = VolumeClient.from_connect(self._client)
                 self._volume_driver = driver
                 self._volumes += driver.upload_lazy_files(
                     self._image,
@@ -1450,12 +1429,6 @@ class Container:
                 spec["resources"] = resources
 
             if self._volumes:
-                for v in self._volumes:
-                    if not v.type:
-                        raise VolumeError(
-                            f"Volume {v.name!r} mounted at {v.mount_path!r} has no "
-                            "mount type; refusing to guess one for the container spec"
-                        )
                 spec["volumes"] = [v.to_spec_dict() for v in self._volumes]
 
             if resolved_secrets:
@@ -1751,9 +1724,7 @@ class Container:
         if self._volumes:
             # Driver is used here only to perform the delete action, not to
             # derive a mount type.
-            driver = self._volume_driver or VersionedVolumeClient.from_connect(
-                self._client
-            )
+            driver = self._volume_driver or VolumeClient.from_connect(self._client)
             cleanup_owned_volumes(driver, self._volumes, self._referenced_volumes)
         self._volumes = []
         self._volume_driver = None

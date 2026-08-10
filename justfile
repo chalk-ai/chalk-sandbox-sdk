@@ -22,7 +22,7 @@ sync:
     uv sync --all-extras
 
 # Build the native chalkcompute._native extension into the local venv.
-# Required for VersionedVolume APIs (and the examples that use them).
+# Required for the Volume APIs (and the examples that use them).
 native *args="--release":
     uv run --with maturin maturin develop {{ args }}
 

@@ -615,7 +615,7 @@ def build_image_with_volumes(
     """Build an ``Image`` and upload any lazy local files to volumes.
 
     Combines :func:`build_image` (build via ``CustomImageService``) with
-    :func:`chalkcompute._volume.upload_lazy_files` (upload
+    :meth:`chalkcompute._volume.VolumeClient.upload_lazy_files` (upload
     ``add_local_file`` / ``add_local_dir`` entries registered with
     ``strategy="volume"`` to managed volumes).
 
@@ -636,15 +636,14 @@ def build_image_with_volumes(
     -------
     tuple[str, list[VolumeMount]]
         ``(image_uri, volumes)`` where ``volumes`` is a list of
-        :class:`VolumeMount`, each carrying its own mount type, ready to
-        attach to a container spec.
+        :class:`VolumeMount` ready to attach to a container spec.
 
     Raises
     ------
     ConnectError
         If the build fails or times out.
     """
-    from chalkcompute._vvolume import VersionedVolumeClient
+    from chalkcompute._volume import VolumeClient
 
     image_uri = build_image(
         client,
@@ -654,7 +653,7 @@ def build_image_with_volumes(
     )
     volumes: list[VolumeMount] = []
     if image.lazy_local_files:
-        volumes = VersionedVolumeClient.from_connect(client).upload_lazy_files(
+        volumes = VolumeClient.from_connect(client).upload_lazy_files(
             image,
             volume_prefix=volume_prefix,
         )

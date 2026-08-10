@@ -20,8 +20,8 @@ from chalkcompute import (
     VolumeNotFoundError,
 )
 
-COUNTER_VOLUME = "vvolume_counters"
-COUNTER_PATH = "vvolume_counter.txt"
+COUNTER_VOLUME = "volume_counters"
+COUNTER_PATH = "volume_counter.txt"
 MOUNT = "/data"
 
 BUMP_SH = (
