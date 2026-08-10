@@ -16,21 +16,20 @@ env:
 
 jobs:
   build-linux:
-    name: "Build linux wheel + sdist (py${{ matrix.python_version }})"
+    name: "Build ${{ matrix.platform.name }} wheel (py${{ matrix.python_version }})"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - python_version: "3.11"
-            sdist_args: ""
-          - python_version: "3.12"
-            sdist_args: "--sdist"
-          - python_version: "3.13"
-            sdist_args: ""
-          - python_version: "3.14"
-            sdist_args: ""
+        python_version: ["3.11", "3.12", "3.13", "3.14"]
+        platform:
+          - name: manylinux_2_28
+            target: x86_64-unknown-linux-gnu
+            manylinux: "2_28"
+          - name: musllinux_1_2
+            target: x86_64-unknown-linux-musl
+            manylinux: musllinux_1_2
     steps:
       - uses: actions/checkout@v4
 
@@ -62,16 +61,21 @@ jobs:
           CHALK_PRIVATE_READ_TOKEN: ${{ secrets.CHALK_PRIVATE_READ_TOKEN }}
         with:
           command: build
-          args: --release ${{ matrix.sdist_args }} --out dist -i python${{ matrix.python_version }}
-          manylinux: "2_28"
+          args: --release --out dist -i python${{ matrix.python_version }}
+          target: ${{ matrix.platform.target }}
+          manylinux: ${{ matrix.platform.manylinux }}
           docker-options: -e CHALK_PRIVATE_READ_TOKEN -e PROTOC=/opt/protoc/bin/protoc
           before-script-linux: |
             set -euo pipefail
-            dnf install -y git curl unzip
+            if command -v apk >/dev/null; then
+              apk add --no-cache git curl unzip
+            else
+              dnf install -y git curl unzip
+            fi
             curl -fsSLo /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v25.3/protoc-25.3-linux-x86_64.zip
             mkdir -p /opt/protoc
             unzip -q /tmp/protoc.zip -d /opt/protoc
-            /opt/protoc/bin/protoc --version
+            "${PROTOC}" --version
             git config --global url."https://x-access-token:${CHALK_PRIVATE_READ_TOKEN}@github.com/chalk-ai/chalk-private.git".insteadOf "https://github.com/chalk-ai/chalk-private.git"
 
       - name: Verify package contents
@@ -88,8 +92,46 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: dist-linux-py${{ matrix.python_version }}
+          name: dist-${{ matrix.platform.name }}-py${{ matrix.python_version }}
           path: dist/
+
+  build-sdist:
+    name: "Build source distribution"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure Cargo access to chalk-private
+        env:
+          CHALK_PRIVATE_READ_TOKEN: ${{ secrets.CHALK_PRIVATE_READ_TOKEN }}
+        run: |
+          if [ -z "$CHALK_PRIVATE_READ_TOKEN" ]; then
+            echo "CHALK_PRIVATE_READ_TOKEN must be a GitHub token with read access to chalk-ai/chalk-private." >&2
+            exit 1
+          fi
+          git config --global url."https://x-access-token:${CHALK_PRIVATE_READ_TOKEN}@github.com/chalk-ai/chalk-private.git".insteadOf "https://github.com/chalk-ai/chalk-private.git"
+
+      - name: Set version from release tag
+        if: github.event_name == 'release'
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Setting version to $VERSION"
+          sed -i "s/^version = .*/version = \"$VERSION\"/" pyproject.toml
+
+      - name: Build
+        uses: PyO3/maturin-action@v1
+        env:
+          CHALK_PRIVATE_READ_TOKEN: ${{ secrets.CHALK_PRIVATE_READ_TOKEN }}
+        with:
+          command: sdist
+          args: --out dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-sdist
+          path: dist/*.tar.gz
 
   build-macos:
     name: "Build macOS arm64 wheel (py${{ matrix.python_version }})"
@@ -339,7 +381,7 @@ jobs:
 
   publish:
     name: "Publish to PyPI"
-    needs: [build-linux, build-macos, verify-built-wheels]
+    needs: [build-linux, build-sdist, build-macos, verify-built-wheels]
     if: github.event_name == 'release' || inputs.skip_publish == false
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -363,7 +405,7 @@ jobs:
 
   notify:
     name: "Notify #proj-compute"
-    needs: [build-linux, build-macos, verify-built-wheels, publish]
+    needs: [build-linux, build-sdist, build-macos, verify-built-wheels, publish]
     # Run for every release outcome (success or failure), regardless of upstream
     # job status. Skipped for build-only workflow_dispatch runs to avoid noise.
     if: always() && github.event_name == 'release'
