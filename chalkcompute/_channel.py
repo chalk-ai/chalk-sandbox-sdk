@@ -13,6 +13,7 @@ per-call metadata, so one channel serves every environment on a target.
 from __future__ import annotations
 
 import atexit
+import dataclasses
 import json
 import logging
 import os
@@ -21,43 +22,74 @@ from typing import Any
 
 import grpc
 
+from chalkcompute._tracing import get_tracer
+
 logger = logging.getLogger(__name__)
 
-# Transparent retries for transient connection loss.
-_SERVICE_CONFIG = json.dumps(
-    {
-        "methodConfig": [
+# Ping every 60s while the channel is idle so LB/NATs keep connection alive,.
+_KEEPALIVE_TIME_MS = 60_000
+# Fail the connection if a ping goes unacked for 5s.
+_KEEPALIVE_TIMEOUT_MS = 5_000
+# gRPC channel options interpret -1 as "no limit".
+_UNLIMITED_MESSAGE_SIZE = -1
+
+
+@dataclasses.dataclass(frozen=True)
+class _RetryPolicy:
+    """Transparent retries for transient connection loss.
+
+    Serialized into the channel's service config:
+    https://github.com/grpc/grpc/blob/master/doc/service_config.md
+    """
+
+    # Backoff retry waits are: 0.1s, 0.2s, 0.4s, 0.8s:
+    max_attempts: int = 5
+    initial_backoff: str = "0.1s"
+    max_backoff: str = "1s"
+    backoff_multiplier: int = 2
+    # Retry transport level failures; avoid retrying after reaching server:
+    retryable_status_codes: tuple[str, ...] = ("UNAVAILABLE",)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "maxAttempts": self.max_attempts,
+            "initialBackoff": self.initial_backoff,
+            "maxBackoff": self.max_backoff,
+            "backoffMultiplier": self.backoff_multiplier,
+            "retryableStatusCodes": list(self.retryable_status_codes),
+        }
+
+
+@dataclasses.dataclass(frozen=True)
+class _ServiceConfig:
+    """gRPC service config applying ``retry_policy`` to every method."""
+
+    retry_policy: _RetryPolicy = _RetryPolicy()
+
+    def to_json(self) -> str:
+        # https://github.com/grpc/grpc/blob/master/doc/service_config.md
+        return json.dumps(
             {
-                "name": [{}],
-                "retryPolicy": {
-                    "maxAttempts": 5,
-                    "initialBackoff": "0.1s",
-                    "maxBackoff": "1s",
-                    "backoffMultiplier": 2,
-                    "retryableStatusCodes": ["UNAVAILABLE"],
-                },
+                "methodConfig": [
+                    {"name": [{}], "retryPolicy": self.retry_policy.to_dict()}
+                ]
             }
-        ]
-    }
-)
+        )
+
+
+_SERVICE_CONFIG = _ServiceConfig()
 
 
 def default_channel_options() -> list[tuple[str, Any]]:
-    """Channel options for the shared registry.
-
-    Keepalive pings keep idle channels from being silently dropped by LBs and
-    NATs (poll loops sleep between unary calls, so the connection is idle most
-    of its life); unlimited message sizes match the volume client's needs so
-    it can share the channel later.
-    """
+    """Channel options for the shared registry."""
     return [
-        ("grpc.keepalive_time_ms", 60_000),
-        ("grpc.keepalive_timeout_ms", 5_000),
+        ("grpc.keepalive_time_ms", _KEEPALIVE_TIME_MS),
+        ("grpc.keepalive_timeout_ms", _KEEPALIVE_TIMEOUT_MS),
         ("grpc.keepalive_permit_without_calls", 1),
         ("grpc.http2.max_pings_without_data", 0),
-        ("grpc.max_send_message_length", -1),
-        ("grpc.max_receive_message_length", -1),
-        ("grpc.service_config", _SERVICE_CONFIG),
+        ("grpc.max_send_message_length", _UNLIMITED_MESSAGE_SIZE),
+        ("grpc.max_receive_message_length", _UNLIMITED_MESSAGE_SIZE),
+        ("grpc.service_config", _SERVICE_CONFIG.to_json()),
     ]
 
 
@@ -69,8 +101,6 @@ class _TracingInterceptor(grpc.UnaryUnaryClientInterceptor):
     """
 
     def intercept_unary_unary(self, continuation, client_call_details, request):
-        from chalkcompute._tracing import get_tracer
-
         method = client_call_details.method
         if isinstance(method, bytes):
             method = method.decode("utf-8", errors="replace")
@@ -114,6 +144,7 @@ def get_channel(target: str, use_tls: bool) -> grpc.Channel:
             _owner_pid = pid
         channel = _channels.get(cache_key)
         if channel is None:
+            # Create channel:
             base = (
                 grpc.secure_channel(
                     target,

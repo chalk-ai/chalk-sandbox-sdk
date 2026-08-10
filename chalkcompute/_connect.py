@@ -22,7 +22,7 @@ from chalkcompute._remote_call_client import (
     ServiceAuthContext,
     resolve_service_auth_context,
 )
-from chalkcompute._tracing import _instrumented
+from chalkcompute._tracing import _instrumented, get_tracer
 from chalkcompute._web_identity import (
     WebIdentityTokenError,
     read_web_identity_token,
@@ -467,8 +467,6 @@ class ConnectClient:
             The raw HTTP response from the Connect endpoint.
         """
         import httpx
-
-        from chalkcompute._tracing import get_tracer
 
         with get_tracer().start_as_current_span("chalkcompute.rpc") as span:
             span.set_attribute("rpc.service", service)
