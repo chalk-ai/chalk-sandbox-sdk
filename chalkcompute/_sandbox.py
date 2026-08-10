@@ -59,6 +59,7 @@ from chalkcompute._naming import validate_dns_label, validate_env
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
     MOUNT_TYPE,
+    Volume,
     VolumeClient,
     VolumeMount,
     cleanup_owned_volumes,
@@ -69,7 +70,7 @@ from chalkcompute._volume import (
 # Aliases defined before SandboxClient, which has a ``.list()`` method that
 # would otherwise shadow the builtin ``list`` in class-scope name resolution.
 _GrpcMetadata = list[tuple[str, str]]
-_VolumeList = list[tuple[str, str]]
+_VolumeList = list[tuple[str, str] | Volume | VolumeMount]
 
 
 # ---------------------------------------------------------------------------
@@ -441,7 +442,7 @@ class Sandbox:
         cpu: str | None = None,
         memory: str | None = None,
         env: dict[str, str] | None = None,
-        volumes: list[tuple[str, str]] | None = None,
+        volumes: _VolumeList | None = None,
         entrypoint: list[str] | None = None,
         network_policy: NetworkPolicy | None = None,
         restart_policy: RestartPolicy | None = None,
@@ -506,7 +507,7 @@ class Sandbox:
         self._memory: str | None = None
         self._env: dict[str, str] = {}
         # Existence is checked at run() time, not here.
-        self._referenced_volumes: list[tuple[str, str]] = []
+        self._referenced_volumes: list[VolumeMount] = []
         # Populated at run() time: referenced volumes plus any freshly
         # uploaded volumes.
         self._volumes: list[VolumeMount] = []
@@ -629,7 +630,7 @@ class Sandbox:
         ...     .run()
         ... )
         """
-        self._referenced_volumes.append((name, mount_path))
+        self._referenced_volumes.append(VolumeMount(name=name, mount_path=mount_path))
         return self
 
     @_instrumented("chalkcompute.sandbox.run")
@@ -678,8 +679,8 @@ class Sandbox:
         # A missing user-referenced volume fails run().
         connect = self._connect_client(client)
         self._volumes = [
-            referenced_volume_mount(connect, name, mount_path)
-            for name, mount_path in self._referenced_volumes
+            referenced_volume_mount(connect, mount)
+            for mount in self._referenced_volumes
         ]
         # Upload the image's lazy local files (add_local_file / add_local_dir
         # with the default strategy="volume") and mount them alongside.
@@ -1419,10 +1420,17 @@ def _handle_rpc_error(e: grpc.RpcError, sandbox_id: str) -> None:
 def _volume_mounts_to_proto(
     volumes: list[VolumeMount],
 ) -> list[container_pb.VolumeMount]:
-    return [
-        container_pb.VolumeMount(name=v.name, mount_path=v.mount_path, type=MOUNT_TYPE)
-        for v in volumes
-    ]
+    mounts: list[container_pb.VolumeMount] = []
+    for volume in volumes:
+        mount = container_pb.VolumeMount(
+            name=volume.name,
+            mount_path=volume.mount_path,
+            type=MOUNT_TYPE,
+        )
+        if volume.version_id is not None:
+            mount.version_id = volume.version_id
+        mounts.append(mount)
+    return mounts
 
 
 def connect(target: str = "localhost:50051", **kwargs) -> SandboxClient:

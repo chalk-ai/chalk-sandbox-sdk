@@ -75,7 +75,7 @@ def test_versions_include_committed_writes(volume: Volume) -> None:
 
     version_ids = {version.id for version in versions}
     assert {first.id, second.id}.issubset(version_ids)
-    assert second.sequence_number > first.sequence_number
+    assert second.id != first.id
 
 
 def test_pinned_version_can_read_removed_file(volume: Volume) -> None:
@@ -97,6 +97,22 @@ def test_pinned_version_rejects_writes(volume: Volume) -> None:
 
     with pytest.raises(VolumeError, match="read-only"):
         pinned.put_file("data/should-fail.txt", b"immutable")
+
+
+def test_fork_diverges_from_main(volume: Volume) -> None:
+    volume.put_file("shared.txt", b"base")
+    base = volume.latest_version()
+    fork_name = f"test-{uuid.uuid4().hex[:8]}"
+    fork = volume.at_version(base.id).fork(fork_name)
+    try:
+        fork.put_file("fork-only.txt", b"fork")
+
+        assert fork.read_file("shared.txt") == b"base"
+        assert fork.read_file("fork-only.txt") == b"fork"
+        assert "fork-only.txt" not in {item.path for item in volume.listdir()}
+        assert any(ref.name == fork_name for ref in volume.forks())
+    finally:
+        fork.delete_fork()
 
 
 def test_client_lookup_helpers(volume: Volume) -> None:

@@ -83,6 +83,20 @@ class VolumeInfo:
     ref: str | None = None
 
 
+@dataclass
+class ForkInfo:
+    """Metadata for a volume fork.
+
+    A fork is an independent version lineage created by :meth:`Volume.fork`.
+    """
+
+    name: str
+    version_id: int
+    commit_id: str | None = None
+    updated_at: datetime.datetime | None = None
+    parent_version_id: int | None = None
+
+
 @dataclass(frozen=True)
 class VolumeMount:
     """A volume to mount into a container, sandbox, or scaling group.
@@ -93,18 +107,24 @@ class VolumeMount:
         Volume name.
     mount_path
         Absolute path inside the container where the volume is mounted.
+    version_id
+        Optional immutable version to mount.
     """
 
     name: str
     mount_path: str
+    version_id: int | None = None
 
-    def to_spec_dict(self) -> dict[str, str]:
+    def to_spec_dict(self) -> dict[str, str | int]:
         """Render this mount as a container-spec ``volumes`` entry."""
-        return {
+        spec: dict[str, str | int] = {
             "name": self.name,
             "mountPath": self.mount_path,
             "type": MOUNT_TYPE,
         }
+        if self.version_id is not None:
+            spec["versionId"] = self.version_id
+        return spec
 
 
 @dataclass
@@ -202,8 +222,6 @@ class VersionInfo:
     ----------
     id
         Stable identifier of this version.
-    sequence_number
-        Monotonic position of this version on its ref.
     parent_id
         Version this one was committed against, if any.
     created_at
@@ -215,7 +233,6 @@ class VersionInfo:
     """
 
     id: int
-    sequence_number: int = 0
     parent_id: int | None = None
     created_at: datetime.datetime | None = None
     ref: str | None = None
@@ -325,6 +342,11 @@ class Volume:
     def version_id(self) -> int | None:
         """Pinned version id, or ``None`` for a ref-tracking handle."""
         return self._version_id
+
+    @property
+    def ref(self) -> str:
+        """Mutable ref tracked by this handle."""
+        return self._ref
 
     @property
     def info(self) -> VolumeInfo:
@@ -467,6 +489,7 @@ class Volume:
             self._name,
             [(path, Path(local_path))],
             batch_size=1,
+            ref_name=self._selector_ref(),
         )
         self._update_version_from_statuses(statuses)
         return self
@@ -490,6 +513,7 @@ class Volume:
             self._name,
             [(path, False)],
             max_commit_retries=_COMMIT_MAX_REBASE_RETRIES,
+            ref_name=self._selector_ref(),
         )
         self._update_version_from_statuses([status])
         return self
@@ -608,6 +632,7 @@ class Volume:
                 self._name,
                 limit=limit,
                 cursor=cursor,
+                ref_name=self._selector_ref(),
             )
             versions.extend(_dict_to_version_info(v) for v in raw["versions"])
             cursor = str(raw.get("next_cursor") or "")
@@ -662,6 +687,78 @@ class Volume:
         volume._info = self._info
         return volume
 
+    @traced("chalkcompute.volume.fork")
+    def fork(self, name: str) -> Volume:
+        """Create an independent ref at this handle's current version.
+
+        The returned handle reads and writes through the new ref. Forking a
+        version-pinned handle starts exactly at that immutable version.
+
+        Parameters
+        ----------
+        name
+            Name for the new ref.
+
+        Returns
+        -------
+        Volume
+            A mutable handle tracking the new ref.
+        """
+        self._raise_if_closed()
+        from_version_id = self._version_id
+        if from_version_id is None:
+            from_version_id = self.version.id
+        ref = self._client._create_ref(self._name, name, from_version_id)
+        forked = Volume(
+            self._name,
+            client=self._client,
+            ref=ref.name,
+            create_if_missing=False,
+        )
+        forked._info = self._info
+        forked._version = _ref_to_version_info(ref)
+        return forked
+
+    def forks(self) -> list[ForkInfo]:
+        """List the forks for this volume."""
+        self._ensure_ready()
+        return [
+            fork for fork in self._client._list_refs(self._name) if fork.name != "main"
+        ]
+
+    @traced("chalkcompute.volume.delete_fork")
+    def delete_fork(self) -> None:
+        """Delete this handle's fork without deleting its versions.
+
+        Raises
+        ------
+        VolumeError
+            If this handle tracks the main ref or is pinned to a version.
+        """
+        self._raise_if_closed()
+        if self._version_id is not None:
+            raise VolumeError("A version-pinned handle does not identify a ref")
+        if not self._ref or self._ref == "main":
+            raise VolumeError("The main ref cannot be deleted")
+        self._client._delete_ref(self._name, self._ref)
+
+    def mount(self, mount_path: str | None = None) -> VolumeMount:
+        """Create a mount specification for this handle.
+
+        Fork and version-pinned handles mount their current immutable snapshot.
+        The default path is ``/volumes/<volume-name>``.
+        """
+        self._raise_if_closed()
+        path = mount_path or f"/volumes/{self._name}"
+        version_id = self._version_id
+        if version_id is None and self._ref and self._ref != "main":
+            version_id = self.version.id
+        return VolumeMount(
+            name=self._name,
+            mount_path=path,
+            version_id=version_id,
+        )
+
     @traced("chalkcompute.volume.delete")
     def delete(self) -> None:
         """Delete this volume and all of its versions.
@@ -715,6 +812,7 @@ class Volume:
             self._name,
             files,
             batch_size=max(1, len(files)),
+            ref_name=self._selector_ref(),
         )
         return self._update_version_from_statuses(statuses)
 
@@ -770,8 +868,6 @@ class Volume:
         self._raise_if_closed()
         if self._version_id is not None:
             raise VolumeError("Volume.at_version(...) handles are read-only")
-        if self._ref and self._ref != "main":
-            raise VolumeError("Volume writes currently support only ref='main'")
 
     def close(self) -> None:
         """Close the underlying client used by this Volume.
@@ -1197,12 +1293,40 @@ class VolumeClient:
         *,
         limit: int,
         cursor: str,
+        ref_name: str | None,
     ) -> dict[str, Any]:
         self._raise_if_closed()
         try:
-            return dict(self._inner.list_volume_versions(name, limit, cursor))
+            if ref_name is None:
+                return dict(self._inner.list_volume_versions(name, limit, cursor))
+            return dict(self._inner.list_volume_versions(name, limit, cursor, ref_name))
         except _native_error_types() as exc:
             _raise_volume_error(exc, name)
+
+    def _create_ref(self, volume: str, name: str, from_version_id: int) -> ForkInfo:
+        self._raise_if_closed()
+        try:
+            raw = dict(self._inner.create_ref(volume, name, from_version_id))
+        except _native_error_types() as exc:
+            _raise_volume_error(exc, volume)
+        if not raw.get("ref"):
+            raise VolumeError("CreateRef returned no ref metadata")
+        return _dict_to_ref_info(dict(raw["ref"]))
+
+    def _list_refs(self, volume: str) -> builtins.list[ForkInfo]:
+        self._raise_if_closed()
+        try:
+            refs = self._inner.list_refs(volume)
+        except _native_error_types() as exc:
+            _raise_volume_error(exc, volume)
+        return [_dict_to_ref_info(dict(ref)) for ref in refs]
+
+    def _delete_ref(self, volume: str, name: str) -> None:
+        self._raise_if_closed()
+        try:
+            self._inner.delete_ref(volume, name)
+        except _native_error_types() as exc:
+            _raise_volume_error(exc, volume)
 
     def _list_files(
         self,
@@ -1235,6 +1359,7 @@ class VolumeClient:
         files: Sequence[tuple[str, bytes | Path]],
         *,
         batch_size: int,
+        ref_name: str | None = None,
     ) -> builtins.list[CommitStatus]:
         self._raise_if_closed()
         config = {
@@ -1249,7 +1374,10 @@ class VolumeClient:
             "max_commit_retries": _COMMIT_MAX_REBASE_RETRIES,
         }
         try:
-            raw_statuses = self._inner.upload(volume, builtins.list(files), config)
+            args: tuple[Any, ...] = (volume, builtins.list(files), config)
+            if ref_name is not None:
+                args = (*args, ref_name)
+            raw_statuses = self._inner.upload(*args)
         except _native_error_types() as exc:
             _raise_volume_error(exc, volume)
         return [_dict_to_commit_status(dict(status)) for status in raw_statuses]
@@ -1260,10 +1388,14 @@ class VolumeClient:
         paths: builtins.list[tuple[str, bool]],
         *,
         max_commit_retries: int,
+        ref_name: str | None = None,
     ) -> CommitStatus:
         self._raise_if_closed()
         try:
-            raw = self._inner.remove_files(volume, paths, max_commit_retries)
+            args: tuple[Any, ...] = (volume, paths, max_commit_retries)
+            if ref_name is not None:
+                args = (*args, ref_name)
+            raw = self._inner.remove_files(*args)
         except _native_error_types() as exc:
             _raise_volume_error(exc, volume)
         return _dict_to_commit_status(dict(raw))
@@ -1324,13 +1456,35 @@ def _dict_to_volume_info(info: dict[str, Any]) -> VolumeInfo:
 def _dict_to_version_info(info: dict[str, Any]) -> VersionInfo:
     return VersionInfo(
         id=int(info.get("version_id") or 0),
-        sequence_number=int(info.get("sequence_number") or 0),
         parent_id=(
             int(info["parent_id"]) if info.get("parent_id") is not None else None
         ),
         created_at=_datetime_from_ms(info.get("created_at_ms")),
         ref=_optional_str(info.get("ref")),
         commit_id=_optional_str(info.get("commit_id")),
+    )
+
+
+def _dict_to_ref_info(info: dict[str, Any]) -> ForkInfo:
+    return ForkInfo(
+        name=str(info.get("name") or ""),
+        version_id=int(info.get("version_id") or 0),
+        commit_id=_optional_str(info.get("commit_id")),
+        updated_at=_datetime_from_ms(info.get("updated_at_ms")),
+        parent_version_id=(
+            int(info["parent_version_id"])
+            if info.get("parent_version_id") is not None
+            else None
+        ),
+    )
+
+
+def _ref_to_version_info(ref: ForkInfo) -> VersionInfo:
+    return VersionInfo(
+        id=ref.version_id,
+        created_at=ref.updated_at,
+        ref=ref.name,
+        commit_id=ref.commit_id,
     )
 
 
@@ -1510,6 +1664,7 @@ class _BatchUpload:
             self._volume.name,
             files,
             batch_size=len(files),
+            ref_name=self._volume._selector_ref(),
         )
         self._volume._update_version_from_statuses(statuses)
 
@@ -1520,27 +1675,34 @@ class _BatchUpload:
 
 
 def normalize_volume_refs(
-    volumes: Iterable[tuple[str, str]] | None,
-) -> builtins.list[tuple[str, str]]:
-    """Validate caller-supplied ``(name, mount_path)`` volume references.
+    volumes: Iterable[tuple[str, str] | Volume | VolumeMount] | None,
+) -> builtins.list[VolumeMount]:
+    """Validate and normalize caller-supplied volume references.
 
     Shared by every surface that accepts ``volumes=[...]`` so the accepted
     shape can't drift between sandboxes, containers, functions, classes, and
     scaling groups. Existence is checked later, at run/deploy time, by
     :func:`referenced_volume_mount`.
     """
-    refs: builtins.list[tuple[str, str]] = []
+    refs: builtins.list[VolumeMount] = []
     for item in volumes or []:
+        if isinstance(item, Volume):
+            refs.append(item.mount())
+            continue
+        if isinstance(item, VolumeMount):
+            refs.append(item)
+            continue
         if not (
             isinstance(item, (tuple, list))
             and len(item) == 2
             and all(isinstance(s, str) for s in item)
         ):
             raise ValueError(
-                f"Each volumes entry must be a (name, mount_path) string tuple, "
-                f"got {item!r}. Example: volumes=[('my-volume', '/data')]"
+                "Each volumes entry must be a Volume, VolumeMount, or "
+                f"(name, mount_path) string tuple, got {item!r}. "
+                "Example: volumes=[('my-volume', '/data')]"
             )
-        refs.append((item[0], item[1]))
+        refs.append(VolumeMount(name=item[0], mount_path=item[1]))
     return refs
 
 
@@ -1553,17 +1715,15 @@ def _require_volume_exists(connect: ConnectClient, name: str) -> None:
         )
 
 
-def referenced_volume_mount(
-    connect: ConnectClient, name: str, mount_path: str
-) -> VolumeMount:
+def referenced_volume_mount(connect: ConnectClient, mount: VolumeMount) -> VolumeMount:
     """Build a mount for a caller-referenced volume, failing fast if absent.
 
     A volume supplied as a ``(name, mount_path)`` tuple is owned by the caller
     and must already exist. Checking here turns a typo'd name into a deploy-time
     error instead of a container that mounts nothing.
     """
-    _require_volume_exists(connect, name)
-    return VolumeMount(name=name, mount_path=mount_path)
+    _require_volume_exists(connect, mount.name)
+    return mount
 
 
 def resolve_referenced_volume_type(connect: ConnectClient, name: str) -> str:
@@ -1579,7 +1739,7 @@ def resolve_referenced_volume_type(connect: ConnectClient, name: str) -> str:
 def cleanup_owned_volumes(
     client: VolumeClient,
     all_volumes: Iterable[VolumeMount],
-    referenced_volumes: Iterable[tuple[str, str]],
+    referenced_volumes: Iterable[VolumeMount],
 ) -> None:
     """Delete only volumes the SDK created; never user-referenced ones.
 
@@ -1588,7 +1748,7 @@ def cleanup_owned_volumes(
     ``volumes=[(name, path)]``. Caller-referenced volumes are owned by
     the caller and must outlive this lifecycle.
     """
-    referenced_names = {name for name, _ in referenced_volumes}
+    referenced_names = {volume.name for volume in referenced_volumes}
     for v in all_volumes:
         if v.name in referenced_names:
             continue
