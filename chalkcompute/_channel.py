@@ -16,19 +16,12 @@ import atexit
 import dataclasses
 import json
 import logging
-import os
 import threading
 from typing import Any
 
 import grpc
 
-from chalkcompute._tracing import (
-    RPC_METHOD_ATTRIBUTE,
-    RPC_RESPONSE_STATUS_CODE_ATTRIBUTE,
-    RPC_SPAN_NAME,
-    RPC_SYSTEM_NAME_ATTRIBUTE,
-    get_tracer,
-)
+from chalkcompute._tracing import get_tracer
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +92,14 @@ def default_channel_options() -> list[tuple[str, Any]]:
     ]
 
 
+# Following OpenTelemetry RPC semantic conventions:
+# (https://opentelemetry.io/docs/specs/semconv/registry/attributes/rpc/)
+_RPC_SPAN_NAME = "chalkcompute.rpc"
+_RPC_SYSTEM_NAME_ATTRIBUTE = "rpc.system.name"
+_RPC_METHOD_ATTRIBUTE = "rpc.method"
+_RPC_RESPONSE_STATUS_CODE_ATTRIBUTE = "rpc.response.status_code"
+
+
 class _TracingInterceptor(grpc.UnaryUnaryClientInterceptor):
     """Wrap each unary RPC in a ``chalkcompute.rpc`` span."""
 
@@ -108,13 +109,12 @@ class _TracingInterceptor(grpc.UnaryUnaryClientInterceptor):
         )  # Example: /chalk.server.v1.ContainerService/GetContainer
         if isinstance(method, bytes):
             method = method.decode("utf-8", errors="replace")
-        with get_tracer().start_as_current_span(RPC_SPAN_NAME) as span:
-            span.set_attribute(RPC_SYSTEM_NAME_ATTRIBUTE, "grpc")
-            # Fully-qualified "package.Service/Method" per current semconv.
-            span.set_attribute(RPC_METHOD_ATTRIBUTE, method.lstrip("/"))
+        with get_tracer().start_as_current_span(_RPC_SPAN_NAME) as span:
+            span.set_attribute(_RPC_SYSTEM_NAME_ATTRIBUTE, "grpc")
+            span.set_attribute(_RPC_METHOD_ATTRIBUTE, method.lstrip("/"))
             call = continuation(client_call_details, request)
             code = call.code()  # blocks until the RPC completes; never raises
-            span.set_attribute(RPC_RESPONSE_STATUS_CODE_ATTRIBUTE, code.name)
+            span.set_attribute(_RPC_RESPONSE_STATUS_CODE_ATTRIBUTE, code.name)
             if code != grpc.StatusCode.OK:
                 from opentelemetry.trace import StatusCode
 
@@ -124,7 +124,6 @@ class _TracingInterceptor(grpc.UnaryUnaryClientInterceptor):
 
 _lock = threading.Lock()
 _channels: dict[tuple[str, bool], grpc.Channel] = {}
-_owner_pid: int | None = None
 
 
 def get_channel(target: str, use_tls: bool) -> grpc.Channel:
@@ -133,18 +132,8 @@ def get_channel(target: str, use_tls: bool) -> grpc.Channel:
     Dials lazily (constructing a channel to an unreachable target is safe)
     and memoizes.
     """
-    global _owner_pid
     cache_key = (target, use_tls)
     with _lock:
-        pid = os.getpid()
-        if _owner_pid != pid:
-            # Forked child: parent owns these sockets — drop without closing.
-            if _owner_pid is not None:
-                logger.debug(
-                    "pid changed (%s -> %s); dropping shared channels", _owner_pid, pid
-                )
-            _channels.clear()
-            _owner_pid = pid
         channel = _channels.get(cache_key)
         if channel is None:
             # Create channel:
@@ -163,14 +152,13 @@ def get_channel(target: str, use_tls: bool) -> grpc.Channel:
 
 
 def close_all() -> None:
-    """Close every channel this process owns and empty the registry."""
+    """Close every channel in the registry and empty it."""
     with _lock:
-        if _owner_pid == os.getpid():
-            for channel in _channels.values():
-                try:
-                    channel.close()
-                except Exception:  # noqa: BLE001 - best-effort shutdown
-                    logger.debug("error closing shared channel", exc_info=True)
+        for channel in _channels.values():
+            try:
+                channel.close()
+            except Exception:
+                logger.debug("error closing shared channel", exc_info=True)
         _channels.clear()
 
 

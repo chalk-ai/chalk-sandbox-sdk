@@ -21,14 +21,6 @@ F = TypeVar("F", bound=Callable[..., Any])
 _TRACER_NAME = "chalkcompute"
 _DEFAULT_PUBLIC_SPAN_NAME = "chalkcompute.span"
 
-# Following latest OpenTelemetry RPC semantic conventions:
-# (https://opentelemetry.io/docs/specs/semconv/registry/attributes/rpc/)
-# Utilized in _channel.py and _connect.py.
-RPC_SPAN_NAME = "chalkcompute.rpc"
-RPC_SYSTEM_NAME_ATTRIBUTE = "rpc.system.name"
-RPC_METHOD_ATTRIBUTE = "rpc.method"
-RPC_RESPONSE_STATUS_CODE_ATTRIBUTE = "rpc.response.status_code"
-
 _TRACE_CONTEXT_METADATA_KEYS = ("traceparent", "tracestate", "baggage")
 _REMOTE_FUNCTION_TRACE_POLICY_ENV_VAR = "CHALK_REMOTE_FUNCTION_TRACE_POLICY"
 _initialized = False

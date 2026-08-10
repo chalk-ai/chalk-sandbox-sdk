@@ -37,20 +37,6 @@ def test_tls_flag_is_part_of_the_key() -> None:
     assert a is not b
 
 
-def test_fork_drops_cached_channels_without_closing(monkeypatch) -> None:
-    parent = get_channel("localhost:50051", False)
-    closed: list[bool] = []
-    monkeypatch.setattr(parent, "close", lambda: closed.append(True), raising=False)
-
-    # Simulate a fork: the registry must hand out a NEW channel in the child
-    # and must not close the parent's channel (its sockets aren't ours).
-    monkeypatch.setattr(channel_mod.os, "getpid", lambda: channel_mod._owner_pid + 1)
-    child = get_channel("localhost:50051", False)
-
-    assert child is not parent
-    assert closed == []
-
-
 def test_close_all_empties_registry() -> None:
     a = get_channel("localhost:50051", False)
     channel_mod.close_all()
@@ -93,9 +79,6 @@ def _intercept_with_recording_tracer(monkeypatch, status_code: grpc.StatusCode):
 
 
 def test_rpc_span_contract(monkeypatch) -> None:
-    # Dashboards key on this exact span shape (name + attribute keys/values).
-    # Literals on purpose: editing the RPC_* constants in _tracing.py must
-    # fail here, not silently rename what dashboards query.
     from opentelemetry.trace import StatusCode
 
     span = _intercept_with_recording_tracer(monkeypatch, grpc.StatusCode.OK)
