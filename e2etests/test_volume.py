@@ -103,7 +103,12 @@ def test_fork_diverges_from_main(volume: Volume) -> None:
     volume.put_file("shared.txt", b"base")
     base = volume.latest_version()
     fork_name = f"test-{uuid.uuid4().hex[:8]}"
-    fork = volume.at_version(base.id).fork(fork_name)
+    try:
+        fork = volume.at_version(base.id).fork(fork_name)
+    except VolumeError as error:
+        if error.code == "unimplemented":
+            pytest.skip(str(error))
+        raise
     try:
         fork.put_file("fork-only.txt", b"fork")
 

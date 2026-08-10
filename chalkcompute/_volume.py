@@ -46,6 +46,10 @@ MOUNT_TYPE = "versioned_chalkfs"
 class VolumeError(Exception):
     """Base exception for volume errors."""
 
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+
 
 class VolumeClosedError(VolumeError):
     """Raised when an operation is attempted on a closed volume."""
@@ -1575,8 +1579,8 @@ def _raise_volume_error(exc: BaseException, volume_name: str) -> NoReturn:
     code = _native_error_code(exc)
     message = _native_error_message(exc)
     if code == "not_found":
-        raise VolumeNotFoundError(f"Volume {volume_name!r} not found") from exc
-    raise VolumeError(message) from exc
+        raise VolumeNotFoundError(message, code=code) from exc
+    raise VolumeError(message, code=code) from exc
 
 
 def _volume_access_mode_name(value: int) -> str | None:

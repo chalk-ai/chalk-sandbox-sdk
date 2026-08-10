@@ -69,6 +69,35 @@ def _not_found() -> RuntimeError:
     return RuntimeError("not_found", "missing")
 
 
+def test_volume_error_preserves_native_code_and_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    message = "volume v2 upstream returned 404 for CreateRef"
+    client._inner.create_ref.side_effect = RuntimeError("unimplemented", message)
+
+    with pytest.raises(VolumeError, match=message) as raised:
+        client._create_ref("models", "sandbox-a", 7)
+
+    assert raised.value.code == "unimplemented"
+
+
+def test_volume_not_found_preserves_native_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.side_effect = RuntimeError(
+        "not_found", "server volume lookup failed"
+    )
+
+    with pytest.raises(
+        VolumeNotFoundError, match="server volume lookup failed"
+    ) as raised:
+        client.lookup("models")
+
+    assert raised.value.code == "not_found"
+
+
 def test_client_from_connect_uses_connect_http_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -401,7 +430,7 @@ def test_forks_and_delete_fork_delegate_to_native(
             "name": "sandbox-a",
             "version_id": 7,
             "parent_version_id": 4,
-        }
+        },
     ]
     volume = Volume("models", client=client, ref="sandbox-a")
 
