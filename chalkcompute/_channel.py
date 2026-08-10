@@ -22,7 +22,13 @@ from typing import Any
 
 import grpc
 
-from chalkcompute._tracing import get_tracer
+from chalkcompute._tracing import (
+    RPC_METHOD_ATTRIBUTE,
+    RPC_RESPONSE_STATUS_CODE_ATTRIBUTE,
+    RPC_SPAN_NAME,
+    RPC_SYSTEM_NAME_ATTRIBUTE,
+    get_tracer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -94,24 +100,21 @@ def default_channel_options() -> list[tuple[str, Any]]:
 
 
 class _TracingInterceptor(grpc.UnaryUnaryClientInterceptor):
-    """Wrap each unary RPC in a ``chalkcompute.rpc`` span.
-
-    Preserves the span name and ``rpc.service``/``rpc.method`` attributes the
-    Connect-JSON transport emitted, so dashboards keyed on them keep working.
-    """
+    """Wrap each unary RPC in a ``chalkcompute.rpc`` span."""
 
     def intercept_unary_unary(self, continuation, client_call_details, request):
-        method = client_call_details.method
+        method = (
+            client_call_details.method
+        )  # Example: /chalk.server.v1.ContainerService/GetContainer
         if isinstance(method, bytes):
             method = method.decode("utf-8", errors="replace")
-        service, _, method_name = method.lstrip("/").partition("/")
-        with get_tracer().start_as_current_span("chalkcompute.rpc") as span:
-            span.set_attribute("rpc.system", "grpc")
-            span.set_attribute("rpc.service", service)
-            span.set_attribute("rpc.method", method_name)
+        with get_tracer().start_as_current_span(RPC_SPAN_NAME) as span:
+            span.set_attribute(RPC_SYSTEM_NAME_ATTRIBUTE, "grpc")
+            # Fully-qualified "package.Service/Method" per current semconv.
+            span.set_attribute(RPC_METHOD_ATTRIBUTE, method.lstrip("/"))
             call = continuation(client_call_details, request)
             code = call.code()  # blocks until the RPC completes; never raises
-            span.set_attribute("rpc.grpc.status_code", code.name)
+            span.set_attribute(RPC_RESPONSE_STATUS_CODE_ATTRIBUTE, code.name)
             if code != grpc.StatusCode.OK:
                 from opentelemetry.trace import StatusCode
 

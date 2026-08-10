@@ -22,7 +22,13 @@ from chalkcompute._remote_call_client import (
     ServiceAuthContext,
     resolve_service_auth_context,
 )
-from chalkcompute._tracing import _instrumented, get_tracer
+from chalkcompute._tracing import (
+    RPC_METHOD_ATTRIBUTE,
+    RPC_SPAN_NAME,
+    RPC_SYSTEM_NAME_ATTRIBUTE,
+    _instrumented,
+    get_tracer,
+)
 from chalkcompute._web_identity import (
     WebIdentityTokenError,
     read_web_identity_token,
@@ -468,9 +474,9 @@ class ConnectClient:
         """
         import httpx
 
-        with get_tracer().start_as_current_span("chalkcompute.rpc") as span:
-            span.set_attribute("rpc.service", service)
-            span.set_attribute("rpc.method", method)
+        with get_tracer().start_as_current_span(RPC_SPAN_NAME) as span:
+            span.set_attribute(RPC_SYSTEM_NAME_ATTRIBUTE, "connectrpc")
+            span.set_attribute(RPC_METHOD_ATTRIBUTE, f"{service}/{method}")
             self._ensure_auth()
             assert self._api_server is not None
             assert self._headers is not None
