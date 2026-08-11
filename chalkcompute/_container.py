@@ -30,11 +30,18 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import grpc
+from google.protobuf import json_format
 
+from chalkcompute._channel import get_channel
 from chalkcompute._connect import (
     ConnectClient,
+    grpc_error_message,
     grpc_target_from_url,
     raise_for_grpc_error,
+)
+from chalkcompute._gen.chalk.container.v1 import service_pb2 as container_pb
+from chalkcompute._gen.chalk.container.v1 import (
+    service_pb2_grpc as container_pb_grpc,
 )
 from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb2 as pb
 from chalkcompute._gen.chalk.sandbox.v2 import (
@@ -60,10 +67,6 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from chalkcompute._image import Image as _Image
     from chalkcompute._secret import Secret
-
-_SVC = "chalk.container.v1.ContainerService"
-_IMAGE_SVC = "chalk.sandbox.v1.CustomImageService"
-
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -141,7 +144,7 @@ class ContainerSecurityPolicy:
     """Kernel hardening policy."""
 
     def to_dict(self) -> dict[str, Any]:
-        return {"kernelPolicy": self.kernel_policy.value}
+        return {"kernelPolicy": f"KERNEL_POLICY_{self.kernel_policy.value}"}
 
 
 _PortRangeInput = tuple[int, int] | int
@@ -765,14 +768,21 @@ class ContainerSessionClient:
         credentials: grpc.ChannelCredentials | None,
         metadata: list[tuple[str, str]],
         _connect: ConnectClient | None = None,
+        _channel: grpc.Channel | None = None,
     ) -> None:
         self._target = target
         self._static_metadata = metadata
         self._connect = _connect
-        if credentials is not None:
+        if _channel is not None:
+            # Borrowed (shared registry) channel: not ours to close.
+            self._channel = _channel
+            self._owns_channel = False
+        elif credentials is not None:
             self._channel = grpc.secure_channel(target, credentials)
+            self._owns_channel = True
         else:
             self._channel = grpc.insecure_channel(target)
+            self._owns_channel = True
         self._stub = pb_grpc.SandboxProcessServiceStub(self._channel)
 
     @classmethod
@@ -781,13 +791,14 @@ class ContainerSessionClient:
         target, use_tls = grpc_target_from_url(connect._api_server or "")
         return cls(
             target,
-            credentials=grpc.ssl_channel_credentials() if use_tls else None,
+            credentials=None,
             metadata=connect._grpc_metadata(),
             _connect=(
                 connect
                 if getattr(connect, "_uses_web_identity_token", lambda: False)() is True
                 else None
             ),
+            _channel=get_channel(target, use_tls),
         )
 
     @property
@@ -801,7 +812,8 @@ class ContainerSessionClient:
         self._static_metadata = value
 
     def close(self) -> None:
-        self._channel.close()
+        if self._owns_channel:
+            self._channel.close()
 
     def new_session(
         self,
@@ -1077,10 +1089,9 @@ class Container:
             If the container cannot be found.
         """
         c = cls._make_empty(chalk_client=chalk_client)
-        resp = c._client.rpc(_SVC, "GetContainer", {"id": container_id})
-        if resp.status_code != 200:
-            raise ContainerError(f"GetContainer failed: {resp.text}")
-        c._container_info = _parse_container_response(resp.json()["container"])
+        c._container_info = _get_container_info(
+            c._client, container_pb.GetContainerRequest(id=container_id)
+        )
         c._container_id = c._container_info.id
         return c
 
@@ -1104,10 +1115,9 @@ class Container:
             If the container cannot be found.
         """
         c = cls._make_empty(chalk_client=chalk_client)
-        resp = c._client.rpc(_SVC, "GetContainer", {"name": name})
-        if resp.status_code != 200:
-            raise ContainerError(f"GetContainer failed: {resp.text}")
-        c._container_info = _parse_container_response(resp.json()["container"])
+        c._container_info = _get_container_info(
+            c._client, container_pb.GetContainerRequest(name=name)
+        )
         c._container_id = c._container_info.id
         c._name = name
         return c
@@ -1127,13 +1137,16 @@ class Container:
             If the request fails.
         """
         c = cls._make_empty(chalk_client=chalk_client)
-        resp = c._client.rpc(_SVC, "ListContainers", {})
-        if resp.status_code != 200:
-            raise ContainerError(f"ListContainers failed: {resp.text}")
-        return [
-            _parse_container_response(item)
-            for item in resp.json().get("containers", [])
-        ]
+        stub = c._client.stub(container_pb_grpc.ContainerServiceStub)
+        try:
+            resp = c._client.call(
+                stub.ListContainers, container_pb.ListContainersRequest()
+            )
+        except grpc.RpcError as e:
+            raise ContainerError(
+                f"ListContainers failed: {grpc_error_message(e)}"
+            ) from e
+        return [_parse_container_response(item) for item in resp.containers]
 
     @classmethod
     def _make_empty(cls, *, chalk_client: Any | None = None) -> Container:
@@ -1436,17 +1449,17 @@ class Container:
                 spec["secretRefs"] = [s._to_proto_dict() for s in resolved_secrets]
 
             logger.info("Starting container '%s'...", container_name)
-            resp = self._client.rpc(
-                _SVC,
-                "RunContainer",
-                {"container": {"spec": spec}},
-                timeout=60,
-            )
-            if resp.status_code != 200:
-                raise ContainerError(f"RunContainer failed: {resp.text}")
+            request = container_pb.RunContainerRequest()
+            json_format.ParseDict(spec, request.container.spec)
+            stub = self._client.stub(container_pb_grpc.ContainerServiceStub)
+            try:
+                resp = self._client.call(stub.RunContainer, request, timeout=60)
+            except grpc.RpcError as e:
+                raise ContainerError(
+                    f"RunContainer failed: {grpc_error_message(e)}"
+                ) from e
 
-            data = resp.json()
-            self._container_info = _parse_container_response(data["container"])
+            self._container_info = _parse_container_response(resp.container)
             self._container_id = self._container_info.id
             logger.info(
                 "Container created: %s (status=%s)",
@@ -1490,11 +1503,9 @@ class Container:
     ) -> None:
         assert self._container_id is not None
         deadline = time.monotonic() + timeout
+        request = container_pb.GetContainerRequest(id=self._container_id)
         while time.monotonic() < deadline:
-            resp = self._client.rpc(_SVC, "GetContainer", {"id": self._container_id})
-            if resp.status_code != 200:
-                raise ContainerError(f"GetContainer failed: {resp.text}")
-            info = _parse_container_response(resp.json()["container"])
+            info = _get_container_info(self._client, request)
             self._container_info = info
             logger.info("  poll: status=%s", info.status)
             if info.status == "Running":
@@ -1711,10 +1722,19 @@ class Container:
         if self._container_id is None:
             raise ContainerError("container has not been started; call .run() first")
         if self._container_id is not None:
-            body: dict[str, Any] = {"id": self._container_id}
+            request = container_pb.StopContainerRequest(id=self._container_id)
             if grace_period_seconds is not None:
-                body["gracePeriodSeconds"] = grace_period_seconds
-            self._client.rpc(_SVC, "StopContainer", body)
+                request.grace_period_seconds = grace_period_seconds
+            stub = self._client.stub(container_pb_grpc.ContainerServiceStub)
+            try:
+                self._client.call(stub.StopContainer, request)
+            except grpc.RpcError as e:
+                # Log, don't raise: cleanup must proceed.
+                logger.warning(
+                    "StopContainer for %s failed: %s",
+                    self._container_id,
+                    grpc_error_message(e),
+                )
             self._container_id = None
             self._container_info = None
 
@@ -1745,10 +1765,9 @@ class Container:
         """
         if self._container_id is None:
             raise ContainerError("No container ID — call .run() first.")
-        resp = self._client.rpc(_SVC, "GetContainer", {"id": self._container_id})
-        if resp.status_code != 200:
-            raise ContainerError(f"GetContainer failed: {resp.text}")
-        self._container_info = _parse_container_response(resp.json()["container"])
+        self._container_info = _get_container_info(
+            self._client, container_pb.GetContainerRequest(id=self._container_id)
+        )
         return self._container_info
 
     @property
@@ -1790,14 +1809,29 @@ class Container:
 # ---------------------------------------------------------------------------
 
 
-def _parse_container_response(data: dict) -> ContainerInfo:
+def _parse_container_response(
+    container: container_pb.ContainerResponse,
+) -> ContainerInfo:
     return ContainerInfo(
-        id=data["id"],
-        name=data["name"],
-        status=data["status"],
-        pod_name=data.get("podName", ""),
-        web_url=data.get("webUrl"),
+        id=container.id,
+        name=container.name,
+        status=container.status,
+        pod_name=container.pod_name,
+        web_url=container.web_url or None,
     )
+
+
+def _get_container_info(
+    client: ConnectClient,
+    request: container_pb.GetContainerRequest,
+) -> ContainerInfo:
+    """Fetch a container via ``GetContainer`` and parse it, or raise ContainerError."""
+    stub = client.stub(container_pb_grpc.ContainerServiceStub)
+    try:
+        resp = client.call(stub.GetContainer, request)
+    except grpc.RpcError as e:
+        raise ContainerError(f"GetContainer failed: {grpc_error_message(e)}") from e
+    return _parse_container_response(resp.container)
 
 
 def _process_states() -> dict[int, ContainerSession.Status.State]:

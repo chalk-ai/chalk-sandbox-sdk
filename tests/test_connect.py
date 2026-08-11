@@ -981,3 +981,49 @@ class TestSandboxClientFromEnv:
             assert client._target == "localhost:18080"
         finally:
             client.close()
+
+
+class TestStubAndCall:
+    """The gRPC transport seam: ConnectClient.stub() + ConnectClient.call()."""
+
+    def _authed_client(self) -> ConnectClient:
+        client = ConnectClient()
+        client._access_token = "tok1"
+        client._env_id = "env-1"
+        client._api_server = "http://localhost:50051"
+        return client
+
+    def test_call_rebuilds_metadata_per_call(self, monkeypatch) -> None:
+        monkeypatch.delenv("CHALK_WEB_IDENTITY_TOKEN_FILE", raising=False)
+        client = self._authed_client()
+        captured: list[tuple[Any, Any]] = []
+
+        def method(request: Any, timeout: Any = None, metadata: Any = None) -> str:
+            captured.append((timeout, metadata))
+            return "resp"
+
+        assert client.call(method, object(), timeout=12) == "resp"
+        client._access_token = "tok2"  # simulate token rotation
+        client.call(method, object())
+
+        assert captured[0][0] == 12
+        assert ("authorization", "Bearer tok1") in captured[0][1]
+        assert ("authorization", "Bearer tok2") in captured[1][1]
+        assert ("x-chalk-env-id", "env-1") in captured[1][1]
+
+    def test_stubs_share_the_channel(self, monkeypatch) -> None:
+        import chalkcompute._channel as channel_mod
+        from chalkcompute._gen.chalk.container.v1 import service_pb2_grpc as pb_grpc
+
+        monkeypatch.delenv("CHALK_WEB_IDENTITY_TOKEN_FILE", raising=False)
+        channel_mod.close_channel()
+        try:
+            client = self._authed_client()
+            client.stub(pb_grpc.ContainerServiceStub)
+            first = channel_mod._channel
+            client.stub(pb_grpc.ContainerServiceStub)
+            # Both stubs were built on the one shared channel.
+            assert first is not None
+            assert channel_mod._channel is first
+        finally:
+            channel_mod.close_channel()

@@ -1,7 +1,8 @@
-"""Shared Connect-protocol client for Chalk API services.
+"""Shared authenticated client for Chalk API services.
 
-Provides auth (OAuth token exchange), Connect-protocol RPC dispatch,
-and image build polling.
+Provides auth (OAuth token exchange), RPC dispatch — gRPC over a shared
+channel via ``stub()``/``call()``, plus the legacy Connect-protocol
+(HTTP/JSON) ``rpc()`` — and image build polling.
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ import logging
 import os
 import re
 import time
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping, TypeVar
 from urllib.parse import urlparse
 
 import grpc
@@ -21,7 +22,7 @@ from chalkcompute._remote_call_client import (
     ServiceAuthContext,
     resolve_service_auth_context,
 )
-from chalkcompute._tracing import _instrumented
+from chalkcompute._tracing import _instrumented, get_tracer
 from chalkcompute._web_identity import (
     WebIdentityTokenError,
     read_web_identity_token,
@@ -31,6 +32,10 @@ from chalkcompute._web_identity import (
 logger = logging.getLogger(__name__)
 
 _WEB_IDENTITY_MAX_CACHE_TTL_SECONDS = 60 * 60
+
+_StubT = TypeVar("_StubT")
+_RespT = TypeVar("_RespT")
+
 
 if TYPE_CHECKING:
     import httpx
@@ -90,7 +95,15 @@ def chalk_client_from_env(
 
 
 class ConnectClient:
-    """Authenticated Connect-protocol (HTTP/JSON) client for Chalk APIs.
+    """Authenticated RPC client for Chalk APIs.
+
+    Two transports share this client's auth:
+
+    - :meth:`stub` / :meth:`call` — gRPC over a process-wide shared HTTP/2
+      channel (see ``_channel.py``). The preferred transport; new call sites
+      should use it.
+    - :meth:`rpc` — legacy Connect-protocol (HTTP/JSON), one connection per
+      call. Remaining services migrate off it incrementally (CHA-10029).
 
     Ambient Chalk credentials are read lazily. A JWT configured through
     ``CHALK_WEB_IDENTITY_TOKEN_FILE`` takes precedence and is cached for the
@@ -100,11 +113,8 @@ class ConnectClient:
     Examples
     --------
     >>> client = ConnectClient()
-    >>> resp = client.rpc(
-    ...     "chalk.container.v1.ContainerService",
-    ...     "GetContainer",
-    ...     {"id": "..."},
-    ... )
+    >>> stub = client.stub(ContainerServiceStub)
+    >>> resp = client.call(stub.GetContainer, pb.GetContainerRequest(id="..."))
     """
 
     def __init__(self, chalk_client: Any | None = None) -> None:
@@ -385,6 +395,48 @@ class ConnectClient:
             )
         return token
 
+    def stub(self, stub_cls: Callable[[grpc.Channel], _StubT]) -> _StubT:
+        """Return a gRPC stub bound to the shared api-server channel.
+
+        All stubs on one target multiplex over a single HTTP/2 connection.
+        Stubs are cheap to construct and not cached; the channel is the
+        expensive resource and the registry owns it.
+        """
+        from chalkcompute._channel import get_channel
+
+        self._ensure_auth()
+        assert self._api_server is not None
+        target, use_tls = grpc_target_from_url(self._api_server)
+        return stub_cls(get_channel(target, use_tls))
+
+    def call(
+        self,
+        method: Callable[..., _RespT],
+        request: Any,
+        *,
+        timeout: float = 30.0,
+    ) -> _RespT:
+        """Invoke a unary stub method with per-call auth metadata.
+
+        Metadata is rebuilt on every call via :meth:`_grpc_metadata`, so
+        rotating web-identity tokens are picked up without any caller effort.
+
+        Parameters
+        ----------
+        method
+            A bound stub method, e.g. ``client.stub(FooStub).GetFoo``.
+        request
+            The request protobuf message.
+        timeout
+            gRPC deadline in seconds.
+
+        Raises
+        ------
+        grpc.RpcError
+            On any non-OK status; callers translate to typed errors.
+        """
+        return method(request, timeout=timeout, metadata=self._grpc_metadata())
+
     def rpc(
         self,
         service: str,
@@ -415,8 +467,6 @@ class ConnectClient:
             The raw HTTP response from the Connect endpoint.
         """
         import httpx
-
-        from chalkcompute._tracing import get_tracer
 
         with get_tracer().start_as_current_span("chalkcompute.rpc") as span:
             span.set_attribute("rpc.service", service)
@@ -669,6 +719,12 @@ def build_image_with_volumes_from_spec(
     """Build an Image and upload lazy files. Authenticates via env vars."""
     client = ConnectClient(chalk_client=chalk_client)
     return build_image_with_volumes(client, image, volume_prefix=volume_prefix)
+
+
+def grpc_error_message(e: grpc.RpcError) -> str:
+    """Render a gRPC error as ``CODE: details`` for exception messages."""
+    assert isinstance(e, grpc.Call)
+    return f"{e.code().name}: {e.details()}"
 
 
 def raise_for_grpc_error(
