@@ -210,6 +210,29 @@ def test_sandbox_exec_uses_v2_process_service() -> None:
     assert list(stub.request.new_process.args) == ["hello"]
 
 
+class _TerminatedStub:
+    def CreateSandbox(self, request: pb.CreateSandboxRequest, **_kwargs: object):
+        return pb.CreateSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id="sandbox-123",
+                status=pb.SANDBOX_STATUS_TERMINATED,
+                created_at={"seconds": 1},
+                status_message="Exit code 0",
+            )
+        )
+
+
+def test_terminated_during_creation_includes_status_message() -> None:
+    from chalkcompute._sandbox import SandboxTerminatedError
+
+    client = SandboxClient()
+    client._stub = _TerminatedStub()  # type: ignore[assignment]
+    try:
+        with pytest.raises(SandboxTerminatedError, match="Exit code 0"):
+            client.create("python:3.14-slim", wait=True)
+    finally:
+        client.close()
+        
 def test_sandbox_referenced_volume_is_existence_checked() -> None:
     from chalkcompute._volume import VolumeMount
 

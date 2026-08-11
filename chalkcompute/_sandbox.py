@@ -89,48 +89,35 @@ class SandboxNotFoundError(SandboxError):
     pass
 
 
-class SandboxTerminatedError(SandboxError):
+class SandboxStatusError(SandboxError):
+    """Sandbox error carrying the backend's lifecycle status details."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        sandbox_id: str | None = None,
+        status: str | None = None,
+        status_message: str | None = None,
+        build_id: str | None = None,
+    ) -> None:
+        self.sandbox_id = sandbox_id
+        self.status = status
+        self.status_message = status_message
+        self.build_id = build_id
+        super().__init__(message)
+
+
+class SandboxTerminatedError(SandboxStatusError):
     """Raised when a sandbox has terminated."""
 
-    pass
 
-
-class SandboxBuildError(SandboxError):
+class SandboxBuildError(SandboxStatusError):
     """Raised when a custom sandbox image build fails."""
 
-    def __init__(
-        self,
-        message: str,
-        *,
-        sandbox_id: str | None = None,
-        status: str | None = None,
-        status_message: str | None = None,
-        build_id: str | None = None,
-    ) -> None:
-        self.sandbox_id = sandbox_id
-        self.status = status
-        self.status_message = status_message
-        self.build_id = build_id
-        super().__init__(message)
 
-
-class SandboxCreationError(SandboxError):
+class SandboxCreationError(SandboxStatusError):
     """Raised when sandbox creation or startup fails."""
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        sandbox_id: str | None = None,
-        status: str | None = None,
-        status_message: str | None = None,
-        build_id: str | None = None,
-    ) -> None:
-        self.sandbox_id = sandbox_id
-        self.status = status
-        self.status_message = status_message
-        self.build_id = build_id
-        super().__init__(message)
 
 
 class ExecError(SandboxError):
@@ -1272,12 +1259,8 @@ class SandboxClient:
                 poll_interval=poll_interval,
                 timeout=timeout,
             )
-        elif wait and info.status in ("failed", "error", "unknown"):
+        elif wait and info.status in ("failed", "error", "unknown", "terminated"):
             raise _sandbox_creation_error(info)
-        elif wait and info.status == "terminated":
-            raise SandboxTerminatedError(
-                f"Sandbox {info.id} was terminated during creation"
-            )
 
         sandbox._id = info.id
         sandbox._info = info
@@ -1303,12 +1286,8 @@ class SandboxClient:
             info = _pb_to_sandbox_info(resp.sandbox)
             if info.status == "running":
                 return info
-            if info.status in ("failed", "error", "unknown"):
+            if info.status in ("failed", "error", "unknown", "terminated"):
                 raise _sandbox_creation_error(info)
-            if info.status == "terminated":
-                raise SandboxTerminatedError(
-                    f"Sandbox {sandbox_id} was terminated during creation"
-                )
             time.sleep(poll_interval)
         raise SandboxError(
             f"Timed out after {timeout}s waiting for sandbox {sandbox_id} to become ready"
@@ -1363,12 +1342,17 @@ def _pb_to_sandbox_info(info: pb.SandboxInfo) -> SandboxInfo:
     )
 
 
-def _sandbox_creation_error(info: SandboxInfo) -> SandboxCreationError:
+def _sandbox_creation_error(info: SandboxInfo) -> SandboxStatusError:
     """Build a detailed error from the backend's sandbox status."""
-    message = f"Sandbox {info.id} entered {info.status} state during creation"
+    if info.status == "terminated":
+        exc_cls: type[SandboxStatusError] = SandboxTerminatedError
+        message = f"Sandbox {info.id} was terminated during creation"
+    else:
+        exc_cls = SandboxCreationError
+        message = f"Sandbox {info.id} entered {info.status} state during creation"
     if info.status_message:
         message = f"{message}: {info.status_message}"
-    return SandboxCreationError(
+    return exc_cls(
         message,
         sandbox_id=info.id,
         status=info.status,
