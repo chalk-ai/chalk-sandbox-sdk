@@ -85,6 +85,7 @@ from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._retry import RetryPolicy
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
+    Volume,
     VolumeClient,
     VolumeMount,
     cleanup_owned_volumes,
@@ -652,7 +653,7 @@ class RemoteClass:
         gpu: str | None = None,
         env: dict[str, str] | None = None,
         secrets: list[_Secret] | None = None,
-        volumes: list[tuple[str, str]] | None = None,
+        volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
         min_replicas: int = 1,
         max_replicas: int = 1,
         shutdown_delay_seconds: int | None = None,
@@ -684,7 +685,7 @@ class RemoteClass:
         self._env = env or {}
         self._secrets: list[_Secret] = list(secrets or [])
         # Existence is checked once at deploy time, not here.
-        self._referenced_volumes: list[tuple[str, str]] = normalize_volume_refs(volumes)
+        self._referenced_volumes: list[VolumeMount] = normalize_volume_refs(volumes)
         # Populated at deploy time: referenced volumes plus any freshly
         # uploaded volumes.
         self._volumes: list[VolumeMount] = []
@@ -1067,8 +1068,8 @@ class RemoteClass:
             # A missing user-referenced volume fails the deploy. Checked once
             # here, then reused across every per-method spec.
             referenced_volumes = [
-                referenced_volume_mount(self._client, name, mount_path)
-                for name, mount_path in self._referenced_volumes
+                referenced_volume_mount(self._client, mount)
+                for mount in self._referenced_volumes
             ]
             self._volumes = [*referenced_volumes, *new_vols]
             self._volume_driver = driver
@@ -1499,7 +1500,7 @@ def cls(
     name: str | None = None,
     env: dict[str, str] | None = None,
     secrets: list[_Secret] | None = None,
-    volumes: list[tuple[str, str]] | None = None,
+    volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
     min_replicas: int = 1,
     max_replicas: int = 1,
     shutdown_delay_seconds: int | None = None,
@@ -1529,7 +1530,7 @@ def cls(
     name: str | None = None,
     env: dict[str, str] | None = None,
     secrets: list[_Secret] | None = None,
-    volumes: list[tuple[str, str]] | None = None,
+    volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
     min_replicas: int = 1,
     max_replicas: int = 1,
     shutdown_delay_seconds: int | None = None,
@@ -1560,7 +1561,7 @@ def cls(
     name: str | None = None,
     env: dict[str, str] | None = None,
     secrets: list[_Secret] | None = None,
-    volumes: list[tuple[str, str]] | None = None,
+    volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
     min_replicas: int = 1,
     max_replicas: int = 1,
     shutdown_delay_seconds: int | None = None,

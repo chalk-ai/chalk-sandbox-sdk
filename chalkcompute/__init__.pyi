@@ -73,6 +73,7 @@ from chalkcompute._secret import resolve_lazy_secrets as resolve_lazy_secrets
 from chalkcompute._tracing import span as span
 from chalkcompute._tracing import traced as traced
 from chalkcompute._volume import FileInfo as FileInfo
+from chalkcompute._volume import ForkInfo as ForkInfo
 from chalkcompute._volume import VersionInfo as VersionInfo
 from chalkcompute._volume import Volume as Volume
 from chalkcompute._volume import VolumeClient as VolumeClient
@@ -80,6 +81,7 @@ from chalkcompute._volume import VolumeClosedError as VolumeClosedError
 from chalkcompute._volume import VolumeError as VolumeError
 from chalkcompute._volume import VolumeFileNotFoundError as VolumeFileNotFoundError
 from chalkcompute._volume import VolumeInfo as VolumeInfo
+from chalkcompute._volume import VolumeMount as VolumeMount
 from chalkcompute._volume import VolumeNotFoundError as VolumeNotFoundError
 from chalkcompute._volume import (
     resolve_referenced_volume_type as resolve_referenced_volume_type,
@@ -162,12 +164,14 @@ __all__ = [
     "ScalingGroupInfo",
     "ReadinessProbe",
     "FileInfo",
+    "ForkInfo",
     "Volume",
     "VolumeClient",
     "VolumeClosedError",
     "VolumeError",
     "VolumeFileNotFoundError",
     "VolumeInfo",
+    "VolumeMount",
     "VolumeNotFoundError",
     "VersionInfo",
     "resolve_referenced_volume_type",

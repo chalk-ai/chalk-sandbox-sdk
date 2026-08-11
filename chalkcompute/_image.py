@@ -27,7 +27,6 @@ import logging
 import os
 import tarfile
 import tempfile
-import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -380,8 +379,9 @@ class Image:
             Absolute destination path in the image.
         mode
             Optional POSIX file permission mode. Written in octal with a
-            ``0o`` prefix; if omitted, the file is created with the image's
-            default permissions. Common values:
+            ``0o`` prefix; if omitted, ``strategy="volume"`` preserves the
+            source file's on-disk permissions and ``strategy="copy"`` uses
+            the image's default permissions. Common values:
 
             - ``0o755`` (``rwxr-xr-x``) — executable scripts and binaries;
               owner can read/write/execute, everyone else read/execute.
@@ -434,13 +434,6 @@ class Image:
             )
         new = self._copy()
         if strategy == "volume":
-            if mode is not None:
-                warnings.warn(
-                    "add_local_file: `mode` is ignored for strategy='volume' files "
-                    "(served as 0644); it is honored only for strategy='copy', which "
-                    "is limited to files <=32 KiB.",
-                    stacklevel=2,
-                )
             _validate_lazy_local_file_destination(dest)
             src_path = Path(src).resolve()
             if not src_path.exists():

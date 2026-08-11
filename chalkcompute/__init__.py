@@ -102,6 +102,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "ReadinessProbe": ("chalkcompute._scaling_group", "ReadinessProbe"),
     # _volume.py
     "FileInfo": ("chalkcompute._volume", "FileInfo"),
+    "ForkInfo": ("chalkcompute._volume", "ForkInfo"),
     "VersionInfo": ("chalkcompute._volume", "VersionInfo"),
     "Volume": ("chalkcompute._volume", "Volume"),
     "VolumeClient": ("chalkcompute._volume", "VolumeClient"),
@@ -109,6 +110,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "VolumeError": ("chalkcompute._volume", "VolumeError"),
     "VolumeFileNotFoundError": ("chalkcompute._volume", "VolumeFileNotFoundError"),
     "VolumeInfo": ("chalkcompute._volume", "VolumeInfo"),
+    "VolumeMount": ("chalkcompute._volume", "VolumeMount"),
     "VolumeNotFoundError": ("chalkcompute._volume", "VolumeNotFoundError"),
     # Imported by chalkpy's model-deploy path; every volume mounts as
     # MOUNT_TYPE, so this only validates existence now.

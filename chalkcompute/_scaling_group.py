@@ -39,6 +39,7 @@ from chalkcompute._connect import ConnectClient, build_image, rpc_with_retries
 from chalkcompute._naming import sanitize_dns_label, validate_dns_label, validate_env
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
+    Volume,
     VolumeClient,
     VolumeMount,
     cleanup_owned_volumes,
@@ -195,7 +196,7 @@ class ScalingGroup:
         gpu: str | None = None,
         env: dict[str, str] | None = None,
         secrets: list[_Secret] | None = None,
-        volumes: list[tuple[str, str]] | None = None,
+        volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
         entrypoint: list[str] | None = None,
         port: int = 8080,
         protocol: str = "http",
@@ -219,7 +220,7 @@ class ScalingGroup:
         self._env = env or {}
         self._secrets: list[_Secret] = list(secrets or [])
         # Existence is checked at deploy time, not here.
-        self._referenced_volumes: list[tuple[str, str]] = normalize_volume_refs(volumes)
+        self._referenced_volumes: list[VolumeMount] = normalize_volume_refs(volumes)
         # Populated at deploy time: referenced volumes plus any freshly
         # uploaded volumes.
         self._volumes: list[VolumeMount] = []
@@ -402,8 +403,8 @@ class ScalingGroup:
 
         # 2a. A missing user-referenced volume fails the deploy.
         self._volumes = [
-            referenced_volume_mount(self._client, name, mount_path)
-            for name, mount_path in self._referenced_volumes
+            referenced_volume_mount(self._client, mount)
+            for mount in self._referenced_volumes
         ]
 
         # 2b. Upload lazy local files to volumes (if any)

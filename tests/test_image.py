@@ -217,18 +217,15 @@ class TestImageAddFile:
         step = img.to_proto().steps[0].add_file
         assert step.mode == 0o755
 
-    def test_add_local_file_volume_mode_warns(self, tmp_path: Path) -> None:
+    def test_add_local_file_volume_mode_is_recorded(self, tmp_path: Path) -> None:
         src = tmp_path / "weights.bin"
         src.write_bytes(b"x")
-        with pytest.warns(UserWarning, match="ignored for strategy='volume'"):
-            Image.debian_slim().add_local_file(
-                str(src), "/data/weights.bin", mode=0o755
-            )
-        import warnings as _w
+        image = Image.debian_slim().add_local_file(
+            str(src), "/data/weights.bin", mode=0o755
+        )
 
-        with _w.catch_warnings():
-            _w.simplefilter("error")
-            Image.debian_slim().add_local_file(str(src), "/data/weights.bin")
+        assert len(image.lazy_local_files) == 1
+        assert next(iter(image.lazy_local_files)).mode == 0o755
 
     def test_add_local_file_copy_allows_limit_sized_file(self, tmp_path: Path) -> None:
         src = tmp_path / "limit.bin"

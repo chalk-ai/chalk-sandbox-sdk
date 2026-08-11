@@ -10,6 +10,7 @@ from chalkcompute._volume import VolumeClosedError, VolumeError, VolumeNotFoundE
 from chalkcompute import _volume as vv
 from chalkcompute._volume import (
     CommitStatus,
+    ForkInfo,
     VersionInfo,
     Volume,
     VolumeClient,
@@ -39,20 +40,19 @@ def _volume_dict(name: str = "models") -> dict[str, Any]:
     }
 
 
-def _version_dict(version_id: int = 10, sequence_number: int = 20) -> dict[str, Any]:
+def _version_dict(version_id: int = 10) -> dict[str, Any]:
     return {
         "version_id": version_id,
-        "sequence_number": sequence_number,
         "ref": "main",
         "commit_id": f"commit-{version_id}",
     }
 
 
-def _status_dict(version_id: int = 11, sequence_number: int = 21) -> dict[str, Any]:
+def _status_dict(version_id: int = 11) -> dict[str, Any]:
     return {
         "commit_id": "commit-1",
         "result": "committed",
-        "version": _version_dict(version_id, sequence_number),
+        "version": _version_dict(version_id),
     }
 
 
@@ -67,6 +67,35 @@ def _make_client(monkeypatch: pytest.MonkeyPatch) -> VolumeClient:
 
 def _not_found() -> RuntimeError:
     return RuntimeError("not_found", "missing")
+
+
+def test_volume_error_preserves_native_code_and_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    message = "volume v2 upstream returned 404 for CreateRef"
+    client._inner.create_ref.side_effect = RuntimeError("unimplemented", message)
+
+    with pytest.raises(VolumeError, match=message) as raised:
+        client._create_ref("models", "sandbox-a", 7)
+
+    assert raised.value.code == "unimplemented"
+
+
+def test_volume_not_found_preserves_native_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.side_effect = RuntimeError(
+        "not_found", "server volume lookup failed"
+    )
+
+    with pytest.raises(
+        VolumeNotFoundError, match="server volume lookup failed"
+    ) as raised:
+        client.lookup("models")
+
+    assert raised.value.code == "not_found"
 
 
 def test_client_from_connect_uses_connect_http_endpoint(
@@ -205,9 +234,7 @@ def test_put_file_delegates_to_native_upload(monkeypatch: pytest.MonkeyPatch) ->
             "max_commit_retries": _COMMIT_MAX_REBASE_RETRIES,
         },
     )
-    assert vol.version == VersionInfo(
-        id=11, sequence_number=21, ref="main", commit_id="commit-11"
-    )
+    assert vol.version == VersionInfo(id=11, ref="main", commit_id="commit-11")
 
 
 def test_batch_upload_microbatches_by_file_count(
@@ -309,6 +336,132 @@ def test_at_version_is_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
     client._inner.upload.assert_not_called()
 
 
+def test_fork_creates_ref_from_pinned_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._inner.create_ref.return_value = {
+        "ref": {
+            "name": "sandbox-a",
+            "version_id": 7,
+            "commit_id": "base-commit",
+            "parent_version_id": 7,
+        }
+    }
+
+    fork = Volume("models", client=client).at_version(7).fork("sandbox-a")
+
+    client._inner.create_ref.assert_called_once_with("models", "sandbox-a", 7)
+    assert fork.ref == "sandbox-a"
+    assert fork.version == VersionInfo(
+        id=7,
+        ref="sandbox-a",
+        commit_id="base-commit",
+    )
+
+
+def test_forks_can_be_chained(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.return_value = {
+        "volume": _volume_dict(),
+        "version": _version_dict(7),
+    }
+    client._inner.create_ref.side_effect = [
+        {"ref": {"name": "test-fork", "version_id": 7}},
+        {
+            "ref": {
+                "name": "chained-fork",
+                "version_id": 7,
+            }
+        },
+    ]
+
+    chained = Volume("test", client=client).fork("test-fork").fork("chained-fork")
+
+    assert [call.args for call in client._inner.create_ref.call_args_list] == [
+        ("test", "test-fork", 7),
+        ("test", "chained-fork", 7),
+    ]
+    assert chained.ref == "chained-fork"
+
+
+def test_fork_writes_and_lists_versions_on_its_ref(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.return_value = {
+        "volume": _volume_dict(),
+        "version": _version_dict(7),
+    }
+    client._inner.create_ref.return_value = {
+        "ref": {"name": "sandbox-a", "version_id": 7}
+    }
+    client._inner.upload.return_value = [_status_dict(8)]
+    client._inner.list_volume_versions.return_value = {
+        "versions": [_version_dict(8)],
+        "next_cursor": "",
+    }
+    fork = Volume("models", client=client).fork("sandbox-a")
+
+    fork.put_file("result.txt", b"done")
+    versions = fork.versions()
+
+    assert client._inner.upload.call_args.args[-1] == "sandbox-a"
+    client._inner.list_volume_versions.assert_called_once_with(
+        "models", 100, "", "sandbox-a"
+    )
+    assert [version.id for version in versions] == [8]
+
+
+def test_forks_and_delete_fork_delegate_to_native(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.return_value = {
+        "volume": _volume_dict(),
+        "version": _version_dict(),
+    }
+    client._inner.list_refs.return_value = [
+        {
+            "name": "main",
+            "version_id": 10,
+        },
+        {
+            "name": "sandbox-a",
+            "version_id": 7,
+            "parent_version_id": 4,
+        },
+    ]
+    volume = Volume("models", client=client, ref="sandbox-a")
+
+    assert volume.forks() == [
+        ForkInfo(
+            name="sandbox-a",
+            version_id=7,
+            parent_version_id=4,
+        )
+    ]
+    volume.delete_fork()
+
+    client._inner.list_refs.assert_called_once_with("models")
+    client._inner.delete_ref.assert_called_once_with("models", "sandbox-a")
+
+
+def test_fork_mount_uses_default_path_and_pins_tip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    fork = Volume("models", client=client, ref="sandbox-a")
+    fork._version = VersionInfo(id=7, ref="sandbox-a")
+
+    mount = fork.mount()
+
+    assert mount.name == "models"
+    assert mount.mount_path == "/volumes/models"
+    assert mount.version_id == 7
+    assert mount.to_spec_dict()["versionId"] == 7
+
+
 def test_closed_volume_operations_raise(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _make_client(monkeypatch)
     vol = Volume("models", client=client)
@@ -332,6 +485,10 @@ def test_closed_volume_operations_raise(monkeypatch: pytest.MonkeyPatch) -> None
         vol.delete()
     with pytest.raises(VolumeClosedError):
         vol.at_version(7)
+    with pytest.raises(VolumeClosedError):
+        vol.fork("branch")
+    with pytest.raises(VolumeClosedError):
+        vol.forks()
     with pytest.raises(VolumeClosedError):
         with vol.batch_upload():
             pass
@@ -373,8 +530,8 @@ def test_versions_traverse_native_cursor(monkeypatch: pytest.MonkeyPatch) -> Non
         "version": _version_dict(),
     }
     client._inner.list_volume_versions.side_effect = [
-        {"versions": [_version_dict(1, 1)], "next_cursor": "next"},
-        {"versions": [_version_dict(2, 2)], "next_cursor": ""},
+        {"versions": [_version_dict(1)], "next_cursor": "next"},
+        {"versions": [_version_dict(2)], "next_cursor": ""},
     ]
 
     versions = Volume("models", client=client).versions(limit=1)
@@ -428,9 +585,7 @@ def test_dict_commit_status_conversion() -> None:
     assert vv._dict_to_commit_status(_status_dict()) == CommitStatus(
         commit_id="commit-1",
         result="committed",
-        version=VersionInfo(
-            id=11, sequence_number=21, ref="main", commit_id="commit-11"
-        ),
+        version=VersionInfo(id=11, ref="main", commit_id="commit-11"),
     )
 
 

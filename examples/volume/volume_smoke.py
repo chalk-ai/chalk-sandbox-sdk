@@ -46,9 +46,7 @@ def _print_listing(volume: Volume, prefix: str = "") -> None:
 def _print_versions(volume: Volume) -> None:
     print("\nVersions:")
     for version in volume.versions():
-        print(
-            f"  - id={version.id} sequence={version.sequence_number} ref={version.ref or '<none>'}"
-        )
+        print(f"  - id={version.id} ref={version.ref or '<none>'}")
 
 
 def main() -> None:
