@@ -150,7 +150,7 @@ class ConnectClient:
                 os.environ.get("CHALK_API_SERVER") or "https://api.chalk.ai"
             ).rstrip("/")
             self._access_token = identity.value
-            self._env_id = requested_env or identity.environment_id
+            self._env_id = requested_env or identity.environment_id or ""
             self._headers = {
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {identity.value}",

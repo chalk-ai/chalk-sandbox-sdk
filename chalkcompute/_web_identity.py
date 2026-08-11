@@ -24,7 +24,7 @@ class WebIdentityToken:
     """A directly usable Chalk JWT and the environment encoded in it."""
 
     value: str
-    environment_id: str
+    environment_id: str | None
     expires_at: float | None
 
 
@@ -53,11 +53,6 @@ def read_web_identity_token(path: str) -> WebIdentityToken:
 
     claims = _decode_jwt_claims(token, path=path)
     environment_id = claims.get("environment_id")
-    if not isinstance(environment_id, str) or not environment_id:
-        raise WebIdentityTokenError(
-            f"JWT in {WEB_IDENTITY_TOKEN_FILE_ENV_VAR} file {path!r} "
-            "has no non-empty environment_id claim"
-        )
     expiration = claims.get("exp")
     if expiration is None:
         expires_at = None
