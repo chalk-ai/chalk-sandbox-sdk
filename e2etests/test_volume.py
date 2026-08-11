@@ -109,7 +109,9 @@ def test_fork_diverges_from_main(volume: Volume) -> None:
     except VolumeError as error:
         # forks need route_volume_to_dataplane, which meta-ci does not enable
         if error.code == "unimplemented" or "route_volume_to_dataplane" in str(error):
-            warnings.warn(f"forks unavailable in this environment: {error}", stacklevel=1)
+            warnings.warn(
+                f"forks unavailable in this environment: {error}", stacklevel=1
+            )
             pytest.skip(str(error))
         raise
     try:
