@@ -217,9 +217,9 @@ def _wrap_with_span(
 ) -> F:
     """Wrap ``func`` so a span from ``span_factory`` stays open for its full execution.
 
-    Coroutine functions and async generator functions must keep the span current
-    while the coroutine is awaited or the generator is iterated, not just while
-    the coroutine/generator object is constructed.
+    Coroutine functions, async generator functions, and generator functions must
+    keep the span current while the coroutine is awaited or the generator is
+    iterated, not just while the coroutine/generator object is constructed.
     """
     if inspect.iscoroutinefunction(func):
 
@@ -239,6 +239,15 @@ def _wrap_with_span(
                     yield item
 
         return cast(F, async_gen_wrapper)
+
+    if inspect.isgeneratorfunction(func):
+
+        @functools.wraps(func)
+        def gen_wrapper(*args: Any, **kwargs: Any) -> Any:
+            with span_factory():
+                yield from func(*args, **kwargs)
+
+        return cast(F, gen_wrapper)
 
     @functools.wraps(func)
     def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
