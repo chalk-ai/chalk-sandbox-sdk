@@ -22,6 +22,7 @@ class _RecordingSandboxClient:
             **kwargs,
             "cpu": sandbox._cpu,
             "memory": sandbox._memory,
+            "volumes": sandbox._volumes,
         }
         sandbox._id = "sandbox-123"
 
@@ -231,3 +232,81 @@ def test_terminated_during_creation_includes_status_message() -> None:
             client.create("python:3.14-slim", wait=True)
     finally:
         client.close()
+        
+def test_sandbox_referenced_volume_is_existence_checked() -> None:
+    from chalkcompute._volume import VolumeMount
+
+    client = _RecordingSandboxClient()
+    sandbox = Sandbox(
+        image="ubuntu:latest",
+        volumes=[("my-data", "/data")],
+        sandbox_client=client,  # type: ignore[arg-type]
+    )
+
+    with patch(
+        "chalkcompute._sandbox.referenced_volume_mount",
+        return_value=VolumeMount(name="my-data", mount_path="/data"),
+    ) as resolve:
+        sandbox.run()
+
+    resolve.assert_called_once_with(client._connect, "my-data", "/data")
+    assert client.create_kwargs is not None
+    assert client.create_kwargs["volumes"] == [
+        VolumeMount(name="my-data", mount_path="/data")
+    ]
+
+
+def test_sandbox_missing_referenced_volume_fails_run() -> None:
+    import pytest
+
+    from chalkcompute._volume import VolumeError
+
+    client = _RecordingSandboxClient()
+    sandbox = Sandbox(
+        image="ubuntu:latest",
+        volumes=[("nope", "/data")],
+        sandbox_client=client,  # type: ignore[arg-type]
+    )
+
+    with patch(
+        "chalkcompute._sandbox.referenced_volume_mount",
+        side_effect=VolumeError("Referenced volume 'nope' was not found."),
+    ):
+        with pytest.raises(VolumeError, match="nope"):
+            sandbox.run()
+
+
+def test_sandbox_uploads_lazy_local_files_to_a_volume(tmp_path) -> None:
+    from unittest.mock import MagicMock
+
+    from chalkcompute._volume import VolumeClient, VolumeMount
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "main.py").write_text("print('hi')\n")
+
+    client = _RecordingSandboxClient()
+    image = Image.debian_slim().add_local_dir(str(src), "/app")
+    sandbox = Sandbox(
+        image=image,
+        sandbox_client=client,  # type: ignore[arg-type]
+    )
+
+    volume_client = MagicMock(spec=VolumeClient)
+    volume_client.upload_lazy_files.return_value = [
+        VolumeMount(name="sandbox-files-abc", mount_path="/app")
+    ]
+
+    with (
+        patch("chalkcompute._sandbox.build_image", return_value="img:built"),
+        patch.object(VolumeClient, "from_connect", return_value=volume_client),
+    ):
+        sandbox.run()
+
+    volume_client.upload_lazy_files.assert_called_once_with(
+        image, volume_prefix="sandbox-files"
+    )
+    assert client.create_kwargs is not None
+    assert client.create_kwargs["volumes"] == [
+        VolumeMount(name="sandbox-files-abc", mount_path="/app")
+    ]

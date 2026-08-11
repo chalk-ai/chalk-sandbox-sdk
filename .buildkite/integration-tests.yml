@@ -167,7 +167,7 @@ steps:
       uv sync --locked --all-extras --reinstall-package chalkcompute
 
       echo "--- :floppy_disk: Run volume service integration tests ($$CHALK_API_SERVER)"
-      uv run python -m pytest e2etests/test_volume.py e2etests/test_versioned_volume.py -v -s --tb=short
+      uv run python -m pytest e2etests/test_volume.py -v -s --tb=short
     agents:
       queue: default
     timeout_in_minutes: 15

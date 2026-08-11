@@ -85,12 +85,12 @@ from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._retry import RetryPolicy
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
-    VolumeDriver,
+    VolumeClient,
     VolumeMount,
     cleanup_owned_volumes,
-    resolve_referenced_volume_type,
+    normalize_volume_refs,
+    referenced_volume_mount,
 )
-from chalkcompute._vvolume import VersionedVolumeClient
 
 if TYPE_CHECKING:
     from chalkcompute._image import Image as _Image
@@ -683,15 +683,10 @@ class RemoteClass:
         validate_env(env)
         self._env = env or {}
         self._secrets: list[_Secret] = list(secrets or [])
-        # User-referenced volumes carry no type of their own; their backend
-        # (hence mount type) is resolved once at deploy time via
-        # resolve_referenced_volume_type, then travels on each per-method
-        # deploy request. Never defaulted here.
-        self._referenced_volumes: list[tuple[str, str]] = [
-            (vol_name, mount_path) for vol_name, mount_path in (volumes or [])
-        ]
-        # Populated at deploy time: referenced volumes (typed by lookup) plus
-        # any freshly uploaded volumes (typed by the upload driver).
+        # Existence is checked once at deploy time, not here.
+        self._referenced_volumes: list[tuple[str, str]] = normalize_volume_refs(volumes)
+        # Populated at deploy time: referenced volumes plus any freshly
+        # uploaded volumes.
         self._volumes: list[VolumeMount] = []
         if min_replicas < 0:
             raise ValueError(f"min_replicas must be >= 0, got {min_replicas}")
@@ -701,7 +696,7 @@ class RemoteClass:
             raise ValueError(
                 f"min_replicas ({min_replicas}) must be <= max_replicas ({max_replicas})"
             )
-        self._volume_driver: VolumeDriver | None = None
+        self._volume_driver: VolumeClient | None = None
         self._min_replicas = min_replicas
         self._max_replicas = max_replicas
         self._shutdown_delay_seconds = shutdown_delay_seconds
@@ -1069,15 +1064,10 @@ class RemoteClass:
                 build_timeout=build_timeout,
                 progress_parent=ckey,
             )
-            # Resolve each user-referenced volume's real mount type from its
-            # backend instead of defaulting; a missing volume fails the deploy.
-            # Resolved once here, then reused across every per-method spec.
+            # A missing user-referenced volume fails the deploy. Checked once
+            # here, then reused across every per-method spec.
             referenced_volumes = [
-                VolumeMount(
-                    name=name,
-                    mount_path=mount_path,
-                    type=resolve_referenced_volume_type(self._client, name),
-                )
+                referenced_volume_mount(self._client, name, mount_path)
                 for name, mount_path in self._referenced_volumes
             ]
             self._volumes = [*referenced_volumes, *new_vols]
@@ -1356,9 +1346,7 @@ class RemoteClass:
         if self._volumes:
             # Driver is used here only to perform the delete action, not to
             # derive a mount type.
-            driver = self._volume_driver or VersionedVolumeClient.from_connect(
-                self._client
-            )
+            driver = self._volume_driver or VolumeClient.from_connect(self._client)
             cleanup_owned_volumes(driver, self._volumes, self._referenced_volumes)
         self._volumes = []
         self._volume_driver = None

@@ -1,589 +1,506 @@
 from __future__ import annotations
 
-import logging
-from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import grpc
 import pytest
 
-from chalkcompute._connect import ConnectClient
-from chalkcompute._gen.chalk.volume.v1 import volume_pb2 as pb
+from chalkcompute._gen.chalk.volume.v2 import volume_pb2 as pb_v2
+from chalkcompute._volume import VolumeClosedError, VolumeError, VolumeNotFoundError
+from chalkcompute import _volume as vv
 from chalkcompute._volume import (
-    SimpleVolume as Volume,
-    VolumeClosedError,
+    CommitStatus,
+    VersionInfo,
+    Volume,
     VolumeClient,
+    _CHUNK_MAX_RETRIES,
+    _CHUNK_CONCURRENCY,
+    _CHUNK_SIZE_BYTES,
+    _COMMIT_MAX_REBASE_RETRIES,
+    _FILE_CONCURRENCY,
     _INLINE_THRESHOLD_BYTES,
-    _read_file_bytes,
-    _put_file_presigned,
-    _upload_bytes,
+    _MAX_PACK_BYTES,
+    _RATE_LIMIT_MAX_RETRIES,
+    _read_file_response,
 )
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _disable_tracing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CHALK_REMOTE_FUNCTION_TRACE_POLICY", "always_off")
 
 
-class MockConnect(ConnectClient):
-    def __init__(self, api_server: str) -> None:
-        self._api_server = api_server
-        self._access_token = "token-123"
-        self._env_id = "env-456"
-        self._headers = None
-
-    def _ensure_auth(self) -> None:
-        pass
+def _volume_dict(name: str = "models") -> dict[str, Any]:
+    return {
+        "volume_id": "vol-123",
+        "name": name,
+        "access_mode": 2,
+        "ref": "main",
+    }
 
 
-class RotatingIdentityConnect(MockConnect):
-    def _uses_web_identity_token(self) -> bool:
-        return True
+def _version_dict(version_id: int = 10, sequence_number: int = 20) -> dict[str, Any]:
+    return {
+        "version_id": version_id,
+        "sequence_number": sequence_number,
+        "ref": "main",
+        "commit_id": f"commit-{version_id}",
+    }
 
 
-class FakeRpcError(grpc.RpcError):
-    def __init__(self, code: grpc.StatusCode) -> None:
-        self._code = code
+def _status_dict(version_id: int = 11, sequence_number: int = 21) -> dict[str, Any]:
+    return {
+        "commit_id": "commit-1",
+        "result": "committed",
+        "version": _version_dict(version_id, sequence_number),
+    }
 
-    def code(self) -> grpc.StatusCode:
-        return self._code
 
-
-def _make_vol_client() -> Any:
-    """Build a VolumeClient whose gRPC stubs are mocked out."""
+def _make_client(monkeypatch: pytest.MonkeyPatch) -> VolumeClient:
+    monkeypatch.setattr(vv, "_NativeVolumeRpcError", RuntimeError)
     client = object.__new__(VolumeClient)
-    client._metadata = [("authorization", "Bearer test-token")]
-    client._stub = MagicMock()
-    client._obj_stub = MagicMock()
-    client._refresh = MagicMock()
+    client._closed = False
+    client._inner = MagicMock()
+    client.close = MagicMock()
     return client
 
 
-def _set_resumable_response(
-    client: VolumeClient,
-    storage_object_id: str = "obj-gcs-123",
-    signed_uri: str = "https://storage.googleapis.com/signed",
+def _not_found() -> RuntimeError:
+    return RuntimeError("not_found", "missing")
+
+
+def test_client_from_connect_uses_connect_http_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    resp = MagicMock()
-    resp.storage_object_id = storage_object_id
-    resp.WhichOneof.return_value = "resumable"
-    resp.resumable.signed_upload_uri = signed_uri
-    client._obj_stub.GetObjectUploadUri.return_value = resp
+    native = MagicMock()
+    monkeypatch.setattr(vv, "_NativeVolumeClient", native)
+    connect = MagicMock()
+    connect._api_server = "https://api.chalk.ai/"
+    connect._access_token = "token"
+    connect._env_id = "env-1"
+
+    client = VolumeClient.from_connect(connect)
+
+    connect._ensure_auth.assert_called_once()
+    assert client._endpoint == "https://api.chalk.ai"
+    # commit_author is None so the native client derives the agent URN
+    # from the credentials.
+    native.assert_called_once_with(
+        "https://api.chalk.ai",
+        "token",
+        "env-1",
+        None,
+        [],
+        "go-api",
+    )
 
 
-def _set_multipart_response(
-    client: VolumeClient,
-    storage_object_id: str = "obj-s3-456",
-    part_uris: list[str] | None = None,
-    completion_uri: str = "https://s3.amazonaws.com/complete",
+def test_client_from_connect_rebuilds_after_identity_token_rotation(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    if part_uris is None:
-        part_uris = ["https://s3.amazonaws.com/part/1"]
-    resp = MagicMock()
-    resp.storage_object_id = storage_object_id
-    resp.WhichOneof.return_value = "multipart"
-    resp.multipart.signed_upload_uris = part_uris + [completion_uri]
-    client._obj_stub.GetObjectUploadUri.return_value = resp
+    native = MagicMock()
+    monkeypatch.setattr(vv, "_NativeVolumeClient", native)
+
+    class RotatingConnect:
+        _api_server = "https://api.chalk.ai"
+        _access_token = "token-one"
+        _env_id = "env-one"
+
+        def _ensure_auth(self) -> None:
+            pass
+
+        def _uses_web_identity_token(self) -> bool:
+            return True
+
+    connect = RotatingConnect()
+    client = VolumeClient.from_connect(connect)  # type: ignore[arg-type]
+    connect._access_token = "token-two"
+    connect._env_id = "env-two"
+
+    _ = client._inner
+
+    assert native.call_count == 2
+    native.assert_called_with(
+        "https://api.chalk.ai",
+        "token-two",
+        "env-two",
+        None,
+        [],
+        "go-api",
+    )
 
 
-# ---------------------------------------------------------------------------
-# Volume constructor
-# ---------------------------------------------------------------------------
+def test_accepts_explicit_client_and_gets_existing_volume_lazily(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.return_value = {
+        "volume": _volume_dict(),
+        "version": _version_dict(),
+    }
+
+    vol = Volume("models", client=client)
+
+    assert vol.name == "models"
+    assert vol._client is client
+    client._inner.get_volume.assert_not_called()
+    assert vol.info.name == "models"
+    assert vol.version.id == 10
+    client._inner.get_volume.assert_called_once_with("models", None, None)
 
 
-class TestVolumeConstructor:
-    def test_accepts_explicit_client_and_gets_existing_volume(self):
-        client = _make_vol_client()
-        client._stub.GetVolume.return_value = pb.GetVolumeResponse(
-            volume=pb.VolumeInfo(name="my-data"),
-        )
+def test_accepts_name_only_and_creates_missing_volume_lazily(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.side_effect = _not_found()
+    client._inner.create_volume.return_value = {"volume": _volume_dict()}
 
-        vol = Volume("my-data", client=client)
+    with patch.object(
+        VolumeClient, "from_connect", return_value=client
+    ) as from_connect:
+        vol = Volume("models")
 
-        assert vol.name == "my-data"
-        assert vol._client is client
-        client._stub.GetVolume.assert_not_called()
-        client._stub.CreateVolume.assert_not_called()
-        assert vol.info.name == "my-data"
-        client._stub.GetVolume.assert_called_once()
-        client._stub.CreateVolume.assert_not_called()
-
-    def test_accepts_name_only_and_creates_missing_volume(self):
-        client = _make_vol_client()
-        client._stub.GetVolume.side_effect = FakeRpcError(grpc.StatusCode.NOT_FOUND)
-        client._stub.CreateVolume.return_value = pb.CreateVolumeResponse(
-            volume=pb.VolumeInfo(name="my-data"),
-        )
-
-        with patch.object(
-            VolumeClient, "from_connect", return_value=client
-        ) as from_connect:
-            vol = Volume("my-data")
-
-        assert vol.name == "my-data"
-        assert vol._client is client
-        from_connect.assert_called_once()
-        client._stub.GetVolume.assert_not_called()
-        client._stub.CreateVolume.assert_not_called()
-        assert vol.info.name == "my-data"
-        client._stub.CreateVolume.assert_called_once()
-
-    def test_put_file_lazily_creates_missing_volume(self):
-        client = _make_vol_client()
-        client._stub.GetVolume.side_effect = FakeRpcError(grpc.StatusCode.NOT_FOUND)
-        client._stub.CreateVolume.return_value = pb.CreateVolumeResponse(
-            volume=pb.VolumeInfo(name="my-data"),
-        )
-        vol = Volume("my-data", client=client)
-
-        vol.put_file("hello.txt", b"hello")
-
-        client._stub.CreateVolume.assert_called_once()
-        req = client._stub.PutFile.call_args[0][0]
-        assert req.volume_name == "my-data"
-        assert req.path == "hello.txt"
-        assert req.data == b"hello"
-
-    def test_can_create_handle_without_get_or_create(self):
-        client = _make_vol_client()
-
-        vol = Volume("my-data", client=client, create_if_missing=False)
-
-        assert vol.name == "my-data"
-        client._stub.GetVolume.assert_not_called()
-        client._stub.CreateVolume.assert_not_called()
-
-    def test_close_closes_default_client(self):
-        client = _make_vol_client()
-        client.close = MagicMock()
-
-        with patch.object(VolumeClient, "from_connect", return_value=client):
-            vol = Volume("my-data")
-
-        vol.close()
-        vol.close()
-
-        client.close.assert_called_once()
-
-    def test_close_closes_explicit_client(self):
-        client = _make_vol_client()
-        client.close = MagicMock()
-        vol = Volume("my-data", client=client)
-
-        vol.close()
-
-        client.close.assert_called_once()
-
-    def test_context_manager_closes_owned_client(self):
-        client = _make_vol_client()
-        client.close = MagicMock()
-
-        with patch.object(VolumeClient, "from_connect", return_value=client):
-            with Volume("my-data") as vol:
-                assert vol.name == "my-data"
-
-        client.close.assert_called_once()
-
-    def test_closed_volume_operations_raise(self):
-        client = _make_vol_client()
-        client.close = MagicMock()
-        vol = Volume("my-data", client=client)
-        vol.close()
-
-        with pytest.raises(VolumeClosedError):
-            _ = vol.info
-        with pytest.raises(VolumeClosedError):
-            vol.reload()
-        with pytest.raises(VolumeClosedError):
-            vol.put_file("hello.txt", b"hello")
-        with pytest.raises(VolumeClosedError):
-            vol.read_file("hello.txt")
-        with pytest.raises(VolumeClosedError):
-            vol.listdir()
-        with pytest.raises(VolumeClosedError):
-            vol.remove_file("hello.txt")
-        with pytest.raises(VolumeClosedError):
-            vol.delete()
-        with pytest.raises(VolumeClosedError):
-            with vol.batch_upload():
-                pass
-        with pytest.raises(VolumeClosedError):
-            with vol:
-                pass
-
-        client._stub.GetVolume.assert_not_called()
-        client._stub.PutFile.assert_not_called()
+    from_connect.assert_called_once()
+    assert vol.info.name == "models"
+    client._inner.create_volume.assert_called_once_with("models", None)
 
 
-# ---------------------------------------------------------------------------
-# VolumeClient construction
-# ---------------------------------------------------------------------------
+def test_create_if_missing_false_propagates_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.side_effect = _not_found()
+    vol = Volume("models", client=client, create_if_missing=False)
+
+    with pytest.raises(VolumeNotFoundError):
+        vol.reload()
+
+    client._inner.create_volume.assert_not_called()
 
 
-class TestVolumeClientFromConnect:
-    def test_builds_tls_client_from_connect_auth(self):
-        connect = MockConnect("https://api.chalk.ai")
+def test_put_file_delegates_to_native_upload(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.return_value = {
+        "volume": _volume_dict(),
+        "version": _version_dict(),
+    }
+    client._inner.upload.return_value = [_status_dict()]
+    vol = Volume("models", client=client)
 
-        with patch("chalkcompute._volume.ConnectClient", return_value=connect):
-            with patch.object(connect, "_ensure_auth") as ensure_auth:
-                client = VolumeClient.from_connect(connect)
+    vol.put_file("models/latest.bin", "hello")
 
-        assert client._target == "api.chalk.ai:443"
-        assert client._metadata == (
-            ("authorization", "Bearer token-123"),
-            ("x-chalk-env-id", "env-456"),
-            ("x-chalk-server", "go-api"),
-        )
-        ensure_auth.assert_called_once_with()
-        client.close()
+    client._inner.upload.assert_called_once_with(
+        "models",
+        [("models/latest.bin", b"hello")],
+        {
+            "chunk_size": _CHUNK_SIZE_BYTES,
+            "inline_threshold": _INLINE_THRESHOLD_BYTES,
+            "max_pack_bytes": _MAX_PACK_BYTES,
+            "file_concurrency": _FILE_CONCURRENCY,
+            "chunk_concurrency": _CHUNK_CONCURRENCY,
+            "batch_size": 1,
+            "max_chunk_retries": _CHUNK_MAX_RETRIES,
+            "max_rate_limit_retries": _RATE_LIMIT_MAX_RETRIES,
+            "max_commit_retries": _COMMIT_MAX_REBASE_RETRIES,
+        },
+    )
+    assert vol.version == VersionInfo(
+        id=11, sequence_number=21, ref="main", commit_id="commit-11"
+    )
 
-    def test_preserves_explicit_port(self):
-        connect = MockConnect("https://api.chalk.ai:7443")
 
-        with patch.object(connect, "_ensure_auth"):
-            client = VolumeClient.from_connect(connect)
+def test_batch_upload_microbatches_by_file_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.return_value = {
+        "volume": _volume_dict(),
+        "version": _version_dict(),
+    }
+    client._inner.upload.return_value = [_status_dict()]
+    vol = Volume("models", client=client)
 
-        assert client._target == "api.chalk.ai:7443"
-        client.close()
+    with vol.batch_upload(max_files_per_commit=2) as batch:
+        for index in range(5):
+            batch.put(f"data/{index}.txt", f"value-{index}")
 
-    def test_metadata_observes_identity_token_rotation(self):
-        connect = RotatingIdentityConnect("https://api.chalk.ai")
-        client = VolumeClient.from_connect(connect)
-        try:
-            assert ("authorization", "Bearer token-123") in client._metadata
+    calls = client._inner.upload.call_args_list
+    assert [call.args[1] for call in calls] == [
+        [("data/0.txt", b"value-0"), ("data/1.txt", b"value-1")],
+        [("data/2.txt", b"value-2"), ("data/3.txt", b"value-3")],
+        [("data/4.txt", b"value-4")],
+    ]
+    assert [call.args[2]["batch_size"] for call in calls] == [2, 2, 1]
 
-            connect._access_token = "rotated-token"
-            connect._env_id = "rotated-env"
 
-            assert ("authorization", "Bearer rotated-token") in client._metadata
-            assert ("x-chalk-env-id", "rotated-env") in client._metadata
-        finally:
-            client.close()
+def test_batch_upload_creates_missing_volume_before_flush(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.side_effect = _not_found()
+    client._inner.create_volume.return_value = {"volume": _volume_dict()}
+    client._inner.upload.return_value = [_status_dict()]
+    vol = Volume("models", client=client)
 
-    def test_from_connect_called_by_volume_init_default(self):
-        client = _make_vol_client()
-        client._stub.GetVolume.return_value = pb.GetVolumeResponse(
-            volume=pb.VolumeInfo(name="test-vol"),
-        )
+    with vol.batch_upload() as batch:
+        batch.put("data/train.csv", "id,label\n")
 
-        with patch.object(
-            VolumeClient, "from_connect", return_value=client
-        ) as from_connect:
-            vol = Volume("test-vol")
+    client._inner.create_volume.assert_called_once_with("models", None)
+    client._inner.upload.assert_called_once()
 
-        assert vol._client is client
-        from_connect.assert_called_once()
 
-    def test_channel_options_are_forwarded(self):
-        client = VolumeClient(
-            "localhost:50051",
-            credentials=grpc.ssl_channel_credentials(),
-            options=[
-                ("grpc.max_send_message_length", -1),
-                ("grpc.max_receive_message_length", -1),
+def test_batch_upload_rejects_invalid_microbatch_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    vol = Volume("models", client=client)
+
+    with pytest.raises(ValueError, match="max_files_per_commit"):
+        with vol.batch_upload(max_files_per_commit=0):
+            pass
+
+
+def test_put_file_from_path_passes_path_to_native(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.return_value = {
+        "volume": _volume_dict(),
+        "version": _version_dict(),
+    }
+    client._inner.upload.return_value = [_status_dict()]
+    src = tmp_path / "model.bin"
+    src.write_bytes(b"weights")
+
+    Volume("models", client=client).put_file_from_path("model.bin", src)
+
+    assert client._inner.upload.call_args.args[1] == [("model.bin", src)]
+
+
+def test_read_file_delegates_to_native_download(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.return_value = {
+        "volume": _volume_dict(),
+        "version": _version_dict(),
+    }
+    client._inner.download_bytes.return_value = b"old"
+    vol = Volume("models", client=client).at_version(7)
+
+    assert vol.read_file("model.bin") == b"old"
+    client._inner.download_bytes.assert_called_once_with(
+        "models",
+        "model.bin",
+        7,
+        None,
+    )
+
+
+def test_at_version_is_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _make_client(monkeypatch)
+    vol = Volume("models", client=client).at_version(7)
+
+    with pytest.raises(VolumeError, match="read-only"):
+        vol.put_file("model.bin", b"new")
+
+    client._inner.upload.assert_not_called()
+
+
+def test_closed_volume_operations_raise(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _make_client(monkeypatch)
+    vol = Volume("models", client=client)
+    vol.close()
+
+    with pytest.raises(VolumeClosedError):
+        _ = vol.info
+    with pytest.raises(VolumeClosedError):
+        vol.put_file("model.bin", b"new")
+    with pytest.raises(VolumeClosedError):
+        vol.read_file("model.bin")
+    with pytest.raises(VolumeClosedError):
+        vol.listdir()
+    with pytest.raises(VolumeClosedError):
+        vol.remove_file("model.bin")
+    with pytest.raises(VolumeClosedError):
+        vol.versions()
+    with pytest.raises(VolumeClosedError):
+        vol.latest_version()
+    with pytest.raises(VolumeClosedError):
+        vol.delete()
+    with pytest.raises(VolumeClosedError):
+        vol.at_version(7)
+    with pytest.raises(VolumeClosedError):
+        with vol.batch_upload():
+            pass
+
+    client._inner.get_volume.assert_not_called()
+    client._inner.upload.assert_not_called()
+
+
+def test_listdir_recurses_through_native_pages(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.return_value = {
+        "volume": _volume_dict(),
+        "version": _version_dict(),
+    }
+    client._inner.list_files.side_effect = [
+        {
+            "files": [
+                {"path": "dir", "size": 0, "kind": 2},
+                {"path": "root.txt", "size": 4, "kind": 1},
             ],
-        )
+            "next_cursor": "",
+            "version": _version_dict(),
+        },
+        {
+            "files": [{"path": "dir/file.txt", "size": 2, "kind": 1}],
+            "next_cursor": "",
+        },
+    ]
 
-        assert client._target == "localhost:50051"
-        client.close()
+    files = Volume("models", client=client).listdir()
 
-
-# ---------------------------------------------------------------------------
-# Upload routing
-# ---------------------------------------------------------------------------
-
-
-class TestReadRouting:
-    def test_signed_download_uri_uses_httpx(self):
-        client = _make_vol_client()
-        resp = MagicMock()
-        resp.WhichOneof.return_value = "signed_download_uri"
-        resp.signed_download_uri = "https://storage.example.com/file"
-        client._stub.GetFile.return_value = resp
-
-        with patch("httpx.get") as mock_get:
-            mock_get.return_value = MagicMock(content=b"payload")
-            data = _read_file_bytes(client, "vol", "file.txt")
-
-        assert data == b"payload"
-        req = client._stub.GetFile.call_args[0][0]
-        assert req.volume_name == "vol"
-        assert req.path == "file.txt"
-        assert req.get_signed_uri is True
-        mock_get.assert_called_once_with(
-            "https://storage.example.com/file", timeout=300
-        )
-
-    def test_inline_data_falls_back_without_http(self):
-        client = _make_vol_client()
-        resp = MagicMock()
-        resp.WhichOneof.return_value = "data"
-        resp.data = b"inline"
-        client._stub.GetFile.return_value = resp
-
-        with patch("httpx.get") as mock_get:
-            data = _read_file_bytes(client, "vol", "file.txt")
-
-        assert data == b"inline"
-        mock_get.assert_not_called()
+    assert [f.path for f in files] == ["dir", "root.txt", "dir/file.txt"]
 
 
-class TestUploadRouting:
-    def test_small_file_routes_to_inline(self):
-        client = _make_vol_client()
+def test_versions_traverse_native_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.return_value = {
+        "volume": _volume_dict(),
+        "version": _version_dict(),
+    }
+    client._inner.list_volume_versions.side_effect = [
+        {"versions": [_version_dict(1, 1)], "next_cursor": "next"},
+        {"versions": [_version_dict(2, 2)], "next_cursor": ""},
+    ]
 
-        _upload_bytes(client, "vol", "file.txt", b"x" * 100)
+    versions = Volume("models", client=client).versions(limit=1)
 
-        req = client._stub.PutFile.call_args[0][0]
-        assert req.data == b"x" * 100
-        assert req.volume_name == "vol"
-        assert req.path == "file.txt"
-        client._obj_stub.GetObjectUploadUri.assert_not_called()
-
-    def test_exactly_at_threshold_uses_inline(self):
-        client = _make_vol_client()
-
-        _upload_bytes(client, "vol", "exact.bin", b"y" * _INLINE_THRESHOLD_BYTES)
-
-        client._stub.PutFile.assert_called_once()
-        client._obj_stub.GetObjectUploadUri.assert_not_called()
-
-    def test_above_threshold_uses_presigned(self):
-        client = _make_vol_client()
-        _set_resumable_response(client)
-        data = b"z" * (_INLINE_THRESHOLD_BYTES + 1)
-
-        with patch("httpx.post") as mock_post, patch("httpx.put") as mock_put:
-            mock_post.return_value = MagicMock(
-                status_code=200,
-                is_success=True,
-                headers={"Location": "https://session/"},
-            )
-            mock_put.return_value = MagicMock(status_code=200, is_success=True)
-
-            _upload_bytes(client, "vol", "large.bin", data)
-
-        client._obj_stub.GetObjectUploadUri.assert_called_once()
-        req = client._stub.PutFile.call_args[0][0]
-        assert req.storage_object_id == "obj-gcs-123"
-        assert not req.data
-
-    def test_inline_upload_logs_completion(self, caplog):
-        client = _make_vol_client()
-
-        with caplog.at_level(logging.INFO, logger="chalkcompute._volume"):
-            _upload_bytes(client, "vol", "file.txt", b"x" * 100)
-
-        assert "Uploaded file.txt (inline, 100 bytes)" in caplog.text
+    assert [v.id for v in versions] == [1, 2]
 
 
-# ---------------------------------------------------------------------------
-# Presigned upload: GCS resumable
-# ---------------------------------------------------------------------------
+def test_delete_delegates_to_native_delete(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.return_value = {
+        "volume": _volume_dict(),
+        "version": _version_dict(),
+    }
+
+    Volume("models", client=client).delete()
+
+    client._inner.delete_volume.assert_called_once_with("models")
 
 
-class TestPresignedResumable:
-    def test_success(self):
-        client = _make_vol_client()
-        _set_resumable_response(client, "gcs-obj", "https://gcs/signed")
-        data = b"B" * (_INLINE_THRESHOLD_BYTES + 1)
-
-        with patch("httpx.post") as mock_post, patch("httpx.put") as mock_put:
-            mock_post.return_value = MagicMock(
-                status_code=200,
-                is_success=True,
-                headers={"Location": "https://session/"},
-            )
-            mock_put.return_value = MagicMock(status_code=200, is_success=True)
-
-            _put_file_presigned(client, "vol", "data.bin", data)
-
-        assert mock_post.call_args[0][0] == "https://gcs/signed"
-        assert mock_put.call_args[0][0] == "https://session/"
-        assert client._stub.PutFile.call_args[0][0].storage_object_id == "gcs-obj"
-
-    def test_refreshes_on_401(self):
-        client = _make_vol_client()
-        first = MagicMock(storage_object_id="old")
-        first.WhichOneof.return_value = "resumable"
-        first.resumable.signed_upload_uri = "https://gcs/old"
-        second = MagicMock(storage_object_id="new")
-        second.WhichOneof.return_value = "resumable"
-        second.resumable.signed_upload_uri = "https://gcs/new"
-        client._obj_stub.GetObjectUploadUri.side_effect = [first, second]
-
-        data = b"C" * (_INLINE_THRESHOLD_BYTES + 1)
-
-        with patch("httpx.post") as mock_post, patch("httpx.put") as mock_put:
-            mock_post.side_effect = [
-                MagicMock(status_code=401, is_success=False),
-                MagicMock(
-                    status_code=200,
-                    is_success=True,
-                    headers={"Location": "https://session/"},
+def test_chunked_read_downloads_chunks_and_joins_by_offset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resp = pb_v2.GetFileResponse(
+        chunked=pb_v2.ChunkedFileContent(
+            chunks=[
+                pb_v2.SignedChunkRef(
+                    signed_download_uri="https://storage/chunk-2",
+                    offset=6,
+                    size=5,
+                ),
+                pb_v2.SignedChunkRef(
+                    signed_download_uri="https://storage/chunk-1",
+                    offset=0,
+                    size=6,
                 ),
             ]
-            mock_put.return_value = MagicMock(status_code=200, is_success=True)
-
-            _put_file_presigned(client, "vol", "file.bin", data)
-
-        assert client._obj_stub.GetObjectUploadUri.call_count == 2
-        assert client._stub.PutFile.call_args[0][0].storage_object_id == "new"
-
-    def test_logs_completion(self, caplog):
-        client = _make_vol_client()
-        _set_resumable_response(client, "gcs-obj", "https://gcs/signed")
-        data = b"B" * (_INLINE_THRESHOLD_BYTES + 1)
-
-        with patch("httpx.post") as mock_post, patch("httpx.put") as mock_put:
-            mock_post.return_value = MagicMock(
-                status_code=200,
-                is_success=True,
-                headers={"Location": "https://session/"},
-            )
-            mock_put.return_value = MagicMock(status_code=200, is_success=True)
-
-            with caplog.at_level(logging.INFO, logger="chalkcompute._volume"):
-                _put_file_presigned(client, "vol", "data.bin", data)
-
-        assert "Resumable upload complete: object=gcs-obj refreshes=0" in caplog.text
-        assert "Uploaded data.bin (presigned resumable" in caplog.text
-
-
-# ---------------------------------------------------------------------------
-# Presigned upload: S3 multipart
-# ---------------------------------------------------------------------------
-
-
-class TestPresignedMultipart:
-    def test_success(self):
-        client = _make_vol_client()
-        _set_multipart_response(
-            client,
-            "s3-obj",
-            part_uris=["https://s3/part/1"],
-            completion_uri="https://s3/complete",
         )
-        data = b"D" * (_INLINE_THRESHOLD_BYTES + 1)
+    )
 
-        with patch("httpx.put") as mock_put, patch("httpx.post") as mock_post:
-            mock_put.return_value = MagicMock(
-                status_code=200,
-                is_success=True,
-                headers={"ETag": '"abc"'},
-            )
-            mock_post.return_value = MagicMock(status_code=200, is_success=True)
+    def read(uri: str) -> bytes:
+        return {
+            "https://storage/chunk-1": b"hello ",
+            "https://storage/chunk-2": b"world",
+        }[uri]
 
-            _put_file_presigned(client, "vol", "archive.tar", data)
-
-        mock_put.assert_called_once_with("https://s3/part/1", content=data, timeout=300)
-        assert mock_post.call_args[0][0] == "https://s3/complete"
-        assert b"abc" in mock_post.call_args[1]["content"]
-        assert client._stub.PutFile.call_args[0][0].storage_object_id == "s3-obj"
-
-    def test_refreshes_on_403(self):
-        import httpx as _httpx
-
-        client = _make_vol_client()
-        first = MagicMock(storage_object_id="old")
-        first.WhichOneof.return_value = "multipart"
-        first.multipart.signed_upload_uris = ["https://s3/p-old", "https://s3/c-old"]
-        second = MagicMock(storage_object_id="new")
-        second.WhichOneof.return_value = "multipart"
-        second.multipart.signed_upload_uris = ["https://s3/p-new", "https://s3/c-new"]
-        client._obj_stub.GetObjectUploadUri.side_effect = [first, second]
-
-        data = b"E" * (_INLINE_THRESHOLD_BYTES + 1)
-
-        forbidden = MagicMock(status_code=403, is_success=False)
-        forbidden.raise_for_status.side_effect = _httpx.HTTPStatusError(
-            "403",
-            request=MagicMock(),
-            response=forbidden,
-        )
-
-        with patch("httpx.put") as mock_put, patch("httpx.post") as mock_post:
-            mock_put.side_effect = [
-                forbidden,
-                MagicMock(status_code=200, is_success=True, headers={"ETag": '"e1"'}),
-            ]
-            mock_post.return_value = MagicMock(status_code=200, is_success=True)
-
-            _put_file_presigned(client, "vol", "data.bin", data)
-
-        assert client._obj_stub.GetObjectUploadUri.call_count == 2
-        assert client._stub.PutFile.call_args[0][0].storage_object_id == "new"
-
-    def test_logs_completion(self, caplog):
-        client = _make_vol_client()
-        _set_multipart_response(
-            client,
-            "s3-obj",
-            part_uris=["https://s3/part/1"],
-            completion_uri="https://s3/complete",
-        )
-        data = b"D" * (_INLINE_THRESHOLD_BYTES + 1)
-
-        with patch("httpx.put") as mock_put, patch("httpx.post") as mock_post:
-            mock_put.return_value = MagicMock(
-                status_code=200,
-                is_success=True,
-                headers={"ETag": '"abc"'},
-            )
-            mock_post.return_value = MagicMock(status_code=200, is_success=True)
-
-            with caplog.at_level(logging.INFO, logger="chalkcompute._volume"):
-                _put_file_presigned(client, "vol", "archive.tar", data)
-
-        assert (
-            "Multipart upload complete: object=s3-obj parts=1 refreshes=0"
-            in caplog.text
-        )
-        assert "Uploaded archive.tar (presigned multipart" in caplog.text
+    monkeypatch.setattr(vv, "_read_file_from_signed_uri", read)
+    assert _read_file_response(resp) == b"hello world"
 
 
-# ---------------------------------------------------------------------------
-# upload_lazy_files
-# ---------------------------------------------------------------------------
+def test_dict_commit_status_conversion() -> None:
+    assert vv._dict_to_commit_status(_status_dict()) == CommitStatus(
+        commit_id="commit-1",
+        result="committed",
+        version=VersionInfo(
+            id=11, sequence_number=21, ref="main", commit_id="commit-11"
+        ),
+    )
 
 
-class TestUploadLazyFiles:
-    def test_creates_volume_and_uploads(self, tmp_path: Path):
-        src = tmp_path / "hello.txt"
-        src.write_bytes(b"hello")
+def _lazy_image(tmp_path, dest: str = "/app/f.txt"):
+    from chalkcompute._image import Image, LazyLocalFile
 
-        from chalkcompute._image import Image, LazyLocalFile
+    src = tmp_path / "f.txt"
+    src.write_bytes(b"hi")
+    image = Image.base("python:3.14")
+    image._lazy_local_files = {LazyLocalFile(src=str(src), dest=dest)}
+    return image, src
 
-        image = Image.base("python:3.14")
-        image._lazy_local_files = {LazyLocalFile(src=str(src), dest="/app/hello.txt")}
 
-        client = _make_vol_client()
-        mock_vol = MagicMock()
-        mock_vol.name = "test-vol-abc"
-        client.create = MagicMock(return_value=mock_vol)
+def test_stage_lazy_files_creates_source_code_volume_and_returns_intent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from pathlib import Path
 
-        with patch("chalkcompute._volume._upload_bytes") as mock_upload:
-            volumes = client.upload_lazy_files(image)
+    image, src = _lazy_image(tmp_path)
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.side_effect = _not_found()
+    client._inner.create_volume.return_value = {"volume": _volume_dict("src-vol")}
+    intent = pb_v2.CommitIntent(
+        volume=pb_v2.VolumeRef(name="src-vol"), author="chalk:env:agent:a"
+    )
+    client._inner.staged_intent.return_value = intent.SerializeToString()
 
-        client.create.assert_called_once()
-        mock_upload.assert_called_once()
-        assert mock_upload.call_args[0][1] == "test-vol-abc"
-        assert mock_upload.call_args[0][3] == b"hello"
-        from chalkcompute._volume import VolumeMount
+    volumes, intents = client.stage_lazy_files(image, volume_name="fn-src-add")
 
-        assert volumes == [
-            VolumeMount(name="test-vol-abc", mount_path="/app", type="chalkfs")
-        ]
+    client._inner.create_volume.assert_called_once_with("fn-src-add-app", "source_code")
 
-    def test_empty_image_returns_early(self):
-        from chalkcompute._image import Image
+    (staged_name, source), _ = client._inner.stage.call_args
+    assert staged_name == "fn-src-add-app"
+    assert source == [("f.txt", Path(str(src)))]
 
-        image = Image.base("python:3.14")
-        image._lazy_local_files = set()
+    assert intents == [{"volume": {"name": "src-vol"}, "author": "chalk:env:agent:a"}]
+    assert len(volumes) == 1
+    assert volumes[0].name == "fn-src-add-app"
+    assert volumes[0].mount_path == "/app"
+    assert volumes[0].to_spec_dict()["type"] == "versioned_chalkfs"
+    # Nothing commits client-side: the intent lands via volume_commits.
+    client._inner.commit_staged.assert_not_called()
+    client._inner.upload.assert_not_called()
 
-        client = _make_vol_client()
-        client.create = MagicMock()
 
-        assert client.upload_lazy_files(image) == []
-        client.create.assert_not_called()
+def test_stage_lazy_files_reuses_volume_and_replaces_base_tree(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    image, _src = _lazy_image(tmp_path)
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.return_value = {
+        "volume": _volume_dict("fn-src-add-app"),
+        "version": _version_dict(),
+    }
+    intent = pb_v2.CommitIntent(volume=pb_v2.VolumeRef(name="fn-src-add-app"))
+    client._inner.staged_intent.return_value = intent.SerializeToString()
+
+    volumes, intents = client.stage_lazy_files(image, volume_name="fn-src-add")
+
+    client._inner.create_volume.assert_not_called()
+    assert volumes[0].name == "fn-src-add-app"
+    # A recursive root remove tells the server to build the version from
+    # an empty tree plus the upserts.
+    assert intents[0]["pathDeltas"]["removes"] == [{"path": "/", "recursive": True}]
+
+
+def test_native_client_symbol_is_bound() -> None:
+    from chalkcompute import _volume
+
+    if _volume._native is None:
+        pytest.skip("native extension not built")
+    assert _volume._NativeVolumeClient is not None
+    assert _volume._NativeVolumeRpcError is not None

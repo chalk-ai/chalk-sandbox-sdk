@@ -2,11 +2,11 @@
 # requires-python = ">=3.11"
 # dependencies = ["boto3", "chalkcompute"]
 # ///
-"""Copy object-store bucket contents into a VersionedVolume.
+"""Copy object-store bucket contents into a Volume.
 
 Works with AWS S3 and any S3-compatible provider (Google Cloud Storage,
 Cloudflare R2, MinIO, etc).  Downloads objects concurrently to a temporary
-directory, then uploads each chunk as a single versioned commit.  The native
+directory, then uploads each chunk as a single commit.  The native
 Rust client handles chunking and concurrent uploads internally.
 
 Disk usage is bounded to roughly `max_files_per_commit x avg_object_size`
@@ -14,18 +14,18 @@ at any point: each batch is downloaded, committed, and cleaned up before
 the next batch begins.
 
 AWS S3 (credentials from env / ~/.aws/credentials / instance profile):
-    uv run python examples/versioned_volume/copy_s3_to_volume.py \\
+    uv run python examples/volume/copy_s3_to_volume.py \\
         --bucket my-bucket --volume my-volume
-    uv run python examples/versioned_volume/copy_s3_to_volume.py \\
+    uv run python examples/volume/copy_s3_to_volume.py \\
         --bucket my-bucket --prefix data/2024/ \\
         --volume my-volume --dest-prefix imported/
-    uv run python examples/versioned_volume/copy_s3_to_volume.py \\
+    uv run python examples/volume/copy_s3_to_volume.py \\
         --bucket my-bucket --volume my-volume --dry-run
 
 Google Cloud Storage via the S3-compatible XML API (requires HMAC keys):
     export AWS_ACCESS_KEY_ID=$GOOGLE_ACCESS_KEY_ID
     export AWS_SECRET_ACCESS_KEY=$GOOGLE_ACCESS_KEY_SECRET
-    uv run python examples/versioned_volume/copy_s3_to_volume.py \\
+    uv run python examples/volume/copy_s3_to_volume.py \\
         --bucket my-gcs-bucket --volume my-volume \\
         --endpoint-url https://storage.googleapis.com
 """
@@ -44,7 +44,7 @@ from typing import Any
 
 import boto3
 
-from chalkcompute import VersionedVolume
+from chalkcompute import Volume
 
 log = logging.getLogger(__name__)
 
@@ -114,7 +114,7 @@ def copy_s3_to_volume(
     s3_client: Any,
     bucket: str,
     prefix: str,
-    volume: VersionedVolume,
+    volume: Volume,
     dest_prefix: str = "",
     max_download_workers: int = _DEFAULT_MAX_DOWNLOAD_WORKERS,
     max_files_per_commit: int = _DEFAULT_MAX_FILES_PER_COMMIT,
@@ -177,7 +177,7 @@ def main() -> None:
     parser.add_argument(
         "--volume",
         required=True,
-        help="Destination VersionedVolume name (created if absent).",
+        help="Destination Volume name (created if absent).",
     )
     parser.add_argument(
         "--dest-prefix",
@@ -194,7 +194,7 @@ def main() -> None:
         "--max-files-per-commit",
         type=int,
         default=_DEFAULT_MAX_FILES_PER_COMMIT,
-        help=f"Files per versioned volume commit (default: {_DEFAULT_MAX_FILES_PER_COMMIT}).",
+        help=f"Files per volume commit (default: {_DEFAULT_MAX_FILES_PER_COMMIT}).",
     )
     parser.add_argument(
         "--endpoint-url",
@@ -247,7 +247,7 @@ def main() -> None:
         print("Dry run: listing only, no uploads.")
 
     start = time.perf_counter()
-    with VersionedVolume(args.volume) as volume:
+    with Volume(args.volume) as volume:
         file_count, total_bytes = copy_s3_to_volume(
             s3_client=s3,
             bucket=args.bucket,
