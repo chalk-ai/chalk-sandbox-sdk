@@ -232,7 +232,8 @@ def test_terminated_during_creation_includes_status_message() -> None:
             client.create("python:3.14-slim", wait=True)
     finally:
         client.close()
-        
+
+
 def test_sandbox_referenced_volume_is_existence_checked() -> None:
     from chalkcompute._volume import VolumeMount
 
