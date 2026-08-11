@@ -20,7 +20,6 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 _TRACER_NAME = "chalkcompute"
 _DEFAULT_PUBLIC_SPAN_NAME = "chalkcompute.span"
-
 _TRACE_CONTEXT_METADATA_KEYS = ("traceparent", "tracestate", "baggage")
 _REMOTE_FUNCTION_TRACE_POLICY_ENV_VAR = "CHALK_REMOTE_FUNCTION_TRACE_POLICY"
 _initialized = False
