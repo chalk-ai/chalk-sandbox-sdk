@@ -1,13 +1,7 @@
-"""Process-wide shared gRPC channel registry.
+"""Process-wide shared gRPC channel.
 
-Every unary RPC in the SDK multiplexes over one long-lived HTTP/2 channel per
-``(target, tls)`` pair instead of opening a TCP+TLS connection per call
-
-grpc-python's C-core channel is thread-safe for concurrent sync callers, so
-worker threads share it directly.
-
-Environment selection stays out of the cache key: ``x-chalk-env-id`` is
-per-call metadata, so one channel serves every environment on a target.
+Every unary RPC in the SDK multiplexes over one long-lived HTTP/2 channel
+instead of opening a TCP+TLS connection per call.
 """
 
 from __future__ import annotations
@@ -16,7 +10,6 @@ import atexit
 import dataclasses
 import json
 import logging
-import threading
 from typing import Any
 
 import grpc
@@ -80,7 +73,7 @@ _SERVICE_CONFIG = _ServiceConfig()
 
 
 def default_channel_options() -> list[tuple[str, Any]]:
-    """Channel options for the shared registry."""
+    """Channel options for the shared channel."""
     return [
         ("grpc.keepalive_time_ms", _KEEPALIVE_TIME_MS),
         ("grpc.keepalive_timeout_ms", _KEEPALIVE_TIMEOUT_MS),
@@ -122,44 +115,40 @@ class _TracingInterceptor(grpc.UnaryUnaryClientInterceptor):
             return call
 
 
-_lock = threading.Lock()
-_channels: dict[tuple[str, bool], grpc.Channel] = {}
+_channel: grpc.Channel | None = None
 
 
 def get_channel(target: str, use_tls: bool) -> grpc.Channel:
-    """Return the process-wide shared channel for ``(target, use_tls)``.
+    """Return the process-wide shared channel, dialing it on first use.
 
     Dials lazily (constructing a channel to an unreachable target is safe)
     and memoizes.
     """
-    cache_key = (target, use_tls)
-    with _lock:
-        channel = _channels.get(cache_key)
-        if channel is None:
-            # Create channel:
-            base = (
-                grpc.secure_channel(
-                    target,
-                    grpc.ssl_channel_credentials(),
-                    options=default_channel_options(),
-                )
-                if use_tls
-                else grpc.insecure_channel(target, options=default_channel_options())
+    global _channel
+    if _channel is None:
+        # Create channel:
+        base = (
+            grpc.secure_channel(
+                target,
+                grpc.ssl_channel_credentials(),
+                options=default_channel_options(),
             )
-            channel = grpc.intercept_channel(base, _TracingInterceptor())
-            _channels[cache_key] = channel
-        return channel
+            if use_tls
+            else grpc.insecure_channel(target, options=default_channel_options())
+        )
+        _channel = grpc.intercept_channel(base, _TracingInterceptor())
+    return _channel
 
 
-def close_all() -> None:
-    """Close every channel in the registry and empty it."""
-    with _lock:
-        for channel in _channels.values():
-            try:
-                channel.close()
-            except Exception:
-                logger.debug("error closing shared channel", exc_info=True)
-        _channels.clear()
+def close_channel() -> None:
+    """Close channel. Intended for process shutdown."""
+    global _channel
+    if _channel is not None:
+        try:
+            _channel.close()
+        except Exception:
+            logger.debug("Error closing channel", exc_info=True)
+    _channel = None
 
 
-atexit.register(close_all)
+atexit.register(close_channel)

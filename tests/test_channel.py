@@ -1,4 +1,4 @@
-"""Tests for the process-wide shared gRPC channel registry."""
+"""Tests for the process-wide shared gRPC channel."""
 
 from __future__ import annotations
 
@@ -13,10 +13,10 @@ from chalkcompute._channel import default_channel_options, get_channel
 
 
 @pytest.fixture(autouse=True)
-def _clean_registry():
-    channel_mod.close_all()
+def _clean_channel():
+    channel_mod.close_channel()
     yield
-    channel_mod.close_all()
+    channel_mod.close_channel()
 
 
 def test_same_key_returns_same_channel() -> None:
@@ -25,21 +25,9 @@ def test_same_key_returns_same_channel() -> None:
     assert a is b
 
 
-def test_distinct_targets_get_distinct_channels() -> None:
+def test_close_channel_allows_redial() -> None:
     a = get_channel("localhost:50051", False)
-    b = get_channel("localhost:50052", False)
-    assert a is not b
-
-
-def test_tls_flag_is_part_of_the_key() -> None:
-    a = get_channel("localhost:50051", False)
-    b = get_channel("localhost:50051", True)
-    assert a is not b
-
-
-def test_close_all_empties_registry() -> None:
-    a = get_channel("localhost:50051", False)
-    channel_mod.close_all()
+    channel_mod.close_channel()
     b = get_channel("localhost:50051", False)
     assert a is not b
 

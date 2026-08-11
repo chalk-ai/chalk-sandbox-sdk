@@ -1011,17 +1011,19 @@ class TestStubAndCall:
         assert ("authorization", "Bearer tok2") in captured[1][1]
         assert ("x-chalk-env-id", "env-1") in captured[1][1]
 
-    def test_stubs_share_the_registry_channel(self, monkeypatch) -> None:
+    def test_stubs_share_the_channel(self, monkeypatch) -> None:
         import chalkcompute._channel as channel_mod
         from chalkcompute._gen.chalk.container.v1 import service_pb2_grpc as pb_grpc
 
         monkeypatch.delenv("CHALK_WEB_IDENTITY_TOKEN_FILE", raising=False)
-        channel_mod.close_all()
+        channel_mod.close_channel()
         try:
             client = self._authed_client()
             client.stub(pb_grpc.ContainerServiceStub)
+            first = channel_mod._channel
             client.stub(pb_grpc.ContainerServiceStub)
-            # Both stubs were built on the one registry channel for the target.
-            assert len(channel_mod._channels) == 1
+            # Both stubs were built on the one shared channel.
+            assert first is not None
+            assert channel_mod._channel is first
         finally:
-            channel_mod.close_all()
+            channel_mod.close_channel()
