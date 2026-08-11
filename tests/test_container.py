@@ -259,7 +259,9 @@ def test_mount_volume_sent_in_run_container_rpc() -> None:
     ) as resolve:
         container.run()
 
-    resolve.assert_called_once_with(client, "my-volume", "/data")
+    resolve.assert_called_once_with(
+        client, VolumeMount(name="my-volume", mount_path="/data")
+    )
     spec = client.calls[0].request.container.spec
     assert len(spec.volumes) == 1
     volume = spec.volumes[0]
@@ -268,13 +270,6 @@ def test_mount_volume_sent_in_run_container_rpc() -> None:
         "/data",
         "versioned_chalkfs",
     )
-    resolve.assert_called_once_with(
-        client, VolumeMount(name="my-volume", mount_path="/data")
-    )
-    _, _, body, _ = client.calls[0]
-    assert body["container"]["spec"]["volumes"] == [
-        {"name": "my-volume", "mountPath": "/data", "type": "versioned_chalkfs"}
-    ]
 
 
 def test_container_run_sends_compute_class() -> None:
