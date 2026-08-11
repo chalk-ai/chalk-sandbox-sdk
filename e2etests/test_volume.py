@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 import uuid
+import warnings
 
 import pytest
 
@@ -106,7 +107,9 @@ def test_fork_diverges_from_main(volume: Volume) -> None:
     try:
         fork = volume.at_version(base.id).fork(fork_name)
     except VolumeError as error:
-        if error.code == "unimplemented":
+        # forks need route_volume_to_dataplane, which meta-ci does not enable
+        if error.code == "unimplemented" or "route_volume_to_dataplane" in str(error):
+            warnings.warn(f"forks unavailable in this environment: {error}", stacklevel=1)
             pytest.skip(str(error))
         raise
     try:
