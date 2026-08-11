@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, NoReturn, cast
 import grpc
 from google.protobuf import json_format
 
+from chalkcompute._channel import get_channel
 from chalkcompute._connect import (
     ConnectClient,
     grpc_error_message,
@@ -785,8 +786,6 @@ class ContainerSessionClient:
 
     @classmethod
     def from_connect(cls, connect: ConnectClient) -> ContainerSessionClient:
-        from chalkcompute._channel import get_channel
-
         connect._ensure_auth()
         target, use_tls = grpc_target_from_url(connect._api_server or "")
         return cls(
