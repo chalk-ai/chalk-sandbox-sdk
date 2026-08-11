@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from chalkcompute import Image, Sandbox
@@ -210,6 +210,30 @@ def test_sandbox_exec_uses_v2_process_service() -> None:
     assert list(stub.request.new_process.args) == ["hello"]
 
 
+class _TerminatedStub:
+    def CreateSandbox(self, request: pb.CreateSandboxRequest, **_kwargs: object):
+        return pb.CreateSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id="sandbox-123",
+                status=pb.SANDBOX_STATUS_TERMINATED,
+                created_at={"seconds": 1},
+                status_message="Exit code 0",
+            )
+        )
+
+
+def test_terminated_during_creation_includes_status_message() -> None:
+    from chalkcompute._sandbox import SandboxTerminatedError
+
+    client = SandboxClient()
+    client._stub = _TerminatedStub()  # type: ignore[assignment]
+    try:
+        with pytest.raises(SandboxTerminatedError, match="Exit code 0"):
+            client.create("python:3.14-slim", wait=True)
+    finally:
+        client.close()
+
+
 def test_sandbox_referenced_volume_is_existence_checked() -> None:
     from chalkcompute._volume import VolumeMount
 
@@ -226,11 +250,53 @@ def test_sandbox_referenced_volume_is_existence_checked() -> None:
     ) as resolve:
         sandbox.run()
 
-    resolve.assert_called_once_with(client._connect, "my-data", "/data")
+    resolve.assert_called_once_with(
+        client._connect, VolumeMount(name="my-data", mount_path="/data")
+    )
     assert client.create_kwargs is not None
     assert client.create_kwargs["volumes"] == [
         VolumeMount(name="my-data", mount_path="/data")
     ]
+
+
+def test_sandbox_accepts_version_pinned_volume_handle() -> None:
+    from chalkcompute._volume import Volume, VolumeMount
+
+    volume = Volume("my-data", client=MagicMock()).at_version(7)
+    client = _RecordingSandboxClient()
+    sandbox = Sandbox(
+        image="ubuntu:latest",
+        volumes=[volume],
+        sandbox_client=client,  # type: ignore[arg-type]
+    )
+
+    with patch(
+        "chalkcompute._sandbox.referenced_volume_mount",
+        side_effect=lambda _connect, mount: mount,
+    ):
+        sandbox.run()
+
+    assert volume.version_id == 7
+    assert client.create_kwargs is not None
+    assert client.create_kwargs["volumes"] == [
+        VolumeMount(
+            name="my-data",
+            mount_path="/volumes/my-data",
+            version_id=7,
+        )
+    ]
+
+
+def test_version_pinned_mount_is_serialized_to_proto() -> None:
+    from chalkcompute._sandbox import _volume_mounts_to_proto
+    from chalkcompute._volume import VolumeMount
+
+    mount = _volume_mounts_to_proto(
+        [VolumeMount(name="my-data", mount_path="/data", version_id=7)]
+    )[0]
+
+    assert mount.version_id == 7
+    assert mount.HasField("version_id")
 
 
 def test_sandbox_missing_referenced_volume_fails_run() -> None:

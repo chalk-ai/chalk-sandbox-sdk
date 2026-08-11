@@ -7,6 +7,7 @@ import pytest
 from chalkcompute import Container, ComputeClass, NetworkPolicy
 from chalkcompute._container import ContainerSecurityPolicy, KernelPolicy
 from chalkcompute._gen.chalk.container.v1 import service_pb2 as pb
+from chalkcompute._volume import VolumeMount
 
 from ._fakes import FakeConnectClient
 
@@ -233,11 +234,10 @@ def test_mount_volume_appends_and_chains() -> None:
         .mount_volume("vol-a", "/data")
         .mount_volume("vol-b", "/scratch")
     )
-    # Referenced volumes carry no type until deploy time; they are stored as
-    # raw (name, mount_path) references and typed by a backend lookup in run().
+    # Referenced volumes are typed by a backend lookup in run().
     assert c._referenced_volumes == [
-        ("vol-a", "/data"),
-        ("vol-b", "/scratch"),
+        VolumeMount(name="vol-a", mount_path="/data"),
+        VolumeMount(name="vol-b", mount_path="/scratch"),
     ]
 
 
@@ -268,6 +268,13 @@ def test_mount_volume_sent_in_run_container_rpc() -> None:
         "/data",
         "versioned_chalkfs",
     )
+    resolve.assert_called_once_with(
+        client, VolumeMount(name="my-volume", mount_path="/data")
+    )
+    _, _, body, _ = client.calls[0]
+    assert body["container"]["spec"]["volumes"] == [
+        {"name": "my-volume", "mountPath": "/data", "type": "versioned_chalkfs"}
+    ]
 
 
 def test_container_run_sends_compute_class() -> None:

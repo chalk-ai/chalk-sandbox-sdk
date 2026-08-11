@@ -59,6 +59,7 @@ from chalkcompute._naming import validate_dns_label, validate_env
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
     MOUNT_TYPE,
+    Volume,
     VolumeClient,
     VolumeMount,
     cleanup_owned_volumes,
@@ -69,7 +70,7 @@ from chalkcompute._volume import (
 # Aliases defined before SandboxClient, which has a ``.list()`` method that
 # would otherwise shadow the builtin ``list`` in class-scope name resolution.
 _GrpcMetadata = list[tuple[str, str]]
-_VolumeList = list[tuple[str, str]]
+_VolumeList = list[tuple[str, str] | Volume | VolumeMount]
 
 
 # ---------------------------------------------------------------------------
@@ -89,48 +90,35 @@ class SandboxNotFoundError(SandboxError):
     pass
 
 
-class SandboxTerminatedError(SandboxError):
+class SandboxStatusError(SandboxError):
+    """Sandbox error carrying the backend's lifecycle status details."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        sandbox_id: str | None = None,
+        status: str | None = None,
+        status_message: str | None = None,
+        build_id: str | None = None,
+    ) -> None:
+        self.sandbox_id = sandbox_id
+        self.status = status
+        self.status_message = status_message
+        self.build_id = build_id
+        super().__init__(message)
+
+
+class SandboxTerminatedError(SandboxStatusError):
     """Raised when a sandbox has terminated."""
 
-    pass
 
-
-class SandboxBuildError(SandboxError):
+class SandboxBuildError(SandboxStatusError):
     """Raised when a custom sandbox image build fails."""
 
-    def __init__(
-        self,
-        message: str,
-        *,
-        sandbox_id: str | None = None,
-        status: str | None = None,
-        status_message: str | None = None,
-        build_id: str | None = None,
-    ) -> None:
-        self.sandbox_id = sandbox_id
-        self.status = status
-        self.status_message = status_message
-        self.build_id = build_id
-        super().__init__(message)
 
-
-class SandboxCreationError(SandboxError):
+class SandboxCreationError(SandboxStatusError):
     """Raised when sandbox creation or startup fails."""
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        sandbox_id: str | None = None,
-        status: str | None = None,
-        status_message: str | None = None,
-        build_id: str | None = None,
-    ) -> None:
-        self.sandbox_id = sandbox_id
-        self.status = status
-        self.status_message = status_message
-        self.build_id = build_id
-        super().__init__(message)
 
 
 class ExecError(SandboxError):
@@ -454,7 +442,7 @@ class Sandbox:
         cpu: str | None = None,
         memory: str | None = None,
         env: dict[str, str] | None = None,
-        volumes: list[tuple[str, str]] | None = None,
+        volumes: _VolumeList | None = None,
         entrypoint: list[str] | None = None,
         network_policy: NetworkPolicy | None = None,
         restart_policy: RestartPolicy | None = None,
@@ -519,7 +507,7 @@ class Sandbox:
         self._memory: str | None = None
         self._env: dict[str, str] = {}
         # Existence is checked at run() time, not here.
-        self._referenced_volumes: list[tuple[str, str]] = []
+        self._referenced_volumes: list[VolumeMount] = []
         # Populated at run() time: referenced volumes plus any freshly
         # uploaded volumes.
         self._volumes: list[VolumeMount] = []
@@ -642,7 +630,7 @@ class Sandbox:
         ...     .run()
         ... )
         """
-        self._referenced_volumes.append((name, mount_path))
+        self._referenced_volumes.append(VolumeMount(name=name, mount_path=mount_path))
         return self
 
     @_instrumented("chalkcompute.sandbox.run")
@@ -691,8 +679,8 @@ class Sandbox:
         # A missing user-referenced volume fails run().
         connect = self._connect_client(client)
         self._volumes = [
-            referenced_volume_mount(connect, name, mount_path)
-            for name, mount_path in self._referenced_volumes
+            referenced_volume_mount(connect, mount)
+            for mount in self._referenced_volumes
         ]
         # Upload the image's lazy local files (add_local_file / add_local_dir
         # with the default strategy="volume") and mount them alongside.
@@ -1272,12 +1260,8 @@ class SandboxClient:
                 poll_interval=poll_interval,
                 timeout=timeout,
             )
-        elif wait and info.status in ("failed", "error", "unknown"):
+        elif wait and info.status in ("failed", "error", "unknown", "terminated"):
             raise _sandbox_creation_error(info)
-        elif wait and info.status == "terminated":
-            raise SandboxTerminatedError(
-                f"Sandbox {info.id} was terminated during creation"
-            )
 
         sandbox._id = info.id
         sandbox._info = info
@@ -1303,12 +1287,8 @@ class SandboxClient:
             info = _pb_to_sandbox_info(resp.sandbox)
             if info.status == "running":
                 return info
-            if info.status in ("failed", "error", "unknown"):
+            if info.status in ("failed", "error", "unknown", "terminated"):
                 raise _sandbox_creation_error(info)
-            if info.status == "terminated":
-                raise SandboxTerminatedError(
-                    f"Sandbox {sandbox_id} was terminated during creation"
-                )
             time.sleep(poll_interval)
         raise SandboxError(
             f"Timed out after {timeout}s waiting for sandbox {sandbox_id} to become ready"
@@ -1363,12 +1343,17 @@ def _pb_to_sandbox_info(info: pb.SandboxInfo) -> SandboxInfo:
     )
 
 
-def _sandbox_creation_error(info: SandboxInfo) -> SandboxCreationError:
+def _sandbox_creation_error(info: SandboxInfo) -> SandboxStatusError:
     """Build a detailed error from the backend's sandbox status."""
-    message = f"Sandbox {info.id} entered {info.status} state during creation"
+    if info.status == "terminated":
+        exc_cls: type[SandboxStatusError] = SandboxTerminatedError
+        message = f"Sandbox {info.id} was terminated during creation"
+    else:
+        exc_cls = SandboxCreationError
+        message = f"Sandbox {info.id} entered {info.status} state during creation"
     if info.status_message:
         message = f"{message}: {info.status_message}"
-    return SandboxCreationError(
+    return exc_cls(
         message,
         sandbox_id=info.id,
         status=info.status,
@@ -1435,10 +1420,17 @@ def _handle_rpc_error(e: grpc.RpcError, sandbox_id: str) -> None:
 def _volume_mounts_to_proto(
     volumes: list[VolumeMount],
 ) -> list[container_pb.VolumeMount]:
-    return [
-        container_pb.VolumeMount(name=v.name, mount_path=v.mount_path, type=MOUNT_TYPE)
-        for v in volumes
-    ]
+    mounts: list[container_pb.VolumeMount] = []
+    for volume in volumes:
+        mount = container_pb.VolumeMount(
+            name=volume.name,
+            mount_path=volume.mount_path,
+            type=MOUNT_TYPE,
+        )
+        if volume.version_id is not None:
+            mount.version_id = volume.version_id
+        mounts.append(mount)
+    return mounts
 
 
 def connect(target: str = "localhost:50051", **kwargs) -> SandboxClient:

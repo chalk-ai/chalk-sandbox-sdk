@@ -54,6 +54,7 @@ from chalkcompute._naming import (
 )
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
+    Volume,
     VolumeClient,
     VolumeMount,
     cleanup_owned_volumes,
@@ -984,7 +985,7 @@ class Container:
         gpu: str | None = None,
         env: dict[str, str] | None = None,
         secrets: list[Secret] | None = None,
-        volumes: list[tuple[str, str]] | None = None,
+        volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
         port: int | None = None,
         entrypoint: list[str] | None = None,
         lifetime: str | None = None,
@@ -1021,7 +1022,7 @@ class Container:
         self._env = dict(env) if env else {}
         self._secrets = list(secrets or [])
         # Existence is checked at run() time, not here.
-        self._referenced_volumes: list[tuple[str, str]] = normalize_volume_refs(volumes)
+        self._referenced_volumes: list[VolumeMount] = normalize_volume_refs(volumes)
         # Populated at run() time: referenced volumes plus any freshly
         # uploaded volumes.
         self._volumes: list[VolumeMount] = []
@@ -1245,7 +1246,7 @@ class Container:
         """
         # Referenced volume: its mount type is resolved from the backend at
         # run() time, not defaulted here.
-        self._referenced_volumes.append((name, mount_path))
+        self._referenced_volumes.append(VolumeMount(name=name, mount_path=mount_path))
         return self
 
     # -- Lifecycle -------------------------------------------------------------
@@ -1353,8 +1354,8 @@ class Container:
 
             # 2a. A missing user-referenced volume fails run().
             self._volumes = [
-                referenced_volume_mount(self._client, name, mount_path)
-                for name, mount_path in self._referenced_volumes
+                referenced_volume_mount(self._client, mount)
+                for mount in self._referenced_volumes
             ]
 
             # 2b. Upload lazy local files to a volume (if any)
