@@ -81,12 +81,12 @@ from chalkcompute._tracing import (
     remote_function_call_span,
 )
 from chalkcompute._volume import (
-    VolumeDriver,
-    VolumeError,
+    Volume,
+    VolumeClient,
     VolumeMount,
-    resolve_referenced_volume_type,
+    normalize_volume_refs,
+    referenced_volume_mount,
 )
-from chalkcompute._vvolume import VersionedVolumeClient
 
 logger = logging.getLogger(__name__)
 
@@ -1136,12 +1136,18 @@ def _build_and_upload(
     deploy_image: _Image,
     *,
     label: str,
-    volume_prefix: str,
+    volume_name: str,
     poll_interval: float,
     build_timeout: float,
     progress_parent: str | None = None,
-) -> tuple[str, list[VolumeMount], VolumeDriver | None]:
-    """Build the container image and upload lazy local files.
+) -> tuple[str, list[VolumeMount], VolumeClient | None, list[dict[str, Any]]]:
+    """Build the container image and stage lazy local files.
+
+    Lazy files are uploaded into ``source_code``-kind versioned volumes but
+    not committed: each staged upload is returned as a commit-intent dict for
+    ``CreateExternalFunctionVersionRequest.volume_commits``, so the server
+    commits atomically with the function version and pins the mount to the
+    resulting snapshot.
 
     Parameters
     ----------
@@ -1151,8 +1157,9 @@ def _build_and_upload(
         Declarative image to build.
     label
         Human-readable label used in progress output.
-    volume_prefix
-        Prefix for any new volumes created for lazy local files.
+    volume_name
+        Stable volume name for the lazy local files, derived from the
+        function or class name so redeploys reuse the same volume.
     poll_interval
         Seconds between build status polls.
     build_timeout
@@ -1162,10 +1169,11 @@ def _build_and_upload(
 
     Returns
     -------
-    tuple of (str, list of VolumeMount, VolumeDriver or None)
-        ``(image_uri, new_volumes, driver)``. The driver is returned only so
-        the caller can later delete the uploaded volumes; mount types live on
-        the returned :class:`VolumeMount` objects, never on the driver.
+    tuple of (str, list of VolumeMount, VolumeClient or None, list of dict)
+        ``(image_uri, new_volumes, driver, volume_commits)``. The driver is
+        returned only so the caller can later delete the uploaded volumes;
+        mount types live on the returned :class:`VolumeMount` objects, never
+        on the driver.
     """
     from chalkcompute._progress import progress_add, progress_done
 
@@ -1180,7 +1188,8 @@ def _build_and_upload(
     progress_done(ikey)
 
     new_volumes: list[VolumeMount] = []
-    driver: VolumeDriver | None = None
+    driver: VolumeClient | None = None
+    volume_commits: list[dict[str, Any]] = []
     if deploy_image.lazy_local_files:
         vkey = f"upload:{label}"
         progress_add(
@@ -1190,13 +1199,14 @@ def _build_and_upload(
             parent=progress_parent,
         )
         logger.info("Uploading %d local file(s)...", len(deploy_image.lazy_local_files))
-        driver = VersionedVolumeClient.from_connect(client)
-        new_volumes = driver.upload_lazy_files(
+        vvclient = VolumeClient.from_connect(client)
+        driver = vvclient
+        new_volumes, volume_commits = vvclient.stage_lazy_files(
             deploy_image,
-            volume_prefix=volume_prefix,
+            volume_name=volume_name,
         )
         progress_done(vkey)
-    return image_uri, new_volumes, driver
+    return image_uri, new_volumes, driver, volume_commits
 
 
 def _cleanup_temp_files(paths: list[str]) -> None:
@@ -1244,21 +1254,12 @@ def _make_container_spec(
     gpu
         Optional GPU resource request.
     volumes
-        List of :class:`VolumeMount`. Each mount carries its own ``type``,
-        which is the value stamped into the request; the type is never
-        recomputed from a driver here.
+        List of :class:`VolumeMount`.
 
     Returns
     -------
     dict
         Container spec dictionary.
-
-    Raises
-    ------
-    VolumeError
-        If a volume is missing its mount type. After typed volumes flow from
-        upload/normalization the type is always known, so this guards against
-        an unexpected untyped volume rather than silently guessing one.
     """
     spec: dict[str, Any] = {
         "name": name,
@@ -1282,12 +1283,6 @@ def _make_container_spec(
     if resources:
         spec["resources"] = resources
     if volumes:
-        for v in volumes:
-            if not v.type:
-                raise VolumeError(
-                    f"Volume {v.name!r} mounted at {v.mount_path!r} has no mount "
-                    "type; refusing to guess one for the container spec"
-                )
         spec["volumes"] = [v.to_spec_dict() for v in volumes]
     return spec
 
@@ -1508,12 +1503,13 @@ class RemoteFunction:
         gpu: str | None = None,
         env: dict[str, str] | None = None,
         secrets: list[_Secret] | None = None,
-        volumes: list[tuple[str, str]] | None = None,
+        volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
         min_replicas: int = 1,
         max_replicas: int = 1,
         shutdown_delay_seconds: int | None = None,
         scaling_interval_seconds: int | None = None,
         target_cpu_utilization_percentage: int | None = None,
+        target_gpu_utilization_percentage: int | None = None,
         target_queue_depth: int | None = None,
         serialization_format: SerializationFormat = "pyarrow",
         options: dict[str, str] | None = None,
@@ -1553,27 +1549,10 @@ class RemoteFunction:
 
             self._env[MODELS_ENV_VAR] = encode_models_env(models)
         self._secrets: list[_Secret] = list(secrets or [])
-        referenced_volumes: list[tuple[str, str]] = []
-        if volumes is not None:
-            for item in volumes:
-                if not (
-                    isinstance(item, (tuple, list))
-                    and len(item) == 2
-                    and all(isinstance(s, str) for s in item)
-                ):
-                    raise ValueError(
-                        f"Each volumes entry must be a (name, mount_path) string tuple, got {item!r}. "
-                        f"Example: volumes=[('my-volume', '/data')]"
-                    )
-                # User-referenced volumes have no type of their own at
-                # construction time. Their backend (hence mount type) is
-                # resolved at deploy time via resolve_referenced_volume_type,
-                # not defaulted here: a non-versioned chalkfs volume must not
-                # be sent as versioned_chalkfs.
-                referenced_volumes.append((item[0], item[1]))
-        self._referenced_volumes: list[tuple[str, str]] = referenced_volumes
-        # Populated at deploy time: referenced volumes (typed by lookup) plus
-        # any freshly uploaded volumes (typed by the upload driver).
+        # Existence is checked at deploy time, not here.
+        self._referenced_volumes: list[VolumeMount] = normalize_volume_refs(volumes)
+        # Populated at deploy time: referenced volumes plus any freshly
+        # uploaded volumes.
         self._volumes: list[VolumeMount] = []
         if min_replicas < 0:
             raise ValueError(f"min_replicas must be >= 0, got {min_replicas}")
@@ -1583,7 +1562,7 @@ class RemoteFunction:
             raise ValueError(
                 f"min_replicas ({min_replicas}) must be <= max_replicas ({max_replicas})"
             )
-        self._volume_driver: VolumeDriver | None = None
+        self._volume_driver: VolumeClient | None = None
         self._min_replicas = min_replicas
         self._max_replicas = max_replicas
         self._shutdown_delay_seconds = shutdown_delay_seconds
@@ -1595,6 +1574,22 @@ class RemoteFunction:
                 f"target_cpu_utilization_percentage must be between 1 and 100, got {target_cpu_utilization_percentage}"
             )
         self._target_cpu_utilization_percentage = target_cpu_utilization_percentage
+        if target_gpu_utilization_percentage is not None:
+            if not (0 < target_gpu_utilization_percentage <= 100):
+                raise ValueError(
+                    f"target_gpu_utilization_percentage must be between 1 and 100, got {target_gpu_utilization_percentage}"
+                )
+            if gpu is None:
+                raise ValueError(
+                    "target_gpu_utilization_percentage requires gpu to be set"
+                )
+            # The utilization series only exists while replicas do, so a group that
+            # may reach zero would deactivate and never see a sample to scale back up.
+            if min_replicas < 1:
+                raise ValueError(
+                    f"target_gpu_utilization_percentage requires min_replicas >= 1, got {min_replicas}"
+                )
+        self._target_gpu_utilization_percentage = target_gpu_utilization_percentage
         self._target_queue_depth = target_queue_depth
         self._serialization_format: SerializationFormat = serialization_format
         self._options = options or {}
@@ -1775,6 +1770,7 @@ class RemoteFunction:
         f._shutdown_delay_seconds = None
         f._scaling_interval_seconds = None
         f._target_cpu_utilization_percentage = None
+        f._target_gpu_utilization_percentage = None
         f._target_queue_depth = None
         f._serialization_format = "pyarrow"
         f._options = {}
@@ -1890,24 +1886,19 @@ class RemoteFunction:
             deploy_image = self._build_deploy_image()
 
             # 2. Build image + upload lazy files
-            image_uri, new_vols, driver = _build_and_upload(
+            image_uri, new_vols, driver, volume_commits = _build_and_upload(
                 self._client,
                 deploy_image,
                 label=f"function '{self._func_name}'",
-                volume_prefix="fn-files",
+                volume_name=f"fn-src-{self._explicit_name or self._func_name}",
                 poll_interval=poll_interval,
                 build_timeout=build_timeout,
                 progress_parent=fkey,
             )
-            # Resolve each user-referenced volume's real mount type from its
-            # backend instead of defaulting; a missing volume fails the deploy.
+            # A missing user-referenced volume fails the deploy.
             referenced_volumes = [
-                VolumeMount(
-                    name=name,
-                    mount_path=mount_path,
-                    type=resolve_referenced_volume_type(self._client, name),
-                )
-                for name, mount_path in getattr(self, "_referenced_volumes", [])
+                referenced_volume_mount(self._client, mount)
+                for mount in getattr(self, "_referenced_volumes", [])
             ]
             deploy_volumes = [
                 *referenced_volumes,
@@ -1945,6 +1936,10 @@ class RemoteFunction:
                 scaling_spec["targetCpuUtilizationPercentage"] = (
                     self._target_cpu_utilization_percentage
                 )
+            if self._target_gpu_utilization_percentage is not None:
+                scaling_spec["gpuUtilizationTrigger"] = {
+                    "targetUtilizationPercentage": self._target_gpu_utilization_percentage
+                }
             if self._target_queue_depth is not None:
                 scaling_spec["functionQueueDepthTrigger"] = {
                     "functionName": self._explicit_name or self._func_name,
@@ -2010,6 +2005,8 @@ class RemoteFunction:
             }
             if function_config:
                 create_request["config"] = function_config
+            if volume_commits:
+                create_request["volumeCommits"] = volume_commits
 
             resp = self._client.rpc(
                 _CATALOG_SVC,
@@ -2852,12 +2849,13 @@ def function(
     name: str | None = None,
     env: dict[str, str] | None = None,
     secrets: list[_Secret] | None = None,
-    volumes: list[tuple[str, str]] | None = None,
+    volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
     min_replicas: int = 1,
     max_replicas: int = 1,
     shutdown_delay_seconds: int | None = None,
     scaling_interval_seconds: int | None = None,
     target_cpu_utilization_percentage: int | None = None,
+    target_gpu_utilization_percentage: int | None = None,
     target_queue_depth: int | None = None,
     serialization_format: SerializationFormat = "pyarrow",
     options: dict[str, str] | None = None,
@@ -2883,12 +2881,13 @@ def function(
     name: str | None = None,
     env: dict[str, str] | None = None,
     secrets: list[_Secret] | None = None,
-    volumes: list[tuple[str, str]] | None = None,
+    volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
     min_replicas: int = 1,
     max_replicas: int = 1,
     shutdown_delay_seconds: int | None = None,
     scaling_interval_seconds: int | None = None,
     target_cpu_utilization_percentage: int | None = None,
+    target_gpu_utilization_percentage: int | None = None,
     target_queue_depth: int | None = None,
     serialization_format: SerializationFormat = "pyarrow",
     options: dict[str, str] | None = None,
@@ -2915,12 +2914,13 @@ def function(
     name: str | None = None,
     env: dict[str, str] | None = None,
     secrets: list[_Secret] | None = None,
-    volumes: list[tuple[str, str]] | None = None,
+    volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
     min_replicas: int = 1,
     max_replicas: int = 1,
     shutdown_delay_seconds: int | None = None,
     scaling_interval_seconds: int | None = None,
     target_cpu_utilization_percentage: int | None = None,
+    target_gpu_utilization_percentage: int | None = None,
     target_queue_depth: int | None = None,
     serialization_format: SerializationFormat = "pyarrow",
     options: dict[str, str] | None = None,
@@ -2981,6 +2981,11 @@ def function(
         decisions. Defaults to 60s on the server.
     target_cpu_utilization_percentage
         Target CPU utilization percentage (0-100) that drives autoscaling.
+    target_gpu_utilization_percentage
+        Target GPU utilization percentage (1-100) that drives autoscaling, read
+        from DCGM. Requires ``gpu`` and ``min_replicas >= 1``: the utilization
+        series exists only while replicas do, so this trigger cannot scale a
+        group up from zero.
     target_queue_depth
         Target pending-request queue depth per replica. When set, the
         autoscaler scales on the function's own queue depth.
@@ -3069,6 +3074,7 @@ def function(
             shutdown_delay_seconds=shutdown_delay_seconds,
             scaling_interval_seconds=scaling_interval_seconds,
             target_cpu_utilization_percentage=target_cpu_utilization_percentage,
+            target_gpu_utilization_percentage=target_gpu_utilization_percentage,
             target_queue_depth=target_queue_depth,
             serialization_format=serialization_format,
             options=options,

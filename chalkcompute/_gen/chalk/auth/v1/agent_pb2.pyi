@@ -16,6 +16,13 @@ from typing import (
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
+class ExchangeTokenKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    EXCHANGE_TOKEN_KIND_UNSPECIFIED: _ClassVar[ExchangeTokenKind]
+    EXCHANGE_TOKEN_KIND_INTERNAL_SERVICE: _ClassVar[ExchangeTokenKind]
+    EXCHANGE_TOKEN_KIND_USER: _ClassVar[ExchangeTokenKind]
+    EXCHANGE_TOKEN_KIND_SERVICE_TOKEN: _ClassVar[ExchangeTokenKind]
+
 class AgentKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     AGENT_KIND_UNSPECIFIED: _ClassVar[AgentKind]
@@ -24,13 +31,21 @@ class AgentKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     AGENT_KIND_ENGINE: _ClassVar[AgentKind]
     AGENT_KIND_TENANT: _ClassVar[AgentKind]
     AGENT_KIND_METADATA_SERVICE: _ClassVar[AgentKind]
+    AGENT_KIND_SELF_HOSTED_LICENSE: _ClassVar[AgentKind]
+    AGENT_KIND_RESOURCE_SHARE: _ClassVar[AgentKind]
 
+EXCHANGE_TOKEN_KIND_UNSPECIFIED: ExchangeTokenKind
+EXCHANGE_TOKEN_KIND_INTERNAL_SERVICE: ExchangeTokenKind
+EXCHANGE_TOKEN_KIND_USER: ExchangeTokenKind
+EXCHANGE_TOKEN_KIND_SERVICE_TOKEN: ExchangeTokenKind
 AGENT_KIND_UNSPECIFIED: AgentKind
 AGENT_KIND_USER: AgentKind
 AGENT_KIND_SERVICE_TOKEN: AgentKind
 AGENT_KIND_ENGINE: AgentKind
 AGENT_KIND_TENANT: AgentKind
 AGENT_KIND_METADATA_SERVICE: AgentKind
+AGENT_KIND_SELF_HOSTED_LICENSE: AgentKind
+AGENT_KIND_RESOURCE_SHARE: AgentKind
 
 class EnvironmentPermissions(_message.Message):
     __slots__ = ("permissions", "feature_permissions", "customer_claims")
@@ -199,17 +214,20 @@ class ExchangeTokenDetails(_message.Message):
         "generation_number",
         "subject",
         "environment_id",
+        "kind",
     )
     REQUESTABLE_PERMISSIONS_FIELD_NUMBER: _ClassVar[int]
     GENERATION_NUMBER_FIELD_NUMBER: _ClassVar[int]
     SUBJECT_FIELD_NUMBER: _ClassVar[int]
     ENVIRONMENT_ID_FIELD_NUMBER: _ClassVar[int]
+    KIND_FIELD_NUMBER: _ClassVar[int]
     requestable_permissions: _containers.RepeatedScalarFieldContainer[
         _permissions_pb2.Permission
     ]
     generation_number: int
     subject: str
     environment_id: str
+    kind: ExchangeTokenKind
     def __init__(
         self,
         requestable_permissions: _Optional[
@@ -218,6 +236,7 @@ class ExchangeTokenDetails(_message.Message):
         generation_number: _Optional[int] = ...,
         subject: _Optional[str] = ...,
         environment_id: _Optional[str] = ...,
+        kind: _Optional[_Union[ExchangeTokenKind, str]] = ...,
     ) -> None: ...
 
 class TenantAgent(_message.Message):
@@ -249,6 +268,56 @@ class TenantAgent(_message.Message):
         cluster_id: _Optional[str] = ...,
     ) -> None: ...
 
+class SelfHostedLicenseAgent(_message.Message):
+    __slots__ = ("id", "team_id", "name")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    TEAM_ID_FIELD_NUMBER: _ClassVar[int]
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    team_id: str
+    name: str
+    def __init__(
+        self,
+        id: _Optional[str] = ...,
+        team_id: _Optional[str] = ...,
+        name: _Optional[str] = ...,
+    ) -> None: ...
+
+class NotebookShareScope(_message.Message):
+    __slots__ = ("notebook_id",)
+    NOTEBOOK_ID_FIELD_NUMBER: _ClassVar[int]
+    notebook_id: str
+    def __init__(self, notebook_id: _Optional[str] = ...) -> None: ...
+
+class ResourceShareScope(_message.Message):
+    __slots__ = ("notebook",)
+    NOTEBOOK_FIELD_NUMBER: _ClassVar[int]
+    notebook: NotebookShareScope
+    def __init__(
+        self, notebook: _Optional[_Union[NotebookShareScope, _Mapping]] = ...
+    ) -> None: ...
+
+class ResourceShareAgent(_message.Message):
+    __slots__ = ("id", "team_id", "environment_id", "scope", "requires_authentication")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    TEAM_ID_FIELD_NUMBER: _ClassVar[int]
+    ENVIRONMENT_ID_FIELD_NUMBER: _ClassVar[int]
+    SCOPE_FIELD_NUMBER: _ClassVar[int]
+    REQUIRES_AUTHENTICATION_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    team_id: str
+    environment_id: str
+    scope: ResourceShareScope
+    requires_authentication: bool
+    def __init__(
+        self,
+        id: _Optional[str] = ...,
+        team_id: _Optional[str] = ...,
+        environment_id: _Optional[str] = ...,
+        scope: _Optional[_Union[ResourceShareScope, _Mapping]] = ...,
+        requires_authentication: bool = ...,
+    ) -> None: ...
+
 class Agent(_message.Message):
     __slots__ = (
         "user_agent",
@@ -256,17 +325,23 @@ class Agent(_message.Message):
         "engine_agent",
         "tenant_agent",
         "metadata_service_agent",
+        "self_hosted_license_agent",
+        "resource_share_agent",
     )
     USER_AGENT_FIELD_NUMBER: _ClassVar[int]
     SERVICE_TOKEN_AGENT_FIELD_NUMBER: _ClassVar[int]
     ENGINE_AGENT_FIELD_NUMBER: _ClassVar[int]
     TENANT_AGENT_FIELD_NUMBER: _ClassVar[int]
     METADATA_SERVICE_AGENT_FIELD_NUMBER: _ClassVar[int]
+    SELF_HOSTED_LICENSE_AGENT_FIELD_NUMBER: _ClassVar[int]
+    RESOURCE_SHARE_AGENT_FIELD_NUMBER: _ClassVar[int]
     user_agent: UserAgent
     service_token_agent: ServiceTokenAgent
     engine_agent: EngineAgent
     tenant_agent: TenantAgent
     metadata_service_agent: MetadataServiceAgent
+    self_hosted_license_agent: SelfHostedLicenseAgent
+    resource_share_agent: ResourceShareAgent
     def __init__(
         self,
         user_agent: _Optional[_Union[UserAgent, _Mapping]] = ...,
@@ -274,4 +349,8 @@ class Agent(_message.Message):
         engine_agent: _Optional[_Union[EngineAgent, _Mapping]] = ...,
         tenant_agent: _Optional[_Union[TenantAgent, _Mapping]] = ...,
         metadata_service_agent: _Optional[_Union[MetadataServiceAgent, _Mapping]] = ...,
+        self_hosted_license_agent: _Optional[
+            _Union[SelfHostedLicenseAgent, _Mapping]
+        ] = ...,
+        resource_share_agent: _Optional[_Union[ResourceShareAgent, _Mapping]] = ...,
     ) -> None: ...

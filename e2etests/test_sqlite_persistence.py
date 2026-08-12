@@ -9,11 +9,11 @@ import uuid
 
 import pytest
 
-from chalkcompute import Container, Image
+from chalkcompute import Container, Image, Volume
 from e2etests.conftest import needs_staging
 
 pytestmark = pytest.mark.skip(
-    reason="expensive — overlaps with test_volume_hello for the volume+container path"
+    reason="expensive — overlaps with test_volume for the volume+container path"
 )
 
 MOUNT_PATH = "/data"
@@ -51,17 +51,11 @@ image = Image.debian_slim()
 
 
 def _create_volume(name: str) -> None:
-    c = Container._make_empty()
-    c._ensure_auth()
-    resp = c._volume_rpc("CreateVolume", {"name": name})
-    if resp.status_code != 200 and "already exists" not in resp.text:
-        raise RuntimeError(f"CreateVolume failed: {resp.text}")
+    Volume(name).reload()
 
 
 def _delete_volume(name: str) -> None:
-    c = Container._make_empty()
-    c._ensure_auth()
-    c._volume_rpc("DeleteVolume", {"name": name})
+    Volume(name, create_if_missing=False).delete()
 
 
 @pytest.fixture()

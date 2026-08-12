@@ -43,6 +43,11 @@ class RemoteCallClient:
 
 class VolumeRpcError(RuntimeError): ...
 
+class StagedFiles:
+    def __init__(self) -> None: ...
+    def extend(self, other: StagedFiles) -> None: ...
+    def __len__(self) -> int: ...
+
 class VersionedVolumeNativeClient:
     def __init__(
         self,
@@ -58,7 +63,28 @@ class VersionedVolumeNativeClient:
         volume: str,
         source: Any,
         config: dict[str, Any] | None = None,
+        ref_name: str | None = None,
     ) -> list[dict[str, Any]]: ...
+    def stage(
+        self,
+        volume: str,
+        source: Any,
+        config: dict[str, Any] | None = None,
+    ) -> StagedFiles: ...
+    def staged_intent(
+        self,
+        volume: str,
+        staged: StagedFiles,
+        ref_name: str | None = None,
+    ) -> bytes: ...
+    def commit_staged(
+        self,
+        volume: str,
+        staged: StagedFiles,
+        commit_id: str | None = None,
+        max_commit_retries: int = 3,
+        ref_name: str | None = None,
+    ) -> dict[str, Any]: ...
     def download_bytes(
         self,
         volume: str,
@@ -86,8 +112,11 @@ class VersionedVolumeNativeClient:
         volume: str,
         paths: Sequence[tuple[str, bool]],
         max_commit_retries: int = 3,
+        ref_name: str | None = None,
     ) -> dict[str, Any]: ...
-    def create_volume(self, name: str) -> dict[str, Any]: ...
+    def create_volume(
+        self, name: str, volume_type: str | None = None
+    ) -> dict[str, Any]: ...
     def get_volume(
         self,
         name: str,
@@ -105,6 +134,7 @@ class VersionedVolumeNativeClient:
         name: str,
         limit: int | None = None,
         cursor: str | None = None,
+        ref_name: str | None = None,
     ) -> dict[str, Any]: ...
     def list_files(
         self,
@@ -116,6 +146,11 @@ class VersionedVolumeNativeClient:
         cursor: str | None = None,
     ) -> dict[str, Any]: ...
     def get_commit_status(self, volume: str, commit_id: str) -> dict[str, Any]: ...
+    def create_ref(
+        self, volume: str, name: str, from_version_id: int
+    ) -> dict[str, Any]: ...
+    def list_refs(self, volume: str) -> list[dict[str, Any]]: ...
+    def delete_ref(self, volume: str, name: str) -> None: ...
 
 def configure_volume_client_logging(
     level: str = "info",

@@ -18,11 +18,11 @@ destination path's common ancestor.
 
 from __future__ import annotations
 
-import base64
 import logging
 import queue
 import time
 import uuid
+import warnings
 from collections import deque
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
@@ -30,14 +30,23 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import grpc
+from google.protobuf import json_format
 
+from chalkcompute._channel import get_channel
 from chalkcompute._connect import (
     ConnectClient,
+    grpc_error_message,
     grpc_target_from_url,
     raise_for_grpc_error,
 )
-from chalkcompute._gen.chalk.container.v1 import service_pb2 as pb
-from chalkcompute._gen.chalk.container.v1 import service_pb2_grpc as pb_grpc
+from chalkcompute._gen.chalk.container.v1 import service_pb2 as container_pb
+from chalkcompute._gen.chalk.container.v1 import (
+    service_pb2_grpc as container_pb_grpc,
+)
+from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb2 as pb
+from chalkcompute._gen.chalk.sandbox.v2 import (
+    process_service_pb2_grpc as pb_grpc,
+)
 from chalkcompute._naming import (
     sanitize_dns_label,
     validate_dns_label,
@@ -45,23 +54,19 @@ from chalkcompute._naming import (
 )
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
-    VolumeDriver,
-    VolumeError,
+    Volume,
+    VolumeClient,
     VolumeMount,
     cleanup_owned_volumes,
-    resolve_referenced_volume_type,
+    normalize_volume_refs,
+    referenced_volume_mount,
 )
-from chalkcompute._vvolume import VersionedVolumeClient
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from chalkcompute._image import Image as _Image
     from chalkcompute._secret import Secret
-
-_SVC = "chalk.container.v1.ContainerService"
-_IMAGE_SVC = "chalk.sandbox.v1.CustomImageService"
-
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -139,7 +144,7 @@ class ContainerSecurityPolicy:
     """Kernel hardening policy."""
 
     def to_dict(self) -> dict[str, Any]:
-        return {"kernelPolicy": self.kernel_policy.value}
+        return {"kernelPolicy": f"KERNEL_POLICY_{self.kernel_policy.value}"}
 
 
 _PortRangeInput = tuple[int, int] | int
@@ -289,15 +294,23 @@ class NetworkPolicy:
         """Request transform for a host policy rule."""
 
         headers: dict[str, str] = field(default_factory=dict)
+        headers_secrets: dict[str, str] = field(default_factory=dict)
 
         def __post_init__(self) -> None:
             self.headers = dict(self.headers or {})
             for key, value in self.headers.items():
                 if not isinstance(key, str) or not isinstance(value, str):
                     raise TypeError("headers must be a dict[str, str]")
+            self.headers_secrets = dict(self.headers_secrets or {})
+            for key, value in self.headers_secrets.items():
+                if not isinstance(key, str) or not isinstance(value, str):
+                    raise TypeError("headers_secrets must be a dict[str, str]")
 
         def to_dict(self) -> dict[str, Any]:
-            return {"headers": dict(self.headers)}
+            body: dict[str, Any] = {"headers": dict(self.headers)}
+            if self.headers_secrets:
+                body["headersSecrets"] = dict(self.headers_secrets)
+            return body
 
     @dataclass
     class Rule:
@@ -581,8 +594,8 @@ class ContainerSession:
 
     _client: ContainerSessionClient = field(repr=False)
     _container_id: str = field(repr=False)
-    _request_queue: queue.Queue[pb.SessionRequest | None] = field(repr=False)
-    _response_iterator: Iterator[pb.SessionResponse] = field(repr=False)
+    _request_queue: queue.Queue[pb.OpenSessionRequest | None] = field(repr=False)
+    _response_iterator: Iterator[pb.OpenSessionResponse] = field(repr=False)
     _pending_events: deque[ContainerSession.Event] = field(
         default_factory=deque,
         repr=False,
@@ -600,19 +613,19 @@ class ContainerSession:
         """Write data to the session process's stdin."""
         if isinstance(data, str):
             data = data.encode("utf-8")
-        self._send(pb.SessionRequest(stdin_data=pb.StdinData(data=data)))
+        self._send(pb.OpenSessionRequest(stdin_data=pb.StdinData(data=data)))
 
     def close_stdin(self) -> None:
         """Signal EOF on stdin."""
-        self._send(pb.SessionRequest(stdin_eof=pb.StdinEof()))
+        self._send(pb.OpenSessionRequest(stdin_eof=pb.StdinEof()))
 
     def signal(self, signum: int) -> None:
         """Send a signal to the session process."""
-        self._send(pb.SessionRequest(signal=pb.SessionSignal(signal=signum)))
+        self._send(pb.OpenSessionRequest(signal=pb.SessionSignal(signal=signum)))
 
     def resize(self, cols: int, rows: int) -> None:
         """Resize the session pty."""
-        self._send(pb.SessionRequest(pty_info=_make_pty_info(cols, rows)))
+        self._send(pb.OpenSessionRequest(resize_pty=_make_resize_pty(cols, rows)))
 
     def status(self) -> ContainerSession.Status:
         """Fetch the latest process status for this session."""
@@ -622,7 +635,7 @@ class ContainerSession:
         """Detach this stream from the session without stopping the process."""
         if self._detached:
             return
-        self._send(pb.SessionRequest(detach_session=pb.DetachSession()))
+        self._send(pb.OpenSessionRequest(detach_session=pb.DetachSession()))
         for event in self.events():
             match event:
                 case ContainerSession.DetachedEvent():
@@ -734,7 +747,7 @@ class ContainerSession:
         self._close_request_stream()
         raise ContainerError("Session stream ended before the session was attached")
 
-    def _send(self, request: pb.SessionRequest) -> None:
+    def _send(self, request: pb.OpenSessionRequest) -> None:
         if self._closed_requests:
             raise ContainerError("Session stream is closed")
         self._request_queue.put(request)
@@ -755,15 +768,22 @@ class ContainerSessionClient:
         credentials: grpc.ChannelCredentials | None,
         metadata: list[tuple[str, str]],
         _connect: ConnectClient | None = None,
+        _channel: grpc.Channel | None = None,
     ) -> None:
         self._target = target
         self._static_metadata = metadata
         self._connect = _connect
-        if credentials is not None:
+        if _channel is not None:
+            # Borrowed (shared registry) channel: not ours to close.
+            self._channel = _channel
+            self._owns_channel = False
+        elif credentials is not None:
             self._channel = grpc.secure_channel(target, credentials)
+            self._owns_channel = True
         else:
             self._channel = grpc.insecure_channel(target)
-        self._stub = pb_grpc.ContainerServiceStub(self._channel)
+            self._owns_channel = True
+        self._stub = pb_grpc.SandboxProcessServiceStub(self._channel)
 
     @classmethod
     def from_connect(cls, connect: ConnectClient) -> ContainerSessionClient:
@@ -771,13 +791,14 @@ class ContainerSessionClient:
         target, use_tls = grpc_target_from_url(connect._api_server or "")
         return cls(
             target,
-            credentials=grpc.ssl_channel_credentials() if use_tls else None,
+            credentials=None,
             metadata=connect._grpc_metadata(),
             _connect=(
                 connect
                 if getattr(connect, "_uses_web_identity_token", lambda: False)() is True
                 else None
             ),
+            _channel=get_channel(target, use_tls),
         )
 
     @property
@@ -791,7 +812,8 @@ class ContainerSessionClient:
         self._static_metadata = value
 
     def close(self) -> None:
-        self._channel.close()
+        if self._owns_channel:
+            self._channel.close()
 
     def new_session(
         self,
@@ -805,7 +827,7 @@ class ContainerSessionClient:
     ) -> ContainerSession:
         validate_env(env)
         process = pb.NewProcess(
-            container_id=container_id,
+            sandbox_id=container_id,
             command=command,
             args=list(args),
         )
@@ -813,16 +835,16 @@ class ContainerSessionClient:
             process.workdir = workdir
         if env is not None:
             for key, value in env.items():
-                process.env[key] = value
+                process.env_vars[key] = value
         if timeout_secs is not None:
-            process.timeout_secs = timeout_secs
+            process.timeout.seconds = timeout_secs
         pty_info = _coerce_pty_info(pty)
         if pty_info is not None:
             process.pty_info.CopyFrom(pty_info)
 
         return self._start_session(
             container_id,
-            pb.SessionRequest(new_process=process),
+            pb.OpenSessionRequest(new_process=process),
         )
 
     def attach_session(
@@ -832,13 +854,13 @@ class ContainerSessionClient:
         *,
         pty: bool | tuple[int, int] = False,
     ) -> ContainerSession:
-        attach = pb.AttachSession(container_id=container_id, session_id=session_id)
+        attach = pb.AttachSession(sandbox_id=container_id, session_id=session_id)
         pty_info = _coerce_pty_info(pty)
         if pty_info is not None:
             attach.pty_info.CopyFrom(pty_info)
         return self._start_session(
             container_id,
-            pb.SessionRequest(attach_session=attach),
+            pb.OpenSessionRequest(attach_session=attach),
         )
 
     def get_session(
@@ -848,7 +870,7 @@ class ContainerSessionClient:
     ) -> ContainerSession.Info:
         try:
             resp = self._stub.GetSession(
-                pb.GetSessionRequest(container_id=container_id, session_id=session_id),
+                pb.GetSessionRequest(sandbox_id=container_id, session_id=session_id),
                 metadata=self._metadata,
             )
         except grpc.RpcError as e:
@@ -858,22 +880,42 @@ class ContainerSessionClient:
     def list_sessions(self, container_id: str) -> list[ContainerSession.Info]:
         try:
             resp = self._stub.ListSessions(
-                pb.ListSessionsRequest(container_id=container_id),
+                pb.ListSessionsRequest(sandbox_id=container_id),
                 metadata=self._metadata,
             )
         except grpc.RpcError as e:
             _handle_container_grpc_error(e, container_id)
         return [_pb_to_session_info(container_id, session) for session in resp.sessions]
 
+    def exec_command(
+        self,
+        container_id: str,
+        command: str,
+        *args: str,
+        timeout_secs: int | None = None,
+    ) -> pb.ExecCommandResponse:
+        request = pb.ExecCommandRequest(
+            sandbox_id=container_id,
+            command=command,
+            args=args,
+        )
+        if timeout_secs is not None:
+            request.timeout.seconds = timeout_secs
+        try:
+            return self._stub.ExecCommand(request, metadata=self._metadata)
+        except grpc.RpcError as e:
+            _handle_container_grpc_error(e, container_id)
+            raise
+
     def _start_session(
         self,
         container_id: str,
-        initial_request: pb.SessionRequest,
+        initial_request: pb.OpenSessionRequest,
     ) -> ContainerSession:
-        request_queue: queue.Queue[pb.SessionRequest | None] = queue.Queue()
+        request_queue: queue.Queue[pb.OpenSessionRequest | None] = queue.Queue()
         request_queue.put(initial_request)
 
-        def request_iterator() -> Iterator[pb.SessionRequest]:
+        def request_iterator() -> Iterator[pb.OpenSessionRequest]:
             while True:
                 request = request_queue.get()
                 if request is None:
@@ -881,7 +923,7 @@ class ContainerSessionClient:
                 yield request
 
         try:
-            response_iterator = self._stub.Session(
+            response_iterator = self._stub.OpenSession(
                 request_iterator(),
                 metadata=self._metadata,
             )
@@ -943,7 +985,7 @@ class Container:
         gpu: str | None = None,
         env: dict[str, str] | None = None,
         secrets: list[Secret] | None = None,
-        volumes: list[tuple[str, str]] | None = None,
+        volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
         port: int | None = None,
         entrypoint: list[str] | None = None,
         lifetime: str | None = None,
@@ -954,6 +996,13 @@ class Container:
         tags: dict[str, str] | None = None,
         chalk_client: Any | None = None,
     ) -> None:
+        warnings.warn(
+            "`Container` is deprecated. Use `Sandbox` instead; it is the "
+            "supported API for creating, managing, and executing commands in "
+            "sandboxes.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self._image: _Image | str | None = image
         if name is not None:
             validate_dns_label(name)
@@ -972,29 +1021,14 @@ class Container:
         validate_env(env)
         self._env = dict(env) if env else {}
         self._secrets = list(secrets or [])
-        referenced_volumes: list[tuple[str, str]] = []
-        if volumes is not None:
-            for item in volumes:
-                if not (
-                    isinstance(item, (tuple, list))
-                    and len(item) == 2
-                    and all(isinstance(s, str) for s in item)
-                ):
-                    raise ValueError(
-                        f"Each volumes entry must be a (name, mount_path) string tuple, got {item!r}. "
-                        f"Example: volumes=[('my-volume', '/data')]"
-                    )
-                # User-referenced volumes carry no type of their own; their
-                # backend (hence mount type) is resolved at run() time via
-                # resolve_referenced_volume_type, not defaulted here.
-                referenced_volumes.append((item[0], item[1]))
-        self._referenced_volumes: list[tuple[str, str]] = referenced_volumes
-        # Populated at run() time: referenced volumes (typed by lookup) plus
-        # any freshly uploaded volumes (typed by the upload driver).
+        # Existence is checked at run() time, not here.
+        self._referenced_volumes: list[VolumeMount] = normalize_volume_refs(volumes)
+        # Populated at run() time: referenced volumes plus any freshly
+        # uploaded volumes.
         self._volumes: list[VolumeMount] = []
         if port is not None and not (1 <= port <= 65535):
             raise ValueError(f"port must be between 1 and 65535, got {port!r}")
-        self._volume_driver: VolumeDriver | None = None
+        self._volume_driver: VolumeClient | None = None
         self._port = port
         self._entrypoint = entrypoint
         if lifetime is not None:
@@ -1002,7 +1036,10 @@ class Container:
             from google.protobuf.json_format import Parse, ParseError
 
             try:
-                _parsed_lifetime = Parse(f'"{lifetime}"', duration_pb2.Duration())  # ty: ignore[unresolved-attribute]
+                _parsed_lifetime = Parse(
+                    f'"{lifetime}"',
+                    duration_pb2.Duration(),  # ty: ignore[unresolved-attribute]
+                )
             except ParseError:
                 raise ValueError(
                     f"Invalid lifetime {lifetime!r}. "
@@ -1052,10 +1089,9 @@ class Container:
             If the container cannot be found.
         """
         c = cls._make_empty(chalk_client=chalk_client)
-        resp = c._client.rpc(_SVC, "GetContainer", {"id": container_id})
-        if resp.status_code != 200:
-            raise ContainerError(f"GetContainer failed: {resp.text}")
-        c._container_info = _parse_container_response(resp.json()["container"])
+        c._container_info = _get_container_info(
+            c._client, container_pb.GetContainerRequest(id=container_id)
+        )
         c._container_id = c._container_info.id
         return c
 
@@ -1079,10 +1115,9 @@ class Container:
             If the container cannot be found.
         """
         c = cls._make_empty(chalk_client=chalk_client)
-        resp = c._client.rpc(_SVC, "GetContainer", {"name": name})
-        if resp.status_code != 200:
-            raise ContainerError(f"GetContainer failed: {resp.text}")
-        c._container_info = _parse_container_response(resp.json()["container"])
+        c._container_info = _get_container_info(
+            c._client, container_pb.GetContainerRequest(name=name)
+        )
         c._container_id = c._container_info.id
         c._name = name
         return c
@@ -1102,13 +1137,16 @@ class Container:
             If the request fails.
         """
         c = cls._make_empty(chalk_client=chalk_client)
-        resp = c._client.rpc(_SVC, "ListContainers", {})
-        if resp.status_code != 200:
-            raise ContainerError(f"ListContainers failed: {resp.text}")
-        return [
-            _parse_container_response(item)
-            for item in resp.json().get("containers", [])
-        ]
+        stub = c._client.stub(container_pb_grpc.ContainerServiceStub)
+        try:
+            resp = c._client.call(
+                stub.ListContainers, container_pb.ListContainersRequest()
+            )
+        except grpc.RpcError as e:
+            raise ContainerError(
+                f"ListContainers failed: {grpc_error_message(e)}"
+            ) from e
+        return [_parse_container_response(item) for item in resp.containers]
 
     @classmethod
     def _make_empty(cls, *, chalk_client: Any | None = None) -> Container:
@@ -1208,7 +1246,7 @@ class Container:
         """
         # Referenced volume: its mount type is resolved from the backend at
         # run() time, not defaulted here.
-        self._referenced_volumes.append((name, mount_path))
+        self._referenced_volumes.append(VolumeMount(name=name, mount_path=mount_path))
         return self
 
     # -- Lifecycle -------------------------------------------------------------
@@ -1314,15 +1352,10 @@ class Container:
             else:
                 self._built_image_uri = self._image
 
-            # 2a. Resolve each user-referenced volume's real mount type from
-            # its backend instead of defaulting; a missing volume fails run().
+            # 2a. A missing user-referenced volume fails run().
             self._volumes = [
-                VolumeMount(
-                    name=name,
-                    mount_path=mount_path,
-                    type=resolve_referenced_volume_type(self._client, name),
-                )
-                for name, mount_path in self._referenced_volumes
+                referenced_volume_mount(self._client, mount)
+                for mount in self._referenced_volumes
             ]
 
             # 2b. Upload lazy local files to a volume (if any)
@@ -1344,7 +1377,7 @@ class Container:
                     len(lazy_files),
                 )
                 assert isinstance(self._image, Image)
-                driver = VersionedVolumeClient.from_connect(self._client)
+                driver = VolumeClient.from_connect(self._client)
                 self._volume_driver = driver
                 self._volumes += driver.upload_lazy_files(
                     self._image,
@@ -1410,29 +1443,23 @@ class Container:
                 spec["resources"] = resources
 
             if self._volumes:
-                for v in self._volumes:
-                    if not v.type:
-                        raise VolumeError(
-                            f"Volume {v.name!r} mounted at {v.mount_path!r} has no "
-                            "mount type; refusing to guess one for the container spec"
-                        )
                 spec["volumes"] = [v.to_spec_dict() for v in self._volumes]
 
             if resolved_secrets:
                 spec["secretRefs"] = [s._to_proto_dict() for s in resolved_secrets]
 
             logger.info("Starting container '%s'...", container_name)
-            resp = self._client.rpc(
-                _SVC,
-                "RunContainer",
-                {"container": {"spec": spec}},
-                timeout=60,
-            )
-            if resp.status_code != 200:
-                raise ContainerError(f"RunContainer failed: {resp.text}")
+            request = container_pb.RunContainerRequest()
+            json_format.ParseDict(spec, request.container.spec)
+            stub = self._client.stub(container_pb_grpc.ContainerServiceStub)
+            try:
+                resp = self._client.call(stub.RunContainer, request, timeout=60)
+            except grpc.RpcError as e:
+                raise ContainerError(
+                    f"RunContainer failed: {grpc_error_message(e)}"
+                ) from e
 
-            data = resp.json()
-            self._container_info = _parse_container_response(data["container"])
+            self._container_info = _parse_container_response(resp.container)
             self._container_id = self._container_info.id
             logger.info(
                 "Container created: %s (status=%s)",
@@ -1476,11 +1503,9 @@ class Container:
     ) -> None:
         assert self._container_id is not None
         deadline = time.monotonic() + timeout
+        request = container_pb.GetContainerRequest(id=self._container_id)
         while time.monotonic() < deadline:
-            resp = self._client.rpc(_SVC, "GetContainer", {"id": self._container_id})
-            if resp.status_code != 200:
-                raise ContainerError(f"GetContainer failed: {resp.text}")
-            info = _parse_container_response(resp.json()["container"])
+            info = _get_container_info(self._client, request)
             self._container_info = info
             logger.info("  poll: status=%s", info.status)
             if info.status == "Running":
@@ -1609,35 +1634,20 @@ class Container:
         if self._container_id is None:
             raise ContainerError("Container is not running. Call .run() first.")
 
-        body: dict[str, Any] = {
-            "id": self._container_id,
-            "command": list(command),
-        }
-        if timeout_secs is not None:
-            body["timeout"] = f"{timeout_secs}s"
+        if not command:
+            raise ValueError("exec() requires a command")
 
-        # Add buffer so the HTTP connection outlives the in-container exec
-        # timeout rather than racing it.
-        rpc_timeout = (timeout_secs + 10) if timeout_secs is not None else 30
-
-        # TODO(CHA-8630): Remove retry loop once the API reports accurate
-        # Running status (container may not be exec-ready immediately).
-        for attempt in range(_retries + 1):
-            resp = self._client.rpc(_SVC, "ExecCommand", body, timeout=rpc_timeout)
-            if resp.status_code == 200:
-                data = resp.json()
-                stdout_b64 = data.get("stdout", "")
-                stderr_b64 = data.get("stderr", "")
-                return ExecResult(
-                    stdout=base64.b64decode(stdout_b64) if stdout_b64 else b"",
-                    stderr=base64.b64decode(stderr_b64) if stderr_b64 else b"",
-                    exit_code=data.get("exitCode", 0),
-                )
-            if "container not found" not in resp.text or attempt >= _retries:
-                raise ContainerError(f"ExecCommand failed: {resp.text}")
-            time.sleep(_retry_delay)
-
-        raise ContainerError(f"ExecCommand failed after {_retries} retries")
+        response = self._get_session_client().exec_command(
+            self._container_id,
+            command[0],
+            *command[1:],
+            timeout_secs=timeout_secs,
+        )
+        return ExecResult(
+            stdout=response.stdout,
+            stderr=response.stderr,
+            exit_code=response.exit_code,
+        )
 
     @_instrumented("chalkcompute.container.new_session")
     def new_session(
@@ -1712,10 +1722,19 @@ class Container:
         if self._container_id is None:
             raise ContainerError("container has not been started; call .run() first")
         if self._container_id is not None:
-            body: dict[str, Any] = {"id": self._container_id}
+            request = container_pb.StopContainerRequest(id=self._container_id)
             if grace_period_seconds is not None:
-                body["gracePeriodSeconds"] = grace_period_seconds
-            self._client.rpc(_SVC, "StopContainer", body)
+                request.grace_period_seconds = grace_period_seconds
+            stub = self._client.stub(container_pb_grpc.ContainerServiceStub)
+            try:
+                self._client.call(stub.StopContainer, request)
+            except grpc.RpcError as e:
+                # Log, don't raise: cleanup must proceed.
+                logger.warning(
+                    "StopContainer for %s failed: %s",
+                    self._container_id,
+                    grpc_error_message(e),
+                )
             self._container_id = None
             self._container_info = None
 
@@ -1726,9 +1745,7 @@ class Container:
         if self._volumes:
             # Driver is used here only to perform the delete action, not to
             # derive a mount type.
-            driver = self._volume_driver or VersionedVolumeClient.from_connect(
-                self._client
-            )
+            driver = self._volume_driver or VolumeClient.from_connect(self._client)
             cleanup_owned_volumes(driver, self._volumes, self._referenced_volumes)
         self._volumes = []
         self._volume_driver = None
@@ -1748,10 +1765,9 @@ class Container:
         """
         if self._container_id is None:
             raise ContainerError("No container ID — call .run() first.")
-        resp = self._client.rpc(_SVC, "GetContainer", {"id": self._container_id})
-        if resp.status_code != 200:
-            raise ContainerError(f"GetContainer failed: {resp.text}")
-        self._container_info = _parse_container_response(resp.json()["container"])
+        self._container_info = _get_container_info(
+            self._client, container_pb.GetContainerRequest(id=self._container_id)
+        )
         return self._container_info
 
     @property
@@ -1793,14 +1809,29 @@ class Container:
 # ---------------------------------------------------------------------------
 
 
-def _parse_container_response(data: dict) -> ContainerInfo:
+def _parse_container_response(
+    container: container_pb.ContainerResponse,
+) -> ContainerInfo:
     return ContainerInfo(
-        id=data["id"],
-        name=data["name"],
-        status=data["status"],
-        pod_name=data.get("podName", ""),
-        web_url=data.get("webUrl"),
+        id=container.id,
+        name=container.name,
+        status=container.status,
+        pod_name=container.pod_name,
+        web_url=container.web_url or None,
     )
+
+
+def _get_container_info(
+    client: ConnectClient,
+    request: container_pb.GetContainerRequest,
+) -> ContainerInfo:
+    """Fetch a container via ``GetContainer`` and parse it, or raise ContainerError."""
+    stub = client.stub(container_pb_grpc.ContainerServiceStub)
+    try:
+        resp = client.call(stub.GetContainer, request)
+    except grpc.RpcError as e:
+        raise ContainerError(f"GetContainer failed: {grpc_error_message(e)}") from e
+    return _parse_container_response(resp.container)
 
 
 def _process_states() -> dict[int, ContainerSession.Status.State]:
@@ -1823,9 +1854,9 @@ def _pb_to_session_info(
         command=new_process.command,
         args=list(new_process.args),
         workdir=new_process.workdir if new_process.HasField("workdir") else None,
-        env=dict(new_process.env),
+        env=dict(new_process.env_vars),
         timeout_secs=(
-            new_process.timeout_secs if new_process.HasField("timeout_secs") else None
+            new_process.timeout.seconds if new_process.HasField("timeout") else None
         ),
         pty=new_process.HasField("pty_info"),
         status=_pb_to_session_status(info.process_status),
@@ -1843,7 +1874,7 @@ def _pb_to_session_status(status: pb.ProcessStatus) -> ContainerSession.Status:
     )
 
 
-def _pb_to_session_event(response: pb.SessionResponse) -> ContainerSession.Event:
+def _pb_to_session_event(response: pb.OpenSessionResponse) -> ContainerSession.Event:
     match response.WhichOneof("event"):
         case "session_attached":
             return ContainerSession.AttachedEvent(
@@ -1923,6 +1954,12 @@ def _make_pty_info(cols: int, rows: int) -> pb.PtyInfo:
     _validate_pty_dimension(cols, "cols")
     _validate_pty_dimension(rows, "rows")
     return pb.PtyInfo(cols=cols, rows=rows)
+
+
+def _make_resize_pty(cols: int, rows: int) -> pb.ResizePty:
+    _validate_pty_dimension(cols, "cols")
+    _validate_pty_dimension(rows, "rows")
+    return pb.ResizePty(cols=cols, rows=rows)
 
 
 def _validate_pty_dimension(value: int, name: str) -> None:

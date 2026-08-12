@@ -34,6 +34,18 @@ class _RPCResponse:
     status_code = 200
 
 
+class _WorkloadIdentityTokenResponse:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self._payload = payload
+        self.raise_for_status_called = False
+
+    def raise_for_status(self) -> None:
+        self.raise_for_status_called = True
+
+    def json(self) -> dict[str, Any]:
+        return self._payload
+
+
 class _SpanContext:
     is_valid = True
 
@@ -522,6 +534,65 @@ class TestConnectClientWebIdentity:
             client.close()
 
 
+class TestConnectClientWorkloadIdentityToken:
+    def test_requests_token_for_audience(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        response = _WorkloadIdentityTokenResponse({"token": "snowflake-jwt"})
+        request: dict[str, Any] = {}
+        client = ConnectClient()
+
+        def fake_rpc(
+            service: str,
+            method: str,
+            body: dict[str, Any],
+            timeout: float = 30,
+            **_kwargs: Any,
+        ) -> _WorkloadIdentityTokenResponse:
+            request.update(
+                service=service,
+                method=method,
+                body=body,
+                timeout=timeout,
+            )
+            return response
+
+        monkeypatch.setattr(client, "rpc", fake_rpc)
+
+        token = client.get_workload_identity_token(
+            "snowflakecomputing.com",
+            timeout=12,
+        )
+
+        assert token == "snowflake-jwt"
+        assert response.raise_for_status_called is True
+        assert request == {
+            "service": "chalk.server.v1.AuthService",
+            "method": "GetWorkloadIdentityToken",
+            "body": {"audience": "snowflakecomputing.com"},
+            "timeout": 12,
+        }
+
+    @pytest.mark.parametrize("audience", ["", "   "])
+    def test_rejects_empty_audience(self, audience: str) -> None:
+        with pytest.raises(ValueError, match="audience cannot be empty"):
+            ConnectClient().get_workload_identity_token(audience)
+
+    @pytest.mark.parametrize("payload", [{}, {"token": ""}, {"token": 123}])
+    def test_rejects_response_without_token(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        payload: dict[str, Any],
+    ) -> None:
+        client = ConnectClient()
+        monkeypatch.setattr(
+            client,
+            "rpc",
+            lambda *_args, **_kwargs: _WorkloadIdentityTokenResponse(payload),
+        )
+
+        with pytest.raises(ConnectError, match="response without a token"):
+            client.get_workload_identity_token("snowflakecomputing.com")
+
+
 class TestConnectClientTracing:
     def test_internal_configure_tracing_installs_parent_based_sampler(
         self, monkeypatch
@@ -910,3 +981,49 @@ class TestSandboxClientFromEnv:
             assert client._target == "localhost:18080"
         finally:
             client.close()
+
+
+class TestStubAndCall:
+    """The gRPC transport seam: ConnectClient.stub() + ConnectClient.call()."""
+
+    def _authed_client(self) -> ConnectClient:
+        client = ConnectClient()
+        client._access_token = "tok1"
+        client._env_id = "env-1"
+        client._api_server = "http://localhost:50051"
+        return client
+
+    def test_call_rebuilds_metadata_per_call(self, monkeypatch) -> None:
+        monkeypatch.delenv("CHALK_WEB_IDENTITY_TOKEN_FILE", raising=False)
+        client = self._authed_client()
+        captured: list[tuple[Any, Any]] = []
+
+        def method(request: Any, timeout: Any = None, metadata: Any = None) -> str:
+            captured.append((timeout, metadata))
+            return "resp"
+
+        assert client.call(method, object(), timeout=12) == "resp"
+        client._access_token = "tok2"  # simulate token rotation
+        client.call(method, object())
+
+        assert captured[0][0] == 12
+        assert ("authorization", "Bearer tok1") in captured[0][1]
+        assert ("authorization", "Bearer tok2") in captured[1][1]
+        assert ("x-chalk-env-id", "env-1") in captured[1][1]
+
+    def test_stubs_share_the_channel(self, monkeypatch) -> None:
+        import chalkcompute._channel as channel_mod
+        from chalkcompute._gen.chalk.container.v1 import service_pb2_grpc as pb_grpc
+
+        monkeypatch.delenv("CHALK_WEB_IDENTITY_TOKEN_FILE", raising=False)
+        channel_mod.close_channel()
+        try:
+            client = self._authed_client()
+            client.stub(pb_grpc.ContainerServiceStub)
+            first = channel_mod._channel
+            client.stub(pb_grpc.ContainerServiceStub)
+            # Both stubs were built on the one shared channel.
+            assert first is not None
+            assert channel_mod._channel is first
+        finally:
+            channel_mod.close_channel()

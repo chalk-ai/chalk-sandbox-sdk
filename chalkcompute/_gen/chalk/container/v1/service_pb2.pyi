@@ -146,6 +146,7 @@ class ChalkContainerSpec(_message.Message):
         "startup_probe",
         "readiness_probe",
         "restart_policy",
+        "chalk_workload_identity",
     )
     class TagsEntry(_message.Message):
         __slots__ = ("key", "value")
@@ -187,6 +188,7 @@ class ChalkContainerSpec(_message.Message):
     STARTUP_PROBE_FIELD_NUMBER: _ClassVar[int]
     READINESS_PROBE_FIELD_NUMBER: _ClassVar[int]
     RESTART_POLICY_FIELD_NUMBER: _ClassVar[int]
+    CHALK_WORKLOAD_IDENTITY_FIELD_NUMBER: _ClassVar[int]
     name: str
     image: str
     entrypoint: _containers.RepeatedScalarFieldContainer[str]
@@ -207,6 +209,7 @@ class ChalkContainerSpec(_message.Message):
     startup_probe: StartupProbe
     readiness_probe: ReadinessProbe
     restart_policy: RestartPolicy
+    chalk_workload_identity: ChalkWorkloadIdentity
     def __init__(
         self,
         name: _Optional[str] = ...,
@@ -229,6 +232,9 @@ class ChalkContainerSpec(_message.Message):
         startup_probe: _Optional[_Union[StartupProbe, _Mapping]] = ...,
         readiness_probe: _Optional[_Union[ReadinessProbe, _Mapping]] = ...,
         restart_policy: _Optional[_Union[RestartPolicy, str]] = ...,
+        chalk_workload_identity: _Optional[
+            _Union[ChalkWorkloadIdentity, _Mapping]
+        ] = ...,
     ) -> None: ...
 
 class StartupProbe(_message.Message):
@@ -369,7 +375,7 @@ class NetworkPolicyRule(_message.Message):
     ) -> None: ...
 
 class NetworkTransformer(_message.Message):
-    __slots__ = ("headers",)
+    __slots__ = ("headers", "headers_secrets")
     class HeadersEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -380,9 +386,25 @@ class NetworkTransformer(_message.Message):
             self, key: _Optional[str] = ..., value: _Optional[str] = ...
         ) -> None: ...
 
+    class HeadersSecretsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: str
+        def __init__(
+            self, key: _Optional[str] = ..., value: _Optional[str] = ...
+        ) -> None: ...
+
     HEADERS_FIELD_NUMBER: _ClassVar[int]
+    HEADERS_SECRETS_FIELD_NUMBER: _ClassVar[int]
     headers: _containers.ScalarMap[str, str]
-    def __init__(self, headers: _Optional[_Mapping[str, str]] = ...) -> None: ...
+    headers_secrets: _containers.ScalarMap[str, str]
+    def __init__(
+        self,
+        headers: _Optional[_Mapping[str, str]] = ...,
+        headers_secrets: _Optional[_Mapping[str, str]] = ...,
+    ) -> None: ...
 
 class NetworkPolicyMatch(_message.Message):
     __slots__ = ("path", "method", "query_string", "headers")
@@ -584,18 +606,38 @@ class GetContainerResponse(_message.Message):
     ) -> None: ...
 
 class ListContainersRequest(_message.Message):
-    __slots__ = ("cursor", "limit", "include_stopped")
+    __slots__ = (
+        "cursor",
+        "limit",
+        "include_stopped",
+        "statuses",
+        "images",
+        "search",
+        "sort_ascending",
+    )
     CURSOR_FIELD_NUMBER: _ClassVar[int]
     LIMIT_FIELD_NUMBER: _ClassVar[int]
     INCLUDE_STOPPED_FIELD_NUMBER: _ClassVar[int]
+    STATUSES_FIELD_NUMBER: _ClassVar[int]
+    IMAGES_FIELD_NUMBER: _ClassVar[int]
+    SEARCH_FIELD_NUMBER: _ClassVar[int]
+    SORT_ASCENDING_FIELD_NUMBER: _ClassVar[int]
     cursor: str
     limit: int
     include_stopped: bool
+    statuses: _containers.RepeatedScalarFieldContainer[str]
+    images: _containers.RepeatedScalarFieldContainer[str]
+    search: str
+    sort_ascending: bool
     def __init__(
         self,
         cursor: _Optional[str] = ...,
         limit: _Optional[int] = ...,
         include_stopped: bool = ...,
+        statuses: _Optional[_Iterable[str]] = ...,
+        images: _Optional[_Iterable[str]] = ...,
+        search: _Optional[str] = ...,
+        sort_ascending: bool = ...,
     ) -> None: ...
 
 class ListContainersResponse(_message.Message):
@@ -1179,3 +1221,7 @@ class CreateContainerDebugTTYResponse(_message.Message):
         error: _Optional[str] = ...,
         closed: bool = ...,
     ) -> None: ...
+
+class ChalkWorkloadIdentity(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...

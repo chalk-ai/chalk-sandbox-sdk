@@ -1,214 +1,153 @@
-"""End-to-end tests for the Volume service against fraud-template-staging.
+"""End-to-end tests for the v2 Volume Python SDK."""
 
-These tests exercise the VolumeService Connect-protocol endpoints:
-  - CreateVolume
-  - GetVolume
-  - ListVolumes
-  - PutFile
-  - GetFile
-  - ListFiles
-  - RemoveFile
-  - DeleteVolume
-"""
+from __future__ import annotations
 
+from collections.abc import Iterator
 import uuid
+import warnings
 
 import pytest
 
-from e2etests.conftest import _connect_rpc, needs_staging
+from chalkcompute import (
+    ConnectClient,
+    Volume,
+    VolumeClient,
+    VolumeError,
+)
+from e2etests.conftest import needs_staging
 
-_SVC = "chalk.volume.v1.VolumeService"
+MODEL_PATH = "models/latest.bin"
+TRAIN_PATH = "data/train.csv"
+EVAL_PATH = "data/eval.csv"
+LOCAL_NOTES_PATH = "notes/from-local.txt"
 
-
-@pytest.fixture(scope="module")
-def test_volume_name() -> str:
-    """Generate a unique volume name for this test run."""
-    return f"a-test-volume-{uuid.uuid4().hex[:8]}"
-
-
-@pytest.fixture(scope="module")
-def created_volume(
-    auth_headers: dict[str, str],
-    test_volume_name: str,
-) -> str:
-    """Create a volume for the test session and delete it afterwards."""
-    resp = _connect_rpc(_SVC, "CreateVolume", {"name": test_volume_name}, auth_headers)
-    assert resp.status_code == 200, f"CreateVolume failed: {resp.text}"
-    data = resp.json()
-    assert "volume" in data
-    assert data["volume"]["name"] == test_volume_name
-    yield test_volume_name
-
-    # Cleanup
-    _connect_rpc(_SVC, "DeleteVolume", {"name": test_volume_name}, auth_headers)
+pytestmark = needs_staging
 
 
-@needs_staging
-def test_create_and_get_volume(
-    auth_headers: dict[str, str],
-    created_volume: str,
-) -> None:
-    """CreateVolume then GetVolume returns matching metadata."""
-    resp = _connect_rpc(_SVC, "GetVolume", {"name": created_volume}, auth_headers)
-    assert resp.status_code == 200, f"GetVolume failed: {resp.text}"
-    data = resp.json()
-    assert data["volume"]["name"] == created_volume
-    assert "createdAt" in data["volume"]
+@pytest.fixture
+def volume() -> Iterator[Volume]:
+    volume = Volume(f"a-test-volume-{uuid.uuid4().hex[:8]}")
+    try:
+        yield volume
+    finally:
+        try:
+            volume.delete()
+        except VolumeError:
+            pass
+        volume.close()
 
 
-@needs_staging
-def test_list_volumes(
-    auth_headers: dict[str, str],
-    created_volume: str,
-) -> None:
-    """ListVolumes should include our test volume, paginating if necessary."""
-    found = False
-    page_token = ""
-    total = 0
-    checked_structure = False
+def test_put_and_read_file(volume: Volume) -> None:
+    model_bytes = b"pretend model weights\n"
 
-    while True:
-        body: dict = {"pageSize": 100}
-        if page_token:
-            body["pageToken"] = page_token
+    volume.put_file(MODEL_PATH, model_bytes)
 
-        resp = _connect_rpc(_SVC, "ListVolumes", body, auth_headers)
-        assert resp.status_code == 200, f"ListVolumes failed: {resp.text}"
-        data = resp.json()
-        volumes = data.get("volumes", [])
-        total += len(volumes)
-
-        # Spot-check structure once
-        if not checked_structure and volumes:
-            checked_structure = True
-            for v in volumes[:3]:
-                assert "name" in v, f"Volume missing 'name': {v}"
-                assert "createdAt" in v, f"Volume missing 'createdAt': {v}"
-
-        if any(v["name"] == created_volume for v in volumes):
-            found = True
-            break
-
-        page_token = data.get("nextPageToken", "")
-        if not page_token:
-            break
-
-    assert found, (
-        f"Expected {created_volume} in ListVolumes response "
-        f"({total} volumes seen across all pages)"
-    )
+    assert volume.read_file(MODEL_PATH) == model_bytes
 
 
-@needs_staging
-def test_put_and_get_file(
-    auth_headers: dict[str, str],
-    created_volume: str,
-) -> None:
-    """PutFile then GetFile round-trips data correctly."""
-    import base64
+def test_batch_upload_and_listdir(volume: Volume) -> None:
+    volume.put_file(MODEL_PATH, b"base version\n")
 
-    file_path = "test-data/hello.txt"
-    file_content = b"Hello from the volume e2e test!"
-    encoded = base64.b64encode(file_content).decode("ascii")
+    with volume.batch_upload() as batch:
+        batch.put(TRAIN_PATH, b"id,label\n1,approved\n2,declined\n")
+        batch.put(EVAL_PATH, b"id,label\n3,approved\n")
 
-    # Put the file
-    put_resp = _connect_rpc(
-        _SVC,
-        "PutFile",
-        {
-            "volumeName": created_volume,
-            "path": file_path,
-            "data": encoded,
-        },
-        auth_headers,
-    )
-    assert put_resp.status_code == 200, f"PutFile failed: {put_resp.text}"
-
-    # Get the file back
-    get_resp = _connect_rpc(
-        _SVC,
-        "GetFile",
-        {"volumeName": created_volume, "path": file_path},
-        auth_headers,
-    )
-    assert get_resp.status_code == 200, f"GetFile failed: {get_resp.text}"
-    returned_data = base64.b64decode(get_resp.json()["data"])
-    assert returned_data == file_content
+    data_paths = {item.path for item in volume.listdir("data")}
+    assert {TRAIN_PATH, EVAL_PATH}.issubset(data_paths)
 
 
-@needs_staging
-def test_list_files(
-    auth_headers: dict[str, str],
-    created_volume: str,
-) -> None:
-    """ListFiles should show files we uploaded."""
-    resp = _connect_rpc(
-        _SVC,
-        "ListFiles",
-        {"volumeName": created_volume, "prefix": "test-data/"},
-        auth_headers,
-    )
-    assert resp.status_code == 200, f"ListFiles failed: {resp.text}"
-    data = resp.json()
-    paths = [f["path"] for f in data.get("files", [])]
-    assert "test-data/hello.txt" in paths, f"Expected test-data/hello.txt in {paths}"
+def test_put_file_from_path(volume: Volume, tmp_path) -> None:
+    local_notes = "uploaded from a local path\n"
+    local_path = tmp_path / "notes.txt"
+    local_path.write_text(local_notes)
+
+    volume.put_file_from_path(LOCAL_NOTES_PATH, local_path)
+
+    assert volume.read_file(LOCAL_NOTES_PATH) == local_notes.encode()
 
 
-@needs_staging
-def test_remove_file(
-    auth_headers: dict[str, str],
-    created_volume: str,
-) -> None:
-    """RemoveFile should delete a file, and it should no longer appear in ListFiles."""
-    import base64
+def test_versions_include_committed_writes(volume: Volume) -> None:
+    volume.put_file("one.txt", b"one")
+    first = volume.latest_version()
+    volume.put_file("two.txt", b"two")
+    second = volume.latest_version()
 
-    # Put a file to remove
-    file_path = "test-data/to-remove.txt"
-    _connect_rpc(
-        _SVC,
-        "PutFile",
-        {
-            "volumeName": created_volume,
-            "path": file_path,
-            "data": base64.b64encode(b"delete me").decode("ascii"),
-        },
-        auth_headers,
-    )
+    versions = volume.versions(limit=1)
 
-    # Remove it
-    rm_resp = _connect_rpc(
-        _SVC,
-        "RemoveFile",
-        {"volumeName": created_volume, "path": file_path},
-        auth_headers,
-    )
-    assert rm_resp.status_code == 200, f"RemoveFile failed: {rm_resp.text}"
-
-    # Verify it's gone
-    list_resp = _connect_rpc(
-        _SVC,
-        "ListFiles",
-        {"volumeName": created_volume, "prefix": "test-data/"},
-        auth_headers,
-    )
-    assert list_resp.status_code == 200
-    paths = [f["path"] for f in list_resp.json().get("files", [])]
-    assert file_path not in paths, f"File {file_path} should have been removed"
+    version_ids = {version.id for version in versions}
+    assert {first.id, second.id}.issubset(version_ids)
+    assert second.id != first.id
 
 
-@needs_staging
-def test_delete_volume(auth_headers: dict[str, str]) -> None:
-    """Create and delete a standalone volume to verify DeleteVolume works."""
-    vol_name = f"test-delete-{uuid.uuid4().hex[:8]}"
+def test_pinned_version_can_read_removed_file(volume: Volume) -> None:
+    eval_csv = b"id,label\n3,approved\n"
+    volume.put_file(EVAL_PATH, eval_csv)
+    before_remove = volume.latest_version()
 
-    create_resp = _connect_rpc(_SVC, "CreateVolume", {"name": vol_name}, auth_headers)
-    assert create_resp.status_code == 200, f"CreateVolume failed: {create_resp.text}"
+    volume.remove_file(EVAL_PATH)
+    after_remove = volume.latest_version()
 
-    delete_resp = _connect_rpc(_SVC, "DeleteVolume", {"name": vol_name}, auth_headers)
-    assert delete_resp.status_code == 200, f"DeleteVolume failed: {delete_resp.text}"
+    assert after_remove.id != before_remove.id
+    assert volume.at_version(before_remove.id).read_file(EVAL_PATH) == eval_csv
 
-    # GetVolume should fail
-    get_resp = _connect_rpc(_SVC, "GetVolume", {"name": vol_name}, auth_headers)
-    assert get_resp.status_code != 200 or "code" in get_resp.json(), (
-        f"Expected volume {vol_name} to be deleted but GetVolume succeeded: {get_resp.text}"
-    )
+
+def test_pinned_version_rejects_writes(volume: Volume) -> None:
+    volume.put_file(MODEL_PATH, b"base version\n")
+
+    pinned = volume.at_version(volume.latest_version().id)
+
+    with pytest.raises(VolumeError, match="read-only"):
+        pinned.put_file("data/should-fail.txt", b"immutable")
+
+
+def test_fork_diverges_from_main(volume: Volume) -> None:
+    volume.put_file("shared.txt", b"base")
+    base = volume.latest_version()
+    fork_name = f"test-{uuid.uuid4().hex[:8]}"
+    try:
+        fork = volume.at_version(base.id).fork(fork_name)
+    except VolumeError as error:
+        # forks need route_volume_to_dataplane, which meta-ci does not enable
+        if error.code == "unimplemented" or "route_volume_to_dataplane" in str(error):
+            warnings.warn(
+                f"forks unavailable in this environment: {error}", stacklevel=1
+            )
+            pytest.skip(str(error))
+        raise
+    try:
+        fork.put_file("fork-only.txt", b"fork")
+
+        assert fork.read_file("shared.txt") == b"base"
+        assert fork.read_file("fork-only.txt") == b"fork"
+        assert "fork-only.txt" not in {item.path for item in volume.listdir()}
+        assert any(ref.name == fork_name for ref in volume.forks())
+    finally:
+        fork.delete_fork()
+
+
+def test_client_lookup_helpers(volume: Volume) -> None:
+    volume.put_file(MODEL_PATH, b"base version\n")
+
+    with VolumeClient.from_connect(ConnectClient()) as client:
+        assert client.from_name(volume.name).name == volume.name
+        looked_up = client.lookup(volume.name)
+        assert looked_up.info.name == volume.name
+        assert client.exists(volume.name)
+
+
+def test_documented_round_trip(volume: Volume) -> None:
+    model_bytes = b"pretend model weights\n"
+    train_csv = b"id,label\n1,approved\n2,declined\n"
+    eval_csv = b"id,label\n3,approved\n"
+
+    volume.put_file(MODEL_PATH, model_bytes)
+    with volume.batch_upload() as batch:
+        batch.put(TRAIN_PATH, train_csv)
+        batch.put(EVAL_PATH, eval_csv)
+
+    assert volume.read_file(MODEL_PATH) == model_bytes
+    assert volume.read_file(TRAIN_PATH) == train_csv
+    assert volume.read_file(EVAL_PATH) == eval_csv
+
+    data_paths = {item.path for item in volume.listdir("data")}
+    assert {TRAIN_PATH, EVAL_PATH}.issubset(data_paths)

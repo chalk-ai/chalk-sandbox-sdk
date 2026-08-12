@@ -85,12 +85,13 @@ from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._retry import RetryPolicy
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
-    VolumeDriver,
+    Volume,
+    VolumeClient,
     VolumeMount,
     cleanup_owned_volumes,
-    resolve_referenced_volume_type,
+    normalize_volume_refs,
+    referenced_volume_mount,
 )
-from chalkcompute._vvolume import VersionedVolumeClient
 
 if TYPE_CHECKING:
     from chalkcompute._image import Image as _Image
@@ -652,12 +653,13 @@ class RemoteClass:
         gpu: str | None = None,
         env: dict[str, str] | None = None,
         secrets: list[_Secret] | None = None,
-        volumes: list[tuple[str, str]] | None = None,
+        volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
         min_replicas: int = 1,
         max_replicas: int = 1,
         shutdown_delay_seconds: int | None = None,
         scaling_interval_seconds: int | None = None,
         target_cpu_utilization_percentage: int | None = None,
+        target_gpu_utilization_percentage: int | None = None,
         target_queue_depth: int | None = None,
         serialization_format: SerializationFormat = "pyarrow",
         options: dict[str, str] | None = None,
@@ -682,15 +684,10 @@ class RemoteClass:
         validate_env(env)
         self._env = env or {}
         self._secrets: list[_Secret] = list(secrets or [])
-        # User-referenced volumes carry no type of their own; their backend
-        # (hence mount type) is resolved once at deploy time via
-        # resolve_referenced_volume_type, then travels on each per-method
-        # deploy request. Never defaulted here.
-        self._referenced_volumes: list[tuple[str, str]] = [
-            (vol_name, mount_path) for vol_name, mount_path in (volumes or [])
-        ]
-        # Populated at deploy time: referenced volumes (typed by lookup) plus
-        # any freshly uploaded volumes (typed by the upload driver).
+        # Existence is checked once at deploy time, not here.
+        self._referenced_volumes: list[VolumeMount] = normalize_volume_refs(volumes)
+        # Populated at deploy time: referenced volumes plus any freshly
+        # uploaded volumes.
         self._volumes: list[VolumeMount] = []
         if min_replicas < 0:
             raise ValueError(f"min_replicas must be >= 0, got {min_replicas}")
@@ -700,12 +697,28 @@ class RemoteClass:
             raise ValueError(
                 f"min_replicas ({min_replicas}) must be <= max_replicas ({max_replicas})"
             )
-        self._volume_driver: VolumeDriver | None = None
+        self._volume_driver: VolumeClient | None = None
         self._min_replicas = min_replicas
         self._max_replicas = max_replicas
         self._shutdown_delay_seconds = shutdown_delay_seconds
         self._scaling_interval_seconds = scaling_interval_seconds
         self._target_cpu_utilization_percentage = target_cpu_utilization_percentage
+        if target_gpu_utilization_percentage is not None:
+            if not (0 < target_gpu_utilization_percentage <= 100):
+                raise ValueError(
+                    f"target_gpu_utilization_percentage must be between 1 and 100, got {target_gpu_utilization_percentage}"
+                )
+            if gpu is None:
+                raise ValueError(
+                    "target_gpu_utilization_percentage requires gpu to be set"
+                )
+            # The utilization series only exists while replicas do, so a group that
+            # may reach zero would deactivate and never see a sample to scale back up.
+            if min_replicas < 1:
+                raise ValueError(
+                    f"target_gpu_utilization_percentage requires min_replicas >= 1, got {min_replicas}"
+                )
+        self._target_gpu_utilization_percentage = target_gpu_utilization_percentage
         self._target_queue_depth = target_queue_depth
         self._serialization_format: SerializationFormat = serialization_format
         self._options = options or {}
@@ -891,6 +904,7 @@ class RemoteClass:
         rc._shutdown_delay_seconds = None
         rc._scaling_interval_seconds = None
         rc._target_cpu_utilization_percentage = None
+        rc._target_gpu_utilization_percentage = None
         rc._target_queue_depth = None
         rc._serialization_format = "pyarrow"
         rc._options = {}
@@ -1042,25 +1056,20 @@ class RemoteClass:
             deploy_image, temp_files = self._build_deploy_image()
 
             # 2. Build image + upload lazy files
-            image_uri, new_vols, driver = _build_and_upload(
+            image_uri, new_vols, driver, volume_commits = _build_and_upload(
                 self._client,
                 deploy_image,
                 label=f"class '{self._class_name}'",
-                volume_prefix="cls-files",
+                volume_name=f"cls-src-{self._explicit_name or self._class_name}",
                 poll_interval=poll_interval,
                 build_timeout=build_timeout,
                 progress_parent=ckey,
             )
-            # Resolve each user-referenced volume's real mount type from its
-            # backend instead of defaulting; a missing volume fails the deploy.
-            # Resolved once here, then reused across every per-method spec.
+            # A missing user-referenced volume fails the deploy. Checked once
+            # here, then reused across every per-method spec.
             referenced_volumes = [
-                VolumeMount(
-                    name=name,
-                    mount_path=mount_path,
-                    type=resolve_referenced_volume_type(self._client, name),
-                )
-                for name, mount_path in self._referenced_volumes
+                referenced_volume_mount(self._client, mount)
+                for mount in self._referenced_volumes
             ]
             self._volumes = [*referenced_volumes, *new_vols]
             self._volume_driver = driver
@@ -1127,6 +1136,10 @@ class RemoteClass:
                     scaling_spec["targetCpuUtilizationPercentage"] = (
                         self._target_cpu_utilization_percentage
                     )
+                if self._target_gpu_utilization_percentage is not None:
+                    scaling_spec["gpuUtilizationTrigger"] = {
+                        "targetUtilizationPercentage": self._target_gpu_utilization_percentage
+                    }
                 if self._target_queue_depth is not None:
                     scaling_spec["functionQueueDepthTrigger"] = {
                         "functionName": func_name,
@@ -1168,6 +1181,8 @@ class RemoteClass:
                 }
                 if function_config:
                     create_request["config"] = function_config
+                if volume_commits:
+                    create_request["volumeCommits"] = volume_commits
 
                 resp = self._client.rpc(
                     _CATALOG_SVC,
@@ -1332,9 +1347,7 @@ class RemoteClass:
         if self._volumes:
             # Driver is used here only to perform the delete action, not to
             # derive a mount type.
-            driver = self._volume_driver or VersionedVolumeClient.from_connect(
-                self._client
-            )
+            driver = self._volume_driver or VolumeClient.from_connect(self._client)
             cleanup_owned_volumes(driver, self._volumes, self._referenced_volumes)
         self._volumes = []
         self._volume_driver = None
@@ -1487,12 +1500,13 @@ def cls(
     name: str | None = None,
     env: dict[str, str] | None = None,
     secrets: list[_Secret] | None = None,
-    volumes: list[tuple[str, str]] | None = None,
+    volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
     min_replicas: int = 1,
     max_replicas: int = 1,
     shutdown_delay_seconds: int | None = None,
     scaling_interval_seconds: int | None = None,
     target_cpu_utilization_percentage: int | None = None,
+    target_gpu_utilization_percentage: int | None = None,
     target_queue_depth: int | None = None,
     serialization_format: SerializationFormat = "pyarrow",
     options: dict[str, str] | None = None,
@@ -1516,12 +1530,13 @@ def cls(
     name: str | None = None,
     env: dict[str, str] | None = None,
     secrets: list[_Secret] | None = None,
-    volumes: list[tuple[str, str]] | None = None,
+    volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
     min_replicas: int = 1,
     max_replicas: int = 1,
     shutdown_delay_seconds: int | None = None,
     scaling_interval_seconds: int | None = None,
     target_cpu_utilization_percentage: int | None = None,
+    target_gpu_utilization_percentage: int | None = None,
     target_queue_depth: int | None = None,
     serialization_format: SerializationFormat = "pyarrow",
     options: dict[str, str] | None = None,
@@ -1546,12 +1561,13 @@ def cls(
     name: str | None = None,
     env: dict[str, str] | None = None,
     secrets: list[_Secret] | None = None,
-    volumes: list[tuple[str, str]] | None = None,
+    volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
     min_replicas: int = 1,
     max_replicas: int = 1,
     shutdown_delay_seconds: int | None = None,
     scaling_interval_seconds: int | None = None,
     target_cpu_utilization_percentage: int | None = None,
+    target_gpu_utilization_percentage: int | None = None,
     target_queue_depth: int | None = None,
     serialization_format: SerializationFormat = "pyarrow",
     options: dict[str, str] | None = None,
@@ -1609,6 +1625,11 @@ def cls(
         decisions. Defaults to 60s on the server.
     target_cpu_utilization_percentage
         Target CPU utilization percentage (0-100) that drives autoscaling.
+    target_gpu_utilization_percentage
+        Target GPU utilization percentage (1-100) that drives autoscaling, read
+        from DCGM. Requires ``gpu`` and ``min_replicas >= 1``: the utilization
+        series exists only while replicas do, so this trigger cannot scale a
+        group up from zero.
     target_queue_depth
         Target pending-request queue depth per replica. When set, the
         autoscaler scales on each method's own queue depth.
@@ -1671,6 +1692,7 @@ def cls(
             shutdown_delay_seconds=shutdown_delay_seconds,
             scaling_interval_seconds=scaling_interval_seconds,
             target_cpu_utilization_percentage=target_cpu_utilization_percentage,
+            target_gpu_utilization_percentage=target_gpu_utilization_percentage,
             target_queue_depth=target_queue_depth,
             serialization_format=serialization_format,
             options=options,

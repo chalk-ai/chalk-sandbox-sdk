@@ -206,7 +206,7 @@ dependencies = [
 [[package]]
 name = "chalk-protos"
 version = "0.0.0"
-source = "git+https://github.com/chalk-ai/chalk-private.git?rev=cc43e6212a28bb01202c8758113bcba48b56247f#cc43e6212a28bb01202c8758113bcba48b56247f"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=ba32430a645c31fa6b7b1c25e08c4dfef9056838#ba32430a645c31fa6b7b1c25e08c4dfef9056838"
 dependencies = [
  "prost",
  "prost-build",
@@ -246,11 +246,11 @@ dependencies = [
 [[package]]
 name = "chalk_volume_client"
 version = "0.0.0"
-source = "git+https://github.com/chalk-ai/chalk-private.git?rev=cc43e6212a28bb01202c8758113bcba48b56247f#cc43e6212a28bb01202c8758113bcba48b56247f"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=ba32430a645c31fa6b7b1c25e08c4dfef9056838#ba32430a645c31fa6b7b1c25e08c4dfef9056838"
 dependencies = [
  "blake3",
  "bytes",
- "chalk-protos 0.0.0 (git+https://github.com/chalk-ai/chalk-private.git?rev=cc43e6212a28bb01202c8758113bcba48b56247f)",
+ "chalk-protos 0.0.0 (git+https://github.com/chalk-ai/chalk-private.git?rev=ba32430a645c31fa6b7b1c25e08c4dfef9056838)",
  "futures-util",
  "log",
  "prost",
@@ -674,7 +674,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "tokio",
  "tower-service",
  "tracing",
@@ -1181,7 +1181,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls 0.23.40",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -1218,7 +1218,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.59.0",
 ]

@@ -379,8 +379,9 @@ class Image:
             Absolute destination path in the image.
         mode
             Optional POSIX file permission mode. Written in octal with a
-            ``0o`` prefix; if omitted, the file is created with the image's
-            default permissions. Common values:
+            ``0o`` prefix; if omitted, ``strategy="volume"`` preserves the
+            source file's on-disk permissions and ``strategy="copy"`` uses
+            the image's default permissions. Common values:
 
             - ``0o755`` (``rwxr-xr-x``) — executable scripts and binaries;
               owner can read/write/execute, everyone else read/execute.
@@ -423,6 +424,7 @@ class Image:
         ...         "./entrypoint.sh",
         ...         "/app/entrypoint.sh",
         ...         mode=0o755,
+        ...         strategy="copy",
         ...     )
         ... )
         """
@@ -865,6 +867,24 @@ class Image:
         for k, v in self._env.items():
             spec.env[k] = v
         return spec
+
+    @classmethod
+    def from_proto(cls, spec: pb.ImageSpec) -> Image:
+        """Reconstruct an ``Image`` from an ``ImageSpec`` (inverse of :meth:`to_proto`; volume files excluded)."""
+        img = cls(spec.base_image)
+        img._steps = list(spec.steps)
+        img._entrypoint = list(spec.entrypoint)
+        img._cmd = list(spec.cmd)
+        img._workdir = spec.workdir if spec.HasField("workdir") else None
+        img._env = dict(spec.env)
+        return img
+
+    @classmethod
+    def from_proto_bytes(cls, data: bytes) -> Image:
+        """Reconstruct an ``Image`` from a serialized ``ImageSpec`` byte string."""
+        spec = pb.ImageSpec()
+        spec.ParseFromString(data)
+        return cls.from_proto(spec)
 
     def __repr__(self) -> str:
         parts = [f"Image(base={self._base_image!r}"]

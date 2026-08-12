@@ -1,15 +1,15 @@
-"""Versioned Volume SDK example.
+"""Volume SDK example.
 
 This mirrors the Python SDK flow from the volume documentation, using
-VersionedVolume instead of Volume:
+Volume instead of Volume:
 
-1. Open a named volume with ``VersionedVolume("my-data")``.
+1. Open a named volume with ``Volume("my-data")``.
 2. Upload files directly and with ``batch_upload``.
 3. Read files and list directories.
 4. Inspect versions and read a previous immutable snapshot.
 
-Versioned volumes are not mountable into containers or sandboxes yet, so this
-example intentionally uses only the direct VersionedVolume Python APIs.
+Volumes are not mountable into containers or sandboxes yet, so this
+example intentionally uses only the direct Volume Python APIs.
 """
 
 from __future__ import annotations
@@ -22,8 +22,8 @@ from pathlib import Path
 
 from chalkcompute import (
     ConnectClient,
-    VersionedVolume,
-    VersionedVolumeClient,
+    Volume,
+    VolumeClient,
     VolumeError,
 )
 
@@ -36,32 +36,30 @@ EVAL_PATH = "data/eval.csv"
 LOCAL_NOTES_PATH = "notes/from-local.txt"
 
 
-def _print_listing(volume: VersionedVolume, prefix: str = "") -> None:
+def _print_listing(volume: Volume, prefix: str = "") -> None:
     print(f"\nFiles under {prefix or '/'}:")
     for item in volume.listdir(prefix):
         kind = f" {item.kind}" if item.kind else ""
         print(f"  - {item.path} ({item.size} bytes{kind})")
 
 
-def _print_versions(volume: VersionedVolume) -> None:
+def _print_versions(volume: Volume) -> None:
     print("\nVersions:")
     for version in volume.versions():
-        print(
-            f"  - id={version.id} sequence={version.sequence_number} ref={version.ref or '<none>'}"
-        )
+        print(f"  - id={version.id} ref={version.ref or '<none>'}")
 
 
 def main() -> None:
     volume_name = os.environ.get(
         "VERSIONED_VOLUME_NAME",
-        f"versioned-volume-example-{uuid.uuid4().hex[:8]}",
+        f"volume-example-{uuid.uuid4().hex[:8]}",
     )
     keep_volume = os.environ.get("KEEP_VERSIONED_VOLUME") == "1"
 
     print(f"Volume: {volume_name}")
     print("Opening with lazy get-or-create semantics...")
 
-    with VersionedVolume(volume_name) as volume:
+    with Volume(volume_name) as volume:
         try:
             # This follows the documented Volume shape:
             #
@@ -91,7 +89,7 @@ def main() -> None:
             print(f"\nRead {MODEL_PATH}: {data.decode().strip()!r}")
             _print_listing(volume, "data")
 
-            # Additional VersionedVolume SDK functionality.
+            # Additional Volume SDK functionality.
 
             with tempfile.TemporaryDirectory() as tmpdir:
                 local_path = Path(tmpdir) / "notes.txt"
@@ -122,9 +120,9 @@ def main() -> None:
             _print_versions(volume)
             _print_listing(volume)
 
-            # Client helper ergonomics. These use the v2/versioned volume client
+            # Client helper ergonomics. These use the volume client
             # only; no v1 VolumeClient, containers, or sandboxes are involved.
-            with VersionedVolumeClient.from_connect(ConnectClient()) as client:
+            with VolumeClient.from_connect(ConnectClient()) as client:
                 known_existing = client.from_name(volume_name)
                 print(f"\nfrom_name handle: {known_existing.name}")
 
@@ -139,7 +137,7 @@ def main() -> None:
                     f"\nKeeping volume because KEEP_VERSIONED_VOLUME=1: {volume_name}"
                 )
             else:
-                log.info("Deleting versioned volume %s", volume_name)
+                log.info("Deleting volume %s", volume_name)
                 volume.delete()
 
 

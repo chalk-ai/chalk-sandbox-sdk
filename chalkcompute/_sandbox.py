@@ -48,16 +48,29 @@ from chalkcompute._gen.chalk.sandbox.v1 import runtime_service_pb2 as runtime_pb
 from chalkcompute._gen.chalk.sandbox.v1 import (
     runtime_service_pb2_grpc as runtime_pb_grpc,
 )
-from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as pb
-from chalkcompute._gen.chalk.sandbox.v1 import service_pb2_grpc as pb_grpc
+from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb2 as process_pb
+from chalkcompute._gen.chalk.sandbox.v2 import (
+    process_service_pb2_grpc as process_pb_grpc,
+)
+from chalkcompute._gen.chalk.sandbox.v2 import service_pb2 as pb
+from chalkcompute._gen.chalk.sandbox.v2 import service_pb2_grpc as pb_grpc
 from chalkcompute._image import Image
 from chalkcompute._naming import validate_dns_label, validate_env
 from chalkcompute._tracing import _instrumented
+from chalkcompute._volume import (
+    MOUNT_TYPE,
+    Volume,
+    VolumeClient,
+    VolumeMount,
+    cleanup_owned_volumes,
+    normalize_volume_refs,
+    referenced_volume_mount,
+)
 
 # Aliases defined before SandboxClient, which has a ``.list()`` method that
 # would otherwise shadow the builtin ``list`` in class-scope name resolution.
 _GrpcMetadata = list[tuple[str, str]]
-_VolumeMountList = list[pb.VolumeMount]
+_VolumeList = list[tuple[str, str] | Volume | VolumeMount]
 
 
 # ---------------------------------------------------------------------------
@@ -77,16 +90,35 @@ class SandboxNotFoundError(SandboxError):
     pass
 
 
-class SandboxTerminatedError(SandboxError):
+class SandboxStatusError(SandboxError):
+    """Sandbox error carrying the backend's lifecycle status details."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        sandbox_id: str | None = None,
+        status: str | None = None,
+        status_message: str | None = None,
+        build_id: str | None = None,
+    ) -> None:
+        self.sandbox_id = sandbox_id
+        self.status = status
+        self.status_message = status_message
+        self.build_id = build_id
+        super().__init__(message)
+
+
+class SandboxTerminatedError(SandboxStatusError):
     """Raised when a sandbox has terminated."""
 
-    pass
+
+class SandboxBuildError(SandboxStatusError):
+    """Raised when a custom sandbox image build fails."""
 
 
-class SandboxBuildError(SandboxError):
-    """Raised when a sandbox image build fails."""
-
-    pass
+class SandboxCreationError(SandboxStatusError):
+    """Raised when sandbox creation or startup fails."""
 
 
 class ExecError(SandboxError):
@@ -128,6 +160,9 @@ class SandboxInfo:
     build_id: str | None = None
     """Optional identifier of the image build associated with this sandbox."""
 
+    status_message: str | None = None
+    """Backend-provided explanation for the current lifecycle status."""
+
 
 @dataclass
 class ExecResult:
@@ -144,9 +179,6 @@ class ExecResult:
 
     signal: int | None = None
     """Signal number that terminated the process, if any."""
-
-    pid: int | None = None
-    """PID of the process, if known."""
 
     error: str | None = None
     """Error string if execution failed."""
@@ -166,14 +198,14 @@ class ExecResult:
 class ExecEvent:
     """A single event from a streaming exec call."""
 
+    session_id: str | None = None
+    """V2 session identifier, set when the process session starts."""
+
     stdout: str | None = None
     """Stdout text chunk, if this event carries stdout output."""
 
     stderr: str | None = None
     """Stderr text chunk, if this event carries stderr output."""
-
-    pid: int | None = None
-    """PID of the started process, set on the process-started event."""
 
     exit_code: int | None = None
     """Exit code of the process, set on the process-exited event."""
@@ -189,7 +221,7 @@ class ExecEvent:
 
     @property
     def is_started(self) -> bool:
-        return self.pid is not None
+        return self.session_id is not None
 
     @property
     def is_output(self) -> bool:
@@ -279,11 +311,11 @@ class ExecProcess:
     """Handle to a running exec stream, allowing stdin writes and signal sends."""
 
     _request_queue: queue.Queue = field(repr=False)
-    _response_iterator: Iterator[pb.ExecResponse] = field(repr=False)
+    _response_iterator: Iterator[process_pb.OpenSessionResponse] = field(repr=False)
     _sandbox_id: str = field(repr=False)
 
-    pid: int | None = None
-    """PID of the running process once the server reports it."""
+    session_id: str | None = None
+    """V2 session identifier once the process session starts."""
 
     def write_stdin(self, data: str | bytes) -> None:
         """Send data to the process's stdin.
@@ -295,11 +327,15 @@ class ExecProcess:
         """
         if isinstance(data, str):
             data = data.encode("utf-8")
-        self._request_queue.put(pb.ExecRequest(stdin_data=pb.StdinData(data=data)))
+        self._request_queue.put(
+            process_pb.OpenSessionRequest(stdin_data=process_pb.StdinData(data=data))
+        )
 
     def close_stdin(self) -> None:
         """Signal EOF on stdin."""
-        self._request_queue.put(pb.ExecRequest(stdin_eof=pb.StdinEof()))
+        self._request_queue.put(
+            process_pb.OpenSessionRequest(stdin_eof=process_pb.StdinEof())
+        )
 
     def send_signal(self, sig: int = signal.SIGTERM) -> None:
         """Send a signal to the process.
@@ -309,7 +345,9 @@ class ExecProcess:
         sig
             Signal number to send. Defaults to ``SIGTERM``.
         """
-        self._request_queue.put(pb.ExecRequest(signal=pb.ExecSignal(signal=sig)))
+        self._request_queue.put(
+            process_pb.OpenSessionRequest(signal=process_pb.SessionSignal(signal=sig))
+        )
 
     def output(self) -> Iterator[ExecEvent]:
         """Iterate over output events from the process.
@@ -322,8 +360,8 @@ class ExecProcess:
         """
         for response in self._response_iterator:
             event = _response_to_event(response)
-            if event.pid is not None:
-                self.pid = event.pid
+            if event.session_id is not None:
+                self.session_id = event.session_id
             yield event
             if event.is_exited or event.is_error:
                 return
@@ -340,18 +378,15 @@ class ExecProcess:
         stderr_parts: list[bytes] = []
         exit_code: int | None = None
         exit_signal: int | None = None
-        pid: int | None = self.pid
         error: str | None = None
 
         for response in self._response_iterator:
-            msg_type = response.WhichOneof("message")
-            if msg_type == "process_started":
-                pid = response.process_started.pid
-            elif msg_type == "output_data":
+            msg_type = response.WhichOneof("event")
+            if msg_type == "output_data":
                 od = response.output_data
-                if od.stream == pb.OutputData.STREAM_STDOUT:
+                if od.stream == process_pb.OutputData.STREAM_STDOUT:
                     stdout_parts.append(od.data)
-                elif od.stream == pb.OutputData.STREAM_STDERR:
+                elif od.stream == process_pb.OutputData.STREAM_STDERR:
                     stderr_parts.append(od.data)
             elif msg_type == "process_exited":
                 pe = response.process_exited
@@ -367,7 +402,6 @@ class ExecProcess:
             stderr=b"".join(stderr_parts),
             exit_code=exit_code,
             signal=exit_signal,
-            pid=pid,
             error=error,
         )
 
@@ -380,24 +414,24 @@ class ExecProcess:
 class Sandbox:
     """A managed sandbox backed by the Chalk ``SandboxService``.
 
-    Configure a sandbox with ``Sandbox(image=...)`` and call :meth:`run` to
-    create it. Use :meth:`exec` to run commands and :meth:`terminate` to shut
-    the sandbox down when you're done.
+    Create sandboxes with :meth:`SandboxClient.create`. Use :meth:`exec` to run
+    commands and :meth:`terminate` to shut the sandbox down when you're done.
 
     Examples
     --------
-    >>> from chalkcompute import Sandbox, Image
-    >>> sandbox = Sandbox(
-    ...     image=Image.debian_slim().pip_install(["numpy"]),
-    ... ).run()
-    >>> result = sandbox.exec(
-    ...     "python",
-    ...     "-c",
-    ...     "import numpy; print(numpy.__version__)",
-    ... )
+    >>> from chalkcompute import Image, SandboxClient
+    >>> with SandboxClient.from_env() as client:
+    ...     sandbox = client.create(
+    ...         Image.debian_slim().pip_install(["numpy"]),
+    ...     )
+    ...     result = sandbox.exec(
+    ...         "python",
+    ...         "-c",
+    ...         "import numpy; print(numpy.__version__)",
+    ...     )
+    ...     sandbox.terminate()
     >>> result.stdout_text.strip()
-    '1.26.4'
-    >>> sandbox.terminate()
+    '2.5.1'
     """
 
     def __init__(
@@ -408,10 +442,11 @@ class Sandbox:
         cpu: str | None = None,
         memory: str | None = None,
         env: dict[str, str] | None = None,
-        volumes: list[tuple[str, str]] | None = None,
+        volumes: _VolumeList | None = None,
         entrypoint: list[str] | None = None,
         network_policy: NetworkPolicy | None = None,
         restart_policy: RestartPolicy | None = None,
+        chalk_identity: bool = False,
         chalk_client: Any | None = None,
         sandbox_client: SandboxClient | None = None,
         client: Any | None = None,
@@ -434,7 +469,8 @@ class Sandbox:
             Optional environment variables to set in the sandbox.
         volumes
             Optional ``(volume_name, mount_path)`` pairs to mount into the
-            sandbox.
+            sandbox. Each volume must already exist; :meth:`run` fails if one
+            is missing.
         entrypoint
             Optional command to run as the sandbox container's main process.
         network_policy
@@ -443,10 +479,22 @@ class Sandbox:
         restart_policy
             Optional restart behavior. Use :attr:`RestartPolicy.NEVER` or
             :attr:`RestartPolicy.ALWAYS`.
+        chalk_identity
+            Whether to give the sandbox a platform-managed Chalk identity.
+            The identity is exposed inside the sandbox through the standard
+            ``CHALK_WEB_IDENTITY_TOKEN_FILE`` environment variable.
+
+        Notes
+        -----
+        Calling :meth:`run` without a client creates one from the environment.
+        Prefer creating a :class:`SandboxClient` explicitly and calling
+        :meth:`SandboxClient.create` instead of constructing a ``Sandbox``
+        directly.
 
         Examples
         --------
-        >>> sandbox = Sandbox(image="ubuntu:latest").run()
+        >>> with SandboxClient.from_env() as client:
+        ...     sandbox = client.create("ubuntu:latest")
         """
         self._client: Any | None = None
         self._id: str | None = None
@@ -458,10 +506,16 @@ class Sandbox:
         self._cpu: str | None = None
         self._memory: str | None = None
         self._env: dict[str, str] = {}
-        self._volumes: list[tuple[str, str]] = []
+        # Existence is checked at run() time, not here.
+        self._referenced_volumes: list[VolumeMount] = []
+        # Populated at run() time: referenced volumes plus any freshly
+        # uploaded volumes.
+        self._volumes: list[VolumeMount] = []
+        self._volume_client: VolumeClient | None = None
         self._entrypoint: list[str] | None = None
         self._network_policy: NetworkPolicy | None = None
         self._restart_policy: RestartPolicy | None = None
+        self._chalk_identity = False
         self._chalk_client: Any | None = None
 
         if client is not None or sandbox_id is not None:
@@ -475,6 +529,7 @@ class Sandbox:
                 or entrypoint is not None
                 or network_policy is not None
                 or restart_policy is not None
+                or chalk_identity
                 or chalk_client is not None
                 or sandbox_client is not None
             ):
@@ -505,22 +560,12 @@ class Sandbox:
                 f"memory must be a string such as '2Gi' or '512Mi', got {memory!r}"
             )
         validate_env(env)
-        if volumes is not None:
-            for item in volumes:
-                if not (
-                    isinstance(item, (tuple, list))
-                    and len(item) == 2
-                    and all(isinstance(s, str) for s in item)
-                ):
-                    raise ValueError(
-                        f"Each volumes entry must be a (name, mount_path) string tuple, got {item!r}. "
-                        f"Example: volumes=[('my-volume', '/data')]"
-                    )
-
         if network_policy is not None and not isinstance(network_policy, NetworkPolicy):
             raise TypeError("network_policy must be a NetworkPolicy")
         if restart_policy is not None and not isinstance(restart_policy, RestartPolicy):
             raise TypeError("restart_policy must be a RestartPolicy")
+        if not isinstance(chalk_identity, bool):
+            raise TypeError("chalk_identity must be a bool")
 
         self._client = sandbox_client
         self._image = image
@@ -528,10 +573,11 @@ class Sandbox:
         self._cpu = cpu
         self._memory = memory
         self._env = dict(env) if env else {}
-        self._volumes = [(name, mount_path) for name, mount_path in volumes or []]
+        self._referenced_volumes = normalize_volume_refs(volumes)
         self._entrypoint = list(entrypoint) if entrypoint is not None else None
         self._network_policy = network_policy
         self._restart_policy = restart_policy
+        self._chalk_identity = chalk_identity
         self._chalk_client = chalk_client
 
     @property
@@ -562,7 +608,7 @@ class Sandbox:
         sandbox_id = self._require_started()
         try:
             resp = client._stub.GetSandbox(
-                pb.GetSandboxRequest(sandbox_id=sandbox_id),
+                pb.GetSandboxRequest(id=sandbox_id),
                 metadata=client._metadata,
             )
         except grpc.RpcError as e:
@@ -584,7 +630,7 @@ class Sandbox:
         ...     .run()
         ... )
         """
-        self._volumes.append((name, mount_path))
+        self._referenced_volumes.append(VolumeMount(name=name, mount_path=mount_path))
         return self
 
     @_instrumented("chalkcompute.sandbox.run")
@@ -630,23 +676,29 @@ class Sandbox:
                 timeout=timeout,
             )
 
-        sandbox = client.create(
+        # A missing user-referenced volume fails run().
+        connect = self._connect_client(client)
+        self._volumes = [
+            referenced_volume_mount(connect, mount)
+            for mount in self._referenced_volumes
+        ]
+        # Upload the image's lazy local files (add_local_file / add_local_dir
+        # with the default strategy="volume") and mount them alongside.
+        if isinstance(self._image, Image) and self._image.lazy_local_files:
+            self._volume_client = VolumeClient.from_connect(connect)
+            self._volumes += self._volume_client.upload_lazy_files(
+                self._image,
+                volume_prefix="sandbox-files",
+            )
+
+        client._instantiate(
+            self,
             image,
-            name=self._name,
-            cpu=self._cpu,
-            memory=self._memory,
-            env=self._env or None,
-            volumes=_volume_mounts_to_proto(self._volumes) if self._volumes else None,
-            entrypoint=self._entrypoint,
-            network_policy=self._network_policy,
-            restart_policy=self._restart_policy,
             wait=wait,
             poll_interval=poll_interval,
             timeout=timeout,
         )
         self._client = client
-        self._id = sandbox._id
-        self._info = sandbox._info
         self._terminated = False
         return self
 
@@ -772,7 +824,7 @@ class Sandbox:
         """
         client = self._require_client()
         sandbox_id = self._require_started()
-        init = pb.ExecInit(
+        init = process_pb.NewProcess(
             sandbox_id=sandbox_id,
             command=command,
             args=list(args),
@@ -782,15 +834,15 @@ class Sandbox:
         validate_env(env)
         if env is not None:
             for k, v in env.items():
-                init.env[k] = v
+                init.env_vars[k] = v
         if timeout_secs is not None:
-            init.timeout_secs = timeout_secs
+            init.timeout.seconds = timeout_secs
 
-        request_queue: queue.Queue[pb.ExecRequest | None] = queue.Queue()
+        request_queue: queue.Queue[process_pb.OpenSessionRequest | None] = queue.Queue()
         # Send the init message first
-        request_queue.put(pb.ExecRequest(init=init))
+        request_queue.put(process_pb.OpenSessionRequest(new_process=init))
 
-        def request_iterator() -> Iterator[pb.ExecRequest]:
+        def request_iterator() -> Iterator[process_pb.OpenSessionRequest]:
             while True:
                 req = request_queue.get()
                 if req is None:
@@ -798,7 +850,7 @@ class Sandbox:
                 yield req
 
         try:
-            response_iterator = client._stub.Exec(
+            response_iterator = client._process_stub.OpenSession(
                 request_iterator(), metadata=client._metadata
             )
         except grpc.RpcError as e:
@@ -944,18 +996,33 @@ class Sandbox:
             return
         client = self._require_client()
         sandbox_id = self._require_started()
-        req = pb.TerminateSandboxRequest(sandbox_id=sandbox_id)
+        req = pb.TerminateSandboxRequest(id=sandbox_id)
         if grace_period_seconds is not None:
-            req.grace_period_seconds = grace_period_seconds
+            req.grace_period.seconds = grace_period_seconds
         try:
             client._stub.TerminateSandbox(req, metadata=client._metadata)
         except grpc.RpcError as e:
             _handle_rpc_error(e, sandbox_id)
             raise
         self._terminated = True
+        if self._volumes:
+            volume_client = self._volume_client or VolumeClient.from_connect(
+                self._connect_client(client)
+            )
+            cleanup_owned_volumes(
+                volume_client, self._volumes, self._referenced_volumes
+            )
+        self._volumes = []
+        self._volume_client = None
         if self._image is not None:
             self._id = None
             self._info = None
+
+    def _connect_client(self, client: SandboxClient) -> ConnectClient:
+        """Return the authenticated Connect client backing ``client``."""
+        return getattr(client, "_connect", None) or ConnectClient(
+            chalk_client=self._chalk_client
+        )
 
     def _build_image(
         self,
@@ -966,9 +1033,7 @@ class Sandbox:
     ) -> str:
         """Build the configured image and return the resulting image URI."""
         assert isinstance(self._image, Image)
-        connect = getattr(client, "_connect", None) or ConnectClient(
-            chalk_client=self._chalk_client
-        )
+        connect = self._connect_client(client)
         try:
             return build_image(
                 connect,
@@ -1023,6 +1088,7 @@ class SandboxClient:
         else:
             self._channel = grpc.insecure_channel(target)
         self._stub = pb_grpc.SandboxServiceStub(self._channel)
+        self._process_stub = process_pb_grpc.SandboxProcessServiceStub(self._channel)
 
     @classmethod
     def from_env(cls, *, chalk_client: Any | None = None) -> SandboxClient:
@@ -1064,7 +1130,6 @@ class SandboxClient:
         """Close the gRPC channel."""
         self._channel.close()
 
-    @_instrumented("chalkcompute.sandbox.create")
     def create(
         self,
         image: str | Image,
@@ -1073,10 +1138,11 @@ class SandboxClient:
         cpu: str | None = None,
         memory: str | None = None,
         env: dict[str, str] | None = None,
-        volumes: _VolumeMountList | None = None,
+        volumes: _VolumeList | None = None,
         entrypoint: _StrList | None = None,
         network_policy: NetworkPolicy | None = None,
         restart_policy: RestartPolicy | None = None,
+        chalk_identity: bool = False,
         wait: bool = True,
         poll_interval: float = 0.5,
         timeout: float = 600.0,
@@ -1102,7 +1168,8 @@ class SandboxClient:
         env
             Optional environment variables.
         volumes
-            Optional list of ``VolumeMount`` protos to attach.
+            Optional ``(volume_name, mount_path)`` pairs to mount into the
+            sandbox.
         entrypoint
             Optional command to run as the sandbox container's main process.
         network_policy
@@ -1111,10 +1178,14 @@ class SandboxClient:
         restart_policy
             Optional restart behavior. Use ``RestartPolicy.NEVER`` or
             ``RestartPolicy.ALWAYS``.
+        chalk_identity
+            Whether to give the sandbox a platform-managed Chalk identity.
+            The identity is exposed inside the sandbox through the standard
+            ``CHALK_WEB_IDENTITY_TOKEN_FILE`` environment variable.
         wait
             If ``True``, poll until the sandbox is ready (default ``True``).
         poll_interval
-            Seconds between ``GetSandbox`` polls (default 5).
+            Seconds between ``GetSandbox`` polls (default 0.5).
         timeout
             Maximum seconds to wait for the sandbox to become ready
             (default 600).
@@ -1124,79 +1195,76 @@ class SandboxClient:
         Sandbox
             A sandbox handle.
         """
-        if network_policy is not None and not isinstance(network_policy, NetworkPolicy):
-            raise TypeError("network_policy must be a NetworkPolicy")
-        if restart_policy is not None and not isinstance(restart_policy, RestartPolicy):
-            raise TypeError("restart_policy must be a RestartPolicy")
+        return Sandbox(
+            image=image,
+            name=name,
+            cpu=cpu,
+            memory=memory,
+            env=env,
+            volumes=volumes,
+            entrypoint=entrypoint,
+            network_policy=network_policy,
+            restart_policy=restart_policy,
+            chalk_identity=chalk_identity,
+            sandbox_client=self,
+        ).run(wait=wait, poll_interval=poll_interval, timeout=timeout)
 
-        if isinstance(image, Image):
-            image = self._build_image(
-                image,
-                poll_interval=poll_interval,
-                timeout=timeout,
-            )
-
-        req = pb.CreateSandboxRequest(image=image)
-        if name is not None:
-            req.name = name
-        if cpu is not None or memory is not None:
-            limits = pb.ResourceLimits()
-            if cpu is not None:
-                limits.cpu = cpu
-            if memory is not None:
-                limits.memory = memory
-            req.resource_limits.CopyFrom(limits)
-        validate_env(env)
-        if env is not None:
-            for k, v in env.items():
-                req.env[k] = v
-        if volumes is not None:
-            req.volumes.extend(volumes)
-        if entrypoint is not None:
-            req.entrypoint.extend(entrypoint)
-        if network_policy is not None:
+    @_instrumented("chalkcompute.sandbox.create")
+    def _instantiate(
+        self,
+        sandbox: Sandbox,
+        image: str,
+        *,
+        wait: bool,
+        poll_interval: float,
+        timeout: float,
+    ) -> None:
+        spec = container_pb.ChalkContainerSpec(image=image)
+        if sandbox._name is not None:
+            spec.name = sandbox._name
+        if sandbox._cpu is not None or sandbox._memory is not None:
+            limits = container_pb.ResourceLimits()
+            if sandbox._cpu is not None:
+                limits.cpu = sandbox._cpu
+            if sandbox._memory is not None:
+                limits.memory = sandbox._memory
+            spec.resources.CopyFrom(limits)
+        if sandbox._env:
+            for k, v in sandbox._env.items():
+                spec.env_vars[k] = v
+        if sandbox._volumes:
+            spec.volumes.extend(_volume_mounts_to_proto(sandbox._volumes))
+        if sandbox._entrypoint is not None:
+            spec.entrypoint.extend(sandbox._entrypoint)
+        if sandbox._network_policy is not None:
             from google.protobuf.json_format import ParseDict
 
-            ParseDict(network_policy.to_dict(), req.network_policy)
-        if restart_policy is not None:
-            req.restart_policy = (
+            ParseDict(sandbox._network_policy.to_dict(), spec.network_policy)
+        if sandbox._restart_policy is not None:
+            spec.restart_policy = (
                 container_pb.RESTART_POLICY_NEVER
-                if restart_policy is RestartPolicy.NEVER
+                if sandbox._restart_policy is RestartPolicy.NEVER
                 else container_pb.RESTART_POLICY_ALWAYS
             )
+        if sandbox._chalk_identity:
+            spec.chalk_workload_identity.CopyFrom(container_pb.ChalkWorkloadIdentity())
 
-        resp = self._stub.CreateSandbox(req, metadata=self._metadata)
+        resp = self._stub.CreateSandbox(
+            pb.CreateSandboxRequest(spec=spec), metadata=self._metadata
+        )
         info = _pb_to_sandbox_info(resp.sandbox)
-        sandbox = Sandbox(client=self, sandbox_id=info.id)
-        sandbox._info = info
 
-        if wait and info.status in ("building", "connecting"):
-            sandbox._info = self._poll_until_ready(
+        if wait and info.status == "pending":
+            info = self._poll_until_ready(
                 info.id,
                 poll_interval=poll_interval,
                 timeout=timeout,
             )
+        elif wait and info.status in ("failed", "error", "unknown", "terminated"):
+            raise _sandbox_creation_error(info)
 
-        return sandbox
-
-    def _build_image(
-        self,
-        image: Image,
-        *,
-        poll_interval: float,
-        timeout: float,
-    ) -> str:
-        """Build an ``Image`` spec and return the resulting image URI."""
-        connect = self._connect or ConnectClient()
-        try:
-            return build_image(
-                connect,
-                image,
-                poll_interval=poll_interval,
-                timeout=timeout,
-            )
-        except ConnectError as e:
-            raise SandboxBuildError(str(e)) from e
+        sandbox._id = info.id
+        sandbox._info = info
 
     def _poll_until_ready(
         self,
@@ -1210,23 +1278,17 @@ class SandboxClient:
         while time.monotonic() < deadline:
             try:
                 resp = self._stub.GetSandbox(
-                    pb.GetSandboxRequest(sandbox_id=sandbox_id),
+                    pb.GetSandboxRequest(id=sandbox_id),
                     metadata=self._metadata,
                 )
             except grpc.RpcError as e:
                 _handle_rpc_error(e, sandbox_id)
                 raise
             info = _pb_to_sandbox_info(resp.sandbox)
-            if info.status == "ready":
+            if info.status == "running":
                 return info
-            if info.status == "error":
-                raise SandboxBuildError(
-                    f"Sandbox {sandbox_id} entered error state during image build"
-                )
-            if info.status == "terminated":
-                raise SandboxTerminatedError(
-                    f"Sandbox {sandbox_id} was terminated during image build"
-                )
+            if info.status in ("failed", "error", "unknown", "terminated"):
+                raise _sandbox_creation_error(info)
             time.sleep(poll_interval)
         raise SandboxError(
             f"Timed out after {timeout}s waiting for sandbox {sandbox_id} to become ready"
@@ -1269,25 +1331,47 @@ class SandboxClient:
 
 
 def _pb_to_sandbox_info(info: pb.SandboxInfo) -> SandboxInfo:
+    status = pb.SandboxStatus.Name(info.status).removeprefix("SANDBOX_STATUS_").lower()
     return SandboxInfo(
         id=info.id,
-        status=info.state,
-        created_at=info.created_at,
-        name=info.name if info.HasField("name") else None,
-        build_id=info.build_id if info.HasField("build_id") else None,
+        status=status,
+        created_at=info.created_at.ToJsonString(),
+        name=info.name or None,
+        status_message=(
+            info.status_message if info.HasField("status_message") else None
+        ),
     )
 
 
-def _response_to_event(response: pb.ExecResponse) -> ExecEvent:
-    msg_type = response.WhichOneof("message")
-    if msg_type == "process_started":
-        return ExecEvent(pid=response.process_started.pid)
+def _sandbox_creation_error(info: SandboxInfo) -> SandboxStatusError:
+    """Build a detailed error from the backend's sandbox status."""
+    if info.status == "terminated":
+        exc_cls: type[SandboxStatusError] = SandboxTerminatedError
+        message = f"Sandbox {info.id} was terminated during creation"
+    else:
+        exc_cls = SandboxCreationError
+        message = f"Sandbox {info.id} entered {info.status} state during creation"
+    if info.status_message:
+        message = f"{message}: {info.status_message}"
+    return exc_cls(
+        message,
+        sandbox_id=info.id,
+        status=info.status,
+        status_message=info.status_message,
+        build_id=info.build_id,
+    )
+
+
+def _response_to_event(response: process_pb.OpenSessionResponse) -> ExecEvent:
+    msg_type = response.WhichOneof("event")
+    if msg_type == "session_attached":
+        return ExecEvent(session_id=response.session_attached.session_id)
     elif msg_type == "output_data":
         od = response.output_data
         text = od.data.decode("utf-8", errors="replace")
-        if od.stream == pb.OutputData.STREAM_STDOUT:
+        if od.stream == process_pb.OutputData.STREAM_STDOUT:
             return ExecEvent(stdout=text)
-        elif od.stream == pb.OutputData.STREAM_STDERR:
+        elif od.stream == process_pb.OutputData.STREAM_STDERR:
             return ExecEvent(stderr=text)
         return ExecEvent(stdout=text)
     elif msg_type == "process_exited":
@@ -1295,6 +1379,19 @@ def _response_to_event(response: pb.ExecResponse) -> ExecEvent:
         return ExecEvent(
             exit_code=pe.exit_code if pe.HasField("exit_code") else None,
             exit_signal=pe.signal if pe.HasField("signal") else None,
+        )
+    elif msg_type == "process_timed_out":
+        pe = response.process_timed_out
+        return ExecEvent(
+            exit_code=pe.exit_code if pe.HasField("exit_code") else None,
+            exit_signal=pe.signal if pe.HasField("signal") else None,
+            error_code="timed_out",
+            error_message="Process timed out",
+        )
+    elif msg_type == "process_failed":
+        return ExecEvent(
+            error_code="process_failed",
+            error_message=response.process_failed.message,
         )
     elif msg_type == "error":
         return ExecEvent(
@@ -1320,11 +1417,20 @@ def _handle_rpc_error(e: grpc.RpcError, sandbox_id: str) -> None:
     )
 
 
-def _volume_mounts_to_proto(volumes: list[tuple[str, str]]) -> list[pb.VolumeMount]:
-    return [
-        pb.VolumeMount(name=vol_name, mount_path=mount_path, type="versioned_chalkfs")
-        for vol_name, mount_path in volumes
-    ]
+def _volume_mounts_to_proto(
+    volumes: list[VolumeMount],
+) -> list[container_pb.VolumeMount]:
+    mounts: list[container_pb.VolumeMount] = []
+    for volume in volumes:
+        mount = container_pb.VolumeMount(
+            name=volume.name,
+            mount_path=volume.mount_path,
+            type=MOUNT_TYPE,
+        )
+        if volume.version_id is not None:
+            mount.version_id = volume.version_id
+        mounts.append(mount)
+    return mounts
 
 
 def connect(target: str = "localhost:50051", **kwargs) -> SandboxClient:

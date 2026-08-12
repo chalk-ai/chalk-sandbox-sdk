@@ -56,6 +56,7 @@ from chalkcompute._sandbox import PythonSkippedArtifact as PythonSkippedArtifact
 from chalkcompute._sandbox import RestartPolicy as RestartPolicy
 from chalkcompute._sandbox import Sandbox as Sandbox
 from chalkcompute._sandbox import SandboxBuildError as SandboxBuildError
+from chalkcompute._sandbox import SandboxCreationError as SandboxCreationError
 from chalkcompute._sandbox import SandboxClient as SandboxClient
 from chalkcompute._sandbox import SandboxError as SandboxError
 from chalkcompute._sandbox import SandboxInfo as SandboxInfo
@@ -72,20 +73,24 @@ from chalkcompute._secret import resolve_lazy_secrets as resolve_lazy_secrets
 from chalkcompute._tracing import span as span
 from chalkcompute._tracing import traced as traced
 from chalkcompute._volume import FileInfo as FileInfo
-from chalkcompute._volume import SimpleVolume as SimpleVolume
+from chalkcompute._volume import ForkInfo as ForkInfo
+from chalkcompute._volume import VersionInfo as VersionInfo
+from chalkcompute._volume import Volume as Volume
 from chalkcompute._volume import VolumeClient as VolumeClient
-from chalkcompute._volume import make_volume as Volume
 from chalkcompute._volume import VolumeClosedError as VolumeClosedError
 from chalkcompute._volume import VolumeError as VolumeError
 from chalkcompute._volume import VolumeFileNotFoundError as VolumeFileNotFoundError
 from chalkcompute._volume import VolumeInfo as VolumeInfo
+from chalkcompute._volume import VolumeMount as VolumeMount
 from chalkcompute._volume import VolumeNotFoundError as VolumeNotFoundError
 from chalkcompute._volume import (
     resolve_referenced_volume_type as resolve_referenced_volume_type,
 )
-from chalkcompute._vvolume import VersionInfo as VersionInfo
-from chalkcompute._vvolume import VersionedVolume as VersionedVolume
-from chalkcompute._vvolume import VersionedVolumeClient as VersionedVolumeClient
+
+# Back-compat aliases: all volumes are versioned, so the qualifier is gone from
+# the canonical names. Keep the old spellings importable.
+from chalkcompute._volume import Volume as VersionedVolume
+from chalkcompute._volume import VolumeClient as VersionedVolumeClient
 
 __all__ = [
     "Artifact",
@@ -147,6 +152,7 @@ __all__ = [
     "RestartPolicy",
     "Sandbox",
     "SandboxBuildError",
+    "SandboxCreationError",
     "SandboxClient",
     "SandboxError",
     "SandboxInfo",
@@ -158,16 +164,17 @@ __all__ = [
     "ScalingGroupInfo",
     "ReadinessProbe",
     "FileInfo",
+    "ForkInfo",
     "Volume",
-    "SimpleVolume",
     "VolumeClient",
     "VolumeClosedError",
     "VolumeError",
     "VolumeFileNotFoundError",
     "VolumeInfo",
+    "VolumeMount",
     "VolumeNotFoundError",
-    "resolve_referenced_volume_type",
     "VersionInfo",
+    "resolve_referenced_volume_type",
     "VersionedVolume",
     "VersionedVolumeClient",
 ]

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import pytest
 from chalkcompute import Image, Sandbox
-from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as pb
-from chalkcompute._sandbox import SandboxClient
+from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb2 as process_pb
+from chalkcompute._gen.chalk.sandbox.v2 import service_pb2 as pb
+from chalkcompute._sandbox import SandboxClient, SandboxCreationError
 
 
 class _RecordingSandboxClient:
@@ -14,10 +16,15 @@ class _RecordingSandboxClient:
         self.created_image: str | None = None
         self.create_kwargs: dict[str, object] | None = None
 
-    def create(self, image: str, **kwargs: object) -> Sandbox:
+    def _instantiate(self, sandbox: Sandbox, image: str, **kwargs: object) -> None:
         self.created_image = image
-        self.create_kwargs = kwargs
-        return Sandbox(client=self, sandbox_id="sandbox-123")
+        self.create_kwargs = {
+            **kwargs,
+            "cpu": sandbox._cpu,
+            "memory": sandbox._memory,
+            "volumes": sandbox._volumes,
+        }
+        sandbox._id = "sandbox-123"
 
 
 def test_sandbox_run_builds_image_before_create() -> None:
@@ -56,8 +63,30 @@ class _Stub:
         return pb.CreateSandboxResponse(
             sandbox=pb.SandboxInfo(
                 id="sandbox-123",
-                state="ready",
-                created_at="2026-08-03T00:00:00Z",
+                status=pb.SANDBOX_STATUS_RUNNING,
+                created_at={"seconds": 1},
+            )
+        )
+
+
+class _ErrorAfterBuildStub:
+    def CreateSandbox(self, request: pb.CreateSandboxRequest, **_kwargs: object):
+        return pb.CreateSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id="sandbox-123",
+                status=pb.SANDBOX_STATUS_PENDING,
+                created_at={"seconds": 1},
+            )
+        )
+
+    def GetSandbox(self, request: pb.GetSandboxRequest, **_kwargs: object):
+        assert request.id == "sandbox-123"
+        return pb.GetSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id="sandbox-123",
+                status=pb.SANDBOX_STATUS_FAILED,
+                created_at={"seconds": 1},
+                status_message="pod failed readiness probe: connection refused",
             )
         )
 
@@ -78,6 +107,249 @@ def test_sandbox_client_create_sends_image_uri_not_image_spec() -> None:
         client.close()
 
     assert stub.request is not None
-    assert stub.request.image == "registry/image:built"
-    assert stub.request.WhichOneof("image_source") == "image"
+    assert stub.request.spec.image == "registry/image:built"
     build.assert_called_once()
+
+
+def test_sandbox_client_create_can_request_chalk_identity() -> None:
+    client = SandboxClient()
+    stub = _Stub()
+    client._stub = stub  # type: ignore[assignment]
+    try:
+        client.create("python:3.14-slim", chalk_identity=True, wait=False)
+    finally:
+        client.close()
+
+    assert stub.request is not None
+    assert stub.request.spec.HasField("chalk_workload_identity")
+
+
+def test_sandbox_client_create_omits_chalk_identity_by_default() -> None:
+    client = SandboxClient()
+    stub = _Stub()
+    client._stub = stub  # type: ignore[assignment]
+    try:
+        client.create("python:3.14-slim", wait=False)
+    finally:
+        client.close()
+
+    assert stub.request is not None
+    assert not stub.request.spec.HasField("chalk_workload_identity")
+
+
+def test_sandbox_rejects_non_bool_chalk_identity() -> None:
+    with pytest.raises(TypeError, match="chalk_identity must be a bool"):
+        Sandbox(
+            image="python:3.14-slim",
+            chalk_identity="yes",  # type: ignore[arg-type]
+        )
+
+
+def test_sandbox_client_create_propagates_backend_error_details() -> None:
+    client = SandboxClient()
+    client._stub = _ErrorAfterBuildStub()  # type: ignore[assignment]
+    try:
+        with pytest.raises(SandboxCreationError) as exc_info:
+            with patch("chalkcompute._sandbox.time.sleep"):
+                client.create("python:3.14-slim", poll_interval=0, timeout=30)
+    finally:
+        client.close()
+
+    error = exc_info.value
+    assert str(error) == (
+        "Sandbox sandbox-123 entered failed state during creation: "
+        "pod failed readiness probe: connection refused"
+    )
+    assert error.sandbox_id == "sandbox-123"
+    assert error.status == "failed"
+    assert error.status_message == "pod failed readiness probe: connection refused"
+    assert error.build_id is None
+
+
+class _ProcessStub:
+    def __init__(self) -> None:
+        self.request: process_pb.OpenSessionRequest | None = None
+
+    def OpenSession(self, requests, **_kwargs: object):
+        self.request = next(requests)
+        return iter(
+            [
+                process_pb.OpenSessionResponse(
+                    session_attached=process_pb.SessionAttached(
+                        session_id="session-123"
+                    )
+                ),
+                process_pb.OpenSessionResponse(
+                    output_data=process_pb.OutputData(
+                        stream=process_pb.OutputData.STREAM_STDOUT,
+                        data=b"hello\\n",
+                    )
+                ),
+                process_pb.OpenSessionResponse(
+                    process_exited=process_pb.ProcessExited(exit_code=0)
+                ),
+            ]
+        )
+
+
+def test_sandbox_exec_uses_v2_process_service() -> None:
+    client = SandboxClient()
+    stub = _ProcessStub()
+    client._process_stub = stub  # type: ignore[assignment]
+    try:
+        result = Sandbox(client=client, sandbox_id="sandbox-123").exec("echo", "hello")
+    finally:
+        client.close()
+
+    assert result.stdout == b"hello\\n"
+    assert result.stderr == b""
+    assert result.exit_code == 0
+    assert stub.request is not None
+    assert stub.request.new_process.sandbox_id == "sandbox-123"
+    assert stub.request.new_process.command == "echo"
+    assert list(stub.request.new_process.args) == ["hello"]
+
+
+class _TerminatedStub:
+    def CreateSandbox(self, request: pb.CreateSandboxRequest, **_kwargs: object):
+        return pb.CreateSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id="sandbox-123",
+                status=pb.SANDBOX_STATUS_TERMINATED,
+                created_at={"seconds": 1},
+                status_message="Exit code 0",
+            )
+        )
+
+
+def test_terminated_during_creation_includes_status_message() -> None:
+    from chalkcompute._sandbox import SandboxTerminatedError
+
+    client = SandboxClient()
+    client._stub = _TerminatedStub()  # type: ignore[assignment]
+    try:
+        with pytest.raises(SandboxTerminatedError, match="Exit code 0"):
+            client.create("python:3.14-slim", wait=True)
+    finally:
+        client.close()
+
+
+def test_sandbox_referenced_volume_is_existence_checked() -> None:
+    from chalkcompute._volume import VolumeMount
+
+    client = _RecordingSandboxClient()
+    sandbox = Sandbox(
+        image="ubuntu:latest",
+        volumes=[("my-data", "/data")],
+        sandbox_client=client,  # type: ignore[arg-type]
+    )
+
+    with patch(
+        "chalkcompute._sandbox.referenced_volume_mount",
+        return_value=VolumeMount(name="my-data", mount_path="/data"),
+    ) as resolve:
+        sandbox.run()
+
+    resolve.assert_called_once_with(
+        client._connect, VolumeMount(name="my-data", mount_path="/data")
+    )
+    assert client.create_kwargs is not None
+    assert client.create_kwargs["volumes"] == [
+        VolumeMount(name="my-data", mount_path="/data")
+    ]
+
+
+def test_sandbox_accepts_version_pinned_volume_handle() -> None:
+    from chalkcompute._volume import Volume, VolumeMount
+
+    volume = Volume("my-data", client=MagicMock()).at_version(7)
+    client = _RecordingSandboxClient()
+    sandbox = Sandbox(
+        image="ubuntu:latest",
+        volumes=[volume],
+        sandbox_client=client,  # type: ignore[arg-type]
+    )
+
+    with patch(
+        "chalkcompute._sandbox.referenced_volume_mount",
+        side_effect=lambda _connect, mount: mount,
+    ):
+        sandbox.run()
+
+    assert volume.version_id == 7
+    assert client.create_kwargs is not None
+    assert client.create_kwargs["volumes"] == [
+        VolumeMount(
+            name="my-data",
+            mount_path="/volumes/my-data",
+            version_id=7,
+        )
+    ]
+
+
+def test_version_pinned_mount_is_serialized_to_proto() -> None:
+    from chalkcompute._sandbox import _volume_mounts_to_proto
+    from chalkcompute._volume import VolumeMount
+
+    mount = _volume_mounts_to_proto(
+        [VolumeMount(name="my-data", mount_path="/data", version_id=7)]
+    )[0]
+
+    assert mount.version_id == 7
+    assert mount.HasField("version_id")
+
+
+def test_sandbox_missing_referenced_volume_fails_run() -> None:
+    import pytest
+
+    from chalkcompute._volume import VolumeError
+
+    client = _RecordingSandboxClient()
+    sandbox = Sandbox(
+        image="ubuntu:latest",
+        volumes=[("nope", "/data")],
+        sandbox_client=client,  # type: ignore[arg-type]
+    )
+
+    with patch(
+        "chalkcompute._sandbox.referenced_volume_mount",
+        side_effect=VolumeError("Referenced volume 'nope' was not found."),
+    ):
+        with pytest.raises(VolumeError, match="nope"):
+            sandbox.run()
+
+
+def test_sandbox_uploads_lazy_local_files_to_a_volume(tmp_path) -> None:
+    from unittest.mock import MagicMock
+
+    from chalkcompute._volume import VolumeClient, VolumeMount
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "main.py").write_text("print('hi')\n")
+
+    client = _RecordingSandboxClient()
+    image = Image.debian_slim().add_local_dir(str(src), "/app")
+    sandbox = Sandbox(
+        image=image,
+        sandbox_client=client,  # type: ignore[arg-type]
+    )
+
+    volume_client = MagicMock(spec=VolumeClient)
+    volume_client.upload_lazy_files.return_value = [
+        VolumeMount(name="sandbox-files-abc", mount_path="/app")
+    ]
+
+    with (
+        patch("chalkcompute._sandbox.build_image", return_value="img:built"),
+        patch.object(VolumeClient, "from_connect", return_value=volume_client),
+    ):
+        sandbox.run()
+
+    volume_client.upload_lazy_files.assert_called_once_with(
+        image, volume_prefix="sandbox-files"
+    )
+    assert client.create_kwargs is not None
+    assert client.create_kwargs["volumes"] == [
+        VolumeMount(name="sandbox-files-abc", mount_path="/app")
+    ]

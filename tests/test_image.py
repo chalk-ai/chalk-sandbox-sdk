@@ -217,6 +217,16 @@ class TestImageAddFile:
         step = img.to_proto().steps[0].add_file
         assert step.mode == 0o755
 
+    def test_add_local_file_volume_mode_is_recorded(self, tmp_path: Path) -> None:
+        src = tmp_path / "weights.bin"
+        src.write_bytes(b"x")
+        image = Image.debian_slim().add_local_file(
+            str(src), "/data/weights.bin", mode=0o755
+        )
+
+        assert len(image.lazy_local_files) == 1
+        assert next(iter(image.lazy_local_files)).mode == 0o755
+
     def test_add_local_file_copy_allows_limit_sized_file(self, tmp_path: Path) -> None:
         src = tmp_path / "limit.bin"
         src.write_bytes(b"x" * _COPY_FILE_SIZE_LIMIT_BYTES)
@@ -1052,3 +1062,41 @@ class TestImageChaining:
         assert spec.env["APP"] == "test"
         assert list(spec.entrypoint) == ["python"]
         assert list(spec.cmd) == ["test.py"]
+
+
+class TestFromProto:
+    """Image.from_proto rehydrates an ImageSpec back into an Image."""
+
+    def test_round_trip_preserves_spec(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+            f.write("print('hi')\n")
+            copy_src = f.name
+
+        img = (
+            Image.debian_slim("3.12")
+            .pip_install(["torch", "transformers"])
+            .run_commands("huggingface-cli download org/model --local-dir /app/model")
+            .env({"HF_HOME": "/app/hf"})
+            .workdir("/app")
+            .add_local_file(copy_src, "/app/main.py", strategy="copy")
+        )
+
+        spec = img.to_proto()
+        rebuilt = Image.from_proto(spec)
+
+        assert rebuilt.to_proto() == spec
+
+    def test_round_trip_without_workdir(self):
+        img = Image.debian_slim().pip_install(["numpy"])
+        rebuilt = Image.from_proto(img.to_proto())
+        assert rebuilt.to_proto() == img.to_proto()
+        assert rebuilt._workdir is None  # pyright: ignore[reportPrivateUsage]
+
+    def test_from_proto_covers_every_imagespec_field(self):
+        # Canary: from_proto hand-copies top-level fields, so a NEW ImageSpec field would be
+        # silently dropped. If this fails, add the field to Image.from_proto/to_proto and here.
+        handled = {"base_image", "steps", "entrypoint", "cmd", "workdir", "env"}
+        fields = set(Image.debian_slim().to_proto().DESCRIPTOR.fields_by_name)
+        assert fields == handled, (
+            f"ImageSpec fields changed ({fields ^ handled}); update Image.from_proto/to_proto."
+        )

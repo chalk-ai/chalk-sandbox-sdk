@@ -1,4 +1,4 @@
-"""Deploy a model that loads config from a chalkfs volume.
+"""Deploy a model that loads config from a volume.
 
 uv run python examples/model/deploy_volume.py
 """

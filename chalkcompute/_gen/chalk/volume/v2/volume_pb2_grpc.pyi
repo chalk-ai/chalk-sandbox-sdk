@@ -12,8 +12,12 @@ from chalkcompute._gen.chalk.volume.v2.volume_pb2 import (
     AllocateInodeRangeResponse,
     CommitVersionRequest,
     CommitVersionResponse,
+    CreateRefRequest,
+    CreateRefResponse,
     CreateVolumeRequest,
     CreateVolumeResponse,
+    DeleteRefRequest,
+    DeleteRefResponse,
     DeleteVolumeRequest,
     DeleteVolumeResponse,
     GetCommitStatusRequest,
@@ -24,6 +28,8 @@ from chalkcompute._gen.chalk.volume.v2.volume_pb2 import (
     GetVolumeResponse,
     ListFilesRequest,
     ListFilesResponse,
+    ListRefsRequest,
+    ListRefsResponse,
     ListVolumeVersionsRequest,
     ListVolumeVersionsResponse,
     ListVolumesRequest,
@@ -64,6 +70,18 @@ class VolumeServiceStub:
     ListVolumeVersions: UnaryUnaryMultiCallable[
         ListVolumeVersionsRequest,
         ListVolumeVersionsResponse,
+    ]
+    CreateRef: UnaryUnaryMultiCallable[
+        CreateRefRequest,
+        CreateRefResponse,
+    ]
+    ListRefs: UnaryUnaryMultiCallable[
+        ListRefsRequest,
+        ListRefsResponse,
+    ]
+    DeleteRef: UnaryUnaryMultiCallable[
+        DeleteRefRequest,
+        DeleteRefResponse,
     ]
     CommitVersion: UnaryUnaryMultiCallable[
         CommitVersionRequest,
@@ -126,6 +144,24 @@ class VolumeServiceServicer(metaclass=ABCMeta):
         request: ListVolumeVersionsRequest,
         context: ServicerContext,
     ) -> ListVolumeVersionsResponse: ...
+    @abstractmethod
+    def CreateRef(
+        self,
+        request: CreateRefRequest,
+        context: ServicerContext,
+    ) -> CreateRefResponse: ...
+    @abstractmethod
+    def ListRefs(
+        self,
+        request: ListRefsRequest,
+        context: ServicerContext,
+    ) -> ListRefsResponse: ...
+    @abstractmethod
+    def DeleteRef(
+        self,
+        request: DeleteRefRequest,
+        context: ServicerContext,
+    ) -> DeleteRefResponse: ...
     @abstractmethod
     def CommitVersion(
         self,

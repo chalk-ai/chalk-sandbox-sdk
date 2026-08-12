@@ -1,73 +1,42 @@
-"""Client utilities for Chalk volumes backed by object storage.
+"""Client utilities for Chalk volumes.
 
 Examples
 --------
->>> from chalkcompute import VolumeClient
->>> with VolumeClient("localhost:50051") as client:
-...     vol = client.create("my-data")
-...     vol.put_file("models/latest.bin", model_bytes)
-...     vol.put_file("config.json", b'{"key": "value"}')
-...     with vol.batch_upload() as batch:
-...         batch.put("data/a.csv", csv_a)
-...         batch.put("data/b.csv", csv_b)
-...         batch.put("data/c.csv", csv_c)
-...     data = vol.read_file("models/latest.bin")
-...     for f in vol.listdir("data/"):
-...         print(f"{f.path}  {f.size} bytes")
-...     vol.remove_file("config.json")
-...     vol.delete()
+>>> from chalkcompute import Volume
+>>> vol = Volume("my-data")
+>>> vol.put_file("models/latest.bin", model_bytes)
+>>> data = vol.read_file("models/latest.bin")
+>>> for f in vol.listdir("data/"):
+...     print(f"{f.path}  {f.size} bytes")
 """
 
 from __future__ import annotations
 
+import builtins
 import datetime
-import hashlib
+import importlib
 import logging
 import os
 import uuid
-from collections.abc import Callable, Generator, Iterable, Iterator
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, NoReturn
 
-import grpc
 import httpx
+from google.protobuf.json_format import MessageToDict
 
-from chalkcompute._connect import (
-    ConnectClient,
-    grpc_target_from_url,
-    raise_for_grpc_error,
-)
-from chalkcompute._gen.chalk.volume.v1 import volume_pb2 as pb
-from chalkcompute._gen.chalk.volume.v1 import volume_pb2_grpc as pb_grpc
-from chalkcompute._image import Image, LazyLocalFile
-from chalkcompute._tracing import _instrumented
-
-# Aliases defined before VolumeClient, which has a ``.list()`` method that
-# would otherwise shadow the builtin ``list`` in class-scope name resolution.
-_GrpcMetadata = list[tuple[str, str]]
-_GrpcOptions = list[tuple[str, int]]
+from chalkcompute._connect import ConnectClient
+from chalkcompute._gen.chalk.volume.v2 import volume_pb2 as pb_v2
+from chalkcompute._image import Image
+from chalkcompute._tracing import traced
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Upload routing constants
-# ---------------------------------------------------------------------------
+#: Mount type stamped into container/sandbox specs for every Chalk volume.
+MOUNT_TYPE = "versioned_chalkfs"
 
-#: Files at or below this size are uploaded via gRPC inline PutFile(data=...).
-#: Files above this threshold use presigned object-storage upload.
-_INLINE_THRESHOLD_BYTES: int = 2 * 1024 * 1024  # 8 MB
-
-#: Part size sent to GetObjectUploadUri for multipart uploads.
-_PRESIGNED_PART_SIZE_BYTES: int = 10 * 1024 * 1024  # 10 MB
-
-#: Maximum number of signed-URL refreshes before giving up on a presigned upload.
-_PRESIGNED_MAX_RETRIES: int = 3
-
-#: Maximum concurrent threads for multipart part uploads and lazy file uploads.
-_UPLOAD_MAX_WORKERS: int = 32
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -76,6 +45,10 @@ _UPLOAD_MAX_WORKERS: int = 32
 
 class VolumeError(Exception):
     """Base exception for volume errors."""
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class VolumeClosedError(VolumeError):
@@ -114,16 +87,23 @@ class VolumeInfo:
     ref: str | None = None
 
 
+@dataclass
+class ForkInfo:
+    """Metadata for a volume fork.
+
+    A fork is an independent version lineage created by :meth:`Volume.fork`.
+    """
+
+    name: str
+    version_id: int
+    commit_id: str | None = None
+    updated_at: datetime.datetime | None = None
+    parent_version_id: int | None = None
+
+
 @dataclass(frozen=True)
 class VolumeMount:
-    """A volume to mount into a scaling group, with its mount type attached.
-
-    The mount ``type`` is a property of the volume, not of the request being
-    built or of a transient driver. Carrying it on the volume itself is the
-    single source of truth: every create/update request for a given scaling
-    group stamps the same type onto the same volume name, so the backend
-    ChalkScalingGroup CR does not flip-flop between ``chalkfs`` and
-    ``versioned_chalkfs`` and re-roll endlessly.
+    """A volume to mount into a container, sandbox, or scaling group.
 
     Attributes
     ----------
@@ -131,18 +111,24 @@ class VolumeMount:
         Volume name.
     mount_path
         Absolute path inside the container where the volume is mounted.
-    type
-        Mount type: ``"chalkfs"`` (non-versioned) or ``"versioned_chalkfs"``
-        (versioned).
+    version_id
+        Optional immutable version to mount.
     """
 
     name: str
     mount_path: str
-    type: str
+    version_id: int | None = None
 
-    def to_spec_dict(self) -> dict[str, str]:
+    def to_spec_dict(self) -> dict[str, str | int]:
         """Render this mount as a container-spec ``volumes`` entry."""
-        return {"name": self.name, "mountPath": self.mount_path, "type": self.type}
+        spec: dict[str, str | int] = {
+            "name": self.name,
+            "mountPath": self.mount_path,
+            "type": MOUNT_TYPE,
+        }
+        if self.version_id is not None:
+            spec["versionId"] = self.version_id
+        return spec
 
 
 @dataclass
@@ -168,863 +154,6 @@ class FileInfo:
     uid: int | None = None
     gid: int | None = None
     nlink: int | None = None
-
-
-# ---------------------------------------------------------------------------
-# Batch upload context manager
-# ---------------------------------------------------------------------------
-
-
-class _BatchUpload:
-    """Accumulates put_file operations and executes them on exit."""
-
-    def __init__(self, volume: SimpleVolume) -> None:
-        self._volume = volume
-        self._files: list[tuple[str, bytes]] = []
-
-    def put(self, path: str, data: bytes | str) -> None:
-        """Stage a file for upload.
-
-        Parameters
-        ----------
-        path
-            Destination path within the volume.
-        data
-            File contents (bytes or str).
-        """
-        if isinstance(data, str):
-            data = data.encode("utf-8")
-        self._files.append((path, data))
-
-    def put_file(self, path: str, local_path: str | Path) -> None:
-        """Stage a local file for upload.
-
-        Parameters
-        ----------
-        path
-            Destination path within the volume.
-        local_path
-            Local file to read.
-        """
-        self._files.append((path, Path(local_path).read_bytes()))
-
-    def _flush(self) -> None:
-        for path, data in self._files:
-            self._volume.put_file(path, data)
-        self._files.clear()
-
-
-# ---------------------------------------------------------------------------
-# Volume handle
-# ---------------------------------------------------------------------------
-
-
-class SimpleVolume:
-    """A handle to a named volume, providing file operations.
-
-    The v1 implementation: a flat, path-keyed object store with no version
-    history. For snapshot/version semantics use :class:`VersionedVolume`.
-
-    Volumes are persistent storage backed by object storage. Obtain an
-    instance via :meth:`VolumeClient.create` or :meth:`VolumeClient.get`.
-
-    Examples
-    --------
-    Create a volume, upload files, and read them back:
-
-    >>> from chalkcompute import VolumeClient
-    >>> client = VolumeClient(target="volumes.example.com:443")
-    >>> vol = client.create("models")
-    >>> vol.put_file("config.yaml", b"learning_rate: 0.01\\n")
-    >>> vol.read_file("config.yaml")
-    b'learning_rate: 0.01\\n'
-    >>> [f.path for f in vol.listdir()]
-    ['config.yaml']
-
-    Batch-upload multiple files atomically:
-
-    >>> with vol.batch_upload() as batch:
-    ...     batch.put("a.txt", b"hello")
-    ...     batch.put("b.txt", b"world")
-    """
-
-    def __init__(
-        self,
-        name: str,
-        client: VolumeClient | None = None,
-        *,
-        create_if_missing: bool = True,
-        chalk_client: Any | None = None,
-    ) -> None:
-        if not name or not name.strip():
-            raise ValueError("volume name cannot be empty")
-        self._client = client or VolumeClient.from_connect(
-            ConnectClient(chalk_client=chalk_client)
-        )
-        self._name = name
-        self._info: VolumeInfo | None = None
-        self._create_if_missing = create_if_missing
-        self._closed = False
-
-    @property
-    def name(self) -> str:
-        return self._name
-
-    @property
-    def info(self) -> VolumeInfo:
-        """Return cached volume metadata, fetching it on first access.
-
-        Returns
-        -------
-        VolumeInfo
-            Metadata for this volume.
-        """
-        self._raise_if_closed()
-        if self._info is None:
-            self._info = self._fetch_info()
-        return self._info
-
-    def reload(self) -> VolumeInfo:
-        """Refresh volume metadata from the server.
-
-        Returns
-        -------
-        VolumeInfo
-            Fresh metadata for this volume.
-        """
-        self._info = self._fetch_info()
-        return self._info
-
-    def _fetch_info(self) -> VolumeInfo:
-        self._raise_if_closed()
-        try:
-            resp = self._client._stub.GetVolume(
-                pb.GetVolumeRequest(name=self._name),
-                metadata=self._client._metadata,
-            )
-        except grpc.RpcError as e:
-            code = getattr(e, "code", lambda: None)()
-            if not self._create_if_missing or code != grpc.StatusCode.NOT_FOUND:
-                _handle_rpc_error(e, self._name)
-                raise
-        else:
-            return _pb_to_volume_info(resp.volume)
-
-        try:
-            resp = self._client._stub.CreateVolume(
-                pb.CreateVolumeRequest(name=self._name),
-                metadata=self._client._metadata,
-            )
-        except grpc.RpcError as e:
-            _handle_rpc_error(e, self._name)
-            raise
-        return _pb_to_volume_info(resp.volume)
-
-    def _raise_if_closed(self) -> None:
-        if self._closed:
-            raise VolumeClosedError(f"Volume {self._name!r} is closed")
-
-    def _ensure_ready(self) -> None:
-        self._raise_if_closed()
-        if self._info is None:
-            self._info = self._fetch_info()
-
-    # -- File operations -------------------------------------------------------
-
-    @_instrumented("chalkcompute.volume.read_file")
-    def read_file(self, path: str) -> bytes:
-        """Read a file's contents from the volume.
-
-        Parameters
-        ----------
-        path
-            File path within the volume.
-
-        Returns
-        -------
-        bytes
-            The raw file bytes.
-        """
-        self._ensure_ready()
-        return _read_file_bytes(self._client, self._name, path)
-
-    @_instrumented("chalkcompute.volume.put_file")
-    def put_file(self, path: str, data: bytes | str) -> SimpleVolume:
-        """Write a file into the volume.
-
-        Small files (<= ``_INLINE_THRESHOLD_BYTES``) are uploaded via gRPC
-        inline ``PutFile(data=...)``. Large files use a presigned
-        object-storage URL (``GetObjectUploadUri`` -> direct S3/GCS upload ->
-        ``PutFile(storageObjectId=...)``).
-
-        Parameters
-        ----------
-        path
-            Destination path within the volume.
-        data
-            File contents (bytes or str).
-
-        Returns
-        -------
-        Volume
-            ``self``, to allow chaining.
-        """
-        if isinstance(data, str):
-            data = data.encode("utf-8")
-        self._ensure_ready()
-        _upload_bytes(self._client, self._name, path, data)
-        return self
-
-    def put_file_from_path(self, path: str, local_path: str | Path) -> SimpleVolume:
-        """Upload a local file into the volume.
-
-        Parameters
-        ----------
-        path
-            Destination path within the volume.
-        local_path
-            Local file to read and upload.
-
-        Returns
-        -------
-        Volume
-            ``self``, to allow chaining.
-        """
-        self.put_file(path, Path(local_path).read_bytes())
-        return self
-
-    def remove_file(self, path: str) -> SimpleVolume:
-        """Remove a file from the volume.
-
-        Parameters
-        ----------
-        path
-            File path within the volume.
-
-        Returns
-        -------
-        Volume
-            ``self``, to allow chaining.
-        """
-        self._ensure_ready()
-        try:
-            self._client._stub.RemoveFile(
-                pb.RemoveFileRequest(volume_name=self._name, path=path),
-                metadata=self._client._metadata,
-            )
-        except grpc.RpcError as e:
-            _handle_rpc_error(e, self._name)
-            raise
-        return self
-
-    def listdir(self, prefix: str = "", *, recursive: bool = True) -> list[FileInfo]:
-        """List files in the volume.
-
-        Parameters
-        ----------
-        prefix
-            Only return files whose paths start with this prefix.
-        recursive
-            Currently always recursive (server-side behavior).
-
-        Returns
-        -------
-        list of FileInfo
-            One entry per matching file.
-        """
-        self._ensure_ready()
-        try:
-            resp = self._client._stub.ListFiles(
-                pb.ListFilesRequest(volume_name=self._name, prefix=prefix),
-                metadata=self._client._metadata,
-            )
-        except grpc.RpcError as e:
-            _handle_rpc_error(e, self._name)
-            raise
-        return [_pb_to_file_info(f) for f in resp.files]
-
-    def iterdir(self, prefix: str = "") -> Iterator[FileInfo]:
-        """Iterate over files in the volume.
-
-        Same as ``listdir()`` but returns an iterator for lazy consumption.
-
-        Parameters
-        ----------
-        prefix
-            Only return files whose paths start with this prefix.
-
-        Yields
-        ------
-        FileInfo
-            One entry per matching file.
-        """
-        yield from self.listdir(prefix)
-
-    @contextmanager
-    def batch_upload(self) -> Generator[_BatchUpload, None, None]:
-        """Context manager for batching multiple file uploads.
-
-        All staged files are uploaded when the context manager exits.
-
-        Examples
-        --------
-        >>> with vol.batch_upload() as batch:
-        ...     batch.put("a.txt", b"hello")
-        ...     batch.put("b.txt", b"world")
-        """
-        self._raise_if_closed()
-        batch = _BatchUpload(self)
-        yield batch
-        batch._flush()
-
-    # -- Volume lifecycle ------------------------------------------------------
-
-    @_instrumented("chalkcompute.volume.delete")
-    def delete(self) -> None:
-        """Delete this volume and all of its contents."""
-        self._ensure_ready()
-        try:
-            self._client._stub.DeleteVolume(
-                pb.DeleteVolumeRequest(name=self._name),
-                metadata=self._client._metadata,
-            )
-        except grpc.RpcError as e:
-            _handle_rpc_error(e, self._name)
-            raise
-
-    def close(self) -> None:
-        """Close the underlying client used by this Volume."""
-        if not self._closed:
-            self._client.close()
-        self._closed = True
-
-    # -- Versioned-volume API stubs --------------------------------------------
-    # The v1 backend has no version history. These exist so the generic
-    # ``Volume`` factory can return either backend and code can program against
-    # a single interface; callers using the v1 backend explicitly opt out of
-    # version-aware operations.
-
-    def versions(self, *, limit: int = 100) -> list:
-        raise NotImplementedError("SimpleVolume has no version history")
-
-    def latest_version(self):
-        raise NotImplementedError("SimpleVolume has no version history")
-
-    def at_version(self, version_id: int) -> SimpleVolume:
-        raise NotImplementedError("SimpleVolume has no version history")
-
-    def __enter__(self) -> SimpleVolume:
-        self._raise_if_closed()
-        return self
-
-    def __exit__(self, *_args: object) -> None:
-        self.close()
-
-    def __repr__(self) -> str:
-        return f"SimpleVolume(name={self._name!r})"
-
-
-# ---------------------------------------------------------------------------
-# Client
-# ---------------------------------------------------------------------------
-
-
-_VolumeInfoList = list[VolumeInfo]
-_VolumeMounts = list[VolumeMount]
-
-
-class VolumeDriver(Protocol):
-    """Internal protocol for clients that back container/sandbox mounts.
-
-    Satisfied by both :class:`VolumeClient` (mount type ``chalkfs``) and
-    :class:`VersionedVolumeClient` (mount type ``versioned_chalkfs``).
-    Not re-exported from ``chalkcompute``.
-    """
-
-    mount_type: str
-
-    def upload_lazy_files(
-        self, image: Image, *, volume_prefix: str
-    ) -> "list[VolumeMount]": ...
-
-    def delete_volume(self, name: str) -> None: ...
-
-    def exists(self, name: str) -> bool: ...
-
-    def close(self) -> None: ...
-
-
-def resolve_referenced_volume_type(connect: ConnectClient, name: str) -> str:
-    """Return the actual mount type of an existing volume by probing the
-    versioned (v2) service first, then non-versioned (v1).
-
-    A user-referenced volume (supplied as a ``(name, mount_path)`` tuple)
-    has no type of its own at construction time. Its mount type is a property
-    of the backend that actually stores it, so we look it up at deploy time
-    instead of stamping a hardcoded default. Defaulting here is exactly the
-    bug this avoids: a non-versioned ``chalkfs`` volume sent as
-    ``versioned_chalkfs`` cannot be mounted by the versioned FUSE sidecar.
-
-    Parameters
-    ----------
-    connect
-        Authenticated client reused for both probes.
-    name
-        Name of the existing volume to classify.
-
-    Returns
-    -------
-    str
-        ``"versioned_chalkfs"`` if the volume lives in the v2 service, or
-        ``"chalkfs"`` if it lives only in the v1 service.
-
-    Raises
-    ------
-    VolumeError
-        If the volume is not found in either service. We never fall back to a
-        default mount type for a referenced volume.
-    grpc.RpcError
-        Propagated for any non-``NOT_FOUND`` probe failure (auth, transport,
-        etc.), so a transient error is never silently treated as "absent".
-    """
-    from chalkcompute._vvolume import VersionedVolumeClient
-
-    v2 = VersionedVolumeClient.from_connect(connect)
-    if v2.exists(name):
-        return v2.mount_type
-
-    v1 = VolumeClient.from_connect(connect)
-    if v1.exists(name):
-        return v1.mount_type
-
-    raise VolumeError(
-        f"Referenced volume {name!r} was not found in the versioned "
-        f"(v2) or non-versioned (v1) volume service; cannot determine its "
-        f"mount type. Check the volume name, or create it before referencing it."
-    )
-
-
-def cleanup_owned_volumes(
-    driver: VolumeDriver,
-    all_volumes: Iterable[VolumeMount],
-    referenced_volumes: Iterable[tuple[str, str]],
-) -> None:
-    """Delete only volumes the SDK created; never user-referenced ones.
-
-    ``all_volumes`` contains both volumes the SDK uploaded (e.g. for an
-    image's lazy local files) and volumes the caller referenced via
-    ``volumes=[(name, path)]``. Caller-referenced volumes are owned by
-    the caller and must outlive this lifecycle.
-    """
-    referenced_names = {name for name, _ in referenced_volumes}
-    for v in all_volumes:
-        if v.name in referenced_names:
-            continue
-        driver.delete_volume(v.name)
-
-
-def make_volume(
-    name: str,
-    *,
-    versioned: bool = True,
-    client: object | None = None,
-    version_id: int | None = None,
-    ref: str = "main",
-    create_if_missing: bool = True,
-):
-    """Construct a volume handle (re-exported as :data:`chalkcompute.Volume`).
-
-    Defaults to a versioned (v2) volume; pass ``versioned=False`` for the
-    path-keyed :class:`SimpleVolume` backend, which raises
-    ``NotImplementedError`` for version-aware operations.
-
-    Parameters
-    ----------
-    name
-        Volume name.
-    versioned
-        If ``True`` (the default), return a :class:`VersionedVolume`.
-        Otherwise return a :class:`SimpleVolume`.
-    client
-        Optional pre-constructed client matching the chosen backend.
-    version_id
-        Pin a versioned handle to an immutable version. Versioned only.
-    ref
-        Mutable ref to read/write through. Versioned only.
-    create_if_missing
-        If ``True``, create the volume on first access if absent.
-
-    Returns
-    -------
-    VersionedVolume or SimpleVolume
-        A handle for the requested backend.
-
-    Raises
-    ------
-    ValueError
-        If ``version_id`` or a non-default ``ref`` is supplied with
-        ``versioned=False``.
-    """
-    if versioned:
-        from chalkcompute._vvolume import VersionedVolume, VersionedVolumeClient
-
-        return VersionedVolume(
-            name,
-            client=client if isinstance(client, VersionedVolumeClient) else None,
-            version_id=version_id,
-            ref=ref,
-            create_if_missing=create_if_missing,
-        )
-    if version_id is not None or ref != "main":
-        raise ValueError("version_id and ref are only supported for versioned volumes")
-    return SimpleVolume(
-        name,
-        client=client if isinstance(client, VolumeClient) else None,
-        create_if_missing=create_if_missing,
-    )
-
-
-class VolumeClient:
-    """Client for the Volume gRPC service."""
-
-    mount_type = "chalkfs"
-
-    def __init__(
-        self,
-        target: str = "localhost:50051",
-        *,
-        credentials: grpc.ChannelCredentials | None = None,
-        metadata: _GrpcMetadata | None = None,
-        options: _GrpcOptions | None = None,
-        _connect: ConnectClient | None = None,
-    ) -> None:
-        """Initialize the gRPC client.
-
-        Parameters
-        ----------
-        target
-            gRPC server address (e.g. ``"localhost:50051"`` or
-            ``"volumes.example.com:443"``).
-        credentials
-            Optional TLS/SSL channel credentials. If ``None``, uses insecure
-            channel.
-        metadata
-            Optional default metadata to send with every RPC call.
-        options
-            Optional gRPC channel options.
-        """
-        self._target = target
-        self._static_metadata = tuple(metadata) if metadata else ()
-        self._connect = _connect
-        self._chalk_client: Any | None = None
-        if credentials is not None:
-            self._channel = grpc.secure_channel(target, credentials, options=options)
-        else:
-            self._channel = grpc.insecure_channel(target, options=options)
-        self._stub = pb_grpc.VolumeServiceStub(self._channel)
-        self._obj_stub = pb_grpc.DataPlaneObjectStorageServiceStub(self._channel)
-
-    @classmethod
-    def from_connect(cls, connect: ConnectClient) -> VolumeClient:
-        """Create a ``VolumeClient`` from an already-authenticated ``ConnectClient``.
-
-        Parameters
-        ----------
-        connect
-            An authenticated ``ConnectClient`` instance. Auth is
-            ensured automatically if not already done.
-
-        Returns
-        -------
-        VolumeClient
-            A new client with TLS credentials and metadata derived
-            from the ``ConnectClient``'s token and environment.
-        """
-        connect._ensure_auth()
-
-        host, use_tls = grpc_target_from_url(connect._api_server or "")
-
-        client = cls(
-            host,
-            credentials=grpc.ssl_channel_credentials() if use_tls else None,
-            metadata=[
-                ("authorization", f"Bearer {connect._access_token}"),
-                ("x-chalk-env-id", connect._env_id or ""),
-                ("x-chalk-server", "go-api"),
-            ],
-            options=[
-                ("grpc.max_send_message_length", -1),
-                ("grpc.max_receive_message_length", -1),
-            ],
-            _connect=(
-                connect
-                if getattr(connect, "_uses_web_identity_token", lambda: False)() is True
-                else None
-            ),
-        )
-        client._chalk_client = getattr(connect, "_chalk_client", None)
-        return client
-
-    def _refresh(self) -> None:
-        """Re-authenticate and rebuild the gRPC channel.
-
-        Creates a fresh ``ConnectClient``, fetches a new bearer token,
-        and replaces the channel, stubs, and metadata in-place.
-        """
-        connect = self._connect or ConnectClient(
-            chalk_client=getattr(self, "_chalk_client", None)
-        )
-        connect._ensure_auth()
-        self._channel.close()
-
-        self._metadata = (
-            ("authorization", f"Bearer {connect._access_token}"),
-            ("x-chalk-env-id", connect._env_id or ""),
-            ("x-chalk-server", "go-api"),
-        )
-        self._target, use_tls = grpc_target_from_url(connect._api_server or "")
-        options = [
-            ("grpc.max_send_message_length", -1),
-            ("grpc.max_receive_message_length", -1),
-        ]
-        if use_tls:
-            self._channel = grpc.secure_channel(
-                self._target,
-                grpc.ssl_channel_credentials(),
-                options=options,
-            )
-        else:
-            self._channel = grpc.insecure_channel(
-                self._target,
-                options=options,
-            )
-        self._stub = pb_grpc.VolumeServiceStub(self._channel)
-        self._obj_stub = pb_grpc.DataPlaneObjectStorageServiceStub(self._channel)
-
-    @property
-    def _metadata(self) -> tuple[tuple[str, str], ...]:
-        connect = getattr(self, "_connect", None)
-        if connect is not None:
-            return tuple(connect._grpc_metadata())
-        return self._static_metadata
-
-    @_metadata.setter
-    def _metadata(self, value: Iterable[tuple[str, str]]) -> None:
-        self._static_metadata = tuple(value)
-
-    def __enter__(self) -> VolumeClient:
-        return self
-
-    def __exit__(self, *_args: object) -> None:
-        self.close()
-
-    def close(self) -> None:
-        """Close the underlying gRPC channel"""
-        self._channel.close()
-
-    @_instrumented("chalkcompute.volume.create")
-    def create(self, name: str) -> SimpleVolume:
-        """Create a new named volume.
-
-        If the volume already exists on the server, behavior depends on the
-        server implementation (may return the existing volume or error).
-
-        Parameters
-        ----------
-        name
-            Name for the volume.
-
-        Returns
-        -------
-        Volume
-            A volume handle.
-        """
-        try:
-            resp = self._stub.CreateVolume(
-                pb.CreateVolumeRequest(name=name),
-                metadata=self._metadata,
-            )
-        except grpc.RpcError as e:
-            _handle_rpc_error(e, name)
-            raise
-        info = _pb_to_volume_info(resp.volume)
-        vol = SimpleVolume(info.name, client=self, create_if_missing=False)
-        vol._info = info
-        return vol
-
-    def from_name(self, name: str) -> SimpleVolume:
-        """Get a ``Volume`` handle by name.
-
-        Does not validate the volume exists until you call a method on it.
-        Use this when you know the volume already exists.
-
-        Parameters
-        ----------
-        name
-            Name of the existing volume.
-
-        Returns
-        -------
-        Volume
-            A volume handle.
-        """
-        return SimpleVolume(name, client=self, create_if_missing=False)
-
-    def lookup(self, name: str) -> SimpleVolume:
-        """Look up a volume by name, verifying it exists.
-
-        Parameters
-        ----------
-        name
-            Name of the volume.
-
-        Returns
-        -------
-        Volume
-            A volume handle with info pre-fetched.
-
-        Raises
-        ------
-        VolumeNotFoundError
-            If the volume does not exist.
-        """
-        vol = SimpleVolume(name, client=self, create_if_missing=False)
-        vol.reload()
-        return vol
-
-    def exists(self, name: str) -> bool:
-        """Return whether a non-versioned (v1) volume with ``name`` exists.
-
-        Probes ``GetVolume`` and maps ``NOT_FOUND`` to ``False``. Any other
-        RPC error propagates: callers resolving a referenced volume's type
-        must not silently treat an auth/transport failure as "absent".
-        """
-        try:
-            self._stub.GetVolume(
-                pb.GetVolumeRequest(name=name),
-                metadata=self._metadata,
-            )
-        except grpc.RpcError as e:
-            code = getattr(e, "code", lambda: None)()
-            if code == grpc.StatusCode.NOT_FOUND:
-                return False
-            raise
-        return True
-
-    @_instrumented("chalkcompute.volume.upload_lazy_files")
-    def upload_lazy_files(
-        self, image: Image, *, volume_prefix: str = "files"
-    ) -> _VolumeMounts:
-        """Upload an image's lazy local files into v1 volumes.
-
-        Creates one volume per destination directory and uploads each
-        file through the inline-vs-presigned router.
-
-        Parameters
-        ----------
-        image
-            Image whose lazy local files should be uploaded.
-        volume_prefix
-            Prefix used when naming the generated volumes.
-
-        Returns
-        -------
-        list of VolumeMount
-            One :class:`VolumeMount` per created volume. Each carries its own
-            mount type (``"chalkfs"`` for this v1 backend), so callers mount it
-            with the type that travels on the volume rather than re-deriving a
-            type at the request-building site.
-        """
-        try:
-            dir_to_files = image.lazy_local_files_grouped_for_volume_mounts()
-        except ValueError as e:
-            raise VolumeError(str(e)) from e
-
-        def _put(vol_name: str, lf: LazyLocalFile, dest_dir: str) -> None:
-            content = Path(lf.src).read_bytes()
-            _upload_bytes(
-                self,
-                vol_name,
-                os.path.relpath(lf.dest, dest_dir),
-                content,
-            )
-
-        volumes: _VolumeMounts = []
-        for dest_dir, files in dir_to_files.items():
-            vol = self.create(f"{volume_prefix}-{uuid.uuid4().hex[:12]}")
-            with ThreadPoolExecutor(max_workers=_UPLOAD_MAX_WORKERS) as pool:
-                for fut in as_completed(
-                    pool.submit(_put, vol.name, lf, dest_dir) for lf in files
-                ):
-                    fut.result()
-            volumes.append(
-                VolumeMount(name=vol.name, mount_path=dest_dir, type=self.mount_type)
-            )
-        return volumes
-
-    def delete_volume(self, name: str) -> None:
-        """Delete a volume by name."""
-        try:
-            self._stub.DeleteVolume(
-                pb.DeleteVolumeRequest(name=name),
-                metadata=self._metadata,
-            )
-        except grpc.RpcError as e:
-            _handle_rpc_error(e, name)
-            raise
-
-    def list(self) -> _VolumeInfoList:
-        """List all volumes.
-
-        Returns
-        -------
-        list of VolumeInfo
-            One entry per volume.
-        """
-        resp = self._stub.ListVolumes(
-            pb.ListVolumesRequest(),
-            metadata=self._metadata,
-        )
-        return [_pb_to_volume_info(v) for v in resp.volumes]
-
-
-# ---------------------------------------------------------------------------
-# Upload routing helpers
-# ---------------------------------------------------------------------------
-
-
-def _read_file_bytes(client: VolumeClient, volume_name: str, path: str) -> bytes:
-    """Read a file using the transport selected by the server.
-
-    Parameters
-    ----------
-    client
-        Volume client used for the download.
-    volume_name
-        Name of the source volume.
-    path
-        Path to read within the volume.
-
-    Returns
-    -------
-    bytes
-        Raw file contents.
-    """
-    try:
-        resp = client._stub.GetFile(
-            pb.GetFileRequest(volume_name=volume_name, path=path, get_signed_uri=True),
-            metadata=client._metadata,
-        )
-    except grpc.RpcError as e:
-        _handle_rpc_error(e, volume_name)
-        raise
-
-    content_type = resp.WhichOneof("content")
-    if content_type == "signed_download_uri":
-        return _read_file_from_signed_uri(resp.signed_download_uri)
-    if content_type == "data":
-        return resp.data
-    raise VolumeError(f"Unsupported file download response type: {content_type!r}")
 
 
 def _read_file_from_signed_uri(signed_download_uri: str) -> bytes:
@@ -1059,369 +188,1572 @@ def _read_file_from_signed_uri(signed_download_uri: str) -> bytes:
         raise VolumeError(f"Signed file download failed: {e}") from e
 
 
-def _upload_bytes(
-    client: VolumeClient, volume_name: str, path: str, data: bytes
-) -> None:
-    """Upload a file using the appropriate transport.
+_INLINE_THRESHOLD_BYTES: int = 4 * 1024
+_CHUNK_SIZE_BYTES: int = 8 * 1024 * 1024
+_MAX_PACK_BYTES: int = 64 * 1024 * 1024
+_COMMIT_MAX_REBASE_RETRIES: int = 3
+_TRANSFER_MAX_WORKERS: int = 32
+_FILE_CONCURRENCY: int = _TRANSFER_MAX_WORKERS
+_CHUNK_CONCURRENCY: int = _TRANSFER_MAX_WORKERS
+_CHUNK_MAX_RETRIES: int = 3
+_RATE_LIMIT_MAX_RETRIES: int = 8
+_BATCH_MAX_FILES: int = 200
 
-    Files at or below ``_INLINE_THRESHOLD_BYTES`` are sent via gRPC inline
-    ``PutFile(data=...)``.  Larger files use a presigned object-storage upload
-    followed by ``PutFile(storageObjectId=...)``.
+_native: Any | None
+_NativeVolumeClient: Any | None
+_NativeVolumeRpcError: type[BaseException] | None
+_NATIVE_IMPORT_ERROR: ImportError | None
+try:
+    _native = importlib.import_module("chalkcompute._native")
+except ImportError as exc:
+    _native = None
+    _NativeVolumeClient = None
+    _NativeVolumeRpcError = None
+    _NATIVE_IMPORT_ERROR = exc
+else:
+    # Symbol name is fixed by the Rust `chalk_volume_client` crate; it keeps the
+    # "Versioned" prefix even though the Python-side name has dropped it.
+    _NativeVolumeClient = getattr(_native, "VersionedVolumeNativeClient", None)
+    _NativeVolumeRpcError = getattr(_native, "VolumeRpcError", None)
+    _NATIVE_IMPORT_ERROR = None
 
-    Parameters
+
+@dataclass
+class VersionInfo:
+    """Metadata for an immutable volume snapshot.
+
+    Attributes
     ----------
-    client
-        Volume client used for the upload.
-    volume_name
-        Name of the destination volume.
-    path
-        Destination path within the volume.
-    data
-        File contents to upload.
+    id
+        Stable identifier of this version.
+    parent_id
+        Version this one was committed against, if any.
+    created_at
+        Server-side commit timestamp.
+    ref
+        Ref this version was committed on, if known.
+    commit_id
+        Client-supplied commit identifier that produced this version.
     """
-    if len(data) <= _INLINE_THRESHOLD_BYTES:
-        _put_file_inline(client, volume_name, path, data)
-    else:
-        _put_file_presigned(client, volume_name, path, data)
+
+    id: int
+    parent_id: int | None = None
+    created_at: datetime.datetime | None = None
+    ref: str | None = None
+    commit_id: str | None = None
+
+    @property
+    def version_id(self) -> int:
+        """Alias for the protobuf ``version_id`` field name."""
+        return self.id
 
 
-def _put_file_inline(
-    client: VolumeClient, volume_name: str, path: str, data: bytes
-) -> None:
-    """Upload a file via gRPC inline ``PutFile(data=...)``.
+@dataclass
+class CommitStatus:
+    """Result of a volume commit attempt.
 
-    Parameters
+    Attributes
     ----------
-    client
-        Volume client used for the upload.
-    volume_name
-        Name of the destination volume.
-    path
-        Destination path within the volume.
-    data
-        File contents to upload.
+    commit_id
+        Client-generated id used to look up commit progress.
+    result
+        Commit outcome (``"committed"``, ``"pending"``,
+        ``"rebase_required"``, ``"aborted"``, or ``"unspecified"``).
+    version
+        The new version on success, or ``None`` otherwise.
+    latest_version
+        The newest known version, useful when a rebase is required.
+    created_at
+        Server-side timestamp for the commit attempt.
     """
-    try:
-        client._stub.PutFile(
-            pb.PutFileRequest(volume_name=volume_name, path=path, data=data),
-            metadata=client._metadata,
-        )
-    except grpc.RpcError as e:
-        _handle_rpc_error(e, volume_name)
-        raise
-    logger.info("Uploaded %s (inline, %d bytes)", path, len(data))
+
+    commit_id: str
+    result: str
+    version: VersionInfo | None = None
+    latest_version: VersionInfo | None = None
+    created_at: datetime.datetime | None = None
 
 
-def _put_file_presigned(
-    client: VolumeClient, volume_name: str, path: str, data: bytes
-) -> None:
-    """Upload a file via a presigned object-storage URL.
+class Volume:
+    """A handle to a volume using the v2 volume service.
 
-    Uses the gRPC ``DataPlaneObjectStorageServiceStub`` for
-    ``GetObjectUploadUri``, ``httpx`` for the direct object-storage transfer,
-    and gRPC ``VolumeServiceStub`` for the final ``PutFile(storageObjectId=...)``.
+    Volumes expose immutable snapshots behind mutable refs. The
+    Python API supports direct file writes, reads, listing, and version
+    lookup. Each write produces a new immutable version; the ``main`` ref
+    (or a caller-provided ref) advances to point at the latest committed
+    version.
 
-    Parameters
-    ----------
-    client
-        Volume client used for the upload.
-    volume_name
-        Name of the destination volume.
-    path
-        Destination path within the volume.
-    data
-        File contents to upload.
+    Examples
+    --------
+    Write a file, advance the ref, and read the result back:
 
-    Raises
-    ------
-    VolumeError
-        If the server returns an unsupported object-storage upload type.
+    >>> from chalkcompute import Volume
+    >>> with Volume("models") as vol:
+    ...     vol.put_file("config.yaml", b"lr: 0.01\\n")
+    ...     vol.read_file("config.yaml")
+    b'lr: 0.01\\n'
+
+    Pin a handle to a previous version and read from it:
+
+    >>> previous = vol.at_version(vol.versions()[-2].id)
+    >>> _ = previous.read_file("config.yaml")
     """
-    checksum = hashlib.md5(data).hexdigest()
 
-    def _get_uri():  # type: ignore[no-untyped-def]
-        return client._obj_stub.GetObjectUploadUri(
-            pb.GetObjectUploadUriRequest(
-                content_size=len(data),
-                hash=checksum,
-                part_size=_PRESIGNED_PART_SIZE_BYTES,
-            ),
-            metadata=client._metadata,
-        )
+    def __init__(
+        self,
+        name: str,
+        client: VolumeClient | None = None,
+        *,
+        version_id: int | None = None,
+        ref: str = "main",
+        create_if_missing: bool = True,
+    ) -> None:
+        """Initialize a volume handle.
 
-    resp = _get_uri()
-    upload_type = resp.WhichOneof("upload")
+        Parameters
+        ----------
+        name
+            Volume name.
+        client
+            Optional :class:`VolumeClient`. If ``None``, one is
+            constructed from a default :class:`ConnectClient`.
+        version_id
+            If set, pin this handle to a specific immutable version. Such
+            handles are read-only; mutating operations raise
+            :class:`VolumeError`.
+        ref
+            Mutable ref to read/write through (defaults to ``"main"``).
+        create_if_missing
+            If ``True`` (the default), the volume is created on first
+            access if it does not already exist. Ignored when
+            ``version_id`` is set.
+        """
+        self._client = client or VolumeClient.from_connect(ConnectClient())
+        self._name = name
+        self._version_id = version_id
+        self._ref = ref
+        self._info: VolumeInfo | None = None
+        self._version: VersionInfo | None = None
+        self._create_if_missing = create_if_missing and version_id is None
+        self._closed = False
 
-    if upload_type == "multipart":
-        storage_object_id = _upload_multipart(data, resp, _get_uri)
-    elif upload_type == "resumable":
-        storage_object_id = _upload_resumable(data, resp, _get_uri)
-    else:
-        raise VolumeError(f"Unsupported object-storage upload type: {upload_type!r}")
+    @property
+    def name(self) -> str:
+        """Volume name."""
+        return self._name
 
-    client._refresh()
-    try:
-        client._stub.PutFile(
-            pb.PutFileRequest(
-                volume_name=volume_name,
-                path=path,
-                storage_object_id=storage_object_id,
-            ),
-            metadata=client._metadata,
-        )
-    except grpc.RpcError as e:
-        _handle_rpc_error(e, volume_name)
-        raise
-    logger.info(
-        "Uploaded %s (presigned %s, %d bytes, object=%s)",
-        path,
-        upload_type,
-        len(data),
-        storage_object_id,
-    )
+    @property
+    def version_id(self) -> int | None:
+        """Pinned version id, or ``None`` for a ref-tracking handle."""
+        return self._version_id
 
+    @property
+    def ref(self) -> str:
+        """Mutable ref tracked by this handle."""
+        return self._ref
 
-def _upload_multipart(
-    data: bytes,
-    resp: pb.GetObjectUploadUriResponse,
-    refresh: Callable[[], pb.GetObjectUploadUriResponse],
-) -> str:
-    """Upload via S3-style multipart presigned URLs.
+    @property
+    def info(self) -> VolumeInfo:
+        """Cached volume metadata, fetched on first access.
 
-    Parts are uploaded concurrently. On 401/403 from S3, all signed URLs
-    are refreshed and parts are re-uploaded from scratch.
+        Returns
+        -------
+        VolumeInfo
+            Metadata for this volume.
+        """
+        self._raise_if_closed()
+        if self._info is None:
+            self.reload()
+        assert self._info is not None
+        return self._info
 
-    Parameters
-    ----------
-    data
-        File contents to upload.
-    resp
-        Initial multipart upload configuration returned by the server.
-    refresh
-        Callback that fetches a fresh upload configuration after signed URLs
-        expire.
+    @property
+    def version(self) -> VersionInfo:
+        """Cached version metadata for the current ref or pinned version.
 
-    Returns
-    -------
-    str
-        Storage object ID for the completed upload.
-    """
-    from concurrent.futures import ThreadPoolExecutor
+        Returns
+        -------
+        VersionInfo
+            The version this handle currently points at.
 
-    storage_object_id = resp.storage_object_id
-    all_uris = list(resp.multipart.signed_upload_uris)
-    part_uris = all_uris[:-1]
-    completion_uri = all_uris[-1]
-    n_parts = len(part_uris)
+        Raises
+        ------
+        VolumeError
+            If the volume has no version yet (newly created, no commits).
+        """
+        self._raise_if_closed()
+        if self._version is None:
+            self.reload()
+        if self._version is None:
+            raise VolumeError(f"Volume {self._name!r} has no version")
+        return self._version
 
-    def _put_part(i: int) -> tuple[int, str]:
-        """Upload part *i* and return ``(index, etag)``."""
-        chunk = data[
-            i * _PRESIGNED_PART_SIZE_BYTES : (i + 1) * _PRESIGNED_PART_SIZE_BYTES
-        ]
-        r = httpx.put(part_uris[i], content=chunk, timeout=300)
-        if r.status_code in (401, 403):
-            r.raise_for_status()
-        r.raise_for_status()
-        return i, r.headers.get("ETag", "")
+    def reload(self) -> VolumeInfo:
+        """Refresh volume and version metadata from the server.
 
-    refresh_count = 0
-    while True:
+        Returns
+        -------
+        VolumeInfo
+            Fresh metadata for this volume.
+        """
+        self._info, self._version = self._fetch_info()
+        return self._info
+
+    def _fetch_info(self) -> tuple[VolumeInfo, VersionInfo | None]:
+        self._raise_if_closed()
         try:
-            etags_by_index: dict[int, str] = {}
-            with ThreadPoolExecutor(max_workers=_UPLOAD_MAX_WORKERS) as pool:
-                for i, etag in pool.map(_put_part, range(n_parts)):
-                    etags_by_index[i] = etag
-            break
-        except httpx.HTTPStatusError as e:
-            if (
-                e.response.status_code in (401, 403)
-                and refresh_count < _PRESIGNED_MAX_RETRIES
-            ):
-                refresh_count += 1
-                logger.warning(
-                    "Multipart upload: refreshing signed URLs (attempt %d/%d)",
-                    refresh_count,
-                    _PRESIGNED_MAX_RETRIES,
-                )
-                new_resp = refresh()
-                storage_object_id = new_resp.storage_object_id
-                all_uris = list(new_resp.multipart.signed_upload_uris)
-                part_uris = all_uris[:-1]
-                completion_uri = all_uris[-1]
-                continue
-            raise
+            raw = self._client._get_volume(
+                self._name,
+                version_id=self._version_id,
+                ref_name=self._selector_ref(),
+            )
+        except VolumeNotFoundError:
+            if not self._create_if_missing:
+                raise
+            raw = self._client._create_volume(self._name)
+            return _dict_to_volume_info(raw["volume"]), None
 
-    etags = [etags_by_index[i] for i in range(n_parts)]
-    parts_xml = "".join(
-        f"<Part><PartNumber>{j + 1}</PartNumber><ETag>{etag}</ETag></Part>"
-        for j, etag in enumerate(etags)
-    )
-    body = f"<CompleteMultipartUpload>{parts_xml}</CompleteMultipartUpload>".encode()
-    complete_resp = httpx.post(
-        completion_uri,
-        content=body,
-        headers={"Content-Type": "application/xml"},
-        timeout=60,
-    )
-    complete_resp.raise_for_status()
-    logger.info(
-        "Multipart upload complete: object=%s parts=%d refreshes=%d",
-        storage_object_id,
-        n_parts,
-        refresh_count,
-    )
-    return storage_object_id
-
-
-def _upload_resumable(
-    data: bytes,
-    resp: pb.GetObjectUploadUriResponse,
-    refresh: Callable[[], pb.GetObjectUploadUriResponse],
-) -> str:
-    """Upload via a GCS resumable signed URL.
-
-    Parameters
-    ----------
-    data
-        File contents to upload.
-    resp
-        Initial resumable upload configuration returned by the server.
-    refresh
-        Callback that fetches a fresh upload configuration after the signed URL
-        expires.
-
-    Returns
-    -------
-    str
-        Storage object ID for the completed upload.
-    """
-    storage_object_id = resp.storage_object_id
-    signed_uri = resp.resumable.signed_upload_uri
-    refresh_count = 0
-
-    while True:
-        init = httpx.post(
-            signed_uri,
-            content=b"",
-            headers={
-                "Content-Type": "application/octet-stream",
-                "Content-Length": "0",
-                "x-goog-resumable": "start",
-            },
-            timeout=30,
+        return (
+            _dict_to_volume_info(raw["volume"]),
+            _dict_to_version_info(raw["version"]) if raw.get("version") else None,
         )
-        if not init.is_success:
-            if (
-                init.status_code in (401, 403)
-                and refresh_count < _PRESIGNED_MAX_RETRIES
-            ):
-                refresh_count += 1
-                logger.warning(
-                    "Resumable upload: refreshing signed URL (attempt %d/%d)",
-                    refresh_count,
-                    _PRESIGNED_MAX_RETRIES,
-                )
-                new_resp = refresh()
-                storage_object_id = new_resp.storage_object_id
-                signed_uri = new_resp.resumable.signed_upload_uri
-                continue
-            init.raise_for_status()
 
-        session_uri = init.headers.get("Location")
-        if not session_uri:
+    def _raise_if_closed(self) -> None:
+        if self._closed:
+            raise VolumeClosedError(f"Volume {self._name!r} is closed")
+
+    def _ensure_ready(self) -> None:
+        self._raise_if_closed()
+        if self._info is None:
+            self._info, self._version = self._fetch_info()
+
+    @traced("chalkcompute.volume.read_file")
+    def read_file(self, path: str) -> bytes:
+        """Read a file's contents at the current version.
+
+        Parameters
+        ----------
+        path
+            File path within the volume.
+
+        Returns
+        -------
+        bytes
+            The raw file bytes.
+        """
+        self._ensure_ready()
+        return self._client._download_bytes(
+            self._name,
+            path,
+            version_id=self._read_version_id(),
+        )
+
+    @traced("chalkcompute.volume.put_file")
+    def put_file(self, path: str, data: bytes | str) -> Volume:
+        """Write a file, committing a new version on the current ref.
+
+        Small payloads are committed inline; large payloads are chunked
+        and uploaded to object storage before the commit completes.
+
+        Parameters
+        ----------
+        path
+            Destination path within the volume.
+        data
+            File contents (``bytes`` or ``str``).
+
+        Returns
+        -------
+        Volume
+            ``self``, to allow chaining.
+        """
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        self._commit_files([(path, data)])
+        return self
+
+    def put_file_from_path(self, path: str, local_path: str | Path) -> Volume:
+        """Upload a local file into the volume.
+
+        Parameters
+        ----------
+        path
+            Destination path within the volume.
+        local_path
+            Local file to read and upload.
+
+        Returns
+        -------
+        Volume
+            ``self``, to allow chaining.
+        """
+        self._ensure_mutable()
+        self._ensure_ready()
+        statuses = self._client._upload(
+            self._name,
+            [(path, Path(local_path))],
+            batch_size=1,
+            ref_name=self._selector_ref(),
+        )
+        self._update_version_from_statuses(statuses)
+        return self
+
+    def remove_file(self, path: str) -> Volume:
+        """Remove a file, committing a new version on the current ref.
+
+        Parameters
+        ----------
+        path
+            File path within the volume.
+
+        Returns
+        -------
+        Volume
+            ``self``, to allow chaining.
+        """
+        self._ensure_mutable()
+        self._ensure_ready()
+        status = self._client._remove_files(
+            self._name,
+            [(path, False)],
+            max_commit_retries=_COMMIT_MAX_REBASE_RETRIES,
+            ref_name=self._selector_ref(),
+        )
+        self._update_version_from_statuses([status])
+        return self
+
+    def listdir(self, prefix: str = "", *, recursive: bool = True) -> list[FileInfo]:
+        """List files at the current version.
+
+        Parameters
+        ----------
+        prefix
+            Only return entries under this directory prefix.
+        recursive
+            If ``True`` (the default), descend into subdirectories.
+
+        Returns
+        -------
+        list of FileInfo
+            One entry per matching file or directory.
+        """
+        self._ensure_ready()
+        files = self._listdir_page_all(prefix)
+        if not recursive:
+            return files
+
+        out = list(files)
+        seen_dirs = {prefix.strip("/")}
+        queue = [
+            f.path
+            for f in files
+            if f.kind == "directory" and f.path.strip("/") not in seen_dirs
+        ]
+        while queue:
+            directory = queue.pop(0).strip("/")
+            seen_dirs.add(directory)
+            children = self._listdir_page_all(directory)
+            out.extend(children)
+            queue.extend(
+                f.path
+                for f in children
+                if f.kind == "directory" and f.path.strip("/") not in seen_dirs
+            )
+        return out
+
+    def iterdir(self, prefix: str = "") -> Iterator[FileInfo]:
+        """Iterate over files at the current version.
+
+        Parameters
+        ----------
+        prefix
+            Only return entries under this directory prefix.
+
+        Yields
+        ------
+        FileInfo
+            One entry per matching file or directory.
+        """
+        yield from self.listdir(prefix)
+
+    @contextmanager
+    def batch_upload(
+        self,
+        *,
+        max_files_per_commit: int = _BATCH_MAX_FILES,
+    ) -> Generator[_BatchUpload, None, None]:
+        """Context manager that commits staged writes as one version.
+
+        Files staged within the block are bundled into a single commit
+        when the block exits (or when ``max_files_per_commit`` is reached).
+
+        Parameters
+        ----------
+        max_files_per_commit
+            Maximum files per commit before flushing automatically.
+
+        Yields
+        ------
+        _BatchUpload
+            A batch handle with ``put`` / ``put_file`` methods.
+
+        Examples
+        --------
+        >>> with vol.batch_upload() as batch:
+        ...     batch.put("a.txt", b"hello")
+        ...     batch.put("b.txt", b"world")
+        """
+        self._raise_if_closed()
+        self._ensure_mutable()
+        if max_files_per_commit <= 0:
+            raise ValueError("max_files_per_commit must be positive")
+        self._ensure_ready()
+        batch = _BatchUpload(
+            self,
+            max_files_per_commit=max_files_per_commit,
+        )
+        yield batch
+        batch._flush()
+
+    def versions(self, *, limit: int = 100) -> list[VersionInfo]:
+        """List all versions of this volume.
+
+        Parameters
+        ----------
+        limit
+            Page size used when traversing the server-side cursor.
+
+        Returns
+        -------
+        list of VersionInfo
+            One entry per immutable version, ordered by the server.
+        """
+        self._ensure_ready()
+        versions: list[VersionInfo] = []
+        cursor = ""
+        while True:
+            raw = self._client._list_volume_versions(
+                self._name,
+                limit=limit,
+                cursor=cursor,
+                ref_name=self._selector_ref(),
+            )
+            versions.extend(_dict_to_version_info(v) for v in raw["versions"])
+            cursor = str(raw.get("next_cursor") or "")
+            if not cursor:
+                return versions
+
+    def latest_version(self) -> VersionInfo:
+        """Fetch the latest committed version on this handle's ref.
+
+        Returns
+        -------
+        VersionInfo
+            The version currently pointed at by the ref.
+
+        Raises
+        ------
+        VolumeError
+            If the volume has no committed versions yet.
+        """
+        self._ensure_ready()
+        raw = self._client._get_volume(self._name, ref_name=self._selector_ref())
+        self._info = _dict_to_volume_info(raw["volume"])
+        if not raw.get("version"):
+            raise VolumeError(f"Volume {self._name!r} has no latest version")
+        self._version = _dict_to_version_info(raw["version"])
+        return self._version
+
+    def at_version(self, version_id: int) -> Volume:
+        """Return a read-only handle pinned to a specific version.
+
+        Mutating operations on the returned handle raise
+        :class:`VolumeError`.
+
+        Parameters
+        ----------
+        version_id
+            The immutable version to pin to.
+
+        Returns
+        -------
+        Volume
+            A new handle pointing at ``version_id``.
+        """
+        self._raise_if_closed()
+        volume = Volume(
+            self._name,
+            client=self._client,
+            version_id=version_id,
+            ref=self._ref,
+            create_if_missing=False,
+        )
+        volume._info = self._info
+        return volume
+
+    @traced("chalkcompute.volume.fork")
+    def fork(self, name: str) -> Volume:
+        """Create an independent ref at this handle's current version.
+
+        The returned handle reads and writes through the new ref. Forking a
+        version-pinned handle starts exactly at that immutable version.
+
+        Parameters
+        ----------
+        name
+            Name for the new ref.
+
+        Returns
+        -------
+        Volume
+            A mutable handle tracking the new ref.
+        """
+        self._raise_if_closed()
+        from_version_id = self._version_id
+        if from_version_id is None:
+            from_version_id = self.version.id
+        ref = self._client._create_ref(self._name, name, from_version_id)
+        forked = Volume(
+            self._name,
+            client=self._client,
+            ref=ref.name,
+            create_if_missing=False,
+        )
+        forked._info = self._info
+        forked._version = _ref_to_version_info(ref)
+        return forked
+
+    def forks(self) -> list[ForkInfo]:
+        """List the forks for this volume."""
+        self._ensure_ready()
+        return [
+            fork for fork in self._client._list_refs(self._name) if fork.name != "main"
+        ]
+
+    @traced("chalkcompute.volume.delete_fork")
+    def delete_fork(self) -> None:
+        """Delete this handle's fork without deleting its versions.
+
+        Raises
+        ------
+        VolumeError
+            If this handle tracks the main ref or is pinned to a version.
+        """
+        self._raise_if_closed()
+        if self._version_id is not None:
+            raise VolumeError("A version-pinned handle does not identify a ref")
+        if not self._ref or self._ref == "main":
+            raise VolumeError("The main ref cannot be deleted")
+        self._client._delete_ref(self._name, self._ref)
+
+    def mount(self, mount_path: str | None = None) -> VolumeMount:
+        """Create a mount specification for this handle.
+
+        Fork and version-pinned handles mount their current immutable snapshot.
+        The default path is ``/volumes/<volume-name>``.
+        """
+        self._raise_if_closed()
+        path = mount_path or f"/volumes/{self._name}"
+        version_id = self._version_id
+        if version_id is None and self._ref and self._ref != "main":
+            version_id = self.version.id
+        return VolumeMount(
+            name=self._name,
+            mount_path=path,
+            version_id=version_id,
+        )
+
+    @traced("chalkcompute.volume.delete")
+    def delete(self) -> None:
+        """Delete this volume and all of its versions.
+
+        Raises
+        ------
+        VolumeError
+            If called on a version-pinned (read-only) handle.
+        """
+        self._ensure_mutable()
+        self._ensure_ready()
+        self._client.delete_volume(self._name)
+
+    def download_to_file(self, remote_path: str, local_path: str | Path) -> None:
+        """Download a file from the current version to a local path.
+
+        Parameters
+        ----------
+        remote_path
+            File path within the volume.
+        local_path
+            Local destination path to write.
+        """
+        self._ensure_ready()
+        self._client._download_to_file(
+            self._name,
+            remote_path,
+            Path(local_path),
+            version_id=self._read_version_id(),
+        )
+
+    def download_to_directory(self, local_dir: str | Path) -> None:
+        """Download the current version into a local directory.
+
+        Parameters
+        ----------
+        local_dir
+            Local destination directory.
+        """
+        self._ensure_ready()
+        self._client._download_to_directory(
+            self._name,
+            Path(local_dir),
+            version_id=self._read_version_id(),
+        )
+
+    def _commit_files(self, files: list[tuple[str, bytes]]) -> VersionInfo:
+        self._ensure_mutable()
+        self._ensure_ready()
+        statuses = self._client._upload(
+            self._name,
+            files,
+            batch_size=max(1, len(files)),
+            ref_name=self._selector_ref(),
+        )
+        return self._update_version_from_statuses(statuses)
+
+    def _update_version_from_statuses(
+        self, statuses: list[CommitStatus]
+    ) -> VersionInfo:
+        committed = [status for status in statuses if status.version is not None]
+        if not committed:
+            raise VolumeError("Volume commit returned no committed version")
+        status = committed[-1]
+        if status.result != "committed":
             raise VolumeError(
-                "GCS resumable upload: missing Location header in initiation response"
+                f"Volume commit {status.commit_id} returned {status.result}"
             )
+        assert status.version is not None
+        self._version = status.version
+        return status.version
 
-        put_resp = httpx.put(
-            session_uri,
-            content=data,
-            headers={"Content-Type": "application/octet-stream"},
-            timeout=600,
+    def _listdir_page_all(self, path: str) -> list[FileInfo]:
+        files: list[FileInfo] = []
+        cursor = ""
+        while True:
+            raw = self._client._list_files(
+                self._name,
+                path=path,
+                version_id=self._version_id,
+                ref_name=self._selector_ref(),
+                limit=1000,
+                cursor=cursor,
+            )
+            files.extend(_dict_to_file_info(f) for f in raw["files"])
+            if raw.get("version"):
+                self._version = _dict_to_version_info(raw["version"])
+            cursor = str(raw.get("next_cursor") or "")
+            if not cursor:
+                return files
+
+    def _selector_ref(self) -> str | None:
+        if self._version_id is not None:
+            return None
+        if self._ref and self._ref != "main":
+            return self._ref
+        return None
+
+    def _read_version_id(self) -> int | None:
+        if self._version_id is not None:
+            return self._version_id
+        if self._ref and self._ref != "main":
+            return self.version.id
+        return None
+
+    def _ensure_mutable(self) -> None:
+        self._raise_if_closed()
+        if self._version_id is not None:
+            raise VolumeError("Volume.at_version(...) handles are read-only")
+
+    def close(self) -> None:
+        """Close the underlying client used by this Volume.
+
+        Safe to call multiple times.
+        """
+        if not self._closed:
+            self._client.close()
+        self._closed = True
+
+    def __enter__(self) -> Volume:
+        """Enter a context that closes the volume on exit."""
+        self._raise_if_closed()
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        """Close the volume on context exit."""
+        self.close()
+
+    def __repr__(self) -> str:
+        if self._version_id is not None:
+            return f"Volume(name={self._name!r}, version_id={self._version_id!r})"
+        return f"Volume(name={self._name!r}, ref={self._ref!r})"
+
+
+class VolumeClient:
+    """Client for the Chalk Volume service."""
+
+    def __init__(
+        self,
+        endpoint: str = "http://localhost:50051",
+        *,
+        token: str = "",
+        env_id: str | None = None,
+        commit_author: str | None = None,
+        extra_headers: builtins.list[tuple[str, str]] | None = None,
+        chalk_server: str = "go-api",
+        credentials: object | None = None,
+        metadata: object | None = None,
+        options: object | None = None,
+    ) -> None:
+        """Initialize the native volume client.
+
+        Parameters
+        ----------
+        endpoint
+            Volume service endpoint. Values without a scheme are converted
+            to ``http://`` or ``https://`` depending on ``credentials``.
+        token
+            Optional bearer token used for service authentication.
+        env_id
+            Chalk environment id to send with requests.
+        commit_author
+            Optional commit author URN. If omitted, the native client derives
+            one from the request credentials.
+        extra_headers
+            Additional request headers to send with every call.
+        chalk_server
+            Target Chalk server name.
+        credentials
+            Optional TLS/SSL credentials marker. If set, schemeless endpoints
+            use ``https://``.
+        metadata
+            Optional default metadata. ``authorization``, ``x-chalk-env-id``,
+            and ``x-chalk-server`` are translated into native client settings.
+        options
+            Accepted for compatibility with the gRPC-backed constructor and
+            ignored by the native client.
+        """
+        if _NativeVolumeClient is None:
+            raise VolumeError(
+                "volumes require the native chalkcompute._native extension"
+            ) from _NATIVE_IMPORT_ERROR
+        del options
+        if metadata is not None:
+            token = token or _metadata_value(metadata, "authorization").removeprefix(
+                "Bearer "
+            )
+            env_id = env_id or _metadata_value(metadata, "x-chalk-env-id") or None
+            chalk_server = _metadata_value(metadata, "x-chalk-server") or chalk_server
+        endpoint = _native_endpoint(endpoint, use_tls=credentials is not None)
+        self._endpoint = endpoint
+        self._token = token
+        self._env_id = env_id
+        self._commit_author = commit_author
+        self._extra_headers = builtins.list(extra_headers or [])
+        self._chalk_server = chalk_server
+        self._connect: ConnectClient | None = None
+        self._closed = False
+        self._inner = _NativeVolumeClient(
+            endpoint,
+            token,
+            env_id,
+            commit_author,
+            self._extra_headers,
+            chalk_server,
         )
-        if put_resp.status_code in (200, 201):
-            logger.info(
-                "Resumable upload complete: object=%s refreshes=%d",
-                storage_object_id,
-                refresh_count,
+
+    @classmethod
+    def from_connect(cls, connect: ConnectClient) -> VolumeClient:
+        """Create a client from an authenticated :class:`ConnectClient`.
+
+        Parameters
+        ----------
+        connect
+            An authenticated ``ConnectClient``. Auth is ensured
+            automatically if not already done.
+
+        Returns
+        -------
+        VolumeClient
+            A new client with endpoint, token, and environment settings
+            derived from the ``ConnectClient``.
+        """
+        connect._ensure_auth()
+        # No commit_author here on purpose. When the author is unset, the
+        # native client derives a chalk:{environment}:agent:{agent_id} URN
+        # from the credentials so dashboard commit history links back to
+        # the authoring agent.
+        client = cls(
+            connect._api_server or "",
+            token=connect._access_token or "",
+            env_id=connect._env_id or None,
+            chalk_server="go-api",
+        )
+        if getattr(connect, "_uses_web_identity_token", lambda: False)() is True:
+            client._connect = connect
+        return client
+
+    @property
+    def _inner(self) -> Any:
+        self._sync_web_identity_auth()
+        return self._native_inner
+
+    @_inner.setter
+    def _inner(self, value: Any) -> None:
+        self._native_inner = value
+
+    def _sync_web_identity_auth(self) -> None:
+        """Recreate the native client after an identity-token rotation."""
+        connect = getattr(self, "_connect", None)
+        if connect is None:
+            return
+        connect._ensure_auth()
+        token = connect._access_token or ""
+        env_id = connect._env_id or None
+        if token == self._token and env_id == self._env_id:
+            return
+        if _NativeVolumeClient is None:
+            raise VolumeError(
+                "volumes require the native chalkcompute._native extension"
+            ) from _NATIVE_IMPORT_ERROR
+        self._token = token
+        self._env_id = env_id
+        self._native_inner = _NativeVolumeClient(
+            self._endpoint,
+            token,
+            env_id,
+            self._commit_author,
+            self._extra_headers,
+            self._chalk_server,
+        )
+
+    def __enter__(self) -> VolumeClient:
+        """Enter a context that closes the client on exit."""
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        """Close the client on context exit."""
+        self.close()
+
+    def close(self) -> None:
+        """Close the underlying native client handle."""
+        self._closed = True
+
+    @traced("chalkcompute.volume.create")
+    def create(self, name: str, *, volume_type: str | None = None) -> Volume:
+        """Create a new named volume.
+
+        Parameters
+        ----------
+        name
+            Name for the new volume.
+        volume_type
+            Optional volume kind, e.g. ``"source_code"`` for volumes that
+            hold deployed function source files.
+
+        Returns
+        -------
+        Volume
+            A handle to the newly created volume.
+        """
+        raw = self._create_volume(name, volume_type=volume_type)
+        vol = Volume(name, client=self, create_if_missing=False)
+        vol._info = _dict_to_volume_info(raw["volume"])
+        return vol
+
+    def from_name(self, name: str) -> Volume:
+        """Return a handle by name without validating that it exists.
+
+        Parameters
+        ----------
+        name
+            Name of the existing volume.
+
+        Returns
+        -------
+        Volume
+            A handle that fetches metadata lazily on first use.
+        """
+        return Volume(name, client=self, create_if_missing=False)
+
+    def lookup(self, name: str) -> Volume:
+        """Look up a volume by name, verifying it exists.
+
+        Parameters
+        ----------
+        name
+            Name of the volume.
+
+        Returns
+        -------
+        Volume
+            A handle with metadata pre-fetched.
+
+        Raises
+        ------
+        VolumeNotFoundError
+            If the volume does not exist.
+        """
+        vol = Volume(name, client=self, create_if_missing=False)
+        vol.reload()
+        return vol
+
+    def exists(self, name: str) -> bool:
+        """Return whether a volume with ``name`` exists.
+
+        Probes ``GetVolume`` with the default version selector. A not-found
+        response maps to ``False``; any other client error propagates so a
+        transient failure is never mistaken for "absent".
+        """
+        try:
+            self._get_volume(name)
+        except VolumeNotFoundError:
+            return False
+        return True
+
+    @traced("chalkcompute.volume.upload_lazy_files")
+    def upload_lazy_files(
+        self, image: Image, *, volume_prefix: str = "files"
+    ) -> builtins.list[VolumeMount]:
+        """Upload an image's lazy local files into volumes.
+
+        Creates one volume per destination directory and commits
+        all files for that directory as a single version.
+
+        Parameters
+        ----------
+        image
+            Image whose lazy local files should be uploaded.
+        volume_prefix
+            Prefix used when naming the generated volumes.
+
+        Returns
+        -------
+        list of VolumeMount
+            One :class:`VolumeMount` per created volume.
+        """
+        try:
+            dir_to_files = image.lazy_local_files_grouped_for_volume_mounts()
+        except ValueError as e:
+            raise VolumeError(str(e)) from e
+
+        volumes: builtins.list[VolumeMount] = []
+        for dest_dir, files in dir_to_files.items():
+            vol = self.create(f"{volume_prefix}-{uuid.uuid4().hex[:12]}")
+            with vol.batch_upload() as batch:
+                for lf in files:
+                    batch.put_file(os.path.relpath(lf.dest, dest_dir), lf.src)
+            volumes.append(VolumeMount(name=vol.name, mount_path=dest_dir))
+        return volumes
+
+    @traced("chalkcompute.volume.stage_lazy_files")
+    def stage_lazy_files(
+        self, image: Image, *, volume_name: str
+    ) -> tuple[builtins.list[VolumeMount], builtins.list[dict[str, Any]]]:
+        """Stage an image's lazy local files into source-code volumes.
+
+        Reuses (or creates, ``source_code``-kind) one stable volume
+        per destination directory — named from ``volume_name`` — and uploads
+        the file bytes, but does **not** commit. Each staged upload is
+        returned as a ``chalk.volume.v2.CommitIntent`` JSON dict for
+        ``CreateExternalFunctionVersionRequest.volume_commits``: the server
+        commits the intent and stamps the resulting version_id onto the spec
+        volume with the matching name, so every replica is pinned to that
+        immutable snapshot.
+
+        On reused volumes the intent carries a recursive remove of root,
+        which the server applies as "replace the base tree": the committed
+        version is exactly the staged files, so redeploys never leak stale
+        files into new versions.
+
+        Parameters
+        ----------
+        image
+            Image whose lazy local files should be staged.
+        volume_name
+            Stable name for the volume, typically derived from the function
+            or class name so redeploys append versions to the same volume.
+            A per-directory suffix is added when the image spans multiple
+            destination directories.
+
+        Returns
+        -------
+        tuple of (list of VolumeMount, list of dict)
+            One mount and one commit-intent dict per volume.
+        """
+        from chalkcompute._naming import sanitize_dns_label
+
+        try:
+            dir_to_files = image.lazy_local_files_grouped_for_volume_mounts()
+        except ValueError as e:
+            raise VolumeError(str(e)) from e
+
+        volumes: builtins.list[VolumeMount] = []
+        intents: builtins.list[dict[str, Any]] = []
+        for dest_dir, files in dir_to_files.items():
+            name = sanitize_dns_label(f"{volume_name}-{dest_dir}")
+            existed = self.exists(name)
+            vol = (
+                self.from_name(name)
+                if existed
+                else self.create(name, volume_type="source_code")
             )
-            return storage_object_id
-        if (
-            put_resp.status_code in (401, 403)
-            and refresh_count < _PRESIGNED_MAX_RETRIES
-        ):
-            refresh_count += 1
-            logger.warning(
-                "Resumable upload: refreshing signed URL (attempt %d/%d)",
-                refresh_count,
-                _PRESIGNED_MAX_RETRIES,
+            source = [
+                (os.path.relpath(lf.dest, dest_dir), Path(lf.src)) for lf in files
+            ]
+            self._raise_if_closed()
+            try:
+                staged = self._inner.stage(vol.name, source)
+                intent_bytes = self._inner.staged_intent(vol.name, staged)
+            except _native_error_types() as exc:
+                _raise_volume_error(exc, vol.name)
+            intent = pb_v2.CommitIntent.FromString(bytes(intent_bytes))
+            if existed:
+                intent.path_deltas.removes.add(path="/", recursive=True)
+            intents.append(MessageToDict(intent))
+            volumes.append(VolumeMount(name=vol.name, mount_path=dest_dir))
+        return volumes, intents
+
+    def delete_volume(self, name: str) -> None:
+        """Delete a volume by name.
+
+        Parameters
+        ----------
+        name
+            Volume to delete.
+        """
+        self._raise_if_closed()
+        try:
+            self._inner.delete_volume(name)
+        except _native_error_types() as exc:
+            _raise_volume_error(exc, name)
+
+    def list(self, *, limit: int = 100) -> builtins.list[VolumeInfo]:
+        """List all volumes the caller has access to.
+
+        Parameters
+        ----------
+        limit
+            Page size used when traversing the server-side cursor.
+
+        Returns
+        -------
+        list of VolumeInfo
+            One entry per volume.
+        """
+        volumes: list[VolumeInfo] = []
+        cursor = ""
+        while True:
+            raw = self._list_volumes(limit=limit, cursor=cursor)
+            volumes.extend(_dict_to_volume_info(v) for v in raw["volumes"])
+            cursor = str(raw.get("next_cursor") or "")
+            if not cursor:
+                return volumes
+
+    def _raise_if_closed(self) -> None:
+        if self._closed:
+            raise VolumeClosedError("VolumeClient is closed")
+
+    def _create_volume(
+        self, name: str, *, volume_type: str | None = None
+    ) -> dict[str, Any]:
+        self._raise_if_closed()
+        try:
+            return dict(self._inner.create_volume(name, volume_type))
+        except _native_error_types() as exc:
+            _raise_volume_error(exc, name)
+
+    def _get_volume(
+        self,
+        name: str,
+        *,
+        version_id: int | None = None,
+        ref_name: str | None = None,
+    ) -> dict[str, Any]:
+        self._raise_if_closed()
+        try:
+            return dict(self._inner.get_volume(name, version_id, ref_name))
+        except _native_error_types() as exc:
+            _raise_volume_error(exc, name)
+
+    def _list_volumes(self, *, limit: int, cursor: str) -> dict[str, Any]:
+        self._raise_if_closed()
+        try:
+            return dict(self._inner.list_volumes(limit, cursor))
+        except _native_error_types() as exc:
+            _raise_volume_error(exc, "")
+
+    def _list_volume_versions(
+        self,
+        name: str,
+        *,
+        limit: int,
+        cursor: str,
+        ref_name: str | None,
+    ) -> dict[str, Any]:
+        self._raise_if_closed()
+        try:
+            if ref_name is None:
+                return dict(self._inner.list_volume_versions(name, limit, cursor))
+            return dict(self._inner.list_volume_versions(name, limit, cursor, ref_name))
+        except _native_error_types() as exc:
+            _raise_volume_error(exc, name)
+
+    def _create_ref(self, volume: str, name: str, from_version_id: int) -> ForkInfo:
+        self._raise_if_closed()
+        try:
+            raw = dict(self._inner.create_ref(volume, name, from_version_id))
+        except _native_error_types() as exc:
+            _raise_volume_error(exc, volume)
+        if not raw.get("ref"):
+            raise VolumeError("CreateRef returned no ref metadata")
+        return _dict_to_ref_info(dict(raw["ref"]))
+
+    def _list_refs(self, volume: str) -> builtins.list[ForkInfo]:
+        self._raise_if_closed()
+        try:
+            refs = self._inner.list_refs(volume)
+        except _native_error_types() as exc:
+            _raise_volume_error(exc, volume)
+        return [_dict_to_ref_info(dict(ref)) for ref in refs]
+
+    def _delete_ref(self, volume: str, name: str) -> None:
+        self._raise_if_closed()
+        try:
+            self._inner.delete_ref(volume, name)
+        except _native_error_types() as exc:
+            _raise_volume_error(exc, volume)
+
+    def _list_files(
+        self,
+        volume: str,
+        *,
+        path: str,
+        version_id: int | None,
+        ref_name: str | None,
+        limit: int,
+        cursor: str,
+    ) -> dict[str, Any]:
+        self._raise_if_closed()
+        try:
+            return dict(
+                self._inner.list_files(
+                    volume,
+                    path,
+                    version_id,
+                    ref_name,
+                    limit,
+                    cursor,
+                )
             )
-            new_resp = refresh()
-            storage_object_id = new_resp.storage_object_id
-            signed_uri = new_resp.resumable.signed_upload_uri
-            continue
-        put_resp.raise_for_status()
+        except _native_error_types() as exc:
+            _raise_volume_error(exc, volume)
+
+    def _upload(
+        self,
+        volume: str,
+        files: Sequence[tuple[str, bytes | Path]],
+        *,
+        batch_size: int,
+        ref_name: str | None = None,
+    ) -> builtins.list[CommitStatus]:
+        self._raise_if_closed()
+        config = {
+            "chunk_size": _CHUNK_SIZE_BYTES,
+            "inline_threshold": _INLINE_THRESHOLD_BYTES,
+            "max_pack_bytes": _MAX_PACK_BYTES,
+            "file_concurrency": _FILE_CONCURRENCY,
+            "chunk_concurrency": _CHUNK_CONCURRENCY,
+            "batch_size": batch_size,
+            "max_chunk_retries": _CHUNK_MAX_RETRIES,
+            "max_rate_limit_retries": _RATE_LIMIT_MAX_RETRIES,
+            "max_commit_retries": _COMMIT_MAX_REBASE_RETRIES,
+        }
+        try:
+            args: tuple[Any, ...] = (volume, builtins.list(files), config)
+            if ref_name is not None:
+                args = (*args, ref_name)
+            raw_statuses = self._inner.upload(*args)
+        except _native_error_types() as exc:
+            _raise_volume_error(exc, volume)
+        return [_dict_to_commit_status(dict(status)) for status in raw_statuses]
+
+    def _remove_files(
+        self,
+        volume: str,
+        paths: builtins.list[tuple[str, bool]],
+        *,
+        max_commit_retries: int,
+        ref_name: str | None = None,
+    ) -> CommitStatus:
+        self._raise_if_closed()
+        try:
+            args: tuple[Any, ...] = (volume, paths, max_commit_retries)
+            if ref_name is not None:
+                args = (*args, ref_name)
+            raw = self._inner.remove_files(*args)
+        except _native_error_types() as exc:
+            _raise_volume_error(exc, volume)
+        return _dict_to_commit_status(dict(raw))
+
+    def _download_bytes(
+        self,
+        volume: str,
+        path: str,
+        *,
+        version_id: int | None,
+    ) -> bytes:
+        self._raise_if_closed()
+        try:
+            return bytes(self._inner.download_bytes(volume, path, version_id, None))
+        except _native_error_types() as exc:
+            _raise_volume_error(exc, volume)
+
+    def _download_to_file(
+        self,
+        volume: str,
+        remote_path: str,
+        local_path: Path,
+        *,
+        version_id: int | None,
+    ) -> None:
+        self._raise_if_closed()
+        try:
+            self._inner.download_to_file(
+                volume, remote_path, local_path, version_id, None
+            )
+        except _native_error_types() as exc:
+            _raise_volume_error(exc, volume)
+
+    def _download_to_directory(
+        self,
+        volume: str,
+        local_dir: Path,
+        *,
+        version_id: int | None,
+    ) -> None:
+        self._raise_if_closed()
+        try:
+            self._inner.download_to_directory(volume, local_dir, version_id, None)
+        except _native_error_types() as exc:
+            _raise_volume_error(exc, volume)
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _pb_to_volume_info(info: pb.VolumeInfo) -> VolumeInfo:
-    created_at = None
-    if info.HasField("created_at"):
-        created_at = info.created_at.ToDatetime(tzinfo=datetime.timezone.utc)
+def _dict_to_volume_info(info: dict[str, Any]) -> VolumeInfo:
     return VolumeInfo(
-        name=info.name,
-        created_at=created_at,
+        name=str(info.get("name") or ""),
+        created_at=_datetime_from_ms(info.get("created_at_ms")),
+        volume_id=_optional_str(info.get("volume_id")),
+        access_mode=_volume_access_mode_name(int(info.get("access_mode") or 0)),
+        ref=_optional_str(info.get("ref")),
     )
 
 
-def _pb_to_file_info(info: pb.FileInfo) -> FileInfo:
-    updated_at = None
-    if info.HasField("updated_at"):
-        updated_at = info.updated_at.ToDatetime(tzinfo=datetime.timezone.utc)
+def _dict_to_version_info(info: dict[str, Any]) -> VersionInfo:
+    return VersionInfo(
+        id=int(info.get("version_id") or 0),
+        parent_id=(
+            int(info["parent_id"]) if info.get("parent_id") is not None else None
+        ),
+        created_at=_datetime_from_ms(info.get("created_at_ms")),
+        ref=_optional_str(info.get("ref")),
+        commit_id=_optional_str(info.get("commit_id")),
+    )
+
+
+def _dict_to_ref_info(info: dict[str, Any]) -> ForkInfo:
+    return ForkInfo(
+        name=str(info.get("name") or ""),
+        version_id=int(info.get("version_id") or 0),
+        commit_id=_optional_str(info.get("commit_id")),
+        updated_at=_datetime_from_ms(info.get("updated_at_ms")),
+        parent_version_id=(
+            int(info["parent_version_id"])
+            if info.get("parent_version_id") is not None
+            else None
+        ),
+    )
+
+
+def _ref_to_version_info(ref: ForkInfo) -> VersionInfo:
+    return VersionInfo(
+        id=ref.version_id,
+        created_at=ref.updated_at,
+        ref=ref.name,
+        commit_id=ref.commit_id,
+    )
+
+
+def _dict_to_file_info(info: dict[str, Any]) -> FileInfo:
     return FileInfo(
-        path=info.path,
-        size=info.size,
-        updated_at=updated_at,
+        path=str(info.get("path") or ""),
+        size=int(info.get("size") or 0),
+        updated_at=_datetime_from_ms(info.get("updated_at_ms")),
+        kind=_file_kind_name(int(info.get("kind") or 0)),
+        hash=_optional_str(info.get("hash")),
+        mode=int(info["mode"]) if info.get("mode") is not None else None,
+        uid=int(info.get("uid") or 0),
+        gid=int(info.get("gid") or 0),
+        nlink=int(info.get("nlink") or 0),
     )
 
 
-def _handle_rpc_error(e: grpc.RpcError, volume_name: str) -> None:
-    raise_for_grpc_error(
-        e,
-        {
-            grpc.StatusCode.NOT_FOUND: (
-                VolumeNotFoundError,
-                f"Volume {volume_name!r} not found",
-            ),
-        },
+def _dict_to_commit_status(status: dict[str, Any]) -> CommitStatus:
+    return CommitStatus(
+        commit_id=str(status.get("commit_id") or ""),
+        result=str(status.get("result") or "unspecified"),
+        version=(
+            _dict_to_version_info(dict(status["version"]))
+            if status.get("version") is not None
+            else None
+        ),
+        latest_version=(
+            _dict_to_version_info(dict(status["latest_version"]))
+            if status.get("latest_version") is not None
+            else None
+        ),
+        created_at=_datetime_from_ms(status.get("created_at_ms")),
     )
 
 
-def connect(
-    target: str = "localhost:50051",
-    *,
-    credentials: grpc.ChannelCredentials | None = None,
-    metadata: _GrpcMetadata | None = None,
-) -> VolumeClient:
-    """Create a new ``VolumeClient``.
+def _datetime_from_ms(value: Any) -> datetime.datetime | None:
+    if value is None:
+        return None
+    return datetime.datetime.fromtimestamp(
+        int(value) / 1000,
+        tz=datetime.timezone.utc,
+    )
 
-    Parameters
-    ----------
-    target
-        gRPC server address.
-    credentials
-        Optional TLS/SSL channel credentials.
-    metadata
-        Optional default metadata to send with every RPC call.
 
-    Returns
-    -------
-    VolumeClient
-        A new client instance.
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return text or None
+
+
+def _metadata_value(metadata: Any, key: str) -> str:
+    for item in tuple(metadata or ()):
+        if len(item) != 2:
+            continue
+        k, v = item
+        if str(k).lower() == key:
+            return str(v)
+    return ""
+
+
+def _native_endpoint(endpoint: str, *, use_tls: bool) -> str:
+    if endpoint.startswith(("http://", "https://")):
+        return endpoint.rstrip("/")
+    scheme = "https" if use_tls else "http"
+    return f"{scheme}://{endpoint.rstrip('/')}"
+
+
+def _native_error_types() -> tuple[type[BaseException], ...]:
+    if _NativeVolumeRpcError is None:
+        return (RuntimeError,)
+    return (_NativeVolumeRpcError,)
+
+
+def _native_error_code(exc: BaseException) -> str:
+    if len(exc.args) >= 1:
+        return str(exc.args[0])
+    return ""
+
+
+def _native_error_message(exc: BaseException) -> str:
+    if len(exc.args) >= 2:
+        return str(exc.args[1])
+    return str(exc)
+
+
+def _raise_volume_error(exc: BaseException, volume_name: str) -> NoReturn:
+    code = _native_error_code(exc)
+    message = _native_error_message(exc)
+    if code == "not_found":
+        raise VolumeNotFoundError(message, code=code) from exc
+    raise VolumeError(message, code=code) from exc
+
+
+def _volume_access_mode_name(value: int) -> str | None:
+    return {
+        1: "read_only",
+        2: "read_write",
+    }.get(value)
+
+
+def _file_kind_name(value: int) -> str:
+    return {
+        1: "file",
+        2: "directory",
+        3: "symlink",
+    }.get(value, "unspecified")
+
+
+def _read_file_response(resp: pb_v2.GetFileResponse) -> bytes:
+    content_type = resp.WhichOneof("content")
+    if content_type == "data":
+        return resp.data
+    if content_type == "chunked":
+        chunks = sorted(resp.chunked.chunks, key=lambda c: c.offset)
+        if not chunks:
+            return b""
+        return b"".join(
+            _read_file_from_signed_uri(c.signed_download_uri) for c in chunks
+        )
+    if content_type == "packed":
+        pack = resp.packed.pack
+        data = _read_file_from_signed_uri(pack.signed_download_uri)
+        return data[pack.offset : pack.offset + pack.size]
+    raise VolumeError(f"Unsupported file response type: {content_type!r}")
+
+
+class _BatchUpload:
+    """Accumulates volume writes and commits them as one version."""
+
+    def __init__(
+        self,
+        volume: Volume,
+        *,
+        max_files_per_commit: int,
+    ) -> None:
+        self._volume = volume
+        self._max_files_per_commit = max_files_per_commit
+        self._pending: list[tuple[str, bytes | Path]] = []
+
+    def put(self, path: str, data: bytes | str) -> None:
+        """Stage a file for the next commit.
+
+        Parameters
+        ----------
+        path
+            Destination path within the volume.
+        data
+            File contents (``bytes`` or ``str``).
+        """
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        self._pending.append((path, data))
+        if len(self._pending) >= self._max_files_per_commit:
+            self._flush()
+
+    def put_file(self, path: str, local_path: str | Path) -> None:
+        """Stage a local file for the next commit.
+
+        Parameters
+        ----------
+        path
+            Destination path within the volume.
+        local_path
+            Local file to upload.
+        """
+        self._pending.append((path, Path(local_path)))
+        if len(self._pending) >= self._max_files_per_commit:
+            self._flush()
+
+    def _flush(self) -> None:
+        if not self._pending:
+            return
+        files = self._pending
+        self._pending = []
+        statuses = self._volume._client._upload(
+            self._volume.name,
+            files,
+            batch_size=len(files),
+            ref_name=self._volume._selector_ref(),
+        )
+        self._volume._update_version_from_statuses(statuses)
+
+
+# ---------------------------------------------------------------------------
+# Mount helpers
+# ---------------------------------------------------------------------------
+
+
+def normalize_volume_refs(
+    volumes: Iterable[tuple[str, str] | Volume | VolumeMount] | None,
+) -> builtins.list[VolumeMount]:
+    """Validate and normalize caller-supplied volume references.
+
+    Shared by every surface that accepts ``volumes=[...]`` so the accepted
+    shape can't drift between sandboxes, containers, functions, classes, and
+    scaling groups. Existence is checked later, at run/deploy time, by
+    :func:`referenced_volume_mount`.
     """
-    return VolumeClient(target, credentials=credentials, metadata=metadata)
+    refs: builtins.list[VolumeMount] = []
+    for item in volumes or []:
+        if isinstance(item, Volume):
+            refs.append(item.mount())
+            continue
+        if isinstance(item, VolumeMount):
+            refs.append(item)
+            continue
+        if not (
+            isinstance(item, (tuple, list))
+            and len(item) == 2
+            and all(isinstance(s, str) for s in item)
+        ):
+            raise ValueError(
+                "Each volumes entry must be a Volume, VolumeMount, or "
+                f"(name, mount_path) string tuple, got {item!r}. "
+                "Example: volumes=[('my-volume', '/data')]"
+            )
+        refs.append(VolumeMount(name=item[0], mount_path=item[1]))
+    return refs
+
+
+def _require_volume_exists(connect: ConnectClient, name: str) -> None:
+    """Raise :class:`VolumeError` unless a volume named ``name`` exists."""
+    if not VolumeClient.from_connect(connect).exists(name):
+        raise VolumeError(
+            f"Referenced volume {name!r} was not found. "
+            f"Check the name, or create it before referencing it."
+        )
+
+
+def referenced_volume_mount(connect: ConnectClient, mount: VolumeMount) -> VolumeMount:
+    """Build a mount for a caller-referenced volume, failing fast if absent.
+
+    A volume supplied as a ``(name, mount_path)`` tuple is owned by the caller
+    and must already exist. Checking here turns a typo'd name into a deploy-time
+    error instead of a container that mounts nothing.
+    """
+    _require_volume_exists(connect, mount.name)
+    return mount
+
+
+def resolve_referenced_volume_type(connect: ConnectClient, name: str) -> str:
+    """Return the mount type of an existing volume, or raise if it is absent.
+
+    Every volume mounts as :data:`MOUNT_TYPE`, so this no longer discriminates
+    between backends. Prefer :func:`referenced_volume_mount`.
+    """
+    _require_volume_exists(connect, name)
+    return MOUNT_TYPE
+
+
+def cleanup_owned_volumes(
+    client: VolumeClient,
+    all_volumes: Iterable[VolumeMount],
+    referenced_volumes: Iterable[VolumeMount],
+) -> None:
+    """Delete only volumes the SDK created; never user-referenced ones.
+
+    ``all_volumes`` contains both volumes the SDK uploaded (e.g. for an
+    image's lazy local files) and volumes the caller referenced via
+    ``volumes=[(name, path)]``. Caller-referenced volumes are owned by
+    the caller and must outlive this lifecycle.
+    """
+    referenced_names = {volume.name for volume in referenced_volumes}
+    for v in all_volumes:
+        if v.name in referenced_names:
+            continue
+        client.delete_volume(v.name)

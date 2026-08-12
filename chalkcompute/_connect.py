@@ -1,7 +1,8 @@
-"""Shared Connect-protocol client for Chalk API services.
+"""Shared authenticated client for Chalk API services.
 
-Provides auth (OAuth token exchange), Connect-protocol RPC dispatch,
-and image build polling.
+Provides auth (OAuth token exchange), RPC dispatch — gRPC over a shared
+channel via ``stub()``/``call()``, plus the legacy Connect-protocol
+(HTTP/JSON) ``rpc()`` — and image build polling.
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ import logging
 import os
 import re
 import time
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping, TypeVar
 from urllib.parse import urlparse
 
 import grpc
@@ -21,7 +22,7 @@ from chalkcompute._remote_call_client import (
     ServiceAuthContext,
     resolve_service_auth_context,
 )
-from chalkcompute._tracing import _instrumented
+from chalkcompute._tracing import _instrumented, get_tracer
 from chalkcompute._web_identity import (
     WebIdentityTokenError,
     read_web_identity_token,
@@ -31,6 +32,10 @@ from chalkcompute._web_identity import (
 logger = logging.getLogger(__name__)
 
 _WEB_IDENTITY_MAX_CACHE_TTL_SECONDS = 60 * 60
+
+_StubT = TypeVar("_StubT")
+_RespT = TypeVar("_RespT")
+
 
 if TYPE_CHECKING:
     import httpx
@@ -90,7 +95,15 @@ def chalk_client_from_env(
 
 
 class ConnectClient:
-    """Authenticated Connect-protocol (HTTP/JSON) client for Chalk APIs.
+    """Authenticated RPC client for Chalk APIs.
+
+    Two transports share this client's auth:
+
+    - :meth:`stub` / :meth:`call` — gRPC over a process-wide shared HTTP/2
+      channel (see ``_channel.py``). The preferred transport; new call sites
+      should use it.
+    - :meth:`rpc` — legacy Connect-protocol (HTTP/JSON), one connection per
+      call. Remaining services migrate off it incrementally (CHA-10029).
 
     Ambient Chalk credentials are read lazily. A JWT configured through
     ``CHALK_WEB_IDENTITY_TOKEN_FILE`` takes precedence and is cached for the
@@ -100,11 +113,8 @@ class ConnectClient:
     Examples
     --------
     >>> client = ConnectClient()
-    >>> resp = client.rpc(
-    ...     "chalk.container.v1.ContainerService",
-    ...     "GetContainer",
-    ...     {"id": "..."},
-    ... )
+    >>> stub = client.stub(ContainerServiceStub)
+    >>> resp = client.call(stub.GetContainer, pb.GetContainerRequest(id="..."))
     """
 
     def __init__(self, chalk_client: Any | None = None) -> None:
@@ -140,7 +150,7 @@ class ConnectClient:
                 os.environ.get("CHALK_API_SERVER") or "https://api.chalk.ai"
             ).rstrip("/")
             self._access_token = identity.value
-            self._env_id = requested_env or identity.environment_id
+            self._env_id = requested_env or identity.environment_id or ""
             self._headers = {
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {identity.value}",
@@ -348,6 +358,85 @@ class ConnectClient:
         """Return whether rotating web-identity authentication is configured."""
         return web_identity_token_file_from_env() is not None
 
+    def get_workload_identity_token(
+        self,
+        audience: str,
+        *,
+        timeout: float = 30,
+    ) -> str:
+        """Return a short-lived OIDC token for workload identity federation.
+
+        The token is scoped to the active Chalk environment and uses ``audience``
+        as its OIDC audience. Third parties can validate it against the Chalk
+        API server's ``/.well-known/jwks.json`` endpoint.
+
+        Parameters
+        ----------
+        audience
+            Audience expected by the workload identity provider.
+        timeout
+            Request timeout in seconds.
+        """
+        if not isinstance(audience, str) or not audience.strip():
+            raise ValueError("audience cannot be empty")
+
+        response = self.rpc(
+            "chalk.server.v1.AuthService",
+            "GetWorkloadIdentityToken",
+            {"audience": audience},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        data = response.json()
+        token = data.get("token")
+        if not isinstance(token, str) or not token:
+            raise ConnectError(
+                "GetWorkloadIdentityToken returned a response without a token"
+            )
+        return token
+
+    def stub(self, stub_cls: Callable[[grpc.Channel], _StubT]) -> _StubT:
+        """Return a gRPC stub bound to the shared api-server channel.
+
+        All stubs on one target multiplex over a single HTTP/2 connection.
+        Stubs are cheap to construct and not cached; the channel is the
+        expensive resource and the registry owns it.
+        """
+        from chalkcompute._channel import get_channel
+
+        self._ensure_auth()
+        assert self._api_server is not None
+        target, use_tls = grpc_target_from_url(self._api_server)
+        return stub_cls(get_channel(target, use_tls))
+
+    def call(
+        self,
+        method: Callable[..., _RespT],
+        request: Any,
+        *,
+        timeout: float = 30.0,
+    ) -> _RespT:
+        """Invoke a unary stub method with per-call auth metadata.
+
+        Metadata is rebuilt on every call via :meth:`_grpc_metadata`, so
+        rotating web-identity tokens are picked up without any caller effort.
+
+        Parameters
+        ----------
+        method
+            A bound stub method, e.g. ``client.stub(FooStub).GetFoo``.
+        request
+            The request protobuf message.
+        timeout
+            gRPC deadline in seconds.
+
+        Raises
+        ------
+        grpc.RpcError
+            On any non-OK status; callers translate to typed errors.
+        """
+        return method(request, timeout=timeout, metadata=self._grpc_metadata())
+
     def rpc(
         self,
         service: str,
@@ -379,8 +468,6 @@ class ConnectClient:
         """
         import httpx
 
-        from chalkcompute._tracing import get_tracer
-
         with get_tracer().start_as_current_span("chalkcompute.rpc") as span:
             span.set_attribute("rpc.service", service)
             span.set_attribute("rpc.method", method)
@@ -407,6 +494,62 @@ class ConnectClient:
 # ---------------------------------------------------------------------------
 # Shared helpers that operate on a ConnectClient
 # ---------------------------------------------------------------------------
+
+
+POLL_MAX_ATTEMPTS = 5
+"""Total attempts per poll RPC before a transient failure is raised."""
+
+
+def rpc_with_retries(
+    client: ConnectClient,
+    service: str,
+    method: str,
+    body: dict[str, Any],
+    *,
+    error_cls: type[Exception] = ConnectError,
+    max_attempts: int = POLL_MAX_ATTEMPTS,
+    retry_interval: float = 1.0,
+    timeout: float = 30,
+) -> httpx.Response:
+    """Call ``client.rpc``, retrying transient failures.
+
+    Status polls should temporarily survive transient failures
+    (``httpx.RequestError``, HTTP 429, or a 5xx response). Deterministic
+    client errors (other 4xx, e.g. 400/404) would fail identically on every
+    attempt, so they raise ``error_cls`` immediately. Each RPC call gets
+    ``max_attempts`` total attempts with ``retry_interval`` seconds between
+    them; ``error_cls`` is raised only when all attempts fail.
+
+    Returns
+    -------
+    httpx.Response
+        The first response with status 200.
+    """
+    import httpx
+
+    last_detail = ""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = client.rpc(service, method, body, timeout=timeout)
+        except httpx.RequestError as e:
+            last_detail = f"{type(e).__name__}: {e}"
+        else:
+            if resp.status_code == 200:
+                return resp
+            last_detail = f"HTTP {resp.status_code}: {resp.text}"
+            if resp.status_code != 429 and resp.status_code < 500:
+                raise error_cls(f"{method} failed: {last_detail}")
+        if attempt < max_attempts:
+            logger.warning(
+                "%s attempt %d/%d failed (%s); retrying in %.1fs",
+                method,
+                attempt,
+                max_attempts,
+                last_detail,
+                retry_interval,
+            )
+            time.sleep(retry_interval)
+    raise error_cls(f"{method} failed after {max_attempts} attempts: {last_detail}")
 
 
 @_instrumented("chalkcompute.build_image")
@@ -522,7 +665,7 @@ def build_image_with_volumes(
     """Build an ``Image`` and upload any lazy local files to volumes.
 
     Combines :func:`build_image` (build via ``CustomImageService``) with
-    :func:`chalkcompute._volume.upload_lazy_files` (upload
+    :meth:`chalkcompute._volume.VolumeClient.upload_lazy_files` (upload
     ``add_local_file`` / ``add_local_dir`` entries registered with
     ``strategy="volume"`` to managed volumes).
 
@@ -543,8 +686,7 @@ def build_image_with_volumes(
     -------
     tuple[str, list[VolumeMount]]
         ``(image_uri, volumes)`` where ``volumes`` is a list of
-        :class:`VolumeMount`, each carrying its own mount type, ready to
-        attach to a container spec.
+        :class:`VolumeMount` ready to attach to a container spec.
 
     Raises
     ------
@@ -577,6 +719,12 @@ def build_image_with_volumes_from_spec(
     """Build an Image and upload lazy files. Authenticates via env vars."""
     client = ConnectClient(chalk_client=chalk_client)
     return build_image_with_volumes(client, image, volume_prefix=volume_prefix)
+
+
+def grpc_error_message(e: grpc.RpcError) -> str:
+    """Render a gRPC error as ``CODE: details`` for exception messages."""
+    assert isinstance(e, grpc.Call)
+    return f"{e.code().name}: {e.details()}"
 
 
 def raise_for_grpc_error(

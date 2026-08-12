@@ -12,6 +12,7 @@ import atexit
 import contextlib
 import functools
 import importlib
+import inspect
 import os
 from collections.abc import Callable, Iterator
 from typing import Any, TypeVar, cast, overload
@@ -206,38 +207,103 @@ def _span(name: str) -> Iterator[Any]:
         yield span
 
 
-@contextlib.contextmanager
-def span(name: str = _DEFAULT_PUBLIC_SPAN_NAME) -> Iterator[Any]:
-    """Start a span and propagate its trace context to nested calls."""
-    with _span(name) as span:
-        yield span
-
-
 def _default_span_name(func: Callable[..., Any]) -> str:
     return getattr(func, "__name__", _DEFAULT_PUBLIC_SPAN_NAME)
 
 
-def _decorate_traced(func: F, name: str | None) -> F:
+def _wrap_with_span(
+    func: F,
+    span_factory: Callable[[], contextlib.AbstractContextManager[Any]],
+) -> F:
+    """Wrap ``func`` so a span from ``span_factory`` stays open for its full execution.
+
+    Coroutine functions, async generator functions, and generator functions must
+    keep the span current while the coroutine is awaited or the generator is
+    iterated, not just while the coroutine/generator object is constructed.
+    """
+    if inspect.iscoroutinefunction(func):
+
+        @functools.wraps(func)
+        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+            with span_factory():
+                return await func(*args, **kwargs)
+
+        return cast(F, async_wrapper)
+
+    if inspect.isasyncgenfunction(func):
+
+        @functools.wraps(func)
+        async def async_gen_wrapper(*args: Any, **kwargs: Any) -> Any:
+            with span_factory():
+                async for item in func(*args, **kwargs):
+                    yield item
+
+        return cast(F, async_gen_wrapper)
+
+    if inspect.isgeneratorfunction(func):
+
+        @functools.wraps(func)
+        def gen_wrapper(*args: Any, **kwargs: Any) -> Any:
+            with span_factory():
+                yield from func(*args, **kwargs)
+
+        return cast(F, gen_wrapper)
+
     @functools.wraps(func)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        with _span(name or _default_span_name(func)):
+    def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+        with span_factory():
             return func(*args, **kwargs)
 
-    return wrapper  # ty: ignore[invalid-return-type]
+    return cast(F, sync_wrapper)
+
+
+class _SpanContextManager(contextlib.AbstractContextManager[Any]):
+    """Dual-purpose context manager / decorator returned by ``span``."""
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+        self._cm: contextlib.AbstractContextManager[Any] | None = None
+
+    def __enter__(self) -> Any:
+        cm = _span(self._name)
+        self._cm = cm
+        return cm.__enter__()
+
+    def __exit__(self, *exc_info: Any) -> Any:
+        cm = self._cm
+        self._cm = None
+        assert cm is not None
+        return cm.__exit__(*exc_info)
+
+    def __call__(self, func: F) -> F:
+        return _wrap_with_span(func, lambda: _span(self._name))
+
+
+def span(name: str = _DEFAULT_PUBLIC_SPAN_NAME) -> _SpanContextManager:
+    """Start a span and propagate its trace context to nested calls.
+
+    Usable as a context manager (``with chalkcompute.span(...):``) or as a
+    decorator (``@chalkcompute.span(...)``), including on coroutine functions
+    and async generator functions.
+    """
+    return _SpanContextManager(name)
+
+
+def _decorate_traced(func: F, name: str | None) -> F:
+    span_name = name or _default_span_name(func)
+    return _wrap_with_span(func, lambda: _span(span_name))
 
 
 def _instrumented(name: str) -> Callable[[F], F]:
     """Trace internal SDK work without treating it as user tracing intent."""
 
     def decorator(func: F) -> F:
-        @functools.wraps(func)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
+        def span_factory() -> contextlib.AbstractContextManager[Any]:
             if _is_remote_tracing_off() or not _has_tracing_intent():
-                return func(*args, **kwargs)
-            with get_tracer().start_as_current_span(name):
-                return func(*args, **kwargs)
+                return contextlib.nullcontext()
+            return get_tracer().start_as_current_span(name)
 
-        return wrapper  # ty: ignore[invalid-return-type]
+        return _wrap_with_span(func, span_factory)
 
     return decorator
 

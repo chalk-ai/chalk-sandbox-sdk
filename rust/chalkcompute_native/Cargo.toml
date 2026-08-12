@@ -12,5 +12,5 @@ crate-type = ["cdylib"]
 [dependencies]
 bytes = "1"
 chalk_remote_call = { package = "chalk_remote_call_client", git = "https://github.com/chalk-ai/chalk-private.git", rev = "49c04ac2c42" }
-chalk_volume_client = { git = "https://github.com/chalk-ai/chalk-private.git", rev = "cc43e6212a28bb01202c8758113bcba48b56247f", features = ["py-extension"] }
+chalk_volume_client = { git = "https://github.com/chalk-ai/chalk-private.git", rev = "ba32430a645c31fa6b7b1c25e08c4dfef9056838", features = ["py-extension"] }
 pyo3 = { version = "0.25.1", features = ["extension-module"] }
