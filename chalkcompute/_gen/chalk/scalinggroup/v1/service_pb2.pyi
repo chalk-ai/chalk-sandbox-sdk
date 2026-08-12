@@ -54,6 +54,7 @@ class ScalingSpec(_message.Message):
         "window_seconds",
         "function_queue_depth_trigger",
         "gpu_utilization_trigger",
+        "cron_scaling_trigger",
     )
     MIN_REPLICAS_FIELD_NUMBER: _ClassVar[int]
     MAX_REPLICAS_FIELD_NUMBER: _ClassVar[int]
@@ -62,6 +63,7 @@ class ScalingSpec(_message.Message):
     WINDOW_SECONDS_FIELD_NUMBER: _ClassVar[int]
     FUNCTION_QUEUE_DEPTH_TRIGGER_FIELD_NUMBER: _ClassVar[int]
     GPU_UTILIZATION_TRIGGER_FIELD_NUMBER: _ClassVar[int]
+    CRON_SCALING_TRIGGER_FIELD_NUMBER: _ClassVar[int]
     min_replicas: int
     max_replicas: int
     target_cpu_utilization_percentage: int
@@ -69,6 +71,7 @@ class ScalingSpec(_message.Message):
     window_seconds: int
     function_queue_depth_trigger: FunctionQueueDepthScalingTrigger
     gpu_utilization_trigger: GpuUtilizationScalingTrigger
+    cron_scaling_trigger: CronScalingTrigger
     def __init__(
         self,
         min_replicas: _Optional[int] = ...,
@@ -82,6 +85,7 @@ class ScalingSpec(_message.Message):
         gpu_utilization_trigger: _Optional[
             _Union[GpuUtilizationScalingTrigger, _Mapping]
         ] = ...,
+        cron_scaling_trigger: _Optional[_Union[CronScalingTrigger, _Mapping]] = ...,
     ) -> None: ...
 
 class FunctionQueueDepthScalingTrigger(_message.Message):
@@ -101,6 +105,33 @@ class GpuUtilizationScalingTrigger(_message.Message):
     TARGET_UTILIZATION_PERCENTAGE_FIELD_NUMBER: _ClassVar[int]
     target_utilization_percentage: int
     def __init__(self, target_utilization_percentage: _Optional[int] = ...) -> None: ...
+
+class CronScalingTrigger(_message.Message):
+    __slots__ = ("timezone", "windows")
+    TIMEZONE_FIELD_NUMBER: _ClassVar[int]
+    WINDOWS_FIELD_NUMBER: _ClassVar[int]
+    timezone: str
+    windows: _containers.RepeatedCompositeFieldContainer[CronScalingWindow]
+    def __init__(
+        self,
+        timezone: _Optional[str] = ...,
+        windows: _Optional[_Iterable[_Union[CronScalingWindow, _Mapping]]] = ...,
+    ) -> None: ...
+
+class CronScalingWindow(_message.Message):
+    __slots__ = ("start", "end", "desired_replicas")
+    START_FIELD_NUMBER: _ClassVar[int]
+    END_FIELD_NUMBER: _ClassVar[int]
+    DESIRED_REPLICAS_FIELD_NUMBER: _ClassVar[int]
+    start: str
+    end: str
+    desired_replicas: int
+    def __init__(
+        self,
+        start: _Optional[str] = ...,
+        end: _Optional[str] = ...,
+        desired_replicas: _Optional[int] = ...,
+    ) -> None: ...
 
 class ScalingGroupSpec(_message.Message):
     __slots__ = ("container_spec", "scaling_spec")

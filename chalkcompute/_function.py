@@ -92,6 +92,7 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from chalkcompute._image import Image as _Image
+    from chalkcompute._scaling_group import CronScalingTrigger as _CronScalingTrigger
     from chalkcompute._secret import Secret as _Secret
 
 SerializationFormat = typing.Literal["pyarrow"]
@@ -1510,6 +1511,7 @@ class RemoteFunction:
         target_cpu_utilization_percentage: int | None = None,
         target_gpu_utilization_percentage: int | None = None,
         target_queue_depth: int | None = None,
+        cron_scaling_trigger: _CronScalingTrigger | None = None,
         serialization_format: SerializationFormat = "pyarrow",
         options: dict[str, str] | None = None,
         max_buffer_duration: int | None = None,
@@ -1590,6 +1592,7 @@ class RemoteFunction:
                 )
         self._target_gpu_utilization_percentage = target_gpu_utilization_percentage
         self._target_queue_depth = target_queue_depth
+        self._cron_scaling_trigger = cron_scaling_trigger
         self._serialization_format: SerializationFormat = serialization_format
         self._options = options or {}
         self._max_buffer_duration = max_buffer_duration
@@ -1771,6 +1774,7 @@ class RemoteFunction:
         f._target_cpu_utilization_percentage = None
         f._target_gpu_utilization_percentage = None
         f._target_queue_depth = None
+        f._cron_scaling_trigger = None
         f._serialization_format = "pyarrow"
         f._options = {}
         f._max_buffer_duration = None
@@ -1944,6 +1948,10 @@ class RemoteFunction:
                     "functionName": self._explicit_name or self._func_name,
                     "targetQueueDepth": self._target_queue_depth,
                 }
+            if self._cron_scaling_trigger is not None:
+                scaling_spec["cronScalingTrigger"] = (
+                    self._cron_scaling_trigger.to_dict()
+                )
 
             spec: dict[str, Any] = {
                 "containerSpec": container_spec,
@@ -2842,6 +2850,7 @@ def function(
     target_cpu_utilization_percentage: int | None = None,
     target_gpu_utilization_percentage: int | None = None,
     target_queue_depth: int | None = None,
+    cron_scaling_trigger: _CronScalingTrigger | None = None,
     serialization_format: SerializationFormat = "pyarrow",
     options: dict[str, str] | None = None,
     max_buffer_duration: int | None = None,
@@ -2874,6 +2883,7 @@ def function(
     target_cpu_utilization_percentage: int | None = None,
     target_gpu_utilization_percentage: int | None = None,
     target_queue_depth: int | None = None,
+    cron_scaling_trigger: _CronScalingTrigger | None = None,
     serialization_format: SerializationFormat = "pyarrow",
     options: dict[str, str] | None = None,
     max_buffer_duration: int | None = None,
@@ -2907,6 +2917,7 @@ def function(
     target_cpu_utilization_percentage: int | None = None,
     target_gpu_utilization_percentage: int | None = None,
     target_queue_depth: int | None = None,
+    cron_scaling_trigger: _CronScalingTrigger | None = None,
     serialization_format: SerializationFormat = "pyarrow",
     options: dict[str, str] | None = None,
     max_buffer_duration: int | None = None,
@@ -2974,6 +2985,9 @@ def function(
     target_queue_depth
         Target pending-request queue depth per replica. When set, the
         autoscaler scales on the function's own queue depth.
+    cron_scaling_trigger
+        Sets a replica floor during specified cron-defined time windows,
+        independent of the other autoscaling triggers.
     serialization_format
         Wire format for arguments and results. Currently only ``"pyarrow"``
         is supported.
@@ -3061,6 +3075,7 @@ def function(
             target_cpu_utilization_percentage=target_cpu_utilization_percentage,
             target_gpu_utilization_percentage=target_gpu_utilization_percentage,
             target_queue_depth=target_queue_depth,
+            cron_scaling_trigger=cron_scaling_trigger,
             serialization_format=serialization_format,
             options=options,
             max_buffer_duration=max_buffer_duration,
