@@ -525,8 +525,6 @@ class Image:
         from chalkcompute._ignore import (
             _match_exclude,
             collect_ignore_patterns,
-        )
-        from chalkcompute._ignore import (
             is_excluded as _is_pattern_excluded,
         )
 
