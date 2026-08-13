@@ -9,12 +9,6 @@ _setup_logging()
 # Keep top-level imports lazy so `import chalkcompute` does not eagerly import
 # the grpc/protobuf/client modules. Update `__init__.pyi` when adding exports.
 _LAZY_MAP: dict[str, tuple[str, str]] = {
-    # _agent_tracing.py
-    "AgentResult": ("chalkcompute._agent_tracing", "AgentResult"),
-    "AgentTask": ("chalkcompute._agent_tracing", "AgentTask"),
-    "AgentTrace": ("chalkcompute._agent_tracing", "AgentTrace"),
-    "AgentTurn": ("chalkcompute._agent_tracing", "AgentTurn"),
-    "agent_trace": ("chalkcompute._agent_tracing", "agent_trace"),
     # _artifact.py
     "Artifact": ("chalkcompute._artifact", "Artifact"),
     "ArtifactClient": ("chalkcompute._artifact", "ArtifactClient"),

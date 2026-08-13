@@ -594,6 +594,15 @@ class TestConnectClientWorkloadIdentityToken:
 
 
 class TestConnectClientTracing:
+    def test_trace_headers_return_current_w3c_context(self, monkeypatch):
+        monkeypatch.setattr(
+            _tracing,
+            "current_trace_metadata",
+            lambda: [("traceparent", "00-trace-span-01")],
+        )
+
+        assert _tracing.trace_headers() == {"traceparent": "00-trace-span-01"}
+
     def test_internal_configure_tracing_installs_parent_based_sampler(
         self, monkeypatch
     ):

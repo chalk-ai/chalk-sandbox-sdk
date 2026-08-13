@@ -30,22 +30,6 @@ with SandboxClient.from_env() as client:
     sandbox.terminate()
 ```
 
-## Agent tracing
-
-Agent tracing is opt-in and uses the current OpenTelemetry exporter configuration.
-
-```python
-from chalkcompute import AgentResult, AgentTask, agent_trace
-
-task = AgentTask(kind="account_login", goal="Log in to the account")
-
-with agent_trace("Account login", task=task) as trace:
-    with trace.turn(index=0, observation={"page": "Sign in"}) as turn:
-        turn.set_action({"kind": "click", "ref": "e1"})
-
-    trace.set_result(AgentResult(success=True, status="complete", steps=1))
-```
-
 ## Declarative images
 
 Build custom container images with a fluent API instead of writing Dockerfiles.
