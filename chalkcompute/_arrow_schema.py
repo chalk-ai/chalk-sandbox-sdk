@@ -99,13 +99,54 @@ def _is_pydantic_basemodel(typ: Any) -> bool:
     )
 
 
+def _contains_chalk_arrow_contract(
+    annotation: Any, *, seen: set[Any] | None = None
+) -> bool:
+    """Return whether a nested annotation contains a custom Arrow class."""
+    from chalkcompute._arrow_serde import has_chalk_arrow_contract
+
+    annotation = _unwrap_annotated(annotation)
+    if _is_optional(annotation):
+        annotation = next(a for a in get_args(annotation) if a is not _NoneType)
+    if has_chalk_arrow_contract(annotation):
+        return True
+
+    seen = set() if seen is None else seen
+    try:
+        if annotation in seen:
+            return False
+        seen.add(annotation)
+    except TypeError:
+        pass
+
+    origin = get_origin(annotation)
+    if origin is not None:
+        return any(
+            arg is not ... and _contains_chalk_arrow_contract(arg, seen=seen)
+            for arg in get_args(annotation)
+        )
+
+    if isinstance(annotation, type) and (
+        dataclasses.is_dataclass(annotation)
+        or _is_namedtuple(annotation)
+        or is_typeddict(annotation)
+        or _has_attrs(annotation)
+        or _is_pydantic_basemodel(annotation)
+    ):
+        return any(
+            _contains_chalk_arrow_contract(field_type, seen=seen)
+            for field_type in typing.get_type_hints(annotation).values()
+        )
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
 
 def rich_to_arrow_schema(
-    params: dict[str, type],
+    params: dict[str, Any],
 ) -> Any:
     """Convert a mapping of ``{name: python_type}`` to an ``arrow_pb2.Schema``.
 
@@ -122,10 +163,19 @@ def rich_to_arrow_schema(
         The serialized Arrow schema.
     """
     from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
+    from chalkcompute._arrow_serde import has_chalk_arrow_contract
 
     columns = []
     for name, typ in params.items():
         inner, nullable = _unwrap_optional(typ)
+        if not has_chalk_arrow_contract(inner) and _contains_chalk_arrow_contract(
+            inner
+        ):
+            raise TypeError(
+                "Chalk Arrow-serialized classes are currently supported only as "
+                f"direct function inputs and outputs; field {name!r} nests one "
+                f"inside {typ!r}."
+            )
         columns.append(
             arrow_pb2.Field(
                 name=name,
@@ -134,6 +184,174 @@ def rich_to_arrow_schema(
             )
         )
     return arrow_pb2.Schema(columns=columns)
+
+
+def _pyarrow_metadata(metadata: Any) -> dict[str, str]:
+    """Convert Arrow's byte metadata to the string metadata used by the proto."""
+    if not metadata:
+        return {}
+    try:
+        return {
+            key.decode("utf-8"): value.decode("utf-8")
+            for key, value in metadata.items()
+        }
+    except UnicodeDecodeError as error:
+        raise TypeError(
+            "Arrow field metadata keys and values must be valid UTF-8."
+        ) from error
+
+
+def _pyarrow_time_unit(unit: str) -> Any:
+    from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
+
+    units = {
+        "s": arrow_pb2.TIME_UNIT_SECOND,
+        "ms": arrow_pb2.TIME_UNIT_MILLISECOND,
+        "us": arrow_pb2.TIME_UNIT_MICROSECOND,
+        "ns": arrow_pb2.TIME_UNIT_NANOSECOND,
+    }
+    try:
+        return units[unit]
+    except KeyError as error:
+        raise TypeError(f"Unsupported PyArrow time unit: {unit!r}.") from error
+
+
+def _pyarrow_field_to_proto(field: Any) -> Any:
+    from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
+
+    return arrow_pb2.Field(
+        name=field.name,
+        arrow_type=_pyarrow_to_arrow_type(field.type),
+        nullable=field.nullable,
+        metadata=_pyarrow_metadata(field.metadata),
+    )
+
+
+def _pyarrow_to_arrow_type(data_type: Any) -> Any:
+    """Convert a concrete ``pyarrow.DataType`` to Chalk's Arrow type proto."""
+    import pyarrow as pa
+
+    from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
+
+    if not isinstance(data_type, pa.DataType):
+        raise TypeError(f"Expected a pyarrow.DataType, got {type(data_type).__name__}.")
+
+    E = arrow_pb2.EmptyMessage
+
+    extension_base = getattr(pa, "BaseExtensionType", None)
+    if extension_base is not None and isinstance(data_type, extension_base):
+        return arrow_pb2.ArrowType(
+            extension=arrow_pb2.Extension(
+                name=data_type.extension_name,
+                storage_type=_pyarrow_to_arrow_type(data_type.storage_type),
+            )
+        )
+
+    if pa.types.is_null(data_type):
+        return arrow_pb2.ArrowType(none=E())
+    if pa.types.is_boolean(data_type):
+        return arrow_pb2.ArrowType(bool=E())
+    if pa.types.is_float16(data_type):
+        return arrow_pb2.ArrowType(float16=E())
+    if pa.types.is_float32(data_type):
+        return arrow_pb2.ArrowType(float32=E())
+    if pa.types.is_float64(data_type):
+        return arrow_pb2.ArrowType(float64=E())
+
+    integer_fields = (
+        (pa.types.is_int8, "int8"),
+        (pa.types.is_int16, "int16"),
+        (pa.types.is_int32, "int32"),
+        (pa.types.is_int64, "int64"),
+        (pa.types.is_uint8, "uint8"),
+        (pa.types.is_uint16, "uint16"),
+        (pa.types.is_uint32, "uint32"),
+        (pa.types.is_uint64, "uint64"),
+    )
+    for predicate, field_name in integer_fields:
+        if predicate(data_type):
+            scalar_type_kwargs: Any = {field_name: E()}
+            return arrow_pb2.ArrowType(**scalar_type_kwargs)
+
+    if pa.types.is_string(data_type):
+        return arrow_pb2.ArrowType(utf8=E())
+    if pa.types.is_large_string(data_type):
+        return arrow_pb2.ArrowType(large_utf8=E())
+    if pa.types.is_fixed_size_binary(data_type):
+        return arrow_pb2.ArrowType(fixed_size_binary=data_type.byte_width)
+    if pa.types.is_binary(data_type):
+        return arrow_pb2.ArrowType(binary=E())
+    if pa.types.is_large_binary(data_type):
+        return arrow_pb2.ArrowType(large_binary=E())
+
+    if pa.types.is_timestamp(data_type):
+        return arrow_pb2.ArrowType(
+            timestamp=arrow_pb2.Timestamp(
+                time_unit=_pyarrow_time_unit(data_type.unit),
+                timezone=data_type.tz or "",
+            )
+        )
+    if pa.types.is_date32(data_type):
+        return arrow_pb2.ArrowType(date32=E())
+    if pa.types.is_date64(data_type):
+        return arrow_pb2.ArrowType(date64=E())
+    if pa.types.is_time32(data_type):
+        return arrow_pb2.ArrowType(time32=_pyarrow_time_unit(data_type.unit))
+    if pa.types.is_time64(data_type):
+        return arrow_pb2.ArrowType(time64=_pyarrow_time_unit(data_type.unit))
+    if pa.types.is_duration(data_type):
+        return arrow_pb2.ArrowType(duration=_pyarrow_time_unit(data_type.unit))
+
+    if pa.types.is_decimal128(data_type):
+        return arrow_pb2.ArrowType(
+            decimal_128=arrow_pb2.Decimal(
+                precision=data_type.precision,
+                scale=data_type.scale,
+            )
+        )
+    if pa.types.is_decimal256(data_type):
+        return arrow_pb2.ArrowType(
+            decimal_256=arrow_pb2.Decimal(
+                precision=data_type.precision,
+                scale=data_type.scale,
+            )
+        )
+
+    if pa.types.is_list(data_type):
+        return arrow_pb2.ArrowType(
+            list=arrow_pb2.List(
+                field_type=_pyarrow_field_to_proto(data_type.value_field)
+            )
+        )
+    if pa.types.is_large_list(data_type):
+        return arrow_pb2.ArrowType(
+            large_list=arrow_pb2.List(
+                field_type=_pyarrow_field_to_proto(data_type.value_field)
+            )
+        )
+    if pa.types.is_fixed_size_list(data_type):
+        return arrow_pb2.ArrowType(
+            fixed_size_list=arrow_pb2.FixedSizeList(
+                field_type=_pyarrow_field_to_proto(data_type.value_field),
+                list_size=data_type.list_size,
+            )
+        )
+    if pa.types.is_struct(data_type):
+        return arrow_pb2.ArrowType(
+            struct=arrow_pb2.Struct(
+                sub_field_types=[_pyarrow_field_to_proto(field) for field in data_type]
+            )
+        )
+    if pa.types.is_map(data_type):
+        return arrow_pb2.ArrowType(
+            map=arrow_pb2.Map(
+                key_field=_pyarrow_field_to_proto(data_type.key_field),
+                item_field=_pyarrow_field_to_proto(data_type.item_field),
+                keys_sorted=data_type.keys_sorted,
+            )
+        )
+
+    raise TypeError(f"Unable to convert PyArrow type `{data_type}` to Arrow proto.")
 
 
 def _rich_to_arrow_type(python_type: Any) -> Any:
@@ -161,6 +379,14 @@ def _rich_to_arrow_type(python_type: Any) -> Any:
     python_type = _unwrap_annotated(python_type)
     if _is_optional(python_type):
         python_type = next(a for a in get_args(python_type) if a is not _NoneType)
+
+    from chalkcompute._arrow_serde import (
+        chalk_arrow_type,
+        has_chalk_arrow_contract,
+    )
+
+    if has_chalk_arrow_contract(python_type):
+        return _pyarrow_to_arrow_type(chalk_arrow_type(python_type))
 
     origin = get_origin(python_type)
 

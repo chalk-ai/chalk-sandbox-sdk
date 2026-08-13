@@ -9,6 +9,8 @@ import uuid
 from datetime import date, datetime, time, timedelta
 
 import attrs
+import pyarrow as pa
+import pytest
 
 from chalkcompute._arrow_schema import rich_to_arrow_schema
 
@@ -34,6 +36,26 @@ class Color(enum.Enum):
     RED = "red"
     GREEN = "green"
     BLUE = "blue"
+
+
+class ArrowPoint:
+    __chalk_arrow_type__ = pa.struct(
+        [
+            pa.field("x", pa.int32(), nullable=False),
+            pa.field("label", pa.string()),
+        ]
+    )
+
+    def __chalk_serialize__(self) -> pa.Scalar:
+        return pa.scalar(
+            {"x": 1, "label": "point"},
+            type=self.__chalk_arrow_type__,
+        )
+
+    @classmethod
+    def __chalk_deserialize__(cls, value: pa.Scalar) -> "ArrowPoint":
+        del value
+        return cls()
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +154,52 @@ class TestRichToArrowSchema:
         assert proto.columns[1].arrow_type.HasField("large_utf8")  # UUID
         assert proto.columns[2].arrow_type.HasField("uint32")  # IPv4
         assert proto.columns[3].arrow_type.HasField("large_utf8")  # IPv6
+
+    def test_custom_type_uses_literal_pyarrow_type(self):
+        proto = rich_to_arrow_schema({"point": ArrowPoint})
+
+        arrow_type = proto.columns[0].arrow_type
+        assert arrow_type.HasField("struct")
+        fields = arrow_type.struct.sub_field_types
+        assert [field.name for field in fields] == ["x", "label"]
+        assert fields[0].arrow_type.HasField("int32")
+        assert fields[0].nullable is False
+        assert fields[1].arrow_type.HasField("utf8")
+        assert fields[1].nullable is True
+
+    def test_custom_type_requires_pyarrow_data_type(self):
+        class Invalid:
+            __chalk_arrow_type__ = "struct<x: int64>"
+
+            def __chalk_serialize__(self) -> pa.Scalar:
+                raise NotImplementedError
+
+            @classmethod
+            def __chalk_deserialize__(cls, value: pa.Scalar) -> "Invalid":
+                raise NotImplementedError
+
+        with pytest.raises(TypeError, match="must be a pyarrow.DataType"):
+            rich_to_arrow_schema({"value": Invalid})
+
+    def test_unsupported_literal_pyarrow_type_fails(self):
+        class DictionaryBacked:
+            __chalk_arrow_type__ = pa.dictionary(pa.int8(), pa.string())
+
+            def __chalk_serialize__(self) -> pa.Scalar:
+                raise NotImplementedError
+
+            @classmethod
+            def __chalk_deserialize__(cls, value: pa.Scalar) -> "DictionaryBacked":
+                raise NotImplementedError
+
+        with pytest.raises(TypeError, match="Unable to convert PyArrow type"):
+            rich_to_arrow_schema({"value": DictionaryBacked})
+
+    def test_custom_type_nested_in_container_fails_explicitly(self):
+        with pytest.raises(
+            TypeError, match="supported only as direct function inputs and outputs"
+        ):
+            rich_to_arrow_schema({"points": list[ArrowPoint]})
 
 
 # ---------------------------------------------------------------------------

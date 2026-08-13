@@ -328,13 +328,19 @@ def _generate_handler_shim(
         if bind_models
         else ""
     )
+    from chalkcompute._arrow_serde import handler_runtime_source
+
+    serde_runtime = handler_runtime_source()
     if batched:
         # Flatten all (caller_idx, row_idx, kwargs) across every caller so
         # each item is an independent unit of work.  Results are collected in
         # completion order (not submission order), then regrouped per caller.
         # This means a slow item in one caller never blocks another caller's
         # items from completing — true promise semantics.
-        return bootstrap + textwrap.dedent(f"""\
+        return (
+            bootstrap
+            + serde_runtime
+            + textwrap.dedent(f"""\
             import inspect
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -343,19 +349,24 @@ def _generate_handler_shim(
             _NO_ARGS_SENTINEL_COLUMN = {_NO_ARGS_SENTINEL_COLUMN!r}
             _target = inspect.unwrap({func_name})
             _is_coroutine = inspect.iscoroutinefunction(_target)
+            _input_types = _chalk_typing.get_type_hints(_target)
+            _output_type = _chalk_result_annotation(_target)
 
 
             def _flatten_events(events):
                 work = []
                 for ci, event in enumerate(events):
                     columns = {{
-                        k: v.to_pylist()
+                        k: v
                         for k, v in event.items()
                         if k != _NO_ARGS_SENTINEL_COLUMN
                     }}
                     n = len(next(iter(columns.values()))) if columns else 1
                     for ri in range(n):
-                        work.append((ci, ri, {{k: v[ri] for k, v in columns.items()}}))
+                        work.append((ci, ri, {{
+                            k: _chalk_deserialize_scalar(v[ri], _input_types.get(k))
+                            for k, v in columns.items()
+                        }}))
                 return work
 
 
@@ -373,7 +384,11 @@ def _generate_handler_shim(
                     import asyncio
                     async def _run_all():
                         coros = [{func_name}(**kw) for _, _, kw in work]
-                        flat = await asyncio.gather(*coros)
+                        raw = await asyncio.gather(*coros)
+                        flat = [
+                            _chalk_serialize_value(value, _output_type)
+                            for value in raw
+                        ]
                         return _regroup(work, flat, len(events))
                     return asyncio.run(_run_all())
                 bucket = {{}}
@@ -384,11 +399,17 @@ def _generate_handler_shim(
                     }}
                     for fut in as_completed(futures):
                         ci, ri = futures[fut]
-                        bucket.setdefault(ci, {{}})[ri] = fut.result()
+                        bucket.setdefault(ci, {{}})[ri] = _chalk_serialize_value(
+                            fut.result(), _output_type
+                        )
                 return [[bucket[ci][ri] for ri in sorted(bucket[ci])]
                         for ci in range(len(events))]
             """)
-    return bootstrap + textwrap.dedent(f"""\
+        )
+    return (
+        bootstrap
+        + serde_runtime
+        + textwrap.dedent(f"""\
         import inspect
 
         from user_module import {func_name}
@@ -398,6 +419,15 @@ def _generate_handler_shim(
         _is_sync_gen = inspect.isgeneratorfunction(_target)
         _is_async_gen = inspect.isasyncgenfunction(_target)
         _is_coroutine = inspect.iscoroutinefunction(_target) and not _is_async_gen
+        _input_types = _chalk_typing.get_type_hints(_target)
+        _output_type = _chalk_result_annotation(_target)
+
+
+        def _kwargs_for_row(event, row):
+            return {{
+                key: _chalk_deserialize_scalar(values[row], _input_types.get(key))
+                for key, values in event.items()
+            }}
 
 
         def handler(event, context):
@@ -410,30 +440,34 @@ def _generate_handler_shim(
             if _is_sync_gen:
                 def _gen():
                     for i in range(n):
-                        kwargs = {{k: v[i].as_py() for k, v in event.items()}}
-                        yield from {func_name}(**kwargs)
+                        kwargs = _kwargs_for_row(event, i)
+                        for item in {func_name}(**kwargs):
+                            yield _chalk_serialize_value(item, _output_type)
                 return _gen()
             elif _is_async_gen:
                 async def _agen():
                     for i in range(n):
-                        kwargs = {{k: v[i].as_py() for k, v in event.items()}}
+                        kwargs = _kwargs_for_row(event, i)
                         async for item in {func_name}(**kwargs):
-                            yield item
+                            yield _chalk_serialize_value(item, _output_type)
                 return _agen()
             elif _is_coroutine:
                 import asyncio
                 results = []
                 for i in range(n):
-                    kwargs = {{k: v[i].as_py() for k, v in event.items()}}
-                    results.append(asyncio.run({func_name}(**kwargs)))
+                    kwargs = _kwargs_for_row(event, i)
+                    result = asyncio.run({func_name}(**kwargs))
+                    results.append(_chalk_serialize_value(result, _output_type))
                 return results
             else:
                 results = []
                 for i in range(n):
-                    kwargs = {{k: v[i].as_py() for k, v in event.items()}}
-                    results.append({func_name}(**kwargs))
+                    kwargs = _kwargs_for_row(event, i)
+                    result = {func_name}(**kwargs)
+                    results.append(_chalk_serialize_value(result, _output_type))
                 return results
         """)
+    )
 
 
 def _write_temp(content: str) -> str:
@@ -2448,6 +2482,14 @@ class RemoteFunction:
         import pyarrow as pa
         import pyarrow.ipc as ipc
 
+        from chalkcompute._arrow_serde import (
+            chalk_arrow_type,
+            has_chalk_arrow_contract,
+            serialize_value,
+        )
+
+        input_types = typing.get_type_hints(self._func) if self._has_local_func else {}
+
         if self._input_field_names:
             arguments: dict[str, Any] = {}
             for i, name in enumerate(self._input_field_names):
@@ -2475,7 +2517,16 @@ class RemoteFunction:
         names = []
         if arguments:
             for param_name, value in arguments.items():
-                arrays.append(pa.array([value]))
+                annotation = input_types.get(param_name)
+                serialized = serialize_value(value, annotation)
+                if annotation is not None and has_chalk_arrow_contract(annotation):
+                    arrays.append(
+                        pa.array([serialized], type=chalk_arrow_type(annotation))
+                    )
+                elif isinstance(serialized, pa.Scalar):
+                    arrays.append(pa.array([serialized], type=serialized.type))
+                else:
+                    arrays.append(pa.array([serialized]))
                 names.append(param_name)
         else:
             arrays.append(pa.array([True]))
@@ -2490,13 +2541,26 @@ class RemoteFunction:
     def _decode_result_chunks(self, chunks: list[bytes]) -> list[Any]:
         import pyarrow.ipc as ipc
 
+        from chalkcompute._arrow_serde import (
+            deserialize_scalar,
+            function_result_annotation,
+        )
+
+        result_type = (
+            function_result_annotation(self._func) if self._has_local_func else None
+        )
+
         results: list[Any] = []
         for chunk in chunks:
             reader = ipc.open_stream(chunk)
             for result_batch in reader:
-                result_dict = result_batch.to_pydict()
-                if "result" in result_dict:
-                    results.extend(result_dict["result"])
+                field_index = result_batch.schema.get_field_index("result")
+                if field_index >= 0:
+                    result_column = result_batch.column(field_index)
+                    results.extend(
+                        deserialize_scalar(result_column[i], result_type)
+                        for i in range(len(result_column))
+                    )
         return results
 
     def _materialize_result_chunks(self, chunks: list[bytes]) -> Any:

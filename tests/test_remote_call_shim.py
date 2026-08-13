@@ -49,6 +49,36 @@ def _decode_result_column(payloads: list[bytes]) -> list[list]:
     return out
 
 
+class ArrowPoint:
+    __chalk_arrow_type__ = pa.struct(
+        [
+            pa.field("x", pa.int32(), nullable=False),
+            pa.field("y", pa.int32(), nullable=False),
+        ]
+    )
+
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, ArrowPoint) and (self.x, self.y) == (
+            other.x,
+            other.y,
+        )
+
+    def __chalk_serialize__(self) -> pa.Scalar:
+        return pa.scalar(
+            {"x": self.x, "y": self.y},
+            type=self.__chalk_arrow_type__,
+        )
+
+    @classmethod
+    def __chalk_deserialize__(cls, value: pa.Scalar) -> ArrowPoint:
+        data = value.as_py()
+        return cls(data["x"], data["y"])
+
+
 class TestGenerateHandlerShimNormal:
     def test_signature(self):
         src = _generate_handler_shim("fn")
@@ -143,6 +173,43 @@ class TestGenerateHandlerShimNormal:
         assert len(batches) == 1
         assert batches[0].to_pydict() == {_NO_ARGS_SENTINEL_COLUMN: [True]}
 
+    def test_arrow_dunder_input_and_output(self):
+        def offset(point: ArrowPoint) -> ArrowPoint:
+            assert isinstance(point, ArrowPoint)
+            return ArrowPoint(point.x + 10, point.y + 20)
+
+        _install_user_module(offset=offset)
+        ns = _load_shim(_generate_handler_shim("offset"))
+        event = {
+            "point": pa.array(
+                [{"x": 1, "y": 2}],
+                type=ArrowPoint.__chalk_arrow_type__,
+            )
+        }
+
+        result = ns["handler"](event, {})
+
+        assert len(result) == 1
+        assert isinstance(result[0], pa.StructScalar)
+        assert result[0].type.equals(ArrowPoint.__chalk_arrow_type__)
+        assert result[0].as_py() == {"x": 11, "y": 22}
+
+    def test_optional_arrow_dunder_preserves_typed_null(self):
+        def clear(point: ArrowPoint | None) -> ArrowPoint | None:
+            assert point is None
+            return None
+
+        _install_user_module(clear=clear)
+        ns = _load_shim(_generate_handler_shim("clear"))
+        event = {"point": pa.array([None], type=ArrowPoint.__chalk_arrow_type__)}
+
+        result = ns["handler"](event, {})
+
+        assert len(result) == 1
+        assert isinstance(result[0], pa.StructScalar)
+        assert result[0].type.equals(ArrowPoint.__chalk_arrow_type__)
+        assert not result[0].is_valid
+
 
 class TestGenerateHandlerShimBatched:
     def test_signature(self):
@@ -233,6 +300,27 @@ class TestGenerateHandlerShimBatched:
 
         assert ns["handler"](events, [{}, {}]) == [[3], [110, 220]]
         assert run_count == 1
+
+    def test_arrow_dunder_values(self):
+        def offset(point: ArrowPoint) -> ArrowPoint:
+            return ArrowPoint(point.x + 1, point.y + 1)
+
+        _install_user_module(offset=offset)
+        ns = _load_shim(_generate_handler_shim("offset", batched=True))
+        events = [
+            {
+                "point": pa.array(
+                    [{"x": 1, "y": 2}, {"x": 3, "y": 4}],
+                    type=ArrowPoint.__chalk_arrow_type__,
+                )
+            }
+        ]
+
+        result = ns["handler"](events, [{}])
+
+        assert [[value.as_py() for value in row] for row in result] == [
+            [{"x": 2, "y": 3}, {"x": 4, "y": 5}]
+        ]
 
 
 class TestGenerateClassHandlerShimNormal:
@@ -474,6 +562,37 @@ class TestShimViaRemoteCallLib:
         ipc_bytes = _encode_event({"x": pa.array([1, 2]), "y": pa.array([10, 20])})
         payloads = process_batches(ipc_bytes, ns["handler"], None, {})
         assert _decode_result_column(payloads) == [[11, 22]]
+
+    def test_arrow_dunder_roundtrip(self):
+        from chalk_remote_call.servicer import process_batches
+
+        def offset(point: ArrowPoint) -> ArrowPoint:
+            assert isinstance(point, ArrowPoint)
+            return ArrowPoint(point.x + 10, point.y + 20)
+
+        function = RemoteFunction(offset)
+        _install_user_module(offset=offset)
+        ns = _load_shim(_generate_handler_shim("offset"))
+
+        request = function._serialize_call_args(ArrowPoint(1, 2))
+        request_batches = decode_ipc_stream(request)
+        assert (
+            request_batches[0]
+            .column("point")
+            .type.equals(ArrowPoint.__chalk_arrow_type__)
+        )
+
+        payloads = process_batches(request, ns["handler"], None, {})
+
+        response_batches = [
+            batch for payload in payloads for batch in decode_ipc_stream(payload)
+        ]
+        assert (
+            response_batches[0]
+            .column("result")
+            .type.equals(ArrowPoint.__chalk_arrow_type__)
+        )
+        assert function._decode_result_chunks(payloads) == [ArrowPoint(11, 22)]
 
     def test_sync_generator_streams_per_yield(self):
         from chalk_remote_call.servicer import process_batches
