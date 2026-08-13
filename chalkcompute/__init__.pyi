@@ -67,6 +67,8 @@ from chalkcompute._scaling_group import ScalingGroupBuildError as ScalingGroupBu
 from chalkcompute._scaling_group import ScalingGroupError as ScalingGroupError
 from chalkcompute._scaling_group import ScalingGroupInfo as ScalingGroupInfo
 from chalkcompute._scaling_group import ReadinessProbe as ReadinessProbe
+from chalkcompute._scaling_group import CronScalingTrigger as CronScalingTrigger
+from chalkcompute._scaling_group import CronScalingWindow as CronScalingWindow
 from chalkcompute._secret import Secret as Secret
 from chalkcompute._secret import SecretScope as SecretScope
 from chalkcompute._secret import resolve_lazy_secrets as resolve_lazy_secrets
@@ -163,6 +165,8 @@ __all__ = [
     "ScalingGroupError",
     "ScalingGroupInfo",
     "ReadinessProbe",
+    "CronScalingTrigger",
+    "CronScalingWindow",
     "FileInfo",
     "ForkInfo",
     "Volume",

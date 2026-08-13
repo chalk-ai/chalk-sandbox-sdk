@@ -138,6 +138,44 @@ class ReadinessProbe:
         return body
 
 
+@dataclass(frozen=True)
+class CronScalingWindow:
+    """A single cron-based scaling window."""
+
+    start: str
+    """Cron expression for window start (e.g. ``"0 8 * * 1-5"``)."""
+
+    end: str
+    """Cron expression for window end (e.g. ``"0 18 * * 1-5"``)."""
+
+    desired_replicas: int
+    """Replica floor during the active window. ``0`` allows scale-to-zero."""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "start": self.start,
+            "end": self.end,
+            "desiredReplicas": self.desired_replicas,
+        }
+
+
+@dataclass(frozen=True)
+class CronScalingTrigger:
+    """Uses KEDA cron triggers to set a replica floor during specified time windows."""
+
+    timezone: str
+    """IANA timezone for evaluating cron expressions (e.g. ``"America/New_York"``)."""
+
+    windows: list[CronScalingWindow]
+    """The cron windows and their replica floors."""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "timezone": self.timezone,
+            "windows": [w.to_dict() for w in self.windows],
+        }
+
+
 @dataclass
 class ScalingGroupInfo:
     """Metadata about a scaling group."""
@@ -207,6 +245,7 @@ class ScalingGroup:
         scaling_interval_seconds: int | None = None,
         target_cpu_utilization_percentage: int | None = None,
         target_gpu_utilization_percentage: int | None = None,
+        cron_scaling_trigger: CronScalingTrigger | None = None,
         chalk_client: Any | None = None,
     ) -> None:
         self._image: _Image | str | None = image
@@ -254,6 +293,7 @@ class ScalingGroup:
                     f"got {min_replicas}"
                 )
         self._target_gpu_utilization_percentage = target_gpu_utilization_percentage
+        self._cron_scaling_trigger = cron_scaling_trigger
 
         # Set after .deploy()
         self._built_image_uri: str | None = None
@@ -348,6 +388,7 @@ class ScalingGroup:
         sg._scaling_interval_seconds = None
         sg._target_cpu_utilization_percentage = None
         sg._target_gpu_utilization_percentage = None
+        sg._cron_scaling_trigger = None
         sg._built_image_uri = None
         sg._scaling_group_id = None
         sg._scaling_group_info = None
@@ -484,6 +525,8 @@ class ScalingGroup:
             scaling_spec["gpuUtilizationTrigger"] = {
                 "targetUtilizationPercentage": self._target_gpu_utilization_percentage
             }
+        if self._cron_scaling_trigger is not None:
+            scaling_spec["cronScalingTrigger"] = self._cron_scaling_trigger.to_dict()
 
         spec: dict[str, Any] = {
             "containerSpec": container_spec,

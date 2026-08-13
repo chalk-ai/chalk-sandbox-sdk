@@ -100,6 +100,8 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "ScalingGroupError": ("chalkcompute._scaling_group", "ScalingGroupError"),
     "ScalingGroupInfo": ("chalkcompute._scaling_group", "ScalingGroupInfo"),
     "ReadinessProbe": ("chalkcompute._scaling_group", "ReadinessProbe"),
+    "CronScalingTrigger": ("chalkcompute._scaling_group", "CronScalingTrigger"),
+    "CronScalingWindow": ("chalkcompute._scaling_group", "CronScalingWindow"),
     # _volume.py
     "FileInfo": ("chalkcompute._volume", "FileInfo"),
     "ForkInfo": ("chalkcompute._volume", "ForkInfo"),
