@@ -88,6 +88,7 @@ class AgentTrace:
         with span("agent.turn") as turn_span:
             if turn_span is not None:
                 turn_span.set_attribute(_SPAN_KIND, "CHAIN")
+                turn_span.set_attribute("turn.index", index)
                 turn_span.set_attribute(f"{_ATTRIBUTE_PREFIX}.turn.index", index)
             _set_json(turn_span, "input", observation)
             yield AgentTurn(turn_span)

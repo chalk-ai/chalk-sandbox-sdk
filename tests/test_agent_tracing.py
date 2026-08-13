@@ -65,6 +65,7 @@ def test_agent_trace_records_task_turn_and_result(spans: InMemorySpanExporter) -
         "summary": "Logged in",
     }
     assert turn.attributes["openinference.span.kind"] == "CHAIN"
+    assert turn.attributes["turn.index"] == 0
     assert turn.attributes["chalk.agent.turn.index"] == 0
     assert turn.attributes["chalk.agent.action.kind"] == "click"
     assert json.loads(turn.attributes["input.value"]) == {
