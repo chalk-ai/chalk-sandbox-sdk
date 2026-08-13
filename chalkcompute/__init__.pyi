@@ -1,3 +1,8 @@
+from chalkcompute._agent_tracing import AgentResult as AgentResult
+from chalkcompute._agent_tracing import AgentTask as AgentTask
+from chalkcompute._agent_tracing import AgentTrace as AgentTrace
+from chalkcompute._agent_tracing import AgentTurn as AgentTurn
+from chalkcompute._agent_tracing import agent_trace as agent_trace
 from chalkcompute._artifact import Artifact as Artifact
 from chalkcompute._artifact import ArtifactClient as ArtifactClient
 from chalkcompute._artifact import ArtifactError as ArtifactError
@@ -71,6 +76,7 @@ from chalkcompute._secret import Secret as Secret
 from chalkcompute._secret import SecretScope as SecretScope
 from chalkcompute._secret import resolve_lazy_secrets as resolve_lazy_secrets
 from chalkcompute._tracing import span as span
+from chalkcompute._tracing import trace_headers as trace_headers
 from chalkcompute._tracing import traced as traced
 from chalkcompute._volume import FileInfo as FileInfo
 from chalkcompute._volume import ForkInfo as ForkInfo
@@ -93,6 +99,11 @@ from chalkcompute._volume import Volume as VersionedVolume
 from chalkcompute._volume import VolumeClient as VersionedVolumeClient
 
 __all__ = [
+    "AgentResult",
+    "AgentTask",
+    "AgentTrace",
+    "AgentTurn",
+    "agent_trace",
     "Artifact",
     "ArtifactClient",
     "ArtifactError",
@@ -137,6 +148,7 @@ __all__ = [
     "build_image",
     "build_image_with_volumes",
     "span",
+    "trace_headers",
     "traced",
     "Image",
     "LazyLocalFile",

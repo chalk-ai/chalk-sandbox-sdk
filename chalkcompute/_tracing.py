@@ -191,6 +191,11 @@ def current_trace_metadata() -> list[tuple[str, str]]:
     ]
 
 
+def trace_headers() -> dict[str, str]:
+    """Return W3C headers for the current trace context."""
+    return dict(current_trace_metadata())
+
+
 def has_trace_metadata(metadata: list[tuple[str, str]]) -> bool:
     return any(key.lower() in _TRACE_CONTEXT_METADATA_KEYS for key, _ in metadata)
 
