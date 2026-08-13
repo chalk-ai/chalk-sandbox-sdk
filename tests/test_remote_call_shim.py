@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import inspect
 import sys
 import types
 import typing
@@ -591,15 +592,23 @@ class TestShimViaRemoteCallLib:
         assert function._decode_result_chunks(payloads) == [ArrowPoint(11, 22)]
 
     def test_arrow_adapters_are_resolved_once(self, monkeypatch):
-        calls = 0
+        hint_calls = 0
+        bind_calls = 0
         get_type_hints = typing.get_type_hints
+        signature_bind = inspect.Signature.bind
 
         def counting_get_type_hints(*args, **kwargs):
-            nonlocal calls
-            calls += 1
+            nonlocal hint_calls
+            hint_calls += 1
             return get_type_hints(*args, **kwargs)
 
+        def counting_signature_bind(*args, **kwargs):
+            nonlocal bind_calls
+            bind_calls += 1
+            return signature_bind(*args, **kwargs)
+
         monkeypatch.setattr(typing, "get_type_hints", counting_get_type_hints)
+        monkeypatch.setattr(inspect.Signature, "bind", counting_signature_bind)
 
         def offset(point: ArrowPoint) -> ArrowPoint:
             return point
@@ -608,7 +617,17 @@ class TestShimViaRemoteCallLib:
         function._serialize_call_args(ArrowPoint(1, 2))
         function._serialize_call_args(ArrowPoint(3, 4))
 
-        assert calls == 1
+        assert hint_calls == 1
+        assert bind_calls == 0
+
+    def test_compiled_argument_binder_applies_defaults_and_keywords(self):
+        def configured(x: int, y: int = 2, *, z: int = 3) -> int:
+            return x + y + z
+
+        function = RemoteFunction(configured)
+        batches = decode_ipc_stream(function._serialize_call_args(1, z=4))
+
+        assert batches[0].to_pydict() == {"x": [1], "y": [2], "z": [4]}
 
     def test_sync_generator_streams_per_yield(self):
         from chalk_remote_call.servicer import process_batches
