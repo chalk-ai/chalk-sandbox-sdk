@@ -165,6 +165,8 @@ def test_stripped_function_deploy_image_installs_tracing_runtime_when_enabled(
     def add(x: int, y: int) -> int:
         return x + y
 
+    add.__module__ = "__main__"
+
     fn = RemoteFunction(add, tracing=TracingPolicy(sample_rate=0.0))
 
     image = fn._build_deploy_image()

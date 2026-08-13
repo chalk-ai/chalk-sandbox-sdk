@@ -623,25 +623,23 @@ class Image:
         for name in modules:
             if "." in name or "/" in name:
                 raise ValueError(
-                    f"add_local_python_source: expected a top-level module or package name, got {name!r}"
+                    f"add_local_python_source: {name!r} must be a top-level module name"
                 )
             if name in reserved:
                 raise ValueError(
-                    f"add_local_python_source: {name!r} is reserved — function deploys generate /app/{name}.py, and the added module would collide with it. Rename the module."
+                    f"add_local_python_source: {name!r} is a reserved module name"
                 )
             try:
                 spec = importlib.util.find_spec(name)
             except (ImportError, ValueError):
                 spec = None
             if spec is None:
-                raise ValueError(
-                    f"add_local_python_source: module {name!r} not found on the local Python path."
-                )
+                raise ValueError(f"add_local_python_source: module {name!r} not found")
             if spec.submodule_search_locations:
                 locations = list(spec.submodule_search_locations)
                 if len(locations) != 1:
                     raise ValueError(
-                        f"add_local_python_source: {name!r} is a namespace package spanning multiple directories, which is not supported"
+                        f"add_local_python_source: namespace package {name!r} is not supported"
                     )
                 new = new.add_local_dir(
                     locations[0],
@@ -652,7 +650,7 @@ class Image:
                 new = new.add_local_file(spec.origin, f"/app/{name}.py")
             else:
                 raise ValueError(
-                    f"add_local_python_source: {name!r} is not a pure-Python module or package"
+                    f"add_local_python_source: {name!r} is not a pure-Python module"
                 )
         return new
 
