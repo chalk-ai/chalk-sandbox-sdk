@@ -607,7 +607,7 @@ class Image:
         """Add local Python modules or packages to ``/app`` in the image.
         Wraps add_local_dir and add_local_file with sanity checking.
 
-        Raises ValueError f a name is dotted, reserved (``handler``, ``user_module``),
+        Raises ValueError if a name is dotted, reserved (``handler``, ``user_module``),
         cannot be found on the local Python path, or does not resolve to
         a pure-Python module or package.
 
