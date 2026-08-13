@@ -48,6 +48,10 @@ def test_agent_trace_records_task_turn_and_result(spans: InMemorySpanExporter) -
     turn = by_name["agent.turn"]
 
     assert agent.attributes["openinference.span.kind"] == "AGENT"
+    assert agent.attributes["chalk.agent.task.kind"] == "account_login"
+    assert agent.attributes["chalk.agent.result.success"] is True
+    assert agent.attributes["chalk.agent.result.status"] == "complete"
+    assert agent.attributes["chalk.agent.result.steps"] == 1
     assert agent.attributes["input.mime_type"] == "application/json"
     assert json.loads(agent.attributes["input.value"]) == {
         "kind": "account_login",
@@ -61,7 +65,8 @@ def test_agent_trace_records_task_turn_and_result(spans: InMemorySpanExporter) -
         "summary": "Logged in",
     }
     assert turn.attributes["openinference.span.kind"] == "CHAIN"
-    assert turn.attributes["turn.index"] == 0
+    assert turn.attributes["chalk.agent.turn.index"] == 0
+    assert turn.attributes["chalk.agent.action.kind"] == "click"
     assert json.loads(turn.attributes["input.value"]) == {
         "url": "https://example.com/login"
     }

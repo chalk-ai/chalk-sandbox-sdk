@@ -10,6 +10,7 @@ from chalkcompute._tracing import span
 
 _SPAN_KIND = "openinference.span.kind"
 _JSON_MIME_TYPE = "application/json"
+_ATTRIBUTE_PREFIX = "chalk.agent"
 
 
 @dataclass(frozen=True)
@@ -69,7 +70,11 @@ class AgentTurn:
         self._span = span_instance
 
     def set_action(self, action: Mapping[str, Any]) -> None:
-        _set_json(self._span, "output", dict(action))
+        action_value = dict(action)
+        _set_json(self._span, "output", action_value)
+        action_kind = action_value.get("kind")
+        if self._span is not None and isinstance(action_kind, str):
+            self._span.set_attribute(f"{_ATTRIBUTE_PREFIX}.action.kind", action_kind)
 
 
 class AgentTrace:
@@ -83,12 +88,20 @@ class AgentTrace:
         with span("agent.turn") as turn_span:
             if turn_span is not None:
                 turn_span.set_attribute(_SPAN_KIND, "CHAIN")
-                turn_span.set_attribute("turn.index", index)
+                turn_span.set_attribute(f"{_ATTRIBUTE_PREFIX}.turn.index", index)
             _set_json(turn_span, "input", observation)
             yield AgentTurn(turn_span)
 
     def set_result(self, result: AgentResult) -> None:
         _set_json(self._span, "output", result.to_dict())
+        if self._span is not None:
+            self._span.set_attribute(
+                f"{_ATTRIBUTE_PREFIX}.result.success", result.success
+            )
+            self._span.set_attribute(
+                f"{_ATTRIBUTE_PREFIX}.result.status", result.status
+            )
+            self._span.set_attribute(f"{_ATTRIBUTE_PREFIX}.result.steps", result.steps)
 
 
 @contextlib.contextmanager
@@ -98,5 +111,6 @@ def agent_trace(name: str, *, task: AgentTask) -> Iterator[AgentTrace]:
     with span(name) as agent_span:
         if agent_span is not None:
             agent_span.set_attribute(_SPAN_KIND, "AGENT")
+            agent_span.set_attribute(f"{_ATTRIBUTE_PREFIX}.task.kind", task.kind)
         _set_json(agent_span, "input", task.to_dict())
         yield AgentTrace(agent_span)
