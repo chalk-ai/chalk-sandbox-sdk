@@ -114,7 +114,7 @@ def test_function_deploy_image_installs_tracing_runtime_by_default(
         "chalkcompute==0.0.0",
     ]
     grouped = image.lazy_local_files_grouped_for_volume_mounts()
-    assert set(grouped) == {"/app"}
+    assert set(grouped) == {"/app", "/app/tests"}
 
 
 def test_function_deploy_image_installs_tracing_runtime_when_enabled(
@@ -134,7 +134,7 @@ def test_function_deploy_image_installs_tracing_runtime_when_enabled(
         "chalkcompute==0.0.0",
     ]
     grouped = image.lazy_local_files_grouped_for_volume_mounts()
-    assert set(grouped) == {"/app"}
+    assert set(grouped) == {"/app", "/app/tests"}
 
 
 def test_function_deploy_image_installs_lightweight_runtime_when_tracing_off(
@@ -154,7 +154,7 @@ def test_function_deploy_image_installs_lightweight_runtime_when_tracing_off(
         "chalkcompute==0.0.0",
     ]
     grouped = image.lazy_local_files_grouped_for_volume_mounts()
-    assert set(grouped) == {"/app"}
+    assert set(grouped) == {"/app", "/app/tests"}
 
 
 def test_stripped_function_deploy_image_installs_tracing_runtime_when_enabled(

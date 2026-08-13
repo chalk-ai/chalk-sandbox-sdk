@@ -601,6 +601,64 @@ class Image:
                 )
         return new
 
+    def _app_module_names(self) -> set[str]:
+        """Top-level module names already claimed under ``/app``."""
+        dests = [lazy_file.dest for lazy_file in self._lazy_local_files] + [
+            step.add_file.destination
+            for step in self._steps
+            if step.HasField("add_file")
+        ]
+        return {
+            dest[len("/app/") :].split("/")[0].removesuffix(".py")
+            for dest in dests
+            if dest.startswith("/app/")
+        }
+
+    def add_local_python_source(self, *modules: str) -> Image:
+        """Add local Python modules or packages to ``/app`` in the image.
+        Wraps add_local_dir and add_local_file with sanity checking.
+
+        Raises ValueError if a name is dotted, cannot be found on the local
+        Python path, or does not resolve to a pure-Python module or package.
+
+        Examples
+        --------
+        >>> from chalkcompute import Image
+        >>> img = Image.debian_slim().add_local_python_source("helpers", "mypkg")
+        """
+        import importlib.util
+
+        new = self
+        for name in modules:
+            if "." in name or "/" in name:
+                raise ValueError(
+                    f"add_local_python_source: {name!r} must be a top-level module name"
+                )
+            try:
+                spec = importlib.util.find_spec(name)
+            except (ImportError, ValueError):
+                spec = None
+            if spec is None:
+                raise ValueError(f"add_local_python_source: module {name!r} not found")
+            if spec.submodule_search_locations:
+                locations = list(spec.submodule_search_locations)
+                if len(locations) != 1:
+                    raise ValueError(
+                        f"add_local_python_source: namespace package {name!r} is not supported"
+                    )
+                new = new.add_local_dir(
+                    locations[0],
+                    f"/app/{name}",
+                    exclude=["**/__pycache__/**", "**/*.pyc"],
+                )
+            elif spec.origin and spec.origin.endswith(".py"):
+                new = new.add_local_file(spec.origin, f"/app/{name}.py")
+            else:
+                raise ValueError(
+                    f"add_local_python_source: {name!r} is not a pure-Python module"
+                )
+        return new
+
     def dockerfile_commands(self, commands: Sequence[str]) -> Image:
         """Add raw Dockerfile instructions.
 
