@@ -917,6 +917,16 @@ def _source_file_for_deploy(func: Callable[..., Any]) -> str:
     return inspect.getfile(inspect.unwrap(func))
 
 
+def _available_module_name(base: str, taken: set[str]) -> str:
+    """First of ``base``, ``base_2``, ``base_3``, ... not present in ``taken``."""
+    name = base
+    suffix = 2
+    while name in taken:
+        name = f"{base}_{suffix}"
+        suffix += 1
+    return name
+
+
 def _package_dir_for_module(module_name: str) -> str | None:
     """Directory of the top-level package containing ``module_name``.
 
@@ -1734,6 +1744,7 @@ class RemoteFunction:
         self._web_url: str | None = None
         self._port: int = 8080
         self._temp_files: list[str] = []
+        self._handler_module: str = "handler"
 
         # Input field names (populated from API response for from_id/from_name)
         self._input_field_names: list[str] = []
@@ -1901,12 +1912,6 @@ class RemoteFunction:
         temp_files: list[str],
     ) -> _Image:
         """Add the function's whole top-level package to the image."""
-        if module_name.split(".")[0] == "handler":
-            raise FunctionBuildError(
-                f"Cannot deploy function {self._func_name!r} from a package "
-                f"named 'handler': the package would shadow the generated "
-                f"handler module at /app/handler.py. Rename the package."
-            )
         prepared_dir, dir_is_temp = _prepare_package_dir(
             package_dir,
             label=f"Function {self._func_name!r}",
@@ -1925,8 +1930,9 @@ class RemoteFunction:
         self,
         base_image: _Image,
         temp_files: list[str],
+        module_name: str,
     ) -> _Image:
-        """Add the function's source file to the image as ``user_module.py``."""
+        """Add the function's source file to the image as ``<module_name>.py``."""
         source_file, source_is_temp = _prepare_source_file(
             _source_file_for_deploy(self._func),
             label=f"Function {self._func_name!r}",
@@ -1934,13 +1940,14 @@ class RemoteFunction:
         )
         if source_is_temp:
             temp_files.append(source_file)
-        return base_image.add_local_file(source_file, _USER_MODULE_PATH)
+        return base_image.add_local_file(source_file, f"/app/{module_name}.py")
 
     def _add_handler_shim(
         self,
         deploy_image: _Image,
         shim_module: str,
         temp_files: list[str],
+        handler_module: str,
     ) -> _Image:
         """Generate the handler shim and finalize the deploy image env."""
         from chalkcompute._model import MODELS_ENV_VAR
@@ -1954,7 +1961,7 @@ class RemoteFunction:
         shim_path = _write_temp(handler_shim)
         temp_files.append(shim_path)
 
-        return deploy_image.add_local_file(shim_path, "/app/handler.py").env(
+        return deploy_image.add_local_file(shim_path, f"/app/{handler_module}.py").env(
             {"PYTHONPATH": "/app", _REMOTE_ENV_VAR: "1"}
         )
 
@@ -1966,6 +1973,11 @@ class RemoteFunction:
         the function from its real module, so sibling-module helpers resolve
         remotely. Otherwise the single source file is shipped as
         ``user_module.py``.
+
+        The shim (and, in single-file mode, the renamed source module) get
+        generated names that dodge any top-level ``/app`` name the user's
+        image already claims, so user modules named ``handler`` or
+        ``user_module`` never collide with the SDK's artifacts.
 
         Returns
         -------
@@ -1979,18 +1991,26 @@ class RemoteFunction:
             self._image,
             remote_call_runtime_package=self._remote_call_runtime_package(),
         )
+        taken = base_image._app_module_names()
 
         temp_files: list[str] = []
         if package_dir is not None:
+            taken.add(module_name.split(".")[0])
             shim_module = module_name
             deploy_image = self._add_package_source(
                 base_image, package_dir, module_name, temp_files
             )
         else:
-            shim_module = _USER_MODULE_NAME
-            deploy_image = self._add_single_file_source(base_image, temp_files)
+            shim_module = _available_module_name(_USER_MODULE_NAME, taken)
+            taken.add(shim_module)
+            deploy_image = self._add_single_file_source(
+                base_image, temp_files, shim_module
+            )
 
-        deploy_image = self._add_handler_shim(deploy_image, shim_module, temp_files)
+        self._handler_module = _available_module_name("handler", taken)
+        deploy_image = self._add_handler_shim(
+            deploy_image, shim_module, temp_files, self._handler_module
+        )
 
         self._temp_files = temp_files
         return deploy_image
@@ -2071,7 +2091,11 @@ class RemoteFunction:
             # 3. Register function version
             input_schema_proto, output_schema_proto = _build_schemas(self._func)
 
-            handler_cmd = ["chalk-remote-call", "--handler", "handler.handler"]
+            handler_cmd = [
+                "chalk-remote-call",
+                "--handler",
+                f"{self._handler_module}.handler",
+            ]
 
             container_spec = _make_container_spec(
                 name=sg_name,

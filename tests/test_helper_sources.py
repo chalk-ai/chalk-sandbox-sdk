@@ -89,21 +89,43 @@ def test_add_local_python_source_rejects_dotted_and_missing() -> None:
         Image.debian_slim().add_local_python_source("no_such_module_xyz_123")
 
 
-def test_add_local_python_source_rejects_reserved_names() -> None:
-    with pytest.raises(ValueError, match="reserved"):
-        Image.debian_slim().add_local_python_source("handler")
-    with pytest.raises(ValueError, match="reserved"):
-        Image.debian_slim().add_local_python_source("user_module")
+def test_single_file_entrypoint_renamed_on_collision(tmp_path, monkeypatch) -> None:
+    (tmp_path / "user_module.py").write_text("def f():\n    return 1\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    def add(x: int, y: int) -> int:
+        return x + y
+
+    add.__module__ = "__main__"
+
+    with patch.dict(os.environ, {"CHALK_FUNCTION_STRIP_SOURCE": "0"}, clear=False):
+        fn = RemoteFunction(
+            add, image=Image.debian_slim().add_local_python_source("user_module")
+        )
+        image = fn._build_deploy_image()
+
+    dests = {f.dest for f in image._lazy_local_files}
+    assert "/app/user_module.py" in dests
+    assert "/app/user_module_2.py" in dests
+    shim_src = next(
+        f.src for f in image._lazy_local_files if f.dest == "/app/handler.py"
+    )
+    assert "from user_module_2 import add" in Path(shim_src).read_text()
 
 
-def test_package_named_handler_rejected(tmp_path, monkeypatch) -> None:
+def test_package_named_handler_renames_shim(tmp_path, monkeypatch) -> None:
     import sys
     import types
 
-    from chalkcompute._function import FunctionBuildError
+    pkg_dir = tmp_path / "handler"
+    pkg_dir.mkdir()
+    (pkg_dir / "__init__.py").write_text("")
+    (pkg_dir / "fns.py").write_text(
+        "def add(x: int, y: int) -> int:\n    return x + y\n"
+    )
 
     fake_pkg = types.ModuleType("handler")
-    fake_pkg.__path__ = [str(tmp_path)]
+    fake_pkg.__path__ = [str(pkg_dir)]
     monkeypatch.setitem(sys.modules, "handler", fake_pkg)
 
     def add(x: int, y: int) -> int:
@@ -113,8 +135,16 @@ def test_package_named_handler_rejected(tmp_path, monkeypatch) -> None:
 
     with patch.dict(os.environ, {"CHALK_FUNCTION_STRIP_SOURCE": "0"}, clear=False):
         fn = RemoteFunction(add)
-        with pytest.raises(FunctionBuildError, match="named 'handler'"):
-            fn._build_deploy_image()
+        image = fn._build_deploy_image()
+
+    dests = {f.dest for f in image._lazy_local_files}
+    assert "/app/handler/fns.py" in dests
+    assert "/app/handler_2.py" in dests
+    assert fn._handler_module == "handler_2"
+    shim_src = next(
+        f.src for f in image._lazy_local_files if f.dest == "/app/handler_2.py"
+    )
+    assert "from handler.fns import add" in Path(shim_src).read_text()
 
 
 def test_prepare_package_dir_no_strip_returns_original(tmp_path) -> None:

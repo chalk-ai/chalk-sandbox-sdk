@@ -603,13 +603,28 @@ class Image:
                 )
         return new
 
+    def _app_module_names(self) -> set[str]:
+        """Top-level module names already claimed under ``/app``."""
+        names: set[str] = set()
+        for lazy_file in self._lazy_local_files:
+            if lazy_file.dest.startswith("/app/"):
+                names.add(
+                    lazy_file.dest[len("/app/") :].split("/")[0].removesuffix(".py")
+                )
+        for step in self._steps:
+            if not step.HasField("add_file"):
+                continue
+            dest = step.add_file.destination
+            if dest.startswith("/app/"):
+                names.add(dest[len("/app/") :].split("/")[0].removesuffix(".py"))
+        return names
+
     def add_local_python_source(self, *modules: str) -> Image:
         """Add local Python modules or packages to ``/app`` in the image.
         Wraps add_local_dir and add_local_file with sanity checking.
 
-        Raises ValueError if a name is dotted, reserved (``handler``, ``user_module``),
-        cannot be found on the local Python path, or does not resolve to
-        a pure-Python module or package.
+        Raises ValueError if a name is dotted, cannot be found on the local
+        Python path, or does not resolve to a pure-Python module or package.
 
         Examples
         --------
@@ -618,16 +633,11 @@ class Image:
         """
         import importlib.util
 
-        reserved = {"handler", "user_module"}
         new = self
         for name in modules:
             if "." in name or "/" in name:
                 raise ValueError(
                     f"add_local_python_source: {name!r} must be a top-level module name"
-                )
-            if name in reserved:
-                raise ValueError(
-                    f"add_local_python_source: {name!r} is a reserved module name"
                 )
             try:
                 spec = importlib.util.find_spec(name)
