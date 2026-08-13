@@ -1666,6 +1666,7 @@ class RemoteFunction:
         self._version_info: FunctionVersionInfo | None = None
         self._web_url: str | None = None
         self._port: int = 8080
+        self._temp_files: list[str] = []
 
         # Input field names (populated from API response for from_id/from_name)
         self._input_field_names: list[str] = []
