@@ -202,7 +202,7 @@ class TestRichToArrowSchema:
             def __chalk_deserialize__(cls, value: pa.Scalar) -> "Invalid":
                 raise NotImplementedError
 
-        with pytest.raises(TypeError, match="must be an arrow_pb2.ArrowType"):
+        with pytest.raises(TypeError):
             rich_to_arrow_schema({"value": Invalid})
 
 

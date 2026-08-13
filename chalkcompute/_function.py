@@ -353,22 +353,25 @@ def _generate_handler_shim(
                 _target, include_extras=True
             )
             _output_type = _chalk_result_annotation(_target)
+            _input_decoders = {{
+                name: _chalk_column_decoder(annotation)
+                for name, annotation in _input_types.items()
+                if name != "return"
+            }}
+            _output_encoder = _chalk_encoder(_output_type)
 
 
             def _flatten_events(events):
                 work = []
                 for ci, event in enumerate(events):
                     columns = {{
-                        k: v
+                        k: _input_decoders[k](v)
                         for k, v in event.items()
                         if k != _NO_ARGS_SENTINEL_COLUMN
                     }}
                     n = len(next(iter(columns.values()))) if columns else 1
                     for ri in range(n):
-                        work.append((ci, ri, {{
-                            k: _chalk_deserialize_scalar(v[ri], _input_types.get(k))
-                            for k, v in columns.items()
-                        }}))
+                        work.append((ci, ri, {{k: v[ri] for k, v in columns.items()}}))
                 return work
 
 
@@ -387,10 +390,11 @@ def _generate_handler_shim(
                     async def _run_all():
                         coros = [{func_name}(**kw) for _, _, kw in work]
                         raw = await asyncio.gather(*coros)
-                        flat = [
-                            _chalk_serialize_value(value, _output_type)
-                            for value in raw
-                        ]
+                        flat = (
+                            raw
+                            if _output_encoder is None
+                            else [_output_encoder(value) for value in raw]
+                        )
                         return _regroup(work, flat, len(events))
                     return asyncio.run(_run_all())
                 bucket = {{}}
@@ -401,9 +405,10 @@ def _generate_handler_shim(
                     }}
                     for fut in as_completed(futures):
                         ci, ri = futures[fut]
-                        bucket.setdefault(ci, {{}})[ri] = _chalk_serialize_value(
-                            fut.result(), _output_type
-                        )
+                        value = fut.result()
+                        if _output_encoder is not None:
+                            value = _output_encoder(value)
+                        bucket.setdefault(ci, {{}})[ri] = value
                 return [[bucket[ci][ri] for ri in sorted(bucket[ci])]
                         for ci in range(len(events))]
             """)
@@ -425,50 +430,60 @@ def _generate_handler_shim(
             _target, include_extras=True
         )
         _output_type = _chalk_result_annotation(_target)
+        _input_decoders = {{
+            name: _chalk_column_decoder(annotation)
+            for name, annotation in _input_types.items()
+            if name != "return"
+        }}
+        _output_encoder = _chalk_encoder(_output_type)
 
 
-        def _kwargs_for_row(event, row):
-            return {{
-                key: _chalk_deserialize_scalar(values[row], _input_types.get(key))
-                for key, values in event.items()
-            }}
+        def _kwargs_for_row(columns, row):
+            return {{key: values[row] for key, values in columns.items()}}
 
 
         def handler(event, context):
-            event = {{
-                k: v
+            columns = {{
+                k: _input_decoders[k](v)
                 for k, v in event.items()
                 if k != _NO_ARGS_SENTINEL_COLUMN
             }}
-            n = len(next(iter(event.values()))) if event else 1
+            n = len(next(iter(columns.values()))) if columns else 1
             if _is_sync_gen:
                 def _gen():
                     for i in range(n):
-                        kwargs = _kwargs_for_row(event, i)
-                        for item in {func_name}(**kwargs):
-                            yield _chalk_serialize_value(item, _output_type)
+                        kwargs = _kwargs_for_row(columns, i)
+                        if _output_encoder is None:
+                            yield from {func_name}(**kwargs)
+                        else:
+                            for item in {func_name}(**kwargs):
+                                yield _output_encoder(item)
                 return _gen()
             elif _is_async_gen:
                 async def _agen():
                     for i in range(n):
-                        kwargs = _kwargs_for_row(event, i)
+                        kwargs = _kwargs_for_row(columns, i)
                         async for item in {func_name}(**kwargs):
-                            yield _chalk_serialize_value(item, _output_type)
+                            yield item if _output_encoder is None else _output_encoder(item)
                 return _agen()
             elif _is_coroutine:
                 import asyncio
                 results = []
                 for i in range(n):
-                    kwargs = _kwargs_for_row(event, i)
+                    kwargs = _kwargs_for_row(columns, i)
                     result = asyncio.run({func_name}(**kwargs))
-                    results.append(_chalk_serialize_value(result, _output_type))
+                    if _output_encoder is not None:
+                        result = _output_encoder(result)
+                    results.append(result)
                 return results
             else:
                 results = []
                 for i in range(n):
-                    kwargs = _kwargs_for_row(event, i)
+                    kwargs = _kwargs_for_row(columns, i)
                     result = {func_name}(**kwargs)
-                    results.append(_chalk_serialize_value(result, _output_type))
+                    if _output_encoder is not None:
+                        result = _output_encoder(result)
+                    results.append(result)
                 return results
         """)
     )
@@ -1564,6 +1579,7 @@ class RemoteFunction:
         self._func = func
         self._has_local_func = True
         self._func_name = getattr(func, "__name__", "anonymous")
+        self._signature = inspect.signature(func)
         if name is not None:
             validate_dns_label(name)
         self._explicit_name = name
@@ -1681,6 +1697,9 @@ class RemoteFunction:
 
         # Input field names (populated from API response for from_id/from_name)
         self._input_field_names: list[str] = []
+        self._arrow_adapters_ready = False
+        self._arrow_input_serializers: dict[str, Callable[[Any], Any]] = {}
+        self._arrow_result_deserializer: Callable[[Any], Any] | None = None
         self._is_generator = inspect.isgeneratorfunction(
             func
         ) or inspect.isasyncgenfunction(func)
@@ -1792,6 +1811,7 @@ class RemoteFunction:
         f._func = lambda *a, **kw: None  # type: ignore[assignment]
         f._has_local_func = False
         f._func_name = "unknown"
+        f._signature = inspect.signature(f._func)
         f._explicit_name = "unknown"
         f._image = None
         f._cpu = None
@@ -1823,6 +1843,9 @@ class RemoteFunction:
         f._web_url = None
         f._port = 6666
         f._input_field_names = []
+        f._arrow_adapters_ready = True
+        f._arrow_input_serializers = {}
+        f._arrow_result_deserializer = None
         f._is_generator = False
         f._is_async = False
         f._call_channel = None
@@ -2482,20 +2505,35 @@ class RemoteFunction:
             return self._version_info.function_name
         return self._func_name
 
+    def _ensure_arrow_adapters(self) -> None:
+        """Resolve custom serialization methods once, outside invocation loops."""
+        if self._arrow_adapters_ready:
+            return
+
+        from chalkcompute._arrow_serde import (
+            has_chalk_arrow_contract,
+            unwrap_result_annotation,
+        )
+
+        hints = typing.get_type_hints(self._func, include_extras=True)
+        self._arrow_input_serializers = {
+            name: annotation.__chalk_serialize__
+            for name, annotation in hints.items()
+            if name != "return" and has_chalk_arrow_contract(annotation)
+        }
+        result_type = unwrap_result_annotation(hints.get("return"))
+        self._arrow_result_deserializer = (
+            result_type.__chalk_deserialize__
+            if has_chalk_arrow_contract(result_type)
+            else None
+        )
+        self._arrow_adapters_ready = True
+
     def _serialize_call_args(self, *args: Any, **kwargs: Any) -> bytes:
         import pyarrow as pa
         import pyarrow.ipc as ipc
 
-        from chalkcompute._arrow_serde import (
-            has_chalk_arrow_contract,
-            serialize_value,
-        )
-
-        input_types = (
-            typing.get_type_hints(self._func, include_extras=True)
-            if self._has_local_func
-            else {}
-        )
+        self._ensure_arrow_adapters()
 
         if self._input_field_names:
             arguments: dict[str, Any] = {}
@@ -2507,13 +2545,12 @@ class RemoteFunction:
                 else:
                     raise TypeError(f"Missing argument: {name}")
         else:
-            sig = inspect.signature(self._func)
-            bound = sig.bind(*args, **kwargs)
+            bound = self._signature.bind(*args, **kwargs)
             bound.apply_defaults()
             arguments = {
                 name: value
                 for name, value in bound.arguments.items()
-                if sig.parameters[name].kind
+                if self._signature.parameters[name].kind
                 not in (
                     inspect.Parameter.VAR_POSITIONAL,
                     inspect.Parameter.VAR_KEYWORD,
@@ -2524,9 +2561,9 @@ class RemoteFunction:
         names = []
         if arguments:
             for param_name, value in arguments.items():
-                annotation = input_types.get(param_name)
-                if annotation is not None and has_chalk_arrow_contract(annotation):
-                    serialized = serialize_value(value, annotation)
+                serializer = self._arrow_input_serializers.get(param_name)
+                if serializer is not None:
+                    serialized = serializer(value)
                     arrays.append(pa.array([serialized], type=serialized.type))
                 else:
                     arrays.append(pa.array([value]))
@@ -2544,14 +2581,8 @@ class RemoteFunction:
     def _decode_result_chunks(self, chunks: list[bytes]) -> list[Any]:
         import pyarrow.ipc as ipc
 
-        from chalkcompute._arrow_serde import (
-            deserialize_scalar,
-            function_result_annotation,
-        )
-
-        result_type = (
-            function_result_annotation(self._func) if self._has_local_func else None
-        )
+        self._ensure_arrow_adapters()
+        deserializer = self._arrow_result_deserializer
 
         results: list[Any] = []
         for chunk in chunks:
@@ -2560,10 +2591,13 @@ class RemoteFunction:
                 field_index = result_batch.schema.get_field_index("result")
                 if field_index >= 0:
                     result_column = result_batch.column(field_index)
-                    results.extend(
-                        deserialize_scalar(result_column[i], result_type)
-                        for i in range(len(result_column))
-                    )
+                    if deserializer is None:
+                        results.extend(result_column.to_pylist())
+                    else:
+                        results.extend(
+                            None if not value.is_valid else deserializer(value)
+                            for value in result_column
+                        )
         return results
 
     def _materialize_result_chunks(self, chunks: list[bytes]) -> Any:

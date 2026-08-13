@@ -6,6 +6,7 @@ import asyncio
 import functools
 import sys
 import types
+import typing
 
 import pyarrow as pa
 import pytest
@@ -588,6 +589,26 @@ class TestShimViaRemoteCallLib:
         ]
         assert response_batches[0].column("result").type.equals(_ARROW_POINT_PA_TYPE)
         assert function._decode_result_chunks(payloads) == [ArrowPoint(11, 22)]
+
+    def test_arrow_adapters_are_resolved_once(self, monkeypatch):
+        calls = 0
+        get_type_hints = typing.get_type_hints
+
+        def counting_get_type_hints(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return get_type_hints(*args, **kwargs)
+
+        monkeypatch.setattr(typing, "get_type_hints", counting_get_type_hints)
+
+        def offset(point: ArrowPoint) -> ArrowPoint:
+            return point
+
+        function = RemoteFunction(offset)
+        function._serialize_call_args(ArrowPoint(1, 2))
+        function._serialize_call_args(ArrowPoint(3, 4))
+
+        assert calls == 1
 
     def test_sync_generator_streams_per_yield(self):
         from chalk_remote_call.servicer import process_batches
