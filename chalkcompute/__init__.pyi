@@ -73,6 +73,7 @@ from chalkcompute._secret import Secret as Secret
 from chalkcompute._secret import SecretScope as SecretScope
 from chalkcompute._secret import resolve_lazy_secrets as resolve_lazy_secrets
 from chalkcompute._tracing import span as span
+from chalkcompute._tracing import trace_headers as trace_headers
 from chalkcompute._tracing import traced as traced
 from chalkcompute._volume import FileInfo as FileInfo
 from chalkcompute._volume import ForkInfo as ForkInfo
@@ -139,6 +140,7 @@ __all__ = [
     "build_image",
     "build_image_with_volumes",
     "span",
+    "trace_headers",
     "traced",
     "Image",
     "LazyLocalFile",

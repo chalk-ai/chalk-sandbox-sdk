@@ -70,6 +70,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     ),
     # _tracing.py
     "span": ("chalkcompute._tracing", "span"),
+    "trace_headers": ("chalkcompute._tracing", "trace_headers"),
     "traced": ("chalkcompute._tracing", "traced"),
     # _image.py
     "Image": ("chalkcompute._image", "Image"),
