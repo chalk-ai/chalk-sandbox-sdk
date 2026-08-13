@@ -146,12 +146,7 @@ def test_prepare_package_dir_strips_chalkcompute(tmp_path) -> None:
         "def fn(a: int) -> int:\n"
         "    return a\n"
     )
-    (pkg / "helper.py").write_text(
-        "import chalkcompute\n"
-        "\n"
-        "def h():\n"
-        "    return 1\n"
-    )
+    (pkg / "helper.py").write_text("import chalkcompute\n\ndef h():\n    return 1\n")
 
     with patch.dict(os.environ, {"CHALK_FUNCTION_STRIP_SOURCE": "1"}, clear=False):
         prepared, is_temp = _prepare_package_dir(
