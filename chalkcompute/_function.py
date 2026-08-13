@@ -37,6 +37,7 @@ import json
 import linecache
 import logging
 import os
+import shutil
 import sys
 import tempfile
 import textwrap
@@ -932,6 +933,69 @@ def _package_dir_for_module(module_name: str) -> str | None:
     return paths[0]
 
 
+def _strip_chalkcompute_for_package(source: str) -> str:
+    from chalkcompute._cls import _strip_chalkcompute_from_class_source
+
+    return _strip_chalkcompute_from_class_source(
+        _strip_chalkcompute_from_source(source)
+    )
+
+
+def _prepare_package_dir(
+    package_dir: str,
+    *,
+    label: str,
+    entrypoint_file: str,
+    entrypoint_sources: typing.Sequence[str],
+) -> tuple[str, bool]:
+    """Return the package directory to deploy, stripping chalkcompute if needed.
+
+    In strip mode every ``.py`` file in the package is rewritten (both the
+    function and class strip passes, since any file may use either
+    decorator) into a temp copy of the tree.
+
+    Parameters
+    ----------
+    package_dir
+        Directory of the top-level package to deploy.
+    label
+        Human-readable identifier used in the strip-mode guard error.
+    entrypoint_file
+        Source file containing the deployed function/class, checked by the
+        strip-mode guard.
+    entrypoint_sources
+        Source of the deployed function(s)/method(s) whose bodies the
+        strip-mode guard inspects.
+
+    Returns
+    -------
+    tuple of (str, bool)
+        ``(path, is_temp)`` — if stripping produced a temp directory, the
+        caller should clean it up.
+    """
+    if not _should_strip_source():
+        return package_dir, False
+
+    original = _source_text_for_deploy(entrypoint_file)
+    _assert_stripped_source_self_contained(
+        original,
+        _strip_chalkcompute_for_package(original),
+        label=label,
+        entrypoint_sources=list(entrypoint_sources),
+    )
+
+    temp_dir = tempfile.mkdtemp(prefix="chalkfn_pkg_")
+    shutil.copytree(
+        package_dir,
+        temp_dir,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        dirs_exist_ok=True,
+    )
+    for py_file in Path(temp_dir).rglob("*.py"):
+        py_file.write_text(_strip_chalkcompute_for_package(py_file.read_text()))
+    return temp_dir, True
+
+
 def _chalkcompute_bound_names(source: str) -> set[str]:
     """Names that ``source`` binds to chalkcompute via import.
 
@@ -1235,16 +1299,19 @@ def _build_and_upload(
 
 
 def _cleanup_temp_files(paths: list[str]) -> None:
-    """Remove temporary files, ignoring errors.
+    """Remove temporary files or directories, ignoring errors.
 
     Parameters
     ----------
     paths
-        Paths to temporary files to remove.
+        Paths to temporary files/directories to remove.
     """
     for tmp in paths:
         try:
-            os.unlink(tmp)
+            if os.path.isdir(tmp):
+                shutil.rmtree(tmp, ignore_errors=True)
+            else:
+                os.unlink(tmp)
         except OSError:
             pass
 
@@ -1831,6 +1898,7 @@ class RemoteFunction:
         base_image: _Image,
         package_dir: str,
         module_name: str,
+        temp_files: list[str],
     ) -> _Image:
         """Add the function's whole top-level package to the image."""
         if module_name.split(".")[0] == "handler":
@@ -1839,16 +1907,16 @@ class RemoteFunction:
                 f"named 'handler': the package would shadow the generated "
                 f"handler module at /app/handler.py. Rename the package."
             )
-        if _should_strip_source():
-            raise FunctionBuildError(
-                f"Function {self._func_name!r} is defined in a package, which "
-                f"is not supported in strip mode (CHALK_FUNCTION_STRIP_SOURCE, "
-                f"or a 0.0.0 source checkout). Set CHALK_FUNCTION_STRIP_SOURCE=0 "
-                f"with CHALK_FUNCTION_LOCAL_SDK_COPY=1 to deploy from a dev "
-                f"checkout."
-            )
-        return base_image.add_local_dir(
+        prepared_dir, dir_is_temp = _prepare_package_dir(
             package_dir,
+            label=f"Function {self._func_name!r}",
+            entrypoint_file=_source_file_for_deploy(self._func),
+            entrypoint_sources=_entrypoint_source(self._func),
+        )
+        if dir_is_temp:
+            temp_files.append(prepared_dir)
+        return base_image.add_local_dir(
+            prepared_dir,
             f"/app/{module_name.split('.')[0]}",
             exclude=["**/__pycache__/**", "**/*.pyc"],
         )
@@ -1916,7 +1984,7 @@ class RemoteFunction:
         if package_dir is not None:
             shim_module = module_name
             deploy_image = self._add_package_source(
-                base_image, package_dir, module_name
+                base_image, package_dir, module_name, temp_files
             )
         else:
             shim_module = _USER_MODULE_NAME

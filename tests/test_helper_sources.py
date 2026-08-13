@@ -11,6 +11,7 @@ from chalkcompute._function import (
     RemoteFunction,
     _generate_handler_shim,
     _package_dir_for_module,
+    _prepare_package_dir,
 )
 from chalkcompute._image import Image
 
@@ -116,10 +117,47 @@ def test_package_named_handler_rejected(tmp_path, monkeypatch) -> None:
             fn._build_deploy_image()
 
 
-def test_package_function_rejected_in_strip_mode() -> None:
-    from chalkcompute._function import FunctionBuildError
+def test_prepare_package_dir_no_strip_returns_original(tmp_path) -> None:
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+
+    with patch.dict(os.environ, {"CHALK_FUNCTION_STRIP_SOURCE": "0"}, clear=False):
+        prepared, is_temp = _prepare_package_dir(
+            str(pkg),
+            label="Function 'fn'",
+            entrypoint_file=str(pkg / "__init__.py"),
+            entrypoint_sources=[],
+        )
+
+    assert prepared == str(pkg)
+    assert not is_temp
+
+
+def test_prepare_package_dir_strips_chalkcompute(tmp_path) -> None:
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    entry = pkg / "fns.py"
+    entry.write_text(
+        "import chalkcompute\n"
+        "\n"
+        "@chalkcompute.function(name='x')\n"
+        "def fn(a: int) -> int:\n"
+        "    return a\n"
+    )
+    (pkg / "helper.py").write_text("import chalkcompute\n\ndef h():\n    return 1\n")
 
     with patch.dict(os.environ, {"CHALK_FUNCTION_STRIP_SOURCE": "1"}, clear=False):
-        fn = RemoteFunction(_pkg_add)
-        with pytest.raises(FunctionBuildError, match="strip mode"):
-            fn._build_deploy_image()
+        prepared, is_temp = _prepare_package_dir(
+            str(pkg),
+            label="Function 'fn'",
+            entrypoint_file=str(entry),
+            entrypoint_sources=["def fn(a: int) -> int:\n    return a\n"],
+        )
+
+    assert is_temp
+    stripped_entry = (Path(prepared) / "fns.py").read_text()
+    assert "chalkcompute" not in stripped_entry
+    assert "def fn" in stripped_entry
+    assert "chalkcompute" not in (Path(prepared) / "helper.py").read_text()

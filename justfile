@@ -11,7 +11,6 @@ ruff_paths := "chalkcompute tests e2etests"
 # Decrypt .env.enc to .env (or .env.<name>.enc to .env.<name> if name given)
 env name="":
     sops --input-type dotenv --output-type dotenv -d ".env{{ if name != "" { "." + name } else { "" } }}.enc" > ".env{{ if name != "" { "." + name } else { "" } }}"
-    @grep -q CHALK_FUNCTION_STRIP_SOURCE ".env{{ if name != "" { "." + name } else { "" } }}" || printf 'CHALK_FUNCTION_STRIP_SOURCE=0\nCHALK_FUNCTION_LOCAL_SDK_COPY=1\n' >> ".env{{ if name != "" { "." + name } else { "" } }}"
 
 # Encrypt .env (or .env.<name>) to .env.enc (or .env.<name>.enc) and delete plaintext
 encrypt name="":
