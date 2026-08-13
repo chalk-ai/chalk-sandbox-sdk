@@ -339,13 +339,19 @@ def _generate_handler_shim(
         if bind_models
         else ""
     )
+    from chalkcompute._arrow_serde import handler_runtime_source
+
+    serde_runtime = handler_runtime_source()
     if batched:
         # Flatten all (caller_idx, row_idx, kwargs) across every caller so
         # each item is an independent unit of work.  Results are collected in
         # completion order (not submission order), then regrouped per caller.
         # This means a slow item in one caller never blocks another caller's
         # items from completing — true promise semantics.
-        return bootstrap + textwrap.dedent(f"""\
+        return (
+            bootstrap
+            + serde_runtime
+            + textwrap.dedent(f"""\
             import inspect
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -354,13 +360,23 @@ def _generate_handler_shim(
             _NO_ARGS_SENTINEL_COLUMN = {_NO_ARGS_SENTINEL_COLUMN!r}
             _target = inspect.unwrap({func_name})
             _is_coroutine = inspect.iscoroutinefunction(_target)
+            _input_types = _chalk_typing.get_type_hints(
+                _target, include_extras=True
+            )
+            _output_type = _chalk_result_annotation(_target)
+            _input_decoders = {{
+                name: _chalk_column_decoder(annotation)
+                for name, annotation in _input_types.items()
+                if name != "return"
+            }}
+            _output_encoder = _chalk_encoder(_output_type)
 
 
             def _flatten_events(events):
                 work = []
                 for ci, event in enumerate(events):
                     columns = {{
-                        k: v.to_pylist()
+                        k: _input_decoders[k](v)
                         for k, v in event.items()
                         if k != _NO_ARGS_SENTINEL_COLUMN
                     }}
@@ -384,7 +400,12 @@ def _generate_handler_shim(
                     import asyncio
                     async def _run_all():
                         coros = [{func_name}(**kw) for _, _, kw in work]
-                        flat = await asyncio.gather(*coros)
+                        raw = await asyncio.gather(*coros)
+                        flat = (
+                            raw
+                            if _output_encoder is None
+                            else [_output_encoder(value) for value in raw]
+                        )
                         return _regroup(work, flat, len(events))
                     return asyncio.run(_run_all())
                 bucket = {{}}
@@ -395,11 +416,18 @@ def _generate_handler_shim(
                     }}
                     for fut in as_completed(futures):
                         ci, ri = futures[fut]
-                        bucket.setdefault(ci, {{}})[ri] = fut.result()
+                        value = fut.result()
+                        if _output_encoder is not None:
+                            value = _output_encoder(value)
+                        bucket.setdefault(ci, {{}})[ri] = value
                 return [[bucket[ci][ri] for ri in sorted(bucket[ci])]
                         for ci in range(len(events))]
             """)
-    return bootstrap + textwrap.dedent(f"""\
+        )
+    return (
+        bootstrap
+        + serde_runtime
+        + textwrap.dedent(f"""\
         import inspect
 
         from {module_name} import {func_name}
@@ -409,42 +437,67 @@ def _generate_handler_shim(
         _is_sync_gen = inspect.isgeneratorfunction(_target)
         _is_async_gen = inspect.isasyncgenfunction(_target)
         _is_coroutine = inspect.iscoroutinefunction(_target) and not _is_async_gen
+        _input_types = _chalk_typing.get_type_hints(
+            _target, include_extras=True
+        )
+        _output_type = _chalk_result_annotation(_target)
+        _input_decoders = {{
+            name: _chalk_column_decoder(annotation)
+            for name, annotation in _input_types.items()
+            if name != "return"
+        }}
+        _output_encoder = _chalk_encoder(_output_type)
+
+
+        def _kwargs_for_row(columns, row):
+            return {{key: values[row] for key, values in columns.items()}}
 
 
         def handler(event, context):
-            event = {{
-                k: v
+            columns = {{
+                k: _input_decoders[k](v)
                 for k, v in event.items()
                 if k != _NO_ARGS_SENTINEL_COLUMN
             }}
-            n = len(next(iter(event.values()))) if event else 1
+            n = len(next(iter(columns.values()))) if columns else 1
             if _is_sync_gen:
                 def _gen():
                     for i in range(n):
-                        kwargs = {{k: v[i].as_py() for k, v in event.items()}}
-                        yield from {func_name}(**kwargs)
+                        kwargs = _kwargs_for_row(columns, i)
+                        if _output_encoder is None:
+                            yield from {func_name}(**kwargs)
+                        else:
+                            for item in {func_name}(**kwargs):
+                                yield _output_encoder(item)
                 return _gen()
             elif _is_async_gen:
                 async def _agen():
                     for i in range(n):
-                        kwargs = {{k: v[i].as_py() for k, v in event.items()}}
+                        kwargs = _kwargs_for_row(columns, i)
                         async for item in {func_name}(**kwargs):
-                            yield item
+                            yield item if _output_encoder is None else _output_encoder(item)
                 return _agen()
             elif _is_coroutine:
                 import asyncio
                 results = []
                 for i in range(n):
-                    kwargs = {{k: v[i].as_py() for k, v in event.items()}}
-                    results.append(asyncio.run({func_name}(**kwargs)))
+                    kwargs = _kwargs_for_row(columns, i)
+                    result = asyncio.run({func_name}(**kwargs))
+                    if _output_encoder is not None:
+                        result = _output_encoder(result)
+                    results.append(result)
                 return results
             else:
                 results = []
                 for i in range(n):
-                    kwargs = {{k: v[i].as_py() for k, v in event.items()}}
-                    results.append({func_name}(**kwargs))
+                    kwargs = _kwargs_for_row(columns, i)
+                    result = {func_name}(**kwargs)
+                    if _output_encoder is not None:
+                        result = _output_encoder(result)
+                    results.append(result)
                 return results
         """)
+    )
 
 
 def _write_temp(content: str) -> str:
@@ -1423,7 +1476,7 @@ def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
 
     from chalkcompute._arrow_schema import rich_to_arrow_schema
 
-    hints = typing.get_type_hints(func)
+    hints = typing.get_type_hints(func, include_extras=True)
     sig = inspect.signature(func)
 
     # Input: one Field per parameter
@@ -1537,6 +1590,110 @@ def _callable_input_names(
     return names
 
 
+_MISSING_ARGUMENT = object()
+_ArgumentBinder = Callable[[tuple[Any, ...], dict[str, Any]], tuple[Any, ...]]
+
+
+def _compile_fixed_argument_binder(
+    names: tuple[str, ...],
+    *,
+    positional_count: int,
+    defaults: tuple[Any, ...],
+) -> _ArgumentBinder:
+    """Compile argument binding for a fixed, non-variadic parameter list."""
+    indexes = {name: index for index, name in enumerate(names)}
+    parameter_count = len(names)
+
+    def bind(args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[Any, ...]:
+        positional_given = len(args)
+        if positional_given > positional_count:
+            raise TypeError(
+                f"Expected at most {positional_count} positional arguments, "
+                f"got {positional_given}"
+            )
+
+        if not kwargs and positional_given == parameter_count:
+            return args
+
+        values = list(defaults)
+        values[:positional_given] = args
+        for name, value in kwargs.items():
+            index = indexes.get(name)
+            if index is None:
+                raise TypeError(f"Unexpected keyword argument: {name!r}")
+            if index < positional_given:
+                raise TypeError(f"Multiple values for argument: {name!r}")
+            values[index] = value
+
+        for index, value in enumerate(values):
+            if value is _MISSING_ARGUMENT:
+                raise TypeError(f"Missing argument: {names[index]}")
+        return tuple(values)
+
+    return bind
+
+
+def _compile_argument_binder(
+    signature: inspect.Signature,
+) -> tuple[tuple[str, ...], _ArgumentBinder]:
+    """Compile the common fixed-signature path; retain bind() as a fallback."""
+    parameters = tuple(signature.parameters.values())
+    value_parameters = tuple(
+        parameter
+        for parameter in parameters
+        if parameter.kind
+        not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+    )
+    names = tuple(parameter.name for parameter in value_parameters)
+
+    if any(
+        parameter.kind
+        in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        )
+        for parameter in parameters
+    ):
+
+        def bind_fallback(
+            args: tuple[Any, ...], kwargs: dict[str, Any]
+        ) -> tuple[Any, ...]:
+            bound = signature.bind(*args, **kwargs)
+            bound.apply_defaults()
+            return tuple(bound.arguments[name] for name in names)
+
+        return names, bind_fallback
+
+    positional_count = sum(
+        parameter.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD
+        for parameter in value_parameters
+    )
+    defaults = tuple(
+        _MISSING_ARGUMENT
+        if parameter.default is inspect.Parameter.empty
+        else parameter.default
+        for parameter in value_parameters
+    )
+    return names, _compile_fixed_argument_binder(
+        names,
+        positional_count=positional_count,
+        defaults=defaults,
+    )
+
+
+def _compile_catalog_argument_binder(
+    names: typing.Sequence[str],
+) -> tuple[tuple[str, ...], _ArgumentBinder]:
+    """Compile binding for an attached function whose catalog exposes names only."""
+    names_tuple = tuple(names)
+    return names_tuple, _compile_fixed_argument_binder(
+        names_tuple,
+        positional_count=len(names_tuple),
+        defaults=(_MISSING_ARGUMENT,) * len(names_tuple),
+    )
+
+
 # ---------------------------------------------------------------------------
 # RemoteFunction
 # ---------------------------------------------------------------------------
@@ -1631,6 +1788,31 @@ class RemoteFunction:
         self._func = func
         self._has_local_func = True
         self._func_name = getattr(func, "__name__", "anonymous")
+        self._call_parameter_names, self._bind_call_arguments = (
+            _compile_argument_binder(inspect.signature(func))
+        )
+
+        from chalkcompute._arrow_serde import (
+            has_chalk_arrow_contract,
+            unwrap_result_annotation,
+        )
+
+        hints = typing.get_type_hints(func, include_extras=True)
+        serializers_by_name: dict[str, Callable[[Any], Any]] = {
+            param_name: annotation.__chalk_serialize__
+            for param_name, annotation in hints.items()
+            if param_name != "return" and has_chalk_arrow_contract(annotation)
+        }
+        self._arrow_input_serializers: tuple[Callable[[Any], Any] | None, ...] = tuple(
+            serializers_by_name.get(param_name)
+            for param_name in self._call_parameter_names
+        )
+        result_type = unwrap_result_annotation(hints.get("return"))
+        self._arrow_result_deserializer: Callable[[Any], Any] | None = (
+            result_type.__chalk_deserialize__
+            if has_chalk_arrow_contract(result_type)
+            else None
+        )
         if name is not None:
             validate_dns_label(name)
         self._explicit_name = name
@@ -1809,6 +1991,10 @@ class RemoteFunction:
         f._func_name = efv["functionName"]
         f._explicit_name = sanitize_dns_label(efv["functionName"])
         f._input_field_names = _extract_field_names(efv.get("inputArrowSchema"))
+        f._call_parameter_names, f._bind_call_arguments = (
+            _compile_catalog_argument_binder(f._input_field_names)
+        )
+        f._arrow_input_serializers = (None,) * len(f._call_parameter_names)
         f._is_generator, f._is_async = _extract_function_traits(efv)
         sg = data.get("scalingGroup")
         if sg:
@@ -1849,6 +2035,10 @@ class RemoteFunction:
         f._func_name = efv["functionName"]
         f._explicit_name = sanitize_dns_label(efv["functionName"])
         f._input_field_names = _extract_field_names(efv.get("inputArrowSchema"))
+        f._call_parameter_names, f._bind_call_arguments = (
+            _compile_catalog_argument_binder(f._input_field_names)
+        )
+        f._arrow_input_serializers = (None,) * len(f._call_parameter_names)
         f._is_generator, f._is_async = _extract_function_traits(efv)
         sg = data.get("scalingGroup")
         if sg:
@@ -1862,6 +2052,9 @@ class RemoteFunction:
         f._func = lambda *a, **kw: None  # type: ignore[assignment]
         f._has_local_func = False
         f._func_name = "unknown"
+        f._call_parameter_names, f._bind_call_arguments = (
+            _compile_catalog_argument_binder(())
+        )
         f._explicit_name = "unknown"
         f._image = None
         f._cpu = None
@@ -1894,6 +2087,8 @@ class RemoteFunction:
         f._web_url = None
         f._port = 6666
         f._input_field_names = []
+        f._arrow_input_serializers = ()
+        f._arrow_result_deserializer = None
         f._is_generator = False
         f._is_async = False
         f._call_channel = None
@@ -2640,38 +2835,20 @@ class RemoteFunction:
         import pyarrow as pa
         import pyarrow.ipc as ipc
 
-        if self._input_field_names:
-            arguments: dict[str, Any] = {}
-            for i, name in enumerate(self._input_field_names):
-                if name in kwargs:
-                    arguments[name] = kwargs[name]
-                elif i < len(args):
-                    arguments[name] = args[i]
-                else:
-                    raise TypeError(f"Missing argument: {name}")
-        else:
-            sig = inspect.signature(self._func)
-            bound = sig.bind(*args, **kwargs)
-            bound.apply_defaults()
-            arguments = {
-                name: value
-                for name, value in bound.arguments.items()
-                if sig.parameters[name].kind
-                not in (
-                    inspect.Parameter.VAR_POSITIONAL,
-                    inspect.Parameter.VAR_KEYWORD,
-                )
-            }
+        values = self._bind_call_arguments(args, kwargs)
 
         arrays = []
-        names = []
-        if arguments:
-            for param_name, value in arguments.items():
-                arrays.append(pa.array([value]))
-                names.append(param_name)
+        if self._call_parameter_names:
+            for value, serializer in zip(values, self._arrow_input_serializers):
+                if serializer is not None:
+                    serialized = serializer(value)
+                    arrays.append(pa.array([serialized], type=serialized.type))
+                else:
+                    arrays.append(pa.array([value]))
+            names = self._call_parameter_names
         else:
             arrays.append(pa.array([True]))
-            names.append(_NO_ARGS_SENTINEL_COLUMN)
+            names = (_NO_ARGS_SENTINEL_COLUMN,)
         batch = pa.record_batch(arrays, names=names)
 
         sink = pa.BufferOutputStream()
@@ -2682,13 +2859,22 @@ class RemoteFunction:
     def _decode_result_chunks(self, chunks: list[bytes]) -> list[Any]:
         import pyarrow.ipc as ipc
 
+        deserializer = self._arrow_result_deserializer
+
         results: list[Any] = []
         for chunk in chunks:
             reader = ipc.open_stream(chunk)
             for result_batch in reader:
-                result_dict = result_batch.to_pydict()
-                if "result" in result_dict:
-                    results.extend(result_dict["result"])
+                field_index = result_batch.schema.get_field_index("result")
+                if field_index >= 0:
+                    result_column = result_batch.column(field_index)
+                    if deserializer is None:
+                        results.extend(result_column.to_pylist())
+                    else:
+                        results.extend(
+                            None if not value.is_valid else deserializer(value)
+                            for value in result_column
+                        )
         return results
 
     def _materialize_result_chunks(self, chunks: list[bytes]) -> Any:

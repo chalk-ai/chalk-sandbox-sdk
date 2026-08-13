@@ -105,7 +105,7 @@ def _is_pydantic_basemodel(typ: Any) -> bool:
 
 
 def rich_to_arrow_schema(
-    params: dict[str, type],
+    params: dict[str, Any],
 ) -> Any:
     """Convert a mapping of ``{name: python_type}`` to an ``arrow_pb2.Schema``.
 
@@ -122,9 +122,22 @@ def rich_to_arrow_schema(
         The serialized Arrow schema.
     """
     from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
+    from chalkcompute._arrow_serde import (
+        chalk_arrow_type,
+        has_chalk_arrow_contract,
+    )
 
     columns = []
     for name, typ in params.items():
+        if has_chalk_arrow_contract(typ):
+            columns.append(
+                arrow_pb2.Field(
+                    name=name,
+                    arrow_type=chalk_arrow_type(typ),
+                    nullable=False,
+                )
+            )
+            continue
         inner, nullable = _unwrap_optional(typ)
         columns.append(
             arrow_pb2.Field(

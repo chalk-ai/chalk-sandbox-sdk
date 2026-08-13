@@ -4,19 +4,30 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import inspect
 import sys
 import types
+import typing
 
 import pyarrow as pa
 import pytest
 from chalk_remote_call.arrow_utils import decode_ipc_stream, encode_record_batch
 
+from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
 from chalkcompute._cls import _generate_class_handler_shim
 from chalkcompute._function import (
     _NO_ARGS_SENTINEL_COLUMN,
     _NoOpFunction,
     _generate_handler_shim,
     RemoteFunction,
+)
+
+
+_ARROW_POINT_PA_TYPE = pa.struct(
+    [
+        pa.field("x", pa.int32(), nullable=False),
+        pa.field("y", pa.int32(), nullable=False),
+    ]
 )
 
 
@@ -47,6 +58,46 @@ def _decode_result_column(payloads: list[bytes]) -> list[list]:
         for batch in decode_ipc_stream(payload):
             out.append(batch.column("result").to_pylist())
     return out
+
+
+class ArrowPoint:
+    __chalk_arrow_type__ = arrow_pb2.ArrowType(
+        struct=arrow_pb2.Struct(
+            sub_field_types=[
+                arrow_pb2.Field(
+                    name="x",
+                    arrow_type=arrow_pb2.ArrowType(int32=arrow_pb2.EmptyMessage()),
+                    nullable=False,
+                ),
+                arrow_pb2.Field(
+                    name="y",
+                    arrow_type=arrow_pb2.ArrowType(int32=arrow_pb2.EmptyMessage()),
+                    nullable=False,
+                ),
+            ]
+        )
+    )
+
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, ArrowPoint) and (self.x, self.y) == (
+            other.x,
+            other.y,
+        )
+
+    def __chalk_serialize__(self) -> pa.Scalar:
+        return pa.scalar(
+            {"x": self.x, "y": self.y},
+            type=_ARROW_POINT_PA_TYPE,
+        )
+
+    @classmethod
+    def __chalk_deserialize__(cls, value: pa.Scalar) -> ArrowPoint:
+        data = value.as_py()
+        return cls(data["x"], data["y"])
 
 
 class TestGenerateHandlerShimNormal:
@@ -143,6 +194,27 @@ class TestGenerateHandlerShimNormal:
         assert len(batches) == 1
         assert batches[0].to_pydict() == {_NO_ARGS_SENTINEL_COLUMN: [True]}
 
+    def test_arrow_dunder_input_and_output(self):
+        def offset(point: ArrowPoint) -> ArrowPoint:
+            assert isinstance(point, ArrowPoint)
+            return ArrowPoint(point.x + 10, point.y + 20)
+
+        _install_user_module(offset=offset)
+        ns = _load_shim(_generate_handler_shim("offset"))
+        event = {
+            "point": pa.array(
+                [{"x": 1, "y": 2}],
+                type=_ARROW_POINT_PA_TYPE,
+            )
+        }
+
+        result = ns["handler"](event, {})
+
+        assert len(result) == 1
+        assert isinstance(result[0], pa.StructScalar)
+        assert result[0].type.equals(_ARROW_POINT_PA_TYPE)
+        assert result[0].as_py() == {"x": 11, "y": 22}
+
 
 class TestGenerateHandlerShimBatched:
     def test_signature(self):
@@ -233,6 +305,27 @@ class TestGenerateHandlerShimBatched:
 
         assert ns["handler"](events, [{}, {}]) == [[3], [110, 220]]
         assert run_count == 1
+
+    def test_arrow_dunder_values(self):
+        def offset(point: ArrowPoint) -> ArrowPoint:
+            return ArrowPoint(point.x + 1, point.y + 1)
+
+        _install_user_module(offset=offset)
+        ns = _load_shim(_generate_handler_shim("offset", batched=True))
+        events = [
+            {
+                "point": pa.array(
+                    [{"x": 1, "y": 2}, {"x": 3, "y": 4}],
+                    type=_ARROW_POINT_PA_TYPE,
+                )
+            }
+        ]
+
+        result = ns["handler"](events, [{}])
+
+        assert [[value.as_py() for value in row] for row in result] == [
+            [{"x": 2, "y": 3}, {"x": 4, "y": 5}]
+        ]
 
 
 class TestGenerateClassHandlerShimNormal:
@@ -474,6 +567,67 @@ class TestShimViaRemoteCallLib:
         ipc_bytes = _encode_event({"x": pa.array([1, 2]), "y": pa.array([10, 20])})
         payloads = process_batches(ipc_bytes, ns["handler"], None, {})
         assert _decode_result_column(payloads) == [[11, 22]]
+
+    def test_arrow_dunder_roundtrip(self):
+        from chalk_remote_call.servicer import process_batches
+
+        def offset(point: ArrowPoint) -> ArrowPoint:
+            assert isinstance(point, ArrowPoint)
+            return ArrowPoint(point.x + 10, point.y + 20)
+
+        function = RemoteFunction(offset)
+        _install_user_module(offset=offset)
+        ns = _load_shim(_generate_handler_shim("offset"))
+
+        request = function._serialize_call_args(ArrowPoint(1, 2))
+        request_batches = decode_ipc_stream(request)
+        assert request_batches[0].column("point").type.equals(_ARROW_POINT_PA_TYPE)
+
+        payloads = process_batches(request, ns["handler"], None, {})
+
+        response_batches = [
+            batch for payload in payloads for batch in decode_ipc_stream(payload)
+        ]
+        assert response_batches[0].column("result").type.equals(_ARROW_POINT_PA_TYPE)
+        assert function._decode_result_chunks(payloads) == [ArrowPoint(11, 22)]
+
+    def test_arrow_adapters_are_resolved_once(self, monkeypatch):
+        hint_calls = 0
+        bind_calls = 0
+        get_type_hints = typing.get_type_hints
+        signature_bind = inspect.Signature.bind
+
+        def counting_get_type_hints(*args, **kwargs):
+            nonlocal hint_calls
+            hint_calls += 1
+            return get_type_hints(*args, **kwargs)
+
+        def counting_signature_bind(*args, **kwargs):
+            nonlocal bind_calls
+            bind_calls += 1
+            return signature_bind(*args, **kwargs)
+
+        monkeypatch.setattr(typing, "get_type_hints", counting_get_type_hints)
+        monkeypatch.setattr(inspect.Signature, "bind", counting_signature_bind)
+
+        def offset(point: ArrowPoint) -> ArrowPoint:
+            return point
+
+        function = RemoteFunction(offset)
+        function._serialize_call_args(ArrowPoint(1, 2))
+        function._serialize_call_args(ArrowPoint(3, 4))
+
+        assert hint_calls == 1
+        assert bind_calls == 0
+
+    def test_compiled_argument_binder_applies_defaults_and_keywords(self):
+        def configured(x: int, y: int = 2, *, z: int = 3) -> int:
+            return x + y + z
+
+        function = RemoteFunction(configured)
+        batches = decode_ipc_stream(function._serialize_call_args(1, z=4))
+
+        assert batches[0].to_pydict() == {"x": [1], "y": [2], "z": [4]}
 
     def test_sync_generator_streams_per_yield(self):
         from chalk_remote_call.servicer import process_batches
