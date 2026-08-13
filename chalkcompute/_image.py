@@ -605,19 +605,16 @@ class Image:
 
     def _app_module_names(self) -> set[str]:
         """Top-level module names already claimed under ``/app``."""
-        names: set[str] = set()
-        for lazy_file in self._lazy_local_files:
-            if lazy_file.dest.startswith("/app/"):
-                names.add(
-                    lazy_file.dest[len("/app/") :].split("/")[0].removesuffix(".py")
-                )
-        for step in self._steps:
-            if not step.HasField("add_file"):
-                continue
-            dest = step.add_file.destination
-            if dest.startswith("/app/"):
-                names.add(dest[len("/app/") :].split("/")[0].removesuffix(".py"))
-        return names
+        dests = [lazy_file.dest for lazy_file in self._lazy_local_files] + [
+            step.add_file.destination
+            for step in self._steps
+            if step.HasField("add_file")
+        ]
+        return {
+            dest[len("/app/") :].split("/")[0].removesuffix(".py")
+            for dest in dests
+            if dest.startswith("/app/")
+        }
 
     def add_local_python_source(self, *modules: str) -> Image:
         """Add local Python modules or packages to ``/app`` in the image.
