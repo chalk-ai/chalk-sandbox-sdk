@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from typing import Annotated
+
 import pyarrow as pa
 import pytest
 
 from chalkcompute._arrow_serde import (
     chalk_arrow_type,
     deserialize_scalar,
+    has_chalk_arrow_contract,
     serialize_value,
 )
 
@@ -45,14 +48,39 @@ def test_round_trip_uses_arrow_scalar():
     assert deserialize_scalar(serialized, Point) == Point(2, 3)
 
 
-def test_optional_none_bypasses_dunders():
-    null = pa.scalar(None, type=Point.__chalk_arrow_type__)
+def test_contract_requires_all_three_dunders():
+    class ArrowTypeOnly:
+        __chalk_arrow_type__ = pa.int64()
 
-    serialized = serialize_value(None, Point | None)
-    assert isinstance(serialized, pa.StructScalar)
-    assert serialized.type.equals(Point.__chalk_arrow_type__)
-    assert not serialized.is_valid
-    assert deserialize_scalar(null, Point | None) is None
+    class MethodsOnly:
+        def __chalk_serialize__(self) -> pa.Scalar:
+            return pa.scalar(1)
+
+        @classmethod
+        def __chalk_deserialize__(cls, value: pa.Scalar) -> MethodsOnly:
+            del value
+            return cls()
+
+    assert has_chalk_arrow_contract(Point)
+    assert not has_chalk_arrow_contract(ArrowTypeOnly)
+    assert not has_chalk_arrow_contract(MethodsOnly)
+    assert not has_chalk_arrow_contract(Point | None)
+    assert not has_chalk_arrow_contract(Annotated[Point, "metadata"])
+
+
+def test_partial_contract_is_not_custom_serialized():
+    class Partial:
+        __chalk_arrow_type__ = pa.int64()
+
+    value = Partial()
+
+    assert serialize_value(value, Partial) is value
+
+
+def test_contract_is_not_inferred_from_runtime_value():
+    value = Point(2, 3)
+
+    assert serialize_value(value, None) is value
 
 
 def test_serializer_must_return_arrow_scalar():

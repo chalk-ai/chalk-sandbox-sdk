@@ -194,22 +194,6 @@ class TestGenerateHandlerShimNormal:
         assert result[0].type.equals(ArrowPoint.__chalk_arrow_type__)
         assert result[0].as_py() == {"x": 11, "y": 22}
 
-    def test_optional_arrow_dunder_preserves_typed_null(self):
-        def clear(point: ArrowPoint | None) -> ArrowPoint | None:
-            assert point is None
-            return None
-
-        _install_user_module(clear=clear)
-        ns = _load_shim(_generate_handler_shim("clear"))
-        event = {"point": pa.array([None], type=ArrowPoint.__chalk_arrow_type__)}
-
-        result = ns["handler"](event, {})
-
-        assert len(result) == 1
-        assert isinstance(result[0], pa.StructScalar)
-        assert result[0].type.equals(ArrowPoint.__chalk_arrow_type__)
-        assert not result[0].is_valid
-
 
 class TestGenerateHandlerShimBatched:
     def test_signature(self):

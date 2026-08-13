@@ -99,47 +99,6 @@ def _is_pydantic_basemodel(typ: Any) -> bool:
     )
 
 
-def _contains_chalk_arrow_contract(
-    annotation: Any, *, seen: set[Any] | None = None
-) -> bool:
-    """Return whether a nested annotation contains a custom Arrow class."""
-    from chalkcompute._arrow_serde import has_chalk_arrow_contract
-
-    annotation = _unwrap_annotated(annotation)
-    if _is_optional(annotation):
-        annotation = next(a for a in get_args(annotation) if a is not _NoneType)
-    if has_chalk_arrow_contract(annotation):
-        return True
-
-    seen = set() if seen is None else seen
-    try:
-        if annotation in seen:
-            return False
-        seen.add(annotation)
-    except TypeError:
-        pass
-
-    origin = get_origin(annotation)
-    if origin is not None:
-        return any(
-            arg is not ... and _contains_chalk_arrow_contract(arg, seen=seen)
-            for arg in get_args(annotation)
-        )
-
-    if isinstance(annotation, type) and (
-        dataclasses.is_dataclass(annotation)
-        or _is_namedtuple(annotation)
-        or is_typeddict(annotation)
-        or _has_attrs(annotation)
-        or _is_pydantic_basemodel(annotation)
-    ):
-        return any(
-            _contains_chalk_arrow_contract(field_type, seen=seen)
-            for field_type in typing.get_type_hints(annotation).values()
-        )
-    return False
-
-
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -163,19 +122,23 @@ def rich_to_arrow_schema(
         The serialized Arrow schema.
     """
     from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
-    from chalkcompute._arrow_serde import has_chalk_arrow_contract
+    from chalkcompute._arrow_serde import (
+        chalk_arrow_type,
+        has_chalk_arrow_contract,
+    )
 
     columns = []
     for name, typ in params.items():
-        inner, nullable = _unwrap_optional(typ)
-        if not has_chalk_arrow_contract(inner) and _contains_chalk_arrow_contract(
-            inner
-        ):
-            raise TypeError(
-                "Chalk Arrow-serialized classes are currently supported only as "
-                f"direct function inputs and outputs; field {name!r} nests one "
-                f"inside {typ!r}."
+        if has_chalk_arrow_contract(typ):
+            columns.append(
+                arrow_pb2.Field(
+                    name=name,
+                    arrow_type=_pyarrow_to_arrow_type(chalk_arrow_type(typ)),
+                    nullable=False,
+                )
             )
+            continue
+        inner, nullable = _unwrap_optional(typ)
         columns.append(
             arrow_pb2.Field(
                 name=name,
@@ -379,14 +342,6 @@ def _rich_to_arrow_type(python_type: Any) -> Any:
     python_type = _unwrap_annotated(python_type)
     if _is_optional(python_type):
         python_type = next(a for a in get_args(python_type) if a is not _NoneType)
-
-    from chalkcompute._arrow_serde import (
-        chalk_arrow_type,
-        has_chalk_arrow_contract,
-    )
-
-    if has_chalk_arrow_contract(python_type):
-        return _pyarrow_to_arrow_type(chalk_arrow_type(python_type))
 
     origin = get_origin(python_type)
 

@@ -349,7 +349,9 @@ def _generate_handler_shim(
             _NO_ARGS_SENTINEL_COLUMN = {_NO_ARGS_SENTINEL_COLUMN!r}
             _target = inspect.unwrap({func_name})
             _is_coroutine = inspect.iscoroutinefunction(_target)
-            _input_types = _chalk_typing.get_type_hints(_target)
+            _input_types = _chalk_typing.get_type_hints(
+                _target, include_extras=True
+            )
             _output_type = _chalk_result_annotation(_target)
 
 
@@ -419,7 +421,9 @@ def _generate_handler_shim(
         _is_sync_gen = inspect.isgeneratorfunction(_target)
         _is_async_gen = inspect.isasyncgenfunction(_target)
         _is_coroutine = inspect.iscoroutinefunction(_target) and not _is_async_gen
-        _input_types = _chalk_typing.get_type_hints(_target)
+        _input_types = _chalk_typing.get_type_hints(
+            _target, include_extras=True
+        )
         _output_type = _chalk_result_annotation(_target)
 
 
@@ -1353,7 +1357,7 @@ def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
 
     from chalkcompute._arrow_schema import rich_to_arrow_schema
 
-    hints = typing.get_type_hints(func)
+    hints = typing.get_type_hints(func, include_extras=True)
     sig = inspect.signature(func)
 
     # Input: one Field per parameter
@@ -2488,7 +2492,11 @@ class RemoteFunction:
             serialize_value,
         )
 
-        input_types = typing.get_type_hints(self._func) if self._has_local_func else {}
+        input_types = (
+            typing.get_type_hints(self._func, include_extras=True)
+            if self._has_local_func
+            else {}
+        )
 
         if self._input_field_names:
             arguments: dict[str, Any] = {}
@@ -2518,15 +2526,13 @@ class RemoteFunction:
         if arguments:
             for param_name, value in arguments.items():
                 annotation = input_types.get(param_name)
-                serialized = serialize_value(value, annotation)
                 if annotation is not None and has_chalk_arrow_contract(annotation):
+                    serialized = serialize_value(value, annotation)
                     arrays.append(
                         pa.array([serialized], type=chalk_arrow_type(annotation))
                     )
-                elif isinstance(serialized, pa.Scalar):
-                    arrays.append(pa.array([serialized], type=serialized.type))
                 else:
-                    arrays.append(pa.array([serialized]))
+                    arrays.append(pa.array([value]))
                 names.append(param_name)
         else:
             arrays.append(pa.array([True]))

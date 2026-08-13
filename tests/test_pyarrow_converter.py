@@ -167,6 +167,14 @@ class TestRichToArrowSchema:
         assert fields[1].arrow_type.HasField("utf8")
         assert fields[1].nullable is True
 
+    @pytest.mark.parametrize(
+        "annotation",
+        [typing.Optional[ArrowPoint], typing.Annotated[ArrowPoint, "metadata"]],
+    )
+    def test_custom_type_must_be_direct_annotation(self, annotation):
+        with pytest.raises(TypeError, match="Unable to convert type"):
+            rich_to_arrow_schema({"point": annotation})
+
     def test_custom_type_requires_pyarrow_data_type(self):
         class Invalid:
             __chalk_arrow_type__ = "struct<x: int64>"
@@ -194,12 +202,6 @@ class TestRichToArrowSchema:
 
         with pytest.raises(TypeError, match="Unable to convert PyArrow type"):
             rich_to_arrow_schema({"value": DictionaryBacked})
-
-    def test_custom_type_nested_in_container_fails_explicitly(self):
-        with pytest.raises(
-            TypeError, match="supported only as direct function inputs and outputs"
-        ):
-            rich_to_arrow_schema({"points": list[ArrowPoint]})
 
 
 # ---------------------------------------------------------------------------

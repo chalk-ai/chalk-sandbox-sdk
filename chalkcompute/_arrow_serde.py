@@ -30,35 +30,20 @@ SDK so the same rules can be embedded in generated function handlers.
 from __future__ import annotations
 
 import inspect
-import types
 import typing
-from typing import Annotated, Any, Union, get_args, get_origin
+from typing import Any, get_args, get_origin
 
 
 _ARROW_TYPE_ATTRIBUTE = "__chalk_arrow_type__"
 _SERIALIZE_METHOD = "__chalk_serialize__"
 _DESERIALIZE_METHOD = "__chalk_deserialize__"
-_NoneType = type(None)
-
-
-def _unwrap_annotation(annotation: Any) -> Any:
-    """Remove ``Annotated`` and a single ``None`` branch from an annotation."""
-    while get_origin(annotation) is Annotated:
-        annotation = get_args(annotation)[0]
-
-    origin = get_origin(annotation)
-    args = get_args(annotation)
-    if origin in (Union, types.UnionType) and len(args) == 2 and _NoneType in args:
-        return next(arg for arg in args if arg is not _NoneType)
-    return annotation
 
 
 def has_chalk_arrow_contract(annotation: Any) -> bool:
-    """Return whether an annotation declares any part of the Chalk contract."""
-    annotation = _unwrap_annotation(annotation)
+    """Return whether a class declares the complete Chalk Arrow contract."""
     if not isinstance(annotation, type):
         return False
-    return any(
+    return all(
         hasattr(annotation, name)
         for name in (
             _ARROW_TYPE_ATTRIBUTE,
@@ -78,7 +63,6 @@ def chalk_arrow_type(annotation: Any) -> Any:
     """
     import pyarrow as pa
 
-    annotation = _unwrap_annotation(annotation)
     if not isinstance(annotation, type):
         raise TypeError(
             "Chalk Arrow serialization can only be declared on a class, "
@@ -110,38 +94,35 @@ def chalk_arrow_type(annotation: Any) -> Any:
     return arrow_type
 
 
-def serialize_value(value: Any, annotation: Any | None = None) -> Any:
+def serialize_value(value: Any, annotation: Any) -> Any:
     """Serialize one typed function value to its Arrow scalar representation."""
     import pyarrow as pa
 
-    candidate = type(value) if annotation is None else _unwrap_annotation(annotation)
-    if not has_chalk_arrow_contract(candidate):
+    if not has_chalk_arrow_contract(annotation):
         return value
 
-    expected_type = chalk_arrow_type(candidate)
-    if value is None:
-        return pa.scalar(None, type=expected_type)
-    if not isinstance(value, candidate):
+    expected_type = chalk_arrow_type(annotation)
+    if not isinstance(value, annotation):
         raise TypeError(
-            f"Expected a {candidate.__module__}.{candidate.__qualname__}, "
+            f"Expected a {annotation.__module__}.{annotation.__qualname__}, "
             f"got {type(value).__module__}.{type(value).__qualname__}."
         )
 
     serialized = value.__chalk_serialize__()
     if not isinstance(serialized, pa.Scalar):
         raise TypeError(
-            f"{candidate.__module__}.{candidate.__qualname__}.{_SERIALIZE_METHOD} "
+            f"{annotation.__module__}.{annotation.__qualname__}.{_SERIALIZE_METHOD} "
             f"must return a pyarrow.Scalar, got {type(serialized).__name__}."
         )
     if not serialized.type.equals(expected_type):
         raise TypeError(
-            f"{candidate.__module__}.{candidate.__qualname__}.{_SERIALIZE_METHOD} "
+            f"{annotation.__module__}.{annotation.__qualname__}.{_SERIALIZE_METHOD} "
             f"returned Arrow type {serialized.type}, expected {expected_type}."
         )
     return serialized
 
 
-def deserialize_scalar(value: Any, annotation: Any | None = None) -> Any:
+def deserialize_scalar(value: Any, annotation: Any) -> Any:
     """Deserialize one Arrow scalar according to a function annotation."""
     import pyarrow as pa
 
@@ -153,7 +134,7 @@ def deserialize_scalar(value: Any, annotation: Any | None = None) -> Any:
     if not value.is_valid:
         return None
 
-    candidate = None if annotation is None else _unwrap_annotation(annotation)
+    candidate = annotation
     if candidate is None or not has_chalk_arrow_contract(candidate):
         return value.as_py()
 
@@ -171,7 +152,7 @@ def function_result_annotation(func: Any) -> Any | None:
     """Return a function's scalar return or generator yield annotation."""
     import collections.abc as cabc
 
-    hints = typing.get_type_hints(func)
+    hints = typing.get_type_hints(func, include_extras=True)
     annotation = hints.get("return")
     origin = get_origin(annotation)
     if origin in (
@@ -199,24 +180,11 @@ def handler_runtime_source() -> str:
     return textwrap.dedent(
         """\
         import collections.abc as _chalk_cabc
-        import types as _chalk_types
         import typing as _chalk_typing
         import pyarrow as _chalk_pa
 
 
-        def _chalk_unwrap_annotation(annotation):
-            while _chalk_typing.get_origin(annotation) is _chalk_typing.Annotated:
-                annotation = _chalk_typing.get_args(annotation)[0]
-            origin = _chalk_typing.get_origin(annotation)
-            args = _chalk_typing.get_args(annotation)
-            if (origin in (_chalk_typing.Union, _chalk_types.UnionType)
-                    and len(args) == 2 and type(None) in args):
-                return next(arg for arg in args if arg is not type(None))
-            return annotation
-
-
         def _chalk_contract_type(annotation):
-            annotation = _chalk_unwrap_annotation(annotation)
             if not isinstance(annotation, type):
                 return None
             names = (
@@ -224,7 +192,7 @@ def handler_runtime_source() -> str:
                 "__chalk_serialize__",
                 "__chalk_deserialize__",
             )
-            if not any(hasattr(annotation, name) for name in names):
+            if not all(hasattr(annotation, name) for name in names):
                 return None
             arrow_type = getattr(annotation, "__chalk_arrow_type__", None)
             if not isinstance(arrow_type, _chalk_pa.DataType):
@@ -265,10 +233,6 @@ def handler_runtime_source() -> str:
             contract_type = _chalk_contract_type(annotation)
             if contract_type is None:
                 return value
-            if value is None:
-                return _chalk_pa.scalar(
-                    None, type=contract_type.__chalk_arrow_type__
-                )
             if not isinstance(value, contract_type):
                 raise TypeError(
                     f"Expected {contract_type.__module__}."
@@ -292,7 +256,9 @@ def handler_runtime_source() -> str:
 
 
         def _chalk_result_annotation(target):
-            annotation = _chalk_typing.get_type_hints(target).get("return")
+            annotation = _chalk_typing.get_type_hints(
+                target, include_extras=True
+            ).get("return")
             origin = _chalk_typing.get_origin(annotation)
             if origin in (
                 _chalk_cabc.Iterator,
