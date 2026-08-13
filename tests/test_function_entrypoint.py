@@ -96,6 +96,7 @@ def test_function_deploy_image_groups_local_mounts_by_purpose(
     grouped = image.lazy_local_files_grouped_for_volume_mounts()
     assert set(grouped) == {
         "/app",
+        "/app/tests",
         "/tmp/remote-call-wheel",
         "/tmp/sdk",
     }

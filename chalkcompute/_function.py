@@ -37,6 +37,8 @@ import json
 import linecache
 import logging
 import os
+import shutil
+import sys
 import tempfile
 import textwrap
 import threading
@@ -54,6 +56,7 @@ from typing import (
     runtime_checkable,
 )
 
+from chalkcompute import _local_dev
 from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import (
     ConnectClient,
@@ -61,7 +64,6 @@ from chalkcompute._connect import (
     grpc_target_from_url,
     service_auth_context_from_env,
 )
-from chalkcompute import _local_dev
 from chalkcompute._naming import (
     sanitize_dns_label,
     validate_dns_label,
@@ -286,9 +288,14 @@ def _is_chalkcompute_decorator(
     return False
 
 
+_USER_MODULE_NAME = "user_module"
+_USER_MODULE_PATH = f"/app/{_USER_MODULE_NAME}.py"
+
+
 def _generate_handler_shim(
     func_name: str,
     *,
+    module_name: str = _USER_MODULE_NAME,
     batched: bool = False,
     bind_models: bool = False,
 ) -> str:
@@ -307,6 +314,9 @@ def _generate_handler_shim(
     ----------
     func_name
         Name of the user function to import and invoke.
+    module_name
+        Module to import ``func_name`` from. ``user_module`` for single-file
+        deploys; the function's real dotted module name for package deploys.
     batched
         Whether the deployed function enables batching.
     bind_models
@@ -338,7 +348,7 @@ def _generate_handler_shim(
             import inspect
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
-            from user_module import {func_name}
+            from {module_name} import {func_name}
 
             _NO_ARGS_SENTINEL_COLUMN = {_NO_ARGS_SENTINEL_COLUMN!r}
             _target = inspect.unwrap({func_name})
@@ -391,7 +401,7 @@ def _generate_handler_shim(
     return bootstrap + textwrap.dedent(f"""\
         import inspect
 
-        from user_module import {func_name}
+        from {module_name} import {func_name}
 
         _NO_ARGS_SENTINEL_COLUMN = {_NO_ARGS_SENTINEL_COLUMN!r}
         _target = inspect.unwrap({func_name})
@@ -907,6 +917,85 @@ def _source_file_for_deploy(func: Callable[..., Any]) -> str:
     return inspect.getfile(inspect.unwrap(func))
 
 
+def _package_dir_for_module(module_name: str) -> str | None:
+    """Directory of the top-level package containing ``module_name``.
+
+    Returns ``None`` for non-dotted module names (loose scripts,
+    ``__main__``) and for packages that can't be resolved to a single
+    directory — callers fall back to single-file deploy.
+    """
+    if "." not in module_name:
+        return None
+    package = sys.modules.get(module_name.split(".")[0])
+    paths = list(getattr(package, "__path__", None) or [])
+    if len(paths) != 1:
+        return None
+    return paths[0]
+
+
+def _strip_chalkcompute_for_package(source: str) -> str:
+    from chalkcompute._cls import _strip_chalkcompute_from_class_source
+
+    return _strip_chalkcompute_from_class_source(
+        _strip_chalkcompute_from_source(source)
+    )
+
+
+def _prepare_package_dir(
+    package_dir: str,
+    *,
+    label: str,
+    entrypoint_file: str,
+    entrypoint_sources: typing.Sequence[str],
+) -> tuple[str, bool]:
+    """Return the package directory to deploy, stripping chalkcompute if needed.
+
+    In strip mode every ``.py`` file in the package is rewritten (both the
+    function and class strip passes, since any file may use either
+    decorator) into a temp copy of the tree.
+
+    Parameters
+    ----------
+    package_dir
+        Directory of the top-level package to deploy.
+    label
+        Human-readable identifier used in the strip-mode guard error.
+    entrypoint_file
+        Source file containing the deployed function/class, checked by the
+        strip-mode guard.
+    entrypoint_sources
+        Source of the deployed function(s)/method(s) whose bodies the
+        strip-mode guard inspects.
+
+    Returns
+    -------
+    tuple of (str, bool)
+        ``(path, is_temp)`` — if stripping produced a temp directory, the
+        caller should clean it up.
+    """
+    if not _should_strip_source():
+        return package_dir, False
+
+    original = _source_text_for_deploy(entrypoint_file)
+    _assert_stripped_source_self_contained(
+        original,
+        _strip_chalkcompute_for_package(original),
+        label=label,
+        entrypoint_sources=list(entrypoint_sources),
+    )
+
+    temp_dir = tempfile.mkdtemp(prefix="chalkfn_pkg_")
+    shutil.copytree(
+        package_dir,
+        temp_dir,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        dirs_exist_ok=True,
+    )
+    for py_file in Path(temp_dir).rglob("*.py"):
+        py_file.write_text(_strip_chalkcompute_for_package(py_file.read_text()))
+    return temp_dir, True
+
+
 def _chalkcompute_bound_names(source: str) -> set[str]:
     """Names that ``source`` binds to chalkcompute via import.
 
@@ -1095,7 +1184,8 @@ def _remote_call_runtime_package_with_extras(extras: list[str]) -> str:
         package = f"{_REMOTE_CALL_RUNTIME_PACKAGE}[{','.join(sorted(extras))}]"
 
     try:
-        from importlib.metadata import PackageNotFoundError, version as _pkg_version
+        from importlib.metadata import PackageNotFoundError
+        from importlib.metadata import version as _pkg_version
 
         return f"{package}=={_pkg_version(_REMOTE_CALL_RUNTIME_PACKAGE)}"
     except PackageNotFoundError:
@@ -1209,16 +1299,19 @@ def _build_and_upload(
 
 
 def _cleanup_temp_files(paths: list[str]) -> None:
-    """Remove temporary files, ignoring errors.
+    """Remove temporary files or directories, ignoring errors.
 
     Parameters
     ----------
     paths
-        Paths to temporary files to remove.
+        Paths to temporary files/directories to remove.
     """
     for tmp in paths:
         try:
-            os.unlink(tmp)
+            if os.path.isdir(tmp):
+                shutil.rmtree(tmp, ignore_errors=True)
+            else:
+                os.unlink(tmp)
         except OSError:
             pass
 
@@ -1799,40 +1892,106 @@ class RemoteFunction:
 
     # -- Image building --------------------------------------------------------
 
+    def _add_package_source(
+        self,
+        base_image: _Image,
+        package_dir: str,
+        module_name: str,
+        temp_files: list[str],
+    ) -> _Image:
+        """Add the function's whole top-level package to the image."""
+        if module_name.split(".")[0] == "handler":
+            raise FunctionBuildError(
+                f"Cannot deploy function {self._func_name!r} from a package "
+                f"named 'handler': the package would shadow the generated "
+                f"handler module at /app/handler.py. Rename the package."
+            )
+        prepared_dir, dir_is_temp = _prepare_package_dir(
+            package_dir,
+            label=f"Function {self._func_name!r}",
+            entrypoint_file=_source_file_for_deploy(self._func),
+            entrypoint_sources=_entrypoint_source(self._func),
+        )
+        if dir_is_temp:
+            temp_files.append(prepared_dir)
+        return base_image.add_local_dir(
+            prepared_dir,
+            f"/app/{module_name.split('.')[0]}",
+            exclude=["**/__pycache__/**", "**/*.pyc"],
+        )
+
+    def _add_single_file_source(
+        self,
+        base_image: _Image,
+        temp_files: list[str],
+    ) -> _Image:
+        """Add the function's source file to the image as ``user_module.py``."""
+        source_file, source_is_temp = _prepare_source_file(
+            _source_file_for_deploy(self._func),
+            label=f"Function {self._func_name!r}",
+            entrypoint_sources=_entrypoint_source(self._func),
+        )
+        if source_is_temp:
+            temp_files.append(source_file)
+        return base_image.add_local_file(source_file, _USER_MODULE_PATH)
+
+    def _add_handler_shim(
+        self,
+        deploy_image: _Image,
+        shim_module: str,
+        temp_files: list[str],
+    ) -> _Image:
+        """Generate the handler shim and finalize the deploy image env."""
+        from chalkcompute._model import MODELS_ENV_VAR
+
+        handler_shim = _generate_handler_shim(
+            self._func_name,
+            module_name=shim_module,
+            batched=self._max_batching_size is not None,
+            bind_models=bool(self._env.get(MODELS_ENV_VAR)),
+        )
+        shim_path = _write_temp(handler_shim)
+        temp_files.append(shim_path)
+
+        return deploy_image.add_local_file(shim_path, "/app/handler.py").env(
+            {"PYTHONPATH": "/app", _REMOTE_ENV_VAR: "1"}
+        )
+
     def _build_deploy_image(self) -> _Image:
-        """Build the deploy image with handler shim and user module.
+        """Build the deploy image with handler shim and user code.
+
+        When the function is defined in a package (its module name is
+        dotted), the whole top-level package is shipped and the shim imports
+        the function from its real module, so sibling-module helpers resolve
+        remotely. Otherwise the single source file is shipped as
+        ``user_module.py``.
 
         Returns
         -------
         Image
             Declarative image ready to be built.
         """
-        source_file, source_is_temp = _prepare_source_file(
-            _source_file_for_deploy(self._func),
-            label=f"Function {self._func_name!r}",
-            entrypoint_sources=_entrypoint_source(self._func),
+        module_name = self._func.__module__ or ""
+        package_dir = _package_dir_for_module(module_name)
+
+        base_image = _make_base_image(
+            self._image,
+            remote_call_runtime_package=self._remote_call_runtime_package(),
         )
 
-        from chalkcompute._model import MODELS_ENV_VAR
-
-        handler_shim = _generate_handler_shim(
-            self._func_name,
-            batched=self._max_batching_size is not None,
-            bind_models=bool(self._env.get(MODELS_ENV_VAR)),
-        )
-        shim_path = _write_temp(handler_shim)
-
-        deploy_image = (
-            _make_base_image(
-                self._image,
-                remote_call_runtime_package=self._remote_call_runtime_package(),
+        temp_files: list[str] = []
+        if package_dir is not None:
+            shim_module = module_name
+            deploy_image = self._add_package_source(
+                base_image, package_dir, module_name, temp_files
             )
-            .add_local_file(source_file, "/app/user_module.py")
-            .add_local_file(shim_path, "/app/handler.py")
-            .env({"PYTHONPATH": "/app", _REMOTE_ENV_VAR: "1"})
-        )
+        else:
+            shim_module = _USER_MODULE_NAME
+            deploy_image = self._add_single_file_source(base_image, temp_files)
 
-        self._temp_files = [shim_path] + ([source_file] if source_is_temp else [])
+        deploy_image = self._add_handler_shim(deploy_image, shim_module, temp_files)
+
+        self._temp_files = temp_files
         return deploy_image
 
     # -- Lifecycle -------------------------------------------------------------
