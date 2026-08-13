@@ -11,12 +11,21 @@ import pyarrow as pa
 import pytest
 from chalk_remote_call.arrow_utils import decode_ipc_stream, encode_record_batch
 
+from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
 from chalkcompute._cls import _generate_class_handler_shim
 from chalkcompute._function import (
     _NO_ARGS_SENTINEL_COLUMN,
     _NoOpFunction,
     _generate_handler_shim,
     RemoteFunction,
+)
+
+
+_ARROW_POINT_PA_TYPE = pa.struct(
+    [
+        pa.field("x", pa.int32(), nullable=False),
+        pa.field("y", pa.int32(), nullable=False),
+    ]
 )
 
 
@@ -50,11 +59,21 @@ def _decode_result_column(payloads: list[bytes]) -> list[list]:
 
 
 class ArrowPoint:
-    __chalk_arrow_type__ = pa.struct(
-        [
-            pa.field("x", pa.int32(), nullable=False),
-            pa.field("y", pa.int32(), nullable=False),
-        ]
+    __chalk_arrow_type__ = arrow_pb2.ArrowType(
+        struct=arrow_pb2.Struct(
+            sub_field_types=[
+                arrow_pb2.Field(
+                    name="x",
+                    arrow_type=arrow_pb2.ArrowType(int32=arrow_pb2.EmptyMessage()),
+                    nullable=False,
+                ),
+                arrow_pb2.Field(
+                    name="y",
+                    arrow_type=arrow_pb2.ArrowType(int32=arrow_pb2.EmptyMessage()),
+                    nullable=False,
+                ),
+            ]
+        )
     )
 
     def __init__(self, x: int, y: int):
@@ -70,7 +89,7 @@ class ArrowPoint:
     def __chalk_serialize__(self) -> pa.Scalar:
         return pa.scalar(
             {"x": self.x, "y": self.y},
-            type=self.__chalk_arrow_type__,
+            type=_ARROW_POINT_PA_TYPE,
         )
 
     @classmethod
@@ -183,7 +202,7 @@ class TestGenerateHandlerShimNormal:
         event = {
             "point": pa.array(
                 [{"x": 1, "y": 2}],
-                type=ArrowPoint.__chalk_arrow_type__,
+                type=_ARROW_POINT_PA_TYPE,
             )
         }
 
@@ -191,7 +210,7 @@ class TestGenerateHandlerShimNormal:
 
         assert len(result) == 1
         assert isinstance(result[0], pa.StructScalar)
-        assert result[0].type.equals(ArrowPoint.__chalk_arrow_type__)
+        assert result[0].type.equals(_ARROW_POINT_PA_TYPE)
         assert result[0].as_py() == {"x": 11, "y": 22}
 
 
@@ -295,7 +314,7 @@ class TestGenerateHandlerShimBatched:
             {
                 "point": pa.array(
                     [{"x": 1, "y": 2}, {"x": 3, "y": 4}],
-                    type=ArrowPoint.__chalk_arrow_type__,
+                    type=_ARROW_POINT_PA_TYPE,
                 )
             }
         ]
@@ -560,22 +579,14 @@ class TestShimViaRemoteCallLib:
 
         request = function._serialize_call_args(ArrowPoint(1, 2))
         request_batches = decode_ipc_stream(request)
-        assert (
-            request_batches[0]
-            .column("point")
-            .type.equals(ArrowPoint.__chalk_arrow_type__)
-        )
+        assert request_batches[0].column("point").type.equals(_ARROW_POINT_PA_TYPE)
 
         payloads = process_batches(request, ns["handler"], None, {})
 
         response_batches = [
             batch for payload in payloads for batch in decode_ipc_stream(payload)
         ]
-        assert (
-            response_batches[0]
-            .column("result")
-            .type.equals(ArrowPoint.__chalk_arrow_type__)
-        )
+        assert response_batches[0].column("result").type.equals(_ARROW_POINT_PA_TYPE)
         assert function._decode_result_chunks(payloads) == [ArrowPoint(11, 22)]
 
     def test_sync_generator_streams_per_yield(self):

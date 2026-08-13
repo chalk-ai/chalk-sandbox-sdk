@@ -5,6 +5,7 @@ from typing import Annotated
 import pyarrow as pa
 import pytest
 
+from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
 from chalkcompute._arrow_serde import (
     chalk_arrow_type,
     deserialize_scalar,
@@ -13,12 +14,30 @@ from chalkcompute._arrow_serde import (
 )
 
 
+_POINT_PA_TYPE = pa.struct(
+    [
+        pa.field("x", pa.int32(), nullable=False),
+        pa.field("y", pa.int32(), nullable=False),
+    ]
+)
+
+
 class Point:
-    __chalk_arrow_type__ = pa.struct(
-        [
-            pa.field("x", pa.int32(), nullable=False),
-            pa.field("y", pa.int32(), nullable=False),
-        ]
+    __chalk_arrow_type__ = arrow_pb2.ArrowType(
+        struct=arrow_pb2.Struct(
+            sub_field_types=[
+                arrow_pb2.Field(
+                    name="x",
+                    arrow_type=arrow_pb2.ArrowType(int32=arrow_pb2.EmptyMessage()),
+                    nullable=False,
+                ),
+                arrow_pb2.Field(
+                    name="y",
+                    arrow_type=arrow_pb2.ArrowType(int32=arrow_pb2.EmptyMessage()),
+                    nullable=False,
+                ),
+            ]
+        )
     )
 
     def __init__(self, x: int, y: int):
@@ -31,7 +50,7 @@ class Point:
     def __chalk_serialize__(self) -> pa.Scalar:
         return pa.scalar(
             {"x": self.x, "y": self.y},
-            type=self.__chalk_arrow_type__,
+            type=_POINT_PA_TYPE,
         )
 
     @classmethod
@@ -44,13 +63,13 @@ def test_round_trip_uses_arrow_scalar():
     serialized = serialize_value(Point(2, 3), Point)
 
     assert isinstance(serialized, pa.StructScalar)
-    assert serialized.type.equals(Point.__chalk_arrow_type__)
+    assert serialized.type.equals(_POINT_PA_TYPE)
     assert deserialize_scalar(serialized, Point) == Point(2, 3)
 
 
 def test_contract_requires_all_three_dunders():
     class ArrowTypeOnly:
-        __chalk_arrow_type__ = pa.int64()
+        __chalk_arrow_type__ = arrow_pb2.ArrowType(int64=arrow_pb2.EmptyMessage())
 
     class MethodsOnly:
         def __chalk_serialize__(self) -> pa.Scalar:
@@ -70,7 +89,7 @@ def test_contract_requires_all_three_dunders():
 
 def test_partial_contract_is_not_custom_serialized():
     class Partial:
-        __chalk_arrow_type__ = pa.int64()
+        __chalk_arrow_type__ = arrow_pb2.ArrowType(int64=arrow_pb2.EmptyMessage())
 
     value = Partial()
 
@@ -85,7 +104,7 @@ def test_contract_is_not_inferred_from_runtime_value():
 
 def test_serializer_must_return_arrow_scalar():
     class Invalid:
-        __chalk_arrow_type__ = pa.int64()
+        __chalk_arrow_type__ = arrow_pb2.ArrowType(int64=arrow_pb2.EmptyMessage())
 
         def __chalk_serialize__(self):
             return 1
@@ -99,25 +118,9 @@ def test_serializer_must_return_arrow_scalar():
         serialize_value(Invalid(), Invalid)
 
 
-def test_serializer_scalar_type_must_match_contract():
-    class Invalid:
-        __chalk_arrow_type__ = pa.int32()
-
-        def __chalk_serialize__(self) -> pa.Scalar:
-            return pa.scalar(1, type=pa.int64())
-
-        @classmethod
-        def __chalk_deserialize__(cls, value: pa.Scalar) -> Invalid:
-            del value
-            return cls()
-
-    with pytest.raises(TypeError, match="returned Arrow type int64, expected int32"):
-        serialize_value(Invalid(), Invalid)
-
-
 def test_deserializer_must_be_classmethod():
     class Invalid:
-        __chalk_arrow_type__ = pa.int64()
+        __chalk_arrow_type__ = arrow_pb2.ArrowType(int64=arrow_pb2.EmptyMessage())
 
         def __chalk_serialize__(self) -> pa.Scalar:
             return pa.scalar(1)

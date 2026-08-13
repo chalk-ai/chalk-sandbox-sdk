@@ -1,30 +1,22 @@
 """Runtime helpers for user-defined Arrow-backed values.
 
-Classes opt in by declaring a concrete ``pyarrow.DataType`` and a pair of
-serialization dunders::
+Classes opt in by declaring a concrete ``chalk.arrow.v1.ArrowType`` and a pair
+of PyArrow scalar serialization dunders::
 
-    class Point:
-        __chalk_arrow_type__ = pa.struct(
-            [
-                pa.field("x", pa.int64(), nullable=False),
-                pa.field("y", pa.int64(), nullable=False),
-            ]
+    class Counter:
+        __chalk_arrow_type__ = arrow_pb2.ArrowType(
+            int64=arrow_pb2.EmptyMessage()
         )
 
         def __chalk_serialize__(self) -> pa.Scalar:
-            return pa.scalar(
-                {"x": self.x, "y": self.y},
-                type=self.__chalk_arrow_type__,
-            )
+            return pa.scalar(self.value, type=pa.int64())
 
         @classmethod
-        def __chalk_deserialize__(cls, value: pa.Scalar) -> "Point":
-            data = value.as_py()
-            return cls(data["x"], data["y"])
+        def __chalk_deserialize__(cls, value: pa.Scalar) -> "Counter":
+            return cls(value.as_py())
 
-The Arrow type, rather than Python annotations on the dunder methods, is the
-wire contract. This module intentionally has no imports from the rest of the
-SDK so the same rules can be embedded in generated function handlers.
+The proto is the catalog schema contract; PyArrow scalars are the Arrow IPC
+value contract.
 """
 
 from __future__ import annotations
@@ -54,14 +46,14 @@ def has_chalk_arrow_contract(annotation: Any) -> bool:
 
 
 def chalk_arrow_type(annotation: Any) -> Any:
-    """Validate *annotation* and return its declared ``pyarrow.DataType``.
+    """Validate *annotation* and return its declared Arrow type proto.
 
     Raises
     ------
     TypeError
         If the class declares an incomplete or malformed contract.
     """
-    import pyarrow as pa
+    from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
 
     if not isinstance(annotation, type):
         raise TypeError(
@@ -71,9 +63,10 @@ def chalk_arrow_type(annotation: Any) -> Any:
 
     type_name = f"{annotation.__module__}.{annotation.__qualname__}"
     arrow_type = inspect.getattr_static(annotation, _ARROW_TYPE_ATTRIBUTE, None)
-    if not isinstance(arrow_type, pa.DataType):
+    if not isinstance(arrow_type, arrow_pb2.ArrowType):
         raise TypeError(
-            f"{type_name}.{_ARROW_TYPE_ATTRIBUTE} must be a pyarrow.DataType, "
+            f"{type_name}.{_ARROW_TYPE_ATTRIBUTE} must be an "
+            "arrow_pb2.ArrowType, "
             f"got {type(arrow_type).__name__}."
         )
 
@@ -101,7 +94,7 @@ def serialize_value(value: Any, annotation: Any) -> Any:
     if not has_chalk_arrow_contract(annotation):
         return value
 
-    expected_type = chalk_arrow_type(annotation)
+    chalk_arrow_type(annotation)
     if not isinstance(value, annotation):
         raise TypeError(
             f"Expected a {annotation.__module__}.{annotation.__qualname__}, "
@@ -113,11 +106,6 @@ def serialize_value(value: Any, annotation: Any) -> Any:
         raise TypeError(
             f"{annotation.__module__}.{annotation.__qualname__}.{_SERIALIZE_METHOD} "
             f"must return a pyarrow.Scalar, got {type(serialized).__name__}."
-        )
-    if not serialized.type.equals(expected_type):
-        raise TypeError(
-            f"{annotation.__module__}.{annotation.__qualname__}.{_SERIALIZE_METHOD} "
-            f"returned Arrow type {serialized.type}, expected {expected_type}."
         )
     return serialized
 
@@ -138,13 +126,7 @@ def deserialize_scalar(value: Any, annotation: Any) -> Any:
     if candidate is None or not has_chalk_arrow_contract(candidate):
         return value.as_py()
 
-    expected_type = chalk_arrow_type(candidate)
-    if not value.type.equals(expected_type):
-        raise TypeError(
-            f"Cannot deserialize Arrow type {value.type} as "
-            f"{candidate.__module__}.{candidate.__qualname__}; expected "
-            f"{expected_type}."
-        )
+    chalk_arrow_type(candidate)
     return candidate.__chalk_deserialize__(value)
 
 
@@ -171,9 +153,8 @@ def handler_runtime_source() -> str:
     """Return self-contained serde helpers for a generated worker shim.
 
     Function images running in source-stripping mode do not necessarily have
-    the Chalk SDK installed. Embedding this small duck-typed runtime keeps the
-    public dunder contract usable there without coupling it to the worker
-    package release cycle.
+    the Chalk SDK installed. The caller validates the proto declaration; the
+    embedded worker runtime only needs the scalar dunders.
     """
     import textwrap
 
@@ -194,12 +175,6 @@ def handler_runtime_source() -> str:
             )
             if not all(hasattr(annotation, name) for name in names):
                 return None
-            arrow_type = getattr(annotation, "__chalk_arrow_type__", None)
-            if not isinstance(arrow_type, _chalk_pa.DataType):
-                raise TypeError(
-                    f"{annotation.__module__}.{annotation.__qualname__}."
-                    "__chalk_arrow_type__ must be a pyarrow.DataType"
-                )
             if not callable(getattr(annotation, "__chalk_serialize__", None)):
                 raise TypeError(
                     f"{annotation.__module__}.{annotation.__qualname__}."
@@ -219,13 +194,6 @@ def handler_runtime_source() -> str:
             contract_type = _chalk_contract_type(annotation)
             if contract_type is None:
                 return value.as_py()
-            expected = contract_type.__chalk_arrow_type__
-            if not value.type.equals(expected):
-                raise TypeError(
-                    f"Cannot deserialize Arrow type {value.type} as "
-                    f"{contract_type.__module__}.{contract_type.__qualname__}; "
-                    f"expected {expected}"
-                )
             return contract_type.__chalk_deserialize__(value)
 
 
@@ -244,13 +212,6 @@ def handler_runtime_source() -> str:
                 raise TypeError(
                     f"{contract_type.__module__}.{contract_type.__qualname__}."
                     "__chalk_serialize__ must return a pyarrow.Scalar"
-                )
-            expected = contract_type.__chalk_arrow_type__
-            if not serialized.type.equals(expected):
-                raise TypeError(
-                    f"{contract_type.__module__}.{contract_type.__qualname__}."
-                    f"__chalk_serialize__ returned Arrow type {serialized.type}, "
-                    f"expected {expected}"
                 )
             return serialized
 

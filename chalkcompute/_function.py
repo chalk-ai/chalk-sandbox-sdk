@@ -2487,7 +2487,6 @@ class RemoteFunction:
         import pyarrow.ipc as ipc
 
         from chalkcompute._arrow_serde import (
-            chalk_arrow_type,
             has_chalk_arrow_contract,
             serialize_value,
         )
@@ -2528,9 +2527,7 @@ class RemoteFunction:
                 annotation = input_types.get(param_name)
                 if annotation is not None and has_chalk_arrow_contract(annotation):
                     serialized = serialize_value(value, annotation)
-                    arrays.append(
-                        pa.array([serialized], type=chalk_arrow_type(annotation))
-                    )
+                    arrays.append(pa.array([serialized], type=serialized.type))
                 else:
                     arrays.append(pa.array([value]))
                 names.append(param_name)
