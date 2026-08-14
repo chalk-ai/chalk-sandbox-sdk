@@ -191,3 +191,109 @@ def test_prepare_package_dir_strips_chalkcompute(tmp_path) -> None:
     assert "chalkcompute" not in stripped_entry
     assert "def fn" in stripped_entry
     assert "chalkcompute" not in (Path(prepared) / "helper.py").read_text()
+
+
+def _fake_main(spec_name: str | None, origin: str | None):
+    """A stand-in ``__main__`` module with a controlled ``__spec__``."""
+    import importlib.machinery
+    import types
+
+    module = types.ModuleType("__main__")
+    module.__spec__ = (
+        importlib.machinery.ModuleSpec(spec_name, None, origin=origin)
+        if spec_name is not None
+        else None
+    )
+    return module
+
+
+def _main_like(func):
+    """Clone ``func`` with ``__module__`` forced to ``__main__``."""
+    clone = type(func)(
+        func.__code__, func.__globals__, name=func.__name__, closure=func.__closure__
+    )
+    clone.__annotations__ = dict(func.__annotations__)
+    clone.__module__ = "__main__"
+    return clone
+
+
+def test_deploy_module_name_recovers_dash_m(monkeypatch) -> None:
+    import sys
+
+    from chalkcompute._function import _deploy_module_name
+
+    monkeypatch.setitem(
+        sys.modules,
+        "__main__",
+        _fake_main("tests.test_helper_sources", str(Path(__file__).resolve())),
+    )
+    assert _deploy_module_name(_main_like(_pkg_add)) == "tests.test_helper_sources"
+
+    # Imported functions keep their real module name even when __main__ has a
+    # spec pointing elsewhere.
+    monkeypatch.setitem(
+        sys.modules,
+        "__main__",
+        _fake_main("other.module", str(Path(__file__).resolve())),
+    )
+    assert _deploy_module_name(_pkg_add) == "tests.test_helper_sources"
+
+
+def test_deploy_module_name_keeps_main_for_scripts(monkeypatch) -> None:
+    import sys
+
+    from chalkcompute._function import _deploy_module_name
+
+    fn = _main_like(_pkg_add)
+
+    # Direct script run: no spec at all.
+    monkeypatch.setitem(sys.modules, "__main__", _fake_main(None, None))
+    assert _deploy_module_name(fn) == "__main__"
+
+    # An unrelated -m runner (e.g. python -m pytest): spec origin is not the
+    # function's file, so the spec name must not be adopted.
+    monkeypatch.setitem(
+        sys.modules, "__main__", _fake_main("pytest.__main__", "/nonexistent/xyz.py")
+    )
+    assert _deploy_module_name(fn) == "__main__"
+
+
+def test_dash_m_run_ships_package(monkeypatch) -> None:
+    import sys
+
+    monkeypatch.setitem(
+        sys.modules,
+        "__main__",
+        _fake_main("tests.test_helper_sources", str(Path(__file__).resolve())),
+    )
+
+    with patch.dict(os.environ, {"CHALK_FUNCTION_STRIP_SOURCE": "0"}, clear=False):
+        fn = RemoteFunction(_main_like(_pkg_add))
+        image = fn._build_deploy_image()
+
+    dests = {f.dest for f in image._lazy_local_files}
+    assert "/app/tests/test_helper_sources.py" in dests
+    assert not any(d.endswith("user_module.py") for d in dests)
+    shim_src = next(
+        f.src for f in image._lazy_local_files if f.dest == "/app/handler.py"
+    )
+    assert (
+        "from tests.test_helper_sources import _pkg_add" in Path(shim_src).read_text()
+    )
+
+
+def test_loose_imported_module_ships_single_file() -> None:
+    fn_clone = _main_like(_pkg_add)
+    fn_clone.__module__ = "loose_mod"
+
+    with patch.dict(os.environ, {"CHALK_FUNCTION_STRIP_SOURCE": "0"}, clear=False):
+        fn = RemoteFunction(fn_clone)
+        image = fn._build_deploy_image()
+
+    dests = {f.dest for f in image._lazy_local_files}
+    assert "/app/user_module.py" in dests
+    assert "/app/tests/test_helper_sources.py" not in dests
+    shim_src = next(
+        f.src for f in image._lazy_local_files if f.dest == "/app/handler.py"
+    )
+    assert "from user_module import _pkg_add" in Path(shim_src).read_text()

@@ -1096,6 +1096,28 @@ def _package_dir_for_module(module_name: str) -> str | None:
     return paths[0]
 
 
+def _deploy_module_name(func: Callable[..., Any]) -> str:
+    """Module name to deploy ``func`` from, seeing through ``python -m``.
+
+    ``python -m mypkg.mod`` executes the module as ``__main__`` but records
+    its real dotted name and file on ``__main__.__spec__``. The ``samefile``
+    check ensures the function really was defined in the module being run.
+    Direct script runs have no spec and keep ``__main__``.
+    """
+    module_name = func.__module__ or ""
+    if module_name != "__main__":
+        return module_name
+    spec = getattr(sys.modules.get("__main__"), "__spec__", None)
+    if spec is None or "." not in spec.name or not spec.origin:
+        return module_name
+    try:
+        if os.path.samefile(spec.origin, _source_file_for_deploy(func)):
+            return spec.name
+    except (OSError, TypeError):
+        pass
+    return module_name
+
+
 def _strip_chalkcompute_for_package(source: str) -> str:
     from chalkcompute._cls import _strip_chalkcompute_from_class_source
 
@@ -2252,8 +2274,10 @@ class RemoteFunction:
         When the function is defined in a package (its module name is
         dotted), the whole top-level package is shipped and the shim imports
         the function from its real module, so sibling-module helpers resolve
-        remotely. Otherwise the single source file is shipped as
-        ``user_module.py``.
+        remotely. This includes running the module via ``python -m
+        mypkg.mod``: the real dotted name is recovered from
+        ``__main__.__spec__``. Otherwise the single source file is shipped
+        as ``user_module.py``.
 
         The shim (and, in single-file mode, the renamed source module) get
         generated names that dodge any top-level ``/app`` name the user's
@@ -2265,7 +2289,7 @@ class RemoteFunction:
         Image
             Declarative image ready to be built.
         """
-        module_name = self._func.__module__ or ""
+        module_name = _deploy_module_name(self._func)
         package_dir = _package_dir_for_module(module_name)
 
         base_image = _make_base_image(
@@ -2276,12 +2300,14 @@ class RemoteFunction:
 
         temp_files: list[str] = []
         if package_dir is not None:
+            # Function lives in a package: ship the whole top-level package.
             taken.add(module_name.split(".")[0])
             shim_module = module_name
             deploy_image = self._add_package_source(
                 base_image, package_dir, module_name, temp_files
             )
         else:
+            # Loose script or module: ship its single source file.
             shim_module = _available_module_name(_USER_MODULE_NAME, taken)
             taken.add(shim_module)
             deploy_image = self._add_single_file_source(
