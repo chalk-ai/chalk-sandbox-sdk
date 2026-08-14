@@ -219,7 +219,11 @@ class ScalingGroup:
     ...     .add_local_file("./app.py", "/app/app.py")
     ...     .entrypoint(["python", "/app/app.py"])
     ... )
-    >>> sg = ScalingGroup(image=img, port=8080).deploy().wait_ready()
+    >>> sg = ScalingGroup(
+    ...     image=img,
+    ...     port=8080,
+    ...     authenticated=True,
+    ... ).deploy().wait_ready()
     >>> resp = sg.call("/health", method="GET")
     >>> sg.delete()
     """
@@ -238,6 +242,7 @@ class ScalingGroup:
         entrypoint: list[str] | None = None,
         port: int = 8080,
         protocol: str = "http",
+        authenticated: bool = False,
         min_replicas: int = 1,
         max_replicas: int = 1,
         readiness_probe: ReadinessProbe | None = None,
@@ -269,6 +274,7 @@ class ScalingGroup:
             raise ValueError(f"port must be in range 1–65535, got {port}")
         self._port = port
         self._protocol = protocol
+        self._authenticated = authenticated
         self._min_replicas = min_replicas
         self._max_replicas = max_replicas
         self._readiness_probe = readiness_probe
@@ -329,9 +335,9 @@ class ScalingGroup:
         resp = sg._client.rpc(_SVC, "GetScalingGroup", {"id": scaling_group_id})
         if resp.status_code != 200:
             raise ScalingGroupError(f"GetScalingGroup failed: {resp.text}")
-        sg._scaling_group_info = _parse_scaling_group_response(
-            resp.json()["scalingGroup"]
-        )
+        data = resp.json()["scalingGroup"]
+        sg._scaling_group_info = _parse_scaling_group_response(data)
+        sg._authenticated = _scaling_group_response_is_authenticated(data)
         sg._scaling_group_id = sg._scaling_group_info.id
         return sg
 
@@ -358,9 +364,9 @@ class ScalingGroup:
         resp = sg._client.rpc(_SVC, "GetScalingGroup", {"name": name})
         if resp.status_code != 200:
             raise ScalingGroupError(f"GetScalingGroup failed: {resp.text}")
-        sg._scaling_group_info = _parse_scaling_group_response(
-            resp.json()["scalingGroup"]
-        )
+        data = resp.json()["scalingGroup"]
+        sg._scaling_group_info = _parse_scaling_group_response(data)
+        sg._authenticated = _scaling_group_response_is_authenticated(data)
         sg._scaling_group_id = sg._scaling_group_info.id
         sg._name = name
         return sg
@@ -381,6 +387,7 @@ class ScalingGroup:
         sg._entrypoint = None
         sg._port = 8080
         sg._protocol = "http"
+        sg._authenticated = False
         sg._min_replicas = 1
         sg._max_replicas = 1
         sg._readiness_probe = None
@@ -472,6 +479,8 @@ class ScalingGroup:
             "port": self._port,
             "protocol": self._protocol,
         }
+        if self._authenticated:
+            container_spec["authentication"] = "AUTHENTICATED"
 
         if self._entrypoint:
             container_spec["entrypoint"] = self._entrypoint
@@ -629,7 +638,9 @@ class ScalingGroup:
         data
             Optional raw bytes body (mutually exclusive with ``json``).
         headers
-            Optional HTTP headers.
+            Optional HTTP headers. Authenticated scaling groups automatically
+            receive the current Chalk bearer token unless this contains an
+            ``Authorization`` header.
         timeout
             Request timeout in seconds.
 
@@ -650,8 +661,25 @@ class ScalingGroup:
                 "Scaling group has no web_url. Call .deploy() first or .refresh() to update."
             )
         url = f"{self._scaling_group_info.web_url}{path}"
+        request_headers = dict(headers) if headers is not None else None
+        has_authorization = any(
+            key.lower() == "authorization" for key in request_headers or {}
+        )
+        if self._authenticated and not has_authorization:
+            self._client._ensure_auth()
+            if not self._client._access_token:
+                raise ScalingGroupError("Unable to authenticate scaling-group request.")
+            request_headers = {
+                **(request_headers or {}),
+                "Authorization": f"Bearer {self._client._access_token}",
+            }
         return httpx.request(
-            method, url, json=json, content=data, headers=headers, timeout=timeout
+            method,
+            url,
+            json=json,
+            content=data,
+            headers=request_headers,
+            timeout=timeout,
         )
 
     def wait_ready(
@@ -781,6 +809,11 @@ def _parse_scaling_group_response(data: dict) -> ScalingGroupInfo:
         ready_replicas=data.get("readyReplicas", 0),
         available_replicas=data.get("availableReplicas", 0),
     )
+
+
+def _scaling_group_response_is_authenticated(data: dict[str, Any]) -> bool:
+    container_spec = data.get("spec", {}).get("containerSpec", {})
+    return container_spec.get("authentication") == "AUTHENTICATED"
 
 
 def _scaling_group_info_is_ready(
