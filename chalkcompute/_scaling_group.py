@@ -240,7 +240,7 @@ class ScalingGroup:
         secrets: list[_Secret] | None = None,
         volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
         entrypoint: list[str] | None = None,
-        port: int = 8080,
+        port: int | None = 8080,
         protocol: str = "http",
         authenticated: bool = False,
         min_replicas: int = 1,
@@ -270,7 +270,7 @@ class ScalingGroup:
         self._volumes: list[VolumeMount] = []
         self._volume_driver: VolumeClient | None = None
         self._entrypoint = entrypoint
-        if not (1 <= port <= 65535):
+        if port is not None and not (1 <= port <= 65535):
             raise ValueError(f"port must be in range 1–65535, got {port}")
         self._port = port
         self._protocol = protocol
@@ -385,7 +385,7 @@ class ScalingGroup:
         sg._volumes = []
         sg._volume_driver = None
         sg._entrypoint = None
-        sg._port = 8080
+        sg._port = None
         sg._protocol = "http"
         sg._authenticated = False
         sg._min_replicas = 1
@@ -476,9 +476,10 @@ class ScalingGroup:
         container_spec: dict[str, Any] = {
             "name": sg_name,
             "image": self._built_image_uri,
-            "port": self._port,
             "protocol": self._protocol,
         }
+        if self._port is not None:
+            container_spec["port"] = self._port
         if self._authenticated:
             container_spec["authentication"] = "AUTHENTICATED"
 

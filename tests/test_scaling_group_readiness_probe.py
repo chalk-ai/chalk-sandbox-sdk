@@ -39,6 +39,13 @@ class _CapturingClient:
         return _Response()
 
 
+def _deployed_container_spec(sg: ScalingGroup) -> dict[str, Any]:
+    client = _CapturingClient()
+    sg._client = cast(Any, client)
+    sg.deploy()
+    return client.requests[0]["spec"]["containerSpec"]
+
+
 @pytest.mark.parametrize(
     ("probe", "expected"),
     [
@@ -71,31 +78,42 @@ def test_readiness_probe_to_dict(
 
 
 def test_scaling_group_deploy_includes_readiness_probe() -> None:
-    client = _CapturingClient()
     sg = ScalingGroup(
         image="ubuntu:latest",
         name="sg-readiness",
         port=8080,
         readiness_probe=ReadinessProbe.http("/readyz"),
     )
-    sg._client = cast(Any, client)
+    container_spec = _deployed_container_spec(sg)
 
-    sg.deploy()
-
-    assert client.requests[0]["spec"]["containerSpec"]["readinessProbe"] == {
-        "http": {"path": "/readyz"}
-    }
+    assert container_spec["readinessProbe"] == {"http": {"path": "/readyz"}}
+    assert container_spec["port"] == 8080
 
 
 def test_scaling_group_deploy_omits_readiness_probe_by_default() -> None:
-    client = _CapturingClient()
     sg = ScalingGroup(
         image="ubuntu:latest",
         name="sg-readiness",
         port=8080,
     )
-    sg._client = cast(Any, client)
 
-    sg.deploy()
+    assert "readinessProbe" not in _deployed_container_spec(sg)
 
-    assert "readinessProbe" not in client.requests[0]["spec"]["containerSpec"]
+
+def test_scaling_group_deploy_uses_default_port() -> None:
+    sg = ScalingGroup(
+        image="ubuntu:latest",
+        name="sg-readiness",
+    )
+
+    assert _deployed_container_spec(sg)["port"] == 8080
+
+
+def test_scaling_group_deploy_omits_port_when_none() -> None:
+    sg = ScalingGroup(
+        image="ubuntu:latest",
+        name="sg-readiness",
+        port=None,
+    )
+
+    assert "port" not in _deployed_container_spec(sg)
