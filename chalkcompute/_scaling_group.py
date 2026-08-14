@@ -240,7 +240,7 @@ class ScalingGroup:
         secrets: list[_Secret] | None = None,
         volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
         entrypoint: list[str] | None = None,
-        port: int | None = None,
+        port: int | None = 8080,
         protocol: str = "http",
         authenticated: bool = False,
         min_replicas: int = 1,

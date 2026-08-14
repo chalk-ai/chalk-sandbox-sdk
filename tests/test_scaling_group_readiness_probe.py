@@ -100,10 +100,20 @@ def test_scaling_group_deploy_omits_readiness_probe_by_default() -> None:
     assert "readinessProbe" not in _deployed_container_spec(sg)
 
 
-def test_scaling_group_deploy_omits_port_by_default() -> None:
+def test_scaling_group_deploy_uses_default_port() -> None:
     sg = ScalingGroup(
         image="ubuntu:latest",
         name="sg-readiness",
+    )
+
+    assert _deployed_container_spec(sg)["port"] == 8080
+
+
+def test_scaling_group_deploy_omits_port_when_none() -> None:
+    sg = ScalingGroup(
+        image="ubuntu:latest",
+        name="sg-readiness",
+        port=None,
     )
 
     assert "port" not in _deployed_container_spec(sg)
