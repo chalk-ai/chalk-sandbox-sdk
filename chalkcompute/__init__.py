@@ -50,6 +50,23 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "TracingPolicy",
     ),
     "function": ("chalkcompute._function", "function"),
+    # _evaluation.py
+    "DatasetRevisionLike": ("chalkcompute._evaluation", "DatasetRevisionLike"),
+    "DatasetRevisionRef": ("chalkcompute._evaluation", "DatasetRevisionRef"),
+    "Evaluation": ("chalkcompute._evaluation", "Evaluation"),
+    "EvaluationClient": ("chalkcompute._evaluation", "EvaluationClient"),
+    "EvaluationError": ("chalkcompute._evaluation", "EvaluationError"),
+    "EvaluationNotFoundError": (
+        "chalkcompute._evaluation",
+        "EvaluationNotFoundError",
+    ),
+    "EvaluationRun": ("chalkcompute._evaluation", "EvaluationRun"),
+    "EvaluationRunFailedError": (
+        "chalkcompute._evaluation",
+        "EvaluationRunFailedError",
+    ),
+    "EvaluationRunStatus": ("chalkcompute._evaluation", "EvaluationRunStatus"),
+    "EvaluationScorer": ("chalkcompute._evaluation", "EvaluationScorer"),
     # _remote_call_client.py
     "RemoteCallClient": ("chalkcompute._remote_call_client", "RemoteCallClient"),
     "RemoteCallClientUnavailable": (

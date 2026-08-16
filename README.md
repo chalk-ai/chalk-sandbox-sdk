@@ -174,6 +174,58 @@ The token is scoped to the active Chalk environment. Its audience is the value
 passed to `get_workload_identity_token`, and its signing key is published by the
 Chalk API server at `/.well-known/jwks.json`.
 
+## Evaluations
+
+Create a reusable evaluation by pinning a completed dataset revision to a
+deployed task function and one or more deployed scorer functions. Function
+parameters bind to dataset columns by name; scorers may additionally declare
+`output` and `trace` parameters.
+
+```python
+import chalkcompute as cc
+
+dataset = cc.DatasetRevisionRef(
+    dataset_id="dataset_support_goldens",
+    revision_id="oq_support_goldens_20260810",
+)
+
+@cc.function(name="support-answer")
+def answer(input: str) -> str:
+    return call_support_model(input)
+
+@cc.function(name="brand-alignment")
+def brand_alignment(input: str, output: str) -> float:
+    return score_response(input=input, output=output)
+
+evaluation = cc.Evaluation.create(
+    "Customer Support Chatbot",
+    dataset=dataset,
+    task=answer,
+    scorers=[brand_alignment],
+    metadata={"suite": "release"},
+)
+
+run = evaluation.run(metadata={"git_sha": "abc123"}).wait()
+print(run.status, run.result_dataset)
+```
+
+`@cc.function` deploys synchronously, so the direct handles above already have
+immutable function version IDs by the time `Evaluation.create` runs. Existing
+functions can instead be attached by reference:
+
+```python
+evaluation = cc.Evaluation.create(
+    "Customer Support Chatbot",
+    dataset=dataset,
+    task=cc.RemoteFunction.from_name("support-answer"),
+    scorers=[cc.RemoteFunction.from_id("fn_brand_alignment_v2")],
+)
+```
+
+`RemoteFunction.from_name` resolves the latest version at lookup time;
+evaluation creation then pins that version. An imperative `RemoteFunction`
+must be explicitly deployed before it can be used in an evaluation.
+
 ## Sandbox lifecycle
 
 ```python

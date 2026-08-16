@@ -25,6 +25,20 @@ from chalkcompute._container import ImageBuildError as ImageBuildError
 from chalkcompute._container import ComputeClass as ComputeClass
 from chalkcompute._container import KernelPolicy as KernelPolicy
 from chalkcompute._container import NetworkPolicy as NetworkPolicy
+from chalkcompute._evaluation import DatasetRevisionLike as DatasetRevisionLike
+from chalkcompute._evaluation import DatasetRevisionRef as DatasetRevisionRef
+from chalkcompute._evaluation import Evaluation as Evaluation
+from chalkcompute._evaluation import EvaluationClient as EvaluationClient
+from chalkcompute._evaluation import EvaluationError as EvaluationError
+from chalkcompute._evaluation import (
+    EvaluationNotFoundError as EvaluationNotFoundError,
+)
+from chalkcompute._evaluation import EvaluationRun as EvaluationRun
+from chalkcompute._evaluation import (
+    EvaluationRunFailedError as EvaluationRunFailedError,
+)
+from chalkcompute._evaluation import EvaluationRunStatus as EvaluationRunStatus
+from chalkcompute._evaluation import EvaluationScorer as EvaluationScorer
 from chalkcompute._function import DeployedFunction as DeployedFunction
 from chalkcompute._function import FunctionBuildError as FunctionBuildError
 from chalkcompute._function import FunctionCallHandle as FunctionCallHandle
@@ -130,6 +144,16 @@ __all__ = [
     "QueuePolicy",
     "TracingPolicy",
     "function",
+    "DatasetRevisionLike",
+    "DatasetRevisionRef",
+    "Evaluation",
+    "EvaluationClient",
+    "EvaluationError",
+    "EvaluationNotFoundError",
+    "EvaluationRun",
+    "EvaluationRunFailedError",
+    "EvaluationRunStatus",
+    "EvaluationScorer",
     "RemoteCallClient",
     "RemoteCallClientUnavailable",
     "bind_model",
