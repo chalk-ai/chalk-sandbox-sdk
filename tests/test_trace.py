@@ -335,7 +335,7 @@ def test_summary_reads_the_session_aggregate() -> None:
             ]
         }
     )
-    summary = Trace("session-1", _client=client).summary()
+    summary = Trace("session-1", _client=client).summary(wait=False)
     assert connect.calls[0][1] == "SearchSessions"
     assert connect.calls[0][2]["sessionIds"] == ["session-1"]
     assert summary.trace_count == 4
@@ -347,7 +347,7 @@ def test_summary_reads_the_session_aggregate() -> None:
 def test_summary_raises_not_found_for_an_unknown_session() -> None:
     client, _ = _client({"SearchSessions": [_FakeResponse(200, {"sessions": []})]})
     with pytest.raises(TraceNotFoundError, match="Session not found"):
-        Trace("session-1", _client=client).summary()
+        Trace("session-1", _client=client).summary(wait=False)
 
 
 def test_traces_lists_one_summary_per_turn() -> None:
@@ -370,7 +370,7 @@ def test_traces_lists_one_summary_per_turn() -> None:
             ]
         }
     )
-    (summary,) = Trace("session-1", _client=client).traces()
+    (summary,) = Trace("session-1", _client=client).traces(wait=False)
     assert connect.calls[0][2]["sessionIds"] == ["session-1"]
     assert summary.trace_id == "trace-1"
     assert summary.root_span_names == ("agent.turn",)
@@ -396,3 +396,173 @@ def test_transport_failure_surfaces_the_status_code() -> None:
 def test_client_rejects_two_transports() -> None:
     with pytest.raises(ValueError, match="only one of"):
         TraceClient(chalk_client=object(), connect_client=_FakeConnectClient({}))
+
+
+# --- Every read settles on the same signal -------------------------------
+
+
+def _session_response(span_count: int, trace_count: int = 1) -> _FakeResponse:
+    return _FakeResponse(
+        200,
+        {
+            "sessions": [
+                {
+                    "sessionId": "session-1",
+                    "traceCount": trace_count,
+                    "spanCount": span_count,
+                }
+            ]
+        },
+    )
+
+
+def _traces_response(*span_counts: int) -> _FakeResponse:
+    return _FakeResponse(
+        200,
+        {
+            "traceSummaries": [
+                {"traceId": f"trace-{index}", "spanCount": count}
+                for index, count in enumerate(span_counts)
+            ]
+        },
+    )
+
+
+def test_summary_waits_until_the_session_span_count_stops_growing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _ = _client(
+        {
+            "SearchSessions": [
+                _FakeResponse(200, {"sessions": []}),
+                _session_response(3, trace_count=1),
+                _session_response(11, trace_count=2),
+                _session_response(11, trace_count=2),
+            ]
+        }
+    )
+    monkeypatch.setattr("chalkcompute._trace.time.sleep", lambda _: None)
+    summary = Trace("session-1", _client=client).summary(poll_interval=0)
+    assert (summary.trace_count, summary.span_count) == (2, 11)
+
+
+def test_summary_treats_an_absent_session_as_not_yet_ingested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A session with no spans yet is missing, not an error to give up on."""
+    client, connect = _client(
+        {
+            "SearchSessions": [
+                _FakeResponse(200, {"sessions": []}),
+                _FakeResponse(200, {"sessions": []}),
+                _session_response(2),
+                _session_response(2),
+            ]
+        }
+    )
+    monkeypatch.setattr("chalkcompute._trace.time.sleep", lambda _: None)
+    assert Trace("session-1", _client=client).summary(poll_interval=0).span_count == 2
+    assert len(connect.calls) == 4
+
+
+def test_summary_raises_not_found_when_the_session_never_appears(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The specific diagnosis survives waiting: it received no spans at all."""
+    client, _ = _client({"SearchSessions": [_FakeResponse(200, {"sessions": []})]})
+    monkeypatch.setattr("chalkcompute._trace.time.sleep", lambda _: None)
+    with pytest.raises(TraceNotFoundError, match="Session not found"):
+        Trace("session-1", _client=client).summary(timeout=0, poll_interval=0)
+
+
+def test_summary_accepts_an_empty_session_when_asked_to(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _ = _client(
+        {
+            "SearchSessions": [
+                _session_response(0, trace_count=0),
+                _session_response(0, trace_count=0),
+            ]
+        }
+    )
+    monkeypatch.setattr("chalkcompute._trace.time.sleep", lambda _: None)
+    summary = Trace("session-1", _client=client).summary(expect_min=0, poll_interval=0)
+    assert summary.span_count == 0
+
+
+def test_traces_waits_for_a_turn_that_is_still_recording(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A growing turn adds spans without adding a trace, so the count is the signal."""
+    client, _ = _client(
+        {
+            "SearchTraceSummaries": [
+                _traces_response(2),
+                _traces_response(5),
+                _traces_response(5),
+            ]
+        }
+    )
+    monkeypatch.setattr("chalkcompute._trace.time.sleep", lambda _: None)
+    (summary,) = Trace("session-1", _client=client).traces(poll_interval=0)
+    assert summary.span_count == 5
+
+
+def test_traces_waits_for_a_later_turn_to_appear(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _ = _client(
+        {
+            "SearchTraceSummaries": [
+                _traces_response(3),
+                _traces_response(3, 4),
+                _traces_response(3, 4),
+            ]
+        }
+    )
+    monkeypatch.setattr("chalkcompute._trace.time.sleep", lambda _: None)
+    summaries = Trace("session-1", _client=client).traces(poll_interval=0)
+    assert [s.span_count for s in summaries] == [3, 4]
+
+
+def test_traces_raises_rather_than_returning_an_empty_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _ = _client({"SearchTraceSummaries": [_traces_response()]})
+    monkeypatch.setattr("chalkcompute._trace.time.sleep", lambda _: None)
+    with pytest.raises(TimeoutError, match="expected at least 1"):
+        Trace("session-1", _client=client).traces(timeout=0, poll_interval=0)
+
+
+@pytest.mark.parametrize("method", ["get_spans", "summary", "traces"])
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"timeout": -1}, "timeout must be >= 0"),
+        ({"poll_interval": -1}, "poll_interval must be >= 0"),
+        ({"expect_min": -1}, "expect_min must be >= 0"),
+    ],
+)
+def test_every_read_validates_the_same_bounds(
+    method: str, kwargs: dict[str, Any], match: str
+) -> None:
+    client, _ = _client({})
+    with pytest.raises(ValueError, match=match):
+        getattr(Trace("session-1", _client=client), method)(**kwargs)
+
+
+@pytest.mark.parametrize(
+    ("method", "responses"),
+    [
+        ("get_spans", {"ListSpan": [_FakeResponse(200, {"spans": []})]}),
+        ("summary", {"SearchSessions": [_session_response(1)]}),
+        ("traces", {"SearchTraceSummaries": [_traces_response(1)]}),
+    ],
+)
+def test_every_read_makes_exactly_one_pass_without_waiting(
+    method: str, responses: dict[str, list[_FakeResponse]]
+) -> None:
+    client, connect = _client(responses)
+    getattr(Trace("session-1", _client=client), method)(wait=False)
+    assert len(connect.calls) == 1

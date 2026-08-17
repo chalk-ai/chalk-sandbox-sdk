@@ -275,19 +275,25 @@ class Trace:
     @classmethod
     def from_id(cls, session_id: str, *, chalk_client: Any | None = None) -> Trace: ...
 
+    # All three reads take the same four settling arguments:
+    #   wait: bool = True            default: wait for ingest to settle
+    #   timeout: float = 60.0        raises TimeoutError if still unsettled
+    #   poll_interval: float = 2.0
+    #   expect_min: int | None = None
+
     def get_spans(
         self,
         *,
         operation_name: str | None = None,
         attribute_filters: Mapping[str, str | None] | None = None,
         limit: int | None = None,
-        wait: bool = True,          # default: wait for ingest to settle
-        timeout: float = 60.0,      # raises TimeoutError if still unsettled
-        expect_min: int | None = None,
+        **settling: Any,
     ) -> list[Span]: ...
 
-    def summary(self) -> TraceSummary: ...   # SearchSessions(session_ids=[id])
-    def traces(self) -> list[TraceSummary]: ...  # the individual turns
+    def summary(self, **settling: Any) -> SessionSummary: ...  # SearchSessions
+    def traces(
+        self, *, limit: int | None = None, **settling: Any
+    ) -> list[TraceSummary]: ...  # the individual turns
 
 
 class TraceClient:
@@ -308,7 +314,7 @@ generated stubs.
 and 'str'`. Hence `attribute_float` / `attribute_int` rather than raw indexing.
 It is the first thing anyone writing a cost scorer will hit.
 
-### `wait` semantics on `get_spans`
+### `wait` semantics on every read
 
 Spans reach ClickHouse via `BatchSpanProcessor` → OTLP collector →
 `otel.otel_traces`. The scorer runs immediately after the task inside the same
@@ -324,9 +330,24 @@ ChalkSQL query. Two facts make a naive read unreliable:
 So a single read can return `[]`, or worse a *partial* list, which silently
 under-reports a cost sum rather than failing.
 
-**Waiting is therefore the default, not an opt-in.** A scorer that gets this
-wrong produces a plausible number, not an error, so the safe behavior has to be
-what you get for free:
+**Every read of a session settles on the same signal**, because every read is
+downstream of the same ingest: `ListSpan` returns fewer spans, `SearchSessions`
+returns a smaller `span_count`, and `SearchTraceSummaries` returns stale
+per-trace counts. So `get_spans`, `summary`, and `traces` share one waiter
+(`_settle`) keyed on the number of spans each can see — `len(spans)`,
+`summary.span_count`, and `sum(t.span_count for t in traces)` respectively.
+Waiting on trace *count* alone would not do: a turn that is still recording
+grows the span count without adding a trace.
+
+An absent session is the same "not ingested yet" state as an empty span list, so
+`summary` keeps polling through `TraceNotFoundError` — and if the session never
+appears it raises `TraceNotFoundError` rather than `TimeoutError`, since "it
+received no spans at all" is the more actionable diagnosis and keeps the
+exception type the same as the `wait=False` path.
+
+**Waiting is the default, not an opt-in.** A scorer that gets this wrong
+produces a plausible number, not an error, so the safe behavior has to be what
+you get for free:
 
 - `wait=True` (default) polls until the span count is stable across two
   consecutive polls, then returns.

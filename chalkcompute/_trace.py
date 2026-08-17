@@ -30,11 +30,11 @@ a published ``chalkcompute`` for session-aware scoring.
 from __future__ import annotations
 
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any
+from typing import Any, TypeVar
 
 from chalkcompute._connect import ConnectClient
 from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
@@ -43,6 +43,8 @@ from chalkcompute._tracing import (
     SESSION_ID_HEADER as SESSION_ID_HEADER,
     _instrumented,
 )
+
+_T = TypeVar("_T")
 
 _TRACE_SERVICE = "chalk.server.v1.TraceService"
 
@@ -160,6 +162,33 @@ class Trace:
     Declaring a ``@chalkcompute.function`` parameter as ``Trace`` installs its
     Arrow contract, so the value arrives as the ``large_utf8`` session id Chalk
     bound to that argument.
+
+    .. _trace-waiting:
+
+    **Every read waits for ingest to settle.** Spans reach Chalk asynchronously
+    — through a batching span processor, an OTLP collector, and finally
+    ClickHouse — so a scorer running immediately after the task it scores can
+    observe an incomplete session. That is worse than an error: a partial read
+    produces a plausible wrong number. So :meth:`get_spans`, :meth:`summary`,
+    and :meth:`traces` all poll until the number of spans they can see stops
+    growing, and all take the same four arguments:
+
+    ``wait``
+        Poll until the span count holds steady across two consecutive reads.
+        Pass ``False`` to read once, for a session that finished long ago.
+    ``timeout``
+        Seconds to wait for that. Exceeding it raises :class:`TimeoutError`
+        rather than returning a knowingly incomplete result.
+    ``poll_interval``
+        Seconds between polls.
+    ``expect_min``
+        Minimum span count to wait for. Defaults to 1, so an empty result is
+        treated as "not ingested yet" rather than "nothing to see". Pass 0 to
+        accept an empty session.
+
+    A steady count is a pragmatic signal, not a proof: it cannot tell "complete"
+    from "quiet", so a long pause between agent turns can settle early. Pass
+    ``expect_min`` when the caller knows better.
     """
 
     id: str
@@ -218,12 +247,6 @@ class Trace:
     ) -> list[Span]:
         """Return this session's spans, waiting for span ingest to settle.
 
-        Spans reach Chalk asynchronously — through a batching span processor,
-        an OTLP collector, and finally ClickHouse — so a scorer running
-        immediately after the task it scores can observe an *incomplete* set.
-        A partial read produces a plausible wrong number rather than an error,
-        so waiting is the default.
-
         Parameters
         ----------
         operation_name
@@ -233,18 +256,8 @@ class Trace:
             carrying the key.
         limit
             Stop after this many spans.  ``None`` returns all of them.
-        wait
-            Poll until the span count is stable across two consecutive polls.
-            Pass ``False`` to read once, for a session that finished long ago.
-        timeout
-            Seconds to wait for the count to settle before raising
-            :class:`TimeoutError`.  Never returns a knowingly partial list.
-        poll_interval
-            Seconds between polls.
-        expect_min
-            Minimum span count to wait for.  Defaults to 1, so an empty result
-            is treated as "not ingested yet" rather than "no spans".  Pass 0 to
-            accept an empty session.
+        wait, timeout, poll_interval, expect_min
+            See :ref:`the settling rules <trace-waiting>` on :class:`Trace`.
 
         Returns
         -------
@@ -254,15 +267,9 @@ class Trace:
         Raises
         ------
         TimeoutError
-            If ``timeout`` elapses before the count reaches ``expect_min`` and
-            holds steady.
+            If the span count does not reach ``expect_min`` and hold steady
+            within ``timeout``.
         """
-        if timeout < 0:
-            raise ValueError("timeout must be >= 0")
-        if poll_interval < 0:
-            raise ValueError("poll_interval must be >= 0")
-        if expect_min is not None and expect_min < 0:
-            raise ValueError("expect_min must be >= 0 or None")
 
         def fetch() -> list[Span]:
             return self._require_client().list_spans(
@@ -272,54 +279,129 @@ class Trace:
                 limit=limit,
             )
 
-        if not wait:
-            return fetch()
+        return _settle(
+            fetch,
+            spans_seen=len,
+            subject=f"session {self.id!r}",
+            wait=wait,
+            timeout=timeout,
+            poll_interval=poll_interval,
+            expect_min=expect_min,
+        )
 
-        target = 1 if expect_min is None else expect_min
-        deadline = time.monotonic() + timeout
-        spans = fetch()
-        previous = -1
-        while True:
-            if len(spans) >= target and len(spans) == previous:
-                return spans
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                if len(spans) < target:
-                    raise TimeoutError(
-                        f"session {self.id!r} had {len(spans)} span(s) after "
-                        f"{timeout}s, expected at least {target}; spans may still "
-                        f"be in flight. Pass wait=False to accept a partial read."
-                    )
-                growth = (
-                    "the count was never confirmed steady"
-                    if previous < 0
-                    else f"the count went {previous} -> {len(spans)}"
-                )
-                raise TimeoutError(
-                    f"session {self.id!r} was still receiving spans after "
-                    f"{timeout}s ({growth}); returning them would undercount. "
-                    f"Raise timeout or pass wait=False."
-                )
-            previous = len(spans)
-            time.sleep(min(poll_interval, remaining))
-            spans = fetch()
-
-    def summary(self) -> SessionSummary:
+    def summary(
+        self,
+        *,
+        wait: bool = True,
+        timeout: float = 60.0,
+        poll_interval: float = 2.0,
+        expect_min: int | None = None,
+    ) -> SessionSummary:
         """Return this session's aggregate: turn count, span count, wall clock.
 
-        Unlike :meth:`get_spans`, this does not wait for ingest to settle, so
-        ``span_count`` and ``duration`` can undercount a session whose spans are
-        still arriving. Scoring off a settled read means going through
-        :meth:`get_spans`.
-        """
-        return self._require_client().get_session(self.id)
+        Settles on the same signal as :meth:`get_spans`, so ``trace_count`` and
+        ``span_count`` do not undercount a session whose spans are still
+        arriving.
 
-    def traces(self, *, limit: int | None = None) -> list[TraceSummary]:
+        Parameters
+        ----------
+        wait, timeout, poll_interval, expect_min
+            See :ref:`the settling rules <trace-waiting>` on :class:`Trace`.
+
+        Returns
+        -------
+        SessionSummary
+            The session's aggregate.
+
+        Raises
+        ------
+        TraceNotFoundError
+            If the session never appears — it received no spans at all.
+        TimeoutError
+            If it appears but its span count never holds steady.
+        """
+
+        ever_found = False
+
+        def fetch() -> SessionSummary | None:
+            nonlocal ever_found
+            try:
+                summary = self._require_client().get_session(self.id)
+            except TraceNotFoundError:
+                # An absent session is one that has received no spans yet, which
+                # is the same "not ingested" state as an empty span list.
+                return None
+            ever_found = True
+            return summary
+
+        try:
+            settled = _settle(
+                fetch,
+                spans_seen=lambda summary: 0 if summary is None else summary.span_count,
+                subject=f"session {self.id!r}",
+                wait=wait,
+                timeout=timeout,
+                poll_interval=poll_interval,
+                expect_min=expect_min,
+            )
+        except TimeoutError:
+            # "It never showed up" is the more actionable diagnosis, and keeps the
+            # exception type the same as the wait=False path.
+            if not ever_found:
+                raise TraceNotFoundError(
+                    f"Session not found: {self.id} (waited {timeout}s)"
+                ) from None
+            raise
+        if settled is None:
+            raise TraceNotFoundError(f"Session not found: {self.id}")
+        return settled
+
+    def traces(
+        self,
+        *,
+        limit: int | None = None,
+        wait: bool = True,
+        timeout: float = 60.0,
+        poll_interval: float = 2.0,
+        expect_min: int | None = None,
+    ) -> list[TraceSummary]:
         """Return a summary per trace in this session — typically one per turn.
 
-        Not waited, for the same reason as :meth:`summary`.
+        Settles on the same signal as :meth:`get_spans`: a turn that is still
+        recording grows this session's span count without adding a trace, so
+        waiting on the traces alone would return stale per-trace counts.
+
+        Parameters
+        ----------
+        limit
+            Stop after this many traces.  ``None`` returns all of them.
+        wait, timeout, poll_interval, expect_min
+            See :ref:`the settling rules <trace-waiting>` on :class:`Trace`.
+
+        Returns
+        -------
+        list of TraceSummary
+            One summary per trace, newest first.
+
+        Raises
+        ------
+        TimeoutError
+            If the session's span count does not reach ``expect_min`` and hold
+            steady within ``timeout``.
         """
-        return list(self._require_client().list_traces(self.id, limit=limit))
+
+        def fetch() -> list[TraceSummary]:
+            return list(self._require_client().list_traces(self.id, limit=limit))
+
+        return _settle(
+            fetch,
+            spans_seen=lambda summaries: sum(s.span_count for s in summaries),
+            subject=f"session {self.id!r}",
+            wait=wait,
+            timeout=timeout,
+            poll_interval=poll_interval,
+            expect_min=expect_min,
+        )
 
     def _require_client(self) -> TraceClient:
         if self._client is None:
@@ -470,6 +552,68 @@ class TraceClient:
         if not isinstance(payload, dict):
             raise TraceError(f"{method} returned an invalid response")
         return payload
+
+
+def _settle(
+    fetch: Callable[[], _T],
+    *,
+    spans_seen: Callable[[_T], int],
+    subject: str,
+    wait: bool,
+    timeout: float,
+    poll_interval: float,
+    expect_min: int | None,
+) -> _T:
+    """Poll ``fetch`` until the number of spans it can see stops growing.
+
+    Every read of a session settles on the same signal, because every read is
+    downstream of the same asynchronous ingest: spans, a session aggregate, and
+    per-trace aggregates all grow as spans land. ``spans_seen`` extracts that
+    one number from whatever ``fetch`` returns.
+
+    Returns the settled payload. Raises :class:`TimeoutError` rather than
+    returning a knowingly incomplete one — an undercount reads as a real result.
+    """
+    if timeout < 0:
+        raise ValueError("timeout must be >= 0")
+    if poll_interval < 0:
+        raise ValueError("poll_interval must be >= 0")
+    if expect_min is not None and expect_min < 0:
+        raise ValueError("expect_min must be >= 0 or None")
+
+    if not wait:
+        return fetch()
+
+    target = 1 if expect_min is None else expect_min
+    deadline = time.monotonic() + timeout
+    result = fetch()
+    count = spans_seen(result)
+    previous = -1
+    while True:
+        if count >= target and count == previous:
+            return result
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            if count < target:
+                raise TimeoutError(
+                    f"{subject} had {count} span(s) after {timeout}s, expected at "
+                    f"least {target}; spans may still be in flight. Pass "
+                    f"wait=False to accept a partial read."
+                )
+            growth = (
+                "the count was never confirmed steady"
+                if previous < 0
+                else f"the count went {previous} -> {count}"
+            )
+            raise TimeoutError(
+                f"{subject} was still receiving spans after {timeout}s "
+                f"({growth}); returning now would undercount. Raise timeout or "
+                f"pass wait=False."
+            )
+        previous = count
+        time.sleep(min(poll_interval, remaining))
+        result = fetch()
+        count = spans_seen(result)
 
 
 def _session_query(session_id: str) -> str:
