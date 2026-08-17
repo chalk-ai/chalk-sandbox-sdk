@@ -60,6 +60,30 @@ def unwrap_result_annotation(annotation: Any) -> Any:
     return annotation
 
 
+def unwrap_annotation(annotation: Any) -> Any:
+    """Strip ``Annotated[...]`` metadata and ``| None`` from an annotation.
+
+    An Arrow-backed class is still Arrow-backed when it is optional or carries
+    ``Annotated`` metadata, and a nullable column decodes to either the class or
+    ``None``. Mirrors ``_arrow_schema._unwrap_optional``, which decides the same
+    question for the catalog schema, so the schema and the runtime serde cannot
+    disagree about whether a column is Arrow-backed.
+    """
+    import types
+    import typing
+
+    if type(annotation) is type(typing.Annotated[int, ""]) and hasattr(
+        annotation, "__metadata__"
+    ):
+        annotation = get_args(annotation)[0]
+
+    origin = get_origin(annotation)
+    if origin is not typing.Union and origin is not getattr(types, "UnionType", None):
+        return annotation
+    args = [arg for arg in get_args(annotation) if arg is not type(None)]
+    return unwrap_annotation(args[0]) if len(args) == 1 else annotation
+
+
 def _list_item_annotation(annotation: Any) -> Any | None:
     """Return the item annotation when ``annotation`` is a concrete list."""
     if get_origin(annotation) is not list:
@@ -71,6 +95,7 @@ def _list_item_annotation(annotation: Any) -> Any | None:
 
 
 def _pyarrow_type_for_annotation(annotation: Any) -> Any | None:
+    annotation = unwrap_annotation(annotation)
     if has_chalk_arrow_contract(annotation):
         factory = getattr(annotation, "__chalk_pyarrow_type__", None)
         return None if factory is None else factory()
@@ -91,6 +116,7 @@ def arrow_encoder_for_annotation(
     annotation: Any,
 ) -> Callable[[Any], Any] | None:
     """Build a scalar encoder for an Arrow-backed annotation, recursively."""
+    annotation = unwrap_annotation(annotation)
     if has_chalk_arrow_contract(annotation):
         return annotation.__chalk_serialize__
 
@@ -125,6 +151,7 @@ def arrow_decoder_for_annotation(
     annotation: Any,
 ) -> Callable[[Any], Any] | None:
     """Build a scalar decoder for an Arrow-backed annotation, recursively."""
+    annotation = unwrap_annotation(annotation)
     if has_chalk_arrow_contract(annotation):
         return annotation.__chalk_deserialize__
 
@@ -157,6 +184,7 @@ def handler_runtime_source() -> str:
     return textwrap.dedent(
         """\
         import collections.abc as _chalk_cabc
+        import types as _chalk_types
         import typing as _chalk_typing
 
 
@@ -165,6 +193,25 @@ def handler_runtime_source() -> str:
                 isinstance(annotation, type)
                 and hasattr(annotation, "__chalk_arrow_type__")
             )
+
+
+        def _chalk_unwrap(annotation):
+            # An Arrow-backed class stays Arrow-backed under Annotated or | None.
+            # Mirrors unwrap_annotation in chalkcompute._arrow_serde.
+            if hasattr(annotation, "__metadata__"):
+                args = _chalk_typing.get_args(annotation)
+                if args:
+                    annotation = args[0]
+            origin = _chalk_typing.get_origin(annotation)
+            union_type = getattr(_chalk_types, "UnionType", None)
+            if origin is not _chalk_typing.Union and origin is not union_type:
+                return annotation
+            args = [
+                arg
+                for arg in _chalk_typing.get_args(annotation)
+                if arg is not type(None)
+            ]
+            return _chalk_unwrap(args[0]) if len(args) == 1 else annotation
 
 
         def _chalk_to_pylist(column):
@@ -179,6 +226,7 @@ def handler_runtime_source() -> str:
 
 
         def _chalk_pyarrow_type(annotation):
+            annotation = _chalk_unwrap(annotation)
             if _chalk_has_contract(annotation):
                 factory = getattr(annotation, "__chalk_pyarrow_type__", None)
                 return None if factory is None else factory()
@@ -193,6 +241,7 @@ def handler_runtime_source() -> str:
 
 
         def _chalk_decoder(annotation):
+            annotation = _chalk_unwrap(annotation)
             if _chalk_has_contract(annotation):
                 return annotation.__chalk_deserialize__
             item_annotation = _chalk_list_item_annotation(annotation)
@@ -218,6 +267,7 @@ def handler_runtime_source() -> str:
 
 
         def _chalk_encoder(annotation):
+            annotation = _chalk_unwrap(annotation)
             if _chalk_has_contract(annotation):
                 return annotation.__chalk_serialize__
             item_annotation = _chalk_list_item_annotation(annotation)

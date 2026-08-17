@@ -196,11 +196,31 @@ class TestRichToArrowSchema:
 
     @pytest.mark.parametrize(
         "annotation",
-        [typing.Optional[ArrowPoint], typing.Annotated[ArrowPoint, "metadata"]],
+        [
+            typing.Annotated[ArrowPoint, "metadata"],
+            typing.Annotated[ArrowPoint | None, "m"],
+        ],
     )
-    def test_custom_type_must_be_direct_annotation(self, annotation):
-        with pytest.raises(TypeError, match="Unable to convert type"):
-            rich_to_arrow_schema({"point": annotation})
+    def test_annotated_custom_type_keeps_its_arrow_proto(self, annotation):
+        """``Annotated`` metadata is transparent: the class stays Arrow-backed."""
+        proto = rich_to_arrow_schema({"point": annotation})
+
+        assert proto.columns[0].arrow_type.HasField("struct")
+
+    @pytest.mark.parametrize(
+        "annotation", [typing.Optional[ArrowPoint], ArrowPoint | None]
+    )
+    def test_optional_custom_type_is_arrow_backed_and_nullable(self, annotation):
+        """Chalk may bind a nullable column to an Arrow-backed argument."""
+        proto = rich_to_arrow_schema({"point": annotation})
+
+        field = proto.columns[0]
+        assert field.nullable is True
+        assert field.arrow_type.HasField("struct")
+
+    def test_a_union_of_two_real_types_is_still_unconvertible(self):
+        with pytest.raises(TypeError, match="Unsupported generic type"):
+            rich_to_arrow_schema({"point": typing.Union[ArrowPoint, int]})
 
     def test_custom_type_requires_arrow_proto(self):
         class Invalid:

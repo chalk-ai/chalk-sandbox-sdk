@@ -736,3 +736,71 @@ def test_strip_guard_rejects_class_method_referencing_chalkcompute() -> None:
         _assert_stripped_source_self_contained(
             source, stripped, label="Class 'C'", entrypoint_sources=[method_src]
         )
+
+
+def test_strip_guard_rejects_dangling_parameter_annotation() -> None:
+    # An annotation is not a body statement, but the worker shim resolves it
+    # with typing.get_type_hints, so a stripped `cc` raises NameError in the
+    # container before the body ever runs.
+    source = textwrap.dedent(
+        """
+        import chalkcompute as cc
+
+        @cc.function
+        def fn(output: str, trace: cc.Trace) -> float:
+            return 1.0
+        """
+    )
+    with pytest.raises(FunctionBuildError, match="'cc'"):
+        _strip_and_guard(source)
+
+
+def test_strip_guard_rejects_dangling_return_annotation() -> None:
+    source = textwrap.dedent(
+        """
+        from chalkcompute import function, EvaluationScorerResult
+
+        @function
+        def fn(x: int) -> EvaluationScorerResult:
+            return 1.0
+        """
+    )
+    with pytest.raises(FunctionBuildError, match="EvaluationScorerResult"):
+        _strip_and_guard(source)
+
+
+def test_strip_guard_annotation_error_explains_that_an_inner_import_will_not_help() -> (
+    None
+):
+    source = textwrap.dedent(
+        """
+        import chalkcompute as cc
+
+        @cc.function
+        def fn(trace: cc.Trace) -> float:
+            import chalkcompute
+
+            return 1.0
+        """
+    )
+    with pytest.raises(FunctionBuildError, match="parameter annotation"):
+        _strip_and_guard(source)
+
+
+def test_strip_guard_allows_the_wire_type_annotation() -> None:
+    # The documented strip-mode-safe spelling: annotate `str`, rebuild the
+    # handle from an inner import that survives stripping.
+    source = textwrap.dedent(
+        """
+        import chalkcompute as cc
+
+        @cc.function(
+            image=cc.Image.debian_slim().pip_install(["chalkcompute>=2.1.0"]),
+        )
+        def fn(trace: str) -> float:
+            import chalkcompute
+
+            return float(len(chalkcompute.Trace.from_id(trace).get_spans()))
+        """
+    )
+    _strip_and_guard(source)

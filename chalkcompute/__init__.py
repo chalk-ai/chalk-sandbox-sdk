@@ -78,6 +78,16 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "chalkcompute._evaluation",
         "EvaluationScorerResult",
     ),
+    # _trace.py
+    "SessionSummary": ("chalkcompute._trace", "SessionSummary"),
+    "Span": ("chalkcompute._trace", "Span"),
+    "SpanKind": ("chalkcompute._trace", "SpanKind"),
+    "SpanStatusCode": ("chalkcompute._trace", "SpanStatusCode"),
+    "Trace": ("chalkcompute._trace", "Trace"),
+    "TraceClient": ("chalkcompute._trace", "TraceClient"),
+    "TraceError": ("chalkcompute._trace", "TraceError"),
+    "TraceNotFoundError": ("chalkcompute._trace", "TraceNotFoundError"),
+    "TraceSummary": ("chalkcompute._trace", "TraceSummary"),
     # _remote_call_client.py
     "RemoteCallClient": ("chalkcompute._remote_call_client", "RemoteCallClient"),
     "RemoteCallClientUnavailable": (
