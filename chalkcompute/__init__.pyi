@@ -61,6 +61,8 @@ from chalkcompute._remote_call_client import (
 )
 from chalkcompute._remote_function_tracing import TracingPolicy as TracingPolicy
 from chalkcompute._retry import RetryPolicy as RetryPolicy
+from chalkcompute._call_context import get_call_context as get_call_context
+from chalkcompute._call_context import get_row_metadata as get_row_metadata
 from chalkcompute._sandbox import ExecError as ExecError
 from chalkcompute._sandbox import ExecEvent as ExecEvent
 from chalkcompute._sandbox import ExecProcess as ExecProcess

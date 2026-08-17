@@ -105,6 +105,10 @@ KnowledgeCutoff = str | _dt.datetime
 _REMOTE_ENV_VAR = "CHALK_REMOTE_FUNCTION"
 _REQUEST_TIMESTAMP_HEADER = "x-chalk-request-timestamp"
 _NO_ARGS_SENTINEL_COLUMN = "__chalk_no_args__"
+# Reserved column carrying the caller's per-row metadata blob. Stripped from the argument
+# mapping by the handler shim and published through a context variable instead, so a
+# function can read it without declaring a parameter for it.
+_ROW_METADATA_COLUMN = "__chalk_row_metadata__"
 _LOCAL_COPY_ENV_VAR = _local_dev._LOCAL_COPY_ENV_VAR
 _LOCAL_WHEEL_ENV_VAR = _local_dev._LOCAL_WHEEL_ENV_VAR
 _LOCAL_REMOTE_CALL_WHEEL_ENV_VAR = _local_dev._LOCAL_REMOTE_CALL_WHEEL_ENV_VAR
@@ -358,6 +362,8 @@ def _generate_handler_shim(
             from {module_name} import {func_name}
 
             _NO_ARGS_SENTINEL_COLUMN = {_NO_ARGS_SENTINEL_COLUMN!r}
+            _ROW_METADATA_COLUMN = {_ROW_METADATA_COLUMN!r}
+            _RESERVED_COLUMNS = (_NO_ARGS_SENTINEL_COLUMN, _ROW_METADATA_COLUMN)
             _target = inspect.unwrap({func_name})
             _is_coroutine = inspect.iscoroutinefunction(_target)
             _input_types = _chalk_typing.get_type_hints(
@@ -372,34 +378,84 @@ def _generate_handler_shim(
             _output_encoder = _chalk_encoder(_output_type)
 
 
-            def _flatten_events(events):
+            def _flatten_events(events, contexts):
+                # Each work item carries its own context and row metadata: items run
+                # concurrently, on threads or as tasks, and a context variable set here
+                # would not follow them. The context also differs per caller, since the
+                # server coalesces several callers into one handler call.
                 work = []
                 for ci, event in enumerate(events):
+                    context = contexts[ci] if ci < len(contexts) else None
+                    row_metadata = event.get(_ROW_METADATA_COLUMN)
+                    row_metadata = (
+                        row_metadata.to_pylist() if row_metadata is not None else None
+                    )
                     columns = {{
                         k: _input_decoders[k](v)
                         for k, v in event.items()
-                        if k != _NO_ARGS_SENTINEL_COLUMN
+                        if k not in _RESERVED_COLUMNS
                     }}
                     n = len(next(iter(columns.values()))) if columns else 1
                     for ri in range(n):
-                        work.append((ci, ri, {{k: v[ri] for k, v in columns.items()}}))
+                        work.append((
+                            ci,
+                            ri,
+                            {{k: v[ri] for k, v in columns.items()}},
+                            context,
+                            row_metadata[ri] if row_metadata is not None else None,
+                        ))
                 return work
 
 
             def _regroup(work, flat_results, n_callers):
                 bucket = {{}}
-                for (ci, ri, _), val in zip(work, flat_results):
+                for (ci, ri, _, _, _), val in zip(work, flat_results):
                     bucket.setdefault(ci, {{}})[ri] = val
                 return [[bucket[ci][ri] for ri in sorted(bucket[ci])]
                         for ci in range(n_callers)]
 
 
+            def _scope(context, row_metadata):
+                if not context and row_metadata is None:
+                    return None
+                from chalkcompute._call_context import set_call_scope
+
+                return set_call_scope(context, row_metadata)
+
+
+            def _unscope(token):
+                if token is None:
+                    return
+                from chalkcompute._call_context import reset_call_scope
+
+                reset_call_scope(token)
+
+
+            def _call_one(kwargs, context, row_metadata):
+                token = _scope(context, row_metadata)
+                try:
+                    return {func_name}(**kwargs)
+                finally:
+                    _unscope(token)
+
+
+            async def _acall_one(kwargs, context, row_metadata):
+                # asyncio.gather wraps each coroutine in a Task with its own copy of the
+                # context, so this set is isolated to this row.
+                token = _scope(context, row_metadata)
+                try:
+                    return await {func_name}(**kwargs)
+                finally:
+                    _unscope(token)
+
+
             def handler(events, contexts):
-                work = _flatten_events(events)
+                contexts = contexts or []
+                work = _flatten_events(events, contexts)
                 if _is_coroutine:
                     import asyncio
                     async def _run_all():
-                        coros = [{func_name}(**kw) for _, _, kw in work]
+                        coros = [_acall_one(kw, cx, rm) for _, _, kw, cx, rm in work]
                         raw = await asyncio.gather(*coros)
                         flat = (
                             raw
@@ -411,8 +467,8 @@ def _generate_handler_shim(
                 bucket = {{}}
                 with ThreadPoolExecutor(max_workers=max(1, len(work))) as ex:
                     futures = {{
-                        ex.submit({func_name}, **kw): (ci, ri)
-                        for ci, ri, kw in work
+                        ex.submit(_call_one, kw, cx, rm): (ci, ri)
+                        for ci, ri, kw, cx, rm in work
                     }}
                     for fut in as_completed(futures):
                         ci, ri = futures[fut]
@@ -428,11 +484,14 @@ def _generate_handler_shim(
         bootstrap
         + serde_runtime
         + textwrap.dedent(f"""\
+        import contextlib
         import inspect
 
         from {module_name} import {func_name}
 
         _NO_ARGS_SENTINEL_COLUMN = {_NO_ARGS_SENTINEL_COLUMN!r}
+        _ROW_METADATA_COLUMN = {_ROW_METADATA_COLUMN!r}
+        _RESERVED_COLUMNS = (_NO_ARGS_SENTINEL_COLUMN, _ROW_METADATA_COLUMN)
         _target = inspect.unwrap({func_name})
         _is_sync_gen = inspect.isgeneratorfunction(_target)
         _is_async_gen = inspect.isasyncgenfunction(_target)
@@ -453,36 +512,60 @@ def _generate_handler_shim(
             return {{key: values[row] for key, values in columns.items()}}
 
 
+        @contextlib.contextmanager
+        def _call_scope(context, column, i):
+            # Entered per row rather than once per call because a generator handler is
+            # consumed after handler() returns, so a scope opened around the loop would
+            # already be closed. Imported lazily so a function that reads neither the call
+            # context nor row metadata does not need chalkcompute installed in its image.
+            if not context and column is None:
+                yield
+                return
+            from chalkcompute._call_context import reset_call_scope, set_call_scope
+
+            token = set_call_scope(
+                context, column[i].as_py() if column is not None else None
+            )
+            try:
+                yield
+            finally:
+                reset_call_scope(token)
+
+
         def handler(event, context):
+            row_metadata = event.get(_ROW_METADATA_COLUMN)
             columns = {{
                 k: _input_decoders[k](v)
                 for k, v in event.items()
-                if k != _NO_ARGS_SENTINEL_COLUMN
+                if k not in _RESERVED_COLUMNS
             }}
             n = len(next(iter(columns.values()))) if columns else 1
             if _is_sync_gen:
                 def _gen():
                     for i in range(n):
                         kwargs = _kwargs_for_row(columns, i)
-                        if _output_encoder is None:
-                            yield from {func_name}(**kwargs)
-                        else:
-                            for item in {func_name}(**kwargs):
-                                yield _output_encoder(item)
+                        with _call_scope(context, row_metadata, i):
+                            if _output_encoder is None:
+                                yield from {func_name}(**kwargs)
+                            else:
+                                for item in {func_name}(**kwargs):
+                                    yield _output_encoder(item)
                 return _gen()
             elif _is_async_gen:
                 async def _agen():
                     for i in range(n):
                         kwargs = _kwargs_for_row(columns, i)
-                        async for item in {func_name}(**kwargs):
-                            yield item if _output_encoder is None else _output_encoder(item)
+                        with _call_scope(context, row_metadata, i):
+                            async for item in {func_name}(**kwargs):
+                                yield item if _output_encoder is None else _output_encoder(item)
                 return _agen()
             elif _is_coroutine:
                 import asyncio
                 results = []
                 for i in range(n):
                     kwargs = _kwargs_for_row(columns, i)
-                    result = asyncio.run({func_name}(**kwargs))
+                    with _call_scope(context, row_metadata, i):
+                        result = asyncio.run({func_name}(**kwargs))
                     if _output_encoder is not None:
                         result = _output_encoder(result)
                     results.append(result)
@@ -491,7 +574,8 @@ def _generate_handler_shim(
                 results = []
                 for i in range(n):
                     kwargs = _kwargs_for_row(columns, i)
-                    result = {func_name}(**kwargs)
+                    with _call_scope(context, row_metadata, i):
+                        result = {func_name}(**kwargs)
                     if _output_encoder is not None:
                         result = _output_encoder(result)
                     results.append(result)

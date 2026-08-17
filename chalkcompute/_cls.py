@@ -59,6 +59,7 @@ from chalkcompute._connect import ConnectClient
 from chalkcompute._function import (
     _CATALOG_SVC,
     _REMOTE_ENV_VAR,
+    _ROW_METADATA_COLUMN,
     _SG_SVC,
     FunctionVersionInfo,
     RemoteFunction,
@@ -483,7 +484,7 @@ def _generate_class_handler_shim(
     str
         Python source for the handler shim.
     """
-    parts: list[str] = ["import inspect"]
+    parts: list[str] = ["import contextlib", "import inspect"]
 
     if after_name is not None:
         parts.append("import atexit")
@@ -513,6 +514,34 @@ def _generate_class_handler_shim(
             "",
         ]
 
+    parts.append(
+        textwrap.dedent(f"""\
+        _ROW_METADATA_COLUMN = {_ROW_METADATA_COLUMN!r}
+
+
+        @contextlib.contextmanager
+        def _call_scope(context, column, i, as_py):
+            # Entered per row rather than once per call because a generator handler is
+            # consumed after handler() returns. Imported lazily so a method that reads
+            # neither the call context nor row metadata does not need chalkcompute
+            # installed in its image.
+            if not context and column is None:
+                yield
+                return
+            from chalkcompute._call_context import reset_call_scope, set_call_scope
+
+            row_metadata = None
+            if column is not None:
+                value = column[i]
+                row_metadata = value.as_py() if as_py else value
+            token = set_call_scope(context, row_metadata)
+            try:
+                yield
+            finally:
+                reset_call_scope(token)
+        """)
+    )
+
     method_caller = "_instance" if method_has_self else class_name
     if batched:
         parts.append(
@@ -526,24 +555,44 @@ def _generate_class_handler_shim(
                     import asyncio
                     async def _run_all():
                         results = []
-                        for event in events:
-                            columns = {{k: v.to_pylist() for k, v in event.items()}}
+                        for ci, event in enumerate(events):
+                            context = contexts[ci] if contexts and ci < len(contexts) else None
+                            row_metadata = event.get(_ROW_METADATA_COLUMN)
+                            row_metadata = (
+                                row_metadata.to_pylist() if row_metadata is not None else None
+                            )
+                            columns = {{
+                                k: v.to_pylist()
+                                for k, v in event.items()
+                                if k != _ROW_METADATA_COLUMN
+                            }}
                             n = len(next(iter(columns.values())))
                             per_caller = []
                             for i in range(n):
                                 kwargs = {{k: v[i] for k, v in columns.items()}}
-                                per_caller.append(await {method_caller}.{method_name}(**kwargs))
+                                with _call_scope(context, row_metadata, i, False):
+                                    per_caller.append(await {method_caller}.{method_name}(**kwargs))
                             results.append(per_caller)
                         return results
                     return asyncio.run(_run_all())
                 results = []
-                for event in events:
-                    columns = {{k: v.to_pylist() for k, v in event.items()}}
+                for ci, event in enumerate(events):
+                    context = contexts[ci] if contexts and ci < len(contexts) else None
+                    row_metadata = event.get(_ROW_METADATA_COLUMN)
+                    row_metadata = (
+                        row_metadata.to_pylist() if row_metadata is not None else None
+                    )
+                    columns = {{
+                        k: v.to_pylist()
+                        for k, v in event.items()
+                        if k != _ROW_METADATA_COLUMN
+                    }}
                     n = len(next(iter(columns.values())))
                     per_caller = []
                     for i in range(n):
                         kwargs = {{k: v[i] for k, v in columns.items()}}
-                        per_caller.append({method_caller}.{method_name}(**kwargs))
+                        with _call_scope(context, row_metadata, i, False):
+                            per_caller.append({method_caller}.{method_name}(**kwargs))
                     results.append(per_caller)
                 return results
             """).rstrip()
@@ -558,32 +607,40 @@ def _generate_class_handler_shim(
 
 
             def handler(event, context):
+                row_metadata = event.get(_ROW_METADATA_COLUMN)
+                event = {{
+                    k: v for k, v in event.items() if k != _ROW_METADATA_COLUMN
+                }}
                 n = len(next(iter(event.values())))
                 if _is_sync_gen:
                     def _gen():
                         for i in range(n):
                             kwargs = {{k: v[i].as_py() for k, v in event.items()}}
-                            yield from {method_caller}.{method_name}(**kwargs)
+                            with _call_scope(context, row_metadata, i, True):
+                                yield from {method_caller}.{method_name}(**kwargs)
                     return _gen()
                 elif _is_async_gen:
                     async def _agen():
                         for i in range(n):
                             kwargs = {{k: v[i].as_py() for k, v in event.items()}}
-                            async for item in {method_caller}.{method_name}(**kwargs):
-                                yield item
+                            with _call_scope(context, row_metadata, i, True):
+                                async for item in {method_caller}.{method_name}(**kwargs):
+                                    yield item
                     return _agen()
                 elif _is_coroutine:
                     import asyncio
                     results = []
                     for i in range(n):
                         kwargs = {{k: v[i].as_py() for k, v in event.items()}}
-                        results.append(asyncio.run({method_caller}.{method_name}(**kwargs)))
+                        with _call_scope(context, row_metadata, i, True):
+                            results.append(asyncio.run({method_caller}.{method_name}(**kwargs)))
                     return results
                 else:
                     results = []
                     for i in range(n):
                         kwargs = {{k: v[i].as_py() for k, v in event.items()}}
-                        results.append({method_caller}.{method_name}(**kwargs))
+                        with _call_scope(context, row_metadata, i, True):
+                            results.append({method_caller}.{method_name}(**kwargs))
                     return results
             """).rstrip()
         )
