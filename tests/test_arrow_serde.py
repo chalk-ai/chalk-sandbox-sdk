@@ -6,6 +6,8 @@ import pyarrow as pa
 
 from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
 from chalkcompute._arrow_serde import (
+    arrow_decoder_for_annotation,
+    arrow_encoder_for_annotation,
     chalk_arrow_type,
     has_chalk_arrow_contract,
 )
@@ -13,6 +15,7 @@ from chalkcompute._arrow_serde import (
 
 class Value:
     __chalk_arrow_type__ = arrow_pb2.ArrowType(int64=arrow_pb2.EmptyMessage())
+    __chalk_pyarrow_type__ = staticmethod(pa.int64)
 
     def __init__(self, value: int):
         self.value = value
@@ -47,3 +50,22 @@ def test_arrow_type_is_the_only_contract_marker():
     assert not has_chalk_arrow_contract(MethodsOnly)
     assert not has_chalk_arrow_contract(Value | None)
     assert not has_chalk_arrow_contract(Annotated[Value, "metadata"])
+
+
+def test_list_of_arrow_backed_values_roundtrips() -> None:
+    encoder = arrow_encoder_for_annotation(list[Value])
+    decoder = arrow_decoder_for_annotation(list[Value])
+    assert encoder is not None
+    assert decoder is not None
+
+    encoded = encoder([Value(1), Value(2)])
+    assert encoded.type.equals(
+        pa.large_list(pa.field("item", pa.int64(), nullable=False))
+    )
+    assert [item.value for item in decoder(encoded)] == [1, 2]
+
+    empty = encoder([])
+    assert empty.as_py() == []
+    assert empty.type.equals(
+        pa.large_list(pa.field("item", pa.int64(), nullable=False))
+    )

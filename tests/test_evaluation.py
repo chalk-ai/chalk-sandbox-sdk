@@ -17,6 +17,7 @@ from chalkcompute._evaluation import (
     EvaluationRunStatus,
     EvaluationScorerResult,
 )
+from chalkcompute._arrow_serde import arrow_encoder_for_annotation
 from chalkcompute._function import FunctionVersionInfo, RemoteFunction, _build_schemas
 
 
@@ -117,6 +118,7 @@ def _run_dict(
 
 def test_scorer_result_declares_arrow_contract_and_roundtrips() -> None:
     result = EvaluationScorerResult(
+        name="span count scorer",
         score=1,
         metadata={"total_span_count": 12, "llm_span_count": 3},
     )
@@ -128,30 +130,66 @@ def test_scorer_result_declares_arrow_contract_and_roundtrips() -> None:
     result_field = output_schema.columns[0]
     assert result_field.arrow_type.HasField("struct")
     fields = result_field.arrow_type.struct.sub_field_types
-    assert [field.name for field in fields] == ["score", "metadata"]
-    assert fields[0].arrow_type.HasField("float64")
+    assert [field.name for field in fields] == ["name", "score", "metadata"]
+    assert fields[0].arrow_type.HasField("large_utf8")
     assert fields[0].nullable is False
-    assert fields[1].arrow_type.HasField("large_utf8")
-    assert fields[1].nullable is True
+    assert fields[1].arrow_type.HasField("float64")
+    assert fields[1].nullable is False
+    assert fields[2].arrow_type.HasField("large_utf8")
+    assert fields[2].nullable is True
 
     encoded = result.__chalk_serialize__()
     assert isinstance(encoded, pa.StructScalar)
     assert encoded.as_py() == {
+        "name": "span count scorer",
         "score": 1.0,
         "metadata": '{"llm_span_count":3,"total_span_count":12}',
     }
     assert EvaluationScorerResult.__chalk_deserialize__(encoded) == result
 
 
+def test_scorer_result_list_declares_arrow_contract_and_encodes_empty_list() -> None:
+    def scorer() -> list[EvaluationScorerResult]:
+        return []
+
+    _, output_schema = _build_schemas(scorer)
+    result_type = output_schema.columns[0].arrow_type
+    assert result_type.HasField("large_list")
+    item_field = result_type.large_list.field_type
+    assert item_field.nullable is False
+    assert [field.name for field in item_field.arrow_type.struct.sub_field_types] == [
+        "name",
+        "score",
+        "metadata",
+    ]
+
+    encoder = arrow_encoder_for_annotation(list[EvaluationScorerResult])
+    assert encoder is not None
+    encoded = encoder([])
+    assert isinstance(encoded, pa.LargeListScalar)
+    assert encoded.as_py() == []
+    assert encoded.type.value_type.equals(
+        EvaluationScorerResult.__chalk_pyarrow_type__()
+    )
+
+
+@pytest.mark.parametrize("name", ["", "   "])
+def test_scorer_result_rejects_empty_name(name: str) -> None:
+    with pytest.raises(ValueError, match="name is required"):
+        EvaluationScorerResult(name=name, score=0.5)
+
+
 @pytest.mark.parametrize("score", [-0.01, 1.01, float("nan"), float("inf")])
 def test_scorer_result_rejects_invalid_scores(score: float) -> None:
     with pytest.raises(ValueError):
-        EvaluationScorerResult(score=score)
+        EvaluationScorerResult(name="quality", score=score)
 
 
 def test_scorer_result_rejects_non_json_metadata() -> None:
     with pytest.raises(TypeError, match="JSON-serializable"):
-        EvaluationScorerResult(score=0.5, metadata={"unsupported": object()})
+        EvaluationScorerResult(
+            name="quality", score=0.5, metadata={"unsupported": object()}
+        )
 
 
 def test_create_pins_direct_function_versions() -> None:

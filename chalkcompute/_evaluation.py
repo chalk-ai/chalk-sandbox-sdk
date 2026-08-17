@@ -48,6 +48,7 @@ def _scorer_result_pyarrow_type() -> Any:
 
     return pa.struct(
         [
+            pa.field("name", pa.large_utf8(), nullable=False),
             pa.field("score", pa.float64(), nullable=False),
             pa.field("metadata", pa.large_utf8(), nullable=True),
         ]
@@ -63,6 +64,9 @@ class EvaluationScorerResult:
     ``EvaluationScorerResult`` instance rather than an untyped dictionary.
     """
 
+    name: str
+    """Non-empty metric name used to distinguish scores from the same scorer."""
+
     score: float
     """Normalized score in the inclusive range ``[0, 1]``."""
 
@@ -72,6 +76,11 @@ class EvaluationScorerResult:
     __chalk_arrow_type__ = arrow_pb2.ArrowType(
         struct=arrow_pb2.Struct(
             sub_field_types=[
+                arrow_pb2.Field(
+                    name="name",
+                    arrow_type=arrow_pb2.ArrowType(large_utf8=arrow_pb2.EmptyMessage()),
+                    nullable=False,
+                ),
                 arrow_pb2.Field(
                     name="score",
                     arrow_type=arrow_pb2.ArrowType(float64=arrow_pb2.EmptyMessage()),
@@ -85,8 +94,16 @@ class EvaluationScorerResult:
             ]
         )
     )
+    __chalk_pyarrow_type__ = staticmethod(_scorer_result_pyarrow_type)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.name, str):
+            raise TypeError("name must be a string")
+        name = self.name.strip()
+        if not name:
+            raise ValueError("name is required")
+        object.__setattr__(self, "name", name)
+
         if isinstance(self.score, bool):
             raise TypeError("score must be a number")
         try:
@@ -120,7 +137,7 @@ class EvaluationScorerResult:
                 sort_keys=True,
             )
         return pa.scalar(
-            {"score": self.score, "metadata": metadata},
+            {"name": self.name, "score": self.score, "metadata": metadata},
             type=_scorer_result_pyarrow_type(),
         )
 
@@ -130,6 +147,7 @@ class EvaluationScorerResult:
         raw = value.as_py()
         metadata = raw.get("metadata")
         return cls(
+            name=raw["name"],
             score=raw["score"],
             metadata=None if metadata is None else json.loads(metadata),
         )

@@ -1793,25 +1793,26 @@ class RemoteFunction:
         )
 
         from chalkcompute._arrow_serde import (
-            has_chalk_arrow_contract,
+            arrow_decoder_for_annotation,
+            arrow_encoder_for_annotation,
             unwrap_result_annotation,
         )
 
         hints = typing.get_type_hints(func, include_extras=True)
-        serializers_by_name: dict[str, Callable[[Any], Any]] = {
-            param_name: annotation.__chalk_serialize__
-            for param_name, annotation in hints.items()
-            if param_name != "return" and has_chalk_arrow_contract(annotation)
-        }
+        serializers_by_name: dict[str, Callable[[Any], Any]] = {}
+        for param_name, annotation in hints.items():
+            if param_name == "return":
+                continue
+            serializer = arrow_encoder_for_annotation(annotation)
+            if serializer is not None:
+                serializers_by_name[param_name] = serializer
         self._arrow_input_serializers: tuple[Callable[[Any], Any] | None, ...] = tuple(
             serializers_by_name.get(param_name)
             for param_name in self._call_parameter_names
         )
         result_type = unwrap_result_annotation(hints.get("return"))
         self._arrow_result_deserializer: Callable[[Any], Any] | None = (
-            result_type.__chalk_deserialize__
-            if has_chalk_arrow_contract(result_type)
-            else None
+            arrow_decoder_for_annotation(result_type)
         )
         if name is not None:
             validate_dns_label(name)

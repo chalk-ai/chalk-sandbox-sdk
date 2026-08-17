@@ -183,6 +183,17 @@ class TestRichToArrowSchema:
         assert fields[1].arrow_type.HasField("utf8")
         assert fields[1].nullable is True
 
+    def test_list_of_custom_type_uses_literal_arrow_proto(self):
+        proto = rich_to_arrow_schema({"points": list[ArrowPoint]})
+
+        item = proto.columns[0].arrow_type.large_list.field_type
+        assert item.nullable is False
+        assert item.arrow_type.HasField("struct")
+        assert [field.name for field in item.arrow_type.struct.sub_field_types] == [
+            "x",
+            "label",
+        ]
+
     @pytest.mark.parametrize(
         "annotation",
         [typing.Optional[ArrowPoint], typing.Annotated[ArrowPoint, "metadata"]],
