@@ -14,17 +14,38 @@ import sys
 import types
 
 import pyarrow as pa
+import pytest
 
 from chalkcompute._call_context import get_call_context, get_row_metadata
 from chalkcompute._cls import _generate_class_handler_shim
 from chalkcompute._function import _ROW_METADATA_COLUMN, _generate_handler_shim
 
+_USER_MODULE = "user_module"
+
+
+@pytest.fixture(autouse=True)
+def _restore_user_module():
+    """Undo the fake ``user_module`` these tests install.
+
+    A bare ModuleType has no ``__spec__``, so leaving one in ``sys.modules`` makes
+    ``importlib.util.find_spec("user_module")`` raise for every later test in the session —
+    which is exactly what ``add_local_python_source`` calls.
+    """
+    previous = sys.modules.get(_USER_MODULE)
+    try:
+        yield
+    finally:
+        if previous is None:
+            sys.modules.pop(_USER_MODULE, None)
+        else:
+            sys.modules[_USER_MODULE] = previous
+
 
 def _install_user_module(**attrs) -> None:
-    mod = types.ModuleType("user_module")
+    mod = types.ModuleType(_USER_MODULE)
     for name, value in attrs.items():
         setattr(mod, name, value)
-    sys.modules["user_module"] = mod
+    sys.modules[_USER_MODULE] = mod
 
 
 def _load_shim(source: str) -> dict:

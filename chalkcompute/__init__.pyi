@@ -140,6 +140,8 @@ __all__ = [
     "FunctionCallHandle",
     "FunctionVersionInfo",
     "gather",
+    "get_call_context",
+    "get_row_metadata",
     "RetryPolicy",
     "RateLimitPolicy",
     "ConcurrencyPolicy",
