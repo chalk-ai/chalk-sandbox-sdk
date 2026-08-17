@@ -68,6 +68,10 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     ),
     "EvaluationRunStatus": ("chalkcompute._evaluation", "EvaluationRunStatus"),
     "EvaluationScorer": ("chalkcompute._evaluation", "EvaluationScorer"),
+    "EvaluationScorerResult": (
+        "chalkcompute._evaluation",
+        "EvaluationScorerResult",
+    ),
     # _remote_call_client.py
     "RemoteCallClient": ("chalkcompute._remote_call_client", "RemoteCallClient"),
     "RemoteCallClientUnavailable": (

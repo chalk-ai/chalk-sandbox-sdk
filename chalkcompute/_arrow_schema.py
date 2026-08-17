@@ -149,13 +149,17 @@ def rich_to_arrow_schema(
     return arrow_pb2.Schema(columns=columns)
 
 
-def _rich_to_arrow_type(python_type: Any) -> Any:
+def _rich_to_arrow_type(
+    python_type: Any, *, allow_custom_contract: bool = False
+) -> Any:
     """Recursively convert a Python type to an ``arrow_pb2.ArrowType``.
 
     Parameters
     ----------
     python_type
         The Python type annotation to convert.
+    allow_custom_contract
+        Whether a nested type may use its declared Arrow contract.
 
     Returns
     -------
@@ -168,12 +172,19 @@ def _rich_to_arrow_type(python_type: Any) -> Any:
         If the Python type cannot be represented as an Arrow type.
     """
     from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
+    from chalkcompute._arrow_serde import (
+        chalk_arrow_type,
+        has_chalk_arrow_contract,
+    )
 
     E = arrow_pb2.EmptyMessage
 
     python_type = _unwrap_annotated(python_type)
     if _is_optional(python_type):
         python_type = next(a for a in get_args(python_type) if a is not _NoneType)
+
+    if allow_custom_contract and has_chalk_arrow_contract(python_type):
+        return chalk_arrow_type(python_type)
 
     origin = get_origin(python_type)
 
@@ -190,7 +201,11 @@ def _rich_to_arrow_type(python_type: Any) -> Any:
                 large_list=arrow_pb2.List(
                     field_type=arrow_pb2.Field(
                         name="item",
-                        arrow_type=_rich_to_arrow_type(inner),
+                        arrow_type=_rich_to_arrow_type(
+                            inner,
+                            allow_custom_contract=not nullable
+                            and origin in (list, List),
+                        ),
                         nullable=nullable,
                     )
                 )

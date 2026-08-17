@@ -42,7 +42,12 @@ needs_openai = pytest.mark.skipif(
 )
 
 
-def _deploy_script(example_subdir: str, script_name: str) -> None:
+def _deploy_script(
+    example_subdir: str,
+    script_name: str,
+    *,
+    function_name: str | None = None,
+) -> None:
     """Run an example deploy script as a subprocess.
 
     Parameters
@@ -51,13 +56,18 @@ def _deploy_script(example_subdir: str, script_name: str) -> None:
         Subdirectory under ``examples/`` (e.g. ``"scalar"``).
     script_name
         Script file name within that subdirectory (e.g. ``"deploy_sync.py"``).
+    function_name
+        Optional function name passed to deploy scripts that support CI isolation.
     """
     script_path = EXAMPLES_DIR / example_subdir / script_name
+    env = os.environ.copy()
+    if function_name is not None:
+        env["CHALK_E2E_FUNCTION_NAME"] = function_name
     result = subprocess.run(
         [sys.executable, str(script_path)],
         capture_output=True,
         text=True,
-        env=os.environ,
+        env=env,
         timeout=600,
     )
     if result.returncode != 0:
@@ -67,6 +77,14 @@ def _deploy_script(example_subdir: str, script_name: str) -> None:
             f"stdout: {result.stdout[-500:]}\n"
             f"stderr: {result.stderr[-500:]}"
         )
+
+
+def _build_scoped_name(base: str) -> str:
+    """Return a stable resource name isolated to the current CI build."""
+    build_id = os.environ.get("BUILDKITE_BUILD_ID", "").replace("-", "")
+    if not build_id:
+        return base
+    return f"{base}-{build_id[:8]}"
 
 
 def _get_access_token() -> str:

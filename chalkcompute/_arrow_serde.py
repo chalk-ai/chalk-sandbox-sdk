@@ -15,12 +15,18 @@ expected to provide a pair of PyArrow scalar serialization dunders::
         def __chalk_deserialize__(cls, value: pa.Scalar) -> "Counter":
             return cls(value.as_py())
 
+Classes used inside an annotated container can additionally expose a PyArrow
+type factory so empty containers retain their element type::
+
+    __chalk_pyarrow_type__ = staticmethod(pa.int64)
+
 The proto is the catalog schema contract; PyArrow scalars are the Arrow IPC
 value contract.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, get_args, get_origin
 
 
@@ -54,6 +60,91 @@ def unwrap_result_annotation(annotation: Any) -> Any:
     return annotation
 
 
+def _list_item_annotation(annotation: Any) -> Any | None:
+    """Return the item annotation when ``annotation`` is a concrete list."""
+    if get_origin(annotation) is not list:
+        return None
+    args = get_args(annotation)
+    if len(args) != 1:
+        return None
+    return args[0]
+
+
+def _pyarrow_type_for_annotation(annotation: Any) -> Any | None:
+    if has_chalk_arrow_contract(annotation):
+        factory = getattr(annotation, "__chalk_pyarrow_type__", None)
+        return None if factory is None else factory()
+
+    item_annotation = _list_item_annotation(annotation)
+    if item_annotation is None:
+        return None
+    item_type = _pyarrow_type_for_annotation(item_annotation)
+    if item_type is None:
+        return None
+
+    import pyarrow as pa
+
+    return pa.large_list(pa.field("item", item_type, nullable=False))
+
+
+def arrow_encoder_for_annotation(
+    annotation: Any,
+) -> Callable[[Any], Any] | None:
+    """Build a scalar encoder for an Arrow-backed annotation, recursively."""
+    if has_chalk_arrow_contract(annotation):
+        return annotation.__chalk_serialize__
+
+    item_annotation = _list_item_annotation(annotation)
+    if item_annotation is None:
+        return None
+    item_encoder = arrow_encoder_for_annotation(item_annotation)
+    if item_encoder is None:
+        return None
+    item_encoder_fn = item_encoder
+
+    def encode_list(values: Any) -> Any:
+        import pyarrow as pa
+
+        if not isinstance(values, list):
+            raise TypeError("a list annotation requires a list result")
+        encoded = [item_encoder_fn(value) for value in values]
+        list_type = _pyarrow_type_for_annotation(annotation)
+        if list_type is None:
+            if not encoded:
+                raise TypeError(
+                    "empty lists of Arrow-backed values require the element class "
+                    "to define __chalk_pyarrow_type__"
+                )
+            list_type = pa.large_list(pa.field("item", encoded[0].type, nullable=False))
+        return pa.scalar(encoded, type=list_type)
+
+    return encode_list
+
+
+def arrow_decoder_for_annotation(
+    annotation: Any,
+) -> Callable[[Any], Any] | None:
+    """Build a scalar decoder for an Arrow-backed annotation, recursively."""
+    if has_chalk_arrow_contract(annotation):
+        return annotation.__chalk_deserialize__
+
+    item_annotation = _list_item_annotation(annotation)
+    if item_annotation is None:
+        return None
+    item_decoder = arrow_decoder_for_annotation(item_annotation)
+    if item_decoder is None:
+        return None
+    item_decoder_fn = item_decoder
+
+    def decode_list(value: Any) -> list[Any]:
+        return [
+            None if not item.is_valid else item_decoder_fn(item)
+            for item in value.values
+        ]
+
+    return decode_list
+
+
 def handler_runtime_source() -> str:
     """Return self-contained serde helpers for a generated worker shim.
 
@@ -80,20 +171,80 @@ def handler_runtime_source() -> str:
             return column.to_pylist()
 
 
+        def _chalk_list_item_annotation(annotation):
+            if _chalk_typing.get_origin(annotation) is not list:
+                return None
+            args = _chalk_typing.get_args(annotation)
+            return args[0] if len(args) == 1 else None
+
+
+        def _chalk_pyarrow_type(annotation):
+            if _chalk_has_contract(annotation):
+                factory = getattr(annotation, "__chalk_pyarrow_type__", None)
+                return None if factory is None else factory()
+            item_annotation = _chalk_list_item_annotation(annotation)
+            if item_annotation is None:
+                return None
+            item_type = _chalk_pyarrow_type(item_annotation)
+            if item_type is None:
+                return None
+            import pyarrow as pa
+            return pa.large_list(pa.field("item", item_type, nullable=False))
+
+
+        def _chalk_decoder(annotation):
+            if _chalk_has_contract(annotation):
+                return annotation.__chalk_deserialize__
+            item_annotation = _chalk_list_item_annotation(annotation)
+            if item_annotation is None:
+                return None
+            item_decoder = _chalk_decoder(item_annotation)
+            if item_decoder is None:
+                return None
+            return lambda value: [
+                None if not item.is_valid else item_decoder(item)
+                for item in value.values
+            ]
+
+
         def _chalk_column_decoder(annotation):
-            if not _chalk_has_contract(annotation):
+            decoder = _chalk_decoder(annotation)
+            if decoder is None:
                 return _chalk_to_pylist
-            deserialize = annotation.__chalk_deserialize__
             return lambda column: [
-                None if not value.is_valid else deserialize(value)
+                None if not value.is_valid else decoder(value)
                 for value in column
             ]
 
 
         def _chalk_encoder(annotation):
-            if not _chalk_has_contract(annotation):
+            if _chalk_has_contract(annotation):
+                return annotation.__chalk_serialize__
+            item_annotation = _chalk_list_item_annotation(annotation)
+            if item_annotation is None:
                 return None
-            return annotation.__chalk_serialize__
+            item_encoder = _chalk_encoder(item_annotation)
+            if item_encoder is None:
+                return None
+
+            def encode_list(values):
+                import pyarrow as pa
+                if not isinstance(values, list):
+                    raise TypeError("a list annotation requires a list result")
+                encoded = [item_encoder(value) for value in values]
+                list_type = _chalk_pyarrow_type(annotation)
+                if list_type is None:
+                    if not encoded:
+                        raise TypeError(
+                            "empty lists of Arrow-backed values require the element "
+                            "class to define __chalk_pyarrow_type__"
+                        )
+                    list_type = pa.large_list(
+                        pa.field("item", encoded[0].type, nullable=False)
+                    )
+                return pa.scalar(encoded, type=list_type)
+
+            return encode_list
 
 
         def _chalk_result_annotation(target):

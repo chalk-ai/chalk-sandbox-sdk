@@ -15,6 +15,7 @@ silently deploys an imperative, undeployed ``RemoteFunction``.
 from __future__ import annotations
 
 import json
+import math
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -22,6 +23,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Protocol
 
+from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
 from chalkcompute._connect import ConnectClient
 from chalkcompute._function import DeployedFunction, RemoteFunction
 from chalkcompute._tracing import _instrumented
@@ -39,6 +41,116 @@ class EvaluationError(Exception):
 
 class EvaluationNotFoundError(EvaluationError):
     """Raised when an evaluation or evaluation run does not exist."""
+
+
+def _scorer_result_pyarrow_type() -> Any:
+    import pyarrow as pa
+
+    return pa.struct(
+        [
+            pa.field("name", pa.large_utf8(), nullable=False),
+            pa.field("score", pa.float64(), nullable=False),
+            pa.field("metadata", pa.large_utf8(), nullable=True),
+        ]
+    )
+
+
+@dataclass(frozen=True)
+class EvaluationScorerResult:
+    """The score and optional row-level metadata returned by a scorer function.
+
+    Annotating a ``@chalkcompute.function`` with this return type installs its
+    Arrow struct contract automatically. Scorer functions must return an
+    ``EvaluationScorerResult`` instance rather than an untyped dictionary.
+    """
+
+    name: str
+    """Non-empty metric name used to distinguish scores from the same scorer."""
+
+    score: float
+    """Normalized score in the inclusive range ``[0, 1]``."""
+
+    metadata: Mapping[str, Any] | None = None
+    """Optional JSON-serializable metadata retained with the scored row."""
+
+    __chalk_arrow_type__ = arrow_pb2.ArrowType(
+        struct=arrow_pb2.Struct(
+            sub_field_types=[
+                arrow_pb2.Field(
+                    name="name",
+                    arrow_type=arrow_pb2.ArrowType(large_utf8=arrow_pb2.EmptyMessage()),
+                    nullable=False,
+                ),
+                arrow_pb2.Field(
+                    name="score",
+                    arrow_type=arrow_pb2.ArrowType(float64=arrow_pb2.EmptyMessage()),
+                    nullable=False,
+                ),
+                arrow_pb2.Field(
+                    name="metadata",
+                    arrow_type=arrow_pb2.ArrowType(large_utf8=arrow_pb2.EmptyMessage()),
+                    nullable=True,
+                ),
+            ]
+        )
+    )
+    __chalk_pyarrow_type__ = staticmethod(_scorer_result_pyarrow_type)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str):
+            raise TypeError("name must be a string")
+        name = self.name.strip()
+        if not name:
+            raise ValueError("name is required")
+        object.__setattr__(self, "name", name)
+
+        if isinstance(self.score, bool):
+            raise TypeError("score must be a number")
+        try:
+            score = float(self.score)
+        except (TypeError, ValueError) as exc:
+            raise TypeError("score must be a number") from exc
+        if not math.isfinite(score):
+            raise ValueError("score must be finite")
+        if not 0 <= score <= 1:
+            raise ValueError("score must be between 0 and 1")
+        object.__setattr__(self, "score", score)
+
+        if self.metadata is not None:
+            metadata = _metadata_dict(self.metadata)
+            try:
+                json.dumps(metadata, allow_nan=False)
+            except ValueError as exc:
+                raise TypeError("metadata must be JSON-serializable") from exc
+            object.__setattr__(self, "metadata", metadata)
+
+    def __chalk_serialize__(self) -> Any:
+        """Encode this result as the Arrow struct registered in the catalog."""
+        import pyarrow as pa
+
+        metadata = None
+        if self.metadata is not None:
+            metadata = json.dumps(
+                self.metadata,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        return pa.scalar(
+            {"name": self.name, "score": self.score, "metadata": metadata},
+            type=_scorer_result_pyarrow_type(),
+        )
+
+    @classmethod
+    def __chalk_deserialize__(cls, value: Any) -> EvaluationScorerResult:
+        """Decode an Arrow scorer-result struct returned by Chalk Compute."""
+        raw = value.as_py()
+        metadata = raw.get("metadata")
+        return cls(
+            name=raw["name"],
+            score=raw["score"],
+            metadata=None if metadata is None else json.loads(metadata),
+        )
 
 
 class DatasetRevisionLike(Protocol):
