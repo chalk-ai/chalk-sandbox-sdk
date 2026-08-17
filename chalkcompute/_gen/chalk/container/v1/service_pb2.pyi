@@ -124,6 +124,27 @@ class SecretRef(_message.Message):
         prefix: _Optional[str] = ...,
     ) -> None: ...
 
+class ManagedSshDestination(_message.Message):
+    __slots__ = ("host", "private_key_secret", "host_keys", "port", "username")
+    HOST_FIELD_NUMBER: _ClassVar[int]
+    PRIVATE_KEY_SECRET_FIELD_NUMBER: _ClassVar[int]
+    HOST_KEYS_FIELD_NUMBER: _ClassVar[int]
+    PORT_FIELD_NUMBER: _ClassVar[int]
+    USERNAME_FIELD_NUMBER: _ClassVar[int]
+    host: str
+    private_key_secret: str
+    host_keys: _containers.RepeatedScalarFieldContainer[str]
+    port: int
+    username: str
+    def __init__(
+        self,
+        host: _Optional[str] = ...,
+        private_key_secret: _Optional[str] = ...,
+        host_keys: _Optional[_Iterable[str]] = ...,
+        port: _Optional[int] = ...,
+        username: _Optional[str] = ...,
+    ) -> None: ...
+
 class ChalkContainerSpec(_message.Message):
     __slots__ = (
         "name",
@@ -147,6 +168,7 @@ class ChalkContainerSpec(_message.Message):
         "readiness_probe",
         "restart_policy",
         "chalk_workload_identity",
+        "managed_ssh",
     )
     class TagsEntry(_message.Message):
         __slots__ = ("key", "value")
@@ -166,6 +188,18 @@ class ChalkContainerSpec(_message.Message):
         value: str
         def __init__(
             self, key: _Optional[str] = ..., value: _Optional[str] = ...
+        ) -> None: ...
+
+    class ManagedSshEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: ManagedSshDestination
+        def __init__(
+            self,
+            key: _Optional[str] = ...,
+            value: _Optional[_Union[ManagedSshDestination, _Mapping]] = ...,
         ) -> None: ...
 
     NAME_FIELD_NUMBER: _ClassVar[int]
@@ -189,6 +223,7 @@ class ChalkContainerSpec(_message.Message):
     READINESS_PROBE_FIELD_NUMBER: _ClassVar[int]
     RESTART_POLICY_FIELD_NUMBER: _ClassVar[int]
     CHALK_WORKLOAD_IDENTITY_FIELD_NUMBER: _ClassVar[int]
+    MANAGED_SSH_FIELD_NUMBER: _ClassVar[int]
     name: str
     image: str
     entrypoint: _containers.RepeatedScalarFieldContainer[str]
@@ -210,6 +245,7 @@ class ChalkContainerSpec(_message.Message):
     readiness_probe: ReadinessProbe
     restart_policy: RestartPolicy
     chalk_workload_identity: ChalkWorkloadIdentity
+    managed_ssh: _containers.MessageMap[str, ManagedSshDestination]
     def __init__(
         self,
         name: _Optional[str] = ...,
@@ -235,6 +271,7 @@ class ChalkContainerSpec(_message.Message):
         chalk_workload_identity: _Optional[
             _Union[ChalkWorkloadIdentity, _Mapping]
         ] = ...,
+        managed_ssh: _Optional[_Mapping[str, ManagedSshDestination]] = ...,
     ) -> None: ...
 
 class StartupProbe(_message.Message):

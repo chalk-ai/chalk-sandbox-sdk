@@ -830,18 +830,21 @@ class DeleteVolumeResponse(_message.Message):
     def __init__(self) -> None: ...
 
 class ListVolumeVersionsRequest(_message.Message):
-    __slots__ = ("volume", "limit", "cursor")
+    __slots__ = ("volume", "limit", "cursor", "ref")
     VOLUME_FIELD_NUMBER: _ClassVar[int]
     LIMIT_FIELD_NUMBER: _ClassVar[int]
     CURSOR_FIELD_NUMBER: _ClassVar[int]
+    REF_FIELD_NUMBER: _ClassVar[int]
     volume: VolumeRef
     limit: int
     cursor: str
+    ref: str
     def __init__(
         self,
         volume: _Optional[_Union[VolumeRef, _Mapping]] = ...,
         limit: _Optional[int] = ...,
         cursor: _Optional[str] = ...,
+        ref: _Optional[str] = ...,
     ) -> None: ...
 
 class ListVolumeVersionsResponse(_message.Message):

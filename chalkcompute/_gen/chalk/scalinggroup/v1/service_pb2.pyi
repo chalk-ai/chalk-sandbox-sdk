@@ -235,18 +235,21 @@ class CreateScalingGroupResponse(_message.Message):
     ) -> None: ...
 
 class GetScalingGroupRequest(_message.Message):
-    __slots__ = ("id", "name", "visibility")
+    __slots__ = ("id", "name", "visibility", "include_deleted")
     ID_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
     VISIBILITY_FIELD_NUMBER: _ClassVar[int]
+    INCLUDE_DELETED_FIELD_NUMBER: _ClassVar[int]
     id: str
     name: str
     visibility: _containers.RepeatedScalarFieldContainer[ScalingGroupVisibility]
+    include_deleted: bool
     def __init__(
         self,
         id: _Optional[str] = ...,
         name: _Optional[str] = ...,
         visibility: _Optional[_Iterable[_Union[ScalingGroupVisibility, str]]] = ...,
+        include_deleted: bool = ...,
     ) -> None: ...
 
 class GetScalingGroupResponse(_message.Message):
@@ -258,15 +261,25 @@ class GetScalingGroupResponse(_message.Message):
     ) -> None: ...
 
 class ListScalingGroupsRequest(_message.Message):
-    __slots__ = ("cursor", "limit", "filters", "search", "sort_column", "sort_order")
+    __slots__ = (
+        "cursor",
+        "limit",
+        "include_deleted",
+        "filters",
+        "search",
+        "sort_column",
+        "sort_order",
+    )
     CURSOR_FIELD_NUMBER: _ClassVar[int]
     LIMIT_FIELD_NUMBER: _ClassVar[int]
+    INCLUDE_DELETED_FIELD_NUMBER: _ClassVar[int]
     FILTERS_FIELD_NUMBER: _ClassVar[int]
     SEARCH_FIELD_NUMBER: _ClassVar[int]
     SORT_COLUMN_FIELD_NUMBER: _ClassVar[int]
     SORT_ORDER_FIELD_NUMBER: _ClassVar[int]
     cursor: str
     limit: int
+    include_deleted: bool
     filters: ListScalingGroupsFilters
     search: str
     sort_column: ScalingGroupSortColumn
@@ -275,6 +288,7 @@ class ListScalingGroupsRequest(_message.Message):
         self,
         cursor: _Optional[str] = ...,
         limit: _Optional[int] = ...,
+        include_deleted: bool = ...,
         filters: _Optional[_Union[ListScalingGroupsFilters, _Mapping]] = ...,
         search: _Optional[str] = ...,
         sort_column: _Optional[_Union[ScalingGroupSortColumn, str]] = ...,
@@ -321,6 +335,7 @@ class ScalingGroupRevisionResponse(_message.Message):
         "created_at",
         "metadata",
         "latest",
+        "deleted_at",
     )
     class MetadataEntry(_message.Message):
         __slots__ = ("key", "value")
@@ -343,6 +358,7 @@ class ScalingGroupRevisionResponse(_message.Message):
     CREATED_AT_FIELD_NUMBER: _ClassVar[int]
     METADATA_FIELD_NUMBER: _ClassVar[int]
     LATEST_FIELD_NUMBER: _ClassVar[int]
+    DELETED_AT_FIELD_NUMBER: _ClassVar[int]
     id: str
     scaling_group_id: str
     scaling_group_name: str
@@ -352,6 +368,7 @@ class ScalingGroupRevisionResponse(_message.Message):
     created_at: _timestamp_pb2.Timestamp
     metadata: _containers.MessageMap[str, _struct_pb2.Value]
     latest: bool
+    deleted_at: _timestamp_pb2.Timestamp
     def __init__(
         self,
         id: _Optional[str] = ...,
@@ -363,21 +380,30 @@ class ScalingGroupRevisionResponse(_message.Message):
         created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
         metadata: _Optional[_Mapping[str, _struct_pb2.Value]] = ...,
         latest: bool = ...,
+        deleted_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
     ) -> None: ...
 
 class GetScalingGroupRevisionRequest(_message.Message):
-    __slots__ = ("scaling_group_id", "scaling_group_name", "revision_id")
+    __slots__ = (
+        "scaling_group_id",
+        "scaling_group_name",
+        "revision_id",
+        "include_deleted",
+    )
     SCALING_GROUP_ID_FIELD_NUMBER: _ClassVar[int]
     SCALING_GROUP_NAME_FIELD_NUMBER: _ClassVar[int]
     REVISION_ID_FIELD_NUMBER: _ClassVar[int]
+    INCLUDE_DELETED_FIELD_NUMBER: _ClassVar[int]
     scaling_group_id: str
     scaling_group_name: str
     revision_id: str
+    include_deleted: bool
     def __init__(
         self,
         scaling_group_id: _Optional[str] = ...,
         scaling_group_name: _Optional[str] = ...,
         revision_id: _Optional[str] = ...,
+        include_deleted: bool = ...,
     ) -> None: ...
 
 class GetScalingGroupRevisionResponse(_message.Message):
@@ -389,17 +415,26 @@ class GetScalingGroupRevisionResponse(_message.Message):
     ) -> None: ...
 
 class ListScalingGroupRevisionsRequest(_message.Message):
-    __slots__ = ("scaling_group_id", "scaling_group_name", "cursor", "limit", "filters")
+    __slots__ = (
+        "scaling_group_id",
+        "scaling_group_name",
+        "cursor",
+        "limit",
+        "filters",
+        "include_deleted",
+    )
     SCALING_GROUP_ID_FIELD_NUMBER: _ClassVar[int]
     SCALING_GROUP_NAME_FIELD_NUMBER: _ClassVar[int]
     CURSOR_FIELD_NUMBER: _ClassVar[int]
     LIMIT_FIELD_NUMBER: _ClassVar[int]
     FILTERS_FIELD_NUMBER: _ClassVar[int]
+    INCLUDE_DELETED_FIELD_NUMBER: _ClassVar[int]
     scaling_group_id: str
     scaling_group_name: str
     cursor: str
     limit: int
     filters: ListScalingGroupRevisionsFilters
+    include_deleted: bool
     def __init__(
         self,
         scaling_group_id: _Optional[str] = ...,
@@ -407,6 +442,7 @@ class ListScalingGroupRevisionsRequest(_message.Message):
         cursor: _Optional[str] = ...,
         limit: _Optional[int] = ...,
         filters: _Optional[_Union[ListScalingGroupRevisionsFilters, _Mapping]] = ...,
+        include_deleted: bool = ...,
     ) -> None: ...
 
 class ListScalingGroupRevisionsFilters(_message.Message):
