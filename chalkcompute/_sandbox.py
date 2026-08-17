@@ -29,7 +29,6 @@ import signal
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any
 
 import grpc
@@ -42,8 +41,7 @@ from chalkcompute._connect import (
     grpc_target_from_url,
     raise_for_grpc_error,
 )
-from chalkcompute._container import NetworkPolicy
-from chalkcompute._gen.chalk.container.v1 import service_pb2 as container_pb
+from chalkcompute._containerspec import ContainerSpec, NetworkPolicy, RestartPolicy
 from chalkcompute._gen.chalk.sandbox.v1 import runtime_service_pb2 as runtime_pb
 from chalkcompute._gen.chalk.sandbox.v1 import (
     runtime_service_pb2_grpc as runtime_pb_grpc,
@@ -55,10 +53,9 @@ from chalkcompute._gen.chalk.sandbox.v2 import (
 from chalkcompute._gen.chalk.sandbox.v2 import service_pb2 as pb
 from chalkcompute._gen.chalk.sandbox.v2 import service_pb2_grpc as pb_grpc
 from chalkcompute._image import Image
-from chalkcompute._naming import validate_dns_label, validate_env
+from chalkcompute._naming import validate_env
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
-    MOUNT_TYPE,
     Volume,
     VolumeClient,
     VolumeMount,
@@ -127,13 +124,6 @@ class ExecError(SandboxError):
     def __init__(self, code: str, message: str) -> None:
         self.code = code
         super().__init__(f"{code}: {message}")
-
-
-class RestartPolicy(Enum):
-    """Policy controlling whether a sandbox restarts after exiting."""
-
-    NEVER = "RESTART_POLICY_NEVER"
-    ALWAYS = "RESTART_POLICY_ALWAYS"
 
 
 # ---------------------------------------------------------------------------
@@ -547,25 +537,17 @@ class Sandbox:
 
         if image is None:
             raise TypeError("Sandbox() missing required keyword-only argument: 'image'")
-        if not isinstance(image, (str, Image)):
-            raise TypeError(
-                f"image must be an Image or image reference string, got {image!r}"
-            )
-        if name is not None:
-            validate_dns_label(name)
-        if cpu is not None and not isinstance(cpu, str):
-            raise TypeError(f"cpu must be a string such as '2' or '500m', got {cpu!r}")
-        if memory is not None and not isinstance(memory, str):
-            raise TypeError(
-                f"memory must be a string such as '2Gi' or '512Mi', got {memory!r}"
-            )
-        validate_env(env)
-        if network_policy is not None and not isinstance(network_policy, NetworkPolicy):
-            raise TypeError("network_policy must be a NetworkPolicy")
-        if restart_policy is not None and not isinstance(restart_policy, RestartPolicy):
-            raise TypeError("restart_policy must be a RestartPolicy")
-        if not isinstance(chalk_identity, bool):
-            raise TypeError("chalk_identity must be a bool")
+        ContainerSpec.validate_fields(
+            image=image,
+            name=name,
+            cpu=cpu,
+            memory=memory,
+            env=env,
+            entrypoint=entrypoint,
+            network_policy=network_policy,
+            restart_policy=restart_policy,
+            chalk_identity=chalk_identity,
+        )
 
         self._client = sandbox_client
         self._image = image
@@ -1219,35 +1201,18 @@ class SandboxClient:
         poll_interval: float,
         timeout: float,
     ) -> None:
-        spec = container_pb.ChalkContainerSpec(image=image)
-        if sandbox._name is not None:
-            spec.name = sandbox._name
-        if sandbox._cpu is not None or sandbox._memory is not None:
-            limits = container_pb.ResourceLimits()
-            if sandbox._cpu is not None:
-                limits.cpu = sandbox._cpu
-            if sandbox._memory is not None:
-                limits.memory = sandbox._memory
-            spec.resources.CopyFrom(limits)
-        if sandbox._env:
-            for k, v in sandbox._env.items():
-                spec.env_vars[k] = v
-        if sandbox._volumes:
-            spec.volumes.extend(_volume_mounts_to_proto(sandbox._volumes))
-        if sandbox._entrypoint is not None:
-            spec.entrypoint.extend(sandbox._entrypoint)
-        if sandbox._network_policy is not None:
-            from google.protobuf.json_format import ParseDict
-
-            ParseDict(sandbox._network_policy.to_dict(), spec.network_policy)
-        if sandbox._restart_policy is not None:
-            spec.restart_policy = (
-                container_pb.RESTART_POLICY_NEVER
-                if sandbox._restart_policy is RestartPolicy.NEVER
-                else container_pb.RESTART_POLICY_ALWAYS
-            )
-        if sandbox._chalk_identity:
-            spec.chalk_workload_identity.CopyFrom(container_pb.ChalkWorkloadIdentity())
+        spec = ContainerSpec(
+            image=image,
+            name=sandbox._name,
+            entrypoint=sandbox._entrypoint,
+            cpu=sandbox._cpu,
+            memory=sandbox._memory,
+            env=sandbox._env,
+            volumes=sandbox._volumes,
+            network_policy=sandbox._network_policy,
+            restart_policy=sandbox._restart_policy,
+            chalk_identity=sandbox._chalk_identity,
+        ).to_proto()
 
         resp = self._stub.CreateSandbox(
             pb.CreateSandboxRequest(spec=spec), metadata=self._metadata
@@ -1415,22 +1380,6 @@ def _handle_rpc_error(e: grpc.RpcError, sandbox_id: str) -> None:
             ),
         },
     )
-
-
-def _volume_mounts_to_proto(
-    volumes: list[VolumeMount],
-) -> list[container_pb.VolumeMount]:
-    mounts: list[container_pb.VolumeMount] = []
-    for volume in volumes:
-        mount = container_pb.VolumeMount(
-            name=volume.name,
-            mount_path=volume.mount_path,
-            type=MOUNT_TYPE,
-        )
-        if volume.version_id is not None:
-            mount.version_id = volume.version_id
-        mounts.append(mount)
-    return mounts
 
 
 def connect(target: str = "localhost:50051", **kwargs) -> SandboxClient:

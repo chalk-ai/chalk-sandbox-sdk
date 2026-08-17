@@ -56,6 +56,7 @@ from typing import TYPE_CHECKING, Any, Callable, TypeVar, overload
 
 from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import ConnectClient
+from chalkcompute._containerspec import ContainerSpec
 from chalkcompute._function import (
     _CATALOG_SVC,
     _REMOTE_ENV_VAR,
@@ -73,14 +74,13 @@ from chalkcompute._function import (
     _is_chalkcompute_decorator,
     _local_install_entrypoint,
     _make_base_image,
-    _make_container_spec,
     _normalize_schedule,
     _scaling_group_is_ready,
     _should_strip_source,
     _source_text_for_deploy,
     _write_temp,
 )
-from chalkcompute._naming import sanitize_dns_label, validate_dns_label, validate_env
+from chalkcompute._naming import sanitize_dns_label
 from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._retry import RetryPolicy
@@ -742,15 +742,20 @@ class RemoteClass:
     ) -> None:
         self._user_cls: type | None = user_cls
         self._class_name = user_cls.__name__
-        if name is not None:
-            validate_dns_label(name)
+        ContainerSpec.validate_fields(
+            image=image,
+            name=name,
+            cpu=cpu,
+            memory=memory,
+            gpu=gpu,
+            env=env,
+        )
         self._explicit_name = name
         self._image = image
         self._cpu = cpu
         self._memory = memory
         self._gpu = gpu
-        validate_env(env)
-        self._env = env or {}
+        self._env = dict(env) if env else {}
         self._secrets: list[_Secret] = list(secrets or [])
         # Existence is checked once at deploy time, not here.
         self._referenced_volumes: list[VolumeMount] = normalize_volume_refs(volumes)
@@ -1178,21 +1183,19 @@ class RemoteClass:
                     f"handler_{method_info.name}.handler",
                 ]
 
-                container_spec = _make_container_spec(
+                container_spec = ContainerSpec(
                     name=sg_name,
-                    image_uri=image_uri,
+                    image=image_uri,
                     entrypoint=_local_install_entrypoint(handler_cmd),
-                    env=self._env,
+                    env={"PYTHONPATH": "/app", _REMOTE_ENV_VAR: "1", **self._env},
                     cpu=self._cpu,
                     memory=self._memory,
                     gpu=self._gpu,
                     volumes=self._volumes,
-                )
-
-                if resolved_secrets:
-                    container_spec["secretRefs"] = [
-                        s._to_proto_dict() for s in resolved_secrets
-                    ]
+                    secret_refs=resolved_secrets,
+                    port=6666,
+                    protocol="grpc",
+                ).to_dict()
 
                 scaling_spec: dict[str, Any] = {
                     "minReplicas": self._min_replicas,

@@ -36,7 +36,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from chalkcompute._connect import ConnectClient, build_image, rpc_with_retries
-from chalkcompute._naming import sanitize_dns_label, validate_dns_label, validate_env
+from chalkcompute._containerspec import ContainerSpec
+from chalkcompute._naming import sanitize_dns_label
+from chalkcompute._secret import SecretScope, resolve_lazy_secrets
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
     Volume,
@@ -253,15 +255,25 @@ class ScalingGroup:
         cron_scaling_trigger: CronScalingTrigger | None = None,
         chalk_client: Any | None = None,
     ) -> None:
+        if image is None:
+            raise TypeError(
+                "image must be an Image or image reference string, got None"
+            )
+        ContainerSpec.validate_fields(
+            image=image,
+            name=name,
+            cpu=cpu,
+            memory=memory,
+            gpu=gpu,
+            env=env,
+            entrypoint=entrypoint,
+        )
         self._image: _Image | str | None = image
-        if name is not None:
-            validate_dns_label(name)
         self._name = name
         self._cpu = cpu
         self._memory = memory
         self._gpu = gpu
-        validate_env(env)
-        self._env = env or {}
+        self._env = dict(env) if env else {}
         self._secrets: list[_Secret] = list(secrets or [])
         # Existence is checked at deploy time, not here.
         self._referenced_volumes: list[VolumeMount] = normalize_volume_refs(volumes)
@@ -269,7 +281,7 @@ class ScalingGroup:
         # uploaded volumes.
         self._volumes: list[VolumeMount] = []
         self._volume_driver: VolumeClient | None = None
-        self._entrypoint = entrypoint
+        self._entrypoint = list(entrypoint) if entrypoint is not None else None
         if port is not None and not (1 <= port <= 65535):
             raise ValueError(f"port must be in range 1–65535, got {port}")
         self._port = port
@@ -473,51 +485,33 @@ class ScalingGroup:
 
         # 3. Build the ScalingGroupSpec
         sg_name = sanitize_dns_label(self._name or f"sg-{uuid.uuid4().hex[:8]}")
-        container_spec: dict[str, Any] = {
-            "name": sg_name,
-            "image": self._built_image_uri,
-            "protocol": self._protocol,
-        }
-        if self._port is not None:
-            container_spec["port"] = self._port
-        if self._authenticated:
-            container_spec["authentication"] = "AUTHENTICATED"
+        resolved_secrets = self._secrets
+        if any(s.is_lazy for s in self._secrets):
+            scope = SecretScope.scaling_group(sg_name)
+            resolved_secrets, _upserted = resolve_lazy_secrets(
+                self._secrets, self._client, scope=scope
+            )
 
-        if self._entrypoint:
-            container_spec["entrypoint"] = self._entrypoint
-        if self._env:
-            container_spec["envVars"] = self._env
-        if self._readiness_probe is not None:
-            container_spec["readinessProbe"] = self._readiness_probe.to_dict()
-
-        resources: dict[str, str] = {}
-        if self._cpu:
-            resources["cpu"] = self._cpu
-        if self._memory:
-            resources["memory"] = self._memory
-        if self._gpu:
-            resources["gpu"] = self._gpu
-        if resources:
-            container_spec["resources"] = resources
-
-        if self._secrets:
-            # Resolved into a local, not self._secrets, so a later .deploy()
-            # on the same object re-upserts instead of reusing a stale
-            # resolution.
-            resolved_secrets = self._secrets
-            if any(s.is_lazy for s in self._secrets):
-                from chalkcompute._secret import SecretScope, resolve_lazy_secrets
-
-                scope = SecretScope.scaling_group(sg_name)
-                resolved_secrets, _upserted = resolve_lazy_secrets(
-                    self._secrets, self._client, scope=scope
-                )
-            container_spec["secretRefs"] = [
-                s._to_proto_dict() for s in resolved_secrets
-            ]
-
-        if self._volumes:
-            container_spec["volumes"] = [v.to_spec_dict() for v in self._volumes]
+        assert self._built_image_uri is not None
+        container_spec = ContainerSpec(
+            name=sg_name,
+            image=self._built_image_uri,
+            entrypoint=self._entrypoint,
+            cpu=self._cpu,
+            memory=self._memory,
+            gpu=self._gpu,
+            env=self._env,
+            volumes=self._volumes,
+            secret_refs=resolved_secrets,
+            port=self._port,
+            protocol=self._protocol,
+            authentication="AUTHENTICATED" if self._authenticated else None,
+            readiness_probe=(
+                self._readiness_probe.to_dict()
+                if self._readiness_probe is not None
+                else None
+            ),
+        ).to_dict()
 
         scaling_spec: dict[str, Any] = {
             "minReplicas": self._min_replicas,

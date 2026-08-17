@@ -19,21 +19,22 @@ from chalkcompute._container import Container as Container
 from chalkcompute._container import ContainerError as ContainerError
 from chalkcompute._container import ContainerInfo as ContainerInfo
 from chalkcompute._container import ContainerSession as ContainerSession
-from chalkcompute._container import ContainerSecurityPolicy as ContainerSecurityPolicy
 from chalkcompute._container import ExecResult as ContainerExecResult
 from chalkcompute._container import ImageBuildError as ImageBuildError
-from chalkcompute._container import ComputeClass as ComputeClass
-from chalkcompute._container import KernelPolicy as KernelPolicy
-from chalkcompute._container import NetworkPolicy as NetworkPolicy
+from chalkcompute._containerspec import ComputeClass as ComputeClass
+from chalkcompute._containerspec import (
+    ContainerSecurityPolicy as ContainerSecurityPolicy,
+)
+from chalkcompute._containerspec import KernelPolicy as KernelPolicy
+from chalkcompute._containerspec import NetworkPolicy as NetworkPolicy
+from chalkcompute._containerspec import RestartPolicy as RestartPolicy
 from chalkcompute._evaluation import DatasetNameLike as DatasetNameLike
 from chalkcompute._evaluation import DatasetRevisionLike as DatasetRevisionLike
 from chalkcompute._evaluation import DatasetRevisionRef as DatasetRevisionRef
 from chalkcompute._evaluation import Evaluation as Evaluation
 from chalkcompute._evaluation import EvaluationClient as EvaluationClient
 from chalkcompute._evaluation import EvaluationError as EvaluationError
-from chalkcompute._evaluation import (
-    EvaluationNotFoundError as EvaluationNotFoundError,
-)
+from chalkcompute._evaluation import EvaluationNotFoundError as EvaluationNotFoundError
 from chalkcompute._evaluation import EvaluationRun as EvaluationRun
 from chalkcompute._evaluation import (
     EvaluationRunFailedError as EvaluationRunFailedError,
@@ -71,22 +72,21 @@ from chalkcompute._sandbox import ExecProcess as ExecProcess
 from chalkcompute._sandbox import ExecResult as ExecResult
 from chalkcompute._sandbox import PythonExecution as PythonExecution
 from chalkcompute._sandbox import PythonSkippedArtifact as PythonSkippedArtifact
-from chalkcompute._sandbox import RestartPolicy as RestartPolicy
 from chalkcompute._sandbox import Sandbox as Sandbox
 from chalkcompute._sandbox import SandboxBuildError as SandboxBuildError
-from chalkcompute._sandbox import SandboxCreationError as SandboxCreationError
 from chalkcompute._sandbox import SandboxClient as SandboxClient
+from chalkcompute._sandbox import SandboxCreationError as SandboxCreationError
 from chalkcompute._sandbox import SandboxError as SandboxError
 from chalkcompute._sandbox import SandboxInfo as SandboxInfo
 from chalkcompute._sandbox import SandboxNotFoundError as SandboxNotFoundError
 from chalkcompute._sandbox import SandboxTerminatedError as SandboxTerminatedError
+from chalkcompute._scaling_group import CronScalingTrigger as CronScalingTrigger
+from chalkcompute._scaling_group import CronScalingWindow as CronScalingWindow
+from chalkcompute._scaling_group import ReadinessProbe as ReadinessProbe
 from chalkcompute._scaling_group import ScalingGroup as ScalingGroup
 from chalkcompute._scaling_group import ScalingGroupBuildError as ScalingGroupBuildError
 from chalkcompute._scaling_group import ScalingGroupError as ScalingGroupError
 from chalkcompute._scaling_group import ScalingGroupInfo as ScalingGroupInfo
-from chalkcompute._scaling_group import ReadinessProbe as ReadinessProbe
-from chalkcompute._scaling_group import CronScalingTrigger as CronScalingTrigger
-from chalkcompute._scaling_group import CronScalingWindow as CronScalingWindow
 from chalkcompute._secret import Secret as Secret
 from chalkcompute._secret import SecretScope as SecretScope
 from chalkcompute._secret import resolve_lazy_secrets as resolve_lazy_secrets
