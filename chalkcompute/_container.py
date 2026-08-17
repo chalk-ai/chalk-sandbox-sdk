@@ -1117,7 +1117,11 @@ class Container:
             spec = ContainerSpec(
                 name=container_name,
                 image=self._built_image_uri,
-                entrypoint=self._entrypoint,
+                entrypoint=(
+                    self._entrypoint
+                    if self._entrypoint is not None
+                    else ["sleep", "infinity"]
+                ),
                 cpu=self._cpu,
                 memory=self._memory,
                 gpu=self._gpu,
