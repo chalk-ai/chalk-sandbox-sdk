@@ -4,9 +4,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from chalkcompute import Image, Sandbox
+from chalkcompute._containerspec import ContainerSpec
 from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb2 as process_pb
 from chalkcompute._gen.chalk.sandbox.v2 import service_pb2 as pb
 from chalkcompute._sandbox import SandboxClient, SandboxCreationError
+from chalkcompute._volume import VolumeMount
 
 
 class _RecordingSandboxClient:
@@ -288,12 +290,14 @@ def test_sandbox_accepts_version_pinned_volume_handle() -> None:
 
 
 def test_version_pinned_mount_is_serialized_to_proto() -> None:
-    from chalkcompute._sandbox import _volume_mounts_to_proto
-    from chalkcompute._volume import VolumeMount
-
-    mount = _volume_mounts_to_proto(
-        [VolumeMount(name="my-data", mount_path="/data", version_id=7)]
-    )[0]
+    mount = (
+        ContainerSpec(
+            image="ubuntu:latest",
+            volumes=[VolumeMount(name="my-data", mount_path="/data", version_id=7)],
+        )
+        .to_proto()
+        .volumes[0]
+    )
 
     assert mount.version_id == 7
     assert mount.HasField("version_id")

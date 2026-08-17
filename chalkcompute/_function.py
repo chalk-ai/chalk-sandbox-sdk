@@ -64,10 +64,10 @@ from chalkcompute._connect import (
     grpc_target_from_url,
     service_auth_context_from_env,
 )
+from chalkcompute._containerspec import ContainerSpec
 from chalkcompute._naming import (
     sanitize_dns_label,
     validate_dns_label,
-    validate_env,
 )
 from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
@@ -77,6 +77,7 @@ from chalkcompute._remote_function_tracing import (
     normalize_remote_function_tracing,
 )
 from chalkcompute._retry import RetryPolicy
+from chalkcompute._secret import SecretScope, resolve_lazy_secrets
 from chalkcompute._tracing import (
     _instrumented,
     current_trace_metadata,
@@ -1478,69 +1479,6 @@ def _cleanup_temp_files(paths: list[str]) -> None:
             pass
 
 
-def _make_container_spec(
-    *,
-    name: str,
-    image_uri: str,
-    entrypoint: list[str],
-    env: dict[str, str],
-    cpu: str | None,
-    memory: str | None,
-    gpu: str | None,
-    volumes: list[VolumeMount],
-) -> dict[str, Any]:
-    """Build a container spec dict for ``CreateExternalFunctionVersion``.
-
-    Parameters
-    ----------
-    name
-        Container/scaling-group name.
-    image_uri
-        Fully-qualified image URI.
-    entrypoint
-        Entrypoint command to run in the container.
-    env
-        Additional environment variables beyond the SDK defaults.
-    cpu
-        Optional CPU resource request.
-    memory
-        Optional memory resource request.
-    gpu
-        Optional GPU resource request.
-    volumes
-        List of :class:`VolumeMount`.
-
-    Returns
-    -------
-    dict
-        Container spec dictionary.
-    """
-    spec: dict[str, Any] = {
-        "name": name,
-        "image": image_uri,
-        "port": 6666,
-        "protocol": "grpc",
-        "entrypoint": entrypoint,
-        "envVars": {
-            "PYTHONPATH": "/app",
-            _REMOTE_ENV_VAR: "1",
-            **env,
-        },
-    }
-    resources: dict[str, str] = {}
-    if cpu:
-        resources["cpu"] = cpu
-    if memory:
-        resources["memory"] = memory
-    if gpu:
-        resources["gpu"] = gpu
-    if resources:
-        spec["resources"] = resources
-    if volumes:
-        spec["volumes"] = [v.to_spec_dict() for v in volumes]
-    return spec
-
-
 # ---------------------------------------------------------------------------
 # Schema helpers
 # ---------------------------------------------------------------------------
@@ -1912,23 +1850,20 @@ class RemoteFunction:
         self._arrow_result_deserializer: Callable[[Any], Any] | None = (
             arrow_decoder_for_annotation(result_type)
         )
-        if name is not None:
-            validate_dns_label(name)
+        ContainerSpec.validate_fields(
+            image=image,
+            name=name,
+            cpu=cpu,
+            memory=memory,
+            gpu=gpu,
+            env=env,
+        )
         self._explicit_name = name
         self._image = image
-        if cpu is not None and not isinstance(cpu, str):
-            raise TypeError(f"cpu must be a string such as '2' or '500m', got {cpu!r}")
-        if memory is not None and not isinstance(memory, str):
-            raise TypeError(
-                f"memory must be a string such as '2Gi' or '512Mi', got {memory!r}"
-            )
-        if gpu is not None and not isinstance(gpu, str):
-            raise TypeError(f"gpu must be a string such as 'nvidia-l4', got {gpu!r}")
         self._cpu = cpu
         self._memory = memory
         self._gpu = gpu
         self._env = dict(env) if env else {}
-        validate_env(self._env)
         if models:
             from chalkcompute._model import MODELS_ENV_VAR, encode_models_env
 
@@ -2395,16 +2330,27 @@ class RemoteFunction:
                 f"{self._handler_module}.handler",
             ]
 
-            container_spec = _make_container_spec(
+            # Resolve into a local so later deploys re-upsert lazy secrets.
+            resolved_secrets = self._secrets
+            if any(s.is_lazy for s in self._secrets):
+                scope = SecretScope.function(self._explicit_name or self._func_name)
+                resolved_secrets, _upserted = resolve_lazy_secrets(
+                    self._secrets, self._client, scope=scope
+                )
+
+            container_spec = ContainerSpec(
                 name=sg_name,
-                image_uri=image_uri,
+                image=image_uri,
                 entrypoint=_local_install_entrypoint(handler_cmd),
-                env=self._env,
+                env={"PYTHONPATH": "/app", _REMOTE_ENV_VAR: "1", **self._env},
                 cpu=self._cpu,
                 memory=self._memory,
                 gpu=self._gpu,
                 volumes=deploy_volumes,
-            )
+                secret_refs=resolved_secrets,
+                port=6666,
+                protocol="grpc",
+            ).to_dict()
             scaling_spec: dict[str, Any] = {
                 "minReplicas": self._min_replicas,
                 "maxReplicas": self._max_replicas,
@@ -2436,23 +2382,7 @@ class RemoteFunction:
                 "scalingSpec": scaling_spec,
             }
 
-            # 5b. Resolve lazy secrets and add to container spec. Resolved
-            # into a local, not self._secrets, so a later .deploy() on the
-            # same object re-upserts instead of reusing a stale resolution.
-            if self._secrets:
-                from chalkcompute._secret import SecretScope, resolve_lazy_secrets
-
-                resolved_secrets = self._secrets
-                if any(s.is_lazy for s in self._secrets):
-                    scope = SecretScope.function(self._explicit_name or self._func_name)
-                    resolved_secrets, _upserted = resolve_lazy_secrets(
-                        self._secrets, self._client, scope=scope
-                    )
-                container_spec["secretRefs"] = [
-                    s._to_proto_dict() for s in resolved_secrets
-                ]
-
-            # 5c. Build function-level config
+            # 5b. Build function-level config
             function_config: dict[str, Any] = {}
             if self._serialization_format != "pyarrow":
                 function_config["serializationFormat"] = self._serialization_format
