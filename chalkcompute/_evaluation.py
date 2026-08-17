@@ -55,19 +55,43 @@ class DatasetRevisionLike(Protocol):
         ...
 
 
+class DatasetNameLike(Protocol):
+    """Structural type accepted for references to the latest dataset revision."""
+
+    @property
+    def dataset_name(self) -> object:
+        """Dataset name whose latest revision should be resolved."""
+        ...
+
+
 @dataclass(frozen=True)
 class DatasetRevisionRef:
-    """An immutable reference to a Chalk dataset revision."""
+    """A reference to a specific revision or a dataset's latest revision."""
 
-    dataset_id: str
-    """Dataset identifier."""
+    dataset_id: str | None = None
+    """Dataset identifier. Must be paired with ``revision_id``."""
 
-    revision_id: str
-    """Completed dataset revision identifier."""
+    revision_id: str | None = None
+    """Completed dataset revision identifier. Must be paired with ``dataset_id``."""
+
+    dataset_name: str | None = None
+    """Dataset whose latest revision should be resolved when creating an evaluation."""
 
     def __post_init__(self) -> None:
-        dataset_id = self.dataset_id.strip()
-        revision_id = self.revision_id.strip()
+        dataset_id = self.dataset_id.strip() if self.dataset_id is not None else None
+        revision_id = self.revision_id.strip() if self.revision_id is not None else None
+        dataset_name = (
+            self.dataset_name.strip() if self.dataset_name is not None else None
+        )
+        if dataset_name is not None:
+            if not dataset_name:
+                raise ValueError("dataset_name is required")
+            if dataset_id is not None or revision_id is not None:
+                raise ValueError(
+                    "pass either dataset_name or dataset_id and revision_id, not both"
+                )
+            object.__setattr__(self, "dataset_name", dataset_name)
+            return
         if not dataset_id:
             raise ValueError("dataset_id is required")
         if not revision_id:
@@ -129,11 +153,17 @@ class Evaluation:
     @property
     def dataset_id(self) -> str:
         """Dataset identifier pinned by this evaluation."""
+        if self.dataset.dataset_id is None:
+            raise EvaluationError("evaluation response did not include a dataset_id")
         return self.dataset.dataset_id
 
     @property
     def dataset_revision_id(self) -> str:
         """Dataset revision identifier pinned by this evaluation."""
+        if self.dataset.revision_id is None:
+            raise EvaluationError(
+                "evaluation response did not include a dataset_revision_id"
+            )
         return self.dataset.revision_id
 
     @classmethod
@@ -141,7 +171,7 @@ class Evaluation:
         cls,
         name: str,
         *,
-        dataset: DatasetRevisionRef | DatasetRevisionLike,
+        dataset: DatasetRevisionRef | DatasetRevisionLike | DatasetNameLike,
         task: DeployedFunction,
         scorers: Sequence[DeployedFunction],
         metadata: Mapping[str, Any] | None = None,
@@ -315,7 +345,7 @@ class EvaluationClient:
         self,
         name: str,
         *,
-        dataset: DatasetRevisionRef | DatasetRevisionLike,
+        dataset: DatasetRevisionRef | DatasetRevisionLike | DatasetNameLike,
         task: DeployedFunction,
         scorers: Sequence[DeployedFunction],
         metadata: Mapping[str, Any] | None = None,
@@ -337,14 +367,17 @@ class EvaluationClient:
 
         request: dict[str, Any] = {
             "name": name,
-            "datasetId": dataset_ref.dataset_id,
-            "datasetRevisionId": dataset_ref.revision_id,
             "taskFunctionVersionId": task_version_id,
             "scorers": [
                 {"function": {"functionVersionId": version_id}}
                 for version_id in scorer_version_ids
             ],
         }
+        if dataset_ref.dataset_name is not None:
+            request["datasetName"] = dataset_ref.dataset_name
+        else:
+            request["datasetId"] = dataset_ref.dataset_id
+            request["datasetRevisionId"] = dataset_ref.revision_id
         if metadata is not None:
             request["metadata"] = metadata_dict
         response = self._rpc("CreateEvaluation", request)
@@ -488,20 +521,23 @@ class EvaluationClient:
 
 
 def _resolve_dataset_revision(
-    dataset: DatasetRevisionRef | DatasetRevisionLike,
+    dataset: DatasetRevisionRef | DatasetRevisionLike | DatasetNameLike,
 ) -> DatasetRevisionRef:
     if isinstance(dataset, DatasetRevisionRef):
         return dataset
     dataset_id = getattr(dataset, "dataset_id", None)
     revision_id = getattr(dataset, "revision_id", None)
-    if dataset_id is None or revision_id is None:
-        raise TypeError(
-            "dataset must be a DatasetRevisionRef or expose dataset_id and "
-            "revision_id attributes"
+    if dataset_id is not None and revision_id is not None:
+        return DatasetRevisionRef(
+            dataset_id=str(dataset_id),
+            revision_id=str(revision_id),
         )
-    return DatasetRevisionRef(
-        dataset_id=str(dataset_id),
-        revision_id=str(revision_id),
+    dataset_name = getattr(dataset, "dataset_name", None)
+    if dataset_name is not None:
+        return DatasetRevisionRef(dataset_name=str(dataset_name))
+    raise TypeError(
+        "dataset must be a DatasetRevisionRef, expose dataset_id and revision_id "
+        "attributes, or expose a dataset_name attribute"
     )
 
 

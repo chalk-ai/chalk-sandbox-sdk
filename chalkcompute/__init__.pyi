@@ -25,6 +25,7 @@ from chalkcompute._container import ImageBuildError as ImageBuildError
 from chalkcompute._container import ComputeClass as ComputeClass
 from chalkcompute._container import KernelPolicy as KernelPolicy
 from chalkcompute._container import NetworkPolicy as NetworkPolicy
+from chalkcompute._evaluation import DatasetNameLike as DatasetNameLike
 from chalkcompute._evaluation import DatasetRevisionLike as DatasetRevisionLike
 from chalkcompute._evaluation import DatasetRevisionRef as DatasetRevisionRef
 from chalkcompute._evaluation import Evaluation as Evaluation
@@ -144,6 +145,7 @@ __all__ = [
     "QueuePolicy",
     "TracingPolicy",
     "function",
+    "DatasetNameLike",
     "DatasetRevisionLike",
     "DatasetRevisionRef",
     "Evaluation",

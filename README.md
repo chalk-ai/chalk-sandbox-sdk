@@ -177,16 +177,16 @@ Chalk API server at `/.well-known/jwks.json`.
 ## Evaluations
 
 Create a reusable evaluation by pinning a completed dataset revision to a
-deployed task function and one or more deployed scorer functions. Function
-parameters bind to dataset columns by name; scorers may additionally declare
-`output` and `trace` parameters.
+deployed task function and one or more deployed scorer functions. A dataset
+name resolves to its latest revision when the evaluation is created, and the
+resolved revision is then pinned. Function parameters bind to dataset columns
+by name; scorers may additionally declare `output` and `trace` parameters.
 
 ```python
 import chalkcompute as cc
 
 dataset = cc.DatasetRevisionRef(
-    dataset_id="dataset_support_goldens",
-    revision_id="oq_support_goldens_20260810",
+    dataset_name="support_goldens",
 )
 
 @cc.function(name="support-answer")
