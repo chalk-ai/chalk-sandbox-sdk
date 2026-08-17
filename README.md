@@ -194,8 +194,12 @@ def answer(input: str) -> str:
     return call_support_model(input)
 
 @cc.function(name="brand-alignment")
-def brand_alignment(input: str, output: str) -> float:
-    return score_response(input=input, output=output)
+def brand_alignment(input: str, output: str) -> cc.EvaluationScorerResult:
+    score, details = score_response(input=input, output=output)
+    return cc.EvaluationScorerResult(
+        score=score,
+        metadata={"details": details},
+    )
 
 evaluation = cc.Evaluation.create(
     "Customer Support Chatbot",
@@ -225,6 +229,12 @@ evaluation = cc.Evaluation.create(
 `RemoteFunction.from_name` resolves the latest version at lookup time;
 evaluation creation then pins that version. An imperative `RemoteFunction`
 must be explicitly deployed before it can be used in an evaluation.
+
+Scorers may return either a numeric scalar or an `EvaluationScorerResult`.
+`EvaluationScorerResult` carries a normalized score and optional row-level,
+JSON-serializable metadata. Its return annotation declares the Arrow struct
+schema, and its class-level Arrow encoder and decoder handle serialization, so
+the generic function runtime does not need scorer-specific behavior.
 
 ## Sandbox lifecycle
 

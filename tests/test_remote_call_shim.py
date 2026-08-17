@@ -15,6 +15,7 @@ from chalk_remote_call.arrow_utils import decode_ipc_stream, encode_record_batch
 
 from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
 from chalkcompute._cls import _generate_class_handler_shim
+from chalkcompute._evaluation import EvaluationScorerResult
 from chalkcompute._function import (
     _NO_ARGS_SENTINEL_COLUMN,
     _NoOpFunction,
@@ -590,6 +591,35 @@ class TestShimViaRemoteCallLib:
         ]
         assert response_batches[0].column("result").type.equals(_ARROW_POINT_PA_TYPE)
         assert function._decode_result_chunks(payloads) == [ArrowPoint(11, 22)]
+
+    def test_evaluation_scorer_result_roundtrip(self):
+        from chalk_remote_call.servicer import process_batches
+
+        def score(value: int) -> EvaluationScorerResult:
+            return EvaluationScorerResult(
+                score=1.0 if value > 0 else 0.0,
+                metadata={"input": value},
+            )
+
+        function = RemoteFunction(score)
+        _install_user_module(score=score)
+        ns = _load_shim(_generate_handler_shim("score"))
+
+        payloads = process_batches(
+            function._serialize_call_args(2), ns["handler"], None, {}
+        )
+
+        response_batches = [
+            batch for payload in payloads for batch in decode_ipc_stream(payload)
+        ]
+        assert (
+            response_batches[0]
+            .column("result")
+            .type.equals(EvaluationScorerResult(score=0.0).__chalk_serialize__().type)
+        )
+        assert function._decode_result_chunks(payloads) == [
+            EvaluationScorerResult(score=1.0, metadata={"input": 2})
+        ]
 
     def test_arrow_adapters_are_resolved_once(self, monkeypatch):
         hint_calls = 0
