@@ -19,6 +19,12 @@ siblings, not descendants, and only a session id groups them.  See
 
 The id travels as a ``large_utf8`` scalar, exactly as ``str`` would, so a
 function may equally declare ``trace: str`` and call :meth:`Trace.from_id`.
+
+An image built in strip mode does not install ``chalkcompute``, so the handler
+shim publishes no call context there (it degrades rather than failing the call).
+A function deployed that way is never placed in its caller's session, and
+:meth:`Trace.get_spans` finds nothing — silently. Deploy from an environment with
+a published ``chalkcompute`` for session-aware scoring.
 """
 
 from __future__ import annotations
@@ -32,25 +38,13 @@ from typing import Any
 
 from chalkcompute._connect import ConnectClient
 from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
-from chalkcompute._tracing import _instrumented
+from chalkcompute._tracing import (
+    SESSION_ID_ATTRIBUTE as SESSION_ID_ATTRIBUTE,
+    SESSION_ID_HEADER as SESSION_ID_HEADER,
+    _instrumented,
+)
 
 _TRACE_SERVICE = "chalk.server.v1.TraceService"
-
-SESSION_ID_ATTRIBUTE = "session.id"
-"""Span attribute Chalk resolves an agent session from, first of six spellings.
-
-Kept in sync with ``SESSION_ID_ATTRIBUTE_KEYS`` in chalk-private's
-``engine/chalkengine/chalksql/providers/trace_query.py`` and the ClickHouse
-``SessionId`` column expression.
-"""
-
-SESSION_ID_HEADER = "x-chalk-session-id"
-"""Request header a caller sets to place a call's spans in a session.
-
-Chalk sends it from ``catalog_call('fn', ..., metadata => {'x-chalk-session-id':
-s})``; :func:`chalkcompute.get_call_context` exposes it, and the SDK stamps
-:data:`SESSION_ID_ATTRIBUTE` from it automatically.
-"""
 
 _MAX_PAGE_SIZE = 1000
 
@@ -296,21 +290,35 @@ class Trace:
                         f"{timeout}s, expected at least {target}; spans may still "
                         f"be in flight. Pass wait=False to accept a partial read."
                     )
+                growth = (
+                    "the count was never confirmed steady"
+                    if previous < 0
+                    else f"the count went {previous} -> {len(spans)}"
+                )
                 raise TimeoutError(
                     f"session {self.id!r} was still receiving spans after "
-                    f"{timeout}s ({previous} -> {len(spans)}); returning them "
-                    f"would undercount. Raise timeout or pass wait=False."
+                    f"{timeout}s ({growth}); returning them would undercount. "
+                    f"Raise timeout or pass wait=False."
                 )
             previous = len(spans)
             time.sleep(min(poll_interval, remaining))
             spans = fetch()
 
     def summary(self) -> SessionSummary:
-        """Return this session's aggregate: turn count, span count, wall clock."""
+        """Return this session's aggregate: turn count, span count, wall clock.
+
+        Unlike :meth:`get_spans`, this does not wait for ingest to settle, so
+        ``span_count`` and ``duration`` can undercount a session whose spans are
+        still arriving. Scoring off a settled read means going through
+        :meth:`get_spans`.
+        """
         return self._require_client().get_session(self.id)
 
     def traces(self, *, limit: int | None = None) -> list[TraceSummary]:
-        """Return a summary per trace in this session — typically one per turn."""
+        """Return a summary per trace in this session — typically one per turn.
+
+        Not waited, for the same reason as :meth:`summary`.
+        """
         return list(self._require_client().list_traces(self.id, limit=limit))
 
     def _require_client(self) -> TraceClient:

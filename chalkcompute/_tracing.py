@@ -23,7 +23,27 @@ _TRACER_NAME = "chalkcompute"
 _DEFAULT_PUBLIC_SPAN_NAME = "chalkcompute.span"
 _TRACE_CONTEXT_METADATA_KEYS = ("traceparent", "tracestate", "baggage")
 _REMOTE_FUNCTION_TRACE_POLICY_ENV_VAR = "CHALK_REMOTE_FUNCTION_TRACE_POLICY"
-_SESSION_ID_ATTRIBUTE = "session.id"
+
+SESSION_ID_ATTRIBUTE = "session.id"
+"""Span attribute Chalk resolves an agent session from, first of six spellings.
+
+Kept in sync with ``SESSION_ID_ATTRIBUTE_KEYS`` in chalk-private's
+``engine/chalkengine/chalksql/providers/trace_query.py`` and the ClickHouse
+``SessionId`` column expression.
+"""
+
+SESSION_ID_HEADER = "x-chalk-session-id"
+"""Request header, lowercased, that places a call's spans in a session.
+
+Chalk sends it from ``catalog_call('fn', ..., metadata => {'x-chalk-session-id':
+s})``; :func:`chalkcompute.get_call_context` exposes it, and
+:func:`enter_session` stamps :data:`SESSION_ID_ATTRIBUTE` from it.
+
+This module owns both constants because it is a leaf — ``_trace`` re-exports
+them for the public API and ``_call_context`` reads the header key, so the
+spellings cannot drift between the three.
+"""
+
 _initialized = False
 _provider: Any | None = None
 _user_tracing_configured = False
@@ -107,10 +127,10 @@ def _session_processor_class() -> Any:
             # necessarily the current one. This runs for every span in the
             # process, so it stays a single baggage lookup.
             session_id = baggage_api.get_baggage(
-                _SESSION_ID_ATTRIBUTE, context=parent_context
+                SESSION_ID_ATTRIBUTE, context=parent_context
             )
             if session_id:
-                span.set_attribute(_SESSION_ID_ATTRIBUTE, str(session_id))
+                span.set_attribute(SESSION_ID_ATTRIBUTE, str(session_id))
 
     return _SessionIdSpanProcessor
 
@@ -159,7 +179,7 @@ def enter_session(session_id: str) -> object | None:
     if trace_api is not None:
         _install_session_processor(trace_api.get_tracer_provider())
     return otel_context.attach(
-        baggage_api.set_baggage(_SESSION_ID_ATTRIBUTE, session_id)
+        baggage_api.set_baggage(SESSION_ID_ATTRIBUTE, session_id)
     )
 
 
@@ -176,7 +196,7 @@ def current_session_id() -> str | None:
     baggage_api = _get_otel_module("opentelemetry.baggage")
     if baggage_api is None:
         return None
-    value = baggage_api.get_baggage(_SESSION_ID_ATTRIBUTE)
+    value = baggage_api.get_baggage(SESSION_ID_ATTRIBUTE)
     return None if value is None else str(value)
 
 

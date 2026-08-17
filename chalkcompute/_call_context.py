@@ -44,9 +44,6 @@ __all__ = [
 
 _EMPTY_CONTEXT: Mapping[str, str] = MappingProxyType({})
 
-_SESSION_ID_HEADER = "x-chalk-session-id"
-"""Lowercase spelling of the session header; see ``chalkcompute._trace``."""
-
 _CALL_CONTEXT: ContextVar[Mapping[str, str]] = ContextVar(
     "chalk_call_context", default=_EMPTY_CONTEXT
 )
@@ -128,10 +125,12 @@ def _enter_session(context: Mapping[str, str]) -> object | None:
 
 
 def _session_id_from_headers(context: Mapping[str, str]) -> str | None:
-    """Find ``x-chalk-session-id`` case-insensitively, as gRPC metadata allows."""
+    """Find the session header case-insensitively, as gRPC metadata allows."""
+    from chalkcompute._tracing import SESSION_ID_HEADER
+
     for key, value in context.items():
         if (
-            key.lower() == _SESSION_ID_HEADER
+            key.lower() == SESSION_ID_HEADER
             and isinstance(value, str)
             and value.strip()
         ):
