@@ -416,9 +416,14 @@ def _generate_handler_shim(
 
 
             def _scope(context, row_metadata):
+                # Returns None when chalkcompute is absent (strip-mode images), which
+                # _unscope treats as "nothing was published".
                 if not context and row_metadata is None:
                     return None
-                from chalkcompute._call_context import set_call_scope
+                try:
+                    from chalkcompute._call_context import set_call_scope
+                except ImportError:
+                    return None
 
                 return set_call_scope(context, row_metadata)
 
@@ -521,7 +526,16 @@ def _generate_handler_shim(
             if not context and column is None:
                 yield
                 return
-            from chalkcompute._call_context import reset_call_scope, set_call_scope
+            try:
+                from chalkcompute._call_context import (
+                    reset_call_scope,
+                    set_call_scope,
+                )
+            except ImportError:
+                # Deploy images built in strip mode ship only the remote-call runtime, so
+                # nothing in them can read these accessors either way.
+                yield
+                return
 
             token = set_call_scope(
                 context, column[i].as_py() if column is not None else None

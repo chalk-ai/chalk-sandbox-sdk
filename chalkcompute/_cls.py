@@ -528,7 +528,16 @@ def _generate_class_handler_shim(
             if not context and column is None:
                 yield
                 return
-            from chalkcompute._call_context import reset_call_scope, set_call_scope
+            try:
+                from chalkcompute._call_context import (
+                    reset_call_scope,
+                    set_call_scope,
+                )
+            except ImportError:
+                # Deploy images built in strip mode ship only the remote-call runtime, so
+                # nothing in them can read these accessors either way.
+                yield
+                return
 
             row_metadata = None
             if column is not None:

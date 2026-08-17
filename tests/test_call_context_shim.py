@@ -10,6 +10,7 @@ directions: a caller may send neither, and a function may read neither.
 from __future__ import annotations
 
 import asyncio
+import builtins
 import sys
 import types
 
@@ -230,6 +231,75 @@ class TestNonBatchedShim:
             return [item async for item in agen]
 
         assert asyncio.run(_collect()) == [("v", b"s-1"), ("v", b"s-2"), ("v", b"s-2")]
+
+
+class TestWithoutChalkcomputeInstalled:
+    """Deploy images built in strip mode ship only the remote-call runtime.
+
+    The shim must still run there. The context is never empty in production — the runtime
+    always sends authorization/env/trace headers — so the "only import when needed" guard
+    does not save us; the import itself has to be optional.
+    """
+
+    @staticmethod
+    def _block_chalkcompute(monkeypatch) -> None:
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name.startswith("chalkcompute"):
+                raise ImportError(f"No module named {name!r}")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        # Without this the tests below would pass whether or not the shim guards its import.
+        with pytest.raises(ImportError):
+            builtins.__import__("chalkcompute._call_context")
+
+    def test_non_batched_shim_runs(self, monkeypatch):
+        def echo(x: int) -> int:
+            return x
+
+        _install_user_module(echo=echo)
+        ns = _load_shim(_generate_handler_shim("echo"))
+        event = {
+            "x": pa.array([1, 2]),
+            _ROW_METADATA_COLUMN: _row_metadata_column([b"s-1", b"s-2"]),
+        }
+        self._block_chalkcompute(monkeypatch)
+
+        assert ns["handler"](event, {"authorization": "Bearer x"}) == [1, 2]
+
+    def test_batched_shim_runs(self, monkeypatch):
+        def echo(x: int) -> int:
+            return x
+
+        _install_user_module(echo=echo)
+        ns = _load_shim(_generate_handler_shim("echo", batched=True))
+        events = [{"x": pa.array([1, 2])}]
+        self._block_chalkcompute(monkeypatch)
+
+        assert ns["handler"](events, [{"authorization": "Bearer x"}]) == [[1, 2]]
+
+    def test_class_shim_runs(self, monkeypatch):
+        class Svc:
+            def run(self, x: int) -> int:
+                return x
+
+        _install_user_module(Svc=Svc)
+        ns = _load_shim(
+            _generate_class_handler_shim(
+                class_name="Svc",
+                method_name="run",
+                method_has_self=True,
+                before_name=None,
+                before_has_self=False,
+                after_name=None,
+                after_has_self=False,
+            )
+        )
+        self._block_chalkcompute(monkeypatch)
+
+        assert ns["handler"]({"x": pa.array([1])}, {"authorization": "Bearer x"}) == [1]
 
 
 class TestBatchedShim:
