@@ -187,6 +187,35 @@ def test_create_accepts_chalkpy_shaped_revision_and_reference_handles() -> None:
     assert request["datasetRevisionId"] == str(revision_id)
 
 
+def test_create_resolves_dataset_name_to_latest_revision() -> None:
+    connect = _FakeConnectClient(
+        {"CreateEvaluation": [_FakeResponse(200, {"evaluation": _evaluation_dict()})]}
+    )
+    client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]
+
+    evaluation = client.create(
+        "Latest goldens",
+        dataset=DatasetRevisionRef(dataset_name="  support-goldens  "),
+        task=_remote_function("fn-task-v2", name="support-answer"),
+        scorers=[_remote_function("fn-score-v2", name="brand-alignment")],
+    )
+
+    assert evaluation.dataset == DatasetRevisionRef("dataset-1", "revision-1")
+    request = connect.calls[0][2]
+    assert request["datasetName"] == "support-goldens"
+    assert "datasetId" not in request
+    assert "datasetRevisionId" not in request
+
+
+def test_dataset_revision_ref_rejects_name_with_revision_ids() -> None:
+    with pytest.raises(ValueError, match="either dataset_name"):
+        DatasetRevisionRef(
+            dataset_id="dataset-1",
+            revision_id="revision-1",
+            dataset_name="support-goldens",
+        )
+
+
 def test_create_rejects_undeployed_function_without_rpc() -> None:
     connect = _FakeConnectClient({})
     client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]

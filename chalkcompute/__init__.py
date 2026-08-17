@@ -51,6 +51,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     ),
     "function": ("chalkcompute._function", "function"),
     # _evaluation.py
+    "DatasetNameLike": ("chalkcompute._evaluation", "DatasetNameLike"),
     "DatasetRevisionLike": ("chalkcompute._evaluation", "DatasetRevisionLike"),
     "DatasetRevisionRef": ("chalkcompute._evaluation", "DatasetRevisionRef"),
     "Evaluation": ("chalkcompute._evaluation", "Evaluation"),
