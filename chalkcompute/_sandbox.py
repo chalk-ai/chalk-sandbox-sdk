@@ -27,7 +27,7 @@ from __future__ import annotations
 import queue
 import signal
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -41,7 +41,12 @@ from chalkcompute._connect import (
     grpc_target_from_url,
     raise_for_grpc_error,
 )
-from chalkcompute._containerspec import ContainerSpec, NetworkPolicy, RestartPolicy
+from chalkcompute._containerspec import (
+    ContainerSpec,
+    NetworkPolicy,
+    RestartPolicy,
+    SshDest,
+)
 from chalkcompute._gen.chalk.sandbox.v1 import runtime_service_pb2 as runtime_pb
 from chalkcompute._gen.chalk.sandbox.v1 import (
     runtime_service_pb2_grpc as runtime_pb_grpc,
@@ -437,6 +442,7 @@ class Sandbox:
         network_policy: NetworkPolicy | None = None,
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool = False,
+        managed_ssh: Mapping[str, SshDest] | None = None,
         chalk_client: Any | None = None,
         sandbox_client: SandboxClient | None = None,
         client: Any | None = None,
@@ -473,6 +479,9 @@ class Sandbox:
             Whether to give the sandbox a platform-managed Chalk identity.
             The identity is exposed inside the sandbox through the standard
             ``CHALK_WEB_IDENTITY_TOKEN_FILE`` environment variable.
+        managed_ssh
+            Optional SSH aliases mapped to :class:`SshDest` instances. Managed
+            SSH sandboxes run on host compute.
 
         Notes
         -----
@@ -506,6 +515,7 @@ class Sandbox:
         self._network_policy: NetworkPolicy | None = None
         self._restart_policy: RestartPolicy | None = None
         self._chalk_identity = False
+        self._managed_ssh: dict[str, SshDest] = {}
         self._chalk_client: Any | None = None
 
         if client is not None or sandbox_id is not None:
@@ -520,6 +530,7 @@ class Sandbox:
                 or network_policy is not None
                 or restart_policy is not None
                 or chalk_identity
+                or managed_ssh is not None
                 or chalk_client is not None
                 or sandbox_client is not None
             ):
@@ -547,6 +558,7 @@ class Sandbox:
             network_policy=network_policy,
             restart_policy=restart_policy,
             chalk_identity=chalk_identity,
+            managed_ssh=managed_ssh,
         )
 
         self._client = sandbox_client
@@ -560,6 +572,7 @@ class Sandbox:
         self._network_policy = network_policy
         self._restart_policy = restart_policy
         self._chalk_identity = chalk_identity
+        self._managed_ssh = dict(managed_ssh or {})
         self._chalk_client = chalk_client
 
     @property
@@ -1125,6 +1138,7 @@ class SandboxClient:
         network_policy: NetworkPolicy | None = None,
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool = False,
+        managed_ssh: Mapping[str, SshDest] | None = None,
         wait: bool = True,
         poll_interval: float = 0.5,
         timeout: float = 600.0,
@@ -1164,6 +1178,8 @@ class SandboxClient:
             Whether to give the sandbox a platform-managed Chalk identity.
             The identity is exposed inside the sandbox through the standard
             ``CHALK_WEB_IDENTITY_TOKEN_FILE`` environment variable.
+        managed_ssh
+            Optional SSH aliases mapped to :class:`SshDest` instances.
         wait
             If ``True``, poll until the sandbox is ready (default ``True``).
         poll_interval
@@ -1188,6 +1204,7 @@ class SandboxClient:
             network_policy=network_policy,
             restart_policy=restart_policy,
             chalk_identity=chalk_identity,
+            managed_ssh=managed_ssh,
             sandbox_client=self,
         ).run(wait=wait, poll_interval=poll_interval, timeout=timeout)
 
@@ -1212,6 +1229,7 @@ class SandboxClient:
             network_policy=sandbox._network_policy,
             restart_policy=sandbox._restart_policy,
             chalk_identity=sandbox._chalk_identity,
+            managed_ssh=sandbox._managed_ssh,
         ).to_proto()
 
         resp = self._stub.CreateSandbox(

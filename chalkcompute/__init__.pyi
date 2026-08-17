@@ -28,6 +28,7 @@ from chalkcompute._containerspec import (
 from chalkcompute._containerspec import KernelPolicy as KernelPolicy
 from chalkcompute._containerspec import NetworkPolicy as NetworkPolicy
 from chalkcompute._containerspec import RestartPolicy as RestartPolicy
+from chalkcompute._containerspec import SshDest as SshDest
 from chalkcompute._evaluation import DatasetNameLike as DatasetNameLike
 from chalkcompute._evaluation import DatasetRevisionLike as DatasetRevisionLike
 from chalkcompute._evaluation import DatasetRevisionRef as DatasetRevisionRef
@@ -137,6 +138,7 @@ __all__ = [
     "ComputeClass",
     "KernelPolicy",
     "NetworkPolicy",
+    "SshDest",
     "RemoteClass",
     "ClassError",
     "ClassBuildError",
