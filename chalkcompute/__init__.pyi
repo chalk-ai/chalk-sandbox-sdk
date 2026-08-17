@@ -90,6 +90,15 @@ from chalkcompute._scaling_group import ScalingGroupInfo as ScalingGroupInfo
 from chalkcompute._secret import Secret as Secret
 from chalkcompute._secret import SecretScope as SecretScope
 from chalkcompute._secret import resolve_lazy_secrets as resolve_lazy_secrets
+from chalkcompute._trace import SessionSummary as SessionSummary
+from chalkcompute._trace import Span as Span
+from chalkcompute._trace import SpanKind as SpanKind
+from chalkcompute._trace import SpanStatusCode as SpanStatusCode
+from chalkcompute._trace import Trace as Trace
+from chalkcompute._trace import TraceClient as TraceClient
+from chalkcompute._trace import TraceError as TraceError
+from chalkcompute._trace import TraceNotFoundError as TraceNotFoundError
+from chalkcompute._trace import TraceSummary as TraceSummary
 from chalkcompute._tracing import span as span
 from chalkcompute._tracing import trace_headers as trace_headers
 from chalkcompute._tracing import traced as traced
@@ -214,5 +223,14 @@ __all__ = [
     "VersionInfo",
     "resolve_referenced_volume_type",
     "VersionedVolume",
+    "SessionSummary",
+    "Span",
+    "SpanKind",
+    "SpanStatusCode",
+    "Trace",
+    "TraceClient",
+    "TraceError",
+    "TraceNotFoundError",
+    "TraceSummary",
     "VersionedVolumeClient",
 ]

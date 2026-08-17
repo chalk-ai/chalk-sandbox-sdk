@@ -129,16 +129,19 @@ def rich_to_arrow_schema(
 
     columns = []
     for name, typ in params.items():
-        if has_chalk_arrow_contract(typ):
+        # Unwrap Optional first: an Arrow-contract class is still one when it is
+        # optional, and a column Chalk may bind to null must say so. The runtime
+        # decoders already yield None for an invalid scalar.
+        inner, nullable = _unwrap_optional(typ)
+        if has_chalk_arrow_contract(inner):
             columns.append(
                 arrow_pb2.Field(
                     name=name,
-                    arrow_type=chalk_arrow_type(typ),
-                    nullable=False,
+                    arrow_type=chalk_arrow_type(inner),
+                    nullable=nullable,
                 )
             )
             continue
-        inner, nullable = _unwrap_optional(typ)
         columns.append(
             arrow_pb2.Field(
                 name=name,

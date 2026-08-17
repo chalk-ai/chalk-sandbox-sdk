@@ -1212,6 +1212,44 @@ def _loaded_names_in_bodies(entrypoint_sources: typing.Iterable[str]) -> set[str
     return used
 
 
+def _loaded_names_in_annotations(entrypoint_sources: typing.Iterable[str]) -> set[str]:
+    """Bare names read in the *signature* of the given defs — parameters and return.
+
+    Annotations are not statements in the body, so
+    :func:`_loaded_names_in_bodies` never sees them. They still resolve at call
+    time: the generated worker shim calls ``typing.get_type_hints`` on the
+    deployed target, which evaluates every annotation in the stripped module's
+    namespace. An annotation like ``trace: cc.Trace`` therefore raises
+    ``NameError`` in the container once ``import chalkcompute as cc`` is gone,
+    even though nothing in the body mentions ``cc``.
+    """
+    used: set[str] = set()
+    for src in entrypoint_sources:
+        try:
+            tree = ast.parse(textwrap.dedent(src))
+        except (SyntaxError, IndentationError):
+            continue
+        for top in tree.body:
+            if not isinstance(top, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            args = top.args
+            annotations: list[ast.expr] = [top.returns] if top.returns else []
+            for arg in (
+                *args.posonlyargs,
+                *args.args,
+                *args.kwonlyargs,
+                args.vararg,
+                args.kwarg,
+            ):
+                if arg is not None and arg.annotation is not None:
+                    annotations.append(arg.annotation)
+            for annotation in annotations:
+                for node in ast.walk(annotation):
+                    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                        used.add(node.id)
+    return used
+
+
 def _assert_stripped_source_self_contained(
     original_source: str,
     stripped_source: str,
@@ -1229,14 +1267,19 @@ def _assert_stripped_source_self_contained(
     that here, at deploy, with an actionable message instead of an opaque
     container-side error.
 
-    Only the bodies in ``entrypoint_sources`` (the deployed function / class
-    methods) are inspected; unrelated functions in the same file are ignored.
+    Both the bodies and the signatures in ``entrypoint_sources`` (the deployed
+    function / class methods) are inspected; unrelated functions in the same
+    file are ignored. Annotations count because the worker shim resolves them
+    with ``typing.get_type_hints`` — see
+    :func:`_loaded_names_in_annotations`.
     """
     if not entrypoint_sources:
         return
     bound_before = _chalkcompute_bound_names(original_source)
     bound_after = _chalkcompute_bound_names(stripped_source)
-    used = _loaded_names_in_bodies(entrypoint_sources)
+    used = _loaded_names_in_bodies(entrypoint_sources) | _loaded_names_in_annotations(
+        entrypoint_sources
+    )
     dangling = sorted((bound_before - bound_after) & used)
     if not dangling:
         return
@@ -1257,7 +1300,12 @@ def _assert_stripped_source_self_contained(
         f'    @chalkcompute.function(image=Image.debian_slim().pip_install(["chalkcompute>=2.1.0"]))\n'
         f"    def my_fn(...):\n"
         f"        import chalkcompute\n"
-        f"        ..."
+        f"        ...\n"
+        f"An inner import does not rescue a *parameter annotation* such as "
+        f"'trace: chalkcompute.Trace' — the worker shim resolves annotations with "
+        f"typing.get_type_hints before the body runs. Annotate the wire type "
+        f"instead ('trace: str') and rebuild the handle inside the body, or "
+        f"install chalkcompute in the image with strip mode off."
     )
 
 

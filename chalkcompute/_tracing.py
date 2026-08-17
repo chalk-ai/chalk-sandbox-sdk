@@ -23,10 +23,32 @@ _TRACER_NAME = "chalkcompute"
 _DEFAULT_PUBLIC_SPAN_NAME = "chalkcompute.span"
 _TRACE_CONTEXT_METADATA_KEYS = ("traceparent", "tracestate", "baggage")
 _REMOTE_FUNCTION_TRACE_POLICY_ENV_VAR = "CHALK_REMOTE_FUNCTION_TRACE_POLICY"
+
+SESSION_ID_ATTRIBUTE = "session.id"
+"""Span attribute Chalk resolves an agent session from, first of six spellings.
+
+Kept in sync with ``SESSION_ID_ATTRIBUTE_KEYS`` in chalk-private's
+``engine/chalkengine/chalksql/providers/trace_query.py`` and the ClickHouse
+``SessionId`` column expression.
+"""
+
+SESSION_ID_HEADER = "x-chalk-session-id"
+"""Request header, lowercased, that places a call's spans in a session.
+
+Chalk sends it from ``catalog_call('fn', ..., metadata => {'x-chalk-session-id':
+s})``; :func:`chalkcompute.get_call_context` exposes it, and
+:func:`enter_session` stamps :data:`SESSION_ID_ATTRIBUTE` from it.
+
+This module owns both constants because it is a leaf — ``_trace`` re-exports
+them for the public API and ``_call_context`` reads the header key, so the
+spellings cannot drift between the three.
+"""
+
 _initialized = False
 _provider: Any | None = None
 _user_tracing_configured = False
 _tracer: Any | None = None
+_session_processor_installed = False
 
 
 def _is_enabled() -> bool:
@@ -78,6 +100,106 @@ def _has_tracing_intent() -> bool:
     return _provider is not None or _user_tracing_configured or _is_enabled()
 
 
+def _session_processor_class() -> Any:
+    """Build the session-stamping processor class, lazily.
+
+    Defined inside a function because it subclasses an optional dependency.
+    """
+    import opentelemetry.baggage as baggage_api
+    from opentelemetry.sdk.trace import SpanProcessor
+
+    class _SessionIdSpanProcessor(SpanProcessor):
+        """Copy the active session id onto every span started in its context.
+
+        Chalk resolves an agent session from the ``session.id`` *span*
+        attribute, so the id has to be on the spans before export — including
+        spans this SDK never creates, such as those from LLM instrumentation.
+        A processor on the tracer provider is the only hook that sees every
+        span's start regardless of which tracer made it.
+
+        A resource attribute would not do: the resource is built once per
+        provider and is process-wide, while one function pod serves rows from
+        many different sessions.
+        """
+
+        def on_start(self, span: Any, parent_context: Any = None) -> None:
+            # on_start is handed the parent context explicitly; it is not
+            # necessarily the current one. This runs for every span in the
+            # process, so it stays a single baggage lookup.
+            session_id = baggage_api.get_baggage(
+                SESSION_ID_ATTRIBUTE, context=parent_context
+            )
+            if session_id:
+                span.set_attribute(SESSION_ID_ATTRIBUTE, str(session_id))
+
+    return _SessionIdSpanProcessor
+
+
+def _install_session_processor(provider: Any) -> bool:
+    """Attach the session-stamping processor to ``provider``. Idempotent."""
+    global _session_processor_installed
+    if _session_processor_installed:
+        return True
+    add_span_processor = getattr(provider, "add_span_processor", None)
+    if add_span_processor is None:
+        # The API's no-op provider creates no spans to stamp.
+        return False
+    try:
+        add_span_processor(_session_processor_class()())
+    except ImportError:
+        return False
+    _session_processor_installed = True
+    return True
+
+
+def enter_session(session_id: str) -> object | None:
+    """Place ``session_id`` in the current OpenTelemetry context.
+
+    Every span started until :func:`exit_session` is stamped with
+    ``session.id``, and the id rides outbound calls as W3C ``baggage`` — so a
+    nested compute function's spans join the same session without extra
+    plumbing.
+
+    Returns
+    -------
+    object or None
+        A token for :func:`exit_session`, or ``None`` when OpenTelemetry is
+        unavailable or tracing is off.
+    """
+    if _is_remote_tracing_off() or not session_id:
+        return None
+
+    otel_context = _get_context_api()
+    baggage_api = _get_otel_module("opentelemetry.baggage")
+    if otel_context is None or baggage_api is None:
+        return None
+
+    _ensure_initialized()
+    trace_api = _get_trace_api()
+    if trace_api is not None:
+        _install_session_processor(trace_api.get_tracer_provider())
+    return otel_context.attach(
+        baggage_api.set_baggage(SESSION_ID_ATTRIBUTE, session_id)
+    )
+
+
+def exit_session(token: object) -> None:
+    """Undo :func:`enter_session`."""
+    otel_context = _get_context_api()
+    if otel_context is None:
+        return
+    otel_context.detach(token)
+
+
+def current_session_id() -> str | None:
+    """Return the session id spans in this context are being stamped with."""
+    baggage_api = _get_otel_module("opentelemetry.baggage")
+    if baggage_api is None:
+        return None
+    value = baggage_api.get_baggage(SESSION_ID_ATTRIBUTE)
+    return None if value is None else str(value)
+
+
 def _install_tracer_provider(sample_rate: float) -> None:
     global _provider, _tracer
     if _provider is not None:
@@ -101,6 +223,9 @@ def _install_tracer_provider(sample_rate: float) -> None:
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
         provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+
+    # Before set_tracer_provider, so no span can start unstamped.
+    _install_session_processor(provider)
 
     trace_api.set_tracer_provider(provider)
     _provider = provider

@@ -51,10 +51,12 @@ _ROW_METADATA: ContextVar[bytes | None] = ContextVar("chalk_row_metadata", defau
 
 
 class CallScopeToken(NamedTuple):
-    """Undo tokens for the two variables :func:`set_call_scope` sets."""
+    """Undo tokens for what :func:`set_call_scope` set."""
 
     context: Token[Mapping[str, str]]
     row_metadata: Token[bytes | None]
+    session: object | None = None
+    """OpenTelemetry context token, when the caller sent a session id."""
 
 
 def get_call_context() -> Mapping[str, str]:
@@ -90,12 +92,16 @@ def set_call_scope(
 
     Called by the generated handler shims around each row; user code reads
     :func:`get_call_context` and :func:`get_row_metadata` instead.
+
+    A caller-supplied ``x-chalk-session-id`` header additionally enters this
+    row's OpenTelemetry context, so every span the row emits is grouped into
+    that session. See :func:`chalkcompute._tracing.enter_session`.
     """
+    resolved = _EMPTY_CONTEXT if not context else MappingProxyType(dict(context))
     return CallScopeToken(
-        context=_CALL_CONTEXT.set(
-            _EMPTY_CONTEXT if not context else MappingProxyType(dict(context))
-        ),
+        context=_CALL_CONTEXT.set(resolved),
         row_metadata=_ROW_METADATA.set(row_metadata),
+        session=_enter_session(resolved),
     )
 
 
@@ -103,3 +109,30 @@ def reset_call_scope(token: CallScopeToken) -> None:
     """Restore whatever :func:`set_call_scope` replaced."""
     _CALL_CONTEXT.reset(token.context)
     _ROW_METADATA.reset(token.row_metadata)
+    if token.session is not None:
+        from chalkcompute._tracing import exit_session
+
+        exit_session(token.session)
+
+
+def _enter_session(context: Mapping[str, str]) -> object | None:
+    session_id = _session_id_from_headers(context)
+    if session_id is None:
+        return None
+    from chalkcompute._tracing import enter_session
+
+    return enter_session(session_id)
+
+
+def _session_id_from_headers(context: Mapping[str, str]) -> str | None:
+    """Find the session header case-insensitively, as gRPC metadata allows."""
+    from chalkcompute._tracing import SESSION_ID_HEADER
+
+    for key, value in context.items():
+        if (
+            key.lower() == SESSION_ID_HEADER
+            and isinstance(value, str)
+            and value.strip()
+        ):
+            return value.strip()
+    return None

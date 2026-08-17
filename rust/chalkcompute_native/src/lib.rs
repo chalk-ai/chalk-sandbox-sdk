@@ -249,6 +249,7 @@ fn resolve_service_auth_context(py: Python<'_>) -> PyResult<Option<Py<PyDict>>> 
             Permission::QueryOfflineRead as i32,
             Permission::DeployRead as i32,
             Permission::DeployCreate as i32,
+            Permission::MonitoringRead as i32,
         ],
     )?;
 
