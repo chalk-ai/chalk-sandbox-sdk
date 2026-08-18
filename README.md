@@ -194,23 +194,12 @@ def answer(input: str) -> str:
     return call_support_model(input)
 
 @cc.function(name="response-quality")
-def response_quality(
-    input: str, output: str
-) -> list[cc.EvaluationScorerResult]:
-    brand_score, conciseness_score, details = score_response(
-        input=input, output=output
+def response_quality(input: str, output: str) -> cc.EvaluationScorerResult:
+    score, details = score_response(input=input, output=output)
+    return cc.EvaluationScorerResult(
+        score=score,
+        metadata={"details": details},
     )
-    return [
-        cc.EvaluationScorerResult(
-            name="brand-alignment",
-            score=brand_score,
-            metadata={"details": details},
-        ),
-        cc.EvaluationScorerResult(
-            name="conciseness",
-            score=conciseness_score,
-        ),
-    ]
 
 evaluation = cc.Evaluation.create(
     "Customer Support Chatbot",
@@ -243,11 +232,11 @@ must be explicitly deployed before it can be used in an evaluation.
 
 Scorers may return a numeric scalar, one `EvaluationScorerResult`, or a
 `list[EvaluationScorerResult]`. Returning a list lets one scorer emit multiple
-named metrics from shared computation; an empty list emits no scores for that
-row. Each result carries a required metric name, a normalized score, and
-optional row-level JSON-serializable metadata. The return annotation declares
-the Arrow schema, and the class-level Arrow hooks handle nested serialization,
-so the generic function runtime does not need scorer-specific behavior.
+scores from shared computation; an empty list emits no scores for that row.
+Each result carries a normalized score and optional row-level JSON-serializable
+metadata. The return annotation declares the Arrow schema, and the class-level
+Arrow hooks handle nested serialization, so the generic function runtime does
+not need scorer-specific behavior.
 
 ## Sandbox lifecycle
 

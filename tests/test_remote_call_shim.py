@@ -600,12 +600,10 @@ class TestShimViaRemoteCallLib:
                 return []
             return [
                 EvaluationScorerResult(
-                    name="positive",
                     score=1.0 if value > 0 else 0.0,
                     metadata={"input": value},
                 ),
                 EvaluationScorerResult(
-                    name="even",
                     score=1.0 if value % 2 == 0 else 0.0,
                 ),
             ]
@@ -628,10 +626,8 @@ class TestShimViaRemoteCallLib:
         )
         assert function._decode_result_chunks(payloads) == [
             [
-                EvaluationScorerResult(
-                    name="positive", score=1.0, metadata={"input": 2}
-                ),
-                EvaluationScorerResult(name="even", score=1.0),
+                EvaluationScorerResult(score=1.0, metadata={"input": 2}),
+                EvaluationScorerResult(score=1.0),
             ]
         ]
 
