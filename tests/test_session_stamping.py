@@ -8,6 +8,8 @@ as baggage, and a provider-level span processor copies it onto each span at star
 
 from __future__ import annotations
 
+import contextlib
+import json
 import sys
 import types
 import weakref
@@ -23,11 +25,13 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from chalkcompute import _tracing
 from chalkcompute._call_context import (
     get_call_context,
+    get_row_metadata,
     reset_call_scope,
     set_call_scope,
 )
-from chalkcompute._function import _generate_handler_shim
+from chalkcompute._function import _ROW_METADATA_COLUMN, _generate_handler_shim
 from chalkcompute._trace import SESSION_ID_ATTRIBUTE, SESSION_ID_HEADER
+from chalkcompute._tracing import SESSION_ID_ROW_METADATA_KEY
 
 _USER_MODULE = "user_module"
 
@@ -364,6 +368,88 @@ def test_a_blank_session_header_publishes_nothing() -> None:
         reset_call_scope(token)
 
 
+# --- The session id in a row's metadata ----------------------------------
+
+
+def _blob(session_id: str) -> bytes:
+    return json.dumps({SESSION_ID_ROW_METADATA_KEY: session_id}).encode("utf-8")
+
+
+def test_the_call_scope_publishes_the_session_from_the_row_metadata(
+    exporter: InMemorySpanExporter,
+) -> None:
+    """A header is per request; a batch whose rows differ has only this channel."""
+    token = set_call_scope({}, _blob("session-1"))
+    try:
+        assert _tracing.current_session_id() == "session-1"
+        _emit()
+    finally:
+        reset_call_scope(token)
+
+    assert _span_session_ids(exporter) == ["session-1"]
+    assert _tracing.current_session_id() is None
+
+
+def test_the_row_wins_over_the_header() -> None:
+    """The row is the more specific of the two, and a header cannot vary within a request."""
+    token = set_call_scope({SESSION_ID_HEADER: "from-header"}, _blob("from-row"))
+    try:
+        assert _tracing.current_session_id() == "from-row"
+    finally:
+        reset_call_scope(token)
+
+
+def test_the_header_still_applies_when_the_row_names_no_session() -> None:
+    token = set_call_scope({SESSION_ID_HEADER: "from-header"}, b'{"other": "value"}')
+    try:
+        assert _tracing.current_session_id() == "from-header"
+    finally:
+        reset_call_scope(token)
+
+
+@pytest.mark.parametrize(
+    "blob",
+    [
+        pytest.param(b"\x00\x01\x02", id="not_utf8"),
+        pytest.param(b"an opaque identifier", id="not_json"),
+        pytest.param(b'["__chalk__session_id__"]', id="json_but_not_an_object"),
+        pytest.param(b'{"__chalk__session_id__": 7}', id="not_a_string"),
+        pytest.param(b'{"__chalk__session_id__": "  "}', id="blank"),
+        pytest.param(b'{"__chalk__session_id__": ', id="truncated_json"),
+        pytest.param(
+            b'{"other": "__chalk__session_id__"}', id="key_appears_as_a_value"
+        ),
+        pytest.param(b"", id="empty"),
+    ],
+)
+def test_a_blob_that_names_no_session_is_left_to_the_header(blob: bytes) -> None:
+    """The blob is the caller's to shape, so a bad one is an absent session, not a failure."""
+    token = set_call_scope({SESSION_ID_HEADER: "from-header"}, blob)
+    try:
+        assert _tracing.current_session_id() == "from-header"
+    finally:
+        reset_call_scope(token)
+
+
+def test_a_blob_that_names_no_session_and_no_header_enters_nothing() -> None:
+    token = set_call_scope({}, b"an opaque identifier")
+    try:
+        assert token.session is None
+        assert _tracing.current_session_id() is None
+    finally:
+        reset_call_scope(token)
+
+
+def test_the_row_metadata_is_still_readable_verbatim() -> None:
+    """Reading the session out of it must not consume it."""
+    blob = _blob("session-1")
+    token = set_call_scope({}, blob)
+    try:
+        assert get_row_metadata() == blob
+    finally:
+        reset_call_scope(token)
+
+
 def test_a_scope_without_the_header_leaves_the_context_alone() -> None:
     token = set_call_scope({"traceparent": "00-abc-def-01"}, None)
     try:
@@ -395,6 +481,24 @@ def test_resetting_restores_an_outer_session() -> None:
 # --- End to end through the generated shim -------------------------------
 
 
+@contextlib.contextmanager
+def _shim_for(func: Any) -> Any:
+    """Yield the generated handler for ``func``, with its user module importable."""
+    module = types.ModuleType(_USER_MODULE)
+    module.echo = func  # type: ignore[attr-defined]
+    previous = sys.modules.get(_USER_MODULE)
+    sys.modules[_USER_MODULE] = module
+    try:
+        namespace: dict[str, Any] = {}
+        exec(compile(_generate_handler_shim("echo"), "<shim>", "exec"), namespace)
+        yield namespace["handler"]
+    finally:
+        if previous is None:
+            sys.modules.pop(_USER_MODULE, None)
+        else:
+            sys.modules[_USER_MODULE] = previous
+
+
 def test_a_function_row_emits_spans_into_the_callers_session(
     exporter: InMemorySpanExporter,
 ) -> None:
@@ -406,21 +510,48 @@ def test_a_function_row_emits_spans_into_the_callers_session(
         _emit()
         return x
 
-    module = types.ModuleType(_USER_MODULE)
-    module.echo = echo  # type: ignore[attr-defined]
-    previous = sys.modules.get(_USER_MODULE)
-    sys.modules[_USER_MODULE] = module
-    try:
-        namespace: dict[str, Any] = {}
-        exec(compile(_generate_handler_shim("echo"), "<shim>", "exec"), namespace)
-        assert namespace["handler"](
-            {"x": pa.array([1, 2])}, {SESSION_ID_HEADER: "session-1"}
-        ) == [1, 2]
-    finally:
-        if previous is None:
-            sys.modules.pop(_USER_MODULE, None)
-        else:
-            sys.modules[_USER_MODULE] = previous
+    with _shim_for(echo) as handler:
+        assert handler({"x": pa.array([1, 2])}, {SESSION_ID_HEADER: "session-1"}) == [
+            1,
+            2,
+        ]
 
     assert seen == ["session-1", "session-1"]
     assert _span_session_ids(exporter) == ["session-1", "session-1"]
+
+
+def test_rows_of_one_call_land_in_the_sessions_their_metadata_names(
+    exporter: InMemorySpanExporter,
+) -> None:
+    """The case a header cannot express: one call, a different conversation per row.
+
+    Nothing in the function reads the blob or touches tracing -- the shim resolves the
+    session, and the provider-level processor stamps the span the function did not write.
+    """
+    seen: list[str | None] = []
+
+    def echo(x: int) -> int:
+        seen.append(_tracing.current_session_id())
+        _emit()
+        return x
+
+    with _shim_for(echo) as handler:
+        assert handler(
+            {
+                "x": pa.array([1, 2, 3]),
+                _ROW_METADATA_COLUMN: pa.array(
+                    [_blob("session-1"), _blob("session-2"), None], pa.binary()
+                ),
+            },
+            {},
+        ) == [1, 2, 3]
+
+    assert seen == ["session-1", "session-2", None]
+
+    rows = [span for span in _emitted(exporter) if span.name == "llm.completion"]
+    assert [
+        span.attributes.get(SESSION_ID_ATTRIBUTE) if span.attributes else None
+        for span in rows
+    ] == ["session-1", "session-2", None]
+    # Each session owns a trace; the session-less row is not swept into either.
+    assert len(set(_trace_ids(rows))) == 3

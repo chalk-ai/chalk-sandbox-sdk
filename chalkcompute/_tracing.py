@@ -40,9 +40,18 @@ Chalk sends it from ``catalog_call('fn', ..., metadata => {'x-chalk-session-id':
 s})``; :func:`chalkcompute.get_call_context` exposes it, and
 :func:`enter_session` stamps :data:`SESSION_ID_ATTRIBUTE` from it.
 
-This module owns both constants because it is a leaf — ``_trace`` re-exports
-them for the public API and ``_call_context`` reads the header key, so the
-spellings cannot drift between the three.
+This module owns these constants because it is a leaf — ``_trace`` re-exports
+them for the public API and ``_call_context`` reads the header and row-metadata
+keys, so the spellings cannot drift between the three.
+"""
+
+SESSION_ID_ROW_METADATA_KEY = "__chalk__session_id__"
+"""Key under which a row's metadata blob may name the session that row belongs to.
+
+Read when the blob parses as a UTF-8 JSON object, from
+``catalog_call('fn', ..., row_metadata => <binary expr>)``. Per row, unlike
+:data:`SESSION_ID_HEADER`, which is per request — so this is what a batch whose
+rows belong to different conversations has to use.
 """
 
 SESSION_ROOT_SPAN_NAME = "chalkcompute.session"

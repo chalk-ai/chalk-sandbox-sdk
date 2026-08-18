@@ -13,6 +13,12 @@ something a function should have to add a parameter for:
   header: it travels in the request body under a reserved column that the handler shim
   strips out of the argument mapping.
 
+The blob stays opaque with one exception: when it parses as a UTF-8 JSON object naming a
+``__chalk__session_id__``, that id places the row's spans in that session, exactly as the
+header does for the whole request. A batch whose rows belong to different conversations has
+no other way to say so, and making the function parse the blob itself would leave every
+caller reinventing the same three lines.
+
 Both are optional in both directions. A caller may send neither, one, or both; a function
 may read neither, one, or both. Reading one the caller did not send yields an empty mapping
 or ``None`` rather than an error.
@@ -31,6 +37,8 @@ Both are published as context variables, so they are correct under the shim's th
 
 from __future__ import annotations
 
+import functools
+import json
 from contextvars import ContextVar, Token
 from types import MappingProxyType
 from typing import Any, Mapping, NamedTuple
@@ -94,17 +102,18 @@ def set_call_scope(
     runtime gave them; user code reads :func:`get_call_context` and :func:`get_row_metadata`
     instead.
 
-    A caller-supplied ``x-chalk-session-id`` header additionally enters this
-    row's OpenTelemetry context, so every span the row emits is grouped into
-    that session -- in a trace of the row's own, since rows of one call share an
-    invocation span and a trace carries at most one session. See
-    :func:`chalkcompute._tracing.enter_session`.
+    A session id additionally enters this row's OpenTelemetry context, so every span the row
+    emits is grouped into that session -- in a trace of the row's own, since rows of one call
+    share an invocation span and a trace carries at most one session. It is taken from the
+    row's ``__chalk__session_id__``, falling back to the ``x-chalk-session-id`` header: the
+    row is the more specific of the two, and the header cannot disagree between rows of one
+    request anyway. See :func:`chalkcompute._tracing.enter_session`.
     """
     resolved = _headers_from_context(context)
     return CallScopeToken(
         context=_CALL_CONTEXT.set(resolved),
         row_metadata=_ROW_METADATA.set(row_metadata),
-        session=_enter_session(resolved),
+        session=_enter_session(resolved, row_metadata),
     )
 
 
@@ -134,13 +143,58 @@ def _headers_from_context(context: Mapping[str, Any] | None) -> Mapping[str, str
     return MappingProxyType({k: v for k, v in headers.items() if isinstance(v, str)})
 
 
-def _enter_session(context: Mapping[str, str]) -> object | None:
-    session_id = _session_id_from_headers(context)
+def _enter_session(
+    context: Mapping[str, str], row_metadata: bytes | None
+) -> object | None:
+    session_id = _session_id_from_row_metadata(
+        row_metadata
+    ) or _session_id_from_headers(context)
     if session_id is None:
         return None
     from chalkcompute._tracing import enter_session
 
     return enter_session(session_id)
+
+
+def _session_id_from_row_metadata(row_metadata: bytes | None) -> str | None:
+    """Read ``__chalk__session_id__`` out of a row's blob, if the blob is JSON saying so.
+
+    The blob belongs to the caller and may be anything -- protobuf, msgpack, a raw
+    identifier -- so every step here is a question, not an assumption, and any answer of
+    "no" leaves the row to the header. Callers see a bad blob as an absent session rather
+    than a failed row: this runs per row on the request path, and a malformed side channel
+    must not be able to fail a call that would otherwise succeed.
+
+    The substring test short-circuits the common cases without decoding: a blob that does
+    not contain the key cannot yield one, and a non-JSON blob is rejected in a bytes scan
+    rather than a UTF-8 decode plus a parse of something that was never JSON.
+    """
+    key, quoted = _session_id_key()
+    if not row_metadata or quoted not in row_metadata:
+        return None
+    try:
+        parsed = json.loads(row_metadata.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    value = parsed.get(key)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip()
+
+
+@functools.cache
+def _session_id_key() -> tuple[str, bytes]:
+    """The row-metadata session key, and its spelling as a JSON object key.
+
+    Quoted for the scan so it cannot match a *value* that happens to read like the key.
+    Derived from the one constant rather than written out again, and cached because the
+    import stays lazy while this runs per row.
+    """
+    from chalkcompute._tracing import SESSION_ID_ROW_METADATA_KEY
+
+    return SESSION_ID_ROW_METADATA_KEY, f'"{SESSION_ID_ROW_METADATA_KEY}"'.encode()
 
 
 def _session_id_from_headers(context: Mapping[str, str]) -> str | None:
