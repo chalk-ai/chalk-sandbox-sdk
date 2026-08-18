@@ -250,7 +250,7 @@ def test_deploy_module_name_keeps_main_for_scripts(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "__main__", _fake_main(None, None))
     assert _deploy_module_name(fn) == "__main__"
 
-    # An unrelated -m runner (e.g. python -m pytest): spec origin is not the
+    # An unrelated -m runner (e.g. uv run -m pytest): spec origin is not the
     # function's file, so the spec name must not be adopted.
     monkeypatch.setitem(
         sys.modules, "__main__", _fake_main("pytest.__main__", "/nonexistent/xyz.py")

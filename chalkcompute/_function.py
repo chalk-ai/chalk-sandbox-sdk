@@ -1097,9 +1097,9 @@ def _package_dir_for_module(module_name: str) -> str | None:
 
 
 def _deploy_module_name(func: Callable[..., Any]) -> str:
-    """Module name to deploy ``func`` from, seeing through ``python -m``.
+    """Module name to deploy ``func`` from, seeing through module execution.
 
-    ``python -m mypkg.mod`` executes the module as ``__main__`` but records
+    ``uv run -m mypkg.mod`` executes the module as ``__main__`` but records
     its real dotted name and file on ``__main__.__spec__``. The ``samefile``
     check ensures the function really was defined in the module being run.
     Direct script runs have no spec and keep ``__main__``.
@@ -2274,7 +2274,7 @@ class RemoteFunction:
         When the function is defined in a package (its module name is
         dotted), the whole top-level package is shipped and the shim imports
         the function from its real module, so sibling-module helpers resolve
-        remotely. This includes running the module via ``python -m
+        remotely. This includes running the module via ``uv run -m
         mypkg.mod``: the real dotted name is recovered from
         ``__main__.__spec__``. Otherwise the single source file is shipped
         as ``user_module.py``.
