@@ -9,7 +9,8 @@ import time
 
 import chalkcompute
 
-from e2etests.conftest import _build_scoped_name, _deploy_script, needs_staging
+from e2etests._ci_resources import build_scoped_name
+from e2etests.conftest import _delete_function, _deploy_script, needs_staging
 
 
 def _wait_for_function(function_name: str) -> None:
@@ -29,12 +30,16 @@ def _wait_for_function(function_name: str) -> None:
 
 @needs_staging
 class TestSyncGenerator:
-    function_name = _build_scoped_name("ex-count-up")
+    function_name = build_scoped_name("ex-count-up")
 
     @classmethod
     def setup_class(cls):
         _deploy_script("generator", "deploy_sync.py", function_name=cls.function_name)
         _wait_for_function(cls.function_name)
+
+    @classmethod
+    def teardown_class(cls):
+        _delete_function(cls.function_name)
 
     def test_direct_call_iterates(self):
         """for x in fn(5) yields 5 chunks."""
@@ -57,12 +62,16 @@ class TestSyncGenerator:
 
 @needs_staging
 class TestAsyncGenerator:
-    function_name = _build_scoped_name("ex-async-count-up")
+    function_name = build_scoped_name("ex-async-count-up")
 
     @classmethod
     def setup_class(cls):
         _deploy_script("generator", "deploy_async.py", function_name=cls.function_name)
         _wait_for_function(cls.function_name)
+
+    @classmethod
+    def teardown_class(cls):
+        _delete_function(cls.function_name)
 
     def test_direct_call_async_iterates(self):
         """async for x in fn.remote(5) yields 5 chunks."""
