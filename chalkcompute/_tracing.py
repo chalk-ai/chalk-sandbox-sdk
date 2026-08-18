@@ -313,7 +313,10 @@ def _install_tracer_provider(sample_rate: float) -> None:
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
 
-    resource = Resource.create({"service.name": "chalkcompute"})
+    resource_attributes = {"service.name": "chalkcompute"}
+    if environment_id := os.environ.get("CHALK_ENVIRONMENT_ID"):
+        resource_attributes["chalk.environment_id"] = environment_id
+    resource = Resource.create(resource_attributes)
     provider = TracerProvider(
         resource=resource,
         sampler=ParentBased(TraceIdRatioBased(sample_rate)),
