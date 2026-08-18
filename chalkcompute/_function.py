@@ -1118,6 +1118,58 @@ def _deploy_module_name(func: Callable[..., Any]) -> str:
     return module_name
 
 
+def _ancestor_package_names(source_file: str) -> set[str]:
+    """Names of the packages ``source_file`` sits inside (nearest to top-most)."""
+    packages: set[str] = set()
+    directory = os.path.dirname(os.path.abspath(source_file))
+    while os.path.exists(os.path.join(directory, "__init__.py")):
+        packages.add(os.path.basename(directory))
+        parent = os.path.dirname(directory)
+        if parent == directory:  # filesystem root: stop, never loop
+            break
+        directory = parent
+    return packages
+
+
+def _check_direct_run_from_package(func: Callable[..., Any], func_name: str) -> None:
+    """Raise when a directly-run package file imports its own package.
+
+    The file executed as ``__main__`` with no module spec, so its package
+    name is unrecoverable and the package cannot ship — any import of an
+    ancestor package is guaranteed to fail remotely. Files that don't
+    import their own package (self-contained, or flat imports declared via
+    ``add_local_python_source``) deploy fine as a single file, so they
+    pass silently.
+    """
+    source_file = _source_file_for_deploy(func)
+    packages = _ancestor_package_names(source_file)
+    if not packages:
+        return
+    try:
+        tree = ast.parse(_source_text_for_deploy(source_file))
+    except (FunctionBuildError, SyntaxError):
+        # Unreadable or unparsable source: skip the check rather than block;
+        # a real read failure resurfaces when the deploy ships the file.
+        return
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names = [node.module]
+        else:
+            continue
+        for name in names:
+            if name.split(".")[0] in packages:
+                raise FunctionError(
+                    f"Function {func_name!r} is defined in {source_file}, which "
+                    f"imports its own package via {name!r}, but the file was run "
+                    f"directly, so the package cannot be shipped and this import "
+                    f"would fail remotely. Run it with 'python -m <pkg>.<module>' "
+                    f"or import it from a separate entrypoint to ship the whole "
+                    f"package."
+                )
+
+
 def _strip_chalkcompute_for_package(source: str) -> str:
     from chalkcompute._cls import _strip_chalkcompute_from_class_source
 
@@ -2306,8 +2358,16 @@ class RemoteFunction:
             deploy_image = self._add_package_source(
                 base_image, package_dir, module_name, temp_files
             )
+        elif module_name == "__main__":
+            # File run directly: error if it imports its own package, else ship one file.
+            _check_direct_run_from_package(self._func, self._func_name)
+            shim_module = _available_module_name(_USER_MODULE_NAME, taken)
+            taken.add(shim_module)
+            deploy_image = self._add_single_file_source(
+                base_image, temp_files, shim_module
+            )
         else:
-            # Loose script or module: ship its single source file.
+            # Loose non-package module: ship its single source file.
             shim_module = _available_module_name(_USER_MODULE_NAME, taken)
             taken.add(shim_module)
             deploy_image = self._add_single_file_source(

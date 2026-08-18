@@ -297,3 +297,101 @@ def test_loose_imported_module_ships_single_file() -> None:
         f.src for f in image._lazy_local_files if f.dest == "/app/handler.py"
     )
     assert "from user_module import _pkg_add" in Path(shim_src).read_text()
+
+
+def test_direct_run_of_self_contained_package_file_ships_single_file(
+    monkeypatch, caplog
+) -> None:
+    import logging
+    import sys
+
+    monkeypatch.setitem(sys.modules, "__main__", _fake_main(None, None))
+
+    # This test file lives in the ``tests`` package but never imports it, so
+    # a direct run deploys fine as a single file — no error, no warning.
+    with patch.dict(os.environ, {"CHALK_FUNCTION_STRIP_SOURCE": "0"}, clear=False):
+        fn = RemoteFunction(_main_like(_pkg_add))
+        with caplog.at_level(logging.WARNING, logger="chalkcompute._function"):
+            image = fn._build_deploy_image()
+
+    assert not [r for r in caplog.records if r.name.startswith("chalkcompute")]
+    dests = {f.dest for f in image._lazy_local_files}
+    assert "/app/user_module.py" in dests
+    assert "/app/tests/test_helper_sources.py" not in dests
+
+
+def test_direct_run_outside_any_package_ships_single_file(
+    tmp_path, monkeypatch
+) -> None:
+    import importlib.util
+    import sys
+
+    mod_file = tmp_path / "plain_script_x.py"
+    mod_file.write_text("def fn(x: int) -> int:\n    return x\n")
+    spec = importlib.util.spec_from_file_location("plain_script_x", mod_file)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setitem(sys.modules, "__main__", _fake_main(None, None))
+
+    with patch.dict(os.environ, {"CHALK_FUNCTION_STRIP_SOURCE": "0"}, clear=False):
+        fn = RemoteFunction(_main_like(module.fn))
+        image = fn._build_deploy_image()
+
+    assert "/app/user_module.py" in {f.dest for f in image._lazy_local_files}
+
+
+@pytest.mark.parametrize(
+    ("body", "should_raise"),
+    [
+        ("from direct_pkg_y.util import helper\n", True),
+        ("import direct_pkg_y\n", True),
+        ("import direct_pkg_y.util as u\n", True),
+        # Nested inside a function: never executed, but ast.walk still finds it.
+        ("def inner():\n    from direct_pkg_y.util import helper\n", True),
+        # Relative import (in a function so module load succeeds): level > 0, ignored.
+        ("def inner():\n    from . import util\n", False),
+        # Dynamic import: a call, not an import statement — invisible to the scan.
+        (
+            "def inner():\n    import importlib\n"
+            "    importlib.import_module('direct_pkg_y.util')\n",
+            False,
+        ),
+    ],
+    ids=[
+        "from-import",
+        "plain-import",
+        "aliased-submodule",
+        "nested-in-function",
+        "relative-ignored",
+        "dynamic-passes",
+    ],
+)
+def test_direct_run_package_import_check(
+    tmp_path, monkeypatch, body: str, should_raise: bool
+) -> None:
+    import importlib.util
+    import sys
+
+    from chalkcompute._function import FunctionError
+
+    pkg = tmp_path / "direct_pkg_y"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "util.py").write_text("def helper(x):\n    return x\n")
+    mod_file = pkg / "entry.py"
+    mod_file.write_text(body + "\ndef fn(x: int) -> int:\n    return x\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    spec = importlib.util.spec_from_file_location("direct_entry_y", mod_file)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setitem(sys.modules, "__main__", _fake_main(None, None))
+
+    with patch.dict(os.environ, {"CHALK_FUNCTION_STRIP_SOURCE": "0"}, clear=False):
+        fn = RemoteFunction(_main_like(module.fn))
+        if should_raise:
+            with pytest.raises(FunctionError, match="imports its own package"):
+                fn._build_deploy_image()
+        else:
+            image = fn._build_deploy_image()
+            assert "/app/user_module.py" in {f.dest for f in image._lazy_local_files}
