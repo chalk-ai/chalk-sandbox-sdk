@@ -6,6 +6,7 @@ from chalkcompute._gen.chalk.runtime.v1 import (
 )
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb2 as _service_pb2
 from chalkcompute._gen.chalk.volume.v2 import volume_pb2 as _volume_pb2
+from google.protobuf import field_mask_pb2 as _field_mask_pb2
 from google.protobuf import struct_pb2 as _struct_pb2
 from google.protobuf import timestamp_pb2 as _timestamp_pb2
 from google.protobuf.internal import containers as _containers
@@ -362,17 +363,20 @@ class GetExternalFunctionVersionRequest(_message.Message):
         "include_scaling_group",
         "include_active_schedule",
         "visibility",
+        "include_deleted",
     )
     ID_FIELD_NUMBER: _ClassVar[int]
     KEY_FIELD_NUMBER: _ClassVar[int]
     INCLUDE_SCALING_GROUP_FIELD_NUMBER: _ClassVar[int]
     INCLUDE_ACTIVE_SCHEDULE_FIELD_NUMBER: _ClassVar[int]
     VISIBILITY_FIELD_NUMBER: _ClassVar[int]
+    INCLUDE_DELETED_FIELD_NUMBER: _ClassVar[int]
     id: str
     key: ExternalFunctionVersionKey
     include_scaling_group: bool
     include_active_schedule: bool
     visibility: _containers.RepeatedScalarFieldContainer[ExternalFunctionVisibility]
+    include_deleted: bool
     def __init__(
         self,
         id: _Optional[str] = ...,
@@ -380,6 +384,7 @@ class GetExternalFunctionVersionRequest(_message.Message):
         include_scaling_group: bool = ...,
         include_active_schedule: bool = ...,
         visibility: _Optional[_Iterable[_Union[ExternalFunctionVisibility, str]]] = ...,
+        include_deleted: bool = ...,
     ) -> None: ...
 
 class GetExternalFunctionVersionResponse(_message.Message):
@@ -401,6 +406,44 @@ class GetExternalFunctionVersionResponse(_message.Message):
         active_schedule: _Optional[_Union[ActiveSchedule, _Mapping]] = ...,
     ) -> None: ...
 
+class ExternalFunctionVersionSourceFile(_message.Message):
+    __slots__ = ("path", "size")
+    PATH_FIELD_NUMBER: _ClassVar[int]
+    SIZE_FIELD_NUMBER: _ClassVar[int]
+    path: str
+    size: int
+    def __init__(
+        self, path: _Optional[str] = ..., size: _Optional[int] = ...
+    ) -> None: ...
+
+class GetExternalFunctionVersionSourceRequest(_message.Message):
+    __slots__ = ("function_version_id",)
+    FUNCTION_VERSION_ID_FIELD_NUMBER: _ClassVar[int]
+    function_version_id: str
+    def __init__(self, function_version_id: _Optional[str] = ...) -> None: ...
+
+class GetExternalFunctionVersionSourceResponse(_message.Message):
+    __slots__ = ("volume_name", "volume_version_id", "primary_path", "source_files")
+    VOLUME_NAME_FIELD_NUMBER: _ClassVar[int]
+    VOLUME_VERSION_ID_FIELD_NUMBER: _ClassVar[int]
+    PRIMARY_PATH_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_FILES_FIELD_NUMBER: _ClassVar[int]
+    volume_name: str
+    volume_version_id: int
+    primary_path: str
+    source_files: _containers.RepeatedCompositeFieldContainer[
+        ExternalFunctionVersionSourceFile
+    ]
+    def __init__(
+        self,
+        volume_name: _Optional[str] = ...,
+        volume_version_id: _Optional[int] = ...,
+        primary_path: _Optional[str] = ...,
+        source_files: _Optional[
+            _Iterable[_Union[ExternalFunctionVersionSourceFile, _Mapping]]
+        ] = ...,
+    ) -> None: ...
+
 class ActiveSchedule(_message.Message):
     __slots__ = ("cron",)
     CRON_FIELD_NUMBER: _ClassVar[int]
@@ -408,24 +451,42 @@ class ActiveSchedule(_message.Message):
     def __init__(self, cron: _Optional[str] = ...) -> None: ...
 
 class ListExternalFunctionVersionsRequest(_message.Message):
-    __slots__ = ("cursor", "limit", "include_scaling_group", "function_name", "filters")
+    __slots__ = (
+        "cursor",
+        "limit",
+        "include_scaling_group",
+        "include_deleted",
+        "function_name",
+        "filters",
+        "ids",
+        "read_mask",
+    )
     CURSOR_FIELD_NUMBER: _ClassVar[int]
     LIMIT_FIELD_NUMBER: _ClassVar[int]
     INCLUDE_SCALING_GROUP_FIELD_NUMBER: _ClassVar[int]
+    INCLUDE_DELETED_FIELD_NUMBER: _ClassVar[int]
     FUNCTION_NAME_FIELD_NUMBER: _ClassVar[int]
     FILTERS_FIELD_NUMBER: _ClassVar[int]
+    IDS_FIELD_NUMBER: _ClassVar[int]
+    READ_MASK_FIELD_NUMBER: _ClassVar[int]
     cursor: str
     limit: int
     include_scaling_group: bool
+    include_deleted: bool
     function_name: str
     filters: ListExternalFunctionVersionsFilters
+    ids: _containers.RepeatedScalarFieldContainer[str]
+    read_mask: _field_mask_pb2.FieldMask
     def __init__(
         self,
         cursor: _Optional[str] = ...,
         limit: _Optional[int] = ...,
         include_scaling_group: bool = ...,
+        include_deleted: bool = ...,
         function_name: _Optional[str] = ...,
         filters: _Optional[_Union[ListExternalFunctionVersionsFilters, _Mapping]] = ...,
+        ids: _Optional[_Iterable[str]] = ...,
+        read_mask: _Optional[_Union[_field_mask_pb2.FieldMask, _Mapping]] = ...,
     ) -> None: ...
 
 class ListExternalFunctionVersionsFilters(_message.Message):
@@ -546,6 +607,7 @@ class ListExternalFunctionsRequest(_message.Message):
         "limit",
         "include_scaling_group",
         "include_active_schedule",
+        "include_deleted",
         "filters",
         "search",
         "sort_column",
@@ -555,6 +617,7 @@ class ListExternalFunctionsRequest(_message.Message):
     LIMIT_FIELD_NUMBER: _ClassVar[int]
     INCLUDE_SCALING_GROUP_FIELD_NUMBER: _ClassVar[int]
     INCLUDE_ACTIVE_SCHEDULE_FIELD_NUMBER: _ClassVar[int]
+    INCLUDE_DELETED_FIELD_NUMBER: _ClassVar[int]
     FILTERS_FIELD_NUMBER: _ClassVar[int]
     SEARCH_FIELD_NUMBER: _ClassVar[int]
     SORT_COLUMN_FIELD_NUMBER: _ClassVar[int]
@@ -563,6 +626,7 @@ class ListExternalFunctionsRequest(_message.Message):
     limit: int
     include_scaling_group: bool
     include_active_schedule: bool
+    include_deleted: bool
     filters: ListExternalFunctionsFilters
     search: str
     sort_column: ExternalFunctionSortColumn
@@ -573,6 +637,7 @@ class ListExternalFunctionsRequest(_message.Message):
         limit: _Optional[int] = ...,
         include_scaling_group: bool = ...,
         include_active_schedule: bool = ...,
+        include_deleted: bool = ...,
         filters: _Optional[_Union[ListExternalFunctionsFilters, _Mapping]] = ...,
         search: _Optional[str] = ...,
         sort_column: _Optional[_Union[ExternalFunctionSortColumn, str]] = ...,
@@ -580,12 +645,15 @@ class ListExternalFunctionsRequest(_message.Message):
     ) -> None: ...
 
 class ListExternalFunctionsFilters(_message.Message):
-    __slots__ = ("visibility",)
+    __slots__ = ("visibility", "statuses")
     VISIBILITY_FIELD_NUMBER: _ClassVar[int]
+    STATUSES_FIELD_NUMBER: _ClassVar[int]
     visibility: _containers.RepeatedScalarFieldContainer[ExternalFunctionVisibility]
+    statuses: _containers.RepeatedScalarFieldContainer[str]
     def __init__(
         self,
         visibility: _Optional[_Iterable[_Union[ExternalFunctionVisibility, str]]] = ...,
+        statuses: _Optional[_Iterable[str]] = ...,
     ) -> None: ...
 
 class ListExternalFunctionsResponse(_message.Message):

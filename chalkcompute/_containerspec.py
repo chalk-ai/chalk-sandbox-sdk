@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import KW_ONLY, dataclass, field
 from enum import Enum
 from typing import Any, cast
 
@@ -31,6 +31,66 @@ class RestartPolicy(Enum):
 
     NEVER = "RESTART_POLICY_NEVER"
     ALWAYS = "RESTART_POLICY_ALWAYS"
+
+
+@dataclass(frozen=True, slots=True)
+class SshDest:
+    """An SSH destination exposed inside a sandbox under a managed alias.
+
+    Attributes
+    ----------
+    host
+        DNS hostname or IP address authorized for SSH and used as ``HostName``.
+    private_key_secret
+        Name of the Chalk secret containing the SSH private key.
+    host_keys
+        SSH host key entries. ``None`` or an empty sequence uses trust on first
+        use for the sandbox lifetime.
+    port
+        SSH destination port. Defaults to 22.
+    username
+        Optional SSH username written to the generated alias's ``User`` setting.
+    """
+
+    host: str
+    private_key_secret: str
+    _: KW_ONLY
+    host_keys: Sequence[str] | None = None
+    port: int | None = None
+    username: str | None = None
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("host", self.host),
+            ("private_key_secret", self.private_key_secret),
+        ):
+            if not isinstance(value, str):
+                raise TypeError(f"{name} must be a string")
+            if not value:
+                raise ValueError(f"{name} must not be empty")
+        if self.host_keys is not None:
+            if isinstance(self.host_keys, str) or not all(
+                isinstance(host_key, str) for host_key in self.host_keys
+            ):
+                raise TypeError("host_keys must be a sequence of strings or None")
+            object.__setattr__(self, "host_keys", tuple(self.host_keys))
+        if self.port is not None:
+            _validate_port(self.port, "port")
+        if self.username is not None and not isinstance(self.username, str):
+            raise TypeError("username must be a string")
+
+    def to_dict(self) -> dict[str, Any]:
+        destination: dict[str, Any] = {
+            "host": self.host,
+            "privateKeySecret": self.private_key_secret,
+        }
+        if self.host_keys:
+            destination["hostKeys"] = list(self.host_keys)
+        if self.port is not None:
+            destination["port"] = self.port
+        if self.username is not None:
+            destination["username"] = self.username
+        return destination
 
 
 @dataclass
@@ -306,6 +366,7 @@ class ContainerSpec:
     port: int | None = None
     lifetime: str | None = None
     enable_ssh: bool = False
+    managed_ssh: Mapping[str, SshDest] = field(default_factory=dict)
     tags: Mapping[str, str] = field(default_factory=dict)
     protocol: str | None = None
     authentication: str | None = None
@@ -328,6 +389,7 @@ class ContainerSpec:
             network_policy=self.network_policy,
             restart_policy=self.restart_policy,
             chalk_identity=self.chalk_identity,
+            managed_ssh=self.managed_ssh,
         )
         if self.port is not None and not (1 <= self.port <= 65535):
             raise ValueError(f"port must be between 1 and 65535, got {self.port!r}")
@@ -349,6 +411,11 @@ class ContainerSpec:
         object.__setattr__(self, "tags", dict(self.tags))
         object.__setattr__(
             self,
+            "managed_ssh",
+            dict(self.managed_ssh),
+        )
+        object.__setattr__(
+            self,
             "readiness_probe",
             None if self.readiness_probe is None else dict(self.readiness_probe),
         )
@@ -366,6 +433,7 @@ class ContainerSpec:
         network_policy: NetworkPolicy | None = None,
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool = False,
+        managed_ssh: Mapping[str, SshDest] | None = None,
     ) -> None:
         if image is not None and not isinstance(image, str):
             if not isinstance(image, Image):
@@ -395,6 +463,18 @@ class ContainerSpec:
             raise TypeError("restart_policy must be a RestartPolicy")
         if not isinstance(chalk_identity, bool):
             raise TypeError("chalk_identity must be a bool")
+        if managed_ssh is not None and not isinstance(managed_ssh, Mapping):
+            raise TypeError("managed_ssh must be a mapping of aliases to destinations")
+        if managed_ssh is not None:
+            for alias, destination in managed_ssh.items():
+                if not isinstance(alias, str):
+                    raise TypeError("managed_ssh aliases must be strings")
+                if not alias:
+                    raise ValueError("managed_ssh aliases must not be empty")
+                if not isinstance(destination, SshDest):
+                    raise TypeError(
+                        "managed_ssh destinations must be SshDest instances"
+                    )
 
     def to_dict(self) -> dict[str, Any]:
         spec: dict[str, Any] = {"image": self.image}
@@ -428,6 +508,11 @@ class ContainerSpec:
             spec["lifetime"] = self.lifetime
         if self.enable_ssh:
             spec["enableSsh"] = True
+        if self.managed_ssh:
+            spec["managedSsh"] = {
+                alias: destination.to_dict()
+                for alias, destination in self.managed_ssh.items()
+            }
         if self.tags:
             spec["tags"] = dict(self.tags)
         if self.protocol is not None:

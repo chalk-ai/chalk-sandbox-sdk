@@ -27,6 +27,11 @@ class ExternalFunctionCatalogServiceStub(object):
             request_serializer=chalk_dot_externalfunctioncatalog_dot_v1_dot_service__pb2.GetExternalFunctionVersionRequest.SerializeToString,
             response_deserializer=chalk_dot_externalfunctioncatalog_dot_v1_dot_service__pb2.GetExternalFunctionVersionResponse.FromString,
         )
+        self.GetExternalFunctionVersionSource = channel.unary_unary(
+            "/chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService/GetExternalFunctionVersionSource",
+            request_serializer=chalk_dot_externalfunctioncatalog_dot_v1_dot_service__pb2.GetExternalFunctionVersionSourceRequest.SerializeToString,
+            response_deserializer=chalk_dot_externalfunctioncatalog_dot_v1_dot_service__pb2.GetExternalFunctionVersionSourceResponse.FromString,
+        )
         self.ListExternalFunctionVersions = channel.unary_unary(
             "/chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService/ListExternalFunctionVersions",
             request_serializer=chalk_dot_externalfunctioncatalog_dot_v1_dot_service__pb2.ListExternalFunctionVersionsRequest.SerializeToString,
@@ -70,6 +75,15 @@ class ExternalFunctionCatalogServiceServicer(object):
 
     def GetExternalFunctionVersion(self, request, context):
         """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
+    def GetExternalFunctionVersionSource(self, request, context):
+        """Resolves the source files for one immutable function version. The browser
+        calls this lazily and reads the selected file directly from the pinned
+        volume version; source is intentionally absent from list responses.
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details("Method not implemented!")
         raise NotImplementedError("Method not implemented!")
@@ -125,6 +139,11 @@ def add_ExternalFunctionCatalogServiceServicer_to_server(servicer, server):
             servicer.GetExternalFunctionVersion,
             request_deserializer=chalk_dot_externalfunctioncatalog_dot_v1_dot_service__pb2.GetExternalFunctionVersionRequest.FromString,
             response_serializer=chalk_dot_externalfunctioncatalog_dot_v1_dot_service__pb2.GetExternalFunctionVersionResponse.SerializeToString,
+        ),
+        "GetExternalFunctionVersionSource": grpc.unary_unary_rpc_method_handler(
+            servicer.GetExternalFunctionVersionSource,
+            request_deserializer=chalk_dot_externalfunctioncatalog_dot_v1_dot_service__pb2.GetExternalFunctionVersionSourceRequest.FromString,
+            response_serializer=chalk_dot_externalfunctioncatalog_dot_v1_dot_service__pb2.GetExternalFunctionVersionSourceResponse.SerializeToString,
         ),
         "ListExternalFunctionVersions": grpc.unary_unary_rpc_method_handler(
             servicer.ListExternalFunctionVersions,
@@ -216,6 +235,35 @@ class ExternalFunctionCatalogService(object):
             "/chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService/GetExternalFunctionVersion",
             chalk_dot_externalfunctioncatalog_dot_v1_dot_service__pb2.GetExternalFunctionVersionRequest.SerializeToString,
             chalk_dot_externalfunctioncatalog_dot_v1_dot_service__pb2.GetExternalFunctionVersionResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
+
+    @staticmethod
+    def GetExternalFunctionVersionSource(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService/GetExternalFunctionVersionSource",
+            chalk_dot_externalfunctioncatalog_dot_v1_dot_service__pb2.GetExternalFunctionVersionSourceRequest.SerializeToString,
+            chalk_dot_externalfunctioncatalog_dot_v1_dot_service__pb2.GetExternalFunctionVersionSourceResponse.FromString,
             options,
             channel_credentials,
             insecure,

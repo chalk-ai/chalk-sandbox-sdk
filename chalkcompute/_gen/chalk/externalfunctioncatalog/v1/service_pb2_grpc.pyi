@@ -18,6 +18,8 @@ from chalkcompute._gen.chalk.externalfunctioncatalog.v1.service_pb2 import (
     DeleteExternalFunctionVersionResponse,
     GetExternalFunctionVersionRequest,
     GetExternalFunctionVersionResponse,
+    GetExternalFunctionVersionSourceRequest,
+    GetExternalFunctionVersionSourceResponse,
     ListExternalFunctionScheduledRunsRequest,
     ListExternalFunctionScheduledRunsResponse,
     ListExternalFunctionVersionsRequest,
@@ -42,6 +44,14 @@ class ExternalFunctionCatalogServiceStub:
         GetExternalFunctionVersionRequest,
         GetExternalFunctionVersionResponse,
     ]
+    GetExternalFunctionVersionSource: UnaryUnaryMultiCallable[
+        GetExternalFunctionVersionSourceRequest,
+        GetExternalFunctionVersionSourceResponse,
+    ]
+    """Resolves the source files for one immutable function version. The browser
+    calls this lazily and reads the selected file directly from the pinned
+    volume version; source is intentionally absent from list responses.
+    """
     ListExternalFunctionVersions: UnaryUnaryMultiCallable[
         ListExternalFunctionVersionsRequest,
         ListExternalFunctionVersionsResponse,
@@ -84,6 +94,16 @@ class ExternalFunctionCatalogServiceServicer(metaclass=ABCMeta):
         request: GetExternalFunctionVersionRequest,
         context: ServicerContext,
     ) -> GetExternalFunctionVersionResponse: ...
+    @abstractmethod
+    def GetExternalFunctionVersionSource(
+        self,
+        request: GetExternalFunctionVersionSourceRequest,
+        context: ServicerContext,
+    ) -> GetExternalFunctionVersionSourceResponse:
+        """Resolves the source files for one immutable function version. The browser
+        calls this lazily and reads the selected file directly from the pinned
+        volume version; source is intentionally absent from list responses.
+        """
     @abstractmethod
     def ListExternalFunctionVersions(
         self,
