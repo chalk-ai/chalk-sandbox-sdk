@@ -7,6 +7,7 @@ Connect-protocol RPC pattern.  This module centralizes:
 * the ``needs_staging`` skip marker
 * ``_get_access_token`` + ``_connect_rpc`` helpers
 * the ``access_token`` / ``auth_headers`` module-scoped fixtures
+* the sweep that reaps CI-scoped resources leaked by earlier builds
 """
 
 from __future__ import annotations
@@ -14,11 +15,16 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from collections.abc import Iterator
+from datetime import datetime, timezone
 from pathlib import Path
 
+import chalkcompute
 import httpx
 import pytest
 from dotenv import load_dotenv
+
+from e2etests._ci_resources import SCOPED_NAME_RE, STALE_AFTER, parse_rfc3339
 
 load_dotenv()
 
@@ -79,12 +85,17 @@ def _deploy_script(
         )
 
 
-def _build_scoped_name(base: str) -> str:
-    """Return a stable resource name isolated to the current CI build."""
-    build_id = os.environ.get("BUILDKITE_BUILD_ID", "").replace("-", "")
-    if not build_id:
-        return base
-    return f"{base}-{build_id[:8]}"
+def _delete_function(function_name: str) -> None:
+    """Best-effort delete of a deployed function and its scaling group.
+
+    ``DeleteExternalFunctionVersion`` cascades to the backing scaling group, so
+    deleting the function version is all a test needs to undo a deploy.  Errors
+    are swallowed: a cleanup failure should never fail an otherwise green test.
+    """
+    try:
+        chalkcompute.RemoteFunction.from_name(function_name).delete()
+    except Exception as exc:
+        print(f"warning: could not delete function {function_name}: {exc}")
 
 
 def _get_access_token() -> str:
@@ -142,3 +153,67 @@ def auth_headers(access_token: str) -> dict[str, str]:
         "Authorization": f"Bearer {access_token}",
         "X-Chalk-Env-Id": CHALK_ENVIRONMENT_ID,
     }
+
+
+# ---------------------------------------------------------------------------
+# Stale CI resource sweep
+# ---------------------------------------------------------------------------
+
+_SG_SERVICE = "chalk.scalinggroup.v1.ScalingGroupManagerService"
+
+_LIST_PAGE_SIZE = 100
+_LIST_PAGE_CAP = 50
+
+
+def _iter_scaling_groups(headers: dict[str, str]) -> Iterator[dict]:
+    """Yield every scaling group in the environment, following the cursor."""
+    cursor = ""
+    for _ in range(_LIST_PAGE_CAP):
+        body: dict[str, object] = {"limit": _LIST_PAGE_SIZE}
+        if cursor:
+            body["cursor"] = cursor
+        resp = _connect_rpc(_SG_SERVICE, "ListScalingGroups", body, headers)
+        resp.raise_for_status()
+        page = resp.json()
+        yield from page.get("scalingGroups", [])
+        cursor = page.get("nextCursor") or ""
+        if not cursor:
+            return
+
+
+def _sweep_stale_scoped_scaling_groups() -> None:
+    """Delete build-scoped scaling groups left behind by earlier CI builds.
+
+    ``teardown_class`` covers the happy path, but it never runs when a Buildkite
+    job times out, is cancelled, or loses its agent.  Without this net every such
+    build leaks a scaling group -- and its running replicas -- indefinitely.
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {_get_access_token()}",
+        "X-Chalk-Env-Id": CHALK_ENVIRONMENT_ID,
+    }
+    now = datetime.now(timezone.utc)
+    for sg in _iter_scaling_groups(headers):
+        name = sg.get("name", "")
+        if sg.get("deletedAt") or not SCOPED_NAME_RE.match(name):
+            continue
+        created_at = parse_rfc3339(sg.get("createdAt"))
+        if created_at is None or now - created_at < STALE_AFTER:
+            continue
+        resp = _connect_rpc(
+            _SG_SERVICE, "DeleteScalingGroup", {"id": sg["id"]}, headers
+        )
+        outcome = "deleted" if resp.is_success else f"failed ({resp.status_code})"
+        print(f"stale scaling group {name} ({created_at.isoformat()}): {outcome}")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def sweep_stale_ci_resources() -> None:
+    """Reap scoped resources leaked by earlier builds before any test runs."""
+    if not CHALK_CLIENT_ID or not CHALK_API_SERVER:
+        return
+    try:
+        _sweep_stale_scoped_scaling_groups()
+    except Exception as exc:
+        print(f"warning: stale resource sweep skipped: {exc}")
