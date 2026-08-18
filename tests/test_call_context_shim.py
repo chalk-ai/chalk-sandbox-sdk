@@ -1,10 +1,15 @@
 """The handler shims publish the caller's context and per-row metadata as context variables.
 
-Two side channels, one mechanism: the request's gRPC headers arrive as the handler's
+Two side channels, one mechanism: the request's gRPC headers arrive inside the handler's
 ``context`` argument (per request), and per-row metadata arrives as a reserved column (per
 row). Neither may reach the user function as an argument — the point of both is that a
 function reads them without declaring a dependency — and both are optional in both
 directions: a caller may send neither, and a function may read neither.
+
+Most tests here pass ``context`` as a flat header mapping because it reads clearly. The real
+runtime passes an envelope with the headers nested under ``metadata``; ``TestRuntimeContext``
+pins that shape, since a shim that publishes the envelope puts every header one level out of
+reach while every flat-mapping test still passes.
 """
 
 from __future__ import annotations
@@ -231,6 +236,49 @@ class TestNonBatchedShim:
             return [item async for item in agen]
 
         assert asyncio.run(_collect()) == [("v", b"s-1"), ("v", b"s-2"), ("v", b"s-2")]
+
+
+class TestRuntimeContext:
+    """``chalk_remote_call`` passes an envelope, not the headers themselves.
+
+    ``python_bridge.rs::build_context`` builds
+    ``{"function_name": ..., "peer": ..., "metadata": {<headers>}}``, so the headers a
+    function reads have to come out of ``metadata``.
+    """
+
+    @staticmethod
+    def _envelope(**headers: str) -> dict:
+        return {
+            "function_name": "probe",
+            "peer": "ipv4:127.0.0.1:54321",
+            "metadata": headers,
+        }
+
+    def _run(self, context: dict) -> dict[str, str]:
+        seen: list[dict[str, str]] = []
+
+        def echo(x: int) -> int:
+            seen.append(dict(get_call_context()))
+            return x
+
+        _install_user_module(echo=echo)
+        ns = _load_shim(_generate_handler_shim("echo"))
+        assert ns["handler"]({"x": pa.array([1])}, context) == [1]
+        return seen[0]
+
+    def test_headers_come_out_of_the_envelope(self):
+        seen = self._run(self._envelope(**{"x-chalk-session-id": "s-1"}))
+        assert seen["x-chalk-session-id"] == "s-1"
+
+    def test_envelope_fields_are_not_headers(self):
+        seen = self._run(self._envelope(**{"x-chalk-session-id": "s-1"}))
+        assert set(seen) == {"x-chalk-session-id"}
+
+    def test_envelope_without_headers_reads_empty(self):
+        assert self._run(self._envelope()) == {}
+
+    def test_flat_mapping_is_taken_as_the_headers(self):
+        assert self._run({"x-chalk-session-id": "s-1"}) == {"x-chalk-session-id": "s-1"}
 
 
 class TestWithoutChalkcomputeInstalled:
