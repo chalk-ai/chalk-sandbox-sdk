@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sys
 import types
+import weakref
 from typing import Any
 
 import pyarrow as pa
@@ -38,7 +39,7 @@ def exporter(monkeypatch: pytest.MonkeyPatch) -> InMemorySpanExporter:
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
 
-    monkeypatch.setattr(_tracing, "_session_processor_installed", False)
+    monkeypatch.setattr(_tracing, "_session_processor_providers", weakref.WeakSet())
     monkeypatch.setattr(_tracing, "_initialized", True)
     monkeypatch.setattr(_tracing, "_provider", provider)
     monkeypatch.setattr(_tracing, "_tracer", None)
@@ -47,11 +48,32 @@ def exporter(monkeypatch: pytest.MonkeyPatch) -> InMemorySpanExporter:
     return exporter
 
 
+def _emitted(exporter: InMemorySpanExporter) -> list[Any]:
+    """The spans the caller emitted, without the roots ``enter_session`` opens itself."""
+    return [
+        span
+        for span in exporter.get_finished_spans()
+        if span.name != _tracing.SESSION_ROOT_SPAN_NAME
+    ]
+
+
+def _session_roots(exporter: InMemorySpanExporter) -> list[Any]:
+    return [
+        span
+        for span in exporter.get_finished_spans()
+        if span.name == _tracing.SESSION_ROOT_SPAN_NAME
+    ]
+
+
 def _span_session_ids(exporter: InMemorySpanExporter) -> list[str | None]:
     return [
         span.attributes.get(SESSION_ID_ATTRIBUTE) if span.attributes else None
-        for span in exporter.get_finished_spans()
+        for span in _emitted(exporter)
     ]
+
+
+def _trace_ids(spans: list[Any]) -> list[int]:
+    return [span.get_span_context().trace_id for span in spans]
 
 
 def _emit(name: str = "llm.completion") -> None:
@@ -141,7 +163,7 @@ def test_installing_the_processor_twice_stamps_once(
     finally:
         _tracing.exit_session(token)
 
-    (span,) = exporter.get_finished_spans()
+    (span,) = _emitted(exporter)
     assert span.attributes is not None
     assert span.attributes[SESSION_ID_ATTRIBUTE] == "session-1"
 
@@ -149,6 +171,149 @@ def test_installing_the_processor_twice_stamps_once(
 def test_a_no_op_provider_is_declined() -> None:
     """The API's no-op provider creates no spans, so there is nothing to stamp."""
     assert _tracing._install_session_processor(object()) is False
+
+
+def test_each_provider_is_stamped_even_after_another_one_was(
+    exporter: InMemorySpanExporter,
+) -> None:
+    """Losing the ``set_tracer_provider`` race must not disarm the winner.
+
+    In a function pod the remote-call runtime installs its provider first, so the one
+    chalkcompute builds is refused and orphaned. A process-wide "already installed" flag
+    let that orphan's install suppress the live provider's, and nothing exported was ever
+    stamped.
+    """
+    orphan = TracerProvider()
+    assert _tracing._install_session_processor(orphan) is True
+
+    live = trace_api.get_tracer_provider()
+    assert _tracing._install_session_processor(live) is True
+
+    token = _tracing.enter_session("session-1")
+    try:
+        _emit()
+    finally:
+        _tracing.exit_session(token)
+
+    assert _span_session_ids(exporter) == ["session-1"]
+
+
+def test_a_provider_someone_else_installed_is_adopted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Building a second provider would leave it holding an exporter no span reaches."""
+    installed = TracerProvider()
+    monkeypatch.setattr(_tracing, "_session_processor_providers", weakref.WeakSet())
+    monkeypatch.setattr(_tracing, "_provider", None)
+    monkeypatch.setattr(_tracing, "_tracer", None)
+    monkeypatch.setattr(trace_api, "get_tracer_provider", lambda: installed)
+    calls: list[Any] = []
+    monkeypatch.setattr(trace_api, "set_tracer_provider", calls.append)
+
+    _tracing._install_tracer_provider(sample_rate=1.0)
+
+    assert _tracing._provider is installed
+    assert calls == []
+
+
+# --- One trace, one session ----------------------------------------------
+
+
+def test_two_sessions_under_one_call_do_not_share_a_trace(
+    exporter: InMemorySpanExporter,
+) -> None:
+    """The bug this isolation exists for.
+
+    A remote call serves a whole batch under one invocation span. Chalk resolves a trace's
+    session as a ``max()`` over its spans, so rows sharing that trace would collapse into
+    one session.
+    """
+    with trace_api.get_tracer("runtime").start_as_current_span("invoke") as invoke:
+        for session_id in ("session-1", "session-2"):
+            token = _tracing.enter_session(session_id)
+            try:
+                _emit()
+            finally:
+                _tracing.exit_session(token)
+        invoke_trace = invoke.get_span_context().trace_id
+
+    rows = [span for span in _emitted(exporter) if span.name == "llm.completion"]
+    assert [span.attributes[SESSION_ID_ATTRIBUTE] for span in rows] == [
+        "session-1",
+        "session-2",
+    ]
+    assert len(set(_trace_ids(rows))) == 2
+    assert invoke_trace not in _trace_ids(rows)
+
+
+def test_a_session_trace_links_back_to_the_call_that_opened_it(
+    exporter: InMemorySpanExporter,
+) -> None:
+    """Severing the trace must not sever the trail between the call and its rows."""
+    with trace_api.get_tracer("runtime").start_as_current_span("invoke") as invoke:
+        enclosing = invoke.get_span_context()
+        token = _tracing.enter_session("session-1")
+        _tracing.exit_session(token)
+
+    (root,) = _session_roots(exporter)
+    (link,) = root.links
+    assert link.context.trace_id == enclosing.trace_id
+    assert link.context.span_id == enclosing.span_id
+
+
+def test_a_session_with_no_spans_of_its_own_is_still_visible(
+    exporter: InMemorySpanExporter,
+) -> None:
+    token = _tracing.enter_session("session-1")
+    _tracing.exit_session(token)
+
+    (root,) = _session_roots(exporter)
+    assert root.attributes is not None
+    assert root.attributes[SESSION_ID_ATTRIBUTE] == "session-1"
+
+
+def test_sibling_spans_of_one_row_stay_in_one_trace(
+    exporter: InMemorySpanExporter,
+) -> None:
+    """Owning a root, rather than only cutting the context, is what buys this."""
+    token = _tracing.enter_session("session-1")
+    try:
+        _emit("first")
+        _emit("second")
+    finally:
+        _tracing.exit_session(token)
+
+    assert len(set(_trace_ids(_emitted(exporter)))) == 1
+
+
+def test_re_entering_the_same_session_stays_in_its_trace(
+    exporter: InMemorySpanExporter,
+) -> None:
+    """A nested compute function inherits the session; it must not split the conversation."""
+    outer = _tracing.enter_session("session-1")
+    try:
+        _emit("outer")
+        inner = _tracing.enter_session("session-1")
+        try:
+            _emit("inner")
+        finally:
+            _tracing.exit_session(inner)
+    finally:
+        _tracing.exit_session(outer)
+
+    assert len(_session_roots(exporter)) == 1
+    assert len(set(_trace_ids(_emitted(exporter)))) == 1
+
+
+def test_a_session_entered_outside_any_span_has_nothing_to_link(
+    exporter: InMemorySpanExporter,
+) -> None:
+    token = _tracing.enter_session("session-1")
+    _tracing.exit_session(token)
+
+    (root,) = _session_roots(exporter)
+    assert root.links == ()
+    assert root.parent is None
 
 
 def test_enter_session_is_inert_when_tracing_is_off(
