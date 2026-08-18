@@ -13,8 +13,8 @@ import re
 from datetime import datetime, timedelta
 
 # Names built by ``build_scoped_name`` end in the first eight hex characters of a
-# Buildkite build id.  Fixed example names (``ex-add``, ``ex-slow-add``, ...) and
-# local runs -- which have no build id, so no suffix -- deliberately do not match,
+# Buildkite job id.  Fixed example names (``ex-add``, ``ex-slow-add``, ...) and
+# local runs -- which have no job id, so no suffix -- deliberately do not match,
 # so the sweep can only ever delete resources CI created.
 SCOPED_NAME_RE = re.compile(r"^ex-[a-z0-9-]+-[0-9a-f]{8}$")
 
@@ -24,11 +24,25 @@ STALE_AFTER = timedelta(hours=3)
 
 
 def build_scoped_name(base: str) -> str:
-    """Return a stable resource name isolated to the current CI build."""
-    build_id = os.environ.get("BUILDKITE_BUILD_ID", "").replace("-", "")
-    if not build_id:
+    """Return a stable resource name isolated to the current CI job.
+
+    Scoped to the *job* rather than the build because a job retry reuses its
+    build id: with build scoping, a retry redeploys the exact name the previous
+    attempt's teardown just deleted, and the server can then resolve that name
+    to the scaling group it no longer has.  Job ids differ per attempt, so every
+    retry starts from a name that has never existed -- and an attempt that died
+    before teardown leaves an orphan for the sweep instead of a name the retry
+    silently reuses.
+
+    ``BUILDKITE_BUILD_ID`` remains a fallback; a local run with neither set gets
+    the bare name, which the sweep never matches.
+    """
+    run_id = (
+        os.environ.get("BUILDKITE_JOB_ID") or os.environ.get("BUILDKITE_BUILD_ID") or ""
+    ).replace("-", "")
+    if not run_id:
         return base
-    return f"{base}-{build_id[:8]}"
+    return f"{base}-{run_id[:8]}"
 
 
 def parse_rfc3339(value: str | None) -> datetime | None:

@@ -182,7 +182,7 @@ def _iter_scaling_groups(headers: dict[str, str]) -> Iterator[dict]:
 
 
 def _sweep_stale_scoped_scaling_groups() -> None:
-    """Delete build-scoped scaling groups left behind by earlier CI builds.
+    """Delete CI-scoped scaling groups left behind by earlier builds.
 
     ``teardown_class`` covers the happy path, but it never runs when a Buildkite
     job times out, is cancelled, or loses its agent.  Without this net every such
