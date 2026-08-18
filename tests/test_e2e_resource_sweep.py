@@ -27,6 +27,7 @@ FIXED_E2E_NAMES = [
     "ex-classify-image",
     "ex-policy-check",
     "ex-heartbeat",
+    "ex-function-sandbox",
     "ex-trivial-double-sg",
     "ex-volume-triple-sg",
     # Unsuffixed generator names, i.e. what a local run outside CI creates.
