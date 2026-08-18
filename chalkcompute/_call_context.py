@@ -56,7 +56,7 @@ class CallScopeToken(NamedTuple):
     context: Token[Mapping[str, str]]
     row_metadata: Token[bytes | None]
     session: object | None = None
-    """OpenTelemetry context token, when the caller sent a session id."""
+    """OpenTelemetry session scope, when the caller sent a session id."""
 
 
 def get_call_context() -> Mapping[str, str]:
@@ -96,7 +96,9 @@ def set_call_scope(
 
     A caller-supplied ``x-chalk-session-id`` header additionally enters this
     row's OpenTelemetry context, so every span the row emits is grouped into
-    that session. See :func:`chalkcompute._tracing.enter_session`.
+    that session -- in a trace of the row's own, since rows of one call share an
+    invocation span and a trace carries at most one session. See
+    :func:`chalkcompute._tracing.enter_session`.
     """
     resolved = _headers_from_context(context)
     return CallScopeToken(

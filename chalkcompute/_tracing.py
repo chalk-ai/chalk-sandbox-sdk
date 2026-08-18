@@ -14,8 +14,9 @@ import functools
 import importlib
 import inspect
 import os
+import weakref
 from collections.abc import Callable, Iterator
-from typing import Any, TypeVar, cast, overload
+from typing import Any, NamedTuple, TypeVar, cast, overload
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -44,11 +45,14 @@ them for the public API and ``_call_context`` reads the header key, so the
 spellings cannot drift between the three.
 """
 
+SESSION_ROOT_SPAN_NAME = "chalkcompute.session"
+"""Name of the root span :func:`enter_session` opens for a session's own trace."""
+
 _initialized = False
 _provider: Any | None = None
 _user_tracing_configured = False
 _tracer: Any | None = None
-_session_processor_installed = False
+_session_processor_providers: weakref.WeakSet[Any] = weakref.WeakSet()
 
 
 def _is_enabled() -> bool:
@@ -136,20 +140,69 @@ def _session_processor_class() -> Any:
 
 
 def _install_session_processor(provider: Any) -> bool:
-    """Attach the session-stamping processor to ``provider``. Idempotent."""
-    global _session_processor_installed
-    if _session_processor_installed:
-        return True
+    """Attach the session-stamping processor to ``provider``. Idempotent per provider.
+
+    Tracked per provider rather than once per process. The provider chalkcompute builds is
+    not always the one that ends up installed — in a remote function pod the remote-call
+    runtime installs its own first, so ``set_tracer_provider`` is refused and ours is left
+    orphaned — and a single process-wide flag let that orphan's install suppress the live
+    provider's, so no exported span was ever stamped.
+    """
     add_span_processor = getattr(provider, "add_span_processor", None)
     if add_span_processor is None:
         # The API's no-op provider creates no spans to stamp.
         return False
+    if provider in _session_processor_providers:
+        return True
     try:
         add_span_processor(_session_processor_class()())
     except ImportError:
         return False
-    _session_processor_installed = True
+    try:
+        _session_processor_providers.add(provider)
+    except TypeError:
+        # Not weak-referenceable, so this install cannot be deduped. Every SDK provider is;
+        # only an exotic fake gets here, and it pays with a duplicate (idempotent) stamp.
+        pass
     return True
+
+
+class _SessionScope(NamedTuple):
+    """What :func:`enter_session` attached, and the span it opened, if any."""
+
+    context: object
+    span: Any | None
+
+
+def _open_session_trace(
+    trace_api: Any, context: Any, session_id: str
+) -> tuple[Any, Any]:
+    """Open the session's own trace, linked back to the span that encloses it.
+
+    A trace carries at most one session: Chalk resolves the session of a whole trace as a
+    ``max()`` over its spans' ``session.id``. So a session must not share a trace with a
+    different one — and one remote call serves a whole batch of rows under a single
+    invocation span, with each row free to name its own session. Joining that span would
+    collapse every session in the batch into whichever id sorted highest, and would sweep
+    the session-less rows in with them.
+
+    Severing instead gives each session its own trace, and recording the enclosing span as
+    a link keeps the call and its rows navigable from either end. Owning a root span (rather
+    than only cutting the context) also means the row's spans stay in one trace instead of
+    each sibling starting its own, and that a row emitting no spans of its own still shows
+    up in the session.
+
+    Returns ``(span, context)`` — the opened span, and a context with it current.
+    """
+    enclosing = trace_api.get_current_span(context).get_span_context()
+    links = []
+    if enclosing.is_valid:
+        links.append(trace_api.Link(enclosing, {"chalk.link.kind": "enclosing_call"}))
+        # A span only starts a new trace when its context names no valid parent.
+        context = trace_api.set_span_in_context(trace_api.INVALID_SPAN, context)
+    span = get_tracer().start_span(SESSION_ROOT_SPAN_NAME, context=context, links=links)
+    span.set_attribute(SESSION_ID_ATTRIBUTE, session_id)
+    return span, trace_api.set_span_in_context(span, context)
 
 
 def enter_session(session_id: str) -> object | None:
@@ -159,6 +212,12 @@ def enter_session(session_id: str) -> object | None:
     ``session.id``, and the id rides outbound calls as W3C ``baggage`` — so a
     nested compute function's spans join the same session without extra
     plumbing.
+
+    Unless the context is already in this same session, the spans are placed in a **trace of
+    their own**, rooted at a :data:`SESSION_ROOT_SPAN_NAME` span linked to the enclosing one.
+    A trace belongs to one session, and the rows of a single remote call — which share an
+    invocation span, and therefore a trace — may each name a different one. Re-entering the
+    session already in scope joins it, so a nested call does not split the conversation.
 
     Returns
     -------
@@ -178,17 +237,27 @@ def enter_session(session_id: str) -> object | None:
     trace_api = _get_trace_api()
     if trace_api is not None:
         _install_session_processor(trace_api.get_tracer_provider())
-    return otel_context.attach(
-        baggage_api.set_baggage(SESSION_ID_ATTRIBUTE, session_id)
-    )
+
+    already_in_session = current_session_id() == session_id
+    context = baggage_api.set_baggage(SESSION_ID_ATTRIBUTE, session_id)
+    span = None
+    if trace_api is not None and not already_in_session:
+        span, context = _open_session_trace(trace_api, context, session_id)
+    return _SessionScope(otel_context.attach(context), span)
 
 
 def exit_session(token: object) -> None:
     """Undo :func:`enter_session`."""
+    context, span = (
+        (token.context, token.span)
+        if isinstance(token, _SessionScope)
+        else (token, None)
+    )
     otel_context = _get_context_api()
-    if otel_context is None:
-        return
-    otel_context.detach(token)
+    if otel_context is not None:
+        otel_context.detach(context)
+    if span is not None:
+        span.end()
 
 
 def current_session_id() -> str | None:
@@ -200,16 +269,41 @@ def current_session_id() -> str | None:
     return None if value is None else str(value)
 
 
+def _installed_provider(trace_api: Any) -> Any | None:
+    """The process-wide tracer provider, when a real one is already installed.
+
+    Until something calls ``set_tracer_provider`` the API hands back a proxy that takes no
+    span processor, so "a real one is installed" is exactly "the current provider accepts
+    span processors".
+    """
+    provider = trace_api.get_tracer_provider()
+    return provider if hasattr(provider, "add_span_processor") else None
+
+
 def _install_tracer_provider(sample_rate: float) -> None:
     global _provider, _tracer
     if _provider is not None:
+        return
+
+    trace_api = _require_trace_api()
+
+    # Adopt a provider someone else already installed rather than building a second one.
+    # In a remote function pod the chalk-remote-call runtime installs one before user code
+    # runs; ``set_tracer_provider`` would only log "Overriding of current TracerProvider is
+    # not allowed" and keep theirs, leaving ours holding an exporter that never sees a span
+    # — because ``get_tracer`` resolves through the global provider either way. ``sample_rate``
+    # belongs to the provider that owns the process, so it does not apply to an adopted one.
+    installed = _installed_provider(trace_api)
+    if installed is not None:
+        _install_session_processor(installed)
+        _provider = installed
+        _tracer = None
         return
 
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
 
-    trace_api = _require_trace_api()
     resource = Resource.create({"service.name": "chalkcompute"})
     provider = TracerProvider(
         resource=resource,
