@@ -24,8 +24,7 @@ class TestFunctionSandbox:
     def teardown_class(cls) -> None:
         _delete_function(cls.function_name)
 
-    def test_deployed_function_creates_sandbox_with_pod_identity(self) -> None:
-        sandbox_id = chalkcompute.RemoteFunction.from_name(self.function_name).remote()
+    def test_deployed_function_executes_in_sandbox_with_pod_identity(self) -> None:
+        output = chalkcompute.RemoteFunction.from_name(self.function_name).remote()
 
-        assert isinstance(sandbox_id, str)
-        assert sandbox_id
+        assert output == "sandbox-exec-ok\n"

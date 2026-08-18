@@ -18,7 +18,7 @@ FUNCTION_NAME = os.environ.get("CHALK_E2E_FUNCTION_NAME", "ex-function-sandbox")
     env={"CHALK_E2E_SANDBOX_NAME": FUNCTION_NAME},
 )
 def create_sandbox() -> str:
-    """Create and terminate a sandbox using the deployed function's credentials."""
+    """Create, execute in, and terminate a sandbox with the pod's credentials."""
     import os
 
     from chalkcompute import SandboxClient
@@ -33,6 +33,12 @@ def create_sandbox() -> str:
             name=os.environ["CHALK_E2E_SANDBOX_NAME"],
         )
         try:
-            return sandbox.id
+            result = sandbox.exec("echo", "sandbox-exec-ok")
+            if result.exit_code != 0:
+                raise RuntimeError(
+                    "Sandbox exec failed: "
+                    f"exit_code={result.exit_code}, stderr={result.stderr_text}"
+                )
+            return result.stdout_text
         finally:
             sandbox.terminate()
