@@ -3,9 +3,9 @@
 A remote call carries two side channels beside the function's arguments, and neither is
 something a function should have to add a parameter for:
 
-* **Call context** — the request's gRPC headers, which the runtime hands the handler as its
-  ``context`` argument. Per request, so it is the same for every row of one call. Chalk sets
-  these from ``catalog_call('fn', ..., metadata => {'x-chalk-session-id': session_id})``,
+* **Call context** — the request's gRPC headers, which the runtime hands the handler inside
+  its ``context`` argument. Per request, so it is the same for every row of one call. Chalk
+  sets these from ``catalog_call('fn', ..., metadata => {'x-chalk-session-id': session_id})``,
   and the SDK's own client already puts ``traceparent`` and ``x-chalk-request-timestamp``
   here.
 * **Row metadata** — an opaque blob attached to each row, from
@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from contextvars import ContextVar, Token
 from types import MappingProxyType
-from typing import Mapping, NamedTuple
+from typing import Any, Mapping, NamedTuple
 
 __all__ = [
     "get_call_context",
@@ -85,19 +85,20 @@ def get_row_metadata() -> bytes | None:
 
 
 def set_call_scope(
-    context: Mapping[str, str] | None,
+    context: Mapping[str, Any] | None,
     row_metadata: bytes | None,
 ) -> CallScopeToken:
     """Publish one row's call context and metadata. Returns a token for :func:`reset_call_scope`.
 
-    Called by the generated handler shims around each row; user code reads
-    :func:`get_call_context` and :func:`get_row_metadata` instead.
+    Called by the generated handler shims around each row, with the ``context`` argument the
+    runtime gave them; user code reads :func:`get_call_context` and :func:`get_row_metadata`
+    instead.
 
     A caller-supplied ``x-chalk-session-id`` header additionally enters this
     row's OpenTelemetry context, so every span the row emits is grouped into
     that session. See :func:`chalkcompute._tracing.enter_session`.
     """
-    resolved = _EMPTY_CONTEXT if not context else MappingProxyType(dict(context))
+    resolved = _headers_from_context(context)
     return CallScopeToken(
         context=_CALL_CONTEXT.set(resolved),
         row_metadata=_ROW_METADATA.set(row_metadata),
@@ -113,6 +114,22 @@ def reset_call_scope(token: CallScopeToken) -> None:
         from chalkcompute._tracing import exit_session
 
         exit_session(token.session)
+
+
+def _headers_from_context(context: Mapping[str, Any] | None) -> Mapping[str, str]:
+    """Pull the request's headers out of the runtime's ``context`` argument.
+
+    ``chalk_remote_call`` hands the handler an envelope -- ``function_name``, ``peer``, and
+    the headers nested under ``metadata`` -- so publishing the envelope itself would leave
+    every header one level out of reach of :func:`get_call_context`. A flat mapping is taken
+    as the headers themselves, which is what direct callers and tests pass.
+    """
+    if not context:
+        return _EMPTY_CONTEXT
+    headers = context.get("metadata") if "metadata" in context else context
+    if not isinstance(headers, Mapping) or not headers:
+        return _EMPTY_CONTEXT
+    return MappingProxyType({k: v for k, v in headers.items() if isinstance(v, str)})
 
 
 def _enter_session(context: Mapping[str, str]) -> object | None:
