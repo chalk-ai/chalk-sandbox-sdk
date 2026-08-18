@@ -220,6 +220,55 @@ def test_a_provider_someone_else_installed_is_adopted(
     assert calls == []
 
 
+def _install_sdk_provider(monkeypatch: pytest.MonkeyPatch) -> TracerProvider:
+    """Install the SDK provider through a fake process-wide OTel API."""
+    providers: list[TracerProvider] = []
+
+    class _TraceApi:
+        @staticmethod
+        def get_tracer_provider() -> object:
+            return object()
+
+        @staticmethod
+        def set_tracer_provider(provider: TracerProvider) -> None:
+            providers.append(provider)
+
+    monkeypatch.setattr(_tracing, "_provider", None)
+    monkeypatch.setattr(_tracing, "_tracer", None)
+    monkeypatch.setattr(_tracing, "_get_trace_api", lambda: _TraceApi)
+
+    _tracing._install_tracer_provider(sample_rate=1.0)
+
+    (provider,) = providers
+    return provider
+
+
+def test_sdk_provider_resource_includes_nonempty_environment_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-123")
+
+    provider = _install_sdk_provider(monkeypatch)
+
+    assert provider.resource.attributes["service.name"] == "chalkcompute"
+    assert provider.resource.attributes["chalk.environment_id"] == "env-123"
+
+
+@pytest.mark.parametrize("environment_id", [None, ""])
+def test_sdk_provider_resource_omits_unset_or_empty_environment_id(
+    monkeypatch: pytest.MonkeyPatch, environment_id: str | None
+) -> None:
+    if environment_id is None:
+        monkeypatch.delenv("CHALK_ENVIRONMENT_ID", raising=False)
+    else:
+        monkeypatch.setenv("CHALK_ENVIRONMENT_ID", environment_id)
+
+    provider = _install_sdk_provider(monkeypatch)
+
+    assert provider.resource.attributes["service.name"] == "chalkcompute"
+    assert "chalk.environment_id" not in provider.resource.attributes
+
+
 # --- One trace, one session ----------------------------------------------
 
 
