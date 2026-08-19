@@ -99,10 +99,7 @@ class RetryInterceptor:
                 return call_next(request, ctx)
             except ConnectError as exc:
                 last_error = exc
-                if (
-                    exc.code != Code.UNAVAILABLE
-                    or attempt >= RPC_RETRY_MAX_ATTEMPTS
-                ):
+                if exc.code != Code.UNAVAILABLE or attempt >= RPC_RETRY_MAX_ATTEMPTS:
                     raise
                 logger.warning(
                     "%s/%s UNAVAILABLE (attempt %d/%d); retrying in %.1fs",

@@ -600,9 +600,7 @@ class ScalingGroup:
                     sg_pb.GetScalingGroupRequest(id=self._scaling_group_id),
                 )
             except ConnectRpcError as exc:
-                raise ScalingGroupError(
-                    f"get_scaling_group failed: {exc}"
-                ) from exc
+                raise ScalingGroupError(f"get_scaling_group failed: {exc}") from exc
             if response.scaling_group is None:
                 raise ScalingGroupError("GetScalingGroup returned no scaling group")
             info = _parse_scaling_group_response(response.scaling_group)

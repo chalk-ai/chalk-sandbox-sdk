@@ -89,9 +89,7 @@ def test_retry_interceptor_recovers_from_unavailable(monkeypatch) -> None:
             raise ConnectError(Code.UNAVAILABLE, "connection refused")
         return f"ok:{request}"
 
-    result = _rpc.RetryInterceptor().intercept_unary_sync(
-        call_next, "req", _context()
-    )
+    result = _rpc.RetryInterceptor().intercept_unary_sync(call_next, "req", _context())
     assert result == "ok:req"
     assert attempts["n"] == 3
     assert sleeps == [0.1, 0.2]
