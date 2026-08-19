@@ -17,6 +17,7 @@ from chalkcompute._connect import (
     grpc_target_from_url,
 )
 from chalkcompute._gen.chalk.server.v1 import auth_pb
+from chalkcompute._http import SYNC_HTTP_CLIENT
 from chalkcompute._remote_call_client import ServiceAuthContext
 
 
@@ -1039,12 +1040,18 @@ class TestStubAndCall:
 
         class Stub:
             def __init__(
-                self, address: str, *, protocol: ProtocolType, interceptors: tuple
+                self,
+                address: str,
+                *,
+                protocol: ProtocolType,
+                interceptors: tuple,
+                http_client: object,
             ) -> None:
                 captured.update(
                     address=address,
                     protocol=protocol,
                     interceptor_count=len(interceptors),
+                    http_client=http_client,
                 )
 
         client = ConnectClient(protocol=ProtocolType.CONNECT)
@@ -1056,4 +1063,5 @@ class TestStubAndCall:
             "address": "http://localhost:50051",
             "protocol": ProtocolType.CONNECT,
             "interceptor_count": 1,
+            "http_client": SYNC_HTTP_CLIENT,
         }

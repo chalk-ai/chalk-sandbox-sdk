@@ -25,7 +25,6 @@ _LOCAL_SDK_COPY_EXCLUDES = [
     "**/target/**",
 ]
 _LOCAL_SDK_RUNTIME_PACKAGES = [
-    "httpx>=0.25.0",
     "blake3>=1.0.0",
     "pyyaml>=6.0.0",
     "opentelemetry-api>=1.20.0",
@@ -34,6 +33,7 @@ _LOCAL_SDK_RUNTIME_PACKAGES = [
     "rich>=13.0.0",
     "protobuf-py==0.1.1",
     "connectrpc==0.11.1",
+    "pyqwest>=0.9.0",
 ]
 
 

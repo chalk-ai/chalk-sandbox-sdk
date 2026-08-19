@@ -42,7 +42,7 @@ def _poll_until_ready(sandbox_id: str, headers: dict[str, str]) -> dict:
     while time.monotonic() < deadline:
         time.sleep(POLL_INTERVAL)
         resp = _connect_rpc(_SVC, "GetSandbox", {"sandboxId": sandbox_id}, headers)
-        assert resp.status_code == 200, f"GetSandbox failed: {resp.text}"
+        assert resp.status == 200, f"GetSandbox failed: {resp.text()}"
         data = resp.json()
         state = data.get("sandbox", {}).get("state", "")
         print(f"  poll: state={state}")
@@ -74,7 +74,7 @@ def sandbox_id(auth_headers: dict[str, str]) -> str:
         "name": "test-exec-e2e",
     }
     resp = _connect_rpc(_SVC, "CreateSandbox", body, auth_headers, timeout=60)
-    assert resp.status_code == 200, f"CreateSandbox failed: {resp.text}"
+    assert resp.status == 200, f"CreateSandbox failed: {resp.text()}"
 
     data = resp.json()
     print(f"CreateSandbox response: {data}")
@@ -100,7 +100,7 @@ def sandbox_id(auth_headers: dict[str, str]) -> str:
 @needs_staging
 @pytest.mark.xfail(
     not _is_local_api(),
-    reason="httpx.ReadTimeout due to tcp interceptor issues",
+    reason="read timeout due to tcp interceptor issues",
 )
 def test_exec_ls(grpc_client: SandboxClient, sandbox_id: str) -> None:
     """Exec 'ls /' in the sandbox and verify we get directory listing output."""
@@ -131,7 +131,7 @@ def test_exec_ls(grpc_client: SandboxClient, sandbox_id: str) -> None:
 @needs_staging
 @pytest.mark.xfail(
     not _is_local_api(),
-    reason="httpx.ReadTimeout due to tcp interceptor issues",
+    reason="read timeout due to tcp interceptor issues",
 )
 def test_pty_interaction(grpc_client: SandboxClient, sandbox_id: str) -> None:
     """Start an interactive shell, send a command via stdin, and verify output."""

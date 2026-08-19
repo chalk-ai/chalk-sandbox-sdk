@@ -585,6 +585,40 @@ def test_chunked_read_downloads_chunks_and_joins_by_offset(
     assert _read_file_response(resp) == b"hello world"
 
 
+def test_signed_download_uses_shared_pyqwest_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    http_client = MagicMock()
+    http_client.get.return_value.status = 200
+    http_client.get.return_value.content = b"downloaded"
+    monkeypatch.setattr(vv, "SYNC_HTTP_CLIENT", http_client)
+
+    assert vv._read_file_from_signed_uri("https://storage/chunk") == b"downloaded"
+    http_client.get.assert_called_once_with("https://storage/chunk", timeout=300)
+
+
+def test_signed_download_rejects_unsuccessful_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    http_client = MagicMock()
+    http_client.get.return_value.status = 403
+    monkeypatch.setattr(vv, "SYNC_HTTP_CLIENT", http_client)
+
+    with pytest.raises(VolumeError, match="failed with status 403"):
+        vv._read_file_from_signed_uri("https://storage/chunk")
+
+
+def test_signed_download_translates_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    http_client = MagicMock()
+    http_client.get.side_effect = TimeoutError("slow")
+    monkeypatch.setattr(vv, "SYNC_HTTP_CLIENT", http_client)
+
+    with pytest.raises(VolumeError, match="Timed out downloading signed file URL"):
+        vv._read_file_from_signed_uri("https://storage/chunk")
+
+
 def test_dict_commit_status_conversion() -> None:
     assert vv._dict_to_commit_status(_status_dict()) == CommitStatus(
         commit_id="commit-1",

@@ -1,0 +1,1 @@
+- Use the same pyqwest client for generated ConnectRPC calls, scaling-group endpoint requests, and signed volume downloads, removing the SDK's direct httpx dependency. `ScalingGroup.call()` now returns `pyqwest.FullResponse`; callers should use `response.status` instead of `response.status_code` and `response.text()` instead of the `response.text` property.

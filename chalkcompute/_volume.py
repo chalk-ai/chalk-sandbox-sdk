@@ -24,11 +24,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
 
-import httpx
 from protobuf import Oneof
 
 from chalkcompute._connect import ConnectClient
 from chalkcompute._gen.chalk.volume.v2 import volume_pb as pb_v2
+from chalkcompute._http import HTTP_TRANSPORT_ERRORS, SYNC_HTTP_CLIENT
 from chalkcompute._image import Image
 from chalkcompute._tracing import traced
 
@@ -175,17 +175,14 @@ def _read_file_from_signed_uri(signed_download_uri: str) -> bytes:
         If the download times out or the HTTP request fails.
     """
     try:
-        resp = httpx.get(signed_download_uri, timeout=300)
-        resp.raise_for_status()
-        return resp.content
-    except httpx.TimeoutException as e:
+        response = SYNC_HTTP_CLIENT.get(signed_download_uri, timeout=300)
+    except TimeoutError as e:
         raise VolumeError(f"Timed out downloading signed file URL: {e}") from e
-    except httpx.HTTPStatusError as e:
-        raise VolumeError(
-            f"Signed file download failed with status {e.response.status_code}"
-        ) from e
-    except httpx.HTTPError as e:
+    except HTTP_TRANSPORT_ERRORS as e:
         raise VolumeError(f"Signed file download failed: {e}") from e
+    if not 200 <= response.status < 300:
+        raise VolumeError(f"Signed file download failed with status {response.status}")
+    return response.content
 
 
 _INLINE_THRESHOLD_BYTES: int = 4 * 1024

@@ -26,7 +26,7 @@ def _poll_until_ready(sandbox_id: str, headers: dict[str, str]) -> dict:
         resp = _connect_rpc(
             _SANDBOX_SVC, "GetSandbox", {"sandboxId": sandbox_id}, headers
         )
-        assert resp.status_code == 200, f"GetSandbox failed: {resp.text}"
+        assert resp.status == 200, f"GetSandbox failed: {resp.text()}"
         data = resp.json()
         state = data.get("sandbox", {}).get("state", "")
         build_id = data.get("sandbox", {}).get("buildId", "")
@@ -45,7 +45,7 @@ def _poll_until_ready(sandbox_id: str, headers: dict[str, str]) -> dict:
 def test_list_sandboxes(auth_headers: dict[str, str]) -> None:
     """Verify we can authenticate and call ListSandboxes."""
     resp = _connect_rpc(_SANDBOX_SVC, "ListSandboxes", {}, auth_headers)
-    assert resp.status_code == 200, f"ListSandboxes failed: {resp.text}"
+    assert resp.status == 200, f"ListSandboxes failed: {resp.text()}"
     data = resp.json()
     assert isinstance(data, dict)
     print(f"ListSandboxes response: {data}")
@@ -72,7 +72,7 @@ def test_create_sandbox_with_debian_image(auth_headers: dict[str, str]) -> None:
     }
 
     resp = _connect_rpc(_SANDBOX_SVC, "CreateSandbox", body, auth_headers, timeout=30)
-    assert resp.status_code == 200, f"CreateSandbox failed: {resp.text}"
+    assert resp.status == 200, f"CreateSandbox failed: {resp.text()}"
 
     data = resp.json()
     print(f"CreateSandbox response: {data}")
@@ -108,7 +108,7 @@ def test_create_sandbox_with_plain_image(auth_headers: dict[str, str]) -> None:
     }
 
     resp = _connect_rpc(_SANDBOX_SVC, "CreateSandbox", body, auth_headers, timeout=30)
-    assert resp.status_code == 200, f"CreateSandbox failed: {resp.text}"
+    assert resp.status == 200, f"CreateSandbox failed: {resp.text()}"
 
     data = resp.json()
     print(f"CreateSandbox (plain) response: {data}")
@@ -145,7 +145,7 @@ def test_build_custom_image(auth_headers: dict[str, str]) -> None:
     resp = _connect_rpc(
         _CUSTOM_IMAGE_SVC, "BuildCustomImage", body, auth_headers, timeout=600
     )
-    assert resp.status_code == 200, f"BuildCustomImage failed: {resp.text}"
+    assert resp.status == 200, f"BuildCustomImage failed: {resp.text()}"
 
     data = resp.json()
     print(f"BuildCustomImage response: {data}")
@@ -158,7 +158,7 @@ def test_build_custom_image(auth_headers: dict[str, str]) -> None:
     get_resp = _connect_rpc(
         _CUSTOM_IMAGE_SVC, "GetCustomImage", {"buildId": build_id}, auth_headers
     )
-    assert get_resp.status_code == 200, f"GetCustomImage failed: {get_resp.text}"
+    assert get_resp.status == 200, f"GetCustomImage failed: {get_resp.text()}"
 
     get_data = get_resp.json()
     print(f"GetCustomImage response: {get_data}")

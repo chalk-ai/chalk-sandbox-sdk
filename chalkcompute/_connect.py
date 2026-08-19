@@ -23,6 +23,7 @@ from chalkcompute._gen.chalk.auth.v1 import permissions_pb
 from chalkcompute._gen.chalk.sandbox.v1 import service_connect as image_connect
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb as image_pb
 from chalkcompute._gen.chalk.server.v1 import auth_connect, auth_pb
+from chalkcompute._http import SYNC_HTTP_CLIENT
 from chalkcompute._remote_call_client import (
     RemoteCallClientUnavailable,
     ServiceAuthContext,
@@ -190,6 +191,7 @@ class ConnectClient:
                 self._api_server,
                 protocol=self._protocol,
                 interceptors=rpc_interceptors(self._protocol),
+                http_client=SYNC_HTTP_CLIENT,
             )
             try:
                 data = auth_client.get_internal_working_token(
@@ -273,6 +275,7 @@ class ConnectClient:
             self._api_server,
             protocol=self._protocol,
             interceptors=rpc_interceptors(self._protocol),
+            http_client=SYNC_HTTP_CLIENT,
         )
         try:
             data = auth_client.get_token(
@@ -412,6 +415,7 @@ class ConnectClient:
                 self._api_server,
                 protocol=self._protocol,
                 interceptors=rpc_interceptors(self._protocol),
+                http_client=SYNC_HTTP_CLIENT,
             )
             self._typed_clients[stub_cls] = client
         return client

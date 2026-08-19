@@ -23,7 +23,7 @@ Usage:
 
     sg = ScalingGroup(image=img, port=8080).deploy().wait_ready()
     resp = sg.call("/health", method="GET")
-    print(resp.status_code)
+    print(resp.status)
     sg.delete()
 """
 
@@ -41,6 +41,7 @@ from chalkcompute._connect import ConnectClient, build_image, rpc_with_retries
 from chalkcompute._containerspec import ContainerSpec
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_connect as sg_connect
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
+from chalkcompute._http import SYNC_HTTP_CLIENT
 from chalkcompute._naming import sanitize_dns_label
 from chalkcompute._secret import SecretScope, resolve_lazy_secrets
 from chalkcompute._tracing import _instrumented
@@ -56,7 +57,7 @@ from chalkcompute._volume import (
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    import httpx
+    from pyqwest import FullResponse
 
     from chalkcompute._image import Image as _Image
     from chalkcompute._secret import Secret as _Secret
@@ -640,7 +641,7 @@ class ScalingGroup:
         data: bytes | None = None,
         headers: dict[str, str] | None = None,
         timeout: float = 30.0,
-    ) -> httpx.Response:
+    ) -> FullResponse:
         """Make an HTTP request to the scaling group's endpoint.
 
         Parameters
@@ -662,7 +663,7 @@ class ScalingGroup:
 
         Returns
         -------
-        httpx.Response
+        pyqwest.FullResponse
             The HTTP response.
 
         Raises
@@ -670,8 +671,6 @@ class ScalingGroup:
         ScalingGroupError
             If the scaling group has no ``web_url`` yet.
         """
-        import httpx
-
         if self._scaling_group_info is None or self._scaling_group_info.web_url is None:
             raise ScalingGroupError(
                 "Scaling group has no web_url. Call .deploy() first or .refresh() to update."
@@ -689,12 +688,11 @@ class ScalingGroup:
                 **(request_headers or {}),
                 "Authorization": f"Bearer {self._client._access_token}",
             }
-        return httpx.request(
+        return SYNC_HTTP_CLIENT.execute(
             method,
             url,
-            json=json,
-            content=data,
             headers=request_headers,
+            content=data if data is not None else json,
             timeout=timeout,
         )
 

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from typing import Any, cast
+from unittest.mock import MagicMock
 
-import httpx
 import pytest
 
 import chalkcompute._scaling_group as scaling_group_mod
@@ -94,22 +94,42 @@ def test_authenticated_scaling_group_call_adds_chalk_token(
     sg._client = cast(Any, client)
     sg.deploy()
     original_headers = {"X-Test": "value"}
-    captured: dict[str, Any] = {}
-
-    def request(method: str, url: str, **kwargs: Any) -> object:
-        captured.update(method=method, url=url, **kwargs)
-        return object()
-
-    monkeypatch.setattr(httpx, "request", request)
+    http_client = MagicMock()
+    monkeypatch.setattr(scaling_group_mod, "SYNC_HTTP_CLIENT", http_client)
 
     sg.call("/health", method="GET", headers=original_headers)
 
-    assert captured["headers"] == {
+    assert http_client.execute.call_args.kwargs["headers"] == {
         "X-Test": "value",
         "Authorization": "Bearer test-token",
     }
     assert original_headers == {"X-Test": "value"}
     assert client.ensure_auth_calls == 1
+
+
+@pytest.mark.parametrize(
+    ("json", "data", "expected"),
+    [
+        ({"hello": "world"}, None, {"hello": "world"}),
+        ({"ignored": True}, b"raw", b"raw"),
+    ],
+)
+def test_scaling_group_call_sends_pyqwest_content(
+    monkeypatch: pytest.MonkeyPatch,
+    json: dict[str, object],
+    data: bytes | None,
+    expected: object,
+) -> None:
+    client = _CapturingClient()
+    sg = ScalingGroup(image="nginx:alpine", name="content-test")
+    sg._client = cast(Any, client)
+    sg.deploy()
+    http_client = MagicMock()
+    monkeypatch.setattr(scaling_group_mod, "SYNC_HTTP_CLIENT", http_client)
+
+    sg.call("/echo", json=json, data=data)
+
+    assert http_client.execute.call_args.kwargs["content"] == expected
 
 
 def test_scaling_group_call_preserves_explicit_authorization(
@@ -123,17 +143,14 @@ def test_scaling_group_call_preserves_explicit_authorization(
     )
     sg._client = cast(Any, client)
     sg.deploy()
-    captured: dict[str, Any] = {}
-
-    def request(_method: str, _url: str, **kwargs: Any) -> object:
-        captured.update(kwargs)
-        return object()
-
-    monkeypatch.setattr(httpx, "request", request)
+    http_client = MagicMock()
+    monkeypatch.setattr(scaling_group_mod, "SYNC_HTTP_CLIENT", http_client)
 
     sg.call(headers={"authorization": "Bearer caller-token"})
 
-    assert captured["headers"] == {"authorization": "Bearer caller-token"}
+    assert http_client.execute.call_args.kwargs["headers"] == {
+        "authorization": "Bearer caller-token"
+    }
     assert client.ensure_auth_calls == 0
 
 
