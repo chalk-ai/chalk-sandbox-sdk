@@ -502,7 +502,7 @@ class EvaluationRun(Message[_EvaluationRunFields]):
             optional string error_message = 13;
             ```
         is_baseline:
-            Exactly one run per evaluation may be selected as its comparison baseline.
+            At most one run per environment may be selected as its comparison baseline.
 
             ```proto
             bool is_baseline = 14;
