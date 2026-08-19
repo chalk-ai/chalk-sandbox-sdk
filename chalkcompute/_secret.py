@@ -7,7 +7,10 @@ import warnings
 from dataclasses import dataclass, field
 from typing import Any
 
-_SECRETS_SVC = "chalk.server.v1.EnvironmentSecretsService"
+from protobuf import Oneof
+
+from chalkcompute._gen.chalk.server.v1 import environment_secrets_connect
+from chalkcompute._gen.chalk.server.v1 import environment_secrets_pb as secrets_pb
 
 
 @dataclass(frozen=True)
@@ -52,6 +55,14 @@ class SecretScope:
     def _to_proto_dict(self) -> dict[str, str]:
         """Serialize to the dict shape expected by the ``SecretScope`` protobuf."""
         return {"type": self._type, "ref": self._ref}
+
+    def _to_proto(self) -> secrets_pb.SecretScope:
+        return secrets_pb.SecretScope(
+            type=secrets_pb.SecretScopeType[
+                self._type.removeprefix("SECRET_SCOPE_TYPE_")
+            ],
+            ref=self._ref,
+        )
 
     def __repr__(self) -> str:
         return f"SecretScope(type={self._type!r}, ref={self._ref!r})"
@@ -413,9 +424,12 @@ def _upsert_secret(
     RuntimeError
         If the upsert RPC fails.
     """
-    body: dict[str, Any] = {"name": name, "config": {"literal": value}}
-    if scope is not None:
-        body["scope"] = scope._to_proto_dict()
-    resp = client.rpc(_SECRETS_SVC, "UpsertSecret", body)
-    if resp.status_code != 200:
-        raise RuntimeError(f"Failed to upsert secret {name!r}: {resp.text}")
+    stub = client.stub(environment_secrets_connect.EnvironmentSecretsServiceClientSync)
+    client.call(
+        stub.upsert_secret,
+        secrets_pb.UpsertSecretRequest(
+            name=name,
+            config=secrets_pb.SecretConfigValue(value=Oneof("literal", value)),
+            scope=None if scope is None else scope._to_proto(),
+        ),
+    )

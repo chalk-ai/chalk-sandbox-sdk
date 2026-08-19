@@ -23,14 +23,17 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Protocol
 
+from connectrpc.code import Code
+from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
+from protobuf.wkt import struct_pb
 
 from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
 from chalkcompute._connect import ConnectClient
 from chalkcompute._function import DeployedFunction, RemoteFunction
+from chalkcompute._gen.chalk.evaluation.v1 import service_connect as evaluation_connect
+from chalkcompute._gen.chalk.evaluation.v1 import service_pb as evaluation_pb
 from chalkcompute._tracing import _instrumented
-
-_EVALUATION_SERVICE = "chalk.evaluation.v1.EvaluationService"
 
 
 class EvaluationError(Exception):
@@ -224,6 +227,7 @@ class EvaluationRunStatus(str, Enum):
     UNSPECIFIED = "unspecified"
     PENDING = "pending"
     RUNNING = "running"
+    FINALIZING = "finalizing"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELED = "canceled"
@@ -468,24 +472,36 @@ class EvaluationClient:
             for index, scorer in enumerate(scorer_handles)
         ]
         metadata_dict = _metadata_dict(metadata)
-
-        request: dict[str, Any] = {
-            "name": name,
-            "taskFunctionVersionId": task_version_id,
-            "scorers": [
-                {"function": {"functionVersionId": version_id}}
-                for version_id in scorer_version_ids
-            ],
-        }
-        if dataset_ref.dataset_name is not None:
-            request["datasetName"] = dataset_ref.dataset_name
-        else:
-            request["datasetId"] = dataset_ref.dataset_id
-            request["datasetRevisionId"] = dataset_ref.revision_id
-        if metadata is not None:
-            request["metadata"] = metadata_dict
-        response = self._rpc("CreateEvaluation", request)
-        return _evaluation_from_response(response, self)
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
+        response = self._call(
+            stub.create_evaluation,
+            evaluation_pb.CreateEvaluationRequest(
+                name=name,
+                dataset_name=dataset_ref.dataset_name or "",
+                dataset_id=dataset_ref.dataset_id or "",
+                dataset_revision_id=dataset_ref.revision_id or "",
+                task_function_version_id=task_version_id,
+                scorers=[
+                    evaluation_pb.EvaluationScorerSpec(
+                        implementation=Oneof(
+                            "function",
+                            evaluation_pb.FunctionScorer(
+                                function_version_id=version_id
+                            ),
+                        )
+                    )
+                    for version_id in scorer_version_ids
+                ],
+                metadata=(
+                    None
+                    if metadata is None
+                    else struct_pb.Struct.from_json(json.dumps(metadata_dict))
+                ),
+            ),
+        )
+        if response.evaluation is None:
+            raise EvaluationError("CreateEvaluation returned no evaluation")
+        return _evaluation_from_proto(response.evaluation, self)
 
     @_instrumented("chalkcompute.evaluation.get")
     def get(self, evaluation_id: str) -> Evaluation:
@@ -493,12 +509,15 @@ class EvaluationClient:
         evaluation_id = evaluation_id.strip()
         if not evaluation_id:
             raise ValueError("evaluation_id is required")
-        response = self._rpc(
-            "GetEvaluation",
-            {"evaluationId": evaluation_id},
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
+        response = self._call(
+            stub.get_evaluation,
+            evaluation_pb.GetEvaluationRequest(evaluation_id=evaluation_id),
             not_found_subject=f"Evaluation not found: {evaluation_id}",
         )
-        return _evaluation_from_response(response, self)
+        if response.evaluation is None:
+            raise EvaluationError("GetEvaluation returned no evaluation")
+        return _evaluation_from_proto(response.evaluation, self)
 
     @_instrumented("chalkcompute.evaluation.list")
     def list(self, *, limit: int | None = None) -> Iterator[Evaluation]:
@@ -507,24 +526,23 @@ class EvaluationClient:
             raise ValueError("limit must be >= 0 or None")
         remaining = limit
         cursor: str | None = None
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
         while remaining is None or remaining > 0:
-            request: dict[str, Any] = {
-                "limit": min(remaining, 100) if remaining is not None else 100
-            }
-            if cursor is not None:
-                request["cursor"] = cursor
-            response = self._rpc("ListEvaluations", request)
-            raw_evaluations = response.get("evaluations", [])
-            if not isinstance(raw_evaluations, list):
-                raise EvaluationError("ListEvaluations returned invalid evaluations")
-            for raw in raw_evaluations:
-                evaluation = _evaluation_from_dict(raw, self)
+            response = self._call(
+                stub.list_evaluations,
+                evaluation_pb.ListEvaluationsRequest(
+                    limit=min(remaining, 100) if remaining is not None else 100,
+                    cursor=cursor,
+                ),
+            )
+            for raw in response.evaluations:
+                evaluation = _evaluation_from_proto(raw, self)
                 yield evaluation
                 if remaining is not None:
                     remaining -= 1
                     if remaining <= 0:
                         return
-            cursor = _optional_string(response.get("nextCursor"))
+            cursor = response.next_cursor or None
             if cursor is None:
                 return
 
@@ -539,11 +557,23 @@ class EvaluationClient:
         evaluation_id = evaluation_id.strip()
         if not evaluation_id:
             raise ValueError("evaluation_id is required")
-        request: dict[str, Any] = {"evaluationId": evaluation_id}
-        if metadata is not None:
-            request["metadata"] = _metadata_dict(metadata)
-        response = self._rpc("CreateEvaluationRun", request)
-        return _evaluation_run_from_response(response, self)
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
+        response = self._call(
+            stub.create_evaluation_run,
+            evaluation_pb.CreateEvaluationRunRequest(
+                evaluation_id=evaluation_id,
+                metadata=(
+                    None
+                    if metadata is None
+                    else struct_pb.Struct.from_json(
+                        json.dumps(_metadata_dict(metadata))
+                    )
+                ),
+            ),
+        )
+        if response.evaluation_run is None:
+            raise EvaluationError("CreateEvaluationRun returned no run")
+        return _evaluation_run_from_proto(response.evaluation_run, self)
 
     @_instrumented("chalkcompute.evaluation_run.get")
     def get_run(self, evaluation_run_id: str) -> EvaluationRun:
@@ -551,12 +581,15 @@ class EvaluationClient:
         evaluation_run_id = evaluation_run_id.strip()
         if not evaluation_run_id:
             raise ValueError("evaluation_run_id is required")
-        response = self._rpc(
-            "GetEvaluationRun",
-            {"evaluationRunId": evaluation_run_id},
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
+        response = self._call(
+            stub.get_evaluation_run,
+            evaluation_pb.GetEvaluationRunRequest(evaluation_run_id=evaluation_run_id),
             not_found_subject=f"Evaluation run not found: {evaluation_run_id}",
         )
-        return _evaluation_run_from_response(response, self)
+        if response.evaluation_run is None:
+            raise EvaluationError("GetEvaluationRun returned no run")
+        return _evaluation_run_from_proto(response.evaluation_run, self)
 
     @_instrumented("chalkcompute.evaluation_run.list")
     def list_runs(
@@ -572,56 +605,50 @@ class EvaluationClient:
             raise ValueError("limit must be >= 0 or None")
         remaining = limit
         cursor: str | None = None
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
         while remaining is None or remaining > 0:
-            request: dict[str, Any] = {
-                "limit": min(remaining, 100) if remaining is not None else 100
-            }
-            if evaluation_id is not None:
-                request["evaluationId"] = evaluation_id.strip()
-            if cursor is not None:
-                request["cursor"] = cursor
-            response = self._rpc("ListEvaluationRuns", request)
-            raw_runs = response.get("evaluationRuns", [])
-            if not isinstance(raw_runs, list):
-                raise EvaluationError(
-                    "ListEvaluationRuns returned invalid evaluation runs"
-                )
-            for raw in raw_runs:
-                run = _evaluation_run_from_dict(raw, self)
+            response = self._call(
+                stub.list_evaluation_runs,
+                evaluation_pb.ListEvaluationRunsRequest(
+                    evaluation_id=(
+                        None if evaluation_id is None else evaluation_id.strip()
+                    ),
+                    limit=min(remaining, 100) if remaining is not None else 100,
+                    cursor=cursor,
+                ),
+            )
+            for raw in response.evaluation_runs:
+                run = _evaluation_run_from_proto(raw, self)
                 yield run
                 if remaining is not None:
                     remaining -= 1
                     if remaining <= 0:
                         return
-            cursor = _optional_string(response.get("nextCursor"))
+            cursor = response.next_cursor or None
             if cursor is None:
                 return
 
-    def _rpc(
+    def _call(
         self,
-        method: str,
-        request: dict[str, Any],
+        method: Any,
+        request: Any,
         *,
         not_found_subject: str | None = None,
-    ) -> dict[str, Any]:
-        response = self._connect.rpc(_EVALUATION_SERVICE, method, request)
-        if response.status_code != 200:
-            message = _response_error_message(response)
-            if response.status_code == 404 and not_found_subject is not None:
-                if message:
-                    not_found_subject = f"{not_found_subject}: {message}"
+    ) -> Any:
+        try:
+            return self._connect.call(method, request)
+        except ConnectRpcError as exc:
+            status_code = _http_status_for_code(exc.code)
+            if exc.code == Code.NOT_FOUND and not_found_subject is not None:
+                if str(exc):
+                    not_found_subject = f"{not_found_subject}: {exc}"
                 raise EvaluationNotFoundError(
-                    not_found_subject, status_code=response.status_code
-                )
-            detail = f": {message}" if message else ""
+                    not_found_subject, status_code=status_code
+                ) from exc
             raise EvaluationError(
-                f"{method} failed with HTTP {response.status_code}{detail}",
-                status_code=response.status_code,
-            )
-        payload = response.json()
-        if not isinstance(payload, dict):
-            raise EvaluationError(f"{method} returned an invalid response")
-        return payload
+                f"{getattr(method, '__name__', 'evaluation RPC')} failed: {exc}",
+                status_code=status_code,
+            ) from exc
 
 
 def _resolve_dataset_revision(
@@ -675,152 +702,92 @@ def _metadata_dict(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
     return value
 
 
-def _evaluation_from_response(
-    response: Mapping[str, Any], client: EvaluationClient
+def _evaluation_from_proto(
+    raw: evaluation_pb.Evaluation, client: EvaluationClient
 ) -> Evaluation:
-    raw = response.get("evaluation")
-    if not isinstance(raw, Mapping):
-        raise EvaluationError("evaluation response did not include an evaluation")
-    return _evaluation_from_dict(raw, client)
-
-
-def _evaluation_from_dict(
-    raw: Mapping[str, Any], client: EvaluationClient
-) -> Evaluation:
-    scorer_values = raw.get("scorers", [])
-    if not isinstance(scorer_values, list):
-        raise EvaluationError("evaluation response contained invalid scorers")
-    scorers = tuple(_scorer_from_dict(value) for value in scorer_values)
+    scorers = tuple(_scorer_from_proto(value) for value in raw.scorers)
     return Evaluation(
-        id=_required_string(raw, "id"),
-        name=_required_string(raw, "name"),
+        id=raw.id,
+        name=raw.name,
         dataset=DatasetRevisionRef(
-            dataset_id=_required_string(raw, "datasetId"),
-            revision_id=_required_string(raw, "datasetRevisionId"),
+            dataset_id=raw.dataset_id,
+            revision_id=raw.dataset_revision_id,
         ),
-        task_function_version_id=_required_string(raw, "taskFunctionVersionId"),
+        task_function_version_id=raw.task_function_version_id,
         scorers=scorers,
-        metadata=_mapping_dict(raw.get("metadata")),
-        team_id=_optional_string(raw.get("teamId")),
-        environment_id=_optional_string(raw.get("environmentId")),
-        created_by=_optional_string(raw.get("createdBy")),
-        created_at=_parse_timestamp(raw.get("createdAt")),
+        metadata=_struct_dict(raw.metadata),
+        team_id=raw.team_id or None,
+        environment_id=raw.environment_id or None,
+        created_by=raw.created_by or None,
+        created_at=None if raw.created_at is None else raw.created_at.to_datetime(),
         _client=client,
     )
 
 
-def _scorer_from_dict(raw: object) -> EvaluationScorer:
-    if not isinstance(raw, Mapping):
-        raise EvaluationError("evaluation response contained an invalid scorer")
-    spec = raw.get("spec")
-    if not isinstance(spec, Mapping):
-        spec = {}
-    function = spec.get("function")
-    builtin = spec.get("builtin")
+def _scorer_from_proto(raw: evaluation_pb.EvaluationScorer) -> EvaluationScorer:
+    implementation = None if raw.spec is None else raw.spec.implementation
     return EvaluationScorer(
-        id=_required_string(raw, "id"),
+        id=raw.id,
         function_version_id=(
-            _optional_string(function.get("functionVersionId"))
-            if isinstance(function, Mapping)
+            implementation.value.function_version_id or None
+            if implementation is not None and implementation.field == "function"
             else None
         ),
         builtin_id=(
-            _optional_string(builtin.get("id"))
-            if isinstance(builtin, Mapping)
+            implementation.value.id or None
+            if implementation is not None and implementation.field == "builtin"
             else None
         ),
     )
 
 
-def _evaluation_run_from_response(
-    response: Mapping[str, Any], client: EvaluationClient
-) -> EvaluationRun:
-    raw = response.get("evaluationRun")
-    if not isinstance(raw, Mapping):
-        raise EvaluationError(
-            "evaluation run response did not include an evaluation run"
-        )
-    return _evaluation_run_from_dict(raw, client)
-
-
-def _evaluation_run_from_dict(
-    raw: Mapping[str, Any], client: EvaluationClient
+def _evaluation_run_from_proto(
+    raw: evaluation_pb.EvaluationRun, client: EvaluationClient
 ) -> EvaluationRun:
     return EvaluationRun(
-        id=_required_string(raw, "id"),
-        evaluation_id=_required_string(raw, "evaluationId"),
-        status=_parse_run_status(raw.get("status")),
-        metadata=_mapping_dict(raw.get("metadata")),
-        team_id=_optional_string(raw.get("teamId")),
-        environment_id=_optional_string(raw.get("environmentId")),
-        created_by=_optional_string(raw.get("createdBy")),
-        created_at=_parse_timestamp(raw.get("createdAt")),
-        started_at=_parse_timestamp(raw.get("startedAt")),
-        completed_at=_parse_timestamp(raw.get("completedAt")),
-        result_dataset_id=_optional_string(raw.get("resultDatasetId")),
-        result_dataset_revision_id=_optional_string(raw.get("resultDatasetRevisionId")),
-        error_message=_optional_string(raw.get("errorMessage")),
+        id=raw.id,
+        evaluation_id=raw.evaluation_id,
+        status=_parse_run_status(raw.status),
+        metadata=_struct_dict(raw.metadata),
+        team_id=raw.team_id or None,
+        environment_id=raw.environment_id or None,
+        created_by=raw.created_by or None,
+        created_at=None if raw.created_at is None else raw.created_at.to_datetime(),
+        started_at=None if raw.started_at is None else raw.started_at.to_datetime(),
+        completed_at=(
+            None if raw.completed_at is None else raw.completed_at.to_datetime()
+        ),
+        result_dataset_id=raw.result_dataset_id or None,
+        result_dataset_revision_id=raw.result_dataset_revision_id or None,
+        error_message=raw.error_message or None,
         _client=client,
     )
 
 
-def _parse_run_status(value: object) -> EvaluationRunStatus:
-    if isinstance(value, int):
-        return {
-            1: EvaluationRunStatus.PENDING,
-            2: EvaluationRunStatus.RUNNING,
-            3: EvaluationRunStatus.SUCCEEDED,
-            4: EvaluationRunStatus.FAILED,
-            5: EvaluationRunStatus.CANCELED,
-        }.get(value, EvaluationRunStatus.UNSPECIFIED)
-    if isinstance(value, str):
-        normalized = value.removeprefix("EVALUATION_RUN_STATUS_").lower()
-        try:
-            return EvaluationRunStatus(normalized)
-        except ValueError:
-            pass
-    return EvaluationRunStatus.UNSPECIFIED
-
-
-def _parse_timestamp(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value:
-        return None
+def _parse_run_status(value: evaluation_pb.EvaluationRunStatus) -> EvaluationRunStatus:
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return EvaluationRunStatus(value.name.lower())
     except ValueError as exc:
-        raise EvaluationError(
-            f"invalid timestamp in evaluation response: {value!r}"
-        ) from exc
+        raise EvaluationError(f"unknown evaluation run status: {value}") from exc
 
 
-def _required_string(value: Mapping[str, Any], key: str) -> str:
-    result = _optional_string(value.get(key))
-    if result is None:
-        raise EvaluationError(f"evaluation response is missing {key}")
-    return result
-
-
-def _optional_string(value: object) -> str | None:
-    if not isinstance(value, str) or not value:
-        return None
-    return value
-
-
-def _mapping_dict(value: object) -> dict[str, Any]:
+def _struct_dict(value: struct_pb.Struct | None) -> dict[str, Any]:
     if value is None:
         return {}
-    if not isinstance(value, Mapping):
+    parsed = json.loads(value.to_json())
+    if not isinstance(parsed, dict):
         raise EvaluationError("evaluation response contained invalid metadata")
-    return dict(value)
+    return parsed
 
 
-def _response_error_message(response: Any) -> str:
-    try:
-        payload = response.json()
-    except Exception:
-        return str(getattr(response, "text", "")).strip()
-    if isinstance(payload, Mapping):
-        message = payload.get("message")
-        if isinstance(message, str) and message:
-            return message
-    return str(getattr(response, "text", "")).strip()
+def _http_status_for_code(code: Code) -> int | None:
+    return {
+        Code.INVALID_ARGUMENT: 400,
+        Code.UNAUTHENTICATED: 401,
+        Code.PERMISSION_DENIED: 403,
+        Code.NOT_FOUND: 404,
+        Code.ALREADY_EXISTS: 409,
+        Code.RESOURCE_EXHAUSTED: 429,
+        Code.INTERNAL: 500,
+        Code.UNAVAILABLE: 503,
+    }.get(code)

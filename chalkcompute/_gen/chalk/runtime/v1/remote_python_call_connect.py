@@ -24,46 +24,6 @@ if TYPE_CHECKING:
     from connectrpc.interceptor import InterceptorSync
     from connectrpc.request import Headers, RequestContext
 
-
-class RemoteCallServiceSync(Protocol):
-    def call_function(self, request: Iterator[CallFunctionRequest], ctx: RequestContext[CallFunctionRequest, CallFunctionResponse]) -> Iterator[CallFunctionResponse]:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-
-class RemoteCallServiceWSGIApplication(ConnectWSGIApplication):
-    def __init__(
-        self,
-        service: RemoteCallServiceSync,
-        interceptors: Iterable[InterceptorSync] = (),
-        read_max_bytes: int | None = None,
-        compressions: Iterable[Compression] | None = None,
-        codecs: Iterable[Codec] | None = None,
-    ) -> None:
-        super().__init__(
-            endpoints={
-                "/chalk.runtime.v1.RemoteCallService/CallFunction": EndpointSync.bidi_stream(
-                    method=MethodInfo(
-                        name="CallFunction",
-                        service_name="chalk.runtime.v1.RemoteCallService",
-                        input=CallFunctionRequest,
-                        output=CallFunctionResponse,
-                        idempotency_level=IdempotencyLevel.UNKNOWN,
-                    ),
-                    function=service.call_function,
-                ),
-            },
-            interceptors=interceptors,
-            read_max_bytes=read_max_bytes,
-            compressions=compressions,
-            codecs=codecs,
-        )
-
-    @property
-    def path(self) -> str:
-        """Returns the URL path to mount the application to when serving multiple applications."""
-        return "/chalk.runtime.v1.RemoteCallService"
-
-
 class RemoteCallServiceClientSync(ConnectClientSync):
     def call_function(
         self,
@@ -84,70 +44,6 @@ class RemoteCallServiceClientSync(ConnectClientSync):
             headers=headers,
             timeout_ms=timeout_ms,
         )
-class AsyncRemoteCallServiceSync(Protocol):
-    def enqueue_remote_call(self, request: EnqueueRemoteCallRequest, ctx: RequestContext[EnqueueRemoteCallRequest, EnqueueRemoteCallResponse]) -> EnqueueRemoteCallResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-    def poll_remote_call(self, request: PollRemoteCallRequest, ctx: RequestContext[PollRemoteCallRequest, PollRemoteCallResponse]) -> PollRemoteCallResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-    def purge_queue(self, request: PurgeQueueRequest, ctx: RequestContext[PurgeQueueRequest, PurgeQueueResponse]) -> PurgeQueueResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-
-class AsyncRemoteCallServiceWSGIApplication(ConnectWSGIApplication):
-    def __init__(
-        self,
-        service: AsyncRemoteCallServiceSync,
-        interceptors: Iterable[InterceptorSync] = (),
-        read_max_bytes: int | None = None,
-        compressions: Iterable[Compression] | None = None,
-        codecs: Iterable[Codec] | None = None,
-    ) -> None:
-        super().__init__(
-            endpoints={
-                "/chalk.runtime.v1.AsyncRemoteCallService/EnqueueRemoteCall": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="EnqueueRemoteCall",
-                        service_name="chalk.runtime.v1.AsyncRemoteCallService",
-                        input=EnqueueRemoteCallRequest,
-                        output=EnqueueRemoteCallResponse,
-                        idempotency_level=IdempotencyLevel.UNKNOWN,
-                    ),
-                    function=service.enqueue_remote_call,
-                ),
-                "/chalk.runtime.v1.AsyncRemoteCallService/PollRemoteCall": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="PollRemoteCall",
-                        service_name="chalk.runtime.v1.AsyncRemoteCallService",
-                        input=PollRemoteCallRequest,
-                        output=PollRemoteCallResponse,
-                        idempotency_level=IdempotencyLevel.UNKNOWN,
-                    ),
-                    function=service.poll_remote_call,
-                ),
-                "/chalk.runtime.v1.AsyncRemoteCallService/PurgeQueue": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="PurgeQueue",
-                        service_name="chalk.runtime.v1.AsyncRemoteCallService",
-                        input=PurgeQueueRequest,
-                        output=PurgeQueueResponse,
-                        idempotency_level=IdempotencyLevel.UNKNOWN,
-                    ),
-                    function=service.purge_queue,
-                ),
-            },
-            interceptors=interceptors,
-            read_max_bytes=read_max_bytes,
-            compressions=compressions,
-            codecs=codecs,
-        )
-
-    @property
-    def path(self) -> str:
-        """Returns the URL path to mount the application to when serving multiple applications."""
-        return "/chalk.runtime.v1.AsyncRemoteCallService"
-
 
 class AsyncRemoteCallServiceClientSync(ConnectClientSync):
     def enqueue_remote_call(
@@ -207,70 +103,6 @@ class AsyncRemoteCallServiceClientSync(ConnectClientSync):
             headers=headers,
             timeout_ms=timeout_ms,
         )
-class FunctionQueueMetaServiceSync(Protocol):
-    def get_recent_calls(self, request: GetRecentCallsRequest, ctx: RequestContext[GetRecentCallsRequest, GetRecentCallsResponse]) -> GetRecentCallsResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-    def get_call_results(self, request: GetCallResultsRequest, ctx: RequestContext[GetCallResultsRequest, GetCallResultsResponse]) -> GetCallResultsResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-    def get_call_count(self, request: GetCallCountRequest, ctx: RequestContext[GetCallCountRequest, GetCallCountResponse]) -> GetCallCountResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-
-class FunctionQueueMetaServiceWSGIApplication(ConnectWSGIApplication):
-    def __init__(
-        self,
-        service: FunctionQueueMetaServiceSync,
-        interceptors: Iterable[InterceptorSync] = (),
-        read_max_bytes: int | None = None,
-        compressions: Iterable[Compression] | None = None,
-        codecs: Iterable[Codec] | None = None,
-    ) -> None:
-        super().__init__(
-            endpoints={
-                "/chalk.runtime.v1.FunctionQueueMetaService/GetRecentCalls": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="GetRecentCalls",
-                        service_name="chalk.runtime.v1.FunctionQueueMetaService",
-                        input=GetRecentCallsRequest,
-                        output=GetRecentCallsResponse,
-                        idempotency_level=IdempotencyLevel.UNKNOWN,
-                    ),
-                    function=service.get_recent_calls,
-                ),
-                "/chalk.runtime.v1.FunctionQueueMetaService/GetCallResults": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="GetCallResults",
-                        service_name="chalk.runtime.v1.FunctionQueueMetaService",
-                        input=GetCallResultsRequest,
-                        output=GetCallResultsResponse,
-                        idempotency_level=IdempotencyLevel.UNKNOWN,
-                    ),
-                    function=service.get_call_results,
-                ),
-                "/chalk.runtime.v1.FunctionQueueMetaService/GetCallCount": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="GetCallCount",
-                        service_name="chalk.runtime.v1.FunctionQueueMetaService",
-                        input=GetCallCountRequest,
-                        output=GetCallCountResponse,
-                        idempotency_level=IdempotencyLevel.UNKNOWN,
-                    ),
-                    function=service.get_call_count,
-                ),
-            },
-            interceptors=interceptors,
-            read_max_bytes=read_max_bytes,
-            compressions=compressions,
-            codecs=codecs,
-        )
-
-    @property
-    def path(self) -> str:
-        """Returns the URL path to mount the application to when serving multiple applications."""
-        return "/chalk.runtime.v1.FunctionQueueMetaService"
-
 
 class FunctionQueueMetaServiceClientSync(ConnectClientSync):
     def get_recent_calls(

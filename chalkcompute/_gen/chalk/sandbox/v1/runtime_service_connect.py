@@ -24,46 +24,6 @@ if TYPE_CHECKING:
     from connectrpc.interceptor import InterceptorSync
     from connectrpc.request import Headers, RequestContext
 
-
-class SandboxRuntimeServiceSync(Protocol):
-    def execute_python(self, request: Iterator[ExecutePythonRequest], ctx: RequestContext[ExecutePythonRequest, ExecutePythonResponse]) -> Iterator[ExecutePythonResponse]:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-
-class SandboxRuntimeServiceWSGIApplication(ConnectWSGIApplication):
-    def __init__(
-        self,
-        service: SandboxRuntimeServiceSync,
-        interceptors: Iterable[InterceptorSync] = (),
-        read_max_bytes: int | None = None,
-        compressions: Iterable[Compression] | None = None,
-        codecs: Iterable[Codec] | None = None,
-    ) -> None:
-        super().__init__(
-            endpoints={
-                "/chalk.sandbox.v1.SandboxRuntimeService/ExecutePython": EndpointSync.bidi_stream(
-                    method=MethodInfo(
-                        name="ExecutePython",
-                        service_name="chalk.sandbox.v1.SandboxRuntimeService",
-                        input=ExecutePythonRequest,
-                        output=ExecutePythonResponse,
-                        idempotency_level=IdempotencyLevel.UNKNOWN,
-                    ),
-                    function=service.execute_python,
-                ),
-            },
-            interceptors=interceptors,
-            read_max_bytes=read_max_bytes,
-            compressions=compressions,
-            codecs=codecs,
-        )
-
-    @property
-    def path(self) -> str:
-        """Returns the URL path to mount the application to when serving multiple applications."""
-        return "/chalk.sandbox.v1.SandboxRuntimeService"
-
-
 class SandboxRuntimeServiceClientSync(ConnectClientSync):
     def execute_python(
         self,

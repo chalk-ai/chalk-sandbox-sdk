@@ -19,6 +19,7 @@ from chalkcompute._evaluation import (
 )
 from chalkcompute._arrow_serde import arrow_encoder_for_annotation
 from chalkcompute._function import FunctionVersionInfo, RemoteFunction, _build_schemas
+from tests._typed_connect import TypedConnectFakeMixin
 
 
 class _FakeResponse:
@@ -37,7 +38,7 @@ class _FakeResponse:
         return self._payload
 
 
-class _FakeConnectClient:
+class _FakeConnectClient(TypedConnectFakeMixin):
     def __init__(self, responses: Mapping[str, list[_FakeResponse]]) -> None:
         self._responses = {method: list(values) for method, values in responses.items()}
         self.calls: list[tuple[str, str, dict[str, Any]]] = []

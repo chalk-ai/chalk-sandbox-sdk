@@ -15,7 +15,6 @@ from __future__ import annotations
 import builtins
 import datetime
 import importlib
-import json
 import logging
 import os
 import uuid
@@ -1158,13 +1157,13 @@ class VolumeClient:
     @traced("chalkcompute.volume.stage_lazy_files")
     def stage_lazy_files(
         self, image: Image, *, volume_name: str
-    ) -> tuple[builtins.list[VolumeMount], builtins.list[dict[str, Any]]]:
+    ) -> tuple[builtins.list[VolumeMount], builtins.list[pb_v2.CommitIntent]]:
         """Stage an image's lazy local files into source-code volumes.
 
         Reuses (or creates, ``source_code``-kind) one stable volume
         per destination directory — named from ``volume_name`` — and uploads
         the file bytes, but does **not** commit. Each staged upload is
-        returned as a ``chalk.volume.v2.CommitIntent`` JSON dict for
+        returned as a typed ``chalk.volume.v2.CommitIntent`` for
         ``CreateExternalFunctionVersionRequest.volume_commits``: the server
         commits the intent and stamps the resulting version_id onto the spec
         volume with the matching name, so every replica is pinned to that
@@ -1187,7 +1186,7 @@ class VolumeClient:
 
         Returns
         -------
-        tuple of (list of VolumeMount, list of dict)
+        tuple of (list of VolumeMount, list of CommitIntent)
             One mount and one commit-intent dict per volume.
         """
         from chalkcompute._naming import sanitize_dns_label
@@ -1198,7 +1197,7 @@ class VolumeClient:
             raise VolumeError(str(e)) from e
 
         volumes: builtins.list[VolumeMount] = []
-        intents: builtins.list[dict[str, Any]] = []
+        intents: builtins.list[pb_v2.CommitIntent] = []
         for dest_dir, files in dir_to_files.items():
             name = sanitize_dns_label(f"{volume_name}-{dest_dir}")
             existed = self.exists(name)
@@ -1225,7 +1224,7 @@ class VolumeClient:
                 intent.deltas.value.removes.append(
                     pb_v2.PathRemoveDelta(path="/", recursive=True)
                 )
-            intents.append(json.loads(intent.to_json()))
+            intents.append(intent)
             volumes.append(VolumeMount(name=vol.name, mount_path=dest_dir))
         return volumes, intents
 

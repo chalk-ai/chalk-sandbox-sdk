@@ -11,6 +11,7 @@ from chalkcompute._model import (
     ModelNotFoundError,
     bind_model,
 )
+from tests._typed_connect import TypedConnectFakeMixin
 
 
 class _FakeResponse:
@@ -25,7 +26,7 @@ class _FakeResponse:
         return self._payload
 
 
-class _FakeClient:
+class _FakeClient(TypedConnectFakeMixin):
     """Stand-in for chalkcompute._connect.ConnectClient.
 
     Stores a queue of canned RPC responses keyed by ``(service, method)``.
@@ -140,7 +141,7 @@ def test_bind_model_falls_back_to_model_registry(_no_service_auth):
         "ListModelScalingGroups",
     ]
     list_call = client.calls[2][2]
-    assert list_call["modelVersion"]["identifier"] == {"version": 7}
+    assert list_call["modelVersion"]["identifier"] == {"version": "7"}
 
 
 def test_bind_model_is_idempotent(_no_service_auth):
@@ -168,7 +169,7 @@ def test_explicit_version_via_model_fallback(_no_service_auth):
 
     assert [c[1] for c in client.calls] == ["GetScalingGroup", "ListModelScalingGroups"]
     list_call = client.calls[1][2]
-    assert list_call["modelVersion"]["identifier"] == {"version": 3}
+    assert list_call["modelVersion"]["identifier"] == {"version": "3"}
 
 
 def test_explicit_version_with_sg_name_raises(_no_service_auth):

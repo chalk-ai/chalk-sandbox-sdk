@@ -5,6 +5,7 @@ from typing import Any, cast
 import pytest
 
 from chalkcompute import ScalingGroup
+from tests._typed_connect import TypedConnectFakeMixin
 
 
 class _Response:
@@ -23,7 +24,7 @@ class _Response:
         }
 
 
-class _CapturingClient:
+class _CapturingClient(TypedConnectFakeMixin):
     def __init__(self) -> None:
         self.requests: list[dict[str, Any]] = []
 

@@ -7,6 +7,7 @@ import chalkcompute._cls as cls_mod
 from chalkcompute._cls import RemoteClass, method
 from chalkcompute._function import RemoteFunction
 from chalkcompute._scaling_group import ScalingGroup
+from tests._typed_connect import TypedConnectFakeMixin
 
 
 class _Response:
@@ -20,7 +21,7 @@ class _Response:
         return self._data
 
 
-class _RemoteFunctionReadinessClient:
+class _RemoteFunctionReadinessClient(TypedConnectFakeMixin):
     def __init__(self) -> None:
         self.methods: list[str] = []
         self._env_id: str | None = None
@@ -52,7 +53,6 @@ class _RemoteFunctionReadinessClient:
                     "scalingGroup": {
                         "status": "Running",
                         "webUrl": "http://127.0.0.1",
-                        "port": 6666,
                         "readyReplicas": 0,
                         "availableReplicas": 0,
                     },
@@ -100,7 +100,6 @@ class _RemoteFunctionScaledToZeroClient(_RemoteFunctionReadinessClient):
                     "scalingGroup": {
                         "status": "Pending",
                         "webUrl": "http://127.0.0.1",
-                        "port": 6666,
                     },
                 }
             )
@@ -118,7 +117,7 @@ class _RemoteFunctionScaledToZeroClient(_RemoteFunctionReadinessClient):
         raise AssertionError(f"unexpected method: {method}")
 
 
-class _ScalingGroupReadinessClient:
+class _ScalingGroupReadinessClient(TypedConnectFakeMixin):
     def __init__(self) -> None:
         self.methods: list[str] = []
         self.polls = [
@@ -409,7 +408,12 @@ def test_remote_function_deploy_forwards_volume_commits(monkeypatch) -> None:
     fn = RemoteFunction(add, name="fn-commits")
     fn._client = client  # type: ignore[assignment]
 
-    intent = {"volume": {"name": "fn-files-abc"}, "author": "chalk:env:agent:a"}
+    from chalkcompute._gen.chalk.volume.v2 import volume_pb
+
+    intent = volume_pb.CommitIntent(
+        volume=volume_pb.VolumeRef(name="fn-files-abc"),
+        author="chalk:env:agent:a",
+    )
     mount = VolumeMount(name="fn-files-abc", mount_path="/app")
     monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
     monkeypatch.setattr(
@@ -422,6 +426,8 @@ def test_remote_function_deploy_forwards_volume_commits(monkeypatch) -> None:
     fn.deploy(poll_interval=0, ready_timeout=10)
 
     request = client.requests["CreateExternalFunctionVersion"]
-    assert request["volumeCommits"] == [intent]
+    assert request["volumeCommits"] == [
+        {"volume": {"name": "fn-files-abc"}, "author": "chalk:env:agent:a"}
+    ]
     mounts = request["spec"]["containerSpec"]["volumes"]
     assert any(m["name"] == "fn-files-abc" for m in mounts)

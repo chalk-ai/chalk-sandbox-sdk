@@ -25,6 +25,7 @@ from chalkcompute._remote_function_tracing import (
 from chalkcompute._retry import RetryPolicy
 from chalkcompute._scaling_group import ScalingGroup
 from chalkcompute._image import Image
+from tests._typed_connect import TypedConnectFakeMixin
 
 
 class _FakeResponse:
@@ -38,7 +39,7 @@ class _FakeResponse:
         return self._data
 
 
-class _CapturingClient:
+class _CapturingClient(TypedConnectFakeMixin):
     def __init__(self) -> None:
         self.requests: list[dict[str, Any]] = []
         self._env_id: str | None = None
@@ -68,7 +69,6 @@ class _CapturingClient:
                 "scalingGroup": {
                     "status": "Running",
                     "webUrl": "http://127.0.0.1",
-                    "port": 6666,
                     "readyReplicas": 1,
                     "availableReplicas": 1,
                 },

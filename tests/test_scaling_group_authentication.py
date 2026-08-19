@@ -7,6 +7,7 @@ import pytest
 
 import chalkcompute._scaling_group as scaling_group_mod
 from chalkcompute import ScalingGroup
+from tests._typed_connect import TypedConnectFakeMixin
 
 
 class _Response:
@@ -20,7 +21,7 @@ class _Response:
         return {"scalingGroup": self._scaling_group}
 
 
-class _CapturingClient:
+class _CapturingClient(TypedConnectFakeMixin):
     def __init__(self, *, authentication: str | None = None) -> None:
         self.requests: list[dict[str, Any]] = []
         self._access_token = "test-token"

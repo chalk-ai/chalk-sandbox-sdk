@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 from chalkcompute._secret import Secret, SecretScope, resolve_lazy_secrets
+from tests._typed_connect import TypedConnectFakeMixin
 
 
 class _Response:
@@ -12,8 +13,11 @@ class _Response:
         self.status_code = status_code
         self.text = text
 
+    def json(self) -> dict[str, Any]:
+        return {}
 
-class _Client:
+
+class _Client(TypedConnectFakeMixin):
     """Fake ConnectClient. `statuses[i]` is the status code for the i-th
     call; calls past the end of the list default to 200."""
 

@@ -13,6 +13,7 @@ from chalkcompute._function import (
     _run_in_worker_thread,
 )
 from chalkcompute._remote_call_client import RemoteCallPollResult, ServiceAuthContext
+from tests._typed_connect import TypedConnectFakeMixin
 
 REQUEST_TIMESTAMP_HEADER = "x-chalk-request-timestamp"
 
@@ -32,7 +33,7 @@ def _read_input(payload: bytes) -> dict[str, list[object]]:
     return batches[0].to_pydict()
 
 
-class FakeConnectClient:
+class FakeConnectClient(TypedConnectFakeMixin):
     _access_token = "access-token"
     _env_id = "env-id"
 
@@ -67,6 +68,8 @@ class RpcConnectClient(FakeConnectClient):
 
     def rpc(self, *args, **kwargs):
         self.rpc_calls.append((args, kwargs))
+        if len(args) > 1 and args[1] == "DeleteExternalFunctionVersion":
+            return _EmptyRpcResponse()
         return _RpcResponse()
 
 
@@ -85,6 +88,14 @@ class _RpcResponse:
                 "featherStream": base64.b64encode(b"response-ipc").decode("ascii")
             }
         }
+
+
+class _EmptyRpcResponse:
+    status_code = 200
+    text = ""
+
+    def json(self):
+        return {}
 
 
 class FakeRemoteCallClient:

@@ -16,18 +16,8 @@ from chalkcompute._connect import (
     grpc_engine_target_from_url,
     grpc_target_from_url,
 )
+from chalkcompute._gen.chalk.server.v1 import auth_pb
 from chalkcompute._remote_call_client import ServiceAuthContext
-
-
-class _TokenResponse:
-    def __init__(self, payload: dict[str, Any]) -> None:
-        self._payload = payload
-
-    def raise_for_status(self) -> None:
-        pass
-
-    def json(self) -> dict[str, Any]:
-        return self._payload
 
 
 class _RPCResponse:
@@ -44,6 +34,58 @@ class _WorkloadIdentityTokenResponse:
 
     def json(self) -> dict[str, Any]:
         return self._payload
+
+
+def _install_auth_client(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict[str, Any],
+    captured: dict[str, Any],
+) -> None:
+    class _AuthClient:
+        def __init__(self, address: str, **kwargs: Any) -> None:
+            captured["address"] = address
+            captured["init_kwargs"] = kwargs
+
+        def get_internal_working_token(
+            self, request: Any, **kwargs: Any
+        ) -> auth_pb.GetInternalWorkingTokenResponse:
+            captured["request"] = request
+            captured["call_kwargs"] = kwargs
+            return auth_pb.GetInternalWorkingTokenResponse.from_json(
+                json.dumps(payload)
+            )
+
+        def close(self) -> None:
+            captured["closed"] = True
+
+    monkeypatch.setattr(
+        "chalkcompute._connect.auth_connect.AuthServiceClientSync", _AuthClient
+    )
+
+
+def _install_token_client(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict[str, Any],
+    captured: dict[str, Any] | None = None,
+) -> None:
+    captured = {} if captured is None else captured
+
+    class _AuthClient:
+        def __init__(self, address: str, **kwargs: Any) -> None:
+            captured["address"] = address
+            captured["init_kwargs"] = kwargs
+
+        def get_token(self, request: Any, **kwargs: Any) -> auth_pb.GetTokenResponse:
+            captured["request"] = request
+            captured["call_kwargs"] = kwargs
+            return auth_pb.GetTokenResponse.from_json(json.dumps(payload))
+
+        def close(self) -> None:
+            captured["closed"] = True
+
+    monkeypatch.setattr(
+        "chalkcompute._connect.auth_connect.AuthServiceClientSync", _AuthClient
+    )
 
 
 class _SpanContext:
@@ -185,16 +227,14 @@ class TestConnectClientGrpcEngineTarget:
         monkeypatch.setenv("CHALK_CLIENT_ID", "client-id")
         monkeypatch.setenv("CHALK_CLIENT_SECRET", "client-secret")
         monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-1")
-        monkeypatch.setattr(
-            "httpx.post",
-            lambda *args, **kwargs: _TokenResponse(
-                {
-                    "access_token": "token",
-                    "primary_environment": "env-1",
-                    "grpc_engines": {"env-1": "engine.staging.chalk.dev:443"},
-                    "environment_id_to_name": {"env-1": "Staging"},
-                }
-            ),
+        _install_token_client(
+            monkeypatch,
+            {
+                "accessToken": "token",
+                "primaryEnvironment": "env-1",
+                "grpcEngines": {"env-1": "engine.staging.chalk.dev:443"},
+                "environmentIdToName": {"env-1": "Staging"},
+            },
         )
 
         target, use_tls = ConnectClient().grpc_engine_target()
@@ -207,16 +247,14 @@ class TestConnectClientGrpcEngineTarget:
         monkeypatch.setenv("CHALK_CLIENT_ID", "client-id")
         monkeypatch.setenv("CHALK_CLIENT_SECRET", "client-secret")
         monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "staging")
-        monkeypatch.setattr(
-            "httpx.post",
-            lambda *args, **kwargs: _TokenResponse(
-                {
-                    "access_token": "token",
-                    "primary_environment": "env-1",
-                    "grpc_engines": {"env-1": "localhost:50051"},
-                    "environment_id_to_name": {"env-1": "Staging"},
-                }
-            ),
+        _install_token_client(
+            monkeypatch,
+            {
+                "accessToken": "token",
+                "primaryEnvironment": "env-1",
+                "grpcEngines": {"env-1": "localhost:50051"},
+                "environmentIdToName": {"env-1": "Staging"},
+            },
         )
 
         target, use_tls = ConnectClient().grpc_engine_target()
@@ -243,29 +281,27 @@ tokens:
         )
         posted: dict[str, Any] = {}
 
-        def fake_post(*args, **kwargs):
-            posted["args"] = args
-            posted["kwargs"] = kwargs
-            return _TokenResponse(
-                {
-                    "access_token": "token",
-                    "primary_environment": "env-primary",
-                    "grpc_engines": {"env-1": "engine.staging.chalk.dev:443"},
-                    "environment_id_to_name": {"env-1": "Staging"},
-                }
-            )
-
-        monkeypatch.setattr("httpx.post", fake_post)
+        _install_token_client(
+            monkeypatch,
+            {
+                "accessToken": "token",
+                "primaryEnvironment": "env-primary",
+                "grpcEngines": {"env-1": "engine.staging.chalk.dev:443"},
+                "environmentIdToName": {"env-1": "Staging"},
+            },
+            posted,
+        )
 
         client = ConnectClient()
         client._ensure_auth()
 
-        assert posted["args"] == ("https://api.config.chalk.ai/v1/oauth/token",)
-        assert posted["kwargs"]["json"] == {
-            "client_id": "config-client",
-            "client_secret": "config-secret",
-            "grant_type": "client_credentials",
-        }
+        assert posted["address"] == "https://api.config.chalk.ai"
+        assert posted["request"] == auth_pb.GetTokenRequest(
+            client_id="config-client",
+            client_secret="config-secret",
+            grant_type="client_credentials",
+        )
+        assert posted["closed"] is True
         assert client._env_id == "env-1"
 
     def test_loads_project_scoped_token_from_chalk_login_config(
@@ -302,25 +338,22 @@ tokens:
         )
         posted: dict[str, Any] = {}
 
-        def fake_post(*args, **kwargs):
-            posted["args"] = args
-            posted["kwargs"] = kwargs
-            return _TokenResponse(
-                {
-                    "access_token": "token",
-                    "primary_environment": "env-primary",
-                    "grpc_engines": {"env-project": "engine.chalk.ai:443"},
-                    "environment_id_to_name": {"env-project": "Project"},
-                }
-            )
-
-        monkeypatch.setattr("httpx.post", fake_post)
+        _install_token_client(
+            monkeypatch,
+            {
+                "accessToken": "token",
+                "primaryEnvironment": "env-primary",
+                "grpcEngines": {"env-project": "engine.chalk.ai:443"},
+                "environmentIdToName": {"env-project": "Project"},
+            },
+            posted,
+        )
 
         ConnectClient()._ensure_auth()
 
-        assert posted["args"] == ("https://api.project.chalk.ai/v1/oauth/token",)
-        assert posted["kwargs"]["json"]["client_id"] == "project-client"
-        assert posted["kwargs"]["json"]["client_secret"] == "project-secret"
+        assert posted["address"] == "https://api.project.chalk.ai"
+        assert posted["request"].client_id == "project-client"
+        assert posted["request"].client_secret == "project-secret"
 
 
 class TestConnectClientWebIdentity:
@@ -340,11 +373,14 @@ class TestConnectClientWebIdentity:
                 AssertionError("identity auth must take precedence over service auth")
             ),
         )
+
+        class _UnexpectedAuthClient:
+            def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+                raise AssertionError("identity JWTs must not be exchanged")
+
         monkeypatch.setattr(
-            "httpx.post",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                AssertionError("identity JWTs must not be exchanged")
-            ),
+            "chalkcompute._connect.auth_connect.AuthServiceClientSync",
+            _UnexpectedAuthClient,
         )
 
         client = ConnectClient()
@@ -536,26 +572,23 @@ class TestConnectClientWebIdentity:
 
 class TestConnectClientWorkloadIdentityToken:
     def test_requests_token_for_audience(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        response = _WorkloadIdentityTokenResponse({"token": "snowflake-jwt"})
         request: dict[str, Any] = {}
         client = ConnectClient()
 
-        def fake_rpc(
-            service: str,
-            method: str,
-            body: dict[str, Any],
-            timeout: float = 30,
-            **_kwargs: Any,
-        ) -> _WorkloadIdentityTokenResponse:
+        stub = types.SimpleNamespace(get_workload_identity_token=object())
+        monkeypatch.setattr(client, "stub", lambda _cls: stub)
+
+        def fake_call(
+            method: object, body: Any, *, timeout: float = 30, **_kwargs: Any
+        ):
             request.update(
-                service=service,
                 method=method,
                 body=body,
                 timeout=timeout,
             )
-            return response
+            return auth_pb.GetWorkloadIdentityTokenResponse(token="snowflake-jwt")
 
-        monkeypatch.setattr(client, "rpc", fake_rpc)
+        monkeypatch.setattr(client, "call", fake_call)
 
         token = client.get_workload_identity_token(
             "snowflakecomputing.com",
@@ -563,11 +596,11 @@ class TestConnectClientWorkloadIdentityToken:
         )
 
         assert token == "snowflake-jwt"
-        assert response.raise_for_status_called is True
         assert request == {
-            "service": "chalk.server.v1.AuthService",
-            "method": "GetWorkloadIdentityToken",
-            "body": {"audience": "snowflakecomputing.com"},
+            "method": stub.get_workload_identity_token,
+            "body": auth_pb.GetWorkloadIdentityTokenRequest(
+                audience="snowflakecomputing.com"
+            ),
             "timeout": 12,
         }
 
@@ -585,8 +618,13 @@ class TestConnectClientWorkloadIdentityToken:
         client = ConnectClient()
         monkeypatch.setattr(
             client,
-            "rpc",
-            lambda *_args, **_kwargs: _WorkloadIdentityTokenResponse(payload),
+            "stub",
+            lambda _cls: types.SimpleNamespace(get_workload_identity_token=object()),
+        )
+        monkeypatch.setattr(
+            client,
+            "call",
+            lambda *_args, **_kwargs: types.SimpleNamespace(token=payload.get("token")),
         )
 
         with pytest.raises(ConnectError, match="response without a token"):
@@ -746,12 +784,12 @@ class TestConnectClientTracing:
         monkeypatch.setattr(client, "_ensure_auth", lambda: None)
         return client
 
-    def test_rpc_does_not_inject_trace_metadata(self, monkeypatch):
+    def test_call_does_not_inject_trace_metadata(self, monkeypatch):
         posted: dict[str, Any] = {}
 
-        def fake_post(*args, **kwargs):
+        def fake_method(_request, **kwargs):
             posted["kwargs"] = kwargs
-            return _RPCResponse()
+            return object()
 
         def fail_current_trace_metadata():
             raise AssertionError(
@@ -762,33 +800,35 @@ class TestConnectClientTracing:
             "chalkcompute._tracing.current_trace_metadata",
             fail_current_trace_metadata,
         )
-        monkeypatch.setattr("httpx.post", fake_post)
+        client = self._client(monkeypatch)
+        monkeypatch.setattr(
+            client, "_rpc_metadata", lambda: [("authorization", "Bearer token")]
+        )
+        client.call(fake_method, object())
 
-        self._client(monkeypatch).rpc("svc", "Method", {})
+        assert posted["kwargs"]["headers"] == {"authorization": "Bearer token"}
 
-        assert posted["kwargs"]["headers"] == {"Authorization": "Bearer token"}
-
-    def test_rpc_merges_extra_headers_without_mutating_cached_headers(
+    def test_call_merges_extra_headers_without_mutating_cached_headers(
         self, monkeypatch
     ):
         posted: dict[str, Any] = {}
 
-        def fake_post(*args, **kwargs):
+        def fake_method(_request, **kwargs):
             posted["kwargs"] = kwargs
-            return _RPCResponse()
-
-        monkeypatch.setattr("httpx.post", fake_post)
+            return object()
 
         client = self._client(monkeypatch)
-        client.rpc(
-            "svc",
-            "Method",
-            {},
+        monkeypatch.setattr(
+            client, "_rpc_metadata", lambda: [("authorization", "Bearer token")]
+        )
+        client.call(
+            fake_method,
+            object(),
             extra_headers={"x-chalk-test-header": "embed"},
         )
 
         assert posted["kwargs"]["headers"] == {
-            "Authorization": "Bearer token",
+            "authorization": "Bearer token",
             "x-chalk-test-header": "embed",
         }
         assert client._headers == {"Authorization": "Bearer token"}
@@ -807,22 +847,19 @@ class TestConnectClientServiceAuth:
             ),
         )
         posted: dict[str, Any] = {}
-
-        def fake_post(*args, **kwargs):
-            posted["args"] = args
-            posted["kwargs"] = kwargs
-            return _TokenResponse({"accessToken": "working-token"})
-
-        monkeypatch.setattr("httpx.post", fake_post)
+        _install_auth_client(monkeypatch, {"accessToken": "working-token"}, posted)
 
         client = ConnectClient()
         client._ensure_auth()
 
-        assert posted["args"] == (
-            "https://api.chalk.test/chalk.server.v1.AuthService/GetInternalWorkingToken",
+        assert posted["address"] == "https://api.chalk.test"
+        assert posted["request"] == auth_pb.GetInternalWorkingTokenRequest(
+            requested_permissions=[2, 3, 11]
         )
-        assert posted["kwargs"]["json"] == {"requestedPermissions": [2, 3, 11]}
-        assert posted["kwargs"]["headers"]["Authorization"] == "Bearer exchange-token"
+        assert (
+            posted["call_kwargs"]["headers"]["Authorization"] == "Bearer exchange-token"
+        )
+        assert posted["closed"] is True
         assert client._headers is not None
         assert client._headers["Authorization"] == "Bearer working-token"
         assert client._headers["X-Chalk-Env-Id"] == "env-1"
@@ -839,16 +876,15 @@ class TestConnectClientServiceAuth:
             ),
         )
 
-        def fake_post(*_args, **_kwargs):
-            return _TokenResponse(
-                {
-                    "accessToken": "working-token",
-                    "grpcEngines": {"env-1": "engine.chalk.test:443"},
-                    "environmentIdToName": {"env-1": "Staging"},
-                }
-            )
-
-        monkeypatch.setattr("httpx.post", fake_post)
+        _install_auth_client(
+            monkeypatch,
+            {
+                "accessToken": "working-token",
+                "grpcEngines": {"env-1": "engine.chalk.test:443"},
+                "environmentIdToName": {"env-1": "Staging"},
+            },
+            {},
+        )
 
         target, use_tls = ConnectClient().grpc_engine_target()
 
@@ -890,20 +926,12 @@ class TestChalkClientFromEnv:
         )
 
         posted: dict[str, Any] = {}
-
-        def fake_post(*args: Any, **kwargs: Any) -> _TokenResponse:
-            posted["args"] = args
-            posted["kwargs"] = kwargs
-            return _TokenResponse({"accessToken": "working-token"})
-
-        monkeypatch.setattr("httpx.post", fake_post)
+        _install_auth_client(monkeypatch, {"accessToken": "working-token"}, posted)
 
         client = chalk_client_from_env()
 
         assert isinstance(client, _FakeChalkClient)
-        assert posted["args"] == (
-            "https://api.chalk.test/chalk.server.v1.AuthService/GetInternalWorkingToken",
-        )
+        assert posted["address"] == "https://api.chalk.test"
         assert _FakeChalkClient.calls == [
             {
                 "api_server": "https://api.chalk.test",
@@ -926,13 +954,15 @@ class TestChalkClientFromEnv:
                 grpc_engine=None,
             ),
         )
-        posted = {"called": False}
 
-        def fake_post(*_args: Any, **_kwargs: Any) -> _TokenResponse:
-            posted["called"] = True
-            return _TokenResponse({"accessToken": "working-token"})
+        class _UnexpectedAuthClient:
+            def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+                raise AssertionError("explicit authorization must not be exchanged")
 
-        monkeypatch.setattr("httpx.post", fake_post)
+        monkeypatch.setattr(
+            "chalkcompute._connect.auth_connect.AuthServiceClientSync",
+            _UnexpectedAuthClient,
+        )
 
         client = chalk_client_from_env(
             additional_headers={"Authorization": "Bearer explicit-token"},
@@ -940,7 +970,6 @@ class TestChalkClientFromEnv:
         )
 
         assert isinstance(client, _FakeChalkClient)
-        assert posted["called"] is False
         assert _FakeChalkClient.calls == [
             {
                 "additional_headers": {"Authorization": "Bearer explicit-token"},
@@ -974,15 +1003,13 @@ class TestSandboxClientFromEnv:
         monkeypatch.setenv("CHALK_CLIENT_ID", "client-id")
         monkeypatch.setenv("CHALK_CLIENT_SECRET", "client-secret")
         monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-1")
-        monkeypatch.setattr(
-            "httpx.post",
-            lambda *args, **kwargs: _TokenResponse(
-                {
-                    "access_token": "token",
-                    "primary_environment": "env-1",
-                    "environment_id_to_name": {"env-1": "Local"},
-                }
-            ),
+        _install_token_client(
+            monkeypatch,
+            {
+                "accessToken": "token",
+                "primaryEnvironment": "env-1",
+                "environmentIdToName": {"env-1": "Local"},
+            },
         )
 
         client = SandboxClient.from_env()

@@ -11,7 +11,6 @@ import logging
 import os
 import re
 import time
-import json
 from typing import TYPE_CHECKING, Any, Callable, Mapping, TypeVar
 from urllib.parse import urlparse
 
@@ -20,13 +19,17 @@ from connectrpc.errors import ConnectError as ConnectRpcError
 from connectrpc.protocol import ProtocolType
 
 from chalkcompute._auth_config import active_environment_from_env, load_token
+from chalkcompute._gen.chalk.auth.v1 import permissions_pb
+from chalkcompute._gen.chalk.sandbox.v1 import service_connect as image_connect
+from chalkcompute._gen.chalk.sandbox.v1 import service_pb as image_pb
+from chalkcompute._gen.chalk.server.v1 import auth_connect, auth_pb
 from chalkcompute._remote_call_client import (
     RemoteCallClientUnavailable,
     ServiceAuthContext,
     resolve_service_auth_context,
 )
 from chalkcompute._rpc import rpc_interceptors
-from chalkcompute._tracing import _instrumented, get_tracer
+from chalkcompute._tracing import _instrumented
 from chalkcompute._web_identity import (
     WebIdentityTokenError,
     read_web_identity_token,
@@ -42,8 +45,6 @@ _RespT = TypeVar("_RespT")
 
 
 if TYPE_CHECKING:
-    import httpx
-
     from chalkcompute._image import Image
     from chalkcompute._volume import VolumeMount
 
@@ -105,9 +106,6 @@ class ConnectClient:
 
     - :meth:`stub` / :meth:`call` — typed ConnectRPC clients. gRPC is the
       compatibility default, while Connect and gRPC-Web remain selectable.
-    - :meth:`rpc` — legacy Connect-protocol (HTTP/JSON), one connection per
-      call. Remaining services migrate off it incrementally (CHA-10029).
-
     Ambient Chalk credentials are read lazily. A JWT configured through
     ``CHALK_WEB_IDENTITY_TOKEN_FILE`` takes precedence and is cached for the
     shorter of one hour or half its remaining lifetime. Otherwise, service
@@ -185,35 +183,33 @@ class ConnectClient:
         if self._access_token is not None:
             return
 
-        import httpx
-
         service_auth = service_auth_context_from_env()
         if service_auth is not None:
             self._api_server = service_auth.auth_endpoint.rstrip("/")
-            resp = httpx.post(
-                f"{self._api_server}/chalk.server.v1.AuthService/GetInternalWorkingToken",
-                json={
-                    "requestedPermissions": list(service_auth.requested_permissions),
-                },
-                headers={
-                    "Accept": "application/json",
-                    "Authorization": f"Bearer {service_auth.exchange_token}",
-                    "Content-Type": "application/json",
-                    "X-Chalk-Server": "go-api",
-                },
-                timeout=30,
+            auth_client = auth_connect.AuthServiceClientSync(
+                self._api_server,
+                protocol=self._protocol,
+                interceptors=rpc_interceptors(self._protocol),
             )
-            resp.raise_for_status()
-            data = resp.json()
-            self._access_token = data.get("accessToken") or data["access_token"]
-            self._grpc_engines = _string_map(
-                data.get("grpcEngines")
-                or data.get("grpc_engines")
-                or data.get("engines"),
-            )
-            self._environment_id_to_name = _string_map(
-                data.get("environment_id_to_name") or data.get("environmentIdToName"),
-            )
+            try:
+                data = auth_client.get_internal_working_token(
+                    auth_pb.GetInternalWorkingTokenRequest(
+                        requested_permissions=[
+                            permissions_pb.Permission(value)
+                            for value in service_auth.requested_permissions
+                        ],
+                    ),
+                    headers={
+                        "Authorization": f"Bearer {service_auth.exchange_token}",
+                        "X-Chalk-Server": "go-api",
+                    },
+                    timeout_ms=30_000,
+                )
+            finally:
+                auth_client.close()
+            self._access_token = data.access_token
+            self._grpc_engines = _string_map(data.grpc_engines or data.engines)
+            self._environment_id_to_name = _string_map(data.environment_id_to_name)
             self._env_id = self._resolve_environment_id(service_auth.environment_id)
             self._headers = {
                 "Content-Type": "application/json",
@@ -273,28 +269,27 @@ class ConnectClient:
                 "environment variables, run `chalk login`, or pass a ChalkClient instance."
             )
 
-        resp = httpx.post(
-            f"{self._api_server}/v1/oauth/token",
-            json={
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "grant_type": "client_credentials",
-            },
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-                "X-Chalk-Server": "go-api",
-            },
-            timeout=30,
+        auth_client = auth_connect.AuthServiceClientSync(
+            self._api_server,
+            protocol=self._protocol,
+            interceptors=rpc_interceptors(self._protocol),
         )
-        resp.raise_for_status()
-        data = resp.json()
-        self._access_token = data["access_token"]
-        self._primary_environment = data.get("primary_environment")
-        self._grpc_engines = _string_map(
-            data.get("grpc_engines") or data.get("engines"),
-        )
-        self._environment_id_to_name = _string_map(data.get("environment_id_to_name"))
+        try:
+            data = auth_client.get_token(
+                auth_pb.GetTokenRequest(
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    grant_type="client_credentials",
+                ),
+                headers={"X-Chalk-Server": "go-api"},
+                timeout_ms=30_000,
+            )
+        finally:
+            auth_client.close()
+        self._access_token = data.access_token
+        self._primary_environment = data.primary_environment or None
+        self._grpc_engines = _string_map(data.grpc_engines or data.engines)
+        self._environment_id_to_name = _string_map(data.environment_id_to_name)
         self._env_id = self._resolve_environment_id(
             requested_env or self._primary_environment or ""
         )
@@ -390,20 +385,17 @@ class ConnectClient:
         if not isinstance(audience, str) or not audience.strip():
             raise ValueError("audience cannot be empty")
 
-        response = self.rpc(
-            "chalk.server.v1.AuthService",
-            "GetWorkloadIdentityToken",
-            {"audience": audience},
+        stub = self.stub(auth_connect.AuthServiceClientSync)
+        response = self.call(
+            stub.get_workload_identity_token,
+            auth_pb.GetWorkloadIdentityTokenRequest(audience=audience),
             timeout=timeout,
         )
-        response.raise_for_status()
-        data = response.json()
-        token = data.get("token")
-        if not isinstance(token, str) or not token:
+        if not isinstance(response.token, str) or not response.token:
             raise ConnectError(
                 "GetWorkloadIdentityToken returned a response without a token"
             )
-        return token
+        return response.token
 
     def stub(self, stub_cls: Callable[..., _StubT]) -> _StubT:
         """Return a generated ConnectRPC client for the API server.
@@ -438,6 +430,7 @@ class ConnectClient:
         request: Any,
         *,
         timeout: float = 30.0,
+        extra_headers: Mapping[str, str] | None = None,
     ) -> _RespT:
         """Invoke a generated unary RPC method with per-call auth headers.
 
@@ -454,64 +447,14 @@ class ConnectClient:
             RPC deadline in seconds.
 
         """
+        headers = dict(self._rpc_metadata())
+        if extra_headers:
+            headers.update(extra_headers)
         return method(
             request,
             timeout_ms=round(timeout * 1000),
-            headers=dict(self._rpc_metadata()),
+            headers=headers,
         )
-
-    def rpc(
-        self,
-        service: str,
-        method: str,
-        body: dict[str, Any],
-        timeout: float = 30,
-        extra_headers: Mapping[str, str] | None = None,
-    ) -> httpx.Response:
-        """Make a Connect-protocol RPC call.
-
-        Parameters
-        ----------
-        service
-            Fully-qualified service name (e.g. ``chalk.container.v1.ContainerService``).
-        method
-            Method name on the service.
-        body
-            JSON-serializable request body.
-        timeout
-            Request timeout in seconds.
-        extra_headers
-            Additional request headers. These are merged per call and do not
-            mutate the client's cached auth headers.
-
-        Returns
-        -------
-        httpx.Response
-            The raw HTTP response from the Connect endpoint.
-        """
-        import httpx
-
-        with get_tracer().start_as_current_span("chalkcompute.rpc") as span:
-            span.set_attribute("rpc.service", service)
-            span.set_attribute("rpc.method", method)
-            self._ensure_auth()
-            assert self._api_server is not None
-            assert self._headers is not None
-            headers = self._headers
-            if extra_headers:
-                headers = {**headers, **extra_headers}
-            resp = httpx.post(
-                f"{self._api_server}/{service}/{method}",
-                json=body,
-                headers=headers,
-                timeout=timeout,
-            )
-            span.set_attribute("http.response.status_code", resp.status_code)
-            if resp.status_code >= 400:
-                from opentelemetry.trace import StatusCode
-
-                span.set_status(StatusCode.ERROR, f"HTTP {resp.status_code}")
-            return resp
 
 
 # ---------------------------------------------------------------------------
@@ -525,54 +468,51 @@ POLL_MAX_ATTEMPTS = 5
 
 def rpc_with_retries(
     client: ConnectClient,
-    service: str,
-    method: str,
-    body: dict[str, Any],
+    method: Callable[..., _RespT],
+    request: Any,
     *,
     error_cls: type[Exception] = ConnectError,
     max_attempts: int = POLL_MAX_ATTEMPTS,
     retry_interval: float = 1.0,
     timeout: float = 30,
-) -> httpx.Response:
-    """Call ``client.rpc``, retrying transient failures.
+) -> _RespT:
+    """Call a generated RPC method, retrying transient failures.
 
-    Status polls should temporarily survive transient failures
-    (``httpx.RequestError``, HTTP 429, or a 5xx response). Deterministic
-    client errors (other 4xx, e.g. 400/404) would fail identically on every
-    attempt, so they raise ``error_cls`` immediately. Each RPC call gets
-    ``max_attempts`` total attempts with ``retry_interval`` seconds between
-    them; ``error_cls`` is raised only when all attempts fail.
-
-    Returns
-    -------
-    httpx.Response
-        The first response with status 200.
+    Only ConnectRPC errors that represent transient transport/server failures
+    are retried. Deterministic request errors fail immediately.
     """
-    import httpx
-
-    last_detail = ""
+    method_name = getattr(method, "__name__", "RPC")
+    last_error: ConnectRpcError | None = None
+    transient_codes = {
+        Code.CANCELED,
+        Code.UNKNOWN,
+        Code.DEADLINE_EXCEEDED,
+        Code.RESOURCE_EXHAUSTED,
+        Code.ABORTED,
+        Code.INTERNAL,
+        Code.UNAVAILABLE,
+        Code.DATA_LOSS,
+    }
     for attempt in range(1, max_attempts + 1):
         try:
-            resp = client.rpc(service, method, body, timeout=timeout)
-        except httpx.RequestError as e:
-            last_detail = f"{type(e).__name__}: {e}"
-        else:
-            if resp.status_code == 200:
-                return resp
-            last_detail = f"HTTP {resp.status_code}: {resp.text}"
-            if resp.status_code != 429 and resp.status_code < 500:
-                raise error_cls(f"{method} failed: {last_detail}")
+            return client.call(method, request, timeout=timeout)
+        except ConnectRpcError as exc:
+            last_error = exc
+            if exc.code not in transient_codes:
+                raise error_cls(f"{method_name} failed: {exc}") from exc
         if attempt < max_attempts:
             logger.warning(
                 "%s attempt %d/%d failed (%s); retrying in %.1fs",
-                method,
+                method_name,
                 attempt,
                 max_attempts,
-                last_detail,
+                last_error,
                 retry_interval,
             )
             time.sleep(retry_interval)
-    raise error_cls(f"{method} failed after {max_attempts} attempts: {last_detail}")
+    raise error_cls(
+        f"{method_name} failed after {max_attempts} attempts: {last_error}"
+    ) from last_error
 
 
 @_instrumented("chalkcompute.build_image")
@@ -613,55 +553,49 @@ def build_image(
     if image_uri is not None:
         return image_uri
 
-    spec_dict = json.loads(image.to_proto().to_json())
-    resp = client.rpc(
-        "chalk.sandbox.v1.CustomImageService",
-        "GetOrBuildCustomImage",
-        {"imageSpec": spec_dict},
+    stub = client.stub(image_connect.CustomImageServiceClientSync)
+    response = client.call(
+        stub.get_or_build_custom_image,
+        image_pb.GetOrBuildCustomImageRequest(image_spec=image.to_proto()),
     )
-    if resp.status_code != 200:
-        raise ConnectError(f"GetOrBuildCustomImage failed: {resp.text}")
-
-    data = resp.json()
-    status = data.get("status", "")
+    status = response.status
     if status in ("exists", "succeeded"):
-        return data["image"]
+        return response.image
     if status == "failed":
-        raise ConnectError(f"Image build failed: {data.get('error', 'unknown')}")
+        raise ConnectError(f"Image build failed: {response.error or 'unknown'}")
 
-    build_id = data["buildId"]
+    build_id = response.build_id
     deadline = time.monotonic() + timeout
     transient_failures = 0
     max_transient_failures = 5
     while time.monotonic() < deadline:
-        get_resp = client.rpc(
-            "chalk.sandbox.v1.CustomImageService",
-            "GetCustomImage",
-            {"buildId": build_id},
-        )
-        if get_resp.status_code != 200:
+        try:
+            get_response = client.call(
+                stub.get_custom_image,
+                image_pb.GetCustomImageRequest(build_id=build_id),
+            )
+        except ConnectRpcError as exc:
             transient_failures += 1
             if transient_failures >= max_transient_failures:
                 raise ConnectError(
                     f"GetCustomImage failed after {transient_failures} consecutive "
-                    f"transient errors: {get_resp.text}"
-                )
+                    f"transient errors: {exc}"
+                ) from exc
             logger.warning(
                 "GetCustomImage transient error (%d/%d): %s",
                 transient_failures,
                 max_transient_failures,
-                get_resp.text,
+                exc,
             )
             time.sleep(poll_interval)
             continue
         transient_failures = 0
-        get_data = get_resp.json()
-        status = get_data.get("status", "")
+        status = get_response.status
         if status == "succeeded":
-            return get_data["image"]
+            return get_response.image
         if status == "failed":
             raise ConnectError(
-                f"Image build {build_id} failed: {get_data.get('error', 'unknown')}"
+                f"Image build {build_id} failed: {get_response.error or 'unknown'}"
             )
         time.sleep(poll_interval)
 

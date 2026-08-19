@@ -9,13 +9,15 @@ from __future__ import annotations
 
 from typing import Any
 
-import httpx
 import pytest
+from connectrpc.code import Code
+from connectrpc.errors import ConnectError as ConnectRpcError
 
 from chalkcompute._connect import POLL_MAX_ATTEMPTS, ConnectError, rpc_with_retries
+from chalkcompute._gen.chalk.scalinggroup.v1 import service_connect as sg_connect
+from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from chalkcompute._scaling_group import ScalingGroup, ScalingGroupError
-
-_SVC = "chalk.scalinggroup.v1.ScalingGroupManagerService"
+from tests._typed_connect import TypedConnectFakeMixin
 
 
 class _Response:
@@ -33,7 +35,7 @@ class _Response:
         return self._data
 
 
-class _FlakyClient:
+class _FlakyClient(TypedConnectFakeMixin):
     """Pops one scripted outcome per rpc call: an exception to raise or a
     response to return."""
 
@@ -52,39 +54,42 @@ class _FlakyClient:
 _BLIP = "upstream connect error or disconnect/reset before headers: connection refused"
 
 
+def _get_with_retries(
+    client: _FlakyClient, *, error_cls: type[Exception] = ConnectError
+) -> sg_pb.GetScalingGroupResponse:
+    stub = client.stub(sg_connect.ScalingGroupManagerServiceClientSync)
+    return rpc_with_retries(
+        client,  # type: ignore[arg-type]
+        stub.get_scaling_group,
+        sg_pb.GetScalingGroupRequest(id="sg-1"),
+        error_cls=error_cls,
+        retry_interval=0,
+    )
+
+
 def test_rpc_with_retries_recovers_from_transient_failures() -> None:
     ok = _Response({"scalingGroup": {}})
     client = _FlakyClient(
         [
-            httpx.ConnectError("connection refused"),
+            ConnectRpcError(Code.UNAVAILABLE, "connection refused"),
             _Response(status_code=503, text=_BLIP),
             ok,
         ]
     )
-    resp = rpc_with_retries(
-        client,  # type: ignore[arg-type]
-        _SVC,
-        "GetScalingGroup",
-        {"id": "sg-1"},
-        retry_interval=0,
-    )
-    assert resp is ok
+    resp = _get_with_retries(client)
+    assert resp.scaling_group is not None
     assert client.calls == 3
 
 
 def test_rpc_with_retries_raises_error_cls_after_all_attempts_fail() -> None:
     client = _FlakyClient(
-        [httpx.ConnectError("connection refused") for _ in range(POLL_MAX_ATTEMPTS)]
+        [
+            ConnectRpcError(Code.UNAVAILABLE, "connection refused")
+            for _ in range(POLL_MAX_ATTEMPTS)
+        ]
     )
     with pytest.raises(ScalingGroupError, match="after 5 attempts"):
-        rpc_with_retries(
-            client,  # type: ignore[arg-type]
-            _SVC,
-            "GetScalingGroup",
-            {"id": "sg-1"},
-            error_cls=ScalingGroupError,
-            retry_interval=0,
-        )
+        _get_with_retries(client, error_cls=ScalingGroupError)
     assert client.calls == POLL_MAX_ATTEMPTS
 
 
@@ -92,14 +97,8 @@ def test_rpc_with_retries_defaults_to_connect_error() -> None:
     client = _FlakyClient(
         [_Response(status_code=503, text=_BLIP) for _ in range(POLL_MAX_ATTEMPTS)]
     )
-    with pytest.raises(ConnectError, match="HTTP 503"):
-        rpc_with_retries(
-            client,  # type: ignore[arg-type]
-            _SVC,
-            "GetScalingGroup",
-            {"id": "sg-1"},
-            retry_interval=0,
-        )
+    with pytest.raises(ConnectError, match="after 5 attempts"):
+        _get_with_retries(client)
 
 
 @pytest.mark.parametrize("status_code", [400, 404])
@@ -107,28 +106,16 @@ def test_rpc_with_retries_raises_immediately_on_client_errors(
     status_code: int,
 ) -> None:
     client = _FlakyClient([_Response(status_code=status_code, text="nope")])
-    with pytest.raises(ConnectError, match=f"HTTP {status_code}"):
-        rpc_with_retries(
-            client,  # type: ignore[arg-type]
-            _SVC,
-            "GetScalingGroup",
-            {"id": "sg-1"},
-            retry_interval=0,
-        )
+    with pytest.raises(ConnectError):
+        _get_with_retries(client)
     assert client.calls == 1
 
 
 def test_rpc_with_retries_retries_429() -> None:
     ok = _Response({"scalingGroup": {}})
     client = _FlakyClient([_Response(status_code=429, text="rate limited"), ok])
-    resp = rpc_with_retries(
-        client,  # type: ignore[arg-type]
-        _SVC,
-        "GetScalingGroup",
-        {"id": "sg-1"},
-        retry_interval=0,
-    )
-    assert resp is ok
+    resp = _get_with_retries(client)
+    assert resp.scaling_group is not None
     assert client.calls == 2
 
 
@@ -148,7 +135,7 @@ def _sg_response(**overrides: Any) -> _Response:
 def test_scaling_group_poll_survives_blip() -> None:
     client = _FlakyClient(
         [
-            httpx.ConnectError("connection refused"),
+            ConnectRpcError(Code.UNAVAILABLE, "connection refused"),
             _sg_response(),
             _Response(status_code=503, text=_BLIP),
             _sg_response(readyReplicas=1, availableReplicas=1),
@@ -166,7 +153,10 @@ def test_scaling_group_poll_survives_blip() -> None:
 
 def test_scaling_group_poll_raises_after_all_attempts_fail() -> None:
     client = _FlakyClient(
-        [httpx.ConnectError("connection refused") for _ in range(POLL_MAX_ATTEMPTS)]
+        [
+            ConnectRpcError(Code.UNAVAILABLE, "connection refused")
+            for _ in range(POLL_MAX_ATTEMPTS)
+        ]
     )
     sg = ScalingGroup(image="ubuntu:latest", name="sg-retry")
     sg._client = client  # type: ignore[assignment]

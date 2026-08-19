@@ -625,7 +625,7 @@ def test_stage_lazy_files_creates_source_code_volume_and_returns_intent(
     assert staged_name == "fn-src-add-app"
     assert source == [("f.txt", Path(str(src)))]
 
-    assert intents == [{"volume": {"name": "src-vol"}, "author": "chalk:env:agent:a"}]
+    assert intents == [intent]
     assert len(volumes) == 1
     assert volumes[0].name == "fn-src-add-app"
     assert volumes[0].mount_path == "/app"
@@ -653,7 +653,11 @@ def test_stage_lazy_files_reuses_volume_and_replaces_base_tree(
     assert volumes[0].name == "fn-src-add-app"
     # A recursive root remove tells the server to build the version from
     # an empty tree plus the upserts.
-    assert intents[0]["pathDeltas"]["removes"] == [{"path": "/", "recursive": True}]
+    assert intents[0].deltas is not None
+    assert intents[0].deltas.field == "path_deltas"
+    assert intents[0].deltas.value.removes == [
+        pb_v2.PathRemoveDelta(path="/", recursive=True)
+    ]
 
 
 def test_native_client_symbol_is_bound() -> None:
