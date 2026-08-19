@@ -120,10 +120,6 @@ from chalkcompute._volume import (
     resolve_referenced_volume_type as resolve_referenced_volume_type,
 )
 
-# Back-compat aliases: all volumes are versioned, so the qualifier is gone from
-# the canonical names. Keep the old spellings importable.
-from chalkcompute._volume import Volume as VersionedVolume
-from chalkcompute._volume import VolumeClient as VersionedVolumeClient
 
 __all__ = [
     "Artifact",
@@ -228,7 +224,6 @@ __all__ = [
     "VolumeNotFoundError",
     "VersionInfo",
     "resolve_referenced_volume_type",
-    "VersionedVolume",
     "SessionSummary",
     "Span",
     "SpanKind",
@@ -238,5 +233,4 @@ __all__ = [
     "TraceError",
     "TraceNotFoundError",
     "TraceSummary",
-    "VersionedVolumeClient",
 ]

@@ -48,7 +48,7 @@ class StagedFiles:
     def extend(self, other: StagedFiles) -> None: ...
     def __len__(self) -> int: ...
 
-class VersionedVolumeNativeClient:
+class VolumeNativeClient:
     def __init__(
         self,
         endpoint: str,

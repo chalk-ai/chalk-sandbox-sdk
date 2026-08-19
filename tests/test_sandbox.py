@@ -309,6 +309,20 @@ def test_version_pinned_mount_is_serialized_to_proto() -> None:
     assert mount.has_field("version_id")
 
 
+def test_fork_mount_is_serialized_to_proto() -> None:
+    mount = (
+        ContainerSpec(
+            image="ubuntu:latest",
+            volumes=[VolumeMount(name="my-data", mount_path="/data", ref_name="sandbox-a")],
+        )
+        .to_proto()
+        .volumes[0]
+    )
+
+    assert mount.ref_name == "sandbox-a"
+    assert mount.has_field("ref_name")
+
+
 def test_sandbox_missing_referenced_volume_fails_run() -> None:
     import pytest
 

@@ -15,6 +15,7 @@ from chalkcompute._volume import (
     VersionInfo,
     Volume,
     VolumeClient,
+    VolumeMount,
     _CHUNK_MAX_RETRIES,
     _CHUNK_CONCURRENCY,
     _CHUNK_SIZE_BYTES,
@@ -448,7 +449,7 @@ def test_forks_and_delete_fork_delegate_to_native(
     client._inner.delete_ref.assert_called_once_with("models", "sandbox-a")
 
 
-def test_fork_mount_uses_default_path_and_pins_tip(
+def test_fork_mount_uses_default_path_and_preserves_ref(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = _make_client(monkeypatch)
@@ -459,8 +460,24 @@ def test_fork_mount_uses_default_path_and_pins_tip(
 
     assert mount.name == "models"
     assert mount.mount_path == "/volumes/models"
-    assert mount.version_id == 7
-    assert mount.to_spec_dict()["versionId"] == 7
+    assert mount.version_id is None
+    assert mount.ref_name == "sandbox-a"
+    assert mount.to_spec_dict()["refName"] == "sandbox-a"
+
+
+def test_volume_mount_rejects_ambiguous_selector() -> None:
+    with pytest.raises(ValueError, match="cannot both be set"):
+        VolumeMount(
+            name="models",
+            mount_path="/models",
+            version_id=7,
+            ref_name="sandbox-a",
+        )
+
+
+def test_volume_mount_rejects_empty_ref() -> None:
+    with pytest.raises(ValueError, match="must not be empty"):
+        VolumeMount(name="models", mount_path="/models", ref_name="")
 
 
 def test_closed_volume_operations_raise(monkeypatch: pytest.MonkeyPatch) -> None:
