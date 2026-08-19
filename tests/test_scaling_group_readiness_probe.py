@@ -5,46 +5,41 @@ from typing import Any, cast
 import pytest
 
 from chalkcompute import ReadinessProbe, ScalingGroup
-from tests._typed_connect import TypedConnectFakeMixin
+from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
+from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
+from tests._fakes import FakeMethod, StubbedConnectClient
 
 
-class _Response:
-    status_code = 200
-    text = ""
-
-    def json(self) -> dict[str, Any]:
-        return {
-            "scalingGroup": {
-                "id": "sg-1",
-                "name": "sg-readiness",
-                "status": "Running",
-                "readyReplicas": 1,
-                "availableReplicas": 1,
-            }
-        }
-
-
-class _CapturingClient(TypedConnectFakeMixin):
+class _CapturingClient(StubbedConnectClient):
     def __init__(self) -> None:
-        self.requests: list[dict[str, Any]] = []
+        self.requests: list[sg_pb.CreateScalingGroupRequest] = []
 
-    def rpc(
+    def call(
         self,
-        _service: str,
-        method: str,
-        request: dict[str, Any],
+        method: FakeMethod,
+        request: sg_pb.CreateScalingGroupRequest,
         **_: Any,
-    ) -> _Response:
-        assert method == "CreateScalingGroup"
+    ) -> sg_pb.CreateScalingGroupResponse:
+        assert method.name == "create_scaling_group"
         self.requests.append(request)
-        return _Response()
+        return sg_pb.CreateScalingGroupResponse(
+            scaling_group=sg_pb.ScalingGroupResponse(
+                id="sg-1",
+                name="sg-readiness",
+                status="Running",
+                ready_replicas=1,
+                available_replicas=1,
+            )
+        )
 
 
-def _deployed_container_spec(sg: ScalingGroup) -> dict[str, Any]:
+def _deployed_container_spec(sg: ScalingGroup) -> container_pb.ChalkContainerSpec:
     client = _CapturingClient()
     sg._client = cast(Any, client)
     sg.deploy()
-    return client.requests[0]["spec"]["containerSpec"]
+    spec = client.requests[0].spec
+    assert spec is not None and spec.container_spec is not None
+    return spec.container_spec
 
 
 @pytest.mark.parametrize(
@@ -87,8 +82,10 @@ def test_scaling_group_deploy_includes_readiness_probe() -> None:
     )
     container_spec = _deployed_container_spec(sg)
 
-    assert container_spec["readinessProbe"] == {"http": {"path": "/readyz"}}
-    assert container_spec["port"] == 8080
+    probe = container_spec.readiness_probe
+    assert probe is not None and probe.check is not None
+    assert probe.check.value.path == "/readyz"
+    assert container_spec.port == 8080
 
 
 def test_scaling_group_deploy_omits_readiness_probe_by_default() -> None:
@@ -98,7 +95,7 @@ def test_scaling_group_deploy_omits_readiness_probe_by_default() -> None:
         port=8080,
     )
 
-    assert "readinessProbe" not in _deployed_container_spec(sg)
+    assert _deployed_container_spec(sg).readiness_probe is None
 
 
 def test_scaling_group_deploy_uses_default_port() -> None:
@@ -107,7 +104,7 @@ def test_scaling_group_deploy_uses_default_port() -> None:
         name="sg-readiness",
     )
 
-    assert _deployed_container_spec(sg)["port"] == 8080
+    assert _deployed_container_spec(sg).port == 8080
 
 
 def test_scaling_group_deploy_omits_port_when_none() -> None:
@@ -117,4 +114,4 @@ def test_scaling_group_deploy_omits_port_when_none() -> None:
         port=None,
     )
 
-    assert "port" not in _deployed_container_spec(sg)
+    assert not _deployed_container_spec(sg).has_field("port")

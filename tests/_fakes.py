@@ -2,12 +2,13 @@
 
 Production code obtains a stub via ``client.stub(SomeServiceStub)`` and
 invokes it via ``client.call(stub.Method, request, ...)``. These fakes
-implement that seam so unit tests assert on the *typed pb2 requests* the SDK
+implement that seam so unit tests assert on the *typed protobuf requests* the SDK
 builds, without any HTTP client or network.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -23,7 +24,9 @@ class FakeCall:
     timeout: float
 
 
-class _FakeMethod:
+class FakeMethod:
+    """A generated client method represented by its Python method name."""
+
     def __init__(self, name: str) -> None:
         self.name = name
 
@@ -32,8 +35,19 @@ class _FakeStub:
     def __init__(self, stub_cls: type) -> None:
         self._stub_cls = stub_cls
 
-    def __getattr__(self, name: str) -> _FakeMethod:
-        return _FakeMethod(name)
+    def __getattr__(self, name: str) -> FakeMethod:
+        return FakeMethod(name)
+
+
+class StubbedConnectClient:
+    """Minimal typed transport seam shared by SDK unit-test doubles.
+
+    Generated client construction is intentionally reduced to a method name;
+    requests and responses remain protobuf messages throughout each test.
+    """
+
+    def stub(self, stub_cls: type) -> _FakeStub:
+        return _FakeStub(stub_cls)
 
 
 def default_container_handler(method: str, request: Any) -> Any:
@@ -59,7 +73,7 @@ def default_container_handler(method: str, request: Any) -> Any:
 
 
 @dataclass
-class FakeConnectClient:
+class FakeConnectClient(StubbedConnectClient):
     """Stands in for ``ConnectClient`` behind the stub/call seam.
 
     ``handler(method_name, request)`` produces responses (or raises
@@ -73,15 +87,13 @@ class FakeConnectClient:
     def _ensure_auth(self) -> None:
         pass
 
-    def stub(self, stub_cls: type) -> _FakeStub:
-        return _FakeStub(stub_cls)
-
     def call(
         self,
-        method: _FakeMethod,
+        method: FakeMethod,
         request: Any,
         *,
         timeout: float = 30.0,
+        extra_headers: Mapping[str, str] | None = None,
     ) -> Any:
         self.calls.append(
             FakeCall(method=method.name, request=request, timeout=timeout)

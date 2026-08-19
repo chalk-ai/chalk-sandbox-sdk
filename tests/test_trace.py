@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import timedelta
+import json
 from typing import Any
 
 import pyarrow as pa
 import pytest
+from connectrpc.code import Code
+from connectrpc.errors import ConnectError as ConnectRpcError
 
 from chalkcompute._arrow_schema import rich_to_arrow_schema
 from chalkcompute._arrow_serde import (
@@ -20,36 +23,36 @@ from chalkcompute._trace import (
     TraceError,
     TraceNotFoundError,
 )
-from tests._typed_connect import TypedConnectFakeMixin
+from chalkcompute._gen.chalk.server.v1 import trace_pb
+from tests._fakes import FakeMethod, StubbedConnectClient
 
 
-class _FakeResponse:
-    def __init__(
-        self,
-        status_code: int,
-        payload: Mapping[str, Any] | None = None,
-        *,
-        text: str = "",
-    ) -> None:
-        self.status_code = status_code
-        self._payload = dict(payload or {})
-        self.text = text
-
-    def json(self) -> dict[str, Any]:
-        return self._payload
+def _response(payload: Mapping[str, Any]) -> Any:
+    if "spans" in payload:
+        message_type = trace_pb.ListSpanResponse
+    elif "sessions" in payload:
+        message_type = trace_pb.SearchSessionsResponse
+    elif "traceSummaries" in payload:
+        message_type = trace_pb.SearchTraceSummariesResponse
+    else:
+        raise AssertionError(f"unknown trace response fixture: {payload}")
+    return message_type.from_json(json.dumps(payload))
 
 
-class _FakeConnectClient(TypedConnectFakeMixin):
-    def __init__(self, responses: Mapping[str, list[_FakeResponse]]) -> None:
+class _FakeConnectClient(StubbedConnectClient):
+    def __init__(self, responses: Mapping[str, list[Any]]) -> None:
         self._responses = {method: list(values) for method, values in responses.items()}
-        self.calls: list[tuple[str, str, dict[str, Any]]] = []
+        self.calls: list[tuple[str, Any]] = []
 
-    def rpc(self, service: str, method: str, request: dict[str, Any]) -> _FakeResponse:
-        self.calls.append((service, method, request))
+    def call(self, method: FakeMethod, request: Any, **_kwargs: Any) -> Any:
+        self.calls.append((method.name, request))
         try:
-            return self._responses[method].pop(0)
+            outcome = self._responses[method.name].pop(0)
         except (KeyError, IndexError) as exc:
-            raise AssertionError(f"unexpected RPC call: {method}") from exc
+            raise AssertionError(f"unexpected RPC call: {method.name}") from exc
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
 
 
 def _span_dict(span_id: str, **attributes: str) -> dict[str, Any]:
@@ -67,7 +70,7 @@ def _span_dict(span_id: str, **attributes: str) -> dict[str, Any]:
     }
 
 
-def _client(responses: Mapping[str, list[_FakeResponse]]) -> tuple[TraceClient, Any]:
+def _client(responses: Mapping[str, list[Any]]) -> tuple[TraceClient, Any]:
     connect = _FakeConnectClient(responses)
     return TraceClient(connect_client=connect), connect
 
@@ -123,14 +126,14 @@ def test_trace_strips_surrounding_whitespace() -> None:
 
 def test_get_spans_queries_by_session_and_decodes_spans() -> None:
     client, connect = _client(
-        {"ListSpan": [_FakeResponse(200, {"spans": [_span_dict("span-1")]})]}
+        {"list_span": [_response({"spans": [_span_dict("span-1")]})]}
     )
     spans = Trace("session-1", _client=client).get_spans(wait=False)
 
-    service, method, request = connect.calls[0]
-    assert service == "chalk.server.v1.TraceService"
-    assert method == "ListSpan"
-    assert request["query"] == "session:session-1"
+    method, request = connect.calls[0]
+    assert method == "list_span"
+    assert isinstance(request, trace_pb.ListSpanRequest)
+    assert request.query == "session:session-1"
 
     (span,) = spans
     assert span.span_id == "span-1"
@@ -144,9 +147,8 @@ def test_attribute_float_parses_string_attributes() -> None:
     """`ChalkSpan.attributes` is map<string,string>; summing raw values is a TypeError."""
     client, _ = _client(
         {
-            "ListSpan": [
-                _FakeResponse(
-                    200,
+            "list_span": [
+                _response(
                     {
                         "spans": [
                             _span_dict("span-1", **{"llm.cost": "0.25"}),
@@ -165,7 +167,7 @@ def test_attribute_float_parses_string_attributes() -> None:
 
 def test_attribute_accessors_tolerate_missing_and_unparseable_values() -> None:
     client, _ = _client(
-        {"ListSpan": [_FakeResponse(200, {"spans": [_span_dict("s", note="abc")]})]}
+        {"list_span": [_response({"spans": [_span_dict("s", note="abc")]})]}
     )
     (span,) = Trace("session-1", _client=client).get_spans(wait=False)
     assert span.attribute_float("absent") is None
@@ -176,26 +178,26 @@ def test_attribute_accessors_tolerate_missing_and_unparseable_values() -> None:
 def test_list_spans_pages_transparently() -> None:
     client, connect = _client(
         {
-            "ListSpan": [
-                _FakeResponse(
-                    200,
+            "list_span": [
+                _response(
                     {"spans": [_span_dict("span-1")], "nextPageToken": "cursor"},
                 ),
-                _FakeResponse(200, {"spans": [_span_dict("span-2")]}),
+                _response({"spans": [_span_dict("span-2")]}),
             ]
         }
     )
     spans = Trace("session-1", _client=client).get_spans(wait=False)
     assert [s.span_id for s in spans] == ["span-1", "span-2"]
-    assert connect.calls[1][2]["pageToken"] == "cursor"
+    request = connect.calls[1][1]
+    assert isinstance(request, trace_pb.ListSpanRequest)
+    assert request.page_token == "cursor"
 
 
 def test_list_spans_honors_limit_without_extra_pages() -> None:
     client, _ = _client(
         {
-            "ListSpan": [
-                _FakeResponse(
-                    200,
+            "list_span": [
+                _response(
                     {
                         "spans": [_span_dict("span-1"), _span_dict("span-2")],
                         "nextPageToken": "cursor",
@@ -209,13 +211,15 @@ def test_list_spans_honors_limit_without_extra_pages() -> None:
 
 
 def test_attribute_filters_send_bare_keys_for_none_values() -> None:
-    client, connect = _client({"ListSpan": [_FakeResponse(200, {"spans": []})]})
+    client, connect = _client({"list_span": [_response({"spans": []})]})
     Trace("session-1", _client=client).get_spans(
         wait=False, attribute_filters={"llm.model": "opus", "llm.cost": None}
     )
-    assert connect.calls[0][2]["attributeFilters"] == [
-        {"key": "llm.model", "value": "opus"},
-        {"key": "llm.cost"},
+    request = connect.calls[0][1]
+    assert isinstance(request, trace_pb.ListSpanRequest)
+    assert [(item.key, item.value or None) for item in request.attribute_filters] == [
+        ("llm.model", "opus"),
+        ("llm.cost", None),
     ]
 
 
@@ -228,15 +232,11 @@ def test_get_spans_waits_until_the_span_count_stops_growing(
     """Spans arrive asynchronously, so a settled count is the completion signal."""
     client, _ = _client(
         {
-            "ListSpan": [
-                _FakeResponse(200, {"spans": []}),
-                _FakeResponse(200, {"spans": [_span_dict("span-1")]}),
-                _FakeResponse(
-                    200, {"spans": [_span_dict("span-1"), _span_dict("span-2")]}
-                ),
-                _FakeResponse(
-                    200, {"spans": [_span_dict("span-1"), _span_dict("span-2")]}
-                ),
+            "list_span": [
+                _response({"spans": []}),
+                _response({"spans": [_span_dict("span-1")]}),
+                _response({"spans": [_span_dict("span-1"), _span_dict("span-2")]}),
+                _response({"spans": [_span_dict("span-1"), _span_dict("span-2")]}),
             ]
         }
     )
@@ -248,7 +248,7 @@ def test_get_spans_waits_until_the_span_count_stops_growing(
 def test_get_spans_raises_rather_than_returning_an_empty_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client, _ = _client({"ListSpan": [_FakeResponse(200, {"spans": []})]})
+    client, _ = _client({"list_span": [_response({"spans": []})]})
     monkeypatch.setattr("chalkcompute._trace.time.sleep", lambda _: None)
     with pytest.raises(TimeoutError, match="expected at least 1"):
         Trace("session-1", _client=client).get_spans(timeout=0, poll_interval=0)
@@ -259,9 +259,9 @@ def test_get_spans_accepts_an_empty_session_when_asked_to(
 ) -> None:
     client, _ = _client(
         {
-            "ListSpan": [
-                _FakeResponse(200, {"spans": []}),
-                _FakeResponse(200, {"spans": []}),
+            "list_span": [
+                _response({"spans": []}),
+                _response({"spans": []}),
             ]
         }
     )
@@ -277,9 +277,9 @@ def test_get_spans_raises_when_expect_min_is_never_reached(
 ) -> None:
     client, _ = _client(
         {
-            "ListSpan": [
-                _FakeResponse(200, {"spans": [_span_dict("span-1")]}),
-                _FakeResponse(200, {"spans": [_span_dict("span-1")]}),
+            "list_span": [
+                _response({"spans": [_span_dict("span-1")]}),
+                _response({"spans": [_span_dict("span-1")]}),
             ]
         }
     )
@@ -291,7 +291,7 @@ def test_get_spans_raises_when_expect_min_is_never_reached(
 
 
 def test_get_spans_without_waiting_makes_exactly_one_pass() -> None:
-    client, connect = _client({"ListSpan": [_FakeResponse(200, {"spans": []})]})
+    client, connect = _client({"list_span": [_response({"spans": []})]})
     assert Trace("session-1", _client=client).get_spans(wait=False) == []
     assert len(connect.calls) == 1
 
@@ -316,9 +316,8 @@ def test_get_spans_validates_its_bounds(kwargs: dict[str, Any], match: str) -> N
 def test_summary_reads_the_session_aggregate() -> None:
     client, connect = _client(
         {
-            "SearchSessions": [
-                _FakeResponse(
-                    200,
+            "search_sessions": [
+                _response(
                     {
                         "sessions": [
                             {
@@ -337,8 +336,10 @@ def test_summary_reads_the_session_aggregate() -> None:
         }
     )
     summary = Trace("session-1", _client=client).summary(wait=False)
-    assert connect.calls[0][1] == "SearchSessions"
-    assert connect.calls[0][2]["sessionIds"] == ["session-1"]
+    assert connect.calls[0][0] == "search_sessions"
+    request = connect.calls[0][1]
+    assert isinstance(request, trace_pb.SearchSessionsRequest)
+    assert request.session_ids == ["session-1"]
     assert summary.trace_count == 4
     assert summary.span_count == 27
     assert summary.duration == timedelta(minutes=5)
@@ -346,7 +347,7 @@ def test_summary_reads_the_session_aggregate() -> None:
 
 
 def test_summary_raises_not_found_for_an_unknown_session() -> None:
-    client, _ = _client({"SearchSessions": [_FakeResponse(200, {"sessions": []})]})
+    client, _ = _client({"search_sessions": [_response({"sessions": []})]})
     with pytest.raises(TraceNotFoundError, match="Session not found"):
         Trace("session-1", _client=client).summary(wait=False)
 
@@ -354,9 +355,8 @@ def test_summary_raises_not_found_for_an_unknown_session() -> None:
 def test_traces_lists_one_summary_per_turn() -> None:
     client, connect = _client(
         {
-            "SearchTraceSummaries": [
-                _FakeResponse(
-                    200,
+            "search_trace_summaries": [
+                _response(
                     {
                         "traceSummaries": [
                             {
@@ -372,7 +372,9 @@ def test_traces_lists_one_summary_per_turn() -> None:
         }
     )
     (summary,) = Trace("session-1", _client=client).traces(wait=False)
-    assert connect.calls[0][2]["sessionIds"] == ["session-1"]
+    request = connect.calls[0][1]
+    assert isinstance(request, trace_pb.SearchTraceSummariesRequest)
+    assert request.session_ids == ["session-1"]
     assert summary.trace_id == "trace-1"
     assert summary.root_span_names == ("agent.turn",)
     assert summary.session_id == "session-1"
@@ -382,14 +384,16 @@ def test_traces_lists_one_summary_per_turn() -> None:
 
 
 def test_permission_denied_names_the_missing_permission() -> None:
-    client, _ = _client({"ListSpan": [_FakeResponse(403, {"message": "denied"})]})
+    client, _ = _client(
+        {"list_span": [ConnectRpcError(Code.PERMISSION_DENIED, "denied")]}
+    )
     with pytest.raises(TraceError, match="monitoring-read permission"):
         Trace("session-1", _client=client).get_spans(wait=False)
 
 
 def test_transport_failure_surfaces_the_status_code() -> None:
-    client, _ = _client({"ListSpan": [_FakeResponse(500, {"message": "boom"})]})
-    with pytest.raises(TraceError, match="HTTP 500") as exc:
+    client, _ = _client({"list_span": [ConnectRpcError(Code.INTERNAL, "boom")]})
+    with pytest.raises(TraceError, match="boom") as exc:
         Trace("session-1", _client=client).get_spans(wait=False)
     assert exc.value.status_code == 500
 
@@ -402,9 +406,10 @@ def test_client_rejects_two_transports() -> None:
 # --- Every read settles on the same signal -------------------------------
 
 
-def _session_response(span_count: int, trace_count: int = 1) -> _FakeResponse:
-    return _FakeResponse(
-        200,
+def _session_response(
+    span_count: int, trace_count: int = 1
+) -> trace_pb.SearchSessionsResponse:
+    return _response(
         {
             "sessions": [
                 {
@@ -417,9 +422,8 @@ def _session_response(span_count: int, trace_count: int = 1) -> _FakeResponse:
     )
 
 
-def _traces_response(*span_counts: int) -> _FakeResponse:
-    return _FakeResponse(
-        200,
+def _traces_response(*span_counts: int) -> trace_pb.SearchTraceSummariesResponse:
+    return _response(
         {
             "traceSummaries": [
                 {"traceId": f"trace-{index}", "spanCount": count}
@@ -434,8 +438,8 @@ def test_summary_waits_until_the_session_span_count_stops_growing(
 ) -> None:
     client, _ = _client(
         {
-            "SearchSessions": [
-                _FakeResponse(200, {"sessions": []}),
+            "search_sessions": [
+                _response({"sessions": []}),
                 _session_response(3, trace_count=1),
                 _session_response(11, trace_count=2),
                 _session_response(11, trace_count=2),
@@ -453,9 +457,9 @@ def test_summary_treats_an_absent_session_as_not_yet_ingested(
     """A session with no spans yet is missing, not an error to give up on."""
     client, connect = _client(
         {
-            "SearchSessions": [
-                _FakeResponse(200, {"sessions": []}),
-                _FakeResponse(200, {"sessions": []}),
+            "search_sessions": [
+                _response({"sessions": []}),
+                _response({"sessions": []}),
                 _session_response(2),
                 _session_response(2),
             ]
@@ -470,7 +474,7 @@ def test_summary_raises_not_found_when_the_session_never_appears(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The specific diagnosis survives waiting: it received no spans at all."""
-    client, _ = _client({"SearchSessions": [_FakeResponse(200, {"sessions": []})]})
+    client, _ = _client({"search_sessions": [_response({"sessions": []})]})
     monkeypatch.setattr("chalkcompute._trace.time.sleep", lambda _: None)
     with pytest.raises(TraceNotFoundError, match="Session not found"):
         Trace("session-1", _client=client).summary(timeout=0, poll_interval=0)
@@ -481,7 +485,7 @@ def test_summary_accepts_an_empty_session_when_asked_to(
 ) -> None:
     client, _ = _client(
         {
-            "SearchSessions": [
+            "search_sessions": [
                 _session_response(0, trace_count=0),
                 _session_response(0, trace_count=0),
             ]
@@ -498,7 +502,7 @@ def test_traces_waits_for_a_turn_that_is_still_recording(
     """A growing turn adds spans without adding a trace, so the count is the signal."""
     client, _ = _client(
         {
-            "SearchTraceSummaries": [
+            "search_trace_summaries": [
                 _traces_response(2),
                 _traces_response(5),
                 _traces_response(5),
@@ -515,7 +519,7 @@ def test_traces_waits_for_a_later_turn_to_appear(
 ) -> None:
     client, _ = _client(
         {
-            "SearchTraceSummaries": [
+            "search_trace_summaries": [
                 _traces_response(3),
                 _traces_response(3, 4),
                 _traces_response(3, 4),
@@ -530,7 +534,7 @@ def test_traces_waits_for_a_later_turn_to_appear(
 def test_traces_raises_rather_than_returning_an_empty_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client, _ = _client({"SearchTraceSummaries": [_traces_response()]})
+    client, _ = _client({"search_trace_summaries": [_traces_response()]})
     monkeypatch.setattr("chalkcompute._trace.time.sleep", lambda _: None)
     with pytest.raises(TimeoutError, match="expected at least 1"):
         Trace("session-1", _client=client).traces(timeout=0, poll_interval=0)
@@ -556,13 +560,13 @@ def test_every_read_validates_the_same_bounds(
 @pytest.mark.parametrize(
     ("method", "responses"),
     [
-        ("get_spans", {"ListSpan": [_FakeResponse(200, {"spans": []})]}),
-        ("summary", {"SearchSessions": [_session_response(1)]}),
-        ("traces", {"SearchTraceSummaries": [_traces_response(1)]}),
+        ("get_spans", {"list_span": [_response({"spans": []})]}),
+        ("summary", {"search_sessions": [_session_response(1)]}),
+        ("traces", {"search_trace_summaries": [_traces_response(1)]}),
     ],
 )
 def test_every_read_makes_exactly_one_pass_without_waiting(
-    method: str, responses: dict[str, list[_FakeResponse]]
+    method: str, responses: dict[str, list[Any]]
 ) -> None:
     client, connect = _client(responses)
     getattr(Trace("session-1", _client=client), method)(wait=False)

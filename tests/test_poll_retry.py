@@ -17,33 +17,18 @@ from chalkcompute._connect import POLL_MAX_ATTEMPTS, ConnectError, rpc_with_retr
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_connect as sg_connect
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from chalkcompute._scaling_group import ScalingGroup, ScalingGroupError
-from tests._typed_connect import TypedConnectFakeMixin
+from tests._fakes import FakeMethod, StubbedConnectClient
 
 
-class _Response:
-    def __init__(
-        self,
-        data: dict[str, Any] | None = None,
-        status_code: int = 200,
-        text: str = "",
-    ) -> None:
-        self._data = data or {}
-        self.status_code = status_code
-        self.text = text
-
-    def json(self) -> dict[str, Any]:
-        return self._data
-
-
-class _FlakyClient(TypedConnectFakeMixin):
-    """Pops one scripted outcome per rpc call: an exception to raise or a
+class _FlakyClient(StubbedConnectClient):
+    """Pops one scripted outcome per generated call: an exception to raise or a
     response to return."""
 
     def __init__(self, outcomes: list[Any]) -> None:
         self.outcomes = outcomes
         self.calls = 0
 
-    def rpc(self, _service: str, _method: str, _body: dict, **_: Any) -> _Response:
+    def call(self, _method: FakeMethod, _request: Any, **_: Any) -> Any:
         self.calls += 1
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, BaseException):
@@ -68,11 +53,11 @@ def _get_with_retries(
 
 
 def test_rpc_with_retries_recovers_from_transient_failures() -> None:
-    ok = _Response({"scalingGroup": {}})
+    ok = sg_pb.GetScalingGroupResponse(scaling_group=sg_pb.ScalingGroupResponse())
     client = _FlakyClient(
         [
             ConnectRpcError(Code.UNAVAILABLE, "connection refused"),
-            _Response(status_code=503, text=_BLIP),
+            ConnectRpcError(Code.UNAVAILABLE, _BLIP),
             ok,
         ]
     )
@@ -95,41 +80,43 @@ def test_rpc_with_retries_raises_error_cls_after_all_attempts_fail() -> None:
 
 def test_rpc_with_retries_defaults_to_connect_error() -> None:
     client = _FlakyClient(
-        [_Response(status_code=503, text=_BLIP) for _ in range(POLL_MAX_ATTEMPTS)]
+        [ConnectRpcError(Code.UNAVAILABLE, _BLIP) for _ in range(POLL_MAX_ATTEMPTS)]
     )
     with pytest.raises(ConnectError, match="after 5 attempts"):
         _get_with_retries(client)
 
 
-@pytest.mark.parametrize("status_code", [400, 404])
+@pytest.mark.parametrize("code", [Code.INVALID_ARGUMENT, Code.NOT_FOUND])
 def test_rpc_with_retries_raises_immediately_on_client_errors(
-    status_code: int,
+    code: Code,
 ) -> None:
-    client = _FlakyClient([_Response(status_code=status_code, text="nope")])
+    client = _FlakyClient([ConnectRpcError(code, "nope")])
     with pytest.raises(ConnectError):
         _get_with_retries(client)
     assert client.calls == 1
 
 
 def test_rpc_with_retries_retries_429() -> None:
-    ok = _Response({"scalingGroup": {}})
-    client = _FlakyClient([_Response(status_code=429, text="rate limited"), ok])
+    ok = sg_pb.GetScalingGroupResponse(scaling_group=sg_pb.ScalingGroupResponse())
+    client = _FlakyClient(
+        [ConnectRpcError(Code.RESOURCE_EXHAUSTED, "rate limited"), ok]
+    )
     resp = _get_with_retries(client)
     assert resp.scaling_group is not None
     assert client.calls == 2
 
 
-def _sg_response(**overrides: Any) -> _Response:
-    sg = {
-        "id": "sg-1",
-        "name": "sg-retry",
-        "status": "Running",
-        "webUrl": "http://127.0.0.1",
-        "readyReplicas": 0,
-        "availableReplicas": 0,
-        **overrides,
-    }
-    return _Response({"scalingGroup": sg})
+def _sg_response(**overrides: Any) -> sg_pb.GetScalingGroupResponse:
+    return sg_pb.GetScalingGroupResponse(
+        scaling_group=sg_pb.ScalingGroupResponse(
+            id="sg-1",
+            name="sg-retry",
+            status="Running",
+            web_url="http://127.0.0.1",
+            ready_replicas=overrides.get("ready_replicas", 0),
+            available_replicas=overrides.get("available_replicas", 0),
+        )
+    )
 
 
 def test_scaling_group_poll_survives_blip() -> None:
@@ -137,8 +124,8 @@ def test_scaling_group_poll_survives_blip() -> None:
         [
             ConnectRpcError(Code.UNAVAILABLE, "connection refused"),
             _sg_response(),
-            _Response(status_code=503, text=_BLIP),
-            _sg_response(readyReplicas=1, availableReplicas=1),
+            ConnectRpcError(Code.UNAVAILABLE, _BLIP),
+            _sg_response(ready_replicas=1, available_replicas=1),
         ]
     )
     sg = ScalingGroup(image="ubuntu:latest", name="sg-retry")

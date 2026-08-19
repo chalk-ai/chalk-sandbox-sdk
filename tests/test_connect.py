@@ -20,22 +20,6 @@ from chalkcompute._gen.chalk.server.v1 import auth_pb
 from chalkcompute._remote_call_client import ServiceAuthContext
 
 
-class _RPCResponse:
-    status_code = 200
-
-
-class _WorkloadIdentityTokenResponse:
-    def __init__(self, payload: dict[str, Any]) -> None:
-        self._payload = payload
-        self.raise_for_status_called = False
-
-    def raise_for_status(self) -> None:
-        self.raise_for_status_called = True
-
-    def json(self) -> dict[str, Any]:
-        return self._payload
-
-
 def _install_auth_client(
     monkeypatch: pytest.MonkeyPatch,
     payload: dict[str, Any],

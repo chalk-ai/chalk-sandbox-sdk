@@ -1,37 +1,21 @@
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
+from chalkcompute._gen.chalk.server.v1 import environment_secrets_pb as secrets_pb
 from chalkcompute._secret import Secret, SecretScope, resolve_lazy_secrets
-from tests._typed_connect import TypedConnectFakeMixin
+from tests._fakes import FakeMethod, StubbedConnectClient
 
 
-class _Response:
-    def __init__(self, status_code: int = 200, text: str = "") -> None:
-        self.status_code = status_code
-        self.text = text
+class _Client(StubbedConnectClient):
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, secrets_pb.UpsertSecretRequest]] = []
 
-    def json(self) -> dict[str, Any]:
-        return {}
-
-
-class _Client(TypedConnectFakeMixin):
-    """Fake ConnectClient. `statuses[i]` is the status code for the i-th
-    call; calls past the end of the list default to 200."""
-
-    def __init__(self, statuses: list[int] | None = None) -> None:
-        self.calls: list[tuple[str, str, dict[str, Any]]] = []
-        self._statuses = statuses or []
-
-    def rpc(
-        self, service: str, method: str, body: dict[str, Any], **kwargs: Any
-    ) -> _Response:
-        idx = len(self.calls)
-        self.calls.append((service, method, body))
-        status = self._statuses[idx] if idx < len(self._statuses) else 200
-        return _Response(status_code=status, text="boom" if status != 200 else "")
+    def call(
+        self, method: FakeMethod, request: secrets_pb.UpsertSecretRequest, **_kwargs
+    ) -> secrets_pb.UpsertSecretResponse:
+        self.calls.append((method.name, request))
+        return secrets_pb.UpsertSecretResponse()
 
 
 def test_resolve_lazy_secrets_sends_scope_on_every_upsert(
@@ -46,9 +30,11 @@ def test_resolve_lazy_secrets_sends_scope_on_every_upsert(
 
     resolve_lazy_secrets(secrets, client, scope=scope)
 
-    upsert_calls = [c for c in client.calls if c[1] == "UpsertSecret"]
-    assert [c[2]["name"] for c in upsert_calls] == ["FIRST_VAR", "SECOND_VAR"]
-    assert all(c[2]["scope"] == scope._to_proto_dict() for c in upsert_calls)
+    upsert_calls = [
+        request for method, request in client.calls if method == "upsert_secret"
+    ]
+    assert [request.name for request in upsert_calls] == ["FIRST_VAR", "SECOND_VAR"]
+    assert all(request.scope == scope._to_proto() for request in upsert_calls)
 
 
 def test_resolve_lazy_secrets_without_scope_omits_scope_field() -> None:
@@ -91,5 +77,5 @@ def test_resolve_lazy_secrets_mid_list_failure_raises_without_deleting(
 
     # The first secret's upsert went through and is left in place; nothing
     # issues a DeleteSecret here.
-    assert [c[1] for c in client.calls] == ["UpsertSecret"]
-    assert client.calls[0][2]["name"] == "FIRST_VAR"
+    assert [method for method, _request in client.calls] == ["upsert_secret"]
+    assert client.calls[0][1].name == "FIRST_VAR"

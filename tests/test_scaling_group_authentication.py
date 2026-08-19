@@ -7,23 +7,14 @@ import pytest
 
 import chalkcompute._scaling_group as scaling_group_mod
 from chalkcompute import ScalingGroup
-from tests._typed_connect import TypedConnectFakeMixin
+from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
+from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
+from tests._fakes import FakeMethod, StubbedConnectClient
 
 
-class _Response:
-    status_code = 200
-    text = ""
-
-    def __init__(self, scaling_group: dict[str, Any]) -> None:
-        self._scaling_group = scaling_group
-
-    def json(self) -> dict[str, Any]:
-        return {"scalingGroup": self._scaling_group}
-
-
-class _CapturingClient(TypedConnectFakeMixin):
+class _CapturingClient(StubbedConnectClient):
     def __init__(self, *, authentication: str | None = None) -> None:
-        self.requests: list[dict[str, Any]] = []
+        self.requests: list[Any] = []
         self._access_token = "test-token"
         self.ensure_auth_calls = 0
         self.authentication = authentication
@@ -31,36 +22,40 @@ class _CapturingClient(TypedConnectFakeMixin):
     def _ensure_auth(self) -> None:
         self.ensure_auth_calls += 1
 
-    def rpc(
+    def call(
         self,
-        _service: str,
-        method: str,
-        request: dict[str, Any],
+        method: FakeMethod,
+        request: Any,
         **_: Any,
-    ) -> _Response:
+    ) -> Any:
         self.requests.append(request)
-        if method == "CreateScalingGroup":
-            spec = request["spec"]
-            name = spec["containerSpec"]["name"]
-        elif method == "GetScalingGroup":
-            name = request.get("name", "existing-group")
-            spec = {
-                "containerSpec": {
-                    "authentication": self.authentication,
-                }
-            }
+        if method.name == "create_scaling_group":
+            assert isinstance(request, sg_pb.CreateScalingGroupRequest)
+            assert request.spec is not None and request.spec.container_spec is not None
+            spec = request.spec
+            name = spec.container_spec.name
+            response_type = sg_pb.CreateScalingGroupResponse
+        elif method.name == "get_scaling_group":
+            assert isinstance(request, sg_pb.GetScalingGroupRequest)
+            name = request.name or "existing-group"
+            spec = sg_pb.ScalingGroupSpec(
+                container_spec=container_pb.ChalkContainerSpec(
+                    authentication=self.authentication
+                )
+            )
+            response_type = sg_pb.GetScalingGroupResponse
         else:
-            raise AssertionError(f"unexpected method: {method}")
-        return _Response(
-            {
-                "id": "sg-1",
-                "name": name,
-                "status": "Available",
-                "webUrl": "https://example.com",
-                "readyReplicas": 1,
-                "availableReplicas": 1,
-                "spec": spec,
-            }
+            raise AssertionError(f"unexpected method: {method.name}")
+        return response_type(
+            scaling_group=sg_pb.ScalingGroupResponse(
+                id="sg-1",
+                name=name,
+                status="Available",
+                web_url="https://example.com",
+                ready_replicas=1,
+                available_replicas=1,
+                spec=spec,
+            )
         )
 
 
@@ -81,8 +76,10 @@ def test_scaling_group_deploy_serializes_authentication(
 
     sg.deploy()
 
-    container_spec = client.requests[0]["spec"]["containerSpec"]
-    assert container_spec.get("authentication") == expected
+    request = client.requests[0]
+    assert isinstance(request, sg_pb.CreateScalingGroupRequest)
+    assert request.spec is not None and request.spec.container_spec is not None
+    assert (request.spec.container_spec.authentication or None) == expected
 
 
 def test_authenticated_scaling_group_call_adds_chalk_token(
