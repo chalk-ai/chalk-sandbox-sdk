@@ -763,6 +763,126 @@ class Volume:
             version_id=version_id,
         )
 
+    @classmethod
+    def from_huggingface_model(
+        cls,
+        repo_id: str,
+        volume_name: str,
+        *,
+        revision: str = "main",
+        mount_path: str = "/data",
+        cpu: str = "4",
+        memory: str = "8Gi",
+        force: bool = False,
+        client: VolumeClient | None = None,
+    ) -> Volume:
+        """Mirror a HuggingFace Hub repo into a volume and return a handle to it.
+
+        The download runs inside a short-lived Chalk :class:`Sandbox` (a
+        one-shot run-and-terminate job, unlike :func:`chalkcompute.function`
+        which deploys a persistent, always-warm scaling group — the wrong
+        primitive for a single mirroring pass) with ``volume_name`` mounted at
+        ``mount_path`` (a Rust-FUSE, S3-backed mount). Weights stream
+        directly from the HuggingFace CDN, through the sandbox, and out to S3
+        via the FUSE driver's own write path, entirely within Chalk's
+        network. The calling process (wherever this is invoked from) never
+        receives the model bytes. The sandbox is always terminated before
+        returning, including on failure.
+
+        ``cpu``/``memory`` don't need to scale with checkpoint size:
+        ``huggingface_hub`` (optionally accelerated by ``hf_transfer``)
+        streams each file to disk in bounded chunks rather than buffering
+        whole files in memory, and writes through the FUSE mount stream out
+        to S3 rather than buffering a whole file locally. The defaults here
+        comfortably cover models of any size; raise them only if the sandbox
+        is timing out or CPU-starved on checksum/hash verification, not to
+        make room for bigger weights.
+
+        Idempotent by default: if the volume already has files under
+        ``mount_path``'s contents, the mirror step is skipped and the
+        existing volume is returned as-is. Pass ``force=True`` to re-mirror
+        regardless.
+
+        Parameters
+        ----------
+        repo_id
+            HuggingFace Hub repo id, e.g. ``"Qwen/Qwen3-8B-FP8"``.
+        volume_name
+            Name of the volume to populate (created if missing).
+        revision
+            Git revision/commit/tag on the HF repo. Defaults to ``"main"``.
+        mount_path
+            Path the repo's files are written to inside the volume.
+        cpu, memory
+            Resources for the transient mirroring sandbox.
+        force
+            If ``True``, re-run the mirror even if the volume already has
+            content.
+        client
+            Optional :class:`VolumeClient` to use for the returned handle.
+
+        Returns
+        -------
+        Volume
+            A handle to the populated volume.
+        """
+        # Imported lazily: _sandbox.py imports from this module, so a
+        # top-level import here would be circular.
+        from chalkcompute._sandbox import Sandbox as _Sandbox
+
+        vol = cls(volume_name, client=client)
+        if not force:
+            try:
+                if any(vol.listdir(recursive=True)):
+                    logger.info(
+                        "Volume %r already populated; skipping HF mirror of %r.",
+                        volume_name,
+                        repo_id,
+                    )
+                    return vol
+            except VolumeNotFoundError:
+                pass
+
+        # hf_transfer deliberately not used here: it splits a single file into
+        # several concurrent byte-range downloads, each written to a
+        # different offset of the same destination file. Against a FUSE
+        # mount that's fine on chalkfs-fuse's default `inode` layout (chunked
+        # read-modify-write) but still costs extra read-modify-write work at
+        # each chunk boundary, and is pathological on the `pure-path` layout
+        # (unchunked -- a random write reads + rewrites the whole object).
+        # Plain `snapshot_download` already parallelizes *across* files via
+        # `max_workers`, and writes each individual file strictly
+        # sequentially, so there's no concurrent-write contention on a single
+        # file either way.
+        mirror_image = Image.debian_slim().pip_install(["huggingface_hub"])
+        script = (
+            "from huggingface_hub import snapshot_download; "
+            f"snapshot_download({repo_id!r}, revision={revision!r}, "
+            f"local_dir={mount_path!r}, max_workers=8)"
+        )
+        sandbox = (
+            _Sandbox(
+                image=mirror_image,
+                name=f"hf-mirror-{volume_name}",
+                cpu=cpu,
+                memory=memory,
+            )
+            .mount_volume(volume_name, mount_path)
+            .run()
+        )
+        try:
+            result = sandbox.exec("python", "-c", script, timeout_secs=1800)
+            if result.exit_code != 0:
+                raise VolumeError(
+                    f"HF mirror of {repo_id!r} into {volume_name!r} failed: "
+                    f"{result.stderr_text}"
+                )
+        finally:
+            sandbox.terminate()
+
+        vol.reload()
+        return vol
+
     @traced("chalkcompute.volume.delete")
     def delete(self) -> None:
         """Delete this volume and all of its versions.
