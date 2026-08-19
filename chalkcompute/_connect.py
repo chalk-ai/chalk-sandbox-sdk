@@ -29,7 +29,7 @@ from chalkcompute._remote_call_client import (
     ServiceAuthContext,
     resolve_service_auth_context,
 )
-from chalkcompute._rpc import rpc_interceptors
+from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
 from chalkcompute._tracing import _instrumented
 from chalkcompute._web_identity import (
     WebIdentityTokenError,
@@ -103,14 +103,12 @@ def chalk_client_from_env(
 class ConnectClient:
     """Authenticated RPC client for Chalk APIs.
 
-    Two transports share this client's auth:
-
-    - :meth:`stub` / :meth:`call` — typed ConnectRPC clients. gRPC is the
-      compatibility default, while Connect and gRPC-Web remain selectable.
-    Ambient Chalk credentials are read lazily. A JWT configured through
-    ``CHALK_WEB_IDENTITY_TOKEN_FILE`` takes precedence and is cached for the
-    shorter of one hour or half its remaining lifetime. Otherwise, service
-    auth or ChalkPy's client credentials and ``~/.chalk.yml`` lookup are used.
+    Typed RPC dispatch goes through ConnectRPC clients using the gRPC protocol
+    over the shared HTTP/2 transport. Ambient Chalk credentials are read lazily.
+    A JWT configured through ``CHALK_WEB_IDENTITY_TOKEN_FILE`` takes precedence
+    and is cached for the shorter of one hour or half its remaining lifetime.
+    Otherwise, service auth or ChalkPy's client credentials and ``~/.chalk.yml``
+    lookup are used.
 
     Examples
     --------
@@ -122,8 +120,6 @@ class ConnectClient:
     def __init__(
         self,
         chalk_client: Any | None = None,
-        *,
-        protocol: ProtocolType = ProtocolType.GRPC,
     ) -> None:
         self._api_server: str | None = None
         self._access_token: str | None = None
@@ -133,7 +129,6 @@ class ConnectClient:
         self._environment_id_to_name: dict[str, str] = {}
         self._primary_environment: str | None = None
         self._chalk_client = chalk_client
-        self._protocol = protocol
         self._typed_clients: dict[Callable[..., Any], Any] = {}
         self._web_identity_token_file: str | None = None
         self._web_identity_cached_at: float | None = None
@@ -189,9 +184,10 @@ class ConnectClient:
             self._api_server = service_auth.auth_endpoint.rstrip("/")
             auth_client = auth_connect.AuthServiceClientSync(
                 self._api_server,
-                protocol=self._protocol,
-                interceptors=rpc_interceptors(self._protocol),
+                protocol=ProtocolType.GRPC,
+                interceptors=rpc_interceptors(),
                 http_client=SYNC_HTTP_CLIENT,
+                read_max_bytes=RPC_READ_MAX_BYTES,
             )
             try:
                 data = auth_client.get_internal_working_token(
@@ -273,9 +269,10 @@ class ConnectClient:
 
         auth_client = auth_connect.AuthServiceClientSync(
             self._api_server,
-            protocol=self._protocol,
-            interceptors=rpc_interceptors(self._protocol),
+            protocol=ProtocolType.GRPC,
+            interceptors=rpc_interceptors(),
             http_client=SYNC_HTTP_CLIENT,
+            read_max_bytes=RPC_READ_MAX_BYTES,
         )
         try:
             data = auth_client.get_token(
@@ -403,9 +400,7 @@ class ConnectClient:
     def stub(self, stub_cls: Callable[..., _StubT]) -> _StubT:
         """Return a generated ConnectRPC client for the API server.
 
-        The configured protocol defaults to gRPC for compatibility with Chalk's
-        existing endpoints, but callers may select Connect or gRPC-Web through
-        :class:`connectrpc.protocol.ProtocolType`.
+        Clients always use the gRPC protocol over the shared HTTP/2 transport.
         """
         self._ensure_auth()
         assert self._api_server is not None
@@ -413,9 +408,10 @@ class ConnectClient:
         if client is None:
             client = stub_cls(
                 self._api_server,
-                protocol=self._protocol,
-                interceptors=rpc_interceptors(self._protocol),
+                protocol=ProtocolType.GRPC,
+                interceptors=rpc_interceptors(),
                 http_client=SYNC_HTTP_CLIENT,
+                read_max_bytes=RPC_READ_MAX_BYTES,
             )
             self._typed_clients[stub_cls] = client
         return client
@@ -464,59 +460,6 @@ class ConnectClient:
 # ---------------------------------------------------------------------------
 # Shared helpers that operate on a ConnectClient
 # ---------------------------------------------------------------------------
-
-
-POLL_MAX_ATTEMPTS = 5
-"""Total attempts per poll RPC before a transient failure is raised."""
-
-
-def rpc_with_retries(
-    client: ConnectClient,
-    method: Callable[..., _RespT],
-    request: Any,
-    *,
-    error_cls: type[Exception] = ConnectError,
-    max_attempts: int = POLL_MAX_ATTEMPTS,
-    retry_interval: float = 1.0,
-    timeout: float = 30,
-) -> _RespT:
-    """Call a generated RPC method, retrying transient failures.
-
-    Only ConnectRPC errors that represent transient transport/server failures
-    are retried. Deterministic request errors fail immediately.
-    """
-    method_name = getattr(method, "__name__", "RPC")
-    last_error: ConnectRpcError | None = None
-    transient_codes = {
-        Code.CANCELED,
-        Code.UNKNOWN,
-        Code.DEADLINE_EXCEEDED,
-        Code.RESOURCE_EXHAUSTED,
-        Code.ABORTED,
-        Code.INTERNAL,
-        Code.UNAVAILABLE,
-        Code.DATA_LOSS,
-    }
-    for attempt in range(1, max_attempts + 1):
-        try:
-            return client.call(method, request, timeout=timeout)
-        except ConnectRpcError as exc:
-            last_error = exc
-            if exc.code not in transient_codes:
-                raise error_cls(f"{method_name} failed: {exc}") from exc
-        if attempt < max_attempts:
-            logger.warning(
-                "%s attempt %d/%d failed (%s); retrying in %.1fs",
-                method_name,
-                attempt,
-                max_attempts,
-                last_error,
-                retry_interval,
-            )
-            time.sleep(retry_interval)
-    raise error_cls(
-        f"{method_name} failed after {max_attempts} attempts: {last_error}"
-    ) from last_error
 
 
 @_instrumented("chalkcompute.build_image")

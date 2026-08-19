@@ -62,9 +62,10 @@ from chalkcompute._gen.chalk.sandbox.v2 import (
 )
 from chalkcompute._gen.chalk.sandbox.v2 import service_pb as pb
 from chalkcompute._gen.chalk.sandbox.v2 import service_connect as pb_connect
+from chalkcompute._http import SYNC_HTTP_CLIENT
 from chalkcompute._image import Image
 from chalkcompute._naming import validate_env
-from chalkcompute._rpc import rpc_interceptors
+from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
     Volume,
@@ -939,7 +940,6 @@ class Sandbox:
             client._address,
             use_tls=client._use_tls,
             metadata=client._metadata,
-            protocol=client._protocol,
         )
 
         execution_id = ""
@@ -1080,7 +1080,6 @@ class SandboxClient:
         use_tls: bool | None = None,
         metadata: _GrpcMetadata | None = None,
         _connect: ConnectClient | None = None,
-        protocol: ProtocolType = ProtocolType.GRPC,
     ) -> None:
         """Initialize the RPC client.
 
@@ -1103,17 +1102,28 @@ class SandboxClient:
         self._static_metadata = metadata
         self._connect = _connect
         self._use_tls = credentials is not None if use_tls is None else use_tls
-        self._protocol = protocol
         self._address = rpc_address_from_target(target, use_tls=self._use_tls)
-        interceptors = rpc_interceptors(protocol)
+        interceptors = rpc_interceptors()
         self._stub = pb_connect.SandboxServiceClientSync(
-            self._address, protocol=protocol, interceptors=interceptors
+            self._address,
+            protocol=ProtocolType.GRPC,
+            interceptors=interceptors,
+            http_client=SYNC_HTTP_CLIENT,
+            read_max_bytes=RPC_READ_MAX_BYTES,
         )
         self._process_stub = process_connect.SandboxProcessServiceClientSync(
-            self._address, protocol=protocol, interceptors=interceptors
+            self._address,
+            protocol=ProtocolType.GRPC,
+            interceptors=interceptors,
+            http_client=SYNC_HTTP_CLIENT,
+            read_max_bytes=RPC_READ_MAX_BYTES,
         )
         self._runtime_stub = runtime_connect.SandboxRuntimeServiceClientSync(
-            self._address, protocol=protocol, interceptors=interceptors
+            self._address,
+            protocol=ProtocolType.GRPC,
+            interceptors=interceptors,
+            http_client=SYNC_HTTP_CLIENT,
+            read_max_bytes=RPC_READ_MAX_BYTES,
         )
 
     @classmethod
@@ -1121,7 +1131,6 @@ class SandboxClient:
         cls,
         *,
         chalk_client: Any | None = None,
-        protocol: ProtocolType = ProtocolType.GRPC,
     ) -> SandboxClient:
         """Create a ``SandboxClient`` from ambient Chalk credentials."""
 
@@ -1134,7 +1143,6 @@ class SandboxClient:
             host,
             use_tls=use_tls,
             metadata=connect._rpc_metadata(),
-            protocol=protocol,
             _connect=(
                 connect
                 if getattr(connect, "_uses_web_identity_token", lambda: False)() is True

@@ -2,21 +2,38 @@
 
 from __future__ import annotations
 
+import logging
+import time
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeVar
 
+from connectrpc.code import Code
 from connectrpc.errors import ConnectError
-from connectrpc.protocol import ProtocolType
 from connectrpc.request import RequestContext
 from opentelemetry.trace import Span, StatusCode
 
 from chalkcompute._tracing import get_tracer
 
+logger = logging.getLogger(__name__)
+
 _RPC_SPAN_NAME = "chalkcompute.rpc"
-_RPC_SYSTEM_NAME_ATTRIBUTE = "rpc.system.name"
 _RPC_METHOD_ATTRIBUTE = "rpc.method"
 _RPC_RESPONSE_STATUS_CODE_ATTRIBUTE = "rpc.response.status_code"
+
+# Match the historical grpcio max receive message size (100MB). Connect only
+# enforces a read limit; there is no client-side send-size knob.
+RPC_READ_MAX_BYTES = 100 << 20
+
+# Match the historical grpcio service_config retryPolicy for UNAVAILABLE.
+RPC_RETRY_MAX_ATTEMPTS = 5
+RPC_RETRY_INITIAL_BACKOFF_SECONDS = 0.1
+RPC_RETRY_MAX_BACKOFF_SECONDS = 1.0
+RPC_RETRY_BACKOFF_MULTIPLIER = 2.0
+
+_REQ = TypeVar("_REQ")
+_RES = TypeVar("_RES")
 
 
 @dataclass
@@ -28,13 +45,9 @@ class _SpanToken:
 class TracingInterceptor:
     """Emit one OpenTelemetry span around each synchronous RPC."""
 
-    def __init__(self, protocol: ProtocolType) -> None:
-        self._protocol = protocol
-
     def on_start_sync(self, ctx: RequestContext[Any, Any]) -> _SpanToken:
         context = get_tracer().start_as_current_span(_RPC_SPAN_NAME)
         span = context.__enter__()
-        span.set_attribute(_RPC_SYSTEM_NAME_ATTRIBUTE, self._protocol.name.lower())
         span.set_attribute(
             _RPC_METHOD_ATTRIBUTE,
             f"{ctx.method.service_name}/{ctx.method.name}",
@@ -65,6 +78,52 @@ class TracingInterceptor:
         )
 
 
-def rpc_interceptors(protocol: ProtocolType) -> tuple[TracingInterceptor]:
-    """Return the common interceptors for a generated synchronous client."""
-    return (TracingInterceptor(protocol),)
+class RetryInterceptor:
+    """Retry unary RPCs that fail with ``UNAVAILABLE``.
+
+    Mirrors the historical grpcio ``service_config`` retry policy: five total
+    attempts, exponential backoff from 0.1s to 1s with multiplier 2.
+    """
+
+    def intercept_unary_sync(
+        self,
+        call_next: Callable[[_REQ, RequestContext[_REQ, _RES]], _RES],
+        request: _REQ,
+        ctx: RequestContext[_REQ, _RES],
+        /,
+    ) -> _RES:
+        delay = RPC_RETRY_INITIAL_BACKOFF_SECONDS
+        last_error: ConnectError | None = None
+        for attempt in range(1, RPC_RETRY_MAX_ATTEMPTS + 1):
+            try:
+                return call_next(request, ctx)
+            except ConnectError as exc:
+                last_error = exc
+                if (
+                    exc.code != Code.UNAVAILABLE
+                    or attempt >= RPC_RETRY_MAX_ATTEMPTS
+                ):
+                    raise
+                logger.warning(
+                    "%s/%s UNAVAILABLE (attempt %d/%d); retrying in %.1fs",
+                    ctx.method.service_name,
+                    ctx.method.name,
+                    attempt,
+                    RPC_RETRY_MAX_ATTEMPTS,
+                    delay,
+                )
+                time.sleep(delay)
+                delay = min(
+                    delay * RPC_RETRY_BACKOFF_MULTIPLIER,
+                    RPC_RETRY_MAX_BACKOFF_SECONDS,
+                )
+        assert last_error is not None
+        raise last_error
+
+
+def rpc_interceptors() -> tuple[RetryInterceptor, TracingInterceptor]:
+    """Return the common interceptors for a generated synchronous client.
+
+    Retry runs outermost so each attempt is traced independently.
+    """
+    return (RetryInterceptor(), TracingInterceptor())

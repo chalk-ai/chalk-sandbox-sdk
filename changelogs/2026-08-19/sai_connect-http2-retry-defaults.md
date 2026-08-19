@@ -1,0 +1,1 @@
+- Harden ConnectRPC transport defaults: pin HTTP/2 with a shared pyqwest client, 100MB read limit, TCP keepalive at 60s, and a unary interceptor that retries ``UNAVAILABLE`` with exponential backoff. Force gRPC as the only protocol and drop the selectable protocol / ``rpc_with_retries`` helpers.

@@ -38,7 +38,8 @@ from chalkcompute._connect import (
 )
 from chalkcompute._gen.chalk.artifactstore.v1 import service_pb as pb
 from chalkcompute._gen.chalk.artifactstore.v1 import service_connect as pb_connect
-from chalkcompute._rpc import rpc_interceptors
+from chalkcompute._http import SYNC_HTTP_CLIENT
+from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
 from chalkcompute._tracing import _instrumented
 
 # Aliases defined before ArtifactClient, which has a ``.list()`` method that
@@ -188,17 +189,17 @@ class ArtifactClient:
         credentials: object | None = None,
         use_tls: bool | None = None,
         metadata: _GrpcMetadata | None = None,
-        protocol: ProtocolType = ProtocolType.GRPC,
     ) -> None:
         self._target = target
         self._metadata = metadata
-        self._protocol = protocol
         if use_tls is None:
             use_tls = credentials is not None
         self._stub = pb_connect.ArtifactServiceClientSync(
             rpc_address_from_target(target, use_tls=use_tls),
-            protocol=protocol,
-            interceptors=rpc_interceptors(protocol),
+            protocol=ProtocolType.GRPC,
+            interceptors=rpc_interceptors(),
+            http_client=SYNC_HTTP_CLIENT,
+            read_max_bytes=RPC_READ_MAX_BYTES,
         )
 
     @classmethod
@@ -209,7 +210,6 @@ class ArtifactClient:
             connect._api_server or "",
             use_tls=(connect._api_server or "").startswith("https://"),
             metadata=connect._rpc_metadata(),
-            protocol=connect._protocol,
         )
 
     @classmethod
