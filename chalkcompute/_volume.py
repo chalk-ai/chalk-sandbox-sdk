@@ -24,11 +24,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
 
-import httpx
-from google.protobuf.json_format import MessageToDict
+from protobuf import Oneof
 
 from chalkcompute._connect import ConnectClient
-from chalkcompute._gen.chalk.volume.v2 import volume_pb2 as pb_v2
+from chalkcompute._gen.chalk.volume.v2 import volume_pb as pb_v2
+from chalkcompute._http import HTTP_TRANSPORT_ERRORS, SYNC_HTTP_CLIENT
 from chalkcompute._image import Image
 from chalkcompute._tracing import traced
 
@@ -175,17 +175,14 @@ def _read_file_from_signed_uri(signed_download_uri: str) -> bytes:
         If the download times out or the HTTP request fails.
     """
     try:
-        resp = httpx.get(signed_download_uri, timeout=300)
-        resp.raise_for_status()
-        return resp.content
-    except httpx.TimeoutException as e:
+        response = SYNC_HTTP_CLIENT.get(signed_download_uri, timeout=300)
+    except TimeoutError as e:
         raise VolumeError(f"Timed out downloading signed file URL: {e}") from e
-    except httpx.HTTPStatusError as e:
-        raise VolumeError(
-            f"Signed file download failed with status {e.response.status_code}"
-        ) from e
-    except httpx.HTTPError as e:
+    except HTTP_TRANSPORT_ERRORS as e:
         raise VolumeError(f"Signed file download failed: {e}") from e
+    if not 200 <= response.status < 300:
+        raise VolumeError(f"Signed file download failed with status {response.status}")
+    return response.content
 
 
 _INLINE_THRESHOLD_BYTES: int = 4 * 1024
@@ -1157,13 +1154,13 @@ class VolumeClient:
     @traced("chalkcompute.volume.stage_lazy_files")
     def stage_lazy_files(
         self, image: Image, *, volume_name: str
-    ) -> tuple[builtins.list[VolumeMount], builtins.list[dict[str, Any]]]:
+    ) -> tuple[builtins.list[VolumeMount], builtins.list[pb_v2.CommitIntent]]:
         """Stage an image's lazy local files into source-code volumes.
 
         Reuses (or creates, ``source_code``-kind) one stable volume
         per destination directory — named from ``volume_name`` — and uploads
         the file bytes, but does **not** commit. Each staged upload is
-        returned as a ``chalk.volume.v2.CommitIntent`` JSON dict for
+        returned as a typed ``chalk.volume.v2.CommitIntent`` for
         ``CreateExternalFunctionVersionRequest.volume_commits``: the server
         commits the intent and stamps the resulting version_id onto the spec
         volume with the matching name, so every replica is pinned to that
@@ -1186,7 +1183,7 @@ class VolumeClient:
 
         Returns
         -------
-        tuple of (list of VolumeMount, list of dict)
+        tuple of (list of VolumeMount, list of CommitIntent)
             One mount and one commit-intent dict per volume.
         """
         from chalkcompute._naming import sanitize_dns_label
@@ -1197,7 +1194,7 @@ class VolumeClient:
             raise VolumeError(str(e)) from e
 
         volumes: builtins.list[VolumeMount] = []
-        intents: builtins.list[dict[str, Any]] = []
+        intents: builtins.list[pb_v2.CommitIntent] = []
         for dest_dir, files in dir_to_files.items():
             name = sanitize_dns_label(f"{volume_name}-{dest_dir}")
             existed = self.exists(name)
@@ -1215,10 +1212,16 @@ class VolumeClient:
                 intent_bytes = self._inner.staged_intent(vol.name, staged)
             except _native_error_types() as exc:
                 _raise_volume_error(exc, vol.name)
-            intent = pb_v2.CommitIntent.FromString(bytes(intent_bytes))
+            intent = pb_v2.CommitIntent.from_binary(bytes(intent_bytes))
             if existed:
-                intent.path_deltas.removes.add(path="/", recursive=True)
-            intents.append(MessageToDict(intent))
+                if intent.deltas is None:
+                    intent.deltas = Oneof("path_deltas", pb_v2.PathDeltaList())
+                elif intent.deltas.field != "path_deltas":
+                    raise VolumeError("Native staging returned non-path commit deltas")
+                intent.deltas.value.removes.append(
+                    pb_v2.PathRemoveDelta(path="/", recursive=True)
+                )
+            intents.append(intent)
             volumes.append(VolumeMount(name=vol.name, mount_path=dest_dir))
         return volumes, intents
 
@@ -1599,21 +1602,20 @@ def _file_kind_name(value: int) -> str:
 
 
 def _read_file_response(resp: pb_v2.GetFileResponse) -> bytes:
-    content_type = resp.WhichOneof("content")
-    if content_type == "data":
-        return resp.data
-    if content_type == "chunked":
-        chunks = sorted(resp.chunked.chunks, key=lambda c: c.offset)
-        if not chunks:
-            return b""
-        return b"".join(
-            _read_file_from_signed_uri(c.signed_download_uri) for c in chunks
-        )
-    if content_type == "packed":
-        pack = resp.packed.pack
-        data = _read_file_from_signed_uri(pack.signed_download_uri)
-        return data[pack.offset : pack.offset + pack.size]
-    raise VolumeError(f"Unsupported file response type: {content_type!r}")
+    match resp.content:
+        case Oneof(field="data", value=data):
+            return data
+        case Oneof(field="chunked", value=chunked):
+            chunks = sorted(chunked.chunks, key=lambda c: c.offset)
+            return b"".join(
+                _read_file_from_signed_uri(c.signed_download_uri) for c in chunks
+            )
+        case Oneof(field="packed", value=packed) if packed.pack is not None:
+            pack = packed.pack
+            data = _read_file_from_signed_uri(pack.signed_download_uri)
+            return data[pack.offset : pack.offset + pack.size]
+        case _:
+            raise VolumeError(f"Unsupported file response type: {resp.content!r}")
 
 
 class _BatchUpload:

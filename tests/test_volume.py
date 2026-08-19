@@ -4,8 +4,9 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from protobuf import Oneof
 
-from chalkcompute._gen.chalk.volume.v2 import volume_pb2 as pb_v2
+from chalkcompute._gen.chalk.volume.v2 import volume_pb as pb_v2
 from chalkcompute._volume import VolumeClosedError, VolumeError, VolumeNotFoundError
 from chalkcompute import _volume as vv
 from chalkcompute._volume import (
@@ -555,19 +556,22 @@ def test_chunked_read_downloads_chunks_and_joins_by_offset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     resp = pb_v2.GetFileResponse(
-        chunked=pb_v2.ChunkedFileContent(
-            chunks=[
-                pb_v2.SignedChunkRef(
-                    signed_download_uri="https://storage/chunk-2",
-                    offset=6,
-                    size=5,
-                ),
-                pb_v2.SignedChunkRef(
-                    signed_download_uri="https://storage/chunk-1",
-                    offset=0,
-                    size=6,
-                ),
-            ]
+        content=Oneof(
+            "chunked",
+            pb_v2.ChunkedFileContent(
+                chunks=[
+                    pb_v2.SignedChunkRef(
+                        signed_download_uri="https://storage/chunk-2",
+                        offset=6,
+                        size=5,
+                    ),
+                    pb_v2.SignedChunkRef(
+                        signed_download_uri="https://storage/chunk-1",
+                        offset=0,
+                        size=6,
+                    ),
+                ]
+            ),
         )
     )
 
@@ -579,6 +583,40 @@ def test_chunked_read_downloads_chunks_and_joins_by_offset(
 
     monkeypatch.setattr(vv, "_read_file_from_signed_uri", read)
     assert _read_file_response(resp) == b"hello world"
+
+
+def test_signed_download_uses_shared_pyqwest_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    http_client = MagicMock()
+    http_client.get.return_value.status = 200
+    http_client.get.return_value.content = b"downloaded"
+    monkeypatch.setattr(vv, "SYNC_HTTP_CLIENT", http_client)
+
+    assert vv._read_file_from_signed_uri("https://storage/chunk") == b"downloaded"
+    http_client.get.assert_called_once_with("https://storage/chunk", timeout=300)
+
+
+def test_signed_download_rejects_unsuccessful_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    http_client = MagicMock()
+    http_client.get.return_value.status = 403
+    monkeypatch.setattr(vv, "SYNC_HTTP_CLIENT", http_client)
+
+    with pytest.raises(VolumeError, match="failed with status 403"):
+        vv._read_file_from_signed_uri("https://storage/chunk")
+
+
+def test_signed_download_translates_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    http_client = MagicMock()
+    http_client.get.side_effect = TimeoutError("slow")
+    monkeypatch.setattr(vv, "SYNC_HTTP_CLIENT", http_client)
+
+    with pytest.raises(VolumeError, match="Timed out downloading signed file URL"):
+        vv._read_file_from_signed_uri("https://storage/chunk")
 
 
 def test_dict_commit_status_conversion() -> None:
@@ -611,7 +649,7 @@ def test_stage_lazy_files_creates_source_code_volume_and_returns_intent(
     intent = pb_v2.CommitIntent(
         volume=pb_v2.VolumeRef(name="src-vol"), author="chalk:env:agent:a"
     )
-    client._inner.staged_intent.return_value = intent.SerializeToString()
+    client._inner.staged_intent.return_value = intent.to_binary()
 
     volumes, intents = client.stage_lazy_files(image, volume_name="fn-src-add")
 
@@ -621,7 +659,7 @@ def test_stage_lazy_files_creates_source_code_volume_and_returns_intent(
     assert staged_name == "fn-src-add-app"
     assert source == [("f.txt", Path(str(src)))]
 
-    assert intents == [{"volume": {"name": "src-vol"}, "author": "chalk:env:agent:a"}]
+    assert intents == [intent]
     assert len(volumes) == 1
     assert volumes[0].name == "fn-src-add-app"
     assert volumes[0].mount_path == "/app"
@@ -641,7 +679,7 @@ def test_stage_lazy_files_reuses_volume_and_replaces_base_tree(
         "version": _version_dict(),
     }
     intent = pb_v2.CommitIntent(volume=pb_v2.VolumeRef(name="fn-src-add-app"))
-    client._inner.staged_intent.return_value = intent.SerializeToString()
+    client._inner.staged_intent.return_value = intent.to_binary()
 
     volumes, intents = client.stage_lazy_files(image, volume_name="fn-src-add")
 
@@ -649,7 +687,11 @@ def test_stage_lazy_files_reuses_volume_and_replaces_base_tree(
     assert volumes[0].name == "fn-src-add-app"
     # A recursive root remove tells the server to build the version from
     # an empty tree plus the upserts.
-    assert intents[0]["pathDeltas"]["removes"] == [{"path": "/", "recursive": True}]
+    assert intents[0].deltas is not None
+    assert intents[0].deltas.field == "path_deltas"
+    assert intents[0].deltas.value.removes == [
+        pb_v2.PathRemoveDelta(path="/", recursive=True)
+    ]
 
 
 def test_native_client_symbol_is_bound() -> None:

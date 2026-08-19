@@ -17,6 +17,7 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -83,7 +84,7 @@ print("Waiting for vLLM to load the model...")
 for _ in range(60):
     try:
         resp = sg.call("/health", method="GET", timeout=10)
-        if resp.status_code == 200:
+        if resp.status == 200:
             break
     except Exception:
         pass
@@ -105,12 +106,14 @@ for attempt in range(10):
         },
         timeout=120,
     )
-    if resp.status_code == 200:
+    if resp.status == 200:
         break
-    print(f"  attempt {attempt + 1}: {resp.status_code}, retrying...")
+    print(f"  attempt {attempt + 1}: {resp.status}, retrying...")
     time.sleep(15)
-resp.raise_for_status()
-print(f"Response: {resp.json()['choices'][0]['message']['content']}")
+if not 200 <= resp.status < 300:
+    raise RuntimeError(f"Completion request failed with status {resp.status}")
+response_body = json.loads(resp.content)
+print(f"Response: {response_body['choices'][0]['message']['content']}")
 
 print(f"\nServing at: {sg.web_url}")
 print("To tear down: sg.delete()")

@@ -6,201 +6,111 @@ import chalkcompute._function as function_mod
 import chalkcompute._cls as cls_mod
 from chalkcompute._cls import RemoteClass, method
 from chalkcompute._function import RemoteFunction
+from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as catalog_pb
+from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from chalkcompute._scaling_group import ScalingGroup
+from tests._fakes import FakeMethod, StubbedConnectClient
 
 
-class _Response:
-    status_code = 200
-    text = ""
+class _RemoteFunctionReadinessClient(StubbedConnectClient):
+    create_status = "Running"
 
-    def __init__(self, data: dict[str, Any]) -> None:
-        self._data = data
-
-    def json(self) -> dict[str, Any]:
-        return self._data
-
-
-class _RemoteFunctionReadinessClient:
     def __init__(self) -> None:
         self.methods: list[str] = []
         self._env_id: str | None = None
         self.polls = [
-            {"status": "Running", "readyReplicas": 0, "availableReplicas": 0},
-            {"status": "Running", "readyReplicas": 1, "availableReplicas": 1},
+            sg_pb.ScalingGroupResponse(status="Running"),
+            sg_pb.ScalingGroupResponse(
+                status="Running", ready_replicas=1, available_replicas=1
+            ),
         ]
 
     def _ensure_auth(self) -> None:
         pass
 
-    def rpc(
+    def call(
         self,
-        _service: str,
-        method: str,
-        request: dict[str, Any],
+        method: FakeMethod,
+        request: Any,
         **_: Any,
-    ) -> _Response:
-        self.methods.append(method)
-        if method == "CreateExternalFunctionVersion":
-            return _Response(
-                {
-                    "externalFunctionVersion": {
-                        "id": "fn-version-1",
-                        "functionName": request["functionName"],
-                        "version": 1,
-                        "scalingGroupName": request["spec"]["containerSpec"]["name"],
-                    },
-                    "scalingGroup": {
-                        "status": "Running",
-                        "webUrl": "http://127.0.0.1",
-                        "port": 6666,
-                        "readyReplicas": 0,
-                        "availableReplicas": 0,
-                    },
-                }
+    ) -> Any:
+        self.methods.append(method.name)
+        if method.name == "create_external_function_version":
+            assert isinstance(request, catalog_pb.CreateExternalFunctionVersionRequest)
+            assert request.spec is not None and request.spec.container_spec is not None
+            return catalog_pb.CreateExternalFunctionVersionResponse(
+                external_function_version=catalog_pb.ExternalFunctionVersion(
+                    id="fn-version-1",
+                    function_name=request.function_name,
+                    version=1,
+                    scaling_group_name=request.spec.container_spec.name,
+                ),
+                scaling_group=sg_pb.ScalingGroupResponse(
+                    status=self.create_status,
+                    web_url="http://127.0.0.1",
+                ),
             )
-        if method == "GetScalingGroup":
+        if method.name == "get_scaling_group":
+            assert isinstance(request, sg_pb.GetScalingGroupRequest)
             sg = self.polls.pop(0)
-            return _Response(
-                {
-                    "scalingGroup": {
-                        "name": request["name"],
-                        "webUrl": "http://127.0.0.1",
-                        **sg,
-                    }
-                }
-            )
-        raise AssertionError(f"unexpected method: {method}")
+            sg.name = request.name
+            sg.web_url = "http://127.0.0.1"
+            return sg_pb.GetScalingGroupResponse(scaling_group=sg)
+        raise AssertionError(f"unexpected method: {method.name}")
 
 
 class _RemoteFunctionScaledToZeroClient(_RemoteFunctionReadinessClient):
+    create_status = "Pending"
+
     def __init__(self) -> None:
-        self.methods: list[str] = []
-        self._env_id: str | None = None
-        self.polls = [
-            {"status": "ScaledToZero", "readyReplicas": None, "availableReplicas": None}
-        ]
-
-    def rpc(
-        self,
-        _service: str,
-        method: str,
-        request: dict[str, Any],
-        **_: Any,
-    ) -> _Response:
-        self.methods.append(method)
-        if method == "CreateExternalFunctionVersion":
-            return _Response(
-                {
-                    "externalFunctionVersion": {
-                        "id": "fn-version-1",
-                        "functionName": request["functionName"],
-                        "version": 1,
-                        "scalingGroupName": request["spec"]["containerSpec"]["name"],
-                    },
-                    "scalingGroup": {
-                        "status": "Pending",
-                        "webUrl": "http://127.0.0.1",
-                        "port": 6666,
-                    },
-                }
-            )
-        if method == "GetScalingGroup":
-            sg = self.polls.pop(0)
-            return _Response(
-                {
-                    "scalingGroup": {
-                        "name": request["name"],
-                        "webUrl": "http://127.0.0.1",
-                        **sg,
-                    }
-                }
-            )
-        raise AssertionError(f"unexpected method: {method}")
+        self.methods = []
+        self._env_id = None
+        self.polls = [sg_pb.ScalingGroupResponse(status="ScaledToZero")]
 
 
-class _ScalingGroupReadinessClient:
+class _ScalingGroupReadinessClient(StubbedConnectClient):
+    create_status = "Running"
+    poll_name = "sg-ready"
+
     def __init__(self) -> None:
         self.methods: list[str] = []
         self.polls = [
-            {"status": "Running", "readyReplicas": 0, "availableReplicas": 0},
-            {"status": "Running", "readyReplicas": 1, "availableReplicas": 1},
+            sg_pb.ScalingGroupResponse(status="Running"),
+            sg_pb.ScalingGroupResponse(
+                status="Running", ready_replicas=1, available_replicas=1
+            ),
         ]
 
-    def rpc(
-        self,
-        _service: str,
-        method: str,
-        request: dict[str, Any],
-        **_: Any,
-    ) -> _Response:
-        self.methods.append(method)
-        if method == "CreateScalingGroup":
-            return _Response(
-                {
-                    "scalingGroup": {
-                        "id": "sg-1",
-                        "name": request["spec"]["containerSpec"]["name"],
-                        "status": "Running",
-                        "webUrl": "http://127.0.0.1",
-                        "readyReplicas": 0,
-                        "availableReplicas": 0,
-                    }
-                }
+    def call(self, method: FakeMethod, request: Any, **_: Any) -> Any:
+        self.methods.append(method.name)
+        if method.name == "create_scaling_group":
+            assert isinstance(request, sg_pb.CreateScalingGroupRequest)
+            assert request.spec is not None and request.spec.container_spec is not None
+            return sg_pb.CreateScalingGroupResponse(
+                scaling_group=sg_pb.ScalingGroupResponse(
+                    id="sg-1",
+                    name=request.spec.container_spec.name,
+                    status=self.create_status,
+                    web_url="http://127.0.0.1",
+                )
             )
-        if method == "GetScalingGroup":
+        if method.name == "get_scaling_group":
+            assert isinstance(request, sg_pb.GetScalingGroupRequest)
             sg = self.polls.pop(0)
-            return _Response(
-                {
-                    "scalingGroup": {
-                        "id": request["id"],
-                        "name": "sg-ready",
-                        "webUrl": "http://127.0.0.1",
-                        **sg,
-                    }
-                }
-            )
-        raise AssertionError(f"unexpected method: {method}")
+            sg.id = request.id
+            sg.name = self.poll_name
+            sg.web_url = "http://127.0.0.1"
+            return sg_pb.GetScalingGroupResponse(scaling_group=sg)
+        raise AssertionError(f"unexpected method: {method.name}")
 
 
 class _ScalingGroupScaledToZeroClient(_ScalingGroupReadinessClient):
-    def __init__(self) -> None:
-        self.methods: list[str] = []
-        self.polls = [
-            {"status": "ScaledToZero", "readyReplicas": None, "availableReplicas": None}
-        ]
+    create_status = "Pending"
+    poll_name = "sg-zero"
 
-    def rpc(
-        self,
-        _service: str,
-        method: str,
-        request: dict[str, Any],
-        **_: Any,
-    ) -> _Response:
-        self.methods.append(method)
-        if method == "CreateScalingGroup":
-            return _Response(
-                {
-                    "scalingGroup": {
-                        "id": "sg-1",
-                        "name": request["spec"]["containerSpec"]["name"],
-                        "status": "Pending",
-                        "webUrl": "http://127.0.0.1",
-                    }
-                }
-            )
-        if method == "GetScalingGroup":
-            sg = self.polls.pop(0)
-            return _Response(
-                {
-                    "scalingGroup": {
-                        "id": request["id"],
-                        "name": "sg-zero",
-                        "webUrl": "http://127.0.0.1",
-                        **sg,
-                    }
-                }
-            )
-        raise AssertionError(f"unexpected method: {method}")
+    def __init__(self) -> None:
+        self.methods = []
+        self.polls = [sg_pb.ScalingGroupResponse(status="ScaledToZero")]
 
 
 class _RemoteClassReadinessClient(_RemoteFunctionReadinessClient):
@@ -230,9 +140,9 @@ def test_remote_function_deploy_waits_for_ready_replicas(monkeypatch) -> None:
     fn.deploy(poll_interval=0, ready_timeout=10)
 
     assert client.methods == [
-        "CreateExternalFunctionVersion",
-        "GetScalingGroup",
-        "GetScalingGroup",
+        "create_external_function_version",
+        "get_scaling_group",
+        "get_scaling_group",
     ]
 
 
@@ -253,7 +163,7 @@ def test_remote_function_deploy_allows_zero_min_replicas(monkeypatch) -> None:
 
     fn.deploy(poll_interval=0, ready_timeout=10)
 
-    assert client.methods == ["CreateExternalFunctionVersion"]
+    assert client.methods == ["create_external_function_version"]
 
 
 def test_remote_function_deploy_allows_scaled_to_zero(monkeypatch) -> None:
@@ -273,7 +183,7 @@ def test_remote_function_deploy_allows_scaled_to_zero(monkeypatch) -> None:
 
     fn.deploy(poll_interval=0, ready_timeout=10)
 
-    assert client.methods == ["CreateExternalFunctionVersion", "GetScalingGroup"]
+    assert client.methods == ["create_external_function_version", "get_scaling_group"]
 
 
 def test_scaling_group_deploy_waits_for_ready_replicas(monkeypatch) -> None:
@@ -286,9 +196,9 @@ def test_scaling_group_deploy_waits_for_ready_replicas(monkeypatch) -> None:
     sg.deploy(poll_interval=0, ready_timeout=10)
 
     assert client.methods == [
-        "CreateScalingGroup",
-        "GetScalingGroup",
-        "GetScalingGroup",
+        "create_scaling_group",
+        "get_scaling_group",
+        "get_scaling_group",
     ]
 
 
@@ -299,7 +209,7 @@ def test_scaling_group_deploy_allows_zero_min_replicas(monkeypatch) -> None:
 
     sg.deploy(poll_interval=0, ready_timeout=10)
 
-    assert client.methods == ["CreateScalingGroup"]
+    assert client.methods == ["create_scaling_group"]
 
 
 def test_scaling_group_deploy_allows_scaled_to_zero(monkeypatch) -> None:
@@ -309,7 +219,7 @@ def test_scaling_group_deploy_allows_scaled_to_zero(monkeypatch) -> None:
 
     sg.deploy(poll_interval=0, ready_timeout=10)
 
-    assert client.methods == ["CreateScalingGroup", "GetScalingGroup"]
+    assert client.methods == ["create_scaling_group", "get_scaling_group"]
 
 
 def test_remote_class_deploy_waits_for_ready_replicas(monkeypatch) -> None:
@@ -333,9 +243,9 @@ def test_remote_class_deploy_waits_for_ready_replicas(monkeypatch) -> None:
     rc.deploy(poll_interval=0, ready_timeout=10)
 
     assert client.methods == [
-        "CreateExternalFunctionVersion",
-        "GetScalingGroup",
-        "GetScalingGroup",
+        "create_external_function_version",
+        "get_scaling_group",
+        "get_scaling_group",
     ]
 
 
@@ -358,7 +268,7 @@ def test_remote_class_deploy_allows_zero_min_replicas(monkeypatch) -> None:
 
     rc.deploy(poll_interval=0, ready_timeout=10)
 
-    assert client.methods == ["CreateExternalFunctionVersion"]
+    assert client.methods == ["create_external_function_version"]
 
 
 def test_remote_class_deploy_allows_scaled_to_zero(monkeypatch) -> None:
@@ -380,23 +290,22 @@ def test_remote_class_deploy_allows_scaled_to_zero(monkeypatch) -> None:
 
     rc.deploy(poll_interval=0, ready_timeout=10)
 
-    assert client.methods == ["CreateExternalFunctionVersion", "GetScalingGroup"]
+    assert client.methods == ["create_external_function_version", "get_scaling_group"]
 
 
 class _RequestCapturingClient(_RemoteFunctionReadinessClient):
     def __init__(self) -> None:
         super().__init__()
-        self.requests: dict[str, dict[str, Any]] = {}
+        self.requests: dict[str, Any] = {}
 
-    def rpc(
+    def call(
         self,
-        service: str,
-        method: str,
-        request: dict[str, Any],
+        method: FakeMethod,
+        request: Any,
         **kwargs: Any,
-    ) -> _Response:
-        self.requests[method] = request
-        return super().rpc(service, method, request, **kwargs)
+    ) -> Any:
+        self.requests[method.name] = request
+        return super().call(method, request, **kwargs)
 
 
 def test_remote_function_deploy_forwards_volume_commits(monkeypatch) -> None:
@@ -409,7 +318,12 @@ def test_remote_function_deploy_forwards_volume_commits(monkeypatch) -> None:
     fn = RemoteFunction(add, name="fn-commits")
     fn._client = client  # type: ignore[assignment]
 
-    intent = {"volume": {"name": "fn-files-abc"}, "author": "chalk:env:agent:a"}
+    from chalkcompute._gen.chalk.volume.v2 import volume_pb
+
+    intent = volume_pb.CommitIntent(
+        volume=volume_pb.VolumeRef(name="fn-files-abc"),
+        author="chalk:env:agent:a",
+    )
     mount = VolumeMount(name="fn-files-abc", mount_path="/app")
     monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
     monkeypatch.setattr(
@@ -421,7 +335,8 @@ def test_remote_function_deploy_forwards_volume_commits(monkeypatch) -> None:
 
     fn.deploy(poll_interval=0, ready_timeout=10)
 
-    request = client.requests["CreateExternalFunctionVersion"]
-    assert request["volumeCommits"] == [intent]
-    mounts = request["spec"]["containerSpec"]["volumes"]
-    assert any(m["name"] == "fn-files-abc" for m in mounts)
+    request = client.requests["create_external_function_version"]
+    assert isinstance(request, catalog_pb.CreateExternalFunctionVersionRequest)
+    assert request.volume_commits == [intent]
+    assert request.spec is not None and request.spec.container_spec is not None
+    assert any(m.name == "fn-files-abc" for m in request.spec.container_spec.volumes)

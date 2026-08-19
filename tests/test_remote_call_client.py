@@ -1,10 +1,10 @@
 import asyncio
-import base64
 import contextvars
 from datetime import datetime, timezone
 
 import pyarrow as pa
 import pytest
+from protobuf import Oneof
 
 from chalkcompute._function import (
     FunctionError,
@@ -12,7 +12,10 @@ from chalkcompute._function import (
     RemoteFunction,
     _run_in_worker_thread,
 )
+from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as catalog_pb
+from chalkcompute._gen.chalk.runtime.v1 import remote_python_call_pb as remote_call_pb
 from chalkcompute._remote_call_client import RemoteCallPollResult, ServiceAuthContext
+from tests._fakes import FakeMethod, StubbedConnectClient
 
 REQUEST_TIMESTAMP_HEADER = "x-chalk-request-timestamp"
 
@@ -32,7 +35,7 @@ def _read_input(payload: bytes) -> dict[str, list[object]]:
     return batches[0].to_pydict()
 
 
-class FakeConnectClient:
+class FakeConnectClient(StubbedConnectClient):
     _access_token = "access-token"
     _env_id = "env-id"
 
@@ -65,26 +68,17 @@ class RpcConnectClient(FakeConnectClient):
     def __init__(self) -> None:
         self.rpc_calls = []
 
-    def rpc(self, *args, **kwargs):
-        self.rpc_calls.append((args, kwargs))
-        return _RpcResponse()
-
-
-class OldStyleRpcConnectClient(FakeConnectClient):
-    def rpc(self, service, method, body, timeout=30):
-        return _RpcResponse()
-
-
-class _RpcResponse:
-    status_code = 200
-    text = ""
-
-    def json(self):
-        return {
-            "remoteCallResponse": {
-                "featherStream": base64.b64encode(b"response-ipc").decode("ascii")
-            }
-        }
+    def call(self, method: FakeMethod, request: object, **kwargs: object) -> object:
+        self.rpc_calls.append((method.name, request, kwargs))
+        if method.name == "delete_external_function_version":
+            return catalog_pb.DeleteExternalFunctionVersionResponse()
+        assert method.name == "call_external_function"
+        return catalog_pb.CallExternalFunctionResponse(
+            body=Oneof(
+                "remote_call_response",
+                remote_call_pb.CallFunctionResponse(feather_stream=b"response-ipc"),
+            )
+        )
 
 
 class FakeRemoteCallClient:
@@ -693,8 +687,11 @@ def test_api_rpc_call_propagates_remote_trace_headers(monkeypatch) -> None:
 
     assert fn._call_via_api_rpc(b"request-ipc") == b"response-ipc"
 
-    args, kwargs = client.rpc_calls[0]
-    assert args[2]["remoteCallRequest"]["name"] == "catalog-add"
+    method, request, kwargs = client.rpc_calls[0]
+    assert method == "call_external_function"
+    assert isinstance(request, catalog_pb.CallExternalFunctionRequest)
+    assert request.body is not None
+    assert request.body.value.name == "catalog-add"
     assert kwargs["extra_headers"] == {
         "traceparent": "trace-id",
     }
@@ -707,17 +704,19 @@ def test_api_rpc_call_propagates_knowledge_cutoff_header() -> None:
 
     assert fn._call_via_api_rpc(b"request-ipc") == b"response-ipc"
 
-    _, kwargs = client.rpc_calls[0]
+    _method, _request, kwargs = client.rpc_calls[0]
     assert kwargs["extra_headers"] == {
         REQUEST_TIMESTAMP_HEADER: "2026-05-01T12:30:45Z",
     }
 
 
-def test_api_rpc_call_does_not_require_extra_headers_by_default() -> None:
+def test_api_rpc_call_omits_extra_headers_by_default() -> None:
     fn = _remote_function()
-    fn._client = OldStyleRpcConnectClient()
+    client = RpcConnectClient()
+    fn._client = client
 
     assert fn._call_via_api_rpc(b"request-ipc") == b"response-ipc"
+    assert client.rpc_calls[0][2]["extra_headers"] is None
 
 
 def test_direct_call_rebuilds_client_after_identity_token_rotation(

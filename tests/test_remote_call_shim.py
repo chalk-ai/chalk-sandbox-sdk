@@ -11,9 +11,10 @@ import typing
 
 import pyarrow as pa
 import pytest
+from protobuf import Oneof
 from chalk_remote_call.arrow_utils import decode_ipc_stream, encode_record_batch
 
-from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
+from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
 from chalkcompute._cls import _generate_class_handler_shim
 from chalkcompute._evaluation import EvaluationScorerResult
 from chalkcompute._function import (
@@ -62,20 +63,27 @@ def _decode_result_column(payloads: list[bytes]) -> list[list]:
 
 
 class ArrowPoint:
-    __chalk_arrow_type__ = arrow_pb2.ArrowType(
-        struct=arrow_pb2.Struct(
-            sub_field_types=[
-                arrow_pb2.Field(
-                    name="x",
-                    arrow_type=arrow_pb2.ArrowType(int32=arrow_pb2.EmptyMessage()),
-                    nullable=False,
-                ),
-                arrow_pb2.Field(
-                    name="y",
-                    arrow_type=arrow_pb2.ArrowType(int32=arrow_pb2.EmptyMessage()),
-                    nullable=False,
-                ),
-            ]
+    __chalk_arrow_type__ = arrow_pb.ArrowType(
+        arrow_type_enum=Oneof(
+            "struct",
+            arrow_pb.Struct(
+                sub_field_types=[
+                    arrow_pb.Field(
+                        name="x",
+                        arrow_type=arrow_pb.ArrowType(
+                            arrow_type_enum=Oneof("int32", arrow_pb.EmptyMessage())
+                        ),
+                        nullable=False,
+                    ),
+                    arrow_pb.Field(
+                        name="y",
+                        arrow_type=arrow_pb.ArrowType(
+                            arrow_type_enum=Oneof("int32", arrow_pb.EmptyMessage())
+                        ),
+                        nullable=False,
+                    ),
+                ],
+            ),
         )
     )
 

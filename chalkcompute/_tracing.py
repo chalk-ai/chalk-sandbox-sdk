@@ -323,7 +323,7 @@ def _install_tracer_provider(sample_rate: float) -> None:
     )
 
     if _is_enabled():
-        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
             OTLPSpanExporter,
         )
         from opentelemetry.sdk.trace.export import BatchSpanProcessor

@@ -3,48 +3,43 @@ from __future__ import annotations
 
 import pyarrow as pa
 import pytest
+from connectrpc.code import Code
+from connectrpc.errors import ConnectError as ConnectRpcError
 
 from chalkcompute import _model as model_module
+from chalkcompute._gen.chalk.modeldeployment.v1 import service_pb as deploy_pb
+from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
+from chalkcompute._gen.chalk.server.v1 import model_registry_pb
 from chalkcompute._model import (
     ModelError,
     ModelNotDeployedError,
     ModelNotFoundError,
     bind_model,
 )
+from tests._fakes import FakeMethod, StubbedConnectClient
 
 
-class _FakeResponse:
-    def __init__(
-        self, status_code: int, payload: dict | None = None, text: str | None = None
-    ) -> None:
-        self.status_code = status_code
-        self._payload = payload or {}
-        self.text = text if text is not None else ""
-
-    def json(self) -> dict:
-        return self._payload
-
-
-class _FakeClient:
+class _FakeClient(StubbedConnectClient):
     """Stand-in for chalkcompute._connect.ConnectClient.
 
-    Stores a queue of canned RPC responses keyed by ``(service, method)``.
+    Stores canned protobuf responses or Connect errors keyed by method name.
     """
 
-    def __init__(self, responses: dict[tuple[str, str], _FakeResponse]) -> None:
+    def __init__(self, responses: dict[str, object]) -> None:
         self._responses = responses
-        self.calls: list[tuple[str, str, dict]] = []
+        self.calls: list[tuple[str, object]] = []
         self._access_token = "fake-token"
         self._env_id = "fake-env"
 
-    def rpc(self, service: str, method: str, payload: dict) -> _FakeResponse:
-        self.calls.append((service, method, payload))
+    def call(self, method: FakeMethod, request: object, **_kwargs: object) -> object:
+        self.calls.append((method.name, request))
         try:
-            return self._responses[(service, method)]
-        except KeyError:
-            return _FakeResponse(
-                status_code=500, text=f"no canned response for {service}/{method}"
-            )
+            outcome = self._responses[method.name]
+        except KeyError as exc:
+            raise AssertionError(f"no canned response for {method.name}") from exc
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
 
     def _ensure_auth(self) -> None:
         pass
@@ -69,47 +64,39 @@ def _no_service_auth(monkeypatch: pytest.MonkeyPatch):
 
 def _sg_response(
     scaling_url: str = "https://qwen3-prod-test.example.chalk.dev",
-) -> _FakeResponse:
-    return _FakeResponse(
-        200,
-        {
-            "scalingGroup": {
-                "name": "qwen3-prod-test",
-                "webUrl": scaling_url,
-                "status": "Available",
-            }
-        },
+) -> sg_pb.GetScalingGroupResponse:
+    return sg_pb.GetScalingGroupResponse(
+        scaling_group=sg_pb.ScalingGroupResponse(
+            name="qwen3-prod-test",
+            web_url=scaling_url,
+            status="Available",
+        )
     )
 
 
 def _ok_responses(
     scaling_url: str = "https://qwen3-prod-test.example.chalk.dev",
-) -> dict[tuple[str, str], _FakeResponse]:
+) -> dict[str, object]:
     """SG-first path: GetScalingGroup returns 200 with the URL."""
     return {
-        (
-            "chalk.scalinggroup.v1.ScalingGroupManagerService",
-            "GetScalingGroup",
-        ): _sg_response(scaling_url),
+        "get_scaling_group": _sg_response(scaling_url),
     }
 
 
 def _model_fallback_responses(
     scaling_url: str = "https://qwen3-prod-test.example.chalk.dev",
-) -> dict[tuple[str, str], _FakeResponse]:
+) -> dict[str, object]:
     """Fallback path: SG lookup 404s; resolution goes through model registry."""
     return {
-        (
-            "chalk.scalinggroup.v1.ScalingGroupManagerService",
-            "GetScalingGroup",
-        ): _FakeResponse(404, text='{"code":"not_found"}'),
-        ("chalk.server.v1.ModelRegistryService", "GetModel"): _FakeResponse(
-            200, {"model": {"latestModelVersion": {"version": 7}}}
+        "get_scaling_group": ConnectRpcError(Code.NOT_FOUND, "not found"),
+        "get_model": model_registry_pb.GetModelResponse(
+            model=model_registry_pb.Model(
+                latest_model_version=model_registry_pb.ModelVersion(version=7)
+            )
         ),
-        (
-            "chalk.modeldeployment.v1.ModelDeploymentService",
-            "ListModelScalingGroups",
-        ): _FakeResponse(200, {"scalingGroups": [{"webUrl": scaling_url}]}),
+        "list_model_scaling_groups": deploy_pb.ListModelScalingGroupsResponse(
+            scaling_groups=[sg_pb.ScalingGroupResponse(web_url=scaling_url)]
+        ),
     }
 
 
@@ -122,7 +109,7 @@ def test_bind_model_sg_first_path(_no_service_auth):
 
     assert Catalog.local_catalog().runtime.contains("model.qwen3-prod-test")
     # Single RPC: GetScalingGroup (no model-registry fallback needed).
-    assert [c[1] for c in client.calls] == ["GetScalingGroup"]
+    assert [method for method, _request in client.calls] == ["get_scaling_group"]
 
 
 def test_bind_model_falls_back_to_model_registry(_no_service_auth):
@@ -134,13 +121,17 @@ def test_bind_model_falls_back_to_model_registry(_no_service_auth):
 
     assert Catalog.local_catalog().runtime.contains("model.qwen3-embedding-0-6b")
     # SG-first → 404 → GetModel → ListModelScalingGroups.
-    assert [c[1] for c in client.calls] == [
-        "GetScalingGroup",
-        "GetModel",
-        "ListModelScalingGroups",
+    assert [method for method, _request in client.calls] == [
+        "get_scaling_group",
+        "get_model",
+        "list_model_scaling_groups",
     ]
-    list_call = client.calls[2][2]
-    assert list_call["modelVersion"]["identifier"] == {"version": 7}
+    list_call = client.calls[2][1]
+    assert isinstance(list_call, deploy_pb.ListModelScalingGroupsRequest)
+    assert list_call.model_version is not None
+    assert list_call.model_version.identifier is not None
+    assert list_call.model_version.identifier.identifier is not None
+    assert list_call.model_version.identifier.identifier.value == 7
 
 
 def test_bind_model_is_idempotent(_no_service_auth):
@@ -156,7 +147,7 @@ def test_bind_model_is_idempotent(_no_service_auth):
 def test_explicit_version_via_model_fallback(_no_service_auth):
     responses = _model_fallback_responses()
     # With explicit version we should skip GetModel.
-    responses.pop(("chalk.server.v1.ModelRegistryService", "GetModel"))
+    responses.pop("get_model")
     client = _FakeClient(responses)
 
     bind_model(
@@ -166,9 +157,16 @@ def test_explicit_version_via_model_fallback(_no_service_auth):
         client=client,
     )
 
-    assert [c[1] for c in client.calls] == ["GetScalingGroup", "ListModelScalingGroups"]
-    list_call = client.calls[1][2]
-    assert list_call["modelVersion"]["identifier"] == {"version": 3}
+    assert [method for method, _request in client.calls] == [
+        "get_scaling_group",
+        "list_model_scaling_groups",
+    ]
+    list_call = client.calls[1][1]
+    assert isinstance(list_call, deploy_pb.ListModelScalingGroupsRequest)
+    assert list_call.model_version is not None
+    assert list_call.model_version.identifier is not None
+    assert list_call.model_version.identifier.identifier is not None
+    assert list_call.model_version.identifier.identifier.value == 3
 
 
 def test_explicit_version_with_sg_name_raises(_no_service_auth):
@@ -203,13 +201,8 @@ def test_missing_name_raises_not_found(_no_service_auth):
     # Both SG and model registry return 404.
     client = _FakeClient(
         {
-            (
-                "chalk.scalinggroup.v1.ScalingGroupManagerService",
-                "GetScalingGroup",
-            ): _FakeResponse(404, text='{"code":"not_found"}'),
-            ("chalk.server.v1.ModelRegistryService", "GetModel"): _FakeResponse(
-                404, text='{"code":"not_found"}'
-            ),
+            "get_scaling_group": ConnectRpcError(Code.NOT_FOUND, "not found"),
+            "get_model": ConnectRpcError(Code.NOT_FOUND, "not found"),
         }
     )
 
@@ -219,9 +212,7 @@ def test_missing_name_raises_not_found(_no_service_auth):
 
 def test_model_without_scaling_group_raises(_no_service_auth):
     responses = _model_fallback_responses()
-    responses[
-        ("chalk.modeldeployment.v1.ModelDeploymentService", "ListModelScalingGroups")
-    ] = _FakeResponse(200, {"scalingGroups": []})
+    responses["list_model_scaling_groups"] = deploy_pb.ListModelScalingGroupsResponse()
     client = _FakeClient(responses)
 
     with pytest.raises(ModelNotDeployedError):
@@ -231,11 +222,10 @@ def test_model_without_scaling_group_raises(_no_service_auth):
 def test_sg_with_missing_weburl_raises(_no_service_auth):
     client = _FakeClient(
         {
-            (
-                "chalk.scalinggroup.v1.ScalingGroupManagerService",
-                "GetScalingGroup",
-            ): _FakeResponse(
-                200, {"scalingGroup": {"name": "qwen3-prod-test", "status": "Pending"}}
+            "get_scaling_group": sg_pb.GetScalingGroupResponse(
+                scaling_group=sg_pb.ScalingGroupResponse(
+                    name="qwen3-prod-test", status="Pending"
+                )
             ),
         }
     )
@@ -334,12 +324,7 @@ def test_remote_function_models_arg_sets_env_var_and_flags_shim(
 
 def test_unexpected_rpc_error_raises_model_error(_no_service_auth):
     client = _FakeClient(
-        {
-            (
-                "chalk.scalinggroup.v1.ScalingGroupManagerService",
-                "GetScalingGroup",
-            ): _FakeResponse(500, text='{"code":"internal"}')
-        }
+        {"get_scaling_group": ConnectRpcError(Code.INTERNAL, "internal")}
     )
 
     with pytest.raises(ModelError):

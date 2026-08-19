@@ -68,7 +68,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-import httpx
+from pyqwest import SyncClient
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -550,20 +550,20 @@ AI_LANGUAGES: list[tuple[Language, str]] = [
 def generate_solution(extra_instruction: str) -> str:
     """Ask GPT-4o to write a solution for ``PROBLEM_STATEMENT``.
 
-    Uses httpx directly (already a chalkcompute dependency) so no extra
+    Uses pyqwest directly (already a chalkcompute dependency) so no extra
     packages are required beyond what the SDK already installs.
     """
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY environment variable not set")
 
-    response = httpx.post(
+    response = SyncClient().post(
         "https://api.openai.com/v1/chat/completions",
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
-        json={
+        content={
             "model": "gpt-4o",
             "temperature": 0,
             "messages": [
@@ -579,7 +579,10 @@ def generate_solution(extra_instruction: str) -> str:
         },
         timeout=30,
     )
-    response.raise_for_status()
+    if not 200 <= response.status < 300:
+        raise RuntimeError(
+            f"OpenAI request failed with status {response.status}: {response.text()}"
+        )
     return response.json()["choices"][0]["message"]["content"].strip()
 
 

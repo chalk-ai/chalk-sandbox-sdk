@@ -32,10 +32,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as pb
+from protobuf import Oneof
+
+from chalkcompute._gen.chalk.sandbox.v1 import service_pb as pb
 from chalkcompute._naming import validate_env
 
 logger = logging.getLogger(__name__)
+
+
+def _build_step(field: str, value: object) -> pb.BuildStep:
+    return pb.BuildStep(
+        step=Oneof(field, value)  # ty: ignore[invalid-argument-type]
+    )
 
 
 ARCHIVE_NAME = "_archive.tar.gz"
@@ -181,8 +189,9 @@ class Image:
         img = cls(base)
         if commands:
             img._steps.append(
-                pb.BuildStep(
-                    dockerfile_commands=pb.DockerfileCommandsStep(commands=commands)
+                _build_step(
+                    "dockerfile_commands",
+                    pb.DockerfileCommandsStep(commands=commands),
                 )
             )
         return img
@@ -228,7 +237,7 @@ class Image:
         """
         new = self._copy()
         new._steps.append(
-            pb.BuildStep(run_commands=pb.RunCommandsStep(commands=list(commands)))
+            _build_step("run_commands", pb.RunCommandsStep(commands=list(commands)))
         )
         return new
 
@@ -259,7 +268,7 @@ class Image:
         """
         new = self._copy()
         new._steps.append(
-            pb.BuildStep(uv_pip_install=pb.UvPipInstallStep(packages=list(packages)))
+            _build_step("uv_pip_install", pb.UvPipInstallStep(packages=list(packages)))
         )
         return new
 
@@ -321,7 +330,7 @@ class Image:
         """
         new = self._copy()
         new._steps.append(
-            pb.BuildStep(pip_install=pb.PipInstallStep(packages=list(packages)))
+            _build_step("pip_install", pb.PipInstallStep(packages=list(packages)))
         )
         return new
 
@@ -454,7 +463,7 @@ class Image:
             step = pb.AddFileStep(destination=dest, content=content)
             if mode is not None:
                 step.mode = mode
-            new._steps.append(pb.BuildStep(add_file=step))
+            new._steps.append(_build_step("add_file", step))
         return new
 
     def add_local_dir(
@@ -595,8 +604,9 @@ class Image:
                     path=file_path,
                 )
                 new._steps.append(
-                    pb.BuildStep(
-                        add_file=pb.AddFileStep(destination=file_dest, content=content)
+                    _build_step(
+                        "add_file",
+                        pb.AddFileStep(destination=file_dest, content=content),
                     )
                 )
         return new
@@ -604,9 +614,9 @@ class Image:
     def _app_module_names(self) -> set[str]:
         """Top-level module names already claimed under ``/app``."""
         dests = [lazy_file.dest for lazy_file in self._lazy_local_files] + [
-            step.add_file.destination
+            step.step.value.destination
             for step in self._steps
-            if step.HasField("add_file")
+            if step.step is not None and step.step.field == "add_file"
         ]
         return {
             dest[len("/app/") :].split("/")[0].removesuffix(".py")
@@ -692,8 +702,9 @@ class Image:
         """
         new = self._copy()
         new._steps.append(
-            pb.BuildStep(
-                dockerfile_commands=pb.DockerfileCommandsStep(commands=list(commands))
+            _build_step(
+                "dockerfile_commands",
+                pb.DockerfileCommandsStep(commands=list(commands)),
             )
         )
         return new
@@ -933,16 +944,14 @@ class Image:
         img._steps = list(spec.steps)
         img._entrypoint = list(spec.entrypoint)
         img._cmd = list(spec.cmd)
-        img._workdir = spec.workdir if spec.HasField("workdir") else None
+        img._workdir = spec.workdir if spec.has_field("workdir") else None
         img._env = dict(spec.env)
         return img
 
     @classmethod
     def from_proto_bytes(cls, data: bytes) -> Image:
         """Reconstruct an ``Image`` from a serialized ``ImageSpec`` byte string."""
-        spec = pb.ImageSpec()
-        spec.ParseFromString(data)
-        return cls.from_proto(spec)
+        return cls.from_proto(pb.ImageSpec.from_binary(data))
 
     def __repr__(self) -> str:
         parts = [f"Image(base={self._base_image!r}"]
@@ -986,9 +995,9 @@ def _read_copy_file(path: Path) -> bytes:
 def _inline_copy_size(steps: Sequence[pb.BuildStep]) -> int:
     """Return the raw bytes already embedded by copy-based add-file steps."""
     return sum(
-        len(step.add_file.content)
+        len(step.step.value.content)
         for step in steps
-        if step.WhichOneof("step") == "add_file"
+        if step.step is not None and step.step.field == "add_file"
     )
 
 

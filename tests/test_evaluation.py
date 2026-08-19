@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import uuid
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
 import pyarrow as pa
 import pytest
+from connectrpc.code import Code
+from connectrpc.errors import ConnectError as ConnectRpcError
 
 from chalkcompute._evaluation import (
     DatasetRevisionRef,
@@ -19,35 +22,28 @@ from chalkcompute._evaluation import (
 )
 from chalkcompute._arrow_serde import arrow_encoder_for_annotation
 from chalkcompute._function import FunctionVersionInfo, RemoteFunction, _build_schemas
+from chalkcompute._gen.chalk.evaluation.v1 import service_pb as evaluation_pb
+from tests._fakes import FakeMethod, StubbedConnectClient
 
 
-class _FakeResponse:
-    def __init__(
-        self,
-        status_code: int,
-        payload: Mapping[str, Any] | None = None,
-        *,
-        text: str = "",
-    ) -> None:
-        self.status_code = status_code
-        self._payload = dict(payload or {})
-        self.text = text
-
-    def json(self) -> dict[str, Any]:
-        return self._payload
+def _message(message_type: type[Any], payload: Mapping[str, Any]) -> Any:
+    return message_type.from_json(json.dumps(payload))
 
 
-class _FakeConnectClient:
-    def __init__(self, responses: Mapping[str, list[_FakeResponse]]) -> None:
+class _FakeConnectClient(StubbedConnectClient):
+    def __init__(self, responses: Mapping[str, list[Any]]) -> None:
         self._responses = {method: list(values) for method, values in responses.items()}
-        self.calls: list[tuple[str, str, dict[str, Any]]] = []
+        self.calls: list[tuple[str, Any]] = []
 
-    def rpc(self, service: str, method: str, request: dict[str, Any]) -> _FakeResponse:
-        self.calls.append((service, method, request))
+    def call(self, method: FakeMethod, request: Any, **_kwargs: Any) -> Any:
+        self.calls.append((method.name, request))
         try:
-            return self._responses[method].pop(0)
+            outcome = self._responses[method.name].pop(0)
         except (KeyError, IndexError) as exc:
-            raise AssertionError(f"unexpected RPC call: {method}") from exc
+            raise AssertionError(f"unexpected RPC call: {method.name}") from exc
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
 
 
 def _remote_function(
@@ -127,12 +123,12 @@ def test_scorer_result_declares_arrow_contract_and_roundtrips() -> None:
 
     _, output_schema = _build_schemas(scorer)
     result_field = output_schema.columns[0]
-    assert result_field.arrow_type.HasField("struct")
-    fields = result_field.arrow_type.struct.sub_field_types
+    assert result_field.arrow_type.has_field("struct")
+    fields = result_field.arrow_type.arrow_type_enum.value.sub_field_types
     assert [field.name for field in fields] == ["score", "metadata"]
-    assert fields[0].arrow_type.HasField("float64")
+    assert fields[0].arrow_type.has_field("float64")
     assert fields[0].nullable is False
-    assert fields[1].arrow_type.HasField("large_utf8")
+    assert fields[1].arrow_type.has_field("large_utf8")
     assert fields[1].nullable is True
 
     encoded = result.__chalk_serialize__()
@@ -150,10 +146,13 @@ def test_scorer_result_list_declares_arrow_contract_and_encodes_empty_list() -> 
 
     _, output_schema = _build_schemas(scorer)
     result_type = output_schema.columns[0].arrow_type
-    assert result_type.HasField("large_list")
-    item_field = result_type.large_list.field_type
+    assert result_type.has_field("large_list")
+    item_field = result_type.arrow_type_enum.value.field_type
     assert item_field.nullable is False
-    assert [field.name for field in item_field.arrow_type.struct.sub_field_types] == [
+    assert [
+        field.name
+        for field in item_field.arrow_type.arrow_type_enum.value.sub_field_types
+    ] == [
         "score",
         "metadata",
     ]
@@ -181,7 +180,14 @@ def test_scorer_result_rejects_non_json_metadata() -> None:
 
 def test_create_pins_direct_function_versions() -> None:
     connect = _FakeConnectClient(
-        {"CreateEvaluation": [_FakeResponse(200, {"evaluation": _evaluation_dict()})]}
+        {
+            "create_evaluation": [
+                _message(
+                    evaluation_pb.CreateEvaluationResponse,
+                    {"evaluation": _evaluation_dict()},
+                )
+            ]
+        }
     )
     client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]
     task = _remote_function("fn-task-v2", name="support-answer")
@@ -202,20 +208,17 @@ def test_create_pins_direct_function_versions() -> None:
     assert evaluation.scorers[0].function_version_id == "fn-score-v2"
     assert evaluation.created_at is not None
     assert evaluation.created_at.isoformat() == "2026-08-14T18:22:00+00:00"
-    assert connect.calls == [
-        (
-            "chalk.evaluation.v1.EvaluationService",
-            "CreateEvaluation",
-            {
-                "name": "Support quality",
-                "datasetId": "dataset-1",
-                "datasetRevisionId": "revision-1",
-                "taskFunctionVersionId": "fn-task-v2",
-                "scorers": [{"function": {"functionVersionId": "fn-score-v2"}}],
-                "metadata": {"suite": "release"},
-            },
-        )
-    ]
+    assert len(connect.calls) == 1
+    method, request = connect.calls[0]
+    assert method == "create_evaluation"
+    assert isinstance(request, evaluation_pb.CreateEvaluationRequest)
+    assert request.name == "Support quality"
+    assert request.dataset_id == "dataset-1"
+    assert request.dataset_revision_id == "revision-1"
+    assert request.task_function_version_id == "fn-task-v2"
+    assert request.scorers[0].implementation is not None
+    assert request.scorers[0].implementation.value.function_version_id == "fn-score-v2"
+    assert json.loads(request.metadata.to_json()) == {"suite": "release"}
 
 
 def test_create_accepts_chalkpy_shaped_revision_and_reference_handles() -> None:
@@ -230,7 +233,14 @@ def test_create_accepts_chalkpy_shaped_revision_and_reference_handles() -> None:
     response["datasetId"] = str(dataset_id)
     response["datasetRevisionId"] = str(revision_id)
     connect = _FakeConnectClient(
-        {"CreateEvaluation": [_FakeResponse(200, {"evaluation": response})]}
+        {
+            "create_evaluation": [
+                _message(
+                    evaluation_pb.CreateEvaluationResponse,
+                    {"evaluation": response},
+                )
+            ]
+        }
     )
     client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]
 
@@ -248,14 +258,22 @@ def test_create_accepts_chalkpy_shaped_revision_and_reference_handles() -> None:
     )
 
     assert evaluation.dataset == DatasetRevisionRef(str(dataset_id), str(revision_id))
-    request = connect.calls[0][2]
-    assert request["datasetId"] == str(dataset_id)
-    assert request["datasetRevisionId"] == str(revision_id)
+    request = connect.calls[0][1]
+    assert isinstance(request, evaluation_pb.CreateEvaluationRequest)
+    assert request.dataset_id == str(dataset_id)
+    assert request.dataset_revision_id == str(revision_id)
 
 
 def test_create_resolves_dataset_name_to_latest_revision() -> None:
     connect = _FakeConnectClient(
-        {"CreateEvaluation": [_FakeResponse(200, {"evaluation": _evaluation_dict()})]}
+        {
+            "create_evaluation": [
+                _message(
+                    evaluation_pb.CreateEvaluationResponse,
+                    {"evaluation": _evaluation_dict()},
+                )
+            ]
+        }
     )
     client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]
 
@@ -267,10 +285,11 @@ def test_create_resolves_dataset_name_to_latest_revision() -> None:
     )
 
     assert evaluation.dataset == DatasetRevisionRef("dataset-1", "revision-1")
-    request = connect.calls[0][2]
-    assert request["datasetName"] == "support-goldens"
-    assert "datasetId" not in request
-    assert "datasetRevisionId" not in request
+    request = connect.calls[0][1]
+    assert isinstance(request, evaluation_pb.CreateEvaluationRequest)
+    assert request.dataset_name == "support-goldens"
+    assert not request.has_field("dataset_id")
+    assert not request.has_field("dataset_revision_id")
 
 
 def test_dataset_revision_ref_rejects_name_with_revision_ids() -> None:
@@ -313,22 +332,25 @@ def test_create_rejects_bare_callable() -> None:
 def test_run_waits_until_success_and_exposes_result_dataset() -> None:
     connect = _FakeConnectClient(
         {
-            "CreateEvaluation": [
-                _FakeResponse(200, {"evaluation": _evaluation_dict()})
+            "create_evaluation": [
+                _message(
+                    evaluation_pb.CreateEvaluationResponse,
+                    {"evaluation": _evaluation_dict()},
+                )
             ],
-            "CreateEvaluationRun": [
-                _FakeResponse(
-                    200,
+            "create_evaluation_run": [
+                _message(
+                    evaluation_pb.CreateEvaluationRunResponse,
                     {"evaluationRun": _run_dict("EVALUATION_RUN_STATUS_PENDING")},
                 )
             ],
-            "GetEvaluationRun": [
-                _FakeResponse(
-                    200,
+            "get_evaluation_run": [
+                _message(
+                    evaluation_pb.GetEvaluationRunResponse,
                     {"evaluationRun": _run_dict("EVALUATION_RUN_STATUS_RUNNING")},
                 ),
-                _FakeResponse(
-                    200,
+                _message(
+                    evaluation_pb.GetEvaluationRunResponse,
                     {
                         "evaluationRun": _run_dict(
                             "EVALUATION_RUN_STATUS_SUCCEEDED", result=True
@@ -351,24 +373,24 @@ def test_run_waits_until_success_and_exposes_result_dataset() -> None:
     assert run.status is EvaluationRunStatus.SUCCEEDED
     assert run.is_terminal
     assert run.result_dataset == DatasetRevisionRef("result-dataset", "result-revision")
-    assert [call[1] for call in connect.calls] == [
-        "CreateEvaluation",
-        "CreateEvaluationRun",
-        "GetEvaluationRun",
-        "GetEvaluationRun",
+    assert [method for method, _request in connect.calls] == [
+        "create_evaluation",
+        "create_evaluation_run",
+        "get_evaluation_run",
+        "get_evaluation_run",
     ]
-    assert connect.calls[1][2] == {
-        "evaluationId": "eval-1",
-        "metadata": {"git_sha": "abc123"},
-    }
+    run_request = connect.calls[1][1]
+    assert isinstance(run_request, evaluation_pb.CreateEvaluationRunRequest)
+    assert run_request.evaluation_id == "eval-1"
+    assert json.loads(run_request.metadata.to_json()) == {"git_sha": "abc123"}
 
 
 def test_wait_raises_typed_error_for_failed_run() -> None:
     connect = _FakeConnectClient(
         {
-            "GetEvaluationRun": [
-                _FakeResponse(
-                    200,
+            "get_evaluation_run": [
+                _message(
+                    evaluation_pb.GetEvaluationRunResponse,
                     {
                         "evaluationRun": _run_dict(
                             "EVALUATION_RUN_STATUS_FAILED",
@@ -390,15 +412,7 @@ def test_wait_raises_typed_error_for_failed_run() -> None:
 
 def test_get_maps_not_found_to_typed_error() -> None:
     connect = _FakeConnectClient(
-        {
-            "GetEvaluation": [
-                _FakeResponse(
-                    404,
-                    {"code": "not_found", "message": "evaluation not found"},
-                    text='{"code":"not_found","message":"evaluation not found"}',
-                )
-            ]
-        }
+        {"get_evaluation": [ConnectRpcError(Code.NOT_FOUND, "evaluation not found")]}
     )
     client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]
 
@@ -411,15 +425,18 @@ def test_list_evaluations_pages_and_honors_limit() -> None:
     second["id"] = "eval-2"
     connect = _FakeConnectClient(
         {
-            "ListEvaluations": [
-                _FakeResponse(
-                    200,
+            "list_evaluations": [
+                _message(
+                    evaluation_pb.ListEvaluationsResponse,
                     {
                         "evaluations": [_evaluation_dict()],
                         "nextCursor": "next-page",
                     },
                 ),
-                _FakeResponse(200, {"evaluations": [second]}),
+                _message(
+                    evaluation_pb.ListEvaluationsResponse,
+                    {"evaluations": [second]},
+                ),
             ]
         }
     )
@@ -428,8 +445,12 @@ def test_list_evaluations_pages_and_honors_limit() -> None:
     evaluations = list(client.list(limit=2))
 
     assert [evaluation.id for evaluation in evaluations] == ["eval-1", "eval-2"]
-    assert connect.calls[0][2] == {"limit": 2}
-    assert connect.calls[1][2] == {"limit": 1, "cursor": "next-page"}
+    first_request = connect.calls[0][1]
+    second_request = connect.calls[1][1]
+    assert isinstance(first_request, evaluation_pb.ListEvaluationsRequest)
+    assert isinstance(second_request, evaluation_pb.ListEvaluationsRequest)
+    assert first_request.limit == 2 and not first_request.has_field("cursor")
+    assert second_request.limit == 1 and second_request.cursor == "next-page"
 
 
 def test_metadata_must_be_json_serializable() -> None:

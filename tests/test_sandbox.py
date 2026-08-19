@@ -4,9 +4,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from chalkcompute import Image, Sandbox
+from protobuf import Oneof
+from protobuf.wkt import Timestamp
 from chalkcompute._containerspec import ContainerSpec
-from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb2 as process_pb
-from chalkcompute._gen.chalk.sandbox.v2 import service_pb2 as pb
+from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb as process_pb
+from chalkcompute._gen.chalk.sandbox.v2 import service_pb as pb
 from chalkcompute._sandbox import SandboxClient, SandboxCreationError
 from chalkcompute._volume import VolumeMount
 
@@ -60,34 +62,34 @@ class _Stub:
     def __init__(self) -> None:
         self.request: pb.CreateSandboxRequest | None = None
 
-    def CreateSandbox(self, request: pb.CreateSandboxRequest, **_kwargs: object):
+    def create_sandbox(self, request: pb.CreateSandboxRequest, **_kwargs: object):
         self.request = request
         return pb.CreateSandboxResponse(
             sandbox=pb.SandboxInfo(
                 id="sandbox-123",
-                status=pb.SANDBOX_STATUS_RUNNING,
-                created_at={"seconds": 1},
+                status=pb.SandboxStatus.RUNNING,
+                created_at=Timestamp(seconds=1),
             )
         )
 
 
 class _ErrorAfterBuildStub:
-    def CreateSandbox(self, request: pb.CreateSandboxRequest, **_kwargs: object):
+    def create_sandbox(self, request: pb.CreateSandboxRequest, **_kwargs: object):
         return pb.CreateSandboxResponse(
             sandbox=pb.SandboxInfo(
                 id="sandbox-123",
-                status=pb.SANDBOX_STATUS_PENDING,
-                created_at={"seconds": 1},
+                status=pb.SandboxStatus.PENDING,
+                created_at=Timestamp(seconds=1),
             )
         )
 
-    def GetSandbox(self, request: pb.GetSandboxRequest, **_kwargs: object):
+    def get_sandbox(self, request: pb.GetSandboxRequest, **_kwargs: object):
         assert request.id == "sandbox-123"
         return pb.GetSandboxResponse(
             sandbox=pb.SandboxInfo(
                 id="sandbox-123",
-                status=pb.SANDBOX_STATUS_FAILED,
-                created_at={"seconds": 1},
+                status=pb.SandboxStatus.FAILED,
+                created_at=Timestamp(seconds=1),
                 status_message="pod failed readiness probe: connection refused",
             )
         )
@@ -109,7 +111,7 @@ def test_sandbox_client_create_sends_image_uri_not_image_spec() -> None:
         client.close()
 
     assert stub.request is not None
-    assert stub.request.spec.image == "registry/image:built"
+    assert stub.request.source.value.image == "registry/image:built"
     build.assert_called_once()
 
 
@@ -123,7 +125,7 @@ def test_sandbox_client_create_can_request_chalk_identity() -> None:
         client.close()
 
     assert stub.request is not None
-    assert stub.request.spec.HasField("chalk_workload_identity")
+    assert stub.request.source.value.has_field("chalk_workload_identity")
 
 
 def test_sandbox_client_create_omits_chalk_identity_by_default() -> None:
@@ -136,7 +138,7 @@ def test_sandbox_client_create_omits_chalk_identity_by_default() -> None:
         client.close()
 
     assert stub.request is not None
-    assert not stub.request.spec.HasField("chalk_workload_identity")
+    assert not stub.request.source.value.has_field("chalk_workload_identity")
 
 
 def test_sandbox_rejects_non_bool_chalk_identity() -> None:
@@ -172,23 +174,27 @@ class _ProcessStub:
     def __init__(self) -> None:
         self.request: process_pb.OpenSessionRequest | None = None
 
-    def OpenSession(self, requests, **_kwargs: object):
+    def open_session(self, requests, **_kwargs: object):
         self.request = next(requests)
         return iter(
             [
                 process_pb.OpenSessionResponse(
-                    session_attached=process_pb.SessionAttached(
-                        session_id="session-123"
+                    event=Oneof(
+                        "session_attached",
+                        process_pb.SessionAttached(session_id="session-123"),
                     )
                 ),
                 process_pb.OpenSessionResponse(
-                    output_data=process_pb.OutputData(
-                        stream=process_pb.OutputData.STREAM_STDOUT,
-                        data=b"hello\\n",
+                    event=Oneof(
+                        "output_data",
+                        process_pb.OutputData(
+                            stream=process_pb.OutputData.Stream.STDOUT,
+                            data=b"hello\\n",
+                        ),
                     )
                 ),
                 process_pb.OpenSessionResponse(
-                    process_exited=process_pb.ProcessExited(exit_code=0)
+                    event=Oneof("process_exited", process_pb.ProcessExited(exit_code=0))
                 ),
             ]
         )
@@ -207,18 +213,18 @@ def test_sandbox_exec_uses_v2_process_service() -> None:
     assert result.stderr == b""
     assert result.exit_code == 0
     assert stub.request is not None
-    assert stub.request.new_process.sandbox_id == "sandbox-123"
-    assert stub.request.new_process.command == "echo"
-    assert list(stub.request.new_process.args) == ["hello"]
+    assert stub.request.command.value.sandbox_id == "sandbox-123"
+    assert stub.request.command.value.command == "echo"
+    assert list(stub.request.command.value.args) == ["hello"]
 
 
 class _TerminatedStub:
-    def CreateSandbox(self, request: pb.CreateSandboxRequest, **_kwargs: object):
+    def create_sandbox(self, request: pb.CreateSandboxRequest, **_kwargs: object):
         return pb.CreateSandboxResponse(
             sandbox=pb.SandboxInfo(
                 id="sandbox-123",
-                status=pb.SANDBOX_STATUS_TERMINATED,
-                created_at={"seconds": 1},
+                status=pb.SandboxStatus.TERMINATED,
+                created_at=Timestamp(seconds=1),
                 status_message="Exit code 0",
             )
         )
@@ -300,7 +306,7 @@ def test_version_pinned_mount_is_serialized_to_proto() -> None:
     )
 
     assert mount.version_id == 7
-    assert mount.HasField("version_id")
+    assert mount.has_field("version_id")
 
 
 def test_sandbox_missing_referenced_volume_fails_run() -> None:

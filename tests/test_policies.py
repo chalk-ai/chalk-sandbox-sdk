@@ -1,9 +1,9 @@
 """Tests for policy dataclasses (rate limit / concurrency / retry) and the
 deploy-time guards that reject generator handlers + max_batching_size.
 
-The ``to_dict()`` output of each policy is the wire contract — the dict
-ends up in ``function_config`` on CreateExternalFunctionVersion, so these
-tests lock in the key names the server reads.
+Each policy's ``to_dict()`` output is the payload stored in the protobuf
+``Struct`` field on ``CreateExternalFunctionVersion``. These tests lock in the
+JSON key names the server reads; the surrounding request remains typed.
 """
 
 from __future__ import annotations
@@ -17,6 +17,8 @@ import chalkcompute._function as function_mod
 from chalkcompute._cls import ClassError, RemoteClass, method
 from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._function import FunctionError, RemoteFunction
+from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as catalog_pb
+from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._remote_function_tracing import (
     TracingPolicy,
@@ -25,54 +27,41 @@ from chalkcompute._remote_function_tracing import (
 from chalkcompute._retry import RetryPolicy
 from chalkcompute._scaling_group import ScalingGroup
 from chalkcompute._image import Image
+from tests._fakes import FakeMethod, StubbedConnectClient
 
 
-class _FakeResponse:
-    status_code = 200
-    text = ""
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self._data = data
-
-    def json(self) -> dict[str, Any]:
-        return self._data
-
-
-class _CapturingClient:
+class _CapturingClient(StubbedConnectClient):
     def __init__(self) -> None:
-        self.requests: list[dict[str, Any]] = []
+        self.requests: list[catalog_pb.CreateExternalFunctionVersionRequest] = []
         self._env_id: str | None = None
 
     def _ensure_auth(self) -> None:
         pass
 
-    def rpc(
+    def call(
         self,
-        _service: str,
-        method: str,
-        request: dict[str, Any],
+        method: FakeMethod,
+        request: catalog_pb.CreateExternalFunctionVersionRequest,
         **_: Any,
-    ) -> _FakeResponse:
-        if method != "CreateExternalFunctionVersion":
-            raise AssertionError(f"unexpected method: {method}")
+    ) -> catalog_pb.CreateExternalFunctionVersionResponse:
+        if method.name != "create_external_function_version":
+            raise AssertionError(f"unexpected method: {method.name}")
         self.requests.append(request)
-        return _FakeResponse(
-            {
-                "externalFunctionVersion": {
-                    "id": f"version-{len(self.requests)}",
-                    "functionName": request["functionName"],
-                    "version": len(self.requests),
-                    "scalingGroupName": request["spec"]["containerSpec"]["name"],
-                    "inputArrowSchema": request["inputArrowSchema"],
-                },
-                "scalingGroup": {
-                    "status": "Running",
-                    "webUrl": "http://127.0.0.1",
-                    "port": 6666,
-                    "readyReplicas": 1,
-                    "availableReplicas": 1,
-                },
-            }
+        assert request.spec is not None and request.spec.container_spec is not None
+        return catalog_pb.CreateExternalFunctionVersionResponse(
+            external_function_version=catalog_pb.ExternalFunctionVersion(
+                id=f"version-{len(self.requests)}",
+                function_name=request.function_name,
+                version=len(self.requests),
+                scaling_group_name=request.spec.container_spec.name,
+                input_arrow_schema=request.input_arrow_schema,
+            ),
+            scaling_group=sg_pb.ScalingGroupResponse(
+                status="Running",
+                web_url="http://127.0.0.1",
+                ready_replicas=1,
+                available_replicas=1,
+            ),
         )
 
 
@@ -328,7 +317,8 @@ class TestScheduleValidationFunction:
 
         fn.deploy()
 
-        assert client.requests[0]["config"]["schedule"] == "1h"
+        assert client.requests[0].config is not None
+        assert client.requests[0].config.schedule == "1h"
 
     def test_tracing_is_sent_in_function_config(
         self,
@@ -349,10 +339,12 @@ class TestScheduleValidationFunction:
 
         fn.deploy()
 
-        assert client.requests[0]["config"]["tracing"] == {
-            "mode": "TRACING_MODE_PARENT_BASED_TRACE_ID_RATIO",
-            "sampleRate": 0.25,
-        }
+        tracing = (
+            client.requests[0].config.tracing if client.requests[0].config else None
+        )
+        assert tracing is not None
+        assert tracing.mode == catalog_pb.TracingMode.PARENT_BASED_TRACE_ID_RATIO
+        assert tracing.sample_rate == 0.25
 
     def test_tracing_true_turns_on_remote_function_tracing(
         self,
@@ -373,10 +365,12 @@ class TestScheduleValidationFunction:
 
         fn.deploy()
 
-        assert client.requests[0]["config"]["tracing"] == {
-            "mode": "TRACING_MODE_PARENT_BASED_TRACE_ID_RATIO",
-            "sampleRate": 1.0,
-        }
+        tracing = (
+            client.requests[0].config.tracing if client.requests[0].config else None
+        )
+        assert tracing is not None
+        assert tracing.mode == catalog_pb.TracingMode.PARENT_BASED_TRACE_ID_RATIO
+        assert tracing.sample_rate == 1.0
 
     def test_tracing_false_turns_off_remote_function_tracing(
         self,
@@ -397,9 +391,11 @@ class TestScheduleValidationFunction:
 
         fn.deploy()
 
-        assert client.requests[0]["config"]["tracing"] == {
-            "mode": "TRACING_MODE_ALWAYS_OFF"
-        }
+        tracing = (
+            client.requests[0].config.tracing if client.requests[0].config else None
+        )
+        assert tracing is not None
+        assert tracing.mode == catalog_pb.TracingMode.ALWAYS_OFF
 
     def test_tracing_config_included_by_default(
         self,
@@ -420,10 +416,12 @@ class TestScheduleValidationFunction:
 
         fn.deploy()
 
-        assert client.requests[0]["config"]["tracing"] == {
-            "mode": "TRACING_MODE_PARENT_BASED_TRACE_ID_RATIO",
-            "sampleRate": 1.0,
-        }
+        tracing = (
+            client.requests[0].config.tracing if client.requests[0].config else None
+        )
+        assert tracing is not None
+        assert tracing.mode == catalog_pb.TracingMode.PARENT_BASED_TRACE_ID_RATIO
+        assert tracing.sample_rate == 1.0
 
 
 class TestScheduleValidationClass:
@@ -481,7 +479,9 @@ class TestScheduleValidationClass:
 
         rc.deploy()
 
-        assert [req["config"]["schedule"] for req in client.requests] == [
+        assert [
+            req.config.schedule if req.config else None for req in client.requests
+        ] == [
             "0 * * * *",
             "0 * * * *",
         ]

@@ -5,45 +5,40 @@ from typing import Any, cast
 import pytest
 
 from chalkcompute import ScalingGroup
+from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
+from tests._fakes import FakeMethod, StubbedConnectClient
 
 
-class _Response:
-    status_code = 200
-    text = ""
-
-    def json(self) -> dict[str, Any]:
-        return {
-            "scalingGroup": {
-                "id": "sg-1",
-                "name": "sg-gpu",
-                "status": "Running",
-                "readyReplicas": 1,
-                "availableReplicas": 1,
-            }
-        }
-
-
-class _CapturingClient:
+class _CapturingClient(StubbedConnectClient):
     def __init__(self) -> None:
-        self.requests: list[dict[str, Any]] = []
+        self.requests: list[sg_pb.CreateScalingGroupRequest] = []
 
-    def rpc(
+    def call(
         self,
-        _service: str,
-        method: str,
-        request: dict[str, Any],
+        method: FakeMethod,
+        request: sg_pb.CreateScalingGroupRequest,
         **_: Any,
-    ) -> _Response:
-        assert method == "CreateScalingGroup"
+    ) -> sg_pb.CreateScalingGroupResponse:
+        assert method.name == "create_scaling_group"
         self.requests.append(request)
-        return _Response()
+        return sg_pb.CreateScalingGroupResponse(
+            scaling_group=sg_pb.ScalingGroupResponse(
+                id="sg-1",
+                name="sg-gpu",
+                status="Running",
+                ready_replicas=1,
+                available_replicas=1,
+            )
+        )
 
 
-def _deployed_scaling_spec(sg: ScalingGroup) -> dict[str, Any]:
+def _deployed_scaling_spec(sg: ScalingGroup) -> sg_pb.ScalingSpec:
     client = _CapturingClient()
     sg._client = cast(Any, client)
     sg.deploy()
-    return client.requests[0]["spec"]["scalingSpec"]
+    spec = client.requests[0].spec
+    assert spec is not None and spec.scaling_spec is not None
+    return spec.scaling_spec
 
 
 def test_deploy_includes_gpu_utilization_trigger() -> None:
@@ -57,9 +52,9 @@ def test_deploy_includes_gpu_utilization_trigger() -> None:
         target_gpu_utilization_percentage=70,
     )
 
-    assert _deployed_scaling_spec(sg)["gpuUtilizationTrigger"] == {
-        "targetUtilizationPercentage": 70
-    }
+    trigger = _deployed_scaling_spec(sg).gpu_utilization_trigger
+    assert trigger is not None
+    assert trigger.target_utilization_percentage == 70
 
 
 def test_deploy_omits_gpu_utilization_trigger_by_default() -> None:
@@ -70,7 +65,7 @@ def test_deploy_omits_gpu_utilization_trigger_by_default() -> None:
         gpu="nvidia-l4",
     )
 
-    assert "gpuUtilizationTrigger" not in _deployed_scaling_spec(sg)
+    assert _deployed_scaling_spec(sg).gpu_utilization_trigger is None
 
 
 def test_gpu_and_cpu_targets_are_both_sent() -> None:
@@ -86,8 +81,9 @@ def test_gpu_and_cpu_targets_are_both_sent() -> None:
     )
 
     scaling_spec = _deployed_scaling_spec(sg)
-    assert scaling_spec["targetCpuUtilizationPercentage"] == 60
-    assert scaling_spec["gpuUtilizationTrigger"] == {"targetUtilizationPercentage": 70}
+    assert scaling_spec.target_cpu_utilization_percentage == 60
+    assert scaling_spec.gpu_utilization_trigger is not None
+    assert scaling_spec.gpu_utilization_trigger.target_utilization_percentage == 70
 
 
 @pytest.mark.parametrize("percentage", [0, -1, 101])

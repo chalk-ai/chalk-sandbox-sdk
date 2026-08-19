@@ -20,8 +20,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import chalkcompute
-import httpx
 import pytest
+from pyqwest import FullResponse, SyncClient
 from dotenv import load_dotenv
 
 from e2etests._ci_resources import SCOPED_NAME_RE, STALE_AFTER, parse_rfc3339
@@ -30,6 +30,7 @@ load_dotenv()
 
 CHALK_CLIENT_ID = os.environ.get("CHALK_CLIENT_ID", "")
 CHALK_CLIENT_SECRET = os.environ.get("CHALK_CLIENT_SECRET", "")
+_HTTP_CLIENT = SyncClient()
 CHALK_ENVIRONMENT_ID = os.environ.get("CHALK_ENVIRONMENT_ID", "")
 CHALK_API_SERVER = os.environ.get("CHALK_API_SERVER", "")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
@@ -45,6 +46,14 @@ needs_staging = pytest.mark.skipif(
 needs_openai = pytest.mark.skipif(
     not OPENAI_API_KEY,
     reason="OPENAI_API_KEY not set",
+)
+
+needs_function_sandbox_identity = pytest.mark.skipif(
+    os.environ.get("CHALK_RUN_FUNCTION_SANDBOX_E2E") != "1",
+    reason=(
+        "CHALK_RUN_FUNCTION_SANDBOX_E2E=1 not set; the target environment must "
+        "grant deployed functions deploy.redeploy and sandbox image-pull access"
+    ),
 )
 
 
@@ -100,9 +109,9 @@ def _delete_function(function_name: str) -> None:
 
 def _get_access_token() -> str:
     """Exchange client credentials for a bearer token via the Chalk REST API."""
-    resp = httpx.post(
+    resp = _HTTP_CLIENT.post(
         f"{CHALK_API_SERVER}/v1/oauth/token",
-        json={
+        content={
             "client_id": CHALK_CLIENT_ID,
             "client_secret": CHALK_CLIENT_SECRET,
             "grant_type": "client_credentials",
@@ -113,7 +122,10 @@ def _get_access_token() -> str:
         },
         timeout=30,
     )
-    resp.raise_for_status()
+    if not 200 <= resp.status < 300:
+        raise RuntimeError(
+            f"Token exchange failed with status {resp.status}: {resp.text()}"
+        )
     return resp.json()["access_token"]
 
 
@@ -123,7 +135,7 @@ def _connect_rpc(
     body: dict,
     headers: dict[str, str],
     timeout: float = 30,
-) -> httpx.Response:
+) -> FullResponse:
     """Make a Connect-protocol unary RPC call.
 
     Parameters
@@ -133,9 +145,9 @@ def _connect_rpc(
     method
         RPC method name on that service.
     """
-    return httpx.post(
+    return _HTTP_CLIENT.post(
         f"{CHALK_API_SERVER}/{service}/{method}",
-        json=body,
+        content=body,
         headers=headers,
         timeout=timeout,
     )
@@ -173,7 +185,10 @@ def _iter_scaling_groups(headers: dict[str, str]) -> Iterator[dict]:
         if cursor:
             body["cursor"] = cursor
         resp = _connect_rpc(_SG_SERVICE, "ListScalingGroups", body, headers)
-        resp.raise_for_status()
+        if not 200 <= resp.status < 300:
+            raise RuntimeError(
+                f"ListScalingGroups failed with status {resp.status}: {resp.text()}"
+            )
         page = resp.json()
         yield from page.get("scalingGroups", [])
         cursor = page.get("nextCursor") or ""
@@ -204,7 +219,7 @@ def _sweep_stale_scoped_scaling_groups() -> None:
         resp = _connect_rpc(
             _SG_SERVICE, "DeleteScalingGroup", {"id": sg["id"]}, headers
         )
-        outcome = "deleted" if resp.is_success else f"failed ({resp.status_code})"
+        outcome = "deleted" if 200 <= resp.status < 300 else f"failed ({resp.status})"
         print(f"stale scaling group {name} ({created_at.isoformat()}): {outcome}")
 
 

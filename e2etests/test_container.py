@@ -11,8 +11,11 @@ import uuid
 from pathlib import Path
 
 import pytest
+from protobuf import Oneof
 
-from chalkcompute import Container, Image, Secret
+from chalkcompute import Container, Image, Secret, SecretScope
+from chalkcompute._gen.chalk.server.v1 import environment_secrets_connect
+from chalkcompute._gen.chalk.server.v1 import environment_secrets_pb as secrets_pb
 from e2etests.conftest import needs_staging
 from e2etests.container_metrics import assert_container_metrics
 
@@ -145,25 +148,26 @@ def test_container_add_local_dir() -> None:
 @needs_staging
 def test_container_secret_from_env() -> None:
     """Secret.from_chalk_env() injects a Chalk secret as an env var into the container."""
-    from chalkcompute import SecretScope
     from chalkcompute._connect import ConnectClient
 
     client = ConnectClient()
     secret_name = f"TEST_SECRET_{uuid.uuid4().hex[:8].upper()}"
     secret_value = f"secret-value-{uuid.uuid4().hex[:8]}"
-    _SECRETS_SVC = "chalk.server.v1.EnvironmentSecretsService"
+    stub = client.stub(environment_secrets_connect.EnvironmentSecretsServiceClientSync)
 
     # Create a test secret scoped to the container so it never leaks into
     # unrelated deployments. Servers without scoped-secret support ignore
     # the scope field.
     container_name = f"test-secret-{uuid.uuid4().hex[:8]}"
-    scope = SecretScope.sandbox(container_name)._to_proto_dict()
-    resp = client.rpc(
-        _SECRETS_SVC,
-        "UpsertSecret",
-        {"name": secret_name, "config": {"literal": secret_value}, "scope": scope},
+    scope = SecretScope.sandbox(container_name)._to_proto()
+    client.call(
+        stub.upsert_secret,
+        secrets_pb.UpsertSecretRequest(
+            name=secret_name,
+            config=secrets_pb.SecretConfigValue(value=Oneof("literal", secret_value)),
+            scope=scope,
+        ),
     )
-    assert resp.status_code == 200, f"UpsertSecret failed: {resp.text}"
 
     try:
         img = Image.debian_slim()
@@ -183,7 +187,13 @@ def test_container_secret_from_env() -> None:
             c.stop()
     finally:
         # Clean up the test secret
-        client.rpc(_SECRETS_SVC, "DeleteSecret", {"name": secret_name, "scope": scope})
+        try:
+            client.call(
+                stub.delete_secret,
+                secrets_pb.DeleteSecretRequest(name=secret_name, scope=scope),
+            )
+        finally:
+            client.close()
 
 
 @needs_staging

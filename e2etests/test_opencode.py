@@ -9,7 +9,7 @@ import sys
 import uuid
 from collections.abc import Generator
 
-import httpx
+from pyqwest import SyncClient
 import pytest
 from chalkcompute import Container
 
@@ -78,5 +78,5 @@ def test_public_web_url_is_accessible(opencode_container: Container) -> None:
     assert web_url, (
         "No web_url returned — the container port may not be publicly exposed"
     )
-    resp = httpx.get(web_url, timeout=15, follow_redirects=True)
-    assert resp.status_code < 500, f"Server at {web_url} returned {resp.status_code}"
+    resp = SyncClient().get(web_url, timeout=15)
+    assert resp.status < 500, f"Server at {web_url} returned {resp.status}"
