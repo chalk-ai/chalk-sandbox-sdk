@@ -3,12 +3,14 @@
 These tests run without any network access or credentials.
 """
 
+import json
 import tempfile
 from pathlib import Path
 
 import pytest
 
 from chalkcompute import Image
+from chalkcompute._gen.chalk.sandbox.v1 import service_pb as pb
 from chalkcompute._image import (
     _COPY_FILE_SIZE_LIMIT_BYTES,
     _COPY_TOTAL_SIZE_LIMIT_BYTES,
@@ -59,7 +61,7 @@ class TestImageFromDockerfile:
         spec = img.to_proto()
         assert spec.base_image == "python:3.14"
         assert len(spec.steps) == 1
-        assert spec.steps[0].dockerfile_commands.commands == [
+        assert spec.steps[0].step.value.commands == [
             "RUN pip install requests",
             "EXPOSE 8080",
         ]
@@ -75,7 +77,7 @@ class TestImageFromDockerfile:
             img = Image.from_dockerfile(f.name)
         spec = img.to_proto()
         assert spec.base_image == "alpine:3.23"
-        assert spec.steps[0].dockerfile_commands.commands == ["RUN apk add git"]
+        assert spec.steps[0].step.value.commands == ["RUN apk add git"]
 
     def test_dockerfile_chaining(self) -> None:
         """from_dockerfile images can be further extended."""
@@ -87,7 +89,7 @@ class TestImageFromDockerfile:
             img = Image.from_dockerfile(f.name).pip_install(["numpy"])
         spec = img.to_proto()
         assert len(spec.steps) == 2
-        assert spec.steps[1].pip_install.packages == ["numpy"]
+        assert spec.steps[1].step.value.packages == ["numpy"]
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +122,7 @@ class TestImageImmutability:
     def test_workdir_does_not_mutate(self) -> None:
         base = Image.debian_slim()
         extended = base.workdir("/app")
-        assert not base.to_proto().HasField("workdir")
+        assert not base.to_proto().has_field("workdir")
         assert extended.to_proto().workdir == "/app"
 
     def test_entrypoint_does_not_mutate(self) -> None:
@@ -148,14 +150,14 @@ class TestImageRunCommands:
         img = Image.base("alpine").run_commands("apk add git")
         spec = img.to_proto()
         assert len(spec.steps) == 1
-        assert spec.steps[0].run_commands.commands == ["apk add git"]
+        assert spec.steps[0].step.value.commands == ["apk add git"]
 
     def test_multiple_commands(self) -> None:
         img = Image.base("alpine").run_commands(
             "apt-get update", "apt-get install -y git"
         )
         spec = img.to_proto()
-        assert spec.steps[0].run_commands.commands == [
+        assert spec.steps[0].step.value.commands == [
             "apt-get update",
             "apt-get install -y git",
         ]
@@ -171,11 +173,11 @@ class TestImagePipInstall:
 
     def test_single_package(self) -> None:
         img = Image.debian_slim().pip_install(["requests"])
-        assert img.to_proto().steps[0].pip_install.packages == ["requests"]
+        assert img.to_proto().steps[0].step.value.packages == ["requests"]
 
     def test_versioned_packages(self) -> None:
         img = Image.debian_slim().pip_install(["requests>=2.34", "pandas==3.0.3"])
-        assert img.to_proto().steps[0].pip_install.packages == [
+        assert img.to_proto().steps[0].step.value.packages == [
             "requests>=2.34",
             "pandas==3.0.3",
         ]
@@ -185,7 +187,7 @@ class TestImagePipInstall:
             f.write("requests>=2.34\n# comment\npandas\n\nnumpy\n")
             f.flush()
             img = Image.debian_slim().pip_install_from_requirements(f.name)
-        assert img.to_proto().steps[0].pip_install.packages == [
+        assert img.to_proto().steps[0].step.value.packages == [
             "requests>=2.34",
             "pandas",
             "numpy",
@@ -202,10 +204,10 @@ class TestImageAddFile:
             img = Image.debian_slim().add_local_file(
                 f.name, "/app/main.py", strategy="copy"
             )
-        step = img.to_proto().steps[0].add_file
+        step = img.to_proto().steps[0].step.value
         assert step.destination == "/app/main.py"
         assert step.content == b"print('hello')"
-        assert not step.HasField("mode")
+        assert not step.has_field("mode")
 
     def test_add_local_file_with_mode(self) -> None:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False) as f:
@@ -214,7 +216,7 @@ class TestImageAddFile:
             img = Image.debian_slim().add_local_file(
                 f.name, "/app/run.sh", mode=0o755, strategy="copy"
             )
-        step = img.to_proto().steps[0].add_file
+        step = img.to_proto().steps[0].step.value
         assert step.mode == 0o755
 
     def test_add_local_file_volume_mode_is_recorded(self, tmp_path: Path) -> None:
@@ -236,7 +238,8 @@ class TestImageAddFile:
         )
 
         assert (
-            len(img.to_proto().steps[0].add_file.content) == _COPY_FILE_SIZE_LIMIT_BYTES
+            len(img.to_proto().steps[0].step.value.content)
+            == _COPY_FILE_SIZE_LIMIT_BYTES
         )
 
     def test_add_local_file_copy_rejects_large_file(self, tmp_path: Path) -> None:
@@ -267,7 +270,7 @@ class TestImageAddFile:
             .add_local_file(str(second), "/app/second.bin", strategy="copy")
         )
 
-        assert sum(len(step.add_file.content) for step in img.to_proto().steps) == (
+        assert sum(len(step.step.value.content) for step in img.to_proto().steps) == (
             _COPY_TOTAL_SIZE_LIMIT_BYTES
         )
 
@@ -308,7 +311,7 @@ class TestImageAddFile:
             (sub / "b.py").write_text("b")
             img = Image.debian_slim().add_local_dir(d, "/app", strategy="copy")
         spec = img.to_proto()
-        dests = [s.add_file.destination for s in spec.steps]
+        dests = [s.step.value.destination for s in spec.steps]
         assert "/app/a.py" in dests
         assert "/app/sub/b.py" in dests
 
@@ -392,7 +395,7 @@ class TestAddLocalDirExclude:
         img = Image.debian_slim().add_local_dir(
             src, "/app", strategy="copy", exclude=exclude
         )
-        return {s.add_file.destination for s in img.to_proto().steps}
+        return {s.step.value.destination for s in img.to_proto().steps}
 
     def test_venv_deeply_nested_excluded(self) -> None:
         """'.venv/**' must exclude files at arbitrary depth under .venv/."""
@@ -596,7 +599,7 @@ class TestChalkignore:
         img = Image.debian_slim().add_local_dir(
             src, "/app", strategy="copy", exclude=exclude
         )
-        return {s.add_file.destination for s in img.to_proto().steps}
+        return {s.step.value.destination for s in img.to_proto().steps}
 
     def test_git_dir_always_excluded(self) -> None:
         """.git/** is excluded even without any ignore file."""
@@ -942,7 +945,7 @@ class TestImageDockerfileCommands:
         img = Image.base("alpine").dockerfile_commands(
             ["EXPOSE 8080", "LABEL maintainer=test"]
         )
-        step = img.to_proto().steps[0].dockerfile_commands
+        step = img.to_proto().steps[0].step.value
         assert step.commands == ["EXPOSE 8080", "LABEL maintainer=test"]
 
 
@@ -1001,29 +1004,25 @@ class TestImageProtoSerialization:
         spec = img.to_proto()
         assert spec.base_image == "python:3.14-slim-trixie"
         assert len(spec.steps) == 2
-        assert spec.steps[0].pip_install.packages == ["requests"]
-        assert spec.steps[1].run_commands.commands == ["echo 'hello'"]
+        assert spec.steps[0].step.value.packages == ["requests"]
+        assert spec.steps[1].step.value.commands == ["echo 'hello'"]
         assert spec.workdir == "/home/user"
         assert spec.env["TEST_VAR"] == "hello"
 
     def test_json_serialization_for_connect(self) -> None:
-        from google.protobuf.json_format import MessageToDict
-
         img = Image.debian_slim().pip_install(["requests"]).env({"K": "V"})
-        spec_dict = MessageToDict(img.to_proto(), preserving_proto_field_name=True)
+        spec_dict = json.loads(img.to_proto().to_json(use_proto_field_name=True))
         assert spec_dict["base_image"] == "python:3.14-slim-trixie"
         assert "steps" in spec_dict
         assert "env" in spec_dict
 
     def test_empty_image_serialization(self) -> None:
         """An image with no steps should serialize cleanly."""
-        from google.protobuf.json_format import MessageToDict
-
         img = Image.base("scratch")
         spec = img.to_proto()
         assert spec.base_image == "scratch"
         assert len(spec.steps) == 0
-        spec_dict = MessageToDict(spec, preserving_proto_field_name=True)
+        spec_dict = json.loads(spec.to_json(use_proto_field_name=True))
         assert spec_dict == {"base_image": "scratch"}
 
 
@@ -1038,8 +1037,8 @@ class TestImageChaining:
         assert len(base.to_proto().steps) == 1
         assert len(branch_a.to_proto().steps) == 2
         assert len(branch_b.to_proto().steps) == 2
-        assert branch_a.to_proto().steps[1].pip_install.packages == ["pandas"]
-        assert branch_b.to_proto().steps[1].run_commands.commands == ["apt-get update"]
+        assert branch_a.to_proto().steps[1].step.value.packages == ["pandas"]
+        assert branch_b.to_proto().steps[1].step.value.commands == ["apt-get update"]
 
     def test_long_chain(self, tmp_path: Path) -> None:
         source = tmp_path / "test.py"
@@ -1096,7 +1095,8 @@ class TestFromProto:
         # Canary: from_proto hand-copies top-level fields, so a NEW ImageSpec field would be
         # silently dropped. If this fails, add the field to Image.from_proto/to_proto and here.
         handled = {"base_image", "steps", "entrypoint", "cmd", "workdir", "env"}
-        fields = set(Image.debian_slim().to_proto().DESCRIPTOR.fields_by_name)
+        image_spec = next(m for m in pb.desc().messages if m.name == "ImageSpec")
+        fields = {field.name for field in image_spec.fields}
         assert fields == handled, (
             f"ImageSpec fields changed ({fields ^ handled}); update Image.from_proto/to_proto."
         )

@@ -1,9 +1,9 @@
-"""Test doubles for the gRPC transport seam (``ConnectClient.stub``/``call``).
+"""Test doubles for the ConnectRPC transport seam (``ConnectClient.stub``/``call``).
 
 Production code obtains a stub via ``client.stub(SomeServiceStub)`` and
 invokes it via ``client.call(stub.Method, request, ...)``. These fakes
 implement that seam so unit tests assert on the *typed pb2 requests* the SDK
-builds, without any channel or network.
+builds, without any HTTP client or network.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from chalkcompute._gen.chalk.container.v1 import service_pb2 as container_pb
+from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 
 
 @dataclass
@@ -38,22 +38,22 @@ class _FakeStub:
 
 def default_container_handler(method: str, request: Any) -> Any:
     """Successful responses for the ContainerService lifecycle."""
-    name = request.container.spec.name if method == "RunContainer" else "network-test"
+    name = request.container.spec.name if method == "run_container" else "network-test"
     running = container_pb.ContainerResponse(
         id="container-123",
         name=name,
         status="Running",
         pod_name="pod-network-test",
     )
-    if method == "RunContainer":
+    if method == "run_container":
         return container_pb.RunContainerResponse(container=running)
-    if method == "GetContainer":
+    if method == "get_container":
         return container_pb.GetContainerResponse(container=running)
-    if method == "ListContainers":
+    if method == "list_containers":
         return container_pb.ListContainersResponse(containers=[running])
-    if method == "StopContainer":
+    if method == "stop_container":
         return container_pb.StopContainerResponse()
-    if method == "ExecCommand":
+    if method == "exec_command":
         return container_pb.ExecCommandResponse(stdout=b"", stderr=b"", exit_code=0)
     raise AssertionError(f"unexpected method: {method}")
 

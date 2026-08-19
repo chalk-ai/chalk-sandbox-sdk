@@ -1,8 +1,8 @@
 """Shared authenticated client for Chalk API services.
 
-Provides auth (OAuth token exchange), RPC dispatch — gRPC over a shared
-channel via ``stub()``/``call()``, plus the legacy Connect-protocol
-(HTTP/JSON) ``rpc()`` — and image build polling.
+Provides auth (OAuth token exchange), typed RPC dispatch through ConnectRPC
+clients via ``stub()``/``call()``, plus the legacy untyped Connect JSON
+``rpc()`` helper and image build polling.
 """
 
 from __future__ import annotations
@@ -11,10 +11,13 @@ import logging
 import os
 import re
 import time
+import json
 from typing import TYPE_CHECKING, Any, Callable, Mapping, TypeVar
 from urllib.parse import urlparse
 
-import grpc
+from connectrpc.code import Code
+from connectrpc.errors import ConnectError as ConnectRpcError
+from connectrpc.protocol import ProtocolType
 
 from chalkcompute._auth_config import active_environment_from_env, load_token
 from chalkcompute._remote_call_client import (
@@ -22,6 +25,7 @@ from chalkcompute._remote_call_client import (
     ServiceAuthContext,
     resolve_service_auth_context,
 )
+from chalkcompute._rpc import rpc_interceptors
 from chalkcompute._tracing import _instrumented, get_tracer
 from chalkcompute._web_identity import (
     WebIdentityTokenError,
@@ -99,9 +103,8 @@ class ConnectClient:
 
     Two transports share this client's auth:
 
-    - :meth:`stub` / :meth:`call` — gRPC over a process-wide shared HTTP/2
-      channel (see ``_channel.py``). The preferred transport; new call sites
-      should use it.
+    - :meth:`stub` / :meth:`call` — typed ConnectRPC clients. gRPC is the
+      compatibility default, while Connect and gRPC-Web remain selectable.
     - :meth:`rpc` — legacy Connect-protocol (HTTP/JSON), one connection per
       call. Remaining services migrate off it incrementally (CHA-10029).
 
@@ -117,7 +120,12 @@ class ConnectClient:
     >>> resp = client.call(stub.GetContainer, pb.GetContainerRequest(id="..."))
     """
 
-    def __init__(self, chalk_client: Any | None = None) -> None:
+    def __init__(
+        self,
+        chalk_client: Any | None = None,
+        *,
+        protocol: ProtocolType = ProtocolType.GRPC,
+    ) -> None:
         self._api_server: str | None = None
         self._access_token: str | None = None
         self._env_id: str | None = None
@@ -126,6 +134,8 @@ class ConnectClient:
         self._environment_id_to_name: dict[str, str] = {}
         self._primary_environment: str | None = None
         self._chalk_client = chalk_client
+        self._protocol = protocol
+        self._typed_clients: dict[Callable[..., Any], Any] = {}
         self._web_identity_token_file: str | None = None
         self._web_identity_cached_at: float | None = None
         self._web_identity_cache_ttl_seconds = _WEB_IDENTITY_MAX_CACHE_TTL_SECONDS
@@ -345,8 +355,8 @@ class ConnectClient:
 
         return grpc_engine_target_from_url(query_server)
 
-    def _grpc_metadata(self) -> list[tuple[str, str]]:
-        """Return current gRPC metadata, re-reading rotating identity files."""
+    def _rpc_metadata(self) -> list[tuple[str, str]]:
+        """Return current RPC metadata, re-reading rotating identity files."""
         self._ensure_auth()
         return [
             ("authorization", f"Bearer {self._access_token}"),
@@ -395,19 +405,32 @@ class ConnectClient:
             )
         return token
 
-    def stub(self, stub_cls: Callable[[grpc.Channel], _StubT]) -> _StubT:
-        """Return a gRPC stub bound to the shared api-server channel.
+    def stub(self, stub_cls: Callable[..., _StubT]) -> _StubT:
+        """Return a generated ConnectRPC client for the API server.
 
-        All stubs on one target multiplex over a single HTTP/2 connection.
-        Stubs are cheap to construct and not cached; the channel is the
-        expensive resource and the registry owns it.
+        The configured protocol defaults to gRPC for compatibility with Chalk's
+        existing endpoints, but callers may select Connect or gRPC-Web through
+        :class:`connectrpc.protocol.ProtocolType`.
         """
-        from chalkcompute._channel import get_channel
-
         self._ensure_auth()
         assert self._api_server is not None
-        target, use_tls = grpc_target_from_url(self._api_server)
-        return stub_cls(get_channel(target, use_tls))
+        client = self._typed_clients.get(stub_cls)
+        if client is None:
+            client = stub_cls(
+                self._api_server,
+                protocol=self._protocol,
+                interceptors=rpc_interceptors(self._protocol),
+            )
+            self._typed_clients[stub_cls] = client
+        return client
+
+    def close(self) -> None:
+        """Close cached typed ConnectRPC clients."""
+        for client in self._typed_clients.values():
+            close = getattr(client, "close", None)
+            if close is not None:
+                close()
+        self._typed_clients.clear()
 
     def call(
         self,
@@ -416,26 +439,26 @@ class ConnectClient:
         *,
         timeout: float = 30.0,
     ) -> _RespT:
-        """Invoke a unary stub method with per-call auth metadata.
+        """Invoke a generated unary RPC method with per-call auth headers.
 
-        Metadata is rebuilt on every call via :meth:`_grpc_metadata`, so
+        Metadata is rebuilt on every call via :meth:`_rpc_metadata`, so
         rotating web-identity tokens are picked up without any caller effort.
 
         Parameters
         ----------
         method
-            A bound stub method, e.g. ``client.stub(FooStub).GetFoo``.
+            A bound client method, e.g. ``client.stub(FooClient).get_foo``.
         request
             The request protobuf message.
         timeout
-            gRPC deadline in seconds.
+            RPC deadline in seconds.
 
-        Raises
-        ------
-        grpc.RpcError
-            On any non-OK status; callers translate to typed errors.
         """
-        return method(request, timeout=timeout, metadata=self._grpc_metadata())
+        return method(
+            request,
+            timeout_ms=round(timeout * 1000),
+            headers=dict(self._rpc_metadata()),
+        )
 
     def rpc(
         self,
@@ -590,9 +613,7 @@ def build_image(
     if image_uri is not None:
         return image_uri
 
-    from google.protobuf.json_format import MessageToDict
-
-    spec_dict = MessageToDict(image.to_proto())
+    spec_dict = json.loads(image.to_proto().to_json())
     resp = client.rpc(
         "chalk.sandbox.v1.CustomImageService",
         "GetOrBuildCustomImage",
@@ -721,32 +742,20 @@ def build_image_with_volumes_from_spec(
     return build_image_with_volumes(client, image, volume_prefix=volume_prefix)
 
 
-def grpc_error_message(e: grpc.RpcError) -> str:
-    """Render a gRPC error as ``CODE: details`` for exception messages."""
-    assert isinstance(e, grpc.Call)
-    return f"{e.code().name}: {e.details()}"
+def rpc_error_message(error: ConnectRpcError) -> str:
+    """Render a ConnectRPC error as ``CODE: message``."""
+    return f"{error.code.name}: {error.message}"
 
 
-def raise_for_grpc_error(
-    e: grpc.RpcError,
-    code_map: dict[grpc.StatusCode, tuple[type[Exception], str]],
+def raise_for_rpc_error(
+    error: ConnectRpcError,
+    code_map: dict[Code, tuple[type[Exception], str]],
 ) -> None:
-    """Translate a gRPC error to a typed exception if its status code is mapped.
-
-    Parameters
-    ----------
-    e
-        The gRPC error raised by a stub call.
-    code_map
-        Mapping from ``grpc.StatusCode`` to ``(exception_class, message)``
-        pairs.  Status codes not in the map are ignored — the caller
-        should re-raise the original error.
-    """
-    assert isinstance(e, grpc.Call)
-    mapped = code_map.get(e.code())
+    """Translate a ConnectRPC error to a typed SDK exception when mapped."""
+    mapped = code_map.get(error.code)
     if mapped is not None:
         exc_cls, message = mapped
-        raise exc_cls(message) from e
+        raise exc_cls(message) from error
 
 
 def grpc_target_from_url(
@@ -780,6 +789,14 @@ def grpc_target_from_url(
     if insecure_port is not None:
         return f"{host}:{insecure_port}", False
     return host, False
+
+
+def rpc_address_from_target(target: str, *, use_tls: bool) -> str:
+    """Return an HTTP-style address accepted by ConnectRPC clients."""
+    if target.startswith(("http://", "https://")):
+        return target.rstrip("/")
+    scheme = "https" if use_tls else "http"
+    return f"{scheme}://{target.rstrip('/')}"
 
 
 def grpc_engine_target_from_url(url: str) -> tuple[str, bool]:

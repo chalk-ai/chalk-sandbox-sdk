@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 import logging
 import os
 import textwrap
@@ -1113,8 +1114,6 @@ class RemoteClass:
         RemoteClass
             ``self`` for chaining.
         """
-        from google.protobuf.json_format import MessageToDict
-
         from chalkcompute._progress import (
             progress_add,
             progress_done,
@@ -1252,8 +1251,8 @@ class RemoteClass:
                 logger.info("Registering method '%s'...", func_name)
                 create_request: dict[str, Any] = {
                     "functionName": func_name,
-                    "inputArrowSchema": MessageToDict(input_schema),
-                    "outputArrowSchema": MessageToDict(output_schema),
+                    "inputArrowSchema": json.loads(input_schema.to_json()),
+                    "outputArrowSchema": json.loads(output_schema.to_json()),
                     "spec": spec,
                 }
                 if function_config:

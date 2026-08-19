@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import pytest
+from protobuf import Oneof
 
 from chalkcompute._artifact import (
     Artifact,
     ArtifactError,
     _artifact_from_proto,
 )
-from chalkcompute._gen.chalk.artifactstore.v1 import service_pb2 as pb
+from chalkcompute._gen.chalk.artifactstore.v1 import service_pb as pb
 from chalkcompute._sandbox import PythonExecution
 
 
@@ -15,16 +16,24 @@ def _chart_proto() -> pb.Artifact:
     return pb.Artifact(
         id="art_1",
         name="fig",
-        kind=pb.ARTIFACT_KIND_CHART,
-        producer=pb.ARTIFACT_PRODUCER_SYSTEM,
+        kind=pb.ArtifactKind.CHART,
+        producer=pb.ArtifactProducer.SYSTEM,
         content_type="application/json",
-        inline=pb.ArtifactInlineContent(data=b'{"$schema": "vega-lite"}'),
-        origin=pb.ArtifactOrigin(
-            sandbox_exec=pb.SandboxExecOrigin(sandbox_id="sb_1", execution_id="ex_1")
+        content=Oneof(
+            "inline", pb.ArtifactInlineContent(data=b'{"$schema": "vega-lite"}')
         ),
-        chart=pb.ChartDetails(
-            vega_lite=pb.VegaLiteChartDetails(source="altair"),
-            variable_name="fig",
+        origin=pb.ArtifactOrigin(
+            origin=Oneof(
+                "sandbox_exec",
+                pb.SandboxExecOrigin(sandbox_id="sb_1", execution_id="ex_1"),
+            )
+        ),
+        details=Oneof(
+            "chart",
+            pb.ChartDetails(
+                chart=Oneof("vega_lite", pb.VegaLiteChartDetails(source="altair")),
+                variable_name="fig",
+            ),
         ),
     )
 
@@ -48,10 +57,10 @@ def test_artifact_from_proto_blob_backed() -> None:
     msg = pb.Artifact(
         id="art_2",
         name="report.html",
-        kind=pb.ARTIFACT_KIND_HTML,
-        producer=pb.ARTIFACT_PRODUCER_USER,
+        kind=pb.ArtifactKind.HTML,
+        producer=pb.ArtifactProducer.USER,
         content_type="text/html",
-        blob=pb.ArtifactBlobRef(byte_size=123, content_sha256="abc"),
+        content=Oneof("blob", pb.ArtifactBlobRef(byte_size=123, content_sha256="abc")),
     )
     artifact = _artifact_from_proto(msg, client=None)
     assert artifact.kind == "html"

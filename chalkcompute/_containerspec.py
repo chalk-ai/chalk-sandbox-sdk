@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import KW_ONLY, dataclass, field
 from enum import Enum
 from typing import Any, cast
 
-from google.protobuf.json_format import ParseDict
+from protobuf import Oneof
+from protobuf.wkt import Duration
 
-from chalkcompute._gen.chalk.container.v1 import service_pb2 as container_pb
+from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._image import Image
 from chalkcompute._naming import validate_dns_label, validate_env
 from chalkcompute._secret import Secret
@@ -534,9 +536,187 @@ class ContainerSpec:
         return spec
 
     def to_proto(self) -> container_pb.ChalkContainerSpec:
-        spec = container_pb.ChalkContainerSpec()
-        ParseDict(self.to_dict(), spec)
-        return spec
+        resources = None
+        if self.cpu is not None or self.memory is not None or self.gpu is not None:
+            resources = container_pb.ResourceLimits(
+                cpu=self.cpu,
+                memory=self.memory,
+                gpu=self.gpu,
+            )
+
+        secret_refs = [
+            _secret_to_proto(ref)
+            if isinstance(ref, Secret)
+            else container_pb.SecretRef.from_json(json.dumps(ref))
+            for ref in self.secret_refs
+        ]
+        readiness_probe = (
+            None
+            if self.readiness_probe is None
+            else container_pb.ReadinessProbe.from_json(json.dumps(self.readiness_probe))
+        )
+        return container_pb.ChalkContainerSpec(
+            image=self.image,
+            name=self.name or "",
+            entrypoint=list(self.entrypoint or ()),
+            resources=resources,
+            env_vars=dict(self.env),
+            volumes=[
+                container_pb.VolumeMount(
+                    name=volume.name,
+                    mount_path=volume.mount_path,
+                    type="versioned_chalkfs",
+                    version_id=volume.version_id,
+                )
+                for volume in self.volumes
+            ],
+            secret_refs=secret_refs,
+            port=self.port,
+            lifetime=(
+                None
+                if self.lifetime is None
+                else Duration.from_json(json.dumps(self.lifetime))
+            ),
+            enable_ssh=True if self.enable_ssh else None,
+            managed_ssh={
+                alias: container_pb.ManagedSshDestination(
+                    host=destination.host,
+                    private_key_secret=destination.private_key_secret,
+                    host_keys=list(destination.host_keys or ()),
+                    port=destination.port,
+                    username=destination.username,
+                )
+                for alias, destination in self.managed_ssh.items()
+            },
+            tags=dict(self.tags),
+            protocol=self.protocol,
+            authentication=self.authentication,
+            security_policy=(
+                None
+                if self.security_policy is None
+                else container_pb.ContainerSecurityPolicy(
+                    kernel_policy=container_pb.KernelPolicy[
+                        self.security_policy.kernel_policy.name
+                    ]
+                )
+            ),
+            network_policy=(
+                None
+                if self.network_policy is None
+                else _network_policy_to_proto(self.network_policy)
+            ),
+            compute_class=(
+                None
+                if self.compute_class is None
+                else container_pb.ComputeClass[self.compute_class.name]
+            ),
+            readiness_probe=readiness_probe,
+            restart_policy=(
+                None
+                if self.restart_policy is None
+                else container_pb.RestartPolicy[self.restart_policy.name]
+            ),
+            chalk_workload_identity=(
+                container_pb.ChalkWorkloadIdentity() if self.chalk_identity else None
+            ),
+        )
+
+
+def _secret_to_proto(secret: Secret) -> container_pb.SecretRef:
+    source = None
+    if secret._integration_name is not None:
+        source = Oneof("integration_name", secret._integration_name)
+    elif secret._secret_name is not None:
+        source = Oneof("secret_name", secret._secret_name)
+    return container_pb.SecretRef(
+        source=source,  # ty: ignore[invalid-argument-type]
+        keys=list(secret._keys),
+        aliases=dict(secret._aliases),
+        prefix=secret._prefix,
+    )
+
+
+def _network_matcher_to_proto(
+    matcher: NetworkPolicy.Matcher,
+) -> container_pb.NetworkPolicyMatcher:
+    if matcher.exact is not None:
+        value = Oneof("exact", matcher.exact)
+    elif matcher.starts_with is not None:
+        value = Oneof("starts_with", matcher.starts_with)
+    else:
+        assert matcher.regex is not None
+        value = Oneof("regex", matcher.regex)
+    return container_pb.NetworkPolicyMatcher(
+        matcher=value  # ty: ignore[invalid-argument-type]
+    )
+
+
+def _network_key_value_matcher_to_proto(
+    matcher: NetworkPolicy.KeyValueMatcher,
+) -> container_pb.NetworkPolicyKeyValueMatcher:
+    return container_pb.NetworkPolicyKeyValueMatcher(
+        key=_network_matcher_to_proto(matcher.key),
+        value=(
+            None if matcher.value is None else _network_matcher_to_proto(matcher.value)
+        ),
+    )
+
+
+def _network_policy_to_proto(policy: NetworkPolicy) -> container_pb.NetworkPolicy:
+    return container_pb.NetworkPolicy(
+        allowed_routes=[
+            container_pb.AllowedRoute(
+                route=route.route,
+                port_ranges=[
+                    container_pb.PortRange(
+                        start_port=start_port,
+                        end_port=end_port,
+                    )
+                    for start_port, end_port in route.ports
+                ],
+            )
+            for route in policy.allowed_routes
+        ],
+        denied_routes=list(policy.denied_routes),
+        allowed_hosts={
+            host: container_pb.NetworkPolicyRuleList(
+                rules=[
+                    container_pb.NetworkPolicyRule(
+                        transform=[
+                            container_pb.NetworkTransformer(
+                                headers=dict(transformer.headers),
+                                headers_secrets=dict(transformer.headers_secrets),
+                            )
+                            for transformer in rule.transforms
+                        ],
+                        match=(
+                            None
+                            if rule.match is None
+                            else container_pb.NetworkPolicyMatch(
+                                path=(
+                                    None
+                                    if rule.match.path is None
+                                    else _network_matcher_to_proto(rule.match.path)
+                                ),
+                                method=list(rule.match.methods),
+                                query_string=[
+                                    _network_key_value_matcher_to_proto(matcher)
+                                    for matcher in rule.match.query_strings
+                                ],
+                                headers=[
+                                    _network_key_value_matcher_to_proto(matcher)
+                                    for matcher in rule.match.headers
+                                ],
+                            )
+                        ),
+                        forward_url=rule.forward_url,
+                    )
+                    for rule in rules
+                ]
+            )
+            for host, rules in policy.allowed_hosts.items()
+        },
+    )
 
 
 def _coerce_port_range(port_range: _PortRangeInput) -> tuple[int, int]:

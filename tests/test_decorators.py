@@ -109,7 +109,7 @@ def test_function_deploy_image_installs_tracing_runtime_by_default(
 
     image = fn._build_deploy_image()
 
-    assert image.to_proto().steps[0].pip_install.packages == [
+    assert image.to_proto().steps[0].step.value.packages == [
         _remote_call_runtime(tracing=True),
         "chalkcompute==0.0.0",
     ]
@@ -129,7 +129,7 @@ def test_function_deploy_image_installs_tracing_runtime_when_enabled(
 
     image = fn._build_deploy_image()
 
-    assert image.to_proto().steps[0].pip_install.packages == [
+    assert image.to_proto().steps[0].step.value.packages == [
         _remote_call_runtime(tracing=True),
         "chalkcompute==0.0.0",
     ]
@@ -149,7 +149,7 @@ def test_function_deploy_image_installs_lightweight_runtime_when_tracing_off(
 
     image = fn._build_deploy_image()
 
-    assert image.to_proto().steps[0].pip_install.packages == [
+    assert image.to_proto().steps[0].step.value.packages == [
         _remote_call_runtime(tracing=False),
         "chalkcompute==0.0.0",
     ]
@@ -169,7 +169,7 @@ def test_stripped_function_deploy_image_installs_tracing_runtime_when_enabled(
 
     image = fn._build_deploy_image()
 
-    assert image.to_proto().steps[0].pip_install.packages == [
+    assert image.to_proto().steps[0].step.value.packages == [
         _remote_call_runtime(tracing=True)
     ]
 

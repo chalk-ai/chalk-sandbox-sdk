@@ -36,8 +36,10 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, TypeVar
 
+from protobuf import Oneof
+
 from chalkcompute._connect import ConnectClient
-from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
+from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
 from chalkcompute._tracing import (
     SESSION_ID_ATTRIBUTE as SESSION_ID_ATTRIBUTE,
     SESSION_ID_HEADER as SESSION_ID_HEADER,
@@ -196,7 +198,9 @@ class Trace:
 
     _client: TraceClient | None = field(default=None, repr=False, compare=False)
 
-    __chalk_arrow_type__ = arrow_pb2.ArrowType(large_utf8=arrow_pb2.EmptyMessage())
+    __chalk_arrow_type__ = arrow_pb.ArrowType(
+        arrow_type_enum=Oneof("large_utf8", arrow_pb.EmptyMessage())
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.id, str):

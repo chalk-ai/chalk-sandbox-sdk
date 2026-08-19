@@ -6,14 +6,14 @@ import pytest
 
 from chalkcompute import Container, ComputeClass, NetworkPolicy
 from chalkcompute._container import ContainerSecurityPolicy, KernelPolicy
-from chalkcompute._gen.chalk.container.v1 import service_pb2 as pb
+from chalkcompute._gen.chalk.container.v1 import service_pb as pb
 from chalkcompute._volume import VolumeMount
 
 from ._fakes import FakeConnectClient
 
 
 def _run_container_calls(client: FakeConnectClient) -> list[Any]:
-    return [c for c in client.calls if c.method == "RunContainer"]
+    return [c for c in client.calls if c.method == "run_container"]
 
 
 def test_network_policy_serializes_allowed_routes() -> None:
@@ -106,7 +106,7 @@ def test_host_container_run_sends_network_policy() -> None:
 
     assert len(client.calls) == 1
     call = client.calls[0]
-    assert call.method == "RunContainer"
+    assert call.method == "run_container"
     assert call.timeout == 60
     assert isinstance(call.request, pb.RunContainerRequest)
     spec = call.request.container.spec
@@ -122,15 +122,15 @@ def test_host_container_run_sends_network_policy() -> None:
     assert set(policy.allowed_hosts) == {"api.example.com"}
     (rule,) = policy.allowed_hosts["api.example.com"].rules
     assert rule.forward_url == "https://proxy.example.com/api"
-    assert rule.match.path.starts_with == "/v1/"
+    assert rule.match.path.matcher.value == "/v1/"
     assert list(rule.match.method) == ["GET"]
-    assert rule.match.headers[0].key.exact == "x-api-key"
+    assert rule.match.headers[0].key.matcher.value == "x-api-key"
     (transform,) = rule.transform
     assert dict(transform.headers) == {"x-added": "yes"}
     assert dict(transform.headers_secrets) == {"authorization": "API_TOKEN"}
 
-    assert spec.security_policy.kernel_policy == pb.KERNEL_POLICY_RESTRICTED
-    assert spec.compute_class == pb.COMPUTE_CLASS_HOST
+    assert spec.security_policy.kernel_policy == pb.KernelPolicy.RESTRICTED
+    assert spec.compute_class == pb.ComputeClass.HOST
 
 
 def test_host_container_network_policy_accepts_allowed_hosts_list() -> None:
@@ -156,7 +156,7 @@ def test_host_container_network_policy_accepts_allowed_hosts_list() -> None:
     assert set(policy.allowed_hosts) == {"api.openai.com", "*.anthropic.com"}
     assert len(policy.allowed_hosts["api.openai.com"].rules) == 0
     assert len(policy.allowed_hosts["*.anthropic.com"].rules) == 0
-    assert spec.compute_class == pb.COMPUTE_CLASS_HOST
+    assert spec.compute_class == pb.ComputeClass.HOST
 
 
 def test_container_run_sends_tags() -> None:
@@ -212,8 +212,8 @@ def test_stop_then_run_again_is_allowed() -> None:
     container.run()  # must not raise
 
     assert len(_run_container_calls(client)) == 2
-    assert [c.method for c in client.calls if c.method == "StopContainer"] == [
-        "StopContainer"
+    assert [c.method for c in client.calls if c.method == "stop_container"] == [
+        "stop_container"
     ]
 
 
@@ -284,7 +284,7 @@ def test_container_run_sends_compute_class() -> None:
     container.run()
 
     spec = client.calls[0].request.container.spec
-    assert spec.compute_class == pb.COMPUTE_CLASS_HOST
+    assert spec.compute_class == pb.ComputeClass.HOST
 
 
 def test_container_run_omits_compute_class_when_unset() -> None:
@@ -295,4 +295,4 @@ def test_container_run_omits_compute_class_when_unset() -> None:
     container.run()
 
     spec = client.calls[0].request.container.spec
-    assert spec.compute_class == pb.COMPUTE_CLASS_UNSPECIFIED
+    assert spec.compute_class == pb.ComputeClass.UNSPECIFIED

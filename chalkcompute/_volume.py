@@ -15,6 +15,7 @@ from __future__ import annotations
 import builtins
 import datetime
 import importlib
+import json
 import logging
 import os
 import uuid
@@ -25,10 +26,10 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 import httpx
-from google.protobuf.json_format import MessageToDict
+from protobuf import Oneof
 
 from chalkcompute._connect import ConnectClient
-from chalkcompute._gen.chalk.volume.v2 import volume_pb2 as pb_v2
+from chalkcompute._gen.chalk.volume.v2 import volume_pb as pb_v2
 from chalkcompute._image import Image
 from chalkcompute._tracing import traced
 
@@ -1215,10 +1216,16 @@ class VolumeClient:
                 intent_bytes = self._inner.staged_intent(vol.name, staged)
             except _native_error_types() as exc:
                 _raise_volume_error(exc, vol.name)
-            intent = pb_v2.CommitIntent.FromString(bytes(intent_bytes))
+            intent = pb_v2.CommitIntent.from_binary(bytes(intent_bytes))
             if existed:
-                intent.path_deltas.removes.add(path="/", recursive=True)
-            intents.append(MessageToDict(intent))
+                if intent.deltas is None:
+                    intent.deltas = Oneof("path_deltas", pb_v2.PathDeltaList())
+                elif intent.deltas.field != "path_deltas":
+                    raise VolumeError("Native staging returned non-path commit deltas")
+                intent.deltas.value.removes.append(
+                    pb_v2.PathRemoveDelta(path="/", recursive=True)
+                )
+            intents.append(json.loads(intent.to_json()))
             volumes.append(VolumeMount(name=vol.name, mount_path=dest_dir))
         return volumes, intents
 
@@ -1599,21 +1606,20 @@ def _file_kind_name(value: int) -> str:
 
 
 def _read_file_response(resp: pb_v2.GetFileResponse) -> bytes:
-    content_type = resp.WhichOneof("content")
-    if content_type == "data":
-        return resp.data
-    if content_type == "chunked":
-        chunks = sorted(resp.chunked.chunks, key=lambda c: c.offset)
-        if not chunks:
-            return b""
-        return b"".join(
-            _read_file_from_signed_uri(c.signed_download_uri) for c in chunks
-        )
-    if content_type == "packed":
-        pack = resp.packed.pack
-        data = _read_file_from_signed_uri(pack.signed_download_uri)
-        return data[pack.offset : pack.offset + pack.size]
-    raise VolumeError(f"Unsupported file response type: {content_type!r}")
+    match resp.content:
+        case Oneof(field="data", value=data):
+            return data
+        case Oneof(field="chunked", value=chunked):
+            chunks = sorted(chunked.chunks, key=lambda c: c.offset)
+            return b"".join(
+                _read_file_from_signed_uri(c.signed_download_uri) for c in chunks
+            )
+        case Oneof(field="packed", value=packed) if packed.pack is not None:
+            pack = packed.pack
+            data = _read_file_from_signed_uri(pack.signed_download_uri)
+            return data[pack.offset : pack.offset + pack.size]
+        case _:
+            raise VolumeError(f"Unsupported file response type: {resp.content!r}")
 
 
 class _BatchUpload:

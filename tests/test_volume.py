@@ -4,8 +4,9 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from protobuf import Oneof
 
-from chalkcompute._gen.chalk.volume.v2 import volume_pb2 as pb_v2
+from chalkcompute._gen.chalk.volume.v2 import volume_pb as pb_v2
 from chalkcompute._volume import VolumeClosedError, VolumeError, VolumeNotFoundError
 from chalkcompute import _volume as vv
 from chalkcompute._volume import (
@@ -555,19 +556,22 @@ def test_chunked_read_downloads_chunks_and_joins_by_offset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     resp = pb_v2.GetFileResponse(
-        chunked=pb_v2.ChunkedFileContent(
-            chunks=[
-                pb_v2.SignedChunkRef(
-                    signed_download_uri="https://storage/chunk-2",
-                    offset=6,
-                    size=5,
-                ),
-                pb_v2.SignedChunkRef(
-                    signed_download_uri="https://storage/chunk-1",
-                    offset=0,
-                    size=6,
-                ),
-            ]
+        content=Oneof(
+            "chunked",
+            pb_v2.ChunkedFileContent(
+                chunks=[
+                    pb_v2.SignedChunkRef(
+                        signed_download_uri="https://storage/chunk-2",
+                        offset=6,
+                        size=5,
+                    ),
+                    pb_v2.SignedChunkRef(
+                        signed_download_uri="https://storage/chunk-1",
+                        offset=0,
+                        size=6,
+                    ),
+                ]
+            ),
         )
     )
 
@@ -611,7 +615,7 @@ def test_stage_lazy_files_creates_source_code_volume_and_returns_intent(
     intent = pb_v2.CommitIntent(
         volume=pb_v2.VolumeRef(name="src-vol"), author="chalk:env:agent:a"
     )
-    client._inner.staged_intent.return_value = intent.SerializeToString()
+    client._inner.staged_intent.return_value = intent.to_binary()
 
     volumes, intents = client.stage_lazy_files(image, volume_name="fn-src-add")
 
@@ -641,7 +645,7 @@ def test_stage_lazy_files_reuses_volume_and_replaces_base_tree(
         "version": _version_dict(),
     }
     intent = pb_v2.CommitIntent(volume=pb_v2.VolumeRef(name="fn-src-add-app"))
-    client._inner.staged_intent.return_value = intent.SerializeToString()
+    client._inner.staged_intent.return_value = intent.to_binary()
 
     volumes, intents = client.stage_lazy_files(image, volume_name="fn-src-add")
 

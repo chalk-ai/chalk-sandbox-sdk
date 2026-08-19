@@ -23,7 +23,9 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Protocol
 
-from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
+from protobuf import Oneof
+
+from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
 from chalkcompute._connect import ConnectClient
 from chalkcompute._function import DeployedFunction, RemoteFunction
 from chalkcompute._tracing import _instrumented
@@ -69,20 +71,27 @@ class EvaluationScorerResult:
     metadata: Mapping[str, Any] | None = None
     """Optional JSON-serializable metadata retained with the scored row."""
 
-    __chalk_arrow_type__ = arrow_pb2.ArrowType(
-        struct=arrow_pb2.Struct(
-            sub_field_types=[
-                arrow_pb2.Field(
-                    name="score",
-                    arrow_type=arrow_pb2.ArrowType(float64=arrow_pb2.EmptyMessage()),
-                    nullable=False,
-                ),
-                arrow_pb2.Field(
-                    name="metadata",
-                    arrow_type=arrow_pb2.ArrowType(large_utf8=arrow_pb2.EmptyMessage()),
-                    nullable=True,
-                ),
-            ]
+    __chalk_arrow_type__ = arrow_pb.ArrowType(
+        arrow_type_enum=Oneof(
+            "struct",
+            arrow_pb.Struct(
+                sub_field_types=[
+                    arrow_pb.Field(
+                        name="score",
+                        arrow_type=arrow_pb.ArrowType(
+                            arrow_type_enum=Oneof("float64", arrow_pb.EmptyMessage())
+                        ),
+                        nullable=False,
+                    ),
+                    arrow_pb.Field(
+                        name="metadata",
+                        arrow_type=arrow_pb.ArrowType(
+                            arrow_type_enum=Oneof("large_utf8", arrow_pb.EmptyMessage())
+                        ),
+                        nullable=True,
+                    ),
+                ],
+            ),
         )
     )
     __chalk_pyarrow_type__ = staticmethod(_scorer_result_pyarrow_type)

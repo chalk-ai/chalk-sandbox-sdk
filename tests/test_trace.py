@@ -79,7 +79,7 @@ def test_trace_declares_the_same_arrow_type_as_str() -> None:
     typed = rich_to_arrow_schema({"trace": Trace})
     untyped = rich_to_arrow_schema({"trace": str})
     assert typed.columns[0].arrow_type == untyped.columns[0].arrow_type
-    assert typed.columns[0].arrow_type.WhichOneof("arrow_type_enum") == "large_utf8"
+    assert typed.columns[0].arrow_type.arrow_type_enum.field == "large_utf8"
 
 
 def test_trace_roundtrips_through_the_arrow_scalar_contract() -> None:
@@ -96,7 +96,7 @@ def test_optional_trace_is_nullable_and_still_decodes_to_a_handle() -> None:
     schema = rich_to_arrow_schema({"trace": Trace | None})
     field = schema.columns[0]
     assert field.nullable is True
-    assert field.arrow_type.WhichOneof("arrow_type_enum") == "large_utf8"
+    assert field.arrow_type.arrow_type_enum.field == "large_utf8"
 
     decode = arrow_decoder_for_annotation(Trace | None)
     assert decode is not None

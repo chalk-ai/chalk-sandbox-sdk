@@ -1,5 +1,5 @@
 """
-Python SDK for the Sandbox gRPC Service.
+Python SDK for the Sandbox RPC service.
 
 Usage:
     from chalkcompute import Sandbox
@@ -32,6 +32,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import grpc
+from connectrpc.code import Code
+from connectrpc.errors import ConnectError as ConnectRpcError
+from connectrpc.protocol import ProtocolType
+from protobuf import Oneof
+from protobuf.wkt import Duration
 
 from chalkcompute._artifact import Artifact, ArtifactClient, _artifact_from_proto
 from chalkcompute._connect import (
@@ -39,7 +44,8 @@ from chalkcompute._connect import (
     ConnectClient,
     build_image,
     grpc_target_from_url,
-    raise_for_grpc_error,
+    raise_for_rpc_error,
+    rpc_address_from_target,
 )
 from chalkcompute._containerspec import (
     ContainerSpec,
@@ -47,18 +53,19 @@ from chalkcompute._containerspec import (
     RestartPolicy,
     SshDest,
 )
-from chalkcompute._gen.chalk.sandbox.v1 import runtime_service_pb2 as runtime_pb
+from chalkcompute._gen.chalk.sandbox.v1 import runtime_service_pb as runtime_pb
 from chalkcompute._gen.chalk.sandbox.v1 import (
-    runtime_service_pb2_grpc as runtime_pb_grpc,
+    runtime_service_connect as runtime_connect,
 )
-from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb2 as process_pb
+from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb as process_pb
 from chalkcompute._gen.chalk.sandbox.v2 import (
-    process_service_pb2_grpc as process_pb_grpc,
+    process_service_connect as process_connect,
 )
-from chalkcompute._gen.chalk.sandbox.v2 import service_pb2 as pb
-from chalkcompute._gen.chalk.sandbox.v2 import service_pb2_grpc as pb_grpc
+from chalkcompute._gen.chalk.sandbox.v2 import service_pb as pb
+from chalkcompute._gen.chalk.sandbox.v2 import service_connect as pb_connect
 from chalkcompute._image import Image
 from chalkcompute._naming import validate_env
+from chalkcompute._rpc import rpc_interceptors
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
     Volume,
@@ -294,10 +301,10 @@ class PythonExecution:
 
 
 _PYTHON_OUTCOME_NAMES: dict[int, str] = {
-    runtime_pb.PYTHON_EXECUTION_OUTCOME_SUCCEEDED: "succeeded",
-    runtime_pb.PYTHON_EXECUTION_OUTCOME_FAILED: "failed",
-    runtime_pb.PYTHON_EXECUTION_OUTCOME_TIMED_OUT: "timed_out",
-    runtime_pb.PYTHON_EXECUTION_OUTCOME_INTERRUPTED: "interrupted",
+    runtime_pb.PythonExecutionOutcome.SUCCEEDED: "succeeded",
+    runtime_pb.PythonExecutionOutcome.FAILED: "failed",
+    runtime_pb.PythonExecutionOutcome.TIMED_OUT: "timed_out",
+    runtime_pb.PythonExecutionOutcome.INTERRUPTED: "interrupted",
 }
 
 
@@ -323,13 +330,17 @@ class ExecProcess:
         if isinstance(data, str):
             data = data.encode("utf-8")
         self._request_queue.put(
-            process_pb.OpenSessionRequest(stdin_data=process_pb.StdinData(data=data))
+            process_pb.OpenSessionRequest(
+                command=Oneof("stdin_data", process_pb.StdinData(data=data))
+            )
         )
 
     def close_stdin(self) -> None:
         """Signal EOF on stdin."""
         self._request_queue.put(
-            process_pb.OpenSessionRequest(stdin_eof=process_pb.StdinEof())
+            process_pb.OpenSessionRequest(
+                command=Oneof("stdin_eof", process_pb.StdinEof())
+            )
         )
 
     def send_signal(self, sig: int = signal.SIGTERM) -> None:
@@ -341,7 +352,9 @@ class ExecProcess:
             Signal number to send. Defaults to ``SIGTERM``.
         """
         self._request_queue.put(
-            process_pb.OpenSessionRequest(signal=process_pb.SessionSignal(signal=sig))
+            process_pb.OpenSessionRequest(
+                command=Oneof("signal", process_pb.SessionSignal(signal=sig))
+            )
         )
 
     def output(self) -> Iterator[ExecEvent]:
@@ -376,21 +389,19 @@ class ExecProcess:
         error: str | None = None
 
         for response in self._response_iterator:
-            msg_type = response.WhichOneof("event")
-            if msg_type == "output_data":
-                od = response.output_data
-                if od.stream == process_pb.OutputData.STREAM_STDOUT:
-                    stdout_parts.append(od.data)
-                elif od.stream == process_pb.OutputData.STREAM_STDERR:
-                    stderr_parts.append(od.data)
-            elif msg_type == "process_exited":
-                pe = response.process_exited
-                if pe.HasField("exit_code"):
-                    exit_code = pe.exit_code
-                if pe.HasField("signal"):
-                    exit_signal = pe.signal
-            elif msg_type == "error":
-                error = f"{response.error.code}: {response.error.message}"
+            match response.event:
+                case Oneof(field="output_data", value=od):
+                    if od.stream == process_pb.OutputData.Stream.STDOUT:
+                        stdout_parts.append(od.data)
+                    elif od.stream == process_pb.OutputData.Stream.STDERR:
+                        stderr_parts.append(od.data)
+                case Oneof(field="process_exited", value=pe):
+                    if pe.has_field("exit_code"):
+                        exit_code = pe.exit_code
+                    if pe.has_field("signal"):
+                        exit_signal = pe.signal
+                case Oneof(field="error", value=event):
+                    error = f"{event.code}: {event.message}"
 
         return ExecResult(
             stdout=b"".join(stdout_parts),
@@ -602,11 +613,11 @@ class Sandbox:
         client = self._require_client()
         sandbox_id = self._require_started()
         try:
-            resp = client._stub.GetSandbox(
+            resp = client._stub.get_sandbox(
                 pb.GetSandboxRequest(id=sandbox_id),
-                metadata=client._metadata,
+                headers=client._headers,
             )
-        except grpc.RpcError as e:
+        except ConnectRpcError as e:
             _handle_rpc_error(e, sandbox_id)
             raise
         return _pb_to_sandbox_info(resp.sandbox)
@@ -831,11 +842,13 @@ class Sandbox:
             for k, v in env.items():
                 init.env_vars[k] = v
         if timeout_secs is not None:
-            init.timeout.seconds = timeout_secs
+            init.timeout = Duration(seconds=timeout_secs)
 
         request_queue: queue.Queue[process_pb.OpenSessionRequest | None] = queue.Queue()
         # Send the init message first
-        request_queue.put(process_pb.OpenSessionRequest(new_process=init))
+        request_queue.put(
+            process_pb.OpenSessionRequest(command=Oneof("new_process", init))
+        )
 
         def request_iterator() -> Iterator[process_pb.OpenSessionRequest]:
             while True:
@@ -845,10 +858,10 @@ class Sandbox:
                 yield req
 
         try:
-            response_iterator = client._process_stub.OpenSession(
-                request_iterator(), metadata=client._metadata
+            response_iterator = client._process_stub.open_session(
+                request_iterator(), headers=client._headers
             )
-        except grpc.RpcError as e:
+        except ConnectRpcError as e:
             _handle_rpc_error(e, sandbox_id)
             raise
 
@@ -921,11 +934,13 @@ class Sandbox:
             spec.max_artifact_bytes = max_artifact_bytes
 
         def request_iterator() -> Iterator[runtime_pb.ExecutePythonRequest]:
-            yield runtime_pb.ExecutePythonRequest(spec=spec)
+            yield runtime_pb.ExecutePythonRequest(message=Oneof("spec", spec))
 
-        stub = runtime_pb_grpc.SandboxRuntimeServiceStub(client._channel)
-        artifact_client = ArtifactClient._from_channel(
-            client._channel, client._metadata
+        artifact_client = ArtifactClient(
+            client._address,
+            credentials=grpc.ssl_channel_credentials() if client._use_tls else None,
+            metadata=client._metadata,
+            protocol=client._protocol,
         )
 
         execution_id = ""
@@ -937,23 +952,24 @@ class Sandbox:
         error_message = ""
         skipped: list[PythonSkippedArtifact] = []
         try:
-            for resp in stub.ExecutePython(
-                request_iterator(), metadata=client._metadata
+            for resp in client._runtime_stub.execute_python(
+                request_iterator(), headers=client._headers
             ):
-                which = resp.WhichOneof("message")
+                if resp.message is None:
+                    continue
+                which = resp.message.field
+                message = resp.message.value
                 if which == "started":
-                    execution_id = resp.started.execution_id
+                    execution_id = message.execution_id
                 elif which == "output":
-                    if resp.output.stream == runtime_pb.PythonOutput.STREAM_STDERR:
-                        stderr.append(resp.output.data)
+                    if message.stream == runtime_pb.PythonOutput.Stream.STDERR:
+                        stderr.append(message.data)
                     else:
-                        stdout.append(resp.output.data)
+                        stdout.append(message.data)
                 elif which == "artifact":
-                    artifacts.append(
-                        _artifact_from_proto(resp.artifact, artifact_client)
-                    )
+                    artifacts.append(_artifact_from_proto(message, artifact_client))
                 elif which == "completed":
-                    completed = resp.completed
+                    completed = message
                     exit_code = completed.exit_code
                     outcome = _PYTHON_OUTCOME_NAMES.get(completed.outcome, "failed")
                     error_message = completed.error_message
@@ -963,7 +979,7 @@ class Sandbox:
                         )
                         for s in completed.skipped_artifacts
                     ]
-        except grpc.RpcError as e:
+        except ConnectRpcError as e:
             _handle_rpc_error(e, sandbox_id)
             raise
 
@@ -991,12 +1007,15 @@ class Sandbox:
             return
         client = self._require_client()
         sandbox_id = self._require_started()
-        req = pb.TerminateSandboxRequest(id=sandbox_id)
-        if grace_period_seconds is not None:
-            req.grace_period.seconds = grace_period_seconds
+        req = pb.TerminateSandboxRequest(
+            id=sandbox_id,
+            grace_period=Duration(seconds=grace_period_seconds)
+            if grace_period_seconds is not None
+            else None,
+        )
         try:
-            client._stub.TerminateSandbox(req, metadata=client._metadata)
-        except grpc.RpcError as e:
+            client._stub.terminate_sandbox(req, headers=client._headers)
+        except ConnectRpcError as e:
             _handle_rpc_error(e, sandbox_id)
             raise
         self._terminated = True
@@ -1052,7 +1071,7 @@ _StrList = list[str]
 
 
 class SandboxClient:
-    """Client for the Sandbox gRPC Service."""
+    """Client for the Sandbox service."""
 
     def __init__(
         self,
@@ -1061,14 +1080,15 @@ class SandboxClient:
         credentials: grpc.ChannelCredentials | None = None,
         metadata: _GrpcMetadata | None = None,
         _connect: ConnectClient | None = None,
+        protocol: ProtocolType = ProtocolType.GRPC,
     ) -> None:
-        """Initialize the gRPC client.
+        """Initialize the RPC client.
 
         Parameters
         ----------
         target
-            gRPC server address (e.g. ``"localhost:50051"`` or
-            ``"sandbox.example.com:443"``).
+            RPC server address (e.g. ``"localhost:50051"`` or
+            ``"https://sandbox.example.com"``).
         credentials
             Optional TLS/SSL channel credentials. If ``None``, uses insecure
             channel.
@@ -1078,15 +1098,27 @@ class SandboxClient:
         self._target = target
         self._static_metadata = metadata
         self._connect = _connect
-        if credentials is not None:
-            self._channel = grpc.secure_channel(target, credentials)
-        else:
-            self._channel = grpc.insecure_channel(target)
-        self._stub = pb_grpc.SandboxServiceStub(self._channel)
-        self._process_stub = process_pb_grpc.SandboxProcessServiceStub(self._channel)
+        self._use_tls = credentials is not None
+        self._protocol = protocol
+        self._address = rpc_address_from_target(target, use_tls=self._use_tls)
+        interceptors = rpc_interceptors(protocol)
+        self._stub = pb_connect.SandboxServiceClientSync(
+            self._address, protocol=protocol, interceptors=interceptors
+        )
+        self._process_stub = process_connect.SandboxProcessServiceClientSync(
+            self._address, protocol=protocol, interceptors=interceptors
+        )
+        self._runtime_stub = runtime_connect.SandboxRuntimeServiceClientSync(
+            self._address, protocol=protocol, interceptors=interceptors
+        )
 
     @classmethod
-    def from_env(cls, *, chalk_client: Any | None = None) -> SandboxClient:
+    def from_env(
+        cls,
+        *,
+        chalk_client: Any | None = None,
+        protocol: ProtocolType = ProtocolType.GRPC,
+    ) -> SandboxClient:
         """Create a ``SandboxClient`` from ambient Chalk credentials."""
 
         connect = ConnectClient(chalk_client=chalk_client)
@@ -1097,7 +1129,8 @@ class SandboxClient:
         return cls(
             host,
             credentials=grpc.ssl_channel_credentials() if use_tls else None,
-            metadata=connect._grpc_metadata(),
+            metadata=connect._rpc_metadata(),
+            protocol=protocol,
             _connect=(
                 connect
                 if getattr(connect, "_uses_web_identity_token", lambda: False)() is True
@@ -1108,12 +1141,16 @@ class SandboxClient:
     @property
     def _metadata(self) -> _GrpcMetadata | None:
         if self._connect is not None:
-            return self._connect._grpc_metadata()
+            return self._connect._rpc_metadata()
         return self._static_metadata
 
     @_metadata.setter
     def _metadata(self, value: _GrpcMetadata | None) -> None:
         self._static_metadata = value
+
+    @property
+    def _headers(self) -> dict[str, str]:
+        return dict(self._metadata or [])
 
     def __enter__(self) -> SandboxClient:
         return self
@@ -1122,8 +1159,11 @@ class SandboxClient:
         self.close()
 
     def close(self) -> None:
-        """Close the gRPC channel."""
-        self._channel.close()
+        """Close the underlying HTTP clients."""
+        for stub in (self._stub, self._process_stub, self._runtime_stub):
+            close = getattr(stub, "close", None)
+            if close is not None:
+                close()
 
     def create(
         self,
@@ -1232,9 +1272,12 @@ class SandboxClient:
             managed_ssh=sandbox._managed_ssh,
         ).to_proto()
 
-        resp = self._stub.CreateSandbox(
-            pb.CreateSandboxRequest(spec=spec), metadata=self._metadata
+        resp = self._stub.create_sandbox(
+            pb.CreateSandboxRequest(source=Oneof("spec", spec)),
+            headers=self._headers,
         )
+        if resp.sandbox is None:
+            raise SandboxCreationError("CreateSandbox returned no sandbox")
         info = _pb_to_sandbox_info(resp.sandbox)
 
         if wait and info.status == "pending":
@@ -1260,13 +1303,15 @@ class SandboxClient:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
-                resp = self._stub.GetSandbox(
+                resp = self._stub.get_sandbox(
                     pb.GetSandboxRequest(id=sandbox_id),
-                    metadata=self._metadata,
+                    headers=self._headers,
                 )
-            except grpc.RpcError as e:
+            except ConnectRpcError as e:
                 _handle_rpc_error(e, sandbox_id)
                 raise
+            if resp.sandbox is None:
+                raise SandboxCreationError("GetSandbox returned no sandbox")
             info = _pb_to_sandbox_info(resp.sandbox)
             if info.status == "running":
                 return info
@@ -1302,8 +1347,8 @@ class SandboxClient:
         list of SandboxInfo
             One entry per sandbox.
         """
-        resp = self._stub.ListSandboxes(
-            pb.ListSandboxesRequest(), metadata=self._metadata
+        resp = self._stub.list_sandboxes(
+            pb.ListSandboxesRequest(), headers=self._headers
         )
         return [_pb_to_sandbox_info(s) for s in resp.sandboxes]
 
@@ -1314,14 +1359,16 @@ class SandboxClient:
 
 
 def _pb_to_sandbox_info(info: pb.SandboxInfo) -> SandboxInfo:
-    status = pb.SandboxStatus.Name(info.status).removeprefix("SANDBOX_STATUS_").lower()
+    status = info.status.name.lower()
     return SandboxInfo(
         id=info.id,
         status=status,
-        created_at=info.created_at.ToJsonString(),
+        created_at=info.created_at.to_datetime().isoformat()
+        if info.created_at is not None
+        else "",
         name=info.name or None,
         status_message=(
-            info.status_message if info.HasField("status_message") else None
+            info.status_message if info.has_field("status_message") else None
         ),
     )
 
@@ -1346,53 +1393,65 @@ def _sandbox_creation_error(info: SandboxInfo) -> SandboxStatusError:
 
 
 def _response_to_event(response: process_pb.OpenSessionResponse) -> ExecEvent:
-    msg_type = response.WhichOneof("event")
-    if msg_type == "session_attached":
-        return ExecEvent(session_id=response.session_attached.session_id)
-    elif msg_type == "output_data":
-        od = response.output_data
-        text = od.data.decode("utf-8", errors="replace")
-        if od.stream == process_pb.OutputData.STREAM_STDOUT:
+    match response.event:
+        case Oneof(field="session_attached", value=attached):
+            return ExecEvent(session_id=attached.session_id)
+        case Oneof(field="output_data", value=output):
+            text = output.data.decode("utf-8", errors="replace")
+            if output.stream == process_pb.OutputData.Stream.STDERR:
+                return ExecEvent(stderr=text)
             return ExecEvent(stdout=text)
-        elif od.stream == process_pb.OutputData.STREAM_STDERR:
-            return ExecEvent(stderr=text)
-        return ExecEvent(stdout=text)
-    elif msg_type == "process_exited":
-        pe = response.process_exited
-        return ExecEvent(
-            exit_code=pe.exit_code if pe.HasField("exit_code") else None,
-            exit_signal=pe.signal if pe.HasField("signal") else None,
-        )
-    elif msg_type == "process_timed_out":
-        pe = response.process_timed_out
-        return ExecEvent(
-            exit_code=pe.exit_code if pe.HasField("exit_code") else None,
-            exit_signal=pe.signal if pe.HasField("signal") else None,
-            error_code="timed_out",
-            error_message="Process timed out",
-        )
-    elif msg_type == "process_failed":
-        return ExecEvent(
-            error_code="process_failed",
-            error_message=response.process_failed.message,
-        )
-    elif msg_type == "error":
-        return ExecEvent(
-            error_code=response.error.code,
-            error_message=response.error.message,
-        )
-    return ExecEvent()
+        case Oneof(field="process_exited", value=process_exited):
+            return ExecEvent(
+                exit_code=(
+                    process_exited.exit_code
+                    if process_exited.has_field("exit_code")
+                    else None
+                ),
+                exit_signal=(
+                    process_exited.signal
+                    if process_exited.has_field("signal")
+                    else None
+                ),
+            )
+        case Oneof(field="process_timed_out", value=process_timed_out):
+            return ExecEvent(
+                exit_code=(
+                    process_timed_out.exit_code
+                    if process_timed_out.has_field("exit_code")
+                    else None
+                ),
+                exit_signal=(
+                    process_timed_out.signal
+                    if process_timed_out.has_field("signal")
+                    else None
+                ),
+                error_code="timed_out",
+                error_message="Process timed out",
+            )
+        case Oneof(field="process_failed", value=process_failed):
+            return ExecEvent(
+                error_code="process_failed",
+                error_message=process_failed.message,
+            )
+        case Oneof(field="error", value=error):
+            return ExecEvent(
+                error_code=error.code,
+                error_message=error.message,
+            )
+        case _:
+            return ExecEvent()
 
 
-def _handle_rpc_error(e: grpc.RpcError, sandbox_id: str) -> None:
-    raise_for_grpc_error(
+def _handle_rpc_error(e: ConnectRpcError, sandbox_id: str) -> None:
+    raise_for_rpc_error(
         e,
         {
-            grpc.StatusCode.NOT_FOUND: (
+            Code.NOT_FOUND: (
                 SandboxNotFoundError,
                 f"Sandbox {sandbox_id} not found",
             ),
-            grpc.StatusCode.FAILED_PRECONDITION: (
+            Code.FAILED_PRECONDITION: (
                 SandboxTerminatedError,
                 f"Sandbox {sandbox_id} has terminated",
             ),
@@ -1406,7 +1465,7 @@ def connect(target: str = "localhost:50051", **kwargs) -> SandboxClient:
     Parameters
     ----------
     target
-        gRPC server address.
+        RPC server address.
     **kwargs
         Additional keyword arguments forwarded to ``SandboxClient``.
 

@@ -27,14 +27,19 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import grpc
+from connectrpc.code import Code
+from connectrpc.errors import ConnectError as ConnectRpcError
+from connectrpc.protocol import ProtocolType
+from protobuf import Oneof
 
 from chalkcompute._connect import (
     ConnectClient,
-    grpc_target_from_url,
-    raise_for_grpc_error,
+    raise_for_rpc_error,
+    rpc_address_from_target,
 )
-from chalkcompute._gen.chalk.artifactstore.v1 import service_pb2 as pb
-from chalkcompute._gen.chalk.artifactstore.v1 import service_pb2_grpc as pb_grpc
+from chalkcompute._gen.chalk.artifactstore.v1 import service_pb as pb
+from chalkcompute._gen.chalk.artifactstore.v1 import service_connect as pb_connect
+from chalkcompute._rpc import rpc_interceptors
 from chalkcompute._tracing import _instrumented
 
 # Aliases defined before ArtifactClient, which has a ``.list()`` method that
@@ -43,16 +48,16 @@ _GrpcMetadata = list[tuple[str, str]]
 _StrList = list[str]
 
 _KIND_TO_PROTO: dict[str, pb.ArtifactKind] = {
-    "file": pb.ARTIFACT_KIND_FILE,
-    "chart": pb.ARTIFACT_KIND_CHART,
-    "html": pb.ARTIFACT_KIND_HTML,
-    "image": pb.ARTIFACT_KIND_IMAGE,
+    "file": pb.ArtifactKind.FILE,
+    "chart": pb.ArtifactKind.CHART,
+    "html": pb.ArtifactKind.HTML,
+    "image": pb.ArtifactKind.IMAGE,
 }
 _KIND_FROM_PROTO: dict[pb.ArtifactKind, str] = {v: k for k, v in _KIND_TO_PROTO.items()}
 
 _PRODUCER_TO_PROTO: dict[str, pb.ArtifactProducer] = {
-    "user": pb.ARTIFACT_PRODUCER_USER,
-    "system": pb.ARTIFACT_PRODUCER_SYSTEM,
+    "user": pb.ArtifactProducer.USER,
+    "system": pb.ArtifactProducer.SYSTEM,
 }
 _PRODUCER_FROM_PROTO: dict[pb.ArtifactProducer, str] = {
     v: k for k, v in _PRODUCER_TO_PROTO.items()
@@ -129,29 +134,34 @@ class Artifact:
 def _artifact_from_proto(msg: pb.Artifact, client: ArtifactClient | None) -> Artifact:
     chart_encoding: str | None = None
     chart_variable_name: str | None = None
-    if msg.HasField("chart"):
-        chart_variable_name = msg.chart.variable_name or None
-        which = msg.chart.WhichOneof("chart")
-        if which == "vega_lite":
+    if msg.details is not None and msg.details.field == "chart":
+        chart = msg.details.value
+        chart_variable_name = chart.variable_name or None
+        if chart.chart is not None and chart.chart.field == "vega_lite":
             chart_encoding = "vega_lite"
-        elif which == "tabular":
+        elif chart.chart is not None and chart.chart.field == "tabular":
             chart_encoding = "tabular"
-        elif which == "plotly":
+        elif chart.chart is not None and chart.chart.field == "plotly":
             chart_encoding = "plotly"
 
     sandbox_id: str | None = None
     execution_id: str | None = None
-    if msg.origin.WhichOneof("origin") == "sandbox_exec":
-        sandbox_id = msg.origin.sandbox_exec.sandbox_id or None
-        execution_id = msg.origin.sandbox_exec.execution_id or None
+    if (
+        msg.origin is not None
+        and msg.origin.origin is not None
+        and msg.origin.origin.field == "sandbox_exec"
+    ):
+        sandbox_exec = msg.origin.origin.value
+        sandbox_id = sandbox_exec.sandbox_id or None
+        execution_id = sandbox_exec.execution_id or None
 
     data: bytes | None = None
     byte_size = 0
-    if msg.WhichOneof("content") == "inline":
-        data = msg.inline.data
+    if msg.content is not None and msg.content.field == "inline":
+        data = msg.content.value.data
         byte_size = len(data)
-    elif msg.WhichOneof("content") == "blob":
-        byte_size = msg.blob.byte_size
+    elif msg.content is not None and msg.content.field == "blob":
+        byte_size = msg.content.value.byte_size
 
     return Artifact(
         id=msg.id,
@@ -170,7 +180,7 @@ def _artifact_from_proto(msg: pb.Artifact, client: ArtifactClient | None) -> Art
 
 
 class ArtifactClient:
-    """Client for the artifact store gRPC service."""
+    """Client for the artifact store service."""
 
     def __init__(
         self,
@@ -178,42 +188,36 @@ class ArtifactClient:
         *,
         credentials: grpc.ChannelCredentials | None = None,
         metadata: _GrpcMetadata | None = None,
+        protocol: ProtocolType = ProtocolType.GRPC,
     ) -> None:
         self._target = target
         self._metadata = metadata
-        if credentials is not None:
-            self._channel = grpc.secure_channel(target, credentials)
-        else:
-            self._channel = grpc.insecure_channel(target)
-        self._stub = pb_grpc.ArtifactServiceStub(self._channel)
+        self._protocol = protocol
+        self._stub = pb_connect.ArtifactServiceClientSync(
+            rpc_address_from_target(target, use_tls=credentials is not None),
+            protocol=protocol,
+            interceptors=rpc_interceptors(protocol),
+        )
 
     @classmethod
-    def _from_channel(
-        cls, channel: grpc.Channel, metadata: _GrpcMetadata | None
-    ) -> ArtifactClient:
-        """Internal: wrap an existing authenticated channel (no new connection)."""
-        client = cls.__new__(cls)
-        client._target = ""
-        client._metadata = metadata
-        client._channel = channel
-        client._stub = pb_grpc.ArtifactServiceStub(channel)
-        return client
+    def _from_connect(cls, connect: ConnectClient) -> ArtifactClient:
+        """Internal: build an artifact client from shared Chalk authentication."""
+        connect._ensure_auth()
+        return cls(
+            connect._api_server or "",
+            credentials=grpc.ssl_channel_credentials()
+            if (connect._api_server or "").startswith("https://")
+            else None,
+            metadata=connect._rpc_metadata(),
+            protocol=connect._protocol,
+        )
 
     @classmethod
     def from_env(cls, *, chalk_client: Any | None = None) -> ArtifactClient:
         """Create an ``ArtifactClient`` from ambient Chalk credentials."""
         connect = ConnectClient(chalk_client=chalk_client)
         connect._ensure_auth()
-        host, use_tls = grpc_target_from_url(connect._api_server or "")
-        return cls(
-            host,
-            credentials=grpc.ssl_channel_credentials() if use_tls else None,
-            metadata=[
-                ("authorization", f"Bearer {connect._access_token}"),
-                ("x-chalk-env-id", connect._env_id or ""),
-                ("x-chalk-server", "go-api"),
-            ],
-        )
+        return cls._from_connect(connect)
 
     def __enter__(self) -> ArtifactClient:
         return self
@@ -222,8 +226,8 @@ class ArtifactClient:
         self.close()
 
     def close(self) -> None:
-        """Close the gRPC channel."""
-        self._channel.close()
+        """Close the underlying HTTP client."""
+        self._stub.close()
 
     @_instrumented("chalkcompute.artifact.create")
     def create(
@@ -244,29 +248,35 @@ class ArtifactClient:
         spec = pb.Artifact(
             name=name,
             kind=_KIND_TO_PROTO[kind],
-            producer=pb.ARTIFACT_PRODUCER_USER,
+            producer=pb.ArtifactProducer.USER,
             content_type=content_type,
-            inline=pb.ArtifactInlineContent(data=data),
+            content=Oneof("inline", pb.ArtifactInlineContent(data=data)),
         )
         try:
-            resp = self._stub.CreateArtifact(
-                pb.CreateArtifactRequest(artifact=spec), metadata=self._metadata
+            resp = self._stub.create_artifact(
+                pb.CreateArtifactRequest(artifact=spec),
+                headers=dict(self._metadata or []),
             )
-        except grpc.RpcError as e:
+        except ConnectRpcError as e:
             _handle_artifact_rpc_error(e, name)
             raise
+        if resp.artifact is None:
+            raise ArtifactError("CreateArtifact returned no artifact")
         return _artifact_from_proto(resp.artifact, self)
 
     @_instrumented("chalkcompute.artifact.get")
     def get(self, artifact_id: str) -> Artifact:
         """Fetch a single artifact by id."""
         try:
-            resp = self._stub.GetArtifact(
-                pb.GetArtifactRequest(artifact_id=artifact_id), metadata=self._metadata
+            resp = self._stub.get_artifact(
+                pb.GetArtifactRequest(artifact_id=artifact_id),
+                headers=dict(self._metadata or []),
             )
-        except grpc.RpcError as e:
+        except ConnectRpcError as e:
             _handle_artifact_rpc_error(e, artifact_id)
             raise
+        if resp.artifact is None:
+            raise ArtifactError(f"GetArtifact returned no artifact: {artifact_id}")
         return _artifact_from_proto(resp.artifact, self)
 
     @_instrumented("chalkcompute.artifact.list")
@@ -293,8 +303,10 @@ class ArtifactClient:
             if remaining is not None:
                 req.limit = min(remaining, 100)
             try:
-                resp = self._stub.ListArtifacts(req, metadata=self._metadata)
-            except grpc.RpcError as e:
+                resp = self._stub.list_artifacts(
+                    req, headers=dict(self._metadata or [])
+                )
+            except ConnectRpcError as e:
                 _handle_artifact_rpc_error(e, "list")
                 raise
             for msg in resp.artifacts:
@@ -303,7 +315,7 @@ class ArtifactClient:
                     remaining -= 1
                     if remaining <= 0:
                         return
-            if not resp.HasField("next_cursor") or not resp.next_cursor:
+            if not resp.has_field("next_cursor") or not resp.next_cursor:
                 return
             cursor = resp.next_cursor
 
@@ -312,12 +324,12 @@ class ArtifactClient:
         """Download an artifact's content bytes."""
         chunks: list[bytes] = []
         try:
-            for frame in self._stub.DownloadArtifact(
+            for frame in self._stub.download_artifact(
                 pb.DownloadArtifactRequest(artifact_id=artifact_id),
-                metadata=self._metadata,
+                headers=dict(self._metadata or []),
             ):
                 chunks.append(frame.data)
-        except grpc.RpcError as e:
+        except ConnectRpcError as e:
             _handle_artifact_rpc_error(e, artifact_id)
             raise
         return b"".join(chunks)
@@ -326,25 +338,25 @@ class ArtifactClient:
     def delete(self, artifact_id: str) -> None:
         """Delete an artifact and its stored content."""
         try:
-            self._stub.DeleteArtifact(
+            self._stub.delete_artifact(
                 pb.DeleteArtifactRequest(artifact_id=artifact_id),
-                metadata=self._metadata,
+                headers=dict(self._metadata or []),
             )
-        except grpc.RpcError as e:
+        except ConnectRpcError as e:
             _handle_artifact_rpc_error(e, artifact_id)
             raise
 
 
-def _handle_artifact_rpc_error(e: grpc.RpcError, subject: str) -> None:
-    """Translate mapped gRPC status codes to typed artifact errors.
+def _handle_artifact_rpc_error(e: ConnectRpcError, subject: str) -> None:
+    """Translate mapped RPC status codes to typed artifact errors.
 
-    Unmapped codes return so the caller re-raises the original gRPC error,
+    Unmapped codes return so the caller re-raises the original transport error,
     matching the sandbox/volume client convention.
     """
-    raise_for_grpc_error(
+    raise_for_rpc_error(
         e,
         {
-            grpc.StatusCode.NOT_FOUND: (
+            Code.NOT_FOUND: (
                 ArtifactNotFoundError,
                 f"Artifact not found: {subject}",
             ),

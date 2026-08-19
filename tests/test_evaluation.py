@@ -127,12 +127,12 @@ def test_scorer_result_declares_arrow_contract_and_roundtrips() -> None:
 
     _, output_schema = _build_schemas(scorer)
     result_field = output_schema.columns[0]
-    assert result_field.arrow_type.HasField("struct")
-    fields = result_field.arrow_type.struct.sub_field_types
+    assert result_field.arrow_type.has_field("struct")
+    fields = result_field.arrow_type.arrow_type_enum.value.sub_field_types
     assert [field.name for field in fields] == ["score", "metadata"]
-    assert fields[0].arrow_type.HasField("float64")
+    assert fields[0].arrow_type.has_field("float64")
     assert fields[0].nullable is False
-    assert fields[1].arrow_type.HasField("large_utf8")
+    assert fields[1].arrow_type.has_field("large_utf8")
     assert fields[1].nullable is True
 
     encoded = result.__chalk_serialize__()
@@ -150,10 +150,13 @@ def test_scorer_result_list_declares_arrow_contract_and_encodes_empty_list() -> 
 
     _, output_schema = _build_schemas(scorer)
     result_type = output_schema.columns[0].arrow_type
-    assert result_type.HasField("large_list")
-    item_field = result_type.large_list.field_type
+    assert result_type.has_field("large_list")
+    item_field = result_type.arrow_type_enum.value.field_type
     assert item_field.nullable is False
-    assert [field.name for field in item_field.arrow_type.struct.sub_field_types] == [
+    assert [
+        field.name
+        for field in item_field.arrow_type.arrow_type_enum.value.sub_field_types
+    ] == [
         "score",
         "metadata",
     ]

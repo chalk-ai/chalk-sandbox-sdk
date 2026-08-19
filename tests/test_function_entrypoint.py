@@ -107,7 +107,7 @@ def test_build_function_runtime_image_uses_standard_local_sdk_base() -> None:
 
     proto = image.to_proto()
     assert proto.base_image.startswith("python:3.11-slim")
-    assert proto.steps[0].pip_install.packages == ["chalkcompute==0.0.0"]
+    assert proto.steps[0].step.value.packages == ["chalkcompute==0.0.0"]
 
 
 def test_function_runtime_image_or_none_returns_none_inside_pod() -> None:

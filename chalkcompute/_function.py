@@ -55,6 +55,8 @@ from typing import (
     overload,
     runtime_checkable,
 )
+from connectrpc.code import Code
+from connectrpc.errors import ConnectError as ConnectRpcError
 
 from chalkcompute import _local_dev
 from chalkcompute._concurrency import ConcurrencyPolicy
@@ -62,6 +64,7 @@ from chalkcompute._connect import (
     ConnectClient,
     build_image,
     grpc_target_from_url,
+    rpc_address_from_target,
     service_auth_context_from_env,
 )
 from chalkcompute._containerspec import ContainerSpec
@@ -77,6 +80,7 @@ from chalkcompute._remote_function_tracing import (
     normalize_remote_function_tracing,
 )
 from chalkcompute._retry import RetryPolicy
+from chalkcompute._rpc import rpc_interceptors
 from chalkcompute._secret import SecretScope, resolve_lazy_secrets
 from chalkcompute._tracing import (
     _instrumented,
@@ -743,6 +747,8 @@ def _is_retryable_stale_remote_call_error_message(message: str | None) -> bool:
 
 
 def _is_stale_remote_call_error(error: BaseException) -> bool:
+    if isinstance(error, ConnectRpcError) and error.code == Code.UNAVAILABLE:
+        return True
     try:
         import grpc
     except ImportError:  # pragma: no cover - grpc is a runtime dependency
@@ -1607,9 +1613,9 @@ def _cleanup_temp_files(paths: list[str]) -> None:
 
 
 def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
-    """Derive input/output ``arrow_pb2.Schema`` protos from function type hints.
+    """Derive input/output ``arrow_pb.Schema`` protos from function type hints.
 
-    Goes directly from Python type annotations to ``arrow_pb2.Schema`` protos
+    Goes directly from Python type annotations to ``arrow_pb.Schema`` protos
     without an intermediate PyArrow representation.
 
     Also stores function traits (``is_generator``, ``is_async``) in the output
@@ -2096,8 +2102,7 @@ class RemoteFunction:
             func
         ) or inspect.isasyncgenfunction(func)
 
-        # gRPC call channel (lazily created on first __call__)
-        self._call_channel: Any = None
+        # ConnectRPC fallback client (lazily created on first call if needed).
         self._call_stub: Any = None
         self._remote_call_client: Any = None
         self._queue_call_client: Any = None
@@ -2247,7 +2252,6 @@ class RemoteFunction:
         f._arrow_result_deserializer = None
         f._is_generator = False
         f._is_async = False
-        f._call_channel = None
         f._call_stub = None
         f._remote_call_client = None
         f._queue_call_client = None
@@ -2408,8 +2412,6 @@ class RemoteFunction:
         RemoteFunction
             ``self`` for chaining.
         """
-        from google.protobuf.json_format import MessageToDict
-
         from chalkcompute._progress import (
             progress_add,
             progress_done,
@@ -2548,8 +2550,8 @@ class RemoteFunction:
 
             create_request: dict[str, Any] = {
                 "functionName": self._explicit_name or self._func_name,
-                "inputArrowSchema": MessageToDict(input_schema_proto),
-                "outputArrowSchema": MessageToDict(output_schema_proto),
+                "inputArrowSchema": json.loads(input_schema_proto.to_json()),
+                "outputArrowSchema": json.loads(output_schema_proto.to_json()),
                 "spec": spec,
             }
             if function_config:
@@ -2754,11 +2756,10 @@ class RemoteFunction:
             if client is not None:
                 self._close_remote_call_client(client)
 
-            channel = self._call_channel
+            stub = self._call_stub
             self._call_stub = None
-            self._call_channel = None
-            if channel is not None:
-                self._close_remote_call_client(channel)
+            if stub is not None:
+                self._close_remote_call_client(stub)
 
         if queue:
             client = self._queue_call_client
@@ -2816,7 +2817,7 @@ class RemoteFunction:
         )
 
     def _ensure_call_stub(self) -> None:
-        """Lazily create the gRPC channel and stub for calling the remote function.
+        """Lazily create the ConnectRPC client for calling the remote function.
 
         Raises
         ------
@@ -2826,9 +2827,8 @@ class RemoteFunction:
         if self._call_stub is not None:
             return
 
-        import grpc
-        from chalk_remote_call._gen.chalk.runtime.v1 import (
-            remote_python_call_pb2_grpc as call_grpc,
+        from chalkcompute._gen.chalk.runtime.v1 import (
+            remote_python_call_connect as call_connect,
         )
 
         if self._web_url is None:
@@ -2839,13 +2839,11 @@ class RemoteFunction:
             insecure_port=self._port,
         )
 
-        if use_tls:
-            self._call_channel = grpc.secure_channel(
-                target, grpc.ssl_channel_credentials()
-            )
-        else:
-            self._call_channel = grpc.insecure_channel(target)
-        self._call_stub = call_grpc.RemoteCallServiceStub(self._call_channel)
+        self._call_stub = call_connect.RemoteCallServiceClientSync(
+            rpc_address_from_target(target, use_tls=use_tls),
+            protocol=self._client._protocol,
+            interceptors=rpc_interceptors(self._client._protocol),
+        )
 
     def _remote_call_metadata(self, *, queue: bool) -> list[tuple[str, str]]:
         uses_web_identity = (
@@ -2938,19 +2936,21 @@ class RemoteFunction:
         function_name: str,
         metadata: list[tuple[str, str]],
     ) -> list[bytes]:
-        from chalk_remote_call._gen.chalk.runtime.v1 import (
-            remote_python_call_pb2 as call_pb,
+        from chalkcompute._gen.chalk.runtime.v1 import (
+            remote_python_call_pb as call_pb,
         )
 
         self._ensure_call_stub()
 
         def requests() -> Any:
-            yield call_pb.CallFunctionRequest(  # ty: ignore[unresolved-attribute]
+            yield call_pb.CallFunctionRequest(
                 name=function_name,
                 feather_stream=feather_bytes,
             )
 
-        responses = list(self._call_stub.CallFunction(requests(), metadata=metadata))
+        responses = list(
+            self._call_stub.call_function(requests(), headers=dict(metadata))
+        )
         return [resp.feather_stream for resp in responses]
 
     def _call_direct_chunks_once(

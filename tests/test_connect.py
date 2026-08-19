@@ -380,12 +380,12 @@ class TestConnectClientWebIdentity:
         monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(token_file))
 
         client = ConnectClient()
-        first_metadata = client._grpc_metadata()
+        first_metadata = client._rpc_metadata()
         token_file.write_text(second)
         monotonic_now[0] += 3599.0
-        cached_metadata = client._grpc_metadata()
+        cached_metadata = client._rpc_metadata()
         monotonic_now[0] += 1.0
-        refreshed_metadata = client._grpc_metadata()
+        refreshed_metadata = client._rpc_metadata()
 
         assert ("authorization", f"Bearer {first}") in first_metadata
         assert ("x-chalk-env-id", "env-one") in first_metadata
@@ -414,12 +414,12 @@ class TestConnectClientWebIdentity:
         monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(token_file))
 
         client = ConnectClient()
-        assert ("authorization", f"Bearer {first}") in client._grpc_metadata()
+        assert ("authorization", f"Bearer {first}") in client._rpc_metadata()
         token_file.write_text(second)
         monotonic_now[0] += 899.0
-        assert ("authorization", f"Bearer {first}") in client._grpc_metadata()
+        assert ("authorization", f"Bearer {first}") in client._rpc_metadata()
         monotonic_now[0] += 1.0
-        assert ("authorization", f"Bearer {second}") in client._grpc_metadata()
+        assert ("authorization", f"Bearer {second}") in client._rpc_metadata()
 
     def test_changing_identity_file_path_bypasses_cache(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
@@ -433,12 +433,12 @@ class TestConnectClientWebIdentity:
         monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(first_file))
 
         client = ConnectClient()
-        assert ("authorization", f"Bearer {first}") in client._grpc_metadata()
+        assert ("authorization", f"Bearer {first}") in client._rpc_metadata()
 
         monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(second_file))
 
-        assert ("authorization", f"Bearer {second}") in client._grpc_metadata()
-        assert ("x-chalk-env-id", "env-two") in client._grpc_metadata()
+        assert ("authorization", f"Bearer {second}") in client._rpc_metadata()
+        assert ("x-chalk-env-id", "env-two") in client._rpc_metadata()
 
     def test_explicit_environment_overrides_jwt_claim(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
@@ -969,7 +969,7 @@ class TestChalkClientFromEnv:
 
 
 class TestSandboxClientFromEnv:
-    def test_uses_insecure_channel_for_local_http_api(self, monkeypatch):
+    def test_uses_insecure_address_for_local_http_api(self, monkeypatch):
         monkeypatch.setenv("CHALK_API_SERVER", "http://localhost:18080")
         monkeypatch.setenv("CHALK_CLIENT_ID", "client-id")
         monkeypatch.setenv("CHALK_CLIENT_SECRET", "client-secret")
@@ -993,7 +993,7 @@ class TestSandboxClientFromEnv:
 
 
 class TestStubAndCall:
-    """The gRPC transport seam: ConnectClient.stub() + ConnectClient.call()."""
+    """The ConnectRPC transport seam: ConnectClient.stub() + ConnectClient.call()."""
 
     def _authed_client(self) -> ConnectClient:
         client = ConnectClient()
@@ -1007,32 +1007,42 @@ class TestStubAndCall:
         client = self._authed_client()
         captured: list[tuple[Any, Any]] = []
 
-        def method(request: Any, timeout: Any = None, metadata: Any = None) -> str:
-            captured.append((timeout, metadata))
+        def method(request: Any, timeout_ms: Any = None, headers: Any = None) -> str:
+            captured.append((timeout_ms, headers))
             return "resp"
 
         assert client.call(method, object(), timeout=12) == "resp"
         client._access_token = "tok2"  # simulate token rotation
         client.call(method, object())
 
-        assert captured[0][0] == 12
-        assert ("authorization", "Bearer tok1") in captured[0][1]
-        assert ("authorization", "Bearer tok2") in captured[1][1]
-        assert ("x-chalk-env-id", "env-1") in captured[1][1]
+        assert captured[0][0] == 12_000
+        assert captured[0][1]["authorization"] == "Bearer tok1"
+        assert captured[1][1]["authorization"] == "Bearer tok2"
+        assert captured[1][1]["x-chalk-env-id"] == "env-1"
 
-    def test_stubs_share_the_channel(self, monkeypatch) -> None:
-        import chalkcompute._channel as channel_mod
-        from chalkcompute._gen.chalk.container.v1 import service_pb2_grpc as pb_grpc
+    def test_stub_uses_configured_protocol(self, monkeypatch) -> None:
+        from connectrpc.protocol import ProtocolType
 
         monkeypatch.delenv("CHALK_WEB_IDENTITY_TOKEN_FILE", raising=False)
-        channel_mod.close_channel()
-        try:
-            client = self._authed_client()
-            client.stub(pb_grpc.ContainerServiceStub)
-            first = channel_mod._channel
-            client.stub(pb_grpc.ContainerServiceStub)
-            # Both stubs were built on the one shared channel.
-            assert first is not None
-            assert channel_mod._channel is first
-        finally:
-            channel_mod.close_channel()
+        captured: dict[str, object] = {}
+
+        class Stub:
+            def __init__(
+                self, address: str, *, protocol: ProtocolType, interceptors: tuple
+            ) -> None:
+                captured.update(
+                    address=address,
+                    protocol=protocol,
+                    interceptor_count=len(interceptors),
+                )
+
+        client = ConnectClient(protocol=ProtocolType.CONNECT)
+        client._access_token = "tok"
+        client._env_id = "env-1"
+        client._api_server = "http://localhost:50051"
+        assert isinstance(client.stub(Stub), Stub)
+        assert captured == {
+            "address": "http://localhost:50051",
+            "protocol": ProtocolType.CONNECT,
+            "interceptor_count": 1,
+        }
