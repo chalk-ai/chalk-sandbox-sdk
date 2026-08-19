@@ -3,8 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from connectrpc.code import Code
-from connectrpc.errors import ConnectError as ConnectRpcError
 
 from chalkcompute import Container, ComputeClass, NetworkPolicy
 from chalkcompute._container import ContainerSecurityPolicy, KernelPolicy
@@ -201,35 +199,6 @@ def test_run_twice_raises_container_error() -> None:
         container.run()
 
     assert len(_run_container_calls(client)) == 1  # second run() never reached the RPC
-
-
-def test_container_run_retries_until_new_container_is_visible() -> None:
-    get_attempts = 0
-
-    def handler(method: str, request: Any) -> Any:
-        nonlocal get_attempts
-        container = pb.ContainerResponse(
-            id="container-123",
-            name="eventually-visible",
-            status="Pending" if method == "run_container" else "Running",
-        )
-        if method == "run_container":
-            return pb.RunContainerResponse(container=container)
-        if method == "get_container":
-            get_attempts += 1
-            if get_attempts == 1:
-                raise ConnectRpcError(Code.NOT_FOUND, "not visible yet")
-            return pb.GetContainerResponse(container=container)
-        raise AssertionError(f"unexpected method: {method}")
-
-    client = FakeConnectClient(handler=handler)
-    container = Container(image="ubuntu:latest", name="eventually-visible")
-    container._client = client
-
-    container.run(poll_interval=0)
-
-    assert get_attempts == 2
-    assert container.info.status == "Running"
 
 
 def test_stop_then_run_again_is_allowed() -> None:

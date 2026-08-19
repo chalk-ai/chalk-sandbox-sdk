@@ -114,6 +114,7 @@ NON_FORWARDING_POLICY_CASE_NAMES = [
     for case_name in POLICY_CASE_NAMES
     if case_name not in FORWARDING_POLICY_CASE_NAMES
 ]
+MAX_PARALLEL_POLICY_CASES = 5
 
 
 @dataclass(frozen=True)
@@ -239,7 +240,9 @@ def _assert_policy_cases(
 ) -> None:
     failures_by_case: dict[str, list[str]] = {}
 
-    with ThreadPoolExecutor(max_workers=len(case_names)) as executor:
+    with ThreadPoolExecutor(
+        max_workers=min(MAX_PARALLEL_POLICY_CASES, len(case_names))
+    ) as executor:
         futures = {}
         for case_name in case_names:
             futures[

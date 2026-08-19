@@ -1203,18 +1203,7 @@ class Container:
         deadline = time.monotonic() + timeout
         request = container_pb.GetContainerRequest(id=self._container_id)
         while time.monotonic() < deadline:
-            try:
-                info = _get_container_info(self._client, request)
-            except ContainerError as exc:
-                cause = exc.__cause__
-                if isinstance(cause, ConnectRpcError) and cause.code == Code.NOT_FOUND:
-                    logger.info(
-                        "  poll: container not visible yet; retrying (id=%s)",
-                        self._container_id,
-                    )
-                    time.sleep(poll_interval)
-                    continue
-                raise
+            info = _get_container_info(self._client, request)
             self._container_info = info
             logger.info("  poll: status=%s", info.status)
             if info.status == "Running":
