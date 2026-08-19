@@ -57,6 +57,7 @@ from typing import (
 )
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
+from connectrpc.protocol import ProtocolType
 from protobuf import Oneof
 
 from chalkcompute import _local_dev
@@ -78,6 +79,7 @@ from chalkcompute._gen.chalk.runtime.v1 import remote_python_call_pb as remote_c
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_connect as sg_connect
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from chalkcompute._gen.chalk.volume.v2 import volume_pb as volume_pb
+from chalkcompute._http import SYNC_HTTP_CLIENT
 from chalkcompute._naming import (
     sanitize_dns_label,
     validate_dns_label,
@@ -90,7 +92,7 @@ from chalkcompute._remote_function_tracing import (
     normalize_remote_function_tracing,
 )
 from chalkcompute._retry import RetryPolicy
-from chalkcompute._rpc import rpc_interceptors
+from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
 from chalkcompute._secret import SecretScope, resolve_lazy_secrets
 from chalkcompute._tracing import (
     _instrumented,
@@ -2833,8 +2835,10 @@ class RemoteFunction:
 
         self._call_stub = call_connect.RemoteCallServiceClientSync(
             rpc_address_from_target(target, use_tls=use_tls),
-            protocol=self._client._protocol,
-            interceptors=rpc_interceptors(self._client._protocol),
+            protocol=ProtocolType.GRPC,
+            interceptors=rpc_interceptors(),
+            http_client=SYNC_HTTP_CLIENT,
+            read_max_bytes=RPC_READ_MAX_BYTES,
         )
 
     def _remote_call_metadata(self, *, queue: bool) -> list[tuple[str, str]]:

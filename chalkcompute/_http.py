@@ -4,9 +4,11 @@ from collections.abc import Iterable, Iterator, Sequence
 from typing import TYPE_CHECKING, Protocol, TypeVar, overload
 
 from pyqwest import (
+    HTTPVersion,
     ReadError,
     RemoteProtocolError,
     SyncClient,
+    SyncHTTPTransport,
     TooManyRedirects,
     WriteError,
 )
@@ -76,7 +78,24 @@ if TYPE_CHECKING:
         del buffered_response, streaming_response
 
 
-SYNC_HTTP_CLIENT = SyncClient()
+# Pin HTTP/2: ConnectRPC stubs always use ProtocolType.GRPC, which requires h2.
+# Leaving http_version unset relies on ALPN and can fall back to HTTP/1.1 through
+# proxies/LBs. Match pyqwest's default pool/timeout knobs and raise idle sockets
+# so multiplexed RPCs keep a warmer connection pool.
+#
+# TCP keepalive at 60s approximates the old grpcio keepalive_time_ms=60_000.
+# pyqwest has no HTTP/2 PING keepalive API.
+SYNC_HTTP_VERSION = HTTPVersion.HTTP2
+TCP_KEEPALIVE_INTERVAL_SECONDS = 60.0
+_SYNC_HTTP_TRANSPORT = SyncHTTPTransport(
+    http_version=SYNC_HTTP_VERSION,
+    tls_include_system_certs=True,
+    connect_timeout=30.0,
+    pool_idle_timeout=90.0,
+    tcp_keepalive_interval=TCP_KEEPALIVE_INTERVAL_SECONDS,
+    pool_max_idle_per_host=32,
+)
+SYNC_HTTP_CLIENT = SyncClient(transport=_SYNC_HTTP_TRANSPORT)
 
 # pyqwest deliberately uses built-in connection/timeout exceptions alongside
 # its protocol and stream errors instead of defining one catch-all base class.

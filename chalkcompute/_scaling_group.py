@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from connectrpc.errors import ConnectError as ConnectRpcError
 
-from chalkcompute._connect import ConnectClient, build_image, rpc_with_retries
+from chalkcompute._connect import ConnectClient, build_image
 from chalkcompute._containerspec import ContainerSpec
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_connect as sg_connect
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
@@ -594,13 +594,13 @@ class ScalingGroup:
         info = self._scaling_group_info
         while time.monotonic() < deadline:
             stub = self._client.stub(sg_connect.ScalingGroupManagerServiceClientSync)
-            response = rpc_with_retries(
-                self._client,
-                stub.get_scaling_group,
-                sg_pb.GetScalingGroupRequest(id=self._scaling_group_id),
-                error_cls=ScalingGroupError,
-                retry_interval=poll_interval,
-            )
+            try:
+                response = self._client.call(
+                    stub.get_scaling_group,
+                    sg_pb.GetScalingGroupRequest(id=self._scaling_group_id),
+                )
+            except ConnectRpcError as exc:
+                raise ScalingGroupError(f"get_scaling_group failed: {exc}") from exc
             if response.scaling_group is None:
                 raise ScalingGroupError("GetScalingGroup returned no scaling group")
             info = _parse_scaling_group_response(response.scaling_group)

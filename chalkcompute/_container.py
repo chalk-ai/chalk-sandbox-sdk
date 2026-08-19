@@ -56,11 +56,12 @@ from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb as pb
 from chalkcompute._gen.chalk.sandbox.v2 import (
     process_service_connect as pb_connect,
 )
+from chalkcompute._http import SYNC_HTTP_CLIENT
 from chalkcompute._naming import (
     sanitize_dns_label,
     validate_env,
 )
-from chalkcompute._rpc import rpc_interceptors
+from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
     Volume,
@@ -486,15 +487,16 @@ class ContainerSessionClient:
         credentials: object | None,
         metadata: list[tuple[str, str]],
         _connect: ConnectClient | None = None,
-        protocol: ProtocolType = ProtocolType.GRPC,
     ) -> None:
         self._target = target
         self._static_metadata = metadata
         self._connect = _connect
         self._stub = pb_connect.SandboxProcessServiceClientSync(
             rpc_address_from_target(target, use_tls=credentials is not None),
-            protocol=protocol,
-            interceptors=rpc_interceptors(protocol),
+            protocol=ProtocolType.GRPC,
+            interceptors=rpc_interceptors(),
+            http_client=SYNC_HTTP_CLIENT,
+            read_max_bytes=RPC_READ_MAX_BYTES,
         )
 
     @classmethod
@@ -510,7 +512,6 @@ class ContainerSessionClient:
                 if getattr(connect, "_uses_web_identity_token", lambda: False)() is True
                 else None
             ),
-            protocol=connect._protocol,
         )
 
     @property
