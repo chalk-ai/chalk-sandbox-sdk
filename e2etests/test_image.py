@@ -4,10 +4,10 @@ These tests require CHALK_CLIENT_ID/CHALK_API_SERVER env vars.
 Unit tests have been moved to tests/test_image.py.
 """
 
+import json
 import time
 
 import pytest
-from google.protobuf.json_format import MessageToDict
 
 from chalkcompute import Image
 from e2etests.conftest import _connect_rpc, needs_staging
@@ -65,7 +65,7 @@ def test_create_sandbox_with_debian_image(auth_headers: dict[str, str]) -> None:
         .env({"TEST_VAR": "hello"})
     )
 
-    spec_dict = MessageToDict(img.to_proto())
+    spec_dict = json.loads(img.to_proto().to_json())
     body = {
         "imageSpec": spec_dict,
         "name": "test-debian-slim",
@@ -139,7 +139,7 @@ def test_build_custom_image(auth_headers: dict[str, str]) -> None:
         .run_commands("echo 'custom image built'")
     )
 
-    spec_dict = MessageToDict(img.to_proto())
+    spec_dict = json.loads(img.to_proto().to_json())
     body = {"imageSpec": spec_dict}
 
     resp = _connect_rpc(
