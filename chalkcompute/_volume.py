@@ -790,10 +790,14 @@ class Volume:
         returning, including on failure.
 
         ``cpu``/``memory`` don't need to scale with checkpoint size:
-        ``huggingface_hub`` (optionally accelerated by ``hf_transfer``)
-        streams each file to disk in bounded chunks rather than buffering
-        whole files in memory, and writes through the FUSE mount stream out
-        to S3 rather than buffering a whole file locally. The defaults here
+        ``huggingface_hub`` streams each file to disk sequentially in bounded
+        chunks rather than buffering whole files in memory (parallelizing
+        across files via ``max_workers``, not within one file — deliberately
+        not using ``hf_transfer``, which would split a single file into
+        concurrent range writes at different offsets; see the FUSE-layout
+        note in the implementation), and writes through the FUSE mount
+        stream out to S3 rather than buffering a whole file locally. The
+        defaults here
         comfortably cover models of any size; raise them only if the sandbox
         is timing out or CPU-starved on checksum/hash verification, not to
         make room for bigger weights.
