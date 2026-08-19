@@ -17,6 +17,7 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -111,7 +112,8 @@ for attempt in range(10):
     time.sleep(15)
 if not 200 <= resp.status < 300:
     raise RuntimeError(f"Completion request failed with status {resp.status}")
-print(f"Response: {resp.json()['choices'][0]['message']['content']}")
+response_body = json.loads(resp.content)
+print(f"Response: {response_body['choices'][0]['message']['content']}")
 
 print(f"\nServing at: {sg.web_url}")
 print("To tear down: sg.delete()")

@@ -51,6 +51,7 @@ from chalkcompute._function import FunctionVersionInfo as FunctionVersionInfo
 from chalkcompute._function import RemoteFunction as RemoteFunction
 from chalkcompute._function import function as function
 from chalkcompute._function import gather as gather
+from chalkcompute._http import HTTPResponse as HTTPResponse
 from chalkcompute._image import Image as Image
 from chalkcompute._image import LazyLocalFile as LazyLocalFile
 from chalkcompute._model import ModelError as ModelError
@@ -182,6 +183,7 @@ __all__ = [
     "ConnectClient",
     "build_image",
     "build_image_with_volumes",
+    "HTTPResponse",
     "span",
     "trace_headers",
     "traced",

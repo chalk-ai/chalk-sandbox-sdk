@@ -41,7 +41,7 @@ from chalkcompute._connect import ConnectClient, build_image, rpc_with_retries
 from chalkcompute._containerspec import ContainerSpec
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_connect as sg_connect
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
-from chalkcompute._http import SYNC_HTTP_CLIENT
+from chalkcompute._http import HTTPResponse, SYNC_HTTP_CLIENT
 from chalkcompute._naming import sanitize_dns_label
 from chalkcompute._secret import SecretScope, resolve_lazy_secrets
 from chalkcompute._tracing import _instrumented
@@ -57,8 +57,6 @@ from chalkcompute._volume import (
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from pyqwest import FullResponse
-
     from chalkcompute._image import Image as _Image
     from chalkcompute._secret import Secret as _Secret
 
@@ -641,7 +639,7 @@ class ScalingGroup:
         data: bytes | None = None,
         headers: dict[str, str] | None = None,
         timeout: float = 30.0,
-    ) -> FullResponse:
+    ) -> HTTPResponse[bytes]:
         """Make an HTTP request to the scaling group's endpoint.
 
         Parameters
@@ -663,8 +661,9 @@ class ScalingGroup:
 
         Returns
         -------
-        pyqwest.FullResponse
-            The HTTP response.
+        HTTPResponse[bytes]
+            A buffered HTTP response satisfying the SDK's structural response
+            protocol.
 
         Raises
         ------
