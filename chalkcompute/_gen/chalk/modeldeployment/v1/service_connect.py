@@ -29,6 +29,9 @@ class ModelDeploymentServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> CreateModelScalingGroupResponse:
+        """
+        CreateModelScalingGroup creates a scaling group for a model version
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -48,6 +51,9 @@ class ModelDeploymentServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> ListModelScalingGroupsResponse:
+        """
+        ListModelScalingGroups lists model scaling groups, optionally filtered to a model version
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -67,6 +73,10 @@ class ModelDeploymentServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> CallModelResponse:
+        """
+        CallModel synchronously invokes a model deployed to a scaling group, forwarding the request to the
+        container's RemoteCallService over gRPC.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(

@@ -50,6 +50,9 @@ class AsyncRemoteCallServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> EnqueueRemoteCallResponse:
+        """
+        Accept a CallFunctionRequest and enqueue it for async execution.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -69,6 +72,11 @@ class AsyncRemoteCallServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> PollRemoteCallResponse:
+        """
+        Poll for results. The caller passes a cursor to resume from the
+        last position; the server returns any new result chunks plus an
+        updated cursor.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -88,6 +96,9 @@ class AsyncRemoteCallServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> PurgeQueueResponse:
+        """
+        Drop pending items from one or all per-function queues for the tenant.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -109,6 +120,9 @@ class FunctionQueueMetaServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> GetRecentCallsResponse:
+        """
+        Return the most recent k calls to a function, ordered newest-first.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -128,6 +142,9 @@ class FunctionQueueMetaServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> GetCallResultsResponse:
+        """
+        Return current status and accumulated result chunks for specific calls.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -147,6 +164,9 @@ class FunctionQueueMetaServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> GetCallCountResponse:
+        """
+        Return the number of calls submitted to a function in the past hour.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(

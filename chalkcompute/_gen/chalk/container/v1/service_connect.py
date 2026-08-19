@@ -29,6 +29,9 @@ class ContainerServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> RunContainerResponse:
+        """
+        RunContainer creates and runs a new container as a Kubernetes pod
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -48,6 +51,9 @@ class ContainerServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> StopContainerResponse:
+        """
+        StopContainer stops and deletes a running container
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -67,6 +73,9 @@ class ContainerServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> GetContainerResponse:
+        """
+        GetContainer retrieves the status of a specific container
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -86,6 +95,9 @@ class ContainerServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> ListContainersResponse:
+        """
+        ListContainers lists all containers created by this service
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -105,6 +117,9 @@ class ContainerServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> ExecCommandResponse:
+        """
+        ExecCommand executes a command in a running container
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -124,6 +139,9 @@ class ContainerServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> Iterator[SessionResponse]:
+        """
+        Session establishes a bidirectional command session in a running container
+        """
         return self.execute_bidi_stream(
             request=request,
             method=MethodInfo(
@@ -143,6 +161,9 @@ class ContainerServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> GetSessionResponse:
+        """
+        GetSession retrieves information about a command session
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -162,6 +183,9 @@ class ContainerServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> ListSessionsResponse:
+        """
+        ListSessions lists command sessions for a container
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -181,6 +205,10 @@ class ContainerServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> UpdateContainerStatusResponse:
+        """
+        UpdateContainerStatus updates container status from K8s controller
+        Deprecated: use BatchUpdateContainerStatus
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -200,6 +228,9 @@ class ContainerServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> BatchUpdateContainerStatusResponse:
+        """
+        BatchUpdateContainerStatus updates status for multiple containers from the dataplane controller
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -219,6 +250,9 @@ class ContainerServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> SnapshotContainerResponse:
+        """
+        SnapshotContainer creates a point-in-time snapshot of a running container
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -238,6 +272,9 @@ class ContainerServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> GetContainerSnapshotResponse:
+        """
+        GetContainerSnapshot retrieves a specific container snapshot
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -257,6 +294,9 @@ class ContainerServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> ListContainerSnapshotsResponse:
+        """
+        ListContainerSnapshots lists container snapshots, optionally filtered by source container
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -276,6 +316,12 @@ class ContainerServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> Iterator[CreateContainerDebugTTYResponse]:
+        """
+        CreateContainerDebugTTY establishes a bidirectional streaming TTY session to a container
+        The first request must contain init_request with container id or name
+        Subsequent requests contain input data to send to the TTY stdin
+        Responses contain output data from the TTY stdout/stderr
+        """
         return self.execute_bidi_stream(
             request=request,
             method=MethodInfo(

@@ -29,6 +29,9 @@ class ScalingGroupManagerServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> CreateScalingGroupResponse:
+        """
+        CreateScalingGroup creates a new scaling group as a Kubernetes Deployment
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -48,6 +51,9 @@ class ScalingGroupManagerServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> GetScalingGroupResponse:
+        """
+        GetScalingGroup retrieves the status of a specific scaling group
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -67,6 +73,9 @@ class ScalingGroupManagerServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> ListScalingGroupsResponse:
+        """
+        ListScalingGroups lists all scaling groups in the current environment
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -86,6 +95,9 @@ class ScalingGroupManagerServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> GetScalingGroupRevisionResponse:
+        """
+        GetScalingGroupRevision retrieves a specific scaling group revision
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -105,6 +117,9 @@ class ScalingGroupManagerServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> ListScalingGroupRevisionsResponse:
+        """
+        ListScalingGroupRevisions lists scaling group revisions in the current environment
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -124,6 +139,9 @@ class ScalingGroupManagerServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> DeleteScalingGroupResponse:
+        """
+        DeleteScalingGroup deletes a scaling group and its Kubernetes resources
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -143,6 +161,9 @@ class ScalingGroupManagerServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> BatchUpdateScalingGroupStatusResponse:
+        """
+        BatchUpdateScalingGroupStatus updates status for multiple scaling groups from the dataplane controller
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(

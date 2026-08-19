@@ -22,6 +22,9 @@ if TYPE_CHECKING:
     from connectrpc.request import Headers, RequestContext
 
 class TraceServiceClientSync(ConnectClientSync):
+    """
+    TraceService provides methods for retrieving trace data
+    """
     def get_trace(
         self,
         request: GetTraceRequest,
@@ -30,6 +33,9 @@ class TraceServiceClientSync(ConnectClientSync):
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> GetTraceResponse:
+        """
+        GetTrace retrieves a trace, optionally by operation ID
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -51,6 +57,9 @@ class TraceServiceClientSync(ConnectClientSync):
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> ListTraceResponse:
+        """
+        ListTrace retrieves a list of traces with optional filtering
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -72,6 +81,9 @@ class TraceServiceClientSync(ConnectClientSync):
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> SearchTraceSummariesResponse:
+        """
+        SearchTraceSummaries retrieves traces using indexed trace summary filters
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -93,6 +105,9 @@ class TraceServiceClientSync(ConnectClientSync):
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> ListTraceAggregatedResponse:
+        """
+        ListTraceAggregated returns trace counts bucketed by time for the same filters as SearchTraceSummaries
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -114,6 +129,9 @@ class TraceServiceClientSync(ConnectClientSync):
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> SearchSessionsResponse:
+        """
+        SearchSessions groups matching traces into agent sessions (conversations)
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -135,6 +153,9 @@ class TraceServiceClientSync(ConnectClientSync):
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> ListSessionAggregatedResponse:
+        """
+        ListSessionAggregated returns session counts bucketed by time for the same filters as SearchSessions
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -156,6 +177,9 @@ class TraceServiceClientSync(ConnectClientSync):
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> GetTraceCallGraphResponse:
+        """
+        GetTraceCallGraph retrieves the pre-indexed trace data needed to render a call graph.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -177,6 +201,9 @@ class TraceServiceClientSync(ConnectClientSync):
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> GetTraceFacetsResponse:
+        """
+        GetTraceFacets returns available facets for filtering trace summaries
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -198,6 +225,9 @@ class TraceServiceClientSync(ConnectClientSync):
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> GetTraceFacetValuesResponse:
+        """
+        GetTraceFacetValues returns values for a specific trace summary facet
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -219,6 +249,9 @@ class TraceServiceClientSync(ConnectClientSync):
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> GetSpanResponse:
+        """
+        GetSpan retrieves a specific span by span ID and trace ID
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -240,6 +273,9 @@ class TraceServiceClientSync(ConnectClientSync):
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> GetSpanLatencyDistributionResponse:
+        """
+        GetSpanLatencyDistribution returns latency percentiles for spans matching selected spans.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -261,6 +297,9 @@ class TraceServiceClientSync(ConnectClientSync):
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> ListSpanResponse:
+        """
+        ListSpan retrieves a list of spans for a specific trace with optional filtering
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -282,6 +321,9 @@ class TraceServiceClientSync(ConnectClientSync):
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> GetSpanFacetsResponse:
+        """
+        GetSpanFacets returns available facets for filtering spans
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -303,6 +345,9 @@ class TraceServiceClientSync(ConnectClientSync):
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> GetSpanFacetValuesResponse:
+        """
+        GetSpanFacetValues returns values for a specific span facet
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -324,6 +369,9 @@ class TraceServiceClientSync(ConnectClientSync):
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> ListSpanAggregatedResponse:
+        """
+        ListSpanAggregated returns aggregated span counts bucketed by time and status
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -345,6 +393,9 @@ class TraceServiceClientSync(ConnectClientSync):
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> GetSpanSourceAggregatesResponse:
+        """
+        GetSpanSourceAggregates returns span counts aggregated by (service, resource_group)
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -366,6 +417,10 @@ class TraceServiceClientSync(ConnectClientSync):
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> GetSpanAggregatesResponse:
+        """
+        GetSpanAggregates computes arbitrary aggregations (count distinct, sum/avg/min/max,
+        percentiles) grouped by 0-3 span facets.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(

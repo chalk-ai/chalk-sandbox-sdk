@@ -29,6 +29,12 @@ class SandboxServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> Iterator[ExecResponse]:
+        """
+        Exec establishes a bidirectional streaming session to execute commands in a sandbox.
+        The first request must contain an init message with sandbox_id and command.
+        Subsequent requests contain stdin data, stdin EOF, or signals.
+        Responses contain process started, stdout/stderr output, process exited, or errors.
+        """
         return self.execute_bidi_stream(
             request=request,
             method=MethodInfo(
@@ -48,6 +54,9 @@ class SandboxServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> CreateSandboxResponse:
+        """
+        CreateSandbox provisions a new sandbox pod
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -67,6 +76,9 @@ class SandboxServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> TerminateSandboxResponse:
+        """
+        TerminateSandbox stops and removes a sandbox
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -86,6 +98,9 @@ class SandboxServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> GetSandboxResponse:
+        """
+        GetSandbox returns information about a specific sandbox
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -105,6 +120,9 @@ class SandboxServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> ListSandboxesResponse:
+        """
+        ListSandboxes returns all sandboxes for the current environment
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -119,6 +137,9 @@ class SandboxServiceClientSync(ConnectClientSync):
         )
 
 class CustomImageServiceClientSync(ConnectClientSync):
+    """
+    CustomImageService manages custom container image builds independently of sandboxes.
+    """
     def build_custom_image(
         self,
         request: BuildCustomImageRequest,
@@ -126,6 +147,9 @@ class CustomImageServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> BuildCustomImageResponse:
+        """
+        BuildCustomImage builds a container image from a declarative ImageSpec.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -145,6 +169,9 @@ class CustomImageServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> GetCustomImageResponse:
+        """
+        GetCustomImage returns the status of a custom image build by build ID.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -164,6 +191,10 @@ class CustomImageServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> GetOrBuildCustomImageResponse:
+        """
+        GetOrBuildCustomImage returns an existing image if one matches the spec's content-addressed
+        tag, or submits a new build and returns immediately with status "building".
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -183,6 +214,10 @@ class CustomImageServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> Iterator[StreamCustomImageBuildUpdatesResponse]:
+        """
+        StreamCustomImageBuildUpdates streams build status updates for a given build ID
+        by polling the underlying Argo workflow until it reaches a terminal state.
+        """
         return self.execute_server_stream(
             request=request,
             method=MethodInfo(
@@ -202,6 +237,10 @@ class CustomImageServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> ListCustomImageBuildsResponse:
+        """
+        ListCustomImageBuilds lists the custom images the calling environment
+        references (from the per-environment custom_image_refs index), newest first.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -221,6 +260,10 @@ class CustomImageServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> GetCustomImageBuildResponse:
+        """
+        GetCustomImageBuild returns a single referenced build, addressed by content
+        hash or build ID and authorized against the calling environment.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -240,6 +283,11 @@ class CustomImageServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> GetCustomImageBuildLogsResponse:
+        """
+        GetCustomImageBuildLogs returns a page of build logs for a referenced build,
+        authorized against the calling environment. Returns an Unimplemented error
+        for builders whose backend cannot serve logs.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -259,6 +307,12 @@ class CustomImageServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> GetCustomImageBuildWorkflowResponse:
+        """
+        GetCustomImageBuildWorkflow returns the underlying build workflow (the source
+        for the plan/DAG and step timeline) for a referenced build, authorized
+        against the calling environment. The workflow is unset for non-Argo backends,
+        pure registry cache hits, or builds whose workflow has been garbage-collected.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -278,6 +332,12 @@ class CustomImageServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> GetCustomImageBuildUsageResponse:
+        """
+        GetCustomImageBuildUsage returns the compute resources (containers, scaling
+        groups, and currently-live sandboxes) that reference a referenced build,
+        addressed by content hash or build ID and authorized against the calling
+        environment. The sandbox set reflects only currently-live sandboxes.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(

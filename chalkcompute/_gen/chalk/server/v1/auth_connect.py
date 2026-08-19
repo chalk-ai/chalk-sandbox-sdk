@@ -412,6 +412,9 @@ class AuthServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> GetProjectInfoResponse:
+        """
+        Only for use with auto-impersonation
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -469,6 +472,10 @@ class AuthServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> GetWorkloadIdentityTokenResponse:
+        """
+        Issues a short-lived OIDC ID token that third parties supporting workload
+        identity federation can validate against the JWKS published at <issuer>/.well-known/jwks.json.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(

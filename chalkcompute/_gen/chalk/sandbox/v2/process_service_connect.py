@@ -29,6 +29,9 @@ class SandboxProcessServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> ExecCommandResponse:
+        """
+        Run a command to completion and return its buffered output.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -48,6 +51,10 @@ class SandboxProcessServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> Iterator[OpenSessionResponse]:
+        """
+        Open a bidirectional session against a sandbox, either starting a new
+        process or attaching to an existing one.
+        """
         return self.execute_bidi_stream(
             request=request,
             method=MethodInfo(

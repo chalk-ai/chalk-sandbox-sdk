@@ -1,0 +1,1 @@
+- Upgrade the protobuf-py runtime and generated messages to 0.3.0, including its native JSON and Pydantic improvements.

@@ -124,6 +124,10 @@ class ArtifactServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> Iterator[DownloadArtifactResponse]:
+        """
+        Streams the artifact's content bytes. Browsers read artifacts through
+        this RPC; signed storage URLs never leave the server.
+        """
         return self.execute_server_stream(
             request=request,
             method=MethodInfo(

@@ -70,6 +70,11 @@ class ExternalFunctionCatalogServiceClientSync(ConnectClientSync):
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> GetExternalFunctionVersionSourceResponse:
+        """
+        Resolves the source files for one immutable function version. The browser
+        calls this lazily and reads the selected file directly from the pinned
+        volume version; source is intentionally absent from list responses.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -130,6 +135,11 @@ class ExternalFunctionCatalogServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> DeleteExternalFunctionResponse:
+        """
+        Deletes every version of a function: each version's scaling group is torn
+        down and the function schedule is removed, then all version rows are
+        soft-deleted for historical audit.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
