@@ -6,13 +6,10 @@
 
 from __future__ import annotations
 
-from typing import Protocol, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from connectrpc.client import ConnectClientSync
-from connectrpc.code import Code
-from connectrpc.errors import ConnectError
 from connectrpc.method import IdempotencyLevel, MethodInfo
-from connectrpc.server import ConnectWSGIApplication, EndpointSync
 
 from .trace_pb import GetSpanAggregatesRequest, GetSpanAggregatesResponse, GetSpanFacetValuesRequest, GetSpanFacetValuesResponse, GetSpanFacetsRequest, GetSpanFacetsResponse, GetSpanLatencyDistributionRequest, GetSpanLatencyDistributionResponse, GetSpanRequest, GetSpanResponse, GetSpanSourceAggregatesRequest, GetSpanSourceAggregatesResponse, GetTraceCallGraphRequest, GetTraceCallGraphResponse, GetTraceFacetValuesRequest, GetTraceFacetValuesResponse, GetTraceFacetsRequest, GetTraceFacetsResponse, GetTraceRequest, GetTraceResponse, ListSessionAggregatedRequest, ListSessionAggregatedResponse, ListSpanAggregatedRequest, ListSpanAggregatedResponse, ListSpanRequest, ListSpanResponse, ListTraceAggregatedRequest, ListTraceAggregatedResponse, ListTraceRequest, ListTraceResponse, SearchSessionsRequest, SearchSessionsResponse, SearchTraceSummariesRequest, SearchTraceSummariesResponse
 

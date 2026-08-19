@@ -6,13 +6,10 @@
 
 from __future__ import annotations
 
-from typing import Protocol, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from connectrpc.client import ConnectClientSync
-from connectrpc.code import Code
-from connectrpc.errors import ConnectError
 from connectrpc.method import IdempotencyLevel, MethodInfo
-from connectrpc.server import ConnectWSGIApplication, EndpointSync
 
 from .model_registry_pb import CreateModelArtifactRequest, CreateModelArtifactResponse, CreateModelRequest, CreateModelResponse, CreateModelVersionFromArtifactRequest, CreateModelVersionFromArtifactResponse, CreateModelVersionRequest, CreateModelVersionResponse, DeleteModelRequest, DeleteModelResponse, DeleteModelVersionRequest, DeleteModelVersionResponse, DownloadModelArtifactRequest, DownloadModelArtifactResponse, GetModelArtifactRequest, GetModelArtifactResponse, GetModelArtifactUploadUrlsRequest, GetModelArtifactUploadUrlsResponse, GetModelReferenceRequest, GetModelReferenceResponse, GetModelReferencesRequest, GetModelReferencesResponse, GetModelRequest, GetModelResponse, GetModelVersionRequest, GetModelVersionResponse, ListModelArtifactsRequest, ListModelArtifactsResponse, ListModelVersionsRequest, ListModelVersionsResponse, ListModelsRequest, ListModelsResponse, UpdateModelRequest, UpdateModelResponse, UpdateModelVersionRequest, UpdateModelVersionResponse
 

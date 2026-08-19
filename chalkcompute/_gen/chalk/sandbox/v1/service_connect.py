@@ -6,13 +6,10 @@
 
 from __future__ import annotations
 
-from typing import Protocol, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from connectrpc.client import ConnectClientSync
-from connectrpc.code import Code
-from connectrpc.errors import ConnectError
 from connectrpc.method import IdempotencyLevel, MethodInfo
-from connectrpc.server import ConnectWSGIApplication, EndpointSync
 
 from .service_pb import BuildCustomImageRequest, BuildCustomImageResponse, CreateSandboxRequest, CreateSandboxResponse, ExecRequest, ExecResponse, GetCustomImageBuildLogsRequest, GetCustomImageBuildLogsResponse, GetCustomImageBuildRequest, GetCustomImageBuildResponse, GetCustomImageBuildUsageRequest, GetCustomImageBuildUsageResponse, GetCustomImageBuildWorkflowRequest, GetCustomImageBuildWorkflowResponse, GetCustomImageRequest, GetCustomImageResponse, GetOrBuildCustomImageRequest, GetOrBuildCustomImageResponse, GetSandboxRequest, GetSandboxResponse, ListCustomImageBuildsRequest, ListCustomImageBuildsResponse, ListSandboxesRequest, ListSandboxesResponse, StreamCustomImageBuildUpdatesRequest, StreamCustomImageBuildUpdatesResponse, TerminateSandboxRequest, TerminateSandboxResponse
 
