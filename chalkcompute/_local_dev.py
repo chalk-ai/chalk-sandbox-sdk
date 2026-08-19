@@ -25,15 +25,15 @@ _LOCAL_SDK_COPY_EXCLUDES = [
     "**/target/**",
 ]
 _LOCAL_SDK_RUNTIME_PACKAGES = [
-    "grpcio>=1.60.0",
-    "protobuf>=4.25.0",
     "httpx>=0.25.0",
     "blake3>=1.0.0",
     "pyyaml>=6.0.0",
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",
-    "opentelemetry-exporter-otlp-proto-grpc>=1.20.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.20.0",
     "rich>=13.0.0",
+    "protobuf-py==0.1.1",
+    "connectrpc==0.11.1",
 ]
 
 

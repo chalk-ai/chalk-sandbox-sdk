@@ -125,14 +125,12 @@ worker_sandbox.terminate()
 
 ```python
 from chalkcompute import SandboxClient
-import grpc
 
 # Insecure (local dev)
 client = SandboxClient("localhost:50051")
 
 # With TLS
-creds = grpc.ssl_channel_credentials()
-client = SandboxClient("sandbox.example.com:443", credentials=creds)
+client = SandboxClient("sandbox.example.com:443", use_tls=True)
 
 # As a context manager
 with SandboxClient("localhost:50051") as client:

@@ -31,7 +31,6 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-import grpc
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
 from connectrpc.protocol import ProtocolType
@@ -938,7 +937,7 @@ class Sandbox:
 
         artifact_client = ArtifactClient(
             client._address,
-            credentials=grpc.ssl_channel_credentials() if client._use_tls else None,
+            use_tls=client._use_tls,
             metadata=client._metadata,
             protocol=client._protocol,
         )
@@ -1077,7 +1076,8 @@ class SandboxClient:
         self,
         target: str = "localhost:50051",
         *,
-        credentials: grpc.ChannelCredentials | None = None,
+        credentials: object | None = None,
+        use_tls: bool | None = None,
         metadata: _GrpcMetadata | None = None,
         _connect: ConnectClient | None = None,
         protocol: ProtocolType = ProtocolType.GRPC,
@@ -1090,15 +1090,19 @@ class SandboxClient:
             RPC server address (e.g. ``"localhost:50051"`` or
             ``"https://sandbox.example.com"``).
         credentials
-            Optional TLS/SSL channel credentials. If ``None``, uses insecure
-            channel.
+            Backward-compatible TLS signal. The object is not inspected; prefer
+            ``use_tls`` for new code.
+        use_tls
+            Whether to use HTTPS for the ConnectRPC transport. When omitted,
+            this remains compatible with the old behavior: passing any
+            ``credentials`` object enables TLS.
         metadata
             Optional default metadata to send with every RPC call.
         """
         self._target = target
         self._static_metadata = metadata
         self._connect = _connect
-        self._use_tls = credentials is not None
+        self._use_tls = credentials is not None if use_tls is None else use_tls
         self._protocol = protocol
         self._address = rpc_address_from_target(target, use_tls=self._use_tls)
         interceptors = rpc_interceptors(protocol)
@@ -1128,7 +1132,7 @@ class SandboxClient:
 
         return cls(
             host,
-            credentials=grpc.ssl_channel_credentials() if use_tls else None,
+            use_tls=use_tls,
             metadata=connect._rpc_metadata(),
             protocol=protocol,
             _connect=(

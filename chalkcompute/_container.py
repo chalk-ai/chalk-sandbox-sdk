@@ -29,7 +29,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, NoReturn
 
-import grpc
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
 from connectrpc.protocol import ProtocolType
@@ -484,7 +483,7 @@ class ContainerSessionClient:
         self,
         target: str,
         *,
-        credentials: grpc.ChannelCredentials | None,
+        credentials: object | None,
         metadata: list[tuple[str, str]],
         _connect: ConnectClient | None = None,
         protocol: ProtocolType = ProtocolType.GRPC,

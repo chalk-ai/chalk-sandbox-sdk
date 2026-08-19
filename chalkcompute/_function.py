@@ -749,21 +749,11 @@ def _is_retryable_stale_remote_call_error_message(message: str | None) -> bool:
 def _is_stale_remote_call_error(error: BaseException) -> bool:
     if isinstance(error, ConnectRpcError) and error.code == Code.UNAVAILABLE:
         return True
-    try:
-        import grpc
-    except ImportError:  # pragma: no cover - grpc is a runtime dependency
-        return _is_stale_remote_call_error_message(_remote_call_error_message(error))
-
-    if isinstance(error, grpc.RpcError):
-        code_fn = getattr(error, "code", None)
-        if callable(code_fn):
-            try:
-                if code_fn() == grpc.StatusCode.UNAVAILABLE:
-                    return True
-            except Exception:
-                pass
+    code_fn = getattr(error, "code", None)
+    if callable(code_fn):
         try:
-            if grpc.StatusCode.UNAVAILABLE.name in _remote_call_error_message(error):
+            code = code_fn()
+            if getattr(code, "name", None) == "UNAVAILABLE":
                 return True
         except Exception:
             pass

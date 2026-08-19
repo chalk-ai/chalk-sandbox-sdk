@@ -10,7 +10,6 @@ These tests:
 import os
 import time
 
-import grpc
 import pytest
 
 from chalkcompute import SandboxClient
@@ -58,12 +57,11 @@ def _poll_until_ready(sandbox_id: str, headers: dict[str, str]) -> dict:
 def grpc_client(access_token: str) -> SandboxClient:
     """Create a gRPC SandboxClient pointed at the configured API server."""
     target, use_tls = grpc_target_from_url(CHALK_API_SERVER)
-    credentials = grpc.ssl_channel_credentials() if use_tls else None
     metadata = [
         ("authorization", f"Bearer {access_token}"),
         ("x-chalk-env-id", CHALK_ENVIRONMENT_ID),
     ]
-    client = SandboxClient(target, credentials=credentials, metadata=metadata)
+    client = SandboxClient(target, use_tls=use_tls, metadata=metadata)
     yield client
     client.close()
 
