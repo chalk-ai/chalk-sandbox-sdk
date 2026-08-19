@@ -47,6 +47,14 @@ needs_openai = pytest.mark.skipif(
     reason="OPENAI_API_KEY not set",
 )
 
+needs_function_sandbox_identity = pytest.mark.skipif(
+    os.environ.get("CHALK_RUN_FUNCTION_SANDBOX_E2E") != "1",
+    reason=(
+        "CHALK_RUN_FUNCTION_SANDBOX_E2E=1 not set; the target environment must "
+        "grant deployed functions deploy.redeploy and sandbox image-pull access"
+    ),
+)
+
 
 def _deploy_script(
     example_subdir: str,

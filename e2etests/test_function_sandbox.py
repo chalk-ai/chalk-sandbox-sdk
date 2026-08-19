@@ -5,10 +5,16 @@ from __future__ import annotations
 import chalkcompute
 
 from e2etests._ci_resources import build_scoped_name
-from e2etests.conftest import _delete_function, _deploy_script, needs_staging
+from e2etests.conftest import (
+    _delete_function,
+    _deploy_script,
+    needs_function_sandbox_identity,
+    needs_staging,
+)
 
 
 @needs_staging
+@needs_function_sandbox_identity
 class TestFunctionSandbox:
     function_name = build_scoped_name("ex-function-sandbox")
 
