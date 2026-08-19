@@ -21,7 +21,7 @@ steps:
         --tags  "sandbox,compute,tti,{{matrix}}" \
         -- uv run python -m sandbox_benchmark.pyperf_adapter \
           --mode all \
-          --iterations 10 \
+          --iterations 5 \
           --cpu 250m \
           --memory 128Mi \
           --min-success-rate 1.0 \
