@@ -22,8 +22,8 @@ steps:
         -- uv run python -m sandbox_benchmark.pyperf_adapter \
           --mode all \
           --iterations 10 \
-          --cpu 500m \
-          --memory 256Mi \
+          --cpu 250m \
+          --memory 128Mi \
           --min-success-rate 1.0 \
           --max-p95-ms 60000
     agents:
