@@ -1,7 +1,7 @@
 """End-to-end tests for sandbox exec and PTY interaction against ftqa.
 
 These tests:
-  1. Create a sandbox with a pre-built image via Connect protocol
+  1. Create a sandbox with a pre-built image via gRPC
   2. Exec 'ls' and verify output via gRPC bidirectional streaming
   3. Start an interactive shell (PTY-like), send a command via stdin, read output
   4. Clean up the sandbox

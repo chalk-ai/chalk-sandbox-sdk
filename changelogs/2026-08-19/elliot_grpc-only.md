@@ -1,0 +1,1 @@
+- Always use the gRPC wire protocol for generated RPC clients; Connect and gRPC-Web protocol selection is no longer exposed by the SDK.

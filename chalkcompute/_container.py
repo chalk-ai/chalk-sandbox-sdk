@@ -31,7 +31,6 @@ from typing import TYPE_CHECKING, Any, NoReturn
 
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
-from connectrpc.protocol import ProtocolType
 from protobuf import Oneof
 from protobuf.wkt import Duration
 
@@ -60,7 +59,7 @@ from chalkcompute._naming import (
     sanitize_dns_label,
     validate_env,
 )
-from chalkcompute._rpc import rpc_interceptors
+from chalkcompute._rpc import GRPC_PROTOCOL, rpc_interceptors
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
     Volume,
@@ -486,15 +485,14 @@ class ContainerSessionClient:
         credentials: object | None,
         metadata: list[tuple[str, str]],
         _connect: ConnectClient | None = None,
-        protocol: ProtocolType = ProtocolType.GRPC,
     ) -> None:
         self._target = target
         self._static_metadata = metadata
         self._connect = _connect
         self._stub = pb_connect.SandboxProcessServiceClientSync(
             rpc_address_from_target(target, use_tls=credentials is not None),
-            protocol=protocol,
-            interceptors=rpc_interceptors(protocol),
+            protocol=GRPC_PROTOCOL,
+            interceptors=rpc_interceptors(),
         )
 
     @classmethod
@@ -510,7 +508,6 @@ class ContainerSessionClient:
                 if getattr(connect, "_uses_web_identity_token", lambda: False)() is True
                 else None
             ),
-            protocol=connect._protocol,
         )
 
     @property

@@ -1032,7 +1032,7 @@ class TestStubAndCall:
         assert captured[1][1]["authorization"] == "Bearer tok2"
         assert captured[1][1]["x-chalk-env-id"] == "env-1"
 
-    def test_stub_uses_configured_protocol(self, monkeypatch) -> None:
+    def test_stub_always_uses_grpc(self, monkeypatch) -> None:
         from connectrpc.protocol import ProtocolType
 
         monkeypatch.delenv("CHALK_WEB_IDENTITY_TOKEN_FILE", raising=False)
@@ -1054,14 +1054,14 @@ class TestStubAndCall:
                     http_client=http_client,
                 )
 
-        client = ConnectClient(protocol=ProtocolType.CONNECT)
+        client = ConnectClient()
         client._access_token = "tok"
         client._env_id = "env-1"
         client._api_server = "http://localhost:50051"
         assert isinstance(client.stub(Stub), Stub)
         assert captured == {
             "address": "http://localhost:50051",
-            "protocol": ProtocolType.CONNECT,
+            "protocol": ProtocolType.GRPC,
             "interceptor_count": 1,
             "http_client": SYNC_HTTP_CLIENT,
         }

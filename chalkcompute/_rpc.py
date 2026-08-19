@@ -18,6 +18,8 @@ _RPC_SYSTEM_NAME_ATTRIBUTE = "rpc.system.name"
 _RPC_METHOD_ATTRIBUTE = "rpc.method"
 _RPC_RESPONSE_STATUS_CODE_ATTRIBUTE = "rpc.response.status_code"
 
+GRPC_PROTOCOL = ProtocolType.GRPC
+
 
 @dataclass
 class _SpanToken:
@@ -28,13 +30,10 @@ class _SpanToken:
 class TracingInterceptor:
     """Emit one OpenTelemetry span around each synchronous RPC."""
 
-    def __init__(self, protocol: ProtocolType) -> None:
-        self._protocol = protocol
-
     def on_start_sync(self, ctx: RequestContext[Any, Any]) -> _SpanToken:
         context = get_tracer().start_as_current_span(_RPC_SPAN_NAME)
         span = context.__enter__()
-        span.set_attribute(_RPC_SYSTEM_NAME_ATTRIBUTE, self._protocol.name.lower())
+        span.set_attribute(_RPC_SYSTEM_NAME_ATTRIBUTE, GRPC_PROTOCOL.name.lower())
         span.set_attribute(
             _RPC_METHOD_ATTRIBUTE,
             f"{ctx.method.service_name}/{ctx.method.name}",
@@ -65,6 +64,6 @@ class TracingInterceptor:
         )
 
 
-def rpc_interceptors(protocol: ProtocolType) -> tuple[TracingInterceptor]:
-    """Return the common interceptors for a generated synchronous client."""
-    return (TracingInterceptor(protocol),)
+def rpc_interceptors() -> tuple[TracingInterceptor]:
+    """Return the common interceptors for a generated synchronous gRPC client."""
+    return (TracingInterceptor(),)

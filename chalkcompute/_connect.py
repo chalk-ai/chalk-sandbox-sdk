@@ -1,8 +1,7 @@
 """Shared authenticated client for Chalk API services.
 
 Provides auth (OAuth token exchange), typed RPC dispatch through ConnectRPC
-clients via ``stub()``/``call()``, plus the legacy untyped Connect JSON
-``rpc()`` helper and image build polling.
+clients via ``stub()``/``call()``, and image build polling.
 """
 
 from __future__ import annotations
@@ -16,7 +15,6 @@ from urllib.parse import urlparse
 
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
-from connectrpc.protocol import ProtocolType
 
 from chalkcompute._auth_config import active_environment_from_env, load_token
 from chalkcompute._gen.chalk.auth.v1 import permissions_pb
@@ -29,7 +27,7 @@ from chalkcompute._remote_call_client import (
     ServiceAuthContext,
     resolve_service_auth_context,
 )
-from chalkcompute._rpc import rpc_interceptors
+from chalkcompute._rpc import GRPC_PROTOCOL, rpc_interceptors
 from chalkcompute._tracing import _instrumented
 from chalkcompute._web_identity import (
     WebIdentityTokenError,
@@ -103,10 +101,9 @@ def chalk_client_from_env(
 class ConnectClient:
     """Authenticated RPC client for Chalk APIs.
 
-    Two transports share this client's auth:
+    :meth:`stub` and :meth:`call` dispatch typed requests through generated
+    ConnectRPC clients that always use the gRPC wire protocol.
 
-    - :meth:`stub` / :meth:`call` — typed ConnectRPC clients. gRPC is the
-      compatibility default, while Connect and gRPC-Web remain selectable.
     Ambient Chalk credentials are read lazily. A JWT configured through
     ``CHALK_WEB_IDENTITY_TOKEN_FILE`` takes precedence and is cached for the
     shorter of one hour or half its remaining lifetime. Otherwise, service
@@ -119,12 +116,7 @@ class ConnectClient:
     >>> resp = client.call(stub.GetContainer, pb.GetContainerRequest(id="..."))
     """
 
-    def __init__(
-        self,
-        chalk_client: Any | None = None,
-        *,
-        protocol: ProtocolType = ProtocolType.GRPC,
-    ) -> None:
+    def __init__(self, chalk_client: Any | None = None) -> None:
         self._api_server: str | None = None
         self._access_token: str | None = None
         self._env_id: str | None = None
@@ -133,7 +125,6 @@ class ConnectClient:
         self._environment_id_to_name: dict[str, str] = {}
         self._primary_environment: str | None = None
         self._chalk_client = chalk_client
-        self._protocol = protocol
         self._typed_clients: dict[Callable[..., Any], Any] = {}
         self._web_identity_token_file: str | None = None
         self._web_identity_cached_at: float | None = None
@@ -189,8 +180,8 @@ class ConnectClient:
             self._api_server = service_auth.auth_endpoint.rstrip("/")
             auth_client = auth_connect.AuthServiceClientSync(
                 self._api_server,
-                protocol=self._protocol,
-                interceptors=rpc_interceptors(self._protocol),
+                protocol=GRPC_PROTOCOL,
+                interceptors=rpc_interceptors(),
                 http_client=SYNC_HTTP_CLIENT,
             )
             try:
@@ -273,8 +264,8 @@ class ConnectClient:
 
         auth_client = auth_connect.AuthServiceClientSync(
             self._api_server,
-            protocol=self._protocol,
-            interceptors=rpc_interceptors(self._protocol),
+            protocol=GRPC_PROTOCOL,
+            interceptors=rpc_interceptors(),
             http_client=SYNC_HTTP_CLIENT,
         )
         try:
@@ -403,9 +394,7 @@ class ConnectClient:
     def stub(self, stub_cls: Callable[..., _StubT]) -> _StubT:
         """Return a generated ConnectRPC client for the API server.
 
-        The configured protocol defaults to gRPC for compatibility with Chalk's
-        existing endpoints, but callers may select Connect or gRPC-Web through
-        :class:`connectrpc.protocol.ProtocolType`.
+        The client always uses gRPC for compatibility with Chalk's endpoints.
         """
         self._ensure_auth()
         assert self._api_server is not None
@@ -413,8 +402,8 @@ class ConnectClient:
         if client is None:
             client = stub_cls(
                 self._api_server,
-                protocol=self._protocol,
-                interceptors=rpc_interceptors(self._protocol),
+                protocol=GRPC_PROTOCOL,
+                interceptors=rpc_interceptors(),
                 http_client=SYNC_HTTP_CLIENT,
             )
             self._typed_clients[stub_cls] = client

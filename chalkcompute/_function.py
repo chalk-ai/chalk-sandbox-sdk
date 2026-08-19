@@ -90,7 +90,7 @@ from chalkcompute._remote_function_tracing import (
     normalize_remote_function_tracing,
 )
 from chalkcompute._retry import RetryPolicy
-from chalkcompute._rpc import rpc_interceptors
+from chalkcompute._rpc import GRPC_PROTOCOL, rpc_interceptors
 from chalkcompute._secret import SecretScope, resolve_lazy_secrets
 from chalkcompute._tracing import (
     _instrumented,
@@ -2833,8 +2833,8 @@ class RemoteFunction:
 
         self._call_stub = call_connect.RemoteCallServiceClientSync(
             rpc_address_from_target(target, use_tls=use_tls),
-            protocol=self._client._protocol,
-            interceptors=rpc_interceptors(self._client._protocol),
+            protocol=GRPC_PROTOCOL,
+            interceptors=rpc_interceptors(),
         )
 
     def _remote_call_metadata(self, *, queue: bool) -> list[tuple[str, str]]:

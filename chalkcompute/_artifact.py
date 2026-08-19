@@ -28,7 +28,6 @@ from typing import Any
 
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
-from connectrpc.protocol import ProtocolType
 from protobuf import Oneof
 
 from chalkcompute._connect import (
@@ -38,7 +37,7 @@ from chalkcompute._connect import (
 )
 from chalkcompute._gen.chalk.artifactstore.v1 import service_pb as pb
 from chalkcompute._gen.chalk.artifactstore.v1 import service_connect as pb_connect
-from chalkcompute._rpc import rpc_interceptors
+from chalkcompute._rpc import GRPC_PROTOCOL, rpc_interceptors
 from chalkcompute._tracing import _instrumented
 
 # Aliases defined before ArtifactClient, which has a ``.list()`` method that
@@ -188,17 +187,15 @@ class ArtifactClient:
         credentials: object | None = None,
         use_tls: bool | None = None,
         metadata: _GrpcMetadata | None = None,
-        protocol: ProtocolType = ProtocolType.GRPC,
     ) -> None:
         self._target = target
         self._metadata = metadata
-        self._protocol = protocol
         if use_tls is None:
             use_tls = credentials is not None
         self._stub = pb_connect.ArtifactServiceClientSync(
             rpc_address_from_target(target, use_tls=use_tls),
-            protocol=protocol,
-            interceptors=rpc_interceptors(protocol),
+            protocol=GRPC_PROTOCOL,
+            interceptors=rpc_interceptors(),
         )
 
     @classmethod
@@ -209,7 +206,6 @@ class ArtifactClient:
             connect._api_server or "",
             use_tls=(connect._api_server or "").startswith("https://"),
             metadata=connect._rpc_metadata(),
-            protocol=connect._protocol,
         )
 
     @classmethod
