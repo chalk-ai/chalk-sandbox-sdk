@@ -51,7 +51,8 @@ class TestSyncGenerator:
     def test_direct_call_iterates(self):
         """for x in fn(5) yields 5 chunks."""
         fn = chalkcompute.RemoteFunction.from_name(self.function_name)
-        chunks = [batch.column("result").to_pylist() for batch in fn.remote(5)]
+        stream = _retry_missing_scaling_group(lambda: fn.remote(5))
+        chunks = [batch.column("result").to_pylist() for batch in stream]
         assert chunks == [[0], [1], [2], [3], [4]]
 
     def test_defer_stream(self):
@@ -89,7 +90,8 @@ class TestAsyncGenerator:
         fn = chalkcompute.RemoteFunction.from_name(self.function_name)
 
         async def _collect() -> list[list[int]]:
-            return [batch.column("result").to_pylist() async for batch in fn.remote(5)]
+            stream = _retry_missing_scaling_group(lambda: fn.remote(5))
+            return [batch.column("result").to_pylist() async for batch in stream]
 
         assert asyncio.run(_collect()) == [[0], [1], [2], [3], [4]]
 
