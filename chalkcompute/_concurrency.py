@@ -27,9 +27,7 @@ class ConcurrencyPolicy:
                 f"got {type(self.max_concurrent).__name__}"
             )
         if self.max_concurrent <= 0:
-            raise ValueError(
-                f"concurrency must be > 0, got {self.max_concurrent}"
-            )
+            raise ValueError(f"concurrency must be > 0, got {self.max_concurrent}")
 
     @classmethod
     def from_int_or_policy(cls, value: int | ConcurrencyPolicy) -> ConcurrencyPolicy:
