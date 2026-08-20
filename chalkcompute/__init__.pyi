@@ -120,7 +120,6 @@ from chalkcompute._volume import (
     resolve_referenced_volume_type as resolve_referenced_volume_type,
 )
 
-
 __all__ = [
     "Artifact",
     "ArtifactClient",

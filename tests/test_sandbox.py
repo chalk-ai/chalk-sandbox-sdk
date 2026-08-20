@@ -343,7 +343,9 @@ def test_fork_mount_is_serialized_to_proto() -> None:
     mount = (
         ContainerSpec(
             image="ubuntu:latest",
-            volumes=[VolumeMount(name="my-data", mount_path="/data", ref_name="sandbox-a")],
+            volumes=[
+                VolumeMount(name="my-data", mount_path="/data", ref_name="sandbox-a")
+            ],
         )
         .to_proto()
         .volumes[0]
