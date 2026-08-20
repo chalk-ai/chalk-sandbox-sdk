@@ -159,9 +159,7 @@ class _WebIdentityAuthProvider:
         monotonic_now: float,
     ) -> None:
         self._error_message = error_message
-        self._refresh_after = (
-            monotonic_now + _WEB_IDENTITY_MIN_REFRESH_INTERVAL_SECONDS
-        )
+        self._refresh_after = monotonic_now + _WEB_IDENTITY_MIN_REFRESH_INTERVAL_SECONDS
 
 
 def _web_identity_refresh_interval(
@@ -330,9 +328,7 @@ class ConnectClient:
             )
         finally:
             auth_client.close()
-        grpc_engines = MappingProxyType(
-            _string_map(data.grpc_engines or data.engines)
-        )
+        grpc_engines = MappingProxyType(_string_map(data.grpc_engines or data.engines))
         environment_id_to_name = MappingProxyType(
             _string_map(data.environment_id_to_name)
         )
@@ -419,9 +415,7 @@ class ConnectClient:
         finally:
             auth_client.close()
         primary_environment = data.primary_environment or None
-        grpc_engines = MappingProxyType(
-            _string_map(data.grpc_engines or data.engines)
-        )
+        grpc_engines = MappingProxyType(_string_map(data.grpc_engines or data.engines))
         environment_id_to_name = MappingProxyType(
             _string_map(data.environment_id_to_name)
         )
@@ -453,9 +447,7 @@ class ConnectClient:
             access_token=self._access_token or "",
             environment_id=self._env_id or "",
             grpc_engines=MappingProxyType(dict(self._grpc_engines)),
-            environment_id_to_name=MappingProxyType(
-                dict(self._environment_id_to_name)
-            ),
+            environment_id_to_name=MappingProxyType(dict(self._environment_id_to_name)),
             primary_environment=self._primary_environment,
         )
 
