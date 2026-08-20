@@ -338,6 +338,16 @@ def test_at_version_is_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
     client._inner.upload.assert_not_called()
 
 
+def test_at_ref_opens_mutable_ref_handle(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _make_client(monkeypatch)
+
+    ref = Volume("models", client=client).at_ref("sandbox-a")
+
+    assert ref.name == "models"
+    assert ref.ref == "sandbox-a"
+    assert ref.version_id is None
+
+
 def test_fork_creates_ref_from_pinned_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

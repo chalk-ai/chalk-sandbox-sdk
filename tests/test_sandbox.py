@@ -295,6 +295,36 @@ def test_sandbox_accepts_version_pinned_volume_handle() -> None:
     ]
 
 
+def test_sandbox_accepts_writable_forked_volume_handle() -> None:
+    from chalkcompute._volume import ForkInfo, Volume, VolumeMount
+
+    volume_client = MagicMock()
+    volume_client._create_ref.return_value = ForkInfo(name="sandbox-a", version_id=7)
+    volume = Volume("my-data", client=volume_client).at_version(7).fork("sandbox-a")
+    client = _RecordingSandboxClient()
+    sandbox = Sandbox(
+        image="ubuntu:latest",
+        volumes=[volume],
+        sandbox_client=client,  # type: ignore[arg-type]
+    )
+
+    with patch(
+        "chalkcompute._sandbox.referenced_volume_mount",
+        side_effect=lambda _connect, mount: mount,
+    ):
+        sandbox.run()
+
+    assert volume.version_id is None
+    assert client.create_kwargs is not None
+    assert client.create_kwargs["volumes"] == [
+        VolumeMount(
+            name="my-data",
+            mount_path="/volumes/my-data",
+            ref_name="sandbox-a",
+        )
+    ]
+
+
 def test_version_pinned_mount_is_serialized_to_proto() -> None:
     mount = (
         ContainerSpec(

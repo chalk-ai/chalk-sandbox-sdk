@@ -697,6 +697,31 @@ class Volume:
         volume._info = self._info
         return volume
 
+    def at_ref(self, name: str) -> Volume:
+        """Return a mutable handle tracking an existing ref.
+
+        Parameters
+        ----------
+        name
+            Name of the ref to open.
+
+        Returns
+        -------
+        Volume
+            A mutable handle tracking ``name``.
+        """
+        self._raise_if_closed()
+        if not name:
+            raise ValueError("ref name must not be empty")
+        volume = Volume(
+            self._name,
+            client=self._client,
+            ref=name,
+            create_if_missing=False,
+        )
+        volume._info = self._info
+        return volume
+
     @traced("chalkcompute.volume.fork")
     def fork(self, name: str) -> Volume:
         """Create an independent ref at this handle's current version.
