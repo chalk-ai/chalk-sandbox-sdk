@@ -163,6 +163,8 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "chalkcompute._volume",
         "resolve_referenced_volume_type",
     ),
+    "VersionedVolume": ("chalkcompute._volume", "Volume"),
+    "VersionedVolumeClient": ("chalkcompute._volume", "VolumeClient"),
 }
 
 
