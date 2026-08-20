@@ -7,7 +7,12 @@ import pytest
 from protobuf import Oneof
 
 from chalkcompute._gen.chalk.volume.v2 import volume_pb as pb_v2
-from chalkcompute._volume import VolumeClosedError, VolumeError, VolumeNotFoundError
+from chalkcompute._volume import (
+    VolumeClosedError,
+    VolumeError,
+    VolumeFileNotFoundError,
+    VolumeNotFoundError,
+)
 from chalkcompute import _volume as vv
 from chalkcompute._volume import (
     CommitStatus,
@@ -326,6 +331,22 @@ def test_read_file_delegates_to_native_download(
         7,
         None,
     )
+
+
+def test_read_file_maps_missing_file_to_file_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.return_value = {
+        "volume": _volume_dict(),
+        "version": _version_dict(),
+    }
+    client._inner.download_bytes.side_effect = RuntimeError(
+        "not_found", 'file "model.bin" not found'
+    )
+
+    with pytest.raises(VolumeFileNotFoundError, match='file "model.bin" not found'):
+        Volume("models", client=client).read_file("model.bin")
 
 
 def test_at_version_is_read_only(monkeypatch: pytest.MonkeyPatch) -> None:

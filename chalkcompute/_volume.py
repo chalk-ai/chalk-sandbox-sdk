@@ -1451,7 +1451,7 @@ class VolumeClient:
         try:
             return bytes(self._inner.download_bytes(volume, path, version_id, None))
         except _native_error_types() as exc:
-            _raise_volume_error(exc, volume)
+            _raise_volume_error(exc, volume, file_not_found=True)
 
     def _download_to_file(
         self,
@@ -1467,7 +1467,7 @@ class VolumeClient:
                 volume, remote_path, local_path, version_id, None
             )
         except _native_error_types() as exc:
-            _raise_volume_error(exc, volume)
+            _raise_volume_error(exc, volume, file_not_found=True)
 
     def _download_to_directory(
         self,
@@ -1611,10 +1611,17 @@ def _native_error_message(exc: BaseException) -> str:
     return str(exc)
 
 
-def _raise_volume_error(exc: BaseException, volume_name: str) -> NoReturn:
+def _raise_volume_error(
+    exc: BaseException,
+    volume_name: str,
+    *,
+    file_not_found: bool = False,
+) -> NoReturn:
     code = _native_error_code(exc)
     message = _native_error_message(exc)
     if code == "not_found":
+        if file_not_found:
+            raise VolumeFileNotFoundError(message, code=code) from exc
         raise VolumeNotFoundError(message, code=code) from exc
     raise VolumeError(message, code=code) from exc
 
