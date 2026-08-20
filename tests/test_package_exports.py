@@ -63,6 +63,7 @@ _CHALKPY_IMPORTS = frozenset(
         "RemoteCallClientUnavailable",
         "Secret",
         "VersionedVolumeClient",
+        "VolumeClient",
         "VolumeError",
         "build_image",
         "resolve_lazy_secrets",

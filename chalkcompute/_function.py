@@ -1541,10 +1541,10 @@ def _build_and_upload(
 ) -> tuple[str, list[VolumeMount], VolumeClient | None, list[volume_pb.CommitIntent]]:
     """Build the container image and stage lazy local files.
 
-    Lazy files are uploaded into ``source_code``-kind versioned volumes but
-    not committed: each staged upload is returned as a typed commit intent for
+    Lazy files are uploaded into ``source_code``-kind volumes but not commited:
+    each staged upload is returned as a typed commit-intent for
     ``CreateExternalFunctionVersionRequest.volume_commits``, so the server
-    commits atomically with the function version and pins the mount to the
+    commits automatically with the function version and pins the mount to the
     resulting snapshot.
 
     Parameters

@@ -235,6 +235,7 @@ __all__ = [
     "VersionInfo",
     "resolve_referenced_volume_type",
     "VersionedVolume",
+    "VersionedVolumeClient",
     "SessionSummary",
     "Span",
     "SpanKind",
@@ -244,5 +245,4 @@ __all__ = [
     "TraceError",
     "TraceNotFoundError",
     "TraceSummary",
-    "VersionedVolumeClient",
 ]

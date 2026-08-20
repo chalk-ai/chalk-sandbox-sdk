@@ -113,11 +113,20 @@ class VolumeMount:
         Absolute path inside the container where the volume is mounted.
     version_id
         Optional immutable version to mount.
+    ref_name
+        Optional mutable fork to mount.
     """
 
     name: str
     mount_path: str
     version_id: int | None = None
+    ref_name: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.ref_name == "":
+            raise ValueError("ref_name must not be empty")
+        if self.version_id is not None and self.ref_name is not None:
+            raise ValueError("version_id and ref_name cannot both be set")
 
     def to_spec_dict(self) -> dict[str, str | int]:
         """Render this mount as a container-spec ``volumes`` entry."""
@@ -128,6 +137,8 @@ class VolumeMount:
         }
         if self.version_id is not None:
             spec["versionId"] = self.version_id
+        if self.ref_name is not None:
+            spec["refName"] = self.ref_name
         return spec
 
 
@@ -208,9 +219,7 @@ except ImportError as exc:
     _NativeVolumeRpcError = None
     _NATIVE_IMPORT_ERROR = exc
 else:
-    # Symbol name is fixed by the Rust `chalk_volume_client` crate; it keeps the
-    # "Versioned" prefix even though the Python-side name has dropped it.
-    _NativeVolumeClient = getattr(_native, "VersionedVolumeNativeClient", None)
+    _NativeVolumeClient = getattr(_native, "VolumeNativeClient", None)
     _NativeVolumeRpcError = getattr(_native, "VolumeRpcError", None)
     _NATIVE_IMPORT_ERROR = None
 
@@ -688,6 +697,31 @@ class Volume:
         volume._info = self._info
         return volume
 
+    def at_ref(self, name: str) -> Volume:
+        """Return a mutable handle tracking an existing ref.
+
+        Parameters
+        ----------
+        name
+            Name of the ref to open.
+
+        Returns
+        -------
+        Volume
+            A mutable handle tracking ``name``.
+        """
+        self._raise_if_closed()
+        if not name:
+            raise ValueError("ref name must not be empty")
+        volume = Volume(
+            self._name,
+            client=self._client,
+            ref=name,
+            create_if_missing=False,
+        )
+        volume._info = self._info
+        return volume
+
     @traced("chalkcompute.volume.fork")
     def fork(self, name: str) -> Volume:
         """Create an independent ref at this handle's current version.
@@ -746,18 +780,17 @@ class Volume:
     def mount(self, mount_path: str | None = None) -> VolumeMount:
         """Create a mount specification for this handle.
 
-        Fork and version-pinned handles mount their current immutable snapshot.
+        Fork handles mount their mutable ref. Version-pinned handles mount an
+        immutable snapshot.
         The default path is ``/volumes/<volume-name>``.
         """
         self._raise_if_closed()
         path = mount_path or f"/volumes/{self._name}"
-        version_id = self._version_id
-        if version_id is None and self._ref and self._ref != "main":
-            version_id = self.version.id
         return VolumeMount(
             name=self._name,
             mount_path=path,
-            version_id=version_id,
+            version_id=self._version_id,
+            ref_name=self._selector_ref(),
         )
 
     @traced("chalkcompute.volume.delete")
@@ -1418,7 +1451,7 @@ class VolumeClient:
         try:
             return bytes(self._inner.download_bytes(volume, path, version_id, None))
         except _native_error_types() as exc:
-            _raise_volume_error(exc, volume)
+            _raise_volume_error(exc, volume, file_not_found=True)
 
     def _download_to_file(
         self,
@@ -1434,7 +1467,7 @@ class VolumeClient:
                 volume, remote_path, local_path, version_id, None
             )
         except _native_error_types() as exc:
-            _raise_volume_error(exc, volume)
+            _raise_volume_error(exc, volume, file_not_found=True)
 
     def _download_to_directory(
         self,
@@ -1578,10 +1611,17 @@ def _native_error_message(exc: BaseException) -> str:
     return str(exc)
 
 
-def _raise_volume_error(exc: BaseException, volume_name: str) -> NoReturn:
+def _raise_volume_error(
+    exc: BaseException,
+    volume_name: str,
+    *,
+    file_not_found: bool = False,
+) -> NoReturn:
     code = _native_error_code(exc)
     message = _native_error_message(exc)
     if code == "not_found":
+        if file_not_found:
+            raise VolumeFileNotFoundError(message, code=code) from exc
         raise VolumeNotFoundError(message, code=code) from exc
     raise VolumeError(message, code=code) from exc
 
@@ -1728,7 +1768,14 @@ def referenced_volume_mount(connect: ConnectClient, mount: VolumeMount) -> Volum
     and must already exist. Checking here turns a typo'd name into a deploy-time
     error instead of a container that mounts nothing.
     """
-    _require_volume_exists(connect, mount.name)
+    if mount.version_id is None and mount.ref_name is None:
+        _require_volume_exists(connect, mount.name)
+    else:
+        VolumeClient.from_connect(connect)._get_volume(
+            mount.name,
+            version_id=mount.version_id,
+            ref_name=mount.ref_name,
+        )
     return mount
 
 

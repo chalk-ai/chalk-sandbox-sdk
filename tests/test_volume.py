@@ -7,7 +7,12 @@ import pytest
 from protobuf import Oneof
 
 from chalkcompute._gen.chalk.volume.v2 import volume_pb as pb_v2
-from chalkcompute._volume import VolumeClosedError, VolumeError, VolumeNotFoundError
+from chalkcompute._volume import (
+    VolumeClosedError,
+    VolumeError,
+    VolumeFileNotFoundError,
+    VolumeNotFoundError,
+)
 from chalkcompute import _volume as vv
 from chalkcompute._volume import (
     CommitStatus,
@@ -15,6 +20,7 @@ from chalkcompute._volume import (
     VersionInfo,
     Volume,
     VolumeClient,
+    VolumeMount,
     _CHUNK_MAX_RETRIES,
     _CHUNK_CONCURRENCY,
     _CHUNK_SIZE_BYTES,
@@ -327,6 +333,22 @@ def test_read_file_delegates_to_native_download(
     )
 
 
+def test_read_file_maps_missing_file_to_file_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.return_value = {
+        "volume": _volume_dict(),
+        "version": _version_dict(),
+    }
+    client._inner.download_bytes.side_effect = RuntimeError(
+        "not_found", 'file "model.bin" not found'
+    )
+
+    with pytest.raises(VolumeFileNotFoundError, match='file "model.bin" not found'):
+        Volume("models", client=client).read_file("model.bin")
+
+
 def test_at_version_is_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _make_client(monkeypatch)
     vol = Volume("models", client=client).at_version(7)
@@ -335,6 +357,16 @@ def test_at_version_is_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
         vol.put_file("model.bin", b"new")
 
     client._inner.upload.assert_not_called()
+
+
+def test_at_ref_opens_mutable_ref_handle(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _make_client(monkeypatch)
+
+    ref = Volume("models", client=client).at_ref("sandbox-a")
+
+    assert ref.name == "models"
+    assert ref.ref == "sandbox-a"
+    assert ref.version_id is None
 
 
 def test_fork_creates_ref_from_pinned_version(
@@ -448,7 +480,7 @@ def test_forks_and_delete_fork_delegate_to_native(
     client._inner.delete_ref.assert_called_once_with("models", "sandbox-a")
 
 
-def test_fork_mount_uses_default_path_and_pins_tip(
+def test_fork_mount_uses_default_path_and_preserves_ref(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = _make_client(monkeypatch)
@@ -459,8 +491,24 @@ def test_fork_mount_uses_default_path_and_pins_tip(
 
     assert mount.name == "models"
     assert mount.mount_path == "/volumes/models"
-    assert mount.version_id == 7
-    assert mount.to_spec_dict()["versionId"] == 7
+    assert mount.version_id is None
+    assert mount.ref_name == "sandbox-a"
+    assert mount.to_spec_dict()["refName"] == "sandbox-a"
+
+
+def test_volume_mount_rejects_ambiguous_selector() -> None:
+    with pytest.raises(ValueError, match="cannot both be set"):
+        VolumeMount(
+            name="models",
+            mount_path="/models",
+            version_id=7,
+            ref_name="sandbox-a",
+        )
+
+
+def test_volume_mount_rejects_empty_ref() -> None:
+    with pytest.raises(ValueError, match="must not be empty"):
+        VolumeMount(name="models", mount_path="/models", ref_name="")
 
 
 def test_closed_volume_operations_raise(monkeypatch: pytest.MonkeyPatch) -> None:
