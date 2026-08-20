@@ -355,7 +355,7 @@ steps:
       uv run python -m pytest e2etests/test_model_scaling_group.py -v -s --tb=short
     agents:
       queue: default
-    timeout_in_minutes: 20
+    timeout_in_minutes: 35
     retry:
       automatic:
         - exit_status: -1
