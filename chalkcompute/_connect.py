@@ -12,6 +12,7 @@ import os
 import re
 import threading
 import time
+import weakref
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, TypeVar
@@ -269,6 +270,22 @@ def service_auth_context_from_env() -> ServiceAuthContext | None:
         return None
 
 
+class _RefreshingChalkAuth:
+    """Inject the current ConnectClient token into each ChalkPy HTTP request."""
+
+    def __init__(self, connect: ConnectClient, wrapped_auth: Any = None) -> None:
+        self._connect = connect
+        self._wrapped_auth = wrapped_auth
+        self._finalizer = weakref.finalize(self, connect.close)
+
+    def __call__(self, request: Any) -> Any:
+        if callable(self._wrapped_auth):
+            request = self._wrapped_auth(request)
+        state = self._connect._auth_state()
+        request.headers["Authorization"] = f"Bearer {state.access_token}"
+        return request
+
+
 def chalk_client_from_env(
     *,
     api_server: str | None = None,
@@ -287,29 +304,47 @@ def chalk_client_from_env(
         if web_identity_token_file_from_env() is not None
         else service_auth_context_from_env()
     )
+    connect: ConnectClient | None = None
     if service_auth is not None and not has_authorization:
-        client = ConnectClient()
-        client._auth_provider = _ServiceAuthProvider(
+        connect = ConnectClient()
+        connect._auth_provider = _ServiceAuthProvider(
             initial_context=service_auth,
-            exchange=client._exchange_service_auth,
+            exchange=connect._exchange_service_auth,
         )
         try:
-            state = client._auth_state()
-        finally:
-            client.close()
+            state = connect._auth_state()
+        except Exception:
+            connect.close()
+            raise
         headers = {
             **(headers or {}),
             "Authorization": f"Bearer {state.access_token}",
         }
         api_server = api_server or state.api_server
-        environment = environment or service_auth.environment_id
+        environment = environment or state.environment_id
 
     if api_server is not None:
         kwargs["api_server"] = api_server
     if environment is not None:
         kwargs["environment"] = environment
     kwargs["additional_headers"] = headers
-    return ChalkClient(**kwargs)
+    try:
+        chalk_client = ChalkClient(**kwargs)
+        if connect is not None:
+            session = chalk_client.session
+            session.auth = _RefreshingChalkAuth(
+                connect,
+                wrapped_auth=getattr(session, "auth", None),
+            )
+            # ChalkPy has no public close method. The session auth hook owns the
+            # provider until it is discarded, and this handle lets advanced
+            # callers close it explicitly when they manage the session lifetime.
+            chalk_client._chalkcompute_connect_client = connect
+        return chalk_client
+    except Exception:
+        if connect is not None:
+            connect.close()
+        raise
 
 
 class ConnectClient:

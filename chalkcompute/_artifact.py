@@ -189,9 +189,13 @@ class ArtifactClient:
         credentials: object | None = None,
         use_tls: bool | None = None,
         metadata: _GrpcMetadata | None = None,
+        _connect: ConnectClient | None = None,
+        _owns_connect: bool = False,
     ) -> None:
         self._target = target
-        self._metadata = metadata
+        self._static_metadata = metadata
+        self._connect = _connect
+        self._owns_connect = _owns_connect
         if use_tls is None:
             use_tls = credentials is not None
         self._stub = pb_connect.ArtifactServiceClientSync(
@@ -203,21 +207,41 @@ class ArtifactClient:
         )
 
     @classmethod
-    def _from_connect(cls, connect: ConnectClient) -> ArtifactClient:
+    def _from_connect(
+        cls,
+        connect: ConnectClient,
+        *,
+        _owns_connect: bool = False,
+    ) -> ArtifactClient:
         """Internal: build an artifact client from shared Chalk authentication."""
         connect._ensure_auth()
         return cls(
             connect._api_server or "",
             use_tls=(connect._api_server or "").startswith("https://"),
             metadata=connect._rpc_metadata(),
+            _connect=connect,
+            _owns_connect=_owns_connect,
         )
 
     @classmethod
     def from_env(cls, *, chalk_client: Any | None = None) -> ArtifactClient:
         """Create an ``ArtifactClient`` from ambient Chalk credentials."""
         connect = ConnectClient(chalk_client=chalk_client)
-        connect._ensure_auth()
-        return cls._from_connect(connect)
+        try:
+            return cls._from_connect(connect, _owns_connect=True)
+        except Exception:
+            connect.close()
+            raise
+
+    @property
+    def _metadata(self) -> _GrpcMetadata | None:
+        if self._connect is not None:
+            return self._connect._rpc_metadata()
+        return self._static_metadata
+
+    @_metadata.setter
+    def _metadata(self, value: _GrpcMetadata | None) -> None:
+        self._static_metadata = value
 
     def __enter__(self) -> ArtifactClient:
         return self
@@ -228,6 +252,8 @@ class ArtifactClient:
     def close(self) -> None:
         """Close the underlying HTTP client."""
         self._stub.close()
+        if self._owns_connect and self._connect is not None:
+            self._connect.close()
 
     @_instrumented("chalkcompute.artifact.create")
     def create(

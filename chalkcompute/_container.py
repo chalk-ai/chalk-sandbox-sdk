@@ -507,11 +507,7 @@ class ContainerSessionClient:
             target,
             credentials=None,
             metadata=connect._rpc_metadata(),
-            _connect=(
-                connect
-                if getattr(connect, "_uses_web_identity_token", lambda: False)() is True
-                else None
-            ),
+            _connect=connect,
         )
 
     @property

@@ -325,7 +325,10 @@ class Volume:
             access if it does not already exist. Ignored when
             ``version_id`` is set.
         """
-        self._client = client or VolumeClient.from_connect(ConnectClient())
+        self._client = client or VolumeClient.from_connect(
+            ConnectClient(),
+            _owns_connect=True,
+        )
         self._name = name
         self._version_id = version_id
         self._ref = ref
@@ -957,6 +960,7 @@ class VolumeClient:
         self._extra_headers = builtins.list(extra_headers or [])
         self._chalk_server = chalk_server
         self._connect: ConnectClient | None = None
+        self._owns_connect = False
         self._closed = False
         self._inner = _NativeVolumeClient(
             endpoint,
@@ -968,7 +972,12 @@ class VolumeClient:
         )
 
     @classmethod
-    def from_connect(cls, connect: ConnectClient) -> VolumeClient:
+    def from_connect(
+        cls,
+        connect: ConnectClient,
+        *,
+        _owns_connect: bool = False,
+    ) -> VolumeClient:
         """Create a client from an authenticated :class:`ConnectClient`.
 
         Parameters
@@ -994,21 +1003,21 @@ class VolumeClient:
             env_id=connect._env_id or None,
             chalk_server="go-api",
         )
-        if getattr(connect, "_uses_web_identity_token", lambda: False)() is True:
-            client._connect = connect
+        client._connect = connect
+        client._owns_connect = _owns_connect
         return client
 
     @property
     def _inner(self) -> Any:
-        self._sync_web_identity_auth()
+        self._sync_auth()
         return self._native_inner
 
     @_inner.setter
     def _inner(self, value: Any) -> None:
         self._native_inner = value
 
-    def _sync_web_identity_auth(self) -> None:
-        """Recreate the native client after an identity-token rotation."""
+    def _sync_auth(self) -> None:
+        """Recreate the native client after an access-token refresh."""
         connect = getattr(self, "_connect", None)
         if connect is None:
             return
@@ -1042,7 +1051,11 @@ class VolumeClient:
 
     def close(self) -> None:
         """Close the underlying native client handle."""
+        if self._closed:
+            return
         self._closed = True
+        if self._owns_connect and self._connect is not None:
+            self._connect.close()
 
     @traced("chalkcompute.volume.create")
     def create(self, name: str, *, volume_type: str | None = None) -> Volume:
@@ -1714,7 +1727,9 @@ def normalize_volume_refs(
 
 def _require_volume_exists(connect: ConnectClient, name: str) -> None:
     """Raise :class:`VolumeError` unless a volume named ``name`` exists."""
-    if not VolumeClient.from_connect(connect).exists(name):
+    with VolumeClient.from_connect(connect) as client:
+        exists = client.exists(name)
+    if not exists:
         raise VolumeError(
             f"Referenced volume {name!r} was not found. "
             f"Check the name, or create it before referencing it."

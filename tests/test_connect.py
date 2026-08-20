@@ -1202,6 +1202,7 @@ class _FakeChalkClient:
 
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
+        self.session = types.SimpleNamespace(auth=None)
         self.__class__.calls.append(kwargs)
 
 
@@ -1244,6 +1245,10 @@ class TestChalkClientFromEnv:
                 "additional_headers": {"Authorization": "Bearer working-token"},
             }
         ]
+        request = types.SimpleNamespace(headers={})
+        client.session.auth(request)
+        assert request.headers["Authorization"] == "Bearer working-token"
+        assert posted["init_count"] == 1
 
     def test_respects_explicit_authorization_header(
         self,

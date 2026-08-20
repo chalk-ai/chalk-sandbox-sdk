@@ -940,6 +940,7 @@ class Sandbox:
             client._address,
             use_tls=client._use_tls,
             metadata=client._metadata,
+            _connect=client._connect,
         )
 
         execution_id = ""
@@ -1080,6 +1081,7 @@ class SandboxClient:
         use_tls: bool | None = None,
         metadata: _GrpcMetadata | None = None,
         _connect: ConnectClient | None = None,
+        _owns_connect: bool = False,
     ) -> None:
         """Initialize the RPC client.
 
@@ -1101,6 +1103,7 @@ class SandboxClient:
         self._target = target
         self._static_metadata = metadata
         self._connect = _connect
+        self._owns_connect = _owns_connect
         self._use_tls = credentials is not None if use_tls is None else use_tls
         self._address = rpc_address_from_target(target, use_tls=self._use_tls)
         interceptors = rpc_interceptors()
@@ -1135,20 +1138,19 @@ class SandboxClient:
         """Create a ``SandboxClient`` from ambient Chalk credentials."""
 
         connect = ConnectClient(chalk_client=chalk_client)
-        connect._ensure_auth()
-
-        host, use_tls = grpc_target_from_url(connect._api_server or "")
-
-        return cls(
-            host,
-            use_tls=use_tls,
-            metadata=connect._rpc_metadata(),
-            _connect=(
-                connect
-                if getattr(connect, "_uses_web_identity_token", lambda: False)() is True
-                else None
-            ),
-        )
+        try:
+            connect._ensure_auth()
+            host, use_tls = grpc_target_from_url(connect._api_server or "")
+            return cls(
+                host,
+                use_tls=use_tls,
+                metadata=connect._rpc_metadata(),
+                _connect=connect,
+                _owns_connect=True,
+            )
+        except Exception:
+            connect.close()
+            raise
 
     @property
     def _metadata(self) -> _GrpcMetadata | None:
@@ -1176,6 +1178,8 @@ class SandboxClient:
             close = getattr(stub, "close", None)
             if close is not None:
                 close()
+        if self._owns_connect and self._connect is not None:
+            self._connect.close()
 
     def create(
         self,
