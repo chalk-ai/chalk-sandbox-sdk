@@ -10,8 +10,11 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 import time
-from typing import TYPE_CHECKING, Any, Callable, Mapping, TypeVar
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, TypeVar
 from urllib.parse import urlparse
 
 from connectrpc.code import Code
@@ -32,6 +35,7 @@ from chalkcompute._remote_call_client import (
 from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
 from chalkcompute._tracing import _instrumented
 from chalkcompute._web_identity import (
+    WEB_IDENTITY_TOKEN_FILE_ENV_VAR,
     WebIdentityTokenError,
     read_web_identity_token,
     web_identity_token_file_from_env,
@@ -39,7 +43,9 @@ from chalkcompute._web_identity import (
 
 logger = logging.getLogger(__name__)
 
-_WEB_IDENTITY_MAX_CACHE_TTL_SECONDS = 60 * 60
+_WEB_IDENTITY_MAX_REFRESH_INTERVAL_SECONDS = 60 * 60
+_WEB_IDENTITY_EXPIRY_WINDOW_SECONDS = 5 * 60
+_WEB_IDENTITY_MIN_REFRESH_INTERVAL_SECONDS = 5.0
 
 _StubT = TypeVar("_StubT")
 _RespT = TypeVar("_RespT")
@@ -52,6 +58,127 @@ if TYPE_CHECKING:
 
 class ConnectError(Exception):
     """Raised by ConnectClient operations."""
+
+
+@dataclass(frozen=True)
+class _AuthState:
+    """Immutable credentials and routing data for one authenticated request."""
+
+    api_server: str
+    access_token: str
+    environment_id: str
+    grpc_engines: Mapping[str, str]
+    environment_id_to_name: Mapping[str, str]
+    primary_environment: str | None = None
+
+
+class _AuthProvider(Protocol):
+    """Source of current credentials for a configured authentication mode."""
+
+    uses_web_identity: bool
+
+    def state(self) -> _AuthState: ...
+
+
+class _StaticAuthProvider:
+    """Load non-rotating credentials once, on their first use."""
+
+    uses_web_identity = False
+
+    def __init__(self, load: Callable[[], _AuthState]) -> None:
+        self._load = load
+        self._state: _AuthState | None = None
+
+    def state(self) -> _AuthState:
+        if self._state is None:
+            self._state = self._load()
+        return self._state
+
+
+class _WebIdentityAuthProvider:
+    """Read a rotating identity JWT without rediscovering client configuration."""
+
+    uses_web_identity = True
+
+    def __init__(
+        self,
+        *,
+        token_file: str,
+        api_server: str,
+        requested_environment: str | None,
+    ) -> None:
+        self._token_file = token_file
+        self._api_server = api_server
+        self._requested_environment = requested_environment
+        self._state: _AuthState | None = None
+        self._refresh_after: float | None = None
+        self._error_message: str | None = None
+
+    def state(self) -> _AuthState:
+        monotonic_now = time.monotonic()
+        if self._refresh_after is not None and monotonic_now < self._refresh_after:
+            if self._error_message is not None:
+                raise WebIdentityTokenError(self._error_message)
+            assert self._state is not None
+            return self._state
+
+        try:
+            identity = read_web_identity_token(self._token_file)
+        except WebIdentityTokenError as exc:
+            self._cache_error(str(exc), monotonic_now=monotonic_now)
+            raise
+        wall_now = time.time()
+        if identity.expires_at is not None and identity.expires_at <= wall_now:
+            error_message = (
+                f"JWT in {WEB_IDENTITY_TOKEN_FILE_ENV_VAR} file "
+                f"{self._token_file!r} has expired"
+            )
+            self._cache_error(error_message, monotonic_now=monotonic_now)
+            raise WebIdentityTokenError(error_message)
+
+        self._error_message = None
+        self._state = _AuthState(
+            api_server=self._api_server,
+            access_token=identity.value,
+            environment_id=(
+                self._requested_environment or identity.environment_id or ""
+            ),
+            grpc_engines=MappingProxyType({}),
+            environment_id_to_name=MappingProxyType({}),
+        )
+        self._refresh_after = monotonic_now + _web_identity_refresh_interval(
+            expires_at=identity.expires_at,
+            wall_now=wall_now,
+        )
+        return self._state
+
+    def _cache_error(
+        self,
+        error_message: str,
+        *,
+        monotonic_now: float,
+    ) -> None:
+        self._error_message = error_message
+        self._refresh_after = (
+            monotonic_now + _WEB_IDENTITY_MIN_REFRESH_INTERVAL_SECONDS
+        )
+
+
+def _web_identity_refresh_interval(
+    *,
+    expires_at: float | None,
+    wall_now: float,
+) -> float:
+    """Return a bounded refresh interval that does not collapse near expiry."""
+    if expires_at is None:
+        return _WEB_IDENTITY_MAX_REFRESH_INTERVAL_SECONDS
+    return min(
+        _WEB_IDENTITY_MAX_REFRESH_INTERVAL_SECONDS,
+        max(
+            _WEB_IDENTITY_MIN_REFRESH_INTERVAL_SECONDS,
+            expires_at - wall_now - _WEB_IDENTITY_EXPIRY_WINDOW_SECONDS,
+        ),
+    )
 
 
 def service_auth_context_from_env() -> ServiceAuthContext | None:
@@ -106,9 +233,9 @@ class ConnectClient:
     Typed RPC dispatch goes through ConnectRPC clients using the gRPC protocol
     over the shared HTTP/2 transport. Ambient Chalk credentials are read lazily.
     A JWT configured through ``CHALK_WEB_IDENTITY_TOKEN_FILE`` takes precedence
-    and is cached for the shorter of one hour or half its remaining lifetime.
-    Otherwise, service auth or ChalkPy's client credentials and ``~/.chalk.yml``
-    lookup are used.
+    and is refreshed at most hourly and before its expiration window. Otherwise,
+    service auth or ChalkPy's client credentials and ``~/.chalk.yml`` lookup are
+    used. Auth mode and endpoint configuration are fixed on first use.
 
     Examples
     --------
@@ -124,105 +251,110 @@ class ConnectClient:
         self._api_server: str | None = None
         self._access_token: str | None = None
         self._env_id: str | None = None
-        self._headers: dict[str, str] | None = None
         self._grpc_engines: dict[str, str] = {}
         self._environment_id_to_name: dict[str, str] = {}
         self._primary_environment: str | None = None
         self._chalk_client = chalk_client
         self._typed_clients: dict[Callable[..., Any], Any] = {}
-        self._web_identity_token_file: str | None = None
-        self._web_identity_cached_at: float | None = None
-        self._web_identity_cache_ttl_seconds = _WEB_IDENTITY_MAX_CACHE_TTL_SECONDS
+        self._auth_lock = threading.RLock()
+        self._auth_provider: _AuthProvider | None = None
+        self._auth_state_value: _AuthState | None = None
 
     def _ensure_auth(self) -> None:
-        identity_token_file = web_identity_token_file_from_env()
-        if identity_token_file is not None:
-            if (
-                identity_token_file == self._web_identity_token_file
-                and self._access_token is not None
-                and self._web_identity_cached_at is not None
-                and time.monotonic() - self._web_identity_cached_at
-                < self._web_identity_cache_ttl_seconds
-            ):
-                return
+        self._auth_state()
+
+    def _auth_state(self) -> _AuthState:
+        """Return one internally consistent authentication snapshot."""
+        with self._auth_lock:
+            # Preserve the existing injection seam where callers populate the
+            # private credential fields directly.
+            if self._auth_provider is None and self._access_token is not None:
+                return self._state_from_fields()
+
+            if self._auth_provider is None:
+                self._auth_provider = self._auth_provider_from_env()
+
             try:
-                identity = read_web_identity_token(identity_token_file)
+                state = self._auth_provider.state()
             except WebIdentityTokenError as exc:
                 raise ConnectError(str(exc)) from exc
-            requested_env = active_environment_from_env()
-            self._api_server = (
-                os.environ.get("CHALK_API_SERVER") or "https://api.chalk.ai"
-            ).rstrip("/")
-            self._access_token = identity.value
-            self._env_id = requested_env or identity.environment_id or ""
-            self._headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {identity.value}",
-                "X-Chalk-Env-Id": self._env_id,
-                "X-Chalk-Server": "go-api",
-            }
-            self._grpc_engines = {}
-            self._environment_id_to_name = {}
-            self._primary_environment = None
-            self._web_identity_token_file = identity_token_file
-            self._web_identity_cached_at = time.monotonic()
-            self._web_identity_cache_ttl_seconds = (
-                _WEB_IDENTITY_MAX_CACHE_TTL_SECONDS
-                if identity.expires_at is None
-                else min(
-                    _WEB_IDENTITY_MAX_CACHE_TTL_SECONDS,
-                    max(0.0, identity.expires_at - time.time()) / 2,
-                )
-            )
-            return
+            if state is not self._auth_state_value:
+                self._apply_auth_state(state)
+            return state
 
-        if self._access_token is not None:
-            return
+    def _auth_provider_from_env(self) -> _AuthProvider:
+        """Select and configure an auth provider once for this client."""
+        identity_token_file = web_identity_token_file_from_env()
+        if identity_token_file is not None:
+            provider = _WebIdentityAuthProvider(
+                token_file=identity_token_file,
+                api_server=(
+                    os.environ.get("CHALK_API_SERVER") or "https://api.chalk.ai"
+                ).rstrip("/"),
+                requested_environment=active_environment_from_env(),
+            )
+            return provider
 
         service_auth = service_auth_context_from_env()
         if service_auth is not None:
-            self._api_server = service_auth.auth_endpoint.rstrip("/")
-            auth_client = auth_connect.AuthServiceClientSync(
-                self._api_server,
-                protocol=ProtocolType.GRPC,
-                interceptors=rpc_interceptors(),
-                http_client=SYNC_HTTP_CLIENT,
-                read_max_bytes=RPC_READ_MAX_BYTES,
+            return _StaticAuthProvider(
+                lambda: self._exchange_service_auth(service_auth)
             )
-            try:
-                data = auth_client.get_internal_working_token(
-                    auth_pb.GetInternalWorkingTokenRequest(
-                        requested_permissions=[
-                            permissions_pb.Permission(value)
-                            for value in service_auth.requested_permissions
-                        ],
-                    ),
-                    headers={
-                        "Authorization": f"Bearer {service_auth.exchange_token}",
-                        "X-Chalk-Server": "go-api",
-                    },
-                    timeout_ms=30_000,
-                )
-            finally:
-                auth_client.close()
-            self._access_token = data.access_token
-            self._grpc_engines = _string_map(data.grpc_engines or data.engines)
-            self._environment_id_to_name = _string_map(data.environment_id_to_name)
-            self._env_id = self._resolve_environment_id(service_auth.environment_id)
-            self._headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self._access_token}",
-                "X-Chalk-Env-Id": self._env_id or "",
-                "X-Chalk-Server": "go-api",
-            }
-            return
+        return _StaticAuthProvider(self._exchange_client_credentials)
 
+    def _exchange_service_auth(
+        self,
+        service_auth: ServiceAuthContext,
+    ) -> _AuthState:
+        api_server = service_auth.auth_endpoint.rstrip("/")
+        auth_client = auth_connect.AuthServiceClientSync(
+            api_server,
+            protocol=ProtocolType.GRPC,
+            interceptors=rpc_interceptors(),
+            http_client=SYNC_HTTP_CLIENT,
+            read_max_bytes=RPC_READ_MAX_BYTES,
+        )
+        try:
+            data = auth_client.get_internal_working_token(
+                auth_pb.GetInternalWorkingTokenRequest(
+                    requested_permissions=[
+                        permissions_pb.Permission(value)
+                        for value in service_auth.requested_permissions
+                    ],
+                ),
+                headers={
+                    "Authorization": f"Bearer {service_auth.exchange_token}",
+                    "X-Chalk-Server": "go-api",
+                },
+                timeout_ms=30_000,
+            )
+        finally:
+            auth_client.close()
+        grpc_engines = MappingProxyType(
+            _string_map(data.grpc_engines or data.engines)
+        )
+        environment_id_to_name = MappingProxyType(
+            _string_map(data.environment_id_to_name)
+        )
+        return _AuthState(
+            api_server=api_server,
+            access_token=data.access_token,
+            environment_id=_resolve_environment_id(
+                service_auth.environment_id,
+                grpc_engines=grpc_engines,
+                environment_id_to_name=environment_id_to_name,
+            ),
+            grpc_engines=grpc_engines,
+            environment_id_to_name=environment_id_to_name,
+        )
+
+    def _exchange_client_credentials(self) -> _AuthState:
         token = (
             None
             if self._chalk_client is not None
             else load_token(None, None, None, None)
         )
-        self._api_server = (
+        api_server = (
             token.apiServer
             if token is not None
             else os.environ.get("CHALK_API_SERVER", "")
@@ -248,8 +380,8 @@ class ConnectClient:
             if cc._client_id is None or cc._client_secret is None:
                 if hasattr(cc, "_exchange_credentials"):
                     cc._exchange_credentials()
-            if not self._api_server:
-                self._api_server = cc._api_server or ""
+            if not api_server:
+                api_server = cc._api_server or ""
             if not client_id:
                 client_id = cc._client_id or ""
             if not client_secret:
@@ -261,14 +393,14 @@ class ConnectClient:
                     or ""
                 )
 
-        if not self._api_server or not client_id or not client_secret:
+        if not api_server or not client_id or not client_secret:
             raise ConnectError(
                 "No Chalk credentials found. Set CHALK_CLIENT_ID/CHALK_CLIENT_SECRET "
                 "environment variables, run `chalk login`, or pass a ChalkClient instance."
             )
 
         auth_client = auth_connect.AuthServiceClientSync(
-            self._api_server,
+            api_server,
             protocol=ProtocolType.GRPC,
             interceptors=rpc_interceptors(),
             http_client=SYNC_HTTP_CLIENT,
@@ -286,51 +418,54 @@ class ConnectClient:
             )
         finally:
             auth_client.close()
-        self._access_token = data.access_token
-        self._primary_environment = data.primary_environment or None
-        self._grpc_engines = _string_map(data.grpc_engines or data.engines)
-        self._environment_id_to_name = _string_map(data.environment_id_to_name)
-        self._env_id = self._resolve_environment_id(
-            requested_env or self._primary_environment or ""
+        primary_environment = data.primary_environment or None
+        grpc_engines = MappingProxyType(
+            _string_map(data.grpc_engines or data.engines)
+        )
+        environment_id_to_name = MappingProxyType(
+            _string_map(data.environment_id_to_name)
+        )
+        return _AuthState(
+            api_server=api_server,
+            access_token=data.access_token,
+            environment_id=_resolve_environment_id(
+                requested_env or primary_environment or "",
+                grpc_engines=grpc_engines,
+                environment_id_to_name=environment_id_to_name,
+            ),
+            grpc_engines=grpc_engines,
+            environment_id_to_name=environment_id_to_name,
+            primary_environment=primary_environment,
         )
 
-        self._headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self._access_token}",
-            "X-Chalk-Env-Id": self._env_id or "",
-            "X-Chalk-Server": "go-api",
-        }
+    def _apply_auth_state(self, state: _AuthState) -> None:
+        self._auth_state_value = state
+        self._api_server = state.api_server
+        self._access_token = state.access_token
+        self._env_id = state.environment_id
+        self._grpc_engines = dict(state.grpc_engines)
+        self._environment_id_to_name = dict(state.environment_id_to_name)
+        self._primary_environment = state.primary_environment
 
-    def _resolve_environment_id(self, environment: str) -> str:
-        if not environment:
-            return ""
-        if (
-            environment in self._grpc_engines
-            or environment in self._environment_id_to_name
-        ):
-            return environment
-
-        lower_environment = environment.lower()
-        matches = [
-            env_id
-            for env_id, env_name in self._environment_id_to_name.items()
-            if env_name.lower() == lower_environment
-        ]
-        if len(matches) > 1:
-            raise ConnectError(
-                f"Multiple Chalk environments match {environment!r}: {matches}"
-            )
-        if len(matches) == 1:
-            return matches[0]
-        return environment
+    def _state_from_fields(self) -> _AuthState:
+        return _AuthState(
+            api_server=self._api_server or "",
+            access_token=self._access_token or "",
+            environment_id=self._env_id or "",
+            grpc_engines=MappingProxyType(dict(self._grpc_engines)),
+            environment_id_to_name=MappingProxyType(
+                dict(self._environment_id_to_name)
+            ),
+            primary_environment=self._primary_environment,
+        )
 
     def grpc_engine_target(self) -> tuple[str, bool]:
         """Return the active environment's gRPC engine target and TLS mode."""
-        self._ensure_auth()
-        if not self._env_id:
+        state = self._auth_state()
+        if not state.environment_id:
             raise ConnectError("No Chalk environment selected")
 
-        if web_identity_token_file_from_env() is not None:
+        if self._uses_web_identity_token():
             query_server = os.environ.get("CHALK_GRPC_ENGINE", "").strip()
             if not query_server:
                 raise ConnectError(
@@ -340,28 +475,33 @@ class ConnectClient:
                 )
             return grpc_engine_target_from_url(query_server)
 
-        query_server = self._grpc_engines.get(self._env_id)
+        query_server = state.grpc_engines.get(state.environment_id)
         if not query_server:
-            available = ", ".join(sorted(self._grpc_engines)) or "none"
+            available = ", ".join(sorted(state.grpc_engines)) or "none"
             raise ConnectError(
                 "No gRPC engine endpoint found for Chalk environment "
-                f"{self._env_id!r}. Available environments: {available}"
+                f"{state.environment_id!r}. Available environments: {available}"
             )
 
         return grpc_engine_target_from_url(query_server)
 
     def _rpc_metadata(self) -> list[tuple[str, str]]:
         """Return current RPC metadata, re-reading rotating identity files."""
-        self._ensure_auth()
+        state = self._auth_state()
         return [
-            ("authorization", f"Bearer {self._access_token}"),
-            ("x-chalk-env-id", self._env_id or ""),
+            ("authorization", f"Bearer {state.access_token}"),
+            ("x-chalk-env-id", state.environment_id),
             ("x-chalk-server", "go-api"),
         ]
 
     def _uses_web_identity_token(self) -> bool:
         """Return whether rotating web-identity authentication is configured."""
-        return web_identity_token_file_from_env() is not None
+        with self._auth_lock:
+            if self._auth_provider is None:
+                if self._access_token is not None:
+                    return False
+                self._auth_provider = self._auth_provider_from_env()
+            return self._auth_provider.uses_web_identity
 
     def get_workload_identity_token(
         self,
@@ -402,27 +542,29 @@ class ConnectClient:
 
         Clients always use the gRPC protocol over the shared HTTP/2 transport.
         """
-        self._ensure_auth()
-        assert self._api_server is not None
-        client = self._typed_clients.get(stub_cls)
-        if client is None:
+        with self._auth_lock:
+            client = self._typed_clients.get(stub_cls)
+            if client is not None:
+                return client
+            state = self._auth_state()
             client = stub_cls(
-                self._api_server,
+                state.api_server,
                 protocol=ProtocolType.GRPC,
                 interceptors=rpc_interceptors(),
                 http_client=SYNC_HTTP_CLIENT,
                 read_max_bytes=RPC_READ_MAX_BYTES,
             )
             self._typed_clients[stub_cls] = client
-        return client
+            return client
 
     def close(self) -> None:
         """Close cached typed ConnectRPC clients."""
-        for client in self._typed_clients.values():
-            close = getattr(client, "close", None)
-            if close is not None:
-                close()
-        self._typed_clients.clear()
+        with self._auth_lock:
+            for client in self._typed_clients.values():
+                close = getattr(client, "close", None)
+                if close is not None:
+                    close()
+            self._typed_clients.clear()
 
     def call(
         self,
@@ -702,3 +844,29 @@ def _string_map(value: Any) -> dict[str, str]:
     if not isinstance(value, dict):
         return {}
     return {str(k): str(v) for k, v in value.items()}
+
+
+def _resolve_environment_id(
+    environment: str,
+    *,
+    grpc_engines: Mapping[str, str],
+    environment_id_to_name: Mapping[str, str],
+) -> str:
+    if not environment:
+        return ""
+    if environment in grpc_engines or environment in environment_id_to_name:
+        return environment
+
+    lower_environment = environment.lower()
+    matches = [
+        env_id
+        for env_id, env_name in environment_id_to_name.items()
+        if env_name.lower() == lower_environment
+    ]
+    if len(matches) > 1:
+        raise ConnectError(
+            f"Multiple Chalk environments match {environment!r}: {matches}"
+        )
+    if len(matches) == 1:
+        return matches[0]
+    return environment

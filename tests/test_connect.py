@@ -1,5 +1,5 @@
-import contextlib
 import base64
+import contextlib
 import json
 import sys
 import types
@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 import chalkcompute._auth_config as _auth_config
+import chalkcompute._web_identity as _web_identity
 from chalkcompute import SandboxClient, _tracing
 from chalkcompute._connect import (
     ConnectError,
@@ -374,12 +375,11 @@ class TestConnectClientWebIdentity:
         assert client._api_server == "https://api.identity.chalk.test"
         assert client._access_token == token
         assert client._env_id == "env-identity"
-        assert client._headers == {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {token}",
-            "X-Chalk-Env-Id": "env-identity",
-            "X-Chalk-Server": "go-api",
-        }
+        assert client._rpc_metadata() == [
+            ("authorization", f"Bearer {token}"),
+            ("x-chalk-env-id", "env-identity"),
+            ("x-chalk-server", "go-api"),
+        ]
 
     def test_rereads_rotated_token_and_claims_after_one_hour(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
@@ -415,7 +415,7 @@ class TestConnectClientWebIdentity:
         assert ("authorization", f"Bearer {second}") in refreshed_metadata
         assert ("x-chalk-env-id", "env-two") in refreshed_metadata
 
-    def test_cache_uses_half_of_remaining_token_lifetime(
+    def test_refreshes_at_expiry_window_without_halving_remaining_lifetime(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
     ) -> None:
         monotonic_now = [100.0]
@@ -437,12 +437,12 @@ class TestConnectClientWebIdentity:
         client = ConnectClient()
         assert ("authorization", f"Bearer {first}") in client._rpc_metadata()
         token_file.write_text(second)
-        monotonic_now[0] += 899.0
+        monotonic_now[0] += 1499.0
         assert ("authorization", f"Bearer {first}") in client._rpc_metadata()
         monotonic_now[0] += 1.0
         assert ("authorization", f"Bearer {second}") in client._rpc_metadata()
 
-    def test_changing_identity_file_path_bypasses_cache(
+    def test_auth_configuration_is_fixed_after_first_use(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
     ) -> None:
         first_file = tmp_path / "first.jwt"
@@ -452,14 +452,56 @@ class TestConnectClientWebIdentity:
         first_file.write_text(first)
         second_file.write_text(second)
         monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(first_file))
+        monkeypatch.setenv("CHALK_API_SERVER", "https://api.one.chalk.test")
 
         client = ConnectClient()
         assert ("authorization", f"Bearer {first}") in client._rpc_metadata()
 
         monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(second_file))
+        monkeypatch.setenv("CHALK_API_SERVER", "https://api.two.chalk.test")
 
-        assert ("authorization", f"Bearer {second}") in client._rpc_metadata()
-        assert ("x-chalk-env-id", "env-two") in client._rpc_metadata()
+        assert ("authorization", f"Bearer {first}") in client._rpc_metadata()
+        assert client._api_server == "https://api.one.chalk.test"
+
+        replacement = ConnectClient()
+        assert ("authorization", f"Bearer {second}") in replacement._rpc_metadata()
+        assert replacement._api_server == "https://api.two.chalk.test"
+
+    def test_rejects_expired_token_and_bounds_file_retries(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        monotonic_now = [100.0]
+        wall_now = 1_000.0
+        monkeypatch.setattr(
+            "chalkcompute._connect.time.monotonic", lambda: monotonic_now[0]
+        )
+        monkeypatch.setattr("chalkcompute._connect.time.time", lambda: wall_now)
+        token_file = tmp_path / "identity.jwt"
+        token_file.write_text(_identity_jwt("env-one", expires_at=wall_now - 1))
+        monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(token_file))
+
+        reads = 0
+        read_token = _web_identity.read_web_identity_token
+
+        def counting_read(path: str):
+            nonlocal reads
+            reads += 1
+            return read_token(path)
+
+        monkeypatch.setattr(
+            "chalkcompute._connect.read_web_identity_token", counting_read
+        )
+        client = ConnectClient()
+
+        for _ in range(3):
+            with pytest.raises(ConnectError, match="has expired"):
+                client._rpc_metadata()
+        assert reads == 1
+
+        monotonic_now[0] += 5.0
+        with pytest.raises(ConnectError, match="has expired"):
+            client._rpc_metadata()
+        assert reads == 2
 
     def test_explicit_environment_overrides_jwt_claim(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
@@ -535,6 +577,10 @@ class TestConnectClientWebIdentity:
     def test_sandbox_metadata_observes_rotation(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
     ) -> None:
+        monotonic_now = [100.0]
+        monkeypatch.setattr(
+            "chalkcompute._connect.time.monotonic", lambda: monotonic_now[0]
+        )
         token_file = tmp_path / "identity.jwt"
         first = _identity_jwt("env-one", subject="one")
         second = _identity_jwt("env-two", subject="two")
@@ -547,8 +593,7 @@ class TestConnectClientWebIdentity:
             assert ("authorization", f"Bearer {first}") in (client._metadata or [])
             token_file.write_text(second)
             assert client._connect is not None
-            assert client._connect._web_identity_cached_at is not None
-            client._connect._web_identity_cached_at -= 60 * 60
+            monotonic_now[0] += 60 * 60
             assert ("authorization", f"Bearer {second}") in (client._metadata or [])
             assert ("x-chalk-env-id", "env-two") in (client._metadata or [])
         finally:
@@ -765,7 +810,6 @@ class TestConnectClientTracing:
     def _client(self, monkeypatch) -> ConnectClient:
         client = ConnectClient()
         client._api_server = "https://api.chalk.test"
-        client._headers = {"Authorization": "Bearer token"}
         monkeypatch.setattr(client, "_ensure_auth", lambda: None)
         return client
 
@@ -793,9 +837,7 @@ class TestConnectClientTracing:
 
         assert posted["kwargs"]["headers"] == {"authorization": "Bearer token"}
 
-    def test_call_merges_extra_headers_without_mutating_cached_headers(
-        self, monkeypatch
-    ):
+    def test_call_merges_extra_headers(self, monkeypatch):
         posted: dict[str, Any] = {}
 
         def fake_method(_request, **kwargs):
@@ -816,7 +858,6 @@ class TestConnectClientTracing:
             "authorization": "Bearer token",
             "x-chalk-test-header": "embed",
         }
-        assert client._headers == {"Authorization": "Bearer token"}
 
 
 class TestConnectClientServiceAuth:
@@ -845,9 +886,10 @@ class TestConnectClientServiceAuth:
             posted["call_kwargs"]["headers"]["Authorization"] == "Bearer exchange-token"
         )
         assert posted["closed"] is True
-        assert client._headers is not None
-        assert client._headers["Authorization"] == "Bearer working-token"
-        assert client._headers["X-Chalk-Env-Id"] == "env-1"
+        assert client._rpc_metadata()[:2] == [
+            ("authorization", "Bearer working-token"),
+            ("x-chalk-env-id", "env-1"),
+        ]
 
     def test_uses_grpc_engine_from_exchange_token_response(self, monkeypatch):
         monkeypatch.setattr(
