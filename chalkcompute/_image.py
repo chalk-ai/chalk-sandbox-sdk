@@ -34,6 +34,7 @@ from typing import Literal
 
 from protobuf import Oneof
 
+import chalkcompute._proto_compat  # noqa: F401
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb as pb
 from chalkcompute._naming import validate_env
 

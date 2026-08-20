@@ -527,7 +527,7 @@ requires-dist = [
     { name = "blake3", specifier = ">=1.0.0" },
     { name = "chalk-remote-call-python", specifier = ">=1.8.7" },
     { name = "chalkdf", marker = "extra == 'dev'", specifier = ">=3.31.87" },
-    { name = "chalkpy", extras = ["runtime"], marker = "extra == 'dev'", specifier = ">=2.114.0" },
+    { name = "chalkpy", extras = ["runtime"], marker = "extra == 'dev'", specifier = ">=2.154.34" },
     { name = "connectrpc", git = "https://github.com/connectrpc/connect-py.git?rev=c19b11325be765855f4a4fae209251d3aa7f5d57" },
     { name = "opentelemetry-api", specifier = ">=1.20.0" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.20.0" },
@@ -562,7 +562,7 @@ wheels = [
 
 [[package]]
 name = "chalkpy"
-version = "2.154.7"
+version = "2.155.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "chalkpy-rs" },
@@ -582,9 +582,9 @@ dependencies = [
     { name = "rich" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/35/7f/eecb666d1faedb53a8a4e8a45b26fd2cc2337bcb48c593cc6b3a505ebf81/chalkpy-2.154.7.tar.gz", hash = "sha256:913a61f54f2368bece5a7d7659886477eaa6426c9d29477da337ba8553715779", size = 1853781, upload-time = "2026-07-20T22:09:25.197Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e7/25/9e800b3f6d94d9d52e8bf1cea858c85b81993246ba553f39ad9fa65b8e7d/chalkpy-2.155.4.tar.gz", hash = "sha256:61a5c055ccb8cfdc3de2da522b8be7e584341affe24de2b82f2ac9970bbaa69a", size = 1983127, upload-time = "2026-08-20T17:15:46.085Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c9/f3/d6df6e99277e305b91f0babc741b32314b542a8c5b84b81f39cd38136479/chalkpy-2.154.7-py3-none-any.whl", hash = "sha256:a171a671323b29ad3aec72309a97267713cd0fbc282d14495519a36badd0c2e6", size = 2359233, upload-time = "2026-07-20T22:09:22.543Z" },
+    { url = "https://files.pythonhosted.org/packages/cb/77/6843bf04df516d10187e7589591a5e8d04483468db02c695ca8f4d6d0b80/chalkpy-2.155.4-py3-none-any.whl", hash = "sha256:d2f52d658f2c3ebbe1578dba4bb43f80e54da8b14cd04461f4ecf543bbe14fd3", size = 2511999, upload-time = "2026-08-20T17:15:42.739Z" },
 ]
 
 [package.optional-dependencies]
