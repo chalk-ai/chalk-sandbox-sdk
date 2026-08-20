@@ -19,6 +19,7 @@ from chalkcompute._evaluation import (
     EvaluationRunFailedError,
     EvaluationRunStatus,
     EvaluationScorerResult,
+    EvaluationSuite,
 )
 from chalkcompute._arrow_serde import arrow_encoder_for_annotation
 from chalkcompute._function import FunctionVersionInfo, RemoteFunction, _build_schemas
@@ -67,6 +68,7 @@ def _evaluation_dict() -> dict[str, Any]:
         "teamId": "team-1",
         "environmentId": "env-1",
         "name": "Support quality",
+        "suiteId": "suite-1",
         "datasetId": "dataset-1",
         "datasetRevisionId": "revision-1",
         "taskFunctionVersionId": "fn-task-v2",
@@ -81,6 +83,17 @@ def _evaluation_dict() -> dict[str, Any]:
         "metadata": {"suite": "release"},
         "createdBy": "user-1",
         "createdAt": "2026-08-14T18:22:00Z",
+    }
+
+
+def _suite_dict() -> dict[str, Any]:
+    return {
+        "id": "suite-1",
+        "teamId": "team-1",
+        "environmentId": "env-1",
+        "name": "Release",
+        "createdBy": "user-1",
+        "createdAt": "2026-08-18T21:00:00Z",
     }
 
 
@@ -199,12 +212,14 @@ def test_create_pins_direct_function_versions() -> None:
         task=task,
         scorers=[scorer],
         metadata={"suite": "release"},
+        suite_id="  suite-1  ",
     )
 
     assert evaluation.id == "eval-1"
     assert evaluation.dataset_id == "dataset-1"
     assert evaluation.dataset_revision_id == "revision-1"
     assert evaluation.task_function_version_id == "fn-task-v2"
+    assert evaluation.suite_id == "suite-1"
     assert evaluation.scorers[0].function_version_id == "fn-score-v2"
     assert evaluation.created_at is not None
     assert evaluation.created_at.isoformat() == "2026-08-14T18:22:00+00:00"
@@ -216,9 +231,84 @@ def test_create_pins_direct_function_versions() -> None:
     assert request.dataset_id == "dataset-1"
     assert request.dataset_revision_id == "revision-1"
     assert request.task_function_version_id == "fn-task-v2"
+    assert request.suite_id == "suite-1"
     assert request.scorers[0].implementation is not None
     assert request.scorers[0].implementation.value.function_version_id == "fn-score-v2"
     assert json.loads(request.metadata.to_json()) == {"suite": "release"}
+
+
+def test_create_and_list_suites() -> None:
+    connect = _FakeConnectClient(
+        {
+            "create_evaluation_suite": [
+                _message(
+                    evaluation_pb.CreateEvaluationSuiteResponse,
+                    {"suite": _suite_dict()},
+                )
+            ],
+            "list_evaluation_suites": [
+                _message(
+                    evaluation_pb.ListEvaluationSuitesResponse,
+                    {"suites": [_suite_dict()]},
+                )
+            ],
+        }
+    )
+    client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]
+
+    created = client.create_suite("  Release  ")
+    suites = client.list_suites()
+
+    assert isinstance(created, EvaluationSuite)
+    assert created.id == "suite-1"
+    assert created.name == "Release"
+    assert created.created_at is not None
+    assert created.created_at.isoformat() == "2026-08-18T21:00:00+00:00"
+    assert suites == [created]
+    create_request = connect.calls[0][1]
+    list_request = connect.calls[1][1]
+    assert isinstance(create_request, evaluation_pb.CreateEvaluationSuiteRequest)
+    assert create_request.name == "Release"
+    assert isinstance(list_request, evaluation_pb.ListEvaluationSuitesRequest)
+
+
+def test_suite_handle_filters_evaluations_and_runs() -> None:
+    connect = _FakeConnectClient(
+        {
+            "list_evaluation_suites": [
+                _message(
+                    evaluation_pb.ListEvaluationSuitesResponse,
+                    {"suites": [_suite_dict()]},
+                )
+            ],
+            "list_evaluations": [
+                _message(
+                    evaluation_pb.ListEvaluationsResponse,
+                    {"evaluations": [_evaluation_dict()]},
+                )
+            ],
+            "list_evaluation_runs": [
+                _message(
+                    evaluation_pb.ListEvaluationRunsResponse,
+                    {"evaluationRuns": [_run_dict("EVALUATION_RUN_STATUS_SUCCEEDED")]},
+                )
+            ],
+        }
+    )
+    client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]
+    suite = client.list_suites()[0]
+
+    evaluations = list(suite.evaluations(limit=1))
+    runs = list(suite.runs(limit=1))
+
+    assert [evaluation.id for evaluation in evaluations] == ["eval-1"]
+    assert [run.id for run in runs] == ["run-1"]
+    evaluations_request = connect.calls[1][1]
+    runs_request = connect.calls[2][1]
+    assert isinstance(evaluations_request, evaluation_pb.ListEvaluationsRequest)
+    assert evaluations_request.suite_id == "suite-1"
+    assert isinstance(runs_request, evaluation_pb.ListEvaluationRunsRequest)
+    assert runs_request.suite_id == "suite-1"
 
 
 def test_create_accepts_chalkpy_shaped_revision_and_reference_handles() -> None:
@@ -290,6 +380,7 @@ def test_create_resolves_dataset_name_to_latest_revision() -> None:
     assert request.dataset_name == "support-goldens"
     assert not request.has_field("dataset_id")
     assert not request.has_field("dataset_revision_id")
+    assert not request.has_field("suite_id")
 
 
 def test_dataset_revision_ref_rejects_name_with_revision_ids() -> None:

@@ -1,0 +1,1 @@
+- Add first-class evaluation suites: create and list suites, assign evaluations to a suite, and filter evaluations or runs by suite.

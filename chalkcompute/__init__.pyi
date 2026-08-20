@@ -21,6 +21,8 @@ from chalkcompute._container import ContainerInfo as ContainerInfo
 from chalkcompute._container import ContainerSession as ContainerSession
 from chalkcompute._container import ExecResult as ContainerExecResult
 from chalkcompute._container import ImageBuildError as ImageBuildError
+from chalkcompute._dataset import DatasetClient as DatasetClient
+from chalkcompute._dataset import DatasetError as DatasetError
 from chalkcompute._containerspec import ComputeClass as ComputeClass
 from chalkcompute._containerspec import (
     ContainerSecurityPolicy as ContainerSecurityPolicy,
@@ -43,6 +45,7 @@ from chalkcompute._evaluation import (
 from chalkcompute._evaluation import EvaluationRunStatus as EvaluationRunStatus
 from chalkcompute._evaluation import EvaluationScorer as EvaluationScorer
 from chalkcompute._evaluation import EvaluationScorerResult as EvaluationScorerResult
+from chalkcompute._evaluation import EvaluationSuite as EvaluationSuite
 from chalkcompute._function import DeployedFunction as DeployedFunction
 from chalkcompute._function import FunctionBuildError as FunctionBuildError
 from chalkcompute._function import FunctionCallHandle as FunctionCallHandle
@@ -163,6 +166,8 @@ __all__ = [
     "QueuePolicy",
     "TracingPolicy",
     "function",
+    "DatasetClient",
+    "DatasetError",
     "DatasetNameLike",
     "DatasetRevisionLike",
     "DatasetRevisionRef",
@@ -175,6 +180,7 @@ __all__ = [
     "EvaluationRunStatus",
     "EvaluationScorer",
     "EvaluationScorerResult",
+    "EvaluationSuite",
     "RemoteCallClient",
     "RemoteCallClientUnavailable",
     "bind_model",
