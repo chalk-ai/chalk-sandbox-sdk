@@ -159,6 +159,14 @@ those settings. The JWT's `environment_id` claim selects the environment unless
 function calls additionally require `CHALK_GRPC_ENGINE`, because identity JWTs
 do not contain engine-routing data.
 
+Service-auth and client-credential access tokens are also refreshed before
+their reported expiration. Stable credential configuration is resolved once;
+service-auth exchange tokens are re-resolved only for a refresh. Each
+`ConnectClient` reuses one generated client per service endpoint and closes its
+clients exactly once when `close()` is called or its context manager exits. If
+a refresh temporarily fails, the previous token remains usable only until its
+reported expiration while retries are bounded to once every five seconds.
+
 ### Workload identity federation
 
 Use the authenticated Connect client to mint a short-lived OIDC token for a

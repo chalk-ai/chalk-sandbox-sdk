@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+import chalkcompute._connect as _connect
 import chalkcompute._auth_config as _auth_config
 import chalkcompute._web_identity as _web_identity
 from chalkcompute import SandboxClient, _tracing
@@ -19,7 +20,7 @@ from chalkcompute._connect import (
     grpc_engine_target_from_url,
     grpc_target_from_url,
 )
-from chalkcompute._gen.chalk.server.v1 import auth_pb
+from chalkcompute._gen.chalk.server.v1 import auth_connect, auth_pb
 from chalkcompute._http import SYNC_HTTP_CLIENT
 from chalkcompute._remote_call_client import ServiceAuthContext
 
@@ -31,6 +32,7 @@ def _install_auth_client(
 ) -> None:
     class _AuthClient:
         def __init__(self, address: str, **kwargs: Any) -> None:
+            captured["init_count"] = captured.get("init_count", 0) + 1
             captured["address"] = address
             captured["init_kwargs"] = kwargs
 
@@ -44,6 +46,7 @@ def _install_auth_client(
             )
 
         def close(self) -> None:
+            captured["close_count"] = captured.get("close_count", 0) + 1
             captured["closed"] = True
 
     monkeypatch.setattr(
@@ -60,6 +63,7 @@ def _install_token_client(
 
     class _AuthClient:
         def __init__(self, address: str, **kwargs: Any) -> None:
+            captured["init_count"] = captured.get("init_count", 0) + 1
             captured["address"] = address
             captured["init_kwargs"] = kwargs
 
@@ -69,6 +73,7 @@ def _install_token_client(
             return auth_pb.GetTokenResponse.from_json(json.dumps(payload))
 
         def close(self) -> None:
+            captured["close_count"] = captured.get("close_count", 0) + 1
             captured["closed"] = True
 
     monkeypatch.setattr(
@@ -289,7 +294,9 @@ tokens:
             client_secret="config-secret",
             grant_type="client_credentials",
         )
-        assert posted["closed"] is True
+        assert "closed" not in posted
+        client.close()
+        assert posted["close_count"] == 1
         assert client._env_id == "env-1"
 
     def test_loads_project_scoped_token_from_chalk_login_config(
@@ -345,6 +352,11 @@ tokens:
 
 
 class TestConnectClientWebIdentity:
+    @pytest.fixture(autouse=True)
+    def clear_explicit_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("CHALK_ENVIRONMENT", raising=False)
+        monkeypatch.delenv("CHALK_ENVIRONMENT_ID", raising=False)
+
     def test_uses_identity_jwt_without_exchanging_credentials(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
     ) -> None:
@@ -724,6 +736,55 @@ class TestConnectClientWorkloadIdentityToken:
             client.get_workload_identity_token("snowflakecomputing.com")
 
 
+class TestConnectClientAuthRefresh:
+    def test_retains_previous_token_only_until_its_hard_expiration(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monotonic_now = [100.0]
+        monkeypatch.setattr(
+            "chalkcompute._connect.time.monotonic", lambda: monotonic_now[0]
+        )
+        state = _connect._AuthState(
+            api_server="https://api.chalk.test",
+            access_token="current-token",
+            environment_id="env-1",
+            grpc_engines={},
+            environment_id_to_name={},
+        )
+
+        class _Provider:
+            uses_web_identity = False
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def refresh(self) -> _connect._AuthCache:
+                self.calls += 1
+                if self.calls > 1:
+                    raise ConnectError("auth unavailable")
+                return _connect._AuthCache(
+                    state=state,
+                    refresh_after=200.0,
+                    expires_after=300.0,
+                )
+
+        provider = _Provider()
+        client = ConnectClient()
+        client._auth_provider = provider
+
+        assert client._auth_state() is state
+        monotonic_now[0] = 200.0
+        assert client._auth_state() is state
+        assert provider.calls == 2
+        monotonic_now[0] = 204.0
+        assert client._auth_state() is state
+        assert provider.calls == 2
+        monotonic_now[0] = 300.0
+        with pytest.raises(ConnectError, match="auth unavailable"):
+            client._auth_state()
+        assert provider.calls == 3
+
+
 class TestConnectClientTracing:
     def test_trace_headers_return_current_w3c_context(self, monkeypatch):
         monkeypatch.setattr(
@@ -948,11 +1009,14 @@ class TestConnectClientServiceAuth:
         assert (
             posted["call_kwargs"]["headers"]["Authorization"] == "Bearer exchange-token"
         )
-        assert posted["closed"] is True
+        assert "closed" not in posted
         assert client._rpc_metadata()[:2] == [
             ("authorization", "Bearer working-token"),
             ("x-chalk-env-id", "env-1"),
         ]
+        client.close()
+        client.close()
+        assert posted["close_count"] == 1
 
     def test_uses_grpc_engine_from_exchange_token_response(self, monkeypatch):
         monkeypatch.setattr(
@@ -980,6 +1044,157 @@ class TestConnectClientServiceAuth:
 
         assert target == "engine.chalk.test:443"
         assert use_tls is True
+
+    def test_refreshes_with_one_auth_client_and_rotated_exchange_token(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monotonic_now = [100.0]
+        monkeypatch.setattr(
+            "chalkcompute._connect.time.monotonic", lambda: monotonic_now[0]
+        )
+        monkeypatch.setattr(
+            "chalkcompute._connect.time.time",
+            lambda: 1_000.0 + monotonic_now[0] - 100.0,
+        )
+        resolved = 0
+
+        def resolve() -> ServiceAuthContext:
+            nonlocal resolved
+            resolved += 1
+            return ServiceAuthContext(
+                auth_endpoint="https://api.chalk.test",
+                exchange_token=f"exchange-token-{resolved}",
+                environment_id="env-1",
+                requested_permissions=(2, 3, 11),
+                grpc_engine=None,
+            )
+
+        monkeypatch.setattr(
+            "chalkcompute._connect.resolve_service_auth_context", resolve
+        )
+        captured: dict[str, Any] = {"authorizations": []}
+
+        class _AuthClient:
+            def __init__(self, _address: str, **_kwargs: Any) -> None:
+                captured["init_count"] = captured.get("init_count", 0) + 1
+
+            def get_internal_working_token(
+                self, _request: Any, **kwargs: Any
+            ) -> auth_pb.GetInternalWorkingTokenResponse:
+                captured["authorizations"].append(kwargs["headers"]["Authorization"])
+                call_count = len(captured["authorizations"])
+                expires_at = (
+                    "1970-01-01T00:26:40Z"
+                    if call_count == 1
+                    else "1970-01-01T00:36:40Z"
+                )
+                return auth_pb.GetInternalWorkingTokenResponse.from_json(
+                    json.dumps(
+                        {
+                            "accessToken": f"working-token-{call_count}",
+                            "expiresAt": expires_at,
+                        }
+                    )
+                )
+
+            def close(self) -> None:
+                captured["close_count"] = captured.get("close_count", 0) + 1
+
+        monkeypatch.setattr(
+            "chalkcompute._connect.auth_connect.AuthServiceClientSync", _AuthClient
+        )
+        client = ConnectClient()
+
+        assert ("authorization", "Bearer working-token-1") in client._rpc_metadata()
+        monotonic_now[0] += 299.0
+        assert ("authorization", "Bearer working-token-1") in client._rpc_metadata()
+        monotonic_now[0] += 1.0
+        assert ("authorization", "Bearer working-token-2") in client._rpc_metadata()
+        assert client.stub(auth_connect.AuthServiceClientSync) is client.stub(
+            auth_connect.AuthServiceClientSync
+        )
+        assert resolved == 2
+        assert captured["init_count"] == 1
+        assert captured["authorizations"] == [
+            "Bearer exchange-token-1",
+            "Bearer exchange-token-2",
+        ]
+        assert "close_count" not in captured
+
+        client.close()
+        client.close()
+        assert captured["close_count"] == 1
+        assert client._access_token is None
+        with pytest.raises(ConnectError, match="closed"):
+            client._rpc_metadata()
+
+
+class TestConnectClientCredentialLifecycle:
+    def test_captures_config_once_and_reuses_auth_client_across_refreshes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monotonic_now = [100.0]
+        monkeypatch.setattr(
+            "chalkcompute._connect.time.monotonic", lambda: monotonic_now[0]
+        )
+        monkeypatch.setattr(
+            "chalkcompute._connect.time.time",
+            lambda: 1_000.0 + monotonic_now[0] - 100.0,
+        )
+        config_loads = 0
+
+        def load_config(*_args: Any) -> None:
+            nonlocal config_loads
+            config_loads += 1
+            return None
+
+        monkeypatch.setattr("chalkcompute._connect.load_token", load_config)
+        monkeypatch.setattr(
+            "chalkcompute._connect.resolve_service_auth_context", lambda: None
+        )
+        monkeypatch.setenv("CHALK_API_SERVER", "https://api.chalk.test/")
+        monkeypatch.setenv("CHALK_CLIENT_ID", "client-id-1")
+        monkeypatch.setenv("CHALK_CLIENT_SECRET", "client-secret-1")
+        monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-1")
+        captured: dict[str, Any] = {"requests": []}
+
+        class _AuthClient:
+            def __init__(self, address: str, **_kwargs: Any) -> None:
+                captured["init_count"] = captured.get("init_count", 0) + 1
+                captured["address"] = address
+
+            def get_token(
+                self, request: Any, **_kwargs: Any
+            ) -> auth_pb.GetTokenResponse:
+                captured["requests"].append(request)
+                return auth_pb.GetTokenResponse(
+                    access_token=f"access-token-{len(captured['requests'])}",
+                    expires_in=600,
+                )
+
+            def close(self) -> None:
+                captured["close_count"] = captured.get("close_count", 0) + 1
+
+        monkeypatch.setattr(
+            "chalkcompute._connect.auth_connect.AuthServiceClientSync", _AuthClient
+        )
+        client = ConnectClient()
+
+        assert ("authorization", "Bearer access-token-1") in client._rpc_metadata()
+        monkeypatch.setenv("CHALK_CLIENT_ID", "client-id-2")
+        monkeypatch.setenv("CHALK_CLIENT_SECRET", "client-secret-2")
+        monotonic_now[0] += 300.0
+        assert ("authorization", "Bearer access-token-2") in client._rpc_metadata()
+
+        assert config_loads == 1
+        assert captured["address"] == "https://api.chalk.test"
+        assert captured["init_count"] == 1
+        assert [request.client_id for request in captured["requests"]] == [
+            "client-id-1",
+            "client-id-1",
+        ]
+        client.close()
+        assert captured["close_count"] == 1
 
 
 class _FakeChalkClient:

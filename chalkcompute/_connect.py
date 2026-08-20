@@ -44,8 +44,8 @@ from chalkcompute._web_identity import (
 logger = logging.getLogger(__name__)
 
 _WEB_IDENTITY_MAX_REFRESH_INTERVAL_SECONDS = 60 * 60
-_WEB_IDENTITY_EXPIRY_WINDOW_SECONDS = 5 * 60
-_WEB_IDENTITY_MIN_REFRESH_INTERVAL_SECONDS = 5.0
+_AUTH_EXPIRY_WINDOW_SECONDS = 5 * 60
+_AUTH_RETRY_INTERVAL_SECONDS = 5.0
 
 _StubT = TypeVar("_StubT")
 _RespT = TypeVar("_RespT")
@@ -78,7 +78,18 @@ class _AuthCache:
 
     state: _AuthState | None
     refresh_after: float | None
+    expires_after: float | None = None
     error_message: str | None = None
+
+
+@dataclass(frozen=True)
+class _ClientCredentialsConfig:
+    """Stable client-credential configuration captured on first auth use."""
+
+    api_server: str
+    client_id: str
+    client_secret: str
+    requested_environment: str
 
 
 class _AuthProvider(Protocol):
@@ -89,16 +100,48 @@ class _AuthProvider(Protocol):
     def refresh(self) -> _AuthCache: ...
 
 
-class _StaticAuthProvider:
-    """Load non-rotating credentials once, on their first use."""
+class _RefreshingAuthProvider:
+    """Refresh expiring credentials without rediscovering their configuration."""
 
     uses_web_identity = False
 
-    def __init__(self, load: Callable[[], _AuthState]) -> None:
+    def __init__(self, load: Callable[[], _AuthCache]) -> None:
         self._load = load
 
     def refresh(self) -> _AuthCache:
-        return _AuthCache(state=self._load(), refresh_after=None)
+        return self._load()
+
+
+class _ServiceAuthProvider:
+    """Refresh working tokens while keeping service-auth routing stable."""
+
+    uses_web_identity = False
+
+    def __init__(
+        self,
+        *,
+        initial_context: ServiceAuthContext,
+        exchange: Callable[[ServiceAuthContext], _AuthCache],
+    ) -> None:
+        self._configured_context = initial_context
+        self._next_context: ServiceAuthContext | None = initial_context
+        self._exchange = exchange
+
+    def refresh(self) -> _AuthCache:
+        context = self._next_context
+        self._next_context = None
+        if context is None:
+            context = service_auth_context_from_env()
+            if context is None:
+                raise ConnectError("Service-auth credentials are no longer available")
+            if _service_auth_configuration(context) != _service_auth_configuration(
+                self._configured_context
+            ):
+                raise ConnectError(
+                    "Service-auth configuration changed; create a new ConnectClient "
+                    "to use the new endpoint, environment, or permissions"
+                )
+        return self._exchange(context)
 
 
 class _WebIdentityAuthProvider:
@@ -143,6 +186,11 @@ class _WebIdentityAuthProvider:
                 expires_at=identity.expires_at,
                 wall_now=wall_now,
             ),
+            expires_after=(
+                None
+                if identity.expires_at is None
+                else monotonic_now + identity.expires_at - wall_now
+            ),
         )
 
 
@@ -157,9 +205,59 @@ def _web_identity_refresh_interval(
     return min(
         _WEB_IDENTITY_MAX_REFRESH_INTERVAL_SECONDS,
         max(
-            _WEB_IDENTITY_MIN_REFRESH_INTERVAL_SECONDS,
-            expires_at - wall_now - _WEB_IDENTITY_EXPIRY_WINDOW_SECONDS,
+            _AUTH_RETRY_INTERVAL_SECONDS,
+            expires_at - wall_now - _AUTH_EXPIRY_WINDOW_SECONDS,
         ),
+    )
+
+
+def _service_auth_configuration(
+    context: ServiceAuthContext,
+) -> tuple[str, str, tuple[int, ...]]:
+    return (
+        context.auth_endpoint.rstrip("/"),
+        context.environment_id,
+        context.requested_permissions,
+    )
+
+
+def _token_expiration_epoch(
+    expires_at: Any | None,
+    *,
+    expires_in: int | None = None,
+    wall_now: float,
+) -> float | None:
+    if expires_at is not None:
+        return float(expires_at.seconds) + float(expires_at.nanos) / 1_000_000_000
+    if expires_in is not None and expires_in > 0:
+        return wall_now + expires_in
+    return None
+
+
+def _auth_cache_for_token(
+    state: _AuthState,
+    *,
+    expires_at: Any | None,
+    expires_in: int | None = None,
+) -> _AuthCache:
+    monotonic_now = time.monotonic()
+    wall_now = time.time()
+    expiration_epoch = _token_expiration_epoch(
+        expires_at,
+        expires_in=expires_in,
+        wall_now=wall_now,
+    )
+    if expiration_epoch is None:
+        return _AuthCache(state=state, refresh_after=None)
+
+    remaining = expiration_epoch - wall_now
+    if remaining <= 0:
+        raise ConnectError("Auth service returned an expired access token")
+    return _AuthCache(
+        state=state,
+        refresh_after=monotonic_now
+        + max(_AUTH_RETRY_INTERVAL_SECONDS, remaining - _AUTH_EXPIRY_WINDOW_SECONDS),
+        expires_after=monotonic_now + remaining,
     )
 
 
@@ -191,14 +289,19 @@ def chalk_client_from_env(
     )
     if service_auth is not None and not has_authorization:
         client = ConnectClient()
-        client._ensure_auth()
-        assert client._access_token is not None
-        assert client._api_server is not None
+        client._auth_provider = _ServiceAuthProvider(
+            initial_context=service_auth,
+            exchange=client._exchange_service_auth,
+        )
+        try:
+            state = client._auth_state()
+        finally:
+            client.close()
         headers = {
             **(headers or {}),
-            "Authorization": f"Bearer {client._access_token}",
+            "Authorization": f"Bearer {state.access_token}",
         }
-        api_server = api_server or client._api_server
+        api_server = api_server or state.api_server
         environment = environment or service_auth.environment_id
 
     if api_server is not None:
@@ -237,22 +340,25 @@ class ConnectClient:
         self._environment_id_to_name: dict[str, str] = {}
         self._primary_environment: str | None = None
         self._chalk_client = chalk_client
-        self._typed_clients: dict[Callable[..., Any], Any] = {}
+        self._typed_clients: dict[tuple[Callable[..., Any], str], Any] = {}
         self._auth_lock = threading.RLock()
         self._typed_clients_lock = threading.Lock()
         self._auth_provider: _AuthProvider | None = None
         self._auth_cache: _AuthCache | None = None
+        self._closed = False
 
     def _ensure_auth(self) -> None:
         self._auth_state()
 
     def _auth_state(self) -> _AuthState:
         """Return one internally consistent authentication snapshot."""
+        self._ensure_open()
         cached = self._cached_auth_state()
         if cached is not None:
             return cached
 
         with self._auth_lock:
+            self._ensure_open()
             cached = self._cached_auth_state()
             if cached is not None:
                 return cached
@@ -267,14 +373,8 @@ class ConnectClient:
 
             try:
                 cache = self._auth_provider.refresh()
-            except WebIdentityTokenError as exc:
-                self._auth_cache = _AuthCache(
-                    state=None,
-                    refresh_after=time.monotonic()
-                    + _WEB_IDENTITY_MIN_REFRESH_INTERVAL_SECONDS,
-                    error_message=str(exc),
-                )
-                raise ConnectError(str(exc)) from exc
+            except (ConnectError, ConnectRpcError, WebIdentityTokenError) as exc:
+                return self._handle_auth_refresh_error(exc)
             state = cache.state
             assert state is not None
             self._apply_auth_state(state)
@@ -287,12 +387,45 @@ class ConnectClient:
         cache = self._auth_cache
         if cache is None:
             return None
-        if cache.refresh_after is not None and time.monotonic() >= cache.refresh_after:
+        monotonic_now = time.monotonic()
+        if cache.expires_after is not None and monotonic_now >= cache.expires_after:
+            return None
+        if cache.refresh_after is not None and monotonic_now >= cache.refresh_after:
             return None
         if cache.error_message is not None:
             raise ConnectError(cache.error_message)
         assert cache.state is not None
         return cache.state
+
+    def _handle_auth_refresh_error(self, exc: Exception) -> _AuthState:
+        monotonic_now = time.monotonic()
+        previous = self._auth_cache
+        if (
+            previous is not None
+            and previous.state is not None
+            and (
+                previous.expires_after is None or monotonic_now < previous.expires_after
+            )
+        ):
+            self._auth_cache = _AuthCache(
+                state=previous.state,
+                refresh_after=monotonic_now + _AUTH_RETRY_INTERVAL_SECONDS,
+                expires_after=previous.expires_after,
+            )
+            logger.warning(
+                "Auth refresh failed; retaining the current unexpired token: %s",
+                exc,
+            )
+            return previous.state
+
+        self._auth_cache = _AuthCache(
+            state=None,
+            refresh_after=monotonic_now + _AUTH_RETRY_INTERVAL_SECONDS,
+            error_message=str(exc),
+        )
+        if isinstance(exc, ConnectError):
+            raise exc
+        raise ConnectError(str(exc)) from exc
 
     def _auth_provider_from_env(self) -> _AuthProvider:
         """Select and configure an auth provider once for this client."""
@@ -309,56 +442,57 @@ class ConnectClient:
 
         service_auth = service_auth_context_from_env()
         if service_auth is not None:
-            return _StaticAuthProvider(
-                lambda: self._exchange_service_auth(service_auth)
+            return _ServiceAuthProvider(
+                initial_context=service_auth,
+                exchange=self._exchange_service_auth,
             )
-        return _StaticAuthProvider(self._exchange_client_credentials)
+        config = self._client_credentials_config()
+        return _RefreshingAuthProvider(
+            lambda: self._exchange_client_credentials(config)
+        )
 
     def _exchange_service_auth(
         self,
         service_auth: ServiceAuthContext,
-    ) -> _AuthState:
+    ) -> _AuthCache:
         api_server = service_auth.auth_endpoint.rstrip("/")
-        auth_client = auth_connect.AuthServiceClientSync(
+        auth_client = self._client_for_endpoint(
+            auth_connect.AuthServiceClientSync,
             api_server,
-            protocol=ProtocolType.GRPC,
-            interceptors=rpc_interceptors(),
-            http_client=SYNC_HTTP_CLIENT,
-            read_max_bytes=RPC_READ_MAX_BYTES,
         )
-        try:
-            data = auth_client.get_internal_working_token(
-                auth_pb.GetInternalWorkingTokenRequest(
-                    requested_permissions=[
-                        permissions_pb.Permission(value)
-                        for value in service_auth.requested_permissions
-                    ],
-                ),
-                headers={
-                    "Authorization": f"Bearer {service_auth.exchange_token}",
-                    "X-Chalk-Server": "go-api",
-                },
-                timeout_ms=30_000,
-            )
-        finally:
-            auth_client.close()
+        data = auth_client.get_internal_working_token(
+            auth_pb.GetInternalWorkingTokenRequest(
+                requested_permissions=[
+                    permissions_pb.Permission(value)
+                    for value in service_auth.requested_permissions
+                ],
+            ),
+            headers={
+                "Authorization": f"Bearer {service_auth.exchange_token}",
+                "X-Chalk-Server": "go-api",
+            },
+            timeout_ms=30_000,
+        )
         grpc_engines = MappingProxyType(_string_map(data.grpc_engines or data.engines))
         environment_id_to_name = MappingProxyType(
             _string_map(data.environment_id_to_name)
         )
-        return _AuthState(
-            api_server=api_server,
-            access_token=data.access_token,
-            environment_id=_resolve_environment_id(
-                service_auth.environment_id,
+        return _auth_cache_for_token(
+            _AuthState(
+                api_server=api_server,
+                access_token=data.access_token,
+                environment_id=_resolve_environment_id(
+                    service_auth.environment_id,
+                    grpc_engines=grpc_engines,
+                    environment_id_to_name=environment_id_to_name,
+                ),
                 grpc_engines=grpc_engines,
                 environment_id_to_name=environment_id_to_name,
             ),
-            grpc_engines=grpc_engines,
-            environment_id_to_name=environment_id_to_name,
+            expires_at=data.expires_at,
         )
 
-    def _exchange_client_credentials(self) -> _AuthState:
+    def _client_credentials_config(self) -> _ClientCredentialsConfig:
         token = (
             None
             if self._chalk_client is not None
@@ -409,41 +543,50 @@ class ConnectClient:
                 "environment variables, run `chalk login`, or pass a ChalkClient instance."
             )
 
-        auth_client = auth_connect.AuthServiceClientSync(
-            api_server,
-            protocol=ProtocolType.GRPC,
-            interceptors=rpc_interceptors(),
-            http_client=SYNC_HTTP_CLIENT,
-            read_max_bytes=RPC_READ_MAX_BYTES,
+        return _ClientCredentialsConfig(
+            api_server=api_server.rstrip("/"),
+            client_id=client_id,
+            client_secret=client_secret,
+            requested_environment=requested_env or "",
         )
-        try:
-            data = auth_client.get_token(
-                auth_pb.GetTokenRequest(
-                    client_id=client_id,
-                    client_secret=client_secret,
-                    grant_type="client_credentials",
-                ),
-                headers={"X-Chalk-Server": "go-api"},
-                timeout_ms=30_000,
-            )
-        finally:
-            auth_client.close()
+
+    def _exchange_client_credentials(
+        self,
+        config: _ClientCredentialsConfig,
+    ) -> _AuthCache:
+        auth_client = self._client_for_endpoint(
+            auth_connect.AuthServiceClientSync,
+            config.api_server,
+        )
+        data = auth_client.get_token(
+            auth_pb.GetTokenRequest(
+                client_id=config.client_id,
+                client_secret=config.client_secret,
+                grant_type="client_credentials",
+            ),
+            headers={"X-Chalk-Server": "go-api"},
+            timeout_ms=30_000,
+        )
         primary_environment = data.primary_environment or None
         grpc_engines = MappingProxyType(_string_map(data.grpc_engines or data.engines))
         environment_id_to_name = MappingProxyType(
             _string_map(data.environment_id_to_name)
         )
-        return _AuthState(
-            api_server=api_server,
-            access_token=data.access_token,
-            environment_id=_resolve_environment_id(
-                requested_env or primary_environment or "",
+        return _auth_cache_for_token(
+            _AuthState(
+                api_server=config.api_server,
+                access_token=data.access_token,
+                environment_id=_resolve_environment_id(
+                    config.requested_environment or primary_environment or "",
+                    grpc_engines=grpc_engines,
+                    environment_id_to_name=environment_id_to_name,
+                ),
                 grpc_engines=grpc_engines,
                 environment_id_to_name=environment_id_to_name,
+                primary_environment=primary_environment,
             ),
-            grpc_engines=grpc_engines,
-            environment_id_to_name=environment_id_to_name,
-            primary_environment=primary_environment,
+            expires_at=data.expires_at,
+            expires_in=data.expires_in,
         )
 
     def _apply_auth_state(self, state: _AuthState) -> None:
@@ -501,11 +644,13 @@ class ConnectClient:
 
     def _uses_web_identity_token(self) -> bool:
         """Return whether rotating web-identity authentication is configured."""
+        self._ensure_open()
         provider = self._auth_provider
         if provider is not None:
             return provider.uses_web_identity
 
         with self._auth_lock:
+            self._ensure_open()
             if self._auth_provider is None:
                 if self._access_token is not None:
                     return False
@@ -551,33 +696,63 @@ class ConnectClient:
 
         Clients always use the gRPC protocol over the shared HTTP/2 transport.
         """
-        client = self._typed_clients.get(stub_cls)
+        state = self._auth_state()
+        return self._client_for_endpoint(stub_cls, state.api_server)
+
+    def _client_for_endpoint(
+        self,
+        client_cls: Callable[..., _StubT],
+        api_server: str,
+    ) -> _StubT:
+        """Return the one generated client owned for a class and endpoint."""
+        self._ensure_open()
+        key = (client_cls, api_server)
+        client = self._typed_clients.get(key)
         if client is not None:
             return client
 
-        state = self._auth_state()
         with self._typed_clients_lock:
-            client = self._typed_clients.get(stub_cls)
+            self._ensure_open()
+            client = self._typed_clients.get(key)
             if client is not None:
                 return client
-            client = stub_cls(
-                state.api_server,
+            client = client_cls(
+                api_server,
                 protocol=ProtocolType.GRPC,
                 interceptors=rpc_interceptors(),
                 http_client=SYNC_HTTP_CLIENT,
                 read_max_bytes=RPC_READ_MAX_BYTES,
             )
-            self._typed_clients[stub_cls] = client
+            self._typed_clients[key] = client
             return client
 
     def close(self) -> None:
-        """Close cached typed ConnectRPC clients."""
-        with self._typed_clients_lock:
-            for client in self._typed_clients.values():
-                close = getattr(client, "close", None)
-                if close is not None:
-                    close()
+        """Close every generated client owned by this client, exactly once."""
+        with self._auth_lock, self._typed_clients_lock:
+            if self._closed:
+                return
+            self._closed = True
+            clients = tuple(self._typed_clients.values())
             self._typed_clients.clear()
+            self._auth_cache = None
+            self._auth_provider = None
+            self._access_token = None
+
+        for client in clients:
+            close = getattr(client, "close", None)
+            if close is not None:
+                close()
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise ConnectError("ConnectClient is closed")
+
+    def __enter__(self) -> ConnectClient:
+        self._ensure_open()
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        self.close()
 
     def call(
         self,
