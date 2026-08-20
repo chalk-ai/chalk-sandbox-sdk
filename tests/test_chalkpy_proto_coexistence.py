@@ -27,11 +27,13 @@ OVERLAPPING_MODULES = [
     "chalk._gen.chalk.auth.v1.permissions_pb2",
     "chalk._gen.chalk.utils.v1.encoding_pb2",
     "chalk._gen.chalk.arrow.v1.arrow_pb2",
+    "chalk._gen.chalk.server.v1.datasets_pb2",
 ]
 CHALKCOMPUTE_MIRRORS = [
     "chalkcompute._gen.chalk.auth.v1.permissions_pb",
     "chalkcompute._gen.chalk.utils.v1.encoding_pb",
     "chalkcompute._gen.chalk.arrow.v1.arrow_pb",
+    "chalkcompute._gen.chalk.server.v1.datasets_pb",
 ]
 
 

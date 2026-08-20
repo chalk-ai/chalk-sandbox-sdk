@@ -45,6 +45,9 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "FunctionCallHandle": ("chalkcompute._function", "FunctionCallHandle"),
     "FunctionVersionInfo": ("chalkcompute._function", "FunctionVersionInfo"),
     "gather": ("chalkcompute._function", "gather"),
+    # _dataset.py
+    "DatasetClient": ("chalkcompute._dataset", "DatasetClient"),
+    "DatasetError": ("chalkcompute._dataset", "DatasetError"),
     # _call_context.py
     "get_call_context": ("chalkcompute._call_context", "get_call_context"),
     "get_row_metadata": ("chalkcompute._call_context", "get_row_metadata"),
@@ -79,6 +82,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "chalkcompute._evaluation",
         "EvaluationScorerResult",
     ),
+    "EvaluationSuite": ("chalkcompute._evaluation", "EvaluationSuite"),
     # _trace.py
     "SessionSummary": ("chalkcompute._trace", "SessionSummary"),
     "Span": ("chalkcompute._trace", "Span"),

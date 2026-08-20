@@ -14,6 +14,7 @@ silently deploys an imperative, undeployed ``RemoteFunction``.
 
 from __future__ import annotations
 
+import builtins
 import json
 import math
 import time
@@ -243,6 +244,45 @@ _TERMINAL_RUN_STATUSES = frozenset(
 
 
 @dataclass
+class EvaluationSuite:
+    """A named collection of evaluations and their runs."""
+
+    id: str
+    name: str
+    team_id: str | None = None
+    environment_id: str | None = None
+    created_by: str | None = None
+    created_at: datetime | None = None
+    _client: EvaluationClient | None = field(default=None, repr=False, compare=False)
+
+    @classmethod
+    def create(cls, name: str, *, chalk_client: Any | None = None) -> EvaluationSuite:
+        """Create an evaluation suite in the active environment."""
+        return EvaluationClient(chalk_client=chalk_client).create_suite(name)
+
+    @classmethod
+    def list_all(cls, *, chalk_client: Any | None = None) -> list[EvaluationSuite]:
+        """List the evaluation suites in the active environment."""
+        return EvaluationClient(chalk_client=chalk_client).list_suites()
+
+    def evaluations(self, *, limit: int | None = None) -> Iterator[Evaluation]:
+        """Iterate the evaluations in this suite, newest first."""
+        return self._require_client().list(suite_id=self.id, limit=limit)
+
+    def runs(self, *, limit: int | None = None) -> Iterator[EvaluationRun]:
+        """Iterate the evaluation runs in this suite, newest first."""
+        return self._require_client().list_runs(suite_id=self.id, limit=limit)
+
+    def _require_client(self) -> EvaluationClient:
+        if self._client is None:
+            raise EvaluationError(
+                "EvaluationSuite has no attached client. Fetch or create it through "
+                "EvaluationClient."
+            )
+        return self._client
+
+
+@dataclass
 class Evaluation:
     """A persisted, immutable evaluation definition."""
 
@@ -256,6 +296,7 @@ class Evaluation:
     environment_id: str | None = None
     created_by: str | None = None
     created_at: datetime | None = None
+    suite_id: str | None = None
     _client: EvaluationClient | None = field(default=None, repr=False, compare=False)
 
     @property
@@ -283,6 +324,7 @@ class Evaluation:
         task: DeployedFunction,
         scorers: Sequence[DeployedFunction],
         metadata: Mapping[str, Any] | None = None,
+        suite_id: str | None = None,
         chalk_client: Any | None = None,
     ) -> Evaluation:
         """Create an evaluation from deployed function handles.
@@ -297,6 +339,7 @@ class Evaluation:
             task=task,
             scorers=scorers,
             metadata=metadata,
+            suite_id=suite_id,
         )
 
     @classmethod
@@ -448,6 +491,31 @@ class EvaluationClient:
             raise ValueError("pass only one of chalk_client or connect_client")
         self._connect = connect_client or ConnectClient(chalk_client=chalk_client)
 
+    @_instrumented("chalkcompute.evaluation_suite.create")
+    def create_suite(self, name: str) -> EvaluationSuite:
+        """Create an evaluation suite in the active environment."""
+        name = name.strip()
+        if not name:
+            raise ValueError("name is required")
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
+        response = self._call(
+            stub.create_evaluation_suite,
+            evaluation_pb.CreateEvaluationSuiteRequest(name=name),
+        )
+        if response.suite is None:
+            raise EvaluationError("CreateEvaluationSuite returned no suite")
+        return _evaluation_suite_from_proto(response.suite, self)
+
+    @_instrumented("chalkcompute.evaluation_suite.list")
+    def list_suites(self) -> builtins.list[EvaluationSuite]:
+        """List the evaluation suites in the active environment."""
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
+        response = self._call(
+            stub.list_evaluation_suites,
+            evaluation_pb.ListEvaluationSuitesRequest(),
+        )
+        return [_evaluation_suite_from_proto(raw, self) for raw in response.suites]
+
     @_instrumented("chalkcompute.evaluation.create")
     def create(
         self,
@@ -457,6 +525,7 @@ class EvaluationClient:
         task: DeployedFunction,
         scorers: Sequence[DeployedFunction],
         metadata: Mapping[str, Any] | None = None,
+        suite_id: str | None = None,
     ) -> Evaluation:
         """Persist an evaluation pinned to deployed function versions."""
         name = name.strip()
@@ -472,6 +541,7 @@ class EvaluationClient:
             for index, scorer in enumerate(scorer_handles)
         ]
         metadata_dict = _metadata_dict(metadata)
+        suite_id = _optional_id(suite_id, name="suite_id")
         stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
         response = self._call(
             stub.create_evaluation,
@@ -497,6 +567,7 @@ class EvaluationClient:
                     if metadata is None
                     else struct_pb.Struct.from_json(json.dumps(metadata_dict))
                 ),
+                suite_id=suite_id,
             ),
         )
         if response.evaluation is None:
@@ -520,8 +591,11 @@ class EvaluationClient:
         return _evaluation_from_proto(response.evaluation, self)
 
     @_instrumented("chalkcompute.evaluation.list")
-    def list(self, *, limit: int | None = None) -> Iterator[Evaluation]:
-        """Iterate evaluations, newest first, paging transparently."""
+    def list(
+        self, *, suite_id: str | None = None, limit: int | None = None
+    ) -> Iterator[Evaluation]:
+        """Iterate evaluations, optionally filtered by suite."""
+        suite_id = _optional_id(suite_id, name="suite_id")
         if limit is not None and limit < 0:
             raise ValueError("limit must be >= 0 or None")
         remaining = limit
@@ -533,6 +607,7 @@ class EvaluationClient:
                 evaluation_pb.ListEvaluationsRequest(
                     limit=min(remaining, 100) if remaining is not None else 100,
                     cursor=cursor,
+                    suite_id=suite_id,
                 ),
             )
             for raw in response.evaluations:
@@ -596,11 +671,13 @@ class EvaluationClient:
         self,
         *,
         evaluation_id: str | None = None,
+        suite_id: str | None = None,
         limit: int | None = None,
     ) -> Iterator[EvaluationRun]:
-        """Iterate evaluation runs, optionally filtered by evaluation."""
+        """Iterate runs, optionally filtered by evaluation or suite."""
         if evaluation_id is not None and not evaluation_id.strip():
             raise ValueError("evaluation_id must not be empty")
+        suite_id = _optional_id(suite_id, name="suite_id")
         if limit is not None and limit < 0:
             raise ValueError("limit must be >= 0 or None")
         remaining = limit
@@ -615,6 +692,7 @@ class EvaluationClient:
                     ),
                     limit=min(remaining, 100) if remaining is not None else 100,
                     cursor=cursor,
+                    suite_id=suite_id,
                 ),
             )
             for raw in response.evaluation_runs:
@@ -702,6 +780,29 @@ def _metadata_dict(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
     return value
 
 
+def _optional_id(value: str | None, *, name: str) -> str | None:
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        raise ValueError(f"{name} must not be empty")
+    return value
+
+
+def _evaluation_suite_from_proto(
+    raw: evaluation_pb.EvaluationSuite, client: EvaluationClient
+) -> EvaluationSuite:
+    return EvaluationSuite(
+        id=raw.id,
+        name=raw.name,
+        team_id=raw.team_id or None,
+        environment_id=raw.environment_id or None,
+        created_by=raw.created_by or None,
+        created_at=None if raw.created_at is None else raw.created_at.to_datetime(),
+        _client=client,
+    )
+
+
 def _evaluation_from_proto(
     raw: evaluation_pb.Evaluation, client: EvaluationClient
 ) -> Evaluation:
@@ -716,6 +817,7 @@ def _evaluation_from_proto(
         task_function_version_id=raw.task_function_version_id,
         scorers=scorers,
         metadata=_struct_dict(raw.metadata),
+        suite_id=raw.suite_id or None,
         team_id=raw.team_id or None,
         environment_id=raw.environment_id or None,
         created_by=raw.created_by or None,

@@ -183,9 +183,12 @@ by name; scorers may additionally declare `output` and `trace` parameters.
 ```python
 import chalkcompute as cc
 
-dataset = cc.DatasetRevisionRef(
-    dataset_name="support_goldens",
+dataset = cc.DatasetClient().upload(
+    "support_goldens",
+    "support_goldens.csv",
 )
+
+suite = cc.EvaluationSuite.create("Release")
 
 @cc.function(name="support-answer")
 def answer(input: str) -> str:
@@ -204,12 +207,18 @@ evaluation = cc.Evaluation.create(
     dataset=dataset,
     task=answer,
     scorers=[response_quality],
-    metadata={"suite": "release"},
+    suite_id=suite.id,
 )
 
 run = evaluation.run(metadata={"git_sha": "abc123"}).wait()
 print(run.status, run.result_dataset)
 ```
+
+`DatasetClient.upload` accepts CSV or Parquet paths, multiple same-schema
+files, PyArrow tables and record batches, column/row mappings, and dataframes
+convertible to Arrow. It uploads ordinary tabular data and does not require
+ChalkPy feature definitions. Uploading to an existing name creates a new
+dataset revision.
 
 `@cc.function` deploys synchronously, so the direct handles above already have
 immutable function version IDs by the time `Evaluation.create` runs. Existing
