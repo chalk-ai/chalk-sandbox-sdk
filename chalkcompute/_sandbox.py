@@ -936,11 +936,14 @@ class Sandbox:
         def request_iterator() -> Iterator[runtime_pb.ExecutePythonRequest]:
             yield runtime_pb.ExecutePythonRequest(message=Oneof("spec", spec))
 
-        artifact_client = ArtifactClient(
-            client._address,
-            use_tls=client._use_tls,
-            metadata=client._metadata,
-            _connect=client._connect,
+        artifact_client = (
+            ArtifactClient._from_connect(client._connect)
+            if client._connect is not None
+            else ArtifactClient(
+                client._address,
+                use_tls=client._use_tls,
+                metadata=client._metadata,
+            )
         )
 
         execution_id = ""

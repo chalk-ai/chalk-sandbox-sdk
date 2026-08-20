@@ -189,13 +189,11 @@ class ArtifactClient:
         credentials: object | None = None,
         use_tls: bool | None = None,
         metadata: _GrpcMetadata | None = None,
-        _connect: ConnectClient | None = None,
-        _owns_connect: bool = False,
     ) -> None:
         self._target = target
         self._static_metadata = metadata
-        self._connect = _connect
-        self._owns_connect = _owns_connect
+        self._connect: ConnectClient | None = None
+        self._owns_connect = False
         if use_tls is None:
             use_tls = credentials is not None
         self._stub = pb_connect.ArtifactServiceClientSync(
@@ -215,13 +213,14 @@ class ArtifactClient:
     ) -> ArtifactClient:
         """Internal: build an artifact client from shared Chalk authentication."""
         connect._ensure_auth()
-        return cls(
+        client = cls(
             connect._api_server or "",
             use_tls=(connect._api_server or "").startswith("https://"),
             metadata=connect._rpc_metadata(),
-            _connect=connect,
-            _owns_connect=_owns_connect,
         )
+        client._connect = connect
+        client._owns_connect = _owns_connect
+        return client
 
     @classmethod
     def from_env(cls, *, chalk_client: Any | None = None) -> ArtifactClient:
