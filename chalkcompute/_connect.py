@@ -72,12 +72,21 @@ class _AuthState:
     primary_environment: str | None = None
 
 
+@dataclass(frozen=True)
+class _AuthCache:
+    """Atomically published authentication result and refresh deadline."""
+
+    state: _AuthState | None
+    refresh_after: float | None
+    error_message: str | None = None
+
+
 class _AuthProvider(Protocol):
     """Source of current credentials for a configured authentication mode."""
 
     uses_web_identity: bool
 
-    def state(self) -> _AuthState: ...
+    def refresh(self) -> _AuthCache: ...
 
 
 class _StaticAuthProvider:
@@ -87,12 +96,9 @@ class _StaticAuthProvider:
 
     def __init__(self, load: Callable[[], _AuthState]) -> None:
         self._load = load
-        self._state: _AuthState | None = None
 
-    def state(self) -> _AuthState:
-        if self._state is None:
-            self._state = self._load()
-        return self._state
+    def refresh(self) -> _AuthCache:
+        return _AuthCache(state=self._load(), refresh_after=None)
 
 
 class _WebIdentityAuthProvider:
@@ -110,56 +116,34 @@ class _WebIdentityAuthProvider:
         self._token_file = token_file
         self._api_server = api_server
         self._requested_environment = requested_environment
-        self._state: _AuthState | None = None
-        self._refresh_after: float | None = None
-        self._error_message: str | None = None
 
-    def state(self) -> _AuthState:
+    def refresh(self) -> _AuthCache:
         monotonic_now = time.monotonic()
-        if self._refresh_after is not None and monotonic_now < self._refresh_after:
-            if self._error_message is not None:
-                raise WebIdentityTokenError(self._error_message)
-            assert self._state is not None
-            return self._state
-
-        try:
-            identity = read_web_identity_token(self._token_file)
-        except WebIdentityTokenError as exc:
-            self._cache_error(str(exc), monotonic_now=monotonic_now)
-            raise
+        identity = read_web_identity_token(self._token_file)
         wall_now = time.time()
         if identity.expires_at is not None and identity.expires_at <= wall_now:
             error_message = (
                 f"JWT in {WEB_IDENTITY_TOKEN_FILE_ENV_VAR} file "
                 f"{self._token_file!r} has expired"
             )
-            self._cache_error(error_message, monotonic_now=monotonic_now)
             raise WebIdentityTokenError(error_message)
 
-        self._error_message = None
-        self._state = _AuthState(
-            api_server=self._api_server,
-            access_token=identity.value,
-            environment_id=(
-                self._requested_environment or identity.environment_id or ""
+        return _AuthCache(
+            state=_AuthState(
+                api_server=self._api_server,
+                access_token=identity.value,
+                environment_id=(
+                    self._requested_environment or identity.environment_id or ""
+                ),
+                grpc_engines=MappingProxyType({}),
+                environment_id_to_name=MappingProxyType({}),
             ),
-            grpc_engines=MappingProxyType({}),
-            environment_id_to_name=MappingProxyType({}),
+            refresh_after=monotonic_now
+            + _web_identity_refresh_interval(
+                expires_at=identity.expires_at,
+                wall_now=wall_now,
+            ),
         )
-        self._refresh_after = monotonic_now + _web_identity_refresh_interval(
-            expires_at=identity.expires_at,
-            wall_now=wall_now,
-        )
-        return self._state
-
-    def _cache_error(
-        self,
-        error_message: str,
-        *,
-        monotonic_now: float,
-    ) -> None:
-        self._error_message = error_message
-        self._refresh_after = monotonic_now + _WEB_IDENTITY_MIN_REFRESH_INTERVAL_SECONDS
 
 
 def _web_identity_refresh_interval(
@@ -255,15 +239,24 @@ class ConnectClient:
         self._chalk_client = chalk_client
         self._typed_clients: dict[Callable[..., Any], Any] = {}
         self._auth_lock = threading.RLock()
+        self._typed_clients_lock = threading.Lock()
         self._auth_provider: _AuthProvider | None = None
-        self._auth_state_value: _AuthState | None = None
+        self._auth_cache: _AuthCache | None = None
 
     def _ensure_auth(self) -> None:
         self._auth_state()
 
     def _auth_state(self) -> _AuthState:
         """Return one internally consistent authentication snapshot."""
+        cached = self._cached_auth_state()
+        if cached is not None:
+            return cached
+
         with self._auth_lock:
+            cached = self._cached_auth_state()
+            if cached is not None:
+                return cached
+
             # Preserve the existing injection seam where callers populate the
             # private credential fields directly.
             if self._auth_provider is None and self._access_token is not None:
@@ -273,12 +266,33 @@ class ConnectClient:
                 self._auth_provider = self._auth_provider_from_env()
 
             try:
-                state = self._auth_provider.state()
+                cache = self._auth_provider.refresh()
             except WebIdentityTokenError as exc:
+                self._auth_cache = _AuthCache(
+                    state=None,
+                    refresh_after=time.monotonic()
+                    + _WEB_IDENTITY_MIN_REFRESH_INTERVAL_SECONDS,
+                    error_message=str(exc),
+                )
                 raise ConnectError(str(exc)) from exc
-            if state is not self._auth_state_value:
-                self._apply_auth_state(state)
+            state = cache.state
+            assert state is not None
+            self._apply_auth_state(state)
+            # Publish last so any lock-free reader that observes this cache also
+            # observes the matching compatibility fields above.
+            self._auth_cache = cache
             return state
+
+    def _cached_auth_state(self) -> _AuthState | None:
+        cache = self._auth_cache
+        if cache is None:
+            return None
+        if cache.refresh_after is not None and time.monotonic() >= cache.refresh_after:
+            return None
+        if cache.error_message is not None:
+            raise ConnectError(cache.error_message)
+        assert cache.state is not None
+        return cache.state
 
     def _auth_provider_from_env(self) -> _AuthProvider:
         """Select and configure an auth provider once for this client."""
@@ -433,7 +447,6 @@ class ConnectClient:
         )
 
     def _apply_auth_state(self, state: _AuthState) -> None:
-        self._auth_state_value = state
         self._api_server = state.api_server
         self._access_token = state.access_token
         self._env_id = state.environment_id
@@ -488,6 +501,10 @@ class ConnectClient:
 
     def _uses_web_identity_token(self) -> bool:
         """Return whether rotating web-identity authentication is configured."""
+        provider = self._auth_provider
+        if provider is not None:
+            return provider.uses_web_identity
+
         with self._auth_lock:
             if self._auth_provider is None:
                 if self._access_token is not None:
@@ -534,11 +551,15 @@ class ConnectClient:
 
         Clients always use the gRPC protocol over the shared HTTP/2 transport.
         """
-        with self._auth_lock:
+        client = self._typed_clients.get(stub_cls)
+        if client is not None:
+            return client
+
+        state = self._auth_state()
+        with self._typed_clients_lock:
             client = self._typed_clients.get(stub_cls)
             if client is not None:
                 return client
-            state = self._auth_state()
             client = stub_cls(
                 state.api_server,
                 protocol=ProtocolType.GRPC,
@@ -551,7 +572,7 @@ class ConnectClient:
 
     def close(self) -> None:
         """Close cached typed ConnectRPC clients."""
-        with self._auth_lock:
+        with self._typed_clients_lock:
             for client in self._typed_clients.values():
                 close = getattr(client, "close", None)
                 if close is not None:

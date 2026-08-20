@@ -2,7 +2,9 @@ import base64
 import contextlib
 import json
 import sys
+import threading
 import types
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pytest
@@ -414,6 +416,67 @@ class TestConnectClientWebIdentity:
         assert ("x-chalk-env-id", "env-one") in cached_metadata
         assert ("authorization", f"Bearer {second}") in refreshed_metadata
         assert ("x-chalk-env-id", "env-two") in refreshed_metadata
+
+    def test_cached_metadata_does_not_acquire_client_locks(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        token = _identity_jwt("env-one")
+        token_file = tmp_path / "identity.jwt"
+        token_file.write_text(token)
+        monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(token_file))
+        client = ConnectClient()
+        expected = client._rpc_metadata()
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            with client._auth_lock, client._typed_clients_lock:
+                future = executor.submit(client._rpc_metadata)
+                assert future.result(timeout=1) == expected
+
+    def test_concurrent_refresh_reads_identity_file_once(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        monotonic_now = [100.0]
+        monkeypatch.setattr(
+            "chalkcompute._connect.time.monotonic", lambda: monotonic_now[0]
+        )
+        token_file = tmp_path / "identity.jwt"
+        first = _identity_jwt("env-one", subject="one")
+        second = _identity_jwt("env-two", subject="two")
+        token_file.write_text(first)
+        monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(token_file))
+        client = ConnectClient()
+        client._rpc_metadata()
+
+        token_file.write_text(second)
+        monotonic_now[0] += 60 * 60
+        reads = 0
+        read_started = threading.Event()
+        release_read = threading.Event()
+        start = threading.Barrier(4)
+        read_token = _web_identity.read_web_identity_token
+
+        def slow_read(path: str):
+            nonlocal reads
+            reads += 1
+            read_started.set()
+            assert release_read.wait(timeout=1)
+            return read_token(path)
+
+        def metadata() -> list[tuple[str, str]]:
+            start.wait(timeout=1)
+            return client._rpc_metadata()
+
+        monkeypatch.setattr("chalkcompute._connect.read_web_identity_token", slow_read)
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(metadata) for _ in range(4)]
+            try:
+                assert read_started.wait(timeout=1)
+            finally:
+                release_read.set()
+            results = [future.result(timeout=1) for future in futures]
+
+        assert reads == 1
+        assert all(("authorization", f"Bearer {second}") in value for value in results)
 
     def test_refreshes_at_expiry_window_without_halving_remaining_lifetime(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
