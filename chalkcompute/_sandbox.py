@@ -464,9 +464,9 @@ class ExecProcess:
 
             time.sleep(1)
             self._request_queue.put(None)
-            request_queue: queue.Queue[
-                process_pb.OpenSessionRequest | None
-            ] = queue.Queue()
+            request_queue: queue.Queue[process_pb.OpenSessionRequest | None] = (
+                queue.Queue()
+            )
             request_queue.put(
                 process_pb.OpenSessionRequest(
                     command=Oneof(
