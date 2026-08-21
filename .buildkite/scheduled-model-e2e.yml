@@ -1,23 +1,22 @@
-# Scheduled e2e for the model register→deploy→serve path.
 # Runs the model scaling-group tests twice: once with the released (locked)
 # chalkpy, and once with chalkpy installed from git main.
 
 on:
   schedule:
-    - label: "Model deploy e2e — daily at 6am Pacific"
+    - label: "Model Deploy E2E — Daily at 6am Pacific"
       cron: "0 6 * * * America/Los_Angeles"
       branch: main
-      message: "Scheduled model-deploy e2e (chalkpy released + main)"
+      message: "Scheduled Model Deploy E2E (chalkpy released + main)"
 
 notify:
   - slack:
       channels:
-        - "#buildkite-quarantine-zone"
+        - "#buildkite-test-model-scaling-group"
       message: ":crystal_ball: Model deploy e2e failed — the register→deploy→serve path may have regressed."
     if: build.branch == "main" && pipeline.started_failing
 
 steps:
-  - label: ":crystal_ball: Model e2e — chalkpy {{matrix}} (staging/ftqa)"
+  - label: ":crystal_ball: Model E2E — chalkpy {{matrix}} (staging/ftqa)"
     matrix:
       - "released"
       - "main"
@@ -27,12 +26,12 @@ steps:
       set -euo pipefail
       unset VIRTUAL_ENV
 
-      echo "--- :gear: Install sops"
+      echo "--- :gear: Install SOPS"
       SOPS_VERSION=3.9.4
       curl -fsSL "https://github.com/getsops/sops/releases/download/v$${SOPS_VERSION}/sops-v$${SOPS_VERSION}.linux.amd64" -o /tmp/sops
       chmod +x /tmp/sops
 
-      echo "--- :key: Decrypt secrets"
+      echo "--- :key: Decrypt Secrets"
       source .buildkite/select-env-file.sh "staging/ftqa"
       /tmp/sops --input-type dotenv --output-type dotenv -d "$$ENV_FILE" > /tmp/test.env
       set -a
@@ -41,18 +40,18 @@ steps:
       rm /tmp/test.env
       export CHALK_ACTIVE_ENVIRONMENT="$$CHALK_ENVIRONMENT_ID"
 
-      echo "--- :python: Bootstrap toolchain"
+      echo "--- :python: Bootstrap Toolchain"
       source .buildkite/install-uv.sh
-      echo "--- :package: Sync locked dependencies"
+      echo "--- :package: Sync Locked Deps"
       uv sync --locked --all-extras --reinstall-package chalkcompute
 
       if [ "{{matrix}}" = "main" ]; then
-        echo "--- :snake: Install chalkpy from git main"
+        echo "--- :snake: Install Chalkpy from Git Main"
         uv pip install --reinstall "chalkpy[runtime] @ git+https://github.com/chalk-ai/chalk.git@main"
       fi
       uv run python -c "import chalk; print('chalkpy', chalk.__version__)"
 
-      echo "--- :crystal_ball: Deploy and test model scaling groups (chalkpy {{matrix}})"
+      echo "--- :crystal_ball: Deploy & Test Model Scaling Groups (chalkpy {{matrix}})"
       uv run python -m pytest e2etests/test_model_scaling_group.py -v -s --tb=short
     agents:
       queue: default
