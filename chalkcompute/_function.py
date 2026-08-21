@@ -683,6 +683,56 @@ def _get_scaling_group(client: ConnectClient, name: str) -> sg_pb.ScalingGroupRe
     return response.scaling_group
 
 
+def _warn_if_scaling_group_taken(
+    client: ConnectClient, sg_name: str, function_name: str
+) -> None:
+    """Warn when this deploy would take over a scaling group something else owns.
+
+    The server upserts on (environment, name), so deploying onto a name another
+    function or a deployed model already holds silently replaces that workload
+    in place instead of failing. Redeploying this same function reuses its own
+    group, so only a different owner is worth reporting.
+
+    Advisory only: any failure to resolve the group -- no such group, an
+    unauthenticated client, an unreachable API server -- resolves as "no
+    conflict", because nothing here should be able to fail a deploy.
+    """
+    try:
+        sg = _get_scaling_group(client, sg_name)
+    except Exception:
+        return
+
+    owner = sg.metadata.get("function_name")
+    if owner is not None:
+        if owner.to_python() == function_name:
+            return
+        held_by = f"function {owner.to_python()!r}"
+    else:
+        model = sg.metadata.get("model_name")
+        held_by = (
+            f"model {model.to_python()!r}"
+            if model is not None
+            else "a standalone scaling group"
+        )
+
+    status = sg.status or "Unknown"
+    liveness = (
+        f"is serving traffic (status {status})"
+        if _scaling_group_is_ready(sg)
+        else f"has status {status}"
+    )
+    logger.warning(
+        "Scaling group %r already exists, is held by %s, and %s. Deploying "
+        "function %r onto it replaces that workload in place, and both will "
+        "then resolve to this deploy's container. Rename one of them, or "
+        "delete the existing scaling group first.",
+        sg_name,
+        held_by,
+        liveness,
+        function_name,
+    )
+
+
 def _format_knowledge_cutoff(value: KnowledgeCutoff) -> str:
     if isinstance(value, str):
         if not value:
@@ -2459,6 +2509,9 @@ class RemoteFunction:
         # the server enforces the limit regardless) — never forces auth here.
         sg_name = sanitize_dns_label(self._explicit_name or self._func_name)
         validate_dns_label(sg_name, self._client._env_id)
+        _warn_if_scaling_group_taken(
+            self._client, sg_name, self._explicit_name or self._func_name
+        )
 
         try:
             # 1. Build deploy image

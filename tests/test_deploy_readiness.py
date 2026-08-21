@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from connectrpc.code import Code
+from connectrpc.errors import ConnectError as ConnectRpcError
+
 import chalkcompute._function as function_mod
 import chalkcompute._cls as cls_mod
 from chalkcompute._cls import RemoteClass, method
@@ -18,6 +21,7 @@ class _RemoteFunctionReadinessClient(StubbedConnectClient):
     def __init__(self) -> None:
         self.methods: list[str] = []
         self._env_id: str | None = None
+        self.created = False
         self.polls = [
             sg_pb.ScalingGroupResponse(status="Running"),
             sg_pb.ScalingGroupResponse(
@@ -35,7 +39,12 @@ class _RemoteFunctionReadinessClient(StubbedConnectClient):
         **_: Any,
     ) -> Any:
         self.methods.append(method.name)
+        if method.name == "get_scaling_group" and not self.created:
+            # RemoteFunction.deploy()'s name-conflict probe, which runs before
+            # anything is deployed and so finds no group.
+            raise ConnectRpcError(Code.NOT_FOUND, "scaling group not found")
         if method.name == "create_external_function_version":
+            self.created = True
             assert isinstance(request, catalog_pb.CreateExternalFunctionVersionRequest)
             assert request.spec is not None and request.spec.container_spec is not None
             return catalog_pb.CreateExternalFunctionVersionResponse(
@@ -65,6 +74,7 @@ class _RemoteFunctionScaledToZeroClient(_RemoteFunctionReadinessClient):
     def __init__(self) -> None:
         self.methods = []
         self._env_id = None
+        self.created = False
         self.polls = [sg_pb.ScalingGroupResponse(status="ScaledToZero")]
 
 
@@ -114,11 +124,17 @@ class _ScalingGroupScaledToZeroClient(_ScalingGroupReadinessClient):
 
 
 class _RemoteClassReadinessClient(_RemoteFunctionReadinessClient):
-    pass
+    # RemoteClass.deploy() has no name-conflict probe, so every
+    # get_scaling_group is a readiness poll.
+    def __init__(self) -> None:
+        super().__init__()
+        self.created = True
 
 
 class _RemoteClassScaledToZeroClient(_RemoteFunctionScaledToZeroClient):
-    pass
+    def __init__(self) -> None:
+        super().__init__()
+        self.created = True
 
 
 def test_remote_function_deploy_waits_for_ready_replicas(monkeypatch) -> None:
@@ -140,6 +156,7 @@ def test_remote_function_deploy_waits_for_ready_replicas(monkeypatch) -> None:
     fn.deploy(poll_interval=0, ready_timeout=10)
 
     assert client.methods == [
+        "get_scaling_group",
         "create_external_function_version",
         "get_scaling_group",
         "get_scaling_group",
@@ -163,7 +180,7 @@ def test_remote_function_deploy_allows_zero_min_replicas(monkeypatch) -> None:
 
     fn.deploy(poll_interval=0, ready_timeout=10)
 
-    assert client.methods == ["create_external_function_version"]
+    assert client.methods == ["get_scaling_group", "create_external_function_version"]
 
 
 def test_remote_function_deploy_allows_scaled_to_zero(monkeypatch) -> None:
@@ -183,7 +200,11 @@ def test_remote_function_deploy_allows_scaled_to_zero(monkeypatch) -> None:
 
     fn.deploy(poll_interval=0, ready_timeout=10)
 
-    assert client.methods == ["create_external_function_version", "get_scaling_group"]
+    assert client.methods == [
+        "get_scaling_group",
+        "create_external_function_version",
+        "get_scaling_group",
+    ]
 
 
 def test_scaling_group_deploy_waits_for_ready_replicas(monkeypatch) -> None:
