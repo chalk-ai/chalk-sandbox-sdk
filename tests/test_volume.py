@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from protobuf import Oneof
 
+from chalkcompute._gen.chalk.server.v1 import github_app_pb
 from chalkcompute._gen.chalk.volume.v2 import volume_pb as pb_v2
 from chalkcompute._volume import (
     VolumeClosedError,
@@ -31,6 +32,7 @@ from chalkcompute._volume import (
     _RATE_LIMIT_MAX_RETRIES,
     _read_file_response,
 )
+from tests._fakes import FakeConnectClient
 
 
 @pytest.fixture(autouse=True)
@@ -749,3 +751,157 @@ def test_native_client_symbol_is_bound() -> None:
         pytest.skip("native extension not built")
     assert _volume._NativeVolumeClient is not None
     assert _volume._NativeVolumeRpcError is not None
+
+
+def test_resolve_github_installation_rejects_missing_owner_slash() -> None:
+    connect = FakeConnectClient()
+
+    with pytest.raises(VolumeError, match="owner/name"):
+        vv._resolve_github_installation("no-slash-here", connect=connect, timeout=30.0)  # type: ignore[arg-type]
+
+
+def test_resolve_github_installation_raises_when_no_installations() -> None:
+    def handler(method: str, request: Any) -> Any:
+        if method == "list_git_hub_app_installations":
+            return github_app_pb.ListGitHubAppInstallationsResponse(installations=[])
+        raise AssertionError(method)
+
+    connect = FakeConnectClient(handler=handler)
+
+    with pytest.raises(VolumeError, match="no GitHub App installations"):
+        vv._resolve_github_installation(
+            "chalk-ai/customer-deployment",
+            connect=connect,
+            timeout=30.0,  # type: ignore[arg-type]
+        )
+
+
+def test_resolve_github_installation_paginates_and_tries_next_installation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(vv, "_GITHUB_REPOS_PER_PAGE", 2)
+    repo_calls: list[tuple[str, int]] = []
+
+    def handler(method: str, request: Any) -> Any:
+        if method == "list_git_hub_app_installations":
+            return github_app_pb.ListGitHubAppInstallationsResponse(
+                installations=[
+                    github_app_pb.GitHubAppInstallation(id="inst-1"),
+                    github_app_pb.GitHubAppInstallation(id="inst-2"),
+                ]
+            )
+        if method == "list_git_hub_repositories":
+            repo_calls.append((request.installation_id, request.page))
+            if request.installation_id == "inst-1" and request.page == 1:
+                return github_app_pb.ListGitHubRepositoriesResponse(
+                    repositories=[
+                        github_app_pb.GitHubRepository(full_name="chalk-ai/other-a"),
+                        github_app_pb.GitHubRepository(full_name="chalk-ai/other-b"),
+                    ]
+                )
+            if request.installation_id == "inst-1" and request.page == 2:
+                return github_app_pb.ListGitHubRepositoriesResponse(repositories=[])
+            if request.installation_id == "inst-2" and request.page == 1:
+                return github_app_pb.ListGitHubRepositoriesResponse(
+                    repositories=[
+                        github_app_pb.GitHubRepository(
+                            full_name="Chalk-AI/Customer-Deployment"
+                        ),
+                    ]
+                )
+            raise AssertionError((request.installation_id, request.page))
+        raise AssertionError(method)
+
+    connect = FakeConnectClient(handler=handler)
+
+    result = vv._resolve_github_installation(
+        "chalk-ai/customer-deployment",
+        connect=connect,
+        timeout=30.0,  # type: ignore[arg-type]
+    )
+
+    assert result == ("inst-2", "chalk-ai", "customer-deployment")
+    assert repo_calls == [("inst-1", 1), ("inst-1", 2), ("inst-2", 1)]
+
+
+def test_resolve_github_installation_raises_when_repo_not_found() -> None:
+    def handler(method: str, request: Any) -> Any:
+        if method == "list_git_hub_app_installations":
+            return github_app_pb.ListGitHubAppInstallationsResponse(
+                installations=[github_app_pb.GitHubAppInstallation(id="inst-1")]
+            )
+        if method == "list_git_hub_repositories":
+            return github_app_pb.ListGitHubRepositoriesResponse(repositories=[])
+        raise AssertionError(method)
+
+    connect = FakeConnectClient(handler=handler)
+
+    with pytest.raises(VolumeError, match="was not found in any linked"):
+        vv._resolve_github_installation(
+            "chalk-ai/customer-deployment",
+            connect=connect,
+            timeout=30.0,  # type: ignore[arg-type]
+        )
+
+
+def _github_resolution_handler(method: str, request: Any) -> Any:
+    if method == "list_git_hub_app_installations":
+        return github_app_pb.ListGitHubAppInstallationsResponse(
+            installations=[github_app_pb.GitHubAppInstallation(id="inst-1")]
+        )
+    if method == "list_git_hub_repositories":
+        return github_app_pb.ListGitHubRepositoriesResponse(
+            repositories=[
+                github_app_pb.GitHubRepository(full_name="chalk-ai/customer-deployment")
+            ]
+        )
+    raise AssertionError(method)
+
+
+def test_from_github_creates_volume_via_rpc(monkeypatch: pytest.MonkeyPatch) -> None:
+    requests: list[Any] = []
+
+    def handler(method: str, request: Any) -> Any:
+        if method == "create_volume_from_git_hub_repo":
+            requests.append(request)
+            return github_app_pb.CreateVolumeFromGitHubRepoResponse(
+                volume_name=request.volume_name, volume_id="vol-1", files=3, bytes=42
+            )
+        return _github_resolution_handler(method, request)
+
+    connect = FakeConnectClient(handler=handler)
+    client = _make_client(monkeypatch)
+
+    with patch.object(VolumeClient, "from_connect", return_value=client):
+        volume = Volume.from_github(
+            "chalk-ai/customer-deployment",
+            ref="main",
+            connect_client=connect,  # type: ignore[arg-type]
+        )
+
+    assert volume.name.startswith("github-chalk-ai-customer-deployment-")
+    assert len(requests) == 1
+    request = requests[0]
+    assert request.installation_id == "inst-1"
+    assert request.owner == "chalk-ai"
+    assert request.repo == "customer-deployment"
+    assert request.ref == "main"
+    assert request.volume_name == volume.name
+
+
+def test_from_github_wraps_rpc_errors() -> None:
+    from connectrpc.code import Code
+    from connectrpc.errors import ConnectError as ConnectRpcError
+
+    def handler(method: str, request: Any) -> Any:
+        if method == "create_volume_from_git_hub_repo":
+            raise ConnectRpcError(Code.INTERNAL, "boom")
+        return _github_resolution_handler(method, request)
+
+    connect = FakeConnectClient(handler=handler)
+
+    with pytest.raises(VolumeError, match="failed to create volume"):
+        Volume.from_github(
+            "chalk-ai/customer-deployment",
+            connect_client=connect,  # type: ignore[arg-type]
+        )

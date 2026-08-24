@@ -24,9 +24,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
 
+from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
 
 from chalkcompute._connect import ConnectClient
+from chalkcompute._gen.chalk.server.v1 import github_app_connect, github_app_pb
 from chalkcompute._gen.chalk.volume.v2 import volume_pb as pb_v2
 from chalkcompute._http import HTTP_TRANSPORT_ERRORS, SYNC_HTTP_CLIENT
 from chalkcompute._image import Image
@@ -342,6 +344,76 @@ class Volume:
         self._version: VersionInfo | None = None
         self._create_if_missing = create_if_missing and version_id is None
         self._closed = False
+
+    @classmethod
+    def from_github(
+        cls,
+        repo: str,
+        ref: str | None = None,
+        *,
+        volume_name: str | None = None,
+        connect_client: ConnectClient | None = None,
+        timeout: float = 300.0,
+    ) -> Volume:
+        """Clone a GitHub repository's contents into a new volume.
+
+        ``repo`` must be an ``"owner/name"`` string naming a repository your
+        linked GitHub App installation can access. The resulting volume is a
+        plain, read-only snapshot of the repository's files at ``ref`` (a
+        branch, tag, or commit SHA; the repository's default branch is used
+        if omitted) — it carries no git history, credentials, or connection
+        back to GitHub. The download and commit both happen server-side; no
+        archive bytes pass through this process.
+
+        Parameters
+        ----------
+        repo
+            Repository to clone, as ``"owner/name"``.
+        ref
+            Branch, tag, or commit SHA to clone. Defaults to the
+            repository's default branch.
+        volume_name
+            Name for the new volume. Defaults to a name derived from
+            ``repo`` plus a random suffix.
+        connect_client
+            Optional :class:`ConnectClient` used to resolve the repository
+            and authenticate the new volume. Defaults to one built from the
+            ambient auth context.
+        timeout
+            RPC deadline, in seconds, for the GitHub App service call.
+
+        Returns
+        -------
+        Volume
+            A new volume containing the repository's files.
+        """
+        connect = connect_client or ConnectClient()
+        installation_id, owner, name = _resolve_github_installation(
+            repo, connect=connect, timeout=timeout
+        )
+        volume_name = volume_name or f"github-{owner}-{name}-{uuid.uuid4().hex[:8]}"
+
+        stub = connect.stub(github_app_connect.GitHubAppServiceClientSync)
+        try:
+            connect.call(
+                stub.create_volume_from_git_hub_repo,
+                github_app_pb.CreateVolumeFromGitHubRepoRequest(
+                    installation_id=installation_id,
+                    owner=owner,
+                    repo=name,
+                    ref=ref,
+                    volume_name=volume_name,
+                ),
+                timeout=timeout,
+            )
+        except ConnectRpcError as exc:
+            raise VolumeError(f"failed to create volume from {repo!r}: {exc}") from exc
+
+        return cls(
+            volume_name,
+            client=VolumeClient.from_connect(connect),
+            create_if_missing=False,
+        )
 
     @property
     def name(self) -> str:
@@ -1806,3 +1878,62 @@ def cleanup_owned_volumes(
         if v.name in referenced_names:
             continue
         client.delete_volume(v.name)
+
+
+#: Page size used when paginating GitHub App repository listings.
+_GITHUB_REPOS_PER_PAGE = 100
+
+
+def _resolve_github_installation(
+    repo: str, *, connect: ConnectClient, timeout: float
+) -> tuple[str, str, str]:
+    """Resolve an ``"owner/name"`` repo to ``(installation_id, owner, name)``.
+
+    ``installation_id`` here is the GitHub App installation's internal
+    ``id`` (a string), not its numeric GitHub ``installation_id`` — that's
+    what every other ``GitHubAppService`` RPC expects.
+    """
+    if "/" not in repo:
+        raise VolumeError(f"repo must be in 'owner/name' form, got {repo!r}")
+    owner, _, name = repo.partition("/")
+    full_name = f"{owner}/{name}".lower()
+
+    stub = connect.stub(github_app_connect.GitHubAppServiceClientSync)
+    try:
+        installations = connect.call(
+            stub.list_git_hub_app_installations,
+            github_app_pb.ListGitHubAppInstallationsRequest(),
+            timeout=timeout,
+        ).installations
+    except ConnectRpcError as exc:
+        raise VolumeError(f"failed to list GitHub App installations: {exc}") from exc
+    if not installations:
+        raise VolumeError("no GitHub App installations are linked to this team")
+
+    for installation in installations:
+        page = 1
+        while True:
+            try:
+                response = connect.call(
+                    stub.list_git_hub_repositories,
+                    github_app_pb.ListGitHubRepositoriesRequest(
+                        installation_id=installation.id,
+                        page=page,
+                        per_page=_GITHUB_REPOS_PER_PAGE,
+                    ),
+                    timeout=timeout,
+                )
+            except ConnectRpcError as exc:
+                raise VolumeError(
+                    f"failed to list repositories for installation {installation.id!r}: {exc}"
+                ) from exc
+            for repository in response.repositories:
+                if repository.full_name.lower() == full_name:
+                    return installation.id, owner, name
+            if len(response.repositories) < _GITHUB_REPOS_PER_PAGE:
+                break
+            page += 1
+
+    raise VolumeError(
+        f"repo {repo!r} was not found in any linked GitHub App installation"
+    )
