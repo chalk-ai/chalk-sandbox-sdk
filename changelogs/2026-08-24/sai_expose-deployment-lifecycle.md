@@ -1,0 +1,1 @@
+- Expose stable scaling-group and function deployment lifecycles with revision history, redeploy, rollback, refresh, and parent deletion APIs.
