@@ -8,7 +8,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from protobuf import Oneof
 
-from chalkcompute._gen.chalk.server.v1 import github_app_pb
+from chalkcompute._evaluation import DatasetRevisionRef
+from chalkcompute._gen.chalk.server.v1 import datasets_pb, github_app_pb
 from chalkcompute._gen.chalk.volume.v2 import volume_pb as pb_v2
 from chalkcompute._volume import (
     VolumeClosedError,
@@ -19,6 +20,8 @@ from chalkcompute._volume import (
 from chalkcompute import _volume as vv
 from chalkcompute._volume import (
     CommitStatus,
+    Diff,
+    FileChange,
     ForkInfo,
     VersionInfo,
     Volume,
@@ -935,3 +938,293 @@ def test_from_github_downloads_extracts_and_uploads(
     assert volume.name.startswith("github-chalk-ai-customer-deployment-")
     uploaded = dict(client._inner.upload.call_args.args[1])
     assert uploaded == {"resolvers/foo.py": b"# foo", "README.md": b"hi"}
+def test_version_diff_rejects_non_version_info(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.return_value = {
+        "volume": _volume_dict(),
+        "version": _version_dict(),
+    }
+    version = Volume("models", client=client).version
+
+    with pytest.raises(TypeError, match="expected a VersionInfo"):
+        version.diff("not-a-version")  # type: ignore[arg-type]
+
+
+def test_version_diff_requires_both_sides_from_a_volume_handle() -> None:
+    detached = VersionInfo(id=1, ref="main")
+    attached = VersionInfo(id=2, ref="main")
+    attached._source = object.__new__(Volume)
+    attached._source._name = "models"  # type: ignore[attr-defined]
+
+    with pytest.raises(VolumeError, match="requires both to come from a Volume handle"):
+        attached.diff(detached)
+    with pytest.raises(VolumeError, match="requires both to come from a Volume handle"):
+        detached.diff(attached)
+
+
+def test_version_diff_rejects_cross_volume_diff(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.return_value = {
+        "volume": _volume_dict("models"),
+        "version": _version_dict(1),
+    }
+    new_version = Volume("models", client=client).version
+
+    other_client = _make_client(monkeypatch)
+    other_client._inner.get_volume.return_value = {
+        "volume": _volume_dict("other"),
+        "version": _version_dict(2),
+    }
+    old_version = Volume("other", client=other_client).version
+
+    with pytest.raises(VolumeError, match="cannot diff versions from different volumes"):
+        new_version.diff(old_version)
+
+
+def test_version_diff_detects_added_modified_deleted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.return_value = {
+        "volume": _volume_dict(),
+        "version": _version_dict(20),
+    }
+    client._inner.list_volume_versions.return_value = {
+        "versions": [_version_dict(10), _version_dict(20)],
+        "next_cursor": "",
+    }
+    vol = Volume("models", client=client)
+    old_version, new_version = vol.versions()
+
+    def list_files(volume, path, version_id, ref_name, limit, cursor):
+        if version_id == 10:
+            files = [
+                {"path": "same.txt", "size": 1, "kind": 1, "hash": "h-same"},
+                {"path": "removed.txt", "size": 1, "kind": 1, "hash": "h-removed"},
+                {"path": "changed.txt", "size": 1, "kind": 1, "hash": "h-changed-old"},
+            ]
+        else:
+            files = [
+                {"path": "same.txt", "size": 1, "kind": 1, "hash": "h-same"},
+                {"path": "added.txt", "size": 1, "kind": 1, "hash": "h-added"},
+                {"path": "changed.txt", "size": 1, "kind": 1, "hash": "h-changed-new"},
+            ]
+        return {"files": files, "next_cursor": ""}
+
+    client._inner.list_files.side_effect = list_files
+
+    downloads = {
+        (10, "removed.txt"): b"gone",
+        (10, "changed.txt"): b"before",
+        (20, "added.txt"): b"new file",
+        (20, "changed.txt"): b"after",
+    }
+    client._inner.download_bytes.side_effect = (
+        lambda volume, path, version_id, _: downloads[(version_id, path)]
+    )
+
+    diff = new_version.diff(old_version)
+
+    assert diff.volume_name == "models"
+    assert diff.old_version_id == 10
+    assert diff.new_version_id == 20
+    changes = {change.path: change for change in diff.changes}
+    assert set(changes) == {"added.txt", "removed.txt", "changed.txt"}
+    assert changes["added.txt"] == FileChange(
+        path="added.txt", kind="added", new_content=b"new file"
+    )
+    assert changes["removed.txt"] == FileChange(
+        path="removed.txt", kind="deleted", old_content=b"gone"
+    )
+    assert changes["changed.txt"] == FileChange(
+        path="changed.txt", kind="modified", old_content=b"before", new_content=b"after"
+    )
+
+
+def test_diff_bool_len_and_iter_reflect_changes() -> None:
+    empty = Diff(volume_name="models", old_version_id=1, new_version_id=2, changes=())
+    assert not empty
+    assert len(empty) == 0
+    assert list(empty) == []
+
+    change = FileChange(path="a.txt", kind="added", new_content=b"hi")
+    nonempty = Diff(
+        volume_name="models", old_version_id=1, new_version_id=2, changes=(change,)
+    )
+    assert nonempty
+    assert len(nonempty) == 1
+    assert list(nonempty) == [change]
+
+
+def test_diff_unified_diff_renders_text_changes() -> None:
+    diff = Diff(
+        volume_name="models",
+        old_version_id=1,
+        new_version_id=2,
+        changes=(
+            FileChange(
+                path="a.txt",
+                kind="modified",
+                old_content=b"line1\nline2\n",
+                new_content=b"line1\nline2 changed\n",
+            ),
+        ),
+    )
+
+    rendered = diff.unified_diff()
+
+    assert "--- a/a.txt" in rendered
+    assert "+++ b/a.txt" in rendered
+    assert "-line2" in rendered
+    assert "+line2 changed" in rendered
+    assert str(diff) == rendered
+
+
+def test_diff_unified_diff_reports_binary_files_without_content() -> None:
+    diff = Diff(
+        volume_name="models",
+        old_version_id=1,
+        new_version_id=2,
+        changes=(
+            FileChange(
+                path="weights.bin",
+                kind="modified",
+                old_content=b"\xff\xfe\x00",
+                new_content=b"\x00\xfe\xff",
+            ),
+        ),
+    )
+
+    assert diff.unified_diff() == "Binary files a/weights.bin and b/weights.bin differ\n"
+
+
+def _list_datasets_handler(*, dataset_name: str, offline_query_id: str | None):
+    requests: list[Any] = []
+
+    def handler(method: str, request: Any) -> Any:
+        if method == "list_datasets":
+            requests.append(request)
+            revision = (
+                None
+                if offline_query_id is None
+                else datasets_pb.DatasetRevisionMeta(offline_query_id=offline_query_id)
+            )
+            return datasets_pb.ListDatasetsResponse(
+                datasets=[
+                    datasets_pb.DatasetMeta(
+                        dataset_name=dataset_name,
+                        most_recent_revision=revision,
+                    )
+                ]
+            )
+        raise AssertionError(f"unexpected method: {method}")
+
+    return handler, requests
+
+
+def test_from_dataset_resolves_bare_string_and_uploads_parts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handler, requests = _list_datasets_handler(
+        dataset_name="fraud_labels", offline_query_id="rev-1"
+    )
+
+    def full_handler(method: str, request: Any) -> Any:
+        if method == "get_dataset_revision_download_links":
+            assert request.revision_id == "rev-1"
+            return datasets_pb.GetDatasetRevisionDownloadLinksResponse(
+                output_urls=["https://storage/part-0", "https://storage/part-1"]
+            )
+        return handler(method, request)
+
+    connect = FakeConnectClient(handler=full_handler)
+    contents = {
+        "https://storage/part-0": b"parquet-bytes-0",
+        "https://storage/part-1": b"parquet-bytes-1",
+    }
+    monkeypatch.setattr(vv, "_read_file_from_signed_uri", lambda uri: contents[uri])
+
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.side_effect = _not_found()
+    client._inner.create_volume.return_value = {"volume": _volume_dict("dataset-vol")}
+    client._inner.upload.return_value = [_status_dict()]
+
+    with patch.object(VolumeClient, "from_connect", return_value=client):
+        volume = Volume.from_dataset("fraud_labels", connect_client=connect)  # type: ignore[arg-type]
+
+    assert requests[0].search == "fraud_labels"
+    assert volume.name.startswith("dataset-fraud_labels-")
+    assert client._inner.upload.call_args.args[1] == [
+        ("part-00000.parquet", b"parquet-bytes-0"),
+        ("part-00001.parquet", b"parquet-bytes-1"),
+    ]
+
+
+def test_from_dataset_accepts_explicit_revision_ref_and_skips_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(method: str, request: Any) -> Any:
+        if method == "list_datasets":
+            raise AssertionError("should not resolve by name when a revision is given")
+        if method == "get_dataset_revision_download_links":
+            assert request.revision_id == "rev-42"
+            return datasets_pb.GetDatasetRevisionDownloadLinksResponse(
+                output_urls=["https://storage/part-0"]
+            )
+        raise AssertionError(f"unexpected method: {method}")
+
+    connect = FakeConnectClient(handler=handler)
+    monkeypatch.setattr(vv, "_read_file_from_signed_uri", lambda uri: b"parquet-bytes")
+
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.side_effect = _not_found()
+    client._inner.create_volume.return_value = {"volume": _volume_dict("dataset-vol")}
+    client._inner.upload.return_value = [_status_dict()]
+
+    ref = DatasetRevisionRef(dataset_id="ds-1", revision_id="rev-42")
+    with patch.object(VolumeClient, "from_connect", return_value=client):
+        Volume.from_dataset(ref, connect_client=connect, volume_name="pinned")  # type: ignore[arg-type]
+
+    client._inner.create_volume.assert_called_once_with("pinned", None)
+
+
+def test_from_dataset_raises_when_dataset_name_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handler, _requests = _list_datasets_handler(
+        dataset_name="other_dataset", offline_query_id="rev-1"
+    )
+    connect = FakeConnectClient(handler=handler)
+
+    with pytest.raises(VolumeError, match="no dataset named 'fraud_labels'"):
+        Volume.from_dataset("fraud_labels", connect_client=connect)  # type: ignore[arg-type]
+
+
+def test_from_dataset_raises_when_dataset_has_no_revisions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handler, _requests = _list_datasets_handler(
+        dataset_name="fraud_labels", offline_query_id=None
+    )
+    connect = FakeConnectClient(handler=handler)
+
+    with pytest.raises(VolumeError, match="has no revisions"):
+        Volume.from_dataset("fraud_labels", connect_client=connect)  # type: ignore[arg-type]
+
+
+def test_from_dataset_raises_when_revision_has_no_output_files(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handler, _requests = _list_datasets_handler(
+        dataset_name="fraud_labels", offline_query_id="rev-1"
+    )
+
+    def full_handler(method: str, request: Any) -> Any:
+        if method == "get_dataset_revision_download_links":
+            return datasets_pb.GetDatasetRevisionDownloadLinksResponse(output_urls=[])
+        return handler(method, request)
+
+    connect = FakeConnectClient(handler=full_handler)
+
+    with pytest.raises(VolumeError, match="has no output files"):
+        Volume.from_dataset("fraud_labels", connect_client=connect)  # type: ignore[arg-type]
