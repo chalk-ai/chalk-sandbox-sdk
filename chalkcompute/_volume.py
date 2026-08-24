@@ -14,23 +14,42 @@ from __future__ import annotations
 
 import builtins
 import datetime
+import difflib
 import importlib
 import logging
 import os
 import uuid
 from collections.abc import Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
+from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
 
 from chalkcompute._connect import ConnectClient
+from chalkcompute._gen.chalk.server.v1 import (
+    datasets_connect,
+    datasets_pb,
+    github_app_connect,
+    github_app_pb,
+)
 from chalkcompute._gen.chalk.volume.v2 import volume_pb as pb_v2
 from chalkcompute._http import HTTP_TRANSPORT_ERRORS, SYNC_HTTP_CLIENT
 from chalkcompute._image import Image
 from chalkcompute._tracing import traced
+
+if TYPE_CHECKING:
+    # Deferred to break a circular import: _evaluation -> _function ->
+    # _containerspec -> _volume. These names are only used in type hints
+    # here (resolved lazily thanks to `from __future__ import annotations`);
+    # Volume.from_dataset imports the runtime-needed names locally.
+    from chalkcompute._evaluation import (
+        DatasetNameLike,
+        DatasetRevisionLike,
+        DatasetRevisionRef,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -247,11 +266,45 @@ class VersionInfo:
     created_at: datetime.datetime | None = None
     ref: str | None = None
     commit_id: str | None = None
+    _source: Volume | None = field(default=None, repr=False, compare=False)
 
     @property
     def version_id(self) -> int:
         """Alias for the protobuf ``version_id`` field name."""
         return self.id
+
+    def diff(self, other: VersionInfo) -> Diff:
+        """Diff this version against an earlier one on the same volume.
+
+        ``new_version.diff(old_version)`` returns a :class:`Diff` describing
+        which paths were added, modified, or deleted going from
+        ``old_version`` to this version. Both sides must come from a
+        :class:`Volume` handle (e.g. ``vol.latest_version()``,
+        ``vol.versions()[i]``), since diffing needs to read file listings and
+        content at each version.
+
+        Examples
+        --------
+        >>> base_version = vol.latest_version()
+        >>> # ... something writes to vol ...
+        >>> diff = vol.latest_version().diff(base_version)
+        """
+        if not isinstance(other, VersionInfo):
+            raise TypeError(f"expected a VersionInfo, got {type(other).__name__}")
+        new, old = self, other
+        if new._source is None or old._source is None:
+            raise VolumeError(
+                "diffing volume versions requires both to come from a "
+                "Volume handle, e.g. vol.latest_version() or vol.versions()"
+            )
+        if new._source.name != old._source.name:
+            raise VolumeError(
+                "cannot diff versions from different volumes: "
+                f"{new._source.name!r} vs {old._source.name!r}"
+            )
+        return _diff_volume_versions(
+            new._source, old_version_id=old.id, new_version_id=new.id
+        )
 
 
 @dataclass
@@ -278,6 +331,106 @@ class CommitStatus:
     version: VersionInfo | None = None
     latest_version: VersionInfo | None = None
     created_at: datetime.datetime | None = None
+
+
+@dataclass(frozen=True)
+class FileChange:
+    """One path's change between two volume versions.
+
+    Attributes
+    ----------
+    path
+        File path within the volume.
+    kind
+        ``"added"``, ``"modified"``, or ``"deleted"``.
+    old_content
+        Content at the earlier version. ``None`` for ``"added"``.
+    new_content
+        Content at the later version. ``None`` for ``"deleted"``.
+    """
+
+    path: str
+    kind: str
+    old_content: bytes | None = None
+    new_content: bytes | None = None
+
+
+@dataclass(frozen=True)
+class Diff:
+    """A changeset between two versions of the same volume.
+
+    Produced by subtracting one :class:`VersionInfo` from another
+    (``new_version - old_version``). Generic and volume-native: it has no
+    notion of git or GitHub, just which files changed between two immutable
+    snapshots.
+
+    Attributes
+    ----------
+    volume_name
+        Name of the volume the versions belong to.
+    old_version_id
+        Version id the diff is relative to.
+    new_version_id
+        Version id the diff was computed against.
+    changes
+        One :class:`FileChange` per added, modified, or deleted path.
+    """
+
+    volume_name: str
+    old_version_id: int
+    new_version_id: int
+    changes: tuple[FileChange, ...]
+
+    def __bool__(self) -> bool:
+        return bool(self.changes)
+
+    def __len__(self) -> int:
+        return len(self.changes)
+
+    def __iter__(self) -> Iterator[FileChange]:
+        return iter(self.changes)
+
+    def unified_diff(self) -> str:
+        """Render this diff as unified-diff text, for humans.
+
+        Binary content (anything that doesn't decode as UTF-8) is reported
+        as changed without inline content, matching ``git diff``'s behavior
+        for binary files.
+        """
+        rendered: list[str] = []
+        for change in self.changes:
+            old_lines = _decode_diff_lines(change.old_content)
+            new_lines = _decode_diff_lines(change.new_content)
+            if old_lines is None or new_lines is None:
+                rendered.append(
+                    f"Binary files a/{change.path} and b/{change.path} differ\n"
+                )
+                continue
+            rendered.extend(
+                difflib.unified_diff(
+                    old_lines,
+                    new_lines,
+                    fromfile="/dev/null"
+                    if change.kind == "added"
+                    else f"a/{change.path}",
+                    tofile="/dev/null"
+                    if change.kind == "deleted"
+                    else f"b/{change.path}",
+                )
+            )
+        return "".join(rendered)
+
+    def __str__(self) -> str:
+        return self.unified_diff()
+
+
+def _decode_diff_lines(content: bytes | None) -> list[str] | None:
+    if content is None:
+        return []
+    try:
+        return content.decode("utf-8").splitlines(keepends=True)
+    except UnicodeDecodeError:
+        return None
 
 
 class Volume:
@@ -342,6 +495,141 @@ class Volume:
         self._version: VersionInfo | None = None
         self._create_if_missing = create_if_missing and version_id is None
         self._closed = False
+
+    @classmethod
+    def from_github(
+        cls,
+        repo: str,
+        ref: str | None = None,
+        *,
+        volume_name: str | None = None,
+        connect_client: ConnectClient | None = None,
+        timeout: float = 300.0,
+    ) -> Volume:
+        """Clone a GitHub repository's contents into a new volume.
+
+        ``repo`` must be an ``"owner/name"`` string naming a repository your
+        linked GitHub App installation can access. The resulting volume is a
+        plain, read-only snapshot of the repository's files at ``ref`` (a
+        branch, tag, or commit SHA; the repository's default branch is used
+        if omitted) — it carries no git history, credentials, or connection
+        back to GitHub. The download and commit both happen server-side; no
+        archive bytes pass through this process.
+
+        Parameters
+        ----------
+        repo
+            Repository to clone, as ``"owner/name"``.
+        ref
+            Branch, tag, or commit SHA to clone. Defaults to the
+            repository's default branch.
+        volume_name
+            Name for the new volume. Defaults to a name derived from
+            ``repo`` plus a random suffix.
+        connect_client
+            Optional :class:`ConnectClient` used to resolve the repository
+            and authenticate the new volume. Defaults to one built from the
+            ambient auth context.
+        timeout
+            RPC deadline, in seconds, for the GitHub App service call.
+
+        Returns
+        -------
+        Volume
+            A new volume containing the repository's files.
+        """
+        connect = connect_client or ConnectClient()
+        installation_id, owner, name = _resolve_github_installation(
+            repo, connect=connect, timeout=timeout
+        )
+        volume_name = volume_name or f"github-{owner}-{name}-{uuid.uuid4().hex[:8]}"
+
+        stub = connect.stub(github_app_connect.GitHubAppServiceClientSync)
+        try:
+            connect.call(
+                stub.create_volume_from_git_hub_repo,
+                github_app_pb.CreateVolumeFromGitHubRepoRequest(
+                    installation_id=installation_id,
+                    owner=owner,
+                    repo=name,
+                    ref=ref,
+                    volume_name=volume_name,
+                ),
+                timeout=timeout,
+            )
+        except ConnectRpcError as exc:
+            raise VolumeError(f"failed to create volume from {repo!r}: {exc}") from exc
+
+        return cls(
+            volume_name,
+            client=VolumeClient.from_connect(connect),
+            create_if_missing=False,
+        )
+
+    @classmethod
+    def from_dataset(
+        cls,
+        dataset: str | DatasetRevisionRef | DatasetRevisionLike | DatasetNameLike,
+        *,
+        volume_name: str | None = None,
+        connect_client: ConnectClient | None = None,
+        timeout: float = 300.0,
+    ) -> Volume:
+        """Materialize a Chalk dataset revision's rows as a new volume.
+
+        ``dataset`` is resolved the same way as :meth:`Evaluation.create`'s
+        ``dataset`` parameter: a bare string names a dataset (its latest
+        revision is used), or pass a :class:`DatasetRevisionRef` (or anything
+        exposing ``dataset_id``/``revision_id`` or ``dataset_name``) to pin a
+        specific revision. The resulting volume holds the revision's output
+        Parquet files as plain files, with no offline-query client
+        credentials required inside whatever mounts it.
+
+        Parameters
+        ----------
+        dataset
+            Dataset name, or a revision reference.
+        volume_name
+            Name for the new volume. Defaults to a name derived from the
+            dataset plus a random suffix.
+        connect_client
+            Optional :class:`ConnectClient` used to resolve the dataset and
+            authenticate the new volume. Defaults to one built from the
+            ambient auth context.
+        timeout
+            RPC deadline, in seconds, for each dataset-service call.
+
+        Returns
+        -------
+        Volume
+            A new volume containing the revision's output files.
+        """
+        from chalkcompute._evaluation import (
+            DatasetRevisionRef,
+            _resolve_dataset_revision,
+        )
+
+        connect = connect_client or ConnectClient()
+        ref = (
+            DatasetRevisionRef(dataset_name=dataset)
+            if isinstance(dataset, str)
+            else _resolve_dataset_revision(dataset)
+        )
+        revision_id = _resolve_dataset_revision_id(
+            ref, connect=connect, timeout=timeout
+        )
+        contents = _download_dataset_revision_files(
+            revision_id, connect=connect, timeout=timeout
+        )
+
+        name = volume_name or f"dataset-{_volume_name_slug(ref)}-{uuid.uuid4().hex[:8]}"
+        volume = cls(
+            name, client=VolumeClient.from_connect(connect), create_if_missing=True
+        )
+        with volume.batch_upload() as batch:
+            for index, data in enumerate(contents):
+                batch.put(f"part-{index:05d}.parquet", data)
+        return volume
 
     @property
     def name(self) -> str:
@@ -419,10 +707,10 @@ class Volume:
             raw = self._client._create_volume(self._name)
             return _dict_to_volume_info(raw["volume"]), None
 
-        return (
-            _dict_to_volume_info(raw["volume"]),
-            _dict_to_version_info(raw["version"]) if raw.get("version") else None,
-        )
+        version = _dict_to_version_info(raw["version"]) if raw.get("version") else None
+        if version is not None:
+            version._source = self
+        return _dict_to_volume_info(raw["volume"]), version
 
     def _raise_if_closed(self) -> None:
         if self._closed:
@@ -644,7 +932,10 @@ class Volume:
                 cursor=cursor,
                 ref_name=self._selector_ref(),
             )
-            versions.extend(_dict_to_version_info(v) for v in raw["versions"])
+            for v in raw["versions"]:
+                info = _dict_to_version_info(v)
+                info._source = self
+                versions.append(info)
             cursor = str(raw.get("next_cursor") or "")
             if not cursor:
                 return versions
@@ -668,6 +959,7 @@ class Volume:
         if not raw.get("version"):
             raise VolumeError(f"Volume {self._name!r} has no latest version")
         self._version = _dict_to_version_info(raw["version"])
+        self._version._source = self
         return self._version
 
     def at_version(self, version_id: int) -> Volume:
@@ -862,6 +1154,7 @@ class Volume:
                 f"Volume commit {status.commit_id} returned {status.result}"
             )
         assert status.version is not None
+        status.version._source = self
         self._version = status.version
         return status.version
 
@@ -880,6 +1173,7 @@ class Volume:
             files.extend(_dict_to_file_info(f) for f in raw["files"])
             if raw.get("version"):
                 self._version = _dict_to_version_info(raw["version"])
+                self._version._source = self
             cursor = str(raw.get("next_cursor") or "")
             if not cursor:
                 return files
@@ -1658,6 +1952,113 @@ def _read_file_response(resp: pb_v2.GetFileResponse) -> bytes:
             raise VolumeError(f"Unsupported file response type: {resp.content!r}")
 
 
+def _diff_volume_versions(
+    volume: Volume, *, old_version_id: int, new_version_id: int
+) -> Diff:
+    old = volume.at_version(old_version_id)
+    new = volume.at_version(new_version_id)
+    old_files = {
+        f.path: f for f in old.listdir(recursive=True) if f.kind != "directory"
+    }
+    new_files = {
+        f.path: f for f in new.listdir(recursive=True) if f.kind != "directory"
+    }
+
+    changes: list[FileChange] = []
+    for path in sorted(set(old_files) | set(new_files)):
+        old_info = old_files.get(path)
+        new_info = new_files.get(path)
+        if old_info is None:
+            changes.append(
+                FileChange(path=path, kind="added", new_content=new.read_file(path))
+            )
+        elif new_info is None:
+            changes.append(
+                FileChange(path=path, kind="deleted", old_content=old.read_file(path))
+            )
+        elif (
+            old_info.hash is None
+            or new_info.hash is None
+            or old_info.hash != new_info.hash
+        ):
+            # A missing hash on either side can't prove equality, so treat it
+            # as changed rather than silently skipping a possible diff.
+            changes.append(
+                FileChange(
+                    path=path,
+                    kind="modified",
+                    old_content=old.read_file(path),
+                    new_content=new.read_file(path),
+                )
+            )
+    return Diff(
+        volume_name=volume.name,
+        old_version_id=old_version_id,
+        new_version_id=new_version_id,
+        changes=tuple(changes),
+    )
+
+
+def _resolve_dataset_revision_id(
+    ref: DatasetRevisionRef, *, connect: ConnectClient, timeout: float
+) -> str:
+    if ref.revision_id is not None:
+        return ref.revision_id
+    assert ref.dataset_name is not None
+    stub = connect.stub(datasets_connect.DatasetMetadataServiceClientSync)
+    cursor: str | None = None
+    try:
+        while True:
+            response = connect.call(
+                stub.list_datasets,
+                datasets_pb.ListDatasetsRequest(
+                    search=ref.dataset_name, limit=100, cursor=cursor
+                ),
+                timeout=timeout,
+            )
+            for dataset in response.datasets:
+                if dataset.dataset_name != ref.dataset_name:
+                    continue
+                revision = dataset.most_recent_revision
+                if revision is None or not revision.offline_query_id:
+                    raise VolumeError(f"dataset {ref.dataset_name!r} has no revisions")
+                return revision.offline_query_id
+            cursor = response.cursor or None
+            if not cursor:
+                break
+    except ConnectRpcError as exc:
+        raise VolumeError(
+            f"failed to resolve dataset {ref.dataset_name!r}: {exc}"
+        ) from exc
+    raise VolumeError(f"no dataset named {ref.dataset_name!r} was found")
+
+
+def _download_dataset_revision_files(
+    revision_id: str, *, connect: ConnectClient, timeout: float
+) -> list[bytes]:
+    stub = connect.stub(datasets_connect.DatasetMetadataServiceClientSync)
+    try:
+        response = connect.call(
+            stub.get_dataset_revision_download_links,
+            datasets_pb.GetDatasetRevisionDownloadLinksRequest(revision_id=revision_id),
+            timeout=timeout,
+        )
+    except ConnectRpcError as exc:
+        raise VolumeError(
+            f"failed to get download links for revision {revision_id!r}: {exc}"
+        ) from exc
+    urls = list(response.output_urls)
+    if not urls:
+        raise VolumeError(f"dataset revision {revision_id!r} has no output files")
+    return [_read_file_from_signed_uri(url) for url in urls]
+
+
+def _volume_name_slug(ref: DatasetRevisionRef) -> str:
+    raw = ref.dataset_name or ref.dataset_id or "revision"
+    slug = "".join(c if c.isalnum() or c in "-_" else "-" for c in raw.lower())
+    return slug.strip("-") or "dataset"
+
+
 class _BatchUpload:
     """Accumulates volume writes and commits them as one version."""
 
@@ -1806,3 +2207,62 @@ def cleanup_owned_volumes(
         if v.name in referenced_names:
             continue
         client.delete_volume(v.name)
+
+
+#: Page size used when paginating GitHub App repository listings.
+_GITHUB_REPOS_PER_PAGE = 100
+
+
+def _resolve_github_installation(
+    repo: str, *, connect: ConnectClient, timeout: float
+) -> tuple[str, str, str]:
+    """Resolve an ``"owner/name"`` repo to ``(installation_id, owner, name)``.
+
+    ``installation_id`` here is the GitHub App installation's internal
+    ``id`` (a string), not its numeric GitHub ``installation_id`` — that's
+    what every other ``GitHubAppService`` RPC expects.
+    """
+    if "/" not in repo:
+        raise VolumeError(f"repo must be in 'owner/name' form, got {repo!r}")
+    owner, _, name = repo.partition("/")
+    full_name = f"{owner}/{name}".lower()
+
+    stub = connect.stub(github_app_connect.GitHubAppServiceClientSync)
+    try:
+        installations = connect.call(
+            stub.list_git_hub_app_installations,
+            github_app_pb.ListGitHubAppInstallationsRequest(),
+            timeout=timeout,
+        ).installations
+    except ConnectRpcError as exc:
+        raise VolumeError(f"failed to list GitHub App installations: {exc}") from exc
+    if not installations:
+        raise VolumeError("no GitHub App installations are linked to this team")
+
+    for installation in installations:
+        page = 1
+        while True:
+            try:
+                response = connect.call(
+                    stub.list_git_hub_repositories,
+                    github_app_pb.ListGitHubRepositoriesRequest(
+                        installation_id=installation.id,
+                        page=page,
+                        per_page=_GITHUB_REPOS_PER_PAGE,
+                    ),
+                    timeout=timeout,
+                )
+            except ConnectRpcError as exc:
+                raise VolumeError(
+                    f"failed to list repositories for installation {installation.id!r}: {exc}"
+                ) from exc
+            for repository in response.repositories:
+                if repository.full_name.lower() == full_name:
+                    return installation.id, owner, name
+            if len(response.repositories) < _GITHUB_REPOS_PER_PAGE:
+                break
+            page += 1
+
+    raise VolumeError(
+        f"repo {repo!r} was not found in any linked GitHub App installation"
+    )
