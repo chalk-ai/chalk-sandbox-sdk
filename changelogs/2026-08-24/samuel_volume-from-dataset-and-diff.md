@@ -1,0 +1,2 @@
+- Add `Volume.from_dataset(dataset, ...)`, materializing a Chalk dataset revision's output Parquet files as a new volume, resolved the same way as `Evaluation.create`'s `dataset` parameter (a bare name, or a `DatasetRevisionRef`)
+- Add `VersionInfo.diff(other)`, returning a new `Diff` (with `FileChange` entries and a `unified_diff()`/`str()` rendering) describing which paths were added, modified, or deleted between two versions of the same volume
