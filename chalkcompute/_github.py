@@ -100,7 +100,9 @@ def open_pull_request(
             timeout=timeout,
         )
     except ConnectRpcError as exc:
-        raise GithubError(f"failed to open pull request against {repo!r}: {exc}") from exc
+        raise GithubError(
+            f"failed to open pull request against {repo!r}: {exc}"
+        ) from exc
 
     return PullRequestResult(
         html_url=response.html_url,
@@ -113,4 +115,6 @@ def _file_change_to_proto(change: FileChange) -> github_app_pb.RepoFileChangeInp
     if change.kind == "deleted":
         return github_app_pb.RepoFileChangeInput(path=change.path, delete=True)
     assert change.new_content is not None
-    return github_app_pb.RepoFileChangeInput(path=change.path, content=change.new_content)
+    return github_app_pb.RepoFileChangeInput(
+        path=change.path, content=change.new_content
+    )

@@ -19,7 +19,9 @@ def _patch_resolved_installation(
     name: str = "customer-deployment",
 ) -> None:
     monkeypatch.setattr(
-        gh, "_resolve_github_installation", lambda repo, *, connect, timeout: (installation_id, owner, name)
+        gh,
+        "_resolve_github_installation",
+        lambda repo, *, connect, timeout: (installation_id, owner, name),
     )
 
 
@@ -47,7 +49,10 @@ def test_open_pull_request_maps_changes_and_returns_result(
         changes=(
             FileChange(path="added.py", kind="added", new_content=b"new"),
             FileChange(
-                path="changed.py", kind="modified", old_content=b"old", new_content=b"new2"
+                path="changed.py",
+                kind="modified",
+                old_content=b"old",
+                new_content=b"new2",
             ),
             FileChange(path="removed.py", kind="deleted", old_content=b"gone"),
         ),
