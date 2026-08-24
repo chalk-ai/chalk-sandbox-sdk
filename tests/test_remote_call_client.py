@@ -70,8 +70,8 @@ class RpcConnectClient(FakeConnectClient):
 
     def call(self, method: FakeMethod, request: object, **kwargs: object) -> object:
         self.rpc_calls.append((method.name, request, kwargs))
-        if method.name == "delete_external_function_version":
-            return catalog_pb.DeleteExternalFunctionVersionResponse()
+        if method.name == "delete_external_function":
+            return catalog_pb.DeleteExternalFunctionResponse()
         assert method.name == "call_external_function"
         return catalog_pb.CallExternalFunctionResponse(
             body=Oneof(
@@ -171,6 +171,7 @@ def _remote_function() -> RemoteFunction:
     fn._web_url = "http://127.0.0.1"
     fn._port = 7777
     fn._client = FakeConnectClient()
+    fn._function_id = "function-1"
     fn._version_info = FunctionVersionInfo(
         id="version-1",
         function_name="catalog-add",
@@ -188,6 +189,7 @@ def _async_remote_function() -> RemoteFunction:
     fn._web_url = "http://127.0.0.1"
     fn._port = 7777
     fn._client = FakeConnectClient()
+    fn._function_id = "function-1"
     fn._version_info = FunctionVersionInfo(
         id="version-1",
         function_name="catalog-async-add",

@@ -33,9 +33,12 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 from connectrpc.errors import ConnectError as ConnectRpcError
+from protobuf import Oneof
+from protobuf.wkt import FieldMask
 
 from chalkcompute._connect import ConnectClient, build_image
 from chalkcompute._containerspec import ContainerSpec
@@ -55,6 +58,8 @@ from chalkcompute._volume import (
 )
 
 logger = logging.getLogger(__name__)
+
+_OWNED_VOLUME_PREFIX = "chalkcompute-sg-files"
 
 if TYPE_CHECKING:
     from chalkcompute._image import Image as _Image
@@ -200,6 +205,23 @@ class ScalingGroupInfo:
     available_replicas: int = 0
     """Number of replicas available behind the service endpoint."""
 
+    current_revision_id: str | None = None
+    """Immutable revision currently selected to serve traffic."""
+
+
+@dataclass(frozen=True)
+class ScalingGroupRevisionInfo:
+    """Metadata for one immutable scaling-group revision."""
+
+    id: str
+    scaling_group_id: str
+    scaling_group_name: str
+    status: str
+    status_message: str | None = None
+    created_at: datetime | None = None
+    deleted_at: datetime | None = None
+    is_current: bool = False
+
 
 # ---------------------------------------------------------------------------
 # ScalingGroup
@@ -280,6 +302,7 @@ class ScalingGroup:
         # Populated at deploy time: referenced volumes plus any freshly
         # uploaded volumes.
         self._volumes: list[VolumeMount] = []
+        self._owned_volumes: list[VolumeMount] = []
         self._volume_driver: VolumeClient | None = None
         self._entrypoint = list(entrypoint) if entrypoint is not None else None
         if port is not None and not (1 <= port <= 65535):
@@ -395,6 +418,7 @@ class ScalingGroup:
         sg._secrets = []
         sg._referenced_volumes = []
         sg._volumes = []
+        sg._owned_volumes = []
         sg._volume_driver = None
         sg._entrypoint = None
         sg._port = None
@@ -461,6 +485,8 @@ class ScalingGroup:
         else:
             self._built_image_uri = self._image
 
+        sg_name = sanitize_dns_label(self._name or f"sg-{uuid.uuid4().hex[:8]}")
+
         # 2a. A missing user-referenced volume fails the deploy.
         self._volumes = [
             referenced_volume_mount(self._client, mount)
@@ -476,15 +502,16 @@ class ScalingGroup:
             assert isinstance(self._image, Image)
             driver = VolumeClient.from_connect(self._client)
             self._volume_driver = driver
-            self._volumes += driver.upload_lazy_files(
+            uploaded_volumes = driver.upload_lazy_files(
                 self._image,
-                volume_prefix="sg-files",
+                volume_prefix=_OWNED_VOLUME_PREFIX,
             )
+            self._volumes += uploaded_volumes
+            self._owned_volumes += uploaded_volumes
             for v in self._volumes:
                 logger.info("  Volume created: %s (mount: %s)", v.name, v.mount_path)
 
         # 3. Build the ScalingGroupSpec
-        sg_name = sanitize_dns_label(self._name or f"sg-{uuid.uuid4().hex[:8]}")
         resolved_secrets = self._secrets
         if any(s.is_lazy for s in self._secrets):
             scope = SecretScope.scaling_group(sg_name)
@@ -552,19 +579,37 @@ class ScalingGroup:
         logger.info("Deploying scaling group '%s'...", sg_name)
         stub = self._client.stub(sg_connect.ScalingGroupManagerServiceClientSync)
         try:
-            response = self._client.call(
-                stub.create_scaling_group,
-                sg_pb.CreateScalingGroupRequest(spec=spec),
-                timeout=60,
-            )
+            if self._scaling_group_id is None:
+                response = self._client.call(
+                    stub.create_scaling_group,
+                    sg_pb.CreateScalingGroupRequest(spec=spec),
+                    timeout=60,
+                )
+                operation = "CreateScalingGroup"
+            else:
+                response = self._client.call(
+                    stub.update_scaling_group,
+                    sg_pb.UpdateScalingGroupRequest(
+                        scaling_group_id=self._scaling_group_id,
+                        spec=spec,
+                        update_mask=FieldMask(paths=["spec"]),
+                    ),
+                    timeout=60,
+                )
+                operation = "UpdateScalingGroup"
         except ConnectRpcError as exc:
-            raise ScalingGroupError(f"CreateScalingGroup failed: {exc}") from exc
+            operation = (
+                "UpdateScalingGroup"
+                if self._scaling_group_id is not None
+                else "CreateScalingGroup"
+            )
+            raise ScalingGroupError(f"{operation} failed: {exc}") from exc
         if response.scaling_group is None:
-            raise ScalingGroupError("CreateScalingGroup returned no scaling group")
+            raise ScalingGroupError(f"{operation} returned no scaling group")
         self._scaling_group_info = _parse_scaling_group_response(response.scaling_group)
         self._scaling_group_id = self._scaling_group_info.id
         logger.info(
-            "Scaling group created: %s (status=%s)",
+            "Scaling group deployed: %s (status=%s)",
             self._scaling_group_id,
             self._scaling_group_info.status,
         )
@@ -580,6 +625,95 @@ class ScalingGroup:
                 require_ready_replicas=self._min_replicas > 0,
             )
 
+        return self
+
+    def revisions(
+        self,
+        *,
+        limit: int | None = None,
+        include_deleted: bool = False,
+    ) -> list[ScalingGroupRevisionInfo]:
+        """List immutable revisions for this scaling group."""
+        if self._scaling_group_id is None:
+            raise ScalingGroupError("No scaling group ID — call .deploy() first.")
+        if limit is not None and limit < 1:
+            raise ValueError(f"limit must be positive, got {limit}")
+
+        stub = self._client.stub(sg_connect.ScalingGroupManagerServiceClientSync)
+        revisions: list[ScalingGroupRevisionInfo] = []
+        cursor: str | None = None
+        while limit is None or len(revisions) < limit:
+            page_limit = 100 if limit is None else min(100, limit - len(revisions))
+            try:
+                response = self._client.call(
+                    stub.list_scaling_group_revisions,
+                    sg_pb.ListScalingGroupRevisionsRequest(
+                        scaling_group_key=Oneof(
+                            "scaling_group_id", self._scaling_group_id
+                        ),
+                        cursor=cursor,
+                        limit=page_limit,
+                        include_deleted=include_deleted,
+                    ),
+                )
+            except ConnectRpcError as exc:
+                raise ScalingGroupError(
+                    f"ListScalingGroupRevisions failed: {exc}"
+                ) from exc
+            revisions.extend(
+                _parse_scaling_group_revision(item) for item in response.revisions
+            )
+            cursor = response.next_cursor or None
+            if cursor is None:
+                break
+        return revisions[:limit] if limit is not None else revisions
+
+    @_instrumented("chalkcompute.scaling_group.rollback")
+    def rollback(
+        self,
+        revision_id: str,
+        *,
+        wait_ready: bool = True,
+        timeout: float = 300.0,
+        poll_interval: float = 0.5,
+    ) -> ScalingGroup:
+        """Select an existing immutable revision without creating a new one."""
+        if self._scaling_group_id is None:
+            raise ScalingGroupError("No scaling group ID — call .deploy() first.")
+        if not revision_id:
+            raise ValueError("revision_id must not be empty")
+
+        stub = self._client.stub(sg_connect.ScalingGroupManagerServiceClientSync)
+        try:
+            response = self._client.call(
+                stub.update_scaling_group,
+                sg_pb.UpdateScalingGroupRequest(
+                    scaling_group_id=self._scaling_group_id,
+                    traffic=sg_pb.ScalingGroupTraffic(
+                        targets=[
+                            sg_pb.ScalingGroupTrafficTarget(
+                                revision_target=Oneof(
+                                    "scaling_group_revision_id", revision_id
+                                ),
+                                percent=100,
+                            )
+                        ]
+                    ),
+                    update_mask=FieldMask(paths=["traffic"]),
+                ),
+                timeout=60,
+            )
+        except ConnectRpcError as exc:
+            raise ScalingGroupError(f"UpdateScalingGroup failed: {exc}") from exc
+        if response.scaling_group is None:
+            raise ScalingGroupError("UpdateScalingGroup returned no scaling group")
+        self._scaling_group_info = _parse_scaling_group_response(response.scaling_group)
+        if wait_ready:
+            self._poll_until_ready(
+                poll_interval=poll_interval,
+                timeout=timeout,
+                require_ready_replicas=self._min_replicas > 0,
+            )
         return self
 
     def _poll_until_ready(
@@ -745,6 +879,14 @@ class ScalingGroup:
     @_instrumented("chalkcompute.scaling_group.delete")
     def delete(self) -> None:
         """Delete the scaling group and clean up associated volumes."""
+        owned_volumes = {volume.name: volume for volume in self._owned_volumes}
+        if self._scaling_group_id is not None:
+            try:
+                owned_volumes.update(self._owned_volumes_from_revisions())
+            except ScalingGroupError as exc:
+                logger.warning(
+                    "Could not inspect revision volumes before delete: %s", exc
+                )
         if self._scaling_group_id is not None:
             stub = self._client.stub(sg_connect.ScalingGroupManagerServiceClientSync)
             self._client.call(
@@ -754,13 +896,54 @@ class ScalingGroup:
             self._scaling_group_id = None
             self._scaling_group_info = None
 
-        if self._volumes:
+        if owned_volumes:
             # Driver is used here only to perform the delete action, not to
             # derive a mount type.
             driver = self._volume_driver or VolumeClient.from_connect(self._client)
-            cleanup_owned_volumes(driver, self._volumes, self._referenced_volumes)
+            cleanup_owned_volumes(driver, owned_volumes.values(), ())
         self._volumes = []
+        self._owned_volumes = []
         self._volume_driver = None
+
+    def _owned_volumes_from_revisions(self) -> dict[str, VolumeMount]:
+        """Find SDK-created lazy-file volumes retained by historical revisions."""
+        assert self._scaling_group_id is not None
+        stub = self._client.stub(sg_connect.ScalingGroupManagerServiceClientSync)
+        result: dict[str, VolumeMount] = {}
+        cursor: str | None = None
+        while True:
+            try:
+                response = self._client.call(
+                    stub.list_scaling_group_revisions,
+                    sg_pb.ListScalingGroupRevisionsRequest(
+                        scaling_group_key=Oneof(
+                            "scaling_group_id", self._scaling_group_id
+                        ),
+                        cursor=cursor,
+                        limit=100,
+                        include_deleted=True,
+                    ),
+                )
+            except ConnectRpcError as exc:
+                raise ScalingGroupError(
+                    f"ListScalingGroupRevisions failed: {exc}"
+                ) from exc
+            for revision in response.revisions:
+                spec = revision.spec
+                container_spec = spec.container_spec if spec is not None else None
+                if container_spec is None:
+                    continue
+                for volume in container_spec.volumes:
+                    if volume.name.startswith(f"{_OWNED_VOLUME_PREFIX}-"):
+                        result[volume.name] = VolumeMount(
+                            name=volume.name,
+                            mount_path=volume.mount_path,
+                            version_id=volume.version_id,
+                            ref_name=volume.ref_name,
+                        )
+            cursor = response.next_cursor or None
+            if cursor is None:
+                return result
 
     def refresh(self) -> ScalingGroupInfo:
         """Fetch latest scaling-group status from the server.
@@ -790,6 +973,12 @@ class ScalingGroup:
     @property
     def info(self) -> ScalingGroupInfo | None:
         return self._scaling_group_info
+
+    @property
+    def current_revision_id(self) -> str | None:
+        if self._scaling_group_info is None:
+            return None
+        return self._scaling_group_info.current_revision_id
 
     @property
     def image_uri(self) -> str | None:
@@ -836,6 +1025,22 @@ def _parse_scaling_group_response(data: sg_pb.ScalingGroupResponse) -> ScalingGr
         web_url=data.web_url or None,
         ready_replicas=data.ready_replicas,
         available_replicas=data.available_replicas,
+        current_revision_id=data.revision_id or None,
+    )
+
+
+def _parse_scaling_group_revision(
+    data: sg_pb.ScalingGroupRevisionResponse,
+) -> ScalingGroupRevisionInfo:
+    return ScalingGroupRevisionInfo(
+        id=data.id,
+        scaling_group_id=data.scaling_group_id,
+        scaling_group_name=data.scaling_group_name,
+        status=data.status,
+        status_message=data.status_message or None,
+        created_at=None if data.created_at is None else data.created_at.to_datetime(),
+        deleted_at=None if data.deleted_at is None else data.deleted_at.to_datetime(),
+        is_current=data.latest,
     )
 
 

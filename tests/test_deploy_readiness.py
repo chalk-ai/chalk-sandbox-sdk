@@ -35,19 +35,21 @@ class _RemoteFunctionReadinessClient(StubbedConnectClient):
         **_: Any,
     ) -> Any:
         self.methods.append(method.name)
-        if method.name == "create_external_function_version":
-            assert isinstance(request, catalog_pb.CreateExternalFunctionVersionRequest)
-            assert request.spec is not None and request.spec.container_spec is not None
-            return catalog_pb.CreateExternalFunctionVersionResponse(
-                external_function_version=catalog_pb.ExternalFunctionVersion(
+        if method.name == "create_external_function":
+            assert isinstance(request, catalog_pb.CreateExternalFunctionRequest)
+            assert request.spec is not None and request.spec.spec is not None
+            assert request.spec.spec.container_spec is not None
+            return catalog_pb.CreateExternalFunctionResponse(
+                external_function=catalog_pb.ExternalFunction(
                     id="fn-version-1",
-                    function_name=request.function_name,
-                    version=1,
-                    scaling_group_name=request.spec.container_spec.name,
-                ),
-                scaling_group=sg_pb.ScalingGroupResponse(
-                    status=self.create_status,
-                    web_url="http://127.0.0.1",
+                    name=request.function_name,
+                    current_version=catalog_pb.ExternalFunctionVersion(
+                        id="fn-version-1",
+                        function_id="fn-1",
+                        function_name=request.function_name,
+                        version=1,
+                        scaling_group_name=request.spec.spec.container_spec.name,
+                    ),
                 ),
             )
         if method.name == "get_scaling_group":
@@ -140,7 +142,7 @@ def test_remote_function_deploy_waits_for_ready_replicas(monkeypatch) -> None:
     fn.deploy(poll_interval=0, ready_timeout=10)
 
     assert client.methods == [
-        "create_external_function_version",
+        "create_external_function",
         "get_scaling_group",
         "get_scaling_group",
     ]
@@ -163,7 +165,7 @@ def test_remote_function_deploy_allows_zero_min_replicas(monkeypatch) -> None:
 
     fn.deploy(poll_interval=0, ready_timeout=10)
 
-    assert client.methods == ["create_external_function_version"]
+    assert client.methods == ["create_external_function", "get_scaling_group"]
 
 
 def test_remote_function_deploy_allows_scaled_to_zero(monkeypatch) -> None:
@@ -183,7 +185,7 @@ def test_remote_function_deploy_allows_scaled_to_zero(monkeypatch) -> None:
 
     fn.deploy(poll_interval=0, ready_timeout=10)
 
-    assert client.methods == ["create_external_function_version", "get_scaling_group"]
+    assert client.methods == ["create_external_function", "get_scaling_group"]
 
 
 def test_scaling_group_deploy_waits_for_ready_replicas(monkeypatch) -> None:
@@ -243,7 +245,7 @@ def test_remote_class_deploy_waits_for_ready_replicas(monkeypatch) -> None:
     rc.deploy(poll_interval=0, ready_timeout=10)
 
     assert client.methods == [
-        "create_external_function_version",
+        "create_external_function",
         "get_scaling_group",
         "get_scaling_group",
     ]
@@ -268,7 +270,7 @@ def test_remote_class_deploy_allows_zero_min_replicas(monkeypatch) -> None:
 
     rc.deploy(poll_interval=0, ready_timeout=10)
 
-    assert client.methods == ["create_external_function_version"]
+    assert client.methods == ["create_external_function", "get_scaling_group"]
 
 
 def test_remote_class_deploy_allows_scaled_to_zero(monkeypatch) -> None:
@@ -290,7 +292,7 @@ def test_remote_class_deploy_allows_scaled_to_zero(monkeypatch) -> None:
 
     rc.deploy(poll_interval=0, ready_timeout=10)
 
-    assert client.methods == ["create_external_function_version", "get_scaling_group"]
+    assert client.methods == ["create_external_function", "get_scaling_group"]
 
 
 class _RequestCapturingClient(_RemoteFunctionReadinessClient):
@@ -335,8 +337,12 @@ def test_remote_function_deploy_forwards_volume_commits(monkeypatch) -> None:
 
     fn.deploy(poll_interval=0, ready_timeout=10)
 
-    request = client.requests["create_external_function_version"]
-    assert isinstance(request, catalog_pb.CreateExternalFunctionVersionRequest)
-    assert request.volume_commits == [intent]
-    assert request.spec is not None and request.spec.container_spec is not None
-    assert any(m.name == "fn-files-abc" for m in request.spec.container_spec.volumes)
+    request = client.requests["create_external_function"]
+    assert isinstance(request, catalog_pb.CreateExternalFunctionRequest)
+    assert request.spec is not None
+    assert request.spec.volume_commits == [intent]
+    assert request.spec.spec is not None
+    assert request.spec.spec.container_spec is not None
+    assert any(
+        m.name == "fn-files-abc" for m in request.spec.spec.container_spec.volumes
+    )

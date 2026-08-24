@@ -69,7 +69,8 @@ from chalkcompute._function import (
     _callable_input_names,
     _cleanup_temp_files,
     _entrypoint_source,
-    _extract_field_names,
+    _deploy_external_function,
+    _get_external_function,
     _get_scaling_group,
     _is_chalkcompute_decorator,
     _local_install_entrypoint,
@@ -79,6 +80,7 @@ from chalkcompute._function import (
     _should_strip_source,
     _source_text_for_deploy,
     _write_temp,
+    _apply_external_function,
 )
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import (
     service_connect as catalog_connect,
@@ -909,53 +911,49 @@ class RemoteClass:
         """
         rc = cls._make_empty(name, chalk_client=chalk_client)
 
-        # List all function versions, paginating, and collect those matching
-        entries: list[
-            tuple[
-                catalog_pb.ExternalFunctionVersion,
-                sg_pb.ScalingGroupResponse | None,
-            ]
-        ] = []
-        cursor = ""
+        # Find stable function parents for every deployed class method.
+        function_ids: list[str] = []
+        cursor: str | None = None
         stub = rc._client.stub(catalog_connect.ExternalFunctionCatalogServiceClientSync)
         while True:
             response = rc._client.call(
-                stub.list_external_function_versions,
-                catalog_pb.ListExternalFunctionVersionsRequest(
-                    include_scaling_group=True,
+                stub.list_external_functions,
+                catalog_pb.ListExternalFunctionsRequest(
                     limit=100,
-                    cursor=cursor or None,
+                    cursor=cursor,
+                    search=f"{name}.",
                 ),
             )
-            for entry in response.entries:
-                efv = entry.external_function_version
-                if efv is not None and efv.function_name.startswith(f"{name}."):
-                    entries.append((efv, entry.scaling_group))
-            cursor = response.next_cursor or ""
-            if not cursor:
+            function_ids.extend(
+                summary.function_id
+                for summary in response.functions
+                if summary.name.startswith(f"{name}.")
+            )
+            cursor = response.next_cursor or None
+            if cursor is None:
                 break
 
-        if not entries:
+        if not function_ids:
             raise ClassError(f"No function versions found for class '{name}'")
 
-        for efv, sg in entries:
+        for function_id in function_ids:
+            function_response = _get_external_function(
+                rc._client,
+                function_id=function_id,
+                include_scaling_group=True,
+            )
+            external_function = function_response.external_function
+            if external_function is None or external_function.current_version is None:
+                continue
+            efv = external_function.current_version
             method_name = efv.function_name.split(".", 1)[1]
 
             rf = RemoteFunction._make_empty()
-            rf._func_name = efv.function_name
-            rf._explicit_name = sanitize_dns_label(efv.function_name)
-            rf._version_info = FunctionVersionInfo(
-                id=efv.id,
-                function_name=efv.function_name,
-                version=efv.version,
-                scaling_group_name=efv.scaling_group_name,
+            _apply_external_function(
+                rf,
+                external_function,
+                scaling_group=function_response.scaling_group,
             )
-            rf._input_field_names = _extract_field_names(efv.input_arrow_schema)
-            if sg is not None:
-                rf._web_url = sg.web_url or None
-                rf._port = 6666
-            else:
-                rf._port = 6666
 
             rc._methods[method_name] = _MethodInfo(
                 name=method_name,
@@ -1236,47 +1234,36 @@ class RemoteClass:
                 )
 
                 logger.info("Registering method '%s'...", func_name)
-                stub = self._client.stub(
-                    catalog_connect.ExternalFunctionCatalogServiceClientSync
-                )
-                response = self._client.call(
-                    stub.create_external_function_version,
-                    catalog_pb.CreateExternalFunctionVersionRequest(
-                        function_name=func_name,
+                external_function = _deploy_external_function(
+                    self._client,
+                    function_name=func_name,
+                    external_function_id=(
+                        None
+                        if method_info.remote_function is None
+                        else method_info.remote_function.function_id
+                    ),
+                    version_spec=catalog_pb.ExternalFunctionVersionSpec(
                         input_arrow_schema=input_schema,
                         output_arrow_schema=output_schema,
                         spec=spec,
                         config=config,
                         volume_commits=volume_commits,
                     ),
-                    timeout=60,
                 )
-                efv = response.external_function_version
+                efv = external_function.current_version
                 if efv is None:
                     progress_fail(mkey)
                     raise ClassBuildError(
-                        f"CreateExternalFunctionVersion returned no version for {func_name!r}"
+                        f"External-function mutation returned no version for {func_name!r}"
                     )
-                version_info = FunctionVersionInfo(
-                    id=efv.id,
-                    function_name=efv.function_name,
-                    version=efv.version,
-                    scaling_group_name=efv.scaling_group_name or sg_name,
-                )
-
-                sg_data = response.scaling_group
-                web_url = sg_data.web_url or None if sg_data is not None else None
-                port = 6666
 
                 # Build a RemoteFunction proxy for calling this method
                 rf = RemoteFunction._make_empty()
-                rf._func_name = func_name
-                rf._explicit_name = sg_name
-                rf._version_info = version_info
-                rf._web_url = web_url
-                rf._port = port
-                rf._input_field_names = _extract_field_names(efv.input_arrow_schema)
+                _apply_external_function(rf, external_function)
                 method_info.remote_function = rf
+                version_info = rf.version_info
+                assert version_info is not None
+                sg_data = None
 
                 logger.info(
                     "  %s v%s (id=%s)", func_name, version_info.version, version_info.id
