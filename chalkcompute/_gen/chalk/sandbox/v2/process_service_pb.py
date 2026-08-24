@@ -265,7 +265,7 @@ class NewProcess(Message[_NewProcessFields]):
         timeout: Duration | None
         pty_info: PtyInfo | None
 
-_AttachSessionFields: TypeAlias = Literal["sandbox_id", "session_id", "pty_info"]
+_AttachSessionFields: TypeAlias = Literal["sandbox_id", "session_id", "pty_info", "after_seq"]
 
 class AttachSession(Message[_AttachSessionFields]):
     """
@@ -292,9 +292,16 @@ class AttachSession(Message[_AttachSessionFields]):
             ```proto
             optional chalk.sandbox.v2.PtyInfo pty_info = 3;
             ```
+        after_seq:
+            Replay buffered session events strictly after this sequence number.
+            When omitted, the attachment receives live events only.
+
+            ```proto
+            optional uint64 after_seq = 4;
+            ```
     """
 
-    __slots__ = ("sandbox_id", "session_id", "pty_info")
+    __slots__ = ("sandbox_id", "session_id", "pty_info", "after_seq")
 
     if TYPE_CHECKING:
 
@@ -304,12 +311,14 @@ class AttachSession(Message[_AttachSessionFields]):
             sandbox_id: str = "",
             session_id: str = "",
             pty_info: PtyInfo | None = None,
+            after_seq: int | None = None,
         ) -> None:
             pass
 
         sandbox_id: str
         session_id: str
         pty_info: PtyInfo | None
+        after_seq: int
 
 _SessionAttachedFields: TypeAlias = Literal["session_id"]
 
@@ -742,7 +751,7 @@ class OpenSessionRequest(Message[_OpenSessionRequestFields]):
 
         command: Oneof[Literal["new_process"], NewProcess] | Oneof[Literal["attach_session"], AttachSession] | Oneof[Literal["detach_session"], DetachSession] | Oneof[Literal["stdin_data"], StdinData] | Oneof[Literal["stdin_eof"], StdinEof] | Oneof[Literal["signal"], SessionSignal] | Oneof[Literal["resize_pty"], ResizePty] | Oneof[Literal["get_process_status"], GetProcessStatus] | None
 
-_OpenSessionResponseFields: TypeAlias = Literal["error", "session_attached", "output_data", "process_status", "process_exited", "session_detached", "process_failed", "process_timed_out"]
+_OpenSessionResponseFields: TypeAlias = Literal["error", "session_attached", "output_data", "process_status", "process_exited", "session_detached", "process_failed", "process_timed_out", "seq"]
 
 class OpenSessionResponse(Message[_OpenSessionResponseFields]):
     """
@@ -755,9 +764,16 @@ class OpenSessionResponse(Message[_OpenSessionResponseFields]):
             ```proto
             oneof event
             ```
+        seq:
+            Monotonically increasing sequence number for replayable process events.
+            Session lifecycle events that are not replayable use zero.
+
+            ```proto
+            uint64 seq = 9;
+            ```
     """
 
-    __slots__ = ("event",)
+    __slots__ = ("seq", "event")
 
     if TYPE_CHECKING:
 
@@ -765,10 +781,12 @@ class OpenSessionResponse(Message[_OpenSessionResponseFields]):
             self,
             *,
             event: Oneof[Literal["error"], SessionError] | Oneof[Literal["session_attached"], SessionAttached] | Oneof[Literal["output_data"], OutputData] | Oneof[Literal["process_status"], ProcessStatus] | Oneof[Literal["process_exited"], ProcessExited] | Oneof[Literal["session_detached"], SessionDetached] | Oneof[Literal["process_failed"], ProcessFailed] | Oneof[Literal["process_timed_out"], ProcessTimedOut] | None = None,
+            seq: int = 0,
         ) -> None:
             pass
 
         event: Oneof[Literal["error"], SessionError] | Oneof[Literal["session_attached"], SessionAttached] | Oneof[Literal["output_data"], OutputData] | Oneof[Literal["process_status"], ProcessStatus] | Oneof[Literal["process_exited"], ProcessExited] | Oneof[Literal["session_detached"], SessionDetached] | Oneof[Literal["process_failed"], ProcessFailed] | Oneof[Literal["process_timed_out"], ProcessTimedOut] | None
+        seq: int
 
 _SessionInfoFields: TypeAlias = Literal["session_id", "new_process", "process_status"]
 
@@ -967,7 +985,7 @@ class ProcessState(Enum):
 
 
 _DESC = file_desc(
-    b'\n&chalk/sandbox/v2/process_service.proto\x12\x10chalk.sandbox.v2\x1a\x1fchalk/auth/v1/permissions.proto\x1a\x1egoogle/protobuf/duration.proto"\x81\x03\n\x12ExecCommandRequest\x12\x1d\n\nsandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x18\n\x07command\x18\x02 \x01(\tR\x07command\x12\x12\n\x04args\x18\x03 \x03(\tR\x04args\x12\x1d\n\x07workdir\x18\x04 \x01(\tH\x00R\x07workdir\x88\x01\x01\x12L\n\x08env_vars\x18\x05 \x03(\x0b21.chalk.sandbox.v2.ExecCommandRequest.EnvVarsEntryR\x07envVars\x128\n\x07timeout\x18\x06 \x01(\x0b2\x19.google.protobuf.DurationH\x01R\x07timeout\x88\x01\x01\x12\x19\n\x05stdin\x18\x07 \x01(\x0cH\x02R\x05stdin\x88\x01\x01\x1a:\n\x0cEnvVarsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\n\n\x08_workdirB\n\n\x08_timeoutB\x08\n\x06_stdin"b\n\x13ExecCommandResponse\x12\x16\n\x06stdout\x18\x01 \x01(\x0cR\x06stdout\x12\x16\n\x06stderr\x18\x02 \x01(\x0cR\x06stderr\x12\x1b\n\texit_code\x18\x03 \x01(\x05R\x08exitCode"1\n\x07PtyInfo\x12\x12\n\x04cols\x18\x01 \x01(\rR\x04cols\x12\x12\n\x04rows\x18\x02 \x01(\rR\x04rows"3\n\tResizePty\x12\x12\n\x04cols\x18\x01 \x01(\rR\x04cols\x12\x12\n\x04rows\x18\x02 \x01(\rR\x04rows"\x94\x03\n\nNewProcess\x12\x1d\n\nsandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x18\n\x07command\x18\x02 \x01(\tR\x07command\x12\x12\n\x04args\x18\x03 \x03(\tR\x04args\x12\x1d\n\x07workdir\x18\x04 \x01(\tH\x00R\x07workdir\x88\x01\x01\x12D\n\x08env_vars\x18\x05 \x03(\x0b2).chalk.sandbox.v2.NewProcess.EnvVarsEntryR\x07envVars\x128\n\x07timeout\x18\x06 \x01(\x0b2\x19.google.protobuf.DurationH\x01R\x07timeout\x88\x01\x01\x129\n\x08pty_info\x18\x07 \x01(\x0b2\x19.chalk.sandbox.v2.PtyInfoH\x02R\x07ptyInfo\x88\x01\x01\x1a:\n\x0cEnvVarsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\n\n\x08_workdirB\n\n\x08_timeoutB\x0b\n\t_pty_info"\x95\x01\n\rAttachSession\x12\x1d\n\nsandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x1d\n\nsession_id\x18\x02 \x01(\tR\tsessionId\x129\n\x08pty_info\x18\x03 \x01(\x0b2\x19.chalk.sandbox.v2.PtyInfoH\x00R\x07ptyInfo\x88\x01\x01B\x0b\n\t_pty_info"0\n\x0fSessionAttached\x12\x1d\n\nsession_id\x18\x01 \x01(\tR\tsessionId"\x0f\n\rDetachSession"\x11\n\x0fSessionDetached"\x1f\n\tStdinData\x12\x12\n\x04data\x18\x01 \x01(\x0cR\x04data"\n\n\x08StdinEof"\'\n\rSessionSignal\x12\x16\n\x06signal\x18\x01 \x01(\x05R\x06signal"\x12\n\x10GetProcessStatus"\xbc\x01\n\nOutputData\x12;\n\x06stream\x18\x01 \x01(\x0e2#.chalk.sandbox.v2.OutputData.StreamR\x06stream\x12\x12\n\x04data\x18\x02 \x01(\x0cR\x04data"]\n\x06Stream\x12\x16\n\x12STREAM_UNSPECIFIED\x10\x00\x12\x11\n\rSTREAM_STDOUT\x10\x01\x12\x11\n\rSTREAM_STDERR\x10\x02\x12\x15\n\x11STREAM_PTY_OUTPUT\x10\x03"\x9d\x01\n\rProcessStatus\x124\n\x05state\x18\x01 \x01(\x0e2\x1e.chalk.sandbox.v2.ProcessStateR\x05state\x12 \n\texit_code\x18\x02 \x01(\x05H\x00R\x08exitCode\x88\x01\x01\x12\x1b\n\x06signal\x18\x03 \x01(\x05H\x01R\x06signal\x88\x01\x01B\x0c\n\n_exit_codeB\t\n\x07_signal"g\n\rProcessExited\x12 \n\texit_code\x18\x01 \x01(\x05H\x00R\x08exitCode\x88\x01\x01\x12\x1b\n\x06signal\x18\x02 \x01(\x05H\x01R\x06signal\x88\x01\x01B\x0c\n\n_exit_codeB\t\n\x07_signal")\n\rProcessFailed\x12\x18\n\x07message\x18\x01 \x01(\tR\x07message"i\n\x0fProcessTimedOut\x12 \n\texit_code\x18\x01 \x01(\x05H\x00R\x08exitCode\x88\x01\x01\x12\x1b\n\x06signal\x18\x02 \x01(\x05H\x01R\x06signal\x88\x01\x01B\x0c\n\n_exit_codeB\t\n\x07_signal"<\n\x0cSessionError\x12\x12\n\x04code\x18\x01 \x01(\tR\x04code\x12\x18\n\x07message\x18\x02 \x01(\tR\x07message"\xba\x04\n\x12OpenSessionRequest\x12?\n\x0bnew_process\x18\x01 \x01(\x0b2\x1c.chalk.sandbox.v2.NewProcessH\x00R\nnewProcess\x12H\n\x0eattach_session\x18\x02 \x01(\x0b2\x1f.chalk.sandbox.v2.AttachSessionH\x00R\rattachSession\x12H\n\x0edetach_session\x18\x03 \x01(\x0b2\x1f.chalk.sandbox.v2.DetachSessionH\x00R\rdetachSession\x12<\n\nstdin_data\x18\x04 \x01(\x0b2\x1b.chalk.sandbox.v2.StdinDataH\x00R\tstdinData\x129\n\tstdin_eof\x18\x05 \x01(\x0b2\x1a.chalk.sandbox.v2.StdinEofH\x00R\x08stdinEof\x129\n\x06signal\x18\x06 \x01(\x0b2\x1f.chalk.sandbox.v2.SessionSignalH\x00R\x06signal\x12<\n\nresize_pty\x18\x07 \x01(\x0b2\x1b.chalk.sandbox.v2.ResizePtyH\x00R\tresizePty\x12R\n\x12get_process_status\x18\x08 \x01(\x0b2".chalk.sandbox.v2.GetProcessStatusH\x00R\x10getProcessStatusB\t\n\x07command"\xe6\x04\n\x13OpenSessionResponse\x126\n\x05error\x18\x01 \x01(\x0b2\x1e.chalk.sandbox.v2.SessionErrorH\x00R\x05error\x12N\n\x10session_attached\x18\x02 \x01(\x0b2!.chalk.sandbox.v2.SessionAttachedH\x00R\x0fsessionAttached\x12?\n\x0boutput_data\x18\x03 \x01(\x0b2\x1c.chalk.sandbox.v2.OutputDataH\x00R\noutputData\x12H\n\x0eprocess_status\x18\x04 \x01(\x0b2\x1f.chalk.sandbox.v2.ProcessStatusH\x00R\rprocessStatus\x12H\n\x0eprocess_exited\x18\x05 \x01(\x0b2\x1f.chalk.sandbox.v2.ProcessExitedH\x00R\rprocessExited\x12N\n\x10session_detached\x18\x06 \x01(\x0b2!.chalk.sandbox.v2.SessionDetachedH\x00R\x0fsessionDetached\x12H\n\x0eprocess_failed\x18\x07 \x01(\x0b2\x1f.chalk.sandbox.v2.ProcessFailedH\x00R\rprocessFailed\x12O\n\x11process_timed_out\x18\x08 \x01(\x0b2!.chalk.sandbox.v2.ProcessTimedOutH\x00R\x0fprocessTimedOutB\x07\n\x05event"\xb3\x01\n\x0bSessionInfo\x12\x1d\n\nsession_id\x18\x01 \x01(\tR\tsessionId\x12=\n\x0bnew_process\x18\x02 \x01(\x0b2\x1c.chalk.sandbox.v2.NewProcessR\nnewProcess\x12F\n\x0eprocess_status\x18\x03 \x01(\x0b2\x1f.chalk.sandbox.v2.ProcessStatusR\rprocessStatus"Q\n\x11GetSessionRequest\x12\x1d\n\nsandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x1d\n\nsession_id\x18\x02 \x01(\tR\tsessionId"M\n\x12GetSessionResponse\x127\n\x07session\x18\x01 \x01(\x0b2\x1d.chalk.sandbox.v2.SessionInfoR\x07session"4\n\x13ListSessionsRequest\x12\x1d\n\nsandbox_id\x18\x01 \x01(\tR\tsandboxId"Q\n\x14ListSessionsResponse\x129\n\x08sessions\x18\x01 \x03(\x0b2\x1d.chalk.sandbox.v2.SessionInfoR\x08sessions*\x99\x01\n\x0cProcessState\x12\x1d\n\x19PROCESS_STATE_UNSPECIFIED\x10\x00\x12\x19\n\x15PROCESS_STATE_RUNNING\x10\x01\x12\x18\n\x14PROCESS_STATE_EXITED\x10\x02\x12\x18\n\x14PROCESS_STATE_FAILED\x10\x03\x12\x1b\n\x17PROCESS_STATE_TIMED_OUT\x10\x042\x9f\x03\n\x15SandboxProcessService\x12_\n\x0bExecCommand\x12$.chalk.sandbox.v2.ExecCommandRequest\x1a%.chalk.sandbox.v2.ExecCommandResponse"\x03\x80}\x0e\x12c\n\x0bOpenSession\x12$.chalk.sandbox.v2.OpenSessionRequest\x1a%.chalk.sandbox.v2.OpenSessionResponse"\x03\x80}\x0e(\x010\x01\x12\\\n\nGetSession\x12#.chalk.sandbox.v2.GetSessionRequest\x1a$.chalk.sandbox.v2.GetSessionResponse"\x03\x80}\x0b\x12b\n\x0cListSessions\x12%.chalk.sandbox.v2.ListSessionsRequest\x1a&.chalk.sandbox.v2.ListSessionsResponse"\x03\x80}\x0bB\xa3\x01\n\x14com.chalk.sandbox.v2B\x13ProcessServiceProtoP\x01Z\x14sandbox/v2;sandboxv2\xa2\x02\x03CSX\xaa\x02\x10Chalk.Sandbox.V2\xca\x02\x10Chalk\\Sandbox\\V2\xe2\x02\x1cChalk\\Sandbox\\V2\\GPBMetadata\xea\x02\x12Chalk::Sandbox::V2b\x06proto3',
+    b'\n&chalk/sandbox/v2/process_service.proto\x12\x10chalk.sandbox.v2\x1a\x1fchalk/auth/v1/permissions.proto\x1a\x1egoogle/protobuf/duration.proto"\x81\x03\n\x12ExecCommandRequest\x12\x1d\n\nsandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x18\n\x07command\x18\x02 \x01(\tR\x07command\x12\x12\n\x04args\x18\x03 \x03(\tR\x04args\x12\x1d\n\x07workdir\x18\x04 \x01(\tH\x00R\x07workdir\x88\x01\x01\x12L\n\x08env_vars\x18\x05 \x03(\x0b21.chalk.sandbox.v2.ExecCommandRequest.EnvVarsEntryR\x07envVars\x128\n\x07timeout\x18\x06 \x01(\x0b2\x19.google.protobuf.DurationH\x01R\x07timeout\x88\x01\x01\x12\x19\n\x05stdin\x18\x07 \x01(\x0cH\x02R\x05stdin\x88\x01\x01\x1a:\n\x0cEnvVarsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\n\n\x08_workdirB\n\n\x08_timeoutB\x08\n\x06_stdin"b\n\x13ExecCommandResponse\x12\x16\n\x06stdout\x18\x01 \x01(\x0cR\x06stdout\x12\x16\n\x06stderr\x18\x02 \x01(\x0cR\x06stderr\x12\x1b\n\texit_code\x18\x03 \x01(\x05R\x08exitCode"1\n\x07PtyInfo\x12\x12\n\x04cols\x18\x01 \x01(\rR\x04cols\x12\x12\n\x04rows\x18\x02 \x01(\rR\x04rows"3\n\tResizePty\x12\x12\n\x04cols\x18\x01 \x01(\rR\x04cols\x12\x12\n\x04rows\x18\x02 \x01(\rR\x04rows"\x94\x03\n\nNewProcess\x12\x1d\n\nsandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x18\n\x07command\x18\x02 \x01(\tR\x07command\x12\x12\n\x04args\x18\x03 \x03(\tR\x04args\x12\x1d\n\x07workdir\x18\x04 \x01(\tH\x00R\x07workdir\x88\x01\x01\x12D\n\x08env_vars\x18\x05 \x03(\x0b2).chalk.sandbox.v2.NewProcess.EnvVarsEntryR\x07envVars\x128\n\x07timeout\x18\x06 \x01(\x0b2\x19.google.protobuf.DurationH\x01R\x07timeout\x88\x01\x01\x129\n\x08pty_info\x18\x07 \x01(\x0b2\x19.chalk.sandbox.v2.PtyInfoH\x02R\x07ptyInfo\x88\x01\x01\x1a:\n\x0cEnvVarsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\n\n\x08_workdirB\n\n\x08_timeoutB\x0b\n\t_pty_info"\xc5\x01\n\rAttachSession\x12\x1d\n\nsandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x1d\n\nsession_id\x18\x02 \x01(\tR\tsessionId\x129\n\x08pty_info\x18\x03 \x01(\x0b2\x19.chalk.sandbox.v2.PtyInfoH\x00R\x07ptyInfo\x88\x01\x01\x12 \n\tafter_seq\x18\x04 \x01(\x04H\x01R\x08afterSeq\x88\x01\x01B\x0b\n\t_pty_infoB\x0c\n\n_after_seq"0\n\x0fSessionAttached\x12\x1d\n\nsession_id\x18\x01 \x01(\tR\tsessionId"\x0f\n\rDetachSession"\x11\n\x0fSessionDetached"\x1f\n\tStdinData\x12\x12\n\x04data\x18\x01 \x01(\x0cR\x04data"\n\n\x08StdinEof"\'\n\rSessionSignal\x12\x16\n\x06signal\x18\x01 \x01(\x05R\x06signal"\x12\n\x10GetProcessStatus"\xbc\x01\n\nOutputData\x12;\n\x06stream\x18\x01 \x01(\x0e2#.chalk.sandbox.v2.OutputData.StreamR\x06stream\x12\x12\n\x04data\x18\x02 \x01(\x0cR\x04data"]\n\x06Stream\x12\x16\n\x12STREAM_UNSPECIFIED\x10\x00\x12\x11\n\rSTREAM_STDOUT\x10\x01\x12\x11\n\rSTREAM_STDERR\x10\x02\x12\x15\n\x11STREAM_PTY_OUTPUT\x10\x03"\x9d\x01\n\rProcessStatus\x124\n\x05state\x18\x01 \x01(\x0e2\x1e.chalk.sandbox.v2.ProcessStateR\x05state\x12 \n\texit_code\x18\x02 \x01(\x05H\x00R\x08exitCode\x88\x01\x01\x12\x1b\n\x06signal\x18\x03 \x01(\x05H\x01R\x06signal\x88\x01\x01B\x0c\n\n_exit_codeB\t\n\x07_signal"g\n\rProcessExited\x12 \n\texit_code\x18\x01 \x01(\x05H\x00R\x08exitCode\x88\x01\x01\x12\x1b\n\x06signal\x18\x02 \x01(\x05H\x01R\x06signal\x88\x01\x01B\x0c\n\n_exit_codeB\t\n\x07_signal")\n\rProcessFailed\x12\x18\n\x07message\x18\x01 \x01(\tR\x07message"i\n\x0fProcessTimedOut\x12 \n\texit_code\x18\x01 \x01(\x05H\x00R\x08exitCode\x88\x01\x01\x12\x1b\n\x06signal\x18\x02 \x01(\x05H\x01R\x06signal\x88\x01\x01B\x0c\n\n_exit_codeB\t\n\x07_signal"<\n\x0cSessionError\x12\x12\n\x04code\x18\x01 \x01(\tR\x04code\x12\x18\n\x07message\x18\x02 \x01(\tR\x07message"\xba\x04\n\x12OpenSessionRequest\x12?\n\x0bnew_process\x18\x01 \x01(\x0b2\x1c.chalk.sandbox.v2.NewProcessH\x00R\nnewProcess\x12H\n\x0eattach_session\x18\x02 \x01(\x0b2\x1f.chalk.sandbox.v2.AttachSessionH\x00R\rattachSession\x12H\n\x0edetach_session\x18\x03 \x01(\x0b2\x1f.chalk.sandbox.v2.DetachSessionH\x00R\rdetachSession\x12<\n\nstdin_data\x18\x04 \x01(\x0b2\x1b.chalk.sandbox.v2.StdinDataH\x00R\tstdinData\x129\n\tstdin_eof\x18\x05 \x01(\x0b2\x1a.chalk.sandbox.v2.StdinEofH\x00R\x08stdinEof\x129\n\x06signal\x18\x06 \x01(\x0b2\x1f.chalk.sandbox.v2.SessionSignalH\x00R\x06signal\x12<\n\nresize_pty\x18\x07 \x01(\x0b2\x1b.chalk.sandbox.v2.ResizePtyH\x00R\tresizePty\x12R\n\x12get_process_status\x18\x08 \x01(\x0b2".chalk.sandbox.v2.GetProcessStatusH\x00R\x10getProcessStatusB\t\n\x07command"\xf8\x04\n\x13OpenSessionResponse\x126\n\x05error\x18\x01 \x01(\x0b2\x1e.chalk.sandbox.v2.SessionErrorH\x00R\x05error\x12N\n\x10session_attached\x18\x02 \x01(\x0b2!.chalk.sandbox.v2.SessionAttachedH\x00R\x0fsessionAttached\x12?\n\x0boutput_data\x18\x03 \x01(\x0b2\x1c.chalk.sandbox.v2.OutputDataH\x00R\noutputData\x12H\n\x0eprocess_status\x18\x04 \x01(\x0b2\x1f.chalk.sandbox.v2.ProcessStatusH\x00R\rprocessStatus\x12H\n\x0eprocess_exited\x18\x05 \x01(\x0b2\x1f.chalk.sandbox.v2.ProcessExitedH\x00R\rprocessExited\x12N\n\x10session_detached\x18\x06 \x01(\x0b2!.chalk.sandbox.v2.SessionDetachedH\x00R\x0fsessionDetached\x12H\n\x0eprocess_failed\x18\x07 \x01(\x0b2\x1f.chalk.sandbox.v2.ProcessFailedH\x00R\rprocessFailed\x12O\n\x11process_timed_out\x18\x08 \x01(\x0b2!.chalk.sandbox.v2.ProcessTimedOutH\x00R\x0fprocessTimedOut\x12\x10\n\x03seq\x18\t \x01(\x04R\x03seqB\x07\n\x05event"\xb3\x01\n\x0bSessionInfo\x12\x1d\n\nsession_id\x18\x01 \x01(\tR\tsessionId\x12=\n\x0bnew_process\x18\x02 \x01(\x0b2\x1c.chalk.sandbox.v2.NewProcessR\nnewProcess\x12F\n\x0eprocess_status\x18\x03 \x01(\x0b2\x1f.chalk.sandbox.v2.ProcessStatusR\rprocessStatus"Q\n\x11GetSessionRequest\x12\x1d\n\nsandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x1d\n\nsession_id\x18\x02 \x01(\tR\tsessionId"M\n\x12GetSessionResponse\x127\n\x07session\x18\x01 \x01(\x0b2\x1d.chalk.sandbox.v2.SessionInfoR\x07session"4\n\x13ListSessionsRequest\x12\x1d\n\nsandbox_id\x18\x01 \x01(\tR\tsandboxId"Q\n\x14ListSessionsResponse\x129\n\x08sessions\x18\x01 \x03(\x0b2\x1d.chalk.sandbox.v2.SessionInfoR\x08sessions*\x99\x01\n\x0cProcessState\x12\x1d\n\x19PROCESS_STATE_UNSPECIFIED\x10\x00\x12\x19\n\x15PROCESS_STATE_RUNNING\x10\x01\x12\x18\n\x14PROCESS_STATE_EXITED\x10\x02\x12\x18\n\x14PROCESS_STATE_FAILED\x10\x03\x12\x1b\n\x17PROCESS_STATE_TIMED_OUT\x10\x042\x9f\x03\n\x15SandboxProcessService\x12_\n\x0bExecCommand\x12$.chalk.sandbox.v2.ExecCommandRequest\x1a%.chalk.sandbox.v2.ExecCommandResponse"\x03\x80}\x0e\x12c\n\x0bOpenSession\x12$.chalk.sandbox.v2.OpenSessionRequest\x1a%.chalk.sandbox.v2.OpenSessionResponse"\x03\x80}\x0e(\x010\x01\x12\\\n\nGetSession\x12#.chalk.sandbox.v2.GetSessionRequest\x1a$.chalk.sandbox.v2.GetSessionResponse"\x03\x80}\x0b\x12b\n\x0cListSessions\x12%.chalk.sandbox.v2.ListSessionsRequest\x1a&.chalk.sandbox.v2.ListSessionsResponse"\x03\x80}\x0bB\xa3\x01\n\x14com.chalk.sandbox.v2B\x13ProcessServiceProtoP\x01Z\x14sandbox/v2;sandboxv2\xa2\x02\x03CSX\xaa\x02\x10Chalk.Sandbox.V2\xca\x02\x10Chalk\\Sandbox\\V2\xe2\x02\x1cChalk\\Sandbox\\V2\\GPBMetadata\xea\x02\x12Chalk::Sandbox::V2b\x06proto3',
     [
         permissions_pb.desc(),
         duration_pb.desc(),

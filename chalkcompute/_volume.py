@@ -1194,7 +1194,7 @@ class VolumeClient:
         per destination directory — named from ``volume_name`` — and uploads
         the file bytes, but does **not** commit. Each staged upload is
         returned as a typed ``chalk.volume.v2.CommitIntent`` for
-        ``CreateExternalFunctionVersionRequest.volume_commits``: the server
+        ``ExternalFunctionVersionSpec.volume_commits``: the server
         commits the intent and stamps the resulting version_id onto the spec
         volume with the matching name, so every replica is pinned to that
         immutable snapshot.
