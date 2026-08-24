@@ -108,6 +108,8 @@ from chalkcompute._trace import TraceSummary as TraceSummary
 from chalkcompute._tracing import span as span
 from chalkcompute._tracing import trace_headers as trace_headers
 from chalkcompute._tracing import traced as traced
+from chalkcompute._volume import Diff as Diff
+from chalkcompute._volume import FileChange as FileChange
 from chalkcompute._volume import FileInfo as FileInfo
 from chalkcompute._volume import ForkInfo as ForkInfo
 from chalkcompute._volume import VersionInfo as VersionInfo
@@ -222,6 +224,8 @@ __all__ = [
     "ReadinessProbe",
     "CronScalingTrigger",
     "CronScalingWindow",
+    "Diff",
+    "FileChange",
     "FileInfo",
     "ForkInfo",
     "Volume",
