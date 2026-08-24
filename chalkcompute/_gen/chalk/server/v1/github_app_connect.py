@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from connectrpc.client import ConnectClientSync
 from connectrpc.method import IdempotencyLevel, MethodInfo
 
-from .github_app_pb import CompleteGitHubAppInstallationRequest, CompleteGitHubAppInstallationResponse, CreatePullRequestFromChangesRequest, CreatePullRequestFromChangesResponse, DeleteGitHubAppConfigRequest, DeleteGitHubAppConfigResponse, DeleteGitHubAppInstallationRequest, DeleteGitHubAppInstallationResponse, GetGitHubAppConfigRequest, GetGitHubAppConfigResponse, GetGitHubAppInstallUrlRequest, GetGitHubAppInstallUrlResponse, GetGitHubRepositoryArchiveRequest, GetGitHubRepositoryArchiveResponse, GetProjectGitHubRepoLinkRequest, GetProjectGitHubRepoLinkResponse, LinkProjectToGitHubRepositoryRequest, LinkProjectToGitHubRepositoryResponse, ListGitHubAppInstallationsRequest, ListGitHubAppInstallationsResponse, ListGitHubBranchesRequest, ListGitHubBranchesResponse, ListGitHubPullRequestsRequest, ListGitHubPullRequestsResponse, ListGitHubRepositoriesRequest, ListGitHubRepositoriesResponse, ListProjectGitHubRepoLinksRequest, ListProjectGitHubRepoLinksResponse, SyncGitHubAppInstallationsRequest, SyncGitHubAppInstallationsResponse, UnlinkProjectFromGitHubRepositoryRequest, UnlinkProjectFromGitHubRepositoryResponse, UpsertGitHubAppConfigRequest, UpsertGitHubAppConfigResponse
+from .github_app_pb import CompleteGitHubAppInstallationRequest, CompleteGitHubAppInstallationResponse, CreatePullRequestFromChangesRequest, CreatePullRequestFromChangesResponse, CreateVolumeFromGitHubRepoRequest, CreateVolumeFromGitHubRepoResponse, DeleteGitHubAppConfigRequest, DeleteGitHubAppConfigResponse, DeleteGitHubAppInstallationRequest, DeleteGitHubAppInstallationResponse, GetGitHubAppConfigRequest, GetGitHubAppConfigResponse, GetGitHubAppInstallUrlRequest, GetGitHubAppInstallUrlResponse, GetGitHubRepositoryArchiveRequest, GetGitHubRepositoryArchiveResponse, GetProjectGitHubRepoLinkRequest, GetProjectGitHubRepoLinkResponse, LinkProjectToGitHubRepositoryRequest, LinkProjectToGitHubRepositoryResponse, ListGitHubAppInstallationsRequest, ListGitHubAppInstallationsResponse, ListGitHubBranchesRequest, ListGitHubBranchesResponse, ListGitHubPullRequestsRequest, ListGitHubPullRequestsResponse, ListGitHubRepositoriesRequest, ListGitHubRepositoriesResponse, ListProjectGitHubRepoLinksRequest, ListProjectGitHubRepoLinksResponse, SyncGitHubAppInstallationsRequest, SyncGitHubAppInstallationsResponse, UnlinkProjectFromGitHubRepositoryRequest, UnlinkProjectFromGitHubRepositoryResponse, UpsertGitHubAppConfigRequest, UpsertGitHubAppConfigResponse
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Mapping
@@ -286,6 +286,29 @@ class GitHubAppServiceClientSync(ConnectClientSync):
                 service_name="chalk.server.v1.GitHubAppService",
                 input=CreatePullRequestFromChangesRequest,
                 output=CreatePullRequestFromChangesResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def create_volume_from_git_hub_repo(
+        self,
+        request: CreateVolumeFromGitHubRepoRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> CreateVolumeFromGitHubRepoResponse:
+        """
+        Downloads the repository archive at ref and commits its contents into a
+        new volume, server-side -- no archive bytes cross the caller.
+        """
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="CreateVolumeFromGitHubRepo",
+                service_name="chalk.server.v1.GitHubAppService",
+                input=CreateVolumeFromGitHubRepoRequest,
+                output=CreateVolumeFromGitHubRepoResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,

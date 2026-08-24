@@ -15,12 +15,9 @@ from __future__ import annotations
 import builtins
 import datetime
 import difflib
-import gzip
 import importlib
-import io
 import logging
 import os
-import tarfile
 import uuid
 from collections.abc import Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
@@ -29,15 +26,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
 
 from connectrpc.errors import ConnectError as ConnectRpcError
-from connectrpc.protocol import ProtocolType
 from protobuf import Oneof
 
-from chalkcompute._connect import ConnectClient, rpc_address_from_target
+from chalkcompute._connect import ConnectClient
 from chalkcompute._gen.chalk.server.v1 import datasets_connect, datasets_pb, github_app_connect, github_app_pb
 from chalkcompute._gen.chalk.volume.v2 import volume_pb as pb_v2
 from chalkcompute._http import HTTP_TRANSPORT_ERRORS, SYNC_HTTP_CLIENT
 from chalkcompute._image import Image
-from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
 from chalkcompute._tracing import traced
 
 if TYPE_CHECKING:
@@ -507,7 +502,8 @@ class Volume:
         plain, read-only snapshot of the repository's files at ``ref`` (a
         branch, tag, or commit SHA; the repository's default branch is used
         if omitted) — it carries no git history, credentials, or connection
-        back to GitHub.
+        back to GitHub. The download and commit both happen server-side; no
+        archive bytes pass through this process.
 
         Parameters
         ----------
@@ -524,7 +520,7 @@ class Volume:
             and authenticate the new volume. Defaults to one built from the
             ambient auth context.
         timeout
-            RPC deadline, in seconds, for each GitHub App service call.
+            RPC deadline, in seconds, for the GitHub App service call.
 
         Returns
         -------
@@ -535,17 +531,25 @@ class Volume:
         installation_id, owner, name = _resolve_github_installation(
             repo, connect=connect, timeout=timeout
         )
-        archive = _download_github_repo_archive(
-            installation_id, owner, name, ref, connect=connect, timeout=timeout
-        )
-        contents = _extract_tar_gz_files(archive)
-
         volume_name = volume_name or f"github-{owner}-{name}-{uuid.uuid4().hex[:8]}"
-        volume = cls(volume_name, client=VolumeClient.from_connect(connect), create_if_missing=True)
-        with volume.batch_upload() as batch:
-            for path, data in contents:
-                batch.put(path, data)
-        return volume
+
+        stub = connect.stub(github_app_connect.GitHubAppServiceClientSync)
+        try:
+            connect.call(
+                stub.create_volume_from_git_hub_repo,
+                github_app_pb.CreateVolumeFromGitHubRepoRequest(
+                    installation_id=installation_id,
+                    owner=owner,
+                    repo=name,
+                    ref=ref,
+                    volume_name=volume_name,
+                ),
+                timeout=timeout,
+            )
+        except ConnectRpcError as exc:
+            raise VolumeError(f"failed to create volume from {repo!r}: {exc}") from exc
+
+        return cls(volume_name, client=VolumeClient.from_connect(connect), create_if_missing=False)
 
     @classmethod
     def from_dataset(
@@ -2222,68 +2226,3 @@ def _resolve_github_installation(
             page += 1
 
     raise VolumeError(f"repo {repo!r} was not found in any linked GitHub App installation")
-
-
-def _github_app_stream_stub(
-    connect: ConnectClient,
-) -> github_app_connect.GitHubAppServiceClientSync:
-    connect._ensure_auth()
-    api_server = connect._api_server or ""
-    return github_app_connect.GitHubAppServiceClientSync(
-        rpc_address_from_target(api_server, use_tls=api_server.startswith("https://")),
-        protocol=ProtocolType.GRPC,
-        interceptors=rpc_interceptors(),
-        http_client=SYNC_HTTP_CLIENT,
-        read_max_bytes=RPC_READ_MAX_BYTES,
-    )
-
-
-def _download_github_repo_archive(
-    installation_id: str,
-    owner: str,
-    name: str,
-    ref: str | None,
-    *,
-    connect: ConnectClient,
-    timeout: float,
-) -> bytes:
-    stub = _github_app_stream_stub(connect)
-    request = github_app_pb.GetGitHubRepositoryArchiveRequest(
-        installation_id=installation_id, owner=owner, repo=name, ref=ref
-    )
-    chunks: list[bytes] = []
-    try:
-        for chunk in stub.get_git_hub_repository_archive(
-            request,
-            headers=dict(connect._rpc_metadata()),
-            timeout_ms=int(timeout * 1000),
-        ):
-            chunks.append(chunk.data)
-    except ConnectRpcError as exc:
-        raise VolumeError(f"failed to download archive for {owner}/{name}: {exc}") from exc
-    return b"".join(chunks)
-
-
-def _extract_tar_gz_files(archive: bytes) -> list[tuple[str, bytes]]:
-    """Extract a GitHub codeload-style gzip+tar archive's regular files.
-
-    Strips the leading ``<owner>-<repo>-<sha>/`` path segment GitHub adds to
-    every entry, rejects path-traversal entries, and skips everything that
-    isn't a regular file (directories, symlinks — unlike the server-side
-    archive-to-volume tool, this doesn't reconstruct symlinks).
-    """
-    files: list[tuple[str, bytes]] = []
-    with tarfile.open(fileobj=gzip.GzipFile(fileobj=io.BytesIO(archive))) as tar:
-        for member in tar.getmembers():
-            if "/" not in member.name:
-                continue  # e.g. pax_global_header, with no repo-root prefix
-            rel_path = member.name.split("/", 1)[1]
-            if not rel_path or rel_path.startswith("/") or ".." in rel_path.split("/"):
-                continue
-            if not member.isfile():
-                continue
-            extracted = tar.extractfile(member)
-            if extracted is None:
-                continue
-            files.append((rel_path, extracted.read()))
-    return files
