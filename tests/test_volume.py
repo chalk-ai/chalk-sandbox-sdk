@@ -780,7 +780,9 @@ def test_version_diff_requires_both_sides_from_a_volume_handle() -> None:
         detached.diff(attached)
 
 
-def test_version_diff_rejects_cross_volume_diff(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_version_diff_rejects_cross_volume_diff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     client = _make_client(monkeypatch)
     client._inner.get_volume.return_value = {
         "volume": _volume_dict("models"),
@@ -795,7 +797,9 @@ def test_version_diff_rejects_cross_volume_diff(monkeypatch: pytest.MonkeyPatch)
     }
     old_version = Volume("other", client=other_client).version
 
-    with pytest.raises(VolumeError, match="cannot diff versions from different volumes"):
+    with pytest.raises(
+        VolumeError, match="cannot diff versions from different volumes"
+    ):
         new_version.diff(old_version)
 
 
@@ -837,8 +841,8 @@ def test_version_diff_detects_added_modified_deleted(
         (20, "added.txt"): b"new file",
         (20, "changed.txt"): b"after",
     }
-    client._inner.download_bytes.side_effect = (
-        lambda volume, path, version_id, _: downloads[(version_id, path)]
+    client._inner.download_bytes.side_effect = lambda volume, path, version_id, _: (
+        downloads[(version_id, path)]
     )
 
     diff = new_version.diff(old_version)
@@ -913,7 +917,9 @@ def test_diff_unified_diff_reports_binary_files_without_content() -> None:
         ),
     )
 
-    assert diff.unified_diff() == "Binary files a/weights.bin and b/weights.bin differ\n"
+    assert (
+        diff.unified_diff() == "Binary files a/weights.bin and b/weights.bin differ\n"
+    )
 
 
 def _list_datasets_handler(*, dataset_name: str, offline_query_id: str | None):

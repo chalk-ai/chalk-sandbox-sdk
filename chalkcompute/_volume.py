@@ -397,14 +397,20 @@ class Diff:
             old_lines = _decode_diff_lines(change.old_content)
             new_lines = _decode_diff_lines(change.new_content)
             if old_lines is None or new_lines is None:
-                rendered.append(f"Binary files a/{change.path} and b/{change.path} differ\n")
+                rendered.append(
+                    f"Binary files a/{change.path} and b/{change.path} differ\n"
+                )
                 continue
             rendered.extend(
                 difflib.unified_diff(
                     old_lines,
                     new_lines,
-                    fromfile="/dev/null" if change.kind == "added" else f"a/{change.path}",
-                    tofile="/dev/null" if change.kind == "deleted" else f"b/{change.path}",
+                    fromfile="/dev/null"
+                    if change.kind == "added"
+                    else f"a/{change.path}",
+                    tofile="/dev/null"
+                    if change.kind == "deleted"
+                    else f"b/{change.path}",
                 )
             )
         return "".join(rendered)
@@ -523,15 +529,28 @@ class Volume:
         Volume
             A new volume containing the revision's output files.
         """
-        from chalkcompute._evaluation import DatasetRevisionRef, _resolve_dataset_revision
+        from chalkcompute._evaluation import (
+            DatasetRevisionRef,
+            _resolve_dataset_revision,
+        )
 
         connect = connect_client or ConnectClient()
-        ref = DatasetRevisionRef(dataset_name=dataset) if isinstance(dataset, str) else _resolve_dataset_revision(dataset)
-        revision_id = _resolve_dataset_revision_id(ref, connect=connect, timeout=timeout)
-        contents = _download_dataset_revision_files(revision_id, connect=connect, timeout=timeout)
+        ref = (
+            DatasetRevisionRef(dataset_name=dataset)
+            if isinstance(dataset, str)
+            else _resolve_dataset_revision(dataset)
+        )
+        revision_id = _resolve_dataset_revision_id(
+            ref, connect=connect, timeout=timeout
+        )
+        contents = _download_dataset_revision_files(
+            revision_id, connect=connect, timeout=timeout
+        )
 
         name = volume_name or f"dataset-{_volume_name_slug(ref)}-{uuid.uuid4().hex[:8]}"
-        volume = cls(name, client=VolumeClient.from_connect(connect), create_if_missing=True)
+        volume = cls(
+            name, client=VolumeClient.from_connect(connect), create_if_missing=True
+        )
         with volume.batch_upload() as batch:
             for index, data in enumerate(contents):
                 batch.put(f"part-{index:05d}.parquet", data)
@@ -1863,8 +1882,12 @@ def _diff_volume_versions(
 ) -> Diff:
     old = volume.at_version(old_version_id)
     new = volume.at_version(new_version_id)
-    old_files = {f.path: f for f in old.listdir(recursive=True) if f.kind != "directory"}
-    new_files = {f.path: f for f in new.listdir(recursive=True) if f.kind != "directory"}
+    old_files = {
+        f.path: f for f in old.listdir(recursive=True) if f.kind != "directory"
+    }
+    new_files = {
+        f.path: f for f in new.listdir(recursive=True) if f.kind != "directory"
+    }
 
     changes: list[FileChange] = []
     for path in sorted(set(old_files) | set(new_files)):
@@ -1878,7 +1901,11 @@ def _diff_volume_versions(
             changes.append(
                 FileChange(path=path, kind="deleted", old_content=old.read_file(path))
             )
-        elif old_info.hash is None or new_info.hash is None or old_info.hash != new_info.hash:
+        elif (
+            old_info.hash is None
+            or new_info.hash is None
+            or old_info.hash != new_info.hash
+        ):
             # A missing hash on either side can't prove equality, so treat it
             # as changed rather than silently skipping a possible diff.
             changes.append(
@@ -1925,7 +1952,9 @@ def _resolve_dataset_revision_id(
             if not cursor:
                 break
     except ConnectRpcError as exc:
-        raise VolumeError(f"failed to resolve dataset {ref.dataset_name!r}: {exc}") from exc
+        raise VolumeError(
+            f"failed to resolve dataset {ref.dataset_name!r}: {exc}"
+        ) from exc
     raise VolumeError(f"no dataset named {ref.dataset_name!r} was found")
 
 
