@@ -1439,9 +1439,178 @@ class GetGitHubRepositoryArchiveResponse(Message[_GetGitHubRepositoryArchiveResp
 
         data: bytes
 
+_RepoFileChangeInputFields: TypeAlias = Literal["path", "content", "delete", "mode"]
+
+class RepoFileChangeInput(Message[_RepoFileChangeInputFields]):
+    """
+    ```proto
+    message chalk.server.v1.RepoFileChangeInput
+    ```
+
+    Attributes:
+        path:
+            ```proto
+            string path = 1;
+            ```
+        content:
+            Ignored when delete is true.
+
+            ```proto
+            bytes content = 2;
+            ```
+        delete:
+            ```proto
+            bool delete = 3;
+            ```
+        mode:
+            Git file mode: "100644" (file, the default), "100755" (executable), or
+            "120000" (symlink, with content holding the target).
+
+            ```proto
+            optional string mode = 4;
+            ```
+    """
+
+    __slots__ = ("path", "content", "delete", "mode")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            path: str = "",
+            content: bytes = b"",
+            delete: bool = False,
+            mode: str | None = None,
+        ) -> None:
+            pass
+
+        path: str
+        content: bytes
+        delete: bool
+        mode: str
+
+_CreatePullRequestFromChangesRequestFields: TypeAlias = Literal["installation_id", "owner", "repo", "base_branch", "head_branch", "title", "body", "draft", "changes"]
+
+class CreatePullRequestFromChangesRequest(Message[_CreatePullRequestFromChangesRequestFields]):
+    """
+    ```proto
+    message chalk.server.v1.CreatePullRequestFromChangesRequest
+    ```
+
+    Attributes:
+        installation_id:
+            ```proto
+            string installation_id = 1;
+            ```
+        owner:
+            ```proto
+            string owner = 2;
+            ```
+        repo:
+            ```proto
+            string repo = 3;
+            ```
+        base_branch:
+            ```proto
+            string base_branch = 4;
+            ```
+        head_branch:
+            Defaults to a generated unique branch name when unset.
+
+            ```proto
+            optional string head_branch = 5;
+            ```
+        title:
+            ```proto
+            string title = 6;
+            ```
+        body:
+            ```proto
+            optional string body = 7;
+            ```
+        draft:
+            ```proto
+            bool draft = 8;
+            ```
+        changes:
+            ```proto
+            repeated chalk.server.v1.RepoFileChangeInput changes = 9;
+            ```
+    """
+
+    __slots__ = ("installation_id", "owner", "repo", "base_branch", "head_branch", "title", "body", "draft", "changes")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            installation_id: str = "",
+            owner: str = "",
+            repo: str = "",
+            base_branch: str = "",
+            head_branch: str | None = None,
+            title: str = "",
+            body: str | None = None,
+            draft: bool = False,
+            changes: list[RepoFileChangeInput] | None = None,
+        ) -> None:
+            pass
+
+        installation_id: str
+        owner: str
+        repo: str
+        base_branch: str
+        head_branch: str
+        title: str
+        body: str
+        draft: bool
+        changes: list[RepoFileChangeInput]
+
+_CreatePullRequestFromChangesResponseFields: TypeAlias = Literal["html_url", "number", "head_branch"]
+
+class CreatePullRequestFromChangesResponse(Message[_CreatePullRequestFromChangesResponseFields]):
+    """
+    ```proto
+    message chalk.server.v1.CreatePullRequestFromChangesResponse
+    ```
+
+    Attributes:
+        html_url:
+            ```proto
+            string html_url = 1;
+            ```
+        number:
+            ```proto
+            int64 number = 2;
+            ```
+        head_branch:
+            ```proto
+            string head_branch = 3;
+            ```
+    """
+
+    __slots__ = ("html_url", "number", "head_branch")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            html_url: str = "",
+            number: int = 0,
+            head_branch: str = "",
+        ) -> None:
+            pass
+
+        html_url: str
+        number: int
+        head_branch: str
+
 
 _DESC = file_desc(
-    b'\n chalk/server/v1/github_app.proto\x12\x0fchalk.server.v1\x1a\x19chalk/auth/v1/audit.proto\x1a\x1fchalk/auth/v1/permissions.proto\x1a\x1echalk/utils/v1/sensitive.proto\x1a\x1fgoogle/protobuf/timestamp.proto"\xcf\x03\n\x0fGitHubAppConfig\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n\x07team_id\x18\x02 \x01(\tR\x06teamId\x12\x15\n\x06app_id\x18\x03 \x01(\x03R\x05appId\x12\x19\n\x08app_slug\x18\x04 \x01(\tR\x07appSlug\x12\x1b\n\tclient_id\x18\x05 \x01(\tR\x08clientId\x127\n\x15private_key_secret_id\x18\x06 \x01(\tR\x12privateKeySecretIdB\x04\xd8\xa1\'\x01\x125\n\x11webhook_secret_id\x18\x07 \x01(\tH\x00R\x0fwebhookSecretIdB\x04\xd8\xa1\'\x01\x88\x01\x01\x123\n\x10client_secret_id\x18\x08 \x01(\tH\x01R\x0eclientSecretIdB\x04\xd8\xa1\'\x01\x88\x01\x01\x129\n\ncreated_at\x18\t \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n\nupdated_at\x18\n \x01(\x0b2\x1a.google.protobuf.TimestampR\tupdatedAtB\x14\n\x12_webhook_secret_idB\x13\n\x11_client_secret_id"\xcf\x04\n\x15GitHubAppInstallation\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n\x07team_id\x18\x02 \x01(\tR\x06teamId\x12\'\n\x0finstallation_id\x18\x03 \x01(\x03R\x0einstallationId\x12#\n\raccount_login\x18\x04 \x01(\tR\x0caccountLogin\x12!\n\x0caccount_type\x18\x05 \x01(\tR\x0baccountType\x126\n\x14repository_selection\x18\x06 \x01(\tH\x00R\x13repositorySelection\x88\x01\x01\x12"\n\navatar_url\x18\x07 \x01(\tH\x01R\tavatarUrl\x88\x01\x01\x124\n\x14installed_by_user_id\x18\x08 \x01(\tH\x02R\x11installedByUserId\x88\x01\x01\x12B\n\x0csuspended_at\x18\t \x01(\x0b2\x1a.google.protobuf.TimestampH\x03R\x0bsuspendedAt\x88\x01\x01\x129\n\ncreated_at\x18\n \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n\nupdated_at\x18\x0b \x01(\x0b2\x1a.google.protobuf.TimestampR\tupdatedAtB\x17\n\x15_repository_selectionB\r\n\x0b_avatar_urlB\x17\n\x15_installed_by_user_idB\x0f\n\r_suspended_at"\xc5\x01\n\x10GitHubRepository\x12\x0e\n\x02id\x18\x01 \x01(\x03R\x02id\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x12\x1b\n\tfull_name\x18\x03 \x01(\tR\x08fullName\x12\x14\n\x05owner\x18\x04 \x01(\tR\x05owner\x12\x18\n\x07private\x18\x05 \x01(\x08R\x07private\x12%\n\x0edefault_branch\x18\x06 \x01(\tR\rdefaultBranch\x12\x19\n\x08html_url\x18\x07 \x01(\tR\x07htmlUrl"\xe1\x02\n\x15GitHubProjectRepoLink\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n\x07team_id\x18\x02 \x01(\tR\x06teamId\x12\x1d\n\nproject_id\x18\x03 \x01(\tR\tprojectId\x12\'\n\x0finstallation_id\x18\x04 \x01(\tR\x0einstallationId\x12\x1d\n\nrepo_owner\x18\x05 \x01(\tR\trepoOwner\x12\x1b\n\trepo_name\x18\x06 \x01(\tR\x08repoName\x12%\n\x0edefault_branch\x18\x07 \x01(\tR\rdefaultBranch\x129\n\ncreated_at\x18\x08 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n\nupdated_at\x18\t \x01(\x0b2\x1a.google.protobuf.TimestampR\tupdatedAt"_\n\x0cGitHubBranch\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n\ncommit_sha\x18\x02 \x01(\tR\tcommitSha\x12\x1c\n\tprotected\x18\x03 \x01(\x08R\tprotected"\xad\x03\n\x11GitHubPullRequest\x12\x0e\n\x02id\x18\x01 \x01(\x03R\x02id\x12\x16\n\x06number\x18\x02 \x01(\x05R\x06number\x12\x14\n\x05title\x18\x03 \x01(\tR\x05title\x12\x14\n\x05state\x18\x04 \x01(\tR\x05state\x12\x19\n\x08html_url\x18\x05 \x01(\tR\x07htmlUrl\x12\x1d\n\nuser_login\x18\x06 \x01(\tR\tuserLogin\x12\x19\n\x08head_ref\x18\x07 \x01(\tR\x07headRef\x12\x19\n\x08base_ref\x18\x08 \x01(\tR\x07baseRef\x129\n\ncreated_at\x18\t \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12>\n\nupdated_at\x18\n \x01(\x0b2\x1a.google.protobuf.TimestampH\x00R\tupdatedAt\x88\x01\x01\x12<\n\tmerged_at\x18\x0b \x01(\x0b2\x1a.google.protobuf.TimestampH\x01R\x08mergedAt\x88\x01\x01B\r\n\x0b_updated_atB\x0c\n\n_merged_at"\x9b\x02\n\x1cUpsertGitHubAppConfigRequest\x12\x15\n\x06app_id\x18\x01 \x01(\x03R\x05appId\x12\x19\n\x08app_slug\x18\x02 \x01(\tR\x07appSlug\x12\x1b\n\tclient_id\x18\x03 \x01(\tR\x08clientId\x12%\n\x0bprivate_key\x18\x04 \x01(\tR\nprivateKeyB\x04\xd8\xa1\'\x01\x120\n\x0ewebhook_secret\x18\x05 \x01(\tH\x00R\rwebhookSecretB\x04\xd8\xa1\'\x01\x88\x01\x01\x12.\n\rclient_secret\x18\x06 \x01(\tH\x01R\x0cclientSecretB\x04\xd8\xa1\'\x01\x88\x01\x01B\x11\n\x0f_webhook_secretB\x10\n\x0e_client_secret"Y\n\x1dUpsertGitHubAppConfigResponse\x128\n\x06config\x18\x01 \x01(\x0b2 .chalk.server.v1.GitHubAppConfigR\x06config"\x1b\n\x19GetGitHubAppConfigRequest"f\n\x1aGetGitHubAppConfigResponse\x12=\n\x06config\x18\x01 \x01(\x0b2 .chalk.server.v1.GitHubAppConfigH\x00R\x06config\x88\x01\x01B\t\n\x07_config"\x1e\n\x1cDeleteGitHubAppConfigRequest"\x1f\n\x1dDeleteGitHubAppConfigResponse"\x1f\n\x1dGetGitHubAppInstallUrlRequest"2\n\x1eGetGitHubAppInstallUrlResponse\x12\x10\n\x03url\x18\x01 \x01(\tR\x03url"\x88\x01\n$CompleteGitHubAppInstallationRequest\x12\'\n\x0finstallation_id\x18\x01 \x01(\x03R\x0einstallationId\x12&\n\x0csetup_action\x18\x02 \x01(\tH\x00R\x0bsetupAction\x88\x01\x01B\x0f\n\r_setup_action"s\n%CompleteGitHubAppInstallationResponse\x12J\n\x0cinstallation\x18\x01 \x01(\x0b2&.chalk.server.v1.GitHubAppInstallationR\x0cinstallation"#\n!ListGitHubAppInstallationsRequest"r\n"ListGitHubAppInstallationsResponse\x12L\n\rinstallations\x18\x01 \x03(\x0b2&.chalk.server.v1.GitHubAppInstallationR\rinstallations"4\n"DeleteGitHubAppInstallationRequest\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id"%\n#DeleteGitHubAppInstallationResponse"#\n!SyncGitHubAppInstallationsRequest"r\n"SyncGitHubAppInstallationsResponse\x12L\n\rinstallations\x18\x01 \x03(\x0b2&.chalk.server.v1.GitHubAppInstallationR\rinstallations"\x97\x01\n\x1dListGitHubRepositoriesRequest\x12\'\n\x0finstallation_id\x18\x01 \x01(\tR\x0einstallationId\x12\x17\n\x04page\x18\x02 \x01(\x05H\x00R\x04page\x88\x01\x01\x12\x1e\n\x08per_page\x18\x03 \x01(\x05H\x01R\x07perPage\x88\x01\x01B\x07\n\x05_pageB\x0b\n\t_per_page"g\n\x1eListGitHubRepositoriesResponse\x12E\n\x0crepositories\x18\x01 \x03(\x0b2!.chalk.server.v1.GitHubRepositoryR\x0crepositories"\xe6\x01\n\x1dListGitHubPullRequestsRequest\x12\'\n\x0finstallation_id\x18\x01 \x01(\tR\x0einstallationId\x12\x14\n\x05owner\x18\x02 \x01(\tR\x05owner\x12\x12\n\x04repo\x18\x03 \x01(\tR\x04repo\x12\x19\n\x05state\x18\x04 \x01(\tH\x00R\x05state\x88\x01\x01\x12\x17\n\x04page\x18\x05 \x01(\x05H\x01R\x04page\x88\x01\x01\x12\x1e\n\x08per_page\x18\x06 \x01(\x05H\x02R\x07perPage\x88\x01\x01B\x08\n\x06_stateB\x07\n\x05_pageB\x0b\n\t_per_page"i\n\x1eListGitHubPullRequestsResponse\x12G\n\rpull_requests\x18\x01 \x03(\x0b2".chalk.server.v1.GitHubPullRequestR\x0cpullRequests"\xe9\x01\n$LinkProjectToGitHubRepositoryRequest\x12\x1d\n\nproject_id\x18\x01 \x01(\tR\tprojectId\x12\'\n\x0finstallation_id\x18\x02 \x01(\tR\x0einstallationId\x12\x1d\n\nrepo_owner\x18\x03 \x01(\tR\trepoOwner\x12\x1b\n\trepo_name\x18\x04 \x01(\tR\x08repoName\x12*\n\x0edefault_branch\x18\x05 \x01(\tH\x00R\rdefaultBranch\x88\x01\x01B\x11\n\x0f_default_branch"c\n%LinkProjectToGitHubRepositoryResponse\x12:\n\x04link\x18\x01 \x01(\x0b2&.chalk.server.v1.GitHubProjectRepoLinkR\x04link"I\n(UnlinkProjectFromGitHubRepositoryRequest\x12\x1d\n\nproject_id\x18\x01 \x01(\tR\tprojectId"+\n)UnlinkProjectFromGitHubRepositoryResponse"@\n\x1fGetProjectGitHubRepoLinkRequest\x12\x1d\n\nproject_id\x18\x01 \x01(\tR\tprojectId"l\n GetProjectGitHubRepoLinkResponse\x12?\n\x04link\x18\x01 \x01(\x0b2&.chalk.server.v1.GitHubProjectRepoLinkH\x00R\x04link\x88\x01\x01B\x07\n\x05_link"#\n!ListProjectGitHubRepoLinksRequest"b\n"ListProjectGitHubRepoLinksResponse\x12<\n\x05links\x18\x01 \x03(\x0b2&.chalk.server.v1.GitHubProjectRepoLinkR\x05links"\xbd\x01\n\x19ListGitHubBranchesRequest\x12\'\n\x0finstallation_id\x18\x01 \x01(\tR\x0einstallationId\x12\x14\n\x05owner\x18\x02 \x01(\tR\x05owner\x12\x12\n\x04repo\x18\x03 \x01(\tR\x04repo\x12\x17\n\x04page\x18\x04 \x01(\x05H\x00R\x04page\x88\x01\x01\x12\x1e\n\x08per_page\x18\x05 \x01(\x05H\x01R\x07perPage\x88\x01\x01B\x07\n\x05_pageB\x0b\n\t_per_page"W\n\x1aListGitHubBranchesResponse\x129\n\x08branches\x18\x01 \x03(\x0b2\x1d.chalk.server.v1.GitHubBranchR\x08branches"\x95\x01\n!GetGitHubRepositoryArchiveRequest\x12\'\n\x0finstallation_id\x18\x01 \x01(\tR\x0einstallationId\x12\x14\n\x05owner\x18\x02 \x01(\tR\x05owner\x12\x12\n\x04repo\x18\x03 \x01(\tR\x04repo\x12\x15\n\x03ref\x18\x04 \x01(\tH\x00R\x03ref\x88\x01\x01B\x06\n\x04_ref"8\n"GetGitHubRepositoryArchiveResponse\x12\x12\n\x04data\x18\x01 \x01(\x0cR\x04data2\xf2\x13\n\x10GitHubAppService\x12\xa7\x01\n\x15UpsertGitHubAppConfig\x12-.chalk.server.v1.UpsertGitHubAppConfigRequest\x1a..chalk.server.v1.UpsertGitHubAppConfigResponse"/\x90\x02\x02\x80}\n\x8a\xd3\x0e%\x08\x02\x12!Upserted GitHub App configuration\x12u\n\x12GetGitHubAppConfig\x12*.chalk.server.v1.GetGitHubAppConfigRequest\x1a+.chalk.server.v1.GetGitHubAppConfigResponse"\x06\x90\x02\x01\x80}\n\x12\xa3\x01\n\x15DeleteGitHubAppConfig\x12-.chalk.server.v1.DeleteGitHubAppConfigRequest\x1a..chalk.server.v1.DeleteGitHubAppConfigResponse"+\x80}\n\x8a\xd3\x0e$\x08\x02\x12 Deleted GitHub App configuration\x12\x81\x01\n\x16GetGitHubAppInstallUrl\x12..chalk.server.v1.GetGitHubAppInstallUrlRequest\x1a/.chalk.server.v1.GetGitHubAppInstallUrlResponse"\x06\x90\x02\x01\x80}\x02\x12\xbc\x01\n\x1dCompleteGitHubAppInstallation\x125.chalk.server.v1.CompleteGitHubAppInstallationRequest\x1a6.chalk.server.v1.CompleteGitHubAppInstallationResponse",\x80}\x02\x8a\xd3\x0e%\x08\x02\x12!Completed GitHub App installation\x12\x8d\x01\n\x1aListGitHubAppInstallations\x122.chalk.server.v1.ListGitHubAppInstallationsRequest\x1a3.chalk.server.v1.ListGitHubAppInstallationsResponse"\x06\x90\x02\x01\x80}\x02\x12\xb6\x01\n\x1bDeleteGitHubAppInstallation\x123.chalk.server.v1.DeleteGitHubAppInstallationRequest\x1a4.chalk.server.v1.DeleteGitHubAppInstallationResponse",\x80}\n\x8a\xd3\x0e%\x08\x02\x12!Deleted a GitHub App installation\x12\xbd\x01\n\x1aSyncGitHubAppInstallations\x122.chalk.server.v1.SyncGitHubAppInstallationsRequest\x1a3.chalk.server.v1.SyncGitHubAppInstallationsResponse"6\x80}\n\x8a\xd3\x0e/\x08\x02\x12+Synced GitHub App installations from GitHub\x12\x81\x01\n\x16ListGitHubRepositories\x12..chalk.server.v1.ListGitHubRepositoriesRequest\x1a/.chalk.server.v1.ListGitHubRepositoriesResponse"\x06\x90\x02\x01\x80}\x02\x12\x81\x01\n\x16ListGitHubPullRequests\x12..chalk.server.v1.ListGitHubPullRequestsRequest\x1a/.chalk.server.v1.ListGitHubPullRequestsResponse"\x06\x90\x02\x01\x80}\x02\x12u\n\x12ListGitHubBranches\x12*.chalk.server.v1.ListGitHubBranchesRequest\x1a+.chalk.server.v1.ListGitHubBranchesResponse"\x06\x90\x02\x01\x80}\x02\x12\x8f\x01\n\x1aGetGitHubRepositoryArchive\x122.chalk.server.v1.GetGitHubRepositoryArchiveRequest\x1a3.chalk.server.v1.GetGitHubRepositoryArchiveResponse"\x06\x90\x02\x01\x80}\x020\x01\x12\xc5\x01\n\x1dLinkProjectToGitHubRepository\x125.chalk.server.v1.LinkProjectToGitHubRepositoryRequest\x1a6.chalk.server.v1.LinkProjectToGitHubRepositoryResponse"5\x90\x02\x02\x88}\x1a\x8a\xd3\x0e+\x08\x02\x12\'Linked a project to a GitHub repository\x12\xd7\x01\n!UnlinkProjectFromGitHubRepository\x129.chalk.server.v1.UnlinkProjectFromGitHubRepositoryRequest\x1a:.chalk.server.v1.UnlinkProjectFromGitHubRepositoryResponse";\x90\x02\x02\x88}\x1a\x8a\xd3\x0e1\x08\x02\x12-Unlinked a project from its GitHub repository\x12\x87\x01\n\x18GetProjectGitHubRepoLink\x120.chalk.server.v1.GetProjectGitHubRepoLinkRequest\x1a1.chalk.server.v1.GetProjectGitHubRepoLinkResponse"\x06\x90\x02\x01\x80}\x02\x12\x8d\x01\n\x1aListProjectGitHubRepoLinks\x122.chalk.server.v1.ListProjectGitHubRepoLinksRequest\x1a3.chalk.server.v1.ListProjectGitHubRepoLinksResponse"\x06\x90\x02\x01\x80}\x02B\x97\x01\n\x13com.chalk.server.v1B\x0eGithubAppProtoP\x01Z\x12server/v1;serverv1\xa2\x02\x03CSX\xaa\x02\x0fChalk.Server.V1\xca\x02\x0fChalk\\Server\\V1\xe2\x02\x1bChalk\\Server\\V1\\GPBMetadata\xea\x02\x11Chalk::Server::V1b\x06proto3',
+    b'\n chalk/server/v1/github_app.proto\x12\x0fchalk.server.v1\x1a\x19chalk/auth/v1/audit.proto\x1a\x1fchalk/auth/v1/permissions.proto\x1a\x1echalk/utils/v1/sensitive.proto\x1a\x1fgoogle/protobuf/timestamp.proto"\xcf\x03\n\x0fGitHubAppConfig\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n\x07team_id\x18\x02 \x01(\tR\x06teamId\x12\x15\n\x06app_id\x18\x03 \x01(\x03R\x05appId\x12\x19\n\x08app_slug\x18\x04 \x01(\tR\x07appSlug\x12\x1b\n\tclient_id\x18\x05 \x01(\tR\x08clientId\x127\n\x15private_key_secret_id\x18\x06 \x01(\tR\x12privateKeySecretIdB\x04\xd8\xa1\'\x01\x125\n\x11webhook_secret_id\x18\x07 \x01(\tH\x00R\x0fwebhookSecretIdB\x04\xd8\xa1\'\x01\x88\x01\x01\x123\n\x10client_secret_id\x18\x08 \x01(\tH\x01R\x0eclientSecretIdB\x04\xd8\xa1\'\x01\x88\x01\x01\x129\n\ncreated_at\x18\t \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n\nupdated_at\x18\n \x01(\x0b2\x1a.google.protobuf.TimestampR\tupdatedAtB\x14\n\x12_webhook_secret_idB\x13\n\x11_client_secret_id"\xcf\x04\n\x15GitHubAppInstallation\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n\x07team_id\x18\x02 \x01(\tR\x06teamId\x12\'\n\x0finstallation_id\x18\x03 \x01(\x03R\x0einstallationId\x12#\n\raccount_login\x18\x04 \x01(\tR\x0caccountLogin\x12!\n\x0caccount_type\x18\x05 \x01(\tR\x0baccountType\x126\n\x14repository_selection\x18\x06 \x01(\tH\x00R\x13repositorySelection\x88\x01\x01\x12"\n\navatar_url\x18\x07 \x01(\tH\x01R\tavatarUrl\x88\x01\x01\x124\n\x14installed_by_user_id\x18\x08 \x01(\tH\x02R\x11installedByUserId\x88\x01\x01\x12B\n\x0csuspended_at\x18\t \x01(\x0b2\x1a.google.protobuf.TimestampH\x03R\x0bsuspendedAt\x88\x01\x01\x129\n\ncreated_at\x18\n \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n\nupdated_at\x18\x0b \x01(\x0b2\x1a.google.protobuf.TimestampR\tupdatedAtB\x17\n\x15_repository_selectionB\r\n\x0b_avatar_urlB\x17\n\x15_installed_by_user_idB\x0f\n\r_suspended_at"\xc5\x01\n\x10GitHubRepository\x12\x0e\n\x02id\x18\x01 \x01(\x03R\x02id\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x12\x1b\n\tfull_name\x18\x03 \x01(\tR\x08fullName\x12\x14\n\x05owner\x18\x04 \x01(\tR\x05owner\x12\x18\n\x07private\x18\x05 \x01(\x08R\x07private\x12%\n\x0edefault_branch\x18\x06 \x01(\tR\rdefaultBranch\x12\x19\n\x08html_url\x18\x07 \x01(\tR\x07htmlUrl"\xe1\x02\n\x15GitHubProjectRepoLink\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n\x07team_id\x18\x02 \x01(\tR\x06teamId\x12\x1d\n\nproject_id\x18\x03 \x01(\tR\tprojectId\x12\'\n\x0finstallation_id\x18\x04 \x01(\tR\x0einstallationId\x12\x1d\n\nrepo_owner\x18\x05 \x01(\tR\trepoOwner\x12\x1b\n\trepo_name\x18\x06 \x01(\tR\x08repoName\x12%\n\x0edefault_branch\x18\x07 \x01(\tR\rdefaultBranch\x129\n\ncreated_at\x18\x08 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n\nupdated_at\x18\t \x01(\x0b2\x1a.google.protobuf.TimestampR\tupdatedAt"_\n\x0cGitHubBranch\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n\ncommit_sha\x18\x02 \x01(\tR\tcommitSha\x12\x1c\n\tprotected\x18\x03 \x01(\x08R\tprotected"\xad\x03\n\x11GitHubPullRequest\x12\x0e\n\x02id\x18\x01 \x01(\x03R\x02id\x12\x16\n\x06number\x18\x02 \x01(\x05R\x06number\x12\x14\n\x05title\x18\x03 \x01(\tR\x05title\x12\x14\n\x05state\x18\x04 \x01(\tR\x05state\x12\x19\n\x08html_url\x18\x05 \x01(\tR\x07htmlUrl\x12\x1d\n\nuser_login\x18\x06 \x01(\tR\tuserLogin\x12\x19\n\x08head_ref\x18\x07 \x01(\tR\x07headRef\x12\x19\n\x08base_ref\x18\x08 \x01(\tR\x07baseRef\x129\n\ncreated_at\x18\t \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12>\n\nupdated_at\x18\n \x01(\x0b2\x1a.google.protobuf.TimestampH\x00R\tupdatedAt\x88\x01\x01\x12<\n\tmerged_at\x18\x0b \x01(\x0b2\x1a.google.protobuf.TimestampH\x01R\x08mergedAt\x88\x01\x01B\r\n\x0b_updated_atB\x0c\n\n_merged_at"\x9b\x02\n\x1cUpsertGitHubAppConfigRequest\x12\x15\n\x06app_id\x18\x01 \x01(\x03R\x05appId\x12\x19\n\x08app_slug\x18\x02 \x01(\tR\x07appSlug\x12\x1b\n\tclient_id\x18\x03 \x01(\tR\x08clientId\x12%\n\x0bprivate_key\x18\x04 \x01(\tR\nprivateKeyB\x04\xd8\xa1\'\x01\x120\n\x0ewebhook_secret\x18\x05 \x01(\tH\x00R\rwebhookSecretB\x04\xd8\xa1\'\x01\x88\x01\x01\x12.\n\rclient_secret\x18\x06 \x01(\tH\x01R\x0cclientSecretB\x04\xd8\xa1\'\x01\x88\x01\x01B\x11\n\x0f_webhook_secretB\x10\n\x0e_client_secret"Y\n\x1dUpsertGitHubAppConfigResponse\x128\n\x06config\x18\x01 \x01(\x0b2 .chalk.server.v1.GitHubAppConfigR\x06config"\x1b\n\x19GetGitHubAppConfigRequest"f\n\x1aGetGitHubAppConfigResponse\x12=\n\x06config\x18\x01 \x01(\x0b2 .chalk.server.v1.GitHubAppConfigH\x00R\x06config\x88\x01\x01B\t\n\x07_config"\x1e\n\x1cDeleteGitHubAppConfigRequest"\x1f\n\x1dDeleteGitHubAppConfigResponse"\x1f\n\x1dGetGitHubAppInstallUrlRequest"2\n\x1eGetGitHubAppInstallUrlResponse\x12\x10\n\x03url\x18\x01 \x01(\tR\x03url"\x88\x01\n$CompleteGitHubAppInstallationRequest\x12\'\n\x0finstallation_id\x18\x01 \x01(\x03R\x0einstallationId\x12&\n\x0csetup_action\x18\x02 \x01(\tH\x00R\x0bsetupAction\x88\x01\x01B\x0f\n\r_setup_action"s\n%CompleteGitHubAppInstallationResponse\x12J\n\x0cinstallation\x18\x01 \x01(\x0b2&.chalk.server.v1.GitHubAppInstallationR\x0cinstallation"#\n!ListGitHubAppInstallationsRequest"r\n"ListGitHubAppInstallationsResponse\x12L\n\rinstallations\x18\x01 \x03(\x0b2&.chalk.server.v1.GitHubAppInstallationR\rinstallations"4\n"DeleteGitHubAppInstallationRequest\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id"%\n#DeleteGitHubAppInstallationResponse"#\n!SyncGitHubAppInstallationsRequest"r\n"SyncGitHubAppInstallationsResponse\x12L\n\rinstallations\x18\x01 \x03(\x0b2&.chalk.server.v1.GitHubAppInstallationR\rinstallations"\x97\x01\n\x1dListGitHubRepositoriesRequest\x12\'\n\x0finstallation_id\x18\x01 \x01(\tR\x0einstallationId\x12\x17\n\x04page\x18\x02 \x01(\x05H\x00R\x04page\x88\x01\x01\x12\x1e\n\x08per_page\x18\x03 \x01(\x05H\x01R\x07perPage\x88\x01\x01B\x07\n\x05_pageB\x0b\n\t_per_page"g\n\x1eListGitHubRepositoriesResponse\x12E\n\x0crepositories\x18\x01 \x03(\x0b2!.chalk.server.v1.GitHubRepositoryR\x0crepositories"\xe6\x01\n\x1dListGitHubPullRequestsRequest\x12\'\n\x0finstallation_id\x18\x01 \x01(\tR\x0einstallationId\x12\x14\n\x05owner\x18\x02 \x01(\tR\x05owner\x12\x12\n\x04repo\x18\x03 \x01(\tR\x04repo\x12\x19\n\x05state\x18\x04 \x01(\tH\x00R\x05state\x88\x01\x01\x12\x17\n\x04page\x18\x05 \x01(\x05H\x01R\x04page\x88\x01\x01\x12\x1e\n\x08per_page\x18\x06 \x01(\x05H\x02R\x07perPage\x88\x01\x01B\x08\n\x06_stateB\x07\n\x05_pageB\x0b\n\t_per_page"i\n\x1eListGitHubPullRequestsResponse\x12G\n\rpull_requests\x18\x01 \x03(\x0b2".chalk.server.v1.GitHubPullRequestR\x0cpullRequests"\xe9\x01\n$LinkProjectToGitHubRepositoryRequest\x12\x1d\n\nproject_id\x18\x01 \x01(\tR\tprojectId\x12\'\n\x0finstallation_id\x18\x02 \x01(\tR\x0einstallationId\x12\x1d\n\nrepo_owner\x18\x03 \x01(\tR\trepoOwner\x12\x1b\n\trepo_name\x18\x04 \x01(\tR\x08repoName\x12*\n\x0edefault_branch\x18\x05 \x01(\tH\x00R\rdefaultBranch\x88\x01\x01B\x11\n\x0f_default_branch"c\n%LinkProjectToGitHubRepositoryResponse\x12:\n\x04link\x18\x01 \x01(\x0b2&.chalk.server.v1.GitHubProjectRepoLinkR\x04link"I\n(UnlinkProjectFromGitHubRepositoryRequest\x12\x1d\n\nproject_id\x18\x01 \x01(\tR\tprojectId"+\n)UnlinkProjectFromGitHubRepositoryResponse"@\n\x1fGetProjectGitHubRepoLinkRequest\x12\x1d\n\nproject_id\x18\x01 \x01(\tR\tprojectId"l\n GetProjectGitHubRepoLinkResponse\x12?\n\x04link\x18\x01 \x01(\x0b2&.chalk.server.v1.GitHubProjectRepoLinkH\x00R\x04link\x88\x01\x01B\x07\n\x05_link"#\n!ListProjectGitHubRepoLinksRequest"b\n"ListProjectGitHubRepoLinksResponse\x12<\n\x05links\x18\x01 \x03(\x0b2&.chalk.server.v1.GitHubProjectRepoLinkR\x05links"\xbd\x01\n\x19ListGitHubBranchesRequest\x12\'\n\x0finstallation_id\x18\x01 \x01(\tR\x0einstallationId\x12\x14\n\x05owner\x18\x02 \x01(\tR\x05owner\x12\x12\n\x04repo\x18\x03 \x01(\tR\x04repo\x12\x17\n\x04page\x18\x04 \x01(\x05H\x00R\x04page\x88\x01\x01\x12\x1e\n\x08per_page\x18\x05 \x01(\x05H\x01R\x07perPage\x88\x01\x01B\x07\n\x05_pageB\x0b\n\t_per_page"W\n\x1aListGitHubBranchesResponse\x129\n\x08branches\x18\x01 \x03(\x0b2\x1d.chalk.server.v1.GitHubBranchR\x08branches"\x95\x01\n!GetGitHubRepositoryArchiveRequest\x12\'\n\x0finstallation_id\x18\x01 \x01(\tR\x0einstallationId\x12\x14\n\x05owner\x18\x02 \x01(\tR\x05owner\x12\x12\n\x04repo\x18\x03 \x01(\tR\x04repo\x12\x15\n\x03ref\x18\x04 \x01(\tH\x00R\x03ref\x88\x01\x01B\x06\n\x04_ref"8\n"GetGitHubRepositoryArchiveResponse\x12\x12\n\x04data\x18\x01 \x01(\x0cR\x04data"}\n\x13RepoFileChangeInput\x12\x12\n\x04path\x18\x01 \x01(\tR\x04path\x12\x18\n\x07content\x18\x02 \x01(\x0cR\x07content\x12\x16\n\x06delete\x18\x03 \x01(\x08R\x06delete\x12\x17\n\x04mode\x18\x04 \x01(\tH\x00R\x04mode\x88\x01\x01B\x07\n\x05_mode"\xdd\x02\n#CreatePullRequestFromChangesRequest\x12\'\n\x0finstallation_id\x18\x01 \x01(\tR\x0einstallationId\x12\x14\n\x05owner\x18\x02 \x01(\tR\x05owner\x12\x12\n\x04repo\x18\x03 \x01(\tR\x04repo\x12\x1f\n\x0bbase_branch\x18\x04 \x01(\tR\nbaseBranch\x12$\n\x0bhead_branch\x18\x05 \x01(\tH\x00R\nheadBranch\x88\x01\x01\x12\x14\n\x05title\x18\x06 \x01(\tR\x05title\x12\x17\n\x04body\x18\x07 \x01(\tH\x01R\x04body\x88\x01\x01\x12\x14\n\x05draft\x18\x08 \x01(\x08R\x05draft\x12>\n\x07changes\x18\t \x03(\x0b2$.chalk.server.v1.RepoFileChangeInputR\x07changesB\x0e\n\x0c_head_branchB\x07\n\x05_body"z\n$CreatePullRequestFromChangesResponse\x12\x19\n\x08html_url\x18\x01 \x01(\tR\x07htmlUrl\x12\x16\n\x06number\x18\x02 \x01(\x03R\x06number\x12\x1f\n\x0bhead_branch\x18\x03 \x01(\tR\nheadBranch2\xb4\x15\n\x10GitHubAppService\x12\xa7\x01\n\x15UpsertGitHubAppConfig\x12-.chalk.server.v1.UpsertGitHubAppConfigRequest\x1a..chalk.server.v1.UpsertGitHubAppConfigResponse"/\x90\x02\x02\x80}\n\x8a\xd3\x0e%\x08\x02\x12!Upserted GitHub App configuration\x12u\n\x12GetGitHubAppConfig\x12*.chalk.server.v1.GetGitHubAppConfigRequest\x1a+.chalk.server.v1.GetGitHubAppConfigResponse"\x06\x90\x02\x01\x80}\n\x12\xa3\x01\n\x15DeleteGitHubAppConfig\x12-.chalk.server.v1.DeleteGitHubAppConfigRequest\x1a..chalk.server.v1.DeleteGitHubAppConfigResponse"+\x80}\n\x8a\xd3\x0e$\x08\x02\x12 Deleted GitHub App configuration\x12\x81\x01\n\x16GetGitHubAppInstallUrl\x12..chalk.server.v1.GetGitHubAppInstallUrlRequest\x1a/.chalk.server.v1.GetGitHubAppInstallUrlResponse"\x06\x90\x02\x01\x80}\x02\x12\xbc\x01\n\x1dCompleteGitHubAppInstallation\x125.chalk.server.v1.CompleteGitHubAppInstallationRequest\x1a6.chalk.server.v1.CompleteGitHubAppInstallationResponse",\x80}\x02\x8a\xd3\x0e%\x08\x02\x12!Completed GitHub App installation\x12\x8d\x01\n\x1aListGitHubAppInstallations\x122.chalk.server.v1.ListGitHubAppInstallationsRequest\x1a3.chalk.server.v1.ListGitHubAppInstallationsResponse"\x06\x90\x02\x01\x80}\x02\x12\xb6\x01\n\x1bDeleteGitHubAppInstallation\x123.chalk.server.v1.DeleteGitHubAppInstallationRequest\x1a4.chalk.server.v1.DeleteGitHubAppInstallationResponse",\x80}\n\x8a\xd3\x0e%\x08\x02\x12!Deleted a GitHub App installation\x12\xbd\x01\n\x1aSyncGitHubAppInstallations\x122.chalk.server.v1.SyncGitHubAppInstallationsRequest\x1a3.chalk.server.v1.SyncGitHubAppInstallationsResponse"6\x80}\n\x8a\xd3\x0e/\x08\x02\x12+Synced GitHub App installations from GitHub\x12\x81\x01\n\x16ListGitHubRepositories\x12..chalk.server.v1.ListGitHubRepositoriesRequest\x1a/.chalk.server.v1.ListGitHubRepositoriesResponse"\x06\x90\x02\x01\x80}\x02\x12\x81\x01\n\x16ListGitHubPullRequests\x12..chalk.server.v1.ListGitHubPullRequestsRequest\x1a/.chalk.server.v1.ListGitHubPullRequestsResponse"\x06\x90\x02\x01\x80}\x02\x12u\n\x12ListGitHubBranches\x12*.chalk.server.v1.ListGitHubBranchesRequest\x1a+.chalk.server.v1.ListGitHubBranchesResponse"\x06\x90\x02\x01\x80}\x02\x12\x8f\x01\n\x1aGetGitHubRepositoryArchive\x122.chalk.server.v1.GetGitHubRepositoryArchiveRequest\x1a3.chalk.server.v1.GetGitHubRepositoryArchiveResponse"\x06\x90\x02\x01\x80}\x020\x01\x12\xbf\x01\n\x1cCreatePullRequestFromChanges\x124.chalk.server.v1.CreatePullRequestFromChangesRequest\x1a5.chalk.server.v1.CreatePullRequestFromChangesResponse"2\x80}\x02\x8a\xd3\x0e+\x08\x02\x12\'Opened a GitHub pull request from Chalk\x12\xc5\x01\n\x1dLinkProjectToGitHubRepository\x125.chalk.server.v1.LinkProjectToGitHubRepositoryRequest\x1a6.chalk.server.v1.LinkProjectToGitHubRepositoryResponse"5\x90\x02\x02\x88}\x1a\x8a\xd3\x0e+\x08\x02\x12\'Linked a project to a GitHub repository\x12\xd7\x01\n!UnlinkProjectFromGitHubRepository\x129.chalk.server.v1.UnlinkProjectFromGitHubRepositoryRequest\x1a:.chalk.server.v1.UnlinkProjectFromGitHubRepositoryResponse";\x90\x02\x02\x88}\x1a\x8a\xd3\x0e1\x08\x02\x12-Unlinked a project from its GitHub repository\x12\x87\x01\n\x18GetProjectGitHubRepoLink\x120.chalk.server.v1.GetProjectGitHubRepoLinkRequest\x1a1.chalk.server.v1.GetProjectGitHubRepoLinkResponse"\x06\x90\x02\x01\x80}\x02\x12\x8d\x01\n\x1aListProjectGitHubRepoLinks\x122.chalk.server.v1.ListProjectGitHubRepoLinksRequest\x1a3.chalk.server.v1.ListProjectGitHubRepoLinksResponse"\x06\x90\x02\x01\x80}\x02B\x97\x01\n\x13com.chalk.server.v1B\x0eGithubAppProtoP\x01Z\x12server/v1;serverv1\xa2\x02\x03CSX\xaa\x02\x0fChalk.Server.V1\xca\x02\x0fChalk\\Server\\V1\xe2\x02\x1bChalk\\Server\\V1\\GPBMetadata\xea\x02\x11Chalk::Server::V1b\x06proto3',
     [
         audit_pb.desc(),
         permissions_pb.desc(),
@@ -1487,6 +1656,9 @@ _DESC = file_desc(
         "ListGitHubBranchesResponse": ListGitHubBranchesResponse,
         "GetGitHubRepositoryArchiveRequest": GetGitHubRepositoryArchiveRequest,
         "GetGitHubRepositoryArchiveResponse": GetGitHubRepositoryArchiveResponse,
+        "RepoFileChangeInput": RepoFileChangeInput,
+        "CreatePullRequestFromChangesRequest": CreatePullRequestFromChangesRequest,
+        "CreatePullRequestFromChangesResponse": CreatePullRequestFromChangesResponse,
     },
 )
 

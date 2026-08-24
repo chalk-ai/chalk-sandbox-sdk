@@ -23,6 +23,9 @@ from chalkcompute._container import ExecResult as ContainerExecResult
 from chalkcompute._container import ImageBuildError as ImageBuildError
 from chalkcompute._dataset import DatasetClient as DatasetClient
 from chalkcompute._dataset import DatasetError as DatasetError
+from chalkcompute._github import GithubError as GithubError
+from chalkcompute._github import PullRequestResult as PullRequestResult
+from chalkcompute._github import open_pull_request as open_pull_request
 from chalkcompute._containerspec import ComputeClass as ComputeClass
 from chalkcompute._containerspec import (
     ContainerSecurityPolicy as ContainerSecurityPolicy,
@@ -170,6 +173,9 @@ __all__ = [
     "function",
     "DatasetClient",
     "DatasetError",
+    "GithubError",
+    "PullRequestResult",
+    "open_pull_request",
     "DatasetNameLike",
     "DatasetRevisionLike",
     "DatasetRevisionRef",

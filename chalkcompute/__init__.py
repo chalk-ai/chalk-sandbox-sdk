@@ -48,6 +48,10 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     # _dataset.py
     "DatasetClient": ("chalkcompute._dataset", "DatasetClient"),
     "DatasetError": ("chalkcompute._dataset", "DatasetError"),
+    # _github.py
+    "GithubError": ("chalkcompute._github", "GithubError"),
+    "PullRequestResult": ("chalkcompute._github", "PullRequestResult"),
+    "open_pull_request": ("chalkcompute._github", "open_pull_request"),
     # _call_context.py
     "get_call_context": ("chalkcompute._call_context", "get_call_context"),
     "get_row_metadata": ("chalkcompute._call_context", "get_row_metadata"),

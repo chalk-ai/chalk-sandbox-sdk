@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from connectrpc.client import ConnectClientSync
 from connectrpc.method import IdempotencyLevel, MethodInfo
 
-from .github_app_pb import CompleteGitHubAppInstallationRequest, CompleteGitHubAppInstallationResponse, DeleteGitHubAppConfigRequest, DeleteGitHubAppConfigResponse, DeleteGitHubAppInstallationRequest, DeleteGitHubAppInstallationResponse, GetGitHubAppConfigRequest, GetGitHubAppConfigResponse, GetGitHubAppInstallUrlRequest, GetGitHubAppInstallUrlResponse, GetGitHubRepositoryArchiveRequest, GetGitHubRepositoryArchiveResponse, GetProjectGitHubRepoLinkRequest, GetProjectGitHubRepoLinkResponse, LinkProjectToGitHubRepositoryRequest, LinkProjectToGitHubRepositoryResponse, ListGitHubAppInstallationsRequest, ListGitHubAppInstallationsResponse, ListGitHubBranchesRequest, ListGitHubBranchesResponse, ListGitHubPullRequestsRequest, ListGitHubPullRequestsResponse, ListGitHubRepositoriesRequest, ListGitHubRepositoriesResponse, ListProjectGitHubRepoLinksRequest, ListProjectGitHubRepoLinksResponse, SyncGitHubAppInstallationsRequest, SyncGitHubAppInstallationsResponse, UnlinkProjectFromGitHubRepositoryRequest, UnlinkProjectFromGitHubRepositoryResponse, UpsertGitHubAppConfigRequest, UpsertGitHubAppConfigResponse
+from .github_app_pb import CompleteGitHubAppInstallationRequest, CompleteGitHubAppInstallationResponse, CreatePullRequestFromChangesRequest, CreatePullRequestFromChangesResponse, DeleteGitHubAppConfigRequest, DeleteGitHubAppConfigResponse, DeleteGitHubAppInstallationRequest, DeleteGitHubAppInstallationResponse, GetGitHubAppConfigRequest, GetGitHubAppConfigResponse, GetGitHubAppInstallUrlRequest, GetGitHubAppInstallUrlResponse, GetGitHubRepositoryArchiveRequest, GetGitHubRepositoryArchiveResponse, GetProjectGitHubRepoLinkRequest, GetProjectGitHubRepoLinkResponse, LinkProjectToGitHubRepositoryRequest, LinkProjectToGitHubRepositoryResponse, ListGitHubAppInstallationsRequest, ListGitHubAppInstallationsResponse, ListGitHubBranchesRequest, ListGitHubBranchesResponse, ListGitHubPullRequestsRequest, ListGitHubPullRequestsResponse, ListGitHubRepositoriesRequest, ListGitHubRepositoriesResponse, ListProjectGitHubRepoLinksRequest, ListProjectGitHubRepoLinksResponse, SyncGitHubAppInstallationsRequest, SyncGitHubAppInstallationsResponse, UnlinkProjectFromGitHubRepositoryRequest, UnlinkProjectFromGitHubRepositoryResponse, UpsertGitHubAppConfigRequest, UpsertGitHubAppConfigResponse
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Mapping
@@ -264,6 +264,29 @@ class GitHubAppServiceClientSync(ConnectClientSync):
                 input=GetGitHubRepositoryArchiveRequest,
                 output=GetGitHubRepositoryArchiveResponse,
                 idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def create_pull_request_from_changes(
+        self,
+        request: CreatePullRequestFromChangesRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> CreatePullRequestFromChangesResponse:
+        """
+        Pushes the given file changes as a single commit on a new branch and
+        opens a pull request against base_branch.
+        """
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="CreatePullRequestFromChanges",
+                service_name="chalk.server.v1.GitHubAppService",
+                input=CreatePullRequestFromChangesRequest,
+                output=CreatePullRequestFromChangesResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,
             timeout_ms=timeout_ms,
