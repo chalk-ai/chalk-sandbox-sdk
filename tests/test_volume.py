@@ -770,7 +770,9 @@ def test_resolve_github_installation_raises_when_no_installations() -> None:
 
     with pytest.raises(VolumeError, match="no GitHub App installations"):
         vv._resolve_github_installation(
-            "chalk-ai/customer-deployment", connect=connect, timeout=30.0  # type: ignore[arg-type]
+            "chalk-ai/customer-deployment",
+            connect=connect,
+            timeout=30.0,  # type: ignore[arg-type]
         )
 
 
@@ -813,7 +815,9 @@ def test_resolve_github_installation_paginates_and_tries_next_installation(
     connect = FakeConnectClient(handler=handler)
 
     result = vv._resolve_github_installation(
-        "chalk-ai/customer-deployment", connect=connect, timeout=30.0  # type: ignore[arg-type]
+        "chalk-ai/customer-deployment",
+        connect=connect,
+        timeout=30.0,  # type: ignore[arg-type]
     )
 
     assert result == ("inst-2", "chalk-ai", "customer-deployment")
@@ -834,7 +838,9 @@ def test_resolve_github_installation_raises_when_repo_not_found() -> None:
 
     with pytest.raises(VolumeError, match="was not found in any linked"):
         vv._resolve_github_installation(
-            "chalk-ai/customer-deployment", connect=connect, timeout=30.0  # type: ignore[arg-type]
+            "chalk-ai/customer-deployment",
+            connect=connect,
+            timeout=30.0,  # type: ignore[arg-type]
         )
 
 
@@ -868,7 +874,9 @@ def test_from_github_creates_volume_via_rpc(monkeypatch: pytest.MonkeyPatch) -> 
 
     with patch.object(VolumeClient, "from_connect", return_value=client):
         volume = Volume.from_github(
-            "chalk-ai/customer-deployment", ref="main", connect_client=connect  # type: ignore[arg-type]
+            "chalk-ai/customer-deployment",
+            ref="main",
+            connect_client=connect,  # type: ignore[arg-type]
         )
 
     assert volume.name.startswith("github-chalk-ai-customer-deployment-")
@@ -894,5 +902,6 @@ def test_from_github_wraps_rpc_errors() -> None:
 
     with pytest.raises(VolumeError, match="failed to create volume"):
         Volume.from_github(
-            "chalk-ai/customer-deployment", connect_client=connect  # type: ignore[arg-type]
+            "chalk-ai/customer-deployment",
+            connect_client=connect,  # type: ignore[arg-type]
         )

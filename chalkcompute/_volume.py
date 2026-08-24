@@ -409,7 +409,11 @@ class Volume:
         except ConnectRpcError as exc:
             raise VolumeError(f"failed to create volume from {repo!r}: {exc}") from exc
 
-        return cls(volume_name, client=VolumeClient.from_connect(connect), create_if_missing=False)
+        return cls(
+            volume_name,
+            client=VolumeClient.from_connect(connect),
+            create_if_missing=False,
+        )
 
     @property
     def name(self) -> str:
@@ -1930,4 +1934,6 @@ def _resolve_github_installation(
                 break
             page += 1
 
-    raise VolumeError(f"repo {repo!r} was not found in any linked GitHub App installation")
+    raise VolumeError(
+        f"repo {repo!r} was not found in any linked GitHub App installation"
+    )
