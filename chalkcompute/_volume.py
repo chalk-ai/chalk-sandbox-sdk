@@ -14,9 +14,12 @@ from __future__ import annotations
 
 import builtins
 import datetime
+import gzip
 import importlib
+import io
 import logging
 import os
+import tarfile
 import uuid
 from collections.abc import Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
@@ -24,12 +27,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
 
+from connectrpc.errors import ConnectError as ConnectRpcError
+from connectrpc.protocol import ProtocolType
 from protobuf import Oneof
 
-from chalkcompute._connect import ConnectClient
+from chalkcompute._connect import ConnectClient, rpc_address_from_target
+from chalkcompute._gen.chalk.server.v1 import github_app_connect, github_app_pb
 from chalkcompute._gen.chalk.volume.v2 import volume_pb as pb_v2
 from chalkcompute._http import HTTP_TRANSPORT_ERRORS, SYNC_HTTP_CLIENT
 from chalkcompute._image import Image
+from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
 from chalkcompute._tracing import traced
 
 logger = logging.getLogger(__name__)
@@ -342,6 +349,63 @@ class Volume:
         self._version: VersionInfo | None = None
         self._create_if_missing = create_if_missing and version_id is None
         self._closed = False
+
+    @classmethod
+    def from_github(
+        cls,
+        repo: str,
+        ref: str | None = None,
+        *,
+        volume_name: str | None = None,
+        connect_client: ConnectClient | None = None,
+        timeout: float = 300.0,
+    ) -> Volume:
+        """Clone a GitHub repository's contents into a new volume.
+
+        ``repo`` must be an ``"owner/name"`` string naming a repository your
+        linked GitHub App installation can access. The resulting volume is a
+        plain, read-only snapshot of the repository's files at ``ref`` (a
+        branch, tag, or commit SHA; the repository's default branch is used
+        if omitted) — it carries no git history, credentials, or connection
+        back to GitHub.
+
+        Parameters
+        ----------
+        repo
+            Repository to clone, as ``"owner/name"``.
+        ref
+            Branch, tag, or commit SHA to clone. Defaults to the
+            repository's default branch.
+        volume_name
+            Name for the new volume. Defaults to a name derived from
+            ``repo`` plus a random suffix.
+        connect_client
+            Optional :class:`ConnectClient` used to resolve the repository
+            and authenticate the new volume. Defaults to one built from the
+            ambient auth context.
+        timeout
+            RPC deadline, in seconds, for each GitHub App service call.
+
+        Returns
+        -------
+        Volume
+            A new volume containing the repository's files.
+        """
+        connect = connect_client or ConnectClient()
+        installation_id, owner, name = _resolve_github_installation(
+            repo, connect=connect, timeout=timeout
+        )
+        archive = _download_github_repo_archive(
+            installation_id, owner, name, ref, connect=connect, timeout=timeout
+        )
+        contents = _extract_tar_gz_files(archive)
+
+        volume_name = volume_name or f"github-{owner}-{name}-{uuid.uuid4().hex[:8]}"
+        volume = cls(volume_name, client=VolumeClient.from_connect(connect), create_if_missing=True)
+        with volume.batch_upload() as batch:
+            for path, data in contents:
+                batch.put(path, data)
+        return volume
 
     @property
     def name(self) -> str:
@@ -1806,3 +1870,125 @@ def cleanup_owned_volumes(
         if v.name in referenced_names:
             continue
         client.delete_volume(v.name)
+
+
+#: Page size used when paginating GitHub App repository listings.
+_GITHUB_REPOS_PER_PAGE = 100
+
+
+def _resolve_github_installation(
+    repo: str, *, connect: ConnectClient, timeout: float
+) -> tuple[str, str, str]:
+    """Resolve an ``"owner/name"`` repo to ``(installation_id, owner, name)``.
+
+    ``installation_id`` here is the GitHub App installation's internal
+    ``id`` (a string), not its numeric GitHub ``installation_id`` — that's
+    what every other ``GitHubAppService`` RPC expects.
+    """
+    if "/" not in repo:
+        raise VolumeError(f"repo must be in 'owner/name' form, got {repo!r}")
+    owner, _, name = repo.partition("/")
+    full_name = f"{owner}/{name}".lower()
+
+    stub = connect.stub(github_app_connect.GitHubAppServiceClientSync)
+    try:
+        installations = connect.call(
+            stub.list_git_hub_app_installations,
+            github_app_pb.ListGitHubAppInstallationsRequest(),
+            timeout=timeout,
+        ).installations
+    except ConnectRpcError as exc:
+        raise VolumeError(f"failed to list GitHub App installations: {exc}") from exc
+    if not installations:
+        raise VolumeError("no GitHub App installations are linked to this team")
+
+    for installation in installations:
+        page = 1
+        while True:
+            try:
+                response = connect.call(
+                    stub.list_git_hub_repositories,
+                    github_app_pb.ListGitHubRepositoriesRequest(
+                        installation_id=installation.id,
+                        page=page,
+                        per_page=_GITHUB_REPOS_PER_PAGE,
+                    ),
+                    timeout=timeout,
+                )
+            except ConnectRpcError as exc:
+                raise VolumeError(
+                    f"failed to list repositories for installation {installation.id!r}: {exc}"
+                ) from exc
+            for repository in response.repositories:
+                if repository.full_name.lower() == full_name:
+                    return installation.id, owner, name
+            if len(response.repositories) < _GITHUB_REPOS_PER_PAGE:
+                break
+            page += 1
+
+    raise VolumeError(f"repo {repo!r} was not found in any linked GitHub App installation")
+
+
+def _github_app_stream_stub(
+    connect: ConnectClient,
+) -> github_app_connect.GitHubAppServiceClientSync:
+    connect._ensure_auth()
+    api_server = connect._api_server or ""
+    return github_app_connect.GitHubAppServiceClientSync(
+        rpc_address_from_target(api_server, use_tls=api_server.startswith("https://")),
+        protocol=ProtocolType.GRPC,
+        interceptors=rpc_interceptors(),
+        http_client=SYNC_HTTP_CLIENT,
+        read_max_bytes=RPC_READ_MAX_BYTES,
+    )
+
+
+def _download_github_repo_archive(
+    installation_id: str,
+    owner: str,
+    name: str,
+    ref: str | None,
+    *,
+    connect: ConnectClient,
+    timeout: float,
+) -> bytes:
+    stub = _github_app_stream_stub(connect)
+    request = github_app_pb.GetGitHubRepositoryArchiveRequest(
+        installation_id=installation_id, owner=owner, repo=name, ref=ref
+    )
+    chunks: list[bytes] = []
+    try:
+        for chunk in stub.get_git_hub_repository_archive(
+            request,
+            headers=dict(connect._rpc_metadata()),
+            timeout_ms=int(timeout * 1000),
+        ):
+            chunks.append(chunk.data)
+    except ConnectRpcError as exc:
+        raise VolumeError(f"failed to download archive for {owner}/{name}: {exc}") from exc
+    return b"".join(chunks)
+
+
+def _extract_tar_gz_files(archive: bytes) -> list[tuple[str, bytes]]:
+    """Extract a GitHub codeload-style gzip+tar archive's regular files.
+
+    Strips the leading ``<owner>-<repo>-<sha>/`` path segment GitHub adds to
+    every entry, rejects path-traversal entries, and skips everything that
+    isn't a regular file (directories, symlinks — unlike the server-side
+    archive-to-volume tool, this doesn't reconstruct symlinks).
+    """
+    files: list[tuple[str, bytes]] = []
+    with tarfile.open(fileobj=gzip.GzipFile(fileobj=io.BytesIO(archive))) as tar:
+        for member in tar.getmembers():
+            if "/" not in member.name:
+                continue  # e.g. pax_global_header, with no repo-root prefix
+            rel_path = member.name.split("/", 1)[1]
+            if not rel_path or rel_path.startswith("/") or ".." in rel_path.split("/"):
+                continue
+            if not member.isfile():
+                continue
+            extracted = tar.extractfile(member)
+            if extracted is None:
+                continue
+            files.append((rel_path, extracted.read()))
+    return files

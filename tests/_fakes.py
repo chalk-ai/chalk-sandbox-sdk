@@ -87,6 +87,9 @@ class FakeConnectClient(StubbedConnectClient):
     def _ensure_auth(self) -> None:
         pass
 
+    def _rpc_metadata(self) -> list[tuple[str, str]]:
+        return []
+
     def call(
         self,
         method: FakeMethod,

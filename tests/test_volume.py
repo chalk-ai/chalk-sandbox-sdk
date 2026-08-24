@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import io
+import tarfile
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 from protobuf import Oneof
 
+from chalkcompute._gen.chalk.server.v1 import github_app_pb
 from chalkcompute._gen.chalk.volume.v2 import volume_pb as pb_v2
 from chalkcompute._volume import (
     VolumeClosedError,
@@ -31,6 +34,7 @@ from chalkcompute._volume import (
     _RATE_LIMIT_MAX_RETRIES,
     _read_file_response,
 )
+from tests._fakes import FakeConnectClient
 
 
 @pytest.fixture(autouse=True)
@@ -749,3 +753,185 @@ def test_native_client_symbol_is_bound() -> None:
         pytest.skip("native extension not built")
     assert _volume._NativeVolumeClient is not None
     assert _volume._NativeVolumeRpcError is not None
+
+
+def test_resolve_github_installation_rejects_missing_owner_slash() -> None:
+    connect = FakeConnectClient()
+
+    with pytest.raises(VolumeError, match="owner/name"):
+        vv._resolve_github_installation("no-slash-here", connect=connect, timeout=30.0)  # type: ignore[arg-type]
+
+
+def test_resolve_github_installation_raises_when_no_installations() -> None:
+    def handler(method: str, request: Any) -> Any:
+        if method == "list_git_hub_app_installations":
+            return github_app_pb.ListGitHubAppInstallationsResponse(installations=[])
+        raise AssertionError(method)
+
+    connect = FakeConnectClient(handler=handler)
+
+    with pytest.raises(VolumeError, match="no GitHub App installations"):
+        vv._resolve_github_installation(
+            "chalk-ai/customer-deployment", connect=connect, timeout=30.0  # type: ignore[arg-type]
+        )
+
+
+def test_resolve_github_installation_paginates_and_tries_next_installation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(vv, "_GITHUB_REPOS_PER_PAGE", 2)
+    repo_calls: list[tuple[str, int]] = []
+
+    def handler(method: str, request: Any) -> Any:
+        if method == "list_git_hub_app_installations":
+            return github_app_pb.ListGitHubAppInstallationsResponse(
+                installations=[
+                    github_app_pb.GitHubAppInstallation(id="inst-1"),
+                    github_app_pb.GitHubAppInstallation(id="inst-2"),
+                ]
+            )
+        if method == "list_git_hub_repositories":
+            repo_calls.append((request.installation_id, request.page))
+            if request.installation_id == "inst-1" and request.page == 1:
+                return github_app_pb.ListGitHubRepositoriesResponse(
+                    repositories=[
+                        github_app_pb.GitHubRepository(full_name="chalk-ai/other-a"),
+                        github_app_pb.GitHubRepository(full_name="chalk-ai/other-b"),
+                    ]
+                )
+            if request.installation_id == "inst-1" and request.page == 2:
+                return github_app_pb.ListGitHubRepositoriesResponse(repositories=[])
+            if request.installation_id == "inst-2" and request.page == 1:
+                return github_app_pb.ListGitHubRepositoriesResponse(
+                    repositories=[
+                        github_app_pb.GitHubRepository(
+                            full_name="Chalk-AI/Customer-Deployment"
+                        ),
+                    ]
+                )
+            raise AssertionError((request.installation_id, request.page))
+        raise AssertionError(method)
+
+    connect = FakeConnectClient(handler=handler)
+
+    result = vv._resolve_github_installation(
+        "chalk-ai/customer-deployment", connect=connect, timeout=30.0  # type: ignore[arg-type]
+    )
+
+    assert result == ("inst-2", "chalk-ai", "customer-deployment")
+    assert repo_calls == [("inst-1", 1), ("inst-1", 2), ("inst-2", 1)]
+
+
+def test_resolve_github_installation_raises_when_repo_not_found() -> None:
+    def handler(method: str, request: Any) -> Any:
+        if method == "list_git_hub_app_installations":
+            return github_app_pb.ListGitHubAppInstallationsResponse(
+                installations=[github_app_pb.GitHubAppInstallation(id="inst-1")]
+            )
+        if method == "list_git_hub_repositories":
+            return github_app_pb.ListGitHubRepositoriesResponse(repositories=[])
+        raise AssertionError(method)
+
+    connect = FakeConnectClient(handler=handler)
+
+    with pytest.raises(VolumeError, match="was not found in any linked"):
+        vv._resolve_github_installation(
+            "chalk-ai/customer-deployment", connect=connect, timeout=30.0  # type: ignore[arg-type]
+        )
+
+
+def _make_repo_archive(
+    *, owner: str = "chalk-ai", name: str = "customer-deployment", sha: str = "abc123"
+) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        prefix = f"{owner}-{name}-{sha}"
+
+        def add_file(rel_path: str, data: bytes) -> None:
+            info = tarfile.TarInfo(name=f"{prefix}/{rel_path}")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+
+        add_file("resolvers/foo.py", b"# foo")
+        add_file("README.md", b"hi")
+
+        dir_info = tarfile.TarInfo(name=f"{prefix}/resolvers/")
+        dir_info.type = tarfile.DIRTYPE
+        tar.addfile(dir_info)
+
+        evil_data = b"evil"
+        evil_info = tarfile.TarInfo(name=f"{prefix}/../evil.py")
+        evil_info.size = len(evil_data)
+        tar.addfile(evil_info, io.BytesIO(evil_data))
+
+        pax_info = tarfile.TarInfo(name="pax_global_header")
+        pax_info.size = 0
+        tar.addfile(pax_info, io.BytesIO(b""))
+    return buf.getvalue()
+
+
+def test_extract_tar_gz_files_strips_prefix_skips_dirs_and_rejects_traversal() -> None:
+    archive = _make_repo_archive()
+
+    files = vv._extract_tar_gz_files(archive)
+
+    assert sorted(files) == [("README.md", b"hi"), ("resolvers/foo.py", b"# foo")]
+
+
+def test_from_github_downloads_extracts_and_uploads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive = _make_repo_archive()
+
+    def handler(method: str, request: Any) -> Any:
+        if method == "list_git_hub_app_installations":
+            return github_app_pb.ListGitHubAppInstallationsResponse(
+                installations=[github_app_pb.GitHubAppInstallation(id="inst-1")]
+            )
+        if method == "list_git_hub_repositories":
+            return github_app_pb.ListGitHubRepositoriesResponse(
+                repositories=[
+                    github_app_pb.GitHubRepository(
+                        full_name="chalk-ai/customer-deployment"
+                    )
+                ]
+            )
+        raise AssertionError(method)
+
+    connect = FakeConnectClient(handler=handler)
+
+    class _FakeStreamStub:
+        def get_git_hub_repository_archive(
+            self, request: Any, *, headers: Any, timeout_ms: Any
+        ) -> Any:
+            assert request.installation_id == "inst-1"
+            assert request.owner == "chalk-ai"
+            assert request.repo == "customer-deployment"
+            assert request.ref == "main"
+            midpoint = len(archive) // 2
+            return iter(
+                [
+                    github_app_pb.GetGitHubRepositoryArchiveResponse(
+                        data=archive[:midpoint]
+                    ),
+                    github_app_pb.GetGitHubRepositoryArchiveResponse(
+                        data=archive[midpoint:]
+                    ),
+                ]
+            )
+
+    monkeypatch.setattr(vv, "_github_app_stream_stub", lambda connect: _FakeStreamStub())
+
+    client = _make_client(monkeypatch)
+    client._inner.get_volume.side_effect = _not_found()
+    client._inner.create_volume.return_value = {"volume": _volume_dict("github-vol")}
+    client._inner.upload.return_value = [_status_dict()]
+
+    with patch.object(VolumeClient, "from_connect", return_value=client):
+        volume = Volume.from_github(
+            "chalk-ai/customer-deployment", ref="main", connect_client=connect  # type: ignore[arg-type]
+        )
+
+    assert volume.name.startswith("github-chalk-ai-customer-deployment-")
+    uploaded = dict(client._inner.upload.call_args.args[1])
+    assert uploaded == {"resolvers/foo.py": b"# foo", "README.md": b"hi"}
