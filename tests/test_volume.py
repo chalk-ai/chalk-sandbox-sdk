@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import io
-import tarfile
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -840,92 +838,33 @@ def test_resolve_github_installation_raises_when_repo_not_found() -> None:
         )
 
 
-def _make_repo_archive(
-    *, owner: str = "chalk-ai", name: str = "customer-deployment", sha: str = "abc123"
-) -> bytes:
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        prefix = f"{owner}-{name}-{sha}"
-
-        def add_file(rel_path: str, data: bytes) -> None:
-            info = tarfile.TarInfo(name=f"{prefix}/{rel_path}")
-            info.size = len(data)
-            tar.addfile(info, io.BytesIO(data))
-
-        add_file("resolvers/foo.py", b"# foo")
-        add_file("README.md", b"hi")
-
-        dir_info = tarfile.TarInfo(name=f"{prefix}/resolvers/")
-        dir_info.type = tarfile.DIRTYPE
-        tar.addfile(dir_info)
-
-        evil_data = b"evil"
-        evil_info = tarfile.TarInfo(name=f"{prefix}/../evil.py")
-        evil_info.size = len(evil_data)
-        tar.addfile(evil_info, io.BytesIO(evil_data))
-
-        pax_info = tarfile.TarInfo(name="pax_global_header")
-        pax_info.size = 0
-        tar.addfile(pax_info, io.BytesIO(b""))
-    return buf.getvalue()
+def _github_resolution_handler(method: str, request: Any) -> Any:
+    if method == "list_git_hub_app_installations":
+        return github_app_pb.ListGitHubAppInstallationsResponse(
+            installations=[github_app_pb.GitHubAppInstallation(id="inst-1")]
+        )
+    if method == "list_git_hub_repositories":
+        return github_app_pb.ListGitHubRepositoriesResponse(
+            repositories=[
+                github_app_pb.GitHubRepository(full_name="chalk-ai/customer-deployment")
+            ]
+        )
+    raise AssertionError(method)
 
 
-def test_extract_tar_gz_files_strips_prefix_skips_dirs_and_rejects_traversal() -> None:
-    archive = _make_repo_archive()
-
-    files = vv._extract_tar_gz_files(archive)
-
-    assert sorted(files) == [("README.md", b"hi"), ("resolvers/foo.py", b"# foo")]
-
-
-def test_from_github_downloads_extracts_and_uploads(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    archive = _make_repo_archive()
+def test_from_github_creates_volume_via_rpc(monkeypatch: pytest.MonkeyPatch) -> None:
+    requests: list[Any] = []
 
     def handler(method: str, request: Any) -> Any:
-        if method == "list_git_hub_app_installations":
-            return github_app_pb.ListGitHubAppInstallationsResponse(
-                installations=[github_app_pb.GitHubAppInstallation(id="inst-1")]
+        if method == "create_volume_from_git_hub_repo":
+            requests.append(request)
+            return github_app_pb.CreateVolumeFromGitHubRepoResponse(
+                volume_name=request.volume_name, volume_id="vol-1", files=3, bytes=42
             )
-        if method == "list_git_hub_repositories":
-            return github_app_pb.ListGitHubRepositoriesResponse(
-                repositories=[
-                    github_app_pb.GitHubRepository(
-                        full_name="chalk-ai/customer-deployment"
-                    )
-                ]
-            )
-        raise AssertionError(method)
+        return _github_resolution_handler(method, request)
 
     connect = FakeConnectClient(handler=handler)
-
-    class _FakeStreamStub:
-        def get_git_hub_repository_archive(
-            self, request: Any, *, headers: Any, timeout_ms: Any
-        ) -> Any:
-            assert request.installation_id == "inst-1"
-            assert request.owner == "chalk-ai"
-            assert request.repo == "customer-deployment"
-            assert request.ref == "main"
-            midpoint = len(archive) // 2
-            return iter(
-                [
-                    github_app_pb.GetGitHubRepositoryArchiveResponse(
-                        data=archive[:midpoint]
-                    ),
-                    github_app_pb.GetGitHubRepositoryArchiveResponse(
-                        data=archive[midpoint:]
-                    ),
-                ]
-            )
-
-    monkeypatch.setattr(vv, "_github_app_stream_stub", lambda connect: _FakeStreamStub())
-
     client = _make_client(monkeypatch)
-    client._inner.get_volume.side_effect = _not_found()
-    client._inner.create_volume.return_value = {"volume": _volume_dict("github-vol")}
-    client._inner.upload.return_value = [_status_dict()]
 
     with patch.object(VolumeClient, "from_connect", return_value=client):
         volume = Volume.from_github(
@@ -933,5 +872,27 @@ def test_from_github_downloads_extracts_and_uploads(
         )
 
     assert volume.name.startswith("github-chalk-ai-customer-deployment-")
-    uploaded = dict(client._inner.upload.call_args.args[1])
-    assert uploaded == {"resolvers/foo.py": b"# foo", "README.md": b"hi"}
+    assert len(requests) == 1
+    request = requests[0]
+    assert request.installation_id == "inst-1"
+    assert request.owner == "chalk-ai"
+    assert request.repo == "customer-deployment"
+    assert request.ref == "main"
+    assert request.volume_name == volume.name
+
+
+def test_from_github_wraps_rpc_errors() -> None:
+    from connectrpc.code import Code
+    from connectrpc.errors import ConnectError as ConnectRpcError
+
+    def handler(method: str, request: Any) -> Any:
+        if method == "create_volume_from_git_hub_repo":
+            raise ConnectRpcError(Code.INTERNAL, "boom")
+        return _github_resolution_handler(method, request)
+
+    connect = FakeConnectClient(handler=handler)
+
+    with pytest.raises(VolumeError, match="failed to create volume"):
+        Volume.from_github(
+            "chalk-ai/customer-deployment", connect_client=connect  # type: ignore[arg-type]
+        )
