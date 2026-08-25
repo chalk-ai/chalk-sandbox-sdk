@@ -28,6 +28,8 @@ from e2etests.conftest import (
 
 SG_NAME = "ex-trivial-double-sg"
 VOLUME_SG_NAME = "ex-volume-triple-sg"
+HANDLER_SG_NAME = "ex-handler-affine-sg"
+COMBINED_SG_NAME = "ex-combined-affine-sg"
 READINESS_TIMEOUT = 180
 READINESS_POLL_INTERVAL = 5
 
@@ -163,4 +165,83 @@ class TestModelWithVolume:
         """handler should triple each element in a batch."""
         result = _call_model(self._web_url, {"x": [1.0, 2.0, 5.0]})
         expected = [3.0, 6.0, 15.0]
+        assert result == expected, f"Expected {expected}, got {result}"
+
+
+@needs_staging
+class TestModelHandlerDecorator:
+    """Tests the @model_handler registration path.
+
+    chalkpy builds the serving image from the decorated class, uploads
+    files= to the model artifact volume, and serves via the baked shim
+    (no handler= passed at deploy). The handler loads weights.json from
+    the volume, so a passing call proves the volume had content.
+    """
+
+    _web_url: str
+
+    @classmethod
+    def setup_class(cls):
+        _deploy_script("model", "deploy_handler.py")
+        client = ChalkClient(environment=CHALK_ENVIRONMENT_ID)
+        cls._web_url = _wait_for_ready_replicas(
+            client, HANDLER_SG_NAME, READINESS_TIMEOUT
+        )
+
+    @classmethod
+    def teardown_class(cls):
+        try:
+            client = ChalkClient(environment=CHALK_ENVIRONMENT_ID)
+            client.delete_scaling_group(name=HANDLER_SG_NAME)
+        except Exception:
+            pass
+
+    def test_single_input(self):
+        """predict(x=3.0) with factor=5.0, bias=2.0 should return 17.0."""
+        result = _call_model(self._web_url, {"x": [3.0]})
+        assert result == [17.0], f"Expected [17.0], got {result}"
+
+    def test_batch_input(self):
+        """predict should compute 5x + 2 for each element in a batch."""
+        result = _call_model(self._web_url, {"x": [0.0, 1.0, -2.0]})
+        expected = [2.0, 7.0, -8.0]
+        assert result == expected, f"Expected {expected}, got {result}"
+
+
+@needs_staging
+class TestModelImageAndModelCombined:
+    """Tests registering a custom image together with model_paths.
+
+    The image carries code files with strategy="volume" and the model
+    weights ride the model artifact volume, so both volumes must be
+    attached at deploy. The handler computes 2x + 1 from weights.json.
+    """
+
+    _web_url: str
+
+    @classmethod
+    def setup_class(cls):
+        _deploy_script("model", "deploy_image_and_model.py")
+        client = ChalkClient(environment=CHALK_ENVIRONMENT_ID)
+        cls._web_url = _wait_for_ready_replicas(
+            client, COMBINED_SG_NAME, READINESS_TIMEOUT
+        )
+
+    @classmethod
+    def teardown_class(cls):
+        try:
+            client = ChalkClient(environment=CHALK_ENVIRONMENT_ID)
+            client.delete_scaling_group(name=COMBINED_SG_NAME)
+        except Exception:
+            pass
+
+    def test_single_input(self):
+        """handler(x=3.0) with factor=2.0, bias=1.0 should return 7.0."""
+        result = _call_model(self._web_url, {"x": [3.0]})
+        assert result == [7.0], f"Expected [7.0], got {result}"
+
+    def test_batch_input(self):
+        """handler should compute 2x + 1 for each element in a batch."""
+        result = _call_model(self._web_url, {"x": [0.0, 1.0, -2.0]})
+        expected = [1.0, 3.0, -3.0]
         assert result == expected, f"Expected {expected}, got {result}"
