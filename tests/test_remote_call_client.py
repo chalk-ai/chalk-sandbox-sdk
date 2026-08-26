@@ -1,11 +1,14 @@
 import asyncio
 import contextvars
+import threading
+import time
 from datetime import datetime, timezone
 
 import pyarrow as pa
 import pytest
 from protobuf import Oneof
 
+import chalkcompute._function as function_mod
 from chalkcompute._function import (
     FunctionError,
     FunctionVersionInfo,
@@ -14,6 +17,7 @@ from chalkcompute._function import (
 )
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as catalog_pb
 from chalkcompute._gen.chalk.runtime.v1 import remote_python_call_pb as remote_call_pb
+from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from chalkcompute._remote_call_client import RemoteCallPollResult, ServiceAuthContext
 from tests._fakes import FakeMethod, StubbedConnectClient
 
@@ -89,6 +93,9 @@ class FakeRemoteCallClient:
     enqueue_errors: list[BaseException] = []
     poll_errors: list[BaseException] = []
     purge_errors: list[BaseException] = []
+    # Simulates the native client hitting a crash-looping replica: call_ipc
+    # has no timeout param of its own, so it just never returns.
+    hang_forever: bool = False
 
     def __init__(
         self, endpoint: str, *, metadata, use_tls: bool | None, **kwargs
@@ -112,6 +119,10 @@ class FakeRemoteCallClient:
         input_ipc: bytes,
         metadata=(),
     ) -> list[bytes]:
+        if self.hang_forever:
+            import threading
+
+            threading.Event().wait()
         if self.call_ipc_errors:
             raise self.call_ipc_errors.pop(0)
         self.calls.append((name, input_ipc, list(metadata)))
@@ -157,6 +168,7 @@ def reset_fake_client(monkeypatch):
     FakeRemoteCallClient.enqueue_errors = []
     FakeRemoteCallClient.poll_errors = []
     FakeRemoteCallClient.purge_errors = []
+    FakeRemoteCallClient.hang_forever = False
     monkeypatch.setattr(remote_call_client, "RemoteCallClient", FakeRemoteCallClient)
     monkeypatch.setattr(
         "chalkcompute._function.service_auth_context_from_env", lambda: None
@@ -849,3 +861,59 @@ def test_delete_drops_cached_call_clients() -> None:
     assert fn._remote_call_client is None
     assert fn._queue_call_client is None
     assert fn._version_info is None
+
+
+def test_direct_call_times_out_instead_of_hanging_forever() -> None:
+    # Simulates CHA-10415: the scaling group is crash-looping, so the native
+    # call_ipc (no timeout param of its own) never returns.
+    FakeRemoteCallClient.hang_forever = True
+
+    fn = _remote_function()
+    fn._call_timeout = 0.2
+
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match=r"timed out after 0\.2s"):
+        fn.remote(41)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 2.0
+
+
+def test_call_timeout_error_includes_scaling_group_status(monkeypatch) -> None:
+    FakeRemoteCallClient.hang_forever = True
+
+    fn = _remote_function()
+    fn._call_timeout = 0.2
+
+    monkeypatch.setattr(
+        function_mod,
+        "_get_scaling_group",
+        lambda client, name: sg_pb.ScalingGroupResponse(
+            name=name,
+            status="Unhealthy",
+            status_message="1/1 replicas unhealthy: Error (exit code 1)",
+        ),
+    )
+
+    with pytest.raises(
+        TimeoutError, match=r"Unhealthy.*1/1 replicas unhealthy: Error \(exit code 1\)"
+    ):
+        fn.remote(41)
+
+
+def test_call_timeout_none_disables_deadline() -> None:
+    # Explicit opt-out: call_timeout=None preserves the old unbounded wait.
+    FakeRemoteCallClient.hang_forever = True
+
+    fn = _remote_function()
+    fn._call_timeout = None
+
+    result: dict[str, object] = {}
+    thread = threading.Thread(
+        target=lambda: result.update(value=fn.remote(41)), daemon=True
+    )
+    thread.start()
+    thread.join(timeout=1.0)
+
+    assert thread.is_alive()
+    assert result == {}

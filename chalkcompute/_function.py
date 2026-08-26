@@ -127,6 +127,7 @@ KnowledgeCutoff = str | _dt.datetime
 
 _REMOTE_ENV_VAR = "CHALK_REMOTE_FUNCTION"
 _REQUEST_TIMESTAMP_HEADER = "x-chalk-request-timestamp"
+_DEFAULT_CALL_TIMEOUT: float | None = 60.0
 _NO_ARGS_SENTINEL_COLUMN = "__chalk_no_args__"
 # Reserved column carrying the caller's per-row metadata blob. Stripped from the argument
 # mapping by the handler shim and published through a context variable instead, so a
@@ -2377,6 +2378,7 @@ class RemoteFunction:
         schedule: str | None = None,
         tracing: TracingPolicyConfig | None = None,
         models: typing.Mapping[str, Any] | None = None,
+        call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
         chalk_client: Any | None = None,
     ) -> None:
         self._func = func
@@ -2515,6 +2517,7 @@ class RemoteFunction:
             QueuePolicy.from_int_or_policy(quota) if quota is not None else None
         )
         self._tracing = normalize_remote_function_tracing(tracing)
+        self._call_timeout = call_timeout
 
         # Set after .deploy()
         self._function_id: str | None = None
@@ -2551,18 +2554,28 @@ class RemoteFunction:
 
     @classmethod
     def from_id(
-        cls, version_id: str, *, chalk_client: Any | None = None
+        cls,
+        version_id: str,
+        *,
+        chalk_client: Any | None = None,
+        call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
     ) -> RemoteFunction:
         """Attach to an existing function version by ID.
 
         This compatibility alias retains the historical version-ID meaning.
         Prefer :meth:`from_version_id` or :meth:`from_function_id` in new code.
         """
-        return cls.from_version_id(version_id, chalk_client=chalk_client)
+        return cls.from_version_id(
+            version_id, chalk_client=chalk_client, call_timeout=call_timeout
+        )
 
     @classmethod
     def from_version_id(
-        cls, version_id: str, *, chalk_client: Any | None = None
+        cls,
+        version_id: str,
+        *,
+        chalk_client: Any | None = None,
+        call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
     ) -> RemoteFunction:
         """Attach through an immutable version ID.
 
@@ -2570,13 +2583,16 @@ class RemoteFunction:
         ----------
         version_id
             Identifier of the function version.
+        call_timeout
+            Maximum seconds to wait on a single ``.remote()``/``.defer()``/
+            ``.poll()`` call before raising. ``None`` disables the deadline.
 
         Returns
         -------
         RemoteFunction
             A handle bound to the existing version.
         """
-        f = cls._make_empty(chalk_client=chalk_client)
+        f = cls._make_empty(chalk_client=chalk_client, call_timeout=call_timeout)
         stub = f._client.stub(catalog_connect.ExternalFunctionCatalogServiceClientSync)
         response = f._client.call(
             stub.get_external_function_version,
@@ -2595,20 +2611,29 @@ class RemoteFunction:
         return f
 
     @classmethod
-    def from_name(cls, name: str, *, chalk_client: Any | None = None) -> RemoteFunction:
+    def from_name(
+        cls,
+        name: str,
+        *,
+        chalk_client: Any | None = None,
+        call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
+    ) -> RemoteFunction:
         """Attach to an external function's currently selected version.
 
         Parameters
         ----------
         name
             Name of the function.
+        call_timeout
+            Maximum seconds to wait on a single ``.remote()``/``.defer()``/
+            ``.poll()`` call before raising. ``None`` disables the deadline.
 
         Returns
         -------
         RemoteFunction
             A handle bound to the existing version.
         """
-        f = cls._make_empty(chalk_client=chalk_client)
+        f = cls._make_empty(chalk_client=chalk_client, call_timeout=call_timeout)
         response = _get_external_function(
             f._client,
             function_name=name,
@@ -2623,10 +2648,14 @@ class RemoteFunction:
 
     @classmethod
     def from_function_id(
-        cls, function_id: str, *, chalk_client: Any | None = None
+        cls,
+        function_id: str,
+        *,
+        chalk_client: Any | None = None,
+        call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
     ) -> RemoteFunction:
         """Attach to a stable external function by ID."""
-        f = cls._make_empty(chalk_client=chalk_client)
+        f = cls._make_empty(chalk_client=chalk_client, call_timeout=call_timeout)
         response = _get_external_function(
             f._client,
             function_id=function_id,
@@ -2640,7 +2669,12 @@ class RemoteFunction:
         return f
 
     @classmethod
-    def _make_empty(cls, *, chalk_client: Any | None = None) -> RemoteFunction:
+    def _make_empty(
+        cls,
+        *,
+        chalk_client: Any | None = None,
+        call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
+    ) -> RemoteFunction:
         f = cls.__new__(cls)
         f._func = lambda *a, **kw: None  # type: ignore[assignment]
         f._has_local_func = False
@@ -2691,6 +2725,7 @@ class RemoteFunction:
         f._remote_call_auth_token = None
         f._queue_call_auth_token = None
         f._knowledge_cutoff = None
+        f._call_timeout = call_timeout
         f._background_deploy_future = None
         f._client = ConnectClient(chalk_client=chalk_client)
         return f
@@ -3148,7 +3183,7 @@ class RemoteFunction:
                 sg, require_ready_replicas=require_ready_replicas
             ):
                 return
-            if status in ("Failed", "Error"):
+            if status in ("Failed", "Error", "Unhealthy"):
                 message = f"Scaling group {sg_name} entered {status} state"
                 if status_message:
                     message = f"{message}: {status_message}"
@@ -3223,8 +3258,11 @@ class RemoteFunction:
             sg = _get_scaling_group(self._client, sg_name)
             status = sg.status
             self._web_url = sg.web_url or None
-            if status in ("Failed", "Error"):
-                raise FunctionError(f"Scaling group {sg_name} entered {status} state")
+            if status in ("Failed", "Error", "Unhealthy"):
+                message = f"Scaling group {sg_name} entered {status} state"
+                if sg.status_message:
+                    message = f"{message}: {sg.status_message}"
+                raise FunctionError(message)
             if _scaling_group_is_ready(
                 sg, require_ready_replicas=self._requires_ready_replicas(sg)
             ):
@@ -3283,6 +3321,73 @@ class RemoteFunction:
     def _drop_remote_call_client(self, *, queue: bool) -> None:
         self._drop_remote_call_clients(direct=not queue, queue=queue)
 
+    def _call_timeout_error(self, timeout: float | None) -> TimeoutError:
+        """Best-effort enrich a deadline-exceeded error with scaling-group state.
+
+        Never raises itself — a failed lookup just falls back to the plain
+        message, since this runs on the caller's last nerve already.
+        """
+        function_name = self._queue_function_name()
+        if timeout is None:
+            message = f"Remote call to function {function_name!r} timed out"
+        else:
+            message = f"Remote call to function {function_name!r} timed out after {timeout:g}s"
+        sg_name = self._version_info.scaling_group_name if self._version_info else None
+        if sg_name:
+            try:
+                sg = _get_scaling_group(self._client, sg_name)
+            except Exception:
+                sg = None
+            if sg is not None:
+                message = f"{message} (scaling group {sg_name!r} status={sg.status!r}"
+                if sg.status_message:
+                    message = f"{message}: {sg.status_message}"
+                message = f"{message})"
+        return TimeoutError(message)
+
+    def _call_with_deadline(
+        self,
+        call: Callable[[], _RemoteCallResult],
+        deadline: float | None,
+        *,
+        configured_timeout: float | None,
+    ) -> _RemoteCallResult:
+        """Run ``call`` on a worker thread, bounded by ``deadline``.
+
+        ``configured_timeout`` is only for the error message (the original,
+        full timeout the caller configured — ``deadline`` may be much closer
+        now if this is a retry). A hung call (e.g. the native remote-call
+        client has no timeout param of its own, so a crash-looping replica
+        blocks it forever) can't be canceled — this only bounds how long the
+        *caller* waits. The worker thread is a daemon and, on timeout, is
+        simply abandoned; it may keep running until its underlying
+        connection errors out on its own.
+        """
+        if deadline is None:
+            return call()
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise self._call_timeout_error(configured_timeout)
+
+        outcome: list[Any] = []
+        failure: list[BaseException] = []
+
+        def run() -> None:
+            try:
+                outcome.append(call())
+            except BaseException as exc:  # re-raised on the caller's thread below
+                failure.append(exc)
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        worker.join(remaining)
+        if worker.is_alive():
+            raise self._call_timeout_error(configured_timeout)
+        if failure:
+            raise failure[0]
+        return outcome[0]
+
     def _with_remote_call_transport(
         self,
         *,
@@ -3291,10 +3396,14 @@ class RemoteFunction:
         call: Callable[[], _RemoteCallResult],
         retry_stale: bool | Callable[[BaseException], bool] = False,
         stale_result: Callable[[_RemoteCallResult], bool] | None = None,
+        timeout: float | None = None,
     ) -> _RemoteCallResult:
+        deadline = None if timeout is None else time.monotonic() + timeout
         for attempt in range(2):
             try:
-                result = call()
+                result = self._call_with_deadline(
+                    call, deadline, configured_timeout=timeout
+                )
             except Exception as exc:
                 if not _is_stale_remote_call_error(exc):
                     raise
@@ -3449,6 +3558,7 @@ class RemoteFunction:
         feather_bytes: bytes,
         function_name: str,
         metadata: list[tuple[str, str]],
+        timeout_ms: int | None,
     ) -> list[bytes]:
         from chalkcompute._gen.chalk.runtime.v1 import (
             remote_python_call_pb as call_pb,
@@ -3463,7 +3573,9 @@ class RemoteFunction:
             )
 
         responses = list(
-            self._call_stub.call_function(requests(), headers=dict(metadata))
+            self._call_stub.call_function(
+                requests(), headers=dict(metadata), timeout_ms=timeout_ms
+            )
         )
         return [resp.feather_stream for resp in responses]
 
@@ -3482,10 +3594,14 @@ class RemoteFunction:
                 *self._remote_call_metadata(queue=False),
                 *metadata,
             ]
+            timeout_ms = (
+                None if self._call_timeout is None else int(self._call_timeout * 1000)
+            )
             return self._call_direct_chunks_python_grpc(
                 feather_bytes,
                 function_name,
                 fallback_metadata,
+                timeout_ms,
             )
         return client.call_ipc(function_name, feather_bytes, metadata=metadata)
 
@@ -3496,6 +3612,7 @@ class RemoteFunction:
             queue=False,
             operation="direct call",
             retry_stale=_is_retryable_stale_remote_call_error,
+            timeout=self._call_timeout,
             call=lambda: self._call_direct_chunks_once(
                 feather_bytes,
                 function_name,
@@ -3641,6 +3758,13 @@ class RemoteFunction:
     def remote(self, *args: Any, **kwargs: Any) -> Any:
         """Invoke the deployed remote function over the wire.
 
+        Bounded by ``call_timeout`` (set on the constructor / ``@function``
+        decorator / ``from_name`` — 60s by default): if the scaling group is
+        ``Unhealthy`` (e.g. replicas stuck in ``CrashLoopBackOff``) or
+        otherwise never responds, this raises ``TimeoutError`` instead of
+        blocking forever, including the scaling group's status message when
+        available.
+
         Parameters
         ----------
         *args
@@ -3695,6 +3819,7 @@ class RemoteFunction:
             return self._with_remote_call_transport(
                 queue=True,
                 operation="enqueue",
+                timeout=self._call_timeout,
                 call=lambda: self._ensure_remote_call_client(queue=True).enqueue(
                     function_name,
                     feather_bytes,
@@ -3703,7 +3828,13 @@ class RemoteFunction:
             )
 
     def defer(self, *args: Any, **kwargs: Any) -> FunctionCallHandle:
-        """Enqueue this function call and return a handle immediately."""
+        """Enqueue this function call and return a handle immediately.
+
+        Enqueueing itself is bounded by ``call_timeout`` (see :meth:`remote`);
+        the returned handle's own ``.get()``/``.stream()`` take their own
+        ``timeout`` for how long to wait on the *result*.
+
+        """
         self._wait_for_background_deploy()
         feather_bytes = self._serialize_call_args(*args, **kwargs)
         call_id = self._enqueue(feather_bytes)
@@ -3725,6 +3856,7 @@ class RemoteFunction:
             stale_result=lambda result: _is_stale_remote_call_error_message(
                 result.error_message
             ),
+            timeout=self._call_timeout,
             call=lambda: self._ensure_remote_call_client(queue=True).poll_next(
                 call_id,
                 cursor,
@@ -3921,9 +4053,16 @@ class _NoOpFunction:
     without an explicit ``RemoteFunction.from_name(...)``.
     """
 
-    def __init__(self, func: Callable, *, name: str | None = None) -> None:
+    def __init__(
+        self,
+        func: Callable,
+        *,
+        name: str | None = None,
+        call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
+    ) -> None:
         self._func = func
         self._registered_name = name or getattr(func, "__name__", "anonymous")
+        self._call_timeout = call_timeout
         self._remote: RemoteFunction | None = None
         functools.update_wrapper(self, func)
         _preserve_functionlike_metadata(self, func)
@@ -3934,7 +4073,9 @@ class _NoOpFunction:
     def _bound(self) -> RemoteFunction:
         """Lazily attach to the deployed function by its registered name."""
         if self._remote is None:
-            self._remote = RemoteFunction.from_name(self._registered_name)
+            self._remote = RemoteFunction.from_name(
+                self._registered_name, call_timeout=self._call_timeout
+            )
         return self._remote
 
     def remote(self, *args: Any, **kwargs: Any) -> Any:
@@ -4012,6 +4153,7 @@ def function(
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
     tracing: TracingPolicyConfig | None = None,
+    call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
 ) -> RemoteFunction | _NoOpFunction: ...
 
 
@@ -4045,6 +4187,7 @@ def function(
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
     tracing: TracingPolicyConfig | None = None,
+    call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
 ) -> Callable[..., RemoteFunction | _NoOpFunction]: ...
 
 
@@ -4079,6 +4222,7 @@ def function(
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
     tracing: TracingPolicyConfig | None = None,
+    call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
 ) -> Callable[..., RemoteFunction | _NoOpFunction] | RemoteFunction | _NoOpFunction:
     """Decorator that deploys a function as a versioned remote function.
 
@@ -4199,6 +4343,13 @@ def function(
         Server-side remote-function tracing is enabled by default. Use
         :class:`~chalkcompute.TracingPolicy` for sampling. Set ``False`` to
         explicitly turn tracing off.
+    call_timeout
+        Maximum seconds to wait on a single ``.remote()``/``.defer()``/
+        ``.poll()`` call before raising :class:`FunctionError` — including
+        while the scaling group is ``Unhealthy`` (e.g. replicas stuck in
+        ``CrashLoopBackOff``), where the error includes the scaling group's
+        status message. Defaults to 60s. Pass ``None`` to disable the
+        deadline and wait indefinitely (previous behavior).
 
     Examples
     --------
@@ -4212,7 +4363,7 @@ def function(
 
     def decorator(func: Callable) -> RemoteFunction | _NoOpFunction:
         if os.environ.get(_REMOTE_ENV_VAR):
-            return _NoOpFunction(func, name=name)
+            return _NoOpFunction(func, name=name, call_timeout=call_timeout)
 
         f = RemoteFunction(
             func,
@@ -4243,6 +4394,7 @@ def function(
             schedule=schedule,
             tracing=tracing,
             models=models,
+            call_timeout=call_timeout,
         )
         f._start_background_deploy()
         return f
