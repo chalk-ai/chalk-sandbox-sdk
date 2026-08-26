@@ -222,6 +222,21 @@ def test_client_with_client_borrows_connect(
     connect.close.assert_not_called()
 
 
+def test_from_connect_alias_supports_chalkpy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(vv, "_NativeVolumeClient", MagicMock())
+    connect = MagicMock()
+    connect._api_server = "https://api.chalk.ai"
+    connect._access_token = "token"
+    connect._env_id = "env-1"
+
+    client = VolumeClient.from_connect(connect)
+    client.close()
+
+    connect.close.assert_not_called()
+
+
 def test_default_client_borrows_process_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

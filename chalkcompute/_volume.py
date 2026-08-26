@@ -990,6 +990,10 @@ class VolumeClient:
         )
         return client
 
+    # ChalkPy currently calls this name from its model deployment helpers.
+    # Keep it as a forwarding alias while ``with_client`` remains the SDK API.
+    from_connect = with_client
+
     def _initialize(
         self,
         connect: ConnectClient,
