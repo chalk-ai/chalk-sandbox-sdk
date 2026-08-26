@@ -500,7 +500,7 @@ class ScalingGroup:
         if lazy_files:
             logger.info("Uploading %d local file(s) to volume(s)...", len(lazy_files))
             assert isinstance(self._image, Image)
-            driver = VolumeClient.from_connect(self._client)
+            driver = VolumeClient.with_client(self._client)
             self._volume_driver = driver
             uploaded_volumes = driver.upload_lazy_files(
                 self._image,
@@ -899,7 +899,7 @@ class ScalingGroup:
         if owned_volumes:
             # Driver is used here only to perform the delete action, not to
             # derive a mount type.
-            driver = self._volume_driver or VolumeClient.from_connect(self._client)
+            driver = self._volume_driver or VolumeClient.with_client(self._client)
             cleanup_owned_volumes(driver, owned_volumes.values(), ())
         self._volumes = []
         self._owned_volumes = []

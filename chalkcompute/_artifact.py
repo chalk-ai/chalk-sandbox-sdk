@@ -24,7 +24,6 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Any
 
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
@@ -194,7 +193,6 @@ class ArtifactClient:
         self._target = target
         self._static_metadata = metadata
         self._connect: ConnectClient | None = None
-        self._owns_connect = False
         if use_tls is None:
             use_tls = credentials is not None
         self._stub = pb_connect.ArtifactServiceClientSync(
@@ -206,13 +204,8 @@ class ArtifactClient:
         )
 
     @classmethod
-    def _from_connect(
-        cls,
-        connect: ConnectClient,
-        *,
-        _owns_connect: bool = False,
-    ) -> ArtifactClient:
-        """Internal: build an artifact client from shared Chalk authentication."""
+    def with_client(cls, connect: ConnectClient) -> ArtifactClient:
+        """Build an artifact client borrowing ``connect`` for authentication."""
         connect._ensure_auth()
         client = cls(
             connect._api_server or "",
@@ -220,20 +213,12 @@ class ArtifactClient:
             metadata=connect._rpc_metadata(),
         )
         client._connect = connect
-        client._owns_connect = _owns_connect
         return client
 
     @classmethod
-    def from_env(cls, *, chalk_client: Any | None = None) -> ArtifactClient:
-        """Create an ``ArtifactClient`` from ambient Chalk credentials."""
-        connect = get_connect_client(chalk_client)
-        owns_connect = chalk_client is not None
-        try:
-            return cls._from_connect(connect, _owns_connect=owns_connect)
-        except Exception:
-            if owns_connect:
-                connect.close()
-            raise
+    def from_env(cls) -> ArtifactClient:
+        """Create an ``ArtifactClient`` borrowing the default client."""
+        return cls.with_client(get_connect_client())
 
     @property
     def _metadata(self) -> _GrpcMetadata | None:
@@ -254,8 +239,6 @@ class ArtifactClient:
     def close(self) -> None:
         """Close the underlying HTTP client."""
         self._stub.close()
-        if self._owns_connect and self._connect is not None:
-            self._connect.close()
 
     @_instrumented("chalkcompute.artifact.create")
     def create(

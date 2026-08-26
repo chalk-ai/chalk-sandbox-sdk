@@ -1018,7 +1018,7 @@ def build_image_with_volumes(
     )
     volumes: list[VolumeMount] = []
     if image.lazy_local_files:
-        volumes = VolumeClient.from_connect(client).upload_lazy_files(
+        volumes = VolumeClient.with_client(client).upload_lazy_files(
             image,
             volume_prefix=volume_prefix,
         )

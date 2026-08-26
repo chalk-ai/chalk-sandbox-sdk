@@ -1612,7 +1612,7 @@ def _build_and_upload(
             parent=progress_parent,
         )
         logger.info("Uploading %d local file(s)...", len(deploy_image.lazy_local_files))
-        vvclient = VolumeClient.from_connect(client)
+        vvclient = VolumeClient.with_client(client)
         driver = vvclient
         new_volumes, volume_commits = vvclient.stage_lazy_files(
             deploy_image,

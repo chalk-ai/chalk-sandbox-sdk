@@ -337,7 +337,7 @@ class Volume:
             access if it does not already exist. Ignored when
             ``version_id`` is set.
         """
-        self._client = client or VolumeClient.from_connect(
+        self._client = client or VolumeClient.with_client(
             get_connect_client(),
         )
         self._name = name
@@ -947,29 +947,15 @@ class VolumeClient:
 
     def __init__(
         self,
-        endpoint: str = "http://localhost:50051",
         *,
-        token: str = "",
-        env_id: str | None = None,
         commit_author: str | None = None,
         extra_headers: builtins.list[tuple[str, str]] | None = None,
         chalk_server: str = "go-api",
-        credentials: object | None = None,
-        metadata: object | None = None,
-        options: object | None = None,
-        _connect: ConnectClient | None = None,
     ) -> None:
-        """Initialize the typed volume control plane and native data plane.
+        """Initialize a volume client borrowing the process-default client.
 
         Parameters
         ----------
-        endpoint
-            Volume service endpoint. Values without a scheme are converted
-            to ``http://`` or ``https://`` depending on ``credentials``.
-        token
-            Optional bearer token used for service authentication.
-        env_id
-            Chalk environment id to send with requests.
         commit_author
             Optional commit author URN. If omitted, the native client derives
             one from the request credentials.
@@ -977,44 +963,56 @@ class VolumeClient:
             Additional request headers to send with every call.
         chalk_server
             Target Chalk server name.
-        credentials
-            Optional TLS/SSL credentials marker. If set, schemeless endpoints
-            use ``https://``.
-        metadata
-            Optional default metadata. ``authorization``, ``x-chalk-env-id``,
-            and ``x-chalk-server`` are translated into native client settings.
-        options
-            Accepted for compatibility with the gRPC-backed constructor and
-            ignored by the native client.
         """
+        self._initialize(
+            get_connect_client(),
+            commit_author=commit_author,
+            extra_headers=extra_headers,
+            chalk_server=chalk_server,
+        )
+
+    @classmethod
+    def with_client(
+        cls,
+        connect: ConnectClient,
+        *,
+        commit_author: str | None = None,
+        extra_headers: builtins.list[tuple[str, str]] | None = None,
+        chalk_server: str = "go-api",
+    ) -> VolumeClient:
+        """Build a volume client borrowing ``connect`` for authentication."""
+        client = cls.__new__(cls)
+        client._initialize(
+            connect,
+            commit_author=commit_author,
+            extra_headers=extra_headers,
+            chalk_server=chalk_server,
+        )
+        return client
+
+    def _initialize(
+        self,
+        connect: ConnectClient,
+        *,
+        commit_author: str | None,
+        extra_headers: builtins.list[tuple[str, str]] | None,
+        chalk_server: str,
+    ) -> None:
         if _NativeVolumeClient is None:
             raise VolumeError(
                 "volumes require the native chalkcompute._native extension"
             ) from _NATIVE_IMPORT_ERROR
-        del options
-        if metadata is not None:
-            token = token or _metadata_value(metadata, "authorization").removeprefix(
-                "Bearer "
-            )
-            env_id = env_id or _metadata_value(metadata, "x-chalk-env-id") or None
-            chalk_server = _metadata_value(metadata, "x-chalk-server") or chalk_server
-        endpoint = _native_endpoint(endpoint, use_tls=credentials is not None)
+        connect._ensure_auth()
+        endpoint = (connect._api_server or "").rstrip("/")
+        token = connect._access_token or ""
+        env_id = connect._env_id or None
         self._endpoint = endpoint
         self._token = token
         self._env_id = env_id
         self._commit_author = commit_author
         self._extra_headers = builtins.list(extra_headers or [])
         self._chalk_server = chalk_server
-        if _connect is None:
-            self._connect = _connect_client_for_endpoint(
-                endpoint,
-                token=token,
-                env_id=env_id,
-            )
-            self._owns_connect = True
-        else:
-            self._connect = _connect
-            self._owns_connect = False
+        self._connect = connect
         self._closed = False
         self._inner = _NativeVolumeClient(
             endpoint,
@@ -1024,39 +1022,6 @@ class VolumeClient:
             self._extra_headers,
             chalk_server,
         )
-
-    @classmethod
-    def from_connect(
-        cls,
-        connect: ConnectClient,
-    ) -> VolumeClient:
-        """Create a client from an authenticated :class:`ConnectClient`.
-
-        Parameters
-        ----------
-        connect
-            An authenticated ``ConnectClient``. Auth is ensured
-            automatically if not already done.
-
-        Returns
-        -------
-        VolumeClient
-            A new client with endpoint, token, and environment settings
-            derived from the ``ConnectClient``.
-        """
-        connect._ensure_auth()
-        # No commit_author here on purpose. When the author is unset, the
-        # native client derives a chalk:{environment}:agent:{agent_id} URN
-        # from the credentials so dashboard commit history links back to
-        # the authoring agent.
-        client = cls(
-            connect._api_server or "",
-            token=connect._access_token or "",
-            env_id=connect._env_id or None,
-            chalk_server="go-api",
-            _connect=connect,
-        )
-        return client
 
     @property
     def _inner(self) -> Any:
@@ -1099,12 +1064,10 @@ class VolumeClient:
         self.close()
 
     def close(self) -> None:
-        """Close owned RPC resources and reject subsequent operations."""
+        """Reject subsequent operations without closing the borrowed client."""
         if self._closed:
             return
         self._closed = True
-        if self._owns_connect:
-            self._connect.close()
 
     @traced("chalkcompute.volume.create")
     def create(self, name: str, *, volume_type: str | None = None) -> Volume:
@@ -1700,36 +1663,6 @@ def _optional_str(value: Any) -> str | None:
     return text or None
 
 
-def _metadata_value(metadata: Any, key: str) -> str:
-    for item in tuple(metadata or ()):
-        if len(item) != 2:
-            continue
-        k, v = item
-        if str(k).lower() == key:
-            return str(v)
-    return ""
-
-
-def _native_endpoint(endpoint: str, *, use_tls: bool) -> str:
-    if endpoint.startswith(("http://", "https://")):
-        return endpoint.rstrip("/")
-    scheme = "https" if use_tls else "http"
-    return f"{scheme}://{endpoint.rstrip('/')}"
-
-
-def _connect_client_for_endpoint(
-    endpoint: str,
-    *,
-    token: str,
-    env_id: str | None,
-) -> ConnectClient:
-    connect = ConnectClient()
-    connect._api_server = endpoint
-    connect._access_token = token
-    connect._env_id = env_id
-    return connect
-
-
 def _version_selector(
     version_id: int | None,
     ref_name: str | None,
@@ -1932,7 +1865,7 @@ def normalize_volume_refs(
 
 def _require_volume_exists(connect: ConnectClient, name: str) -> None:
     """Raise :class:`VolumeError` unless a volume named ``name`` exists."""
-    with VolumeClient.from_connect(connect) as client:
+    with VolumeClient.with_client(connect) as client:
         exists = client.exists(name)
     if not exists:
         raise VolumeError(
@@ -1951,7 +1884,7 @@ def referenced_volume_mount(connect: ConnectClient, mount: VolumeMount) -> Volum
     if mount.version_id is None and mount.ref_name is None:
         _require_volume_exists(connect, mount.name)
     else:
-        VolumeClient.from_connect(connect)._get_volume(
+        VolumeClient.with_client(connect)._get_volume(
             mount.name,
             version_id=mount.version_id,
             ref_name=mount.ref_name,

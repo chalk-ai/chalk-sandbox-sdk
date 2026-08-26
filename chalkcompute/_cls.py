@@ -1388,7 +1388,7 @@ class RemoteClass:
         if self._volumes:
             # Driver is used here only to perform the delete action, not to
             # derive a mount type.
-            driver = self._volume_driver or VolumeClient.from_connect(self._client)
+            driver = self._volume_driver or VolumeClient.with_client(self._client)
             cleanup_owned_volumes(driver, self._volumes, self._referenced_volumes)
         self._volumes = []
         self._volume_driver = None

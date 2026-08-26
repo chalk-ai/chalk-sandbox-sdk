@@ -13,7 +13,7 @@ import pytest
 import chalkcompute._connect as _connect
 import chalkcompute._auth_config as _auth_config
 import chalkcompute._web_identity as _web_identity
-from chalkcompute import SandboxClient, _tracing
+from chalkcompute import ArtifactClient, SandboxClient, _tracing
 from chalkcompute._connect import (
     ConnectError,
     ConnectClient,
@@ -279,6 +279,20 @@ class TestSharedConnectClient:
 
         assert second is not first
         assert second._closed is False
+
+    def test_service_clients_borrow_explicit_client(self) -> None:
+        connect = ConnectClient()
+        connect._api_server = "https://api.chalk.ai"
+        connect._access_token = "token"
+        connect._env_id = "env-1"
+
+        sandbox = SandboxClient.with_client(connect)
+        artifacts = ArtifactClient.with_client(connect)
+        sandbox.close()
+        artifacts.close()
+
+        assert connect._closed is False
+        connect.close()
 
 
 class TestConnectClientGrpcEngineTarget:

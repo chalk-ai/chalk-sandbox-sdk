@@ -168,9 +168,22 @@ The SDK owns that default and closes it at process shutdown. It reuses one
 generated client per service endpoint, so normal SDK use authenticates and
 constructs each generated client only once.
 
-Use `use_connect_client` when one synchronous or asynchronous execution context
-needs different credentials. The scope borrows the explicit client: it restores
-the previous client on exit, while the caller closes the override.
+Normal client construction uses the process default directly; no context
+manager is required. For the exceptional case where one service client should
+use different credentials, bind an explicit client with `with_client(...)`.
+
+```python
+from chalkcompute import ConnectClient, SandboxClient
+
+with ConnectClient(chalk_client=other_chalk_client) as connect:
+    with SandboxClient.with_client(connect) as sandboxes:
+        sandbox = sandboxes.create("ubuntu:latest")
+```
+
+Use `use_connect_client` only when an entire synchronous or asynchronous
+execution context should use different credentials. The scope borrows the
+explicit client: it restores the previous client on exit, while the caller
+closes the override.
 
 ```python
 from chalkcompute import ConnectClient, DatasetClient, use_connect_client
