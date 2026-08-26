@@ -1,13 +1,19 @@
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from connectrpc.code import Code
+from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
 
 from chalkcompute._gen.chalk.volume.v2 import volume_pb as pb_v2
-from chalkcompute._volume import VolumeClosedError, VolumeError, VolumeNotFoundError
+from chalkcompute._volume import (
+    VolumeClosedError,
+    VolumeError,
+    VolumeFileNotFoundError,
+    VolumeNotFoundError,
+)
 from chalkcompute import _volume as vv
 from chalkcompute._volume import (
     CommitStatus,
@@ -15,10 +21,10 @@ from chalkcompute._volume import (
     VersionInfo,
     Volume,
     VolumeClient,
+    VolumeMount,
     _CHUNK_MAX_RETRIES,
     _CHUNK_CONCURRENCY,
     _CHUNK_SIZE_BYTES,
-    _COMMIT_MAX_REBASE_RETRIES,
     _FILE_CONCURRENCY,
     _INLINE_THRESHOLD_BYTES,
     _MAX_PACK_BYTES,
@@ -32,50 +38,92 @@ def _disable_tracing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CHALK_REMOTE_FUNCTION_TRACE_POLICY", "always_off")
 
 
-def _volume_dict(name: str = "models") -> dict[str, Any]:
-    return {
-        "volume_id": "vol-123",
-        "name": name,
-        "access_mode": 2,
-        "ref": "main",
-    }
+def _volume_proto(name: str = "models") -> pb_v2.VolumeInfo:
+    return pb_v2.VolumeInfo(
+        volume_id="vol-123",
+        name=name,
+        access_mode=pb_v2.VolumeAccessMode.READ_WRITE,
+        ref="main",
+    )
 
 
-def _version_dict(version_id: int = 10) -> dict[str, Any]:
-    return {
-        "version_id": version_id,
-        "ref": "main",
-        "commit_id": f"commit-{version_id}",
-    }
+def _version_proto(version_id: int = 10) -> pb_v2.VersionInfo:
+    return pb_v2.VersionInfo(
+        version_id=version_id,
+        sequence_number=version_id,
+        ref="main",
+        commit_id=f"commit-{version_id}",
+    )
 
 
-def _status_dict(version_id: int = 11) -> dict[str, Any]:
-    return {
-        "commit_id": "commit-1",
-        "result": "committed",
-        "version": _version_dict(version_id),
-    }
+def _status_proto(version_id: int = 11) -> pb_v2.CommitStatus:
+    return pb_v2.CommitStatus(
+        commit_id="commit-1",
+        result=pb_v2.CommitResult.COMMITTED,
+        version=_version_proto(version_id),
+    )
+
+
+def _get_volume_response(
+    name: str = "models", version_id: int = 10
+) -> pb_v2.GetVolumeResponse:
+    return pb_v2.GetVolumeResponse(
+        volume=_volume_proto(name),
+        version=_version_proto(version_id),
+    )
+
+
+def _prepare_upload(
+    client: VolumeClient,
+    *,
+    volume: str = "models",
+    ref: str | None = None,
+    version_id: int = 11,
+) -> None:
+    client._native_inner.stage.return_value = object()
+    client._native_inner.staged_intent.return_value = pb_v2.CommitIntent(
+        volume=pb_v2.VolumeRef(name=volume),
+        ref=ref,
+        deltas=Oneof("path_deltas", pb_v2.PathDeltaList()),
+    ).to_binary()
+    client._rpc.commit_version.return_value = pb_v2.CommitVersionResponse(
+        status=_status_proto(version_id)
+    )
 
 
 def _make_client(monkeypatch: pytest.MonkeyPatch) -> VolumeClient:
     monkeypatch.setattr(vv, "_NativeVolumeRpcError", RuntimeError)
     client = object.__new__(VolumeClient)
     client._closed = False
-    client._inner = MagicMock()
+    client._token = "token"
+    client._env_id = "env-1"
+    client._commit_author = None
+    client._extra_headers = []
+    client._chalk_server = "go-api"
+    client._owns_connect = False
+    client._native_inner = MagicMock()
+    client._connect = MagicMock()
+    client._connect._access_token = "token"
+    client._connect._env_id = "env-1"
+    client._rpc = MagicMock()
+    client._connect.stub.return_value = client._rpc
+    client._connect.call.side_effect = lambda method, request, **_kwargs: method(
+        request
+    )
     client.close = MagicMock()
     return client
 
 
-def _not_found() -> RuntimeError:
-    return RuntimeError("not_found", "missing")
+def _not_found() -> ConnectRpcError:
+    return ConnectRpcError(Code.NOT_FOUND, "missing")
 
 
-def test_volume_error_preserves_native_code_and_message(
+def test_volume_error_preserves_connect_code_and_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = _make_client(monkeypatch)
     message = "volume v2 upstream returned 404 for CreateRef"
-    client._inner.create_ref.side_effect = RuntimeError("unimplemented", message)
+    client._rpc.create_ref.side_effect = ConnectRpcError(Code.UNIMPLEMENTED, message)
 
     with pytest.raises(VolumeError, match=message) as raised:
         client._create_ref("models", "sandbox-a", 7)
@@ -83,12 +131,12 @@ def test_volume_error_preserves_native_code_and_message(
     assert raised.value.code == "unimplemented"
 
 
-def test_volume_not_found_preserves_native_message(
+def test_volume_not_found_preserves_connect_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = _make_client(monkeypatch)
-    client._inner.get_volume.side_effect = RuntimeError(
-        "not_found", "server volume lookup failed"
+    client._rpc.get_volume.side_effect = ConnectRpcError(
+        Code.NOT_FOUND, "server volume lookup failed"
     )
 
     with pytest.raises(
@@ -164,27 +212,27 @@ def test_accepts_explicit_client_and_gets_existing_volume_lazily(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = _make_client(monkeypatch)
-    client._inner.get_volume.return_value = {
-        "volume": _volume_dict(),
-        "version": _version_dict(),
-    }
+    client._rpc.get_volume.return_value = _get_volume_response()
 
     vol = Volume("models", client=client)
 
     assert vol.name == "models"
     assert vol._client is client
-    client._inner.get_volume.assert_not_called()
+    client._rpc.get_volume.assert_not_called()
     assert vol.info.name == "models"
     assert vol.version.id == 10
-    client._inner.get_volume.assert_called_once_with("models", None, None)
+    request = client._rpc.get_volume.call_args.args[0]
+    assert request == pb_v2.GetVolumeRequest(volume=pb_v2.VolumeRef(name="models"))
 
 
 def test_accepts_name_only_and_creates_missing_volume_lazily(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = _make_client(monkeypatch)
-    client._inner.get_volume.side_effect = _not_found()
-    client._inner.create_volume.return_value = {"volume": _volume_dict()}
+    client._rpc.get_volume.side_effect = _not_found()
+    client._rpc.create_volume.return_value = pb_v2.CreateVolumeResponse(
+        volume=_volume_proto()
+    )
 
     with patch.object(
         VolumeClient, "from_connect", return_value=client
@@ -193,34 +241,35 @@ def test_accepts_name_only_and_creates_missing_volume_lazily(
 
     from_connect.assert_called_once()
     assert vol.info.name == "models"
-    client._inner.create_volume.assert_called_once_with("models", None)
+    client._rpc.create_volume.assert_called_once_with(
+        pb_v2.CreateVolumeRequest(
+            name="models", volume_type=pb_v2.VolumeKind.UNSPECIFIED
+        )
+    )
 
 
 def test_create_if_missing_false_propagates_not_found(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = _make_client(monkeypatch)
-    client._inner.get_volume.side_effect = _not_found()
+    client._rpc.get_volume.side_effect = _not_found()
     vol = Volume("models", client=client, create_if_missing=False)
 
     with pytest.raises(VolumeNotFoundError):
         vol.reload()
 
-    client._inner.create_volume.assert_not_called()
+    client._rpc.create_volume.assert_not_called()
 
 
 def test_put_file_delegates_to_native_upload(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _make_client(monkeypatch)
-    client._inner.get_volume.return_value = {
-        "volume": _volume_dict(),
-        "version": _version_dict(),
-    }
-    client._inner.upload.return_value = [_status_dict()]
+    client._rpc.get_volume.return_value = _get_volume_response()
+    _prepare_upload(client)
     vol = Volume("models", client=client)
 
     vol.put_file("models/latest.bin", "hello")
 
-    client._inner.upload.assert_called_once_with(
+    client._native_inner.stage.assert_called_once_with(
         "models",
         [("models/latest.bin", b"hello")],
         {
@@ -232,9 +281,10 @@ def test_put_file_delegates_to_native_upload(monkeypatch: pytest.MonkeyPatch) ->
             "batch_size": 1,
             "max_chunk_retries": _CHUNK_MAX_RETRIES,
             "max_rate_limit_retries": _RATE_LIMIT_MAX_RETRIES,
-            "max_commit_retries": _COMMIT_MAX_REBASE_RETRIES,
         },
     )
+    client._native_inner.staged_intent.assert_called_once()
+    client._rpc.commit_version.assert_called_once()
     assert vol.version == VersionInfo(id=11, ref="main", commit_id="commit-11")
 
 
@@ -242,18 +292,15 @@ def test_batch_upload_microbatches_by_file_count(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = _make_client(monkeypatch)
-    client._inner.get_volume.return_value = {
-        "volume": _volume_dict(),
-        "version": _version_dict(),
-    }
-    client._inner.upload.return_value = [_status_dict()]
+    client._rpc.get_volume.return_value = _get_volume_response()
+    _prepare_upload(client)
     vol = Volume("models", client=client)
 
     with vol.batch_upload(max_files_per_commit=2) as batch:
         for index in range(5):
             batch.put(f"data/{index}.txt", f"value-{index}")
 
-    calls = client._inner.upload.call_args_list
+    calls = client._native_inner.stage.call_args_list
     assert [call.args[1] for call in calls] == [
         [("data/0.txt", b"value-0"), ("data/1.txt", b"value-1")],
         [("data/2.txt", b"value-2"), ("data/3.txt", b"value-3")],
@@ -266,16 +313,21 @@ def test_batch_upload_creates_missing_volume_before_flush(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = _make_client(monkeypatch)
-    client._inner.get_volume.side_effect = _not_found()
-    client._inner.create_volume.return_value = {"volume": _volume_dict()}
-    client._inner.upload.return_value = [_status_dict()]
+    client._rpc.get_volume.side_effect = [
+        _not_found(),
+        _get_volume_response(),
+    ]
+    client._rpc.create_volume.return_value = pb_v2.CreateVolumeResponse(
+        volume=_volume_proto()
+    )
+    _prepare_upload(client)
     vol = Volume("models", client=client)
 
     with vol.batch_upload() as batch:
         batch.put("data/train.csv", "id,label\n")
 
-    client._inner.create_volume.assert_called_once_with("models", None)
-    client._inner.upload.assert_called_once()
+    client._rpc.create_volume.assert_called_once()
+    client._native_inner.stage.assert_called_once()
 
 
 def test_batch_upload_rejects_invalid_microbatch_size(
@@ -294,27 +346,21 @@ def test_put_file_from_path_passes_path_to_native(
     tmp_path,
 ) -> None:
     client = _make_client(monkeypatch)
-    client._inner.get_volume.return_value = {
-        "volume": _volume_dict(),
-        "version": _version_dict(),
-    }
-    client._inner.upload.return_value = [_status_dict()]
+    client._rpc.get_volume.return_value = _get_volume_response()
+    _prepare_upload(client)
     src = tmp_path / "model.bin"
     src.write_bytes(b"weights")
 
     Volume("models", client=client).put_file_from_path("model.bin", src)
 
-    assert client._inner.upload.call_args.args[1] == [("model.bin", src)]
+    assert client._native_inner.stage.call_args.args[1] == [("model.bin", src)]
 
 
 def test_read_file_delegates_to_native_download(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = _make_client(monkeypatch)
-    client._inner.get_volume.return_value = {
-        "volume": _volume_dict(),
-        "version": _version_dict(),
-    }
+    client._rpc.get_volume.return_value = _get_volume_response()
     client._inner.download_bytes.return_value = b"old"
     vol = Volume("models", client=client).at_version(7)
 
@@ -327,6 +373,19 @@ def test_read_file_delegates_to_native_download(
     )
 
 
+def test_read_file_maps_missing_file_to_file_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._rpc.get_volume.return_value = _get_volume_response()
+    client._inner.download_bytes.side_effect = RuntimeError(
+        "not_found", 'file "model.bin" not found'
+    )
+
+    with pytest.raises(VolumeFileNotFoundError, match='file "model.bin" not found'):
+        Volume("models", client=client).read_file("model.bin")
+
+
 def test_at_version_is_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _make_client(monkeypatch)
     vol = Volume("models", client=client).at_version(7)
@@ -334,25 +393,41 @@ def test_at_version_is_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(VolumeError, match="read-only"):
         vol.put_file("model.bin", b"new")
 
-    client._inner.upload.assert_not_called()
+    client._native_inner.stage.assert_not_called()
+
+
+def test_at_ref_opens_mutable_ref_handle(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _make_client(monkeypatch)
+
+    ref = Volume("models", client=client).at_ref("sandbox-a")
+
+    assert ref.name == "models"
+    assert ref.ref == "sandbox-a"
+    assert ref.version_id is None
 
 
 def test_fork_creates_ref_from_pinned_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = _make_client(monkeypatch)
-    client._inner.create_ref.return_value = {
-        "ref": {
-            "name": "sandbox-a",
-            "version_id": 7,
-            "commit_id": "base-commit",
-            "parent_version_id": 7,
-        }
-    }
+    client._rpc.create_ref.return_value = pb_v2.CreateRefResponse(
+        ref=pb_v2.RefInfo(
+            name="sandbox-a",
+            version_id=7,
+            commit_id="base-commit",
+            parent_version_id=7,
+        )
+    )
 
     fork = Volume("models", client=client).at_version(7).fork("sandbox-a")
 
-    client._inner.create_ref.assert_called_once_with("models", "sandbox-a", 7)
+    client._rpc.create_ref.assert_called_once_with(
+        pb_v2.CreateRefRequest(
+            volume=pb_v2.VolumeRef(name="models"),
+            name="sandbox-a",
+            from_version_id=7,
+        )
+    )
     assert fork.ref == "sandbox-a"
     assert fork.version == VersionInfo(
         id=7,
@@ -363,25 +438,17 @@ def test_fork_creates_ref_from_pinned_version(
 
 def test_forks_can_be_chained(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _make_client(monkeypatch)
-    client._inner.get_volume.return_value = {
-        "volume": _volume_dict(),
-        "version": _version_dict(7),
-    }
-    client._inner.create_ref.side_effect = [
-        {"ref": {"name": "test-fork", "version_id": 7}},
-        {
-            "ref": {
-                "name": "chained-fork",
-                "version_id": 7,
-            }
-        },
+    client._rpc.get_volume.return_value = _get_volume_response(version_id=7)
+    client._rpc.create_ref.side_effect = [
+        pb_v2.CreateRefResponse(ref=pb_v2.RefInfo(name="test-fork", version_id=7)),
+        pb_v2.CreateRefResponse(ref=pb_v2.RefInfo(name="chained-fork", version_id=7)),
     ]
 
     chained = Volume("test", client=client).fork("test-fork").fork("chained-fork")
 
-    assert [call.args for call in client._inner.create_ref.call_args_list] == [
-        ("test", "test-fork", 7),
-        ("test", "chained-fork", 7),
+    assert [call.args[0].name for call in client._rpc.create_ref.call_args_list] == [
+        "test-fork",
+        "chained-fork",
     ]
     assert chained.ref == "chained-fork"
 
@@ -390,27 +457,22 @@ def test_fork_writes_and_lists_versions_on_its_ref(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = _make_client(monkeypatch)
-    client._inner.get_volume.return_value = {
-        "volume": _volume_dict(),
-        "version": _version_dict(7),
-    }
-    client._inner.create_ref.return_value = {
-        "ref": {"name": "sandbox-a", "version_id": 7}
-    }
-    client._inner.upload.return_value = [_status_dict(8)]
-    client._inner.list_volume_versions.return_value = {
-        "versions": [_version_dict(8)],
-        "next_cursor": "",
-    }
+    client._rpc.get_volume.return_value = _get_volume_response(version_id=7)
+    client._rpc.create_ref.return_value = pb_v2.CreateRefResponse(
+        ref=pb_v2.RefInfo(name="sandbox-a", version_id=7)
+    )
+    client._rpc.list_volume_versions.return_value = pb_v2.ListVolumeVersionsResponse(
+        versions=[_version_proto(8)]
+    )
+    _prepare_upload(client, ref="sandbox-a", version_id=8)
     fork = Volume("models", client=client).fork("sandbox-a")
 
     fork.put_file("result.txt", b"done")
     versions = fork.versions()
 
-    assert client._inner.upload.call_args.args[-1] == "sandbox-a"
-    client._inner.list_volume_versions.assert_called_once_with(
-        "models", 100, "", "sandbox-a"
-    )
+    assert client._native_inner.staged_intent.call_args.args[-1] == "sandbox-a"
+    versions_request = client._rpc.list_volume_versions.call_args.args[0]
+    assert versions_request.ref == "sandbox-a"
     assert [version.id for version in versions] == [8]
 
 
@@ -418,21 +480,14 @@ def test_forks_and_delete_fork_delegate_to_native(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = _make_client(monkeypatch)
-    client._inner.get_volume.return_value = {
-        "volume": _volume_dict(),
-        "version": _version_dict(),
-    }
-    client._inner.list_refs.return_value = [
-        {
-            "name": "main",
-            "version_id": 10,
-        },
-        {
-            "name": "sandbox-a",
-            "version_id": 7,
-            "parent_version_id": 4,
-        },
-    ]
+    client._rpc.get_volume.return_value = _get_volume_response()
+    client._rpc.list_refs.return_value = pb_v2.ListRefsResponse(
+        refs=[
+            pb_v2.RefInfo(name="main", version_id=10),
+            pb_v2.RefInfo(name="sandbox-a", version_id=7, parent_version_id=4),
+        ]
+    )
+    client._rpc.delete_ref.return_value = pb_v2.DeleteRefResponse()
     volume = Volume("models", client=client, ref="sandbox-a")
 
     assert volume.forks() == [
@@ -444,11 +499,11 @@ def test_forks_and_delete_fork_delegate_to_native(
     ]
     volume.delete_fork()
 
-    client._inner.list_refs.assert_called_once_with("models")
-    client._inner.delete_ref.assert_called_once_with("models", "sandbox-a")
+    client._rpc.list_refs.assert_called_once()
+    client._rpc.delete_ref.assert_called_once()
 
 
-def test_fork_mount_uses_default_path_and_pins_tip(
+def test_fork_mount_uses_default_path_and_preserves_ref(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = _make_client(monkeypatch)
@@ -459,8 +514,24 @@ def test_fork_mount_uses_default_path_and_pins_tip(
 
     assert mount.name == "models"
     assert mount.mount_path == "/volumes/models"
-    assert mount.version_id == 7
-    assert mount.to_spec_dict()["versionId"] == 7
+    assert mount.version_id is None
+    assert mount.ref_name == "sandbox-a"
+    assert mount.to_spec_dict()["refName"] == "sandbox-a"
+
+
+def test_volume_mount_rejects_ambiguous_selector() -> None:
+    with pytest.raises(ValueError, match="cannot both be set"):
+        VolumeMount(
+            name="models",
+            mount_path="/models",
+            version_id=7,
+            ref_name="sandbox-a",
+        )
+
+
+def test_volume_mount_rejects_empty_ref() -> None:
+    with pytest.raises(ValueError, match="must not be empty"):
+        VolumeMount(name="models", mount_path="/models", ref_name="")
 
 
 def test_closed_volume_operations_raise(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -494,29 +565,28 @@ def test_closed_volume_operations_raise(monkeypatch: pytest.MonkeyPatch) -> None
         with vol.batch_upload():
             pass
 
-    client._inner.get_volume.assert_not_called()
-    client._inner.upload.assert_not_called()
+    client._rpc.get_volume.assert_not_called()
+    client._native_inner.stage.assert_not_called()
 
 
-def test_listdir_recurses_through_native_pages(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_listdir_recurses_through_typed_rpc_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     client = _make_client(monkeypatch)
-    client._inner.get_volume.return_value = {
-        "volume": _volume_dict(),
-        "version": _version_dict(),
-    }
-    client._inner.list_files.side_effect = [
-        {
-            "files": [
-                {"path": "dir", "size": 0, "kind": 2},
-                {"path": "root.txt", "size": 4, "kind": 1},
+    client._rpc.get_volume.return_value = _get_volume_response()
+    client._rpc.list_files.side_effect = [
+        pb_v2.ListFilesResponse(
+            files=[
+                pb_v2.FileInfo(path="dir", size=0, kind=pb_v2.FileKind.DIRECTORY),
+                pb_v2.FileInfo(path="root.txt", size=4, kind=pb_v2.FileKind.FILE),
             ],
-            "next_cursor": "",
-            "version": _version_dict(),
-        },
-        {
-            "files": [{"path": "dir/file.txt", "size": 2, "kind": 1}],
-            "next_cursor": "",
-        },
+            version=_version_proto(),
+        ),
+        pb_v2.ListFilesResponse(
+            files=[
+                pb_v2.FileInfo(path="dir/file.txt", size=2, kind=pb_v2.FileKind.FILE)
+            ]
+        ),
     ]
 
     files = Volume("models", client=client).listdir()
@@ -524,15 +594,14 @@ def test_listdir_recurses_through_native_pages(monkeypatch: pytest.MonkeyPatch) 
     assert [f.path for f in files] == ["dir", "root.txt", "dir/file.txt"]
 
 
-def test_versions_traverse_native_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_versions_traverse_typed_rpc_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _make_client(monkeypatch)
-    client._inner.get_volume.return_value = {
-        "volume": _volume_dict(),
-        "version": _version_dict(),
-    }
-    client._inner.list_volume_versions.side_effect = [
-        {"versions": [_version_dict(1)], "next_cursor": "next"},
-        {"versions": [_version_dict(2)], "next_cursor": ""},
+    client._rpc.get_volume.return_value = _get_volume_response()
+    client._rpc.list_volume_versions.side_effect = [
+        pb_v2.ListVolumeVersionsResponse(
+            versions=[_version_proto(1)], next_cursor="next"
+        ),
+        pb_v2.ListVolumeVersionsResponse(versions=[_version_proto(2)]),
     ]
 
     versions = Volume("models", client=client).versions(limit=1)
@@ -540,16 +609,16 @@ def test_versions_traverse_native_cursor(monkeypatch: pytest.MonkeyPatch) -> Non
     assert [v.id for v in versions] == [1, 2]
 
 
-def test_delete_delegates_to_native_delete(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_delete_delegates_to_typed_rpc(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _make_client(monkeypatch)
-    client._inner.get_volume.return_value = {
-        "volume": _volume_dict(),
-        "version": _version_dict(),
-    }
+    client._rpc.get_volume.return_value = _get_volume_response()
+    client._rpc.delete_volume.return_value = pb_v2.DeleteVolumeResponse()
 
     Volume("models", client=client).delete()
 
-    client._inner.delete_volume.assert_called_once_with("models")
+    client._rpc.delete_volume.assert_called_once_with(
+        pb_v2.DeleteVolumeRequest(volume=pb_v2.VolumeRef(name="models"))
+    )
 
 
 def test_chunked_read_downloads_chunks_and_joins_by_offset(
@@ -619,11 +688,77 @@ def test_signed_download_translates_timeout(
         vv._read_file_from_signed_uri("https://storage/chunk")
 
 
-def test_dict_commit_status_conversion() -> None:
-    assert vv._dict_to_commit_status(_status_dict()) == CommitStatus(
+def test_proto_commit_status_conversion() -> None:
+    assert vv._proto_to_commit_status(_status_proto()) == CommitStatus(
         commit_id="commit-1",
         result="committed",
         version=VersionInfo(id=11, ref="main", commit_id="commit-11"),
+    )
+
+
+def test_commit_intent_retries_with_fresh_typed_base(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._rpc.get_volume.side_effect = [
+        _get_volume_response(version_id=10),
+        _get_volume_response(version_id=11),
+    ]
+    requests: list[pb_v2.CommitVersionRequest] = []
+    responses = iter(
+        [
+            pb_v2.CommitVersionResponse(
+                status=pb_v2.CommitStatus(
+                    commit_id="rebase",
+                    result=pb_v2.CommitResult.REBASE_REQUIRED,
+                )
+            ),
+            pb_v2.CommitVersionResponse(status=_status_proto(12)),
+        ]
+    )
+
+    def commit(request: pb_v2.CommitVersionRequest) -> pb_v2.CommitVersionResponse:
+        requests.append(pb_v2.CommitVersionRequest.from_binary(request.to_binary()))
+        return next(responses)
+
+    client._rpc.commit_version.side_effect = commit
+    intent = pb_v2.CommitIntent(
+        volume=pb_v2.VolumeRef(name="models"),
+        deltas=Oneof("path_deltas", pb_v2.PathDeltaList()),
+    )
+
+    status = client._commit_intent(intent, max_commit_retries=2)
+
+    assert status.version is not None
+    assert status.version.id == 12
+    assert [
+        request.intent.base_version_id for request in requests if request.intent
+    ] == [
+        10,
+        11,
+    ]
+    assert (
+        len({request.intent.commit_id for request in requests if request.intent}) == 2
+    )
+
+
+def test_remove_file_stages_no_data_and_commits_typed_delta(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._rpc.get_volume.return_value = _get_volume_response()
+    _prepare_upload(client)
+
+    Volume("models", client=client).remove_file("old/model.bin")
+
+    client._native_inner.stage.assert_called_once_with("models", [], None)
+    request = client._rpc.commit_version.call_args.args[0]
+    assert request.intent is not None
+    assert request.intent.deltas == Oneof(
+        "path_deltas",
+        pb_v2.PathDeltaList(
+            removes=[pb_v2.PathRemoveDelta(path="old/model.bin", recursive=False)]
+        ),
     )
 
 
@@ -644,8 +779,10 @@ def test_stage_lazy_files_creates_source_code_volume_and_returns_intent(
 
     image, src = _lazy_image(tmp_path)
     client = _make_client(monkeypatch)
-    client._inner.get_volume.side_effect = _not_found()
-    client._inner.create_volume.return_value = {"volume": _volume_dict("src-vol")}
+    client._rpc.get_volume.side_effect = _not_found()
+    client._rpc.create_volume.return_value = pb_v2.CreateVolumeResponse(
+        volume=_volume_proto("fn-src-add-app")
+    )
     intent = pb_v2.CommitIntent(
         volume=pb_v2.VolumeRef(name="src-vol"), author="chalk:env:agent:a"
     )
@@ -653,7 +790,11 @@ def test_stage_lazy_files_creates_source_code_volume_and_returns_intent(
 
     volumes, intents = client.stage_lazy_files(image, volume_name="fn-src-add")
 
-    client._inner.create_volume.assert_called_once_with("fn-src-add-app", "source_code")
+    client._rpc.create_volume.assert_called_once_with(
+        pb_v2.CreateVolumeRequest(
+            name="fn-src-add-app", volume_type=pb_v2.VolumeKind.SOURCE_CODE
+        )
+    )
 
     (staged_name, source), _ = client._inner.stage.call_args
     assert staged_name == "fn-src-add-app"
@@ -665,8 +806,7 @@ def test_stage_lazy_files_creates_source_code_volume_and_returns_intent(
     assert volumes[0].mount_path == "/app"
     assert volumes[0].to_spec_dict()["type"] == "versioned_chalkfs"
     # Nothing commits client-side: the intent lands via volume_commits.
-    client._inner.commit_staged.assert_not_called()
-    client._inner.upload.assert_not_called()
+    client._rpc.commit_version.assert_not_called()
 
 
 def test_stage_lazy_files_reuses_volume_and_replaces_base_tree(
@@ -674,16 +814,13 @@ def test_stage_lazy_files_reuses_volume_and_replaces_base_tree(
 ) -> None:
     image, _src = _lazy_image(tmp_path)
     client = _make_client(monkeypatch)
-    client._inner.get_volume.return_value = {
-        "volume": _volume_dict("fn-src-add-app"),
-        "version": _version_dict(),
-    }
+    client._rpc.get_volume.return_value = _get_volume_response("fn-src-add-app")
     intent = pb_v2.CommitIntent(volume=pb_v2.VolumeRef(name="fn-src-add-app"))
     client._inner.staged_intent.return_value = intent.to_binary()
 
     volumes, intents = client.stage_lazy_files(image, volume_name="fn-src-add")
 
-    client._inner.create_volume.assert_not_called()
+    client._rpc.create_volume.assert_not_called()
     assert volumes[0].name == "fn-src-add-app"
     # A recursive root remove tells the server to build the version from
     # an empty tree plus the upserts.

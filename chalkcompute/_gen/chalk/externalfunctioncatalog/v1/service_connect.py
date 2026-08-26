@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from connectrpc.client import ConnectClientSync
 from connectrpc.method import IdempotencyLevel, MethodInfo
 
-from .service_pb import CallExternalFunctionRequest, CallExternalFunctionResponse, CreateExternalFunctionVersionRequest, CreateExternalFunctionVersionResponse, DeleteExternalFunctionRequest, DeleteExternalFunctionResponse, DeleteExternalFunctionVersionRequest, DeleteExternalFunctionVersionResponse, GetExternalFunctionVersionRequest, GetExternalFunctionVersionResponse, GetExternalFunctionVersionSourceRequest, GetExternalFunctionVersionSourceResponse, ListExternalFunctionScheduledRunsRequest, ListExternalFunctionScheduledRunsResponse, ListExternalFunctionVersionsRequest, ListExternalFunctionVersionsResponse, ListExternalFunctionsRequest, ListExternalFunctionsResponse
+from .service_pb import CallExternalFunctionRequest, CallExternalFunctionResponse, CreateExternalFunctionRequest, CreateExternalFunctionResponse, CreateExternalFunctionVersionRequest, CreateExternalFunctionVersionResponse, DeleteExternalFunctionRequest, DeleteExternalFunctionResponse, DeleteExternalFunctionVersionRequest, DeleteExternalFunctionVersionResponse, GetExternalFunctionRequest, GetExternalFunctionResponse, GetExternalFunctionVersionRequest, GetExternalFunctionVersionResponse, GetExternalFunctionVersionSourceRequest, GetExternalFunctionVersionSourceResponse, ListExternalFunctionScheduledRunsRequest, ListExternalFunctionScheduledRunsResponse, ListExternalFunctionVersionsRequest, ListExternalFunctionVersionsResponse, ListExternalFunctionsRequest, ListExternalFunctionsResponse, UpdateExternalFunctionRequest, UpdateExternalFunctionResponse
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -22,6 +22,150 @@ if TYPE_CHECKING:
     from connectrpc.request import Headers, RequestContext
 
 class ExternalFunctionCatalogServiceClientSync(ConnectClientSync):
+    def create_external_function(
+        self,
+        request: CreateExternalFunctionRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> CreateExternalFunctionResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="CreateExternalFunction",
+                service_name="chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService",
+                input=CreateExternalFunctionRequest,
+                output=CreateExternalFunctionResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def update_external_function(
+        self,
+        request: UpdateExternalFunctionRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> UpdateExternalFunctionResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="UpdateExternalFunction",
+                service_name="chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService",
+                input=UpdateExternalFunctionRequest,
+                output=UpdateExternalFunctionResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def get_external_function(
+        self,
+        request: GetExternalFunctionRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+        use_get: bool = False,
+    ) -> GetExternalFunctionResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="GetExternalFunction",
+                service_name="chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService",
+                input=GetExternalFunctionRequest,
+                output=GetExternalFunctionResponse,
+                idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+            use_get=use_get,
+        )
+    def list_external_functions(
+        self,
+        request: ListExternalFunctionsRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+        use_get: bool = False,
+    ) -> ListExternalFunctionsResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="ListExternalFunctions",
+                service_name="chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService",
+                input=ListExternalFunctionsRequest,
+                output=ListExternalFunctionsResponse,
+                idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+            use_get=use_get,
+        )
+    def delete_external_function(
+        self,
+        request: DeleteExternalFunctionRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> DeleteExternalFunctionResponse:
+        """
+        Deletes every version of a function: each version's scaling group is torn
+        down and the function schedule is removed, then all version rows are
+        soft-deleted for historical audit.
+        """
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="DeleteExternalFunction",
+                service_name="chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService",
+                input=DeleteExternalFunctionRequest,
+                output=DeleteExternalFunctionResponse,
+                idempotency_level=IdempotencyLevel.IDEMPOTENT,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def list_external_function_scheduled_runs(
+        self,
+        request: ListExternalFunctionScheduledRunsRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+        use_get: bool = False,
+    ) -> ListExternalFunctionScheduledRunsResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="ListExternalFunctionScheduledRuns",
+                service_name="chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService",
+                input=ListExternalFunctionScheduledRunsRequest,
+                output=ListExternalFunctionScheduledRunsResponse,
+                idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+            use_get=use_get,
+        )
+    def call_external_function(
+        self,
+        request: CallExternalFunctionRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> CallExternalFunctionResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="CallExternalFunction",
+                service_name="chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService",
+                input=CallExternalFunctionRequest,
+                output=CallExternalFunctionResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
     def create_external_function_version(
         self,
         request: CreateExternalFunctionVersionRequest,
@@ -29,6 +173,11 @@ class ExternalFunctionCatalogServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> CreateExternalFunctionVersionResponse:
+        """
+        Legacy compatibility RPC. New callers should use CreateExternalFunction
+        for the initial resource and UpdateExternalFunction with `spec` for every
+        later version. This remains intentionally available for shipped clients.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -123,91 +272,6 @@ class ExternalFunctionCatalogServiceClientSync(ConnectClientSync):
                 service_name="chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService",
                 input=DeleteExternalFunctionVersionRequest,
                 output=DeleteExternalFunctionVersionResponse,
-                idempotency_level=IdempotencyLevel.UNKNOWN,
-            ),
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-    def delete_external_function(
-        self,
-        request: DeleteExternalFunctionRequest,
-        *,
-        headers: Headers | Mapping[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> DeleteExternalFunctionResponse:
-        """
-        Deletes every version of a function: each version's scaling group is torn
-        down and the function schedule is removed, then all version rows are
-        soft-deleted for historical audit.
-        """
-        return self.execute_unary(
-            request=request,
-            method=MethodInfo(
-                name="DeleteExternalFunction",
-                service_name="chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService",
-                input=DeleteExternalFunctionRequest,
-                output=DeleteExternalFunctionResponse,
-                idempotency_level=IdempotencyLevel.IDEMPOTENT,
-            ),
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-    def list_external_functions(
-        self,
-        request: ListExternalFunctionsRequest,
-        *,
-        headers: Headers | Mapping[str, str] | None = None,
-        timeout_ms: int | None = None,
-        use_get: bool = False,
-    ) -> ListExternalFunctionsResponse:
-        return self.execute_unary(
-            request=request,
-            method=MethodInfo(
-                name="ListExternalFunctions",
-                service_name="chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService",
-                input=ListExternalFunctionsRequest,
-                output=ListExternalFunctionsResponse,
-                idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
-            ),
-            headers=headers,
-            timeout_ms=timeout_ms,
-            use_get=use_get,
-        )
-    def list_external_function_scheduled_runs(
-        self,
-        request: ListExternalFunctionScheduledRunsRequest,
-        *,
-        headers: Headers | Mapping[str, str] | None = None,
-        timeout_ms: int | None = None,
-        use_get: bool = False,
-    ) -> ListExternalFunctionScheduledRunsResponse:
-        return self.execute_unary(
-            request=request,
-            method=MethodInfo(
-                name="ListExternalFunctionScheduledRuns",
-                service_name="chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService",
-                input=ListExternalFunctionScheduledRunsRequest,
-                output=ListExternalFunctionScheduledRunsResponse,
-                idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
-            ),
-            headers=headers,
-            timeout_ms=timeout_ms,
-            use_get=use_get,
-        )
-    def call_external_function(
-        self,
-        request: CallExternalFunctionRequest,
-        *,
-        headers: Headers | Mapping[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> CallExternalFunctionResponse:
-        return self.execute_unary(
-            request=request,
-            method=MethodInfo(
-                name="CallExternalFunction",
-                service_name="chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService",
-                input=CallExternalFunctionRequest,
-                output=CallExternalFunctionResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,

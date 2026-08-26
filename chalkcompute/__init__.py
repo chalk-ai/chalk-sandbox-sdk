@@ -148,6 +148,10 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "ScalingGroupBuildError": ("chalkcompute._scaling_group", "ScalingGroupBuildError"),
     "ScalingGroupError": ("chalkcompute._scaling_group", "ScalingGroupError"),
     "ScalingGroupInfo": ("chalkcompute._scaling_group", "ScalingGroupInfo"),
+    "ScalingGroupRevisionInfo": (
+        "chalkcompute._scaling_group",
+        "ScalingGroupRevisionInfo",
+    ),
     "ReadinessProbe": ("chalkcompute._scaling_group", "ReadinessProbe"),
     "CronScalingTrigger": ("chalkcompute._scaling_group", "CronScalingTrigger"),
     "CronScalingWindow": ("chalkcompute._scaling_group", "CronScalingWindow"),
@@ -169,8 +173,6 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "chalkcompute._volume",
         "resolve_referenced_volume_type",
     ),
-    # Back-compat aliases: all volumes are versioned, so the qualifier is gone
-    # from the canonical names. Keep the old spellings importable.
     "VersionedVolume": ("chalkcompute._volume", "Volume"),
     "VersionedVolumeClient": ("chalkcompute._volume", "VolumeClient"),
 }

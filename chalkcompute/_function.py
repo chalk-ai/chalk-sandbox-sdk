@@ -45,6 +45,7 @@ import threading
 import time
 import typing
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -59,6 +60,7 @@ from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
 from connectrpc.protocol import ProtocolType
 from protobuf import Oneof
+from protobuf.wkt import FieldMask
 
 from chalkcompute import _local_dev
 from chalkcompute._concurrency import ConcurrencyPolicy
@@ -167,6 +169,18 @@ class FunctionVersionInfo:
 
     scaling_group_name: str
     """Name of the scaling group backing this version."""
+
+    function_id: str | None = None
+    """Stable identifier of the parent external function."""
+
+    scaling_group_revision_id: str | None = None
+    """Immutable scaling-group revision linked to this version."""
+
+    created_at: datetime | None = None
+    """Time at which this immutable version was created."""
+
+    is_current: bool = False
+    """Whether the parent external function currently serves this version."""
 
 
 # ---------------------------------------------------------------------------
@@ -1542,10 +1556,10 @@ def _build_and_upload(
 ) -> tuple[str, list[VolumeMount], VolumeClient | None, list[volume_pb.CommitIntent]]:
     """Build the container image and stage lazy local files.
 
-    Lazy files are uploaded into ``source_code``-kind versioned volumes but
-    not committed: each staged upload is returned as a typed commit intent for
+    Lazy files are uploaded into ``source_code``-kind volumes but not commited:
+    each staged upload is returned as a typed commit-intent for
     ``CreateExternalFunctionVersionRequest.volume_commits``, so the server
-    commits atomically with the function version and pins the mount to the
+    commits automatically with the function version and pins the mount to the
     resulting snapshot.
 
     Parameters
@@ -1756,6 +1770,143 @@ def _extract_function_traits(
         metadata.get("chalk.function.is_generator") == "true",
         metadata.get("chalk.function.is_async") == "true",
     )
+
+
+def _parse_function_version(
+    efv: catalog_pb.ExternalFunctionVersion,
+    *,
+    is_current: bool,
+) -> FunctionVersionInfo:
+    return FunctionVersionInfo(
+        id=efv.id,
+        function_id=efv.function_id or None,
+        function_name=efv.function_name,
+        version=efv.version,
+        scaling_group_name=efv.scaling_group_name,
+        scaling_group_revision_id=efv.scaling_group_revision_id or None,
+        created_at=None if efv.created_at is None else efv.created_at.to_datetime(),
+        is_current=is_current,
+    )
+
+
+def _apply_function_version(
+    function: RemoteFunction,
+    efv: catalog_pb.ExternalFunctionVersion,
+    *,
+    is_current: bool,
+) -> None:
+    function._function_id = efv.function_id or None
+    function._version_info = _parse_function_version(efv, is_current=is_current)
+    function._func_name = efv.function_name
+    function._explicit_name = sanitize_dns_label(efv.function_name)
+    function._input_field_names = _extract_field_names(efv.input_arrow_schema)
+    function._call_parameter_names, function._bind_call_arguments = (
+        _compile_catalog_argument_binder(function._input_field_names)
+    )
+    function._arrow_input_serializers = (None,) * len(function._call_parameter_names)
+    function._is_generator, function._is_async = _extract_function_traits(efv)
+
+
+def _apply_external_function(
+    function: RemoteFunction,
+    external_function: catalog_pb.ExternalFunction | None,
+    *,
+    scaling_group: sg_pb.ScalingGroupResponse | None = None,
+) -> None:
+    if external_function is None:
+        raise FunctionError("External-function response contained no function")
+    if external_function.current_version is None:
+        raise FunctionError("External function has no selected version")
+    _apply_function_version(
+        function,
+        external_function.current_version,
+        is_current=True,
+    )
+    function._function_id = external_function.id
+    function._web_url = None if scaling_group is None else scaling_group.web_url or None
+    function._port = 6666
+
+
+def _get_external_function(
+    client: ConnectClient,
+    *,
+    function_id: str | None = None,
+    function_name: str | None = None,
+    include_scaling_group: bool = False,
+) -> catalog_pb.GetExternalFunctionResponse:
+    stub = client.stub(catalog_connect.ExternalFunctionCatalogServiceClientSync)
+    response = client.call(
+        stub.get_external_function,
+        catalog_pb.GetExternalFunctionRequest(
+            function_id=function_id,
+            function_name=function_name,
+            include_scaling_group=include_scaling_group,
+        ),
+    )
+    if response.external_function is None:
+        raise FunctionError("GetExternalFunction returned no function")
+    return response
+
+
+def _find_external_function(
+    client: ConnectClient, function_name: str
+) -> catalog_pb.ExternalFunction | None:
+    try:
+        return _get_external_function(
+            client,
+            function_name=function_name,
+        ).external_function
+    except ConnectRpcError as exc:
+        if exc.code == Code.NOT_FOUND:
+            return None
+        raise
+
+
+def _deploy_external_function(
+    client: ConnectClient,
+    *,
+    function_name: str,
+    version_spec: catalog_pb.ExternalFunctionVersionSpec,
+    external_function_id: str | None = None,
+) -> catalog_pb.ExternalFunction:
+    """Create a stable function or append a version to an existing one."""
+    stub = client.stub(catalog_connect.ExternalFunctionCatalogServiceClientSync)
+    try:
+        if external_function_id is None:
+            response = client.call(
+                stub.create_external_function,
+                catalog_pb.CreateExternalFunctionRequest(
+                    function_name=function_name,
+                    spec=version_spec,
+                ),
+                timeout=60,
+            )
+        else:
+            response = client.call(
+                stub.update_external_function,
+                catalog_pb.UpdateExternalFunctionRequest(
+                    external_function_id=external_function_id,
+                    spec=version_spec,
+                    update_mask=FieldMask(paths=["spec"]),
+                ),
+                timeout=60,
+            )
+    except ConnectRpcError as exc:
+        if external_function_id is None and exc.code == Code.ALREADY_EXISTS:
+            existing = _find_external_function(client, function_name)
+            if existing is not None:
+                return _deploy_external_function(
+                    client,
+                    function_name=function_name,
+                    version_spec=version_spec,
+                    external_function_id=existing.id,
+                )
+        raise
+
+    external_function = response.external_function
+    if external_function is None:
+        raise FunctionError("External-function mutation returned no function")
+    return external_function
 
 
 def _normalize_schedule(schedule: str | None, *, owner: str = "schedule") -> str | None:
@@ -2115,6 +2266,7 @@ class RemoteFunction:
         self._tracing = normalize_remote_function_tracing(tracing)
 
         # Set after .deploy()
+        self._function_id: str | None = None
         self._version_info: FunctionVersionInfo | None = None
         self._web_url: str | None = None
         self._port: int = 8080
@@ -2151,6 +2303,17 @@ class RemoteFunction:
     ) -> RemoteFunction:
         """Attach to an existing function version by ID.
 
+        This compatibility alias retains the historical version-ID meaning.
+        Prefer :meth:`from_version_id` or :meth:`from_function_id` in new code.
+        """
+        return cls.from_version_id(version_id, chalk_client=chalk_client)
+
+    @classmethod
+    def from_version_id(
+        cls, version_id: str, *, chalk_client: Any | None = None
+    ) -> RemoteFunction:
+        """Attach through an immutable version ID.
+
         Parameters
         ----------
         version_id
@@ -2173,28 +2336,15 @@ class RemoteFunction:
         efv = response.external_function_version
         if efv is None:
             raise FunctionError("GetExternalFunctionVersion returned no version")
-        f._version_info = FunctionVersionInfo(
-            id=efv.id,
-            function_name=efv.function_name,
-            version=efv.version,
-            scaling_group_name=efv.scaling_group_name,
-        )
-        f._func_name = efv.function_name
-        f._explicit_name = sanitize_dns_label(efv.function_name)
-        f._input_field_names = _extract_field_names(efv.input_arrow_schema)
-        f._call_parameter_names, f._bind_call_arguments = (
-            _compile_catalog_argument_binder(f._input_field_names)
-        )
-        f._arrow_input_serializers = (None,) * len(f._call_parameter_names)
-        f._is_generator, f._is_async = _extract_function_traits(efv)
+        _apply_function_version(f, efv, is_current=False)
         if response.scaling_group is not None:
             f._web_url = response.scaling_group.web_url or None
-            f._port = 8080
+            f._port = 6666
         return f
 
     @classmethod
     def from_name(cls, name: str, *, chalk_client: Any | None = None) -> RemoteFunction:
-        """Attach to an existing function version by name.
+        """Attach to an external function's currently selected version.
 
         Parameters
         ----------
@@ -2207,36 +2357,34 @@ class RemoteFunction:
             A handle bound to the existing version.
         """
         f = cls._make_empty(chalk_client=chalk_client)
-        stub = f._client.stub(catalog_connect.ExternalFunctionCatalogServiceClientSync)
-        response = f._client.call(
-            stub.get_external_function_version,
-            catalog_pb.GetExternalFunctionVersionRequest(
-                identifier=Oneof(
-                    "key", catalog_pb.ExternalFunctionVersionKey(function_name=name)
-                ),
-                include_scaling_group=True,
-            ),
+        response = _get_external_function(
+            f._client,
+            function_name=name,
+            include_scaling_group=True,
         )
-        efv = response.external_function_version
-        if efv is None:
-            raise FunctionError("GetExternalFunctionVersion returned no version")
-        f._version_info = FunctionVersionInfo(
-            id=efv.id,
-            function_name=efv.function_name,
-            version=efv.version,
-            scaling_group_name=efv.scaling_group_name,
+        _apply_external_function(
+            f,
+            response.external_function,
+            scaling_group=response.scaling_group,
         )
-        f._func_name = efv.function_name
-        f._explicit_name = sanitize_dns_label(efv.function_name)
-        f._input_field_names = _extract_field_names(efv.input_arrow_schema)
-        f._call_parameter_names, f._bind_call_arguments = (
-            _compile_catalog_argument_binder(f._input_field_names)
+        return f
+
+    @classmethod
+    def from_function_id(
+        cls, function_id: str, *, chalk_client: Any | None = None
+    ) -> RemoteFunction:
+        """Attach to a stable external function by ID."""
+        f = cls._make_empty(chalk_client=chalk_client)
+        response = _get_external_function(
+            f._client,
+            function_id=function_id,
+            include_scaling_group=True,
         )
-        f._arrow_input_serializers = (None,) * len(f._call_parameter_names)
-        f._is_generator, f._is_async = _extract_function_traits(efv)
-        if response.scaling_group is not None:
-            f._web_url = response.scaling_group.web_url or None
-            f._port = 8080
+        _apply_external_function(
+            f,
+            response.external_function,
+            scaling_group=response.scaling_group,
+        )
         return f
 
     @classmethod
@@ -2276,6 +2424,7 @@ class RemoteFunction:
         f._concurrency = None
         f._quota = None
         f._tracing = None
+        f._function_id = None
         f._version_info = None
         f._web_url = None
         f._port = 6666
@@ -2552,44 +2701,32 @@ class RemoteFunction:
                 tracing=self._tracing,
             )
 
-            # 6. Call CreateExternalFunctionVersion
+            # 6. Create the stable function or append and select a new version.
             rkey = f"register:{self._func_name}"
             progress_add(rkey, "function", "Registering function", parent=fkey)
             logger.info(
                 "Registering function '%s'...", self._explicit_name or self._func_name
             )
 
-            stub = self._client.stub(
-                catalog_connect.ExternalFunctionCatalogServiceClientSync
-            )
-            response = self._client.call(
-                stub.create_external_function_version,
-                catalog_pb.CreateExternalFunctionVersionRequest(
-                    function_name=self._explicit_name or self._func_name,
+            external_function = _deploy_external_function(
+                self._client,
+                function_name=self._explicit_name or self._func_name,
+                external_function_id=self._function_id,
+                version_spec=catalog_pb.ExternalFunctionVersionSpec(
                     input_arrow_schema=input_schema_proto,
                     output_arrow_schema=output_schema_proto,
                     spec=spec,
                     config=config,
                     volume_commits=volume_commits,
                 ),
-                timeout=60,
             )
-            efv = response.external_function_version
-            if efv is None:
-                raise FunctionError("CreateExternalFunctionVersion returned no version")
-            self._version_info = FunctionVersionInfo(
-                id=efv.id,
-                function_name=efv.function_name,
-                version=efv.version,
-                scaling_group_name=efv.scaling_group_name or sg_name,
-            )
-
-            sg_data = response.scaling_group
-            if sg_data is not None:
-                self._web_url = sg_data.web_url or None
-                self._port = 6666
-            else:
-                self._port = 6666
+            _apply_external_function(self, external_function)
+            # A redeploy may move the stable function to a different scaling
+            # group endpoint. Force subsequent calls to establish fresh
+            # transports for the newly selected version.
+            self._drop_remote_call_clients()
+            assert self._version_info is not None
+            sg_data = None
 
             logger.info(
                 "Function version created: %s v%s (id=%s)",
@@ -3222,19 +3359,105 @@ class RemoteFunction:
 
     # -- Management ------------------------------------------------------------
 
+    def versions(
+        self,
+        *,
+        limit: int | None = None,
+        include_deleted: bool = False,
+    ) -> list[FunctionVersionInfo]:
+        """List immutable versions belonging to this external function."""
+        if self._function_id is None:
+            raise FunctionError("No function ID — call .deploy() first.")
+        if limit is not None and limit < 1:
+            raise ValueError(f"limit must be positive, got {limit}")
+
+        stub = self._client.stub(
+            catalog_connect.ExternalFunctionCatalogServiceClientSync
+        )
+        versions: list[FunctionVersionInfo] = []
+        cursor: str | None = None
+        current_id = None if self._version_info is None else self._version_info.id
+        while limit is None or len(versions) < limit:
+            page_limit = 100 if limit is None else min(100, limit - len(versions))
+            response = self._client.call(
+                stub.list_external_function_versions,
+                catalog_pb.ListExternalFunctionVersionsRequest(
+                    function_id=self._function_id,
+                    cursor=cursor,
+                    limit=page_limit,
+                    include_deleted=include_deleted,
+                ),
+            )
+            for entry in response.entries:
+                efv = entry.external_function_version
+                if efv is not None:
+                    versions.append(
+                        _parse_function_version(
+                            efv,
+                            is_current=efv.id == current_id,
+                        )
+                    )
+            cursor = response.next_cursor or None
+            if cursor is None:
+                break
+        return versions[:limit] if limit is not None else versions
+
+    @_instrumented("chalkcompute.function.rollback")
+    def rollback(
+        self,
+        version_id: str,
+        *,
+        wait_ready: bool = True,
+        timeout: float = 300.0,
+        poll_interval: float = 0.5,
+    ) -> RemoteFunction:
+        """Select an existing immutable version without creating a new one."""
+        if self._function_id is None:
+            raise FunctionError("No function ID — call .deploy() first.")
+        if not version_id:
+            raise ValueError("version_id must not be empty")
+
+        stub = self._client.stub(
+            catalog_connect.ExternalFunctionCatalogServiceClientSync
+        )
+        response = self._client.call(
+            stub.update_external_function,
+            catalog_pb.UpdateExternalFunctionRequest(
+                external_function_id=self._function_id,
+                traffic=catalog_pb.ExternalFunctionTraffic(
+                    targets=[
+                        catalog_pb.ExternalFunctionTrafficTarget(
+                            version_target=Oneof(
+                                "external_function_version_id", version_id
+                            ),
+                            percent=100,
+                        )
+                    ]
+                ),
+                update_mask=FieldMask(paths=["traffic"]),
+            ),
+            timeout=60,
+        )
+        _apply_external_function(self, response.external_function)
+        self._drop_remote_call_clients()
+        if wait_ready:
+            self.wait_ready(timeout=timeout, poll_interval=poll_interval)
+        return self
+
     @_instrumented("chalkcompute.function.delete")
     def delete(self) -> None:
-        """Delete this function version."""
-        if self._version_info is not None:
+        """Delete this external function and all of its versions."""
+        if self._function_id is not None:
             stub = self._client.stub(
                 catalog_connect.ExternalFunctionCatalogServiceClientSync
             )
             self._client.call(
-                stub.delete_external_function_version,
-                catalog_pb.DeleteExternalFunctionVersionRequest(
-                    identifier=Oneof("id", self._version_info.id)
+                stub.delete_external_function,
+                catalog_pb.DeleteExternalFunctionRequest(
+                    function_id=self._function_id,
                 ),
             )
+            self._function_id = None
             self._version_info = None
             self._web_url = None
             self._drop_remote_call_clients()
@@ -3252,38 +3475,32 @@ class RemoteFunction:
         FunctionError
             If the function has not been deployed or the RPC fails.
         """
-        if self._version_info is None:
-            raise FunctionError("No function version — call .deploy() first.")
+        if self._function_id is None:
+            raise FunctionError("No function ID — call .deploy() first.")
         old_web_url = self._web_url
         old_port = self._port
-        stub = self._client.stub(
-            catalog_connect.ExternalFunctionCatalogServiceClientSync
+        response = _get_external_function(
+            self._client,
+            function_id=self._function_id,
+            include_scaling_group=True,
         )
-        response = self._client.call(
-            stub.get_external_function_version,
-            catalog_pb.GetExternalFunctionVersionRequest(
-                identifier=Oneof("id", self._version_info.id),
-                include_scaling_group=True,
-            ),
+        _apply_external_function(
+            self,
+            response.external_function,
+            scaling_group=response.scaling_group,
         )
-        efv = response.external_function_version
-        if efv is None:
-            raise FunctionError("GetExternalFunctionVersion returned no version")
-        self._version_info = FunctionVersionInfo(
-            id=efv.id,
-            function_name=efv.function_name,
-            version=efv.version,
-            scaling_group_name=efv.scaling_group_name,
-        )
-        if response.scaling_group is not None:
-            self._web_url = response.scaling_group.web_url or None
         if self._web_url != old_web_url or self._port != old_port:
             self._drop_remote_call_clients(direct=True, queue=False)
+        assert self._version_info is not None
         return self._version_info
 
     @property
     def version_info(self) -> FunctionVersionInfo | None:
         return self._version_info
+
+    @property
+    def function_id(self) -> str | None:
+        return self._function_id
 
     @property
     def web_url(self) -> str | None:
@@ -3341,6 +3558,20 @@ class _NoOpFunction:
 
     def wait_ready(self, **_: Any) -> DeployedFunction:
         return self
+
+    def versions(
+        self,
+        *,
+        limit: int | None = None,
+        include_deleted: bool = False,
+    ) -> list[FunctionVersionInfo]:
+        return self._bound().versions(
+            limit=limit,
+            include_deleted=include_deleted,
+        )
+
+    def rollback(self, version_id: str, **kwargs: Any) -> RemoteFunction:
+        return self._bound().rollback(version_id, **kwargs)
 
     def delete(self) -> None:
         pass

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 import uuid
 import warnings
 
@@ -13,6 +14,7 @@ from chalkcompute import (
     Volume,
     VolumeClient,
     VolumeError,
+    VolumeFileNotFoundError,
 )
 from e2etests.conftest import needs_staging
 
@@ -123,6 +125,69 @@ def test_fork_diverges_from_main(volume: Volume) -> None:
         assert any(ref.name == fork_name for ref in volume.forks())
     finally:
         fork.delete_fork()
+
+
+def test_concurrent_fork_write_consistency(volume: Volume) -> None:
+    """Independent fork writers persist readable immutable versions."""
+    score_path = "scores/value.txt"
+    writer_a_ref = "writer-a"
+    writer_b_ref = "writer-b"
+    winner_ref = "winner"
+
+    try:
+        base_score = int(volume.read_file(score_path))
+    except VolumeFileNotFoundError:
+        base_score = 0
+        volume.put_file(score_path, str(base_score))
+    base = volume.latest_version()
+
+    try:
+        refs = {ref.name for ref in volume.forks()}
+
+        def open_or_create_fork(name: str) -> Volume:
+            if name in refs:
+                return volume.at_ref(name)
+            try:
+                return volume.at_version(base.id).fork(name)
+            except VolumeError as error:
+                if error.code == "already_exists" or "already exists" in str(error):
+                    return volume.at_ref(name)
+                raise
+
+        writer_a = open_or_create_fork(writer_a_ref)
+        writer_b = open_or_create_fork(writer_b_ref)
+        winner = open_or_create_fork(winner_ref)
+    except VolumeError as error:
+        if error.code == "unimplemented" or "route_volume_to_dataplane" in str(error):
+            pytest.skip(f"forks unavailable in this environment: {error}")
+        raise
+
+    score_a = base_score + 1
+    score_b = base_score + 2
+
+    def write_score(fork: Volume, score: int) -> tuple[int, int]:
+        fork.put_file(score_path, str(score))
+        return score, fork.latest_version().id
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first, second = executor.map(
+            lambda args: write_score(*args),
+            ((writer_a, score_a), (writer_b, score_b)),
+        )
+
+    for fork, (score, version_id) in zip((writer_a, writer_b), (first, second)):
+        assert version_id > base.id
+        assert fork.at_version(version_id).read_file(score_path) == str(score).encode()
+
+    winning_score = max(score_a, score_b)
+    winner.put_file(score_path, str(winning_score))
+    winner_version = winner.latest_version()
+
+    assert winner_version.id > base.id
+    assert (
+        winner.at_version(winner_version.id).read_file(score_path)
+        == str(winning_score).encode()
+    )
 
 
 def test_client_lookup_helpers(volume: Volume) -> None:

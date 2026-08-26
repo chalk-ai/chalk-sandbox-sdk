@@ -567,6 +567,7 @@ class ContainerSpec:
                     mount_path=volume.mount_path,
                     type="versioned_chalkfs",
                     version_id=volume.version_id,
+                    ref_name=volume.ref_name,
                 )
                 for volume in self.volumes
             ],

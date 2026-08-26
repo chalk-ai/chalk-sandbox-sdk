@@ -95,6 +95,9 @@ from chalkcompute._scaling_group import ScalingGroup as ScalingGroup
 from chalkcompute._scaling_group import ScalingGroupBuildError as ScalingGroupBuildError
 from chalkcompute._scaling_group import ScalingGroupError as ScalingGroupError
 from chalkcompute._scaling_group import ScalingGroupInfo as ScalingGroupInfo
+from chalkcompute._scaling_group import (
+    ScalingGroupRevisionInfo as ScalingGroupRevisionInfo,
+)
 from chalkcompute._secret import Secret as Secret
 from chalkcompute._secret import SecretScope as SecretScope
 from chalkcompute._secret import resolve_lazy_secrets as resolve_lazy_secrets
@@ -223,6 +226,7 @@ __all__ = [
     "ScalingGroupBuildError",
     "ScalingGroupError",
     "ScalingGroupInfo",
+    "ScalingGroupRevisionInfo",
     "ReadinessProbe",
     "CronScalingTrigger",
     "CronScalingWindow",
@@ -239,6 +243,7 @@ __all__ = [
     "VersionInfo",
     "resolve_referenced_volume_type",
     "VersionedVolume",
+    "VersionedVolumeClient",
     "SessionSummary",
     "Span",
     "SpanKind",
@@ -248,5 +253,4 @@ __all__ = [
     "TraceError",
     "TraceNotFoundError",
     "TraceSummary",
-    "VersionedVolumeClient",
 ]

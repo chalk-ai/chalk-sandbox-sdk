@@ -316,6 +316,9 @@ class ExecProcess:
     _request_queue: queue.Queue = field(repr=False)
     _response_iterator: Iterator[process_pb.OpenSessionResponse] = field(repr=False)
     _sandbox_id: str = field(repr=False)
+    _client: SandboxClient = field(repr=False)
+    _stdin_closed: bool = field(default=False, repr=False)
+    _last_seq: int = field(default=0, repr=False)
 
     session_id: str | None = None
     """V2 session identifier once the process session starts."""
@@ -338,6 +341,9 @@ class ExecProcess:
 
     def close_stdin(self) -> None:
         """Signal EOF on stdin."""
+        if self._stdin_closed:
+            return
+        self._stdin_closed = True
         self._request_queue.put(
             process_pb.OpenSessionRequest(
                 command=Oneof("stdin_eof", process_pb.StdinEof())
@@ -368,6 +374,8 @@ class ExecProcess:
             process exit, or errors.
         """
         for response in self._response_iterator:
+            if response.seq:
+                self._last_seq = max(self._last_seq, response.seq)
             event = _response_to_event(response)
             if event.session_id is not None:
                 self.session_id = event.session_id
@@ -375,8 +383,12 @@ class ExecProcess:
             if event.is_exited or event.is_error:
                 return
 
-    def wait(self) -> ExecResult:
+    def wait(self, *, auto_reattach: bool = True) -> ExecResult:
         """Consume all output and return the final result.
+
+        If the response stream is interrupted after the session starts,
+        reconnect and replay buffered events by default. Set
+        ``auto_reattach=False`` to handle transport disconnects yourself.
 
         Returns
         -------
@@ -388,21 +400,104 @@ class ExecProcess:
         exit_code: int | None = None
         exit_signal: int | None = None
         error: str | None = None
+        completed = False
+        transient_codes = {
+            Code.CANCELED,
+            Code.UNKNOWN,
+            Code.DEADLINE_EXCEEDED,
+            Code.RESOURCE_EXHAUSTED,
+            Code.ABORTED,
+            Code.INTERNAL,
+            Code.UNAVAILABLE,
+            Code.DATA_LOSS,
+        }
 
-        for response in self._response_iterator:
-            match response.event:
-                case Oneof(field="output_data", value=od):
-                    if od.stream == process_pb.OutputData.Stream.STDOUT:
-                        stdout_parts.append(od.data)
-                    elif od.stream == process_pb.OutputData.Stream.STDERR:
-                        stderr_parts.append(od.data)
-                case Oneof(field="process_exited", value=pe):
-                    if pe.has_field("exit_code"):
-                        exit_code = pe.exit_code
-                    if pe.has_field("signal"):
-                        exit_signal = pe.signal
-                case Oneof(field="error", value=event):
-                    error = f"{event.code}: {event.message}"
+        while not completed:
+            try:
+                for response in self._response_iterator:
+                    if response.seq and response.seq <= self._last_seq:
+                        continue
+                    if response.seq:
+                        self._last_seq = response.seq
+
+                    match response.event:
+                        case Oneof(field="session_attached", value=attached):
+                            self.session_id = attached.session_id
+                        case Oneof(field="output_data", value=od):
+                            if od.stream == process_pb.OutputData.Stream.STDOUT:
+                                stdout_parts.append(od.data)
+                            elif od.stream == process_pb.OutputData.Stream.STDERR:
+                                stderr_parts.append(od.data)
+                        case Oneof(field="process_exited", value=pe):
+                            if pe.has_field("exit_code"):
+                                exit_code = pe.exit_code
+                            if pe.has_field("signal"):
+                                exit_signal = pe.signal
+                            completed = True
+                        case Oneof(field="process_timed_out", value=timed_out):
+                            if timed_out.has_field("exit_code"):
+                                exit_code = timed_out.exit_code
+                            if timed_out.has_field("signal"):
+                                exit_signal = timed_out.signal
+                            error = "timed_out: Process timed out"
+                            completed = True
+                        case Oneof(field="process_failed", value=failed):
+                            error = f"process_failed: {failed.message}"
+                            completed = True
+                        case Oneof(field="error", value=event):
+                            error = f"{event.code}: {event.message}"
+                            completed = True
+                    if completed:
+                        break
+            except ConnectRpcError as exc:
+                if (
+                    not auto_reattach
+                    or self.session_id is None
+                    or exc.code not in transient_codes
+                ):
+                    raise
+
+            if completed:
+                self._request_queue.put(None)
+                break
+            if not auto_reattach or self.session_id is None:
+                raise SandboxError("Exec stream ended before the process completed")
+
+            time.sleep(1)
+            self._request_queue.put(None)
+            request_queue: queue.Queue[process_pb.OpenSessionRequest | None] = (
+                queue.Queue()
+            )
+            request_queue.put(
+                process_pb.OpenSessionRequest(
+                    command=Oneof(
+                        "attach_session",
+                        process_pb.AttachSession(
+                            sandbox_id=self._sandbox_id,
+                            session_id=self.session_id,
+                            after_seq=self._last_seq,
+                        ),
+                    )
+                )
+            )
+            if self._stdin_closed:
+                request_queue.put(
+                    process_pb.OpenSessionRequest(
+                        command=Oneof("stdin_eof", process_pb.StdinEof())
+                    )
+                )
+
+            def request_iterator() -> Iterator[process_pb.OpenSessionRequest]:
+                while True:
+                    request = request_queue.get()
+                    if request is None:
+                        return
+                    yield request
+
+            self._request_queue = request_queue
+            self._response_iterator = self._client._process_stub.open_session(
+                request_iterator(), headers=self._client._headers
+            )
 
         return ExecResult(
             stdout=b"".join(stdout_parts),
@@ -727,6 +822,7 @@ class Sandbox:
         timeout_secs: int | None = None,
         workdir: str | None = None,
         env: dict[str, str] | None = None,
+        auto_reattach: bool = True,
     ) -> ExecResult:
         """Execute a command and wait for it to complete.
 
@@ -742,6 +838,9 @@ class Sandbox:
             Optional working directory inside the sandbox.
         env
             Optional environment variables to set for the command.
+        auto_reattach
+            Reattach and replay buffered output after transient transport
+            disconnects. Disable to handle disconnects yourself.
 
         Returns
         -------
@@ -757,7 +856,7 @@ class Sandbox:
             env=env,
         )
         process.close_stdin()
-        return process.wait()
+        return process.wait(auto_reattach=auto_reattach)
 
     def exec_stream(
         self,
@@ -870,6 +969,7 @@ class Sandbox:
             _request_queue=request_queue,
             _response_iterator=response_iterator,
             _sandbox_id=sandbox_id,
+            _client=client,
         )
 
     @_instrumented("chalkcompute.sandbox.execute_python")

@@ -4,6 +4,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from chalkcompute import Image, Sandbox
+from connectrpc.code import Code
+from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
 from protobuf.wkt import Timestamp
 from chalkcompute._containerspec import ContainerSpec
@@ -218,6 +220,62 @@ def test_sandbox_exec_uses_v2_process_service() -> None:
     assert list(stub.request.command.value.args) == ["hello"]
 
 
+class _ReattachProcessStub:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def open_session(self, requests, **_kwargs: object):
+        next(requests)
+        self.calls += 1
+        if self.calls == 1:
+            yield process_pb.OpenSessionResponse(
+                seq=1,
+                event=Oneof(
+                    "session_attached",
+                    process_pb.SessionAttached(session_id="session-123"),
+                ),
+            )
+            yield process_pb.OpenSessionResponse(
+                seq=2,
+                event=Oneof(
+                    "output_data",
+                    process_pb.OutputData(
+                        stream=process_pb.OutputData.Stream.STDOUT,
+                        data=b"hello",
+                    ),
+                ),
+            )
+            raise ConnectRpcError(Code.UNAVAILABLE, "disconnected")
+
+        yield process_pb.OpenSessionResponse(
+            seq=2,
+            event=Oneof(
+                "output_data",
+                process_pb.OutputData(
+                    stream=process_pb.OutputData.Stream.STDOUT,
+                    data=b"hello",
+                ),
+            ),
+        )
+        yield process_pb.OpenSessionResponse(
+            seq=3,
+            event=Oneof("process_exited", process_pb.ProcessExited(exit_code=0)),
+        )
+
+
+def test_sandbox_reattach() -> None:
+    client = SandboxClient()
+    client._process_stub = _ReattachProcessStub()  # type: ignore[assignment]
+    try:
+        with patch("chalkcompute._sandbox.time.sleep"):
+            result = Sandbox(client=client, sandbox_id="sandbox-123").exec("echo")
+    finally:
+        client.close()
+
+    assert result.stdout == b"hello"
+    assert result.exit_code == 0
+
+
 class _TerminatedStub:
     def create_sandbox(self, request: pb.CreateSandboxRequest, **_kwargs: object):
         return pb.CreateSandboxResponse(
@@ -295,6 +353,36 @@ def test_sandbox_accepts_version_pinned_volume_handle() -> None:
     ]
 
 
+def test_sandbox_accepts_writable_forked_volume_handle() -> None:
+    from chalkcompute._volume import ForkInfo, Volume, VolumeMount
+
+    volume_client = MagicMock()
+    volume_client._create_ref.return_value = ForkInfo(name="sandbox-a", version_id=7)
+    volume = Volume("my-data", client=volume_client).at_version(7).fork("sandbox-a")
+    client = _RecordingSandboxClient()
+    sandbox = Sandbox(
+        image="ubuntu:latest",
+        volumes=[volume],
+        sandbox_client=client,  # type: ignore[arg-type]
+    )
+
+    with patch(
+        "chalkcompute._sandbox.referenced_volume_mount",
+        side_effect=lambda _connect, mount: mount,
+    ):
+        sandbox.run()
+
+    assert volume.version_id is None
+    assert client.create_kwargs is not None
+    assert client.create_kwargs["volumes"] == [
+        VolumeMount(
+            name="my-data",
+            mount_path="/volumes/my-data",
+            ref_name="sandbox-a",
+        )
+    ]
+
+
 def test_version_pinned_mount_is_serialized_to_proto() -> None:
     mount = (
         ContainerSpec(
@@ -307,6 +395,22 @@ def test_version_pinned_mount_is_serialized_to_proto() -> None:
 
     assert mount.version_id == 7
     assert mount.has_field("version_id")
+
+
+def test_fork_mount_is_serialized_to_proto() -> None:
+    mount = (
+        ContainerSpec(
+            image="ubuntu:latest",
+            volumes=[
+                VolumeMount(name="my-data", mount_path="/data", ref_name="sandbox-a")
+            ],
+        )
+        .to_proto()
+        .volumes[0]
+    )
+
+    assert mount.ref_name == "sandbox-a"
+    assert mount.has_field("ref_name")
 
 
 def test_sandbox_missing_referenced_volume_fails_run() -> None:

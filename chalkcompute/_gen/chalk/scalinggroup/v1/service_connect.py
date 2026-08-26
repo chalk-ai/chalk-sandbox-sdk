@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from connectrpc.client import ConnectClientSync
 from connectrpc.method import IdempotencyLevel, MethodInfo
 
-from .service_pb import BatchUpdateScalingGroupStatusRequest, BatchUpdateScalingGroupStatusResponse, CreateScalingGroupRequest, CreateScalingGroupResponse, DeleteScalingGroupRequest, DeleteScalingGroupResponse, GetScalingGroupRequest, GetScalingGroupResponse, GetScalingGroupRevisionRequest, GetScalingGroupRevisionResponse, ListScalingGroupRevisionsRequest, ListScalingGroupRevisionsResponse, ListScalingGroupsRequest, ListScalingGroupsResponse
+from .service_pb import BatchUpdateScalingGroupStatusRequest, BatchUpdateScalingGroupStatusResponse, CreateScalingGroupRequest, CreateScalingGroupResponse, DeleteScalingGroupRequest, DeleteScalingGroupResponse, GetScalingGroupRequest, GetScalingGroupResponse, GetScalingGroupRevisionRequest, GetScalingGroupRevisionResponse, ListScalingGroupRevisionsRequest, ListScalingGroupRevisionsResponse, ListScalingGroupsRequest, ListScalingGroupsResponse, UpdateScalingGroupRequest, UpdateScalingGroupResponse
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -30,7 +30,8 @@ class ScalingGroupManagerServiceClientSync(ConnectClientSync):
         timeout_ms: int | None = None,
     ) -> CreateScalingGroupResponse:
         """
-        CreateScalingGroup creates a new scaling group as a Kubernetes Deployment
+        Preserves deployed clients' create-or-append behavior. New callers that
+        address an existing resource should use UpdateScalingGroup.
         """
         return self.execute_unary(
             request=request,
@@ -39,6 +40,25 @@ class ScalingGroupManagerServiceClientSync(ConnectClientSync):
                 service_name="chalk.scalinggroup.v1.ScalingGroupManagerService",
                 input=CreateScalingGroupRequest,
                 output=CreateScalingGroupResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def update_scaling_group(
+        self,
+        request: UpdateScalingGroupRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> UpdateScalingGroupResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="UpdateScalingGroup",
+                service_name="chalk.scalinggroup.v1.ScalingGroupManagerService",
+                input=UpdateScalingGroupRequest,
+                output=UpdateScalingGroupResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,
@@ -88,6 +108,28 @@ class ScalingGroupManagerServiceClientSync(ConnectClientSync):
             headers=headers,
             timeout_ms=timeout_ms,
         )
+    def delete_scaling_group(
+        self,
+        request: DeleteScalingGroupRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> DeleteScalingGroupResponse:
+        """
+        DeleteScalingGroup deletes a scaling group and its Kubernetes resources
+        """
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="DeleteScalingGroup",
+                service_name="chalk.scalinggroup.v1.ScalingGroupManagerService",
+                input=DeleteScalingGroupRequest,
+                output=DeleteScalingGroupResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
     def get_scaling_group_revision(
         self,
         request: GetScalingGroupRevisionRequest,
@@ -127,28 +169,6 @@ class ScalingGroupManagerServiceClientSync(ConnectClientSync):
                 service_name="chalk.scalinggroup.v1.ScalingGroupManagerService",
                 input=ListScalingGroupRevisionsRequest,
                 output=ListScalingGroupRevisionsResponse,
-                idempotency_level=IdempotencyLevel.UNKNOWN,
-            ),
-            headers=headers,
-            timeout_ms=timeout_ms,
-        )
-    def delete_scaling_group(
-        self,
-        request: DeleteScalingGroupRequest,
-        *,
-        headers: Headers | Mapping[str, str] | None = None,
-        timeout_ms: int | None = None,
-    ) -> DeleteScalingGroupResponse:
-        """
-        DeleteScalingGroup deletes a scaling group and its Kubernetes resources
-        """
-        return self.execute_unary(
-            request=request,
-            method=MethodInfo(
-                name="DeleteScalingGroup",
-                service_name="chalk.scalinggroup.v1.ScalingGroupManagerService",
-                input=DeleteScalingGroupRequest,
-                output=DeleteScalingGroupResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,

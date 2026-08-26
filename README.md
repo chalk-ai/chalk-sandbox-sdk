@@ -256,13 +256,43 @@ evaluation = cc.Evaluation.create(
     "Customer Support Chatbot",
     dataset=dataset,
     task=cc.RemoteFunction.from_name("support-answer"),
-    scorers=[cc.RemoteFunction.from_id("fn_brand_alignment_v2")],
+    scorers=[cc.RemoteFunction.from_version_id("fn_brand_alignment_v2")],
 )
 ```
 
-`RemoteFunction.from_name` resolves the latest version at lookup time;
-evaluation creation then pins that version. An imperative `RemoteFunction`
-must be explicitly deployed before it can be used in an evaluation.
+`RemoteFunction.from_name` resolves the currently selected version at lookup
+time; evaluation creation then pins that version. `from_id` remains a
+compatibility alias for `from_version_id`. An imperative `RemoteFunction` must
+be explicitly deployed before it can be used in an evaluation.
+
+## Deployment revisions and rollback
+
+Scaling groups and functions have stable parent IDs with immutable deployment
+revisions beneath them. Calling `deploy()` again on the same handle appends and
+selects a new revision while preserving the parent ID:
+
+```python
+group = cc.ScalingGroup(name="api", image="registry.example/api:v1").deploy()
+group.deploy()  # updates the same group and creates another revision
+for revision in group.revisions():
+    print(revision.id, revision.status, revision.is_current)
+group.rollback("sgr_previous")
+
+@cc.function(name="rank")
+def rank(query: str) -> str:
+    return query
+
+rank.deploy()
+for version in rank.versions():
+    print(version.id, version.created_at, version.is_current)
+rank.rollback("efv_previous")
+```
+
+Use `ScalingGroup.from_id(...)` or `RemoteFunction.from_function_id(...)` to
+attach to a stable parent. `RemoteFunction.from_version_id(...)` attaches
+through an immutable version and still exposes its parent lifecycle. `refresh()`
+follows the parent's currently selected revision, and `delete()` deletes the
+stable parent and all of its revisions.
 
 Scorers may return a numeric scalar, one `EvaluationScorerResult`, or a
 `list[EvaluationScorerResult]`. Returning a list lets one scorer emit multiple

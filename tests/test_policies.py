@@ -1,10 +1,4 @@
-"""Tests for policy dataclasses (rate limit / concurrency / retry) and the
-deploy-time guards that reject generator handlers + max_batching_size.
-
-Each policy's ``to_dict()`` output is the payload stored in the protobuf
-``Struct`` field on ``CreateExternalFunctionVersion``. These tests lock in the
-JSON key names the server reads; the surrounding request remains typed.
-"""
+"""Tests for remote function policies and their deploy-time guards."""
 
 from __future__ import annotations
 
@@ -32,7 +26,7 @@ from tests._fakes import FakeMethod, StubbedConnectClient
 
 class _CapturingClient(StubbedConnectClient):
     def __init__(self) -> None:
-        self.requests: list[catalog_pb.CreateExternalFunctionVersionRequest] = []
+        self.requests: list[catalog_pb.ExternalFunctionVersionSpec] = []
         self._env_id: str | None = None
 
     def _ensure_auth(self) -> None:
@@ -41,26 +35,36 @@ class _CapturingClient(StubbedConnectClient):
     def call(
         self,
         method: FakeMethod,
-        request: catalog_pb.CreateExternalFunctionVersionRequest,
+        request: Any,
         **_: Any,
-    ) -> catalog_pb.CreateExternalFunctionVersionResponse:
-        if method.name != "create_external_function_version":
+    ) -> Any:
+        if method.name == "get_scaling_group":
+            return sg_pb.GetScalingGroupResponse(
+                scaling_group=sg_pb.ScalingGroupResponse(
+                    status="Running",
+                    web_url="http://127.0.0.1",
+                    ready_replicas=1,
+                    available_replicas=1,
+                )
+            )
+        if method.name != "create_external_function":
             raise AssertionError(f"unexpected method: {method.name}")
-        self.requests.append(request)
-        assert request.spec is not None and request.spec.container_spec is not None
-        return catalog_pb.CreateExternalFunctionVersionResponse(
-            external_function_version=catalog_pb.ExternalFunctionVersion(
+        assert isinstance(request, catalog_pb.CreateExternalFunctionRequest)
+        assert request.spec is not None and request.spec.spec is not None
+        assert request.spec.spec.container_spec is not None
+        self.requests.append(request.spec)
+        return catalog_pb.CreateExternalFunctionResponse(
+            external_function=catalog_pb.ExternalFunction(
                 id=f"version-{len(self.requests)}",
-                function_name=request.function_name,
-                version=len(self.requests),
-                scaling_group_name=request.spec.container_spec.name,
-                input_arrow_schema=request.input_arrow_schema,
-            ),
-            scaling_group=sg_pb.ScalingGroupResponse(
-                status="Running",
-                web_url="http://127.0.0.1",
-                ready_replicas=1,
-                available_replicas=1,
+                name=request.function_name,
+                current_version=catalog_pb.ExternalFunctionVersion(
+                    id=f"version-{len(self.requests)}",
+                    function_id="function-1",
+                    function_name=request.function_name,
+                    version=len(self.requests),
+                    scaling_group_name=request.spec.spec.container_spec.name,
+                    input_arrow_schema=request.spec.input_arrow_schema,
+                ),
             ),
         )
 
@@ -136,18 +140,18 @@ class TestRateLimitPolicyFromIntOrPolicy:
             RateLimitPolicy.from_int_or_policy(True)  # type: ignore[arg-type]
 
 
-class TestConcurrencyPolicyToDict:
-    def test_max_concurrent_only(self):
-        assert ConcurrencyPolicy(max_concurrent=4).to_dict() == {"max_concurrent": 4}
+class TestConcurrencyPolicyValidation:
+    def test_max_concurrent_zero_rejected(self):
+        with pytest.raises(ValueError, match="concurrency must be > 0"):
+            ConcurrencyPolicy(max_concurrent=0)
 
-    def test_key_included_when_set(self):
-        assert ConcurrencyPolicy(max_concurrent=2, key="gpu").to_dict() == {
-            "max_concurrent": 2,
-            "key": "gpu",
-        }
+    def test_max_concurrent_negative_rejected(self):
+        with pytest.raises(ValueError, match="concurrency must be > 0"):
+            ConcurrencyPolicy(max_concurrent=-1)
 
-    def test_key_omitted_when_none(self):
-        assert "key" not in ConcurrencyPolicy(max_concurrent=1).to_dict()
+    def test_max_concurrent_bool_rejected(self):
+        with pytest.raises(TypeError, match="max_concurrent must be an int"):
+            ConcurrencyPolicy(max_concurrent=True)  # type: ignore[arg-type]
 
 
 class TestConcurrencyPolicyFromIntOrPolicy:
