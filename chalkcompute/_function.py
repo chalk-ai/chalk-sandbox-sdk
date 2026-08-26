@@ -185,7 +185,7 @@ def _schedule_background_deployment(function: RemoteFunction) -> Future[None]:
         def run() -> None:
             if predecessor is not None:
                 predecessor.result()
-            context.run(function._deploy)
+            context.run(function.deploy)
 
         future = executor.submit(run)
         _background_deployment_tails[registered_name] = future
@@ -2164,7 +2164,6 @@ class RemoteFunction:
     ... def embed(text: str) -> list[float]:
     ...     import numpy as np
     ...     return np.ones(8).tolist()
-    >>> embed.wait_ready()
     >>> embed.remote("hello world")
     [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
@@ -2663,40 +2662,6 @@ class RemoteFunction:
 
     # -- Lifecycle -------------------------------------------------------------
 
-    def deploy(
-        self,
-        *,
-        poll_interval: float = 0.5,
-        build_timeout: float = 600.0,
-        ready_timeout: float = 300.0,
-    ) -> RemoteFunction:
-        """Synchronously deploy a new version and wait until it is running.
-
-        For handles returned by :func:`function`, the automatic background
-        deployment finishes first. This preserves the historical behavior that
-        an explicit subsequent ``.deploy()`` creates another version.
-
-        Parameters
-        ----------
-        poll_interval
-            Seconds between image-build and readiness status polls.
-        build_timeout
-            Maximum seconds to wait for the image build.
-        ready_timeout
-            Maximum seconds to wait for the scaling group to become ready.
-
-        Returns
-        -------
-        RemoteFunction
-            ``self`` for chaining.
-        """
-        self._wait_for_background_deploy()
-        return self._deploy(
-            poll_interval=poll_interval,
-            build_timeout=build_timeout,
-            ready_timeout=ready_timeout,
-        )
-
     def _start_background_deploy(self) -> None:
         if self._background_deploy_future is not None:
             raise FunctionError(
@@ -2726,7 +2691,7 @@ class RemoteFunction:
         return True
 
     @_instrumented("chalkcompute.function.deploy")
-    def _deploy(
+    def deploy(
         self,
         *,
         poll_interval: float = 0.5,

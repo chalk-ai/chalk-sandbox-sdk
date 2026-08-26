@@ -57,7 +57,7 @@ SLACK_CHANNEL = "#chalk-compute-spam"
 # it once a minute.
 #
 # The body imports `httpx` lazily — the import only needs to resolve in
-# the *deployed* pod, not in the script that calls `.deploy()`.
+# the *deployed* pod, not in the script that defines the function.
 
 
 @chalkcompute.function(

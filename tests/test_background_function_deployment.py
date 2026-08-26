@@ -48,7 +48,7 @@ def test_decorated_functions_start_deploying_concurrently(monkeypatch) -> None:
             deployed.append(self._func_name)
         return self
 
-    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
 
     @function
     def first(value: int) -> int:
@@ -77,7 +77,7 @@ def test_deployments_for_the_same_registered_name_stay_ordered(monkeypatch) -> N
             second_started.set()
         return self
 
-    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
 
     @function(name="shared-name")
     def first(value: int) -> int:
@@ -107,7 +107,7 @@ def test_remote_call_waits_for_background_deployment(monkeypatch) -> None:
         assert release_deploy.wait(timeout=5)
         return self
 
-    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
     _install_fake_remote_call(monkeypatch, 42)
 
     @function
@@ -139,7 +139,7 @@ def test_async_remote_call_does_not_block_the_event_loop(monkeypatch) -> None:
         assert release_deploy.wait(timeout=5)
         return self
 
-    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
     _install_fake_remote_call(monkeypatch, 42)
 
     @function
@@ -167,7 +167,7 @@ def test_local_call_does_not_wait_for_background_deployment(monkeypatch) -> None
         assert release_deploy.wait(timeout=5)
         return self
 
-    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
 
     @function
     def add_one(value: int) -> int:
@@ -185,7 +185,7 @@ def test_background_deployment_error_is_raised_by_use(monkeypatch) -> None:
     def fake_deploy(self: RemoteFunction, **_: Any) -> RemoteFunction:
         raise error
 
-    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
     _install_fake_remote_call(monkeypatch, 42)
 
     @function
@@ -217,7 +217,7 @@ def test_with_knowledge_cutoff_clones_completed_deployment_state(monkeypatch) ->
         self._web_url = "https://function.example.com"
         return self
 
-    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
 
     @function
     def add_one(value: int) -> int:
@@ -250,7 +250,7 @@ def test_explicit_deploy_after_decorator_creates_another_deployment(
             deploy_count += 1
         return self
 
-    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
 
     @function
     def add_one(value: int) -> int:
@@ -282,7 +282,7 @@ def test_definition_only_script_waits_for_all_deployments(tmp_path: Path) -> Non
                 (Path(os.environ["DEPLOY_OUTPUT_DIR"]) / self._func_name).write_text("done")
                 return self
 
-            RemoteFunction._deploy = fake_deploy
+            RemoteFunction.deploy = fake_deploy
 
             @function
             def first(value: int) -> int:
@@ -323,7 +323,7 @@ def test_definition_only_script_reports_deployment_failure(tmp_path: Path) -> No
             def fake_deploy(self, **kwargs):
                 raise RuntimeError("deployment exploded")
 
-            RemoteFunction._deploy = fake_deploy
+            RemoteFunction.deploy = fake_deploy
 
             @function
             def broken(value: int) -> int:
