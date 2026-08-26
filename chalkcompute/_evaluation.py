@@ -8,8 +8,9 @@ queues a separate execution of it.
 The task and scorers may be handles returned directly by
 ``@chalkcompute.function`` or references created with
 ``RemoteFunction.from_name`` / ``RemoteFunction.from_id``.  In either case,
-the handle must already expose a function version.  Evaluation creation never
-silently deploys an imperative, undeployed ``RemoteFunction``.
+decorated handles wait for their automatic background deployment when their
+version is read. Evaluation creation never silently deploys an imperative,
+undeployed ``RemoteFunction``.
 """
 
 from __future__ import annotations
@@ -329,9 +330,9 @@ class Evaluation:
     ) -> Evaluation:
         """Create an evaluation from deployed function handles.
 
-        ``task`` and every scorer must already be deployed.  Handles returned
-        by ``@chalkcompute.function`` meet this requirement because the
-        decorator deploys synchronously before returning.
+        ``task`` and every scorer must already be deployed. Handles returned by
+        ``@chalkcompute.function`` meet this requirement because resolving their
+        version waits for the decorator's background deployment.
         """
         return EvaluationClient(chalk_client=chalk_client).create(
             name,

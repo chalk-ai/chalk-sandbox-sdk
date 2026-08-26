@@ -28,6 +28,7 @@ Or imperatively:
 from __future__ import annotations
 
 import ast
+import atexit
 import asyncio
 import contextvars
 import datetime as _dt
@@ -43,7 +44,9 @@ import tempfile
 import textwrap
 import threading
 import time
+import traceback
 import typing
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -136,6 +139,109 @@ _STRIP_SOURCE_ENV_VAR = _local_dev._STRIP_SOURCE_ENV_VAR
 # When enabled, route __call__ through the API server's CallExternalFunction
 # RPC instead of connecting directly to the scaling group's web URL.
 _CALL_VIA_API_ENV_VAR = "CHALK_FUNCTION_CALL_VIA_API"
+
+
+# ---------------------------------------------------------------------------
+# Background decorator deployments
+# ---------------------------------------------------------------------------
+
+
+_background_deploy_executor: ThreadPoolExecutor | None = None
+_background_deploy_executor_lock = threading.Lock()
+_background_deployments_lock = threading.Lock()
+_background_deployment_tails: dict[str, Future[None]] = {}
+_unobserved_background_deployments: dict[Future[None], str] = {}
+
+
+def _get_background_deploy_executor() -> ThreadPoolExecutor:
+    """Return the process-wide pool used by ``@function`` deployments.
+
+    A pre-shutdown hook drains this pool before Python disables executor
+    submissions globally. A script containing only decorated function definitions
+    therefore waits for every queued deployment, while deployments may still use
+    their own worker pools during teardown.
+    """
+    global _background_deploy_executor
+    with _background_deploy_executor_lock:
+        if _background_deploy_executor is None:
+            _background_deploy_executor = ThreadPoolExecutor(
+                thread_name_prefix="chalk-function-deploy"
+            )
+        return _background_deploy_executor
+
+
+def _schedule_background_deployment(function: RemoteFunction) -> Future[None]:
+    """Schedule one decorator-triggered deployment and return its barrier.
+
+    Deployments for distinct registered names may overlap. Deployments selecting
+    versions of the same stable function are chained in declaration order so
+    their final traffic selection remains deterministic.
+    """
+    executor = _get_background_deploy_executor()
+    context = contextvars.copy_context()
+    registered_name = function._explicit_name or function._func_name
+
+    with _background_deployments_lock:
+        predecessor = _background_deployment_tails.get(registered_name)
+
+        def run() -> None:
+            if predecessor is not None:
+                predecessor.result()
+            context.run(function.deploy)
+
+        future = executor.submit(run)
+        _background_deployment_tails[registered_name] = future
+        _unobserved_background_deployments[future] = registered_name
+
+    def completed(done: Future[None]) -> None:
+        with _background_deployments_lock:
+            if _background_deployment_tails.get(registered_name) is done:
+                _background_deployment_tails.pop(registered_name, None)
+            if not done.cancelled() and done.exception() is None:
+                _unobserved_background_deployments.pop(done, None)
+
+    future.add_done_callback(completed)
+    return future
+
+
+def _mark_background_deployment_observed(future: Future[None]) -> None:
+    with _background_deployments_lock:
+        _unobserved_background_deployments.pop(future, None)
+
+
+def _shutdown_background_deploy_executor() -> None:
+    """Drain decorator deployments before Python shuts down thread pools."""
+    with _background_deploy_executor_lock:
+        executor = _background_deploy_executor
+    if executor is not None:
+        executor.shutdown(wait=True)
+
+
+def _report_unobserved_background_deployments() -> None:
+    """Print failures from definition-only deploy scripts at process exit."""
+    with _background_deployments_lock:
+        deployments = list(_unobserved_background_deployments.items())
+        _unobserved_background_deployments.clear()
+
+    for future, registered_name in deployments:
+        if not future.done() or future.cancelled():
+            continue
+        error = future.exception()
+        if error is None:
+            continue
+        print(
+            f"Background deployment for function {registered_name!r} failed:",
+            file=sys.stderr,
+        )
+        traceback.print_exception(error, file=sys.stderr)
+
+
+# ``ThreadPoolExecutor`` registers its own callback through this hook. Callbacks
+# run newest-first, so registering after importing the executor lets deployments
+# finish before concurrent.futures globally rejects nested executor submissions.
+getattr(threading, "_register_atexit")(_shutdown_background_deploy_executor)
+atexit.register(_report_unobserved_background_deployments)
+
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
@@ -2072,7 +2178,6 @@ class RemoteFunction:
     ... def embed(text: str) -> list[float]:
     ...     import numpy as np
     ...     return np.ones(8).tolist()
-    >>> embed.deploy()
     >>> embed.remote("hello world")
     [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
@@ -2289,6 +2394,7 @@ class RemoteFunction:
         self._remote_call_auth_token: str | None = None
         self._queue_call_auth_token: str | None = None
         self._knowledge_cutoff: str | None = None
+        self._background_deploy_future: Future[None] | None = None
 
         self._client = get_connect_client(chalk_client)
 
@@ -2439,6 +2545,7 @@ class RemoteFunction:
         f._remote_call_auth_token = None
         f._queue_call_auth_token = None
         f._knowledge_cutoff = None
+        f._background_deploy_future = None
         f._client = get_connect_client(chalk_client)
         return f
 
@@ -2569,6 +2676,34 @@ class RemoteFunction:
 
     # -- Lifecycle -------------------------------------------------------------
 
+    def _start_background_deploy(self) -> None:
+        if self._background_deploy_future is not None:
+            raise FunctionError(
+                f"Background deployment already started for {self._func_name!r}"
+            )
+        self._background_deploy_future = _schedule_background_deployment(self)
+
+    def _wait_for_background_deploy(self, timeout: float | None = None) -> bool:
+        """Wait for the decorator-triggered deployment, if this handle has one."""
+        future = self._background_deploy_future
+        if future is None:
+            return False
+        try:
+            future.result(timeout=timeout)
+        except TimeoutError as exc:
+            if not future.done():
+                raise FunctionError(
+                    f"Function {self._func_name!r} is still deploying after {timeout}s"
+                ) from exc
+            _mark_background_deployment_observed(future)
+            raise
+        except BaseException:
+            if future.done():
+                _mark_background_deployment_observed(future)
+            raise
+        _mark_background_deployment_observed(future)
+        return True
+
     @_instrumented("chalkcompute.function.deploy")
     def deploy(
         self,
@@ -2601,7 +2736,8 @@ class RemoteFunction:
             progress_update,
         )
 
-        fkey = f"function:{self._func_name}"
+        registered_name = self._explicit_name or self._func_name
+        fkey = f"function:{registered_name}"
         progress_add(fkey, "function", f'Function "{self._func_name}"')
 
         # Fail fast on the hostname-length limit before the expensive build.
@@ -2702,7 +2838,7 @@ class RemoteFunction:
             )
 
             # 6. Create the stable function or append and select a new version.
-            rkey = f"register:{self._func_name}"
+            rkey = f"register:{registered_name}"
             progress_add(rkey, "function", "Registering function", parent=fkey)
             logger.info(
                 "Registering function '%s'...", self._explicit_name or self._func_name
@@ -2838,6 +2974,8 @@ class RemoteFunction:
         FunctionError
             If the function has not been deployed or never becomes ready.
         """
+        if self._wait_for_background_deploy(timeout=timeout):
+            return self
         if self._version_info is None:
             raise FunctionError("No function version — call .deploy() first.")
 
@@ -3234,6 +3372,9 @@ class RemoteFunction:
         The returned handle shares this function's deployment and clients but sends
         ``x-chalk-request-timestamp`` on subsequent calls and deferred enqueues.
         """
+        # The clone copies deployment fields by value. Wait first so it cannot
+        # retain the pre-deploy ``None`` values while sharing a completed Future.
+        self._wait_for_background_deploy()
         clone = self.__class__.__new__(self.__class__)
         clone.__dict__ = self.__dict__.copy()
         clone._knowledge_cutoff = _format_knowledge_cutoff(knowledge_cutoff)
@@ -3281,6 +3422,7 @@ class RemoteFunction:
         return await _run_in_worker_thread(self._call_sync, *args, **kwargs)
 
     def _call_sync(self, *args: Any, **kwargs: Any) -> Any:
+        self._wait_for_background_deploy()
         feather_bytes = self._serialize_call_args(*args, **kwargs)
         call_type = "api" if _should_call_via_api() else "direct"
 
@@ -3305,6 +3447,7 @@ class RemoteFunction:
         retried call goes through the exact same queue path (fresh per-call
         metadata included).
         """
+        self._wait_for_background_deploy()
         function_name = self._queue_function_name()
         with remote_function_call_span(function_name, "queue"):
             return self._with_remote_call_transport(
@@ -3319,6 +3462,7 @@ class RemoteFunction:
 
     def defer(self, *args: Any, **kwargs: Any) -> FunctionCallHandle:
         """Enqueue this function call and return a handle immediately."""
+        self._wait_for_background_deploy()
         feather_bytes = self._serialize_call_args(*args, **kwargs)
         call_id = self._enqueue(feather_bytes)
         return FunctionCallHandle(self, call_id, request_bytes=feather_bytes)
@@ -3331,6 +3475,7 @@ class RemoteFunction:
         poll_count: int = 0,
     ) -> Any:
         """Poll a deferred call once."""
+        self._wait_for_background_deploy()
         return self._with_remote_call_transport(
             queue=True,
             operation="poll",
@@ -3347,6 +3492,7 @@ class RemoteFunction:
 
     def purge(self) -> int:
         """Drop pending queued calls for this function."""
+        self._wait_for_background_deploy()
         return int(
             self._with_remote_call_transport(
                 queue=True,
@@ -3366,6 +3512,7 @@ class RemoteFunction:
         include_deleted: bool = False,
     ) -> list[FunctionVersionInfo]:
         """List immutable versions belonging to this external function."""
+        self._wait_for_background_deploy()
         if self._function_id is None:
             raise FunctionError("No function ID — call .deploy() first.")
         if limit is not None and limit < 1:
@@ -3412,6 +3559,7 @@ class RemoteFunction:
         poll_interval: float = 0.5,
     ) -> RemoteFunction:
         """Select an existing immutable version without creating a new one."""
+        self._wait_for_background_deploy()
         if self._function_id is None:
             raise FunctionError("No function ID — call .deploy() first.")
         if not version_id:
@@ -3447,6 +3595,7 @@ class RemoteFunction:
     @_instrumented("chalkcompute.function.delete")
     def delete(self) -> None:
         """Delete this external function and all of its versions."""
+        self._wait_for_background_deploy()
         if self._function_id is not None:
             stub = self._client.stub(
                 catalog_connect.ExternalFunctionCatalogServiceClientSync
@@ -3475,6 +3624,7 @@ class RemoteFunction:
         FunctionError
             If the function has not been deployed or the RPC fails.
         """
+        self._wait_for_background_deploy()
         if self._function_id is None:
             raise FunctionError("No function ID — call .deploy() first.")
         old_web_url = self._web_url
@@ -3496,14 +3646,17 @@ class RemoteFunction:
 
     @property
     def version_info(self) -> FunctionVersionInfo | None:
+        self._wait_for_background_deploy()
         return self._version_info
 
     @property
     def function_id(self) -> str | None:
+        self._wait_for_background_deploy()
         return self._function_id
 
     @property
     def web_url(self) -> str | None:
+        self._wait_for_background_deploy()
         return self._web_url
 
     def __repr__(self) -> str:
@@ -3687,13 +3840,19 @@ def function(
 ) -> Callable[..., RemoteFunction | _NoOpFunction] | RemoteFunction | _NoOpFunction:
     """Decorator that deploys a function as a versioned remote function.
 
-    **Locally** (at decoration time):
+    **Locally**, decoration validates the function, starts deployment in a
+    background worker, and returns. The worker:
 
     1. Derives Arrow schemas from the function's type hints
     2. Builds a deploy image with a handler shim
     3. Registers the function version via ``ExternalFunctionCatalogService``
     4. If ``CHALK_FUNCTION_LOCAL_SDK_COPY=1``, includes local SDK source in
        the deploy image for unreleased feature iteration.
+
+    Deployments of consecutive, distinctly named functions overlap. Remote
+    calls and lifecycle operations wait for their function's deployment before
+    proceeding. A script containing only decorated definitions also waits for
+    all queued deployments before interpreter shutdown.
 
     **Remotely** (inside the container):
     Lifecycle methods become no-ops. Calling the symbol runs the local Python
@@ -3843,7 +4002,7 @@ def function(
             tracing=tracing,
             models=models,
         )
-        f.deploy()
+        f._start_background_deploy()
         return f
 
     if func is not None:
