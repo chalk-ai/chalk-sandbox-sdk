@@ -25,7 +25,7 @@ from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
 from pyqwest import SyncClient
 
-from chalkcompute._connect import ConnectClient
+from chalkcompute._connect import get_connect_client
 from chalkcompute._evaluation import DatasetRevisionRef
 from chalkcompute._gen.chalk.server.v1 import datasets_connect, datasets_pb
 from chalkcompute._http import HTTPResponse, HTTP_TRANSPORT_ERRORS
@@ -81,12 +81,9 @@ class DatasetClient:
         self,
         *,
         chalk_client: Any | None = None,
-        connect_client: ConnectClient | None = None,
         http_client: _UploadHTTPClient | None = None,
     ) -> None:
-        if chalk_client is not None and connect_client is not None:
-            raise ValueError("pass only one of chalk_client or connect_client")
-        self._connect = connect_client or ConnectClient(chalk_client=chalk_client)
+        self._connect = get_connect_client(chalk_client)
         # Signed object-store URLs are not ConnectRPC endpoints. In particular,
         # do not use the SDK's HTTP/2-only RPC transport for these PUTs.
         self._http = http_client or SyncClient()

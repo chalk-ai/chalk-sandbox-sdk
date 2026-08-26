@@ -37,6 +37,7 @@ from protobuf.wkt import Duration
 
 from chalkcompute._connect import (
     ConnectClient,
+    get_connect_client,
     raise_for_rpc_error,
     rpc_address_from_target,
     rpc_error_message,
@@ -769,7 +770,7 @@ class Container:
         self._container_id: str | None = None
         self._container_info: ContainerInfo | None = None
 
-        self._client = ConnectClient(chalk_client=chalk_client)
+        self._client = get_connect_client(chalk_client)
         self._session_client: ContainerSessionClient | None = None
 
     # -- Alternate constructors ------------------------------------------------
@@ -878,7 +879,7 @@ class Container:
         c._built_image_uri = None
         c._container_id = None
         c._container_info = None
-        c._client = ConnectClient(chalk_client=chalk_client)
+        c._client = get_connect_client(chalk_client)
         c._session_client = None
         return c
 

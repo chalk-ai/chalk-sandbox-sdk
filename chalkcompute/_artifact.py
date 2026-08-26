@@ -33,6 +33,7 @@ from protobuf import Oneof
 
 from chalkcompute._connect import (
     ConnectClient,
+    get_connect_client,
     raise_for_rpc_error,
     rpc_address_from_target,
 )
@@ -225,11 +226,13 @@ class ArtifactClient:
     @classmethod
     def from_env(cls, *, chalk_client: Any | None = None) -> ArtifactClient:
         """Create an ``ArtifactClient`` from ambient Chalk credentials."""
-        connect = ConnectClient(chalk_client=chalk_client)
+        connect = get_connect_client(chalk_client)
+        owns_connect = chalk_client is not None
         try:
-            return cls._from_connect(connect, _owns_connect=True)
+            return cls._from_connect(connect, _owns_connect=owns_connect)
         except Exception:
-            connect.close()
+            if owns_connect:
+                connect.close()
             raise
 
     @property

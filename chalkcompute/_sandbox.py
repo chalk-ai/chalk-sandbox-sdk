@@ -42,6 +42,7 @@ from chalkcompute._connect import (
     ConnectError,
     ConnectClient,
     build_image,
+    get_connect_client,
     grpc_target_from_url,
     raise_for_rpc_error,
     rpc_address_from_target,
@@ -1037,8 +1038,8 @@ class Sandbox:
 
     def _connect_client(self, client: SandboxClient) -> ConnectClient:
         """Return the authenticated Connect client backing ``client``."""
-        return getattr(client, "_connect", None) or ConnectClient(
-            chalk_client=self._chalk_client
+        return getattr(client, "_connect", None) or get_connect_client(
+            self._chalk_client
         )
 
     def _build_image(
@@ -1140,7 +1141,8 @@ class SandboxClient:
     ) -> SandboxClient:
         """Create a ``SandboxClient`` from ambient Chalk credentials."""
 
-        connect = ConnectClient(chalk_client=chalk_client)
+        connect = get_connect_client(chalk_client)
+        owns_connect = chalk_client is not None
         try:
             connect._ensure_auth()
             host, use_tls = grpc_target_from_url(connect._api_server or "")
@@ -1149,10 +1151,11 @@ class SandboxClient:
                 use_tls=use_tls,
                 metadata=connect._rpc_metadata(),
                 _connect=connect,
-                _owns_connect=True,
+                _owns_connect=owns_connect,
             )
         except Exception:
-            connect.close()
+            if owns_connect:
+                connect.close()
             raise
 
     @property

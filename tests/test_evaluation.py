@@ -11,6 +11,7 @@ import pytest
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
 
+from chalkcompute._connect import use_connect_client
 from chalkcompute._evaluation import (
     DatasetRevisionRef,
     EvaluationClient,
@@ -45,6 +46,11 @@ class _FakeConnectClient(StubbedConnectClient):
         if isinstance(outcome, BaseException):
             raise outcome
         return outcome
+
+
+def _client(connect: _FakeConnectClient) -> EvaluationClient:
+    with use_connect_client(connect):  # type: ignore[arg-type]
+        return EvaluationClient()
 
 
 def _remote_function(
@@ -202,7 +208,7 @@ def test_create_pins_direct_function_versions() -> None:
             ]
         }
     )
-    client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]
+    client = _client(connect)
     task = _remote_function("fn-task-v2", name="support-answer")
     scorer = _remote_function("fn-score-v2", name="brand-alignment")
 
@@ -254,7 +260,7 @@ def test_create_and_list_suites() -> None:
             ],
         }
     )
-    client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]
+    client = _client(connect)
 
     created = client.create_suite("  Release  ")
     suites = client.list_suites()
@@ -295,7 +301,7 @@ def test_suite_handle_filters_evaluations_and_runs() -> None:
             ],
         }
     )
-    client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]
+    client = _client(connect)
     suite = client.list_suites()[0]
 
     evaluations = list(suite.evaluations(limit=1))
@@ -332,7 +338,7 @@ def test_create_accepts_chalkpy_shaped_revision_and_reference_handles() -> None:
             ]
         }
     )
-    client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]
+    client = _client(connect)
 
     evaluation = client.create(
         "Referenced functions",
@@ -365,7 +371,7 @@ def test_create_resolves_dataset_name_to_latest_revision() -> None:
             ]
         }
     )
-    client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]
+    client = _client(connect)
 
     evaluation = client.create(
         "Latest goldens",
@@ -394,7 +400,7 @@ def test_dataset_revision_ref_rejects_name_with_revision_ids() -> None:
 
 def test_create_rejects_undeployed_function_without_rpc() -> None:
     connect = _FakeConnectClient({})
-    client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]
+    client = _client(connect)
 
     with pytest.raises(EvaluationError, match=r"not deployed; call \.deploy\(\)"):
         client.create(
@@ -409,7 +415,7 @@ def test_create_rejects_undeployed_function_without_rpc() -> None:
 
 def test_create_rejects_bare_callable() -> None:
     connect = _FakeConnectClient({})
-    client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]
+    client = _client(connect)
 
     with pytest.raises(TypeError, match="task must be a RemoteFunction"):
         client.create(
@@ -451,7 +457,7 @@ def test_run_waits_until_success_and_exposes_result_dataset() -> None:
             ],
         }
     )
-    client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]
+    client = _client(connect)
     evaluation = client.create(
         "Support quality",
         dataset=DatasetRevisionRef("dataset-1", "revision-1"),
@@ -492,7 +498,7 @@ def test_wait_raises_typed_error_for_failed_run() -> None:
             ]
         }
     )
-    client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]
+    client = _client(connect)
     run = client.get_run("run-1")
 
     with pytest.raises(EvaluationRunFailedError, match="scorer timed out") as raised:
@@ -505,7 +511,7 @@ def test_get_maps_not_found_to_typed_error() -> None:
     connect = _FakeConnectClient(
         {"get_evaluation": [ConnectRpcError(Code.NOT_FOUND, "evaluation not found")]}
     )
-    client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]
+    client = _client(connect)
 
     with pytest.raises(EvaluationNotFoundError, match="evaluation not found"):
         client.get("missing")
@@ -531,7 +537,7 @@ def test_list_evaluations_pages_and_honors_limit() -> None:
             ]
         }
     )
-    client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]
+    client = _client(connect)
 
     evaluations = list(client.list(limit=2))
 
@@ -546,7 +552,7 @@ def test_list_evaluations_pages_and_honors_limit() -> None:
 
 def test_metadata_must_be_json_serializable() -> None:
     connect = _FakeConnectClient({})
-    client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]
+    client = _client(connect)
 
     with pytest.raises(TypeError, match="JSON-serializable"):
         client.create(

@@ -7,6 +7,7 @@ import pytest
 
 import chalkcompute._scaling_group as scaling_group_mod
 from chalkcompute import ScalingGroup
+from chalkcompute._connect import use_connect_client
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from tests._fakes import FakeMethod, StubbedConnectClient
@@ -154,16 +155,10 @@ def test_scaling_group_call_preserves_explicit_authorization(
     assert client.ensure_auth_calls == 0
 
 
-def test_from_name_recovers_authentication(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_from_name_recovers_authentication() -> None:
     client = _CapturingClient(authentication="AUTHENTICATED")
-    monkeypatch.setattr(
-        scaling_group_mod,
-        "ConnectClient",
-        lambda chalk_client=None: client,
-    )
 
-    sg = ScalingGroup.from_name("existing-group")
+    with use_connect_client(client):  # type: ignore[arg-type]
+        sg = ScalingGroup.from_name("existing-group")
 
     assert sg._authenticated is True

@@ -65,6 +65,7 @@ from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import (
     ConnectClient,
     build_image,
+    get_connect_client,
     grpc_target_from_url,
     rpc_address_from_target,
     service_auth_context_from_env,
@@ -2137,7 +2138,7 @@ class RemoteFunction:
         self._queue_call_auth_token: str | None = None
         self._knowledge_cutoff: str | None = None
 
-        self._client = ConnectClient(chalk_client=chalk_client)
+        self._client = get_connect_client(chalk_client)
 
         functools.update_wrapper(self, func)
         _preserve_functionlike_metadata(self, func)
@@ -2289,7 +2290,7 @@ class RemoteFunction:
         f._remote_call_auth_token = None
         f._queue_call_auth_token = None
         f._knowledge_cutoff = None
-        f._client = ConnectClient(chalk_client=chalk_client)
+        f._client = get_connect_client(chalk_client)
         return f
 
     # -- Image building --------------------------------------------------------

@@ -30,7 +30,7 @@ from protobuf import Oneof
 from protobuf.wkt import struct_pb
 
 from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
-from chalkcompute._connect import ConnectClient
+from chalkcompute._connect import get_connect_client
 from chalkcompute._function import DeployedFunction, RemoteFunction
 from chalkcompute._gen.chalk.evaluation.v1 import service_connect as evaluation_connect
 from chalkcompute._gen.chalk.evaluation.v1 import service_pb as evaluation_pb
@@ -485,11 +485,8 @@ class EvaluationClient:
         self,
         *,
         chalk_client: Any | None = None,
-        connect_client: ConnectClient | None = None,
     ) -> None:
-        if chalk_client is not None and connect_client is not None:
-            raise ValueError("pass only one of chalk_client or connect_client")
-        self._connect = connect_client or ConnectClient(chalk_client=chalk_client)
+        self._connect = get_connect_client(chalk_client)
 
     @_instrumented("chalkcompute.evaluation_suite.create")
     def create_suite(self, name: str) -> EvaluationSuite:

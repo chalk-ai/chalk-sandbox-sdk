@@ -7,12 +7,15 @@ clients via ``stub()``/``call()``, plus the legacy untyped Connect JSON
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import re
 import threading
 import time
-import weakref
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, TypeVar
@@ -276,7 +279,6 @@ class _RefreshingChalkAuth:
     def __init__(self, connect: ConnectClient, wrapped_auth: Any = None) -> None:
         self._connect = connect
         self._wrapped_auth = wrapped_auth
-        self._finalizer = weakref.finalize(self, connect.close)
 
     def __call__(self, request: Any) -> Any:
         if callable(self._wrapped_auth):
@@ -306,16 +308,8 @@ def chalk_client_from_env(
     )
     connect: ConnectClient | None = None
     if service_auth is not None and not has_authorization:
-        connect = ConnectClient()
-        connect._auth_provider = _ServiceAuthProvider(
-            initial_context=service_auth,
-            exchange=connect._exchange_service_auth,
-        )
-        try:
-            state = connect._auth_state()
-        except Exception:
-            connect.close()
-            raise
+        connect = get_connect_client()
+        state = connect._auth_state()
         headers = {
             **(headers or {}),
             "Authorization": f"Bearer {state.access_token}",
@@ -328,23 +322,14 @@ def chalk_client_from_env(
     if environment is not None:
         kwargs["environment"] = environment
     kwargs["additional_headers"] = headers
-    try:
-        chalk_client = ChalkClient(**kwargs)
-        if connect is not None:
-            session = chalk_client.session
-            session.auth = _RefreshingChalkAuth(
-                connect,
-                wrapped_auth=getattr(session, "auth", None),
-            )
-            # ChalkPy has no public close method. The session auth hook owns the
-            # provider until it is discarded, and this handle lets advanced
-            # callers close it explicitly when they manage the session lifetime.
-            chalk_client._chalkcompute_connect_client = connect
-        return chalk_client
-    except Exception:
-        if connect is not None:
-            connect.close()
-        raise
+    chalk_client: Any = ChalkClient(**kwargs)
+    if connect is not None:
+        session = chalk_client.session
+        session.auth = _RefreshingChalkAuth(
+            connect,
+            wrapped_auth=getattr(session, "auth", None),
+        )
+    return chalk_client
 
 
 class ConnectClient:
@@ -822,6 +807,69 @@ class ConnectClient:
         )
 
 
+_DEFAULT_CONNECT_CLIENT: ConnectClient | None = None
+_DEFAULT_CONNECT_CLIENT_LOCK = threading.Lock()
+_CONNECT_CLIENT_OVERRIDE: ContextVar[ConnectClient | None] = ContextVar(
+    "chalk_connect_client_override",
+    default=None,
+)
+
+
+def get_connect_client(chalk_client: Any | None = None) -> ConnectClient:
+    """Return the client selected for the current execution context.
+
+    Without an explicit Chalk client, all callers share one lazily constructed
+    process-wide client. :func:`use_connect_client` can replace it within one
+    synchronous or asynchronous execution context. Passing ``chalk_client`` is
+    an explicit choice to create an independent client instead.
+    """
+    if chalk_client is not None:
+        return ConnectClient(chalk_client=chalk_client)
+
+    override = _CONNECT_CLIENT_OVERRIDE.get()
+    if override is not None:
+        return override
+
+    global _DEFAULT_CONNECT_CLIENT
+    client = _DEFAULT_CONNECT_CLIENT
+    if client is not None and not client._closed:
+        return client
+
+    with _DEFAULT_CONNECT_CLIENT_LOCK:
+        client = _DEFAULT_CONNECT_CLIENT
+        if client is None or client._closed:
+            client = ConnectClient()
+            _DEFAULT_CONNECT_CLIENT = client
+        return client
+
+
+@contextmanager
+def use_connect_client(client: ConnectClient) -> Iterator[ConnectClient]:
+    """Use ``client`` within the current context without taking ownership.
+
+    Nested scopes restore the client they replaced. The caller remains
+    responsible for closing an explicitly constructed client.
+    """
+    token = _CONNECT_CLIENT_OVERRIDE.set(client)
+    try:
+        yield client
+    finally:
+        _CONNECT_CLIENT_OVERRIDE.reset(token)
+
+
+def _close_default_connect_client() -> None:
+    """Detach and close the SDK-owned default client, if it was constructed."""
+    global _DEFAULT_CONNECT_CLIENT
+    with _DEFAULT_CONNECT_CLIENT_LOCK:
+        client = _DEFAULT_CONNECT_CLIENT
+        _DEFAULT_CONNECT_CLIENT = None
+    if client is not None:
+        client.close()
+
+
+atexit.register(_close_default_connect_client)
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers that operate on a ConnectClient
 # ---------------------------------------------------------------------------
@@ -916,7 +964,7 @@ def build_image(
 
 def build_image_from_spec(image: Image, chalk_client: Any | None = None) -> str:
     """Build an Image and return the URI. Authenticates via env vars."""
-    client = ConnectClient(chalk_client=chalk_client)
+    client = get_connect_client(chalk_client)
     return build_image(client, image)
 
 
@@ -984,7 +1032,7 @@ def build_image_with_volumes_from_spec(
     chalk_client: Any | None = None,
 ) -> tuple[str, list[VolumeMount]]:
     """Build an Image and upload lazy files. Authenticates via env vars."""
-    client = ConnectClient(chalk_client=chalk_client)
+    client = get_connect_client(chalk_client)
     return build_image_with_volumes(client, image, volume_prefix=volume_prefix)
 
 

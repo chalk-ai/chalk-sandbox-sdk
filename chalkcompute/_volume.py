@@ -26,7 +26,7 @@ from typing import Any, NoReturn
 
 from protobuf import Oneof
 
-from chalkcompute._connect import ConnectClient
+from chalkcompute._connect import ConnectClient, get_connect_client
 from chalkcompute._gen.chalk.volume.v2 import volume_pb as pb_v2
 from chalkcompute._http import HTTP_TRANSPORT_ERRORS, SYNC_HTTP_CLIENT
 from chalkcompute._image import Image
@@ -326,8 +326,7 @@ class Volume:
             ``version_id`` is set.
         """
         self._client = client or VolumeClient.from_connect(
-            ConnectClient(),
-            _owns_connect=True,
+            get_connect_client(),
         )
         self._name = name
         self._version_id = version_id

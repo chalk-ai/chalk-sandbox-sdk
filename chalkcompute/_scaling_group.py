@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from connectrpc.errors import ConnectError as ConnectRpcError
 
-from chalkcompute._connect import ConnectClient, build_image
+from chalkcompute._connect import ConnectClient, build_image, get_connect_client
 from chalkcompute._containerspec import ContainerSpec
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_connect as sg_connect
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
@@ -318,7 +318,7 @@ class ScalingGroup:
         self._scaling_group_id: str | None = None
         self._scaling_group_info: ScalingGroupInfo | None = None
 
-        self._client = ConnectClient(chalk_client=chalk_client)
+        self._client = get_connect_client(chalk_client)
 
     # -- Alternate constructors ------------------------------------------------
 
@@ -411,7 +411,7 @@ class ScalingGroup:
         sg._built_image_uri = None
         sg._scaling_group_id = None
         sg._scaling_group_info = None
-        sg._client = ConnectClient(chalk_client=chalk_client)
+        sg._client = get_connect_client(chalk_client)
         return sg
 
     # -- Lifecycle -------------------------------------------------------------

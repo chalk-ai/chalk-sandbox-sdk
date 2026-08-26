@@ -46,6 +46,7 @@ from protobuf import Oneof
 
 from chalkcompute._connect import (
     ConnectClient,
+    get_connect_client,
     grpc_target_from_url,
     service_auth_context_from_env,
 )
@@ -122,7 +123,7 @@ def bind_model(
         always ``"handler"``), but exposed for forward compatibility.
     client
         Optional pre-configured ``ConnectClient``. Useful for tests; defaults to
-        a fresh client driven by the standard ``CHALK_*`` env vars.
+        the shared client driven by the standard ``CHALK_*`` env vars.
 
     Raises
     ------
@@ -147,7 +148,7 @@ def bind_model(
         logger.debug("Model %r already bound to %r; skipping", name, fqn)
         return
 
-    client = client or ConnectClient(chalk_client=chalk_client)
+    client = client or get_connect_client(chalk_client)
     web_url = _resolve_web_url(client, name, version=version)
 
     target, use_tls = grpc_target_from_url(web_url)

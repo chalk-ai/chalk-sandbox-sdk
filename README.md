@@ -161,11 +161,27 @@ do not contain engine-routing data.
 
 Service-auth and client-credential access tokens are also refreshed before
 their reported expiration. Stable credential configuration is resolved once;
-service-auth exchange tokens are re-resolved only for a refresh. Each
-`ConnectClient` reuses one generated client per service endpoint and closes its
-clients exactly once when `close()` is called or its context manager exits. If
-a refresh temporarily fails, the previous token remains usable only until its
-reported expiration while retries are bounded to once every five seconds.
+service-auth exchange tokens are re-resolved only for a refresh. The SDK
+lazily creates one process-wide `ConnectClient` and shares it across containers,
+functions, volumes, datasets, evaluations, traces, and other service clients.
+The SDK owns that default and closes it at process shutdown. It reuses one
+generated client per service endpoint, so normal SDK use authenticates and
+constructs each generated client only once.
+
+Use `use_connect_client` when one synchronous or asynchronous execution context
+needs different credentials. The scope borrows the explicit client: it restores
+the previous client on exit, while the caller closes the override.
+
+```python
+from chalkcompute import ConnectClient, DatasetClient, use_connect_client
+
+with ConnectClient(chalk_client=other_chalk_client) as client:
+    with use_connect_client(client):
+        datasets = DatasetClient()
+```
+
+If a refresh temporarily fails, the previous token remains usable only until
+its reported expiration while retries are bounded to once every five seconds.
 
 ### Workload identity federation
 
@@ -174,9 +190,9 @@ third-party workload identity provider. For example, with Snowflake configured
 to trust Chalk's issuer and JWKS:
 
 ```python
-from chalkcompute import ConnectClient
+from chalkcompute import get_connect_client
 
-token = ConnectClient().get_workload_identity_token("snowflakecomputing.com")
+token = get_connect_client().get_workload_identity_token("snowflakecomputing.com")
 ```
 
 The token is scoped to the active Chalk environment. Its audience is the value

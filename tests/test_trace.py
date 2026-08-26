@@ -15,6 +15,7 @@ from chalkcompute._arrow_serde import (
     arrow_decoder_for_annotation,
     arrow_encoder_for_annotation,
 )
+from chalkcompute._connect import use_connect_client
 from chalkcompute._trace import (
     SpanKind,
     SpanStatusCode,
@@ -72,7 +73,8 @@ def _span_dict(span_id: str, **attributes: str) -> dict[str, Any]:
 
 def _client(responses: Mapping[str, list[Any]]) -> tuple[TraceClient, Any]:
     connect = _FakeConnectClient(responses)
-    return TraceClient(connect_client=connect), connect
+    with use_connect_client(connect):  # type: ignore[arg-type]
+        return TraceClient(), connect
 
 
 # --- Arrow contract -------------------------------------------------------
@@ -398,9 +400,16 @@ def test_transport_failure_surfaces_the_status_code() -> None:
     assert exc.value.status_code == 500
 
 
-def test_client_rejects_two_transports() -> None:
-    with pytest.raises(ValueError, match="only one of"):
-        TraceClient(chalk_client=object(), connect_client=_FakeConnectClient({}))
+def test_explicit_chalk_client_wins_over_scoped_override() -> None:
+    override = _FakeConnectClient({})
+    chalk_client = object()
+
+    with use_connect_client(override):  # type: ignore[arg-type]
+        client = TraceClient(chalk_client=chalk_client)
+
+    assert client._connect is not override
+    assert client._connect._chalk_client is chalk_client
+    client._connect.close()
 
 
 # --- Every read settles on the same signal -------------------------------

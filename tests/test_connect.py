@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import contextlib
 import json
@@ -17,8 +18,10 @@ from chalkcompute._connect import (
     ConnectError,
     ConnectClient,
     chalk_client_from_env,
+    get_connect_client,
     grpc_engine_target_from_url,
     grpc_target_from_url,
+    use_connect_client,
 )
 from chalkcompute._gen.chalk.server.v1 import auth_connect, auth_pb
 from chalkcompute._http import SYNC_HTTP_CLIENT
@@ -200,6 +203,82 @@ class TestGrpcEngineTargetFromUrl:
 
         assert target == "localhost:50051"
         assert use_tls is False
+
+
+class TestSharedConnectClient:
+    def test_reuses_one_default_across_threads(self) -> None:
+        start = threading.Barrier(8)
+
+        def get_client() -> ConnectClient:
+            start.wait(timeout=5)
+            return get_connect_client()
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            clients = list(executor.map(lambda _index: get_client(), range(8)))
+
+        assert all(client is clients[0] for client in clients)
+
+    def test_scoped_override_is_nested_and_borrowed(self) -> None:
+        default = get_connect_client()
+        outer = ConnectClient()
+        inner = ConnectClient()
+
+        with use_connect_client(outer):
+            assert get_connect_client() is outer
+            with use_connect_client(inner):
+                assert get_connect_client() is inner
+            assert get_connect_client() is outer
+
+        assert get_connect_client() is default
+        assert outer._closed is False
+        assert inner._closed is False
+        outer.close()
+        inner.close()
+
+    def test_explicit_chalk_client_does_not_replace_default(self) -> None:
+        default = get_connect_client()
+        explicit_chalk_client = object()
+
+        explicit = get_connect_client(explicit_chalk_client)
+
+        assert explicit is not default
+        assert explicit._chalk_client is explicit_chalk_client
+        assert get_connect_client() is default
+        explicit.close()
+
+    def test_async_overrides_are_isolated(self) -> None:
+        first = ConnectClient()
+        second = ConnectClient()
+
+        async def selected(client: ConnectClient) -> ConnectClient:
+            with use_connect_client(client):
+                await asyncio.sleep(0)
+                return get_connect_client()
+
+        async def run() -> list[ConnectClient]:
+            return list(await asyncio.gather(selected(first), selected(second)))
+
+        assert asyncio.run(run()) == [first, second]
+        first.close()
+        second.close()
+
+    def test_sdk_closes_and_replaces_its_default(self) -> None:
+        first = get_connect_client()
+
+        _connect._close_default_connect_client()
+        second = get_connect_client()
+
+        assert first._closed is True
+        assert second is not first
+
+    def test_replaces_a_default_closed_by_its_caller(self) -> None:
+        first = get_connect_client()
+        first.close()
+
+        second = get_connect_client()
+
+        assert second is not first
+        assert second._closed is False
 
 
 class TestConnectClientGrpcEngineTarget:
