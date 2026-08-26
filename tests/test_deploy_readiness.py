@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 import chalkcompute._function as function_mod
 import chalkcompute._cls as cls_mod
 from chalkcompute._cls import RemoteClass, method
+from chalkcompute._function import FunctionError, FunctionVersionInfo, RemoteFunction
 from chalkcompute._function import RemoteFunction
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as catalog_pb
@@ -347,3 +350,79 @@ def test_remote_function_deploy_forwards_volume_commits(monkeypatch) -> None:
     assert any(
         m.name == "fn-files-abc" for m in request.spec.spec.container_spec.volumes
     )
+
+
+class _RemoteFunctionUnhealthyClient(_RemoteFunctionReadinessClient):
+    """A scaling group stuck Unhealthy (e.g. CrashLoopBackOff) forever."""
+
+    def __init__(self) -> None:
+        self.methods = []
+        self._env_id = None
+        self.polls = [
+            sg_pb.ScalingGroupResponse(
+                status="Unhealthy",
+                status_message="1/1 replicas unhealthy: Error (exit code 1)",
+            )
+        ]
+
+
+def test_remote_function_deploy_fails_fast_on_unhealthy_scaling_group(
+    monkeypatch,
+) -> None:
+    def add(x: int) -> int:
+        return x
+
+    client = _RemoteFunctionUnhealthyClient()
+    fn = RemoteFunction(add, name="fn-unhealthy")
+    fn._client = client  # type: ignore[assignment]
+
+    monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
+    monkeypatch.setattr(
+        function_mod,
+        "_build_and_upload",
+        lambda *_, **__: ("image:test", [], None, []),
+    )
+    monkeypatch.setattr(function_mod.time, "sleep", lambda _: None)
+
+    with pytest.raises(FunctionError, match="Unhealthy.*exit code 1"):
+        fn.deploy(poll_interval=0, ready_timeout=10)
+
+    # Failed on the first poll rather than looping until ready_timeout.
+    assert client.methods == ["create_external_function", "get_scaling_group"]
+
+
+class _WaitReadyUnhealthyClient(StubbedConnectClient):
+    def __init__(self) -> None:
+        self.get_scaling_group_calls = 0
+
+    def call(self, method: FakeMethod, request: Any, **_: Any) -> Any:
+        assert method.name == "get_scaling_group"
+        self.get_scaling_group_calls += 1
+        return sg_pb.GetScalingGroupResponse(
+            scaling_group=sg_pb.ScalingGroupResponse(
+                name=request.name,
+                status="Unhealthy",
+                status_message="1/1 replicas unhealthy: Error (exit code 1)",
+            )
+        )
+
+
+def test_wait_ready_fails_fast_on_unhealthy_scaling_group() -> None:
+    def add(x: int) -> int:
+        return x
+
+    client = _WaitReadyUnhealthyClient()
+    fn = RemoteFunction(add, name="fn-unhealthy")
+    fn._client = client  # type: ignore[assignment]
+    fn._version_info = FunctionVersionInfo(
+        id="version-1",
+        function_name="fn-unhealthy",
+        version=1,
+        scaling_group_name="sg-unhealthy",
+    )
+
+    with pytest.raises(FunctionError, match="Unhealthy.*exit code 1"):
+        fn.wait_ready(timeout=10, poll_interval=0)
+
+    # Failed on the first poll rather than looping until the 10s timeout.
+    assert client.get_scaling_group_calls == 1
