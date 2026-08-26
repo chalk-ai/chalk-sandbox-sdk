@@ -129,6 +129,12 @@ class DeployProgress:
             Optional detail string rendered after the label.
         """
         with self._lock:
+            # A completed display remains reusable so a concurrent caller that
+            # obtained this singleton just before the previous operation finished
+            # cannot add rows to an orphaned tracker.
+            if not self._started and self._all_roots_terminal():
+                self._resources.clear()
+                self._order.clear()
             state = _ResourceState(kind, label)
             state.status = status
             state.detail = detail
@@ -179,6 +185,18 @@ class DeployProgress:
         """Stop the Live display and restore logger output."""
         with self._lock:
             self._stop_live()
+
+    def finish_if_idle(self) -> None:
+        """Stop the display only when every top-level operation is terminal."""
+        with self._lock:
+            if self._all_roots_terminal():
+                self._stop_live()
+
+    def _all_roots_terminal(self) -> bool:
+        return all(
+            self._resources[key].status in ("done", "failed", "skipped")
+            for key in self._order
+        )
 
     # -- Rendering ---------------------------------------------------------
 
@@ -421,8 +439,10 @@ def progress_fail(key: str, *, detail: str = "") -> None:
 
 
 def progress_finish() -> None:
-    """Stop the global progress display."""
-    reset_progress()
+    """Stop the global display after all concurrent operations finish."""
+    p = get_progress()
+    if p is not None:
+        p.finish_if_idle()
 
 
 # Keep the old import name alive but unused (backwards compat)

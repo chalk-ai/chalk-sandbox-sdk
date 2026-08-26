@@ -44,7 +44,7 @@ def test_function_decorator_accepts_called_and_uncalled_forms(
         deployed.append(self)
         return self
 
-    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
 
     @function
     def bare(x: int) -> int:
@@ -54,6 +54,8 @@ def test_function_decorator_accepts_called_and_uncalled_forms(
     def called(x: int) -> int:
         return x
 
+    bare._wait_for_background_deploy()
+    called._wait_for_background_deploy()
     assert isinstance(bare, RemoteFunction)
     assert isinstance(called, RemoteFunction)
     assert [deployed_fn._func_name for deployed_fn in deployed] == ["bare", "called"]
@@ -68,12 +70,13 @@ def test_function_decorator_passes_schedule(
         deployed.append(self)
         return self
 
-    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
 
     @function(schedule=" 1h ")
     def scheduled() -> None:
         pass
 
+    scheduled._wait_for_background_deploy()
     assert isinstance(scheduled, RemoteFunction)
     assert deployed[0]._schedule == "1h"
 
@@ -87,12 +90,13 @@ def test_function_decorator_passes_tracing(
         deployed.append(self)
         return self
 
-    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
 
     @function(tracing=True)
     def traced_function() -> None:
         pass
 
+    traced_function._wait_for_background_deploy()
     assert isinstance(traced_function, RemoteFunction)
     assert deployed[0]._tracing == TracingPolicy(sample_rate=1.0)
 
@@ -616,12 +620,13 @@ def test_function_accepts_string_env_values(
         deployed.append(self)
         return self
 
-    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
 
     @function(env={"OPENAI_API_KEY": "sk-test"})
     def fn(x: int) -> int:
         return x
 
+    fn._wait_for_background_deploy()
     assert deployed[0]._env["OPENAI_API_KEY"] == "sk-test"
 
 
