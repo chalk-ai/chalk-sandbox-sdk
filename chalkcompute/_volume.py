@@ -24,9 +24,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
 
+from connectrpc.code import Code
+from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
 
 from chalkcompute._connect import ConnectClient
+from chalkcompute._gen.chalk.volume.v2 import volume_connect
 from chalkcompute._gen.chalk.volume.v2 import volume_pb as pb_v2
 from chalkcompute._http import HTTP_TRANSPORT_ERRORS, SYNC_HTTP_CLIENT
 from chalkcompute._image import Image
@@ -408,7 +411,7 @@ class Volume:
     def _fetch_info(self) -> tuple[VolumeInfo, VersionInfo | None]:
         self._raise_if_closed()
         try:
-            raw = self._client._get_volume(
+            response = self._client._get_volume(
                 self._name,
                 version_id=self._version_id,
                 ref_name=self._selector_ref(),
@@ -416,12 +419,20 @@ class Volume:
         except VolumeNotFoundError:
             if not self._create_if_missing:
                 raise
-            raw = self._client._create_volume(self._name)
-            return _dict_to_volume_info(raw["volume"]), None
+            response = self._client._create_volume(self._name)
+            if response.volume is None:
+                raise VolumeError("CreateVolume returned no volume metadata")
+            return _proto_to_volume_info(response.volume), None
 
+        if response.volume is None:
+            raise VolumeError("GetVolume returned no volume metadata")
         return (
-            _dict_to_volume_info(raw["volume"]),
-            _dict_to_version_info(raw["version"]) if raw.get("version") else None,
+            _proto_to_volume_info(response.volume),
+            (
+                _proto_to_version_info(response.version)
+                if response.version is not None
+                else None
+            ),
         )
 
     def _raise_if_closed(self) -> None:
@@ -638,14 +649,14 @@ class Volume:
         versions: list[VersionInfo] = []
         cursor = ""
         while True:
-            raw = self._client._list_volume_versions(
+            response = self._client._list_volume_versions(
                 self._name,
                 limit=limit,
                 cursor=cursor,
                 ref_name=self._selector_ref(),
             )
-            versions.extend(_dict_to_version_info(v) for v in raw["versions"])
-            cursor = str(raw.get("next_cursor") or "")
+            versions.extend(_proto_to_version_info(v) for v in response.versions)
+            cursor = response.next_cursor
             if not cursor:
                 return versions
 
@@ -663,11 +674,13 @@ class Volume:
             If the volume has no committed versions yet.
         """
         self._ensure_ready()
-        raw = self._client._get_volume(self._name, ref_name=self._selector_ref())
-        self._info = _dict_to_volume_info(raw["volume"])
-        if not raw.get("version"):
+        response = self._client._get_volume(self._name, ref_name=self._selector_ref())
+        if response.volume is None:
+            raise VolumeError("GetVolume returned no volume metadata")
+        self._info = _proto_to_volume_info(response.volume)
+        if response.version is None:
             raise VolumeError(f"Volume {self._name!r} has no latest version")
-        self._version = _dict_to_version_info(raw["version"])
+        self._version = _proto_to_version_info(response.version)
         return self._version
 
     def at_version(self, version_id: int) -> Volume:
@@ -869,7 +882,7 @@ class Volume:
         files: list[FileInfo] = []
         cursor = ""
         while True:
-            raw = self._client._list_files(
+            response = self._client._list_files(
                 self._name,
                 path=path,
                 version_id=self._version_id,
@@ -877,10 +890,10 @@ class Volume:
                 limit=1000,
                 cursor=cursor,
             )
-            files.extend(_dict_to_file_info(f) for f in raw["files"])
-            if raw.get("version"):
-                self._version = _dict_to_version_info(raw["version"])
-            cursor = str(raw.get("next_cursor") or "")
+            files.extend(_proto_to_file_info(f) for f in response.files)
+            if response.version is not None:
+                self._version = _proto_to_version_info(response.version)
+            cursor = response.next_cursor
             if not cursor:
                 return files
 
@@ -943,7 +956,7 @@ class VolumeClient:
         metadata: object | None = None,
         options: object | None = None,
     ) -> None:
-        """Initialize the native volume client.
+        """Initialize the typed volume control plane and native data plane.
 
         Parameters
         ----------
@@ -989,7 +1002,12 @@ class VolumeClient:
         self._commit_author = commit_author
         self._extra_headers = builtins.list(extra_headers or [])
         self._chalk_server = chalk_server
-        self._connect: ConnectClient | None = None
+        self._connect = _connect_client_for_endpoint(
+            endpoint,
+            token=token,
+            env_id=env_id,
+        )
+        self._owns_connect = True
         self._closed = False
         self._inner = _NativeVolumeClient(
             endpoint,
@@ -1027,8 +1045,8 @@ class VolumeClient:
             env_id=connect._env_id or None,
             chalk_server="go-api",
         )
-        if getattr(connect, "_uses_web_identity_token", lambda: False)() is True:
-            client._connect = connect
+        client._connect = connect
+        client._owns_connect = False
         return client
 
     @property
@@ -1042,9 +1060,7 @@ class VolumeClient:
 
     def _sync_web_identity_auth(self) -> None:
         """Recreate the native client after an identity-token rotation."""
-        connect = getattr(self, "_connect", None)
-        if connect is None:
-            return
+        connect = self._connect
         connect._ensure_auth()
         token = connect._access_token or ""
         env_id = connect._env_id or None
@@ -1074,7 +1090,9 @@ class VolumeClient:
         self.close()
 
     def close(self) -> None:
-        """Close the underlying native client handle."""
+        """Close owned RPC resources and reject subsequent operations."""
+        if not self._closed and self._owns_connect:
+            self._connect.close()
         self._closed = True
 
     @traced("chalkcompute.volume.create")
@@ -1094,9 +1112,11 @@ class VolumeClient:
         Volume
             A handle to the newly created volume.
         """
-        raw = self._create_volume(name, volume_type=volume_type)
+        response = self._create_volume(name, volume_type=volume_type)
+        if response.volume is None:
+            raise VolumeError("CreateVolume returned no volume metadata")
         vol = Volume(name, client=self, create_if_missing=False)
-        vol._info = _dict_to_volume_info(raw["volume"])
+        vol._info = _proto_to_volume_info(response.volume)
         return vol
 
     def from_name(self, name: str) -> Volume:
@@ -1266,11 +1286,11 @@ class VolumeClient:
         name
             Volume to delete.
         """
-        self._raise_if_closed()
-        try:
-            self._inner.delete_volume(name)
-        except _native_error_types() as exc:
-            _raise_volume_error(exc, name)
+        self._call(
+            self._stub().delete_volume,
+            pb_v2.DeleteVolumeRequest(volume=pb_v2.VolumeRef(name=name)),
+            volume_name=name,
+        )
 
     def list(self, *, limit: int = 100) -> builtins.list[VolumeInfo]:
         """List all volumes the caller has access to.
@@ -1288,9 +1308,9 @@ class VolumeClient:
         volumes: list[VolumeInfo] = []
         cursor = ""
         while True:
-            raw = self._list_volumes(limit=limit, cursor=cursor)
-            volumes.extend(_dict_to_volume_info(v) for v in raw["volumes"])
-            cursor = str(raw.get("next_cursor") or "")
+            response = self._list_volumes(limit=limit, cursor=cursor)
+            volumes.extend(_proto_to_volume_info(v) for v in response.volumes)
+            cursor = response.next_cursor
             if not cursor:
                 return volumes
 
@@ -1298,14 +1318,40 @@ class VolumeClient:
         if self._closed:
             raise VolumeClosedError("VolumeClient is closed")
 
+    def _call(
+        self,
+        method: Any,
+        request: Any,
+        *,
+        volume_name: str,
+    ) -> Any:
+        self._raise_if_closed()
+        headers = dict(self._extra_headers)
+        headers["x-chalk-server"] = self._chalk_server
+        try:
+            return self._connect.call(
+                method,
+                request,
+                extra_headers=headers,
+            )
+        except ConnectRpcError as exc:
+            _raise_connect_volume_error(exc, volume_name)
+
+    def _stub(self) -> volume_connect.VolumeServiceClientSync:
+        self._raise_if_closed()
+        return self._connect.stub(volume_connect.VolumeServiceClientSync)
+
     def _create_volume(
         self, name: str, *, volume_type: str | None = None
-    ) -> dict[str, Any]:
-        self._raise_if_closed()
-        try:
-            return dict(self._inner.create_volume(name, volume_type))
-        except _native_error_types() as exc:
-            _raise_volume_error(exc, name)
+    ) -> pb_v2.CreateVolumeResponse:
+        return self._call(
+            self._stub().create_volume,
+            pb_v2.CreateVolumeRequest(
+                name=name,
+                volume_type=_volume_kind(volume_type),
+            ),
+            volume_name=name,
+        )
 
     def _get_volume(
         self,
@@ -1313,19 +1359,22 @@ class VolumeClient:
         *,
         version_id: int | None = None,
         ref_name: str | None = None,
-    ) -> dict[str, Any]:
-        self._raise_if_closed()
-        try:
-            return dict(self._inner.get_volume(name, version_id, ref_name))
-        except _native_error_types() as exc:
-            _raise_volume_error(exc, name)
+    ) -> pb_v2.GetVolumeResponse:
+        return self._call(
+            self._stub().get_volume,
+            pb_v2.GetVolumeRequest(
+                volume=pb_v2.VolumeRef(name=name),
+                selector=_version_selector(version_id, ref_name),
+            ),
+            volume_name=name,
+        )
 
-    def _list_volumes(self, *, limit: int, cursor: str) -> dict[str, Any]:
-        self._raise_if_closed()
-        try:
-            return dict(self._inner.list_volumes(limit, cursor))
-        except _native_error_types() as exc:
-            _raise_volume_error(exc, "")
+    def _list_volumes(self, *, limit: int, cursor: str) -> pb_v2.ListVolumesResponse:
+        return self._call(
+            self._stub().list_volumes,
+            pb_v2.ListVolumesRequest(limit=limit, cursor=cursor),
+            volume_name="",
+        )
 
     def _list_volume_versions(
         self,
@@ -1334,39 +1383,49 @@ class VolumeClient:
         limit: int,
         cursor: str,
         ref_name: str | None,
-    ) -> dict[str, Any]:
-        self._raise_if_closed()
-        try:
-            if ref_name is None:
-                return dict(self._inner.list_volume_versions(name, limit, cursor))
-            return dict(self._inner.list_volume_versions(name, limit, cursor, ref_name))
-        except _native_error_types() as exc:
-            _raise_volume_error(exc, name)
+    ) -> pb_v2.ListVolumeVersionsResponse:
+        return self._call(
+            self._stub().list_volume_versions,
+            pb_v2.ListVolumeVersionsRequest(
+                volume=pb_v2.VolumeRef(name=name),
+                limit=limit,
+                cursor=cursor,
+                ref=ref_name,
+            ),
+            volume_name=name,
+        )
 
     def _create_ref(self, volume: str, name: str, from_version_id: int) -> ForkInfo:
-        self._raise_if_closed()
-        try:
-            raw = dict(self._inner.create_ref(volume, name, from_version_id))
-        except _native_error_types() as exc:
-            _raise_volume_error(exc, volume)
-        if not raw.get("ref"):
+        response = self._call(
+            self._stub().create_ref,
+            pb_v2.CreateRefRequest(
+                volume=pb_v2.VolumeRef(name=volume),
+                name=name,
+                from_version_id=from_version_id,
+            ),
+            volume_name=volume,
+        )
+        if response.ref is None:
             raise VolumeError("CreateRef returned no ref metadata")
-        return _dict_to_ref_info(dict(raw["ref"]))
+        return _proto_to_ref_info(response.ref)
 
     def _list_refs(self, volume: str) -> builtins.list[ForkInfo]:
-        self._raise_if_closed()
-        try:
-            refs = self._inner.list_refs(volume)
-        except _native_error_types() as exc:
-            _raise_volume_error(exc, volume)
-        return [_dict_to_ref_info(dict(ref)) for ref in refs]
+        response = self._call(
+            self._stub().list_refs,
+            pb_v2.ListRefsRequest(volume=pb_v2.VolumeRef(name=volume)),
+            volume_name=volume,
+        )
+        return [_proto_to_ref_info(ref) for ref in response.refs]
 
     def _delete_ref(self, volume: str, name: str) -> None:
-        self._raise_if_closed()
-        try:
-            self._inner.delete_ref(volume, name)
-        except _native_error_types() as exc:
-            _raise_volume_error(exc, volume)
+        self._call(
+            self._stub().delete_ref,
+            pb_v2.DeleteRefRequest(
+                volume=pb_v2.VolumeRef(name=volume),
+                name=name,
+            ),
+            volume_name=volume,
+        )
 
     def _list_files(
         self,
@@ -1377,21 +1436,19 @@ class VolumeClient:
         ref_name: str | None,
         limit: int,
         cursor: str,
-    ) -> dict[str, Any]:
-        self._raise_if_closed()
-        try:
-            return dict(
-                self._inner.list_files(
-                    volume,
-                    path,
-                    version_id,
-                    ref_name,
-                    limit,
-                    cursor,
-                )
-            )
-        except _native_error_types() as exc:
-            _raise_volume_error(exc, volume)
+    ) -> pb_v2.ListFilesResponse:
+        return self._call(
+            self._stub().list_files,
+            pb_v2.ListFilesRequest(
+                volume=pb_v2.VolumeRef(name=volume),
+                path=path,
+                recursive=False,
+                limit=limit,
+                cursor=cursor,
+                selector=_version_selector(version_id, ref_name),
+            ),
+            volume_name=volume,
+        )
 
     def _upload(
         self,
@@ -1411,16 +1468,21 @@ class VolumeClient:
             "batch_size": batch_size,
             "max_chunk_retries": _CHUNK_MAX_RETRIES,
             "max_rate_limit_retries": _RATE_LIMIT_MAX_RETRIES,
-            "max_commit_retries": _COMMIT_MAX_REBASE_RETRIES,
         }
         try:
-            args: tuple[Any, ...] = (volume, builtins.list(files), config)
-            if ref_name is not None:
-                args = (*args, ref_name)
-            raw_statuses = self._inner.upload(*args)
+            staged = self._inner.stage(volume, builtins.list(files), config)
+            intent_bytes = self._inner.staged_intent(volume, staged, ref_name)
         except _native_error_types() as exc:
             _raise_volume_error(exc, volume)
-        return [_dict_to_commit_status(dict(status)) for status in raw_statuses]
+        if not files:
+            return []
+        intent = pb_v2.CommitIntent.from_binary(bytes(intent_bytes))
+        return [
+            self._commit_intent(
+                intent,
+                max_commit_retries=_COMMIT_MAX_REBASE_RETRIES,
+            )
+        ]
 
     def _remove_files(
         self,
@@ -1432,13 +1494,63 @@ class VolumeClient:
     ) -> CommitStatus:
         self._raise_if_closed()
         try:
-            args: tuple[Any, ...] = (volume, paths, max_commit_retries)
-            if ref_name is not None:
-                args = (*args, ref_name)
-            raw = self._inner.remove_files(*args)
+            staged = self._inner.stage(volume, [], None)
+            intent_bytes = self._inner.staged_intent(volume, staged, ref_name)
         except _native_error_types() as exc:
             _raise_volume_error(exc, volume)
-        return _dict_to_commit_status(dict(raw))
+        intent = pb_v2.CommitIntent.from_binary(bytes(intent_bytes))
+        intent.deltas = Oneof(
+            "path_deltas",
+            pb_v2.PathDeltaList(
+                removes=[
+                    pb_v2.PathRemoveDelta(path=path, recursive=recursive)
+                    for path, recursive in paths
+                ]
+            ),
+        )
+        return self._commit_intent(
+            intent,
+            max_commit_retries=max_commit_retries,
+        )
+
+    def _commit_intent(
+        self,
+        intent: pb_v2.CommitIntent,
+        *,
+        max_commit_retries: int,
+    ) -> CommitStatus:
+        volume_name = intent.volume.name if intent.volume is not None else ""
+        if not volume_name:
+            raise VolumeError("CommitIntent returned no volume name")
+        ref_name = intent.ref or None
+        for _attempt in range(max(max_commit_retries, 1)):
+            tip = self._get_volume(volume_name, ref_name=ref_name).version
+            if tip is None:
+                raise VolumeError(
+                    f"Volume {volume_name!r} has no version to commit against"
+                )
+            intent.commit_id = uuid.uuid4().hex
+            intent.base_version_id = tip.version_id
+            intent.base_sequence_number = tip.sequence_number
+            response = self._call(
+                self._stub().commit_version,
+                pb_v2.CommitVersionRequest(intent=intent),
+                volume_name=volume_name,
+            )
+            if response.status is None:
+                raise VolumeError("CommitVersion returned no status")
+            if response.status.result == pb_v2.CommitResult.COMMITTED:
+                return _proto_to_commit_status(response.status)
+            if response.status.result != pb_v2.CommitResult.REBASE_REQUIRED:
+                result = _commit_result_name(response.status.result)
+                raise VolumeError(
+                    f"Volume commit {response.status.commit_id} returned {result}",
+                    code="failed_precondition",
+                )
+        raise VolumeError(
+            f"Volume commit rebased {max(max_commit_retries, 1)} times without landing",
+            code="aborted",
+        )
 
     def _download_bytes(
         self,
@@ -1483,38 +1595,44 @@ class VolumeClient:
             _raise_volume_error(exc, volume)
 
 
-def _dict_to_volume_info(info: dict[str, Any]) -> VolumeInfo:
+def _proto_to_volume_info(
+    info: pb_v2.VolumeInfo | pb_v2.ListedVolume,
+) -> VolumeInfo:
     return VolumeInfo(
-        name=str(info.get("name") or ""),
-        created_at=_datetime_from_ms(info.get("created_at_ms")),
-        volume_id=_optional_str(info.get("volume_id")),
-        access_mode=_volume_access_mode_name(int(info.get("access_mode") or 0)),
-        ref=_optional_str(info.get("ref")),
-    )
-
-
-def _dict_to_version_info(info: dict[str, Any]) -> VersionInfo:
-    return VersionInfo(
-        id=int(info.get("version_id") or 0),
-        parent_id=(
-            int(info["parent_id"]) if info.get("parent_id") is not None else None
-        ),
-        created_at=_datetime_from_ms(info.get("created_at_ms")),
-        ref=_optional_str(info.get("ref")),
-        commit_id=_optional_str(info.get("commit_id")),
-    )
-
-
-def _dict_to_ref_info(info: dict[str, Any]) -> ForkInfo:
-    return ForkInfo(
-        name=str(info.get("name") or ""),
-        version_id=int(info.get("version_id") or 0),
-        commit_id=_optional_str(info.get("commit_id")),
-        updated_at=_datetime_from_ms(info.get("updated_at_ms")),
-        parent_version_id=(
-            int(info["parent_version_id"])
-            if info.get("parent_version_id") is not None
+        name=info.name,
+        created_at=_timestamp_to_datetime(info.created_at),
+        volume_id=(
+            _optional_str(info.volume_id)
+            if isinstance(info, pb_v2.VolumeInfo)
             else None
+        ),
+        access_mode=(
+            _volume_access_mode_name(info.access_mode)
+            if isinstance(info, pb_v2.VolumeInfo)
+            else None
+        ),
+        ref=(_optional_str(info.ref) if isinstance(info, pb_v2.VolumeInfo) else None),
+    )
+
+
+def _proto_to_version_info(info: pb_v2.VersionInfo) -> VersionInfo:
+    return VersionInfo(
+        id=info.version_id,
+        parent_id=info.parent_id if info.has_field("parent_id") else None,
+        created_at=_timestamp_to_datetime(info.created_at),
+        ref=_optional_str(info.ref),
+        commit_id=_optional_str(info.commit_id),
+    )
+
+
+def _proto_to_ref_info(info: pb_v2.RefInfo) -> ForkInfo:
+    return ForkInfo(
+        name=info.name,
+        version_id=info.version_id,
+        commit_id=_optional_str(info.commit_id),
+        updated_at=_timestamp_to_datetime(info.updated_at),
+        parent_version_id=(
+            info.parent_version_id if info.has_field("parent_version_id") else None
         ),
     )
 
@@ -1528,45 +1646,40 @@ def _ref_to_version_info(ref: ForkInfo) -> VersionInfo:
     )
 
 
-def _dict_to_file_info(info: dict[str, Any]) -> FileInfo:
+def _proto_to_file_info(info: pb_v2.FileInfo) -> FileInfo:
     return FileInfo(
-        path=str(info.get("path") or ""),
-        size=int(info.get("size") or 0),
-        updated_at=_datetime_from_ms(info.get("updated_at_ms")),
-        kind=_file_kind_name(int(info.get("kind") or 0)),
-        hash=_optional_str(info.get("hash")),
-        mode=int(info["mode"]) if info.get("mode") is not None else None,
-        uid=int(info.get("uid") or 0),
-        gid=int(info.get("gid") or 0),
-        nlink=int(info.get("nlink") or 0),
+        path=info.path,
+        size=info.size,
+        updated_at=_timestamp_to_datetime(info.updated_at),
+        kind=_file_kind_name(info.kind),
+        hash=_optional_str(info.hash),
+        mode=info.mode if info.has_field("mode") else None,
+        uid=info.uid,
+        gid=info.gid,
+        nlink=info.nlink,
     )
 
 
-def _dict_to_commit_status(status: dict[str, Any]) -> CommitStatus:
+def _proto_to_commit_status(status: pb_v2.CommitStatus) -> CommitStatus:
     return CommitStatus(
-        commit_id=str(status.get("commit_id") or ""),
-        result=str(status.get("result") or "unspecified"),
+        commit_id=status.commit_id,
+        result=_commit_result_name(status.result),
         version=(
-            _dict_to_version_info(dict(status["version"]))
-            if status.get("version") is not None
+            _proto_to_version_info(status.version)
+            if status.version is not None
             else None
         ),
         latest_version=(
-            _dict_to_version_info(dict(status["latest_version"]))
-            if status.get("latest_version") is not None
+            _proto_to_version_info(status.latest_version)
+            if status.latest_version is not None
             else None
         ),
-        created_at=_datetime_from_ms(status.get("created_at_ms")),
+        created_at=_timestamp_to_datetime(status.created_at),
     )
 
 
-def _datetime_from_ms(value: Any) -> datetime.datetime | None:
-    if value is None:
-        return None
-    return datetime.datetime.fromtimestamp(
-        int(value) / 1000,
-        tz=datetime.timezone.utc,
-    )
+def _timestamp_to_datetime(value: Any) -> datetime.datetime | None:
+    return None if value is None else value.to_datetime()
 
 
 def _optional_str(value: Any) -> str | None:
@@ -1591,6 +1704,40 @@ def _native_endpoint(endpoint: str, *, use_tls: bool) -> str:
         return endpoint.rstrip("/")
     scheme = "https" if use_tls else "http"
     return f"{scheme}://{endpoint.rstrip('/')}"
+
+
+def _connect_client_for_endpoint(
+    endpoint: str,
+    *,
+    token: str,
+    env_id: str | None,
+) -> ConnectClient:
+    connect = ConnectClient()
+    connect._api_server = endpoint
+    connect._access_token = token
+    connect._env_id = env_id
+    return connect
+
+
+def _version_selector(
+    version_id: int | None,
+    ref_name: str | None,
+) -> pb_v2.VersionSelector | None:
+    if version_id is not None and ref_name is not None:
+        raise ValueError("version_id and ref_name are mutually exclusive")
+    if version_id is not None:
+        return pb_v2.VersionSelector(selector=Oneof("version_id", version_id))
+    if ref_name is not None:
+        return pb_v2.VersionSelector(selector=Oneof("ref", ref_name))
+    return None
+
+
+def _volume_kind(value: str | None) -> pb_v2.VolumeKind:
+    if value is None:
+        return pb_v2.VolumeKind.UNSPECIFIED
+    if value == "source_code":
+        return pb_v2.VolumeKind.SOURCE_CODE
+    raise ValueError(f"unknown volume_type {value!r}")
 
 
 def _native_error_types() -> tuple[type[BaseException], ...]:
@@ -1626,18 +1773,38 @@ def _raise_volume_error(
     raise VolumeError(message, code=code) from exc
 
 
-def _volume_access_mode_name(value: int) -> str | None:
+def _raise_connect_volume_error(
+    exc: ConnectRpcError,
+    volume_name: str,
+) -> NoReturn:
+    del volume_name
+    code = exc.code.name.lower()
+    if exc.code == Code.NOT_FOUND:
+        raise VolumeNotFoundError(str(exc), code=code) from exc
+    raise VolumeError(str(exc), code=code) from exc
+
+
+def _volume_access_mode_name(value: pb_v2.VolumeAccessMode) -> str | None:
     return {
-        1: "read_only",
-        2: "read_write",
+        pb_v2.VolumeAccessMode.READ_ONLY: "read_only",
+        pb_v2.VolumeAccessMode.READ_WRITE: "read_write",
     }.get(value)
 
 
-def _file_kind_name(value: int) -> str:
+def _file_kind_name(value: pb_v2.FileKind) -> str:
     return {
-        1: "file",
-        2: "directory",
-        3: "symlink",
+        pb_v2.FileKind.FILE: "file",
+        pb_v2.FileKind.DIRECTORY: "directory",
+        pb_v2.FileKind.SYMLINK: "symlink",
+    }.get(value, "unspecified")
+
+
+def _commit_result_name(value: pb_v2.CommitResult) -> str:
+    return {
+        pb_v2.CommitResult.PENDING: "pending",
+        pb_v2.CommitResult.COMMITTED: "committed",
+        pb_v2.CommitResult.REBASE_REQUIRED: "rebase_required",
+        pb_v2.CommitResult.ABORTED: "aborted",
     }.get(value, "unspecified")
 
 
