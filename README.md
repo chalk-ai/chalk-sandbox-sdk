@@ -220,9 +220,10 @@ convertible to Arrow. It uploads ordinary tabular data and does not require
 ChalkPy feature definitions. Uploading to an existing name creates a new
 dataset revision.
 
-`@cc.function` deploys synchronously, so the direct handles above already have
-immutable function version IDs by the time `Evaluation.create` runs. Existing
-functions can instead be attached by reference:
+`@cc.function` starts deployment in the background, allowing consecutive
+definitions to build concurrently. `Evaluation.create` waits on those handles
+before reading their immutable function version IDs. Existing functions can
+instead be attached by reference:
 
 ```python
 evaluation = cc.Evaluation.create(

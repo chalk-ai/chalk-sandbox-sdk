@@ -57,7 +57,7 @@ SLACK_CHANNEL = "#chalk-compute-spam"
 # it once a minute.
 #
 # The body imports `httpx` lazily — the import only needs to resolve in
-# the *deployed* pod, not in the script that calls `.deploy()`.
+# the *deployed* pod, not in the script that defines the function.
 
 
 @chalkcompute.function(
@@ -92,13 +92,13 @@ def slack_heartbeat() -> None:
 
 # ## Putting it all together
 #
-# `@chalkcompute.function(...)` auto-deploys at decoration time — by the
-# time module loading finishes, the image is built, the version is
-# registered, and the schedule is live. Running this script as `__main__`
-# just prints what got deployed.
+# `@chalkcompute.function(...)` starts deployment in the background. Reading
+# `version_info` below waits for the image build and registration, after which
+# the schedule is live. A definition-only script also waits for its background
+# deployments before the process exits.
 
 if __name__ == "__main__":
-    info = slack_heartbeat._version_info
+    info = slack_heartbeat.version_info
     assert info is not None
     log.info(
         "deployed: name=%s version=%d id=%s",
