@@ -155,9 +155,10 @@ _unobserved_background_deployments: dict[Future[None], str] = {}
 def _get_background_deploy_executor() -> ThreadPoolExecutor:
     """Return the process-wide pool used by ``@function`` deployments.
 
-    ``ThreadPoolExecutor`` workers are joined by Python during interpreter
-    shutdown.  A script containing only decorated function definitions therefore
-    still waits for every queued deployment before its process exits.
+    A pre-shutdown hook drains this pool before Python disables executor
+    submissions globally. A script containing only decorated function definitions
+    therefore waits for every queued deployment, while deployments may still use
+    their own worker pools during teardown.
     """
     global _background_deploy_executor
     with _background_deploy_executor_lock:
@@ -207,6 +208,14 @@ def _mark_background_deployment_observed(future: Future[None]) -> None:
         _unobserved_background_deployments.pop(future, None)
 
 
+def _shutdown_background_deploy_executor() -> None:
+    """Drain decorator deployments before Python shuts down thread pools."""
+    with _background_deploy_executor_lock:
+        executor = _background_deploy_executor
+    if executor is not None:
+        executor.shutdown(wait=True)
+
+
 def _report_unobserved_background_deployments() -> None:
     """Print failures from definition-only deploy scripts at process exit."""
     with _background_deployments_lock:
@@ -226,6 +235,10 @@ def _report_unobserved_background_deployments() -> None:
         traceback.print_exception(error, file=sys.stderr)
 
 
+# ``ThreadPoolExecutor`` registers its own callback through this hook. Callbacks
+# run newest-first, so registering after importing the executor lets deployments
+# finish before concurrent.futures globally rejects nested executor submissions.
+getattr(threading, "_register_atexit")(_shutdown_background_deploy_executor)
 atexit.register(_report_unobserved_background_deployments)
 
 # ---------------------------------------------------------------------------

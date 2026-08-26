@@ -271,6 +271,7 @@ def test_definition_only_script_waits_for_all_deployments(tmp_path: Path) -> Non
             """
             import os
             import threading
+            from concurrent.futures import ThreadPoolExecutor
             from pathlib import Path
 
             from chalkcompute._function import RemoteFunction, function
@@ -279,7 +280,9 @@ def test_definition_only_script_waits_for_all_deployments(tmp_path: Path) -> Non
 
             def fake_deploy(self, **kwargs):
                 rendezvous.wait(timeout=5)
-                (Path(os.environ["DEPLOY_OUTPUT_DIR"]) / self._func_name).write_text("done")
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    result = executor.submit(lambda: "done").result()
+                (Path(os.environ["DEPLOY_OUTPUT_DIR"]) / self._func_name).write_text(result)
                 return self
 
             RemoteFunction.deploy = fake_deploy
