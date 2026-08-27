@@ -11,6 +11,7 @@ import pyarrow.parquet as pq
 import pytest
 from protobuf import Oneof
 
+from chalkcompute._connect import use_connect_client
 from chalkcompute._dataset import (
     DatasetClient,
     DatasetError,
@@ -20,6 +21,15 @@ from chalkcompute._evaluation import DatasetRevisionRef
 from chalkcompute._gen.chalk.server.v1 import datasets_pb
 from chalkcompute._gen.chalk.volume.v1 import volume_pb
 from tests._fakes import FakeConnectClient
+
+
+def _client(
+    connect: FakeConnectClient,
+    *,
+    http_client: _FakeHTTPClient | None = None,
+) -> DatasetClient:
+    with use_connect_client(connect):  # type: ignore[arg-type]
+        return DatasetClient(http_client=http_client)
 
 
 class _FakeHTTPClient:
@@ -121,10 +131,7 @@ def test_upload_csv_files_registers_schema_and_threads_session(
     connect = FakeConnectClient(handler=handler)
     http = _FakeHTTPClient()
     progress: list[tuple[int, int]] = []
-    result = DatasetClient(
-        connect_client=connect,  # type: ignore[arg-type]
-        http_client=http,
-    ).upload(
+    result = _client(connect, http_client=http).upload(
         "  support_goldens  ",
         [first, second],
         part_size_bytes=1024,
@@ -177,8 +184,8 @@ def test_upload_in_memory_column_data_as_parquet(tmp_path: Path) -> None:
             uploaded.append(self.requests[-1][3])
             return response
 
-    DatasetClient(
-        connect_client=FakeConnectClient(handler=handler),  # type: ignore[arg-type]
+    _client(
+        FakeConnectClient(handler=handler),
         http_client=CapturingHTTPClient(),
     ).upload("table", {"id": [1, 2], "value": ["a", "b"]})
 
@@ -206,9 +213,7 @@ def test_upload_rejects_mismatched_schemas_before_requesting_urls(
     )
 
     with pytest.raises(DatasetError, match="does not match the first input"):
-        DatasetClient(connect_client=connect).upload(  # type: ignore[arg-type]
-            "mismatch", [first, second]
-        )
+        _client(connect).upload("mismatch", [first, second])
 
     assert connect.calls == []
 
@@ -216,9 +221,7 @@ def test_upload_rejects_mismatched_schemas_before_requesting_urls(
 @pytest.mark.parametrize("data", [[], b"parquet", object()])
 def test_upload_rejects_unsupported_or_empty_data(data: object) -> None:
     with pytest.raises((DatasetError, TypeError)):
-        DatasetClient(connect_client=FakeConnectClient()).upload(  # type: ignore[arg-type]
-            "invalid", data
-        )
+        _client(FakeConnectClient()).upload("invalid", data)
 
 
 def test_multipart_upload_sends_parts_and_completion_xml(tmp_path: Path) -> None:
@@ -230,7 +233,7 @@ def test_multipart_upload_sends_parts_and_completion_xml(tmp_path: Path) -> None
         _response(headers={"ETag": '"etag-2"'}),
         _response(),
     ]
-    client = DatasetClient(connect_client=FakeConnectClient(), http_client=http)  # type: ignore[arg-type]
+    client = _client(FakeConnectClient(), http_client=http)
     client._upload_file(
         _prepared(path),
         datasets_pb.GetDatasetUploadUrisResponse(
@@ -263,7 +266,7 @@ def test_azure_block_upload_stages_and_commits_blocks(tmp_path: Path) -> None:
     path = tmp_path / "data.parquet"
     path.write_bytes(b"abcdefghij")
     http = _FakeHTTPClient()
-    client = DatasetClient(connect_client=FakeConnectClient(), http_client=http)  # type: ignore[arg-type]
+    client = _client(FakeConnectClient(), http_client=http)
     client._upload_file(
         _prepared(path),
         datasets_pb.GetDatasetUploadUrisResponse(
@@ -302,7 +305,7 @@ def test_signed_upload_http_error_is_wrapped_without_exposing_url(
     path.write_bytes(b"payload")
     http = _FakeHTTPClient()
     http.responses = [_response(403, content=b"signature expired")]
-    client = DatasetClient(connect_client=FakeConnectClient(), http_client=http)  # type: ignore[arg-type]
+    client = _client(FakeConnectClient(), http_client=http)
 
     with pytest.raises(DatasetError, match="HTTP 403: signature expired") as raised:
         client._upload_file(

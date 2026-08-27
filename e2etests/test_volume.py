@@ -193,7 +193,10 @@ def test_concurrent_fork_write_consistency(volume: Volume) -> None:
 def test_client_lookup_helpers(volume: Volume) -> None:
     volume.put_file(MODEL_PATH, b"base version\n")
 
-    with VolumeClient.from_connect(ConnectClient()) as client:
+    with (
+        ConnectClient() as connect,
+        VolumeClient.with_client(connect) as client,
+    ):
         assert client.from_name(volume.name).name == volume.name
         looked_up = client.lookup(volume.name)
         assert looked_up.info.name == volume.name

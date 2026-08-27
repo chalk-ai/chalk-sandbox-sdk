@@ -71,6 +71,7 @@ from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import (
     ConnectClient,
     build_image,
+    get_connect_client,
     grpc_target_from_url,
     rpc_address_from_target,
     service_auth_context_from_env,
@@ -1864,7 +1865,7 @@ def _build_and_upload(
             parent=progress_parent,
         )
         logger.info("Uploading %d local file(s)...", len(deploy_image.lazy_local_files))
-        vvclient = VolumeClient.from_connect(client)
+        vvclient = VolumeClient.with_client(client)
         driver = vvclient
         new_volumes, volume_commits = vvclient.stage_lazy_files(
             deploy_image,
@@ -2542,7 +2543,7 @@ class RemoteFunction:
         self._knowledge_cutoff: str | None = None
         self._background_deploy_future: Future[None] | None = None
 
-        self._client = ConnectClient(chalk_client=chalk_client)
+        self._client = get_connect_client(chalk_client)
 
         functools.update_wrapper(self, func)
         _preserve_functionlike_metadata(self, func)
@@ -2692,7 +2693,7 @@ class RemoteFunction:
         f._queue_call_auth_token = None
         f._knowledge_cutoff = None
         f._background_deploy_future = None
-        f._client = ConnectClient(chalk_client=chalk_client)
+        f._client = get_connect_client(chalk_client)
         return f
 
     # -- Image building --------------------------------------------------------

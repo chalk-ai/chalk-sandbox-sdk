@@ -147,14 +147,54 @@ export CHALK_WEB_IDENTITY_TOKEN_FILE=/var/run/secrets/chalk/identity-token
 export CHALK_API_SERVER=https://api.chalk.ai
 ```
 
-Each SDK client caches the token for the shorter of one hour or half of the
-token's remaining lifetime from its `exp` claim, then re-reads the file on its
-next authenticated operation. Tokens without `exp` use the one-hour limit.
-Changing the configured file path bypasses the cache. The JWT's
-`environment_id` claim selects the environment unless `CHALK_ENVIRONMENT` or
-`CHALK_ENVIRONMENT_ID` is set explicitly. Queued function calls additionally
-require `CHALK_GRPC_ENGINE`, because identity JWTs do not contain engine-routing
-data.
+Each SDK client re-reads the token at most hourly and before the final five
+minutes of its lifetime. During that expiry window, refresh attempts are
+bounded to once every five seconds. Expired tokens are rejected instead of
+being sent. Tokens without `exp` use the one-hour interval.
+
+Authentication mode, token-file path, API server, and explicit environment are
+captured when a client first authenticates. Create a new client after changing
+those settings. The JWT's `environment_id` claim selects the environment unless
+`CHALK_ENVIRONMENT` or `CHALK_ENVIRONMENT_ID` was set explicitly. Queued
+function calls additionally require `CHALK_GRPC_ENGINE`, because identity JWTs
+do not contain engine-routing data.
+
+Service-auth and client-credential access tokens are also refreshed before
+their reported expiration. Stable credential configuration is resolved once;
+service-auth exchange tokens are re-resolved only for a refresh. The SDK
+lazily creates one process-wide `ConnectClient` and shares it across containers,
+functions, volumes, datasets, evaluations, traces, and other service clients.
+The SDK owns that default and closes it at process shutdown. It reuses one
+generated client per service endpoint, so normal SDK use authenticates and
+constructs each generated client only once.
+
+Normal client construction uses the process default directly; no context
+manager is required. For the exceptional case where one service client should
+use different credentials, bind an explicit client with `with_client(...)`.
+
+```python
+from chalkcompute import ConnectClient, SandboxClient
+
+with ConnectClient(chalk_client=other_chalk_client) as connect:
+    with SandboxClient.with_client(connect) as sandboxes:
+        sandbox = sandboxes.create("ubuntu:latest")
+```
+
+Use `use_connect_client` only when an entire synchronous or asynchronous
+execution context should use different credentials. The scope borrows the
+explicit client: it restores the previous client on exit, while the caller
+closes the override.
+
+```python
+from chalkcompute import ConnectClient, DatasetClient, use_connect_client
+
+with ConnectClient(chalk_client=other_chalk_client) as client:
+    with use_connect_client(client):
+        datasets = DatasetClient()
+```
+
+If a refresh temporarily fails, the previous token remains usable only until
+its reported expiration while retries are bounded to once every five seconds.
 
 ### Workload identity federation
 
@@ -163,9 +203,9 @@ third-party workload identity provider. For example, with Snowflake configured
 to trust Chalk's issuer and JWKS:
 
 ```python
-from chalkcompute import ConnectClient
+from chalkcompute import get_connect_client
 
-token = ConnectClient().get_workload_identity_token("snowflakecomputing.com")
+token = get_connect_client().get_workload_identity_token("snowflakecomputing.com")
 ```
 
 The token is scoped to the active Chalk environment. Its audience is the value

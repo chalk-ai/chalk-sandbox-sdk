@@ -122,7 +122,10 @@ def main() -> None:
 
             # Client helper ergonomics. These use the volume client
             # only; no v1 VolumeClient, containers, or sandboxes are involved.
-            with VolumeClient.from_connect(ConnectClient()) as client:
+            with (
+                ConnectClient() as connect,
+                VolumeClient.with_client(connect) as client,
+            ):
                 known_existing = client.from_name(volume_name)
                 print(f"\nfrom_name handle: {known_existing.name}")
 

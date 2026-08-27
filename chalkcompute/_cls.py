@@ -55,7 +55,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, TypeVar, overload
 
 from chalkcompute._concurrency import ConcurrencyPolicy
-from chalkcompute._connect import ConnectClient
+from chalkcompute._connect import get_connect_client
 from chalkcompute._containerspec import ContainerSpec
 from chalkcompute._deployment_proto import function_config, scaling_spec
 from chalkcompute._function import (
@@ -826,7 +826,7 @@ class RemoteClass:
             QueuePolicy.from_int_or_policy(quota) if quota is not None else None
         )
 
-        self._client = ConnectClient(chalk_client=chalk_client)
+        self._client = get_connect_client(chalk_client)
         self._deployed = False
         # Lazily-built local instance for in-process __call__ on methods.
         self._local_instance_cache: Any = None
@@ -996,7 +996,7 @@ class RemoteClass:
         rc._rate_limit = None
         rc._concurrency = None
         rc._quota = None
-        rc._client = ConnectClient(chalk_client=chalk_client)
+        rc._client = get_connect_client(chalk_client)
         rc._deployed = False
         rc._local_instance_cache = None
         rc._methods = {}
@@ -1386,7 +1386,7 @@ class RemoteClass:
         if self._volumes:
             # Driver is used here only to perform the delete action, not to
             # derive a mount type.
-            driver = self._volume_driver or VolumeClient.from_connect(self._client)
+            driver = self._volume_driver or VolumeClient.with_client(self._client)
             cleanup_owned_volumes(driver, self._volumes, self._referenced_volumes)
         self._volumes = []
         self._volume_driver = None

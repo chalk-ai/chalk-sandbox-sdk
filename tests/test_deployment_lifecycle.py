@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import chalkcompute._function as function_mod
+from chalkcompute._connect import use_connect_client
 from chalkcompute._function import RemoteFunction
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as catalog_pb
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
@@ -210,15 +211,11 @@ def test_function_redeploy_history_rollback_refresh_and_delete(monkeypatch) -> N
     assert client.calls[-1][0] == "delete_external_function"
 
 
-def test_from_name_uses_selected_parent_version(monkeypatch) -> None:
+def test_from_name_uses_selected_parent_version() -> None:
     client = _FunctionLifecycleClient()
-    monkeypatch.setattr(
-        function_mod,
-        "ConnectClient",
-        lambda chalk_client=None: client,
-    )
 
-    function = RemoteFunction.from_name("add")
+    with use_connect_client(client):  # type: ignore[arg-type]
+        function = RemoteFunction.from_name("add")
 
     assert function.function_id == "function-1"
     assert function.version_info is not None

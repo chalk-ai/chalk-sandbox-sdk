@@ -24,7 +24,6 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Any
 
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
@@ -33,6 +32,7 @@ from protobuf import Oneof
 
 from chalkcompute._connect import (
     ConnectClient,
+    get_connect_client,
     raise_for_rpc_error,
     rpc_address_from_target,
 )
@@ -191,7 +191,8 @@ class ArtifactClient:
         metadata: _GrpcMetadata | None = None,
     ) -> None:
         self._target = target
-        self._metadata = metadata
+        self._static_metadata = metadata
+        self._connect: ConnectClient | None = None
         if use_tls is None:
             use_tls = credentials is not None
         self._stub = pb_connect.ArtifactServiceClientSync(
@@ -203,21 +204,31 @@ class ArtifactClient:
         )
 
     @classmethod
-    def _from_connect(cls, connect: ConnectClient) -> ArtifactClient:
-        """Internal: build an artifact client from shared Chalk authentication."""
+    def with_client(cls, connect: ConnectClient) -> ArtifactClient:
+        """Build an artifact client borrowing ``connect`` for authentication."""
         connect._ensure_auth()
-        return cls(
+        client = cls(
             connect._api_server or "",
             use_tls=(connect._api_server or "").startswith("https://"),
             metadata=connect._rpc_metadata(),
         )
+        client._connect = connect
+        return client
 
     @classmethod
-    def from_env(cls, *, chalk_client: Any | None = None) -> ArtifactClient:
-        """Create an ``ArtifactClient`` from ambient Chalk credentials."""
-        connect = ConnectClient(chalk_client=chalk_client)
-        connect._ensure_auth()
-        return cls._from_connect(connect)
+    def from_env(cls) -> ArtifactClient:
+        """Create an ``ArtifactClient`` borrowing the default client."""
+        return cls.with_client(get_connect_client())
+
+    @property
+    def _metadata(self) -> _GrpcMetadata | None:
+        if self._connect is not None:
+            return self._connect._rpc_metadata()
+        return self._static_metadata
+
+    @_metadata.setter
+    def _metadata(self, value: _GrpcMetadata | None) -> None:
+        self._static_metadata = value
 
     def __enter__(self) -> ArtifactClient:
         return self

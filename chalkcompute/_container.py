@@ -37,6 +37,7 @@ from protobuf.wkt import Duration
 
 from chalkcompute._connect import (
     ConnectClient,
+    get_connect_client,
     raise_for_rpc_error,
     rpc_address_from_target,
     rpc_error_message,
@@ -507,11 +508,7 @@ class ContainerSessionClient:
             target,
             credentials=None,
             metadata=connect._rpc_metadata(),
-            _connect=(
-                connect
-                if getattr(connect, "_uses_web_identity_token", lambda: False)() is True
-                else None
-            ),
+            _connect=connect,
         )
 
     @property
@@ -773,7 +770,7 @@ class Container:
         self._container_id: str | None = None
         self._container_info: ContainerInfo | None = None
 
-        self._client = ConnectClient(chalk_client=chalk_client)
+        self._client = get_connect_client(chalk_client)
         self._session_client: ContainerSessionClient | None = None
 
     # -- Alternate constructors ------------------------------------------------
@@ -882,7 +879,7 @@ class Container:
         c._built_image_uri = None
         c._container_id = None
         c._container_info = None
-        c._client = ConnectClient(chalk_client=chalk_client)
+        c._client = get_connect_client(chalk_client)
         c._session_client = None
         return c
 
@@ -1088,7 +1085,7 @@ class Container:
                     len(lazy_files),
                 )
                 assert isinstance(self._image, Image)
-                driver = VolumeClient.from_connect(self._client)
+                driver = VolumeClient.with_client(self._client)
                 self._volume_driver = driver
                 self._volumes += driver.upload_lazy_files(
                     self._image,
@@ -1444,7 +1441,7 @@ class Container:
         if self._volumes:
             # Driver is used here only to perform the delete action, not to
             # derive a mount type.
-            driver = self._volume_driver or VolumeClient.from_connect(self._client)
+            driver = self._volume_driver or VolumeClient.with_client(self._client)
             cleanup_owned_volumes(driver, self._volumes, self._referenced_volumes)
         self._volumes = []
         self._volume_driver = None

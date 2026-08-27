@@ -100,7 +100,6 @@ def _make_client(monkeypatch: pytest.MonkeyPatch) -> VolumeClient:
     client._commit_author = None
     client._extra_headers = []
     client._chalk_server = "go-api"
-    client._owns_connect = False
     client._native_inner = MagicMock()
     client._connect = MagicMock()
     client._connect._access_token = "token"
@@ -147,7 +146,7 @@ def test_volume_not_found_preserves_connect_message(
     assert raised.value.code == "not_found"
 
 
-def test_client_from_connect_uses_connect_http_endpoint(
+def test_client_with_client_uses_connect_http_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     native = MagicMock()
@@ -157,7 +156,7 @@ def test_client_from_connect_uses_connect_http_endpoint(
     connect._access_token = "token"
     connect._env_id = "env-1"
 
-    client = VolumeClient.from_connect(connect)
+    client = VolumeClient.with_client(connect)
 
     connect._ensure_auth.assert_called_once()
     assert client._endpoint == "https://api.chalk.ai"
@@ -173,7 +172,7 @@ def test_client_from_connect_uses_connect_http_endpoint(
     )
 
 
-def test_client_from_connect_rebuilds_after_identity_token_rotation(
+def test_client_with_client_rebuilds_after_identity_token_rotation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     native = MagicMock()
@@ -191,7 +190,7 @@ def test_client_from_connect_rebuilds_after_identity_token_rotation(
             return True
 
     connect = RotatingConnect()
-    client = VolumeClient.from_connect(connect)  # type: ignore[arg-type]
+    client = VolumeClient.with_client(connect)  # type: ignore[arg-type]
     connect._access_token = "token-two"
     connect._env_id = "env-two"
 
@@ -206,6 +205,54 @@ def test_client_from_connect_rebuilds_after_identity_token_rotation(
         [],
         "go-api",
     )
+
+
+def test_client_with_client_borrows_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(vv, "_NativeVolumeClient", MagicMock())
+    connect = MagicMock()
+    connect._api_server = "https://api.chalk.ai"
+    connect._access_token = "token"
+    connect._env_id = "env-1"
+
+    client = VolumeClient.with_client(connect)
+    client.close()
+
+    connect.close.assert_not_called()
+
+
+def test_from_connect_alias_supports_chalkpy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(vv, "_NativeVolumeClient", MagicMock())
+    connect = MagicMock()
+    connect._api_server = "https://api.chalk.ai"
+    connect._access_token = "token"
+    connect._env_id = "env-1"
+
+    client = VolumeClient.from_connect(connect)
+    client.close()
+
+    connect.close.assert_not_called()
+
+
+def test_default_client_borrows_process_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(vv, "_NativeVolumeClient", MagicMock())
+    connect = MagicMock()
+    connect._api_server = "https://api.chalk.ai"
+    connect._access_token = "token"
+    connect._env_id = "env-1"
+    get_default = MagicMock(return_value=connect)
+    monkeypatch.setattr(vv, "get_connect_client", get_default)
+
+    client = VolumeClient()
+    client.close()
+
+    get_default.assert_called_once_with()
+    connect.close.assert_not_called()
 
 
 def test_accepts_explicit_client_and_gets_existing_volume_lazily(
@@ -234,12 +281,10 @@ def test_accepts_name_only_and_creates_missing_volume_lazily(
         volume=_volume_proto()
     )
 
-    with patch.object(
-        VolumeClient, "from_connect", return_value=client
-    ) as from_connect:
+    with patch.object(VolumeClient, "with_client", return_value=client) as with_client:
         vol = Volume("models")
 
-    from_connect.assert_called_once()
+    with_client.assert_called_once()
     assert vol.info.name == "models"
     client._rpc.create_volume.assert_called_once_with(
         pb_v2.CreateVolumeRequest(

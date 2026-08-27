@@ -40,7 +40,7 @@ from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
 
-from chalkcompute._connect import ConnectClient
+from chalkcompute._connect import get_connect_client
 from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
 from chalkcompute._gen.chalk.server.v1 import trace_connect, trace_pb
 from chalkcompute._tracing import (
@@ -423,11 +423,8 @@ class TraceClient:
         self,
         *,
         chalk_client: Any | None = None,
-        connect_client: ConnectClient | None = None,
     ) -> None:
-        if chalk_client is not None and connect_client is not None:
-            raise ValueError("pass only one of chalk_client or connect_client")
-        self._connect = connect_client or ConnectClient(chalk_client=chalk_client)
+        self._connect = get_connect_client(chalk_client)
 
     @_instrumented("chalkcompute.trace.list_spans")
     def list_spans(

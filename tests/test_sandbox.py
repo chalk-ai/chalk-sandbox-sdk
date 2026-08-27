@@ -456,7 +456,7 @@ def test_sandbox_uploads_lazy_local_files_to_a_volume(tmp_path) -> None:
 
     with (
         patch("chalkcompute._sandbox.build_image", return_value="img:built"),
-        patch.object(VolumeClient, "from_connect", return_value=volume_client),
+        patch.object(VolumeClient, "with_client", return_value=volume_client),
     ):
         sandbox.run()
 

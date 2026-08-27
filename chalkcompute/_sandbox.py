@@ -42,6 +42,7 @@ from chalkcompute._connect import (
     ConnectError,
     ConnectClient,
     build_image,
+    get_connect_client,
     grpc_target_from_url,
     raise_for_rpc_error,
     rpc_address_from_target,
@@ -549,7 +550,6 @@ class Sandbox:
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool = False,
         managed_ssh: Mapping[str, SshDest] | None = None,
-        chalk_client: Any | None = None,
         sandbox_client: SandboxClient | None = None,
         client: Any | None = None,
         sandbox_id: str | None = None,
@@ -622,8 +622,6 @@ class Sandbox:
         self._restart_policy: RestartPolicy | None = None
         self._chalk_identity = False
         self._managed_ssh: dict[str, SshDest] = {}
-        self._chalk_client: Any | None = None
-
         if client is not None or sandbox_id is not None:
             if (
                 image is not None
@@ -637,7 +635,6 @@ class Sandbox:
                 or restart_policy is not None
                 or chalk_identity
                 or managed_ssh is not None
-                or chalk_client is not None
                 or sandbox_client is not None
             ):
                 raise TypeError(
@@ -679,7 +676,6 @@ class Sandbox:
         self._restart_policy = restart_policy
         self._chalk_identity = chalk_identity
         self._managed_ssh = dict(managed_ssh or {})
-        self._chalk_client = chalk_client
 
     @property
     def id(self) -> str | None:
@@ -767,7 +763,7 @@ class Sandbox:
 
         client = self._client
         if client is None:
-            client = SandboxClient.from_env(chalk_client=self._chalk_client)
+            client = SandboxClient.from_env()
 
         image = self._image
         if isinstance(image, Image):
@@ -786,7 +782,7 @@ class Sandbox:
         # Upload the image's lazy local files (add_local_file / add_local_dir
         # with the default strategy="volume") and mount them alongside.
         if isinstance(self._image, Image) and self._image.lazy_local_files:
-            self._volume_client = VolumeClient.from_connect(connect)
+            self._volume_client = VolumeClient.with_client(connect)
             self._volumes += self._volume_client.upload_lazy_files(
                 self._image,
                 volume_prefix="sandbox-files",
@@ -1036,10 +1032,14 @@ class Sandbox:
         def request_iterator() -> Iterator[runtime_pb.ExecutePythonRequest]:
             yield runtime_pb.ExecutePythonRequest(message=Oneof("spec", spec))
 
-        artifact_client = ArtifactClient(
-            client._address,
-            use_tls=client._use_tls,
-            metadata=client._metadata,
+        artifact_client = (
+            ArtifactClient.with_client(client._connect)
+            if client._connect is not None
+            else ArtifactClient(
+                client._address,
+                use_tls=client._use_tls,
+                metadata=client._metadata,
+            )
         )
 
         execution_id = ""
@@ -1119,7 +1119,7 @@ class Sandbox:
             raise
         self._terminated = True
         if self._volumes:
-            volume_client = self._volume_client or VolumeClient.from_connect(
+            volume_client = self._volume_client or VolumeClient.with_client(
                 self._connect_client(client)
             )
             cleanup_owned_volumes(
@@ -1133,9 +1133,7 @@ class Sandbox:
 
     def _connect_client(self, client: SandboxClient) -> ConnectClient:
         """Return the authenticated Connect client backing ``client``."""
-        return getattr(client, "_connect", None) or ConnectClient(
-            chalk_client=self._chalk_client
-        )
+        return getattr(client, "_connect", None) or get_connect_client()
 
     def _build_image(
         self,
@@ -1179,7 +1177,6 @@ class SandboxClient:
         credentials: object | None = None,
         use_tls: bool | None = None,
         metadata: _GrpcMetadata | None = None,
-        _connect: ConnectClient | None = None,
     ) -> None:
         """Initialize the RPC client.
 
@@ -1200,7 +1197,7 @@ class SandboxClient:
         """
         self._target = target
         self._static_metadata = metadata
-        self._connect = _connect
+        self._connect: ConnectClient | None = None
         self._use_tls = credentials is not None if use_tls is None else use_tls
         self._address = rpc_address_from_target(target, use_tls=self._use_tls)
         interceptors = rpc_interceptors()
@@ -1227,28 +1224,22 @@ class SandboxClient:
         )
 
     @classmethod
-    def from_env(
-        cls,
-        *,
-        chalk_client: Any | None = None,
-    ) -> SandboxClient:
-        """Create a ``SandboxClient`` from ambient Chalk credentials."""
+    def from_env(cls) -> SandboxClient:
+        """Create a ``SandboxClient`` borrowing the default client."""
+        return cls.with_client(get_connect_client())
 
-        connect = ConnectClient(chalk_client=chalk_client)
+    @classmethod
+    def with_client(cls, connect: ConnectClient) -> SandboxClient:
+        """Build a sandbox client borrowing ``connect`` for authentication."""
         connect._ensure_auth()
-
         host, use_tls = grpc_target_from_url(connect._api_server or "")
-
-        return cls(
+        client = cls(
             host,
             use_tls=use_tls,
             metadata=connect._rpc_metadata(),
-            _connect=(
-                connect
-                if getattr(connect, "_uses_web_identity_token", lambda: False)() is True
-                else None
-            ),
         )
+        client._connect = connect
+        return client
 
     @property
     def _metadata(self) -> _GrpcMetadata | None:

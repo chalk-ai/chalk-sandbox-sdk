@@ -40,7 +40,7 @@ from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
 from protobuf.wkt import FieldMask
 
-from chalkcompute._connect import ConnectClient, build_image
+from chalkcompute._connect import ConnectClient, build_image, get_connect_client
 from chalkcompute._containerspec import ContainerSpec
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_connect as sg_connect
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
@@ -341,7 +341,7 @@ class ScalingGroup:
         self._scaling_group_id: str | None = None
         self._scaling_group_info: ScalingGroupInfo | None = None
 
-        self._client = ConnectClient(chalk_client=chalk_client)
+        self._client = get_connect_client(chalk_client)
 
     # -- Alternate constructors ------------------------------------------------
 
@@ -435,7 +435,7 @@ class ScalingGroup:
         sg._built_image_uri = None
         sg._scaling_group_id = None
         sg._scaling_group_info = None
-        sg._client = ConnectClient(chalk_client=chalk_client)
+        sg._client = get_connect_client(chalk_client)
         return sg
 
     # -- Lifecycle -------------------------------------------------------------
@@ -500,7 +500,7 @@ class ScalingGroup:
         if lazy_files:
             logger.info("Uploading %d local file(s) to volume(s)...", len(lazy_files))
             assert isinstance(self._image, Image)
-            driver = VolumeClient.from_connect(self._client)
+            driver = VolumeClient.with_client(self._client)
             self._volume_driver = driver
             uploaded_volumes = driver.upload_lazy_files(
                 self._image,
@@ -899,7 +899,7 @@ class ScalingGroup:
         if owned_volumes:
             # Driver is used here only to perform the delete action, not to
             # derive a mount type.
-            driver = self._volume_driver or VolumeClient.from_connect(self._client)
+            driver = self._volume_driver or VolumeClient.with_client(self._client)
             cleanup_owned_volumes(driver, owned_volumes.values(), ())
         self._volumes = []
         self._owned_volumes = []
