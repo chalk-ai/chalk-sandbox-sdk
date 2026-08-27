@@ -66,6 +66,24 @@ def tui_enabled() -> bool:
 # ---------------------------------------------------------------------------
 
 
+_TERMINAL_STATUSES: tuple[StepStatus, ...] = ("done", "failed", "skipped")
+
+
+def _skip_unfinished_descendants(state: "_ResourceState") -> None:
+    """Mark a terminal row's unfinished children as skipped.
+
+    An operation that has finished — successfully or not — has no steps still
+    running, so leaving descendants "active" would keep the spinner alive and
+    make the two terminality checks disagree about whether the tree is idle.
+    """
+    pending = list(state.children)
+    while pending:
+        child = pending.pop()
+        if child.status not in _TERMINAL_STATUSES:
+            child.status = "skipped"
+        pending.extend(child.children)
+
+
 class _ResourceState:
     __slots__ = ("kind", "label", "status", "detail", "children")
 
@@ -177,6 +195,8 @@ class DeployProgress:
                 return
             if status is not None:
                 state.status = status
+                if status in _TERMINAL_STATUSES:
+                    _skip_unfinished_descendants(state)
             if detail is not None:
                 state.detail = detail
             if label is not None:
@@ -189,15 +209,20 @@ class DeployProgress:
             self._stop_live()
 
     def finish_if_idle(self) -> None:
-        """Stop the display only when every top-level operation is terminal."""
+        """Stop the display only when every top-level operation is terminal.
+
+        A terminal row's unfinished children are marked skipped as they are set
+        (see :func:`_skip_unfinished_descendants`), so a terminal root always
+        has a fully terminal subtree and this agrees with the check that
+        :meth:`_discard_finished_roots` makes.
+        """
         with self._lock:
             if self._all_roots_terminal():
                 self._stop_live()
 
     def _all_roots_terminal(self) -> bool:
         return all(
-            self._resources[key].status in ("done", "failed", "skipped")
-            for key in self._order
+            self._resources[key].status in _TERMINAL_STATUSES for key in self._order
         )
 
     def _discard_finished_roots(self) -> None:
@@ -219,9 +244,7 @@ class DeployProgress:
                     continue
                 subtree.append(state)
                 pending.extend(state.children)
-            if any(
-                state.status not in ("done", "failed", "skipped") for state in subtree
-            ):
+            if any(state.status not in _TERMINAL_STATUSES for state in subtree):
                 continue
             finished.add(key)
             stale.update(id(state) for state in subtree)

@@ -1,3 +1,5 @@
 - Fix `wait_ready()` on decorated functions skipping the readiness poll entirely, which also made `rollback(wait_ready=True)` return before the rolled-back version was serving.
 - Fail strip-mode violations at decoration time so a definition-only deploy script exits nonzero instead of reporting the error after a successful exit.
 - Make an explicit `.deploy()` on a decorated function wait for the decorator's background deployment instead of racing it for the same registered name, while still allowing a retry after that background attempt fails.
+- Fail the process when a definition-only deploy script's background deployment fails, instead of reporting the error after a successful exit.
+- Read `min_replicas` from the scaling group when waiting for readiness, so `wait_ready()` on a scale-to-zero function no longer waits for a replica it will never have.

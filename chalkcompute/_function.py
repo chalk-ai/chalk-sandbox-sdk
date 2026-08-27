@@ -169,6 +169,46 @@ def _get_background_deploy_executor() -> ThreadPoolExecutor:
         return _background_deploy_executor
 
 
+def _await_deploy_predecessor(predecessor: Future[None] | None) -> None:
+    """Wait for the previous deploy of a registered name, ignoring its outcome.
+
+    The chain exists to order version selection, not to propagate failures: a
+    deploy that inherited its predecessor's exception would never run its own
+    attempt, and would report an error belonging to someone else's.
+    """
+    if predecessor is None:
+        return
+    try:
+        predecessor.result()
+    except Exception:
+        pass
+
+
+def _register_manual_deploy(registered_name: str) -> Future[None]:
+    """Publish a caller-initiated deploy as the tail for its registered name.
+
+    Without this a manual ``deploy()`` is invisible to the chain, so a function
+    decorated while one is in flight would select a version concurrently with
+    it. Returns a barrier to complete with :func:`_finish_manual_deploy`.
+    """
+    barrier: Future[None] = Future()
+    barrier.set_running_or_notify_cancel()
+    with _background_deployments_lock:
+        predecessor = _background_deployment_tails.get(registered_name)
+        _background_deployment_tails[registered_name] = barrier
+    _await_deploy_predecessor(predecessor)
+    return barrier
+
+
+def _finish_manual_deploy(registered_name: str, barrier: Future[None]) -> None:
+    """Release anything queued behind a caller-initiated deploy."""
+    with _background_deployments_lock:
+        if _background_deployment_tails.get(registered_name) is barrier:
+            _background_deployment_tails.pop(registered_name, None)
+    if not barrier.done():
+        barrier.set_result(None)
+
+
 def _schedule_background_deployment(function: RemoteFunction) -> Future[None]:
     """Schedule one decorator-triggered deployment and return its barrier.
 
@@ -184,8 +224,7 @@ def _schedule_background_deployment(function: RemoteFunction) -> Future[None]:
         predecessor = _background_deployment_tails.get(registered_name)
 
         def run() -> None:
-            if predecessor is not None:
-                predecessor.result()
+            _await_deploy_predecessor(predecessor)
             context.run(function._deploy)
 
         future = executor.submit(run)
@@ -217,22 +256,44 @@ def _shutdown_background_deploy_executor() -> None:
 
 
 def _report_unobserved_background_deployments() -> None:
-    """Print failures from definition-only deploy scripts at process exit."""
+    """Report failures from definition-only deploy scripts and fail the process.
+
+    A script that only defines functions never touches a handle, so nothing
+    would otherwise surface a failed deployment and the process would exit
+    successfully on code that cannot serve.
+    """
     with _background_deployments_lock:
         deployments = list(_unobserved_background_deployments.items())
         _unobserved_background_deployments.clear()
 
+    failed = False
     for future, registered_name in deployments:
         if not future.done() or future.cancelled():
             continue
         error = future.exception()
         if error is None:
             continue
+        failed = True
         print(
             f"Background deployment for function {registered_name!r} failed:",
             file=sys.stderr,
         )
         traceback.print_exception(error, file=sys.stderr)
+
+    if not failed:
+        return
+
+    # An atexit callback cannot set the exit status the ordinary way: SystemExit
+    # raised here is reported as "Exception ignored" and the process still exits
+    # 0. os._exit can, at the cost of skipping atexit callbacks registered
+    # before this module was imported, so flush what those would have flushed.
+    # Callbacks run newest-first and this one is registered at import, so
+    # anything registered later (the OTel provider shutdown in _tracing, say)
+    # has already run.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    logging.shutdown()
+    os._exit(1)
 
 
 # ``ThreadPoolExecutor`` registers its own callback through this hook. Callbacks
@@ -2839,11 +2900,16 @@ class RemoteFunction:
             ``self`` for chaining.
         """
         self._settle_background_deploy()
-        return self._deploy(
-            poll_interval=poll_interval,
-            build_timeout=build_timeout,
-            ready_timeout=ready_timeout,
-        )
+        registered_name = self._explicit_name or self._func_name
+        barrier = _register_manual_deploy(registered_name)
+        try:
+            return self._deploy(
+                poll_interval=poll_interval,
+                build_timeout=build_timeout,
+                ready_timeout=ready_timeout,
+            )
+        finally:
+            _finish_manual_deploy(registered_name, barrier)
 
     @_instrumented("chalkcompute.function.deploy")
     def _deploy(
@@ -3094,6 +3160,22 @@ class RemoteFunction:
             message = f"{message}: {status_message}"
         raise FunctionError(message)
 
+    def _requires_ready_replicas(self, sg: Any) -> bool:
+        """Whether readiness demands a live replica for this scaling group.
+
+        Prefers the server's own spec over the local ``min_replicas``: a handle
+        from ``from_name``/``from_id`` never learns the deployed value, so
+        trusting the local default would demand a replica from a scale-to-zero
+        function that will never have one.
+        """
+        if (
+            isinstance(sg, sg_pb.ScalingGroupResponse)
+            and sg.has_field("spec")
+            and sg.spec is not None
+        ):
+            return sg.spec.min_replicas > 0
+        return self._min_replicas > 0
+
     def wait_ready(
         self,
         *,
@@ -3139,7 +3221,7 @@ class RemoteFunction:
             if status in ("Failed", "Error"):
                 raise FunctionError(f"Scaling group {sg_name} entered {status} state")
             if _scaling_group_is_ready(
-                sg, require_ready_replicas=self._min_replicas > 0
+                sg, require_ready_replicas=self._requires_ready_replicas(sg)
             ):
                 return self
             if time.monotonic() >= deadline:

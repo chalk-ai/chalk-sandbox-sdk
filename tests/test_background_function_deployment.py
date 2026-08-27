@@ -352,7 +352,8 @@ def test_definition_only_script_reports_deployment_failure(tmp_path: Path) -> No
         check=False,
     )
 
-    assert completed.returncode == 0
+    # A definition-only script must fail, not exit 0 on code that cannot serve.
+    assert completed.returncode != 0
     assert "Background deployment for function 'broken' failed" in completed.stderr
     assert "RuntimeError: deployment exploded" in completed.stderr
 
@@ -657,3 +658,114 @@ def test_wait_ready_accepts_scaled_to_zero_for_scale_to_zero_functions(
     idle.wait_ready(timeout=0.2, poll_interval=0.01)
 
     assert polled == ["sg-idle"]
+
+
+def _scaling_group(name: str, *, status: str, min_replicas: int) -> Any:
+    return sg_pb.ScalingGroupResponse(
+        id="sg-1",
+        name=name,
+        status=status,
+        ready_replicas=0,
+        available_replicas=0,
+        spec=sg_pb.ScalingSpec(min_replicas=min_replicas, max_replicas=2),
+    )
+
+
+def test_wait_ready_trusts_the_servers_min_replicas_over_the_local_default(
+    monkeypatch,
+) -> None:
+    """A from_name handle never learns min_replicas, so read it off the group."""
+    polled: list[str] = []
+
+    def fake_get_scaling_group(_client: Any, name: str) -> Any:
+        polled.append(name)
+        return _scaling_group(name, status="ScaledToZero", min_replicas=0)
+
+    monkeypatch.setattr(
+        "chalkcompute._function._get_scaling_group", fake_get_scaling_group
+    )
+
+    def idle(value: int) -> int:
+        return value
+
+    # _make_empty-style handles hardcode _min_replicas = 1, which would
+    # otherwise demand a replica a scale-to-zero function will never have.
+    fn = RemoteFunction(idle)
+    assert fn._min_replicas == 1
+    fn._version_info = _version_info("idle")
+
+    fn.wait_ready(timeout=0.2, poll_interval=0.01)
+
+    assert polled == ["sg-idle"]
+
+
+def test_wait_ready_still_demands_a_replica_when_the_server_says_so(
+    monkeypatch,
+) -> None:
+    """The server's spec must not be read as "scale to zero" when it isn't."""
+
+    def fake_get_scaling_group(_client: Any, name: str) -> Any:
+        return _scaling_group(name, status="Running", min_replicas=1)
+
+    monkeypatch.setattr(
+        "chalkcompute._function._get_scaling_group", fake_get_scaling_group
+    )
+
+    def busy(value: int) -> int:
+        return value
+
+    fn = RemoteFunction(busy)
+    fn._version_info = _version_info("busy")
+
+    with pytest.raises(FunctionError, match="not ready after"):
+        fn.wait_ready(timeout=0.05, poll_interval=0.01)
+
+
+def test_a_new_decorator_queues_behind_an_in_flight_manual_deploy(
+    monkeypatch,
+) -> None:
+    """A manual deploy must be visible to the chain for its registered name."""
+    order: list[str] = []
+    order_lock = threading.Lock()
+    manual_running = threading.Event()
+    release_manual = threading.Event()
+
+    def fake_deploy(self: RemoteFunction, **_: Any) -> RemoteFunction:
+        with order_lock:
+            first = not order
+        if first:
+            order.append("manual:start")
+            manual_running.set()
+            assert release_manual.wait(timeout=5)
+            with order_lock:
+                order.append("manual:end")
+        else:
+            with order_lock:
+                order.append("decorator")
+        return self
+
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
+
+    def existing(value: int) -> int:
+        return value
+
+    handle = RemoteFunction(existing, name="shared-name")
+    manual = threading.Thread(target=handle.deploy)
+    manual.start()
+    try:
+        assert manual_running.wait(timeout=5)
+
+        # Decorating the same registered name now must queue, not race.
+        @function(name="shared-name")
+        def replacement(value: int) -> int:
+            return value
+
+        time.sleep(0.05)
+        with order_lock:
+            assert order == ["manual:start"], order
+    finally:
+        release_manual.set()
+        manual.join(timeout=5)
+
+    replacement._wait_for_background_deploy()
+    assert order == ["manual:start", "manual:end", "decorator"]

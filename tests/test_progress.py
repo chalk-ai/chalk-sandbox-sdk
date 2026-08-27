@@ -99,15 +99,17 @@ def test_reuse_clear_keeps_rows_of_a_still_running_operation(monkeypatch) -> Non
     assert progress._resources["build:a"].status == "done"
 
 
-def test_reuse_clear_keeps_active_child_of_a_failed_root(monkeypatch) -> None:
-    """A root may fail while a child is still active; that child must survive."""
+def test_terminal_root_skips_its_unfinished_children(monkeypatch) -> None:
+    """A finished operation has no running steps, so the display can idle."""
     progress = DeployProgress()
+    stops: list[None] = []
 
     def start() -> None:
         progress._started = True
 
     def stop() -> None:
         progress._started = False
+        stops.append(None)
 
     monkeypatch.setattr(progress, "_ensure_live", start)
     monkeypatch.setattr(progress, "_refresh", lambda: None)
@@ -116,18 +118,14 @@ def test_reuse_clear_keeps_active_child_of_a_failed_root(monkeypatch) -> None:
     progress.add("fn:a", "function", "A")
     progress.add("build:a", "image", "Building A", parent="fn:a")
     progress.update("fn:a", status="failed")
+
+    # The child cannot still be running once its operation failed.
+    assert progress._resources["build:a"].status == "skipped"
+
+    # Both terminality checks now agree, so the display idles...
     progress.finish_if_idle()
+    assert stops == [None]
 
-    # A new operation reuses the tracker while A's child is still running.
+    # ...and the whole subtree is dropped when the tracker is reused.
     progress.add("fn:b", "function", "B")
-
-    assert set(progress._resources) == {"fn:a", "build:a", "fn:b"}
-
-    # The in-flight child update lands instead of silently no-oping.
-    progress.update("build:a", status="failed")
-    assert progress._resources["build:a"].status == "failed"
-
-    # Once the whole subtree is terminal, the next reuse drops it.
-    progress._started = False
-    progress.add("fn:c", "function", "C")
-    assert set(progress._resources) == {"fn:b", "fn:c"}
+    assert set(progress._resources) == {"fn:b"}
