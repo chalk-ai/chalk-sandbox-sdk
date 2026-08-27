@@ -186,7 +186,7 @@ def _schedule_background_deployment(function: RemoteFunction) -> Future[None]:
         def run() -> None:
             if predecessor is not None:
                 predecessor.result()
-            context.run(function.deploy)
+            context.run(function._deploy)
 
         future = executor.submit(run)
         _background_deployment_tails[registered_name] = future
@@ -1358,11 +1358,11 @@ def _prepare_package_dir(
         return package_dir, False
 
     original = _source_text_for_deploy(entrypoint_file)
-    _assert_stripped_source_self_contained(
+    _strip_source_for_deploy(
         original,
-        _strip_chalkcompute_for_package(original),
+        strip=_strip_chalkcompute_for_package,
         label=label,
-        entrypoint_sources=list(entrypoint_sources),
+        entrypoint_sources=entrypoint_sources,
     )
 
     temp_dir = tempfile.mkdtemp(prefix="chalkfn_pkg_")
@@ -1572,14 +1572,93 @@ def _prepare_source_file(
         return _write_temp(_source_text_for_deploy(source_file)), True
 
     source = _source_text_for_deploy(source_file)
-    stripped = _strip_chalkcompute_from_source(source)
+    stripped = _strip_source_for_deploy(
+        source,
+        strip=_strip_chalkcompute_from_source,
+        label=label or f"Function source {source_file!r}",
+        entrypoint_sources=entrypoint_sources or [],
+    )
+    return _write_temp(stripped), True
+
+
+def _strip_source_for_deploy(
+    source: str,
+    *,
+    strip: Callable[[str], str],
+    label: str,
+    entrypoint_sources: typing.Sequence[str],
+) -> str:
+    """Strip chalkcompute from ``source`` and assert the result is usable.
+
+    Stripping and validating are paired here so no deploy surface can do one
+    without the other. Callers pass the strip pass their deploy mode uses:
+    ``_strip_chalkcompute_from_source`` for a single function file,
+    ``_strip_chalkcompute_for_package`` for a package (function + class passes),
+    ``_strip_chalkcompute_from_class_source`` for a ``@cls`` file. The passes
+    remove different name sets, so a mismatch would let a real violation
+    through.
+
+    Parameters
+    ----------
+    source
+        Original source text of the file being deployed.
+    strip
+        Strip pass matching the caller's deploy mode.
+    label
+        Human-readable identifier used in the guard's error message.
+    entrypoint_sources
+        Source of the deployed function(s)/method(s) whose bodies the guard
+        inspects for dangling chalkcompute references.
+
+    Returns
+    -------
+    str
+        The stripped source.
+    """
+    stripped = strip(source)
     _assert_stripped_source_self_contained(
         source,
         stripped,
-        label=label or f"Function source {source_file!r}",
-        entrypoint_sources=list(entrypoint_sources or []),
+        label=label,
+        entrypoint_sources=list(entrypoint_sources),
     )
-    return _write_temp(stripped), True
+    return stripped
+
+
+def _assert_strip_mode_self_contained(func: Callable[..., Any], *, label: str) -> None:
+    """Run the strip-mode guard without building anything.
+
+    The guard is a pure function of the source text and
+    ``CHALK_FUNCTION_STRIP_SOURCE``, so it can run before a deploy is even
+    scheduled. Callers use this to keep a strip-mode violation a synchronous
+    error on the defining thread rather than a background-thread failure that a
+    definition-only script only reports at interpreter exit — by which point the
+    process has already exited successfully.
+
+    ``@cls`` needs no equivalent: its decorator deploys synchronously, so its
+    guard already raises on the defining thread.
+
+    Parameters
+    ----------
+    func
+        The undecorated user function about to be deployed.
+    label
+        Human-readable identifier used in the guard's error message.
+    """
+    if not _should_strip_source():
+        return
+
+    package_dir = _package_dir_for_module(_deploy_module_name(func))
+    _strip_source_for_deploy(
+        _source_text_for_deploy(_source_file_for_deploy(func)),
+        strip=(
+            _strip_chalkcompute_for_package
+            if package_dir is not None
+            else _strip_chalkcompute_from_source
+        ),
+        label=label,
+        entrypoint_sources=_entrypoint_source(func),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2680,6 +2759,9 @@ class RemoteFunction:
             raise FunctionError(
                 f"Background deployment already started for {self._func_name!r}"
             )
+        _assert_strip_mode_self_contained(
+            self._func, label=f"Function {self._func_name!r}"
+        )
         self._background_deploy_future = _schedule_background_deployment(self)
 
     def _wait_for_background_deploy(self, timeout: float | None = None) -> bool:
@@ -2703,7 +2785,6 @@ class RemoteFunction:
         _mark_background_deployment_observed(future)
         return True
 
-    @_instrumented("chalkcompute.function.deploy")
     def deploy(
         self,
         *,
@@ -2712,6 +2793,39 @@ class RemoteFunction:
         ready_timeout: float = 300.0,
     ) -> RemoteFunction:
         """Build the image, register the function version, and wait until running.
+
+        Parameters
+        ----------
+        poll_interval
+            Seconds between status polls.
+        build_timeout
+            Maximum seconds to wait for the image build.
+        ready_timeout
+            Maximum seconds to wait for the scaling group to become ready.
+
+        Returns
+        -------
+        RemoteFunction
+            ``self`` for chaining.
+        """
+        self._wait_for_background_deploy()
+        return self._deploy(
+            poll_interval=poll_interval,
+            build_timeout=build_timeout,
+            ready_timeout=ready_timeout,
+        )
+
+    @_instrumented("chalkcompute.function.deploy")
+    def _deploy(
+        self,
+        *,
+        poll_interval: float = 0.5,
+        build_timeout: float = 600.0,
+        ready_timeout: float = 300.0,
+    ) -> RemoteFunction:
+        """This is the deploy body without the background-deployment barrier, so
+        the decorator's own worker can call it without waiting on itself.
+        Callers other than that worker should use :meth:`deploy`.
 
         Parameters
         ----------
@@ -2973,14 +3087,17 @@ class RemoteFunction:
         FunctionError
             If the function has not been deployed or never becomes ready.
         """
-        if self._wait_for_background_deploy(timeout=timeout):
-            return self
+        deadline = time.monotonic() + timeout
+        self._wait_for_background_deploy(timeout=timeout)
         if self._version_info is None:
             raise FunctionError("No function version — call .deploy() first.")
 
         sg_name = self._version_info.scaling_group_name
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        # Poll at least once even if the deployment consumed the whole budget:
+        # a zero-poll timeout would report "not ready" without ever asking, and
+        # the deploy only waits for readiness conditionally, so the function may
+        # well be serving by now.
+        while True:
             sg = _get_scaling_group(self._client, sg_name)
             status = sg.status
             self._web_url = sg.web_url or None
@@ -2988,6 +3105,8 @@ class RemoteFunction:
                 raise FunctionError(f"Scaling group {sg_name} entered {status} state")
             if _scaling_group_is_ready(sg):
                 return self
+            if time.monotonic() >= deadline:
+                break
             time.sleep(poll_interval)
 
         raise FunctionError(

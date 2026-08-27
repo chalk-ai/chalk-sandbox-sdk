@@ -64,7 +64,7 @@ from chalkcompute._function import (
     FunctionVersionInfo,
     RemoteFunction,
     SerializationFormat,
-    _assert_stripped_source_self_contained,
+    _strip_source_for_deploy,
     _build_and_upload,
     _callable_input_names,
     _cleanup_temp_files,
@@ -1042,14 +1042,12 @@ class RemoteClass:
         source_path = Path(source_file)
 
         if _should_strip_source():
-            source = _source_text_for_deploy(source_file)
-            stripped = _strip_chalkcompute_from_class_source(source)
             entrypoint_sources: list[str] = []
             for method_info in self._methods.values():
                 entrypoint_sources.extend(_entrypoint_source(method_info.func))
-            _assert_stripped_source_self_contained(
-                source,
-                stripped,
+            stripped = _strip_source_for_deploy(
+                _source_text_for_deploy(source_file),
+                strip=_strip_chalkcompute_from_class_source,
                 label=f"Class {self._class_name!r}",
                 entrypoint_sources=entrypoint_sources,
             )

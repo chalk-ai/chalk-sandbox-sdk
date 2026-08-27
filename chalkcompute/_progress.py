@@ -131,10 +131,12 @@ class DeployProgress:
         with self._lock:
             # A completed display remains reusable so a concurrent caller that
             # obtained this singleton just before the previous operation finished
-            # cannot add rows to an orphaned tracker.
-            if not self._started and self._all_roots_terminal():
-                self._resources.clear()
-                self._order.clear()
+            # cannot add rows to an orphaned tracker. Only finished operations
+            # are dropped: clearing wholesale would also discard the children of
+            # a root that is still running, and later updates to those keys
+            # would silently no-op instead of rendering.
+            if not self._started:
+                self._discard_finished_roots()
             state = _ResourceState(kind, label)
             state.status = status
             state.detail = detail
@@ -197,6 +199,42 @@ class DeployProgress:
             self._resources[key].status in ("done", "failed", "skipped")
             for key in self._order
         )
+
+    def _discard_finished_roots(self) -> None:
+        """Drop rows belonging to top-level operations that already finished.
+
+        A root counts as finished only when every row in its subtree is
+        terminal. A root can reach ``failed`` while a child is still active
+        (see ``finish_if_idle``), and that child's later update must still
+        find its state rather than silently no-op.
+        """
+        stale: set[int] = set()
+        finished: set[str] = set()
+        for key in self._order:
+            subtree: list[_ResourceState] = []
+            pending = [self._resources[key]]
+            while pending:
+                state = pending.pop()
+                if any(state is seen for seen in subtree):
+                    continue
+                subtree.append(state)
+                pending.extend(state.children)
+            if any(
+                state.status not in ("done", "failed", "skipped") for state in subtree
+            ):
+                continue
+            finished.add(key)
+            stale.update(id(state) for state in subtree)
+
+        if not finished:
+            return
+
+        self._order = [key for key in self._order if key not in finished]
+        self._resources = {
+            key: state
+            for key, state in self._resources.items()
+            if id(state) not in stale
+        }
 
     # -- Rendering ---------------------------------------------------------
 

@@ -6,6 +6,7 @@ import subprocess
 import sys
 import textwrap
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ import pytest
 
 from chalkcompute._function import (
     FunctionBuildError,
+    FunctionError,
     FunctionVersionInfo,
     RemoteFunction,
     function,
@@ -48,7 +50,7 @@ def test_decorated_functions_start_deploying_concurrently(monkeypatch) -> None:
             deployed.append(self._func_name)
         return self
 
-    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
 
     @function
     def first(value: int) -> int:
@@ -77,7 +79,7 @@ def test_deployments_for_the_same_registered_name_stay_ordered(monkeypatch) -> N
             second_started.set()
         return self
 
-    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
 
     @function(name="shared-name")
     def first(value: int) -> int:
@@ -107,7 +109,7 @@ def test_remote_call_waits_for_background_deployment(monkeypatch) -> None:
         assert release_deploy.wait(timeout=5)
         return self
 
-    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
     _install_fake_remote_call(monkeypatch, 42)
 
     @function
@@ -139,7 +141,7 @@ def test_async_remote_call_does_not_block_the_event_loop(monkeypatch) -> None:
         assert release_deploy.wait(timeout=5)
         return self
 
-    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
     _install_fake_remote_call(monkeypatch, 42)
 
     @function
@@ -167,7 +169,7 @@ def test_local_call_does_not_wait_for_background_deployment(monkeypatch) -> None
         assert release_deploy.wait(timeout=5)
         return self
 
-    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
 
     @function
     def add_one(value: int) -> int:
@@ -185,7 +187,7 @@ def test_background_deployment_error_is_raised_by_use(monkeypatch) -> None:
     def fake_deploy(self: RemoteFunction, **_: Any) -> RemoteFunction:
         raise error
 
-    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
     _install_fake_remote_call(monkeypatch, 42)
 
     @function
@@ -217,7 +219,7 @@ def test_with_knowledge_cutoff_clones_completed_deployment_state(monkeypatch) ->
         self._web_url = "https://function.example.com"
         return self
 
-    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
 
     @function
     def add_one(value: int) -> int:
@@ -250,7 +252,7 @@ def test_explicit_deploy_after_decorator_creates_another_deployment(
             deploy_count += 1
         return self
 
-    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
 
     @function
     def add_one(value: int) -> int:
@@ -285,7 +287,7 @@ def test_definition_only_script_waits_for_all_deployments(tmp_path: Path) -> Non
                 (Path(os.environ["DEPLOY_OUTPUT_DIR"]) / self._func_name).write_text(result)
                 return self
 
-            RemoteFunction.deploy = fake_deploy
+            RemoteFunction._deploy = fake_deploy
 
             @function
             def first(value: int) -> int:
@@ -326,7 +328,7 @@ def test_definition_only_script_reports_deployment_failure(tmp_path: Path) -> No
             def fake_deploy(self, **kwargs):
                 raise RuntimeError("deployment exploded")
 
-            RemoteFunction.deploy = fake_deploy
+            RemoteFunction._deploy = fake_deploy
 
             @function
             def broken(value: int) -> int:
@@ -352,3 +354,215 @@ def test_definition_only_script_reports_deployment_failure(tmp_path: Path) -> No
     assert completed.returncode == 0
     assert "Background deployment for function 'broken' failed" in completed.stderr
     assert "RuntimeError: deployment exploded" in completed.stderr
+
+
+def _version_info(name: str) -> FunctionVersionInfo:
+    return FunctionVersionInfo(
+        id="version-1",
+        function_id="function-1",
+        function_name=name,
+        version=1,
+        scaling_group_name=f"sg-{name}",
+    )
+
+
+def test_wait_ready_polls_readiness_after_the_background_deploy(monkeypatch) -> None:
+    """The background deploy is a precondition, not a substitute for polling."""
+    polled: list[str] = []
+
+    def fake_deploy(self: RemoteFunction, **_: Any) -> RemoteFunction:
+        self._function_id = "function-1"
+        self._version_info = _version_info(self._func_name)
+        return self
+
+    class _FakeScalingGroup:
+        def __init__(self, ready: bool) -> None:
+            self.status = "Available" if ready else "Pending"
+            self.web_url = "https://function.example.com"
+            self.ready_replicas = 1 if ready else 0
+            self.available_replicas = 1 if ready else 0
+
+    def fake_get_scaling_group(_client: Any, name: str) -> Any:
+        polled.append(name)
+        return _FakeScalingGroup(ready=len(polled) >= 2)
+
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
+    monkeypatch.setattr(
+        "chalkcompute._function._get_scaling_group", fake_get_scaling_group
+    )
+    monkeypatch.setattr(
+        "chalkcompute._function._scaling_group_is_ready",
+        lambda sg, **_: sg.status == "Available",
+    )
+
+    @function
+    def add_one(value: int) -> int:
+        return value + 1
+
+    add_one.wait_ready(timeout=5.0, poll_interval=0.0)
+
+    # Two polls: the first saw Pending, so the loop was genuinely entered.
+    assert polled == ["sg-add_one", "sg-add_one"]
+
+
+def test_wait_ready_timeout_covers_readiness_not_just_the_deploy(monkeypatch) -> None:
+    """A handle that deploys but never becomes ready must raise, not succeed."""
+
+    def fake_deploy(self: RemoteFunction, **_: Any) -> RemoteFunction:
+        self._function_id = "function-1"
+        self._version_info = _version_info(self._func_name)
+        return self
+
+    class _NeverReady:
+        status = "Pending"
+        web_url = None
+        ready_replicas = 0
+        available_replicas = 0
+
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
+    monkeypatch.setattr(
+        "chalkcompute._function._get_scaling_group",
+        lambda _client, _name: _NeverReady(),
+    )
+    monkeypatch.setattr(
+        "chalkcompute._function._scaling_group_is_ready", lambda sg, **_: False
+    )
+
+    @function
+    def add_one(value: int) -> int:
+        return value + 1
+
+    with pytest.raises(FunctionError, match="not ready after"):
+        add_one.wait_ready(timeout=0.15, poll_interval=0.01)
+
+
+def test_explicit_deploy_waits_for_the_decorators_deployment(monkeypatch) -> None:
+    """``.deploy()`` must not race the decorator's deploy for the same name.
+
+    Fakes ``_deploy`` and drives the real public ``deploy`` wrapper, so the
+    barrier itself is exercised rather than replaced.
+    """
+    calls: list[int] = []
+    calls_lock = threading.Lock()
+    background_running = threading.Event()
+    release_background = threading.Event()
+
+    def fake_deploy(self: RemoteFunction, **_: Any) -> RemoteFunction:
+        with calls_lock:
+            index = len(calls)
+            calls.append(index)
+        if index == 0:
+            background_running.set()
+            assert release_background.wait(timeout=5)
+        return self
+
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
+
+    @function
+    def add_one(value: int) -> int:
+        return value + 1
+
+    assert background_running.wait(timeout=5)
+
+    manual = threading.Thread(target=add_one.deploy)
+    manual.start()
+    try:
+        # The manual deploy is parked on the barrier, so it has not entered
+        # _deploy while the decorator's deployment is still running.
+        time.sleep(0.05)
+        with calls_lock:
+            assert calls == [0], calls
+    finally:
+        release_background.set()
+        manual.join(timeout=5)
+
+    assert not manual.is_alive()
+    with calls_lock:
+        assert calls == [0, 1]
+
+
+def test_strip_mode_violation_fails_the_defining_script(tmp_path: Path) -> None:
+    """A strip-mode violation must fail the process, not exit 0 at teardown.
+
+    The guard is local and needs no network, so it runs at decoration time; a
+    definition-only deploy script therefore fails loudly instead of reporting
+    the error from an atexit hook after the process has already succeeded.
+    """
+    script = tmp_path / "strip_violation.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            import chalkcompute
+
+
+            @chalkcompute.function
+            def broken(value: int) -> int:
+                return len(chalkcompute.__name__) + value
+            """
+        )
+    )
+
+    env = os.environ.copy()
+    repo_root = Path(__file__).parents[1]
+    env["PYTHONPATH"] = os.pathsep.join([str(repo_root), env.get("PYTHONPATH", "")])
+    env["CHALK_FUNCTION_STRIP_SOURCE"] = "1"
+
+    completed = subprocess.run(
+        [sys.executable, str(script)],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert completed.returncode != 0, completed.stdout + completed.stderr
+    assert "references chalkcompute" in completed.stderr
+    # Raised inline, not deferred to the background-deployment reporter.
+
+
+def test_wait_ready_polls_once_when_the_deploy_used_the_whole_budget(
+    monkeypatch,
+) -> None:
+    """Exhausting the budget in the deploy must not skip the readiness check.
+
+    ``wait_ready`` shares one deadline across the deployment wait and the
+    readiness poll. A deployment that finishes at the very end of the budget
+    must still get one poll, otherwise a function that is already serving is
+    reported as never ready.
+    """
+    polled: list[str] = []
+
+    def fake_wait(self: RemoteFunction, timeout: float | None = None) -> bool:
+        self._function_id = "function-1"
+        self._version_info = _version_info(self._func_name)
+        if timeout:
+            # Deployment succeeds, but consumes the caller's whole budget.
+            time.sleep(timeout)
+        return True
+
+    class _Ready:
+        status = "Available"
+        web_url = "https://function.example.com"
+        ready_replicas = 1
+        available_replicas = 1
+
+    def fake_get_scaling_group(_client: Any, name: str) -> Any:
+        polled.append(name)
+        return _Ready()
+
+    monkeypatch.setattr(RemoteFunction, "_wait_for_background_deploy", fake_wait)
+    monkeypatch.setattr(
+        "chalkcompute._function._get_scaling_group", fake_get_scaling_group
+    )
+    monkeypatch.setattr(
+        "chalkcompute._function._scaling_group_is_ready", lambda sg, **_: True
+    )
+
+    def add_one(value: int) -> int:
+        return value + 1
+
+    RemoteFunction(add_one).wait_ready(timeout=0.05, poll_interval=0.0)
+
+    assert polled == ["sg-add_one"]
