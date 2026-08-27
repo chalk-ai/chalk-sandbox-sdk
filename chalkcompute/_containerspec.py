@@ -367,7 +367,6 @@ class ContainerSpec:
     secret_refs: Sequence[Secret | Mapping[str, Any]] = ()
     port: int | None = None
     lifetime: str | None = None
-    enable_ssh: bool = False
     managed_ssh: Mapping[str, SshDest] = field(default_factory=dict)
     tags: Mapping[str, str] = field(default_factory=dict)
     protocol: str | None = None
@@ -508,8 +507,6 @@ class ContainerSpec:
             spec["port"] = self.port
         if self.lifetime is not None:
             spec["lifetime"] = self.lifetime
-        if self.enable_ssh:
-            spec["enableSsh"] = True
         if self.managed_ssh:
             spec["managedSsh"] = {
                 alias: destination.to_dict()
@@ -578,7 +575,6 @@ class ContainerSpec:
                 if self.lifetime is None
                 else Duration.from_json(json.dumps(self.lifetime))
             ),
-            enable_ssh=True if self.enable_ssh else None,
             managed_ssh={
                 alias: container_pb.ManagedSshDestination(
                     host=destination.host,
