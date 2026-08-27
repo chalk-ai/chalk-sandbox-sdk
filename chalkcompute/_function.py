@@ -3100,7 +3100,10 @@ class RemoteFunction:
         timeout: float = 120.0,
         poll_interval: float = 2.0,
     ) -> RemoteFunction:
-        """Wait until the backing scaling group has at least one ready replica.
+        """Wait until the backing scaling group is ready to serve.
+
+        A ``min_replicas=0`` function counts as ready once it reaches
+        ``ScaledToZero``, matching what :meth:`deploy` waits for.
 
         Parameters
         ----------
@@ -3135,7 +3138,9 @@ class RemoteFunction:
             self._web_url = sg.web_url or None
             if status in ("Failed", "Error"):
                 raise FunctionError(f"Scaling group {sg_name} entered {status} state")
-            if _scaling_group_is_ready(sg):
+            if _scaling_group_is_ready(
+                sg, require_ready_replicas=self._min_replicas > 0
+            ):
                 return self
             if time.monotonic() >= deadline:
                 break

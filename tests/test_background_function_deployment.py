@@ -19,6 +19,7 @@ from chalkcompute._function import (
     RemoteFunction,
     function,
 )
+from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 
 
 def _install_fake_remote_call(monkeypatch: pytest.MonkeyPatch, result: Any) -> None:
@@ -617,3 +618,42 @@ def test_failed_background_deployment_still_raises_on_use(monkeypatch) -> None:
         add_one.version_info
 
     assert exc_info.value is error
+
+
+def test_wait_ready_accepts_scaled_to_zero_for_scale_to_zero_functions(
+    monkeypatch,
+) -> None:
+    """``min_replicas=0`` is ready at ScaledToZero, as ``deploy`` already treats it.
+
+    Uses a real ScalingGroupResponse so the actual readiness predicate runs.
+    """
+    polled: list[str] = []
+
+    def fake_deploy(self: RemoteFunction, **_: Any) -> RemoteFunction:
+        self._function_id = "function-1"
+        self._version_info = _version_info(self._func_name)
+        return self
+
+    def fake_get_scaling_group(_client: Any, name: str) -> Any:
+        polled.append(name)
+        return sg_pb.ScalingGroupResponse(
+            id="sg-1",
+            name=name,
+            status="ScaledToZero",
+            ready_replicas=0,
+            available_replicas=0,
+        )
+
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
+    monkeypatch.setattr(
+        "chalkcompute._function._get_scaling_group", fake_get_scaling_group
+    )
+
+    @function(min_replicas=0, max_replicas=2)
+    def idle(value: int) -> int:
+        return value
+
+    # Would otherwise burn the whole timeout and raise "not ready".
+    idle.wait_ready(timeout=0.2, poll_interval=0.01)
+
+    assert polled == ["sg-idle"]
