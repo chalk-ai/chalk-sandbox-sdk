@@ -30,6 +30,7 @@ from __future__ import annotations
 import ast
 import atexit
 import asyncio
+import contextlib
 import contextvars
 import datetime as _dt
 import functools
@@ -169,6 +170,52 @@ def _get_background_deploy_executor() -> ThreadPoolExecutor:
         return _background_deploy_executor
 
 
+def _await_deploy_predecessor(predecessor: Future[None] | None) -> None:
+    """Wait for the previous deploy of a registered name, ignoring its outcome.
+
+    The chain exists to order version selection, not to propagate failures: a
+    deploy that inherited its predecessor's exception would never run its own
+    attempt, and would report an error belonging to someone else's.
+    """
+    if predecessor is None:
+        return
+    try:
+        predecessor.result()
+    except Exception:
+        pass
+
+
+@contextlib.contextmanager
+def _manual_deploy_slot(registered_name: str) -> typing.Iterator[None]:
+    """Hold a caller-initiated deploy's place in its registered name's chain.
+
+    Without a slot a manual ``deploy()`` is invisible to the chain, so a
+    function decorated while one is in flight would select a version
+    concurrently with it.
+
+    Publishing and releasing are paired in one context manager because
+    everything after publication must release: waiting on the predecessor can
+    raise something ``_await_deploy_predecessor`` deliberately does not swallow
+    (a ``KeyboardInterrupt``, say), and an unreleased barrier would block every
+    later deploy of that name forever — including at interpreter exit, where
+    the executor shutdown waits on queued deployments.
+    """
+    barrier: Future[None] = Future()
+    barrier.set_running_or_notify_cancel()
+    with _background_deployments_lock:
+        predecessor = _background_deployment_tails.get(registered_name)
+        _background_deployment_tails[registered_name] = barrier
+    try:
+        _await_deploy_predecessor(predecessor)
+        yield
+    finally:
+        with _background_deployments_lock:
+            if _background_deployment_tails.get(registered_name) is barrier:
+                _background_deployment_tails.pop(registered_name, None)
+        if not barrier.done():
+            barrier.set_result(None)
+
+
 def _schedule_background_deployment(function: RemoteFunction) -> Future[None]:
     """Schedule one decorator-triggered deployment and return its barrier.
 
@@ -184,9 +231,8 @@ def _schedule_background_deployment(function: RemoteFunction) -> Future[None]:
         predecessor = _background_deployment_tails.get(registered_name)
 
         def run() -> None:
-            if predecessor is not None:
-                predecessor.result()
-            context.run(function.deploy)
+            _await_deploy_predecessor(predecessor)
+            context.run(function._deploy)
 
         future = executor.submit(run)
         _background_deployment_tails[registered_name] = future
@@ -217,22 +263,44 @@ def _shutdown_background_deploy_executor() -> None:
 
 
 def _report_unobserved_background_deployments() -> None:
-    """Print failures from definition-only deploy scripts at process exit."""
+    """Report failures from definition-only deploy scripts and fail the process.
+
+    A script that only defines functions never touches a handle, so nothing
+    would otherwise surface a failed deployment and the process would exit
+    successfully on code that cannot serve.
+    """
     with _background_deployments_lock:
         deployments = list(_unobserved_background_deployments.items())
         _unobserved_background_deployments.clear()
 
+    failed = False
     for future, registered_name in deployments:
         if not future.done() or future.cancelled():
             continue
         error = future.exception()
         if error is None:
             continue
+        failed = True
         print(
             f"Background deployment for function {registered_name!r} failed:",
             file=sys.stderr,
         )
         traceback.print_exception(error, file=sys.stderr)
+
+    if not failed:
+        return
+
+    # An atexit callback cannot set the exit status the ordinary way: SystemExit
+    # raised here is reported as "Exception ignored" and the process still exits
+    # 0. os._exit can, at the cost of skipping atexit callbacks registered
+    # before this module was imported, so flush what those would have flushed.
+    # Callbacks run newest-first and this one is registered at import, so
+    # anything registered later (the OTel provider shutdown in _tracing, say)
+    # has already run.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    logging.shutdown()
+    os._exit(1)
 
 
 # ``ThreadPoolExecutor`` registers its own callback through this hook. Callbacks
@@ -1358,11 +1426,11 @@ def _prepare_package_dir(
         return package_dir, False
 
     original = _source_text_for_deploy(entrypoint_file)
-    _assert_stripped_source_self_contained(
+    _strip_source_for_deploy(
         original,
-        _strip_chalkcompute_for_package(original),
+        strip=_strip_chalkcompute_for_package,
         label=label,
-        entrypoint_sources=list(entrypoint_sources),
+        entrypoint_sources=entrypoint_sources,
     )
 
     temp_dir = tempfile.mkdtemp(prefix="chalkfn_pkg_")
@@ -1572,14 +1640,93 @@ def _prepare_source_file(
         return _write_temp(_source_text_for_deploy(source_file)), True
 
     source = _source_text_for_deploy(source_file)
-    stripped = _strip_chalkcompute_from_source(source)
+    stripped = _strip_source_for_deploy(
+        source,
+        strip=_strip_chalkcompute_from_source,
+        label=label or f"Function source {source_file!r}",
+        entrypoint_sources=entrypoint_sources or [],
+    )
+    return _write_temp(stripped), True
+
+
+def _strip_source_for_deploy(
+    source: str,
+    *,
+    strip: Callable[[str], str],
+    label: str,
+    entrypoint_sources: typing.Sequence[str],
+) -> str:
+    """Strip chalkcompute from ``source`` and assert the result is usable.
+
+    Stripping and validating are paired here so no deploy surface can do one
+    without the other. Callers pass the strip pass their deploy mode uses:
+    ``_strip_chalkcompute_from_source`` for a single function file,
+    ``_strip_chalkcompute_for_package`` for a package (function + class passes),
+    ``_strip_chalkcompute_from_class_source`` for a ``@cls`` file. The passes
+    remove different name sets, so a mismatch would let a real violation
+    through.
+
+    Parameters
+    ----------
+    source
+        Original source text of the file being deployed.
+    strip
+        Strip pass matching the caller's deploy mode.
+    label
+        Human-readable identifier used in the guard's error message.
+    entrypoint_sources
+        Source of the deployed function(s)/method(s) whose bodies the guard
+        inspects for dangling chalkcompute references.
+
+    Returns
+    -------
+    str
+        The stripped source.
+    """
+    stripped = strip(source)
     _assert_stripped_source_self_contained(
         source,
         stripped,
-        label=label or f"Function source {source_file!r}",
-        entrypoint_sources=list(entrypoint_sources or []),
+        label=label,
+        entrypoint_sources=list(entrypoint_sources),
     )
-    return _write_temp(stripped), True
+    return stripped
+
+
+def _assert_strip_mode_self_contained(func: Callable[..., Any], *, label: str) -> None:
+    """Run the strip-mode guard without building anything.
+
+    The guard is a pure function of the source text and
+    ``CHALK_FUNCTION_STRIP_SOURCE``, so it can run before a deploy is even
+    scheduled. Callers use this to keep a strip-mode violation a synchronous
+    error on the defining thread rather than a background-thread failure that a
+    definition-only script only reports at interpreter exit — by which point the
+    process has already exited successfully.
+
+    ``@cls`` needs no equivalent: its decorator deploys synchronously, so its
+    guard already raises on the defining thread.
+
+    Parameters
+    ----------
+    func
+        The undecorated user function about to be deployed.
+    label
+        Human-readable identifier used in the guard's error message.
+    """
+    if not _should_strip_source():
+        return
+
+    package_dir = _package_dir_for_module(_deploy_module_name(func))
+    _strip_source_for_deploy(
+        _source_text_for_deploy(_source_file_for_deploy(func)),
+        strip=(
+            _strip_chalkcompute_for_package
+            if package_dir is not None
+            else _strip_chalkcompute_from_source
+        ),
+        label=label,
+        entrypoint_sources=_entrypoint_source(func),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2680,6 +2827,9 @@ class RemoteFunction:
             raise FunctionError(
                 f"Background deployment already started for {self._func_name!r}"
             )
+        _assert_strip_mode_self_contained(
+            self._func, label=f"Function {self._func_name!r}"
+        )
         self._background_deploy_future = _schedule_background_deployment(self)
 
     def _wait_for_background_deploy(self, timeout: float | None = None) -> bool:
@@ -2703,7 +2853,36 @@ class RemoteFunction:
         _mark_background_deployment_observed(future)
         return True
 
-    @_instrumented("chalkcompute.function.deploy")
+    def _settle_background_deploy(self) -> None:
+        """Wait for the decorator's deployment, then release this handle from it.
+
+        Used by :meth:`deploy`, which is a caller-initiated retry: it must
+        serialize behind the decorator's attempt so both do not select versions
+        of the same registered name concurrently, but it must not inherit that
+        attempt's failure. A stored exception would otherwise be re-raised on
+        every later ``.deploy()`` — the future is never reset — leaving the
+        handle permanently unable to retry.
+
+        The future is cleared either way, so a successful retry also leaves a
+        clean handle instead of one whose ``.remote()`` still re-raises the old
+        build error.
+        """
+        future = self._background_deploy_future
+        if future is None:
+            return
+        try:
+            future.result()
+        except Exception as exc:
+            logger.warning(
+                "Background deployment for function '%s' failed (%s); "
+                "retrying with an explicit deploy.",
+                self._explicit_name or self._func_name,
+                exc,
+            )
+        finally:
+            _mark_background_deployment_observed(future)
+            self._background_deploy_future = None
+
     def deploy(
         self,
         *,
@@ -2711,7 +2890,43 @@ class RemoteFunction:
         build_timeout: float = 600.0,
         ready_timeout: float = 300.0,
     ) -> RemoteFunction:
+        """Build a new version, register it, and wait until it is running.
+
+        Parameters
+        ----------
+        poll_interval
+            Seconds between status polls.
+        build_timeout
+            Maximum seconds to wait for the image build.
+        ready_timeout
+            Maximum seconds to wait for the scaling group to become ready.
+
+        Returns
+        -------
+        RemoteFunction
+            ``self`` for chaining.
+        """
+        self._settle_background_deploy()
+        with _manual_deploy_slot(self._explicit_name or self._func_name):
+            return self._deploy(
+                poll_interval=poll_interval,
+                build_timeout=build_timeout,
+                ready_timeout=ready_timeout,
+            )
+
+    @_instrumented("chalkcompute.function.deploy")
+    def _deploy(
+        self,
+        *,
+        poll_interval: float = 0.5,
+        build_timeout: float = 600.0,
+        ready_timeout: float = 300.0,
+    ) -> RemoteFunction:
         """Build the image, register the function version, and wait until running.
+
+        This is the deploy body without the background-deployment barrier, so
+        the decorator's own worker can call it without waiting on itself.
+        Callers other than that worker should use :meth:`deploy`.
 
         Parameters
         ----------
@@ -2948,13 +3163,34 @@ class RemoteFunction:
             message = f"{message}: {status_message}"
         raise FunctionError(message)
 
+    def _requires_ready_replicas(self, sg: Any) -> bool:
+        """Whether readiness demands a live replica for this scaling group.
+
+        Prefers the server's own spec over the local ``min_replicas``: a handle
+        from ``from_name``/``from_id`` never learns the deployed value, so
+        trusting the local default would demand a replica from a scale-to-zero
+        function that will never have one.
+
+        ``spec`` is a ``ScalingGroupSpec`` wrapper and both it and its nested
+        ``scaling_spec`` are optional, so each level is checked before use.
+        """
+        if isinstance(sg, sg_pb.ScalingGroupResponse) and sg.has_field("spec"):
+            group_spec = sg.spec
+            scaling_spec = None if group_spec is None else group_spec.scaling_spec
+            if scaling_spec is not None:
+                return scaling_spec.min_replicas > 0
+        return self._min_replicas > 0
+
     def wait_ready(
         self,
         *,
         timeout: float = 120.0,
         poll_interval: float = 2.0,
     ) -> RemoteFunction:
-        """Wait until the backing scaling group has at least one ready replica.
+        """Wait until the backing scaling group is ready to serve.
+
+        A ``min_replicas=0`` function counts as ready once it reaches
+        ``ScaledToZero``, matching what :meth:`deploy` waits for.
 
         Parameters
         ----------
@@ -2973,21 +3209,28 @@ class RemoteFunction:
         FunctionError
             If the function has not been deployed or never becomes ready.
         """
-        if self._wait_for_background_deploy(timeout=timeout):
-            return self
+        deadline = time.monotonic() + timeout
+        self._wait_for_background_deploy(timeout=timeout)
         if self._version_info is None:
             raise FunctionError("No function version — call .deploy() first.")
 
         sg_name = self._version_info.scaling_group_name
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        # Poll at least once even if the deployment consumed the whole budget:
+        # a zero-poll timeout would report "not ready" without ever asking, and
+        # the deploy only waits for readiness conditionally, so the function may
+        # well be serving by now.
+        while True:
             sg = _get_scaling_group(self._client, sg_name)
             status = sg.status
             self._web_url = sg.web_url or None
             if status in ("Failed", "Error"):
                 raise FunctionError(f"Scaling group {sg_name} entered {status} state")
-            if _scaling_group_is_ready(sg):
+            if _scaling_group_is_ready(
+                sg, require_ready_replicas=self._requires_ready_replicas(sg)
+            ):
                 return self
+            if time.monotonic() >= deadline:
+                break
             time.sleep(poll_interval)
 
         raise FunctionError(

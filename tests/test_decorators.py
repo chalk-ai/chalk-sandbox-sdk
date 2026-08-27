@@ -44,7 +44,7 @@ def test_function_decorator_accepts_called_and_uncalled_forms(
         deployed.append(self)
         return self
 
-    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
 
     @function
     def bare(x: int) -> int:
@@ -58,7 +58,9 @@ def test_function_decorator_accepts_called_and_uncalled_forms(
     called._wait_for_background_deploy()
     assert isinstance(bare, RemoteFunction)
     assert isinstance(called, RemoteFunction)
-    assert [deployed_fn._func_name for deployed_fn in deployed] == ["bare", "called"]
+    # Distinct registered names deploy concurrently, so completion order is
+    # not deterministic — assert on membership rather than sequence.
+    assert {deployed_fn._func_name for deployed_fn in deployed} == {"bare", "called"}
 
 
 def test_function_decorator_passes_schedule(
@@ -70,7 +72,7 @@ def test_function_decorator_passes_schedule(
         deployed.append(self)
         return self
 
-    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
 
     @function(schedule=" 1h ")
     def scheduled() -> None:
@@ -90,7 +92,7 @@ def test_function_decorator_passes_tracing(
         deployed.append(self)
         return self
 
-    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
 
     @function(tracing=True)
     def traced_function() -> None:
@@ -620,7 +622,7 @@ def test_function_accepts_string_env_values(
         deployed.append(self)
         return self
 
-    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
 
     @function(env={"OPENAI_API_KEY": "sk-test"})
     def fn(x: int) -> int:
