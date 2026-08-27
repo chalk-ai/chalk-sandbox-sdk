@@ -7,6 +7,7 @@ import sys
 import textwrap
 import threading
 import time
+from concurrent.futures import Future
 from pathlib import Path
 from typing import Any
 
@@ -660,15 +661,33 @@ def test_wait_ready_accepts_scaled_to_zero_for_scale_to_zero_functions(
     assert polled == ["sg-idle"]
 
 
-def _scaling_group(name: str, *, status: str, min_replicas: int) -> Any:
-    return sg_pb.ScalingGroupResponse(
+def _scaling_group(
+    name: str, *, status: str, min_replicas: int | None = 0
+) -> sg_pb.ScalingGroupResponse:
+    """Build a scaling-group response with the real nested spec shape.
+
+    ``min_replicas=None`` omits ``scaling_spec`` entirely, covering a server
+    that reports a group spec without scaling details.
+
+    The result is round-tripped through the wire format on purpose: the
+    generated setters accept a wrongly-typed message, so a fake built by
+    assignment alone can diverge from what a server actually sends and hide an
+    AttributeError in the code under test.
+    """
+    spec = sg_pb.ScalingGroupSpec()
+    if min_replicas is not None:
+        spec = sg_pb.ScalingGroupSpec(
+            scaling_spec=sg_pb.ScalingSpec(min_replicas=min_replicas, max_replicas=2)
+        )
+    response = sg_pb.ScalingGroupResponse(
         id="sg-1",
         name=name,
         status=status,
         ready_replicas=0,
         available_replicas=0,
-        spec=sg_pb.ScalingSpec(min_replicas=min_replicas, max_replicas=2),
+        spec=spec,
     )
+    return sg_pb.ScalingGroupResponse.from_binary(response.to_binary())
 
 
 def test_wait_ready_trusts_the_servers_min_replicas_over_the_local_default(
@@ -769,3 +788,69 @@ def test_a_new_decorator_queues_behind_an_in_flight_manual_deploy(
 
     replacement._wait_for_background_deploy()
     assert order == ["manual:start", "manual:end", "decorator"]
+
+
+def test_wait_ready_falls_back_when_the_group_reports_no_scaling_spec(
+    monkeypatch,
+) -> None:
+    """``spec`` and its nested ``scaling_spec`` are both optional."""
+
+    def fake_get_scaling_group(_client: Any, name: str) -> Any:
+        return _scaling_group(name, status="ScaledToZero", min_replicas=None)
+
+    monkeypatch.setattr(
+        "chalkcompute._function._get_scaling_group", fake_get_scaling_group
+    )
+
+    def busy(value: int) -> int:
+        return value
+
+    fn = RemoteFunction(busy)
+    fn._version_info = _version_info("busy")
+
+    # Nothing authoritative to read, so the local default (1) still applies.
+    with pytest.raises(FunctionError, match="not ready after"):
+        fn.wait_ready(timeout=0.05, poll_interval=0.01)
+
+
+def test_interrupted_manual_deploy_releases_its_slot(monkeypatch) -> None:
+    """An interrupt while queued must not strand the chain for that name."""
+    import chalkcompute._function as fn_module
+
+    name = "interrupted-name"
+    predecessor: Future[None] = Future()
+    predecessor.set_running_or_notify_cancel()
+    # _await_deploy_predecessor deliberately swallows Exception, not BaseException.
+    predecessor.set_exception(KeyboardInterrupt())
+
+    with fn_module._background_deployments_lock:
+        fn_module._background_deployment_tails[name] = predecessor
+
+    monkeypatch.setattr(RemoteFunction, "_deploy", lambda self, **_: self)
+
+    def target(value: int) -> int:
+        return value
+
+    handle = RemoteFunction(target, name=name)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            handle.deploy()
+
+        with fn_module._background_deployments_lock:
+            leftover = fn_module._background_deployment_tails.get(name)
+        assert leftover is None or leftover.done(), "left an unreleased barrier"
+
+        # A later deploy for the same name completes instead of blocking.
+        finished = threading.Event()
+
+        def later() -> None:
+            handle.deploy()
+            finished.set()
+
+        thread = threading.Thread(target=later)
+        thread.start()
+        assert finished.wait(timeout=5), "later deploy blocked on a stranded barrier"
+        thread.join(timeout=5)
+    finally:
+        with fn_module._background_deployments_lock:
+            fn_module._background_deployment_tails.pop(name, None)

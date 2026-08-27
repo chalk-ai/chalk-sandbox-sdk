@@ -30,6 +30,7 @@ from __future__ import annotations
 import ast
 import atexit
 import asyncio
+import contextlib
 import contextvars
 import datetime as _dt
 import functools
@@ -184,29 +185,35 @@ def _await_deploy_predecessor(predecessor: Future[None] | None) -> None:
         pass
 
 
-def _register_manual_deploy(registered_name: str) -> Future[None]:
-    """Publish a caller-initiated deploy as the tail for its registered name.
+@contextlib.contextmanager
+def _manual_deploy_slot(registered_name: str) -> typing.Iterator[None]:
+    """Hold a caller-initiated deploy's place in its registered name's chain.
 
-    Without this a manual ``deploy()`` is invisible to the chain, so a function
-    decorated while one is in flight would select a version concurrently with
-    it. Returns a barrier to complete with :func:`_finish_manual_deploy`.
+    Without a slot a manual ``deploy()`` is invisible to the chain, so a
+    function decorated while one is in flight would select a version
+    concurrently with it.
+
+    Publishing and releasing are paired in one context manager because
+    everything after publication must release: waiting on the predecessor can
+    raise something ``_await_deploy_predecessor`` deliberately does not swallow
+    (a ``KeyboardInterrupt``, say), and an unreleased barrier would block every
+    later deploy of that name forever — including at interpreter exit, where
+    the executor shutdown waits on queued deployments.
     """
     barrier: Future[None] = Future()
     barrier.set_running_or_notify_cancel()
     with _background_deployments_lock:
         predecessor = _background_deployment_tails.get(registered_name)
         _background_deployment_tails[registered_name] = barrier
-    _await_deploy_predecessor(predecessor)
-    return barrier
-
-
-def _finish_manual_deploy(registered_name: str, barrier: Future[None]) -> None:
-    """Release anything queued behind a caller-initiated deploy."""
-    with _background_deployments_lock:
-        if _background_deployment_tails.get(registered_name) is barrier:
-            _background_deployment_tails.pop(registered_name, None)
-    if not barrier.done():
-        barrier.set_result(None)
+    try:
+        _await_deploy_predecessor(predecessor)
+        yield
+    finally:
+        with _background_deployments_lock:
+            if _background_deployment_tails.get(registered_name) is barrier:
+                _background_deployment_tails.pop(registered_name, None)
+        if not barrier.done():
+            barrier.set_result(None)
 
 
 def _schedule_background_deployment(function: RemoteFunction) -> Future[None]:
@@ -2900,16 +2907,12 @@ class RemoteFunction:
             ``self`` for chaining.
         """
         self._settle_background_deploy()
-        registered_name = self._explicit_name or self._func_name
-        barrier = _register_manual_deploy(registered_name)
-        try:
+        with _manual_deploy_slot(self._explicit_name or self._func_name):
             return self._deploy(
                 poll_interval=poll_interval,
                 build_timeout=build_timeout,
                 ready_timeout=ready_timeout,
             )
-        finally:
-            _finish_manual_deploy(registered_name, barrier)
 
     @_instrumented("chalkcompute.function.deploy")
     def _deploy(
@@ -3167,13 +3170,15 @@ class RemoteFunction:
         from ``from_name``/``from_id`` never learns the deployed value, so
         trusting the local default would demand a replica from a scale-to-zero
         function that will never have one.
+
+        ``spec`` is a ``ScalingGroupSpec`` wrapper and both it and its nested
+        ``scaling_spec`` are optional, so each level is checked before use.
         """
-        if (
-            isinstance(sg, sg_pb.ScalingGroupResponse)
-            and sg.has_field("spec")
-            and sg.spec is not None
-        ):
-            return sg.spec.min_replicas > 0
+        if isinstance(sg, sg_pb.ScalingGroupResponse) and sg.has_field("spec"):
+            group_spec = sg.spec
+            scaling_spec = None if group_spec is None else group_spec.scaling_spec
+            if scaling_spec is not None:
+                return scaling_spec.min_replicas > 0
         return self._min_replicas > 0
 
     def wait_ready(
