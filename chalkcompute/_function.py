@@ -2824,13 +2824,6 @@ class RemoteFunction:
     ) -> RemoteFunction:
         """Build a new version, register it, and wait until it is running.
 
-        For handles returned by :func:`function`, the decorator's background
-        deployment settles first, so an explicit ``.deploy()`` appends another
-        version deterministically instead of racing the automatic one for the
-        same registered name. If that background attempt failed, its error is
-        logged and dropped rather than re-raised: an explicit ``.deploy()`` is a
-        fresh attempt, and only its own outcome is reported.
-
         Parameters
         ----------
         poll_interval
