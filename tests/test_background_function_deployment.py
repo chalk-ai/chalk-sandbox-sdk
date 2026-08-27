@@ -566,3 +566,54 @@ def test_wait_ready_polls_once_when_the_deploy_used_the_whole_budget(
     RemoteFunction(add_one).wait_ready(timeout=0.05, poll_interval=0.0)
 
     assert polled == ["sg-add_one"]
+
+
+def test_explicit_deploy_retries_after_a_failed_background_deployment(
+    monkeypatch,
+) -> None:
+    """A failed decorator deployment must not poison later explicit deploys."""
+    attempts: list[int] = []
+    attempts_lock = threading.Lock()
+
+    def fake_deploy(self: RemoteFunction, **_: Any) -> RemoteFunction:
+        with attempts_lock:
+            attempt = len(attempts)
+            attempts.append(attempt)
+        if attempt == 0:
+            raise FunctionBuildError("transient image failure")
+        self._function_id = "function-1"
+        self._version_info = _version_info(self._func_name)
+        return self
+
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
+
+    @function
+    def add_one(value: int) -> int:
+        return value + 1
+
+    # The background attempt failed; an explicit deploy is a fresh attempt.
+    add_one.deploy()
+
+    with attempts_lock:
+        assert attempts == [0, 1]
+    # The handle is no longer bound to the failed attempt, so ordinary use works.
+    assert add_one.function_id == "function-1"
+
+
+def test_failed_background_deployment_still_raises_on_use(monkeypatch) -> None:
+    """Retry is scoped to deploy(); other call sites keep the real error."""
+    error = FunctionBuildError("image failed")
+
+    def fake_deploy(self: RemoteFunction, **_: Any) -> RemoteFunction:
+        raise error
+
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
+
+    @function
+    def add_one(value: int) -> int:
+        return value + 1
+
+    with pytest.raises(FunctionBuildError) as exc_info:
+        add_one.version_info
+
+    assert exc_info.value is error

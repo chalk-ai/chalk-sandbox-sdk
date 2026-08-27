@@ -2785,6 +2785,36 @@ class RemoteFunction:
         _mark_background_deployment_observed(future)
         return True
 
+    def _settle_background_deploy(self) -> None:
+        """Wait for the decorator's deployment, then release this handle from it.
+
+        Used by :meth:`deploy`, which is a caller-initiated retry: it must
+        serialize behind the decorator's attempt so both do not select versions
+        of the same registered name concurrently, but it must not inherit that
+        attempt's failure. A stored exception would otherwise be re-raised on
+        every later ``.deploy()`` — the future is never reset — leaving the
+        handle permanently unable to retry.
+
+        The future is cleared either way, so a successful retry also leaves a
+        clean handle instead of one whose ``.remote()`` still re-raises the old
+        build error.
+        """
+        future = self._background_deploy_future
+        if future is None:
+            return
+        try:
+            future.result()
+        except Exception as exc:
+            logger.warning(
+                "Background deployment for function '%s' failed (%s); "
+                "retrying with an explicit deploy.",
+                self._explicit_name or self._func_name,
+                exc,
+            )
+        finally:
+            _mark_background_deployment_observed(future)
+            self._background_deploy_future = None
+
     def deploy(
         self,
         *,
@@ -2792,7 +2822,14 @@ class RemoteFunction:
         build_timeout: float = 600.0,
         ready_timeout: float = 300.0,
     ) -> RemoteFunction:
-        """Build the image, register the function version, and wait until running.
+        """Build a new version, register it, and wait until it is running.
+
+        For handles returned by :func:`function`, the decorator's background
+        deployment settles first, so an explicit ``.deploy()`` appends another
+        version deterministically instead of racing the automatic one for the
+        same registered name. If that background attempt failed, its error is
+        logged and dropped rather than re-raised: an explicit ``.deploy()`` is a
+        fresh attempt, and only its own outcome is reported.
 
         Parameters
         ----------
@@ -2808,7 +2845,7 @@ class RemoteFunction:
         RemoteFunction
             ``self`` for chaining.
         """
-        self._wait_for_background_deploy()
+        self._settle_background_deploy()
         return self._deploy(
             poll_interval=poll_interval,
             build_timeout=build_timeout,
@@ -2823,7 +2860,9 @@ class RemoteFunction:
         build_timeout: float = 600.0,
         ready_timeout: float = 300.0,
     ) -> RemoteFunction:
-        """This is the deploy body without the background-deployment barrier, so
+        """Build the image, register the function version, and wait until running.
+
+        This is the deploy body without the background-deployment barrier, so
         the decorator's own worker can call it without waiting on itself.
         Callers other than that worker should use :meth:`deploy`.
 
