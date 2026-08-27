@@ -703,7 +703,6 @@ class Container:
         port: int | None = None,
         entrypoint: list[str] | None = None,
         lifetime: str | None = None,
-        enable_ssh: bool = False,
         security_policy: ContainerSecurityPolicy | None = None,
         network_policy: NetworkPolicy | None = None,
         compute_class: ComputeClass | None = None,
@@ -762,7 +761,6 @@ class Container:
                     "(e.g. '30s', '5m')."
                 )
         self._lifetime = lifetime
-        self._enable_ssh = enable_ssh
         self._security_policy = security_policy
         self._network_policy = network_policy
         self._compute_class = compute_class
@@ -875,7 +873,6 @@ class Container:
         c._port = None
         c._entrypoint = None
         c._lifetime = None
-        c._enable_ssh = False
         c._security_policy = None
         c._network_policy = None
         c._tags = {}
@@ -1137,7 +1134,6 @@ class Container:
                 secret_refs=resolved_secrets,
                 port=self._port,
                 lifetime=self._lifetime,
-                enable_ssh=self._enable_ssh,
                 security_policy=self._security_policy,
                 network_policy=self._network_policy,
                 compute_class=self._compute_class,
