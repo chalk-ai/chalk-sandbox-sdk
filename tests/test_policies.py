@@ -497,6 +497,19 @@ class _MethodCls:
         return x
 
 
+def test_remote_function_gpu_trigger_allowed_when_disabled():
+    def run(x: int) -> int:
+        return x
+
+    RemoteFunction(
+        run,
+        gpu="nvidia-l4",
+        min_replicas=0,
+        max_replicas=0,
+        target_gpu_utilization_percentage=70,
+    )
+
+
 class TestRemoteClassReplicaValidation:
     def test_min_greater_than_max_rejected(self):
         with pytest.raises(ValueError, match="min_replicas.*must be.*max_replicas"):
@@ -519,6 +532,15 @@ class TestRemoteClassReplicaValidation:
 
     def test_min_less_than_max_accepted(self):
         RemoteClass(_MethodCls, min_replicas=1, max_replicas=4)
+
+    def test_gpu_trigger_allowed_when_disabled(self):
+        RemoteClass(
+            _MethodCls,
+            gpu="nvidia-l4",
+            min_replicas=0,
+            max_replicas=0,
+            target_gpu_utilization_percentage=70,
+        )
 
 
 class TestScalingGroupPortValidation:

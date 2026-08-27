@@ -111,3 +111,20 @@ def test_gpu_target_with_scale_to_zero_rejected() -> None:
             min_replicas=0,
             target_gpu_utilization_percentage=70,
         )
+
+
+def test_gpu_target_allowed_while_group_is_disabled() -> None:
+    sg = ScalingGroup(
+        image="ubuntu:latest",
+        name="sg-gpu-disabled",
+        gpu="nvidia-l4",
+        min_replicas=0,
+        max_replicas=0,
+        target_gpu_utilization_percentage=70,
+    )
+
+    scaling_spec = _deployed_scaling_spec(sg)
+    assert scaling_spec.min_replicas == 0
+    assert scaling_spec.max_replicas == 0
+    assert scaling_spec.gpu_utilization_trigger is not None
+    assert scaling_spec.gpu_utilization_trigger.target_utilization_percentage == 70
