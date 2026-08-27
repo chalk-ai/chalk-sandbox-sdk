@@ -328,7 +328,7 @@ class ScalingGroup:
                 )
             # The utilization series only exists while replicas do, so a group that
             # may reach zero would deactivate and never see a sample to scale back up.
-            if min_replicas < 1:
+            if min_replicas < 1 and max_replicas != 0:
                 raise ValueError(
                     "target_gpu_utilization_percentage requires min_replicas >= 1, "
                     f"got {min_replicas}"
