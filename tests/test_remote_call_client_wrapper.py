@@ -10,6 +10,7 @@ import chalkcompute._remote_call_client as remote_call_client
 from chalkcompute._remote_call_client import (
     RemoteCallClient,
     RemoteCallClientUnavailable,
+    RemoteCallTransportError,
     RemoteCallUnavailableError,
 )
 
@@ -102,6 +103,11 @@ def test_legacy_native_call_shape_still_works_without_per_call_metadata() -> Non
         ("call_ipc", "handler", b"in"),
         ("enqueue", "pkg.fn", b"in"),
     ]
+
+
+def test_remote_call_errors_remain_runtime_errors() -> None:
+    assert issubclass(RemoteCallUnavailableError, RuntimeError)
+    assert issubclass(RemoteCallTransportError, RuntimeError)
 
 
 def test_call_ipc_retries_unavailable(monkeypatch) -> None:
