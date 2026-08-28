@@ -23,9 +23,7 @@ def test_orchestrate() -> None:
     embed_name = build_scoped_name("ex-embed-orchestrated")
     orchestrate_name = build_scoped_name("ex-orchestrate")
     try:
-        _deploy_script(
-            "embedding-function", "embed.py", function_name=embed_name
-        )
+        _deploy_script("embedding-function", "embed.py", function_name=embed_name)
         _deploy_script(
             "embedding-function",
             "orchestrate.py",
@@ -39,9 +37,7 @@ def test_orchestrate() -> None:
         assert len(embeddings) == 2, f"Expected 2 embeddings, got {len(embeddings)}"
         for i, emb in enumerate(embeddings):
             assert isinstance(emb, list), f"Embedding {i} is not a list"
-            assert len(emb) == 1536, (
-                f"Embedding {i} has {len(emb)} dims, expected 1536"
-            )
+            assert len(emb) == 1536, f"Embedding {i} has {len(emb)} dims, expected 1536"
             assert all(isinstance(v, float) for v in emb), (
                 f"Embedding {i} has non-float values"
             )
@@ -56,9 +52,7 @@ def test_embed_direct_call() -> None:
     """Deploy embed, then call it directly from a local client."""
     function_name = build_scoped_name("ex-embed-direct")
     try:
-        _deploy_script(
-            "embedding-function", "embed.py", function_name=function_name
-        )
+        _deploy_script("embedding-function", "embed.py", function_name=function_name)
 
         fn = chalkcompute.RemoteFunction.from_name(function_name)
         embedding = fn.remote("hello")
