@@ -123,6 +123,7 @@ if TYPE_CHECKING:
 SerializationFormat = typing.Literal["pyarrow"]
 F = TypeVar("F", bound=Callable[..., Any])
 _RemoteCallResult = TypeVar("_RemoteCallResult")
+
 KnowledgeCutoff = str | _dt.datetime
 
 _REMOTE_ENV_VAR = "CHALK_REMOTE_FUNCTION"
@@ -139,6 +140,10 @@ _STRIP_SOURCE_ENV_VAR = _local_dev._STRIP_SOURCE_ENV_VAR
 # When enabled, route __call__ through the API server's CallExternalFunction
 # RPC instead of connecting directly to the scaling group's web URL.
 _CALL_VIA_API_ENV_VAR = "CHALK_FUNCTION_CALL_VIA_API"
+
+
+def _remote_function_startup_probe() -> dict[str, dict[str, object]]:
+    return {"grpc": {}}
 
 
 # ---------------------------------------------------------------------------
@@ -963,6 +968,10 @@ def _is_retryable_stale_remote_call_error_message(message: str | None) -> bool:
 
 
 def _is_stale_remote_call_error(error: BaseException) -> bool:
+    from chalkcompute._remote_call_client import RemoteCallTransportError
+
+    if isinstance(error, RemoteCallTransportError):
+        return True
     if isinstance(error, ConnectRpcError) and error.code == Code.UNAVAILABLE:
         return True
     code_fn = getattr(error, "code", None)
@@ -3017,6 +3026,7 @@ class RemoteFunction:
                 secret_refs=resolved_secrets,
                 port=6666,
                 protocol="grpc",
+                startup_probe=_remote_function_startup_probe(),
             ).to_proto()
             spec = sg_pb.ScalingGroupSpec(
                 container_spec=container_spec,
@@ -3462,8 +3472,21 @@ class RemoteFunction:
                 feather_stream=feather_bytes,
             )
 
-        responses = list(
-            self._call_stub.call_function(requests(), headers=dict(metadata))
+        from chalkcompute._remote_call_client import (
+            _is_retryable_unavailable_in_place,
+            _retry_direct_call,
+        )
+
+        responses = _retry_direct_call(
+            function_name,
+            lambda: list(
+                self._call_stub.call_function(requests(), headers=dict(metadata))
+            ),
+            lambda error: (
+                isinstance(error, ConnectRpcError)
+                and error.code == Code.UNAVAILABLE
+                and _is_retryable_unavailable_in_place(error)
+            ),
         )
         return [resp.feather_stream for resp in responses]
 
@@ -3490,17 +3513,26 @@ class RemoteFunction:
         return client.call_ipc(function_name, feather_bytes, metadata=metadata)
 
     def _call_direct_chunks(self, feather_bytes: bytes) -> list[bytes]:
+        from chalkcompute._remote_call_client import (
+            RemoteCallTransportError,
+            _retry_direct_call,
+        )
+
         function_name = self._queue_function_name()
         metadata = self._per_call_metadata()
-        return self._with_remote_call_transport(
-            queue=False,
-            operation="direct call",
-            retry_stale=_is_retryable_stale_remote_call_error,
-            call=lambda: self._call_direct_chunks_once(
-                feather_bytes,
-                function_name,
-                metadata,
+        return _retry_direct_call(
+            function_name,
+            lambda: self._with_remote_call_transport(
+                queue=False,
+                operation="direct call",
+                retry_stale=_is_retryable_stale_remote_call_error,
+                call=lambda: self._call_direct_chunks_once(
+                    feather_bytes,
+                    function_name,
+                    metadata,
+                ),
             ),
+            lambda error: isinstance(error, RemoteCallTransportError),
         )
 
     def _queue_function_name(self) -> str:

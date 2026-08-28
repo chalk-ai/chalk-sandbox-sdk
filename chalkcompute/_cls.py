@@ -76,6 +76,7 @@ from chalkcompute._function import (
     _local_install_entrypoint,
     _make_base_image,
     _normalize_schedule,
+    _remote_function_startup_probe,
     _scaling_group_is_ready,
     _should_strip_source,
     _source_text_for_deploy,
@@ -1197,6 +1198,7 @@ class RemoteClass:
                     secret_refs=resolved_secrets,
                     port=6666,
                     protocol="grpc",
+                    startup_probe=_remote_function_startup_probe(),
                 ).to_proto()
 
                 spec = sg_pb.ScalingGroupSpec(
