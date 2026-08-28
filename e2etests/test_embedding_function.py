@@ -7,26 +7,47 @@ function can call embed and return embeddings.
 import asyncio
 
 import chalkcompute
-from e2etests.conftest import _deploy_script, needs_openai, needs_staging
+from e2etests._ci_resources import build_scoped_name
+from e2etests.conftest import (
+    _delete_function,
+    _deploy_script,
+    needs_openai,
+    needs_staging,
+)
 
 
 @needs_staging
 @needs_openai
 def test_orchestrate() -> None:
     """Deploy embed + orchestrate, then call orchestrate and verify results."""
-    _deploy_script("embedding-function", "embed.py")
-    _deploy_script("embedding-function", "orchestrate.py")
-
-    orchestrate = chalkcompute.RemoteFunction.from_name("ex-orchestrate")
-    embeddings = orchestrate.remote(["Hello", "world!"])
-
-    assert len(embeddings) == 2, f"Expected 2 embeddings, got {len(embeddings)}"
-    for i, emb in enumerate(embeddings):
-        assert isinstance(emb, list), f"Embedding {i} is not a list"
-        assert len(emb) == 1536, f"Embedding {i} has {len(emb)} dims, expected 1536"
-        assert all(isinstance(v, float) for v in emb), (
-            f"Embedding {i} has non-float values"
+    embed_name = build_scoped_name("ex-embed-orchestrated")
+    orchestrate_name = build_scoped_name("ex-orchestrate")
+    try:
+        _deploy_script(
+            "embedding-function", "embed.py", function_name=embed_name
         )
+        _deploy_script(
+            "embedding-function",
+            "orchestrate.py",
+            function_name=orchestrate_name,
+            extra_env={"CHALK_E2E_EMBED_FUNCTION_NAME": embed_name},
+        )
+
+        orchestrate = chalkcompute.RemoteFunction.from_name(orchestrate_name)
+        embeddings = orchestrate.remote(["Hello", "world!"])
+
+        assert len(embeddings) == 2, f"Expected 2 embeddings, got {len(embeddings)}"
+        for i, emb in enumerate(embeddings):
+            assert isinstance(emb, list), f"Embedding {i} is not a list"
+            assert len(emb) == 1536, (
+                f"Embedding {i} has {len(emb)} dims, expected 1536"
+            )
+            assert all(isinstance(v, float) for v in emb), (
+                f"Embedding {i} has non-float values"
+            )
+    finally:
+        _delete_function(orchestrate_name)
+        _delete_function(embed_name)
 
 
 @needs_staging
