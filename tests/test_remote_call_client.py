@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 
 import pyarrow as pa
 import pytest
+from connectrpc.code import Code
+from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
 
 from chalkcompute._function import (
@@ -14,7 +16,12 @@ from chalkcompute._function import (
 )
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as catalog_pb
 from chalkcompute._gen.chalk.runtime.v1 import remote_python_call_pb as remote_call_pb
-from chalkcompute._remote_call_client import RemoteCallPollResult, ServiceAuthContext
+from chalkcompute._remote_call_client import (
+    RemoteCallPollResult,
+    RemoteCallTransportError,
+    RemoteCallUnavailableError,
+    ServiceAuthContext,
+)
 from tests._fakes import FakeMethod, StubbedConnectClient
 
 REQUEST_TIMESTAMP_HEADER = "x-chalk-request-timestamp"
@@ -327,39 +334,57 @@ def test_direct_call_injects_fresh_trace_metadata_on_cached_client(monkeypatch) 
     )
 
 
-def test_direct_call_refreshes_and_retries_on_goaway_stale_client() -> None:
-    FakeRemoteCallClient.call_ipc_errors = [
-        RuntimeError('gRPC status: status: Unavailable, message: "GOAWAY"')
-    ]
+def test_direct_call_retries_unavailable_error(monkeypatch) -> None:
+    monkeypatch.setattr("chalkcompute._function.time.sleep", lambda _s: None)
+    FakeRemoteCallClient.call_ipc_errors = [RemoteCallUnavailableError("not ready")]
     FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
 
     fn = _remote_function()
 
     assert fn.remote(41) == 42
 
-    assert len(FakeRemoteCallClient.instances) == 2
-    assert FakeRemoteCallClient.instances[0].closed is True
-    assert FakeRemoteCallClient.instances[1].calls[0][0] == "catalog-add"
-    assert _read_input(FakeRemoteCallClient.instances[1].calls[0][1]) == {"x": [41]}
+    assert len(FakeRemoteCallClient.instances) == 1
+    assert FakeRemoteCallClient.instances[0].closed is False
+    assert FakeRemoteCallClient.instances[0].calls[0][0] == "catalog-add"
+    assert _read_input(FakeRemoteCallClient.instances[0].calls[0][1]) == {"x": [41]}
 
 
-def test_direct_call_drops_non_retryable_stale_client_for_next_call() -> None:
-    FakeRemoteCallClient.call_ipc_errors = [
-        RuntimeError("gRPC status: status: Unavailable, message: connection refused")
-    ]
+def test_direct_call_refreshes_transport_error(monkeypatch) -> None:
+    monkeypatch.setattr("chalkcompute._function.time.sleep", lambda _s: None)
+    FakeRemoteCallClient.call_ipc_errors = [RemoteCallTransportError("disconnected")]
     FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
 
     fn = _remote_function()
 
-    with pytest.raises(RuntimeError, match="connection refused"):
+    assert fn.remote(41) == 42
+    assert len(FakeRemoteCallClient.instances) == 2
+    assert FakeRemoteCallClient.instances[0].closed is True
+
+
+def test_direct_call_does_not_retry_deadline_exceeded() -> None:
+    FakeRemoteCallClient.call_ipc_errors = [
+        ConnectRpcError(Code.DEADLINE_EXCEEDED, "deadline exceeded")
+    ]
+
+    fn = _remote_function()
+
+    with pytest.raises(ConnectRpcError) as exc_info:
+        fn.remote(41)
+
+    assert exc_info.value.code == Code.DEADLINE_EXCEEDED
+    assert len(FakeRemoteCallClient.instances) == 1
+
+
+def test_direct_call_stops_retrying_at_deadline(monkeypatch) -> None:
+    monkeypatch.setattr("chalkcompute._function._DIRECT_CALL_RETRY_TIMEOUT_SECONDS", 0)
+    FakeRemoteCallClient.call_ipc_errors = [RemoteCallUnavailableError("not ready")]
+
+    fn = _remote_function()
+
+    with pytest.raises(RemoteCallUnavailableError):
         fn.remote(41)
 
     assert len(FakeRemoteCallClient.instances) == 1
-    assert FakeRemoteCallClient.instances[0].closed is True
-    assert fn._remote_call_client is None
-
-    assert fn.remote(41) == 42
-    assert len(FakeRemoteCallClient.instances) == 2
 
 
 async def _no_sleep(_seconds) -> None:

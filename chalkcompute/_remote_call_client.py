@@ -90,6 +90,22 @@ else:
     _NativeRemoteCallClient = getattr(_native, "RemoteCallClient")
     _NATIVE_IMPORT_ERROR = None
 
+
+class _RemoteCallUnavailableError(RuntimeError):
+    pass
+
+
+class _RemoteCallTransportError(RuntimeError):
+    pass
+
+
+RemoteCallUnavailableError: type[BaseException] = getattr(
+    _native, "RemoteCallUnavailableError", _RemoteCallUnavailableError
+)
+RemoteCallTransportError: type[BaseException] = getattr(
+    _native, "RemoteCallTransportError", _RemoteCallTransportError
+)
+
 _warned_per_call_metadata_unsupported = False
 
 

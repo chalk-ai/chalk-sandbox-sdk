@@ -273,6 +273,7 @@ dependencies = [
  "chalk_remote_call_client",
  "chalk_volume_client",
  "pyo3",
+ "tonic",
 ]
 
 [[package]]
