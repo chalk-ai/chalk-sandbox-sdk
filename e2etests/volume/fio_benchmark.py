@@ -36,8 +36,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--small-files", type=positive_int, default=1000)
     parser.add_argument("--small-file-size", default="4k")
     parser.add_argument("--direct", choices=("0", "1"), default="1")
-    parser.add_argument("--cpu", default="4")
-    parser.add_argument("--memory", default="16Gi")
+    parser.add_argument("--cpu", default="2")
+    parser.add_argument("--memory", default="4Gi")
     parser.add_argument("--timeout-secs", type=positive_int, default=3600)
     return parser.parse_args()
 

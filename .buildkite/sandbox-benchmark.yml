@@ -51,8 +51,8 @@ steps:
           --small-files 1000 \
           --small-file-size 4k \
           --direct 1 \
-          --cpu 4 \
-          --memory 16Gi
+          --cpu 2 \
+          --memory 4Gi
     agents:
       queue: default
     timeout_in_minutes: 90
