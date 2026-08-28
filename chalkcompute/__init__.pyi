@@ -96,6 +96,9 @@ from chalkcompute._scaling_group import ScalingGroupInfo as ScalingGroupInfo
 from chalkcompute._scaling_group import (
     ScalingGroupRevisionInfo as ScalingGroupRevisionInfo,
 )
+from chalkcompute._scaling_group import (
+    ScaleFromZeroRequestPolicy as ScaleFromZeroRequestPolicy,
+)
 from chalkcompute._secret import Secret as Secret
 from chalkcompute._secret import SecretScope as SecretScope
 from chalkcompute._secret import resolve_lazy_secrets as resolve_lazy_secrets
@@ -223,6 +226,7 @@ __all__ = [
     "ScalingGroupError",
     "ScalingGroupInfo",
     "ScalingGroupRevisionInfo",
+    "ScaleFromZeroRequestPolicy",
     "ReadinessProbe",
     "CronScalingTrigger",
     "CronScalingWindow",

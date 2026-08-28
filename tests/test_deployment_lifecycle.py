@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import chalkcompute._function as function_mod
+from chalkcompute import ScaleFromZeroRequestPolicy
 from chalkcompute._function import RemoteFunction
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as catalog_pb
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
@@ -154,6 +155,32 @@ def test_scaling_group_redeploy_history_and_rollback() -> None:
     assert rollback.traffic.targets[0].percent == 100
     assert rollback.traffic.targets[0].revision_target.value == "revision-1"
     assert group.current_revision_id == "revision-1"
+
+
+def test_scaling_group_scale_from_zero_request_policy() -> None:
+    for group, expected in (
+        (
+            ScalingGroup(image="ubuntu:latest", name="default-policy"),
+            sg_pb.ScaleFromZeroRequestPolicy.UNSPECIFIED,
+        ),
+        (
+            ScalingGroup(
+                image="ubuntu:latest",
+                name="hold-policy",
+                scale_from_zero_request_policy=ScaleFromZeroRequestPolicy.HOLD,
+            ),
+            sg_pb.ScaleFromZeroRequestPolicy.HOLD,
+        ),
+    ):
+        client = _ScalingLifecycleClient()
+        group._client = client  # type: ignore[assignment]
+
+        group.deploy()
+
+        request = client.calls[0][1]
+        assert request.spec is not None
+        assert request.spec.scaling_spec is not None
+        assert request.spec.scaling_spec.scale_from_zero_request_policy == expected
 
 
 def test_function_redeploy_history_rollback_refresh_and_delete(monkeypatch) -> None:
