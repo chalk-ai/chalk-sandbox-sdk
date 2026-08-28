@@ -150,6 +150,10 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "chalkcompute._scaling_group",
         "ScalingGroupRevisionInfo",
     ),
+    "ScaleFromZeroRequestPolicy": (
+        "chalkcompute._scaling_group",
+        "ScaleFromZeroRequestPolicy",
+    ),
     "ReadinessProbe": ("chalkcompute._scaling_group", "ReadinessProbe"),
     "CronScalingTrigger": ("chalkcompute._scaling_group", "CronScalingTrigger"),
     "CronScalingWindow": ("chalkcompute._scaling_group", "CronScalingWindow"),

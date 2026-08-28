@@ -34,6 +34,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
 
 from connectrpc.errors import ConnectError as ConnectRpcError
@@ -60,6 +61,12 @@ from chalkcompute._volume import (
 logger = logging.getLogger(__name__)
 
 _OWNED_VOLUME_PREFIX = "chalkcompute-sg-files"
+
+
+class ScaleFromZeroRequestPolicy(Enum):
+    ERROR = "ERROR"
+    HOLD = "HOLD"
+
 
 if TYPE_CHECKING:
     from chalkcompute._image import Image as _Image
@@ -275,6 +282,7 @@ class ScalingGroup:
         target_cpu_utilization_percentage: int | None = None,
         target_gpu_utilization_percentage: int | None = None,
         cron_scaling_trigger: CronScalingTrigger | None = None,
+        scale_from_zero_request_policy: ScaleFromZeroRequestPolicy | None = None,
         chalk_client: Any | None = None,
     ) -> None:
         if image is None:
@@ -335,6 +343,13 @@ class ScalingGroup:
                 )
         self._target_gpu_utilization_percentage = target_gpu_utilization_percentage
         self._cron_scaling_trigger = cron_scaling_trigger
+        if scale_from_zero_request_policy is not None and not isinstance(
+            scale_from_zero_request_policy, ScaleFromZeroRequestPolicy
+        ):
+            raise TypeError(
+                "scale_from_zero_request_policy must be a ScaleFromZeroRequestPolicy"
+            )
+        self._scale_from_zero_request_policy = scale_from_zero_request_policy
 
         # Set after .deploy()
         self._built_image_uri: str | None = None
@@ -432,6 +447,7 @@ class ScalingGroup:
         sg._target_cpu_utilization_percentage = None
         sg._target_gpu_utilization_percentage = None
         sg._cron_scaling_trigger = None
+        sg._scale_from_zero_request_policy = None
         sg._built_image_uri = None
         sg._scaling_group_id = None
         sg._scaling_group_info = None
@@ -569,6 +585,13 @@ class ScalingGroup:
                         for window in self._cron_scaling_trigger.windows
                     ],
                 )
+            ),
+            scale_from_zero_request_policy=(
+                None
+                if self._scale_from_zero_request_policy is None
+                else sg_pb.ScaleFromZeroRequestPolicy[
+                    self._scale_from_zero_request_policy.name
+                ]
             ),
         )
         spec = sg_pb.ScalingGroupSpec(
