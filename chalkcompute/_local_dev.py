@@ -33,7 +33,7 @@ _LOCAL_SDK_RUNTIME_PACKAGES = [
     "rich>=13.0.0",
     "protobuf-py==0.3.0",
     # ConnectRPC 0.11.1 pins protobuf-py 0.1.1; upstream main supports 0.3.0.
-    "connectrpc @ git+https://github.com/connectrpc/connect-py.git@c19b11325be765855f4a4fae209251d3aa7f5d57",
+    "connectrpc @ https://github.com/connectrpc/connect-py/archive/c19b11325be765855f4a4fae209251d3aa7f5d57.tar.gz",
     "pyqwest>=0.9.0",
 ]
 
