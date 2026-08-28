@@ -7,15 +7,22 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 from typing import Any
 import uuid
 
-from chalkcompute import Image, Sandbox, Volume, VolumeError
+from chalkcompute import Image, Sandbox, Volume, VolumeError, VolumeFileNotFoundError
 
 MOUNT_PATH = "/volume"
 BENCHMARK_DIR = f"{MOUNT_PATH}/fio-benchmark"
 FIO_SCRIPT_DEST = "/opt/chalk/benchmarks/fio-benchmark.sh"
 FIO_SCRIPT_SOURCE = Path(__file__).with_name("fio-benchmark.sh")
+RESULTS_DIR = "fio-benchmark/results"
+LOG_PATH = f"{RESULTS_DIR}/benchmark.log"
+ENTRYPOINT = """
+mkdir -p "$2/results"
+"$1" "$2" >"$2/results/benchmark.log" 2>&1
+"""
 RESULT_NAMES = (
     "sequential-write",
     "sequential-read",
@@ -49,41 +56,35 @@ def positive_int(value: str) -> int:
     return parsed
 
 
-def _exec_stream(sandbox: Sandbox, args: argparse.Namespace) -> None:
-    exit_code: int | None = None
-    env = {
-        "FIO_SIZE": args.size,
-        "FIO_JOBS": str(args.jobs),
-        "FIO_SMALL_FILES": str(args.small_files),
-        "FIO_SMALL_FILE_SIZE": args.small_file_size,
-        "FIO_DIRECT": args.direct,
-    }
-    for event in sandbox.exec_stream(
-        FIO_SCRIPT_DEST,
-        BENCHMARK_DIR,
-        env=env,
-        timeout_secs=args.timeout_secs,
-    ):
-        if event.stdout:
-            print(event.stdout, end="", flush=True)
-        if event.stderr:
-            print(event.stderr, end="", file=sys.stderr, flush=True)
-        if event.is_error:
-            raise RuntimeError(event.error_message or event.error_code or "exec failed")
-        if event.is_exited:
-            exit_code = event.exit_code
-    if exit_code != 0:
-        raise RuntimeError(f"fio benchmark exited with code {exit_code}")
+def _wait_for_completion(sandbox: Sandbox, timeout_secs: int) -> tuple[str, str | None]:
+    deadline = time.monotonic() + timeout_secs
+    while time.monotonic() < deadline:
+        info = sandbox.refresh()
+        print(f"Sandbox {sandbox.id} status: {info.status}", flush=True)
+        if info.status not in ("pending", "running"):
+            return info.status, info.status_message
+        time.sleep(30)
+    raise TimeoutError(
+        f"Sandbox {sandbox.id} did not complete within {timeout_secs} seconds"
+    )
 
 
-def _read_results(sandbox: Sandbox) -> dict[str, dict[str, Any]]:
+def _read_volume_file(volume: Volume, path: str, timeout_secs: int = 60) -> bytes:
+    deadline = time.monotonic() + timeout_secs
+    while True:
+        try:
+            return volume.read_file(path)
+        except VolumeFileNotFoundError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(2)
+
+
+def _read_results(volume: Volume) -> dict[str, dict[str, Any]]:
     results: dict[str, dict[str, Any]] = {}
     for name in RESULT_NAMES:
-        path = f"{BENCHMARK_DIR}/results/{name}.json"
-        result = sandbox.exec("cat", path, timeout_secs=30)
-        if result.exit_code != 0:
-            raise RuntimeError(f"Unable to read {path}: {result.stderr_text}")
-        results[name] = json.loads(result.stdout_text)
+        path = f"{RESULTS_DIR}/{name}.json"
+        results[name] = json.loads(_read_volume_file(volume, path))
     return results
 
 
@@ -179,11 +180,37 @@ def main() -> None:
             image=image,
             cpu=args.cpu,
             memory=args.memory,
+            env={
+                "FIO_SIZE": args.size,
+                "FIO_JOBS": str(args.jobs),
+                "FIO_SMALL_FILES": str(args.small_files),
+                "FIO_SMALL_FILE_SIZE": args.small_file_size,
+                "FIO_DIRECT": args.direct,
+            },
             volumes=[volume.mount(MOUNT_PATH)],
+            entrypoint=[
+                "/bin/sh",
+                "-c",
+                ENTRYPOINT,
+                "fio-benchmark",
+                FIO_SCRIPT_DEST,
+                BENCHMARK_DIR,
+            ],
         ).run(timeout=600)
         print(f"Running fio in sandbox {sandbox.id} on volume {volume_name}")
-        _exec_stream(sandbox, args)
-        results = _read_results(sandbox)
+        status, status_message = _wait_for_completion(sandbox, args.timeout_secs)
+        try:
+            log = _read_volume_file(volume, LOG_PATH).decode(errors="replace")
+        except VolumeFileNotFoundError:
+            if status == "succeeded":
+                raise
+            print(f"No benchmark log found at {LOG_PATH}", file=sys.stderr)
+        else:
+            print(log, end="" if log.endswith("\n") else "\n", flush=True)
+        if status != "succeeded":
+            detail = f": {status_message}" if status_message else ""
+            raise RuntimeError(f"fio sandbox completed with status {status}{detail}")
+        results = _read_results(volume)
         Path(output_path).write_text(
             json.dumps(build_pyperf_results(results, args), sort_keys=True)
         )

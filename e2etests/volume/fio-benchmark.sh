@@ -71,17 +71,7 @@ run_fio() {
   echo "=== $name ==="
   fio --name="$name" --directory="$FIO_DIR" --group_reporting \
     --ioengine=psync --direct="$FIO_DIRECT" --thread \
-    --output-format=json+ --output="$RESULTS_DIR/$name.json" "$@" &
-  fio_pid=$!
-  ticks=0
-  while kill -0 "$fio_pid" 2>/dev/null; do
-    sleep 1
-    ticks=$((ticks + 1))
-    if [ $((ticks % 10)) -eq 0 ] && kill -0 "$fio_pid" 2>/dev/null; then
-      echo "fio progress: $name"
-    fi
-  done
-  wait "$fio_pid"
+    --output-format=json+ --output="$RESULTS_DIR/$name.json" "$@"
 }
 
 # Each large-file job owns one file so concurrent jobs do not contend on one inode.
