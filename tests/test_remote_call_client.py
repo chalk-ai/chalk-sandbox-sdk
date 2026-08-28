@@ -349,6 +349,19 @@ def test_direct_call_retries_unavailable_error(monkeypatch) -> None:
     assert _read_input(FakeRemoteCallClient.instances[0].calls[0][1]) == {"x": [41]}
 
 
+def test_direct_call_refreshes_and_retries_legacy_goaway_error() -> None:
+    FakeRemoteCallClient.call_ipc_errors = [
+        RuntimeError('gRPC status: status: Unavailable, message: "GOAWAY"')
+    ]
+    FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
+
+    fn = _remote_function()
+
+    assert fn.remote(41) == 42
+    assert len(FakeRemoteCallClient.instances) == 2
+    assert FakeRemoteCallClient.instances[0].closed is True
+
+
 def test_direct_call_refreshes_transport_error(monkeypatch) -> None:
     monkeypatch.setattr("chalkcompute._function.time.sleep", lambda _s: None)
     FakeRemoteCallClient.call_ipc_errors = [RemoteCallTransportError("disconnected")]

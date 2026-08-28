@@ -964,6 +964,13 @@ def _is_stale_remote_call_error_message(message: str | None) -> bool:
     )
 
 
+def _is_retryable_stale_remote_call_error_message(message: str | None) -> bool:
+    if not message:
+        return False
+    lower = message.lower()
+    return "fd shutdown" in lower or "goaway" in lower
+
+
 def _is_stale_remote_call_error(error: BaseException) -> bool:
     from chalkcompute._remote_call_client import RemoteCallTransportError
 
@@ -982,6 +989,12 @@ def _is_stale_remote_call_error(error: BaseException) -> bool:
     return _is_stale_remote_call_error_message(_remote_call_error_message(error))
 
 
+def _is_retryable_stale_remote_call_error(error: BaseException) -> bool:
+    return _is_retryable_stale_remote_call_error_message(
+        _remote_call_error_message(error)
+    )
+
+
 def _is_retryable_direct_call_error(error: BaseException) -> bool:
     from chalkcompute._remote_call_client import (
         RemoteCallTransportError,
@@ -991,6 +1004,15 @@ def _is_retryable_direct_call_error(error: BaseException) -> bool:
     return (
         isinstance(error, ConnectRpcError) and error.code == Code.UNAVAILABLE
     ) or isinstance(error, (RemoteCallUnavailableError, RemoteCallTransportError))
+
+
+def _should_retry_stale_remote_call(
+    retry_stale: bool | Callable[[BaseException], bool],
+    error: BaseException,
+) -> bool:
+    if callable(retry_stale):
+        return retry_stale(error)
+    return retry_stale
 
 
 # Exception "kind" values that mark a transient, infra-level failure originating
@@ -3292,7 +3314,7 @@ class RemoteFunction:
         queue: bool,
         operation: str,
         call: Callable[[], _RemoteCallResult],
-        retry_stale: bool = False,
+        retry_stale: bool | Callable[[BaseException], bool] = False,
         stale_result: Callable[[_RemoteCallResult], bool] | None = None,
     ) -> _RemoteCallResult:
         for attempt in range(2):
@@ -3302,7 +3324,7 @@ class RemoteFunction:
                 if not _is_stale_remote_call_error(exc):
                     raise
                 self._drop_remote_call_client(queue=queue)
-                if attempt == 0 and retry_stale:
+                if attempt == 0 and _should_retry_stale_remote_call(retry_stale, exc):
                     logger.info(
                         "Detected stale remote-call client during %s for %r; "
                         "refreshing and retrying",
@@ -3503,6 +3525,7 @@ class RemoteFunction:
                 return self._with_remote_call_transport(
                     queue=False,
                     operation="direct call",
+                    retry_stale=_is_retryable_stale_remote_call_error,
                     call=lambda: self._call_direct_chunks_once(
                         feather_bytes,
                         function_name,
