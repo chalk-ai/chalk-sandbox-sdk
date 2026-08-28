@@ -336,7 +336,10 @@ def test_direct_call_injects_fresh_trace_metadata_on_cached_client(monkeypatch) 
 
 def test_direct_call_retries_unavailable_error(monkeypatch) -> None:
     monkeypatch.setattr("chalkcompute._function.time.sleep", lambda _s: None)
-    FakeRemoteCallClient.call_ipc_errors = [RemoteCallUnavailableError("not ready")]
+    FakeRemoteCallClient.call_ipc_errors = [
+        RemoteCallUnavailableError("not ready"),
+        RemoteCallUnavailableError("still starting"),
+    ]
     FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
 
     fn = _remote_function()
@@ -360,6 +363,25 @@ def test_direct_call_refreshes_and_retries_legacy_goaway_error() -> None:
     assert fn.remote(41) == 42
     assert len(FakeRemoteCallClient.instances) == 2
     assert FakeRemoteCallClient.instances[0].closed is True
+
+
+def test_direct_call_drops_non_retryable_stale_client_for_next_call() -> None:
+    FakeRemoteCallClient.call_ipc_errors = [
+        RuntimeError("gRPC status: status: Unavailable, message: connection refused")
+    ]
+    FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
+
+    fn = _remote_function()
+
+    with pytest.raises(RuntimeError, match="connection refused"):
+        fn.remote(41)
+
+    assert len(FakeRemoteCallClient.instances) == 1
+    assert FakeRemoteCallClient.instances[0].closed is True
+    assert fn._remote_call_client is None
+
+    assert fn.remote(41) == 42
+    assert len(FakeRemoteCallClient.instances) == 2
 
 
 def test_direct_call_refreshes_transport_error(monkeypatch) -> None:
