@@ -56,6 +56,9 @@ def test_local_remote_call_wheel_force_reinstalls_before_handler(
 
 
 def test_local_sdk_wheel_installs_runtime_dependencies_before_overlay(tmp_path) -> None:
+    # Integration CI mounts the checkout wheel into deployed functions. Runtime
+    # dependencies must be baked into the image so the startup overlay can use
+    # --no-deps; the archive URL also avoids requiring git in the image builder.
     wheel = tmp_path / "chalkcompute-0.0.0-cp314-cp314-linux_x86_64.whl"
     wheel.write_bytes(b"wheel")
 
