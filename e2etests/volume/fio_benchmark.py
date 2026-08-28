@@ -11,7 +11,14 @@ import time
 from typing import Any
 import uuid
 
-from chalkcompute import Image, Sandbox, Volume, VolumeError, VolumeFileNotFoundError
+from chalkcompute import (
+    Image,
+    Sandbox,
+    SandboxNotFoundError,
+    Volume,
+    VolumeError,
+    VolumeFileNotFoundError,
+)
 
 MOUNT_PATH = "/volume"
 BENCHMARK_DIR = f"{MOUNT_PATH}/fio-benchmark"
@@ -22,6 +29,13 @@ LOG_PATH = f"{RESULTS_DIR}/benchmark.log"
 ENTRYPOINT = """
 mkdir -p "$2/results"
 "$1" "$2" >"$2/results/benchmark.log" 2>&1
+benchmark_status=$?
+"$3/.chalk-volume/commit"
+commit_status=$?
+if [ "$benchmark_status" -ne 0 ]; then
+  exit "$benchmark_status"
+fi
+exit "$commit_status"
 """
 RESULT_NAMES = (
     "sequential-write",
@@ -195,6 +209,7 @@ def main() -> None:
                 "fio-benchmark",
                 FIO_SCRIPT_DEST,
                 BENCHMARK_DIR,
+                MOUNT_PATH,
             ],
         ).run(timeout=600)
         print(f"Running fio in sandbox {sandbox.id} on volume {volume_name}")
@@ -216,7 +231,10 @@ def main() -> None:
         )
     finally:
         if sandbox is not None:
-            sandbox.terminate()
+            try:
+                sandbox.terminate()
+            except SandboxNotFoundError:
+                pass
         if generated_volume and not args.keep_volume:
             try:
                 volume.delete()
