@@ -141,6 +141,10 @@ _STRIP_SOURCE_ENV_VAR = _local_dev._STRIP_SOURCE_ENV_VAR
 _CALL_VIA_API_ENV_VAR = "CHALK_FUNCTION_CALL_VIA_API"
 
 
+def _remote_function_startup_probe() -> dict[str, dict[str, object]]:
+    return {"grpc": {}}
+
+
 # ---------------------------------------------------------------------------
 # Background decorator deployments
 # ---------------------------------------------------------------------------
@@ -3017,6 +3021,7 @@ class RemoteFunction:
                 secret_refs=resolved_secrets,
                 port=6666,
                 protocol="grpc",
+                startup_probe=_remote_function_startup_probe(),
             ).to_proto()
             spec = sg_pb.ScalingGroupSpec(
                 container_spec=container_spec,
