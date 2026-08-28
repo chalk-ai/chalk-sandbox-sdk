@@ -33,3 +33,36 @@ steps:
       automatic:
         - exit_status: -1
           limit: 2
+
+  - label: ":bar_chart: Volume FIO ({{matrix}})"
+    matrix:
+      - "staging/ftqa"
+      - "meta-ci"
+    command: |
+      source .buildkite/select-env-file.sh "{{matrix}}"
+      source .buildkite/setup-benchmark-env.sh
+      .buildkite/run-benchmark.sh \
+        --suite "Sandbox Volume FIO Benchmarks ({{matrix}})" \
+        --case  "volume-fio" \
+        --tags  "sandbox,volume,fio,{{matrix}}" \
+        -- uv run python -m e2etests.volume.fio_benchmark \
+          --size 1G \
+          --jobs 1 \
+          --small-files 1000 \
+          --small-file-size 4k \
+          --direct 1 \
+          --cpu 4 \
+          --memory 16Gi
+    agents:
+      queue: default
+    timeout_in_minutes: 90
+    notify:
+      - slack:
+          channels:
+            - "#proj-compute-volumes"
+          message: ":floppy_disk: <@U0AT4JH64Q4> sandbox volume fio benchmark failed on main."
+        if: build.branch == "main" && step.outcome == "hard_failed"
+    retry:
+      automatic:
+        - exit_status: -1
+          limit: 2
