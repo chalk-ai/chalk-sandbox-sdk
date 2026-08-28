@@ -119,7 +119,10 @@ def wrap_entrypoint_for_local_dev(handler_cmd: list[str]) -> list[str]:
     if config.should_install_sdk_wheel:
         assert config.sdk_wheel_path is not None
         wheel_name = shlex.quote(Path(config.sdk_wheel_path).name)
-        prelude.append(f"python -m pip install {_LOCAL_SDK_MOUNT}/{wheel_name}")
+        prelude.append(
+            "python -m pip install --force-reinstall --no-deps "
+            f"{_LOCAL_SDK_MOUNT}/{wheel_name}"
+        )
     elif config.should_mount_sdk_source:
         from chalkcompute._image import _ARCHIVE_CHUNK_PREFIX, ARCHIVE_NAME
 
@@ -152,7 +155,9 @@ def apply_local_dev_mounts(
     if config.should_install_sdk_wheel:
         assert config.sdk_wheel_path is not None
         path = Path(config.sdk_wheel_path)
-        image = image.add_local_file(str(path), f"{_LOCAL_SDK_MOUNT}/{path.name}")
+        image = image.pip_install(
+            [remote_call_runtime_package, *_LOCAL_SDK_RUNTIME_PACKAGES]
+        ).add_local_file(str(path), f"{_LOCAL_SDK_MOUNT}/{path.name}")
     elif config.should_mount_sdk_source:
         project_root = Path(__file__).resolve().parent.parent
         image = image.pip_install(

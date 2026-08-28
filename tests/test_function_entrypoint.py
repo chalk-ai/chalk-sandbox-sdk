@@ -55,6 +55,28 @@ def test_local_remote_call_wheel_force_reinstalls_before_handler(
     ) in entrypoint[2]
 
 
+def test_local_sdk_wheel_installs_runtime_dependencies_before_overlay(tmp_path) -> None:
+    wheel = tmp_path / "chalkcompute-0.0.0-cp314-cp314-linux_x86_64.whl"
+    wheel.write_bytes(b"wheel")
+
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ[_LOCAL_WHEEL_ENV_VAR] = str(wheel)
+        os.environ.pop(_LOCAL_COPY_ENV_VAR, None)
+        os.environ["CHALK_FUNCTION_STRIP_SOURCE"] = "0"
+        image = _make_base_image(None)
+        entrypoint = _local_install_entrypoint(
+            ["chalk-remote-call", "--handler", "handler.handler"]
+        )
+
+    packages = image.to_proto().steps[0].step.value.packages
+    assert packages[0].startswith("chalk-remote-call-python")
+    assert any(lf.src == str(wheel) for lf in image.lazy_local_files)
+    assert (
+        "python -m pip install --force-reinstall --no-deps "
+        "/tmp/sdk/chalkcompute-0.0.0-cp314-cp314-linux_x86_64.whl"
+    ) in entrypoint[2]
+
+
 def test_make_base_image_mounts_local_remote_call_wheel(
     tmp_path,
 ) -> None:
