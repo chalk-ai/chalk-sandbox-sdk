@@ -10,12 +10,14 @@ import chalkcompute._remote_call_client as remote_call_client
 from chalkcompute._remote_call_client import (
     RemoteCallClient,
     RemoteCallClientUnavailable,
+    RemoteCallUnavailableError,
 )
 
 
 class LegacyNativeRemoteCallClient:
     calls: list[tuple[object, ...]] = []
     method_calls: list[tuple[object, ...]] = []
+    call_ipc_errors: list[BaseException] = []
 
     def __init__(self, *args: object) -> None:
         self.closed = False
@@ -28,6 +30,8 @@ class LegacyNativeRemoteCallClient:
 
     def call_ipc(self, name: str, input_ipc: bytes) -> list[bytes]:
         self.method_calls.append(("call_ipc", name, input_ipc))
+        if self.call_ipc_errors:
+            raise self.call_ipc_errors.pop(0)
         return [b"ok"]
 
     def enqueue(self, name: str, input_ipc: bytes) -> str:
@@ -42,6 +46,7 @@ class LegacyNativeRemoteCallClient:
 def legacy_native_client() -> None:
     LegacyNativeRemoteCallClient.calls = []
     LegacyNativeRemoteCallClient.method_calls = []
+    LegacyNativeRemoteCallClient.call_ipc_errors = []
     with (
         patch.object(
             remote_call_client,
@@ -97,6 +102,52 @@ def test_legacy_native_call_shape_still_works_without_per_call_metadata() -> Non
         ("call_ipc", "handler", b"in"),
         ("enqueue", "pkg.fn", b"in"),
     ]
+
+
+def test_call_ipc_retries_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr(remote_call_client.time, "sleep", lambda _seconds: None)
+    LegacyNativeRemoteCallClient.call_ipc_errors = [
+        RemoteCallUnavailableError("not ready")
+    ]
+    client = RemoteCallClient("remote.chalk.test:443")
+
+    assert client.call_ipc("handler", b"in") == [b"ok"]
+    assert LegacyNativeRemoteCallClient.method_calls == [
+        ("call_ipc", "handler", b"in"),
+        ("call_ipc", "handler", b"in"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "grpc-status header missing, mapped from HTTP status code 504",
+        "upstream request timeout",
+        "Gateway Timeout",
+        "Your scale-to-zero workload failed to scale in time.",
+    ],
+)
+def test_call_ipc_does_not_retry_gateway_timeout(message: str) -> None:
+    LegacyNativeRemoteCallClient.call_ipc_errors = [RemoteCallUnavailableError(message)]
+    client = RemoteCallClient("remote.chalk.test:443")
+
+    with pytest.raises(RemoteCallUnavailableError, match=message):
+        client.call_ipc("handler", b"in")
+
+    assert LegacyNativeRemoteCallClient.method_calls == [("call_ipc", "handler", b"in")]
+
+
+def test_call_ipc_stops_retrying_at_deadline(monkeypatch) -> None:
+    monkeypatch.setattr(remote_call_client, "_DIRECT_CALL_RETRY_TIMEOUT_SECONDS", 0)
+    LegacyNativeRemoteCallClient.call_ipc_errors = [
+        RemoteCallUnavailableError("not ready")
+    ]
+    client = RemoteCallClient("remote.chalk.test:443")
+
+    with pytest.raises(RemoteCallUnavailableError, match="not ready"):
+        client.call_ipc("handler", b"in")
+
+    assert LegacyNativeRemoteCallClient.method_calls == [("call_ipc", "handler", b"in")]
 
 
 def test_legacy_native_drops_per_call_metadata_once(

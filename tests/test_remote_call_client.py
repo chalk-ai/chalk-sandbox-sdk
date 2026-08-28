@@ -19,7 +19,6 @@ from chalkcompute._gen.chalk.runtime.v1 import remote_python_call_pb as remote_c
 from chalkcompute._remote_call_client import (
     RemoteCallPollResult,
     RemoteCallTransportError,
-    RemoteCallUnavailableError,
     ServiceAuthContext,
 )
 from tests._fakes import FakeMethod, StubbedConnectClient
@@ -334,24 +333,6 @@ def test_direct_call_injects_fresh_trace_metadata_on_cached_client(monkeypatch) 
     )
 
 
-def test_direct_call_retries_unavailable_error(monkeypatch) -> None:
-    monkeypatch.setattr("chalkcompute._function.time.sleep", lambda _s: None)
-    FakeRemoteCallClient.call_ipc_errors = [
-        RemoteCallUnavailableError("not ready"),
-        RemoteCallUnavailableError("still starting"),
-    ]
-    FakeRemoteCallClient.direct_response_chunks = [_result_ipc([42])]
-
-    fn = _remote_function()
-
-    assert fn.remote(41) == 42
-
-    assert len(FakeRemoteCallClient.instances) == 1
-    assert FakeRemoteCallClient.instances[0].closed is False
-    assert FakeRemoteCallClient.instances[0].calls[0][0] == "catalog-add"
-    assert _read_input(FakeRemoteCallClient.instances[0].calls[0][1]) == {"x": [41]}
-
-
 def test_direct_call_refreshes_and_retries_legacy_goaway_error() -> None:
     FakeRemoteCallClient.call_ipc_errors = [
         RuntimeError('gRPC status: status: Unavailable, message: "GOAWAY"')
@@ -407,18 +388,6 @@ def test_direct_call_does_not_retry_deadline_exceeded() -> None:
         fn.remote(41)
 
     assert exc_info.value.code == Code.DEADLINE_EXCEEDED
-    assert len(FakeRemoteCallClient.instances) == 1
-
-
-def test_direct_call_stops_retrying_at_deadline(monkeypatch) -> None:
-    monkeypatch.setattr("chalkcompute._function._DIRECT_CALL_RETRY_TIMEOUT_SECONDS", 0)
-    FakeRemoteCallClient.call_ipc_errors = [RemoteCallUnavailableError("not ready")]
-
-    fn = _remote_function()
-
-    with pytest.raises(RemoteCallUnavailableError):
-        fn.remote(41)
-
     assert len(FakeRemoteCallClient.instances) == 1
 
 

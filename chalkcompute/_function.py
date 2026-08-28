@@ -124,10 +124,6 @@ SerializationFormat = typing.Literal["pyarrow"]
 F = TypeVar("F", bound=Callable[..., Any])
 _RemoteCallResult = TypeVar("_RemoteCallResult")
 
-_DIRECT_CALL_RETRY_TIMEOUT_SECONDS = 60.0
-_DIRECT_CALL_RETRY_INITIAL_BACKOFF_SECONDS = 0.1
-_DIRECT_CALL_RETRY_MAX_BACKOFF_SECONDS = 1.0
-_DIRECT_CALL_RETRY_BACKOFF_MULTIPLIER = 2.0
 KnowledgeCutoff = str | _dt.datetime
 
 _REMOTE_ENV_VAR = "CHALK_REMOTE_FUNCTION"
@@ -993,17 +989,6 @@ def _is_retryable_stale_remote_call_error(error: BaseException) -> bool:
     return _is_retryable_stale_remote_call_error_message(
         _remote_call_error_message(error)
     )
-
-
-def _is_retryable_direct_call_error(error: BaseException) -> bool:
-    from chalkcompute._remote_call_client import (
-        RemoteCallTransportError,
-        RemoteCallUnavailableError,
-    )
-
-    return (
-        isinstance(error, ConnectRpcError) and error.code == Code.UNAVAILABLE
-    ) or isinstance(error, (RemoteCallUnavailableError, RemoteCallTransportError))
 
 
 def _should_retry_stale_remote_call(
@@ -3487,8 +3472,21 @@ class RemoteFunction:
                 feather_stream=feather_bytes,
             )
 
-        responses = list(
-            self._call_stub.call_function(requests(), headers=dict(metadata))
+        from chalkcompute._remote_call_client import (
+            _is_retryable_unavailable_in_place,
+            _retry_direct_call,
+        )
+
+        responses = _retry_direct_call(
+            function_name,
+            lambda: list(
+                self._call_stub.call_function(requests(), headers=dict(metadata))
+            ),
+            lambda error: (
+                isinstance(error, ConnectRpcError)
+                and error.code == Code.UNAVAILABLE
+                and _is_retryable_unavailable_in_place(error)
+            ),
         )
         return [resp.feather_stream for resp in responses]
 
@@ -3515,40 +3513,27 @@ class RemoteFunction:
         return client.call_ipc(function_name, feather_bytes, metadata=metadata)
 
     def _call_direct_chunks(self, feather_bytes: bytes) -> list[bytes]:
+        from chalkcompute._remote_call_client import (
+            RemoteCallTransportError,
+            _retry_direct_call,
+        )
+
         function_name = self._queue_function_name()
         metadata = self._per_call_metadata()
-        deadline = time.monotonic() + _DIRECT_CALL_RETRY_TIMEOUT_SECONDS
-        delay = _DIRECT_CALL_RETRY_INITIAL_BACKOFF_SECONDS
-
-        while True:
-            try:
-                return self._with_remote_call_transport(
-                    queue=False,
-                    operation="direct call",
-                    retry_stale=_is_retryable_stale_remote_call_error,
-                    call=lambda: self._call_direct_chunks_once(
-                        feather_bytes,
-                        function_name,
-                        metadata,
-                    ),
-                )
-            except Exception as exc:
-                if not _is_retryable_direct_call_error(exc):
-                    raise
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise
-                retry_delay = min(delay, remaining)
-                logger.info(
-                    "Remote call to %r is unavailable; retrying in %.1fs",
+        return _retry_direct_call(
+            function_name,
+            lambda: self._with_remote_call_transport(
+                queue=False,
+                operation="direct call",
+                retry_stale=_is_retryable_stale_remote_call_error,
+                call=lambda: self._call_direct_chunks_once(
+                    feather_bytes,
                     function_name,
-                    retry_delay,
-                )
-                time.sleep(retry_delay)
-                delay = min(
-                    delay * _DIRECT_CALL_RETRY_BACKOFF_MULTIPLIER,
-                    _DIRECT_CALL_RETRY_MAX_BACKOFF_SECONDS,
-                )
+                    metadata,
+                ),
+            ),
+            lambda error: isinstance(error, RemoteCallTransportError),
+        )
 
     def _queue_function_name(self) -> str:
         if self._version_info is not None and self._version_info.function_name:
