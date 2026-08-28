@@ -23,7 +23,7 @@ class LegacyNativeRemoteCallClient:
         if len(args) > 7:
             raise TypeError(
                 "RemoteCallClient.__new__() takes from 1 to 7 positional "
-                "arguments but 12 were given"
+                "arguments but 13 were given"
             )
 
     def call_ipc(self, name: str, input_ipc: bytes) -> list[bytes]:
@@ -66,7 +66,7 @@ def test_legacy_native_constructor_fallback_without_service_auth() -> None:
 
     assert isinstance(client._inner, LegacyNativeRemoteCallClient)
     assert len(LegacyNativeRemoteCallClient.calls) == 2
-    assert len(LegacyNativeRemoteCallClient.calls[0]) == 12
+    assert len(LegacyNativeRemoteCallClient.calls[0]) == 13
     assert LegacyNativeRemoteCallClient.calls[1] == (
         "remote.chalk.test:443",
         [("x-chalk-env-id", "env-id")],

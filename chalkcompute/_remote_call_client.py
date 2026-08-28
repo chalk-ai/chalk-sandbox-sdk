@@ -142,6 +142,7 @@ class RemoteCallClient:
         requested_permissions: Sequence[int] | None = None,
         auth_rpc_timeout_ms: int | None = None,
         auth_retry_interval_ms: int | None = None,
+        call_timeout_ms: int | None = None,
     ) -> None:
         if _NativeRemoteCallClient is None:
             raise RemoteCallClientUnavailable(
@@ -173,6 +174,7 @@ class RemoteCallClient:
                 else None,
                 auth_rpc_timeout_ms,
                 auth_retry_interval_ms,
+                call_timeout_ms,
             )
         except TypeError as exc:
             if any(value is not None for value in auth_kwargs):

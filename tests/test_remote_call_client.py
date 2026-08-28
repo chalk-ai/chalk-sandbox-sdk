@@ -1,7 +1,6 @@
 import asyncio
 import contextvars
 import threading
-import time
 from datetime import datetime, timezone
 
 import pyarrow as pa
@@ -93,9 +92,14 @@ class FakeRemoteCallClient:
     enqueue_errors: list[BaseException] = []
     poll_errors: list[BaseException] = []
     purge_errors: list[BaseException] = []
-    # Simulates the native client hitting a crash-looping replica: call_ipc
-    # has no timeout param of its own, so it just never returns.
+    # Simulates a native build that predates call_timeout_ms support hitting
+    # a crash-looping replica: call_ipc has no timeout of its own, so it just
+    # never returns.
     hang_forever: bool = False
+    # Simulates the native client's own call_timeout_ms firing: raises
+    # TimeoutError synchronously, the way real cancellation does, instead of
+    # a real multi-second block.
+    raise_timeout: bool = False
 
     def __init__(
         self, endpoint: str, *, metadata, use_tls: bool | None, **kwargs
@@ -119,6 +123,8 @@ class FakeRemoteCallClient:
         input_ipc: bytes,
         metadata=(),
     ) -> list[bytes]:
+        if self.raise_timeout:
+            raise TimeoutError("call timed out after 200ms")
         if self.hang_forever:
             import threading
 
@@ -169,6 +175,7 @@ def reset_fake_client(monkeypatch):
     FakeRemoteCallClient.poll_errors = []
     FakeRemoteCallClient.purge_errors = []
     FakeRemoteCallClient.hang_forever = False
+    FakeRemoteCallClient.raise_timeout = False
     monkeypatch.setattr(remote_call_client, "RemoteCallClient", FakeRemoteCallClient)
     monkeypatch.setattr(
         "chalkcompute._function.service_auth_context_from_env", lambda: None
@@ -864,23 +871,20 @@ def test_delete_drops_cached_call_clients() -> None:
 
 
 def test_direct_call_times_out_instead_of_hanging_forever() -> None:
-    # Simulates CHA-10415: the scaling group is crash-looping, so the native
-    # call_ipc (no timeout param of its own) never returns.
-    FakeRemoteCallClient.hang_forever = True
+    # Simulates CHA-10415: the scaling group is crash-looping. The native
+    # client enforces call_timeout_ms itself via real cancellation, which we
+    # simulate here with a synchronous TimeoutError rather than a real block.
+    FakeRemoteCallClient.raise_timeout = True
 
     fn = _remote_function()
     fn._call_timeout = 0.2
 
-    started = time.monotonic()
     with pytest.raises(TimeoutError, match=r"timed out after 0\.2s"):
         fn.remote(41)
-    elapsed = time.monotonic() - started
-
-    assert elapsed < 2.0
 
 
 def test_call_timeout_error_includes_scaling_group_status(monkeypatch) -> None:
-    FakeRemoteCallClient.hang_forever = True
+    FakeRemoteCallClient.raise_timeout = True
 
     fn = _remote_function()
     fn._call_timeout = 0.2

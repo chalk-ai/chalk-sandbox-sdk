@@ -3,7 +3,7 @@ use chalk_remote_call::{
     proto::chalk::auth::v1::Permission, BlockingRemoteCallClient, CallStatus, ChannelSecurity,
     PollBackoff, PollResult, RemoteCallClientConfig, RemoteCallError,
 };
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyRuntimeError, PyTimeoutError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use std::collections::HashMap;
@@ -35,7 +35,8 @@ impl PyRemoteCallClient {
         exchange_token=None,
         requested_permissions=None,
         auth_rpc_timeout_ms=None,
-        auth_retry_interval_ms=None
+        auth_retry_interval_ms=None,
+        call_timeout_ms=None
     ))]
     fn new(
         endpoint: String,
@@ -50,6 +51,7 @@ impl PyRemoteCallClient {
         requested_permissions: Option<Vec<i32>>,
         auth_rpc_timeout_ms: Option<u64>,
         auth_retry_interval_ms: Option<u64>,
+        call_timeout_ms: Option<u64>,
     ) -> PyResult<Self> {
         let mut config = RemoteCallClientConfig::new(endpoint).with_poll_backoff(PollBackoff::new(
             Duration::from_millis(initial_poll_delay_ms),
@@ -67,6 +69,10 @@ impl PyRemoteCallClient {
 
         if let Some(max_message_size) = max_message_size {
             config = config.with_max_message_size(max_message_size);
+        }
+
+        if let Some(call_timeout_ms) = call_timeout_ms {
+            config = config.with_call_timeout(Duration::from_millis(call_timeout_ms));
         }
 
         match (auth_endpoint, exchange_token) {
@@ -210,7 +216,10 @@ fn status_name(status: CallStatus) -> &'static str {
 }
 
 fn to_py_err(error: RemoteCallError) -> PyErr {
-    PyRuntimeError::new_err(error.to_string())
+    match error {
+        RemoteCallError::Timeout(_) => PyTimeoutError::new_err(error.to_string()),
+        _ => PyRuntimeError::new_err(error.to_string()),
+    }
 }
 
 #[pyfunction]

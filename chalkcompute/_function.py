@@ -3345,49 +3345,6 @@ class RemoteFunction:
                 message = f"{message})"
         return TimeoutError(message)
 
-    def _call_with_deadline(
-        self,
-        call: Callable[[], _RemoteCallResult],
-        deadline: float | None,
-        *,
-        configured_timeout: float | None,
-    ) -> _RemoteCallResult:
-        """Run ``call`` on a worker thread, bounded by ``deadline``.
-
-        ``configured_timeout`` is only for the error message (the original,
-        full timeout the caller configured — ``deadline`` may be much closer
-        now if this is a retry). A hung call (e.g. the native remote-call
-        client has no timeout param of its own, so a crash-looping replica
-        blocks it forever) can't be canceled — this only bounds how long the
-        *caller* waits. The worker thread is a daemon and, on timeout, is
-        simply abandoned; it may keep running until its underlying
-        connection errors out on its own.
-        """
-        if deadline is None:
-            return call()
-
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise self._call_timeout_error(configured_timeout)
-
-        outcome: list[Any] = []
-        failure: list[BaseException] = []
-
-        def run() -> None:
-            try:
-                outcome.append(call())
-            except BaseException as exc:  # re-raised on the caller's thread below
-                failure.append(exc)
-
-        worker = threading.Thread(target=run, daemon=True)
-        worker.start()
-        worker.join(remaining)
-        if worker.is_alive():
-            raise self._call_timeout_error(configured_timeout)
-        if failure:
-            raise failure[0]
-        return outcome[0]
-
     def _with_remote_call_transport(
         self,
         *,
@@ -3398,12 +3355,13 @@ class RemoteFunction:
         stale_result: Callable[[_RemoteCallResult], bool] | None = None,
         timeout: float | None = None,
     ) -> _RemoteCallResult:
-        deadline = None if timeout is None else time.monotonic() + timeout
         for attempt in range(2):
             try:
-                result = self._call_with_deadline(
-                    call, deadline, configured_timeout=timeout
-                )
+                result = call()
+            except TimeoutError as exc:
+                # The native remote-call client enforces `timeout` itself. This function enriches the error
+                # message with scaling group status regardless of which layer caused the error.
+                raise self._call_timeout_error(timeout) from exc
             except Exception as exc:
                 if not _is_stale_remote_call_error(exc):
                     raise
@@ -3548,6 +3506,9 @@ class RemoteFunction:
                 service_auth.requested_permissions if service_auth else None
             ),
             initial_poll_delay_ms=5,
+            call_timeout_ms=(
+                None if self._call_timeout is None else int(self._call_timeout * 1000)
+            ),
         )
         setattr(self, attr, client)
         setattr(self, token_attr, current_token)
