@@ -54,28 +54,48 @@ def test_orchestrate() -> None:
 @needs_openai
 def test_embed_direct_call() -> None:
     """Deploy embed, then call it directly from a local client."""
-    _deploy_script("embedding-function", "embed.py")
+    function_name = build_scoped_name("ex-embed-direct")
+    try:
+        _deploy_script(
+            "embedding-function", "embed.py", function_name=function_name
+        )
 
-    fn = chalkcompute.RemoteFunction.from_name("ex-embed")
-    embedding = fn.remote("hello")
+        fn = chalkcompute.RemoteFunction.from_name(function_name)
+        embedding = fn.remote("hello")
 
-    assert isinstance(embedding, list), f"Expected list, got {type(embedding).__name__}"
-    assert len(embedding) == 1536, f"Got {len(embedding)} dims, expected 1536"
-    assert all(isinstance(v, float) for v in embedding), "Non-float values in embedding"
+        assert isinstance(embedding, list), (
+            f"Expected list, got {type(embedding).__name__}"
+        )
+        assert len(embedding) == 1536, f"Got {len(embedding)} dims, expected 1536"
+        assert all(isinstance(v, float) for v in embedding), (
+            "Non-float values in embedding"
+        )
+    finally:
+        _delete_function(function_name)
 
 
 @needs_staging
 @needs_openai
 def test_async_embed_direct_call() -> None:
     """Deploy async_embed, then call it with await."""
-    _deploy_script("embedding-function", "embed_async.py")
+    function_name = build_scoped_name("ex-async-embed")
+    try:
+        _deploy_script(
+            "embedding-function", "embed_async.py", function_name=function_name
+        )
 
-    async def _run() -> list[float]:
-        fn = chalkcompute.RemoteFunction.from_name("ex-async-embed")
-        return await fn.remote("hello")
+        async def _run() -> list[float]:
+            fn = chalkcompute.RemoteFunction.from_name(function_name)
+            return await fn.remote("hello")
 
-    embedding = asyncio.run(_run())
+        embedding = asyncio.run(_run())
 
-    assert isinstance(embedding, list), f"Expected list, got {type(embedding).__name__}"
-    assert len(embedding) == 1536, f"Got {len(embedding)} dims, expected 1536"
-    assert all(isinstance(v, float) for v in embedding), "Non-float values in embedding"
+        assert isinstance(embedding, list), (
+            f"Expected list, got {type(embedding).__name__}"
+        )
+        assert len(embedding) == 1536, f"Got {len(embedding)} dims, expected 1536"
+        assert all(isinstance(v, float) for v in embedding), (
+            "Non-float values in embedding"
+        )
+    finally:
+        _delete_function(function_name)
