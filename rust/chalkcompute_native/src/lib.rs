@@ -15,6 +15,17 @@ const SERVICE_AUTH_ENDPOINT_ENV_VAR: &str = "CHALK_API_SERVER";
 const SERVICE_AUTH_ENVIRONMENT_ENV_VAR: &str = "CHALK_ENVIRONMENT_ID";
 const SERVICE_AUTH_GRPC_ENGINE_ENV_VAR: &str = "CHALK_GRPC_ENGINE";
 
+pyo3::create_exception!(
+    chalkcompute._native,
+    RemoteCallUnavailableError,
+    PyRuntimeError
+);
+pyo3::create_exception!(
+    chalkcompute._native,
+    RemoteCallTransportError,
+    PyRuntimeError
+);
+
 #[pyclass(name = "RemoteCallClient", module = "chalkcompute._native")]
 struct PyRemoteCallClient {
     inner: BlockingRemoteCallClient,
@@ -210,7 +221,14 @@ fn status_name(status: CallStatus) -> &'static str {
 }
 
 fn to_py_err(error: RemoteCallError) -> PyErr {
-    PyRuntimeError::new_err(error.to_string())
+    let message = error.to_string();
+    match error {
+        RemoteCallError::Status(status) if status.code() == tonic::Code::Unavailable => {
+            RemoteCallUnavailableError::new_err(message)
+        }
+        RemoteCallError::Transport(_) => RemoteCallTransportError::new_err(message),
+        _ => PyRuntimeError::new_err(message),
+    }
 }
 
 #[pyfunction]
@@ -303,6 +321,14 @@ fn grpc_engine_target_from_url(url: &str) -> (String, bool) {
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRemoteCallClient>()?;
+    m.add(
+        "RemoteCallUnavailableError",
+        m.py().get_type::<RemoteCallUnavailableError>(),
+    )?;
+    m.add(
+        "RemoteCallTransportError",
+        m.py().get_type::<RemoteCallTransportError>(),
+    )?;
     m.add_function(wrap_pyfunction!(resolve_service_auth_context, m)?)?;
     chalk_volume_client::register_volume_bindings(m)?;
     Ok(())

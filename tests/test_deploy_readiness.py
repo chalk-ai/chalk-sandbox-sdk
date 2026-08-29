@@ -6,6 +6,7 @@ import chalkcompute._function as function_mod
 import chalkcompute._cls as cls_mod
 from chalkcompute._cls import RemoteClass, method
 from chalkcompute._function import RemoteFunction
+from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as catalog_pb
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from chalkcompute._scaling_group import ScalingGroup
@@ -17,11 +18,14 @@ class _RemoteFunctionReadinessClient(StubbedConnectClient):
 
     def __init__(self) -> None:
         self.methods: list[str] = []
+        self.requests: dict[str, Any] = {}
         self._env_id: str | None = None
         self.polls = [
-            sg_pb.ScalingGroupResponse(status="Running"),
             sg_pb.ScalingGroupResponse(
-                status="Running", ready_replicas=1, available_replicas=1
+                status="Pending", ready_replicas=1, available_replicas=1
+            ),
+            sg_pb.ScalingGroupResponse(
+                status="Available", ready_replicas=1, available_replicas=1
             ),
         ]
 
@@ -35,6 +39,7 @@ class _RemoteFunctionReadinessClient(StubbedConnectClient):
         **_: Any,
     ) -> Any:
         self.methods.append(method.name)
+        self.requests[method.name] = request
         if method.name == "create_external_function":
             assert isinstance(request, catalog_pb.CreateExternalFunctionRequest)
             assert request.spec is not None and request.spec.spec is not None
@@ -66,6 +71,7 @@ class _RemoteFunctionScaledToZeroClient(_RemoteFunctionReadinessClient):
 
     def __init__(self) -> None:
         self.methods = []
+        self.requests = {}
         self._env_id = None
         self.polls = [sg_pb.ScalingGroupResponse(status="ScaledToZero")]
 
@@ -146,6 +152,10 @@ def test_remote_function_deploy_waits_for_ready_replicas(monkeypatch) -> None:
         "get_scaling_group",
         "get_scaling_group",
     ]
+    request = client.requests["create_external_function"]
+    probe = request.spec.spec.container_spec.startup_probe
+    assert probe.check is not None and probe.check.field == "grpc"
+    assert isinstance(probe.check.value, container_pb.GrpcProbe)
 
 
 def test_remote_function_deploy_allows_zero_min_replicas(monkeypatch) -> None:
@@ -153,6 +163,7 @@ def test_remote_function_deploy_allows_zero_min_replicas(monkeypatch) -> None:
         return x
 
     client = _RemoteFunctionReadinessClient()
+    client.polls = [sg_pb.ScalingGroupResponse(status="Running")]
     fn = RemoteFunction(add, name="fn-zero", min_replicas=0)
     fn._client = client  # type: ignore[assignment]
 
@@ -249,6 +260,10 @@ def test_remote_class_deploy_waits_for_ready_replicas(monkeypatch) -> None:
         "get_scaling_group",
         "get_scaling_group",
     ]
+    request = client.requests["create_external_function"]
+    probe = request.spec.spec.container_spec.startup_probe
+    assert probe.check is not None and probe.check.field == "grpc"
+    assert isinstance(probe.check.value, container_pb.GrpcProbe)
 
 
 def test_remote_class_deploy_allows_zero_min_replicas(monkeypatch) -> None:
@@ -258,6 +273,7 @@ def test_remote_class_deploy_allows_zero_min_replicas(monkeypatch) -> None:
             return x
 
     client = _RemoteClassReadinessClient()
+    client.polls = [sg_pb.ScalingGroupResponse(status="Running")]
     rc = RemoteClass(Adder, name="cls-zero", min_replicas=0)
     rc._client = client  # type: ignore[assignment]
 
@@ -295,28 +311,13 @@ def test_remote_class_deploy_allows_scaled_to_zero(monkeypatch) -> None:
     assert client.methods == ["create_external_function", "get_scaling_group"]
 
 
-class _RequestCapturingClient(_RemoteFunctionReadinessClient):
-    def __init__(self) -> None:
-        super().__init__()
-        self.requests: dict[str, Any] = {}
-
-    def call(
-        self,
-        method: FakeMethod,
-        request: Any,
-        **kwargs: Any,
-    ) -> Any:
-        self.requests[method.name] = request
-        return super().call(method, request, **kwargs)
-
-
 def test_remote_function_deploy_forwards_volume_commits(monkeypatch) -> None:
     from chalkcompute._volume import VolumeMount
 
     def add(x: int) -> int:
         return x
 
-    client = _RequestCapturingClient()
+    client = _RemoteFunctionReadinessClient()
     fn = RemoteFunction(add, name="fn-commits")
     fn._client = client  # type: ignore[assignment]
 

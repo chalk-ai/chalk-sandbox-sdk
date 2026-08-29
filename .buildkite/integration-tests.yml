@@ -167,7 +167,7 @@ steps:
       uv sync --locked --all-extras --reinstall-package chalkcompute
 
       echo "--- :floppy_disk: Run volume service integration tests ($$CHALK_API_SERVER)"
-      uv run python -m pytest e2etests/test_volume.py -v -s --tb=short
+      uv run python -m pytest e2etests/volume/test_volume.py -v -s --tb=short
     agents:
       queue: default
     timeout_in_minutes: 15
@@ -238,11 +238,27 @@ steps:
       echo "--- :package: Sync locked dependencies"
       uv sync --locked --all-extras --reinstall-package chalkcompute
 
+      echo "--- :package: Build deployable SDK wheel"
+      uv python install 3.14
+      sdk_python="$$(uv python find 3.14)"
+      wheel_dir="$$(mktemp -d)"
+      uvx --python "$$sdk_python" --from 'maturin>=1.7,<2' maturin build \
+        --release \
+        --out "$$wheel_dir" \
+        --interpreter "$$sdk_python"
+      sdk_wheels=("$$wheel_dir"/*.whl)
+      if [[ $${#sdk_wheels[@]} -ne 1 || ! -f "$${sdk_wheels[0]}" ]]; then
+        echo "Expected exactly one SDK wheel in $$wheel_dir" >&2
+        exit 1
+      fi
+      export CHALK_FUNCTION_LOCAL_SDK_WHEEL="$${sdk_wheels[0]}"
+      export CHALK_FUNCTION_STRIP_SOURCE=0
+
       echo "--- :brain: Deploy and test embedding functions"
       export OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.chalk.ai:443
       export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
       export OTEL_SERVICE_NAME=chalkcompute-ci-embedding
-      CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest e2etests/test_embedding_function.py -v -s --tb=short
+      uv run python -m pytest e2etests/test_embedding_function.py -v -s --tb=short
     agents:
       queue: default
     timeout_in_minutes: 20

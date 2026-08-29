@@ -374,6 +374,7 @@ class ContainerSpec:
     security_policy: ContainerSecurityPolicy | None = None
     network_policy: NetworkPolicy | None = None
     compute_class: ComputeClass | None = None
+    startup_probe: Mapping[str, Any] | None = None
     readiness_probe: Mapping[str, Any] | None = None
     restart_policy: RestartPolicy | None = None
     chalk_identity: bool = False
@@ -414,6 +415,11 @@ class ContainerSpec:
             self,
             "managed_ssh",
             dict(self.managed_ssh),
+        )
+        object.__setattr__(
+            self,
+            "startup_probe",
+            None if self.startup_probe is None else dict(self.startup_probe),
         )
         object.__setattr__(
             self,
@@ -524,6 +530,8 @@ class ContainerSpec:
             spec["networkPolicy"] = self.network_policy.to_dict()
         if self.compute_class is not None:
             spec["computeClass"] = self.compute_class.value
+        if self.startup_probe is not None:
+            spec["startupProbe"] = dict(self.startup_probe)
         if self.readiness_probe is not None:
             spec["readinessProbe"] = dict(self.readiness_probe)
         if self.restart_policy is not None:
@@ -547,6 +555,11 @@ class ContainerSpec:
             else container_pb.SecretRef.from_json(json.dumps(ref))
             for ref in self.secret_refs
         ]
+        startup_probe = (
+            None
+            if self.startup_probe is None
+            else container_pb.StartupProbe.from_json(json.dumps(self.startup_probe))
+        )
         readiness_probe = (
             None
             if self.readiness_probe is None
@@ -607,6 +620,7 @@ class ContainerSpec:
                 if self.compute_class is None
                 else container_pb.ComputeClass[self.compute_class.name]
             ),
+            startup_probe=startup_probe,
             readiness_probe=readiness_probe,
             restart_policy=(
                 None

@@ -62,6 +62,7 @@ def _deploy_script(
     script_name: str,
     *,
     function_name: str | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> None:
     """Run an example deploy script as a subprocess.
 
@@ -73,11 +74,15 @@ def _deploy_script(
         Script file name within that subdirectory (e.g. ``"deploy_sync.py"``).
     function_name
         Optional function name passed to deploy scripts that support CI isolation.
+    extra_env
+        Additional environment variables passed to the deploy script.
     """
     script_path = EXAMPLES_DIR / example_subdir / script_name
     env = os.environ.copy()
     if function_name is not None:
         env["CHALK_E2E_FUNCTION_NAME"] = function_name
+    if extra_env is not None:
+        env.update(extra_env)
     result = subprocess.run(
         [sys.executable, str(script_path)],
         capture_output=True,

@@ -30,11 +30,6 @@ def _retry_missing_scaling_group(call: Callable[[], _T]) -> _T:
             time.sleep(2)
 
 
-def _wait_for_function(function_name: str) -> None:
-    function = chalkcompute.RemoteFunction.from_name(function_name)
-    assert _retry_missing_scaling_group(lambda: function.defer(0).get(timeout=10)) == []
-
-
 @needs_staging
 class TestSyncGenerator:
     function_name = build_scoped_name("ex-count-up")
@@ -42,7 +37,6 @@ class TestSyncGenerator:
     @classmethod
     def setup_class(cls):
         _deploy_script("generator", "deploy_sync.py", function_name=cls.function_name)
-        _wait_for_function(cls.function_name)
 
     @classmethod
     def teardown_class(cls):
@@ -79,7 +73,6 @@ class TestAsyncGenerator:
     @classmethod
     def setup_class(cls):
         _deploy_script("generator", "deploy_async.py", function_name=cls.function_name)
-        _wait_for_function(cls.function_name)
 
     @classmethod
     def teardown_class(cls):
