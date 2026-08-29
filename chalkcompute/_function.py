@@ -126,6 +126,8 @@ _RemoteCallResult = TypeVar("_RemoteCallResult")
 KnowledgeCutoff = str | _dt.datetime
 
 _REMOTE_ENV_VAR = "CHALK_REMOTE_FUNCTION"
+_FNQ_QUEUE_PROTOCOL_ENV_VAR = "CHALK_FNQ_QUEUE_PROTOCOL"
+_FNQ_STREAM_V1 = "stream_v1"
 _REQUEST_TIMESTAMP_HEADER = "x-chalk-request-timestamp"
 _NO_ARGS_SENTINEL_COLUMN = "__chalk_no_args__"
 # Reserved column carrying the caller's per-row metadata blob. Stripped from the argument
@@ -139,6 +141,15 @@ _STRIP_SOURCE_ENV_VAR = _local_dev._STRIP_SOURCE_ENV_VAR
 # When enabled, route __call__ through the API server's CallExternalFunction
 # RPC instead of connecting directly to the scaling group's web URL.
 _CALL_VIA_API_ENV_VAR = "CHALK_FUNCTION_CALL_VIA_API"
+
+
+def _remote_call_container_env(user_env: dict[str, str]) -> dict[str, str]:
+    return {
+        "PYTHONPATH": "/app",
+        _REMOTE_ENV_VAR: "1",
+        _FNQ_QUEUE_PROTOCOL_ENV_VAR: _FNQ_STREAM_V1,
+        **user_env,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -3009,7 +3020,7 @@ class RemoteFunction:
                 name=sg_name,
                 image=image_uri,
                 entrypoint=_local_install_entrypoint(handler_cmd),
-                env={"PYTHONPATH": "/app", _REMOTE_ENV_VAR: "1", **self._env},
+                env=_remote_call_container_env(self._env),
                 cpu=self._cpu,
                 memory=self._memory,
                 gpu=self._gpu,

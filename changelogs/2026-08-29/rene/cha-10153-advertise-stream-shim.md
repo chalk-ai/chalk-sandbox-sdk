@@ -1,0 +1,1 @@
+- advertise Redis Stream function-queue support for remote function and class deployments
