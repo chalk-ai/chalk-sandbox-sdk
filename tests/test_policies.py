@@ -513,9 +513,10 @@ class TestFunctionQueueProtocolAdvertisement:
 
         container_spec = client.requests[0].spec.container_spec
         assert container_spec is not None
-        assert container_spec.env_vars["CHALK_FNQ_QUEUE_PROTOCOL"] == "stream_v1"
+        assert container_spec.env_vars["CHALK_FNQ_STREAMS_SUPPORTED"] == "true"
+        assert "CHALK_FNQ_QUEUE_PROTOCOL" not in container_spec.env_vars
 
-    def test_user_can_force_list_protocol(
+    def test_user_can_disable_stream_support(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ):
@@ -523,7 +524,7 @@ class TestFunctionQueueProtocolAdvertisement:
             pass
 
         client = _CapturingClient()
-        fn = RemoteFunction(run, env={"CHALK_FNQ_QUEUE_PROTOCOL": "list_v1"})
+        fn = RemoteFunction(run, env={"CHALK_FNQ_STREAMS_SUPPORTED": "false"})
         fn._client = client  # type: ignore[assignment]
         monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
         monkeypatch.setattr(
@@ -536,7 +537,8 @@ class TestFunctionQueueProtocolAdvertisement:
 
         container_spec = client.requests[0].spec.container_spec
         assert container_spec is not None
-        assert container_spec.env_vars["CHALK_FNQ_QUEUE_PROTOCOL"] == "list_v1"
+        assert container_spec.env_vars["CHALK_FNQ_STREAMS_SUPPORTED"] == "false"
+        assert "CHALK_FNQ_QUEUE_PROTOCOL" not in container_spec.env_vars
 
     def test_remote_class_advertises_stream_support(
         self,
@@ -563,7 +565,8 @@ class TestFunctionQueueProtocolAdvertisement:
 
         container_spec = client.requests[0].spec.container_spec
         assert container_spec is not None
-        assert container_spec.env_vars["CHALK_FNQ_QUEUE_PROTOCOL"] == "stream_v1"
+        assert container_spec.env_vars["CHALK_FNQ_STREAMS_SUPPORTED"] == "true"
+        assert "CHALK_FNQ_QUEUE_PROTOCOL" not in container_spec.env_vars
 
 
 class _MethodCls:

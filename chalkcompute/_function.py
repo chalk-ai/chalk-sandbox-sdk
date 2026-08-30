@@ -127,8 +127,7 @@ _RemoteCallResult = TypeVar("_RemoteCallResult")
 KnowledgeCutoff = str | _dt.datetime
 
 _REMOTE_ENV_VAR = "CHALK_REMOTE_FUNCTION"
-_FNQ_QUEUE_PROTOCOL_ENV_VAR = "CHALK_FNQ_QUEUE_PROTOCOL"
-_FNQ_STREAM_V1 = "stream_v1"
+_FNQ_STREAMS_SUPPORTED_ENV_VAR = "CHALK_FNQ_STREAMS_SUPPORTED"
 _REQUEST_TIMESTAMP_HEADER = "x-chalk-request-timestamp"
 _NO_ARGS_SENTINEL_COLUMN = "__chalk_no_args__"
 # Reserved column carrying the caller's per-row metadata blob. Stripped from the argument
@@ -148,7 +147,7 @@ def _remote_call_container_env(user_env: dict[str, str]) -> dict[str, str]:
     return {
         "PYTHONPATH": "/app",
         _REMOTE_ENV_VAR: "1",
-        _FNQ_QUEUE_PROTOCOL_ENV_VAR: _FNQ_STREAM_V1,
+        _FNQ_STREAMS_SUPPORTED_ENV_VAR: "true",
         **user_env,
     }
 
