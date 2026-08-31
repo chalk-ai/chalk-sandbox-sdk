@@ -3650,7 +3650,7 @@ class RemoteFunction:
                 queue=False,
                 operation="direct call",
                 retry_stale=_is_retryable_stale_remote_call_error,
-                timeout=self.call_timeout,
+                timeout=self._call_timeout,
                 call=lambda: self._call_direct_chunks_once(
                     feather_bytes,
                     function_name,
