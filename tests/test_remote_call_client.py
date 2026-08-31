@@ -25,7 +25,6 @@ from chalkcompute._remote_call_client import (
     ServiceAuthContext,
 )
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
-from chalkcompute._remote_call_client import RemoteCallPollResult, ServiceAuthContext
 from tests._fakes import FakeMethod, StubbedConnectClient
 
 REQUEST_TIMESTAMP_HEADER = "x-chalk-request-timestamp"

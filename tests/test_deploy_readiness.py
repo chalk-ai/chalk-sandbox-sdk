@@ -8,7 +8,6 @@ import chalkcompute._function as function_mod
 import chalkcompute._cls as cls_mod
 from chalkcompute._cls import RemoteClass, method
 from chalkcompute._function import FunctionError, FunctionVersionInfo, RemoteFunction
-from chalkcompute._function import RemoteFunction
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as catalog_pb
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
@@ -357,6 +356,7 @@ class _RemoteFunctionUnhealthyClient(_RemoteFunctionReadinessClient):
 
     def __init__(self) -> None:
         self.methods = []
+        self.requests = {}
         self._env_id = None
         self.polls = [
             sg_pb.ScalingGroupResponse(

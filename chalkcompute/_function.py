@@ -3600,7 +3600,9 @@ class RemoteFunction:
         responses = _retry_direct_call(
             function_name,
             lambda: list(
-                self._call_stub.call_function(requests(), headers=dict(metadata), timeout_ms=timeout_ms)
+                self._call_stub.call_function(
+                    requests(), headers=dict(metadata), timeout_ms=timeout_ms
+                )
             ),
             lambda error: (
                 isinstance(error, ConnectRpcError)
