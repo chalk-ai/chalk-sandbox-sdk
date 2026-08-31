@@ -1,0 +1,1 @@
+- advertise Redis Stream function-queue support through `CHALK_FNQ_STREAMS_SUPPORTED` for remote function and class deployments

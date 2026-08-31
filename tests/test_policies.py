@@ -491,6 +491,84 @@ class TestScheduleValidationClass:
         ]
 
 
+class TestFunctionQueueProtocolAdvertisement:
+    def test_remote_function_advertises_stream_support(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        def run() -> None:
+            pass
+
+        client = _CapturingClient()
+        fn = RemoteFunction(run)
+        fn._client = client  # type: ignore[assignment]
+        monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
+        monkeypatch.setattr(
+            function_mod,
+            "_build_and_upload",
+            lambda *_, **__: ("image:test", [], None, []),
+        )
+
+        fn.deploy()
+
+        container_spec = client.requests[0].spec.container_spec
+        assert container_spec is not None
+        assert container_spec.env_vars["CHALK_FNQ_STREAMS_SUPPORTED"] == "true"
+        assert "CHALK_FNQ_QUEUE_PROTOCOL" not in container_spec.env_vars
+
+    def test_user_can_disable_stream_support(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        def run() -> None:
+            pass
+
+        client = _CapturingClient()
+        fn = RemoteFunction(run, env={"CHALK_FNQ_STREAMS_SUPPORTED": "false"})
+        fn._client = client  # type: ignore[assignment]
+        monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
+        monkeypatch.setattr(
+            function_mod,
+            "_build_and_upload",
+            lambda *_, **__: ("image:test", [], None, []),
+        )
+
+        fn.deploy()
+
+        container_spec = client.requests[0].spec.container_spec
+        assert container_spec is not None
+        assert container_spec.env_vars["CHALK_FNQ_STREAMS_SUPPORTED"] == "false"
+        assert "CHALK_FNQ_QUEUE_PROTOCOL" not in container_spec.env_vars
+
+    def test_remote_class_advertises_stream_support(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        class Worker:
+            @method
+            def run(self) -> None:
+                pass
+
+        client = _CapturingClient()
+        remote_class = RemoteClass(Worker)
+        remote_class._client = client  # type: ignore[assignment]
+        monkeypatch.setattr(
+            RemoteClass, "_build_deploy_image", lambda _: (object(), [])
+        )
+        monkeypatch.setattr(
+            cls_mod,
+            "_build_and_upload",
+            lambda *_, **__: ("image:test", [], None, []),
+        )
+
+        remote_class.deploy()
+
+        container_spec = client.requests[0].spec.container_spec
+        assert container_spec is not None
+        assert container_spec.env_vars["CHALK_FNQ_STREAMS_SUPPORTED"] == "true"
+        assert "CHALK_FNQ_QUEUE_PROTOCOL" not in container_spec.env_vars
+
+
 class _MethodCls:
     @method
     def run(self, x: int) -> int:
