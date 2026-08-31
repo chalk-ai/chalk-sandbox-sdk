@@ -163,7 +163,9 @@ def _read_committed_results(
         ) as error:
             if time.monotonic() >= deadline:
                 version_detail = (
-                    f"latest version {version_id}" if version_id is not None else "no version"
+                    f"latest version {version_id}"
+                    if version_id is not None
+                    else "no version"
                 )
                 raise TimeoutError(
                     f"Volume results did not become coherent within {timeout_secs} "
@@ -219,8 +221,7 @@ def build_pyperf_results(
     committed: CommittedResults, args: argparse.Namespace
 ) -> dict[str, Any]:
     benchmarks = [
-        fio_result_to_benchmark(name, committed.results[name])
-        for name in RESULT_NAMES
+        fio_result_to_benchmark(name, committed.results[name]) for name in RESULT_NAMES
     ]
     benchmarks.append(
         {

@@ -292,9 +292,7 @@ def _run_read_passes(
     _wait_for_snapshot_file(results, f"jobs-{jobs}/jobs-{jobs}.complete")
 
 
-def _read_results(
-    volume: Volume, jobs: tuple[int, ...]
-) -> dict[str, dict[str, Any]]:
+def _read_results(volume: Volume, jobs: tuple[int, ...]) -> dict[str, dict[str, Any]]:
     names = result_names(jobs)
     expected_paths = {
         name: f"jobs-{name.rsplit('-', 1)[-1]}/{name}.json" for name in names
@@ -337,8 +335,7 @@ def main() -> None:
         model_version_id = _prepare_model_volume(model_volume, image, args)
         model_snapshot = model_volume.at_version(model_version_id)
         print(
-            f"Prepared {args.shards} model shards at volume version "
-            f"{model_version_id}",
+            f"Prepared {args.shards} model shards at volume version {model_version_id}",
             flush=True,
         )
 

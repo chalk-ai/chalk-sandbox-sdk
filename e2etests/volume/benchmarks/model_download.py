@@ -226,9 +226,7 @@ def main() -> None:
     try:
         for volume in volumes.values():
             volume.reload()
-        results = {
-            mode: _run_mode(mode, args, volumes[mode]) for mode in MODES
-        }
+        results = {mode: _run_mode(mode, args, volumes[mode]) for mode in MODES}
         Path(output_path).write_text(
             json.dumps(build_pyperf_results(results, args), sort_keys=True)
         )
