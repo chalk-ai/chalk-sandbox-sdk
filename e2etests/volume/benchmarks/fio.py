@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
@@ -23,19 +24,30 @@ from chalkcompute import (
 MOUNT_PATH = "/volume"
 BENCHMARK_DIR = f"{MOUNT_PATH}/fio-benchmark"
 FIO_SCRIPT_DEST = "/opt/chalk/benchmarks/fio-benchmark.sh"
-FIO_SCRIPT_SOURCE = Path(__file__).with_name("fio-benchmark.sh")
+FIO_SCRIPT_SOURCE = Path(__file__).with_name("payloads") / "fio.sh"
 RESULTS_DIR = "fio-benchmark/results"
 LOG_PATH = f"{RESULTS_DIR}/benchmark.log"
+COMMIT_RESULT_PATH = f"{RESULTS_DIR}/volume-commit.json"
+COMPLETION_MARKER = "Raw fio JSON results:"
 ENTRYPOINT = """
 mkdir -p "$2/results"
 "$1" "$2" >"$2/results/benchmark.log" 2>&1
 benchmark_status=$?
+commit_started_ns=$(date +%s%N)
 "$3/.chalk-volume/commit"
 commit_status=$?
+commit_finished_ns=$(date +%s%N)
+commit_elapsed_ns=$((commit_finished_ns - commit_started_ns))
+printf '{"elapsed_ns":%s}\n' "$commit_elapsed_ns" >"$2/results/volume-commit.json"
+"$3/.chalk-volume/commit"
+metrics_commit_status=$?
 if [ "$benchmark_status" -ne 0 ]; then
   exit "$benchmark_status"
 fi
-exit "$commit_status"
+if [ "$commit_status" -ne 0 ]; then
+  exit "$commit_status"
+fi
+exit "$metrics_commit_status"
 """
 RESULT_NAMES = (
     "sequential-write",
@@ -46,6 +58,20 @@ RESULT_NAMES = (
     "small-file-read",
 )
 WRITE_RESULTS = {"sequential-write", "random-write-4k", "small-file-write"}
+
+
+class _IncompleteResultsError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class CommittedResults:
+    version_id: int
+    log: str
+    results: dict[str, dict[str, Any]]
+    commit_seconds: float
+    ready_seconds: float
+    read_attempts: int
 
 
 def parse_args() -> argparse.Namespace:
@@ -70,14 +96,17 @@ def positive_int(value: str) -> int:
     return parsed
 
 
-def _wait_for_completion(sandbox: Sandbox, timeout_secs: int) -> tuple[str, str | None]:
+def _wait_for_completion(
+    sandbox: Sandbox, timeout_secs: int, poll_interval: float = 1
+) -> tuple[str, str | None]:
     deadline = time.monotonic() + timeout_secs
     while time.monotonic() < deadline:
         info = sandbox.refresh()
         print(f"Sandbox {sandbox.id} status: {info.status}", flush=True)
         if info.status not in ("pending", "running"):
             return info.status, info.status_message
-        time.sleep(30)
+        # unideal, but exec streams are not stable yet
+        time.sleep(poll_interval)
     raise TimeoutError(
         f"Sandbox {sandbox.id} did not complete within {timeout_secs} seconds"
     )
@@ -94,12 +123,55 @@ def _read_volume_file(volume: Volume, path: str, timeout_secs: int = 60) -> byte
             time.sleep(2)
 
 
-def _read_results(volume: Volume) -> dict[str, dict[str, Any]]:
-    results: dict[str, dict[str, Any]] = {}
-    for name in RESULT_NAMES:
-        path = f"{RESULTS_DIR}/{name}.json"
-        results[name] = json.loads(_read_volume_file(volume, path))
-    return results
+def _read_committed_results(
+    volume: Volume, timeout_secs: int = 120, poll_interval: float = 2
+) -> CommittedResults:
+    started_at = time.monotonic()
+    deadline = started_at + timeout_secs
+    attempts = 0
+    version_id: int | None = None
+    while True:
+        attempts += 1
+        try:
+            version = volume.latest_version()
+            version_id = version.id
+            snapshot = volume.at_version(version_id)
+            log = snapshot.read_file(LOG_PATH).decode(errors="replace")
+            if COMPLETION_MARKER not in log:
+                raise _IncompleteResultsError("benchmark log is incomplete")
+
+            results: dict[str, dict[str, Any]] = {}
+            for name in RESULT_NAMES:
+                path = f"{RESULTS_DIR}/{name}.json"
+                results[name] = json.loads(snapshot.read_file(path))
+            commit_result = json.loads(snapshot.read_file(COMMIT_RESULT_PATH))
+            commit_elapsed_ns = commit_result.get("elapsed_ns")
+            if not isinstance(commit_elapsed_ns, int) or commit_elapsed_ns < 0:
+                raise _IncompleteResultsError("volume commit timing is invalid")
+            return CommittedResults(
+                version_id=version_id,
+                log=log,
+                results=results,
+                commit_seconds=commit_elapsed_ns / 1_000_000_000,
+                ready_seconds=time.monotonic() - started_at,
+                read_attempts=attempts,
+            )
+        except (
+            VolumeFileNotFoundError,
+            json.JSONDecodeError,
+            _IncompleteResultsError,
+        ) as error:
+            if time.monotonic() >= deadline:
+                version_detail = (
+                    f"latest version {version_id}"
+                    if version_id is not None
+                    else "no version"
+                )
+                raise TimeoutError(
+                    f"Volume results did not become coherent within {timeout_secs} "
+                    f"seconds ({version_detail}): {error}"
+                ) from error
+            time.sleep(poll_interval)
 
 
 def _percentile(latency: dict[str, Any], percentile: str) -> int | float | None:
@@ -146,11 +218,36 @@ def fio_result_to_benchmark(name: str, result: dict[str, Any]) -> dict[str, Any]
 
 
 def build_pyperf_results(
-    results: dict[str, dict[str, Any]], args: argparse.Namespace
+    committed: CommittedResults, args: argparse.Namespace
 ) -> dict[str, Any]:
+    benchmarks = [
+        fio_result_to_benchmark(name, committed.results[name]) for name in RESULT_NAMES
+    ]
+    benchmarks.append(
+        {
+            "metadata": {
+                "name": "volume-commit",
+                "unit": "second",
+                "volume_version_id": committed.version_id,
+            },
+            "runs": [{"values": [committed.commit_seconds]}],
+        }
+    )
+    benchmarks.append(
+        {
+            "metadata": {
+                "name": "volume-results-ready",
+                "unit": "second",
+                "volume_version_id": committed.version_id,
+                "volume_read_attempts": committed.read_attempts,
+            },
+            "runs": [{"values": [committed.ready_seconds]}],
+        }
+    )
     return {
         "version": "1.0",
         "metadata": {
+            "workload": "fio-microbench",
             "fio_size": args.size,
             "fio_jobs": args.jobs,
             "fio_small_files": args.small_files,
@@ -158,10 +255,12 @@ def build_pyperf_results(
             "fio_direct": int(args.direct),
             "sandbox_cpu": args.cpu,
             "sandbox_memory": args.memory,
+            "volume_version_id": committed.version_id,
+            "volume_commit_seconds": committed.commit_seconds,
+            "volume_results_ready_seconds": committed.ready_seconds,
+            "volume_read_attempts": committed.read_attempts,
         },
-        "benchmarks": [
-            fio_result_to_benchmark(name, results[name]) for name in RESULT_NAMES
-        ],
+        "benchmarks": benchmarks,
     }
 
 
@@ -214,20 +313,30 @@ def main() -> None:
         ).run(timeout=600)
         print(f"Running fio in sandbox {sandbox.id} on volume {volume_name}")
         status, status_message = _wait_for_completion(sandbox, args.timeout_secs)
-        try:
-            log = _read_volume_file(volume, LOG_PATH).decode(errors="replace")
-        except VolumeFileNotFoundError:
-            if status == "succeeded":
-                raise
-            print(f"No benchmark log found at {LOG_PATH}", file=sys.stderr)
-        else:
-            print(log, end="" if log.endswith("\n") else "\n", flush=True)
         if status != "succeeded":
+            try:
+                log = _read_volume_file(volume, LOG_PATH).decode(errors="replace")
+            except VolumeFileNotFoundError:
+                print(f"No benchmark log found at {LOG_PATH}", file=sys.stderr)
+            else:
+                print(log, end="" if log.endswith("\n") else "\n", flush=True)
             detail = f": {status_message}" if status_message else ""
             raise RuntimeError(f"fio sandbox completed with status {status}{detail}")
-        results = _read_results(volume)
+
+        committed = _read_committed_results(volume)
+        print(
+            f"Volume commit completed in {committed.commit_seconds:.3f}s; "
+            f"version {committed.version_id} became readable in "
+            f"{committed.ready_seconds:.3f}s after {committed.read_attempts} attempt(s)",
+            flush=True,
+        )
+        print(
+            committed.log,
+            end="" if committed.log.endswith("\n") else "\n",
+            flush=True,
+        )
         Path(output_path).write_text(
-            json.dumps(build_pyperf_results(results, args), sort_keys=True)
+            json.dumps(build_pyperf_results(committed, args), sort_keys=True)
         )
     finally:
         if sandbox is not None:
