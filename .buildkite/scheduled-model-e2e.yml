@@ -3,7 +3,7 @@
 
 on:
   schedule:
-    - label: "Model Deploy E2E — Daily at 6am Pacific"
+    - label: "Model Deploy E2E — Daily at 10am Pacific"
       cron: "0 10 * * * America/Los_Angeles"
       branch: main
       message: "Scheduled Model Deploy E2E (chalkpy released + main)"

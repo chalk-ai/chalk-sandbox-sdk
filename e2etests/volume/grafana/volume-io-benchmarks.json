@@ -1,0 +1,792 @@
+{
+  "__requires": [
+    {
+      "type": "grafana",
+      "id": "grafana",
+      "name": "Grafana",
+      "version": "10.0.0"
+    },
+    {
+      "type": "datasource",
+      "id": "grafana-postgresql-datasource",
+      "name": "PostgreSQL",
+      "version": "1.0.0"
+    },
+    {
+      "type": "panel",
+      "id": "timeseries",
+      "name": "Time series",
+      "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "stat",
+      "name": "Stat",
+      "version": ""
+    }
+  ],
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "benchmark-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "blue",
+            "mode": "fixed"
+          },
+          "noValue": "No recent run",
+          "unit": "MiBs"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "id": 11,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "text": {
+          "titleSize": 12,
+          "valueSize": 40
+        },
+        "textMode": "value_and_name",
+        "wideLayout": false
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "benchmark-pg"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time, value, split_part(split_part(suite_name, '(', 2), ')', 1) AS metric\nFROM (\n  SELECT DISTINCT ON (suite_name) created_at AS time, (metrics->>'fio_bw_bytes_per_sec')::numeric / 1048576 AS value, suite_name\n  FROM benchmark_results\n  WHERE $__timeFilter(created_at)\n    AND split_part(split_part(suite_name, '(', 2), ')', 1) IN (${environment:sqlstring})\n    AND source = 'ci'\n    AND case_name = 'volume-fio'\n    AND run_name = 'sequential-read'\n  ORDER BY suite_name, created_at DESC\n) latest\nORDER BY time",
+          "refId": "A"
+        }
+      ],
+      "title": "Sequential read",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "benchmark-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "purple",
+            "mode": "fixed"
+          },
+          "noValue": "No recent run",
+          "unit": "iops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "id": 12,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "text": {
+          "titleSize": 12,
+          "valueSize": 40
+        },
+        "textMode": "value_and_name",
+        "wideLayout": false
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "benchmark-pg"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time, value, split_part(split_part(suite_name, '(', 2), ')', 1) AS metric\nFROM (\n  SELECT DISTINCT ON (suite_name) created_at AS time, (metrics->>'fio_iops')::numeric AS value, suite_name\n  FROM benchmark_results\n  WHERE $__timeFilter(created_at)\n    AND split_part(split_part(suite_name, '(', 2), ')', 1) IN (${environment:sqlstring})\n    AND source = 'ci'\n    AND case_name = 'volume-fio'\n    AND run_name = 'random-read-4k'\n  ORDER BY suite_name, created_at DESC\n) latest\nORDER BY time",
+          "refId": "A"
+        }
+      ],
+      "title": "Random read 4K",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "benchmark-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "green",
+            "mode": "fixed"
+          },
+          "noValue": "No recent run",
+          "unit": "MiBs"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "id": 13,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "text": {
+          "titleSize": 12,
+          "valueSize": 40
+        },
+        "textMode": "value_and_name",
+        "wideLayout": false
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "benchmark-pg"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time, value, split_part(split_part(suite_name, '(', 2), ')', 1) AS metric\nFROM (\n  SELECT DISTINCT ON (suite_name) created_at AS time, (metrics->>'fio_bw_bytes_per_sec')::numeric / 1048576 AS value, suite_name\n  FROM benchmark_results\n  WHERE $__timeFilter(created_at)\n    AND split_part(split_part(suite_name, '(', 2), ')', 1) IN (${environment:sqlstring})\n    AND source = 'ci'\n    AND case_name = 'volume-model-load'\n    AND run_name = 'warm-read-jobs-4'\n  ORDER BY suite_name, created_at DESC\n) latest\nORDER BY time",
+          "refId": "A"
+        }
+      ],
+      "title": "Warm model load (4 jobs)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "benchmark-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "orange",
+            "mode": "fixed"
+          },
+          "noValue": "No recent run",
+          "unit": "MiBs"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "id": 14,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "text": {
+          "titleSize": 12,
+          "valueSize": 40
+        },
+        "textMode": "value_and_name",
+        "wideLayout": false
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "benchmark-pg"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time, value, split_part(split_part(suite_name, '(', 2), ')', 1) AS metric\nFROM (\n  SELECT DISTINCT ON (suite_name) created_at AS time, (metrics->>'io_bw_bytes_per_sec')::numeric / 1048576 AS value, suite_name\n  FROM benchmark_results\n  WHERE $__timeFilter(created_at)\n    AND split_part(split_part(suite_name, '(', 2), ')', 1) IN (${environment:sqlstring})\n    AND source = 'ci'\n    AND case_name = 'volume-model-download'\n    AND run_name = 'gemma-shaped-sequential-write'\n  ORDER BY suite_name, created_at DESC\n) latest\nORDER BY time",
+          "refId": "A"
+        }
+      ],
+      "title": "Sequential reconstruction",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "benchmark-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"showPoints": "always"},
+          "unit": "MiBs"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 5
+      },
+      "id": 1,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "showPoints": "always"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "benchmark-pg"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT created_at AS \"time\", (metrics->>'fio_bw_bytes_per_sec')::numeric / 1048576 AS value, split_part(split_part(suite_name, '(', 2), ')', 1) || ' / ' || run_name AS metric\nFROM benchmark_results\nWHERE $__timeFilter(created_at)\n  AND split_part(split_part(suite_name, '(', 2), ')', 1) IN (${environment:sqlstring})\n  AND source = 'ci'\n  AND case_name = 'volume-fio'\n  AND metrics ? 'fio_bw_bytes_per_sec'\nORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "title": "FIO bandwidth by workload",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "benchmark-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"showPoints": "always"},
+          "unit": "iops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 5
+      },
+      "id": 2,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "showPoints": "always"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "benchmark-pg"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT created_at AS \"time\", (metrics->>'fio_iops')::numeric AS value, split_part(split_part(suite_name, '(', 2), ')', 1) || ' / ' || run_name AS metric\nFROM benchmark_results\nWHERE $__timeFilter(created_at)\n  AND split_part(split_part(suite_name, '(', 2), ')', 1) IN (${environment:sqlstring})\n  AND source = 'ci'\n  AND case_name = 'volume-fio'\n  AND run_name IN ('random-read-4k', 'random-write-4k', 'small-file-read', 'small-file-write')\n  AND metrics ? 'fio_iops'\nORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "title": "FIO IOPS",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "benchmark-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"showPoints": "always"},
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 13
+      },
+      "id": 3,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "showPoints": "always"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "benchmark-pg"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT created_at AS \"time\", (metrics->>'fio_clat_p95_ns')::numeric / 1000000 AS value, split_part(split_part(suite_name, '(', 2), ')', 1) || ' / ' || run_name AS metric\nFROM benchmark_results\nWHERE $__timeFilter(created_at)\n  AND split_part(split_part(suite_name, '(', 2), ')', 1) IN (${environment:sqlstring})\n  AND source = 'ci'\n  AND case_name = 'volume-fio'\n  AND metrics ? 'fio_clat_p95_ns'\nORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "title": "FIO completion latency p95",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "benchmark-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"showPoints": "always"},
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 13
+      },
+      "id": 4,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "showPoints": "always"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "benchmark-pg"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT created_at AS \"time\", (metrics->>'fio_clat_p99_ns')::numeric / 1000000 AS value, split_part(split_part(suite_name, '(', 2), ')', 1) || ' / ' || run_name AS metric\nFROM benchmark_results\nWHERE $__timeFilter(created_at)\n  AND split_part(split_part(suite_name, '(', 2), ')', 1) IN (${environment:sqlstring})\n  AND source = 'ci'\n  AND case_name = 'volume-fio'\n  AND metrics ? 'fio_clat_p99_ns'\nORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "title": "FIO completion latency p99",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "benchmark-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"showPoints": "always"},
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 21
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "showPoints": "always"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "benchmark-pg"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT created_at AS \"time\", mean_us / 1000000.0 AS value, split_part(split_part(suite_name, '(', 2), ')', 1) || ' / ' || run_name AS metric\nFROM benchmark_results\nWHERE $__timeFilter(created_at)\n  AND split_part(split_part(suite_name, '(', 2), ')', 1) IN (${environment:sqlstring})\n  AND source = 'ci'\n  AND case_name = 'volume-fio'\n  AND run_name NOT IN ('volume-commit', 'volume-results-ready')\nORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "title": "FIO run duration",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "benchmark-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"showPoints": "always"},
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 21
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "showPoints": "always"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "benchmark-pg"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT created_at AS \"time\", mean_us / 1000000.0 AS value, split_part(split_part(suite_name, '(', 2), ')', 1) || ' / ' || run_name AS metric\nFROM benchmark_results\nWHERE $__timeFilter(created_at)\n  AND split_part(split_part(suite_name, '(', 2), ')', 1) IN (${environment:sqlstring})\n  AND source = 'ci'\n  AND case_name = 'volume-fio'\n  AND run_name IN ('volume-commit', 'volume-results-ready')\nORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "title": "Volume commit and visibility latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "benchmark-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"showPoints": "always"},
+          "unit": "MiBs"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 29
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "showPoints": "always"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "benchmark-pg"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT created_at AS \"time\", (metrics->>'fio_bw_bytes_per_sec')::numeric / 1048576 AS value, split_part(split_part(suite_name, '(', 2), ')', 1) || ' / ' || run_name AS metric\nFROM benchmark_results\nWHERE $__timeFilter(created_at)\n  AND split_part(split_part(suite_name, '(', 2), ')', 1) IN (${environment:sqlstring})\n  AND source = 'ci'\n  AND case_name = 'volume-model-load'\n  AND metrics ? 'fio_bw_bytes_per_sec'\nORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "title": "Model-load fresh versus warm bandwidth",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "benchmark-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"showPoints": "always"},
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 29
+      },
+      "id": 8,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "showPoints": "always"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "benchmark-pg"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT created_at AS \"time\", mean_us / 1000000.0 AS value, split_part(split_part(suite_name, '(', 2), ')', 1) || ' / ' || run_name AS metric\nFROM benchmark_results\nWHERE $__timeFilter(created_at)\n  AND split_part(split_part(suite_name, '(', 2), ')', 1) IN (${environment:sqlstring})\n  AND source = 'ci'\n  AND case_name = 'volume-model-load'\nORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "title": "Model-load duration",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "benchmark-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"showPoints": "always"},
+          "unit": "MiBs"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 37
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "showPoints": "always"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "benchmark-pg"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT created_at AS \"time\", (metrics->>'io_bw_bytes_per_sec')::numeric / 1048576 AS value, split_part(split_part(suite_name, '(', 2), ')', 1) || ' / ' || run_name AS metric\nFROM benchmark_results\nWHERE $__timeFilter(created_at)\n  AND split_part(split_part(suite_name, '(', 2), ')', 1) IN (${environment:sqlstring})\n  AND source = 'ci'\n  AND case_name = 'volume-model-download'\n  AND metrics ? 'io_bw_bytes_per_sec'\nORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "title": "Gemma-shaped reconstruction bandwidth",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "benchmark-pg"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"showPoints": "always"},
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 37
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "showPoints": "always"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "benchmark-pg"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT created_at AS \"time\", mean_us / 1000000.0 AS value, split_part(split_part(suite_name, '(', 2), ')', 1) || ' / ' || run_name AS metric\nFROM benchmark_results\nWHERE $__timeFilter(created_at)\n  AND split_part(split_part(suite_name, '(', 2), ')', 1) IN (${environment:sqlstring})\n  AND source = 'ci'\n  AND case_name = 'volume-model-download'\nORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "title": "Gemma-shaped write and commit duration",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "",
+  "schemaVersion": 39,
+  "tags": [
+    "sandbox",
+    "volume",
+    "benchmark"
+  ],
+  "templating": {
+    "list": [
+      {
+        "allValue": null,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "benchmark-pg"
+        },
+        "definition": "SELECT DISTINCT split_part(split_part(suite_name, '(', 2), ')', 1) AS environment FROM benchmark_results WHERE source = 'ci' AND suite_name LIKE 'Sandbox Volume %' ORDER BY 1",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Environment",
+        "multi": true,
+        "name": "environment",
+        "options": [],
+        "query": "SELECT DISTINCT split_part(split_part(suite_name, '(', 2), ')', 1) AS environment FROM benchmark_results WHERE source = 'ci' AND suite_name LIKE 'Sandbox Volume %' ORDER BY 1",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Volume I/O Benchmarks",
+  "uid": "volume-io-benchmarks",
+  "weekStart": ""
+}
