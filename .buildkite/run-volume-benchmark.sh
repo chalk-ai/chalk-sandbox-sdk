@@ -26,7 +26,7 @@ case "$benchmark" in
       --small-file-size 4k
       --direct 1
       --cpu 2
-      --memory 4Gi
+      --memory 1Gi
     )
     ;;
   model-load)
