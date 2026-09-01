@@ -131,6 +131,7 @@ from chalkcompute._volume import (
 
 from chalkcompute._training import TrainingError as TrainingError
 from chalkcompute._training import TrainingFunction as TrainingFunction
+from chalkcompute._training import TrainingRunHandle as TrainingRunHandle
 from chalkcompute._training import training as training
 
 # Back-compat aliases: all volumes are versioned, so the qualifier is gone from
@@ -249,6 +250,7 @@ __all__ = [
     "VersionedVolume",
     "VersionedVolumeClient",
     "TrainingFunction",
+    "TrainingRunHandle",
     "TrainingError",
     "training",
     "SessionSummary",
