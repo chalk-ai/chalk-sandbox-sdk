@@ -1,9 +1,13 @@
 on:
   schedule:
-    - label: "Sandbox Benchmarks - Daily at 6am Pacific"
+    - label: "Sandbox TTI Benchmark - Daily at 6am Pacific"
       cron: "0 6 * * * America/Los_Angeles"
       branch: main
-      message: "Scheduled sandbox benchmarks"
+      message: "Scheduled sandbox TTI benchmark"
+    - label: "Sandbox Volume Benchmarks - Hourly"
+      cron: "0 * * * * America/Los_Angeles"
+      branch: main
+      message: "Scheduled sandbox volume benchmarks"
 
 env:
   UV_VERSION: "0.11.14"
@@ -16,6 +20,7 @@ steps:
   #   2. Add a step that sources setup-benchmark-env.sh then calls run-benchmark.sh
 
   - label: ":bar_chart: Sandbox TTI ({{matrix}})"
+    if: build.message != "Scheduled sandbox volume benchmarks"
     matrix:
       - "staging/ftqa"
       - "meta-ci"
@@ -42,6 +47,7 @@ steps:
           limit: 2
 
   - label: ":bar_chart: Volume {{matrix.benchmark}} ({{matrix.environment}})"
+    if: build.message != "Scheduled sandbox TTI benchmark"
     command: >-
       .buildkite/run-volume-benchmark.sh
       "{{matrix.environment}}"
