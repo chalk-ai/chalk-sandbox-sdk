@@ -50,13 +50,9 @@ def _validate_data_source(
 ) -> None:
     provided = sum(v is not None for v in (data, dataset, input_sql))
     if provided == 0:
-        raise TrainingError(
-            "exactly one of data=, dataset=, or input_sql= is required"
-        )
+        raise TrainingError("exactly one of data=, dataset=, or input_sql= is required")
     if provided > 1:
-        raise TrainingError(
-            "only one of data=, dataset=, or input_sql= may be provided"
-        )
+        raise TrainingError("only one of data=, dataset=, or input_sql= may be provided")
 
 
 def _is_inside_training_container() -> bool:
