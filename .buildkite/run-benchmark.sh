@@ -36,7 +36,7 @@ fi
 : "${BENCHMARK_RESULTS_URL:?must be set}"
 
 # Download benchmark-runner binary from GCS
-BENCHMARK_RUNNER="/tmp/benchmark-runner"
+BENCHMARK_RUNNER="${BENCHMARK_RUNNER:-/tmp/benchmark-runner}"
 if [[ ! -x "$BENCHMARK_RUNNER" ]]; then
   echo "--- :rust: Download benchmark-runner"
   ARTIFACT_BUCKET="${ARTIFACT_GCS_BUCKET:-chalk-ci-artifact-cache}"
@@ -45,6 +45,10 @@ if [[ ! -x "$BENCHMARK_RUNNER" ]]; then
 fi
 
 PYPERF_OUTPUT="$(mktemp /tmp/benchmark-XXXXXX.json)"
+cleanup() {
+  rm -f "$PYPERF_OUTPUT"
+}
+trap cleanup EXIT
 export CHALK_BENCHMARK_PYPERF_OUTPUT="$PYPERF_OUTPUT"
 
 echo "--- :bar_chart: Run benchmark: ${CASE_NAME}"
@@ -70,7 +74,5 @@ UPLOAD_ARGS=(
 
 echo "--- :rocket: Upload results: ${CASE_NAME}"
 "$BENCHMARK_RUNNER" "${UPLOAD_ARGS[@]}"
-
-rm -f "$PYPERF_OUTPUT"
 
 exit "$BENCHMARK_EXIT"

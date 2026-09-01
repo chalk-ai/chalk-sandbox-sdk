@@ -13,10 +13,14 @@ from typing import Any
 import uuid
 
 from chalkcompute import Image, Sandbox, SandboxNotFoundError, Volume, VolumeError
+from e2etests.volume.benchmarks.results import run_benchmark
+from e2etests.volume.benchmarks.runtime import run_sandbox
 
 MOUNT_PATH = "/model-download"
 WORKER_DEST = "/opt/chalk/benchmarks/model-download-worker.py"
 WORKER_SOURCE = Path(__file__).with_name("payloads") / "model_download.py"
+COMMIT_SCRIPT_DEST = "/opt/chalk/benchmarks/commit-volume.sh"
+COMMIT_SCRIPT_SOURCE = Path(__file__).with_name("payloads") / "commit.sh"
 RESULT_PATH = "reconstruction-result.json"
 COMMIT_RESULT_PATH = "commit-result.json"
 MODES = ("direct", "sequential")
@@ -30,7 +34,7 @@ python3 "$1" \
   --extent-mib "$6" >"$2/reconstruction.log" 2>&1
 benchmark_status=$?
 commit_started_ns=$(date +%s%N)
-"$2/.chalk-volume/commit"
+/bin/sh "$7" "$2" "$2/reconstruction.log"
 commit_status=$?
 commit_finished_ns=$(date +%s%N)
 commit_elapsed_ns=$((commit_finished_ns - commit_started_ns))
@@ -71,21 +75,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout-secs", type=positive_int, default=1800)
     parser.add_argument("--keep-volumes", action="store_true")
     return parser.parse_args()
-
-
-def _wait_for_completion(
-    sandbox: Sandbox, timeout_secs: int, poll_interval: float = 1
-) -> tuple[str, str | None]:
-    deadline = time.monotonic() + timeout_secs
-    while time.monotonic() < deadline:
-        info = sandbox.refresh()
-        print(f"Sandbox {sandbox.id} status: {info.status}", flush=True)
-        if info.status not in ("pending", "running"):
-            return info.status, info.status_message
-        time.sleep(poll_interval)
-    raise TimeoutError(
-        f"Sandbox {sandbox.id} did not complete within {timeout_secs} seconds"
-    )
 
 
 def _read_mode_result(
@@ -170,8 +159,15 @@ def build_pyperf_results(
 
 
 def _run_mode(mode: str, args: argparse.Namespace, volume: Volume) -> ModeResult:
-    image = Image("python:3.12-slim").add_local_file(
-        str(WORKER_SOURCE), WORKER_DEST, mode=0o755, strategy="copy"
+    image = (
+        Image("python:3.12-slim")
+        .add_local_file(str(WORKER_SOURCE), WORKER_DEST, mode=0o755, strategy="copy")
+        .add_local_file(
+            str(COMMIT_SCRIPT_SOURCE),
+            COMMIT_SCRIPT_DEST,
+            mode=0o755,
+            strategy="copy",
+        )
     )
     sandbox = Sandbox(
         image=image,
@@ -189,15 +185,17 @@ def _run_mode(mode: str, args: argparse.Namespace, volume: Volume) -> ModeResult
             str(args.large_shard_mib),
             str(args.small_shard_mib),
             str(args.extent_mib),
+            COMMIT_SCRIPT_DEST,
         ],
     ).run(timeout=600)
     try:
-        status, status_message = _wait_for_completion(sandbox, args.timeout_secs)
-        if status != "succeeded":
-            detail = f": {status_message}" if status_message else ""
-            raise RuntimeError(
-                f"Model-download {mode} sandbox completed with status {status}{detail}"
-            )
+        run_sandbox(
+            sandbox,
+            args.timeout_secs,
+            f"model-download {mode}",
+            log_volume=volume,
+            log_path="reconstruction.log",
+        )
     finally:
         try:
             sandbox.terminate()
@@ -215,9 +213,7 @@ def _delete_volume(volume: Volume) -> None:
 
 def main() -> None:
     args = parse_args()
-    output_path = os.environ.get("CHALK_BENCHMARK_PYPERF_OUTPUT")
-    if not output_path:
-        raise RuntimeError("CHALK_BENCHMARK_PYPERF_OUTPUT must be set")
+    output_path = Path(os.environ["CHALK_BENCHMARK_PYPERF_OUTPUT"])
 
     run_id = uuid.uuid4().hex[:12]
     volumes = {
@@ -227,7 +223,7 @@ def main() -> None:
         for volume in volumes.values():
             volume.reload()
         results = {mode: _run_mode(mode, args, volumes[mode]) for mode in MODES}
-        Path(output_path).write_text(
+        output_path.write_text(
             json.dumps(build_pyperf_results(results, args), sort_keys=True)
         )
     finally:
@@ -239,4 +235,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run_benchmark("volume-model-download", main)

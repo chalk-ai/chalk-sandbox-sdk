@@ -19,34 +19,48 @@ from chalkcompute import (
     VolumeError,
     VolumeFileNotFoundError,
 )
+from e2etests.volume.benchmarks.results import run_benchmark
+from e2etests.volume.benchmarks.runtime import run_sandbox
 
 MODEL_MOUNT_PATH = "/model"
 RESULTS_MOUNT_PATH = "/results"
 SCRIPT_DEST = "/opt/chalk/benchmarks/model-load-benchmark.sh"
 SCRIPT_SOURCE = Path(__file__).with_name("payloads") / "model_load.sh"
+COMMIT_SCRIPT_DEST = "/opt/chalk/benchmarks/commit-volume.sh"
+COMMIT_SCRIPT_SOURCE = Path(__file__).with_name("payloads") / "commit.sh"
 PREPARE_MARKER = "shard-count"
 
 PREPARE_ENTRYPOINT = """
 "$1" prepare "$2" >"$2/prepare.log" 2>&1
 benchmark_status=$?
-"$2/.chalk-volume/commit"
+/bin/sh "$3" "$2" "$2/prepare.log"
 commit_status=$?
+"$2/.chalk-volume/commit"
+log_commit_status=$?
 if [ "$benchmark_status" -ne 0 ]; then
   exit "$benchmark_status"
 fi
-exit "$commit_status"
+if [ "$commit_status" -ne 0 ]; then
+  exit "$commit_status"
+fi
+exit "$log_commit_status"
 """
 
 READ_ENTRYPOINT = """
 mkdir -p "$3"
 "$1" read "$2" "$3" "$4" >"$3/jobs-$4.log" 2>&1
 benchmark_status=$?
-"$5/.chalk-volume/commit"
+/bin/sh "$6" "$5" "$3/jobs-$4.log"
 commit_status=$?
+"$5/.chalk-volume/commit"
+log_commit_status=$?
 if [ "$benchmark_status" -ne 0 ]; then
   exit "$benchmark_status"
 fi
-exit "$commit_status"
+if [ "$commit_status" -ne 0 ]; then
+  exit "$commit_status"
+fi
+exit "$log_commit_status"
 """
 
 
@@ -96,29 +110,6 @@ def result_names(jobs: tuple[int, ...]) -> tuple[str, ...]:
             f"warm-read-jobs-{job_count}",
         )
     )
-
-
-def _wait_for_completion(
-    sandbox: Sandbox, timeout_secs: int, poll_interval: float = 1
-) -> tuple[str, str | None]:
-    deadline = time.monotonic() + timeout_secs
-    while time.monotonic() < deadline:
-        info = sandbox.refresh()
-        print(f"Sandbox {sandbox.id} status: {info.status}", flush=True)
-        if info.status not in ("pending", "running"):
-            return info.status, info.status_message
-        time.sleep(poll_interval)
-    raise TimeoutError(
-        f"Sandbox {sandbox.id} did not complete within {timeout_secs} seconds"
-    )
-
-
-def _run_sandbox(sandbox: Sandbox, timeout_secs: int, phase: str) -> None:
-    status, status_message = _wait_for_completion(sandbox, timeout_secs)
-    if status == "succeeded":
-        return
-    detail = f": {status_message}" if status_message else ""
-    raise RuntimeError(f"{phase} sandbox completed with status {status}{detail}")
 
 
 def _wait_for_snapshot_file(
@@ -212,6 +203,12 @@ def _benchmark_image() -> Image:
             "&& rm -rf /var/lib/apt/lists/*"
         )
         .add_local_file(str(SCRIPT_SOURCE), SCRIPT_DEST, mode=0o755, strategy="copy")
+        .add_local_file(
+            str(COMMIT_SCRIPT_SOURCE),
+            COMMIT_SCRIPT_DEST,
+            mode=0o755,
+            strategy="copy",
+        )
     )
 
 
@@ -235,10 +232,17 @@ def _prepare_model_volume(
             "model-load-prepare",
             SCRIPT_DEST,
             MODEL_MOUNT_PATH,
+            COMMIT_SCRIPT_DEST,
         ],
     ).run(timeout=600)
     try:
-        _run_sandbox(sandbox, args.timeout_secs, "model preparation")
+        run_sandbox(
+            sandbox,
+            args.timeout_secs,
+            "model preparation",
+            log_volume=volume,
+            log_path="prepare.log",
+        )
     finally:
         try:
             sandbox.terminate()
@@ -279,10 +283,17 @@ def _run_read_passes(
             result_dir,
             str(jobs),
             RESULTS_MOUNT_PATH,
+            COMMIT_SCRIPT_DEST,
         ],
     ).run(timeout=600)
     try:
-        _run_sandbox(sandbox, args.timeout_secs, f"model read jobs={jobs}")
+        run_sandbox(
+            sandbox,
+            args.timeout_secs,
+            f"model read jobs={jobs}",
+            log_volume=results,
+            log_path=f"jobs-{jobs}/jobs-{jobs}.log",
+        )
     finally:
         try:
             sandbox.terminate()
@@ -321,9 +332,7 @@ def _delete_volume(volume: Volume) -> None:
 
 def main() -> None:
     args = parse_args()
-    output_path = os.environ.get("CHALK_BENCHMARK_PYPERF_OUTPUT")
-    if not output_path:
-        raise RuntimeError("CHALK_BENCHMARK_PYPERF_OUTPUT must be set")
+    output_path = Path(os.environ["CHALK_BENCHMARK_PYPERF_OUTPUT"])
 
     run_id = uuid.uuid4().hex[:12]
     model_volume = Volume(f"sandbox-model-load-{run_id}")
@@ -344,7 +353,7 @@ def main() -> None:
             _run_read_passes(model_snapshot, results_volume, image, args, jobs)
 
         results = _read_results(results_volume, args.jobs)
-        Path(output_path).write_text(
+        output_path.write_text(
             json.dumps(
                 build_pyperf_results(results, args, model_version_id), sort_keys=True
             )
@@ -358,4 +367,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run_benchmark("volume-model-load", main)

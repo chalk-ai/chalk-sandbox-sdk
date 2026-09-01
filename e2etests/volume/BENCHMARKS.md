@@ -116,6 +116,9 @@ Common keys:
 | `sandbox_cpu` | string | Requested sandbox CPU |
 | `sandbox_memory` | string | Requested sandbox memory |
 | `volume_version_id` | integer | Relevant committed volume version when present |
+| `benchmark_error_count` | integer | `0` for success or `1` for a recorded non-fatal benchmark error |
+| `request_type` | string | Benchmark case that made the failed request |
+| `error_type` | string | Stable error classification |
 
 Fio and model-load keys:
 
@@ -166,7 +169,13 @@ benchmark module
 ```
 
 The database row identifies the suite, case, run, branch, source, and timing
-statistics. Additional pyperf metadata is available in `metrics`.
+statistics. Additional pyperf metadata is available in `metrics`. When sandbox
+creation fails because all registered host-pool capacity is allocated, the
+benchmark wrapper writes a `benchmark-status` run with `benchmark_error_count=1`
+and exits successfully. Successful attempts write the same run with
+`benchmark_error_count=0`. Exhausted volume write spools are handled the same
+way for reporting with `error_type=volume-spool-exhausted`, but remain hard
+benchmark failures. Other errors also remain benchmark failures.
 
 ## Running
 
