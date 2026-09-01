@@ -24,11 +24,22 @@ Usage:
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
+import time
 from typing import TYPE_CHECKING, Any, Callable, overload
 
+from protobuf import Oneof
+from protobuf.wkt import Struct, Value
+
+from chalkcompute._connect import ConnectClient, build_image
 from chalkcompute._containerspec import ContainerSpec
+from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
+from chalkcompute._gen.chalk.server.v1 import (
+    training_runs_connect as tr_connect,
+    training_runs_pb as tr_pb,
+)
 
 if TYPE_CHECKING:
     from chalkcompute._image import Image as _Image
@@ -37,6 +48,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _CHALK_TRAINING_RUN_ID_ENV = "CHALK_TRAINING_RUN_ID"
+_DEFAULT_POLL_INTERVAL = 5.0
 
 
 class TrainingError(Exception):
@@ -59,6 +71,115 @@ def _validate_data_source(
 
 def _is_inside_training_container() -> bool:
     return os.environ.get(_CHALK_TRAINING_RUN_ID_ENV) is not None
+
+
+def _config_to_struct(config: Any) -> Struct | None:
+    if config is None:
+        return None
+    if isinstance(config, dict):
+        return Struct.from_python(config)
+    if dataclasses.is_dataclass(config) and not isinstance(config, type):
+        return Struct.from_python(dataclasses.asdict(config))
+    raise TrainingError(
+        f"config must be a dict or dataclass, got {type(config).__name__}"
+    )
+
+
+def _metadata_to_proto(metadata: dict[str, Any]) -> dict[str, Value]:
+    return {k: Value.from_python(v) for k, v in metadata.items()}
+
+
+def _secret_to_proto(secret: _Secret) -> container_pb.SecretRef:
+    source = None
+    if secret._integration_name is not None:
+        source = Oneof("integration_name", secret._integration_name)
+    elif secret._secret_name is not None:
+        source = Oneof("secret_name", secret._secret_name)
+    return container_pb.SecretRef(
+        source=source,  # ty: ignore[invalid-argument-type]
+        keys=list(secret._keys),
+        aliases=dict(secret._aliases),
+        prefix=secret._prefix,
+    )
+
+
+_TERMINAL_STATUSES = frozenset(
+    {
+        tr_pb.TrainingRunStatus.COMPLETED,
+        tr_pb.TrainingRunStatus.FAILED,
+        tr_pb.TrainingRunStatus.CANCELED,
+    }
+)
+
+
+class TrainingRunHandle:
+    """Handle for a submitted training run.
+
+    Returned by :meth:`TrainingFunction.run_training`. Provides polling
+    for status and a blocking :meth:`wait` helper.
+    """
+
+    def __init__(self, run_id: str, client: ConnectClient) -> None:
+        self._run_id = run_id
+        self._client = client
+
+    @property
+    def run_id(self) -> str:
+        return self._run_id
+
+    def status(self) -> tr_pb.TrainingRunStatus:
+        """Fetch the current status of this training run."""
+        return self._get_run().status
+
+    def _get_run(self) -> tr_pb.TrainingRun:
+        stub = self._client.stub(tr_connect.TrainingRunServiceClientSync)
+        resp = self._client.call(
+            stub.get_training_run,
+            tr_pb.GetTrainingRunRequest(training_run_id=self._run_id),
+        )
+        if resp.training_run is None:
+            raise TrainingError(f"training run {self._run_id} not found")
+        return resp.training_run
+
+    def wait(
+        self,
+        *,
+        poll_interval: float = _DEFAULT_POLL_INTERVAL,
+        timeout: float | None = None,
+    ) -> tr_pb.TrainingRun:
+        """Block until the training run reaches a terminal state.
+
+        Returns the final :class:`TrainingRun` proto. Raises
+        :class:`TrainingError` if the run failed or was canceled.
+        """
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            run = self._get_run()
+            if run.status in _TERMINAL_STATUSES:
+                if run.status == tr_pb.TrainingRunStatus.FAILED:
+                    raise TrainingError(
+                        f"training run {self._run_id} failed: {run.error_message}"
+                    )
+                if run.status == tr_pb.TrainingRunStatus.CANCELED:
+                    raise TrainingError(f"training run {self._run_id} was canceled")
+                return run
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"training run {self._run_id} timed out "
+                    f"(last status: {run.status.name})"
+                )
+            time.sleep(poll_interval)
+
+    def cancel(self) -> None:
+        """Cancel this training run."""
+        stub = self._client.stub(tr_connect.TrainingRunServiceClientSync)
+        self._client.call(
+            stub.cancel_training_run,
+            tr_pb.CancelTrainingRunRequest(training_run_id=self._run_id),
+        )
+
+    def __repr__(self) -> str:
+        return f"TrainingRunHandle(run_id={self._run_id!r})"
 
 
 class TrainingFunction:
@@ -148,17 +269,68 @@ class TrainingFunction:
         """
         return self._func(None, config, **kwargs)
 
-    def run_training(self, *, config: Any = None) -> Any:  # noqa: ARG002
+    def run_training(
+        self,
+        *,
+        config: Any = None,
+        client: ConnectClient | None = None,
+    ) -> TrainingRunHandle:
         """Submit a training run to chalkcompute.
 
-        Returns a TrainingRunHandle (CHA-10117) that can poll for
-        status and stream logs.
-
-        This method is a stub — the RPC integration is CHA-10115.
+        Parameters
+        ----------
+        config
+            A dataclass or dict passed as the training config. Serialized
+            to a ``google.protobuf.Struct`` for the RPC.
+        client
+            An authenticated :class:`ConnectClient`. One is created
+            automatically if not provided.
         """
-        raise NotImplementedError(
-            "run_training() requires TrainingRunHandle (CHA-10117) "
-            "and RPC integration (CHA-10115)"
+        if client is None:
+            client = ConnectClient()
+
+        image_uri: str | None = None
+        if self._image is not None:
+            image_uri = build_image(client, self._image)
+
+        data_source = self._build_data_source()
+        resources = self._build_resources()
+        secret_refs = [_secret_to_proto(s) for s in self._secrets]
+        meta = _metadata_to_proto(self._metadata) if self._metadata else None
+
+        request = tr_pb.CreateTrainingRunRequest(
+            name=self._name,
+            data=data_source,
+            config=_config_to_struct(config),
+            resources=resources,
+            image=image_uri,
+            env=self._env or None,
+            secret_refs=secret_refs or None,
+            meta_data=meta,
+        )
+
+        stub = client.stub(tr_connect.TrainingRunServiceClientSync)
+        resp = client.call(stub.create_training_run, request, timeout=60.0)
+        if resp.training_run is None:
+            raise TrainingError("CreateTrainingRun returned no training run")
+        run_id = resp.training_run.id
+        logger.info("Created training run %s", run_id)
+        return TrainingRunHandle(run_id, client)
+
+    def _build_data_source(self) -> tr_pb.TrainingRunDataSource:
+        if self._input_sql is not None:
+            source = Oneof("input_sql", self._input_sql)
+        else:
+            source = Oneof("dataset_name", self._data or self._dataset or "")
+        return tr_pb.TrainingRunDataSource(source=source)  # ty: ignore[invalid-argument-type]
+
+    def _build_resources(self) -> container_pb.ResourceLimits | None:
+        if self._cpu is None and self._memory is None and self._gpu is None:
+            return None
+        return container_pb.ResourceLimits(
+            cpu=self._cpu,
+            memory=self._memory,
+            gpu=self._gpu,
         )
 
 
