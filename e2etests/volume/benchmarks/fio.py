@@ -20,11 +20,15 @@ from chalkcompute import (
     VolumeError,
     VolumeFileNotFoundError,
 )
+from e2etests.volume.benchmarks.results import run_benchmark
+from e2etests.volume.benchmarks.runtime import run_sandbox
 
 MOUNT_PATH = "/volume"
 BENCHMARK_DIR = f"{MOUNT_PATH}/fio-benchmark"
 FIO_SCRIPT_DEST = "/opt/chalk/benchmarks/fio-benchmark.sh"
 FIO_SCRIPT_SOURCE = Path(__file__).with_name("payloads") / "fio.sh"
+COMMIT_SCRIPT_DEST = "/opt/chalk/benchmarks/commit-volume.sh"
+COMMIT_SCRIPT_SOURCE = Path(__file__).with_name("payloads") / "commit.sh"
 RESULTS_DIR = "fio-benchmark/results"
 LOG_PATH = f"{RESULTS_DIR}/benchmark.log"
 COMMIT_RESULT_PATH = f"{RESULTS_DIR}/volume-commit.json"
@@ -34,7 +38,7 @@ mkdir -p "$2/results"
 "$1" "$2" >"$2/results/benchmark.log" 2>&1
 benchmark_status=$?
 commit_started_ns=$(date +%s%N)
-"$3/.chalk-volume/commit"
+/bin/sh "$4" "$3" "$2/results/benchmark.log"
 commit_status=$?
 commit_finished_ns=$(date +%s%N)
 commit_elapsed_ns=$((commit_finished_ns - commit_started_ns))
@@ -94,33 +98,6 @@ def positive_int(value: str) -> int:
     if parsed < 1:
         raise argparse.ArgumentTypeError("must be a positive integer")
     return parsed
-
-
-def _wait_for_completion(
-    sandbox: Sandbox, timeout_secs: int, poll_interval: float = 1
-) -> tuple[str, str | None]:
-    deadline = time.monotonic() + timeout_secs
-    while time.monotonic() < deadline:
-        info = sandbox.refresh()
-        print(f"Sandbox {sandbox.id} status: {info.status}", flush=True)
-        if info.status not in ("pending", "running"):
-            return info.status, info.status_message
-        # unideal, but exec streams are not stable yet
-        time.sleep(poll_interval)
-    raise TimeoutError(
-        f"Sandbox {sandbox.id} did not complete within {timeout_secs} seconds"
-    )
-
-
-def _read_volume_file(volume: Volume, path: str, timeout_secs: int = 60) -> bytes:
-    deadline = time.monotonic() + timeout_secs
-    while True:
-        try:
-            return volume.read_file(path)
-        except VolumeFileNotFoundError:
-            if time.monotonic() >= deadline:
-                raise
-            time.sleep(2)
 
 
 def _read_committed_results(
@@ -266,9 +243,7 @@ def build_pyperf_results(
 
 def main() -> None:
     args = parse_args()
-    output_path = os.environ.get("CHALK_BENCHMARK_PYPERF_OUTPUT")
-    if not output_path:
-        raise RuntimeError("CHALK_BENCHMARK_PYPERF_OUTPUT must be set")
+    output_path = Path(os.environ["CHALK_BENCHMARK_PYPERF_OUTPUT"])
 
     generated_volume = args.volume is None
     volume_name = args.volume or f"sandbox-volume-fio-{uuid.uuid4().hex[:12]}"
@@ -285,6 +260,12 @@ def main() -> None:
             .add_local_file(
                 str(FIO_SCRIPT_SOURCE),
                 FIO_SCRIPT_DEST,
+                mode=0o755,
+                strategy="copy",
+            )
+            .add_local_file(
+                str(COMMIT_SCRIPT_SOURCE),
+                COMMIT_SCRIPT_DEST,
                 mode=0o755,
                 strategy="copy",
             )
@@ -309,19 +290,17 @@ def main() -> None:
                 FIO_SCRIPT_DEST,
                 BENCHMARK_DIR,
                 MOUNT_PATH,
+                COMMIT_SCRIPT_DEST,
             ],
         ).run(timeout=600)
         print(f"Running fio in sandbox {sandbox.id} on volume {volume_name}")
-        status, status_message = _wait_for_completion(sandbox, args.timeout_secs)
-        if status != "succeeded":
-            try:
-                log = _read_volume_file(volume, LOG_PATH).decode(errors="replace")
-            except VolumeFileNotFoundError:
-                print(f"No benchmark log found at {LOG_PATH}", file=sys.stderr)
-            else:
-                print(log, end="" if log.endswith("\n") else "\n", flush=True)
-            detail = f": {status_message}" if status_message else ""
-            raise RuntimeError(f"fio sandbox completed with status {status}{detail}")
+        run_sandbox(
+            sandbox,
+            args.timeout_secs,
+            "fio",
+            log_volume=volume,
+            log_path=LOG_PATH,
+        )
 
         committed = _read_committed_results(volume)
         print(
@@ -335,7 +314,7 @@ def main() -> None:
             end="" if committed.log.endswith("\n") else "\n",
             flush=True,
         )
-        Path(output_path).write_text(
+        output_path.write_text(
             json.dumps(build_pyperf_results(committed, args), sort_keys=True)
         )
     finally:
@@ -356,4 +335,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run_benchmark("volume-fio", main)
