@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -22,11 +23,12 @@ from chalkcompute._volume import (
     Volume,
     VolumeClient,
     VolumeMount,
+    _BATCH_MAX_FILES,
     _CHUNK_MAX_RETRIES,
     _CHUNK_CONCURRENCY,
     _CHUNK_SIZE_BYTES,
+    _COMMIT_MAX_REBASE_RETRIES,
     _FILE_CONCURRENCY,
-    _INLINE_THRESHOLD_BYTES,
     _MAX_PACK_BYTES,
     _RATE_LIMIT_MAX_RETRIES,
     _read_file_response,
@@ -56,12 +58,20 @@ def _version_proto(version_id: int = 10) -> pb_v2.VersionInfo:
     )
 
 
-def _status_proto(version_id: int = 11) -> pb_v2.CommitStatus:
-    return pb_v2.CommitStatus(
-        commit_id="commit-1",
-        result=pb_v2.CommitResult.COMMITTED,
-        version=_version_proto(version_id),
-    )
+def _status_dict(
+    version_id: int = 11,
+    *,
+    ref: str = "main",
+) -> dict[str, Any]:
+    return {
+        "commit_id": "commit-1",
+        "result": "committed",
+        "version": {
+            "version_id": version_id,
+            "ref": ref,
+            "commit_id": f"commit-{version_id}",
+        },
+    }
 
 
 def _get_volume_response(
@@ -76,32 +86,20 @@ def _get_volume_response(
 def _prepare_upload(
     client: VolumeClient,
     *,
-    volume: str = "models",
     ref: str | None = None,
     version_id: int = 11,
 ) -> None:
-    client._native_inner.stage.return_value = object()
-    client._native_inner.staged_intent.return_value = pb_v2.CommitIntent(
-        volume=pb_v2.VolumeRef(name=volume),
-        ref=ref,
-        deltas=Oneof("path_deltas", pb_v2.PathDeltaList()),
-    ).to_binary()
-    client._rpc.commit_version.return_value = pb_v2.CommitVersionResponse(
-        status=_status_proto(version_id)
-    )
+    client._inner.upload.return_value = [_status_dict(version_id, ref=ref or "main")]
 
 
 def _make_client(monkeypatch: pytest.MonkeyPatch) -> VolumeClient:
     monkeypatch.setattr(vv, "_NativeVolumeRpcError", RuntimeError)
     client = object.__new__(VolumeClient)
     client._closed = False
-    client._token = "token"
-    client._env_id = "env-1"
-    client._commit_author = None
+    client._owns_connect = False
     client._extra_headers = []
     client._chalk_server = "go-api"
-    client._owns_connect = False
-    client._native_inner = MagicMock()
+    client._inner = MagicMock()
     client._connect = MagicMock()
     client._connect._access_token = "token"
     client._connect._env_id = "env-1"
@@ -160,7 +158,6 @@ def test_client_from_connect_uses_connect_http_endpoint(
     client = VolumeClient.from_connect(connect)
 
     connect._ensure_auth.assert_called_once()
-    assert client._endpoint == "https://api.chalk.ai"
     # commit_author is None so the native client derives the agent URN
     # from the credentials.
     native.assert_called_once_with(
@@ -170,10 +167,11 @@ def test_client_from_connect_uses_connect_http_endpoint(
         None,
         [],
         "go-api",
+        client._refresh_token,
     )
 
 
-def test_client_from_connect_rebuilds_after_identity_token_rotation(
+def test_client_from_connect_refreshes_rotated_identity_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     native = MagicMock()
@@ -187,25 +185,15 @@ def test_client_from_connect_rebuilds_after_identity_token_rotation(
         def _ensure_auth(self) -> None:
             pass
 
-        def _uses_web_identity_token(self) -> bool:
-            return True
-
     connect = RotatingConnect()
     client = VolumeClient.from_connect(connect)  # type: ignore[arg-type]
     connect._access_token = "token-two"
     connect._env_id = "env-two"
 
-    _ = client._inner
+    token = client._refresh_token()
 
-    assert native.call_count == 2
-    native.assert_called_with(
-        "https://api.chalk.ai",
-        "token-two",
-        "env-two",
-        None,
-        [],
-        "go-api",
-    )
+    assert token == "token-two"
+    assert native.call_count == 1
 
 
 def test_accepts_explicit_client_and_gets_existing_volume_lazily(
@@ -269,22 +257,22 @@ def test_put_file_delegates_to_native_upload(monkeypatch: pytest.MonkeyPatch) ->
 
     vol.put_file("models/latest.bin", "hello")
 
-    client._native_inner.stage.assert_called_once_with(
+    client._inner.upload.assert_called_once_with(
         "models",
         [("models/latest.bin", b"hello")],
         {
             "chunk_size": _CHUNK_SIZE_BYTES,
-            "inline_threshold": _INLINE_THRESHOLD_BYTES,
             "max_pack_bytes": _MAX_PACK_BYTES,
             "file_concurrency": _FILE_CONCURRENCY,
             "chunk_concurrency": _CHUNK_CONCURRENCY,
-            "batch_size": 1,
+            "batch_size": _BATCH_MAX_FILES,
             "max_chunk_retries": _CHUNK_MAX_RETRIES,
             "max_rate_limit_retries": _RATE_LIMIT_MAX_RETRIES,
+            "max_commit_retries": _COMMIT_MAX_REBASE_RETRIES,
         },
+        None,
     )
-    client._native_inner.staged_intent.assert_called_once()
-    client._rpc.commit_version.assert_called_once()
+    client._rpc.commit_version.assert_not_called()
     assert vol.version == VersionInfo(id=11, ref="main", commit_id="commit-11")
 
 
@@ -300,13 +288,17 @@ def test_batch_upload_microbatches_by_file_count(
         for index in range(5):
             batch.put(f"data/{index}.txt", f"value-{index}")
 
-    calls = client._native_inner.stage.call_args_list
+    calls = client._inner.upload.call_args_list
     assert [call.args[1] for call in calls] == [
         [("data/0.txt", b"value-0"), ("data/1.txt", b"value-1")],
         [("data/2.txt", b"value-2"), ("data/3.txt", b"value-3")],
         [("data/4.txt", b"value-4")],
     ]
-    assert [call.args[2]["batch_size"] for call in calls] == [2, 2, 1]
+    assert [call.args[2]["batch_size"] for call in calls] == [
+        _BATCH_MAX_FILES,
+        _BATCH_MAX_FILES,
+        _BATCH_MAX_FILES,
+    ]
 
 
 def test_batch_upload_creates_missing_volume_before_flush(
@@ -327,7 +319,7 @@ def test_batch_upload_creates_missing_volume_before_flush(
         batch.put("data/train.csv", "id,label\n")
 
     client._rpc.create_volume.assert_called_once()
-    client._native_inner.stage.assert_called_once()
+    client._inner.upload.assert_called_once()
 
 
 def test_batch_upload_rejects_invalid_microbatch_size(
@@ -353,7 +345,7 @@ def test_put_file_from_path_passes_path_to_native(
 
     Volume("models", client=client).put_file_from_path("model.bin", src)
 
-    assert client._native_inner.stage.call_args.args[1] == [("model.bin", src)]
+    assert client._inner.upload.call_args.args[1] == [("model.bin", src)]
 
 
 def test_read_file_delegates_to_native_download(
@@ -393,7 +385,7 @@ def test_at_version_is_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(VolumeError, match="read-only"):
         vol.put_file("model.bin", b"new")
 
-    client._native_inner.stage.assert_not_called()
+    client._inner.upload.assert_not_called()
 
 
 def test_at_ref_opens_mutable_ref_handle(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -470,7 +462,7 @@ def test_fork_writes_and_lists_versions_on_its_ref(
     fork.put_file("result.txt", b"done")
     versions = fork.versions()
 
-    assert client._native_inner.staged_intent.call_args.args[-1] == "sandbox-a"
+    assert client._inner.upload.call_args.args[-1] == "sandbox-a"
     versions_request = client._rpc.list_volume_versions.call_args.args[0]
     assert versions_request.ref == "sandbox-a"
     assert [version.id for version in versions] == [8]
@@ -566,7 +558,7 @@ def test_closed_volume_operations_raise(monkeypatch: pytest.MonkeyPatch) -> None
             pass
 
     client._rpc.get_volume.assert_not_called()
-    client._native_inner.stage.assert_not_called()
+    client._inner.upload.assert_not_called()
 
 
 def test_listdir_recurses_through_typed_rpc_pages(
@@ -688,77 +680,78 @@ def test_signed_download_translates_timeout(
         vv._read_file_from_signed_uri("https://storage/chunk")
 
 
-def test_proto_commit_status_conversion() -> None:
-    assert vv._proto_to_commit_status(_status_proto()) == CommitStatus(
+def test_dict_commit_status_conversion() -> None:
+    created_at_ms = 1_700_000_000_123
+    assert vv._dict_to_commit_status(
+        {
+            "commit_id": "commit-1",
+            "result": "committed",
+            "version": {
+                "version_id": 11,
+                "parent_id": 10,
+                "created_at_ms": created_at_ms,
+                "ref": "main",
+                "commit_id": "commit-11",
+            },
+            "latest_version": {
+                "version_id": 12,
+                "ref": "main",
+                "commit_id": "commit-12",
+            },
+            "created_at_ms": created_at_ms,
+        }
+    ) == CommitStatus(
         commit_id="commit-1",
         result="committed",
-        version=VersionInfo(id=11, ref="main", commit_id="commit-11"),
+        version=VersionInfo(
+            id=11,
+            parent_id=10,
+            created_at=vv._ms_to_datetime(created_at_ms),
+            ref="main",
+            commit_id="commit-11",
+        ),
+        latest_version=VersionInfo(id=12, ref="main", commit_id="commit-12"),
+        created_at=vv._ms_to_datetime(created_at_ms),
     )
 
 
-def test_commit_intent_retries_with_fresh_typed_base(
+def test_empty_files_skip_native_upload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = _make_client(monkeypatch)
-    client._rpc.get_volume.side_effect = [
-        _get_volume_response(version_id=10),
-        _get_volume_response(version_id=11),
-    ]
-    requests: list[pb_v2.CommitVersionRequest] = []
-    responses = iter(
-        [
-            pb_v2.CommitVersionResponse(
-                status=pb_v2.CommitStatus(
-                    commit_id="rebase",
-                    result=pb_v2.CommitResult.REBASE_REQUIRED,
-                )
-            ),
-            pb_v2.CommitVersionResponse(status=_status_proto(12)),
-        ]
+
+    assert client._upload("models", []) == []
+    client._inner.upload.assert_not_called()
+
+
+def test_native_commit_error_preserves_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._inner.upload.side_effect = RuntimeError(
+        "aborted", "commit retries exhausted"
     )
 
-    def commit(request: pb_v2.CommitVersionRequest) -> pb_v2.CommitVersionResponse:
-        requests.append(pb_v2.CommitVersionRequest.from_binary(request.to_binary()))
-        return next(responses)
+    with pytest.raises(VolumeError, match="commit retries exhausted") as raised:
+        client._upload("models", [("model.bin", b"data")])
 
-    client._rpc.commit_version.side_effect = commit
-    intent = pb_v2.CommitIntent(
-        volume=pb_v2.VolumeRef(name="models"),
-        deltas=Oneof("path_deltas", pb_v2.PathDeltaList()),
-    )
-
-    status = client._commit_intent(intent, max_commit_retries=2)
-
-    assert status.version is not None
-    assert status.version.id == 12
-    assert [
-        request.intent.base_version_id for request in requests if request.intent
-    ] == [
-        10,
-        11,
-    ]
-    assert (
-        len({request.intent.commit_id for request in requests if request.intent}) == 2
-    )
+    assert raised.value.code == "aborted"
 
 
-def test_remove_file_stages_no_data_and_commits_typed_delta(
+def test_remove_file_delegates_to_native_remove_files(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = _make_client(monkeypatch)
     client._rpc.get_volume.return_value = _get_volume_response()
-    _prepare_upload(client)
+    client._inner.remove_files.return_value = _status_dict()
 
     Volume("models", client=client).remove_file("old/model.bin")
 
-    client._native_inner.stage.assert_called_once_with("models", [], None)
-    request = client._rpc.commit_version.call_args.args[0]
-    assert request.intent is not None
-    assert request.intent.deltas == Oneof(
-        "path_deltas",
-        pb_v2.PathDeltaList(
-            removes=[pb_v2.PathRemoveDelta(path="old/model.bin", recursive=False)]
-        ),
+    client._inner.remove_files.assert_called_once_with(
+        "models",
+        [("old/model.bin", False)],
+        _COMMIT_MAX_REBASE_RETRIES,
+        None,
     )
 
 
@@ -796,9 +789,18 @@ def test_stage_lazy_files_creates_source_code_volume_and_returns_intent(
         )
     )
 
-    (staged_name, source), _ = client._inner.stage.call_args
-    assert staged_name == "fn-src-add-app"
-    assert source == [("f.txt", Path(str(src)))]
+    staged = client._inner.stage.return_value
+    client._inner.stage.assert_called_once_with(
+        "fn-src-add-app",
+        [("f.txt", Path(str(src)))],
+        vv._default_upload_config(),
+    )
+    client._inner.staged_intent.assert_called_once_with(
+        "fn-src-add-app",
+        staged,
+        None,
+        [],
+    )
 
     assert intents == [intent]
     assert len(volumes) == 1
@@ -815,13 +817,27 @@ def test_stage_lazy_files_reuses_volume_and_replaces_base_tree(
     image, _src = _lazy_image(tmp_path)
     client = _make_client(monkeypatch)
     client._rpc.get_volume.return_value = _get_volume_response("fn-src-add-app")
-    intent = pb_v2.CommitIntent(volume=pb_v2.VolumeRef(name="fn-src-add-app"))
+    intent = pb_v2.CommitIntent(
+        volume=pb_v2.VolumeRef(name="fn-src-add-app"),
+        deltas=Oneof(
+            "path_deltas",
+            pb_v2.PathDeltaList(
+                removes=[pb_v2.PathRemoveDelta(path="/", recursive=True)]
+            ),
+        ),
+    )
     client._inner.staged_intent.return_value = intent.to_binary()
 
     volumes, intents = client.stage_lazy_files(image, volume_name="fn-src-add")
 
     client._rpc.create_volume.assert_not_called()
     assert volumes[0].name == "fn-src-add-app"
+    client._inner.staged_intent.assert_called_once_with(
+        "fn-src-add-app",
+        client._inner.stage.return_value,
+        None,
+        [("/", True)],
+    )
     # A recursive root remove tells the server to build the version from
     # an empty tree plus the upserts.
     assert intents[0].deltas is not None
