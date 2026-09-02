@@ -16,9 +16,10 @@ import builtins
 import datetime
 import importlib
 import logging
+import math
 import os
 import uuid
-from collections.abc import Generator, Iterable, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,8 @@ from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
 
 from chalkcompute._connect import ConnectClient
+from chalkcompute._gen.chalk.manager.v1 import dataset_download_connect
+from chalkcompute._gen.chalk.manager.v1 import dataset_download_pb
 from chalkcompute._gen.chalk.volume.v2 import volume_connect
 from chalkcompute._gen.chalk.volume.v2 import volume_pb as pb_v2
 from chalkcompute._http import HTTP_TRANSPORT_ERRORS, SYNC_HTTP_CLIENT
@@ -208,6 +211,21 @@ _CHUNK_CONCURRENCY: int = _TRANSFER_MAX_WORKERS
 _CHUNK_MAX_RETRIES: int = 3
 _RATE_LIMIT_MAX_RETRIES: int = 8
 _BATCH_MAX_FILES: int = 200
+_DATASET_INGEST_MAX_FILES: int = 500
+_DATASET_INGEST_MAX_BYTES: int = 4 * 1024 * 1024 * 1024
+
+
+def _dataset_output_path(object_path: str, dest_prefix: str = "") -> str:
+    """Map a dataset output object path to a volume path."""
+    _, separator, relative = object_path.partition("/outputs/")
+    if not separator or not relative:
+        raise ValueError(f"invalid dataset output path {object_path!r}")
+    relative_parts = relative.split("/")
+    prefix = dest_prefix.strip("/")
+    prefix_parts = prefix.split("/") if prefix else []
+    if any(part in ("", ".", "..") for part in [*prefix_parts, *relative_parts]):
+        raise ValueError(f"invalid dataset output path {object_path!r}")
+    return "/".join([*prefix_parts, *relative_parts])
 
 
 def _default_upload_config() -> dict[str, int]:
@@ -643,6 +661,159 @@ class Volume:
         )
         yield batch
         batch._flush()
+
+    @traced("chalkcompute.volume.load_dataset")
+    def load_dataset(
+        self,
+        source: str | object,
+        *,
+        dest_prefix: str = "",
+        timeout: float = 600.0,
+        max_attempts: int = 3,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> VersionInfo:
+        """Copy a Chalk Dataset revision into a volume.
+
+        Only the revision's output parquet files are ingested with
+        matching partitioning.
+
+        Parameters
+        ----------
+        source
+            Revision id or an object with a ``revision_id`` attribute.
+        dest_prefix
+            Optional destination directory within the volume.
+        timeout
+            Deadline in seconds for each dataset download-URI stream.
+        max_attempts
+            Number of full stream passes after staging failures. Each new pass
+            obtains fresh signed URLs and skips files already staged.
+        on_progress
+            Optional callback receiving cumulative staged file and byte counts.
+
+        Returns
+        -------
+        VersionInfo
+            The newly committed volume version.
+        """
+        self._ensure_mutable()
+        revision_id = (
+            source if isinstance(source, str) else getattr(source, "revision_id", None)
+        )
+        if not isinstance(revision_id, str) or not revision_id.strip():
+            raise ValueError("source must be a revision id or have a revision_id")
+        if not isinstance(dest_prefix, str):
+            raise TypeError("dest_prefix must be a string")
+        if (
+            not isinstance(timeout, (int, float))
+            or isinstance(timeout, bool)
+            or not math.isfinite(timeout)
+            or timeout <= 0
+        ):
+            raise ValueError("timeout must be a positive finite number")
+        if (
+            not isinstance(max_attempts, int)
+            or isinstance(max_attempts, bool)
+            or max_attempts <= 0
+        ):
+            raise ValueError("max_attempts must be a positive integer")
+        if on_progress is not None and not callable(on_progress):
+            raise TypeError("on_progress must be callable")
+
+        self._ensure_ready()
+        revision_id = revision_id.strip()
+        staged: Any | None = None
+        staged_paths: set[str] = set()
+        staged_files = 0
+        staged_bytes = 0
+        stub = self._client._connect.stub(
+            dataset_download_connect.DatasetDownloadServiceClientSync
+        )
+
+        for attempt in range(1, max_attempts + 1):
+            batch: list[tuple[str, str, int]] = []
+            batch_bytes = 0
+
+            def stage_batch() -> None:
+                nonlocal batch, batch_bytes, staged, staged_files, staged_bytes
+                if not batch:
+                    return
+                next_staged = self._client._inner.stage_remote(
+                    self._name,
+                    batch,
+                    None,
+                )
+                if staged is None:
+                    staged = next_staged
+                else:
+                    staged.extend(next_staged)
+                staged_paths.update(path for path, _, _ in batch)
+                staged_files += len(batch)
+                staged_bytes += batch_bytes
+                batch = []
+                batch_bytes = 0
+                if on_progress is not None:
+                    on_progress(staged_files, staged_bytes)
+
+            try:
+                stream = self._client._connect.call(
+                    stub.stream_dataset_download_ur_is,
+                    dataset_download_pb.StreamDatasetDownloadURIsRequest(
+                        revision_id=revision_id
+                    ),
+                    timeout=float(timeout),
+                )
+                for entry in stream:
+                    path = _dataset_output_path(entry.object_path, dest_prefix)
+                    if path in staged_paths:
+                        continue
+                    if entry.size_bytes < 0:
+                        raise VolumeError(
+                            f"Dataset download returned a negative size for {path!r}"
+                        )
+                    batch.append((path, entry.signed_url, entry.size_bytes))
+                    batch_bytes += entry.size_bytes
+                    if (
+                        len(batch) >= _DATASET_INGEST_MAX_FILES
+                        or batch_bytes >= _DATASET_INGEST_MAX_BYTES
+                    ):
+                        stage_batch()
+                stage_batch()
+                break
+            except _native_error_types() as exc:
+                if attempt == max_attempts:
+                    _raise_volume_error(exc, self._name)
+                logger.warning(
+                    "Dataset load staging failed on attempt %d/%d: %s",
+                    attempt,
+                    max_attempts,
+                    _native_error_message(exc),
+                )
+            except ConnectRpcError as exc:
+                if attempt == max_attempts:
+                    _raise_connect_volume_error(exc, self._name)
+                logger.warning(
+                    "Dataset load stream failed on attempt %d/%d: %s",
+                    attempt,
+                    max_attempts,
+                    exc,
+                )
+
+        if staged is None:
+            raise VolumeError(
+                f"Dataset revision {revision_id!r} yielded no output files"
+            )
+        try:
+            status = self._client._inner.commit_staged(
+                self._name,
+                staged,
+                None,
+                _COMMIT_MAX_REBASE_RETRIES,
+                self._selector_ref(),
+            )
+        except _native_error_types() as exc:
+            _raise_volume_error(exc, self._name)
+        return self._update_version_from_statuses([_dict_to_commit_status(status)])
 
     def versions(self, *, limit: int = 100) -> list[VersionInfo]:
         """List all versions of this volume.

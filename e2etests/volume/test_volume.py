@@ -11,6 +11,7 @@ import pytest
 
 from chalkcompute import (
     ConnectClient,
+    DatasetClient,
     Volume,
     VolumeClient,
     VolumeError,
@@ -66,6 +67,37 @@ def test_put_file_from_path(volume: Volume, tmp_path) -> None:
     volume.put_file_from_path(LOCAL_NOTES_PATH, local_path)
 
     assert volume.read_file(LOCAL_NOTES_PATH) == local_notes.encode()
+
+
+def test_load_dataset_round_trip(volume: Volume, tmp_path) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    source_path = tmp_path / "source.parquet"
+    pq.write_table(
+        pa.table({"id": [1, 2], "label": ["approved", "declined"]}),
+        source_path,
+    )
+    source_bytes = source_path.read_bytes()
+    revision = DatasetClient().upload(
+        f"a-test-dataset-{uuid.uuid4().hex[:8]}",
+        source_path,
+    )
+
+    first = volume.load_dataset(revision, dest_prefix="training")
+    parquet_files = [
+        item
+        for item in volume.listdir("training")
+        if item.kind == "file" and item.path.endswith(".parquet")
+    ]
+
+    assert len(parquet_files) == 1
+    assert volume.read_file(parquet_files[0].path) == source_bytes
+
+    second = volume.load_dataset(revision, dest_prefix="training")
+
+    assert second.id != first.id
+    assert volume.read_file(parquet_files[0].path) == source_bytes
 
 
 def test_versions_include_committed_writes(volume: Volume) -> None:

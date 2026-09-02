@@ -9,6 +9,7 @@ from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
 
 from chalkcompute._gen.chalk.volume.v2 import volume_pb as pb_v2
+from chalkcompute._gen.chalk.manager.v1 import dataset_download_pb
 from chalkcompute._volume import (
     VolumeClosedError,
     VolumeError,
@@ -31,6 +32,7 @@ from chalkcompute._volume import (
     _FILE_CONCURRENCY,
     _MAX_PACK_BYTES,
     _RATE_LIMIT_MAX_RETRIES,
+    _dataset_output_path,
     _read_file_response,
 )
 
@@ -331,6 +333,109 @@ def test_batch_upload_rejects_invalid_microbatch_size(
     with pytest.raises(ValueError, match="max_files_per_commit"):
         with vol.batch_upload(max_files_per_commit=0):
             pass
+
+
+@pytest.mark.parametrize(
+    ("object_path", "dest_prefix", "expected"),
+    [
+        (
+            "env_dev/job_1/query_2/outputs/partition_0/shard_1/chunk_2.parquet",
+            "",
+            "partition_0/shard_1/chunk_2.parquet",
+        ),
+        (
+            "env_dev/job_1/query_2/outputs/partition_0/shard_1/chunk_2.parquet",
+            "/training/run-1/",
+            "training/run-1/partition_0/shard_1/chunk_2.parquet",
+        ),
+    ],
+)
+def test_dataset_output_path(object_path: str, dest_prefix: str, expected: str) -> None:
+    assert _dataset_output_path(object_path, dest_prefix) == expected
+
+
+@pytest.mark.parametrize(
+    "object_path",
+    [
+        "env_dev/job_1/query_2/givens/chunk.parquet",
+        "env_dev/job_1/query_2/outputs/../chunk.parquet",
+    ],
+)
+def test_dataset_output_path_rejects_invalid_paths(object_path: str) -> None:
+    with pytest.raises(ValueError, match="invalid dataset output path"):
+        _dataset_output_path(object_path)
+
+
+def test_load_dataset_retries_and_commits_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._rpc.get_volume.return_value = _get_volume_response()
+    entries = [
+        dataset_download_pb.StreamDatasetDownloadURIsResponse(
+            signed_url=f"https://objects/{index}",
+            object_path=(
+                "env_dev/job_1/query_2/outputs/"
+                f"partition_0/shard_0/chunk_{index}.parquet"
+            ),
+            size_bytes=index + 1,
+        )
+        for index in range(3)
+    ]
+    client._rpc.stream_dataset_download_ur_is.side_effect = [entries, entries]
+    first_staged = MagicMock()
+    final_staged = MagicMock()
+    client._inner.stage_remote.side_effect = [
+        first_staged,
+        RuntimeError("unavailable", "signed URL expired"),
+        final_staged,
+    ]
+    client._inner.commit_staged.return_value = _status_dict()
+    monkeypatch.setattr(vv, "_DATASET_INGEST_MAX_FILES", 2)
+    progress: list[tuple[int, int]] = []
+    vol = Volume("models", client=client)
+
+    version = vol.load_dataset(
+        type("Revision", (), {"revision_id": "revision-1"})(),
+        dest_prefix="dataset",
+        on_progress=lambda files, size: progress.append((files, size)),
+    )
+
+    assert version == VersionInfo(id=11, ref="main", commit_id="commit-11")
+    assert client._rpc.stream_dataset_download_ur_is.call_count == 2
+    stage_calls = client._inner.stage_remote.call_args_list
+    assert len(stage_calls) == 3
+    assert [item[0] for item in stage_calls[0].args[1]] == [
+        "dataset/partition_0/shard_0/chunk_0.parquet",
+        "dataset/partition_0/shard_0/chunk_1.parquet",
+    ]
+    assert [item[0] for item in stage_calls[1].args[1]] == [
+        "dataset/partition_0/shard_0/chunk_2.parquet"
+    ]
+    assert stage_calls[2].args[1] == stage_calls[1].args[1]
+    first_staged.extend.assert_called_once_with(final_staged)
+    client._inner.commit_staged.assert_called_once_with(
+        "models",
+        first_staged,
+        None,
+        _COMMIT_MAX_REBASE_RETRIES,
+        None,
+    )
+    assert progress == [(2, 3), (3, 6)]
+
+
+def test_load_dataset_rejects_empty_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._rpc.get_volume.return_value = _get_volume_response()
+    client._rpc.stream_dataset_download_ur_is.return_value = []
+
+    with pytest.raises(VolumeError, match="yielded no output files"):
+        Volume("models", client=client).load_dataset("revision-1")
+
+    client._inner.stage_remote.assert_not_called()
+    client._inner.commit_staged.assert_not_called()
 
 
 def test_put_file_from_path_passes_path_to_native(
