@@ -73,6 +73,12 @@ class VolumeNativeClient:
         source: Any,
         config: dict[str, Any] | None = None,
     ) -> StagedFiles: ...
+    def stage_remote(
+        self,
+        volume: str,
+        source: Sequence[tuple[str, str, int] | tuple[str, str, int, dict[str, Any]]],
+        config: dict[str, Any] | None = None,
+    ) -> StagedFiles: ...
     def staged_intent(
         self,
         volume: str,
