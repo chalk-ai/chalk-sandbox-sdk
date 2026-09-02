@@ -25,7 +25,6 @@ _LOCAL_SDK_COPY_EXCLUDES = [
     "**/target/**",
 ]
 _LOCAL_SDK_RUNTIME_PACKAGES = [
-    "blake3>=1.0.0",
     "pyyaml>=6.0.0",
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",
