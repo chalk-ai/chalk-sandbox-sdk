@@ -14,6 +14,7 @@ import pytest
 from protobuf import Oneof
 from chalk_remote_call.arrow_utils import decode_ipc_stream, encode_record_batch
 
+from chalkcompute._evaluation import Criterion, Rubric
 from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
 from chalkcompute._cls import _generate_class_handler_shim
 from chalkcompute._evaluation import EvaluationScorerResult
@@ -789,3 +790,49 @@ class TestShimViaRemoteCallLib:
             [{}, {}],
         )
         assert _decode_result_column(payloads) == [[11], [22, 33]]
+
+
+class TestRubricScorer:
+    """The generated shim encodes rubric criteria with no shim-side changes.
+
+    The rubric reaches the pod only as the deployed function's return
+    annotation, and the shim resolves its encoder from that annotation, so
+    this is what pins the two halves together.
+    """
+
+    def _rubric(self):
+        return Rubric(
+            Criterion("directness", scale=(0, 2), description="Shortest path?"),
+            Criterion("task_correctness", scale=(0, 2)),
+        )
+
+    def _judge_module(self, rubric, scores):
+        from chalkcompute._function import _bind_rubric
+
+        def judge(output: str) -> EvaluationScorerResult:
+            return EvaluationScorerResult(score=0.5, criteria=scores)
+
+        _bind_rubric(judge, rubric, label="judge")
+        _install_user_module(judge=judge)
+
+    def test_handler_encodes_criteria(self):
+        rubric = self._rubric()
+        self._judge_module(rubric, {"directness": 2, "task_correctness": 1})
+        ns = _load_shim(_generate_handler_shim("judge"))
+
+        results = ns["handler"]({"output": pa.array(["done"])}, None)
+
+        assert len(results) == 1
+        assert results[0].as_py() == {
+            "score": 0.5,
+            "metadata": None,
+            "criteria": {"directness": 2.0, "task_correctness": 1.0},
+        }
+        assert results[0].type.equals(rubric.pyarrow_type())
+
+    def test_handler_fails_the_row_when_a_criterion_is_missing(self):
+        self._judge_module(self._rubric(), {"directness": 2})
+        ns = _load_shim(_generate_handler_shim("judge"))
+
+        with pytest.raises(ValueError, match="task_correctness"):
+            ns["handler"]({"output": pa.array(["done"])}, None)

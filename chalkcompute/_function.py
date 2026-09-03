@@ -116,6 +116,7 @@ from chalkcompute._volume import (
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from chalkcompute._evaluation import Rubric as _Rubric
     from chalkcompute._image import Image as _Image
     from chalkcompute._scaling_group import CronScalingTrigger as _CronScalingTrigger
     from chalkcompute._scaling_group import ReadinessProbe as _ReadinessProbe
@@ -2312,6 +2313,44 @@ def _compile_catalog_argument_binder(
     )
 
 
+def _bind_rubric(func: Callable[..., Any], rubric: Any, *, label: str) -> None:
+    """Install a rubric's result subclass as ``func``'s return annotation.
+
+    Rewriting the annotation is the whole mechanism. ``_build_schemas`` reads
+    the deployed function's hints to derive the catalog schema, and the
+    generated worker shim resolves its encoder from the same hints inside the
+    pod, so binding here carries the rubric to both without either of them
+    knowing that rubrics exist.
+
+    Parameters
+    ----------
+    func
+        The undecorated user function, whose ``__annotations__`` are rewritten.
+    rubric
+        The :class:`~chalkcompute.Rubric` to bind.
+    label
+        Human-readable identifier used in error messages.
+    """
+    from chalkcompute._arrow_serde import unwrap_result_annotation
+    from chalkcompute._evaluation import EvaluationScorerResult, Rubric
+
+    if not isinstance(rubric, Rubric):
+        raise TypeError("rubric must be a chalkcompute.Rubric")
+
+    hints = typing.get_type_hints(func, include_extras=True)
+    declared = unwrap_result_annotation(hints.get("return"))
+    if declared is not EvaluationScorerResult:
+        raise FunctionError(
+            f"{label} passes rubric= but returns {declared!r}; a rubric "
+            f"requires a return annotation of exactly "
+            f"chalkcompute.EvaluationScorerResult, because the rubric becomes "
+            f"the fields of that result's Arrow struct."
+        )
+
+    func.__annotations__["return"] = rubric.bind()
+    setattr(func, "__chalk_rubric__", rubric)
+
+
 # ---------------------------------------------------------------------------
 # RemoteFunction
 # ---------------------------------------------------------------------------
@@ -2405,8 +2444,18 @@ class RemoteFunction:
         schedule: str | None = None,
         tracing: TracingPolicyConfig | None = None,
         models: typing.Mapping[str, Any] | None = None,
+        rubric: _Rubric | None = None,
         chalk_client: Any | None = None,
     ) -> None:
+        # Before anything reads the function's hints: binding rewrites the
+        # return annotation, and the schema and serializer are derived from it.
+        if rubric is not None:
+            _bind_rubric(
+                func,
+                rubric,
+                label=f"Function {getattr(func, '__name__', 'anonymous')!r}",
+            )
+        self._rubric = rubric
         self._func = func
         self._has_local_func = True
         self._func_name = getattr(func, "__name__", "anonymous")
@@ -2724,6 +2773,7 @@ class RemoteFunction:
         f._remote_call_auth_token = None
         f._queue_call_auth_token = None
         f._knowledge_cutoff = None
+        f._rubric = None
         f._background_deploy_future = None
         f._client = ConnectClient(chalk_client=chalk_client)
         return f
@@ -2855,11 +2905,32 @@ class RemoteFunction:
 
     # -- Lifecycle -------------------------------------------------------------
 
+    def _assert_rubric_deployable(self) -> None:
+        """Reject a rubric in strip mode, where the pod has no chalkcompute.
+
+        A rubric result is encoded by a chalkcompute class, so the deployed
+        image must be able to import it. Strip mode removes the SDK, and the
+        shim swallows the resulting ImportError, so without this the scorer
+        would deploy and then silently record nothing.
+        """
+        if self._rubric is None or not _should_strip_source():
+            return
+        raise FunctionBuildError(
+            f"Function {self._func_name!r} declares a rubric but is being "
+            f"deployed in strip mode (CHALK_FUNCTION_STRIP_SOURCE, or a 0.0.0 "
+            f"source checkout), which removes the chalkcompute SDK from the "
+            f"image -- the deployed scorer could not encode its criteria.\n"
+            f"Deploy from an environment with a published chalkcompute "
+            f"installed, or set CHALK_FUNCTION_LOCAL_SDK_COPY=1 with "
+            f"CHALK_FUNCTION_STRIP_SOURCE=0 to mount the local SDK."
+        )
+
     def _start_background_deploy(self) -> None:
         if self._background_deploy_future is not None:
             raise FunctionError(
                 f"Background deployment already started for {self._func_name!r}"
             )
+        self._assert_rubric_deployable()
         _assert_strip_mode_self_contained(
             self._func, label=f"Function {self._func_name!r}"
         )
@@ -2939,6 +3010,7 @@ class RemoteFunction:
         RemoteFunction
             ``self`` for chaining.
         """
+        self._assert_rubric_deployable()
         self._settle_background_deploy()
         with _manual_deploy_slot(self._explicit_name or self._func_name):
             return self._deploy(
@@ -3986,7 +4058,22 @@ class _NoOpFunction:
     without an explicit ``RemoteFunction.from_name(...)``.
     """
 
-    def __init__(self, func: Callable, *, name: str | None = None) -> None:
+    def __init__(
+        self,
+        func: Callable,
+        *,
+        name: str | None = None,
+        rubric: _Rubric | None = None,
+    ) -> None:
+        # The pod imports the user module through this wrapper, and the shim
+        # reads its encoder off the raw function's hints, so the annotation has
+        # to be rewritten here exactly as it is locally.
+        if rubric is not None:
+            _bind_rubric(
+                func,
+                rubric,
+                label=f"Function {getattr(func, '__name__', 'anonymous')!r}",
+            )
         self._func = func
         self._registered_name = name or getattr(func, "__name__", "anonymous")
         self._remote: RemoteFunction | None = None
@@ -4081,6 +4168,7 @@ def function(
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
+    rubric: _Rubric | None = None,
     tracing: TracingPolicyConfig | None = None,
 ) -> RemoteFunction | _NoOpFunction: ...
 
@@ -4119,6 +4207,7 @@ def function(
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
+    rubric: _Rubric | None = None,
     tracing: TracingPolicyConfig | None = None,
 ) -> Callable[..., RemoteFunction | _NoOpFunction]: ...
 
@@ -4158,6 +4247,7 @@ def function(
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
+    rubric: _Rubric | None = None,
     tracing: TracingPolicyConfig | None = None,
 ) -> Callable[..., RemoteFunction | _NoOpFunction] | RemoteFunction | _NoOpFunction:
     """Decorator that deploys a function as a versioned remote function.
@@ -4275,6 +4365,13 @@ def function(
         without any explicit setup in the function body. For advanced overrides
         (``version``, ``method_name``, ``qualified_name``) call
         :func:`~chalkcompute.bind_model` directly inside the function.
+    rubric
+        Criteria this function grades on, as a
+        :class:`~chalkcompute.Rubric`. Each criterion becomes a field of the
+        returned :class:`~chalkcompute.EvaluationScorerResult` and a column of
+        the evaluation's result dataset, so it is aggregated and compared like
+        the scorer's own score, with its scale and description carried along.
+        Requires a return annotation of exactly ``EvaluationScorerResult``.
     tracing
         Server-side remote-function tracing is enabled by default. Use
         :class:`~chalkcompute.TracingPolicy` for sampling. Set ``False`` to
@@ -4292,7 +4389,7 @@ def function(
 
     def decorator(func: Callable) -> RemoteFunction | _NoOpFunction:
         if os.environ.get(_REMOTE_ENV_VAR):
-            return _NoOpFunction(func, name=name)
+            return _NoOpFunction(func, name=name, rubric=rubric)
 
         f = RemoteFunction(
             func,
@@ -4328,6 +4425,7 @@ def function(
             schedule=schedule,
             tracing=tracing,
             models=models,
+            rubric=rubric,
         )
         f._start_background_deploy()
         return f

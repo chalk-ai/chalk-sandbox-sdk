@@ -31,6 +31,7 @@ from chalkcompute._containerspec import KernelPolicy as KernelPolicy
 from chalkcompute._containerspec import NetworkPolicy as NetworkPolicy
 from chalkcompute._containerspec import RestartPolicy as RestartPolicy
 from chalkcompute._containerspec import SshDest as SshDest
+from chalkcompute._evaluation import Criterion as Criterion
 from chalkcompute._evaluation import DatasetNameLike as DatasetNameLike
 from chalkcompute._evaluation import DatasetRevisionLike as DatasetRevisionLike
 from chalkcompute._evaluation import DatasetRevisionRef as DatasetRevisionRef
@@ -46,6 +47,7 @@ from chalkcompute._evaluation import EvaluationRunStatus as EvaluationRunStatus
 from chalkcompute._evaluation import EvaluationScorer as EvaluationScorer
 from chalkcompute._evaluation import EvaluationScorerResult as EvaluationScorerResult
 from chalkcompute._evaluation import EvaluationSuite as EvaluationSuite
+from chalkcompute._evaluation import Rubric as Rubric
 from chalkcompute._function import DeployedFunction as DeployedFunction
 from chalkcompute._function import FunctionBuildError as FunctionBuildError
 from chalkcompute._function import FunctionCallHandle as FunctionCallHandle
@@ -179,6 +181,7 @@ __all__ = [
     "function",
     "DatasetClient",
     "DatasetError",
+    "Criterion",
     "DatasetNameLike",
     "DatasetRevisionLike",
     "DatasetRevisionRef",
@@ -192,6 +195,7 @@ __all__ = [
     "EvaluationScorer",
     "EvaluationScorerResult",
     "EvaluationSuite",
+    "Rubric",
     "RemoteCallClient",
     "RemoteCallClientUnavailable",
     "bind_model",
