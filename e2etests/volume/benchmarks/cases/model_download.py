@@ -5,22 +5,24 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import json
-import os
 from pathlib import Path
-import sys
-import time
 from typing import Any
-import uuid
 
-from chalkcompute import Image, Sandbox, SandboxNotFoundError, Volume, VolumeError
-from e2etests.volume.benchmarks.results import run_benchmark
-from e2etests.volume.benchmarks.runtime import run_sandbox
+from chalkcompute import Image, Sandbox, Volume, VolumeError
+from e2etests.volume.benchmarks.harness import (
+    positive_int,
+    read_committed_volume,
+    run_benchmark,
+    run_sandbox_workload,
+    temporary_volume,
+)
 
 MOUNT_PATH = "/model-download"
 WORKER_DEST = "/opt/chalk/benchmarks/model-download-worker.py"
-WORKER_SOURCE = Path(__file__).with_name("payloads") / "model_download.py"
+PAYLOADS = Path(__file__).parents[1] / "payloads"
+WORKER_SOURCE = PAYLOADS / "model_download" / "model_download.py"
 COMMIT_SCRIPT_DEST = "/opt/chalk/benchmarks/commit-volume.sh"
-COMMIT_SCRIPT_SOURCE = Path(__file__).with_name("payloads") / "commit.sh"
+COMMIT_SCRIPT_SOURCE = PAYLOADS / "commit.sh"
 RESULT_PATH = "reconstruction-result.json"
 COMMIT_RESULT_PATH = "commit-result.json"
 MODES = ("direct", "sequential")
@@ -58,13 +60,6 @@ class ModeResult:
     commit_seconds: float
 
 
-def positive_int(value: str) -> int:
-    parsed = int(value)
-    if parsed < 1:
-        raise argparse.ArgumentTypeError("must be a positive integer")
-    return parsed
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--large-shard-mib", type=positive_int, default=1024)
@@ -80,25 +75,30 @@ def parse_args() -> argparse.Namespace:
 def _read_mode_result(
     volume: Volume, timeout_secs: int = 120, poll_interval: float = 2
 ) -> ModeResult:
-    deadline = time.monotonic() + timeout_secs
-    while True:
-        try:
-            version_id = volume.latest_version().id
-            snapshot = volume.at_version(version_id)
-            reconstruction = json.loads(snapshot.read_file(RESULT_PATH))
-            commit = json.loads(snapshot.read_file(COMMIT_RESULT_PATH))
-            elapsed_ns = commit["elapsed_ns"]
-            if not isinstance(elapsed_ns, int) or elapsed_ns < 0:
-                raise ValueError("commit timing is invalid")
-            return ModeResult(
-                version_id=version_id,
-                reconstruction=reconstruction,
-                commit_seconds=elapsed_ns / 1_000_000_000,
-            )
-        except (VolumeError, KeyError, ValueError, json.JSONDecodeError):
-            if time.monotonic() >= deadline:
-                raise TimeoutError("Model-download results did not become readable")
-            time.sleep(poll_interval)
+    def read(snapshot: Volume) -> tuple[dict[str, Any], float]:
+        reconstruction = json.loads(snapshot.read_file(RESULT_PATH))
+        commit = json.loads(snapshot.read_file(COMMIT_RESULT_PATH))
+        elapsed_ns = commit["elapsed_ns"]
+        if not isinstance(reconstruction, dict):
+            raise ValueError("reconstruction result is not an object")
+        if not isinstance(elapsed_ns, int) or elapsed_ns < 0:
+            raise ValueError("commit timing is invalid")
+        return reconstruction, elapsed_ns / 1_000_000_000
+
+    committed = read_committed_volume(
+        volume,
+        read,
+        timeout_secs=timeout_secs,
+        poll_interval=poll_interval,
+        retry_errors=(VolumeError, KeyError, ValueError),
+        description="Model-download results",
+    )
+    reconstruction, commit_seconds = committed.value
+    return ModeResult(
+        version_id=committed.version_id,
+        reconstruction=reconstruction,
+        commit_seconds=commit_seconds,
+    )
 
 
 def mode_benchmarks(mode: str, result: ModeResult) -> list[dict[str, Any]]:
@@ -187,51 +187,30 @@ def _run_mode(mode: str, args: argparse.Namespace, volume: Volume) -> ModeResult
             str(args.extent_mib),
             COMMIT_SCRIPT_DEST,
         ],
-    ).run(timeout=600)
-    try:
-        run_sandbox(
-            sandbox,
-            args.timeout_secs,
-            f"model-download {mode}",
-            log_volume=volume,
-            log_path="reconstruction.log",
-        )
-    finally:
-        try:
-            sandbox.terminate()
-        except SandboxNotFoundError:
-            pass
+    )
+    run_sandbox_workload(
+        sandbox,
+        timeout_secs=args.timeout_secs,
+        phase=f"model-download {mode}",
+        log=(volume, "reconstruction.log"),
+    )
     return _read_mode_result(volume)
 
 
-def _delete_volume(volume: Volume) -> None:
-    try:
-        volume.delete()
-    except VolumeError as error:
-        print(f"Unable to delete volume {volume.name}: {error}", file=sys.stderr)
-
-
-def main() -> None:
+def main() -> dict[str, Any]:
     args = parse_args()
-    output_path = Path(os.environ["CHALK_BENCHMARK_PYPERF_OUTPUT"])
 
-    run_id = uuid.uuid4().hex[:12]
-    volumes = {
-        mode: Volume(f"sandbox-model-download-{mode}-{run_id}") for mode in MODES
-    }
-    try:
-        for volume in volumes.values():
-            volume.reload()
+    with (
+        temporary_volume(
+            "sandbox-model-download-direct", keep=args.keep_volumes
+        ) as direct_volume,
+        temporary_volume(
+            "sandbox-model-download-sequential", keep=args.keep_volumes
+        ) as sequential_volume,
+    ):
+        volumes = {"direct": direct_volume, "sequential": sequential_volume}
         results = {mode: _run_mode(mode, args, volumes[mode]) for mode in MODES}
-        output_path.write_text(
-            json.dumps(build_pyperf_results(results, args), sort_keys=True)
-        )
-    finally:
-        if not args.keep_volumes:
-            for volume in volumes.values():
-                _delete_volume(volume)
-        for volume in volumes.values():
-            volume.close()
+        return build_pyperf_results(results, args)
 
 
 if __name__ == "__main__":

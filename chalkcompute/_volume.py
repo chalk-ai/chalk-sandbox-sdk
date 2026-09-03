@@ -18,6 +18,7 @@ import importlib
 import logging
 import math
 import os
+import tempfile
 import uuid
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
@@ -543,6 +544,72 @@ class Volume:
             ref_name=self._selector_ref(),
         )
         self._update_version_from_statuses(statuses)
+        return self
+
+    @traced("chalkcompute.volume.load_git_repo")
+    def load_git_repo(
+        self,
+        url: str,
+        *,
+        dest_prefix: str = "",
+        revision: str = "main",
+    ) -> Volume:
+        """Clone a Git repository and upload its checkout to this volume.
+
+        Requires the ``git`` executable on the local machine. The checkout
+        includes Git metadata so it can be used as a working repository after
+        mounting the volume.
+
+        Parameters
+        ----------
+        url
+            Repository URL accepted by ``git clone``.
+        dest_prefix
+            Destination directory within the volume.
+        revision
+            Branch, tag, or commit SHA to check out.
+        """
+        self._ensure_mutable()
+        if not isinstance(url, str) or not url.strip():
+            raise ValueError("url must be a non-empty string")
+        if not isinstance(dest_prefix, str):
+            raise TypeError("dest_prefix must be a string")
+        prefix_parts = [part for part in dest_prefix.strip("/").split("/") if part]
+        if any(part in (".", "..") for part in prefix_parts):
+            raise ValueError("dest_prefix must not contain '.' or '..'")
+        if not isinstance(revision, str) or not revision.strip():
+            raise ValueError("revision must be a non-empty string")
+
+        with tempfile.TemporaryDirectory(prefix="chalkcompute-git-") as temp_dir:
+            checkout = Path(temp_dir) / "checkout"
+            from chalkcompute._git import GitError, unpack_remote_to_mount
+
+            try:
+                unpack_remote_to_mount(url, checkout, revision)
+            except GitError as exc:
+                raise VolumeError(str(exc)) from exc
+
+            files: list[tuple[str, Path]] = []
+            for local_path in checkout.rglob("*"):
+                relative_path = local_path.relative_to(checkout)
+                if local_path.is_symlink():
+                    raise VolumeError(
+                        f"git clone contains unsupported symbolic link {relative_path!s}"
+                    )
+                if local_path.is_file():
+                    files.append(
+                        ("/".join([*prefix_parts, *relative_path.parts]), local_path)
+                    )
+
+            if not files:
+                raise VolumeError("git clone produced no files to upload")
+            self._ensure_ready()
+            statuses = self._client._upload(
+                self._name,
+                files,
+                ref_name=self._selector_ref(),
+            )
+            self._update_version_from_statuses(statuses)
         return self
 
     def remove_file(self, path: str) -> Volume:

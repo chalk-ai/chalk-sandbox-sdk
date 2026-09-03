@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 
 # Run filesystem I/O tests in a mounted sandbox volume.
-# Usage: FIO_SIZE=1G FIO_JOBS=4 ./payloads/fio.sh /volume/fio-benchmark
+# Usage: FIO_SIZE=1G FIO_JOBS=4 ./fio.sh /volume/fio-benchmark
 # Defaults: /volume/fio-benchmark-<timestamp>, 1G per large-file job, one job.
 
 set -eu
