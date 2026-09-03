@@ -27,6 +27,7 @@ from __future__ import annotations
 import queue
 import signal
 import time
+import uuid
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -47,6 +48,8 @@ from chalkcompute._connect import (
     rpc_address_from_target,
 )
 from chalkcompute._containerspec import (
+    ComputeClass,
+    ContainerSecurityPolicy,
     ContainerSpec,
     NetworkPolicy,
     RestartPolicy,
@@ -65,6 +68,7 @@ from chalkcompute._gen.chalk.sandbox.v2 import service_connect as pb_connect
 from chalkcompute._http import SYNC_HTTP_CLIENT
 from chalkcompute._image import Image
 from chalkcompute._naming import validate_env
+from chalkcompute._secret import Secret, SecretScope, resolve_lazy_secrets
 from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
@@ -80,6 +84,7 @@ from chalkcompute._volume import (
 # would otherwise shadow the builtin ``list`` in class-scope name resolution.
 _GrpcMetadata = list[tuple[str, str]]
 _VolumeList = list[tuple[str, str] | Volume | VolumeMount]
+_SecretList = list[Secret]
 
 
 # ---------------------------------------------------------------------------
@@ -542,10 +547,17 @@ class Sandbox:
         name: str | None = None,
         cpu: str | None = None,
         memory: str | None = None,
+        gpu: str | None = None,
         env: dict[str, str] | None = None,
+        secrets: list[Secret] | None = None,
         volumes: _VolumeList | None = None,
+        port: int | None = None,
         entrypoint: list[str] | None = None,
+        lifetime: str | None = None,
+        security_policy: ContainerSecurityPolicy | None = None,
         network_policy: NetworkPolicy | None = None,
+        compute_class: ComputeClass | None = None,
+        tags: dict[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool = False,
         managed_ssh: Mapping[str, SshDest] | None = None,
@@ -567,17 +579,32 @@ class Sandbox:
             Optional CPU limit, for example ``"2"`` or ``"500m"``.
         memory
             Optional memory limit, for example ``"4Gi"`` or ``"512Mi"``.
+        gpu
+            Optional GPU request, for example ``"nvidia-l4"``.
         env
             Optional environment variables to set in the sandbox.
+        secrets
+            Optional :class:`~chalkcompute.Secret` references to inject.
         volumes
             Optional ``(volume_name, mount_path)`` pairs to mount into the
             sandbox. Each volume must already exist; :meth:`run` fails if one
             is missing.
+        port
+            Optional published port.
         entrypoint
             Optional command to run as the sandbox container's main process.
+        lifetime
+            Optional max lifetime as a protobuf duration string
+            (for example ``"30s"`` or ``"300s"``).
+        security_policy
+            Optional :class:`ContainerSecurityPolicy`.
         network_policy
             Optional network egress policy. Reuses the same
             :class:`NetworkPolicy` type accepted by :class:`Container`.
+        compute_class
+            Optional :class:`ComputeClass` (``K8S`` or ``HOST``).
+        tags
+            Optional labels attached to the sandbox spec.
         restart_policy
             Optional restart behavior. Use :attr:`RestartPolicy.NEVER` or
             :attr:`RestartPolicy.ALWAYS`.
@@ -610,19 +637,28 @@ class Sandbox:
         self._name: str | None = None
         self._cpu: str | None = None
         self._memory: str | None = None
+        self._gpu: str | None = None
         self._env: dict[str, str] = {}
+        self._secrets: list[Secret] = []
+        self._resolved_secrets: list[Secret] = []
         # Existence is checked at run() time, not here.
         self._referenced_volumes: list[VolumeMount] = []
         # Populated at run() time: referenced volumes plus any freshly
         # uploaded volumes.
         self._volumes: list[VolumeMount] = []
         self._volume_client: VolumeClient | None = None
+        self._port: int | None = None
         self._entrypoint: list[str] | None = None
+        self._lifetime: str | None = None
+        self._security_policy: ContainerSecurityPolicy | None = None
         self._network_policy: NetworkPolicy | None = None
+        self._compute_class: ComputeClass | None = None
+        self._tags: dict[str, str] = {}
         self._restart_policy: RestartPolicy | None = None
         self._chalk_identity = False
         self._managed_ssh: dict[str, SshDest] = {}
         self._chalk_client: Any | None = None
+        self._built_image_uri: str | None = None
 
         if client is not None or sandbox_id is not None:
             if (
@@ -630,10 +666,17 @@ class Sandbox:
                 or name is not None
                 or cpu is not None
                 or memory is not None
+                or gpu is not None
                 or env is not None
+                or secrets is not None
                 or volumes is not None
+                or port is not None
                 or entrypoint is not None
+                or lifetime is not None
+                or security_policy is not None
                 or network_policy is not None
+                or compute_class is not None
+                or tags is not None
                 or restart_policy is not None
                 or chalk_identity
                 or managed_ssh is not None
@@ -659,9 +702,16 @@ class Sandbox:
             name=name,
             cpu=cpu,
             memory=memory,
+            gpu=gpu,
             env=env,
             entrypoint=entrypoint,
+            secrets=secrets,
+            port=port,
+            lifetime=lifetime,
+            security_policy=security_policy,
             network_policy=network_policy,
+            compute_class=compute_class,
+            tags=tags,
             restart_policy=restart_policy,
             chalk_identity=chalk_identity,
             managed_ssh=managed_ssh,
@@ -672,14 +722,50 @@ class Sandbox:
         self._name = name
         self._cpu = cpu
         self._memory = memory
+        self._gpu = gpu
         self._env = dict(env) if env else {}
+        self._secrets = list(secrets or [])
         self._referenced_volumes = normalize_volume_refs(volumes)
+        self._port = port
         self._entrypoint = list(entrypoint) if entrypoint is not None else None
+        self._lifetime = lifetime
+        self._security_policy = security_policy
         self._network_policy = network_policy
+        self._compute_class = compute_class
+        self._tags = dict(tags or {})
         self._restart_policy = restart_policy
         self._chalk_identity = chalk_identity
         self._managed_ssh = dict(managed_ssh or {})
         self._chalk_client = chalk_client
+
+    @classmethod
+    def from_id(cls, sandbox_id: str, *, chalk_client: Any | None = None) -> Sandbox:
+        """Attach to an existing sandbox by ID."""
+        client = SandboxClient.from_env(chalk_client=chalk_client)
+        sandbox = client.get(sandbox_id)
+        sandbox.refresh()
+        return sandbox
+
+    @classmethod
+    def from_name(cls, name: str, *, chalk_client: Any | None = None) -> Sandbox:
+        """Attach to an existing sandbox by name."""
+        client = SandboxClient.from_env(chalk_client=chalk_client)
+        matches = [info for info in client.list() if info.name == name]
+        if not matches:
+            raise SandboxNotFoundError(f"Sandbox {name!r} was not found")
+        sandbox = client.get(matches[0].id)
+        sandbox._info = matches[0]
+        sandbox._name = name
+        return sandbox
+
+    @classmethod
+    def list_all(cls, *, chalk_client: Any | None = None) -> list[SandboxInfo]:
+        """List all sandboxes in the current environment."""
+        client = SandboxClient.from_env(chalk_client=chalk_client)
+        try:
+            return client.list()
+        finally:
+            client.close()
 
     @property
     def id(self) -> str | None:
@@ -698,6 +784,16 @@ class Sandbox:
         if self._info is None and self._id is not None:
             self._info = self._fetch_info()
         return self._info
+
+    @property
+    def image_uri(self) -> str | None:
+        """The fully qualified registry URI of the image the sandbox uses.
+
+        Set after :meth:`run` finishes the image build (or, if the sandbox
+        was constructed with a string image reference, equal to that
+        reference). ``None`` before the sandbox has been started.
+        """
+        return self._built_image_uri
 
     def refresh(self) -> SandboxInfo:
         """Force-refresh sandbox info from the server."""
@@ -776,6 +872,7 @@ class Sandbox:
                 poll_interval=poll_interval,
                 timeout=timeout,
             )
+        self._built_image_uri = image
 
         # A missing user-referenced volume fails run().
         connect = self._connect_client(client)
@@ -785,12 +882,24 @@ class Sandbox:
         ]
         # Upload the image's lazy local files (add_local_file / add_local_dir
         # with the default strategy="volume") and mount them alongside.
-        if isinstance(self._image, Image) and self._image.lazy_local_files:
+        lazy_files = (
+            self._image.lazy_local_files if isinstance(self._image, Image) else set()
+        )
+        if lazy_files:
+            assert isinstance(self._image, Image)
             self._volume_client = VolumeClient.from_connect(connect)
             self._volumes += self._volume_client.upload_lazy_files(
                 self._image,
                 volume_prefix="sandbox-files",
             )
+
+        resolved_secrets = self._secrets
+        if any(s.is_lazy for s in self._secrets):
+            scope_name = self._name or f"sandbox-{uuid.uuid4().hex[:8]}"
+            resolved_secrets, _upserted = resolve_lazy_secrets(
+                self._secrets, connect, scope=SecretScope.sandbox(scope_name)
+            )
+        self._resolved_secrets = resolved_secrets
 
         client._instantiate(
             self,
@@ -801,6 +910,9 @@ class Sandbox:
         )
         self._client = client
         self._terminated = False
+
+        if lazy_files:
+            self._wait_for_volume_files(timeout=120.0, poll_interval=5.0)
         return self
 
     def _require_client(self) -> Any:
@@ -1157,6 +1269,26 @@ class Sandbox:
         except ConnectError as e:
             raise SandboxBuildError(str(e)) from e
 
+    def _wait_for_volume_files(
+        self,
+        *,
+        timeout: float = 120.0,
+        poll_interval: float = 0.5,
+    ) -> None:
+        """Poll until at least one uploaded file is visible in the ChalkFS mount."""
+        assert isinstance(self._image, Image)
+        sample = next(iter(self._image.lazy_local_files))
+        probe_path = sample.dest
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            result = self.exec("test", "-f", probe_path)
+            if result.exit_code == 0:
+                return
+            time.sleep(poll_interval)
+        raise SandboxError(
+            f"ChalkFS files not visible after {timeout}s (probed {probe_path})"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Client
@@ -1284,10 +1416,17 @@ class SandboxClient:
         name: str | None = None,
         cpu: str | None = None,
         memory: str | None = None,
+        gpu: str | None = None,
         env: dict[str, str] | None = None,
+        secrets: _SecretList | None = None,
         volumes: _VolumeList | None = None,
+        port: int | None = None,
         entrypoint: _StrList | None = None,
+        lifetime: str | None = None,
+        security_policy: ContainerSecurityPolicy | None = None,
         network_policy: NetworkPolicy | None = None,
+        compute_class: ComputeClass | None = None,
+        tags: dict[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool = False,
         managed_ssh: Mapping[str, SshDest] | None = None,
@@ -1350,10 +1489,17 @@ class SandboxClient:
             name=name,
             cpu=cpu,
             memory=memory,
+            gpu=gpu,
             env=env,
+            secrets=secrets,
             volumes=volumes,
+            port=port,
             entrypoint=entrypoint,
+            lifetime=lifetime,
+            security_policy=security_policy,
             network_policy=network_policy,
+            compute_class=compute_class,
+            tags=tags,
             restart_policy=restart_policy,
             chalk_identity=chalk_identity,
             managed_ssh=managed_ssh,
@@ -1373,12 +1519,23 @@ class SandboxClient:
         spec = ContainerSpec(
             image=image,
             name=sandbox._name,
-            entrypoint=sandbox._entrypoint,
+            entrypoint=(
+                sandbox._entrypoint
+                if sandbox._entrypoint is not None
+                else ["sleep", "infinity"]
+            ),
             cpu=sandbox._cpu,
             memory=sandbox._memory,
+            gpu=sandbox._gpu,
             env=sandbox._env,
             volumes=sandbox._volumes,
+            secret_refs=sandbox._resolved_secrets or sandbox._secrets,
+            port=sandbox._port,
+            lifetime=sandbox._lifetime,
+            security_policy=sandbox._security_policy,
             network_policy=sandbox._network_policy,
+            compute_class=sandbox._compute_class,
+            tags=sandbox._tags,
             restart_policy=sandbox._restart_policy,
             chalk_identity=sandbox._chalk_identity,
             managed_ssh=sandbox._managed_ssh,

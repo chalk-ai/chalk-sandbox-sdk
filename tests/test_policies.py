@@ -401,6 +401,38 @@ class TestScheduleValidationFunction:
         assert tracing is not None
         assert tracing.mode == catalog_pb.TracingMode.ALWAYS_OFF
 
+    def test_remote_class_tracing_is_sent_in_function_config(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        class Worker:
+            @method
+            def run(self) -> None:
+                pass
+
+        client = _CapturingClient()
+        remote_class = RemoteClass(
+            Worker, tracing=TracingPolicy(sample_rate=0.25)
+        )
+        remote_class._client = client  # type: ignore[assignment]
+        monkeypatch.setattr(
+            RemoteClass, "_build_deploy_image", lambda _: (object(), [])
+        )
+        monkeypatch.setattr(
+            cls_mod,
+            "_build_and_upload",
+            lambda *_, **__: ("image:test", [], None, []),
+        )
+
+        remote_class.deploy()
+
+        tracing = (
+            client.requests[0].config.tracing if client.requests[0].config else None
+        )
+        assert tracing is not None
+        assert tracing.mode == catalog_pb.TracingMode.PARENT_BASED_TRACE_ID_RATIO
+        assert tracing.sample_rate == 0.25
+
     def test_tracing_config_included_by_default(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -623,18 +655,111 @@ class TestRemoteClassReplicaValidation:
 
 class TestScalingGroupPortValidation:
     def test_negative_port_rejected(self):
-        with pytest.raises(ValueError, match="port must be in range"):
+        with pytest.raises(ValueError, match="port must be between"):
             ScalingGroup(image=Image.debian_slim(), port=-1)
 
     def test_zero_port_rejected(self):
-        with pytest.raises(ValueError, match="port must be in range"):
+        with pytest.raises(ValueError, match="port must be between"):
             ScalingGroup(image=Image.debian_slim(), port=0)
 
     def test_port_above_max_rejected(self):
-        with pytest.raises(ValueError, match="port must be in range"):
+        with pytest.raises(ValueError, match="port must be between"):
             ScalingGroup(image=Image.debian_slim(), port=65536)
 
     def test_valid_port_accepted(self):
         ScalingGroup(image=Image.debian_slim(), port=8080)
         ScalingGroup(image=Image.debian_slim(), port=1)
         ScalingGroup(image=Image.debian_slim(), port=65535)
+
+
+def test_scaling_group_rejects_min_greater_than_max() -> None:
+    with pytest.raises(ValueError, match="min_replicas.*must be.*max_replicas"):
+        ScalingGroup(image=Image.debian_slim(), min_replicas=5, max_replicas=2)
+
+
+def test_remote_function_forwards_shared_scaling_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from chalkcompute import ReadinessProbe, ScaleFromZeroRequestPolicy
+
+    def add(x: int) -> int:
+        return x
+
+    client = _CapturingClient()
+    fn = RemoteFunction(
+        add,
+        name="shared-fields",
+        tags={"team": "compute"},
+        chalk_identity=True,
+        authenticated=True,
+        readiness_probe=ReadinessProbe.http("/readyz"),
+        scale_from_zero_request_policy=ScaleFromZeroRequestPolicy.HOLD,
+    )
+    fn._client = client  # type: ignore[assignment]
+    monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
+    monkeypatch.setattr(
+        function_mod,
+        "_build_and_upload",
+        lambda *_, **__: ("image:test", [], None, []),
+    )
+
+    fn.deploy()
+
+    spec = client.requests[0].spec
+    assert spec is not None
+    container_spec = spec.container_spec
+    assert container_spec is not None
+    assert dict(container_spec.tags) == {"team": "compute"}
+    assert container_spec.has_field("chalk_workload_identity")
+    assert container_spec.authentication == "AUTHENTICATED"
+    assert container_spec.readiness_probe is not None
+    assert spec.scaling_spec is not None
+    assert (
+        spec.scaling_spec.scale_from_zero_request_policy
+        == sg_pb.ScaleFromZeroRequestPolicy.HOLD
+    )
+
+
+def test_remote_class_forwards_shared_scaling_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from chalkcompute import ReadinessProbe, ScaleFromZeroRequestPolicy
+
+    class Worker:
+        @method
+        def run(self) -> None:
+            pass
+
+    client = _CapturingClient()
+    remote_class = RemoteClass(
+        Worker,
+        name="shared-class",
+        tags={"team": "compute"},
+        chalk_identity=True,
+        authenticated=True,
+        readiness_probe=ReadinessProbe.http("/readyz"),
+        scale_from_zero_request_policy=ScaleFromZeroRequestPolicy.HOLD,
+    )
+    remote_class._client = client  # type: ignore[assignment]
+    monkeypatch.setattr(RemoteClass, "_build_deploy_image", lambda _: (object(), []))
+    monkeypatch.setattr(
+        cls_mod,
+        "_build_and_upload",
+        lambda *_, **__: ("image:test", [], None, []),
+    )
+
+    remote_class.deploy()
+
+    spec = client.requests[0].spec
+    assert spec is not None
+    container_spec = spec.container_spec
+    assert container_spec is not None
+    assert dict(container_spec.tags) == {"team": "compute"}
+    assert container_spec.has_field("chalk_workload_identity")
+    assert container_spec.authentication == "AUTHENTICATED"
+    assert container_spec.readiness_probe is not None
+    assert spec.scaling_spec is not None
+    assert (
+        spec.scaling_spec.scale_from_zero_request_policy
+        == sg_pb.ScaleFromZeroRequestPolicy.HOLD
+    )

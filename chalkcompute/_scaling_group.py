@@ -42,7 +42,8 @@ from protobuf import Oneof
 from protobuf.wkt import FieldMask
 
 from chalkcompute._connect import ConnectClient, build_image
-from chalkcompute._containerspec import ContainerSpec
+from chalkcompute._containerspec import ContainerSpec, validate_replica_and_utilization
+from chalkcompute._deployment_proto import scaling_spec as build_scaling_spec
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_connect as sg_connect
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from chalkcompute._http import HTTPResponse, SYNC_HTTP_CLIENT
@@ -283,6 +284,8 @@ class ScalingGroup:
         target_gpu_utilization_percentage: int | None = None,
         cron_scaling_trigger: CronScalingTrigger | None = None,
         scale_from_zero_request_policy: ScaleFromZeroRequestPolicy | None = None,
+        tags: dict[str, str] | None = None,
+        chalk_identity: bool = False,
         chalk_client: Any | None = None,
     ) -> None:
         if image is None:
@@ -297,6 +300,17 @@ class ScalingGroup:
             gpu=gpu,
             env=env,
             entrypoint=entrypoint,
+            secrets=secrets,
+            port=port,
+            tags=tags,
+            chalk_identity=chalk_identity,
+        )
+        validate_replica_and_utilization(
+            min_replicas=min_replicas,
+            max_replicas=max_replicas,
+            gpu=gpu,
+            target_cpu_utilization_percentage=target_cpu_utilization_percentage,
+            target_gpu_utilization_percentage=target_gpu_utilization_percentage,
         )
         self._image: _Image | str | None = image
         self._name = name
@@ -313,8 +327,6 @@ class ScalingGroup:
         self._owned_volumes: list[VolumeMount] = []
         self._volume_driver: VolumeClient | None = None
         self._entrypoint = list(entrypoint) if entrypoint is not None else None
-        if port is not None and not (1 <= port <= 65535):
-            raise ValueError(f"port must be in range 1–65535, got {port}")
         self._port = port
         self._protocol = protocol
         self._authenticated = authenticated
@@ -324,23 +336,6 @@ class ScalingGroup:
         self._shutdown_delay_seconds = shutdown_delay_seconds
         self._scaling_interval_seconds = scaling_interval_seconds
         self._target_cpu_utilization_percentage = target_cpu_utilization_percentage
-        if target_gpu_utilization_percentage is not None:
-            if not (1 <= target_gpu_utilization_percentage <= 100):
-                raise ValueError(
-                    "target_gpu_utilization_percentage must be in range 1-100, "
-                    f"got {target_gpu_utilization_percentage}"
-                )
-            if gpu is None:
-                raise ValueError(
-                    "target_gpu_utilization_percentage requires gpu to be set"
-                )
-            # The utilization series only exists while replicas do, so a group that
-            # may reach zero would deactivate and never see a sample to scale back up.
-            if min_replicas < 1 and max_replicas != 0:
-                raise ValueError(
-                    "target_gpu_utilization_percentage requires min_replicas >= 1, "
-                    f"got {min_replicas}"
-                )
         self._target_gpu_utilization_percentage = target_gpu_utilization_percentage
         self._cron_scaling_trigger = cron_scaling_trigger
         if scale_from_zero_request_policy is not None and not isinstance(
@@ -350,6 +345,8 @@ class ScalingGroup:
                 "scale_from_zero_request_policy must be a ScaleFromZeroRequestPolicy"
             )
         self._scale_from_zero_request_policy = scale_from_zero_request_policy
+        self._tags = dict(tags or {})
+        self._chalk_identity = chalk_identity
 
         # Set after .deploy()
         self._built_image_uri: str | None = None
@@ -448,6 +445,8 @@ class ScalingGroup:
         sg._target_gpu_utilization_percentage = None
         sg._cron_scaling_trigger = None
         sg._scale_from_zero_request_policy = None
+        sg._tags = {}
+        sg._chalk_identity = False
         sg._built_image_uri = None
         sg._scaling_group_id = None
         sg._scaling_group_info = None
@@ -554,49 +553,26 @@ class ScalingGroup:
                 if self._readiness_probe is not None
                 else None
             ),
+            tags=self._tags,
+            chalk_identity=self._chalk_identity,
         ).to_proto()
 
-        scaling_spec = sg_pb.ScalingSpec(
-            min_replicas=self._min_replicas,
-            max_replicas=self._max_replicas,
-            shutdown_delay_seconds=self._shutdown_delay_seconds,
-            window_seconds=self._scaling_interval_seconds,
-            target_cpu_utilization_percentage=(self._target_cpu_utilization_percentage),
-            gpu_utilization_trigger=(
-                None
-                if self._target_gpu_utilization_percentage is None
-                else sg_pb.GpuUtilizationScalingTrigger(
-                    target_utilization_percentage=(
-                        self._target_gpu_utilization_percentage
-                    )
-                )
-            ),
-            cron_scaling_trigger=(
-                None
-                if self._cron_scaling_trigger is None
-                else sg_pb.CronScalingTrigger(
-                    timezone=self._cron_scaling_trigger.timezone,
-                    windows=[
-                        sg_pb.CronScalingWindow(
-                            start=window.start,
-                            end=window.end,
-                            desired_replicas=window.desired_replicas,
-                        )
-                        for window in self._cron_scaling_trigger.windows
-                    ],
-                )
-            ),
-            scale_from_zero_request_policy=(
-                None
-                if self._scale_from_zero_request_policy is None
-                else sg_pb.ScaleFromZeroRequestPolicy[
-                    self._scale_from_zero_request_policy.name
-                ]
-            ),
-        )
         spec = sg_pb.ScalingGroupSpec(
             container_spec=container_spec,
-            scaling_spec=scaling_spec,
+            scaling_spec=build_scaling_spec(
+                min_replicas=self._min_replicas,
+                max_replicas=self._max_replicas,
+                shutdown_delay_seconds=self._shutdown_delay_seconds,
+                window_seconds=self._scaling_interval_seconds,
+                target_cpu_utilization_percentage=(
+                    self._target_cpu_utilization_percentage
+                ),
+                target_gpu_utilization_percentage=(
+                    self._target_gpu_utilization_percentage
+                ),
+                cron_scaling_trigger=self._cron_scaling_trigger,
+                scale_from_zero_request_policy=self._scale_from_zero_request_policy,
+            ),
         )
 
         logger.info("Deploying scaling group '%s'...", sg_name)

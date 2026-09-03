@@ -88,7 +88,7 @@ def test_gpu_and_cpu_targets_are_both_sent() -> None:
 
 @pytest.mark.parametrize("percentage", [0, -1, 101])
 def test_gpu_target_out_of_range_rejected(percentage: int) -> None:
-    with pytest.raises(ValueError, match="must be in range 1-100"):
+    with pytest.raises(ValueError, match="must be between 1 and 100"):
         ScalingGroup(
             image="ubuntu:latest",
             gpu="nvidia-l4",
