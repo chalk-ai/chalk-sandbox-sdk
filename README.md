@@ -236,16 +236,14 @@ evaluation = cc.Evaluation.create(
 
 ### Rubrics
 
-An LLM judge grades against a rubric, and a bare float hides which part of it
-moved. Declare the criteria and each one becomes a field of the scorer's
-result and a column of the evaluation's result dataset, aggregated and
-compared like the scorer's own score:
+Declare what a judge grades on and each criterion becomes a field of the
+scorer's result and a column of the result dataset -- aggregated and compared
+like the score itself, with its scale and description carried along:
 
 ```python
 RUBRIC = cc.Rubric(
     cc.Criterion("directness", scale=(0, 2), description="Shortest reasonable path to the goal."),
     cc.Criterion("task_correctness", scale=(0, 2), description="Was the task actually completed?"),
-    name="agent-quality-v1",
 )
 
 @cc.function(rubric=RUBRIC)
@@ -254,16 +252,10 @@ def trace_quality(output: str) -> cc.EvaluationScorerResult:
     return RUBRIC.result(graded["scores"], reason=graded["reason"])
 ```
 
-`Rubric.result` checks that the grades are exactly the declared criteria and
-that each falls within its scale, then derives the overall score as the
-weighted mean of the criteria normalized onto `[0, 1]` — so the headline
-number is explainable from the breakdown beneath it. Pass `score=` to set it
-yourself. A scorer that declares a rubric and returns no criteria fails the
-row rather than averaging in as though it had graded.
-
-Each criterion's scale, description, and weight travel with the deployed
-function version, so Chalk can render `1.8 / 2` alongside the sentence the
-judge was asked to apply.
+`Rubric.result` checks the grades against the declared criteria and scales and
+derives the overall score as their weighted, normalized mean (pass `score=` to
+set it). A rubric scorer that returns no criteria fails the row rather than
+averaging in as though it had graded.
 
 `RemoteFunction.from_name` resolves the currently selected version at lookup
 time; evaluation creation then pins that version. `from_id` remains a

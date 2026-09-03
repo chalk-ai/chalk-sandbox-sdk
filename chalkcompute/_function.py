@@ -2314,39 +2314,23 @@ def _compile_catalog_argument_binder(
 
 
 def _bind_rubric(func: Callable[..., Any], rubric: Any, *, label: str) -> None:
-    """Install a rubric's result subclass as ``func``'s return annotation.
+    """Install ``rubric``'s result subclass as ``func``'s return annotation.
 
-    Rewriting the annotation is the whole mechanism. ``_build_schemas`` reads
-    the deployed function's hints to derive the catalog schema, and the
-    generated worker shim resolves its encoder from the same hints inside the
-    pod, so binding here carries the rubric to both without either of them
-    knowing that rubrics exist.
-
-    Parameters
-    ----------
-    func
-        The undecorated user function, whose ``__annotations__`` are rewritten.
-    rubric
-        The :class:`~chalkcompute.Rubric` to bind.
-    label
-        Human-readable identifier used in error messages.
+    The schema builder and the worker shim both read their Arrow contract from
+    the unwrapped function's hints, so rewriting the annotation is the whole
+    mechanism; neither has to know rubrics exist.
     """
     from chalkcompute._arrow_serde import unwrap_result_annotation
     from chalkcompute._evaluation import EvaluationScorerResult, Rubric
 
     if not isinstance(rubric, Rubric):
         raise TypeError("rubric must be a chalkcompute.Rubric")
-
     hints = typing.get_type_hints(func, include_extras=True)
-    declared = unwrap_result_annotation(hints.get("return"))
-    if declared is not EvaluationScorerResult:
+    if unwrap_result_annotation(hints.get("return")) is not EvaluationScorerResult:
         raise FunctionError(
-            f"{label} passes rubric= but returns {declared!r}; a rubric "
-            f"requires a return annotation of exactly "
-            f"chalkcompute.EvaluationScorerResult, because the rubric becomes "
-            f"the fields of that result's Arrow struct."
+            f"{label} passes rubric= and must be annotated to return exactly "
+            "chalkcompute.EvaluationScorerResult"
         )
-
     func.__annotations__["return"] = rubric.bind()
     setattr(func, "__chalk_rubric__", rubric)
 
@@ -2447,8 +2431,7 @@ class RemoteFunction:
         rubric: _Rubric | None = None,
         chalk_client: Any | None = None,
     ) -> None:
-        # Before anything reads the function's hints: binding rewrites the
-        # return annotation, and the schema and serializer are derived from it.
+        # Before the hints are read: binding rewrites the return annotation.
         if rubric is not None:
             _bind_rubric(
                 func,
@@ -2906,24 +2889,16 @@ class RemoteFunction:
     # -- Lifecycle -------------------------------------------------------------
 
     def _assert_rubric_deployable(self) -> None:
-        """Reject a rubric in strip mode, where the pod has no chalkcompute.
-
-        A rubric result is encoded by a chalkcompute class, so the deployed
-        image must be able to import it. Strip mode removes the SDK, and the
-        shim swallows the resulting ImportError, so without this the scorer
-        would deploy and then silently record nothing.
-        """
-        if self._rubric is None or not _should_strip_source():
-            return
-        raise FunctionBuildError(
-            f"Function {self._func_name!r} declares a rubric but is being "
-            f"deployed in strip mode (CHALK_FUNCTION_STRIP_SOURCE, or a 0.0.0 "
-            f"source checkout), which removes the chalkcompute SDK from the "
-            f"image -- the deployed scorer could not encode its criteria.\n"
-            f"Deploy from an environment with a published chalkcompute "
-            f"installed, or set CHALK_FUNCTION_LOCAL_SDK_COPY=1 with "
-            f"CHALK_FUNCTION_STRIP_SOURCE=0 to mount the local SDK."
-        )
+        # A rubric result is encoded by a chalkcompute class; strip mode removes
+        # the SDK from the image and the shim swallows the ImportError, so the
+        # scorer would deploy and silently record nothing.
+        if self._rubric is not None and _should_strip_source():
+            raise FunctionBuildError(
+                f"Function {self._func_name!r} declares a rubric but is deploying "
+                "in strip mode, which leaves no chalkcompute in the image to "
+                "encode it. Install a published chalkcompute in the image, or set "
+                "CHALK_FUNCTION_LOCAL_SDK_COPY=1 with CHALK_FUNCTION_STRIP_SOURCE=0."
+            )
 
     def _start_background_deploy(self) -> None:
         if self._background_deploy_future is not None:
@@ -4065,9 +4040,7 @@ class _NoOpFunction:
         name: str | None = None,
         rubric: _Rubric | None = None,
     ) -> None:
-        # The pod imports the user module through this wrapper, and the shim
-        # reads its encoder off the raw function's hints, so the annotation has
-        # to be rewritten here exactly as it is locally.
+        # Same bind as locally: the shim reads the raw function's hints in-pod.
         if rubric is not None:
             _bind_rubric(
                 func,
@@ -4366,12 +4339,10 @@ def function(
         (``version``, ``method_name``, ``qualified_name``) call
         :func:`~chalkcompute.bind_model` directly inside the function.
     rubric
-        Criteria this function grades on, as a
-        :class:`~chalkcompute.Rubric`. Each criterion becomes a field of the
-        returned :class:`~chalkcompute.EvaluationScorerResult` and a column of
-        the evaluation's result dataset, so it is aggregated and compared like
-        the scorer's own score, with its scale and description carried along.
-        Requires a return annotation of exactly ``EvaluationScorerResult``.
+        :class:`~chalkcompute.Rubric` this scorer grades on. Each criterion
+        becomes a field of the returned ``EvaluationScorerResult`` and a
+        column of the evaluation's result dataset. Requires a return
+        annotation of exactly ``EvaluationScorerResult``.
     tracing
         Server-side remote-function tracing is enabled by default. Use
         :class:`~chalkcompute.TracingPolicy` for sampling. Set ``False`` to

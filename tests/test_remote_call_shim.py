@@ -793,12 +793,7 @@ class TestShimViaRemoteCallLib:
 
 
 class TestRubricScorer:
-    """The generated shim encodes rubric criteria with no shim-side changes.
-
-    The rubric reaches the pod only as the deployed function's return
-    annotation, and the shim resolves its encoder from that annotation, so
-    this is what pins the two halves together.
-    """
+    """The unmodified shim encodes rubric criteria, resolved from the annotation alone."""
 
     def _rubric(self):
         return Rubric(

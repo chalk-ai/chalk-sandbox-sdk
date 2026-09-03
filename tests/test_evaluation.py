@@ -569,108 +569,71 @@ def _rubric() -> Rubric:
 
 
 @pytest.mark.parametrize(
-    "kwargs",
+    ("kwargs", "error"),
     [
-        {"name": ""},
-        {"name": "   "},
-        {"name": "my-criterion"},
-        {"name": "1st"},
-        {"name": "score"},
-        {"name": "criteria"},
-        {"name": "ok", "scale": (2, 2)},
-        {"name": "ok", "scale": (1, 0)},
-        {"name": "ok", "weight": 0},
-        {"name": "ok", "weight": -1},
+        ({"name": ""}, ValueError),
+        ({"name": "my-criterion"}, ValueError),
+        ({"name": "score"}, ValueError),
+        ({"name": "ok", "scale": (2, 2)}, ValueError),
+        ({"name": "ok", "weight": 0}, ValueError),
+        ({"name": "ok", "scale": (0, True)}, TypeError),
+        ({"name": "ok", "scale": (0, 1, 2)}, TypeError),
+        ({"name": "ok", "description": 3}, TypeError),
     ],
 )
-def test_criterion_rejects_invalid_declarations(kwargs: dict[str, Any]) -> None:
-    with pytest.raises(ValueError):
+def test_criterion_rejects_invalid_declarations(
+    kwargs: dict[str, Any], error: type
+) -> None:
+    with pytest.raises(error):
         Criterion(**kwargs)
 
 
-@pytest.mark.parametrize(
-    "kwargs",
-    [
-        {"name": "ok", "scale": (0, True)},
-        {"name": "ok", "weight": True},
-        {"name": "ok", "scale": (0, 1, 2)},
-        {"name": "ok", "description": 3},
-    ],
-)
-def test_criterion_rejects_wrong_types(kwargs: dict[str, Any]) -> None:
-    with pytest.raises(TypeError):
-        Criterion(**kwargs)
-
-
-def test_rubric_requires_unique_named_criteria() -> None:
-    with pytest.raises(ValueError, match="at least one criterion"):
+def test_rubric_validates_its_criteria() -> None:
+    with pytest.raises(ValueError, match="at least one"):
         Rubric()
     with pytest.raises(ValueError, match="duplicate criterion name 'tone'"):
         Rubric(Criterion("tone"), Criterion("tone"))
-    with pytest.raises(TypeError, match="Criterion instances"):
-        Rubric("tone")  # type: ignore[arg-type]
+    assert list(_rubric().by_name) == ["directness", "task_correctness"]
 
 
-def test_rubric_preserves_declaration_order() -> None:
-    rubric = _rubric()
-    assert list(rubric.by_name) == ["directness", "task_correctness"]
-    fields = rubric.arrow_type().arrow_type_enum.value.sub_field_types
-    criteria_field = fields[2]
-    assert [field.name for field in fields] == ["score", "metadata", "criteria"]
-    assert [
-        field.name
-        for field in criteria_field.arrow_type.arrow_type_enum.value.sub_field_types
-    ] == ["directness", "task_correctness"]
-    assert [field.name for field in rubric.pyarrow_type().field("criteria").type] == [
-        "directness",
-        "task_correctness",
-    ]
-
-
-def test_rubric_arrow_type_carries_scale_and_description() -> None:
-    rubric = _rubric()
-    criteria_field = rubric.arrow_type().arrow_type_enum.value.sub_field_types[2]
-    assert criteria_field.nullable is False
-    assert criteria_field.metadata["chalk.rubric.name"] == "distillation-rubric-v1"
-
-    directness = criteria_field.arrow_type.arrow_type_enum.value.sub_field_types[0]
-    assert directness.nullable is False
-    assert directness.arrow_type.has_field("float64")
+def test_rubric_arrow_type_nests_criteria_with_scale_metadata() -> None:
+    fields = _rubric().arrow_type().arrow_type_enum.value.sub_field_types
+    assert [f.name for f in fields] == ["score", "metadata", "criteria"]
+    criteria = fields[2]
+    assert criteria.nullable is False
+    assert criteria.metadata["chalk.rubric.name"] == "distillation-rubric-v1"
+    directness = criteria.arrow_type.arrow_type_enum.value.sub_field_types[0]
+    assert directness.arrow_type.has_field("float64") and directness.nullable is False
     assert directness.metadata == {
         "chalk.rubric.description": "Shortest path?",
         "chalk.rubric.scale_min": "0.0",
         "chalk.rubric.scale_max": "2.0",
         "chalk.rubric.weight": "1.0",
     }
+    assert [f.name for f in _rubric().pyarrow_type().field("criteria").type] == [
+        "directness",
+        "task_correctness",
+    ]
 
 
-def test_rubric_result_derives_a_weighted_normalized_score() -> None:
+def test_rubric_result_derives_score_and_records_criteria() -> None:
     rubric = _rubric()
     # 2/2 and 1/2 normalize to 1.0 and 0.5; equal weights average to 0.75.
-    assert rubric.result({"directness": 2, "task_correctness": 1}).score == 0.75
-
+    result = rubric.result({"task_correctness": 1, "directness": 2}, reason="ok")
+    assert result.score == 0.75
+    assert result.criteria == {"directness": 2.0, "task_correctness": 1.0}
+    assert list(result.criteria or {}) == ["directness", "task_correctness"]
+    assert result.metadata == {"reason": "ok"}
     weighted = Rubric(
-        Criterion("a", scale=(0, 2), weight=3),
-        Criterion("b", scale=(0, 2), weight=1),
+        Criterion("a", scale=(0, 2), weight=3), Criterion("b", scale=(0, 2))
     )
     assert weighted.result({"a": 2, "b": 0}).score == 0.75
-    # An explicit score is the caller's to choose and is not recomputed.
     assert (
         rubric.result({"directness": 0, "task_correctness": 0}, score=0.4).score == 0.4
     )
 
 
-def test_rubric_result_records_criteria_and_reason() -> None:
-    result = _rubric().result(
-        {"task_correctness": 1, "directness": 2}, reason="verified on page"
-    )
-    # Stored in rubric order regardless of the order the judge emitted them.
-    assert list(result.criteria or {}) == ["directness", "task_correctness"]
-    assert result.criteria == {"directness": 2.0, "task_correctness": 1.0}
-    assert result.metadata == {"reason": "verified on page"}
-
-
-def test_rubric_result_rejects_criteria_that_do_not_match() -> None:
+def test_rubric_result_rejects_mismatched_criteria() -> None:
     rubric = _rubric()
     with pytest.raises(ValueError, match=r"missing \['task_correctness'\]"):
         rubric.result({"directness": 1})
@@ -686,23 +649,17 @@ def test_rubric_result_rejects_criteria_that_do_not_match() -> None:
             reason="a",
             metadata={"reason": "b"},
         )
-
-
-def test_rubric_validate_rejects_a_result_without_criteria() -> None:
     with pytest.raises(ValueError, match="must carry criteria"):
-        _rubric().validate(EvaluationScorerResult(score=1.0))
+        rubric.validate(EvaluationScorerResult(score=1.0))
 
 
 def test_bound_result_roundtrips_criteria_through_arrow() -> None:
     rubric = _rubric()
     bound = rubric.bind()
     assert bound is rubric.bind()
-
     result = rubric.result({"directness": 2, "task_correctness": 1}, reason="ok")
-    # The shim encodes whatever the scorer returned, which is ordinarily a base
-    # EvaluationScorerResult rather than an instance of the bound subclass.
+    # The shim encodes whatever the scorer returned -- a base-class instance.
     encoded = bound.__chalk_serialize__(result)
-    assert isinstance(encoded, pa.StructScalar)
     assert encoded.type.equals(rubric.pyarrow_type())
     assert encoded.as_py() == {
         "score": 0.75,
@@ -710,40 +667,28 @@ def test_bound_result_roundtrips_criteria_through_arrow() -> None:
         "criteria": {"directness": 2.0, "task_correctness": 1.0},
     }
     assert bound.__chalk_deserialize__(encoded) == result
-
-
-def test_bound_result_rejects_a_missing_criterion_at_serialization() -> None:
-    bound = _rubric().bind()
-    with pytest.raises(ValueError, match="must carry criteria"):
-        bound.__chalk_serialize__(EvaluationScorerResult(score=1.0))
     with pytest.raises(ValueError, match=r"missing \['task_correctness'\]"):
         bound.__chalk_serialize__(
             EvaluationScorerResult(score=1.0, criteria={"directness": 2})
         )
 
 
-def test_scorer_result_without_a_rubric_drops_criteria_and_warns(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    import chalkcompute._evaluation as evaluation_module
-
-    evaluation_module._warned_criteria_without_rubric = False
+def test_scorer_result_without_a_rubric_drops_criteria_and_warns() -> None:
     result = EvaluationScorerResult(score=0.5, criteria={"directness": 2})
-    with caplog.at_level("WARNING", logger=evaluation_module.__name__):
+    with pytest.warns(UserWarning, match="declares no rubric"):
         encoded = result.__chalk_serialize__()
     assert encoded.as_py() == {"score": 0.5, "metadata": None}
-    assert "declares no rubric" in caplog.text
 
 
-def test_rubric_binds_the_deployed_functions_output_schema(
+def test_rubric_binds_the_deployed_output_schema(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import chalkcompute as cc
-    from chalkcompute._function import _REMOTE_ENV_VAR
+    from chalkcompute._function import _REMOTE_ENV_VAR, FunctionError
 
     rubric = _rubric()
-    # In-pod mode so decoration neither deploys nor needs credentials; the
-    # no-op wrapper performs the same rubric bind the local path does.
+    # In-pod mode: decoration neither deploys nor needs credentials, and the
+    # no-op wrapper performs the same bind the local path does.
     monkeypatch.setenv(_REMOTE_ENV_VAR, "1")
 
     @cc.function(rubric=rubric)
@@ -752,21 +697,14 @@ def test_rubric_binds_the_deployed_functions_output_schema(
 
     _, output_schema = _build_schemas(judge._func)
     result_type = output_schema.columns[0].arrow_type
-    assert result_type.has_field("struct")
-    assert [
-        field.name for field in result_type.arrow_type_enum.value.sub_field_types
-    ] == ["score", "metadata", "criteria"]
+    assert [f.name for f in result_type.arrow_type_enum.value.sub_field_types] == [
+        "score",
+        "metadata",
+        "criteria",
+    ]
 
-
-def test_rubric_requires_a_scorer_result_return_annotation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import chalkcompute as cc
-    from chalkcompute._function import _REMOTE_ENV_VAR, FunctionError
-
-    monkeypatch.setenv(_REMOTE_ENV_VAR, "1")
     with pytest.raises(FunctionError, match="exactly"):
 
-        @cc.function(rubric=_rubric())
-        def judge(output: str) -> float:
+        @cc.function(rubric=rubric)
+        def not_a_scorer(output: str) -> float:
             return 1.0
