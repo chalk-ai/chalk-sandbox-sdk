@@ -322,6 +322,43 @@ def test_remote_function_models_arg_sets_env_var_and_flags_shim(
     assert os.environ.get(MODELS_ENV_VAR) is None  # not leaked into process env
 
 
+def test_remote_class_models_arg_sets_env_var(monkeypatch: pytest.MonkeyPatch):
+    import os
+
+    monkeypatch.setenv("CHALK_REMOTE_FUNCTION", "")
+    monkeypatch.delenv("CHALK_REMOTE_FUNCTION", raising=False)
+    monkeypatch.setenv("CHALK_API_SERVER", "https://api.example.invalid")
+    monkeypatch.setenv("CHALK_CLIENT_ID", "x")
+    monkeypatch.setenv("CHALK_CLIENT_SECRET", "x")
+    monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "x")
+
+    from chalkcompute import RemoteClass, method
+    from chalkcompute._cls import _generate_class_handler_shim
+    from chalkcompute._model import MODELS_ENV_VAR
+
+    class Worker:
+        @method
+        def run(self, text: str) -> str:
+            return text
+
+    rc = RemoteClass(Worker, models={"qwen3-prod-test": pa.list_(pa.float32())})
+    assert MODELS_ENV_VAR in rc._env
+    assert rc._env[MODELS_ENV_VAR]
+    assert os.environ.get(MODELS_ENV_VAR) is None
+
+    shim = _generate_class_handler_shim(
+        class_name="Worker",
+        method_name="run",
+        method_has_self=True,
+        before_name=None,
+        before_has_self=False,
+        after_name=None,
+        after_has_self=False,
+        bind_models=True,
+    )
+    assert shim.startswith("from chalkcompute._model import apply_models_from_env")
+
+
 def test_unexpected_rpc_error_raises_model_error(_no_service_auth):
     client = _FakeClient(
         {"get_scaling_group": ConnectRpcError(Code.INTERNAL, "internal")}

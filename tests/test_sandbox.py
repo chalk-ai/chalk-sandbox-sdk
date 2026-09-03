@@ -151,6 +151,54 @@ def test_sandbox_rejects_non_bool_chalk_identity() -> None:
         )
 
 
+def test_sandbox_client_create_defaults_entrypoint_to_sleep_infinity() -> None:
+    client = SandboxClient()
+    stub = _Stub()
+    client._stub = stub  # type: ignore[assignment]
+    try:
+        sandbox = client.create("python:3.14-slim", wait=False)
+    finally:
+        client.close()
+
+    assert stub.request is not None
+    assert list(stub.request.source.value.entrypoint) == ["sleep", "infinity"]
+    assert sandbox.image_uri == "python:3.14-slim"
+
+
+def test_sandbox_client_create_forwards_container_fields() -> None:
+    from chalkcompute import ComputeClass, ContainerSecurityPolicy, KernelPolicy
+    from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
+
+    client = SandboxClient()
+    stub = _Stub()
+    client._stub = stub  # type: ignore[assignment]
+    try:
+        client.create(
+            "python:3.14-slim",
+            gpu="nvidia-l4",
+            port=8080,
+            lifetime="30s",
+            tags={"team": "compute"},
+            compute_class=ComputeClass.HOST,
+            security_policy=ContainerSecurityPolicy(
+                kernel_policy=KernelPolicy.RESTRICTED
+            ),
+            wait=False,
+        )
+    finally:
+        client.close()
+
+    assert stub.request is not None
+    spec = stub.request.source.value
+    assert spec.resources is not None
+    assert spec.resources.gpu == "nvidia-l4"
+    assert spec.port == 8080
+    assert dict(spec.tags) == {"team": "compute"}
+    assert spec.compute_class == container_pb.ComputeClass.HOST
+    assert spec.security_policy is not None
+    assert spec.has_field("lifetime")
+
+
 def test_sandbox_client_create_propagates_backend_error_details() -> None:
     client = SandboxClient()
     client._stub = _ErrorAfterBuildStub()  # type: ignore[assignment]
@@ -457,6 +505,7 @@ def test_sandbox_uploads_lazy_local_files_to_a_volume(tmp_path) -> None:
     with (
         patch("chalkcompute._sandbox.build_image", return_value="img:built"),
         patch.object(VolumeClient, "from_connect", return_value=volume_client),
+        patch.object(Sandbox, "_wait_for_volume_files"),
     ):
         sandbox.run()
 

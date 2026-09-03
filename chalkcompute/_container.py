@@ -728,7 +728,13 @@ class Container:
             gpu=gpu,
             env=env,
             entrypoint=entrypoint,
+            secrets=secrets,
+            port=port,
+            lifetime=lifetime,
+            security_policy=security_policy,
             network_policy=network_policy,
+            compute_class=compute_class,
+            tags=tags,
         )
         self._image: _Image | str | None = image
         self._name = name
@@ -742,24 +748,9 @@ class Container:
         # Populated at run() time: referenced volumes plus any freshly
         # uploaded volumes.
         self._volumes: list[VolumeMount] = []
-        if port is not None and not (1 <= port <= 65535):
-            raise ValueError(f"port must be between 1 and 65535, got {port!r}")
         self._volume_driver: VolumeClient | None = None
         self._port = port
         self._entrypoint = list(entrypoint) if entrypoint is not None else None
-        if lifetime is not None:
-            try:
-                _parsed_lifetime = Duration.from_json(f'"{lifetime}"')
-            except ValueError:
-                raise ValueError(
-                    f"Invalid lifetime {lifetime!r}. "
-                    "Use a protobuf duration string (e.g. '30s', '1.5s', '300s')."
-                )
-            if _parsed_lifetime.seconds == 0 and _parsed_lifetime.nanos == 0:
-                raise ValueError(
-                    f"Invalid lifetime {lifetime!r}: lifetime must be greater than 0 "
-                    "(e.g. '30s', '5m')."
-                )
         self._lifetime = lifetime
         self._security_policy = security_policy
         self._network_policy = network_policy
