@@ -411,9 +411,7 @@ class TestScheduleValidationFunction:
                 pass
 
         client = _CapturingClient()
-        remote_class = RemoteClass(
-            Worker, tracing=TracingPolicy(sample_rate=0.25)
-        )
+        remote_class = RemoteClass(Worker, tracing=TracingPolicy(sample_rate=0.25))
         remote_class._client = client  # type: ignore[assignment]
         monkeypatch.setattr(
             RemoteClass, "_build_deploy_image", lambda _: (object(), [])
