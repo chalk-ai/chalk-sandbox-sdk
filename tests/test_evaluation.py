@@ -575,7 +575,6 @@ def _rubric() -> Rubric:
         ({"name": "my-criterion"}, ValueError),
         ({"name": "score"}, ValueError),
         ({"name": "ok", "scale": (2, 2)}, ValueError),
-        ({"name": "ok", "weight": 0}, ValueError),
         ({"name": "ok", "scale": (0, True)}, TypeError),
         ({"name": "ok", "scale": (0, 1, 2)}, TypeError),
         ({"name": "ok", "description": 3}, TypeError),
@@ -608,7 +607,6 @@ def test_rubric_arrow_type_nests_criteria_with_scale_metadata() -> None:
         "chalk.rubric.description": "Shortest path?",
         "chalk.rubric.scale_min": "0.0",
         "chalk.rubric.scale_max": "2.0",
-        "chalk.rubric.weight": "1.0",
     }
     assert [f.name for f in _rubric().pyarrow_type().field("criteria").type] == [
         "directness",
@@ -616,33 +614,27 @@ def test_rubric_arrow_type_nests_criteria_with_scale_metadata() -> None:
     ]
 
 
-def test_rubric_result_derives_score_and_records_criteria() -> None:
-    rubric = _rubric()
-    # 2/2 and 1/2 normalize to 1.0 and 0.5; equal weights average to 0.75.
-    result = rubric.result({"task_correctness": 1, "directness": 2}, reason="ok")
-    assert result.score == 0.75
+def test_rubric_result_keeps_the_scorers_score_and_records_criteria() -> None:
+    # The score is whatever the scorer said; criteria explain it, in rubric order.
+    result = _rubric().result(
+        0.9, {"task_correctness": 1, "directness": 2}, reason="ok"
+    )
+    assert result.score == 0.9
     assert result.criteria == {"directness": 2.0, "task_correctness": 1.0}
     assert list(result.criteria or {}) == ["directness", "task_correctness"]
     assert result.metadata == {"reason": "ok"}
-    weighted = Rubric(
-        Criterion("a", scale=(0, 2), weight=3), Criterion("b", scale=(0, 2))
-    )
-    assert weighted.result({"a": 2, "b": 0}).score == 0.75
-    assert (
-        rubric.result({"directness": 0, "task_correctness": 0}, score=0.4).score == 0.4
-    )
 
 
 def test_rubric_result_rejects_mismatched_criteria() -> None:
     rubric = _rubric()
     with pytest.raises(ValueError, match=r"missing \['task_correctness'\]"):
-        rubric.result({"directness": 1})
+        rubric.result(1.0, {"directness": 1})
     with pytest.raises(ValueError, match=r"unexpected \['tone'\]"):
-        rubric.result({"directness": 1, "task_correctness": 1, "tone": 1})
+        rubric.result(1.0, {"directness": 1, "task_correctness": 1, "tone": 1})
     with pytest.raises(ValueError, match="outside its scale"):
-        rubric.result({"directness": 3, "task_correctness": 1})
+        rubric.result(1.0, {"directness": 3, "task_correctness": 1})
     with pytest.raises(TypeError, match="must be a number"):
-        rubric.result({"directness": True, "task_correctness": 1})
+        rubric.result(1.0, {"directness": True, "task_correctness": 1})
     with pytest.raises(ValueError, match="not both"):
         rubric.result(
             {"directness": 1, "task_correctness": 1},
@@ -657,7 +649,7 @@ def test_bound_result_roundtrips_criteria_through_arrow() -> None:
     rubric = _rubric()
     bound = rubric.bind()
     assert bound is rubric.bind()
-    result = rubric.result({"directness": 2, "task_correctness": 1}, reason="ok")
+    result = rubric.result(0.75, {"directness": 2, "task_correctness": 1}, reason="ok")
     # The shim encodes whatever the scorer returned -- a base-class instance.
     encoded = bound.__chalk_serialize__(result)
     assert encoded.type.equals(rubric.pyarrow_type())
@@ -693,7 +685,7 @@ def test_rubric_binds_the_deployed_output_schema(
 
     @cc.function(rubric=rubric)
     def judge(output: str) -> EvaluationScorerResult:
-        return rubric.result({"directness": 2, "task_correctness": 2})
+        return rubric.result(1.0, {"directness": 2, "task_correctness": 2})
 
     _, output_schema = _build_schemas(judge._func)
     result_type = output_schema.columns[0].arrow_type

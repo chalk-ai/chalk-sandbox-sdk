@@ -249,13 +249,13 @@ RUBRIC = cc.Rubric(
 @cc.function(rubric=RUBRIC)
 def trace_quality(output: str) -> cc.EvaluationScorerResult:
     graded = judge_model(RUBRIC, output)
-    return RUBRIC.result(graded["scores"], reason=graded["reason"])
+    return RUBRIC.result(graded["score"], graded["scores"], reason=graded["reason"])
 ```
 
-`Rubric.result` checks the grades against the declared criteria and scales and
-derives the overall score as their weighted, normalized mean (pass `score=` to
-set it). A rubric scorer that returns no criteria fails the row rather than
-averaging in as though it had graded.
+The score is still the scorer's own number, exactly as without a rubric; the
+criteria explain it. `Rubric.result` checks the grades against the declared
+criteria and scales, and a rubric scorer that returns no criteria fails the
+row rather than averaging in as though it had graded.
 
 `RemoteFunction.from_name` resolves the currently selected version at lookup
 time; evaluation creation then pins that version. `from_id` remains a

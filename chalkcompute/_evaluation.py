@@ -215,8 +215,6 @@ class Criterion:
     """Inclusive ``(low, high)`` bounds a value must fall within."""
     description: str = ""
     """What the grader is asked. Rendered into judge prompts and shown in Chalk."""
-    weight: float = 1.0
-    """Relative contribution when the overall score is derived from criteria."""
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str):
@@ -237,17 +235,8 @@ class Criterion:
         high = _finite_number(self.scale[1], owner=f"criterion {name!r} scale high")
         if low >= high:
             raise ValueError(f"criterion {name!r} scale low must be less than high")
-        weight = _finite_number(self.weight, owner=f"criterion {name!r} weight")
-        if weight <= 0:
-            raise ValueError(f"criterion {name!r} weight must be greater than 0")
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "scale", (low, high))
-        object.__setattr__(self, "weight", weight)
-
-    def normalize(self, value: float) -> float:
-        """Map a value on this criterion's scale onto ``[0, 1]``."""
-        low, high = self.scale
-        return (value - low) / (high - low)
 
     def _field(self) -> arrow_pb.Field:
         return _arrow_field(
@@ -258,7 +247,6 @@ class Criterion:
                 "chalk.rubric.description": self.description,
                 "chalk.rubric.scale_min": repr(self.scale[0]),
                 "chalk.rubric.scale_max": repr(self.scale[1]),
-                "chalk.rubric.weight": repr(self.weight),
             },
         )
 
@@ -271,13 +259,16 @@ class Rubric:
     field of the result struct and a column of the result dataset, so
     downstream it is aggregated and compared like the scorer's own score.
 
+    The score stays the scorer's own: a rubric explains it, it never replaces
+    it, and a scorer without a rubric still returns a plain number.
+
     >>> rubric = cc.Rubric(
     ...     cc.Criterion("directness", scale=(0, 2), description="Shortest path?"),
     ...     cc.Criterion("task_correctness", scale=(0, 2), description="Done?"),
     ... )
     >>> @cc.function(rubric=rubric)
     ... def judge(output: str) -> cc.EvaluationScorerResult:
-    ...     return rubric.result({"directness": 2, "task_correctness": 1})
+    ...     return rubric.result(0.75, {"directness": 2, "task_correctness": 1})
     """
 
     criteria: tuple[Criterion, ...]
@@ -303,18 +294,13 @@ class Rubric:
 
     def result(
         self,
-        scores: Mapping[str, Any],
+        score: float,
+        criteria: Mapping[str, Any],
         *,
         reason: str | None = None,
         metadata: Mapping[str, Any] | None = None,
-        score: float | None = None,
     ) -> EvaluationScorerResult:
-        """Build a validated result from one grade per criterion.
-
-        ``score`` defaults to the weighted mean of the criteria normalized onto
-        ``[0, 1]``, so the headline number is explainable from the breakdown.
-        """
-        values = self._validated(scores)
+        """Build a result with the scorer's score and one validated grade per criterion."""
         combined = dict(metadata or {})
         if reason is not None:
             if not isinstance(reason, str):
@@ -322,14 +308,8 @@ class Rubric:
             if "reason" in combined:
                 raise ValueError("pass reason= or metadata['reason'], not both")
             combined["reason"] = reason
-        if score is None:
-            total = sum(c.weight for c in self.criteria)
-            weighted = sum(
-                c.weight * c.normalize(values[c.name]) for c in self.criteria
-            )
-            score = min(1.0, max(0.0, weighted / total))
         return EvaluationScorerResult(
-            score=score, metadata=combined or None, criteria=values
+            score=score, metadata=combined or None, criteria=self._validated(criteria)
         )
 
     def validate(self, result: EvaluationScorerResult) -> Mapping[str, float]:
