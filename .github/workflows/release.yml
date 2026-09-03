@@ -411,7 +411,7 @@ jobs:
     needs: [build-linux, build-sdist, build-macos, verify-built-wheels, publish]
     # Run for every release outcome (success or failure), regardless of upstream
     # job status. Skipped for build-only workflow_dispatch runs to avoid noise.
-    if: always() # && github.event_name == 'release'
+    if: always() && github.event_name == 'release'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
