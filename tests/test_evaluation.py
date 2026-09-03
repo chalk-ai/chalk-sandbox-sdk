@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import typing
 import uuid
 import json
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -573,7 +574,6 @@ def _rubric() -> Rubric:
     [
         ({"name": ""}, ValueError),
         ({"name": "my-criterion"}, ValueError),
-        ({"name": "score"}, ValueError),
         ({"name": "ok", "scale": (2, 2)}, ValueError),
         ({"name": "ok", "scale": (0, True)}, TypeError),
         ({"name": "ok", "scale": (0, 1, 2)}, TypeError),
@@ -587,31 +587,24 @@ def test_criterion_rejects_invalid_declarations(
         Criterion(**kwargs)
 
 
-def test_rubric_validates_its_criteria() -> None:
+def test_rubric_validates_its_criteria_and_declares_them() -> None:
     with pytest.raises(ValueError, match="at least one"):
         Rubric()
     with pytest.raises(ValueError, match="duplicate criterion name 'tone'"):
         Rubric(Criterion("tone"), Criterion("tone"))
-    assert list(_rubric().by_name) == ["directness", "task_correctness"]
-
-
-def test_rubric_arrow_type_nests_criteria_with_scale_metadata() -> None:
-    fields = _rubric().arrow_type().arrow_type_enum.value.sub_field_types
-    assert [f.name for f in fields] == ["score", "metadata", "criteria"]
-    criteria = fields[2]
-    assert criteria.nullable is False
-    assert criteria.metadata["chalk.rubric.name"] == "distillation-rubric-v1"
-    directness = criteria.arrow_type.arrow_type_enum.value.sub_field_types[0]
-    assert directness.arrow_type.has_field("float64") and directness.nullable is False
-    assert directness.metadata == {
-        "chalk.rubric.description": "Shortest path?",
-        "chalk.rubric.scale_min": "0.0",
-        "chalk.rubric.scale_max": "2.0",
+    rubric = _rubric()
+    assert list(rubric.by_name) == ["directness", "task_correctness"]
+    assert json.loads(rubric.to_schema_metadata()) == {
+        "name": "distillation-rubric-v1",
+        "criteria": [
+            {
+                "name": "directness",
+                "scale": [0.0, 2.0],
+                "description": "Shortest path?",
+            },
+            {"name": "task_correctness", "scale": [0.0, 2.0], "description": "Done?"},
+        ],
     }
-    assert [f.name for f in _rubric().pyarrow_type().field("criteria").type] == [
-        "directness",
-        "task_correctness",
-    ]
 
 
 def test_rubric_result_keeps_the_scorers_score_and_records_criteria() -> None:
@@ -620,7 +613,6 @@ def test_rubric_result_keeps_the_scorers_score_and_records_criteria() -> None:
         0.9, {"task_correctness": 1, "directness": 2}, reason="ok"
     )
     assert result.score == 0.9
-    assert result.criteria == {"directness": 2.0, "task_correctness": 1.0}
     assert list(result.criteria or {}) == ["directness", "task_correctness"]
     assert result.metadata == {"reason": "ok"}
 
@@ -637,42 +629,46 @@ def test_rubric_result_rejects_mismatched_criteria() -> None:
         rubric.result(1.0, {"directness": True, "task_correctness": 1})
     with pytest.raises(ValueError, match="not both"):
         rubric.result(
+            1.0,
             {"directness": 1, "task_correctness": 1},
             reason="a",
             metadata={"reason": "b"},
         )
-    with pytest.raises(ValueError, match="must carry criteria"):
-        rubric.validate(EvaluationScorerResult(score=1.0))
+    with pytest.raises(ValueError, match="reserved"):
+        EvaluationScorerResult(score=1.0, criteria={"a": 1}, metadata={"criteria": {}})
 
 
-def test_bound_result_roundtrips_criteria_through_arrow() -> None:
+def test_criteria_travel_inside_metadata_on_the_unchanged_wire_shape() -> None:
+    result = EvaluationScorerResult(
+        score=0.5, criteria={"directness": 2}, metadata={"reason": "ok"}
+    )
+    encoded = result.__chalk_serialize__()
+    # Same struct every deployed server already reads: criteria ride in the JSON.
+    assert encoded.type.equals(EvaluationScorerResult.__chalk_pyarrow_type__())
+    assert encoded.as_py() == {
+        "score": 0.5,
+        "metadata": '{"criteria":{"directness":2.0},"reason":"ok"}',
+    }
+    assert EvaluationScorerResult.__chalk_deserialize__(encoded) == result
+
+
+def test_bound_result_validates_criteria_at_serialization() -> None:
     rubric = _rubric()
     bound = rubric.bind()
     assert bound is rubric.bind()
-    result = rubric.result(0.75, {"directness": 2, "task_correctness": 1}, reason="ok")
+    assert bound.__chalk_arrow_type__ is EvaluationScorerResult.__chalk_arrow_type__
     # The shim encodes whatever the scorer returned -- a base-class instance.
-    encoded = bound.__chalk_serialize__(result)
-    assert encoded.type.equals(rubric.pyarrow_type())
-    assert encoded.as_py() == {
-        "score": 0.75,
-        "metadata": '{"reason":"ok"}',
-        "criteria": {"directness": 2.0, "task_correctness": 1.0},
-    }
-    assert bound.__chalk_deserialize__(encoded) == result
+    good = rubric.result(0.75, {"directness": 2, "task_correctness": 1})
+    assert bound.__chalk_deserialize__(bound.__chalk_serialize__(good)) == good
+    with pytest.raises(ValueError, match="must carry criteria"):
+        bound.__chalk_serialize__(EvaluationScorerResult(score=1.0))
     with pytest.raises(ValueError, match=r"missing \['task_correctness'\]"):
         bound.__chalk_serialize__(
             EvaluationScorerResult(score=1.0, criteria={"directness": 2})
         )
 
 
-def test_scorer_result_without_a_rubric_drops_criteria_and_warns() -> None:
-    result = EvaluationScorerResult(score=0.5, criteria={"directness": 2})
-    with pytest.warns(UserWarning, match="declares no rubric"):
-        encoded = result.__chalk_serialize__()
-    assert encoded.as_py() == {"score": 0.5, "metadata": None}
-
-
-def test_rubric_binds_the_deployed_output_schema(
+def test_rubric_declares_itself_on_the_output_schema(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import chalkcompute as cc
@@ -689,14 +685,24 @@ def test_rubric_binds_the_deployed_output_schema(
 
     _, output_schema = _build_schemas(judge._func)
     result_type = output_schema.columns[0].arrow_type
+    # The annotation is untouched, so the column is the ordinary result struct.
     assert [f.name for f in result_type.arrow_type_enum.value.sub_field_types] == [
         "score",
         "metadata",
-        "criteria",
     ]
+    assert output_schema.metadata["chalk.rubric"] == rubric.to_schema_metadata()
+    assert typing.get_type_hints(judge._func)["return"] is EvaluationScorerResult
+
+    # Binding is idempotent for the same rubric and refuses a different one.
+    cc.function(rubric=rubric)(judge._func)
+    with pytest.raises(FunctionError, match="different rubric"):
+        cc.function(rubric=Rubric(Criterion("other")))(judge._func)
+
+    # A generator of results is not a scorer result, and a failed bind leaves
+    # the function untouched so it can be retried.
+    def streaming(output: str) -> Iterator[EvaluationScorerResult]:
+        yield EvaluationScorerResult(score=1.0)
 
     with pytest.raises(FunctionError, match="exactly"):
-
-        @cc.function(rubric=rubric)
-        def not_a_scorer(output: str) -> float:
-            return 1.0
+        cc.function(rubric=rubric)(streaming)
+    assert not hasattr(streaming, "__chalk_rubric__")

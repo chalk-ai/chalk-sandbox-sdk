@@ -1991,6 +1991,11 @@ def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
         output_schema.metadata["chalk.function.is_generator"] = "true"
     if is_async:
         output_schema.metadata["chalk.function.is_async"] = "true"
+    rubric = getattr(func, "__chalk_rubric__", None)
+    if rubric is not None:
+        from chalkcompute._evaluation import RUBRIC_SCHEMA_METADATA_KEY
+
+        output_schema.metadata[RUBRIC_SCHEMA_METADATA_KEY] = rubric.to_schema_metadata()
 
     return input_schema, output_schema
 
@@ -2314,24 +2319,26 @@ def _compile_catalog_argument_binder(
 
 
 def _bind_rubric(func: Callable[..., Any], rubric: Any, *, label: str) -> None:
-    """Install ``rubric``'s result subclass as ``func``'s return annotation.
+    """Attach ``rubric`` to ``func`` so its results are validated against it.
 
-    The schema builder and the worker shim both read their Arrow contract from
-    the unwrapped function's hints, so rewriting the annotation is the whole
-    mechanism; neither has to know rubrics exist.
+    Recorded as an attribute rather than by rewriting the annotation: the
+    schema builder and the worker shim look for it beside the return hint, the
+    hint itself stays exactly what the user wrote, and binding the same rubric
+    twice is a no-op.
     """
-    from chalkcompute._arrow_serde import unwrap_result_annotation
     from chalkcompute._evaluation import EvaluationScorerResult, Rubric
 
     if not isinstance(rubric, Rubric):
         raise TypeError("rubric must be a chalkcompute.Rubric")
     hints = typing.get_type_hints(func, include_extras=True)
-    if unwrap_result_annotation(hints.get("return")) is not EvaluationScorerResult:
+    if hints.get("return") is not EvaluationScorerResult:
         raise FunctionError(
             f"{label} passes rubric= and must be annotated to return exactly "
-            "chalkcompute.EvaluationScorerResult"
+            "chalkcompute.EvaluationScorerResult (not a generator of them)"
         )
-    func.__annotations__["return"] = rubric.bind()
+    bound = getattr(func, "__chalk_rubric__", None)
+    if bound is not None and bound != rubric:
+        raise FunctionError(f"{label} is already bound to a different rubric")
     setattr(func, "__chalk_rubric__", rubric)
 
 
@@ -2431,7 +2438,6 @@ class RemoteFunction:
         rubric: _Rubric | None = None,
         chalk_client: Any | None = None,
     ) -> None:
-        # Before the hints are read: binding rewrites the return annotation.
         if rubric is not None:
             _bind_rubric(
                 func,
@@ -4040,7 +4046,7 @@ class _NoOpFunction:
         name: str | None = None,
         rubric: _Rubric | None = None,
     ) -> None:
-        # Same bind as locally: the shim reads the raw function's hints in-pod.
+        # Same bind as locally; the shim looks for it in-pod.
         if rubric is not None:
             _bind_rubric(
                 func,
@@ -4339,9 +4345,9 @@ def function(
         (``version``, ``method_name``, ``qualified_name``) call
         :func:`~chalkcompute.bind_model` directly inside the function.
     rubric
-        :class:`~chalkcompute.Rubric` this scorer grades on. Each criterion
-        becomes a field of the returned ``EvaluationScorerResult`` and a
-        column of the evaluation's result dataset. Requires a return
+        :class:`~chalkcompute.Rubric` this scorer grades on. Results are
+        validated against it and their criteria recorded with the row; the
+        declaration travels with the function version. Requires a return
         annotation of exactly ``EvaluationScorerResult``.
     tracing
         Server-side remote-function tracing is enabled by default. Use

@@ -793,13 +793,7 @@ class TestShimViaRemoteCallLib:
 
 
 class TestRubricScorer:
-    """The unmodified shim encodes rubric criteria, resolved from the annotation alone."""
-
-    def _rubric(self):
-        return Rubric(
-            Criterion("directness", scale=(0, 2), description="Shortest path?"),
-            Criterion("task_correctness", scale=(0, 2)),
-        )
+    """The shim validates criteria against a bound rubric and records them in metadata."""
 
     def _judge_module(self, rubric, scores):
         from chalkcompute._function import _bind_rubric
@@ -810,20 +804,25 @@ class TestRubricScorer:
         _bind_rubric(judge, rubric, label="judge")
         _install_user_module(judge=judge)
 
-    def test_handler_encodes_criteria(self):
-        rubric = self._rubric()
-        self._judge_module(rubric, {"directness": 2, "task_correctness": 1})
+    def _rubric(self):
+        return Rubric(
+            Criterion("directness", scale=(0, 2)),
+            Criterion("task_correctness", scale=(0, 2)),
+        )
+
+    def test_handler_records_criteria_in_metadata(self):
+        self._judge_module(self._rubric(), {"directness": 2, "task_correctness": 1})
         ns = _load_shim(_generate_handler_shim("judge"))
 
         results = ns["handler"]({"output": pa.array(["done"])}, None)
 
-        assert len(results) == 1
-        assert results[0].as_py() == {
-            "score": 0.5,
-            "metadata": None,
-            "criteria": {"directness": 2.0, "task_correctness": 1.0},
-        }
-        assert results[0].type.equals(rubric.pyarrow_type())
+        assert [r.as_py() for r in results] == [
+            {
+                "score": 0.5,
+                "metadata": '{"criteria":{"directness":2.0,"task_correctness":1.0}}',
+            }
+        ]
+        assert results[0].type.equals(EvaluationScorerResult.__chalk_pyarrow_type__())
 
     def test_handler_fails_the_row_when_a_criterion_is_missing(self):
         self._judge_module(self._rubric(), {"directness": 2})

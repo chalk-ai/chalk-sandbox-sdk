@@ -236,9 +236,9 @@ evaluation = cc.Evaluation.create(
 
 ### Rubrics
 
-Declare what a judge grades on and each criterion becomes a field of the
-scorer's result and a column of the result dataset -- aggregated and compared
-like the score itself, with its scale and description carried along:
+Declare what a judge grades on. The declaration travels with the function
+version, each result's criteria are checked against it and recorded with the
+row, and the score itself stays exactly what the scorer returns:
 
 ```python
 RUBRIC = cc.Rubric(
@@ -252,10 +252,8 @@ def trace_quality(output: str) -> cc.EvaluationScorerResult:
     return RUBRIC.result(graded["score"], graded["scores"], reason=graded["reason"])
 ```
 
-The score is still the scorer's own number, exactly as without a rubric; the
-criteria explain it. `Rubric.result` checks the grades against the declared
-criteria and scales, and a rubric scorer that returns no criteria fails the
-row rather than averaging in as though it had graded.
+A rubric scorer that returns no criteria, or grades outside a criterion's
+scale, fails the row rather than averaging in as though it had graded.
 
 `RemoteFunction.from_name` resolves the currently selected version at lookup
 time; evaluation creation then pins that version. `from_id` remains a

@@ -20,7 +20,6 @@ import json
 import math
 import re
 import time
-import warnings
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -53,42 +52,6 @@ class EvaluationNotFoundError(EvaluationError):
     """Raised when an evaluation or evaluation run does not exist."""
 
 
-def _arrow_field(
-    name: str,
-    kind: str,
-    *,
-    nullable: bool,
-    metadata: Mapping[str, str] | None = None,
-) -> arrow_pb.Field:
-    return arrow_pb.Field(
-        name=name,
-        arrow_type=arrow_pb.ArrowType(
-            arrow_type_enum=Oneof(kind, arrow_pb.EmptyMessage())  # ty: ignore[invalid-argument-type]
-        ),
-        nullable=nullable,
-        metadata=dict(metadata or {}),
-    )
-
-
-def _struct_type(fields: Sequence[arrow_pb.Field]) -> arrow_pb.ArrowType:
-    return arrow_pb.ArrowType(
-        arrow_type_enum=Oneof("struct", arrow_pb.Struct(sub_field_types=list(fields)))
-    )
-
-
-def _scorer_result_base_fields() -> builtins.list[arrow_pb.Field]:
-    return [
-        _arrow_field("score", "float64", nullable=False),
-        _arrow_field("metadata", "large_utf8", nullable=True),
-    ]
-
-
-def _encode_scorer_metadata(metadata: Mapping[str, Any] | None) -> str | None:
-    if metadata is None:
-        return None
-    return json.dumps(metadata, allow_nan=False, separators=(",", ":"), sort_keys=True)
-
-
 def _scorer_result_pyarrow_type() -> Any:
     import pyarrow as pa
 
@@ -112,6 +75,12 @@ def _finite_number(value: Any, *, owner: str) -> float:
     return number
 
 
+# Key under which a result's criteria travel inside its metadata JSON. The
+# column shape stays {score, metadata}, which every deployed server already
+# reads, so a rubric needs no server change to be recorded.
+_CRITERIA_METADATA_KEY = "criteria"
+
+
 @dataclass(frozen=True)
 class EvaluationScorerResult:
     """The score, optional metadata, and optional rubric criteria a scorer returns.
@@ -127,13 +96,35 @@ class EvaluationScorerResult:
     """Optional JSON-serializable metadata retained with the scored row."""
 
     criteria: Mapping[str, float] | None = None
-    """One grade per criterion when the function declares a ``rubric=``.
+    """One grade per criterion, recorded under ``metadata["criteria"]`` on the wire.
 
-    Checked against the rubric where it is known -- ``Rubric.result`` and
-    serialization -- since a result alone has nothing to check against.
+    Checked against the function's ``rubric=`` at serialization, when there is
+    one; a result alone has nothing to check itself against.
     """
 
-    __chalk_arrow_type__ = _struct_type(_scorer_result_base_fields())
+    __chalk_arrow_type__ = arrow_pb.ArrowType(
+        arrow_type_enum=Oneof(
+            "struct",
+            arrow_pb.Struct(
+                sub_field_types=[
+                    arrow_pb.Field(
+                        name="score",
+                        arrow_type=arrow_pb.ArrowType(
+                            arrow_type_enum=Oneof("float64", arrow_pb.EmptyMessage())
+                        ),
+                        nullable=False,
+                    ),
+                    arrow_pb.Field(
+                        name="metadata",
+                        arrow_type=arrow_pb.ArrowType(
+                            arrow_type_enum=Oneof("large_utf8", arrow_pb.EmptyMessage())
+                        ),
+                        nullable=True,
+                    ),
+                ],
+            ),
+        )
+    )
     __chalk_pyarrow_type__ = staticmethod(_scorer_result_pyarrow_type)
 
     def __post_init__(self) -> None:
@@ -148,6 +139,10 @@ class EvaluationScorerResult:
                 json.dumps(metadata, allow_nan=False)
             except ValueError as exc:
                 raise TypeError("metadata must be JSON-serializable") from exc
+            if self.criteria is not None and _CRITERIA_METADATA_KEY in metadata:
+                raise ValueError(
+                    "metadata['criteria'] is reserved; pass criteria= instead"
+                )
             object.__setattr__(self, "metadata", metadata)
 
         if self.criteria is not None:
@@ -168,18 +163,16 @@ class EvaluationScorerResult:
         """Encode this result as the Arrow struct registered in the catalog."""
         import pyarrow as pa
 
-        if self.criteria:
-            # The column shape is fixed by the function's schema, so with no
-            # rubric the criteria have nowhere to go. Say so rather than make a
-            # judge look like it graded nothing.
-            warnings.warn(
-                "Scorer result carries criteria but its function declares no "
-                "rubric, so they are not recorded. Pass rubric= to "
-                "@chalkcompute.function.",
-                stacklevel=2,
+        metadata = None
+        if self.metadata is not None or self.criteria is not None:
+            combined = dict(self.metadata or {})
+            if self.criteria is not None:
+                combined[_CRITERIA_METADATA_KEY] = dict(self.criteria)
+            metadata = json.dumps(
+                combined, allow_nan=False, separators=(",", ":"), sort_keys=True
             )
         return pa.scalar(
-            {"score": self.score, "metadata": _encode_scorer_metadata(self.metadata)},
+            {"score": self.score, "metadata": metadata},
             type=_scorer_result_pyarrow_type(),
         )
 
@@ -187,10 +180,14 @@ class EvaluationScorerResult:
     def __chalk_deserialize__(cls, value: Any) -> EvaluationScorerResult:
         """Decode an Arrow scorer-result struct returned by Chalk Compute."""
         raw = value.as_py()
-        metadata = raw.get("metadata")
-        return cls(
-            score=raw["score"],
-            metadata=None if metadata is None else json.loads(metadata),
+        metadata = None if raw.get("metadata") is None else json.loads(raw["metadata"])
+        criteria = None
+        if isinstance(metadata, dict) and isinstance(
+            metadata.get(_CRITERIA_METADATA_KEY), dict
+        ):
+            criteria = metadata.pop(_CRITERIA_METADATA_KEY)
+        return EvaluationScorerResult(
+            score=raw["score"], metadata=metadata or None, criteria=criteria
         )
 
 
@@ -199,16 +196,15 @@ class EvaluationScorerResult:
 # ---------------------------------------------------------------------------
 
 _CRITERION_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_RESERVED_CRITERION_NAMES = frozenset({"score", "metadata", "name", "criteria"})
+
+# Schema-metadata key carrying a function's rubric declaration, beside the
+# existing ``chalk.function.*`` traits.
+RUBRIC_SCHEMA_METADATA_KEY = "chalk.rubric"
 
 
 @dataclass(frozen=True)
 class Criterion:
-    """One thing a scorer grades, and the scale it grades on.
-
-    The name becomes a field of the result and a column of the result dataset;
-    scale, description, and weight travel with the deployed function version.
-    """
+    """One thing a scorer grades, and the scale it grades on."""
 
     name: str
     scale: tuple[float, float] = (0.0, 1.0)
@@ -223,10 +219,8 @@ class Criterion:
         if not _CRITERION_NAME_RE.match(name):
             raise ValueError(
                 f"invalid criterion name {name!r}: use letters, digits, and "
-                "underscores, not starting with a digit (it becomes a column)"
+                "underscores, not starting with a digit"
             )
-        if name in _RESERVED_CRITERION_NAMES:
-            raise ValueError(f"criterion name {name!r} is reserved")
         if not isinstance(self.description, str):
             raise TypeError("criterion description must be a string")
         if not isinstance(self.scale, tuple) or len(self.scale) != 2:
@@ -238,29 +232,15 @@ class Criterion:
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "scale", (low, high))
 
-    def _field(self) -> arrow_pb.Field:
-        return _arrow_field(
-            self.name,
-            "float64",
-            nullable=False,
-            metadata={
-                "chalk.rubric.description": self.description,
-                "chalk.rubric.scale_min": repr(self.scale[0]),
-                "chalk.rubric.scale_max": repr(self.scale[1]),
-            },
-        )
-
 
 @dataclass(frozen=True)
 class Rubric:
     """The criteria a scorer grades on, declared once and versioned with it.
 
-    Pass to ``@chalkcompute.function(rubric=...)``. Each criterion becomes a
-    field of the result struct and a column of the result dataset, so
-    downstream it is aggregated and compared like the scorer's own score.
-
-    The score stays the scorer's own: a rubric explains it, it never replaces
-    it, and a scorer without a rubric still returns a plain number.
+    Pass to ``@chalkcompute.function(rubric=...)``. The declaration travels
+    with the function version, and each result's criteria are checked against
+    it and recorded under ``metadata["criteria"]``. The score stays the
+    scorer's own: a rubric explains it, it never replaces it.
 
     >>> rubric = cc.Rubric(
     ...     cc.Criterion("directness", scale=(0, 2), description="Shortest path?"),
@@ -309,22 +289,21 @@ class Rubric:
                 raise ValueError("pass reason= or metadata['reason'], not both")
             combined["reason"] = reason
         return EvaluationScorerResult(
-            score=score, metadata=combined or None, criteria=self._validated(criteria)
+            score=score,
+            metadata=combined or None,
+            criteria=self.validate_criteria(criteria),
         )
 
-    def validate(self, result: EvaluationScorerResult) -> Mapping[str, float]:
-        """Check a result's criteria against this rubric; return them in order."""
-        if result.criteria is None:
+    def validate_criteria(self, criteria: Mapping[str, Any] | None) -> dict[str, float]:
+        """Check grades against this rubric; return them in declaration order."""
+        if criteria is None:
             raise ValueError(
                 "this scorer declares a rubric, so its result must carry "
                 "criteria; got None. Build it with Rubric.result(...)."
             )
-        return self._validated(result.criteria)
-
-    def _validated(self, scores: Mapping[str, Any]) -> dict[str, float]:
-        if not isinstance(scores, Mapping):
-            raise TypeError("criteria scores must be a mapping")
-        expected, given = set(self.by_name), set(scores)
+        if not isinstance(criteria, Mapping):
+            raise TypeError("criteria must be a mapping")
+        expected, given = set(self.by_name), set(criteria)
         if expected != given:
             missing, unexpected = sorted(expected - given), sorted(given - expected)
             parts = [f"missing {missing}"] if missing else []
@@ -333,7 +312,7 @@ class Rubric:
         validated = {}
         for criterion in self.criteria:
             value = _finite_number(
-                scores[criterion.name], owner=f"criterion {criterion.name!r}"
+                criteria[criterion.name], owner=f"criterion {criterion.name!r}"
             )
             low, high = criterion.scale
             if not low <= value <= high:
@@ -343,78 +322,43 @@ class Rubric:
             validated[criterion.name] = value
         return validated
 
-    def arrow_type(self) -> arrow_pb.ArrowType:
-        """Catalog Arrow type of a result scored against this rubric."""
-        criteria = _arrow_field("criteria", "float64", nullable=False)
-        criteria.arrow_type = _struct_type([c._field() for c in self.criteria])
-        if self.name is not None:
-            criteria.metadata["chalk.rubric.name"] = self.name
-        return _struct_type([*_scorer_result_base_fields(), criteria])
-
-    def pyarrow_type(self) -> Any:
-        """PyArrow value type mirroring :meth:`arrow_type`."""
-        import pyarrow as pa
-
-        criteria = pa.struct(
-            [pa.field(c.name, pa.float64(), nullable=False) for c in self.criteria]
-        )
-        return pa.struct(
-            [
-                pa.field("score", pa.float64(), nullable=False),
-                pa.field("metadata", pa.large_utf8(), nullable=True),
-                pa.field("criteria", criteria, nullable=False),
-            ]
+    def to_schema_metadata(self) -> str:
+        """JSON declaration stored on the function's output schema."""
+        return json.dumps(
+            {
+                "name": self.name,
+                "criteria": [
+                    {
+                        "name": c.name,
+                        "scale": list(c.scale),
+                        "description": c.description,
+                    }
+                    for c in self.criteria
+                ],
+            },
+            separators=(",", ":"),
         )
 
     def bind(self) -> type[EvaluationScorerResult]:
-        """The result subclass that serializes against this rubric.
+        """A result class whose serializer validates criteria against this rubric.
 
-        ``@chalkcompute.function(rubric=...)`` installs it as the return
-        annotation; the schema builder and the worker shim both resolve their
-        Arrow contract from that annotation, so nothing else has to know.
+        Same Arrow contract as ``EvaluationScorerResult``; only the encoder
+        differs, so the wire shape is unchanged for every deployed server.
         """
         if (cached := _BOUND_RESULT_CLASSES.get(self)) is not None:
             return cached
         rubric = self
 
-        # Unbound on purpose: the shim calls annotation.__chalk_serialize__(value),
-        # and the value is usually a plain EvaluationScorerResult.
+        # Unbound on purpose: the shim calls annotation.__chalk_serialize__(value)
+        # with whatever the scorer returned, usually a plain EvaluationScorerResult.
         def serialize(result: EvaluationScorerResult) -> Any:
-            import pyarrow as pa
-
-            return pa.scalar(
-                {
-                    "score": result.score,
-                    "metadata": _encode_scorer_metadata(result.metadata),
-                    "criteria": rubric.validate(result),
-                },
-                type=rubric.pyarrow_type(),
-            )
-
-        def deserialize(cls: type, value: Any) -> EvaluationScorerResult:
-            raw = value.as_py()
-            metadata = raw.get("metadata")
-            criteria = raw.get("criteria") or {}
-            return EvaluationScorerResult(
-                score=raw["score"],
-                metadata=None if metadata is None else json.loads(metadata),
-                criteria={
-                    c.name: criteria[c.name]
-                    for c in rubric.criteria
-                    if c.name in criteria
-                },
-            )
+            rubric.validate_criteria(result.criteria)
+            return EvaluationScorerResult.__chalk_serialize__(result)
 
         bound: type[EvaluationScorerResult] = type(
             "RubricScorerResult",
             (EvaluationScorerResult,),
-            {
-                "__chalk_rubric__": rubric,
-                "__chalk_arrow_type__": self.arrow_type(),
-                "__chalk_pyarrow_type__": staticmethod(self.pyarrow_type),
-                "__chalk_serialize__": serialize,
-                "__chalk_deserialize__": classmethod(deserialize),
-            },
+            {"__chalk_rubric__": rubric, "__chalk_serialize__": serialize},
         )
         _BOUND_RESULT_CLASSES[self] = bound
         return bound
