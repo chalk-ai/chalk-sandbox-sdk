@@ -636,6 +636,13 @@ def test_rubric_result_rejects_mismatched_criteria() -> None:
         )
     with pytest.raises(ValueError, match="reserved"):
         EvaluationScorerResult(score=1.0, criteria={"a": 1}, metadata={"criteria": {}})
+    # A grade may be a string; nothing in chalkcompute averages criteria.
+    labelled = rubric.result(1.0, {"directness": "PASS", "task_correctness": 2})
+    assert labelled.criteria == {"directness": "PASS", "task_correctness": 2.0}
+    assert (
+        EvaluationScorerResult.__chalk_deserialize__(labelled.__chalk_serialize__())
+        == labelled
+    )
 
 
 def test_criteria_travel_inside_metadata_on_the_unchanged_wire_shape() -> None:

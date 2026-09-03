@@ -95,11 +95,10 @@ class EvaluationScorerResult:
     metadata: Mapping[str, Any] | None = None
     """Optional JSON-serializable metadata retained with the scored row."""
 
-    criteria: Mapping[str, float] | None = None
-    """One grade per criterion, recorded under ``metadata["criteria"]`` on the wire.
+    criteria: Mapping[str, float | str] | None = None
+    """One grade per criterion, numeric or string, recorded under ``metadata["criteria"]``.
 
-    Checked against the function's ``rubric=`` at serialization, when there is
-    one; a result alone has nothing to check itself against.
+    Checked against the function's ``rubric=`` at serialization, when there is one.
     """
 
     __chalk_arrow_type__ = arrow_pb.ArrowType(
@@ -154,7 +153,9 @@ class EvaluationScorerResult:
                 self,
                 "criteria",
                 {
-                    name: _finite_number(value, owner=f"criterion {name!r}")
+                    name: value
+                    if isinstance(value, str)
+                    else _finite_number(value, owner=f"criterion {name!r}")
                     for name, value in self.criteria.items()
                 },
             )
@@ -294,7 +295,9 @@ class Rubric:
             criteria=self.validate_criteria(criteria),
         )
 
-    def validate_criteria(self, criteria: Mapping[str, Any] | None) -> dict[str, float]:
+    def validate_criteria(
+        self, criteria: Mapping[str, Any] | None
+    ) -> dict[str, float | str]:
         """Check grades against this rubric; return them in declaration order."""
         if criteria is None:
             raise ValueError(
@@ -309,11 +312,13 @@ class Rubric:
             parts = [f"missing {missing}"] if missing else []
             parts += [f"unexpected {unexpected}"] if unexpected else []
             raise ValueError(f"criteria do not match the rubric: {'; '.join(parts)}")
-        validated = {}
+        validated: dict[str, float | str] = {}
         for criterion in self.criteria:
-            value = _finite_number(
-                criteria[criterion.name], owner=f"criterion {criterion.name!r}"
-            )
+            raw = criteria[criterion.name]
+            if isinstance(raw, str):
+                validated[criterion.name] = raw
+                continue
+            value = _finite_number(raw, owner=f"criterion {criterion.name!r}")
             low, high = criterion.scale
             if not low <= value <= high:
                 raise ValueError(
