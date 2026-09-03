@@ -1,0 +1,75 @@
+set working-directory := "../../.."
+
+default:
+    @just --justfile e2etests/volume/benchmarks/justfile --list
+
+fio environment:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    environment={{ quote(environment) }}
+    source .buildkite/select-env-file.sh "$environment"
+    source .buildkite/setup-benchmark-env.sh
+    .buildkite/run-benchmark.sh \
+      --suite "Sandbox Volume FIO Benchmarks ($environment)" \
+      --case volume-fio \
+      --tags "sandbox,volume,fio,$environment" \
+      -- uv run python -m e2etests.volume.benchmarks.cases.fio \
+        --size 1G \
+        --jobs 1 \
+        --small-files 1000 \
+        --small-file-size 4k \
+        --direct 1 \
+        --cpu 2 \
+        --memory 1Gi
+
+model-load environment:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    environment={{ quote(environment) }}
+    source .buildkite/select-env-file.sh "$environment"
+    source .buildkite/setup-benchmark-env.sh
+    .buildkite/run-benchmark.sh \
+      --suite "Sandbox Volume Model Load Benchmarks ($environment)" \
+      --case volume-model-load \
+      --tags "sandbox,volume,fio,model-load,$environment" \
+      -- uv run python -m e2etests.volume.benchmarks.cases.model_load \
+        --shards 4 \
+        --shard-size 256M \
+        --block-size 16M \
+        --jobs 1,4 \
+        --cpu 2 \
+        --memory 4Gi
+
+model-download environment:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    environment={{ quote(environment) }}
+    source .buildkite/select-env-file.sh "$environment"
+    source .buildkite/setup-benchmark-env.sh
+    .buildkite/run-benchmark.sh \
+      --suite "Sandbox Volume Model Download Benchmarks ($environment)" \
+      --case volume-model-download \
+      --tags "sandbox,volume,model-download,$environment" \
+      -- uv run python -m e2etests.volume.benchmarks.cases.model_download \
+        --large-shard-mib 1024 \
+        --small-shard-mib 35 \
+        --extent-mib 4 \
+        --cpu 2 \
+        --memory 2Gi
+
+git-repo environment:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    environment={{ quote(environment) }}
+    source .buildkite/select-env-file.sh "$environment"
+    source .buildkite/setup-benchmark-env.sh
+    .buildkite/run-benchmark.sh \
+      --suite "Sandbox Volume Git Repo Benchmarks ($environment)" \
+      --case volume-git-repo \
+      --tags "sandbox,volume,git-repo,$environment" \
+      -- uv run python -m e2etests.volume.benchmarks.cases.git_repo \
+        --repo-url https://github.com/vllm-project/vllm.git \
+        --repo-ref 2cf0a6915ce544dc493a0990f2ea38d81601128a \
+        --cpu 2 \
+        --memory 4Gi \
+        --timeout-secs 2700

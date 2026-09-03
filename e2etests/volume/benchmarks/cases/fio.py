@@ -5,30 +5,30 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import json
-import os
 from pathlib import Path
-import sys
-import time
 from typing import Any
-import uuid
 
 from chalkcompute import (
     Image,
     Sandbox,
-    SandboxNotFoundError,
     Volume,
     VolumeError,
-    VolumeFileNotFoundError,
 )
-from e2etests.volume.benchmarks.results import run_benchmark
-from e2etests.volume.benchmarks.runtime import run_sandbox
+from e2etests.volume.benchmarks.harness import (
+    positive_int,
+    read_committed_volume,
+    run_benchmark,
+    run_sandbox_workload,
+    temporary_volume,
+)
 
 MOUNT_PATH = "/volume"
 BENCHMARK_DIR = f"{MOUNT_PATH}/fio-benchmark"
 FIO_SCRIPT_DEST = "/opt/chalk/benchmarks/fio-benchmark.sh"
-FIO_SCRIPT_SOURCE = Path(__file__).with_name("payloads") / "fio.sh"
+PAYLOADS = Path(__file__).parents[1] / "payloads"
+FIO_SCRIPT_SOURCE = PAYLOADS / "fio" / "fio.sh"
 COMMIT_SCRIPT_DEST = "/opt/chalk/benchmarks/commit-volume.sh"
-COMMIT_SCRIPT_SOURCE = Path(__file__).with_name("payloads") / "commit.sh"
+COMMIT_SCRIPT_SOURCE = PAYLOADS / "commit.sh"
 RESULTS_DIR = "fio-benchmark/results"
 LOG_PATH = f"{RESULTS_DIR}/benchmark.log"
 COMMIT_RESULT_PATH = f"{RESULTS_DIR}/volume-commit.json"
@@ -93,62 +93,47 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def positive_int(value: str) -> int:
-    parsed = int(value)
-    if parsed < 1:
-        raise argparse.ArgumentTypeError("must be a positive integer")
-    return parsed
-
-
 def _read_committed_results(
     volume: Volume, timeout_secs: int = 120, poll_interval: float = 2
 ) -> CommittedResults:
-    started_at = time.monotonic()
-    deadline = started_at + timeout_secs
-    attempts = 0
-    version_id: int | None = None
-    while True:
-        attempts += 1
-        try:
-            version = volume.latest_version()
-            version_id = version.id
-            snapshot = volume.at_version(version_id)
-            log = snapshot.read_file(LOG_PATH).decode(errors="replace")
-            if COMPLETION_MARKER not in log:
-                raise _IncompleteResultsError("benchmark log is incomplete")
+    def read(
+        snapshot: Volume,
+    ) -> tuple[str, dict[str, dict[str, Any]], float]:
+        log = snapshot.read_file(LOG_PATH).decode(errors="replace")
+        if COMPLETION_MARKER not in log:
+            raise _IncompleteResultsError("benchmark log is incomplete")
 
-            results: dict[str, dict[str, Any]] = {}
-            for name in RESULT_NAMES:
-                path = f"{RESULTS_DIR}/{name}.json"
-                results[name] = json.loads(snapshot.read_file(path))
-            commit_result = json.loads(snapshot.read_file(COMMIT_RESULT_PATH))
-            commit_elapsed_ns = commit_result.get("elapsed_ns")
-            if not isinstance(commit_elapsed_ns, int) or commit_elapsed_ns < 0:
-                raise _IncompleteResultsError("volume commit timing is invalid")
-            return CommittedResults(
-                version_id=version_id,
-                log=log,
-                results=results,
-                commit_seconds=commit_elapsed_ns / 1_000_000_000,
-                ready_seconds=time.monotonic() - started_at,
-                read_attempts=attempts,
-            )
-        except (
-            VolumeFileNotFoundError,
+        results = {
+            name: json.loads(snapshot.read_file(f"{RESULTS_DIR}/{name}.json"))
+            for name in RESULT_NAMES
+        }
+        commit_result = json.loads(snapshot.read_file(COMMIT_RESULT_PATH))
+        commit_elapsed_ns = commit_result.get("elapsed_ns")
+        if not isinstance(commit_elapsed_ns, int) or commit_elapsed_ns < 0:
+            raise _IncompleteResultsError("volume commit timing is invalid")
+        return log, results, commit_elapsed_ns / 1_000_000_000
+
+    committed = read_committed_volume(
+        volume,
+        read,
+        timeout_secs=timeout_secs,
+        poll_interval=poll_interval,
+        retry_errors=(
+            VolumeError,
             json.JSONDecodeError,
             _IncompleteResultsError,
-        ) as error:
-            if time.monotonic() >= deadline:
-                version_detail = (
-                    f"latest version {version_id}"
-                    if version_id is not None
-                    else "no version"
-                )
-                raise TimeoutError(
-                    f"Volume results did not become coherent within {timeout_secs} "
-                    f"seconds ({version_detail}): {error}"
-                ) from error
-            time.sleep(poll_interval)
+        ),
+        description="Volume results",
+    )
+    log, results, commit_seconds = committed.value
+    return CommittedResults(
+        version_id=committed.version_id,
+        log=log,
+        results=results,
+        commit_seconds=commit_seconds,
+        ready_seconds=committed.ready_seconds,
+        read_attempts=committed.read_attempts,
+    )
 
 
 def _percentile(latency: dict[str, Any], percentile: str) -> int | float | None:
@@ -241,21 +226,19 @@ def build_pyperf_results(
     }
 
 
-def main() -> None:
+def main() -> dict[str, Any]:
     args = parse_args()
-    output_path = Path(os.environ["CHALK_BENCHMARK_PYPERF_OUTPUT"])
 
-    generated_volume = args.volume is None
-    volume_name = args.volume or f"sandbox-volume-fio-{uuid.uuid4().hex[:12]}"
-    volume = Volume(volume_name)
-    sandbox: Sandbox | None = None
-    try:
-        volume.reload()
+    with temporary_volume(
+        "sandbox-volume-fio",
+        name=args.volume,
+        keep=args.keep_volume,
+    ) as volume:
         image = (
             Image.debian_slim(python_version="3.12")
             .run_commands(
                 "apt-get update && apt-get install -y --no-install-recommends fio "
-                "&& rm -rf /var/lib/apt/lists/*"
+                + "&& rm -rf /var/lib/apt/lists/*"
             )
             .add_local_file(
                 str(FIO_SCRIPT_SOURCE),
@@ -292,21 +275,19 @@ def main() -> None:
                 MOUNT_PATH,
                 COMMIT_SCRIPT_DEST,
             ],
-        ).run(timeout=600)
-        print(f"Running fio in sandbox {sandbox.id} on volume {volume_name}")
-        run_sandbox(
+        )
+        run_sandbox_workload(
             sandbox,
-            args.timeout_secs,
-            "fio",
-            log_volume=volume,
-            log_path=LOG_PATH,
+            timeout_secs=args.timeout_secs,
+            phase="fio",
+            log=(volume, LOG_PATH),
         )
 
         committed = _read_committed_results(volume)
         print(
             f"Volume commit completed in {committed.commit_seconds:.3f}s; "
-            f"version {committed.version_id} became readable in "
-            f"{committed.ready_seconds:.3f}s after {committed.read_attempts} attempt(s)",
+            + f"version {committed.version_id} became readable in "
+            + f"{committed.ready_seconds:.3f}s after {committed.read_attempts} attempt(s)",
             flush=True,
         )
         print(
@@ -314,24 +295,7 @@ def main() -> None:
             end="" if committed.log.endswith("\n") else "\n",
             flush=True,
         )
-        output_path.write_text(
-            json.dumps(build_pyperf_results(committed, args), sort_keys=True)
-        )
-    finally:
-        if sandbox is not None:
-            try:
-                sandbox.terminate()
-            except SandboxNotFoundError:
-                pass
-        if generated_volume and not args.keep_volume:
-            try:
-                volume.delete()
-            except VolumeError as error:
-                print(
-                    f"Unable to delete benchmark volume {volume_name}: {error}",
-                    file=sys.stderr,
-                )
-        volume.close()
+        return build_pyperf_results(committed, args)
 
 
 if __name__ == "__main__":

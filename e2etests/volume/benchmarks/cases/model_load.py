@@ -3,31 +3,31 @@
 from __future__ import annotations
 
 import argparse
-import json
-import os
+from contextlib import ExitStack
 from pathlib import Path
-import sys
-import time
 from typing import Any
-import uuid
 
 from chalkcompute import (
     Image,
     Sandbox,
-    SandboxNotFoundError,
     Volume,
-    VolumeError,
-    VolumeFileNotFoundError,
 )
-from e2etests.volume.benchmarks.results import run_benchmark
-from e2etests.volume.benchmarks.runtime import run_sandbox
+from e2etests.volume.benchmarks.harness import (
+    positive_int,
+    read_committed_json,
+    read_committed_volume,
+    run_benchmark,
+    run_sandbox_workload,
+    temporary_volume,
+)
 
 MODEL_MOUNT_PATH = "/model"
 RESULTS_MOUNT_PATH = "/results"
 SCRIPT_DEST = "/opt/chalk/benchmarks/model-load-benchmark.sh"
-SCRIPT_SOURCE = Path(__file__).with_name("payloads") / "model_load.sh"
+PAYLOADS = Path(__file__).parents[1] / "payloads"
+SCRIPT_SOURCE = PAYLOADS / "model_load" / "model_load.sh"
 COMMIT_SCRIPT_DEST = "/opt/chalk/benchmarks/commit-volume.sh"
-COMMIT_SCRIPT_SOURCE = Path(__file__).with_name("payloads") / "commit.sh"
+COMMIT_SCRIPT_SOURCE = PAYLOADS / "commit.sh"
 PREPARE_MARKER = "shard-count"
 
 PREPARE_ENTRYPOINT = """
@@ -62,13 +62,6 @@ if [ "$commit_status" -ne 0 ]; then
 fi
 exit "$log_commit_status"
 """
-
-
-def positive_int(value: str) -> int:
-    parsed = int(value)
-    if parsed < 1:
-        raise argparse.ArgumentTypeError("must be a positive integer")
-    return parsed
 
 
 def parse_jobs(value: str) -> tuple[int, ...]:
@@ -110,27 +103,6 @@ def result_names(jobs: tuple[int, ...]) -> tuple[str, ...]:
             f"warm-read-jobs-{job_count}",
         )
     )
-
-
-def _wait_for_snapshot_file(
-    volume: Volume,
-    path: str,
-    timeout_secs: int = 120,
-    poll_interval: float = 2,
-) -> tuple[int, bytes]:
-    deadline = time.monotonic() + timeout_secs
-    while True:
-        try:
-            version_id = volume.latest_version().id
-            data = volume.at_version(version_id).read_file(path)
-            return version_id, data
-        except (VolumeError, VolumeFileNotFoundError):
-            if time.monotonic() >= deadline:
-                raise TimeoutError(
-                    f"Volume file {path!r} did not become readable within "
-                    f"{timeout_secs} seconds"
-                )
-            time.sleep(poll_interval)
 
 
 def fio_result_to_benchmark(name: str, result: dict[str, Any]) -> dict[str, Any]:
@@ -234,25 +206,22 @@ def _prepare_model_volume(
             MODEL_MOUNT_PATH,
             COMMIT_SCRIPT_DEST,
         ],
-    ).run(timeout=600)
-    try:
-        run_sandbox(
-            sandbox,
-            args.timeout_secs,
-            "model preparation",
-            log_volume=volume,
-            log_path="prepare.log",
-        )
-    finally:
-        try:
-            sandbox.terminate()
-        except SandboxNotFoundError:
-            pass
+    )
+    run_sandbox_workload(
+        sandbox,
+        timeout_secs=args.timeout_secs,
+        phase="model preparation",
+        log=(volume, "prepare.log"),
+    )
 
-    version_id, marker = _wait_for_snapshot_file(volume, PREPARE_MARKER)
-    if marker.decode().strip() != str(args.shards):
+    committed = read_committed_volume(
+        volume,
+        lambda snapshot: snapshot.read_file(PREPARE_MARKER),
+        description="Prepared model marker",
+    )
+    if committed.value.decode().strip() != str(args.shards):
         raise RuntimeError("Prepared model shard count is invalid")
-    return version_id
+    return committed.version_id
 
 
 def _run_read_passes(
@@ -285,22 +254,19 @@ def _run_read_passes(
             RESULTS_MOUNT_PATH,
             COMMIT_SCRIPT_DEST,
         ],
-    ).run(timeout=600)
-    try:
-        run_sandbox(
-            sandbox,
-            args.timeout_secs,
-            f"model read jobs={jobs}",
-            log_volume=results,
-            log_path=f"jobs-{jobs}/jobs-{jobs}.log",
-        )
-    finally:
-        try:
-            sandbox.terminate()
-        except SandboxNotFoundError:
-            pass
+    )
+    run_sandbox_workload(
+        sandbox,
+        timeout_secs=args.timeout_secs,
+        phase=f"model read jobs={jobs}",
+        log=(results, f"jobs-{jobs}/jobs-{jobs}.log"),
+    )
 
-    _wait_for_snapshot_file(results, f"jobs-{jobs}/jobs-{jobs}.complete")
+    _ = read_committed_volume(
+        results,
+        lambda snapshot: snapshot.read_file(f"jobs-{jobs}/jobs-{jobs}.complete"),
+        description=f"Model-load jobs={jobs} completion marker",
+    )
 
 
 def _read_results(volume: Volume, jobs: tuple[int, ...]) -> dict[str, dict[str, Any]]:
@@ -308,38 +274,23 @@ def _read_results(volume: Volume, jobs: tuple[int, ...]) -> dict[str, dict[str, 
     expected_paths = {
         name: f"jobs-{name.rsplit('-', 1)[-1]}/{name}.json" for name in names
     }
-    deadline = time.monotonic() + 120
-    while True:
-        try:
-            version_id = volume.latest_version().id
-            snapshot = volume.at_version(version_id)
-            return {
-                name: json.loads(snapshot.read_file(path))
-                for name, path in expected_paths.items()
-            }
-        except (VolumeError, VolumeFileNotFoundError, json.JSONDecodeError):
-            if time.monotonic() >= deadline:
-                raise TimeoutError("Model-load results did not become readable")
-            time.sleep(2)
+    return read_committed_json(
+        volume,
+        expected_paths,
+        description="Model-load results",
+    ).value
 
 
-def _delete_volume(volume: Volume) -> None:
-    try:
-        volume.delete()
-    except VolumeError as error:
-        print(f"Unable to delete volume {volume.name}: {error}", file=sys.stderr)
-
-
-def main() -> None:
+def main() -> dict[str, Any]:
     args = parse_args()
-    output_path = Path(os.environ["CHALK_BENCHMARK_PYPERF_OUTPUT"])
 
-    run_id = uuid.uuid4().hex[:12]
-    model_volume = Volume(f"sandbox-model-load-{run_id}")
-    results_volume = Volume(f"sandbox-model-load-results-{run_id}")
-    try:
-        model_volume.reload()
-        results_volume.reload()
+    with ExitStack() as stack:
+        model_volume = stack.enter_context(
+            temporary_volume("sandbox-model-load", keep=args.keep_volumes)
+        )
+        results_volume = stack.enter_context(
+            temporary_volume("sandbox-model-load-results", keep=args.keep_volumes)
+        )
         image = _benchmark_image()
         model_version_id = _prepare_model_volume(model_volume, image, args)
         model_snapshot = model_volume.at_version(model_version_id)
@@ -353,17 +304,7 @@ def main() -> None:
             _run_read_passes(model_snapshot, results_volume, image, args, jobs)
 
         results = _read_results(results_volume, args.jobs)
-        output_path.write_text(
-            json.dumps(
-                build_pyperf_results(results, args, model_version_id), sort_keys=True
-            )
-        )
-    finally:
-        if not args.keep_volumes:
-            _delete_volume(results_volume)
-            _delete_volume(model_volume)
-        results_volume.close()
-        model_volume.close()
+        return build_pyperf_results(results, args, model_version_id)
 
 
 if __name__ == "__main__":

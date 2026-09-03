@@ -1,1 +1,1 @@
-"""Mounted-volume benchmark controllers."""
+"""Volume benchmark harness."""

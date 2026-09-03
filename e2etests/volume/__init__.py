@@ -1,1 +1,1 @@
-"""End-to-end Volume benchmarks."""
+"""Volume end-to-end tests and benchmarks."""

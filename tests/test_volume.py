@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -451,6 +452,38 @@ def test_put_file_from_path_passes_path_to_native(
     Volume("models", client=client).put_file_from_path("model.bin", src)
 
     assert client._inner.upload.call_args.args[1] == [("model.bin", src)]
+
+
+def test_load_git_repo_uploads_checkout_with_git_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._rpc.get_volume.return_value = _get_volume_response()
+    _prepare_upload(client)
+
+    def unpack(_url, checkout, _revision) -> None:
+        checkout = Path(checkout)
+        checkout.mkdir(parents=True)
+        (checkout / ".git").mkdir()
+        (checkout / "src").mkdir()
+        (checkout / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+        (checkout / "README.md").write_text("hello\n")
+        (checkout / "src" / "main.py").write_text("print('hello')\n")
+
+    monkeypatch.setattr("chalkcompute._git.unpack_remote_to_mount", unpack)
+
+    Volume("models", client=client).load_git_repo(
+        "https://github.com/chalk-ai/example.git",
+        dest_prefix="example",
+        revision="main",
+    )
+
+    uploaded_paths = [path for path, _ in client._inner.upload.call_args.args[1]]
+    assert sorted(uploaded_paths) == [
+        "example/.git/HEAD",
+        "example/README.md",
+        "example/src/main.py",
+    ]
 
 
 def test_read_file_delegates_to_native_download(
