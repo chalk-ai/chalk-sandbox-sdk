@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -91,8 +92,14 @@ def _finalize_response(
     )
 
 
+@pytest.mark.parametrize(
+    "make_data",
+    [list, tuple, set, frozenset, iter, lambda paths: paths[0].parent.glob("*.csv")],
+    ids=["list", "tuple", "set", "frozenset", "iterator", "glob"],
+)
 def test_upload_csv_files_registers_schema_and_threads_session(
     tmp_path: Path,
+    make_data: Callable[[list[Path]], object],
 ) -> None:
     first = tmp_path / "first.csv"
     second = tmp_path / "second.csv"
@@ -126,7 +133,7 @@ def test_upload_csv_files_registers_schema_and_threads_session(
         http_client=http,
     ).upload(
         "  support_goldens  ",
-        [first, second],
+        make_data([first, second]),
         part_size_bytes=1024,
         timeout=12,
         on_progress=lambda uploaded, total: progress.append((uploaded, total)),
@@ -144,6 +151,13 @@ def test_upload_csv_files_registers_schema_and_threads_session(
     ]
     assert all(body.startswith(b"PAR1") for _, _, _, body, _ in http.requests)
     assert all(body.endswith(b"PAR1") for _, _, _, body, _ in http.requests)
+    tables = [pq.read_table(pa.BufferReader(request[3])) for request in http.requests]
+    assert sorted(pa.concat_tables(tables).column("name").to_pylist()) == [
+        "alice",
+        "bob",
+        "charlie",
+    ]
+    assert first.exists() and second.exists()
     assert progress == [(1, 2), (2, 2)]
 
     finalize = finalize_requests[0]
@@ -154,8 +168,75 @@ def test_upload_csv_files_registers_schema_and_threads_session(
     assert schema.types == [pa.int64(), pa.float64(), pa.bool_(), pa.string()]
 
 
-def test_upload_in_memory_column_data_as_parquet(tmp_path: Path) -> None:
-    del tmp_path
+@pytest.mark.parametrize("path_type", [str, Path])
+@pytest.mark.parametrize("upload_variant", ["direct", "resumable"])
+def test_upload_single_parquet_preserves_file(
+    tmp_path: Path, path_type: Callable[[Path], object], upload_variant: str
+) -> None:
+    path = tmp_path / "source.parquet"
+    table = pa.table({"id": [1, 2], "value": ["a", "b"]})
+    pq.write_table(table, path)
+    source_bytes = path.read_bytes()
+    http = _FakeHTTPClient()
+
+    def handler(method: str, request: Any) -> Any:
+        if method == "get_dataset_upload_uris":
+            target = (
+                volume_pb.DirectUpload(signed_upload_uri="https://upload/file")
+                if upload_variant == "direct"
+                else volume_pb.ResumableUpload(signed_upload_uri="https://upload/file")
+            )
+            return datasets_pb.GetDatasetUploadUrisResponse(
+                upload_session_id="session-1",
+                upload=Oneof(upload_variant, target),
+            )
+        if method == "finalize_dataset_upload":
+            return _finalize_response()
+        raise AssertionError(method)
+
+    connect = FakeConnectClient(handler=handler)
+    result = DatasetClient(connect_client=connect, http_client=http).upload(  # type: ignore[arg-type]
+        "single", path_type(path)
+    )
+
+    assert result == DatasetRevisionRef("dataset-1", "revision-1")
+    assert [call.method for call in connect.calls] == [
+        "get_dataset_upload_uris",
+        "finalize_dataset_upload",
+    ]
+    assert connect.calls[0].request.content_size == len(source_bytes)
+    assert len(http.requests) == 1
+    assert http.requests[0][3] == source_bytes
+    assert http.requests[0][2]["Content-Length"] == str(len(source_bytes))
+    schema = pa.ipc.read_schema(
+        pa.BufferReader(connect.calls[-1].request.arrow_schema_serialized)
+    )
+    assert schema.equals(table.schema)
+    assert path.read_bytes() == source_bytes
+
+
+@pytest.mark.parametrize(
+    "input_kind", ["columns", "rows", "table", "batch", "reader", "dataframe"]
+)
+def test_upload_in_memory_data_as_parquet(input_kind: str) -> None:
+    expected = {"id": [1, 2], "value": ["a", "b"]}
+    table = pa.table(expected)
+
+    class IterableDataFrame:
+        def __iter__(self):
+            raise AssertionError("dataframes must not be consumed as paths")
+
+        def to_arrow(self):
+            return table
+
+    data = {
+        "columns": expected,
+        "rows": table.to_pylist(),
+        "table": table,
+        "batch": table.to_batches()[0],
+        "reader": table.to_reader(),
+        "dataframe": IterableDataFrame(),
+    }[input_kind]
     uploaded: list[bytes] = []
 
     def handler(method: str, request: Any) -> Any:
@@ -180,10 +261,10 @@ def test_upload_in_memory_column_data_as_parquet(tmp_path: Path) -> None:
     DatasetClient(
         connect_client=FakeConnectClient(handler=handler),  # type: ignore[arg-type]
         http_client=CapturingHTTPClient(),
-    ).upload("table", {"id": [1, 2], "value": ["a", "b"]})
+    ).upload("table", data)
 
     table = pq.read_table(pa.BufferReader(uploaded[0]))
-    assert table.to_pydict() == {"id": [1, 2], "value": ["a", "b"]}
+    assert table.to_pydict() == expected
 
 
 def test_uploader_has_no_chalk_feature_dependency() -> None:
@@ -213,12 +294,48 @@ def test_upload_rejects_mismatched_schemas_before_requesting_urls(
     assert connect.calls == []
 
 
-@pytest.mark.parametrize("data", [[], b"parquet", object()])
+@pytest.mark.parametrize("data", [[], set(), iter(()), b"parquet", object()])
 def test_upload_rejects_unsupported_or_empty_data(data: object) -> None:
     with pytest.raises((DatasetError, TypeError)):
         DatasetClient(connect_client=FakeConnectClient()).upload(  # type: ignore[arg-type]
             "invalid", data
         )
+
+
+@pytest.mark.parametrize(
+    "invalid_kind", ["missing", "directory", "unsupported", "schema"]
+)
+def test_upload_validates_all_files_and_cleans_up_before_requesting_urls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid_kind: str
+) -> None:
+    first = tmp_path / "first.csv"
+    first.write_text("id\n1\n")
+    temporary = tmp_path / "converted.parquet"
+    monkeypatch.setattr(
+        "chalkcompute._dataset._temporary_parquet_path", lambda: temporary
+    )
+    invalid = tmp_path / "invalid.parquet"
+    if invalid_kind == "directory":
+        invalid.mkdir()
+    elif invalid_kind == "unsupported":
+        invalid = tmp_path / "invalid.txt"
+        invalid.write_text("id\n2\n")
+    elif invalid_kind == "schema":
+        pq.write_table(pa.table({"other": [2]}), invalid)
+    connect = FakeConnectClient(
+        handler=lambda method, request: pytest.fail(f"unexpected RPC: {method}")
+    )
+    http = _FakeHTTPClient()
+
+    with pytest.raises(DatasetError):
+        DatasetClient(connect_client=connect, http_client=http).upload(  # type: ignore[arg-type]
+            "invalid", iter([first, invalid])
+        )
+
+    assert connect.calls == []
+    assert http.requests == []
+    assert not temporary.exists()
+    assert first.exists()
 
 
 def test_multipart_upload_sends_parts_and_completion_xml(tmp_path: Path) -> None:
