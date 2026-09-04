@@ -16,6 +16,7 @@ from chalkcompute import scorers
 from chalkcompute._evaluation import EvaluationScorerResult
 from chalkcompute._function import (
     SCORER_RESPONSE_SCHEMA_METADATA_KEY,
+    FunctionBuildError,
     RemoteFunction,
     _build_schemas,
     _generate_handler_shim,
@@ -32,9 +33,12 @@ class Grade(BaseModel):
 REPLY = {"score": 0.5, "directness": 2, "reason": "ok"}
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def no_deploy(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(RemoteFunction, "_deploy", lambda self, **_: self)
+    """Never start a deploy: a background thread outliving the test would reach
+    the real one after monkeypatch had restored it."""
+    monkeypatch.setattr(RemoteFunction, "_start_background_deploy", lambda self: None)
+    monkeypatch.setattr(scorers, "should_strip_source", lambda: False)
 
 
 @pytest.fixture
@@ -53,19 +57,14 @@ def completion(monkeypatch: pytest.MonkeyPatch):
 
 
 def _judge(**overrides):
-    kwargs: dict = dict(
-        name="trace-quality",
-        response_model=Grade,
-        model="gpt-5",
-        instructions="Be strict.",
-    )
+    kwargs: dict = dict(model="gpt-5", instructions="Be strict.")
     kwargs.update(overrides)
-    return scorers.llm_judge(**kwargs)
+    return scorers.llm_judge(kwargs.pop("response_model", Grade), **kwargs)
 
 
 def test_rejects_non_pydantic_response_model() -> None:
     with pytest.raises(TypeError, match="pydantic"):
-        scorers.llm_judge(name="j", response_model=dict, model="m")
+        scorers.llm_judge(dict, model="m")
 
 
 def test_requires_a_score_field() -> None:
@@ -73,16 +72,52 @@ def test_requires_a_score_field() -> None:
         reason: str
 
     with pytest.raises(ValueError, match="score"):
-        scorers.llm_judge(name="j", response_model=NoScore, model="m")
+        scorers.llm_judge(NoScore, model="m")
 
 
-def test_rejects_invalid_input_names() -> None:
-    with pytest.raises(ValueError, match="column"):
-        _judge(inputs=("not a column",))
+@pytest.mark.parametrize(
+    ("inputs", "error", "match"),
+    [
+        (("not a column",), ValueError, "identifier"),
+        (("class",), ValueError, "keyword"),
+        (("_judge",), ValueError, "reserved"),
+        (("_spec",), ValueError, "reserved"),
+        (("out", "out"), ValueError, "duplicate"),
+        ((), ValueError, "at least one"),
+        ("output", TypeError, "sequence"),
+    ],
+)
+def test_rejects_unusable_input_names(inputs, error, match) -> None:
+    with pytest.raises(error, match=match):
+        _judge(inputs=inputs)
 
 
-def test_generated_function_is_a_scorer_defined_in_the_caller(no_deploy) -> None:
-    judge = _judge(inputs=("output", "expected"))
+def test_rejects_mapping_fields_strict_mode_cannot_express() -> None:
+    class WithMapping(BaseModel):
+        score: float
+        labels: dict[str, str]
+
+    with pytest.raises(ValueError, match="mapping"):
+        _judge(response_model=WithMapping)
+
+
+def test_rejects_strip_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(scorers, "should_strip_source", lambda: True)
+
+    with pytest.raises(FunctionBuildError, match="strip mode"):
+        _judge()
+
+
+def test_name_defaults_to_the_model_in_kebab_case() -> None:
+    class TraceQuality(BaseModel):
+        score: float
+
+    assert _judge(response_model=TraceQuality)._explicit_name == "trace-quality"
+    assert _judge(name="explicit")._explicit_name == "explicit"
+
+
+def test_generated_function_is_a_scorer_defined_in_the_caller() -> None:
+    judge = _judge(name="trace-quality", inputs=("output", "expected"))
     fn = judge._func
 
     assert isinstance(judge, RemoteFunction)
@@ -98,7 +133,7 @@ def test_generated_function_is_a_scorer_defined_in_the_caller(no_deploy) -> None
     assert declared["properties"]["directness"]["maximum"] == 2
 
 
-def test_api_key_secret_is_attached_and_named(no_deploy) -> None:
+def test_api_key_secret_is_attached_and_named() -> None:
     secret = Secret.from_chalk_env("OPENAI_API_TOKEN", alias="OPENAI_API_KEY")
     judge = _judge(api_key=secret)
 
@@ -136,7 +171,7 @@ def test_judge_requests_structured_output_and_splits_score(
     assert user["content"].endswith("## output\ndone")
 
 
-def test_invalid_reply_fails_the_row(no_deploy, completion) -> None:
+def test_invalid_reply_fails_the_row(completion) -> None:
     _, state = completion
     state["content"] = json.dumps({"score": 0.5, "directness": 7, "reason": "ok"})
 
@@ -144,7 +179,7 @@ def test_invalid_reply_fails_the_row(no_deploy, completion) -> None:
         _judge()._func(output="done")
 
 
-def test_prompt_and_parse_hooks(no_deploy, completion) -> None:
+def test_prompt_and_parse_hooks(completion) -> None:
     calls, state = completion
     state["content"] = "Reasoning: fine\n" + json.dumps(REPLY)
 
@@ -161,7 +196,7 @@ def test_prompt_and_parse_hooks(no_deploy, completion) -> None:
     assert calls[0][1]["messages"] == [{"role": "user", "content": "grade Grade: done"}]
 
 
-def test_custom_api_server_and_missing_key(no_deploy, completion, monkeypatch) -> None:
+def test_custom_api_server_and_missing_key(completion, monkeypatch) -> None:
     calls, _ = completion
     judge = _judge(api_server="https://vllm.local/v1/")
     judge._func(output="done")
@@ -173,7 +208,7 @@ def test_custom_api_server_and_missing_key(no_deploy, completion, monkeypatch) -
         judge._func(output="done")
 
 
-def test_handler_shim_runs_the_generated_judge(no_deploy, completion) -> None:
+def test_handler_shim_runs_the_generated_judge(completion) -> None:
     judge = _judge()
     module = types.ModuleType("user_module")
     setattr(module, judge._func_name, judge._func)

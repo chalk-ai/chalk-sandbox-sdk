@@ -256,19 +256,21 @@ class TraceQuality(BaseModel):
     reason: str
 
 trace_quality = cc.scorers.llm_judge(
-    name="trace-quality",
-    response_model=TraceQuality,
+    TraceQuality,
     model="gpt-5",
     instructions="You are grading a browser agent's login attempt.",
     api_key=cc.Secret.from_chalk_env("OPENAI_API_KEY"),
 )
 ```
 
-`inputs` names the dataset columns the judge reads (default `("output",)`);
+The scorer deploys as `trace-quality`, the model's name in kebab case; pass
+`name=` to choose another. `inputs` names the dataset columns the judge reads
+(default `("output",)`);
 `prompt_fn` and `parse_fn` replace the default prompt and JSON parsing. Any
 OpenAI-compatible endpoint works via `api_server`, including Chalk's AI
-router. Every function deployed from the same module imports that module,
-so give sibling functions an image with `pydantic` as well.
+router. Every function deployed from the same module imports that module, so
+give sibling functions an image with `pydantic` as well. A judge is generated
+at import time, so it cannot be deployed in strip mode.
 
 ## Deployment revisions and rollback
 
