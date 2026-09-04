@@ -265,7 +265,8 @@ def _client_options(spec: _JudgeSpec) -> dict[str, Any]:
 
 def _complete(spec: _JudgeSpec, messages: list[dict[str, str]]) -> Any:
     """One chat completion: the parsed model, or ``parse_fn``'s reading of the text."""
-    from openai import OpenAI
+    # Present in the judge's image, never in the SDK's environment.
+    from openai import OpenAI  # ty: ignore[unresolved-import]
 
     client = OpenAI(**_client_options(spec))
     request: dict[str, Any] = {"model": spec.model, "messages": messages}
