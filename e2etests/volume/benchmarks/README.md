@@ -283,10 +283,11 @@ The database row identifies the suite, case, run, branch, source, and timing
 statistics. Additional pyperf metadata is available in `metrics`. When sandbox
 creation fails because all registered host-pool capacity is allocated, the
 benchmark wrapper writes a `benchmark-status` run with `benchmark_error_count=1`
-and exits successfully. Successful attempts write the same run with
-`benchmark_error_count=0`. Exhausted volume write spools are handled the same
-way for reporting with `error_type=volume-spool-exhausted`, but remain hard
-benchmark failures. Other errors also remain benchmark failures.
+and exits successfully. Sandboxes preempted after starting are reported the
+same way with `error_type=sandbox-preempted`. Successful attempts write the same
+run with `benchmark_error_count=0`. Exhausted volume write spools are reported
+with `error_type=volume-spool-exhausted`, but remain hard benchmark failures.
+Other errors also remain benchmark failures.
 
 ## Running
 
@@ -318,6 +319,50 @@ Buildkite expands one two-dimensional matrix step into every case for
 its module, arguments, suite, case, and tags. The pipeline
 runs hourly on `main` and can also be launched manually. Any hard failure on
 `main` notifies `#proj-compute-volumes`.
+
+## Provider baselines
+
+Compare the shared FIO workload across volume providers. Scheduled Buildkite
+runs use Chalk only. Run other providers locally:
+
+```sh
+just --justfile e2etests/volume/benchmarks/justfile fio-run <candidate-provider> \
+  --output benchmark-results/candidate.json
+
+just --justfile e2etests/volume/benchmarks/justfile fio-run <baseline-provider> \
+  --output benchmark-results/baseline.json
+
+just --justfile e2etests/volume/benchmarks/justfile fio-compare \
+  benchmark-results/candidate.json benchmark-results/baseline.json \
+  --output benchmark-results/comparison.md
+```
+
+`fio-run` writes pyperf JSON and a sibling Markdown table locally. Without
+`--output`, it uses a timestamped path in gitignored `benchmark-results/`.
+Runs use temporary volumes; pass `--volume NAME` or `--keep-volume` to retain
+one. Run `uv sync --all-groups` once, then configure credentials for the
+provider you use.
+
+Workload options are shared:
+
+```sh
+just --justfile e2etests/volume/benchmarks/justfile fio-run <provider> \
+  --size 64M --small-files 100 --timeout-secs 900 \
+  --provider-environment baseline --provider-region us-east
+```
+
+`--provider-environment`, `--provider-region`, and `--provider-cloud` apply
+when the selected adapter supports placement. Requested values are recorded in
+the result.
+
+`fio-compare` accepts any two results. It requires matching workload settings,
+resources, image, payload hash, FIO version, and transferred bytes. Ratios are
+candidate / baseline: lower is better for elapsed time and latency; higher is
+better for bandwidth and IOPS. Persistence timings remain in each individual
+report.
+
+To add a provider, register a runner in `cases.fio.providers.PROVIDERS` with
+its dependency group and placement support.
 
 ## Dashboard
 

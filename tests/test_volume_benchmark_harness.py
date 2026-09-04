@@ -14,6 +14,8 @@ from e2etests.volume.benchmarks.harness import (
     BENCHMARK_RESULTS_VOLUME,
     BenchmarkFailure,
     HOST_CAPACITY_ERROR,
+    SANDBOX_PREEMPTED_MESSAGE,
+    SandboxPreemptedError,
     VolumeSpoolExhaustedError,
     archive_benchmark_results,
     read_committed_json,
@@ -192,6 +194,17 @@ def test_run_sandbox_workload_terminates_after_wait_failure(monkeypatch) -> None
     assert terminated == ["sandbox-id"]
 
 
+def test_wait_for_sandbox_classifies_preemption(monkeypatch) -> None:
+    monkeypatch.setattr(
+        harness,
+        "wait_for_completion",
+        lambda *_args: ("failed", SANDBOX_PREEMPTED_MESSAGE),
+    )
+
+    with pytest.raises(SandboxPreemptedError, match=SANDBOX_PREEMPTED_MESSAGE):
+        harness._wait_for_sandbox(cast(Any, object()), 30, "test phase")
+
+
 def test_run_sandbox_workload_terminates_after_startup_failure() -> None:
     terminated: list[str | None] = []
 
@@ -298,6 +311,20 @@ def test_run_benchmark_records_suppressed_known_error(tmp_path, monkeypatch) -> 
     metadata = json.loads(output.read_text())["benchmarks"][0]["metadata"]
     assert metadata["benchmark_error_count"] == 1
     assert metadata["error_type"] == "sandbox-capacity-exhausted"
+
+
+def test_run_benchmark_reports_sandbox_preemption(tmp_path, monkeypatch) -> None:
+    output = tmp_path / "benchmark.json"
+    monkeypatch.setenv("CHALK_BENCHMARK_PYPERF_OUTPUT", str(output))
+
+    def benchmark() -> NoReturn:
+        raise SandboxPreemptedError(SANDBOX_PREEMPTED_MESSAGE)
+
+    run_benchmark("volume-test", benchmark)
+
+    metadata = json.loads(output.read_text())["benchmarks"][0]["metadata"]
+    assert metadata["benchmark_error_count"] == 1
+    assert metadata["error_type"] == "sandbox-preempted"
 
 
 def test_run_benchmark_records_and_reraises_known_error(tmp_path, monkeypatch) -> None:

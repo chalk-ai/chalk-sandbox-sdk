@@ -1582,7 +1582,7 @@ class SandboxClient:
             if resp.sandbox is None:
                 raise SandboxCreationError("GetSandbox returned no sandbox")
             info = _pb_to_sandbox_info(resp.sandbox)
-            if info.status == "running":
+            if info.status in ("running", "succeeded"):
                 return info
             if info.status in ("failed", "error", "unknown", "terminated"):
                 raise _sandbox_creation_error(info)
