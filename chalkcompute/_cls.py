@@ -58,6 +58,11 @@ from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import ConnectClient
 from chalkcompute._containerspec import ContainerSpec, validate_replica_and_utilization
 from chalkcompute._deployment_proto import function_config, scaling_spec
+from chalkcompute._function_deployment import (
+    ensure_external_function,
+    prepare_function_image,
+)
+from chalkcompute._secret import prepare_lazy_secrets
 from chalkcompute._function import (
     _REMOTE_ENV_VAR,
     _ROW_METADATA_COLUMN,
@@ -65,11 +70,9 @@ from chalkcompute._function import (
     RemoteFunction,
     SerializationFormat,
     _strip_source_for_deploy,
-    _build_and_upload,
     _callable_input_names,
     _cleanup_temp_files,
     _entrypoint_source,
-    _deploy_external_function,
     _get_external_function,
     _get_scaling_group,
     _is_chalkcompute_decorator,
@@ -106,7 +109,6 @@ from chalkcompute._volume import (
     VolumeMount,
     cleanup_owned_volumes,
     normalize_volume_refs,
-    referenced_volume_mount,
 )
 
 if TYPE_CHECKING:
@@ -1155,8 +1157,12 @@ class RemoteClass:
         poll_interval: float = 0.5,
         build_timeout: float = 600.0,
         ready_timeout: float = 300.0,
+        force_new_version: bool = False,
     ) -> RemoteClass:
-        """Build the image and deploy all methods as function versions.
+        """Deploy all methods, reusing unchanged function versions.
+
+        ``force_new_version=True`` creates fresh versions while still reusing
+        image builds and source uploads.
 
         Parameters
         ----------
@@ -1183,43 +1189,14 @@ class RemoteClass:
         ckey = f"class:{self._class_name}"
         progress_add(ckey, "class", f'Class "{self._class_name}"')
 
+        temp_files: list[str] = []
         try:
             # 1. Build deploy image
             deploy_image, temp_files = self._build_deploy_image()
-
-            # 2. Build image + upload lazy files
-            image_uri, new_vols, driver, volume_commits = _build_and_upload(
-                self._client,
-                deploy_image,
-                label=f"class '{self._class_name}'",
-                volume_name=f"cls-src-{self._explicit_name or self._class_name}",
-                poll_interval=poll_interval,
-                build_timeout=build_timeout,
-                progress_parent=ckey,
-            )
-            # A missing user-referenced volume fails the deploy. Checked once
-            # here, then reused across every per-method spec.
-            referenced_volumes = [
-                referenced_volume_mount(self._client, mount)
-                for mount in self._referenced_volumes
-            ]
-            self._volumes = [*referenced_volumes, *new_vols]
-            self._volume_driver = driver
-            _cleanup_temp_files(temp_files)
-
-            # Resolve lazy secrets once, into a local rather than
-            # self._secrets: they're shared by every method (one FUNCTION
-            # scope for the class), and keeping self._secrets as the user's
-            # lazy originals means a later .deploy() on the same object
-            # re-upserts instead of reusing a stale resolution.
-            resolved_secrets = self._secrets
-            if self._secrets and any(s.is_lazy for s in self._secrets):
-                from chalkcompute._secret import SecretScope, resolve_lazy_secrets
-
-                scope = SecretScope.function(self._explicit_name or self._class_name)
-                resolved_secrets, _upserted = resolve_lazy_secrets(
-                    self._secrets, self._client, scope=scope
-                )
+            prepared = prepare_function_image(deploy_image)
+            self._volumes = list(self._referenced_volumes)
+            self._volume_driver = None
+            resolved_secrets, local_secrets = prepare_lazy_secrets(self._secrets)
 
             # 3. Register each method as a function version
             sg_names: list[str] = []
@@ -1242,7 +1219,7 @@ class RemoteClass:
 
                 container_spec = ContainerSpec(
                     name=sg_name,
-                    image=image_uri,
+                    image="",
                     entrypoint=_local_install_entrypoint(handler_cmd),
                     env=_remote_call_container_env(self._env),
                     cpu=self._cpu,
@@ -1300,22 +1277,26 @@ class RemoteClass:
                 )
 
                 logger.info("Registering method '%s'...", func_name)
-                external_function = _deploy_external_function(
+                ensured = ensure_external_function(
                     self._client,
                     function_name=func_name,
-                    external_function_id=(
-                        None
-                        if method_info.remote_function is None
-                        else method_info.remote_function.function_id
-                    ),
+                    prepared=prepared,
+                    local_secrets=local_secrets,
+                    force_new_version=force_new_version,
+                    poll_interval=poll_interval,
+                    timeout=build_timeout,
                     version_spec=catalog_pb.ExternalFunctionVersionSpec(
                         input_arrow_schema=input_schema,
                         output_arrow_schema=output_schema,
                         spec=spec,
                         config=config,
-                        volume_commits=volume_commits,
                     ),
                 )
+                external_function = ensured.external_function
+                if external_function is None:
+                    raise ClassBuildError(
+                        "Ensure response omitted the external function"
+                    )
                 efv = external_function.current_version
                 if efv is None:
                     progress_fail(mkey)
@@ -1325,11 +1306,13 @@ class RemoteClass:
 
                 # Build a RemoteFunction proxy for calling this method
                 rf = RemoteFunction._make_empty()
-                _apply_external_function(rf, external_function)
+                _apply_external_function(
+                    rf, external_function, scaling_group=ensured.scaling_group
+                )
                 method_info.remote_function = rf
                 version_info = rf.version_info
                 assert version_info is not None
-                sg_data = None
+                sg_data = ensured.scaling_group
 
                 logger.info(
                     "  %s v%s (id=%s)", func_name, version_info.version, version_info.id
@@ -1362,6 +1345,7 @@ class RemoteClass:
             progress_fail(ckey)
             raise
         finally:
+            _cleanup_temp_files(temp_files)
             progress_finish()
 
         return self

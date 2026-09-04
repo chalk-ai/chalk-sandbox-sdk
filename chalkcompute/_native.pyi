@@ -3,6 +3,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+def source_file_digests(paths: list[str]) -> list[tuple[str, int, int]]: ...
+def source_tree_digest(files: list[tuple[str, str, int, int]]) -> str: ...
+
 class RemoteCallClient:
     def __init__(
         self,

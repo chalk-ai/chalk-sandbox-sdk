@@ -5,9 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from protobuf import Oneof
 
-import chalkcompute._cls as cls_mod
-import chalkcompute._function as function_mod
 from chalkcompute._cls import ClassError, RemoteClass, method
 from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._function import FunctionError, RemoteFunction
@@ -47,25 +46,31 @@ class _CapturingClient(StubbedConnectClient):
                     available_replicas=1,
                 )
             )
-        if method.name != "create_external_function":
+        if method.name != "ensure_external_function":
             raise AssertionError(f"unexpected method: {method.name}")
-        assert isinstance(request, catalog_pb.CreateExternalFunctionRequest)
-        assert request.spec is not None and request.spec.spec is not None
-        assert request.spec.spec.container_spec is not None
-        self.requests.append(request.spec)
-        return catalog_pb.CreateExternalFunctionResponse(
-            external_function=catalog_pb.ExternalFunction(
-                id=f"version-{len(self.requests)}",
-                name=request.function_name,
-                current_version=catalog_pb.ExternalFunctionVersion(
-                    id=f"version-{len(self.requests)}",
-                    function_id="function-1",
-                    function_name=request.function_name,
-                    version=len(self.requests),
-                    scaling_group_name=request.spec.spec.container_spec.name,
-                    input_arrow_schema=request.spec.input_arrow_schema,
+        assert isinstance(request, catalog_pb.EnsureExternalFunctionRequest)
+        assert request.spec is not None and request.spec.version_spec is not None
+        assert request.spec.version_spec.spec is not None
+        assert request.spec.version_spec.spec.container_spec is not None
+        self.requests.append(request.spec.version_spec)
+        return catalog_pb.EnsureExternalFunctionResponse(
+            result=Oneof(
+                "complete",
+                catalog_pb.EnsuredExternalFunction(
+                    external_function=catalog_pb.ExternalFunction(
+                        id=f"version-{len(self.requests)}",
+                        name=request.function_name,
+                        current_version=catalog_pb.ExternalFunctionVersion(
+                            id=f"version-{len(self.requests)}",
+                            function_id="function-1",
+                            function_name=request.function_name,
+                            version=len(self.requests),
+                            scaling_group_name=request.spec.version_spec.spec.container_spec.name,
+                            input_arrow_schema=request.spec.version_spec.input_arrow_schema,
+                        ),
+                    ),
                 ),
-            ),
+            )
         )
 
 
@@ -312,11 +317,8 @@ class TestScheduleValidationFunction:
         client = _CapturingClient()
         fn = RemoteFunction(tick, schedule=" 1h ")
         fn._client = client  # type: ignore[assignment]
-        monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
         monkeypatch.setattr(
-            function_mod,
-            "_build_and_upload",
-            lambda *_, **__: ("image:test", [], None, []),
+            RemoteFunction, "_build_deploy_image", lambda _: Image("image:test")
         )
 
         fn.deploy()
@@ -334,11 +336,8 @@ class TestScheduleValidationFunction:
         client = _CapturingClient()
         fn = RemoteFunction(add, tracing=TracingPolicy(sample_rate=0.25))
         fn._client = client  # type: ignore[assignment]
-        monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
         monkeypatch.setattr(
-            function_mod,
-            "_build_and_upload",
-            lambda *_, **__: ("image:test", [], None, []),
+            RemoteFunction, "_build_deploy_image", lambda _: Image("image:test")
         )
 
         fn.deploy()
@@ -360,11 +359,8 @@ class TestScheduleValidationFunction:
         client = _CapturingClient()
         fn = RemoteFunction(add, tracing=True)
         fn._client = client  # type: ignore[assignment]
-        monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
         monkeypatch.setattr(
-            function_mod,
-            "_build_and_upload",
-            lambda *_, **__: ("image:test", [], None, []),
+            RemoteFunction, "_build_deploy_image", lambda _: Image("image:test")
         )
 
         fn.deploy()
@@ -386,11 +382,8 @@ class TestScheduleValidationFunction:
         client = _CapturingClient()
         fn = RemoteFunction(add, tracing=False)
         fn._client = client  # type: ignore[assignment]
-        monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
         monkeypatch.setattr(
-            function_mod,
-            "_build_and_upload",
-            lambda *_, **__: ("image:test", [], None, []),
+            RemoteFunction, "_build_deploy_image", lambda _: Image("image:test")
         )
 
         fn.deploy()
@@ -414,12 +407,7 @@ class TestScheduleValidationFunction:
         remote_class = RemoteClass(Worker, tracing=TracingPolicy(sample_rate=0.25))
         remote_class._client = client  # type: ignore[assignment]
         monkeypatch.setattr(
-            RemoteClass, "_build_deploy_image", lambda _: (object(), [])
-        )
-        monkeypatch.setattr(
-            cls_mod,
-            "_build_and_upload",
-            lambda *_, **__: ("image:test", [], None, []),
+            RemoteClass, "_build_deploy_image", lambda _: (Image("image:test"), [])
         )
 
         remote_class.deploy()
@@ -441,11 +429,8 @@ class TestScheduleValidationFunction:
         client = _CapturingClient()
         fn = RemoteFunction(add)
         fn._client = client  # type: ignore[assignment]
-        monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
         monkeypatch.setattr(
-            function_mod,
-            "_build_and_upload",
-            lambda *_, **__: ("image:test", [], None, []),
+            RemoteFunction, "_build_deploy_image", lambda _: Image("image:test")
         )
 
         fn.deploy()
@@ -503,12 +488,7 @@ class TestScheduleValidationClass:
         rc = RemoteClass(Jobs, schedule="0 * * * *")
         rc._client = client  # type: ignore[assignment]
         monkeypatch.setattr(
-            RemoteClass, "_build_deploy_image", lambda _: (object(), [])
-        )
-        monkeypatch.setattr(
-            cls_mod,
-            "_build_and_upload",
-            lambda *_, **__: ("image:test", [], None, []),
+            RemoteClass, "_build_deploy_image", lambda _: (Image("image:test"), [])
         )
 
         rc.deploy()
@@ -532,11 +512,8 @@ class TestFunctionQueueProtocolAdvertisement:
         client = _CapturingClient()
         fn = RemoteFunction(run)
         fn._client = client  # type: ignore[assignment]
-        monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
         monkeypatch.setattr(
-            function_mod,
-            "_build_and_upload",
-            lambda *_, **__: ("image:test", [], None, []),
+            RemoteFunction, "_build_deploy_image", lambda _: Image("image:test")
         )
 
         fn.deploy()
@@ -556,11 +533,8 @@ class TestFunctionQueueProtocolAdvertisement:
         client = _CapturingClient()
         fn = RemoteFunction(run, env={"CHALK_FNQ_STREAMS_SUPPORTED": "false"})
         fn._client = client  # type: ignore[assignment]
-        monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
         monkeypatch.setattr(
-            function_mod,
-            "_build_and_upload",
-            lambda *_, **__: ("image:test", [], None, []),
+            RemoteFunction, "_build_deploy_image", lambda _: Image("image:test")
         )
 
         fn.deploy()
@@ -583,12 +557,7 @@ class TestFunctionQueueProtocolAdvertisement:
         remote_class = RemoteClass(Worker)
         remote_class._client = client  # type: ignore[assignment]
         monkeypatch.setattr(
-            RemoteClass, "_build_deploy_image", lambda _: (object(), [])
-        )
-        monkeypatch.setattr(
-            cls_mod,
-            "_build_and_upload",
-            lambda *_, **__: ("image:test", [], None, []),
+            RemoteClass, "_build_deploy_image", lambda _: (Image("image:test"), [])
         )
 
         remote_class.deploy()
@@ -694,11 +663,8 @@ def test_remote_function_forwards_shared_scaling_fields(
         scale_from_zero_request_policy=ScaleFromZeroRequestPolicy.HOLD,
     )
     fn._client = client  # type: ignore[assignment]
-    monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
     monkeypatch.setattr(
-        function_mod,
-        "_build_and_upload",
-        lambda *_, **__: ("image:test", [], None, []),
+        RemoteFunction, "_build_deploy_image", lambda _: Image("image:test")
     )
 
     fn.deploy()
@@ -739,11 +705,8 @@ def test_remote_class_forwards_shared_scaling_fields(
         scale_from_zero_request_policy=ScaleFromZeroRequestPolicy.HOLD,
     )
     remote_class._client = client  # type: ignore[assignment]
-    monkeypatch.setattr(RemoteClass, "_build_deploy_image", lambda _: (object(), []))
     monkeypatch.setattr(
-        cls_mod,
-        "_build_and_upload",
-        lambda *_, **__: ("image:test", [], None, []),
+        RemoteClass, "_build_deploy_image", lambda _: (Image("image:test"), [])
     )
 
     remote_class.deploy()
