@@ -1,4 +1,4 @@
-"""Scorers declared as configuration and deployed as ordinary functions."""
+"""Scorers you declare instead of write."""
 
 from __future__ import annotations
 
@@ -20,8 +20,7 @@ from chalkcompute._naming import sanitize_dns_label
 from chalkcompute._secret import Secret
 
 _DEFAULT_API_KEY_ENV = "OPENAI_API_KEY"
-# Installed in the judge's image, not the SDK's: the model class needs pydantic
-# and the call is made through the OpenAI client.
+# In the judge's image, not the SDK's.
 _JUDGE_PACKAGES = ["pydantic>=2", "openai>=1.99"]
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -29,7 +28,7 @@ _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 @dataclass(frozen=True)
 class _JudgeSpec:
     response_model: Any
-    # The key the score serializes under, which an alias can rename.
+    # What the score serializes as; an alias can rename it.
     score_key: str
     model: str
     instructions: str
@@ -61,19 +60,15 @@ def llm_judge(
 ) -> RemoteFunction | _NoOpFunction:
     """Deploy an LLM judge described by a pydantic model.
 
-    ``response_model`` is a pydantic ``BaseModel`` class with a ``score`` field.
-    The model is asked for a reply matching it through structured outputs;
-    ``score`` becomes the scorer's score and every other field is recorded as
-    row metadata. A reply that fails validation fails the row.
+    ``response_model`` needs a ``score`` field, which becomes the scorer's
+    score; its other fields are recorded as row metadata. A reply that fails
+    validation fails the row.
 
-    ``inputs`` are the dataset columns the judge reads; ``output`` is the task's
-    output. ``prompt_fn(response_model, **inputs)`` replaces the default prompt,
-    and ``parse_fn(text)`` replaces structured outputs for an endpoint without
-    them. ``api_server`` is any OpenAI-compatible base URL, Chalk's AI router
-    included; ``api_key`` is a Secret whose env var is read in the pod, by
-    default ``OPENAI_API_KEY``. Other keyword arguments go to
-    :func:`chalkcompute.function`. ``name`` defaults to the model class in kebab
-    case.
+    ``inputs`` are the dataset columns to grade (``output`` is the task's).
+    ``prompt_fn(response_model, **inputs)`` replaces the prompt; ``parse_fn``
+    replaces structured outputs. ``api_server`` takes any OpenAI-compatible URL
+    and ``api_key`` a Secret read in the pod. ``name`` defaults to the model
+    class in kebab case; other keywords go to :func:`chalkcompute.function`.
     """
     _assert_deployable()
     _assert_response_model(response_model)
@@ -99,8 +94,8 @@ def llm_judge(
         temperature=temperature,
     )
 
-    # The judge is defined in the caller's module so the deploy ships that file,
-    # where the response model lives, and the worker shim imports it back.
+    # Defined in the caller's module so the deploy ships that file, where the
+    # response model lives, and the shim imports it back.
     frame = sys._getframe(1)
     caller_module = frame.f_globals.get("__name__", "__main__")
     py_name = "_chalk_llm_judge_" + re.sub(r"[^0-9A-Za-z_]", "_", name)
@@ -136,8 +131,8 @@ def llm_judge(
 
 
 def _assert_deployable() -> None:
-    # Strip mode removes the caller's chalkcompute import but keeps its
-    # llm_judge(...) call, so the shipped module would fail to import.
+    # Stripping removes the caller's chalkcompute import but keeps this call,
+    # so the shipped module would not import.
     if should_strip_source():
         raise FunctionBuildError(
             "cc.scorers.llm_judge cannot be deployed in strip mode "
@@ -194,8 +189,7 @@ def _serialized_name(response_model: Any, field: str) -> str:
 
 
 def _metadata_schema(response_model: Any, score_key: str) -> dict[str, Any]:
-    """The schema of what lands in row metadata: the model as it serializes,
-    minus the score, which travels in its own column."""
+    """What lands in metadata: the model as it serializes, minus the score."""
     schema = dict(response_model.model_json_schema(mode="serialization"))
     schema["properties"] = {
         name: prop
@@ -232,8 +226,7 @@ def _judge(spec: _JudgeSpec, columns: Mapping[str, Any]) -> EvaluationScorerResu
     graded = _complete(spec, messages)
     if not isinstance(graded, spec.response_model):
         graded = spec.response_model.model_validate(graded)
-    # Serialize by alias, the way the stamped schema is named, so the server
-    # finds each field under the key it read about.
+    # By alias, the way the stamped schema names it.
     data = graded.model_dump(mode="json", by_alias=True)
     score = data.pop(spec.score_key)
     return EvaluationScorerResult(score=float(score), metadata=data or None)
@@ -261,8 +254,7 @@ def _client_options(spec: _JudgeSpec) -> dict[str, Any]:
     base_url = spec.api_server or os.environ.get("OPENAI_BASE_URL")
     if base_url:
         options["base_url"] = base_url
-    # Chalk's AI router resolves the calling environment from this header, as
-    # F.openai_complete sends it; other endpoints ignore it.
+    # Chalk's AI router routes on this; other endpoints ignore it.
     env_id = os.environ.get("CHALK_ENVIRONMENT_ID") or os.environ.get(
         "CHALK_ACTIVE_ENVIRONMENT"
     )
@@ -284,7 +276,7 @@ def _complete(spec: _JudgeSpec, messages: list[dict[str, str]]) -> Any:
     if spec.parse_fn is not None:
         text = client.chat.completions.create(**request).choices[0].message.content
         return spec.parse_fn(text or "")
-    # The client derives the strict schema from the model and validates the reply.
+    # The client derives the strict schema and validates the reply.
     message = (
         client.chat.completions.parse(response_format=spec.response_model, **request)
         .choices[0]
