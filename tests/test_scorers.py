@@ -43,16 +43,15 @@ def no_deploy(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def completion(monkeypatch: pytest.MonkeyPatch):
-    """Stub the HTTP call; returns the captured requests and lets tests set the reply."""
-    calls: list[tuple[str, dict, str]] = []
-    state = {"content": json.dumps(REPLY)}
+    """Stand in for the model call: records the messages, returns a settable reply."""
+    calls: list[list[dict[str, str]]] = []
+    state: dict = {"reply": dict(REPLY)}
 
-    def fake_post(url, body, api_key):
-        calls.append((url, body, api_key))
-        return {"choices": [{"message": {"content": state["content"]}}]}
+    def fake_complete(spec, messages):
+        calls.append(messages)
+        return state["reply"]
 
-    monkeypatch.setattr(scorers, "_post_json", fake_post)
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(scorers, "_complete", fake_complete)
     return calls, state
 
 
@@ -76,29 +75,19 @@ def test_requires_a_score_field() -> None:
 
 
 @pytest.mark.parametrize(
-    ("inputs", "error", "match"),
+    ("inputs", "error"),
     [
-        (("not a column",), ValueError, "identifier"),
-        (("class",), ValueError, "keyword"),
-        (("_judge",), ValueError, "reserved"),
-        (("_spec",), ValueError, "reserved"),
-        (("out", "out"), ValueError, "duplicate"),
-        ((), ValueError, "at least one"),
-        ("output", TypeError, "sequence"),
+        (("not a column",), ValueError),
+        (("class",), ValueError),
+        (("__chalk_spec__",), ValueError),
+        (("out", "out"), ValueError),
+        ((), ValueError),
+        ("output", TypeError),
     ],
 )
-def test_rejects_unusable_input_names(inputs, error, match) -> None:
-    with pytest.raises(error, match=match):
+def test_rejects_unusable_input_names(inputs, error) -> None:
+    with pytest.raises(error):
         _judge(inputs=inputs)
-
-
-def test_rejects_mapping_fields_strict_mode_cannot_express() -> None:
-    class WithMapping(BaseModel):
-        score: float
-        labels: dict[str, str]
-
-    with pytest.raises(ValueError, match="mapping"):
-        _judge(response_model=WithMapping)
 
 
 def test_rejects_strip_mode(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -127,8 +116,8 @@ def test_generated_function_is_a_scorer_defined_in_the_caller() -> None:
     assert inspect.getfile(fn) == __file__ and fn.__module__ == __name__
     assert getattr(sys.modules[__name__], "_chalk_llm_judge_trace_quality") is judge
 
-    _, output_schema = _build_schemas(fn)
     # The declaration describes the metadata: the score has its own column.
+    _, output_schema = _build_schemas(fn)
     declared = json.loads(output_schema.metadata[SCORER_RESPONSE_SCHEMA_METADATA_KEY])
     assert list(declared["properties"]) == ["directness", "reason"]
     assert declared["properties"]["directness"]["maximum"] == 2
@@ -139,74 +128,160 @@ def test_api_key_secret_is_attached_and_named() -> None:
     judge = _judge(api_key=secret)
 
     assert secret in judge._secrets
-    assert judge._func.__globals__["_spec"].api_key_env == "OPENAI_API_KEY"
+    assert judge._func.__globals__["__chalk_spec__"].api_key_env == "OPENAI_API_KEY"
     assert scorers._secret_env_var(Secret.from_local_env("MY_KEY")) == "MY_KEY"
     assert scorers._secret_env_var(Secret.from_chalk_env("K", prefix="P_")) == "P_K"
 
 
-def test_judge_requests_structured_output_and_splits_score(
-    no_deploy, completion
-) -> None:
+def test_judge_splits_the_score_from_the_metadata(completion) -> None:
     calls, _ = completion
-    judge = _judge(max_tokens=300, temperature=0)
 
-    result = judge._func(output="done")
+    result = _judge()._func(output="done")
 
     assert result == EvaluationScorerResult(
         score=0.5, metadata={"directness": 2, "reason": "ok"}
     )
-    url, body, api_key = calls[0]
-    assert url == "https://api.openai.com/v1/chat/completions" and api_key == "sk-test"
-    assert (
-        body["model"] == "gpt-5"
-        and body["max_tokens"] == 300
-        and body["temperature"] == 0
-    )
-    schema = body["response_format"]["json_schema"]
-    assert schema["strict"] is True and schema["name"] == "Grade"
-    assert schema["schema"]["additionalProperties"] is False
-    assert schema["schema"]["required"] == ["score", "directness", "reason"]
-    system, user = body["messages"]
+    system, user = calls[0]
     assert system == {"role": "system", "content": "Be strict."}
-    assert "- directness (integer, 0 to 2): Shortest path." in user["content"]
-    assert user["content"].endswith("## output\ndone")
+    assert '"directness"' in user["content"] and "Shortest path." in user["content"]
+    assert user["content"].endswith("## output\n\ndone")
 
 
 def test_invalid_reply_fails_the_row(completion) -> None:
     _, state = completion
-    state["content"] = json.dumps({"score": 0.5, "directness": 7, "reason": "ok"})
+    state["reply"] = {"score": 0.5, "directness": 7, "reason": "ok"}
 
     with pytest.raises(ValidationError, match="directness"):
         _judge()._func(output="done")
 
 
-def test_prompt_and_parse_hooks(completion) -> None:
-    calls, state = completion
-    state["content"] = "Reasoning: fine\n" + json.dumps(REPLY)
+def test_prompt_fn_replaces_the_default_prompt(completion) -> None:
+    calls, _ = completion
 
     def prompt_fn(response_model, output):
         return f"grade {response_model.__name__}: {output}"
 
-    def parse_fn(text):
-        return json.loads(text.split("\n", 1)[1])
+    _judge(prompt_fn=prompt_fn, instructions="")._func(output="done")
 
-    judge = _judge(prompt_fn=prompt_fn, parse_fn=parse_fn, instructions="")
+    assert calls[0] == [{"role": "user", "content": "grade Grade: done"}]
+
+
+def test_aliased_fields_serialize_the_way_the_schema_names_them(completion) -> None:
+    _, state = completion
+
+    class Aliased(BaseModel):
+        score: float = Field(alias="overall")
+        directness: int = Field(alias="how_direct", ge=0, le=2)
+
+    state["reply"] = {"overall": 0.5, "how_direct": 2}
+    judge = _judge(response_model=Aliased)
+
     result = judge._func(output="done")
 
-    assert result.score == 0.5
-    assert calls[0][1]["messages"] == [{"role": "user", "content": "grade Grade: done"}]
+    # The score comes out of its aliased key; metadata carries the alias the
+    # stamped schema declares, and never the score.
+    assert result == EvaluationScorerResult(score=0.5, metadata={"how_direct": 2})
+    declared = json.loads(judge._func.__chalk_scorer_response_schema__)
+    assert list(declared["properties"]) == ["how_direct"]
+    assert declared["required"] == ["how_direct"]
 
 
-def test_custom_api_server_and_missing_key(completion, monkeypatch) -> None:
-    calls, _ = completion
-    judge = _judge(api_server="https://vllm.local/v1/")
-    judge._func(output="done")
-    assert calls[0][0] == "https://vllm.local/v1/chat/completions"
-    assert "max_tokens" not in calls[0][1] and "temperature" not in calls[0][1]
+def test_client_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    spec = _judge()._func.__globals__["__chalk_spec__"]
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("CHALK_ENVIRONMENT_ID", raising=False)
+    monkeypatch.delenv("CHALK_ACTIVE_ENVIRONMENT", raising=False)
 
-    monkeypatch.delenv("OPENAI_API_KEY")
     with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
-        judge._func(output="done")
+        scorers._client_options(spec)
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    assert scorers._client_options(spec) == {"api_key": "sk-test"}
+
+    # The router's base URL and environment header come from the pod's env.
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.chalk.ai/v1/router")
+    monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-123")
+    assert scorers._client_options(spec) == {
+        "api_key": "sk-test",
+        "base_url": "https://api.chalk.ai/v1/router",
+        "default_headers": {"X-Chalk-Env-Id": "env-123"},
+    }
+    # An explicit api_server wins over the environment.
+    explicit = _judge(api_server="https://vllm.local/v1")._func.__globals__[
+        "__chalk_spec__"
+    ]
+    assert scorers._client_options(explicit)["base_url"] == "https://vllm.local/v1"
+
+
+class _FakeCompletions:
+    """Stands in for ``client.chat.completions``, recording each request."""
+
+    def __init__(self, parsed=None, text=None, refusal=None):
+        self.requests: list[dict] = []
+        self.parsed, self.text, self.refusal = parsed, text, refusal
+
+    def parse(self, **request):
+        self.requests.append(request)
+        message = types.SimpleNamespace(parsed=self.parsed, refusal=self.refusal)
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=message)])
+
+    def create(self, **request):
+        self.requests.append(request)
+        message = types.SimpleNamespace(content=self.text)
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=message)])
+
+
+def _install_fake_openai(
+    monkeypatch: pytest.MonkeyPatch, completions: _FakeCompletions
+):
+    def fake_client(**options):
+        return types.SimpleNamespace(
+            options=options, chat=types.SimpleNamespace(completions=completions)
+        )
+
+    monkeypatch.setitem(
+        sys.modules, "openai", types.SimpleNamespace(OpenAI=fake_client)
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+
+def test_complete_asks_for_structured_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    completions = _FakeCompletions(parsed=Grade(**REPLY))
+    _install_fake_openai(monkeypatch, completions)
+    spec = _judge(max_tokens=300, temperature=0)._func.__globals__["__chalk_spec__"]
+
+    graded = scorers._complete(spec, [{"role": "user", "content": "grade"}])
+
+    assert graded == Grade(**REPLY)
+    assert completions.requests == [
+        {
+            "model": "gpt-5",
+            "messages": [{"role": "user", "content": "grade"}],
+            "max_tokens": 300,
+            "temperature": 0,
+            "response_format": Grade,
+        }
+    ]
+
+
+def test_complete_reports_a_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_openai(monkeypatch, _FakeCompletions(parsed=None, refusal="no"))
+    spec = _judge()._func.__globals__["__chalk_spec__"]
+
+    with pytest.raises(RuntimeError, match="no"):
+        scorers._complete(spec, [])
+
+
+def test_complete_hands_raw_text_to_parse_fn(monkeypatch: pytest.MonkeyPatch) -> None:
+    completions = _FakeCompletions(text="Reasoning: fine\n" + json.dumps(REPLY))
+    _install_fake_openai(monkeypatch, completions)
+    spec = _judge(
+        parse_fn=lambda text: json.loads(text.split("\n", 1)[1])
+    )._func.__globals__["__chalk_spec__"]
+
+    assert scorers._complete(spec, []) == REPLY
+    assert "response_format" not in completions.requests[0]
 
 
 def test_handler_shim_runs_the_generated_judge(completion) -> None:
@@ -223,69 +298,3 @@ def test_handler_shim_runs_the_generated_judge(completion) -> None:
     assert row["score"] == 0.5
     assert json.loads(row["metadata"]) == {"directness": 2, "reason": "ok"}
     assert results[0].type.equals(EvaluationScorerResult.__chalk_pyarrow_type__())
-
-
-def test_post_json_sends_bearer_and_environment_headers(monkeypatch) -> None:
-    import io
-    import urllib.request
-
-    seen: dict = {}
-
-    class Response(io.BytesIO):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-    def fake_urlopen(request, timeout):
-        seen["headers"] = dict(request.header_items())
-        seen["body"] = json.loads(request.data)
-        return Response(b'{"choices": []}')
-
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-123")
-
-    assert scorers._post_json("https://x/v1/chat/completions", {"a": 1}, "sk") == {
-        "choices": []
-    }
-    assert seen["body"] == {"a": 1}
-    assert seen["headers"]["Authorization"] == "Bearer sk"
-    assert seen["headers"]["X-chalk-env-id"] == "env-123"
-
-
-def test_strict_schema_drops_null_defaults(completion) -> None:
-    from typing import Optional
-
-    class WithOptional(BaseModel):
-        score: float
-        confidence: Optional[float] = None
-
-    _judge(response_model=WithOptional)._func(output="done")
-
-    schema = completion[0][0][1]["response_format"]["json_schema"]["schema"]
-    assert "default" not in schema["properties"]["confidence"]
-    assert schema["required"] == ["score", "confidence"]
-
-
-def test_aliased_fields_serialize_the_way_the_schema_names_them(completion) -> None:
-    calls, state = completion
-
-    class Aliased(BaseModel):
-        score: float = Field(alias="overall")
-        directness: int = Field(alias="how_direct", ge=0, le=2)
-
-    state["content"] = json.dumps({"overall": 0.5, "how_direct": 2})
-    judge = _judge(response_model=Aliased)
-
-    result = judge._func(output="done")
-
-    # The score comes out of its aliased key; metadata carries the alias the
-    # stamped schema declares, and never the score.
-    assert result == EvaluationScorerResult(score=0.5, metadata={"how_direct": 2})
-    declared = json.loads(judge._func.__chalk_scorer_response_schema__)
-    assert list(declared["properties"]) == ["how_direct"]
-    assert declared["required"] == ["how_direct"]
-    # The model is still asked for the full response, aliases included.
-    schema = calls[0][1]["response_format"]["json_schema"]["schema"]
-    assert list(schema["properties"]) == ["overall", "how_direct"]

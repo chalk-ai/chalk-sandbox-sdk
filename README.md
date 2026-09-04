@@ -243,8 +243,9 @@ be explicitly deployed before it can be used in an evaluation.
 
 `cc.scorers.llm_judge` deploys a scorer from a pydantic model instead of a
 function body. The model's `score` field becomes the score; every other field
-is recorded as row metadata. The reply is requested with structured outputs
-and validated against the model, so a malformed grade fails the row.
+is recorded as row metadata. The reply is requested through the OpenAI client
+with structured outputs and validated against the model, so a malformed grade
+fails the row.
 
 ```python
 from pydantic import BaseModel, Field
@@ -266,10 +267,11 @@ trace_quality = cc.scorers.llm_judge(
 The scorer deploys as `trace-quality`, the model's name in kebab case; pass
 `name=` to choose another. `inputs` names the dataset columns the judge reads
 (default `("output",)`);
-`prompt_fn` and `parse_fn` replace the default prompt and JSON parsing. Any
-OpenAI-compatible endpoint works via `api_server`, including Chalk's AI
-router. Every function deployed from the same module imports that module, so
-give sibling functions an image with `pydantic` as well. A judge is generated
+`prompt_fn` replaces the default prompt; `parse_fn` replaces structured
+outputs for an endpoint without them. Any OpenAI-compatible endpoint works via
+`api_server`, including Chalk's AI router. Every function deployed from the
+same module imports that module, so give sibling functions an image with
+`pydantic` as well. A judge is generated
 at import time, so it cannot be deployed in strip mode.
 
 ## Deployment revisions and rollback
