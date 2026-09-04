@@ -97,6 +97,28 @@ class _ErrorAfterBuildStub:
         )
 
 
+class _SucceededDuringCreationStub:
+    def create_sandbox(self, request: pb.CreateSandboxRequest, **_kwargs: object):
+        return pb.CreateSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id="sandbox-123",
+                status=pb.SandboxStatus.PENDING,
+                created_at=Timestamp(seconds=1),
+            )
+        )
+
+    def get_sandbox(self, request: pb.GetSandboxRequest, **_kwargs: object):
+        assert request.id == "sandbox-123"
+        return pb.GetSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id="sandbox-123",
+                status=pb.SandboxStatus.SUCCEEDED,
+                created_at=Timestamp(seconds=1),
+                status_message="Exit code 0",
+            )
+        )
+
+
 def test_sandbox_client_create_sends_image_uri_not_image_spec() -> None:
     client = SandboxClient()
     stub = _Stub()
@@ -218,6 +240,18 @@ def test_sandbox_client_create_propagates_backend_error_details() -> None:
     assert error.status == "failed"
     assert error.status_message == "pod failed readiness probe: connection refused"
     assert error.build_id is None
+
+
+def test_sandbox_client_create_accepts_succeeded_during_readiness_poll() -> None:
+    client = SandboxClient()
+    client._stub = _SucceededDuringCreationStub()  # type: ignore[assignment]
+    try:
+        sandbox = client.create("python:3.14-slim", poll_interval=0, timeout=30)
+    finally:
+        client.close()
+
+    assert sandbox.info is not None
+    assert sandbox.info.status == "succeeded"
 
 
 class _ProcessStub:

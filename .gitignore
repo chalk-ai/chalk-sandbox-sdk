@@ -8,3 +8,4 @@ chalkcompute/_native*.so
 chalkcompute/_remote_call_native*.so
 .zoekt-index/
 .claude/worktrees
+benchmark-results/
