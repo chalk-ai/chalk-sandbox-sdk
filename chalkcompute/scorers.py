@@ -34,6 +34,8 @@ _REQUEST_TIMEOUT_SECONDS = 120.0
 @dataclass(frozen=True)
 class _JudgeSpec:
     response_model: Any
+    # The key the score is serialized under, which an alias can rename.
+    score_key: str
     response_format: Mapping[str, Any]
     model: str
     instructions: str
@@ -120,8 +122,10 @@ def llm_judge(
         api_key_env = _secret_env_var(api_key)
         secrets.append(api_key)
 
+    score_key = _serialized_field_name(response_model, "score")
     spec = _JudgeSpec(
         response_model=response_model,
+        score_key=score_key,
         response_format=_response_format(response_model, schema),
         model=model,
         instructions=instructions,
@@ -153,7 +157,9 @@ def llm_judge(
     }
     exec(compile(source, frame.f_code.co_filename, "exec"), namespace)
     judge = namespace[py_name]
-    judge.__chalk_scorer_response_schema__ = json.dumps(schema)
+    judge.__chalk_scorer_response_schema__ = json.dumps(
+        _metadata_schema(response_model, score_key)
+    )
 
     base_image = image if image is not None else Image.debian_slim()
     deployed = _function(
@@ -229,6 +235,25 @@ def _response_schema(response_model: Any) -> dict[str, Any]:
     return schema
 
 
+def _serialized_field_name(response_model: Any, field: str) -> str:
+    """The key ``model_dump(by_alias=True)`` writes ``field`` under."""
+    info = response_model.model_fields[field]
+    return info.serialization_alias or info.alias or field
+
+
+def _metadata_schema(response_model: Any, score_key: str) -> dict[str, Any]:
+    """The schema of what lands in row metadata: the model as it serializes,
+    minus the score, which travels in its own column. Named the way the rows
+    are, so the server can find every declared field it reads about."""
+    schema = dict(response_model.model_json_schema(mode="serialization"))
+    properties = dict(schema.get("properties", {}))
+    properties.pop(score_key, None)
+    schema["properties"] = properties
+    if "required" in schema:
+        schema["required"] = [name for name in schema["required"] if name != score_key]
+    return schema
+
+
 def _assert_closed_objects(schema: Any, *, path: str) -> None:
     """Strict structured outputs reject an object without fixed properties.
 
@@ -268,9 +293,13 @@ def _response_format(response_model: type, schema: Mapping[str, Any]) -> dict[st
 
 
 def _strict(schema: Any) -> Any:
-    """OpenAI strict mode: every object closed, every property required."""
+    """OpenAI strict mode: every object closed, every property required, and
+    no ``default`` -- an optional field emits ``default: null``, which strict
+    mode rejects."""
     if isinstance(schema, dict):
         out = {key: _strict(value) for key, value in schema.items()}
+        if out.get("default", ...) is None:
+            del out["default"]
         if out.get("type") == "object" and isinstance(out.get("properties"), dict):
             out["additionalProperties"] = False
             out["required"] = list(out["properties"])
@@ -327,8 +356,10 @@ def _judge(spec: _JudgeSpec, columns: Mapping[str, Any]) -> EvaluationScorerResu
     graded = spec.parse_fn(text) if spec.parse_fn is not None else json.loads(text)
     if not isinstance(graded, spec.response_model):
         graded = spec.response_model.model_validate(graded)
-    data = graded.model_dump(mode="json")
-    score = data.pop("score")
+    # Aliases: serialize the way the stamped schema is named, so the server
+    # finds each field under the key it read about.
+    data = graded.model_dump(mode="json", by_alias=True)
+    score = data.pop(spec.score_key)
     return EvaluationScorerResult(score=float(score), metadata=data or None)
 
 

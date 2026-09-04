@@ -128,8 +128,9 @@ def test_generated_function_is_a_scorer_defined_in_the_caller() -> None:
     assert getattr(sys.modules[__name__], "_chalk_llm_judge_trace_quality") is judge
 
     _, output_schema = _build_schemas(fn)
+    # The declaration describes the metadata: the score has its own column.
     declared = json.loads(output_schema.metadata[SCORER_RESPONSE_SCHEMA_METADATA_KEY])
-    assert list(declared["properties"]) == ["score", "directness", "reason"]
+    assert list(declared["properties"]) == ["directness", "reason"]
     assert declared["properties"]["directness"]["maximum"] == 2
 
 
@@ -251,3 +252,40 @@ def test_post_json_sends_bearer_and_environment_headers(monkeypatch) -> None:
     assert seen["body"] == {"a": 1}
     assert seen["headers"]["Authorization"] == "Bearer sk"
     assert seen["headers"]["X-chalk-env-id"] == "env-123"
+
+
+def test_strict_schema_drops_null_defaults(completion) -> None:
+    from typing import Optional
+
+    class WithOptional(BaseModel):
+        score: float
+        confidence: Optional[float] = None
+
+    _judge(response_model=WithOptional)._func(output="done")
+
+    schema = completion[0][0][1]["response_format"]["json_schema"]["schema"]
+    assert "default" not in schema["properties"]["confidence"]
+    assert schema["required"] == ["score", "confidence"]
+
+
+def test_aliased_fields_serialize_the_way_the_schema_names_them(completion) -> None:
+    calls, state = completion
+
+    class Aliased(BaseModel):
+        score: float = Field(alias="overall")
+        directness: int = Field(alias="how_direct", ge=0, le=2)
+
+    state["content"] = json.dumps({"overall": 0.5, "how_direct": 2})
+    judge = _judge(response_model=Aliased)
+
+    result = judge._func(output="done")
+
+    # The score comes out of its aliased key; metadata carries the alias the
+    # stamped schema declares, and never the score.
+    assert result == EvaluationScorerResult(score=0.5, metadata={"how_direct": 2})
+    declared = json.loads(judge._func.__chalk_scorer_response_schema__)
+    assert list(declared["properties"]) == ["how_direct"]
+    assert declared["required"] == ["how_direct"]
+    # The model is still asked for the full response, aliases included.
+    schema = calls[0][1]["response_format"]["json_schema"]["schema"]
+    assert list(schema["properties"]) == ["overall", "how_direct"]
