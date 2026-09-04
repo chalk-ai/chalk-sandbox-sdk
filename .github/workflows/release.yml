@@ -432,6 +432,7 @@ jobs:
         with:
           method: chat.postMessage
           token: ${{ secrets.SLACK_BOT_TOKEN }}
+          errors: true
           payload: |
-            channel: "#proj-compute"
+            channel: "${{ vars.PROJ_COMPUTE_SLACK_CHANNEL_ID }}"
             text: "${{ steps.status.outputs.emoji }} chalkcompute release `${{ github.ref_name }}` ${{ steps.status.outputs.verb }}. <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View workflow run>"
