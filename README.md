@@ -239,6 +239,35 @@ time; evaluation creation then pins that version. `from_id` remains a
 compatibility alias for `from_version_id`. An imperative `RemoteFunction` must
 be explicitly deployed before it can be used in an evaluation.
 
+### LLM judges
+
+`cc.scorers.llm_judge` deploys a scorer from a pydantic model instead of a
+function body. The model's `score` field becomes the score; every other field
+is recorded as row metadata. The reply is requested with structured outputs
+and validated against the model, so a malformed grade fails the row.
+
+```python
+from pydantic import BaseModel, Field
+
+class TraceQuality(BaseModel):
+    score: float = Field(ge=0, le=1, description="Overall quality.")
+    directness: int = Field(ge=0, le=2, description="Shortest reasonable path to the goal.")
+    task_correctness: int = Field(ge=0, le=2, description="Was the task actually completed?")
+    reason: str
+
+trace_quality = cc.scorers.llm_judge(
+    name="trace-quality",
+    response_model=TraceQuality,
+    model="gpt-5",
+    instructions="You are grading a browser agent's login attempt.",
+    api_key=cc.Secret.from_chalk_env("OPENAI_API_KEY"),
+)
+```
+
+`inputs` names the dataset columns the judge reads (default `("output",)`);
+`prompt_fn` and `parse_fn` replace the default prompt and JSON parsing. Any
+OpenAI-compatible endpoint works via `api_server`.
+
 ## Deployment revisions and rollback
 
 Scaling groups and functions have stable parent IDs with immutable deployment

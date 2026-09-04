@@ -186,6 +186,8 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
 
 
 def __getattr__(name: str) -> object:
+    if name == "scorers":
+        return importlib.import_module("chalkcompute.scorers")
     if name in _LAZY_MAP:
         module_path, attr_name = _LAZY_MAP[name]
         mod = importlib.import_module(module_path)
@@ -193,4 +195,4 @@ def __getattr__(name: str) -> object:
     raise AttributeError(f"module 'chalkcompute' has no attribute {name}")
 
 
-__all__ = list(_LAZY_MAP.keys())
+__all__ = [*_LAZY_MAP.keys(), "scorers"]

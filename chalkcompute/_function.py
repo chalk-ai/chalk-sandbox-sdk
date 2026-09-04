@@ -515,6 +515,9 @@ def _is_chalkcompute_decorator(
 
 
 _USER_MODULE_NAME = "user_module"
+
+# Output-schema metadata key carrying a declared scorer's response JSON Schema.
+SCORER_RESPONSE_SCHEMA_METADATA_KEY = "chalk.scorer.response_schema"
 _USER_MODULE_PATH = f"/app/{_USER_MODULE_NAME}.py"
 
 
@@ -1913,6 +1916,9 @@ def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
         output_schema.metadata["chalk.function.is_generator"] = "true"
     if is_async:
         output_schema.metadata["chalk.function.is_async"] = "true"
+    response_schema = getattr(func, "__chalk_scorer_response_schema__", None)
+    if response_schema is not None:
+        output_schema.metadata[SCORER_RESPONSE_SCHEMA_METADATA_KEY] = response_schema
 
     return input_schema, output_schema
 
