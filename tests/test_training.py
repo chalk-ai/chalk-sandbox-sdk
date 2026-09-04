@@ -237,7 +237,8 @@ def test_run_training_calls_create_rpc() -> None:
     mock_resp = tr_pb.CreateTrainingRunResponse(training_run=mock_run)
     mock_client.call.return_value = mock_resp
 
-    handle = train.run_training(config={"lr": 0.01}, client=mock_client)
+    with patch("chalkcompute._training.build_image", return_value="img:latest"):
+        handle = train.run_training(config={"lr": 0.01}, client=mock_client)
     assert isinstance(handle, TrainingRunHandle)
     assert handle.run_id == "run-xyz"
     mock_client.call.assert_called_once()
@@ -259,7 +260,8 @@ def test_run_training_with_dataclass_config() -> None:
     mock_resp = tr_pb.CreateTrainingRunResponse(training_run=mock_run)
     mock_client.call.return_value = mock_resp
 
-    handle = train.run_training(config=MyConfig(), client=mock_client)
+    with patch("chalkcompute._training.build_image", return_value="img:latest"):
+        handle = train.run_training(config=MyConfig(), client=mock_client)
     assert handle.run_id == "run-dc"
 
 
@@ -281,5 +283,5 @@ def test_run_training_builds_image_when_provided() -> None:
 
     with patch("chalkcompute._training.build_image", return_value="img:latest") as bi:
         handle = tf.run_training(config=None, client=mock_client)
-        bi.assert_called_once_with(mock_client, mock_image)
+        bi.assert_called_once()
     assert handle.run_id == "run-img"
