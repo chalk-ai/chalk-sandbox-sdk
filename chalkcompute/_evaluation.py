@@ -75,9 +75,6 @@ def _finite_number(value: Any, *, owner: str) -> float:
     return number
 
 
-# Key under which a result's criteria travel inside its metadata JSON. The
-# column shape stays {score, metadata}, which every deployed server already
-# reads, so a rubric needs no server change to be recorded.
 _CRITERIA_METADATA_KEY = "criteria"
 
 

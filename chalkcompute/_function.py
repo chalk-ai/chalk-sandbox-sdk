@@ -2895,9 +2895,6 @@ class RemoteFunction:
     # -- Lifecycle -------------------------------------------------------------
 
     def _assert_rubric_deployable(self) -> None:
-        # A rubric result is encoded by a chalkcompute class; strip mode removes
-        # the SDK from the image and the shim swallows the ImportError, so the
-        # scorer would deploy and silently record nothing.
         if self._rubric is not None and _should_strip_source():
             raise FunctionBuildError(
                 f"Function {self._func_name!r} declares a rubric but is deploying "
