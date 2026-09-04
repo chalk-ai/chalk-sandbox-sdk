@@ -84,7 +84,9 @@ def llm_judge(
         instance, replacing ``json.loads``.
     api_server
         OpenAI-compatible base URL; ``/chat/completions`` is appended. Defaults
-        to ``OPENAI_BASE_URL`` in the function environment, then OpenAI.
+        to ``OPENAI_BASE_URL`` in the function environment, then OpenAI. Chalk's
+        AI router works here; the function's environment id is sent with each
+        request.
     api_key
         Secret exposing the API key to the function; its env var is read at
         call time. Defaults to ``OPENAI_API_KEY``.
@@ -278,14 +280,19 @@ def _describe_field(name: str, prop: Mapping[str, Any]) -> str:
 
 
 def _post_json(url: str, body: Mapping[str, Any], api_key: str) -> dict[str, Any]:
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    # Chalk's AI router resolves the calling environment from this header, as
+    # F.openai_complete does; other endpoints ignore it.
+    env_id = os.environ.get("CHALK_ENVIRONMENT_ID") or os.environ.get(
+        "CHALK_ACTIVE_ENVIRONMENT"
+    )
+    if env_id:
+        headers["X-Chalk-Env-Id"] = env_id
     request = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-        method="POST",
+        url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST"
     )
     try:
         with urllib.request.urlopen(request, timeout=_REQUEST_TIMEOUT_SECONDS) as resp:

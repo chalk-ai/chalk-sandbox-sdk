@@ -187,3 +187,32 @@ def test_handler_shim_runs_the_generated_judge(no_deploy, completion) -> None:
     assert row["score"] == 0.5
     assert json.loads(row["metadata"]) == {"directness": 2, "reason": "ok"}
     assert results[0].type.equals(EvaluationScorerResult.__chalk_pyarrow_type__())
+
+
+def test_post_json_sends_bearer_and_environment_headers(monkeypatch) -> None:
+    import io
+    import urllib.request
+
+    seen: dict = {}
+
+    class Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(request, timeout):
+        seen["headers"] = dict(request.header_items())
+        seen["body"] = json.loads(request.data)
+        return Response(b'{"choices": []}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-123")
+
+    assert scorers._post_json("https://x/v1/chat/completions", {"a": 1}, "sk") == {
+        "choices": []
+    }
+    assert seen["body"] == {"a": 1}
+    assert seen["headers"]["Authorization"] == "Bearer sk"
+    assert seen["headers"]["X-chalk-env-id"] == "env-123"
