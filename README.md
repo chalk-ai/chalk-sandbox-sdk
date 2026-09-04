@@ -266,7 +266,9 @@ trace_quality = cc.scorers.llm_judge(
 
 `inputs` names the dataset columns the judge reads (default `("output",)`);
 `prompt_fn` and `parse_fn` replace the default prompt and JSON parsing. Any
-OpenAI-compatible endpoint works via `api_server`.
+OpenAI-compatible endpoint works via `api_server`, including Chalk's AI
+router. Every function deployed from the same module imports that module,
+so give sibling functions an image with `pydantic` as well.
 
 ## Deployment revisions and rollback
 
