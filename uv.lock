@@ -443,11 +443,11 @@ requires-dist = [
     { name = "chalk-remote-call-python", specifier = ">=1.9.0" },
     { name = "chalkdf", marker = "extra == 'dev'", specifier = ">=3.31.87" },
     { name = "chalkpy", extras = ["runtime"], marker = "extra == 'dev'", specifier = ">=2.154.34" },
-    { name = "connectrpc", git = "https://github.com/connectrpc/connect-py.git?rev=c19b11325be765855f4a4fae209251d3aa7f5d57" },
+    { name = "connectrpc", specifier = ">=0.12.0" },
     { name = "opentelemetry-api", specifier = ">=1.20.0" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.20.0" },
     { name = "opentelemetry-sdk", specifier = ">=1.20.0" },
-    { name = "protobuf-py", specifier = "==0.3.0" },
+    { name = "protobuf-py", specifier = ">=0.3.0" },
     { name = "pyqwest", specifier = ">=0.10.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.2" },
     { name = "python-dotenv", marker = "extra == 'dev'", specifier = ">=1.1.0" },
@@ -653,11 +653,15 @@ wheels = [
 
 [[package]]
 name = "connectrpc"
-version = "0.11.1"
-source = { git = "https://github.com/connectrpc/connect-py.git?rev=c19b11325be765855f4a4fae209251d3aa7f5d57#c19b11325be765855f4a4fae209251d3aa7f5d57" }
+version = "0.12.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "protobuf-py" },
     { name = "pyqwest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/87/c4/05c740ed32c66409f603dd0655f7a7565c8ce2982a53cc1ae4139b062233/connectrpc-0.12.0.tar.gz", hash = "sha256:808c0146581b26d46cdb805df16ebbae03907b38fda104bb6208eaaa704288e7", size = 50561, upload-time = "2026-09-04T01:29:03.594Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fa/24/77669006392d442d677c90bee47b2c9423035ae05775819e9024e305a1b9/connectrpc-0.12.0-py3-none-any.whl", hash = "sha256:aada621024d0f017010bc6dda39591a4c725dc91f52c3a40f55682cb21a69cf2", size = 70056, upload-time = "2026-09-04T01:29:02.276Z" },
 ]
 
 [[package]]
