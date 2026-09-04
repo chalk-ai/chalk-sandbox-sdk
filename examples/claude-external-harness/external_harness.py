@@ -3,55 +3,54 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "chalkcompute",
+#     "chalkcompute>=2.11.1",
 #     "claude-agent-sdk>=0.0.20",
 #     "python-dotenv",
 # ]
 # ///
 
-# # External agent loop driving a Chalk container
+# # External agent loop driving a Chalk sandbox
 #
 # A minimal demo of using the **Claude Agent SDK** as an *external* harness
-# around a `chalkcompute.Container`. The Python process here is the agent
-# loop: it owns the conversation, exposes two custom tools (`start_container`
-# and `exec_in_container`), and the container runs as a side-effect of tool
+# around a Chalk sandbox. The Python process here is the agent
+# loop: it owns the conversation, exposes two custom tools (`start_sandbox`
+# and `exec_in_sandbox`), and the sandbox runs as a side-effect of tool
 # calls the model decides to make.
 #
 # Why bother? It separates *what the agent decides to do* from *what
 # compute it runs on*. The model never sees credentials, k8s, or Docker —
-# it sees two tools. The harness wires the tools to a remote container in
+# it sees two tools. The harness wires the tools to a remote sandbox in
 # Chalk's sandbox cluster and feeds results back into the conversation.
 #
 # ## Overview
 #
-# 1. Define two SDK MCP tools that wrap `Container.run()` / `Container.exec()`.
-#    A module-level dict holds the live `Container` objects keyed by name,
-#    so the model can refer to its container by a friendly name across turns.
+# 1. Define two SDK MCP tools that create and execute in sandboxes.
+#    A module-level dict holds the live sandboxes keyed by name,
+#    so the model can refer to its sandbox by a friendly name across turns.
 # 2. Build a Claude Agent SDK MCP server from those tools.
 # 3. Open a `ClaudeSDKClient` configured to use only those two tools.
-# 4. Send one prompt — *"make a Debian container and run ls"* — then stream
+# 4. Send one prompt — *"make a Debian sandbox and run ls"* — then stream
 #    messages until the model finishes. Print every text block and tool call
 #    so the agent loop is visible.
-# 5. On exit, stop every container the agent started.
+# 5. On exit, terminate every sandbox the agent started.
+#    Each sandbox also has a 10-minute lifetime as a fallback if the harness
+#    process is killed before its cleanup handler runs.
 #
-# Run it (after `just env`):
+# Provide the standard `CHALK_*` credentials and `ANTHROPIC_API_KEY` in the
+# environment or a `.env` file.
 #
-#     uv run python examples/claude/external-harness/external_harness.py
-#
-# You'll see the model call `start_container`, then `exec_in_container`,
+# You'll see the model call `start_sandbox`, then `exec_in_sandbox`,
 # then summarize the output of `ls`.
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import sys
 import uuid
-from pathlib import Path
 from typing import Any
 
-from chalkcompute import Container, Image
+from chalkcompute import Image, Sandbox, SandboxClient
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
@@ -65,39 +64,39 @@ from claude_agent_sdk import (
 )
 from dotenv import load_dotenv
 
-# Load .env from the repo root so CHALK_* credentials are picked up.
-load_dotenv(Path(__file__).parents[3] / ".env")
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger("external-harness")
 
 
-# ## Container registry
+# ## Sandbox registry
 #
 # The agent doesn't have a way to hand a Python object back to us between
-# tool calls — it can only pass JSON. So we keep a dict of live containers
-# keyed by the name the model picked. Each tool looks up the container by
-# name. When the agent loop exits we stop everything that's still in here.
+# tool calls — it can only pass JSON. So we keep a dict of live sandboxes
+# keyed by the name the model picked. Each tool looks up the sandbox by
+# name. When the agent loop exits we terminate everything that's still here.
 
-_CONTAINERS: dict[str, Container] = {}
+_SANDBOXES: dict[str, Sandbox] = {}
+_CLIENT: SandboxClient | None = None
 
 
-# ## Tool 1 — `start_container`
+# ## Tool 1 — `start_sandbox`
 #
-# Spawns a container from a tiny set of declarative knobs: a base image
+# Spawns a sandbox from a tiny set of declarative knobs: a base image
 # string (e.g. `python:3.14-slim-trixie`, `debian:stable-slim`) and an optional
 # list of pip packages. We deliberately keep the surface narrow — the agent
 # doesn't need every `Image` builder method to demo the harness pattern.
 #
 # The tool returns the chosen name so the model can use it in subsequent
-# `exec_in_container` calls.
+# `exec_in_sandbox` calls.
 
 
 @tool(
-    "start_container",
+    "start_sandbox",
     (
-        "Start a fresh Chalk container from a Docker base image. "
-        "Returns the container name to use in exec_in_container."
+        "Start a fresh Chalk sandbox from a Docker base image. "
+        "Returns the sandbox name to use in exec_in_sandbox."
     ),
     {
         "name": str,
@@ -105,21 +104,21 @@ _CONTAINERS: dict[str, Container] = {}
         "pip_packages": list,
     },
 )
-async def start_container(args: dict[str, Any]) -> dict[str, Any]:
+async def start_sandbox(args: dict[str, Any]) -> dict[str, Any]:
     name: str = args["name"]
     base_image: str = args["base_image"]
     pip_packages: list[str] = args.get("pip_packages") or []
 
-    if name in _CONTAINERS:
+    if name in _SANDBOXES:
         return {
             "content": [
-                {"type": "text", "text": f"Container '{name}' is already running."}
+                {"type": "text", "text": f"Sandbox '{name}' is already running."}
             ],
             "isError": True,
         }
 
     log.info(
-        "Starting container name=%s base_image=%s pip=%s",
+        "Starting sandbox name=%s base_image=%s pip=%s",
         name,
         base_image,
         pip_packages,
@@ -130,26 +129,27 @@ async def start_container(args: dict[str, Any]) -> dict[str, Any]:
         image = image.pip_install(pip_packages)
 
     # Suffix the k8s-visible name so concurrent demo runs don't collide.
-    container = Container(
-        image=image,
+    assert _CLIENT is not None
+    sandbox = _CLIENT.create(
+        image,
         name=f"{name}-{uuid.uuid4().hex[:6]}",
+        lifetime="600s",
     )
-    container.run()
-    _CONTAINERS[name] = container
+    _SANDBOXES[name] = sandbox
 
     return {
         "content": [
             {
                 "type": "text",
-                "text": f"Started container '{name}' from base_image='{base_image}'.",
+                "text": f"Started sandbox '{name}' from base_image='{base_image}'.",
             }
         ]
     }
 
 
-# ## Tool 2 — `exec_in_container`
+# ## Tool 2 — `exec_in_sandbox`
 #
-# Runs a command inside a previously started container and returns the
+# Runs a command inside a previously started sandbox and returns the
 # captured stdout, stderr, and exit code as plain text. We cap output at
 # ~8KB so a runaway command doesn't blow the model's context window.
 
@@ -157,34 +157,34 @@ _MAX_OUTPUT_CHARS = 8000
 
 
 @tool(
-    "exec_in_container",
+    "exec_in_sandbox",
     (
-        "Execute a shell command inside a running container started with "
-        "start_container. Returns stdout, stderr, and exit code."
+        "Execute a command inside a running sandbox started with "
+        "start_sandbox. Returns stdout, stderr, and exit code."
     ),
     {
         "name": str,
         "command": list,
     },
 )
-async def exec_in_container(args: dict[str, Any]) -> dict[str, Any]:
+async def exec_in_sandbox(args: dict[str, Any]) -> dict[str, Any]:
     name: str = args["name"]
     command: list[str] = args["command"]
 
-    container = _CONTAINERS.get(name)
-    if container is None:
+    sandbox = _SANDBOXES.get(name)
+    if sandbox is None:
         return {
             "content": [
                 {
                     "type": "text",
-                    "text": f"No container named '{name}'. Call start_container first.",
+                    "text": f"No sandbox named '{name}'. Call start_sandbox first.",
                 }
             ],
             "isError": True,
         }
 
     log.info("exec name=%s command=%s", name, command)
-    result = container.exec(*command)
+    result = sandbox.exec(*command)
 
     stdout = result.stdout_text[:_MAX_OUTPUT_CHARS]
     stderr = result.stderr_text[:_MAX_OUTPUT_CHARS]
@@ -238,22 +238,24 @@ def _render_message(msg: Any) -> None:
 
 
 async def run_demo() -> None:
+    global _CLIENT
+
     server = create_sdk_mcp_server(
-        name="chalk_container",
+        name="chalk_sandbox",
         version="0.1.0",
-        tools=[start_container, exec_in_container],
+        tools=[start_sandbox, exec_in_sandbox],
     )
 
     options = ClaudeAgentOptions(
         mcp_servers={"chalk": server},
         allowed_tools=[
-            "mcp__chalk__start_container",
-            "mcp__chalk__exec_in_container",
+            "mcp__chalk__start_sandbox",
+            "mcp__chalk__exec_in_sandbox",
         ],
         system_prompt=(
-            "You are driving a Chalk container harness. "
-            "When asked to run a command, use start_container to spawn a "
-            "container if one is not already running, then exec_in_container "
+            "You are driving a Chalk sandbox harness. "
+            "When asked to run a command, use start_sandbox to spawn a "
+            "sandbox if one is not already running, then exec_in_sandbox "
             "to run the requested command. Report the command's stdout back "
             "to the user."
         ),
@@ -262,25 +264,28 @@ async def run_demo() -> None:
     )
 
     prompt = (
-        "Start a Debian container called 'demo' from the base image "
+        "Start a Debian sandbox called 'demo' from the base image "
         "'debian:stable-slim', then run 'ls /' inside it and tell me what "
         "directories are at the root."
     )
 
     print(f"\n>>> user: {prompt}\n")
-    try:
-        async with ClaudeSDKClient(options=options) as client:
-            await client.query(prompt)
-            async for message in client.receive_response():
-                _render_message(message)
-    finally:
-        for name, container in list(_CONTAINERS.items()):
-            log.info("Stopping container %s", name)
-            try:
-                container.stop()
-            except Exception as e:  # noqa: BLE001
-                log.warning("stop(%s) failed: %s", name, e)
-            _CONTAINERS.pop(name, None)
+    with SandboxClient.from_env() as sandbox_client:
+        _CLIENT = sandbox_client
+        try:
+            async with ClaudeSDKClient(options=options) as client:
+                await client.query(prompt)
+                async for message in client.receive_response():
+                    _render_message(message)
+        finally:
+            for name, sandbox in list(_SANDBOXES.items()):
+                log.info("Terminating sandbox %s", name)
+                try:
+                    sandbox.terminate()
+                except Exception as e:  # noqa: BLE001
+                    log.warning("terminate(%s) failed: %s", name, e)
+                _SANDBOXES.pop(name, None)
+            _CLIENT = None
 
 
 if __name__ == "__main__":
@@ -288,4 +293,4 @@ if __name__ == "__main__":
         asyncio.run(run_demo())
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
-        os._exit(130)
+        raise SystemExit(130) from None

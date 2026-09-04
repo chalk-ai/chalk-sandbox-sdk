@@ -1,6 +1,13 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["chalkcompute>=2.11.1"]
+# ///
+
 """Deploy a sync scalar function for testing.
 
-uv run python examples/scalar/deploy_sync.py
+The deployment intentionally persists for subsequent remote calls and for the
+nested-gather example that invokes it by name.
 """
 
 from __future__ import annotations

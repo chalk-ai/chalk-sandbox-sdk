@@ -2,7 +2,7 @@
 #
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["chalkcompute"]
+# dependencies = ["chalkcompute>=2.11.1"]
 # ///
 
 """
@@ -10,37 +10,33 @@ Redis Stream → RemoteFunction example.
 
 End-to-end demo that:
   1. Deploys the ``respond`` chalkcompute.function (OpenAI chat completion)
-  2. Starts a worker container that:
-       - subscribes to a Redis stream ("prompts")
+  2. Starts a worker sandbox that:
+       - runs Redis and subscribes to its "prompts" stream
        - calls ``respond`` via ``RemoteFunction.from_name()``
        - writes each response to /tmp/output/
-  3. Publishes a few prompts to the Redis stream (via exec into the container)
-  4. Waits, then reads the responses by exec'ing into the container
+  3. Publishes a few prompts to the Redis stream (via exec into the sandbox)
+  4. Waits, then reads the responses by exec'ing into the sandbox
 
 Prerequisites:
-  - source .env   (CHALK_CLIENT_ID, CHALK_CLIENT_SECRET, CHALK_API_SERVER, CHALK_ENVIRONMENT_ID)
+  - standard Chalk credentials in the environment or `.env`
   - OPENAI_API_KEY must be set locally
-  - The ``fnq-redis`` service must be reachable from the container
-    (it runs in the same k8s cluster: fnq-redis.ns-tmnmc9beyujew.svc.cluster.local:6379)
-
-Usage:
-    source .env
-    uv run python examples/redis-stream/run.py
 """
 
 import logging
 import os
 import time
+import uuid
 
 import chalkcompute
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
 
-REDIS_URL = "redis://fnq-redis.ns-tmnmc9beyujew.svc.cluster.local:6379"
+REDIS_URL = "redis://localhost:6379"
 STREAM = "prompts"
 OUTPUT_DIR = "/tmp/output"
-CONTAINER_NAME = "redis-stream-worker"
+SANDBOX_NAME = f"redis-stream-worker-{uuid.uuid4().hex[:8]}"
+FUNCTION_NAME = f"redis-stream-respond-{uuid.uuid4().hex[:8]}"
 
 PROMPTS = [
     "What is the capital of France?",
@@ -51,75 +47,65 @@ PROMPTS = [
 EXAMPLE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-def deploy_function() -> None:
-    """Deploy the respond function (skip if already available)."""
-    try:
-        f = chalkcompute.RemoteFunction.from_name("respond")
-        log.info(
-            "'respond' function already deployed (v%d), skipping deploy",
-            f._version_info.version,
-        )
-        return
-    except chalkcompute.FunctionError:
-        pass
-
-    log.info("Deploying 'respond' function...")
+def deploy_function() -> chalkcompute.RemoteFunction:
+    """Deploy the function bundled with this example."""
+    log.info("Deploying %r function...", FUNCTION_NAME)
     import importlib.util
 
+    os.environ["REDIS_FUNCTION_NAME"] = FUNCTION_NAME
     spec = importlib.util.spec_from_file_location(
         "respond", os.path.join(EXAMPLE_DIR, "respond.py")
     )
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    mod.respond.wait_ready(timeout=600)
-    log.info("'respond' function is ready")
-
-
-def stop_existing_container() -> None:
-    """Stop a previous container with the same name, if any."""
     try:
-        c = chalkcompute.Container.from_name(CONTAINER_NAME)
-        log.info("Stopping existing container '%s'...", CONTAINER_NAME)
-        c.stop()
-    except chalkcompute.ContainerError:
-        pass
+        mod.respond.wait_ready(timeout=600)
+    except Exception:
+        mod.respond.delete()
+        raise
+    log.info("Function %r is ready", FUNCTION_NAME)
+    return mod.respond
 
 
-def start_worker() -> chalkcompute.Container:
-    """Start the worker container with Redis + chalkcompute installed."""
+def start_worker() -> chalkcompute.Sandbox:
+    """Start the worker sandbox with Redis + chalkcompute installed."""
     worker_image = (
         chalkcompute.Image.debian_slim()
-        .pip_install(["redis", "chalkcompute>=2.1.0"])
+        .run_commands("apt-get update -qq && apt-get install -y -qq redis-server")
+        .pip_install(["redis", "chalkcompute>=2.11.1"])
         .add_local_file(
             os.path.join(EXAMPLE_DIR, "worker.py"),
             "/app/worker.py",
         )
     )
 
-    container = chalkcompute.Container(
-        name=CONTAINER_NAME,
+    sandbox = chalkcompute.Sandbox(
+        name=SANDBOX_NAME,
         image=worker_image,
-        entrypoint=["python", "/app/worker.py"],
-        env={"REDIS_URL": REDIS_URL},
-        secrets=[
-            chalkcompute.Secret.from_local_env("CHALK_CLIENT_ID"),
-            chalkcompute.Secret.from_local_env("CHALK_CLIENT_SECRET"),
-            chalkcompute.Secret.from_local_env("CHALK_API_SERVER"),
-            chalkcompute.Secret.from_local_env("CHALK_ENVIRONMENT_ID"),
-            chalkcompute.Secret.from_local_env("OPENAI_API_KEY"),
+        entrypoint=[
+            "bash",
+            "-c",
+            "redis-server --daemonize yes && exec python /app/worker.py",
         ],
+        env={"REDIS_URL": REDIS_URL, "REDIS_FUNCTION_NAME": FUNCTION_NAME},
+        chalk_identity=True,
         lifetime="600s",
     )
 
-    log.info("Starting worker container...")
-    container.run()
-    log.info("Worker container started")
-    return container
+    log.info("Starting worker sandbox...")
+    try:
+        sandbox.run()
+    except Exception:
+        if sandbox.id is not None:
+            sandbox.terminate()
+        raise
+    log.info("Worker sandbox started")
+    return sandbox
 
 
-def publish_prompts(worker: chalkcompute.Container) -> None:
-    """Publish prompts to the Redis stream by exec'ing into the worker container."""
+def publish_prompts(worker: chalkcompute.Sandbox) -> None:
+    """Publish prompts to the Redis stream by exec'ing into the worker sandbox."""
     for i, prompt in enumerate(PROMPTS):
         escaped = prompt.replace("'", "\\'")
         worker.exec(
@@ -135,7 +121,7 @@ def publish_prompts(worker: chalkcompute.Container) -> None:
         log.info("Published prompt %d: %s", i, prompt)
 
 
-def read_results(worker: chalkcompute.Container) -> None:
+def read_results(worker: chalkcompute.Sandbox) -> None:
     """Read result files from /tmp/output via exec."""
     result = worker.exec(
         "python",
@@ -149,42 +135,43 @@ def read_results(worker: chalkcompute.Container) -> None:
             "for f in files]"
         ),
     )
-    log.info("Results:\n%s", result.stdout.decode())
+    log.info("Results:\n%s", result.stdout_text)
 
 
 def main() -> None:
-    # 1. Deploy the respond function.
-    deploy_function()
-
-    # 2. Stop any previous worker with the same name.
-    stop_existing_container()
-
-    # 3. Start the worker container.
-    worker = start_worker()
-
-    # 4. Give the worker a moment to connect to Redis.
-    log.info("Waiting 15s for worker to initialize...")
-    time.sleep(15)
-
-    # 5. Publish prompts to Redis.
-    log.info("Publishing %d prompts to stream %r...", len(PROMPTS), STREAM)
-    publish_prompts(worker)
-
-    # 6. Wait for the worker to process messages.
-    log.info("Waiting 60s for worker to process messages...")
-    time.sleep(60)
-
-    # 7. Read results.
-    log.info("Reading results...")
-    read_results(worker)
-
-    # 8. Clean up.
-    log.info("Cleaning up...")
+    respond = None
+    worker = None
     try:
-        worker.stop()
-    except Exception:
-        pass
-    log.info("Done!")
+        # 1. Deploy the respond function.
+        respond = deploy_function()
+
+        # 2. Start the worker sandbox.
+        worker = start_worker()
+
+        # 3. Give Redis and the worker a moment to initialize.
+        log.info("Waiting 15s for worker to initialize...")
+        time.sleep(15)
+
+        # 4. Publish prompts to Redis.
+        log.info("Publishing %d prompts to stream %r...", len(PROMPTS), STREAM)
+        publish_prompts(worker)
+
+        # 5. Wait for the worker to process messages.
+        log.info("Waiting 60s for worker to process messages...")
+        time.sleep(60)
+
+        # 6. Read results.
+        log.info("Reading results...")
+        read_results(worker)
+    finally:
+        log.info("Cleaning up...")
+        try:
+            if worker is not None:
+                worker.terminate()
+        finally:
+            if respond is not None:
+                respond.delete()
+        log.info("Done!")
 
 
 if __name__ == "__main__":

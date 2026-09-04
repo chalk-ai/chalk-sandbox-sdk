@@ -1,3 +1,14 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["chalkcompute>=2.11.1"]
+# ///
+
+"""Deploy the synchronous deterministic embedding function.
+
+The deployment intentionally persists for examples that invoke it by name.
+"""
+
 import hashlib
 import logging
 import os

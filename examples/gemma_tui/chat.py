@@ -4,15 +4,12 @@
 # requires-python = ">=3.12"
 # dependencies = ["httpx", "rich"]
 # ///
-"""
-Rich TUI to chat with Gemma 3 4B running on a Chalk ScalingGroup.
+"""Chat with Gemma 3 4B through its public Chalk ScalingGroup URL.
 
-Usage:
-    # With kubectl port-forward to the scaling group service:
-    uv run python examples/gemma_tui/chat.py
-
-    # Or point directly at the scaling group URL:
-    GEMMA_URL=https://<env>-gemma-vllm.staging.internal.gcp.chalk.dev uv run python examples/gemma_tui/chat.py
+`deploy.py` must already have deployed the persistent GPU-backed service. Set
+GEMMA_URL to the public ``Serving at:`` URL printed by that deployment. This
+client creates no Chalk resources; the scaling group remains deployed after the
+client exits and must be removed separately when it is no longer needed.
 """
 
 from __future__ import annotations
@@ -27,10 +24,7 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
 
-BASE_URL = os.environ.get(
-    "GEMMA_URL",
-    "http://localhost:18000",
-)
+BASE_URL = os.environ["GEMMA_URL"].rstrip("/")
 MODEL = "google/gemma-3-4b-it"
 
 console = Console()
@@ -119,7 +113,9 @@ def main() -> None:
             continue
         except httpx.ConnectError:
             console.print(
-                "[bold red]Error:[/bold red] Cannot connect. Is the port-forward running?"
+                f"[bold red]Error:[/bold red] Cannot connect to {BASE_URL}. "
+                "Check that the scaling group is still deployed and GEMMA_URL "
+                "matches its public URL."
             )
             messages.pop()
             continue

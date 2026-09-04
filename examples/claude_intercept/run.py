@@ -2,12 +2,21 @@
 #
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["chalkcompute"]
+# dependencies = ["chalkcompute>=2.11.1"]
 # ///
 
 """Run Claude in a network-restricted Chalk Sandbox and inspect its API calls.
 
-Create a Chalk environment secret named ANTHROPIC_API_KEY, then run this script.
+Prerequisites:
+- Standard CHALK_* credentials in the local environment.
+- A Chalk environment secret named ANTHROPIC_API_KEY.
+
+The proxy prints redacted headers but complete request and response bodies. Those
+bodies can contain prompts, source code, model output, or other sensitive data.
+Use this only in a development environment whose terminal output is safe to keep.
+The temporary scaling group and sandbox are deleted on normal return, exceptions,
+and interrupts handled by Python. The sandbox also expires after 20 minutes if the
+local process is killed before its cleanup handlers run.
 """
 
 import json
@@ -39,9 +48,7 @@ def deployed(scaling_group):
                 break
             time.sleep(1)
         else:
-            raise RuntimeError(
-                f"proxy health check returned HTTP {health.status}"
-            )
+            raise RuntimeError(f"proxy health check returned HTTP {health.status}")
 
         yield scaling_group
     finally:
@@ -166,6 +173,7 @@ with ExitStack() as stack:
     sandbox = client.create(
         workload_image,
         network_policy=policy,
+        lifetime="1200s",
         env={
             "ANTHROPIC_API_KEY": "network-policy-injects-the-real-key",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",

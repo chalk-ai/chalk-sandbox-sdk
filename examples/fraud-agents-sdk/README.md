@@ -1,22 +1,26 @@
 # KYC Fraud Agent — OpenAI Agents SDK on Chalk Compute
 
-An LLM agent (OpenAI Agents SDK) investigates a KYC packet by shell-ing into a
-Chalk Compute container running in your cloud. ID images and utility bills
-stay inside the sandbox; only shell commands and text outputs round-trip to
-OpenAI.
+An LLM agent (OpenAI Agents SDK) investigates a synthetic KYC packet by
+shelling into a Chalk sandbox. The files stay in the sandbox; tool arguments,
+command output, and the final verdict are sent to OpenAI.
+
+This is an agent/tool-use demonstration, not a production KYC or fraud system.
+Do not use its prompt, sample checks, or verdict as a compliance control.
+The model controls a general shell in the sandbox, including its network
+access. Run only the bundled synthetic cases unless you add an appropriate
+network policy and review the data-handling implications.
 
 ## What it does
 
 ```
-$ uv run python story.py case-fraud
+$ ./story.py case-fraud
 
-[volume] kyc-case-case-fraud already exists → reusing (skip upload)
-[build] building image + starting investigator container...
+[volume] kyc-case-fraud-a4f2b1 → uploading packet
+[build] building image + starting investigator sandbox...
 
 ╭─────────────────────────────────────────────────╮
-│ container: kyc-investigator-a4f2b1              │
-│ id:        cnt_…                                │
-│ dashboard: https://staging.chalk.dev/…          │
+│ sandbox: kyc-investigator-a4f2b1                │
+│ id:      sbx_…                                  │
 ╰─────────────────────────────────────────────────╯
 
 [agent] investigation starting
@@ -38,7 +42,8 @@ $ uv run python story.py case-fraud
 │   • utility bill account holder is John Smith     │
 ╰───────────────────────────────────────────────────╯
 
-[stop]  stopping container
+[cleanup] terminating sandbox sbx_…
+[cleanup] deleted volume kyc-case-fraud-a4f2b1
 ```
 
 `case-legit` runs the same flow against a packet where everything agrees and
@@ -47,22 +52,21 @@ returns LOW.
 ## How it's wired
 
 The agent gets **one** function tool: `bash`. Behind it sits a long-lived
-`chalkcompute.Container` with the case packet mounted from a `Volume` at
+Chalk sandbox with the case packet mounted from a `Volume` at
 `/workspace`. The investigator image is a Debian slim with `tesseract`,
 `exiftool`, `pdftotext`, `jq`, and python with `pillow` + `pypdf` +
 `exifread` — the agent composes whatever commands it needs.
 
-The lighter alternative to implementing the OpenAI Agents SDK
-`BaseSandboxClient` provider contract end-to-end. Visually identical to the
-viewer; ~300 LOC across `story.py` + `ui.py`.
+This is the lightweight alternative to implementing the OpenAI Agents SDK
+`BaseSandboxClient` provider contract end-to-end.
 
 ## Layout
 
 ```
 fraud-agents-sdk/
-  story.py            # the demo: Container + Volume + agent + streaming loop
+  story.py            # the demo: sandbox + Volume + agent + streaming loop
   ui.py               # rich console rendering (Panels, syntax-highlighted JSON, …)
-  bash_tool.py        # the agent's one @function_tool, bound to a Container
+  bash_tool.py        # formats results from the agent's shell tool
   samples/
     case-legit/       # application + ID + signed lease, all agree
     case-fraud/       # application + ID + utility bill, names disagree
@@ -78,15 +82,9 @@ CHALK_API_SERVER
 OPENAI_API_KEY
 ```
 
-Drop them in a `.env` next to `story.py` (loaded via `python-dotenv`).
-
-## Running
-
-```bash
-uv sync
-uv run python story.py case-fraud
-uv run python story.py case-legit
-```
+Export them, or put them in a `.env` in the directory where you run the
+example (loaded via `python-dotenv`). Use synthetic or otherwise non-sensitive
+case files: command output is sent to OpenAI.
 
 First run takes a couple of minutes to build the investigator image (apt
 install of `tesseract-ocr`, `libimage-exiftool-perl`, `poppler-utils`, `jq`).
@@ -96,9 +94,9 @@ Each run creates a fresh per-run volume and uploads the case packet — the
 upload shows up in the terminal every time, which is what you want during a
 demo.
 
-Containers are **not** auto-stopped at the end of a run so you can inspect
-them in the dashboard. The `[kept]` line printed after each verdict gives
-you the dashboard URL and the exact command to stop the container.
+The sandbox and per-run volume are deleted in `finally` blocks. The sandbox
+also has a 10-minute maximum lifetime as a fallback if the local process is
+terminated before cleanup completes.
 
 ## Adding a new fraud check
 
@@ -114,8 +112,8 @@ The agent discovers and composes; no code change in the runner.
 
 The agent loop runs on the host where you invoke `story.py`, so the model
 call is the only thing that round-trips outside your VPC. Point the Agents
-SDK at a vLLM scaling group (see `examples/vllm-gemma/`) and override the
-model in `story.py`:
+SDK at a compatible OpenAI-style endpoint and override the model in
+`story.py`:
 
 ```python
 from openai import AsyncOpenAI

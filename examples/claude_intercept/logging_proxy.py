@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Small reverse proxy that records forwarded Anthropic requests and responses."""
 
 import base64
