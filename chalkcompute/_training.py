@@ -298,13 +298,25 @@ class TrainingFunction:
         secret_refs = [_secret_to_proto(s) for s in self._secrets]
         meta = _metadata_to_proto(self._metadata) if self._metadata else None
 
+        env = dict(self._env) if self._env else {}
+        module = self._func.__module__
+        if module == "__main__":
+            import __main__
+
+            spec = getattr(__main__, "__spec__", None)
+            if spec and spec.name:
+                module = spec.name
+            else:
+                module = self._func_name
+        env["CHALK_TRAINING_MODULE"] = f"{module}.{self._func_name}"
+
         request = tr_pb.CreateTrainingRunRequest(
             name=self._name,
             data=data_source,
             config=_config_to_struct(config),
             resources=resources,
             image=image_uri,
-            env=self._env or None,
+            env=env or None,
             secret_refs=secret_refs or None,
             meta_data=meta,
         )
