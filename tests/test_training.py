@@ -273,9 +273,7 @@ def test_handle_wait_timeout() -> None:
     from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
 
     mock_client = MagicMock()
-    working_run = tr_pb.TrainingRun(
-        id="run-t", status=tr_pb.TrainingRunStatus.WORKING
-    )
+    working_run = tr_pb.TrainingRun(id="run-t", status=tr_pb.TrainingRunStatus.WORKING)
     mock_client.call.return_value = tr_pb.GetTrainingRunResponse(
         training_run=working_run
     )
