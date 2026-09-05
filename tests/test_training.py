@@ -319,6 +319,12 @@ def test_handle_cancel() -> None:
 # --- run_training RPC integration (mocked) ---
 
 
+def _mock_deploy_image() -> MagicMock:
+    img = MagicMock()
+    img.lazy_local_files = []
+    return img
+
+
 def test_run_training_calls_create_rpc() -> None:
     from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
 
@@ -331,7 +337,12 @@ def test_run_training_calls_create_rpc() -> None:
     mock_resp = tr_pb.CreateTrainingRunResponse(training_run=mock_run)
     mock_client.call.return_value = mock_resp
 
-    with patch("chalkcompute._training.build_image", return_value="img:latest"):
+    with (
+        patch.object(
+            TrainingFunction, "_build_deploy_image", return_value=_mock_deploy_image()
+        ),
+        patch("chalkcompute._training.build_image", return_value="img:latest"),
+    ):
         handle = train.run_training(config={"lr": 0.01}, client=mock_client)
     assert isinstance(handle, TrainingRunHandle)
     assert handle.run_id == "run-xyz"
@@ -354,7 +365,12 @@ def test_run_training_with_dataclass_config() -> None:
     mock_resp = tr_pb.CreateTrainingRunResponse(training_run=mock_run)
     mock_client.call.return_value = mock_resp
 
-    with patch("chalkcompute._training.build_image", return_value="img:latest"):
+    with (
+        patch.object(
+            TrainingFunction, "_build_deploy_image", return_value=_mock_deploy_image()
+        ),
+        patch("chalkcompute._training.build_image", return_value="img:latest"),
+    ):
         handle = train.run_training(config=MyConfig(), client=mock_client)
     assert handle.run_id == "run-dc"
 
@@ -375,7 +391,12 @@ def test_run_training_builds_image_when_provided() -> None:
     mock_resp = tr_pb.CreateTrainingRunResponse(training_run=mock_run)
     mock_client.call.return_value = mock_resp
 
-    with patch("chalkcompute._training.build_image", return_value="img:latest") as bi:
+    with (
+        patch.object(
+            TrainingFunction, "_build_deploy_image", return_value=_mock_deploy_image()
+        ),
+        patch("chalkcompute._training.build_image", return_value="img:latest") as bi,
+    ):
         handle = tf.run_training(config=None, client=mock_client)
         bi.assert_called_once()
     assert handle.run_id == "run-img"

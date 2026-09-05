@@ -40,6 +40,7 @@ from chalkcompute._gen.chalk.server.v1 import (
     training_runs_connect as tr_connect,
     training_runs_pb as tr_pb,
 )
+from chalkcompute._gen.chalk.volume.v2 import volume_pb
 
 if TYPE_CHECKING:
     from chalkcompute._image import Image as _Image
@@ -288,6 +289,35 @@ class TrainingFunction:
         """
         return self._func(None, config, **kwargs)
 
+    def _build_deploy_image(self) -> _Image:
+        """Build the deploy image with the user's training function source."""
+        from chalkcompute._function import (
+            _deploy_module_name,
+            _make_base_image,
+            _package_dir_for_module,
+            _source_file_for_deploy,
+        )
+
+        deploy_image = _make_base_image(self._image)
+        module_name = _deploy_module_name(self._func)
+        package_dir = _package_dir_for_module(module_name)
+
+        if package_dir is not None:
+            top_pkg = module_name.split(".")[0]
+            deploy_image = deploy_image.add_local_dir(
+                package_dir,
+                f"/app/{top_pkg}",
+                exclude=["**/__pycache__/**", "**/*.pyc"],
+            )
+        else:
+            source_file = _source_file_for_deploy(self._func)
+            target_name = module_name if module_name != "__main__" else self._func_name
+            deploy_image = deploy_image.add_local_file(
+                source_file, f"/app/{target_name}.py"
+            )
+
+        return deploy_image
+
     def run_training(
         self,
         *,
@@ -308,9 +338,23 @@ class TrainingFunction:
         if client is None:
             client = ConnectClient()
 
-        image_uri: str | None = None
-        if self._image is not None:
-            image_uri = build_image(client, self._image)
+        deploy_image = self._build_deploy_image()
+        image_uri = build_image(client, deploy_image)
+
+        volume_commits: list[volume_pb.CommitIntent] = []
+        if deploy_image.lazy_local_files:
+            from chalkcompute._volume import VolumeClient
+
+            logger.info(
+                "Uploading %d source file(s)...",
+                len(deploy_image.lazy_local_files),
+            )
+            vvclient = VolumeClient.from_connect(client)
+            vol_name = f"training-src-{self._name or self._func_name}"
+            _, volume_commits = vvclient.stage_lazy_files(
+                deploy_image,
+                volume_name=vol_name,
+            )
 
         data_source = self._build_data_source()
         resources = self._build_resources()
@@ -318,6 +362,7 @@ class TrainingFunction:
         meta = _metadata_to_proto(self._metadata) if self._metadata else None
 
         env = dict(self._env) if self._env else {}
+        env["PYTHONPATH"] = "/app"
         module = self._func.__module__
         if module == "__main__":
             import __main__
@@ -338,6 +383,7 @@ class TrainingFunction:
             env=env or None,
             secret_refs=secret_refs or None,
             meta_data=meta,
+            volume_commits=volume_commits or None,
         )
 
         stub = client.stub(tr_connect.TrainingRunServiceClientSync)
