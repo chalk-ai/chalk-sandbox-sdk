@@ -338,7 +338,9 @@ def test_run_training_calls_create_rpc() -> None:
     mock_client.call.return_value = mock_resp
 
     with (
-        patch.object(TrainingFunction, "_build_deploy_image", return_value=_mock_deploy_image()),
+        patch.object(
+            TrainingFunction, "_build_deploy_image", return_value=_mock_deploy_image()
+        ),
         patch("chalkcompute._training.build_image", return_value="img:latest"),
     ):
         handle = train.run_training(config={"lr": 0.01}, client=mock_client)
@@ -364,7 +366,9 @@ def test_run_training_with_dataclass_config() -> None:
     mock_client.call.return_value = mock_resp
 
     with (
-        patch.object(TrainingFunction, "_build_deploy_image", return_value=_mock_deploy_image()),
+        patch.object(
+            TrainingFunction, "_build_deploy_image", return_value=_mock_deploy_image()
+        ),
         patch("chalkcompute._training.build_image", return_value="img:latest"),
     ):
         handle = train.run_training(config=MyConfig(), client=mock_client)
@@ -388,7 +392,9 @@ def test_run_training_builds_image_when_provided() -> None:
     mock_client.call.return_value = mock_resp
 
     with (
-        patch.object(TrainingFunction, "_build_deploy_image", return_value=_mock_deploy_image()),
+        patch.object(
+            TrainingFunction, "_build_deploy_image", return_value=_mock_deploy_image()
+        ),
         patch("chalkcompute._training.build_image", return_value="img:latest") as bi,
     ):
         handle = tf.run_training(config=None, client=mock_client)
