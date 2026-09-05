@@ -222,6 +222,100 @@ def test_handle_run_id() -> None:
     assert handle.run_id == "run-123"
 
 
+def test_handle_wait_returns_self() -> None:
+    from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
+
+    mock_client = MagicMock()
+    completed_run = tr_pb.TrainingRun(
+        id="run-w", status=tr_pb.TrainingRunStatus.COMPLETED
+    )
+    mock_client.call.return_value = tr_pb.GetTrainingRunResponse(
+        training_run=completed_run
+    )
+    handle = TrainingRunHandle("run-w", mock_client)
+    result = handle.wait(poll_interval=0)
+    assert result is handle
+
+
+def test_handle_wait_raises_on_failed() -> None:
+    from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
+
+    mock_client = MagicMock()
+    failed_run = tr_pb.TrainingRun(
+        id="run-f",
+        status=tr_pb.TrainingRunStatus.FAILED,
+        error_message="boom",
+    )
+    mock_client.call.return_value = tr_pb.GetTrainingRunResponse(
+        training_run=failed_run
+    )
+    handle = TrainingRunHandle("run-f", mock_client)
+    with pytest.raises(TrainingError, match="boom"):
+        handle.wait(poll_interval=0)
+
+
+def test_handle_wait_raises_on_canceled() -> None:
+    from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
+
+    mock_client = MagicMock()
+    canceled_run = tr_pb.TrainingRun(
+        id="run-c", status=tr_pb.TrainingRunStatus.CANCELED
+    )
+    mock_client.call.return_value = tr_pb.GetTrainingRunResponse(
+        training_run=canceled_run
+    )
+    handle = TrainingRunHandle("run-c", mock_client)
+    with pytest.raises(TrainingError, match="canceled"):
+        handle.wait(poll_interval=0)
+
+
+def test_handle_wait_timeout() -> None:
+    from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
+
+    mock_client = MagicMock()
+    working_run = tr_pb.TrainingRun(id="run-t", status=tr_pb.TrainingRunStatus.WORKING)
+    mock_client.call.return_value = tr_pb.GetTrainingRunResponse(
+        training_run=working_run
+    )
+    handle = TrainingRunHandle("run-t", mock_client)
+    with pytest.raises(TimeoutError):
+        handle.wait(poll_interval=0, timeout=0.0)
+
+
+def test_handle_latest_checkpoint() -> None:
+    from chalkcompute._gen.chalk.server.v1 import (
+        model_registry_pb as mr_pb,
+        training_runs_pb as tr_pb,
+    )
+
+    artifact = mr_pb.ModelArtifact(id="art-1", path="env/artifacts/art-1")
+    mock_client = MagicMock()
+    mock_client.call.return_value = tr_pb.GetLatestCheckpointResponse(
+        model_artifact=artifact
+    )
+    handle = TrainingRunHandle("run-ck", mock_client)
+    result = handle.latest_checkpoint()
+    assert result is not None
+    assert result.id == "art-1"
+    assert result.path == "env/artifacts/art-1"
+
+
+def test_handle_latest_checkpoint_none() -> None:
+    from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
+
+    mock_client = MagicMock()
+    mock_client.call.return_value = tr_pb.GetLatestCheckpointResponse()
+    handle = TrainingRunHandle("run-ck2", mock_client)
+    assert handle.latest_checkpoint() is None
+
+
+def test_handle_cancel() -> None:
+    mock_client = MagicMock()
+    handle = TrainingRunHandle("run-can", mock_client)
+    handle.cancel()
+    mock_client.call.assert_called_once()
+
+
 # --- run_training RPC integration (mocked) ---
 
 
