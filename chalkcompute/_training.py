@@ -116,7 +116,12 @@ class TrainingRunHandle:
     """Handle for a submitted training run.
 
     Returned by :meth:`TrainingFunction.run_training`. Provides polling
-    for status and a blocking :meth:`wait` helper.
+    for status, a blocking :meth:`wait` helper, and access to checkpoints.
+
+    Examples
+    --------
+    >>> handle = train_fn.run_training(config=MyConfig())
+    >>> handle.wait().latest_checkpoint()
     """
 
     def __init__(self, run_id: str, client: ConnectClient) -> None:
@@ -146,11 +151,12 @@ class TrainingRunHandle:
         *,
         poll_interval: float = _DEFAULT_POLL_INTERVAL,
         timeout: float | None = None,
-    ) -> tr_pb.TrainingRun:
+    ) -> TrainingRunHandle:
         """Block until the training run reaches a terminal state.
 
-        Returns the final :class:`TrainingRun` proto. Raises
-        :class:`TrainingError` if the run failed or was canceled.
+        Returns ``self`` for chaining. Raises :class:`TrainingError`
+        if the run failed or was canceled, or :class:`TimeoutError`
+        if *timeout* seconds elapse first.
         """
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
@@ -162,13 +168,26 @@ class TrainingRunHandle:
                     )
                 if run.status == tr_pb.TrainingRunStatus.CANCELED:
                     raise TrainingError(f"training run {self._run_id} was canceled")
-                return run
+                return self
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError(
                     f"training run {self._run_id} timed out "
                     f"(last status: {run.status.name})"
                 )
             time.sleep(poll_interval)
+
+    def latest_checkpoint(self) -> Any | None:
+        """Fetch the latest checkpoint for this training run.
+
+        Returns the :class:`ModelArtifact` proto, or ``None`` if no
+        checkpoint has been uploaded yet.
+        """
+        stub = self._client.stub(tr_connect.TrainingRunServiceClientSync)
+        resp = self._client.call(
+            stub.get_latest_checkpoint,
+            tr_pb.GetLatestCheckpointRequest(training_run_id=self._run_id),
+        )
+        return resp.model_artifact
 
     def cancel(self) -> None:
         """Cancel this training run."""
