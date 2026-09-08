@@ -1995,6 +1995,12 @@ def _apply_function_version(
 ) -> None:
     function._function_id = efv.function_id or None
     function._version_info = _parse_function_version(efv, is_current=is_current)
+    # A locally defined handle keeps its Python name, signature (including
+    # defaults), and Arrow serializers. Catalog names need not be valid Python
+    # identifiers, and replacing the callable name changes the next deploy's
+    # handler source. Only attached handles derive callable metadata from the API.
+    if function._has_local_func:
+        return
     function._func_name = efv.function_name
     function._explicit_name = sanitize_dns_label(efv.function_name)
     function._input_field_names = _extract_field_names(efv.input_arrow_schema)

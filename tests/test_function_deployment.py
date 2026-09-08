@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import importlib.util
 import os
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +12,7 @@ from connectrpc.errors import ConnectError as RpcError
 from protobuf import Oneof
 
 import chalkcompute._function_deployment as deployment
+import chalkcompute._function as function_module
 from chalkcompute import _native
 from chalkcompute._connect import ConnectError
 from chalkcompute._function import RemoteFunction
@@ -302,3 +306,66 @@ def test_ready_reused_function_does_not_poll(monkeypatch):
     assert len(client.requests) == 2
     assert client.requests[0].request_id != client.requests[1].request_id
     assert client.requests[0].spec == client.requests[1].spec
+
+
+@pytest.mark.parametrize("name", [None, "remote-add", "renamed"])
+@pytest.mark.parametrize("strip_source", ["0", "1"])
+@pytest.mark.parametrize("background", [False, True])
+def test_redeploy_preserves_callable_and_desired_spec(
+    monkeypatch, tmp_path, name, strip_source, background
+):
+    monkeypatch.setenv("CHALK_FUNCTION_STRIP_SOURCE", strip_source)
+    monkeypatch.delenv("CHALK_FUNCTION_LOCAL_SDK_COPY", raising=False)
+    source = tmp_path / "reuse_example.py"
+    source.write_text("def add_values(x: int = 41) -> int:\n    return x + 1\n")
+    spec = importlib.util.spec_from_file_location("reuse_example", source)
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    registered_name = name or "add_values"
+
+    class EchoClient(Client):
+        def call(self, method, request, **kwargs):
+            response = super().call(method, request, **kwargs)
+            version = response.result.value.external_function.current_version
+            version.function_name = registered_name
+            version.input_arrow_schema = request.spec.version_spec.input_arrow_schema
+            version.output_arrow_schema = request.spec.version_spec.output_arrow_schema
+            return response
+
+    client = EchoClient([complete(), complete()])
+    client._env_id = None
+    monkeypatch.setattr(function_module, "ConnectClient", lambda **kwargs: client)
+    prepared_sources = []
+
+    def prepare(image):
+        prepared = deployment.prepare_function_image(image)
+        prepared_sources.append(
+            {file.dest: Path(file.src).read_text() for file in image.lazy_local_files}
+        )
+        return prepared
+
+    monkeypatch.setattr(function_module, "prepare_function_image", prepare)
+    monkeypatch.setattr(
+        RemoteFunction,
+        "_poll_until_ready",
+        lambda *a, **kw: pytest.fail("polled a ready version"),
+    )
+    if background:
+        fn = function_module.function(module.add_values, name=name)
+        fn.version_info
+    else:
+        fn = RemoteFunction(module.add_values, name=name)
+        fn.deploy()
+    fn.deploy()
+
+    assert len(client.requests) == 2
+    assert client.requests[0].request_id != client.requests[1].request_id
+    assert [r.function_name for r in client.requests] == [registered_name] * 2
+    assert client.requests[0].spec == client.requests[1].spec
+    assert prepared_sources[0] == prepared_sources[1]
+    for path, text in prepared_sources[1].items():
+        compile(text, path, "exec")
+    assert fn._func_name == "add_values"
+    assert fn._queue_function_name() == registered_name
+    assert fn._bind_call_arguments((), {}) == (41,)
