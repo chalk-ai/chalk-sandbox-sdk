@@ -320,3 +320,26 @@ def test_handler_shim_runs_the_generated_judge(completion) -> None:
     assert row["score"] == 0.5
     assert json.loads(row["metadata"]) == {"directness": 2, "reason": "ok"}
     assert results[0].type.equals(EvaluationScorerResult.__chalk_pyarrow_type__())
+
+
+def test_pydantic_v1_models_work_too(completion) -> None:
+    from pydantic.v1 import BaseModel as V1Model
+    from pydantic.v1 import Field as V1Field
+
+    class Grade1(V1Model):
+        score: float = V1Field(alias="overall")
+        directness: int = V1Field(ge=0, le=2)
+        reason: str
+
+    _, state = completion
+    state["reply"] = {"overall": 0.5, "directness": 2, "reason": "ok"}
+    judge = _judge(response_model=Grade1)
+
+    result = judge._func(output="done")
+
+    assert result == EvaluationScorerResult(
+        score=0.5, metadata={"directness": 2, "reason": "ok"}
+    )
+    declared = json.loads(judge._func.__chalk_scorer_response_schema__)
+    assert list(declared["properties"]) == ["directness", "reason"]
+    assert declared["properties"]["directness"]["maximum"] == 2

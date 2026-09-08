@@ -146,15 +146,48 @@ def _assert_deployable() -> None:
 
 
 def _assert_response_model(response_model: Any) -> None:
-    if not isinstance(response_model, type) or not hasattr(
-        response_model, "model_fields"
-    ):
-        raise TypeError("response_model must be a pydantic v2 BaseModel class")
-    if "score" not in response_model.model_fields:
+    if not _is_pydantic_model(response_model):
+        raise TypeError("response_model must be a pydantic BaseModel class")
+    if "score" not in _field_names(response_model):
         raise ValueError(
             "response_model must declare a `score` field; it becomes the scorer's "
             "score and the remaining fields are recorded as metadata"
         )
+
+
+# pydantic 1 and 2 both work, for parity with chalkpy; the helpers below pick
+# the API the installed version has.
+def _is_pydantic_model(cls: Any) -> bool:
+    return isinstance(cls, type) and (
+        hasattr(cls, "model_fields") or hasattr(cls, "__fields__")
+    )
+
+
+def _field_names(cls: Any) -> Any:
+    fields = getattr(cls, "model_fields", None)
+    return (fields if fields is not None else cls.__fields__).keys()
+
+
+def _json_schema(cls: Any, *, serialization: bool = False) -> dict[str, Any]:
+    if hasattr(cls, "model_json_schema"):
+        return cls.model_json_schema(
+            mode="serialization" if serialization else "validation"
+        )
+    return cls.schema(by_alias=True)
+
+
+def _validate(cls: Any, data: Any) -> Any:
+    return (
+        cls.model_validate(data)
+        if hasattr(cls, "model_validate")
+        else cls.parse_obj(data)
+    )
+
+
+def _dump(instance: Any) -> dict[str, Any]:
+    if hasattr(instance, "model_dump"):
+        return instance.model_dump(mode="json", by_alias=True)
+    return json.loads(instance.json(by_alias=True))
 
 
 def _validate_inputs(inputs: Sequence[str]) -> tuple[str, ...]:
@@ -184,14 +217,17 @@ def _default_name(response_model: Any) -> str:
 
 
 def _serialized_name(response_model: Any, field: str) -> str:
-    """The key ``model_dump(by_alias=True)`` writes ``field`` under."""
-    info = response_model.model_fields[field]
+    """The key the model serializes ``field`` under."""
+    fields = getattr(response_model, "model_fields", None)
+    if fields is None:
+        return response_model.__fields__[field].alias
+    info = fields[field]
     return info.serialization_alias or info.alias or field
 
 
 def _metadata_schema(response_model: Any, score_key: str) -> dict[str, Any]:
     """What lands in metadata: the model as it serializes, minus the score."""
-    schema = dict(response_model.model_json_schema(mode="serialization"))
+    schema = dict(_json_schema(response_model, serialization=True))
     schema["properties"] = {
         name: prop
         for name, prop in schema.get("properties", {}).items()
@@ -226,15 +262,15 @@ def _judge(spec: _JudgeSpec, columns: Mapping[str, Any]) -> EvaluationScorerResu
     messages.append({"role": "user", "content": prompt})
     graded = _complete(spec, messages)
     if not isinstance(graded, spec.response_model):
-        graded = spec.response_model.model_validate(graded)
+        graded = _validate(spec.response_model, graded)
     # By alias, the way the stamped schema names it.
-    data = graded.model_dump(mode="json", by_alias=True)
+    data = _dump(graded)
     score = data.pop(spec.score_key)
     return EvaluationScorerResult(score=float(score), metadata=data or None)
 
 
 def _default_prompt(spec: _JudgeSpec, columns: Mapping[str, Any]) -> str:
-    fields = spec.response_model.model_json_schema().get("properties", {})
+    fields = _json_schema(spec.response_model).get("properties", {})
     parts = [
         "Grade the material below. Reply with a JSON object matching this schema:",
         json.dumps(fields, indent=1),

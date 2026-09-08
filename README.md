@@ -241,8 +241,8 @@ be explicitly deployed before it can be used in an evaluation.
 
 ### LLM judges
 
-`cc.scorers.llm_judge` deploys a scorer from a pydantic model instead of a
-function body. The model's `score` field becomes the score; every other field
+`cc.scorers.llm_judge` deploys a scorer from a pydantic model (v1 or v2)
+instead of a function body. The model's `score` field becomes the score; every other field
 is recorded as row metadata. The reply is requested through the OpenAI client
 with structured outputs and validated against the model, so a malformed grade
 fails the row.
