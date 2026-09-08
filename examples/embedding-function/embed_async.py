@@ -1,3 +1,15 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["chalkcompute>=2.11.1"]
+# ///
+
+"""Deploy the asynchronous deterministic embedding function.
+
+The deployment intentionally persists so callers can examine asynchronous
+function behavior after the deploy process exits.
+"""
+
 import hashlib
 import logging
 import os

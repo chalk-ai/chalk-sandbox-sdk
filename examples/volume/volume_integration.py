@@ -1,23 +1,28 @@
+#!/usr/bin/env -S uv run --script
+#
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["chalkcompute>=2.11.1"]
+# ///
+
 """Increment a counter file on a shared volume from every surface that can
-read and write volumes: the Volume API directly, a Sandbox, a Container,
-and a RemoteFunction.
+read and write volumes: the Volume API directly, a Sandbox, and a
+RemoteFunction.
 
 Each surface reads /data/counter.txt, increments the integer, and writes it
-back. The file is created on first run.
+back. The file is created on first run. The named volume intentionally persists
+so subsequent runs continue the same counter; the function deployment and
+sandbox created by each run are deleted.
 """
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+import uuid
 
 from chalkcompute import (
-    Container,
     Image,
     RemoteFunction,
     Sandbox,
     Volume,
-    VolumeNotFoundError,
+    VolumeFileNotFoundError,
 )
 
 COUNTER_VOLUME = "volume_counters"
@@ -35,7 +40,7 @@ BUMP_SH = (
 def read_counter() -> int:
     try:
         return int(Volume(COUNTER_VOLUME).read_file(COUNTER_PATH).decode().strip())
-    except VolumeNotFoundError:
+    except VolumeFileNotFoundError:
         return 0
 
 
@@ -53,32 +58,25 @@ if __name__ == "__main__":
     vol = Volume(COUNTER_VOLUME)
     try:
         n = int(vol.read_file(COUNTER_PATH).decode().strip())
-    except VolumeNotFoundError:
+    except VolumeFileNotFoundError:
         n = 0
     vol.put_file(COUNTER_PATH, str(n + 1))
     print(f"volume:    {n} -> {n + 1}")
 
-    # Attach to Container
-    container = Container(
-        image=Image.debian_slim(python_version="3.12"),
-        volumes=[(COUNTER_VOLUME, MOUNT)],
-    ).run()
-    try:
-        result = container.exec("sh", "-c", BUMP_SH)
-        print(f"container: -> {result.stdout_text.strip()}")
-    finally:
-        container.stop()
-
     # Attach to a RemoteFunction
     bump_via_function = RemoteFunction(
         _bump_via_function,
+        name=f"volume-counter-bump-{uuid.uuid4().hex[:8]}",
         image=Image.debian_slim(python_version="3.12"),
         cpu="1",
         memory="1Gi",
         volumes=[(COUNTER_VOLUME, MOUNT)],
     )
-    bump_via_function.deploy()
-    print(f"function:  -> {bump_via_function.remote()}")
+    try:
+        bump_via_function.deploy()
+        print(f"function:  -> {bump_via_function.remote()}")
+    finally:
+        bump_via_function.delete()
 
     # Attach to a Sandbox
     sandbox = Sandbox(
@@ -86,11 +84,13 @@ if __name__ == "__main__":
         memory="1Gi",
         image=Image.debian_slim(python_version="3.12"),
         volumes=[(COUNTER_VOLUME, MOUNT)],
-    ).run()
+    )
     try:
+        sandbox.run()
         result = sandbox.exec("sh", "-c", BUMP_SH)
         print(f"sandbox:   -> {result.stdout_text.strip()}")
     finally:
-        sandbox.terminate()
+        if sandbox.id is not None:
+            sandbox.terminate()
 
     print(f"end:   counter = {read_counter()}")

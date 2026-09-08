@@ -9,7 +9,6 @@ weights = None
 
 def on_startup():
     global weights
-    # weights.json arrives on the model volume mounted at /app/artifacts.
     with open("/app/artifacts/weights.json") as f:
         weights = json.load(f)
 

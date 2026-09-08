@@ -1,4 +1,4 @@
-"""Formats container.exec results as stdout + [stderr] + exit code for the model."""
+"""Format sandbox command results for the model."""
 
 WORKSPACE = "/workspace"
 _MAX_OUTPUT_BYTES = 16 * 1024
