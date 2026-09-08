@@ -234,6 +234,27 @@ evaluation = cc.Evaluation.create(
 )
 ```
 
+### Rubrics
+
+Declare what a judge grades on. The declaration travels with the function
+version, each result's criteria are checked against it and recorded with the
+row, and the score itself stays exactly what the scorer returns:
+
+```python
+RUBRIC = cc.Rubric(
+    cc.Criterion("directness", scale=(0, 2), description="Shortest reasonable path to the goal."),
+    cc.Criterion("task_correctness", scale=(0, 2), description="Was the task actually completed?"),
+)
+
+@cc.function(rubric=RUBRIC)
+def trace_quality(output: str) -> cc.EvaluationScorerResult:
+    graded = judge_model(RUBRIC, output)
+    return RUBRIC.result(graded["score"], graded["scores"], reason=graded["reason"])
+```
+
+A rubric scorer that returns no criteria, or grades outside a criterion's
+scale, fails the row rather than averaging in as though it had graded.
+
 `RemoteFunction.from_name` resolves the currently selected version at lookup
 time; evaluation creation then pins that version. `from_id` remains a
 compatibility alias for `from_version_id`. An imperative `RemoteFunction` must

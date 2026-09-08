@@ -304,6 +304,11 @@ def handler_runtime_source() -> str:
 
 
         def _chalk_result_annotation(target):
+            # A declared rubric supplies the encoder that validates criteria;
+            # the Arrow contract is the same either way.
+            rubric = getattr(target, "__chalk_rubric__", None)
+            if rubric is not None:
+                return rubric.bind()
             annotation = _chalk_typing.get_type_hints(
                 target, include_extras=True
             ).get("return")
