@@ -1,0 +1,19 @@
+{
+  "firstStartTime": "2026-01-01T00:00:00.000Z",
+  "migrationVersion": 13,
+  "theme": "dark",
+  "hasCompletedOnboarding": true,
+  "projects": {
+    "/work": {
+      "allowedTools": [],
+      "mcpContextUris": [],
+      "enabledMcpjsonServers": [],
+      "disabledMcpjsonServers": [],
+      "hasTrustDialogAccepted": true,
+      "projectOnboardingSeenCount": 0,
+      "hasClaudeMdExternalIncludesApproved": false,
+      "hasClaudeMdExternalIncludesWarningShown": false,
+      "hasUnseenTeamArtifacts": false
+    }
+  }
+}

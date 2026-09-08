@@ -2,48 +2,44 @@
 #
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["httpx", "python-dotenv"]
+# dependencies = ["chalkcompute>=2.11.1", "python-dotenv"]
 # ///
 
 # # Shared SQLite on a Persistent Volume
 #
-# Chalk volumes let multiple containers share a filesystem backed by object
-# storage. This example uses that to solve a common problem: one container
+# Chalk volumes let multiple sandboxes share a filesystem backed by object
+# storage. This example uses that to solve a common problem: one sandbox
 # writes structured data, and several others read it — without standing up a
 # database server.
 #
 # The pattern works well for experiment tracking, lightweight feature stores,
 # coordination state, or any case where you want persistence that outlives a
-# single container but don't need a full RDBMS.
+# single sandbox but don't need a full RDBMS.
 #
 # ## Overview
 #
 # 1. Create a Chalk volume called `sqlite-persistence`.
-# 2. Start a **writer** container, mount the volume at `/data`, and run a
+# 2. Start a **writer** sandbox, mount the volume at `/data`, and run a
 #    Python script that creates a SQLite database with a `users` table.
-# 3. Stop the writer — proving the data outlives the container.
-# 4. Start two **reader** containers (`reader-a`, `reader-b`), each mounting
+# 3. Terminate the writer — proving the data outlives the sandbox.
+# 4. Start two **reader** sandboxes (`reader-a`, `reader-b`), each mounting
 #    the same volume, and have them independently query the database.
 # 5. Assert that both readers see identical rows.
 
-import os
 import sys
 import time
 import uuid
 
 from dotenv import load_dotenv
 
-# We import from the SDK at the repo root.
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+from chalkcompute import Image, Sandbox, Volume
 
-from chalkcompute import Container, Image, Volume  # noqa: E402
-
-load_dotenv(os.path.join(os.path.dirname(__file__), "../../.env"))
+load_dotenv()
 
 
 # ## Configuration
 #
-# A single volume name and mount path shared by all three containers. The
+# A single volume name and mount path shared by all three sandboxes. The
 # writer creates `/data/app.db`; each reader queries it.
 
 VOLUME_NAME = f"sqlite-persistence-{uuid.uuid4().hex[:8]}"
@@ -53,7 +49,7 @@ DB_PATH = f"{MOUNT_PATH}/app.db"
 
 # ## The image
 #
-# All three containers share the same slim Python image. SQLite ships with
+# All three sandboxes share the same slim Python image. SQLite ships with
 # Python's standard library, so no extra packages are needed.
 
 image = Image.debian_slim()
@@ -76,11 +72,11 @@ def delete_volume() -> None:
     print(f"Volume '{VOLUME_NAME}' deleted.")
 
 
-def wait_for_file(container: Container, path: str, timeout: float = 120.0) -> None:
-    """Poll until *path* exists inside the container."""
+def wait_for_file(sandbox: Sandbox, path: str, timeout: float = 120.0) -> None:
+    """Poll until *path* exists inside the sandbox."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if container.exec("test", "-e", path).exit_code == 0:
+        if sandbox.exec("test", "-e", path).exit_code == 0:
             return
         time.sleep(5)
     raise TimeoutError(f"{path} not visible after {timeout}s")
@@ -88,7 +84,7 @@ def wait_for_file(container: Container, path: str, timeout: float = 120.0) -> No
 
 # ## Step 1 — Write the database
 #
-# The writer container runs an inline Python script that creates a SQLite
+# The writer sandbox runs an inline Python script that creates a SQLite
 # database at `/data/app.db` and inserts three rows.
 
 WRITE_SCRIPT = """
@@ -149,9 +145,10 @@ def main() -> None:
         # --- Writer -----------------------------------------------------------
         # We start the writer, run the script, then stop it *before* starting
         # readers. This proves the data persists on the volume independently of
-        # the container that wrote it.
-        print("\n=== Starting writer container ===")
-        writer = Container(image=image).mount_volume(VOLUME_NAME, MOUNT_PATH).run()
+        # the sandbox that wrote it.
+        print("\n=== Starting writer sandbox ===")
+        writer = Sandbox(image=image).mount_volume(VOLUME_NAME, MOUNT_PATH)
+        writer.run()
 
         wait_for_file(writer, MOUNT_PATH)
         result = writer.exec("python3", "-c", WRITE_SCRIPT, timeout_secs=30)
@@ -160,16 +157,18 @@ def main() -> None:
             print(f"Writer failed: {result.stderr_text}", file=sys.stderr)
             sys.exit(1)
 
-        writer.stop()
+        writer.terminate()
         writer = None
         print("Writer stopped.\n")
 
         # --- Readers ----------------------------------------------------------
-        # Two independent containers mount the same volume and each query the
+        # Two independent sandboxes mount the same volume and each query the
         # database. Both should see all three rows.
-        print("=== Starting reader containers ===")
-        reader_a = Container(image=image).mount_volume(VOLUME_NAME, MOUNT_PATH).run()
-        reader_b = Container(image=image).mount_volume(VOLUME_NAME, MOUNT_PATH).run()
+        print("=== Starting reader sandboxes ===")
+        reader_a = Sandbox(image=image).mount_volume(VOLUME_NAME, MOUNT_PATH)
+        reader_a.run()
+        reader_b = Sandbox(image=image).mount_volume(VOLUME_NAME, MOUNT_PATH)
+        reader_b.run()
 
         for reader_name, reader in [("reader-a", reader_a), ("reader-b", reader_b)]:
             wait_for_file(reader, DB_PATH)
@@ -189,7 +188,7 @@ def main() -> None:
         for c in [writer, reader_a, reader_b]:
             if c is not None:
                 try:
-                    c.stop()
+                    c.terminate()
                 except Exception:
                     pass
         delete_volume()

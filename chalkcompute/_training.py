@@ -40,6 +40,7 @@ from chalkcompute._gen.chalk.server.v1 import (
     training_runs_connect as tr_connect,
     training_runs_pb as tr_pb,
 )
+from chalkcompute._gen.chalk.volume.v2 import volume_pb
 
 if TYPE_CHECKING:
     from chalkcompute._image import Image as _Image
@@ -116,7 +117,12 @@ class TrainingRunHandle:
     """Handle for a submitted training run.
 
     Returned by :meth:`TrainingFunction.run_training`. Provides polling
-    for status and a blocking :meth:`wait` helper.
+    for status, a blocking :meth:`wait` helper, and access to checkpoints.
+
+    Examples
+    --------
+    >>> handle = train_fn.run_training(config=MyConfig())
+    >>> handle.wait().latest_checkpoint()
     """
 
     def __init__(self, run_id: str, client: ConnectClient) -> None:
@@ -146,11 +152,12 @@ class TrainingRunHandle:
         *,
         poll_interval: float = _DEFAULT_POLL_INTERVAL,
         timeout: float | None = None,
-    ) -> tr_pb.TrainingRun:
+    ) -> TrainingRunHandle:
         """Block until the training run reaches a terminal state.
 
-        Returns the final :class:`TrainingRun` proto. Raises
-        :class:`TrainingError` if the run failed or was canceled.
+        Returns ``self`` for chaining. Raises :class:`TrainingError`
+        if the run failed or was canceled, or :class:`TimeoutError`
+        if *timeout* seconds elapse first.
         """
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
@@ -162,13 +169,26 @@ class TrainingRunHandle:
                     )
                 if run.status == tr_pb.TrainingRunStatus.CANCELED:
                     raise TrainingError(f"training run {self._run_id} was canceled")
-                return run
+                return self
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError(
                     f"training run {self._run_id} timed out "
                     f"(last status: {run.status.name})"
                 )
             time.sleep(poll_interval)
+
+    def latest_checkpoint(self) -> Any | None:
+        """Fetch the latest checkpoint for this training run.
+
+        Returns the :class:`ModelArtifact` proto, or ``None`` if no
+        checkpoint has been uploaded yet.
+        """
+        stub = self._client.stub(tr_connect.TrainingRunServiceClientSync)
+        resp = self._client.call(
+            stub.get_latest_checkpoint,
+            tr_pb.GetLatestCheckpointRequest(training_run_id=self._run_id),
+        )
+        return resp.model_artifact
 
     def cancel(self) -> None:
         """Cancel this training run."""
@@ -269,6 +289,35 @@ class TrainingFunction:
         """
         return self._func(None, config, **kwargs)
 
+    def _build_deploy_image(self) -> _Image:
+        """Build the deploy image with the user's training function source."""
+        from chalkcompute._function import (
+            _deploy_module_name,
+            _make_base_image,
+            _package_dir_for_module,
+            _source_file_for_deploy,
+        )
+
+        deploy_image = _make_base_image(self._image)
+        module_name = _deploy_module_name(self._func)
+        package_dir = _package_dir_for_module(module_name)
+
+        if package_dir is not None:
+            top_pkg = module_name.split(".")[0]
+            deploy_image = deploy_image.add_local_dir(
+                package_dir,
+                f"/app/{top_pkg}",
+                exclude=["**/__pycache__/**", "**/*.pyc"],
+            )
+        else:
+            source_file = _source_file_for_deploy(self._func)
+            target_name = module_name if module_name != "__main__" else self._func_name
+            deploy_image = deploy_image.add_local_file(
+                source_file, f"/app/{target_name}.py"
+            )
+
+        return deploy_image
+
     def run_training(
         self,
         *,
@@ -289,14 +338,41 @@ class TrainingFunction:
         if client is None:
             client = ConnectClient()
 
-        image_uri: str | None = None
-        if self._image is not None:
-            image_uri = build_image(client, self._image)
+        deploy_image = self._build_deploy_image()
+        image_uri = build_image(client, deploy_image)
+
+        volume_commits: list[volume_pb.CommitIntent] = []
+        if deploy_image.lazy_local_files:
+            from chalkcompute._volume import VolumeClient
+
+            logger.info(
+                "Uploading %d source file(s)...",
+                len(deploy_image.lazy_local_files),
+            )
+            vvclient = VolumeClient.from_connect(client)
+            vol_name = f"training-src-{self._name or self._func_name}"
+            _, volume_commits = vvclient.stage_lazy_files(
+                deploy_image,
+                volume_name=vol_name,
+            )
 
         data_source = self._build_data_source()
         resources = self._build_resources()
         secret_refs = [_secret_to_proto(s) for s in self._secrets]
         meta = _metadata_to_proto(self._metadata) if self._metadata else None
+
+        env = dict(self._env) if self._env else {}
+        env["PYTHONPATH"] = "/app"
+        module = self._func.__module__
+        if module == "__main__":
+            import __main__
+
+            spec = getattr(__main__, "__spec__", None)
+            if spec and spec.name:
+                module = spec.name
+            else:
+                module = self._func_name
+        env["CHALK_TRAINING_MODULE"] = f"{module}.{self._func_name}"
 
         request = tr_pb.CreateTrainingRunRequest(
             name=self._name,
@@ -304,9 +380,10 @@ class TrainingFunction:
             config=_config_to_struct(config),
             resources=resources,
             image=image_uri,
-            env=self._env or None,
+            env=env or None,
             secret_refs=secret_refs or None,
             meta_data=meta,
+            volume_commits=volume_commits or None,
         )
 
         stub = client.stub(tr_connect.TrainingRunServiceClientSync)

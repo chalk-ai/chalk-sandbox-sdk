@@ -26,6 +26,10 @@ a leaf module like `_naming.py` (e.g. `validate_env`) so the logic can't drift.
 Grep for the field name across `chalkcompute/` before assuming one call site is
 the only one.
 
+## SDK Examples
+
+When adding or updating SDK examples in the `examples/` directory, follow `examples/style_guide.md`.
+
 ## Testing
 
 Tests run both **locally** and via **Buildkite** (PR-triggered). Credentials are SOPS-encrypted in `.env.enc`.

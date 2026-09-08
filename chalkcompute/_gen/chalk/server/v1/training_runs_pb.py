@@ -15,12 +15,14 @@ from protobuf.wkt import field_mask_pb, struct_pb, timestamp_pb
 from . import model_registry_pb
 from ...auth.v1 import permissions_pb
 from ...container.v1 import service_pb
+from ...volume.v2 import volume_pb
 
 if TYPE_CHECKING:
     from protobuf import DescFile, Oneof
     from protobuf.wkt import FieldMask, Struct, Timestamp, Value
 
     from ...container.v1.service_pb import ResourceLimits, SecretRef
+    from ...volume.v2.volume_pb import CommitIntent
     from .model_registry_pb import ModelArtifact
 
 
@@ -176,7 +178,7 @@ class TrainingRun(Message[_TrainingRunFields]):
         environment_id: str
         deployment_id: str
 
-_CreateTrainingRunRequestFields: TypeAlias = Literal["name", "data", "config", "resources", "image", "env", "secret_refs", "meta_data"]
+_CreateTrainingRunRequestFields: TypeAlias = Literal["name", "data", "config", "resources", "image", "env", "secret_refs", "meta_data", "volume_commits"]
 
 class CreateTrainingRunRequest(Message[_CreateTrainingRunRequestFields]):
     """
@@ -217,9 +219,13 @@ class CreateTrainingRunRequest(Message[_CreateTrainingRunRequestFields]):
             ```proto
             map<string, google.protobuf.Value> meta_data = 8;
             ```
+        volume_commits:
+            ```proto
+            repeated chalk.volume.v2.CommitIntent volume_commits = 9;
+            ```
     """
 
-    __slots__ = ("name", "data", "config", "resources", "image", "env", "secret_refs", "meta_data")
+    __slots__ = ("name", "data", "config", "resources", "image", "env", "secret_refs", "meta_data", "volume_commits")
 
     if TYPE_CHECKING:
 
@@ -234,6 +240,7 @@ class CreateTrainingRunRequest(Message[_CreateTrainingRunRequestFields]):
             env: dict[str, str] | None = None,
             secret_refs: list[SecretRef] | None = None,
             meta_data: dict[str, Value] | None = None,
+            volume_commits: list[CommitIntent] | None = None,
         ) -> None:
             pass
 
@@ -245,6 +252,7 @@ class CreateTrainingRunRequest(Message[_CreateTrainingRunRequestFields]):
         env: dict[str, str]
         secret_refs: list[SecretRef]
         meta_data: dict[str, Value]
+        volume_commits: list[CommitIntent]
 
 _CreateTrainingRunResponseFields: TypeAlias = Literal["training_run"]
 
@@ -330,7 +338,41 @@ class GetTrainingRunResponse(Message[_GetTrainingRunResponseFields]):
 
         training_run: TrainingRun | None
 
-_ListTrainingRunsRequestFields: TypeAlias = Literal["limit", "cursor", "name"]
+_ListTrainingRunsFiltersFields: TypeAlias = Literal["name", "statuses"]
+
+class ListTrainingRunsFilters(Message[_ListTrainingRunsFiltersFields]):
+    """
+    ```proto
+    message chalk.server.v1.ListTrainingRunsFilters
+    ```
+
+    Attributes:
+        name:
+            ```proto
+            optional string name = 1;
+            ```
+        statuses:
+            ```proto
+            repeated chalk.server.v1.TrainingRunStatus statuses = 2 [packed = true];
+            ```
+    """
+
+    __slots__ = ("name", "statuses")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            name: str | None = None,
+            statuses: list[TrainingRunStatus] | None = None,
+        ) -> None:
+            pass
+
+        name: str
+        statuses: list[TrainingRunStatus]
+
+_ListTrainingRunsRequestFields: TypeAlias = Literal["limit", "cursor", "filters"]
 
 class ListTrainingRunsRequest(Message[_ListTrainingRunsRequestFields]):
     """
@@ -347,13 +389,13 @@ class ListTrainingRunsRequest(Message[_ListTrainingRunsRequestFields]):
             ```proto
             optional string cursor = 2;
             ```
-        name:
+        filters:
             ```proto
-            optional string name = 3;
+            optional chalk.server.v1.ListTrainingRunsFilters filters = 3;
             ```
     """
 
-    __slots__ = ("limit", "cursor", "name")
+    __slots__ = ("limit", "cursor", "filters")
 
     if TYPE_CHECKING:
 
@@ -362,13 +404,13 @@ class ListTrainingRunsRequest(Message[_ListTrainingRunsRequestFields]):
             *,
             limit: int | None = None,
             cursor: str | None = None,
-            name: str | None = None,
+            filters: ListTrainingRunsFilters | None = None,
         ) -> None:
             pass
 
         limit: int
         cursor: str
-        name: str
+        filters: ListTrainingRunsFilters | None
 
 _ListTrainingRunsResponseFields: TypeAlias = Literal["training_runs", "next_cursor"]
 
@@ -902,11 +944,12 @@ class TrainingRunStatus(Enum):
 
 
 _DESC = file_desc(
-    b'\n#chalk/server/v1/training_runs.proto\x12\x0fchalk.server.v1\x1a\x1fchalk/auth/v1/permissions.proto\x1a chalk/container/v1/service.proto\x1a$chalk/server/v1/model_registry.proto\x1a google/protobuf/field_mask.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto"~\n\x15TrainingRunDataSource\x12#\n\x0cdataset_name\x18\x01 \x01(\tH\x00R\x0bdatasetName\x12\x17\n\x06s3_uri\x18\x02 \x01(\tH\x00R\x05s3Uri\x12\x1d\n\tinput_sql\x18\x03 \x01(\tH\x00R\x08inputSqlB\x08\n\x06source"\x9b\x08\n\x0bTrainingRun\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x12:\n\x06status\x18\x03 \x01(\x0e2".chalk.server.v1.TrainingRunStatusR\x06status\x12:\n\x04data\x18\x04 \x01(\x0b2&.chalk.server.v1.TrainingRunDataSourceR\x04data\x12/\n\x06config\x18\x05 \x01(\x0b2\x17.google.protobuf.StructR\x06config\x12@\n\tresources\x18\x06 \x01(\x0b2".chalk.container.v1.ResourceLimitsR\tresources\x12\x14\n\x05image\x18\x07 \x01(\tR\x05image\x127\n\x03env\x18\x08 \x03(\x0b2%.chalk.server.v1.TrainingRun.EnvEntryR\x03env\x12>\n\x0bsecret_refs\x18\t \x03(\x0b2\x1d.chalk.container.v1.SecretRefR\nsecretRefs\x12G\n\tmeta_data\x18\n \x03(\x0b2*.chalk.server.v1.TrainingRun.MetaDataEntryR\x08metaData\x12(\n\rerror_message\x18\x0b \x01(\tH\x00R\x0cerrorMessage\x88\x01\x01\x12>\n\nstarted_at\x18\x0c \x01(\x0b2\x1a.google.protobuf.TimestampH\x01R\tstartedAt\x88\x01\x01\x12B\n\x0cfinalized_at\x18\r \x01(\x0b2\x1a.google.protobuf.TimestampH\x02R\x0bfinalizedAt\x88\x01\x01\x12"\n\ncreated_by\x18\x0e \x01(\tH\x03R\tcreatedBy\x88\x01\x01\x129\n\ncreated_at\x18\x0f \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12%\n\x0eenvironment_id\x18\x10 \x01(\tR\renvironmentId\x12#\n\rdeployment_id\x18\x11 \x01(\tR\x0cdeploymentId\x1a6\n\x08EnvEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aS\n\rMetaDataEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12,\n\x05value\x18\x02 \x01(\x0b2\x16.google.protobuf.ValueR\x05value:\x028\x01B\x10\n\x0e_error_messageB\r\n\x0b_started_atB\x0f\n\r_finalized_atB\r\n\x0b_created_by"\xf9\x04\n\x18CreateTrainingRunRequest\x12\x17\n\x04name\x18\x01 \x01(\tH\x00R\x04name\x88\x01\x01\x12:\n\x04data\x18\x02 \x01(\x0b2&.chalk.server.v1.TrainingRunDataSourceR\x04data\x12/\n\x06config\x18\x03 \x01(\x0b2\x17.google.protobuf.StructR\x06config\x12@\n\tresources\x18\x04 \x01(\x0b2".chalk.container.v1.ResourceLimitsR\tresources\x12\x19\n\x05image\x18\x05 \x01(\tH\x01R\x05image\x88\x01\x01\x12D\n\x03env\x18\x06 \x03(\x0b22.chalk.server.v1.CreateTrainingRunRequest.EnvEntryR\x03env\x12>\n\x0bsecret_refs\x18\x07 \x03(\x0b2\x1d.chalk.container.v1.SecretRefR\nsecretRefs\x12T\n\tmeta_data\x18\x08 \x03(\x0b27.chalk.server.v1.CreateTrainingRunRequest.MetaDataEntryR\x08metaData\x1a6\n\x08EnvEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aS\n\rMetaDataEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12,\n\x05value\x18\x02 \x01(\x0b2\x16.google.protobuf.ValueR\x05value:\x028\x01B\x07\n\x05_nameB\x08\n\x06_image"\\\n\x19CreateTrainingRunResponse\x12?\n\x0ctraining_run\x18\x01 \x01(\x0b2\x1c.chalk.server.v1.TrainingRunR\x0btrainingRun"?\n\x15GetTrainingRunRequest\x12&\n\x0ftraining_run_id\x18\x01 \x01(\tR\rtrainingRunId"o\n\x16GetTrainingRunResponse\x12D\n\x0ctraining_run\x18\x01 \x01(\x0b2\x1c.chalk.server.v1.TrainingRunH\x00R\x0btrainingRun\x88\x01\x01B\x0f\n\r_training_run"\x88\x01\n\x17ListTrainingRunsRequest\x12\x19\n\x05limit\x18\x01 \x01(\x05H\x00R\x05limit\x88\x01\x01\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x01R\x06cursor\x88\x01\x01\x12\x17\n\x04name\x18\x03 \x01(\tH\x02R\x04name\x88\x01\x01B\x08\n\x06_limitB\t\n\x07_cursorB\x07\n\x05_name"\x93\x01\n\x18ListTrainingRunsResponse\x12A\n\rtraining_runs\x18\x01 \x03(\x0b2\x1c.chalk.server.v1.TrainingRunR\x0ctrainingRuns\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"\xd1\x02\n\x1aUpdateTrainingRunOperation\x12?\n\x06status\x18\x01 \x01(\x0e2".chalk.server.v1.TrainingRunStatusH\x00R\x06status\x88\x01\x01\x12(\n\rerror_message\x18\x02 \x01(\tH\x01R\x0cerrorMessage\x88\x01\x01\x12V\n\tmeta_data\x18\x03 \x03(\x0b29.chalk.server.v1.UpdateTrainingRunOperation.MetaDataEntryR\x08metaData\x1aS\n\rMetaDataEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12,\n\x05value\x18\x02 \x01(\x0b2\x16.google.protobuf.ValueR\x05value:\x028\x01B\t\n\x07_statusB\x10\n\x0e_error_message"\xc4\x01\n\x18UpdateTrainingRunRequest\x12&\n\x0ftraining_run_id\x18\x01 \x01(\tR\rtrainingRunId\x12C\n\x06update\x18\x02 \x01(\x0b2+.chalk.server.v1.UpdateTrainingRunOperationR\x06update\x12;\n\x0bupdate_mask\x18\x03 \x01(\x0b2\x1a.google.protobuf.FieldMaskR\nupdateMask"\\\n\x19UpdateTrainingRunResponse\x12?\n\x0ctraining_run\x18\x01 \x01(\x0b2\x1c.chalk.server.v1.TrainingRunR\x0btrainingRun"B\n\x18CancelTrainingRunRequest\x12&\n\x0ftraining_run_id\x18\x01 \x01(\tR\rtrainingRunId"\x1b\n\x19CancelTrainingRunResponse"\xa3\x01\n\x1cCheckpointTrainingRunRequest\x12&\n\x0ftraining_run_id\x18\x01 \x01(\tR\rtrainingRunId\x12\x1d\n\nfile_names\x18\x02 \x03(\tR\tfileNames\x12<\n\rartifact_spec\x18\x03 \x01(\x0b2\x17.google.protobuf.StructR\x0cartifactSpec"\xeb\x01\n\x1dCheckpointTrainingRunResponse\x12*\n\x11model_artifact_id\x18\x01 \x01(\tR\x0fmodelArtifactId\x12_\n\x0bupload_urls\x18\x02 \x03(\x0b2>.chalk.server.v1.CheckpointTrainingRunResponse.UploadUrlsEntryR\nuploadUrls\x1a=\n\x0fUploadUrlsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x028\x01"D\n\x1aGetLatestCheckpointRequest\x12&\n\x0ftraining_run_id\x18\x01 \x01(\tR\rtrainingRunId"|\n\x1bGetLatestCheckpointResponse\x12J\n\x0emodel_artifact\x18\x01 \x01(\x0b2\x1e.chalk.server.v1.ModelArtifactH\x00R\rmodelArtifact\x88\x01\x01B\x11\n\x0f_model_artifact"\x8d\x01\n\x16ListCheckpointsRequest\x12&\n\x0ftraining_run_id\x18\x01 \x01(\tR\rtrainingRunId\x12\x19\n\x05limit\x18\x02 \x01(\x05H\x00R\x05limit\x88\x01\x01\x12\x1b\n\x06cursor\x18\x03 \x01(\tH\x01R\x06cursor\x88\x01\x01B\x08\n\x06_limitB\t\n\x07_cursor"\x98\x01\n\x17ListCheckpointsResponse\x12G\n\x0fmodel_artifacts\x18\x01 \x03(\x0b2\x1e.chalk.server.v1.ModelArtifactR\x0emodelArtifacts\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"\x88\x01\n\x0eTrainingMetric\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n\x05value\x18\x02 \x01(\x01R\x05value\x12\x12\n\x04step\x18\x03 \x01(\x03R\x04step\x128\n\ttimestamp\x18\x04 \x01(\x0b2\x1a.google.protobuf.TimestampR\ttimestamp"\x81\x01\n\x1cReportTrainingMetricsRequest\x12&\n\x0ftraining_run_id\x18\x01 \x01(\tR\rtrainingRunId\x129\n\x07metrics\x18\x02 \x03(\x0b2\x1f.chalk.server.v1.TrainingMetricR\x07metrics"\x1f\n\x1dReportTrainingMetricsResponse*\xde\x01\n\x11TrainingRunStatus\x12#\n\x1fTRAINING_RUN_STATUS_UNSPECIFIED\x10\x00\x12\x1e\n\x1aTRAINING_RUN_STATUS_QUEUED\x10\x01\x12\x1f\n\x1bTRAINING_RUN_STATUS_WORKING\x10\x02\x12!\n\x1dTRAINING_RUN_STATUS_COMPLETED\x10\x03\x12\x1e\n\x1aTRAINING_RUN_STATUS_FAILED\x10\x04\x12 \n\x1cTRAINING_RUN_STATUS_CANCELED\x10\x052\xa8\x08\n\x12TrainingRunService\x12o\n\x11CreateTrainingRun\x12).chalk.server.v1.CreateTrainingRunRequest\x1a*.chalk.server.v1.CreateTrainingRunResponse"\x03\x80}\x04\x12i\n\x0eGetTrainingRun\x12&.chalk.server.v1.GetTrainingRunRequest\x1a\'.chalk.server.v1.GetTrainingRunResponse"\x06\x90\x02\x01\x80}\x0b\x12o\n\x10ListTrainingRuns\x12(.chalk.server.v1.ListTrainingRunsRequest\x1a).chalk.server.v1.ListTrainingRunsResponse"\x06\x90\x02\x01\x80}\x0b\x12o\n\x11UpdateTrainingRun\x12).chalk.server.v1.UpdateTrainingRunRequest\x1a*.chalk.server.v1.UpdateTrainingRunResponse"\x03\x80}\x04\x12r\n\x11CancelTrainingRun\x12).chalk.server.v1.CancelTrainingRunRequest\x1a*.chalk.server.v1.CancelTrainingRunResponse"\x06\x90\x02\x02\x80}\x04\x12{\n\x15CheckpointTrainingRun\x12-.chalk.server.v1.CheckpointTrainingRunRequest\x1a..chalk.server.v1.CheckpointTrainingRunResponse"\x03\x80}\x04\x12x\n\x13GetLatestCheckpoint\x12+.chalk.server.v1.GetLatestCheckpointRequest\x1a,.chalk.server.v1.GetLatestCheckpointResponse"\x06\x90\x02\x01\x80}\x0b\x12l\n\x0fListCheckpoints\x12\'.chalk.server.v1.ListCheckpointsRequest\x1a(.chalk.server.v1.ListCheckpointsResponse"\x06\x90\x02\x01\x80}\x0b\x12{\n\x15ReportTrainingMetrics\x12-.chalk.server.v1.ReportTrainingMetricsRequest\x1a..chalk.server.v1.ReportTrainingMetricsResponse"\x03\x80}\x04B\x9a\x01\n\x13com.chalk.server.v1B\x11TrainingRunsProtoP\x01Z\x12server/v1;serverv1\xa2\x02\x03CSX\xaa\x02\x0fChalk.Server.V1\xca\x02\x0fChalk\\Server\\V1\xe2\x02\x1bChalk\\Server\\V1\\GPBMetadata\xea\x02\x11Chalk::Server::V1b\x06proto3',
+    b'\n#chalk/server/v1/training_runs.proto\x12\x0fchalk.server.v1\x1a\x1fchalk/auth/v1/permissions.proto\x1a chalk/container/v1/service.proto\x1a$chalk/server/v1/model_registry.proto\x1a\x1cchalk/volume/v2/volume.proto\x1a google/protobuf/field_mask.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto"~\n\x15TrainingRunDataSource\x12#\n\x0cdataset_name\x18\x01 \x01(\tH\x00R\x0bdatasetName\x12\x17\n\x06s3_uri\x18\x02 \x01(\tH\x00R\x05s3Uri\x12\x1d\n\tinput_sql\x18\x03 \x01(\tH\x00R\x08inputSqlB\x08\n\x06source"\x9b\x08\n\x0bTrainingRun\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x12:\n\x06status\x18\x03 \x01(\x0e2".chalk.server.v1.TrainingRunStatusR\x06status\x12:\n\x04data\x18\x04 \x01(\x0b2&.chalk.server.v1.TrainingRunDataSourceR\x04data\x12/\n\x06config\x18\x05 \x01(\x0b2\x17.google.protobuf.StructR\x06config\x12@\n\tresources\x18\x06 \x01(\x0b2".chalk.container.v1.ResourceLimitsR\tresources\x12\x14\n\x05image\x18\x07 \x01(\tR\x05image\x127\n\x03env\x18\x08 \x03(\x0b2%.chalk.server.v1.TrainingRun.EnvEntryR\x03env\x12>\n\x0bsecret_refs\x18\t \x03(\x0b2\x1d.chalk.container.v1.SecretRefR\nsecretRefs\x12G\n\tmeta_data\x18\n \x03(\x0b2*.chalk.server.v1.TrainingRun.MetaDataEntryR\x08metaData\x12(\n\rerror_message\x18\x0b \x01(\tH\x00R\x0cerrorMessage\x88\x01\x01\x12>\n\nstarted_at\x18\x0c \x01(\x0b2\x1a.google.protobuf.TimestampH\x01R\tstartedAt\x88\x01\x01\x12B\n\x0cfinalized_at\x18\r \x01(\x0b2\x1a.google.protobuf.TimestampH\x02R\x0bfinalizedAt\x88\x01\x01\x12"\n\ncreated_by\x18\x0e \x01(\tH\x03R\tcreatedBy\x88\x01\x01\x129\n\ncreated_at\x18\x0f \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12%\n\x0eenvironment_id\x18\x10 \x01(\tR\renvironmentId\x12#\n\rdeployment_id\x18\x11 \x01(\tR\x0cdeploymentId\x1a6\n\x08EnvEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aS\n\rMetaDataEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12,\n\x05value\x18\x02 \x01(\x0b2\x16.google.protobuf.ValueR\x05value:\x028\x01B\x10\n\x0e_error_messageB\r\n\x0b_started_atB\x0f\n\r_finalized_atB\r\n\x0b_created_by"\xbf\x05\n\x18CreateTrainingRunRequest\x12\x17\n\x04name\x18\x01 \x01(\tH\x00R\x04name\x88\x01\x01\x12:\n\x04data\x18\x02 \x01(\x0b2&.chalk.server.v1.TrainingRunDataSourceR\x04data\x12/\n\x06config\x18\x03 \x01(\x0b2\x17.google.protobuf.StructR\x06config\x12@\n\tresources\x18\x04 \x01(\x0b2".chalk.container.v1.ResourceLimitsR\tresources\x12\x19\n\x05image\x18\x05 \x01(\tH\x01R\x05image\x88\x01\x01\x12D\n\x03env\x18\x06 \x03(\x0b22.chalk.server.v1.CreateTrainingRunRequest.EnvEntryR\x03env\x12>\n\x0bsecret_refs\x18\x07 \x03(\x0b2\x1d.chalk.container.v1.SecretRefR\nsecretRefs\x12T\n\tmeta_data\x18\x08 \x03(\x0b27.chalk.server.v1.CreateTrainingRunRequest.MetaDataEntryR\x08metaData\x12D\n\x0evolume_commits\x18\t \x03(\x0b2\x1d.chalk.volume.v2.CommitIntentR\rvolumeCommits\x1a6\n\x08EnvEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aS\n\rMetaDataEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12,\n\x05value\x18\x02 \x01(\x0b2\x16.google.protobuf.ValueR\x05value:\x028\x01B\x07\n\x05_nameB\x08\n\x06_image"\\\n\x19CreateTrainingRunResponse\x12?\n\x0ctraining_run\x18\x01 \x01(\x0b2\x1c.chalk.server.v1.TrainingRunR\x0btrainingRun"?\n\x15GetTrainingRunRequest\x12&\n\x0ftraining_run_id\x18\x01 \x01(\tR\rtrainingRunId"o\n\x16GetTrainingRunResponse\x12D\n\x0ctraining_run\x18\x01 \x01(\x0b2\x1c.chalk.server.v1.TrainingRunH\x00R\x0btrainingRun\x88\x01\x01B\x0f\n\r_training_run"{\n\x17ListTrainingRunsFilters\x12\x17\n\x04name\x18\x01 \x01(\tH\x00R\x04name\x88\x01\x01\x12>\n\x08statuses\x18\x02 \x03(\x0e2".chalk.server.v1.TrainingRunStatusR\x08statusesB\x07\n\x05_name"\xaa\x01\n\x17ListTrainingRunsRequest\x12\x19\n\x05limit\x18\x01 \x01(\x05H\x00R\x05limit\x88\x01\x01\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x01R\x06cursor\x88\x01\x01\x12B\n\x07filters\x18\x03 \x01(\x0b2(.chalk.server.v1.ListTrainingRunsFiltersR\x07filtersB\x08\n\x06_limitB\t\n\x07_cursor"\x93\x01\n\x18ListTrainingRunsResponse\x12A\n\rtraining_runs\x18\x01 \x03(\x0b2\x1c.chalk.server.v1.TrainingRunR\x0ctrainingRuns\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"\xd1\x02\n\x1aUpdateTrainingRunOperation\x12?\n\x06status\x18\x01 \x01(\x0e2".chalk.server.v1.TrainingRunStatusH\x00R\x06status\x88\x01\x01\x12(\n\rerror_message\x18\x02 \x01(\tH\x01R\x0cerrorMessage\x88\x01\x01\x12V\n\tmeta_data\x18\x03 \x03(\x0b29.chalk.server.v1.UpdateTrainingRunOperation.MetaDataEntryR\x08metaData\x1aS\n\rMetaDataEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12,\n\x05value\x18\x02 \x01(\x0b2\x16.google.protobuf.ValueR\x05value:\x028\x01B\t\n\x07_statusB\x10\n\x0e_error_message"\xc4\x01\n\x18UpdateTrainingRunRequest\x12&\n\x0ftraining_run_id\x18\x01 \x01(\tR\rtrainingRunId\x12C\n\x06update\x18\x02 \x01(\x0b2+.chalk.server.v1.UpdateTrainingRunOperationR\x06update\x12;\n\x0bupdate_mask\x18\x03 \x01(\x0b2\x1a.google.protobuf.FieldMaskR\nupdateMask"\\\n\x19UpdateTrainingRunResponse\x12?\n\x0ctraining_run\x18\x01 \x01(\x0b2\x1c.chalk.server.v1.TrainingRunR\x0btrainingRun"B\n\x18CancelTrainingRunRequest\x12&\n\x0ftraining_run_id\x18\x01 \x01(\tR\rtrainingRunId"\x1b\n\x19CancelTrainingRunResponse"\xa3\x01\n\x1cCheckpointTrainingRunRequest\x12&\n\x0ftraining_run_id\x18\x01 \x01(\tR\rtrainingRunId\x12\x1d\n\nfile_names\x18\x02 \x03(\tR\tfileNames\x12<\n\rartifact_spec\x18\x03 \x01(\x0b2\x17.google.protobuf.StructR\x0cartifactSpec"\xeb\x01\n\x1dCheckpointTrainingRunResponse\x12*\n\x11model_artifact_id\x18\x01 \x01(\tR\x0fmodelArtifactId\x12_\n\x0bupload_urls\x18\x02 \x03(\x0b2>.chalk.server.v1.CheckpointTrainingRunResponse.UploadUrlsEntryR\nuploadUrls\x1a=\n\x0fUploadUrlsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x028\x01"D\n\x1aGetLatestCheckpointRequest\x12&\n\x0ftraining_run_id\x18\x01 \x01(\tR\rtrainingRunId"|\n\x1bGetLatestCheckpointResponse\x12J\n\x0emodel_artifact\x18\x01 \x01(\x0b2\x1e.chalk.server.v1.ModelArtifactH\x00R\rmodelArtifact\x88\x01\x01B\x11\n\x0f_model_artifact"\x8d\x01\n\x16ListCheckpointsRequest\x12&\n\x0ftraining_run_id\x18\x01 \x01(\tR\rtrainingRunId\x12\x19\n\x05limit\x18\x02 \x01(\x05H\x00R\x05limit\x88\x01\x01\x12\x1b\n\x06cursor\x18\x03 \x01(\tH\x01R\x06cursor\x88\x01\x01B\x08\n\x06_limitB\t\n\x07_cursor"\x98\x01\n\x17ListCheckpointsResponse\x12G\n\x0fmodel_artifacts\x18\x01 \x03(\x0b2\x1e.chalk.server.v1.ModelArtifactR\x0emodelArtifacts\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"\x88\x01\n\x0eTrainingMetric\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n\x05value\x18\x02 \x01(\x01R\x05value\x12\x12\n\x04step\x18\x03 \x01(\x03R\x04step\x128\n\ttimestamp\x18\x04 \x01(\x0b2\x1a.google.protobuf.TimestampR\ttimestamp"\x81\x01\n\x1cReportTrainingMetricsRequest\x12&\n\x0ftraining_run_id\x18\x01 \x01(\tR\rtrainingRunId\x129\n\x07metrics\x18\x02 \x03(\x0b2\x1f.chalk.server.v1.TrainingMetricR\x07metrics"\x1f\n\x1dReportTrainingMetricsResponse*\xde\x01\n\x11TrainingRunStatus\x12#\n\x1fTRAINING_RUN_STATUS_UNSPECIFIED\x10\x00\x12\x1e\n\x1aTRAINING_RUN_STATUS_QUEUED\x10\x01\x12\x1f\n\x1bTRAINING_RUN_STATUS_WORKING\x10\x02\x12!\n\x1dTRAINING_RUN_STATUS_COMPLETED\x10\x03\x12\x1e\n\x1aTRAINING_RUN_STATUS_FAILED\x10\x04\x12 \n\x1cTRAINING_RUN_STATUS_CANCELED\x10\x052\xa8\x08\n\x12TrainingRunService\x12o\n\x11CreateTrainingRun\x12).chalk.server.v1.CreateTrainingRunRequest\x1a*.chalk.server.v1.CreateTrainingRunResponse"\x03\x80}\x04\x12i\n\x0eGetTrainingRun\x12&.chalk.server.v1.GetTrainingRunRequest\x1a\'.chalk.server.v1.GetTrainingRunResponse"\x06\x90\x02\x01\x80}\x0b\x12o\n\x10ListTrainingRuns\x12(.chalk.server.v1.ListTrainingRunsRequest\x1a).chalk.server.v1.ListTrainingRunsResponse"\x06\x90\x02\x01\x80}\x0b\x12o\n\x11UpdateTrainingRun\x12).chalk.server.v1.UpdateTrainingRunRequest\x1a*.chalk.server.v1.UpdateTrainingRunResponse"\x03\x80}\x04\x12r\n\x11CancelTrainingRun\x12).chalk.server.v1.CancelTrainingRunRequest\x1a*.chalk.server.v1.CancelTrainingRunResponse"\x06\x90\x02\x02\x80}\x04\x12{\n\x15CheckpointTrainingRun\x12-.chalk.server.v1.CheckpointTrainingRunRequest\x1a..chalk.server.v1.CheckpointTrainingRunResponse"\x03\x80}\x04\x12x\n\x13GetLatestCheckpoint\x12+.chalk.server.v1.GetLatestCheckpointRequest\x1a,.chalk.server.v1.GetLatestCheckpointResponse"\x06\x90\x02\x01\x80}\x0b\x12l\n\x0fListCheckpoints\x12\'.chalk.server.v1.ListCheckpointsRequest\x1a(.chalk.server.v1.ListCheckpointsResponse"\x06\x90\x02\x01\x80}\x0b\x12{\n\x15ReportTrainingMetrics\x12-.chalk.server.v1.ReportTrainingMetricsRequest\x1a..chalk.server.v1.ReportTrainingMetricsResponse"\x03\x80}\x04B\x9a\x01\n\x13com.chalk.server.v1B\x11TrainingRunsProtoP\x01Z\x12server/v1;serverv1\xa2\x02\x03CSX\xaa\x02\x0fChalk.Server.V1\xca\x02\x0fChalk\\Server\\V1\xe2\x02\x1bChalk\\Server\\V1\\GPBMetadata\xea\x02\x11Chalk::Server::V1b\x06proto3',
     [
         permissions_pb.desc(),
         service_pb.desc(),
         model_registry_pb.desc(),
+        volume_pb.desc(),
         field_mask_pb.desc(),
         struct_pb.desc(),
         timestamp_pb.desc(),
@@ -918,6 +961,7 @@ _DESC = file_desc(
         "CreateTrainingRunResponse": CreateTrainingRunResponse,
         "GetTrainingRunRequest": GetTrainingRunRequest,
         "GetTrainingRunResponse": GetTrainingRunResponse,
+        "ListTrainingRunsFilters": ListTrainingRunsFilters,
         "ListTrainingRunsRequest": ListTrainingRunsRequest,
         "ListTrainingRunsResponse": ListTrainingRunsResponse,
         "UpdateTrainingRunOperation": UpdateTrainingRunOperation,
