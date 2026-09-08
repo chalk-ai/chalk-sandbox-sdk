@@ -239,6 +239,43 @@ time; evaluation creation then pins that version. `from_id` remains a
 compatibility alias for `from_version_id`. An imperative `RemoteFunction` must
 be explicitly deployed before it can be used in an evaluation.
 
+### LLM judges
+
+`cc.scorers.llm_judge` deploys a scorer from a pydantic model (v1 or v2)
+instead of a function body. The model's `score` field becomes the score; every other field
+is recorded as row metadata. The reply is requested through the OpenAI client
+with structured outputs and validated against the model, so a malformed grade
+fails the row.
+
+```python
+from pydantic import BaseModel, Field
+
+class TraceQuality(BaseModel):
+    score: float = Field(ge=0, le=1, description="Overall quality.")
+    directness: int = Field(ge=0, le=2, description="Shortest reasonable path to the goal.")
+    task_correctness: int = Field(ge=0, le=2, description="Was the task actually completed?")
+    reason: str
+
+trace_quality = cc.scorers.llm_judge(
+    TraceQuality,
+    model="gpt-5",
+    instructions="You are grading a browser agent's login attempt.",
+    api_key=cc.Secret.from_chalk_env("OPENAI_API_KEY"),
+)
+```
+
+The scorer deploys as `trace-quality`, the model's name in kebab case; pass
+`name=` to choose another. `inputs` names the dataset columns the judge reads
+(default `("output",)`);
+`prompt_fn` replaces the default prompt; `parse_fn` replaces structured
+outputs for an endpoint without them. `completion_kwargs` (for example
+`{"temperature": 0, "max_tokens": 400}`) go on every request as given. Any
+OpenAI-compatible endpoint works via
+`base_url`, including Chalk's AI router. Every function deployed from the
+same module imports that module, so give sibling functions an image with
+`pydantic` as well. A judge is generated
+at import time, so it cannot be deployed in strip mode.
+
 ## Deployment revisions and rollback
 
 Scaling groups and functions have stable parent IDs with immutable deployment
