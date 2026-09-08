@@ -9,6 +9,7 @@ import math
 import os
 import re
 import sys
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -26,6 +27,17 @@ _DEFAULT_API_KEY_ENV = "OPENAI_API_KEY"
 # the versions it has.
 _JUDGE_PACKAGES = ["pydantic", "openai"]
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Chalk's AI router, under the environment's own API server.
+_ROUTER_PATH = "/v1/router"
+# Well inside the credential's lifetime, so a long scorer run does not carry a
+# token past its expiry.
+_ROUTER_TOKEN_TTL_SECONDS = 30 * 60
+_router_cache: dict[str, Any] = {}
+_ROUTER_UNREACHABLE = (
+    "llm_judge: no api_key and no base_url, and this environment has no Chalk "
+    "credentials to reach the AI router with. Pass api_key=Secret.from_chalk_env(...) "
+    "for a provider key, or base_url= for another OpenAI-compatible endpoint."
+)
 
 
 @dataclass(frozen=True)
@@ -77,8 +89,10 @@ def llm_judge(
 
     ``inputs`` are the dataset columns to grade (``output`` is the task's).
     ``prompt_fn(response_model, **inputs)`` replaces the prompt; ``parse_fn``
-    replaces structured outputs. ``base_url`` takes any OpenAI-compatible URL
-    and ``api_key`` a Secret read in the pod. ``completion_kwargs`` (say
+    replaces structured outputs. With neither ``base_url`` nor ``api_key`` the
+    judge calls Chalk's AI router as the environment itself, so no provider key
+    is needed; ``base_url`` takes any other OpenAI-compatible URL and
+    ``api_key`` a Secret read in the pod. ``completion_kwargs`` (say
     ``{"temperature": 0, "max_tokens": 400}``) are sent with every request.
     ``name`` defaults to the model class in kebab case; other keywords go to
     :func:`chalkcompute.function`.
@@ -343,24 +357,60 @@ def _default_prompt(spec: _JudgeSpec, columns: Mapping[str, Any]) -> str:
     return "\n\n".join(parts)
 
 
+def _environment_id() -> str | None:
+    return os.environ.get("CHALK_ENVIRONMENT_ID") or os.environ.get(
+        "CHALK_ACTIVE_ENVIRONMENT"
+    )
+
+
 def _client_options(spec: _JudgeSpec | _EmbeddingSpec) -> dict[str, Any]:
+    base_url = spec.base_url or os.environ.get("OPENAI_BASE_URL")
     api_key = os.environ.get(spec.api_key_env)
+    # No endpoint and no key of the user's own: Chalk's router is one the
+    # function is already credentialed for. It serves completions, so only a
+    # judge falls back to it.
+    if base_url is None and api_key is None and isinstance(spec, _JudgeSpec):
+        return _router_client_options()
     if not api_key:
         raise RuntimeError(
             f"llm_judge: {spec.api_key_env} is not set in the function environment; "
             "pass api_key=Secret.from_chalk_env(...) to llm_judge"
         )
     options: dict[str, Any] = {"api_key": api_key}
-    base_url = spec.base_url or os.environ.get("OPENAI_BASE_URL")
     if base_url:
         options["base_url"] = base_url
     # Chalk's AI router routes on this; other endpoints ignore it.
-    env_id = os.environ.get("CHALK_ENVIRONMENT_ID") or os.environ.get(
-        "CHALK_ACTIVE_ENVIRONMENT"
-    )
+    env_id = _environment_id()
     if env_id:
         options["default_headers"] = {"X-Chalk-Env-Id": env_id}
     return options
+
+
+def _router_client_options() -> dict[str, Any]:
+    """Chalk's AI router, which takes a Chalk credential rather than a provider key."""
+    from chalkcompute._connect import ConnectClient
+
+    now = time.monotonic()
+    issued_at = float(_router_cache.get("issued_at", 0.0))
+    connection = _router_cache.get("connection")
+    if connection is None or now - issued_at > _ROUTER_TOKEN_TTL_SECONDS:
+        try:
+            connection = ConnectClient()
+            connection._ensure_auth()
+        except Exception as exc:
+            raise RuntimeError(_ROUTER_UNREACHABLE) from exc
+        _router_cache.update(connection=connection, issued_at=now)
+    token = connection._access_token
+    api_server = (connection._api_server or "").rstrip("/")
+    if not token or not api_server:
+        raise RuntimeError(_ROUTER_UNREACHABLE)
+    return {
+        "api_key": token,
+        "base_url": f"{api_server}{_ROUTER_PATH}",
+        "default_headers": {
+            "X-Chalk-Env-Id": connection._env_id or _environment_id() or ""
+        },
+    }
 
 
 def _complete(spec: _JudgeSpec, messages: list[dict[str, str]]) -> Any:

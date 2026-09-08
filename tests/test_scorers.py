@@ -198,16 +198,96 @@ def test_aliased_fields_serialize_the_way_the_schema_names_them(completion) -> N
     assert declared["required"] == ["how_direct"]
 
 
-def test_client_options(monkeypatch: pytest.MonkeyPatch) -> None:
+class _FakeConnection:
+    """Stands in for ``ConnectClient``: the credentials a function already holds."""
+
+    instances = 0
+
+    def __init__(self) -> None:
+        type(self).instances += 1
+        self._access_token = f"chalk-token-{type(self).instances}"
+        self._api_server = "https://api.staging.chalk.dev/"
+        self._env_id = "env-123"
+
+    def _ensure_auth(self) -> None:
+        return None
+
+
+@pytest.fixture
+def chalk_credentials(monkeypatch: pytest.MonkeyPatch):
+    """A function's own Chalk credentials, and no provider key or endpoint."""
+    from chalkcompute import _connect
+
+    for name in (
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "CHALK_ENVIRONMENT_ID",
+        "CHALK_ACTIVE_ENVIRONMENT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    _FakeConnection.instances = 0
+    scorers._router_cache.clear()
+    monkeypatch.setattr(_connect, "ConnectClient", _FakeConnection)
+    monkeypatch.setattr(scorers, "_router_cache", {})
+    return _FakeConnection
+
+
+def test_a_judge_without_a_key_or_url_calls_the_chalk_router(chalk_credentials) -> None:
     spec = _judge()._func.__globals__["__chalk_spec__"]
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    monkeypatch.delenv("CHALK_ENVIRONMENT_ID", raising=False)
-    monkeypatch.delenv("CHALK_ACTIVE_ENVIRONMENT", raising=False)
+
+    assert scorers._client_options(spec) == {
+        "api_key": "chalk-token-1",
+        "base_url": "https://api.staging.chalk.dev/v1/router",
+        "default_headers": {"X-Chalk-Env-Id": "env-123"},
+    }
+
+
+def test_the_router_credential_is_reused_until_it_goes_stale(
+    chalk_credentials, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _judge()._func.__globals__["__chalk_spec__"]
+    clock = {"now": 1_000.0}
+    monkeypatch.setattr(scorers.time, "monotonic", lambda: clock["now"])
+
+    first = scorers._client_options(spec)
+    assert scorers._client_options(spec) == first
+
+    # Re-read well before the credential could expire mid-run.
+    clock["now"] += scorers._ROUTER_TOKEN_TTL_SECONDS + 1
+    assert scorers._client_options(spec)["api_key"] == "chalk-token-2"
+
+
+def test_an_unreachable_router_says_what_to_pass_instead(
+    chalk_credentials, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from chalkcompute import _connect
+
+    def unauthenticated() -> _FakeConnection:
+        raise RuntimeError("no credentials")
+
+    monkeypatch.setattr(_connect, "ConnectClient", unauthenticated)
+    spec = _judge()._func.__globals__["__chalk_spec__"]
+
+    with pytest.raises(RuntimeError, match="api_key=Secret.from_chalk_env"):
+        scorers._client_options(spec)
+
+
+def test_a_base_url_without_a_key_still_asks_for_one(
+    chalk_credentials,
+) -> None:
+    spec = _judge(base_url="https://vllm.local/v1")._func.__globals__["__chalk_spec__"]
 
     with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
         scorers._client_options(spec)
 
+
+def test_client_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    spec = _judge()._func.__globals__["__chalk_spec__"]
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("CHALK_ENVIRONMENT_ID", raising=False)
+    monkeypatch.delenv("CHALK_ACTIVE_ENVIRONMENT", raising=False)
+
+    # A key of the user's own goes to the provider, not through Chalk.
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     assert scorers._client_options(spec) == {"api_key": "sk-test"}
 
