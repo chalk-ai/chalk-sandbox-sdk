@@ -36,7 +36,7 @@ class _JudgeSpec:
     inputs: tuple[str, ...]
     prompt_fn: Callable[..., str] | None
     parse_fn: Callable[[str], Any] | None
-    api_server: str | None
+    base_url: str | None
     api_key_env: str
     completion_kwargs: dict[str, Any]
 
@@ -54,7 +54,7 @@ def llm_judge(
     inputs: Sequence[str] = ("output",),
     prompt_fn: Callable[..., str] | None = None,
     parse_fn: Callable[[str], Any] | None = None,
-    api_server: str | None = None,
+    base_url: str | None = None,
     api_key: Secret | None = None,
     completion_kwargs: Mapping[str, Any] | None = None,
     image: Image | None = None,
@@ -68,7 +68,7 @@ def llm_judge(
 
     ``inputs`` are the dataset columns to grade (``output`` is the task's).
     ``prompt_fn(response_model, **inputs)`` replaces the prompt; ``parse_fn``
-    replaces structured outputs. ``api_server`` takes any OpenAI-compatible URL
+    replaces structured outputs. ``base_url`` takes any OpenAI-compatible URL
     and ``api_key`` a Secret read in the pod. ``completion_kwargs`` (say
     ``{"temperature": 0, "max_tokens": 400}``) are sent with every request.
     ``name`` defaults to the model class in kebab case; other keywords go to
@@ -93,7 +93,7 @@ def llm_judge(
         inputs=inputs,
         prompt_fn=prompt_fn,
         parse_fn=parse_fn,
-        api_server=api_server,
+        base_url=base_url,
         api_key_env=api_key_env,
         completion_kwargs=completion_kwargs,
     )
@@ -302,7 +302,7 @@ def _client_options(spec: _JudgeSpec) -> dict[str, Any]:
             "pass api_key=Secret.from_chalk_env(...) to llm_judge"
         )
     options: dict[str, Any] = {"api_key": api_key}
-    base_url = spec.api_server or os.environ.get("OPENAI_BASE_URL")
+    base_url = spec.base_url or os.environ.get("OPENAI_BASE_URL")
     if base_url:
         options["base_url"] = base_url
     # Chalk's AI router routes on this; other endpoints ignore it.

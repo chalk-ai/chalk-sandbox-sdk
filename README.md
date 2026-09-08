@@ -271,7 +271,7 @@ The scorer deploys as `trace-quality`, the model's name in kebab case; pass
 outputs for an endpoint without them. `completion_kwargs` (for example
 `{"temperature": 0, "max_tokens": 400}`) go on every request as given. Any
 OpenAI-compatible endpoint works via
-`api_server`, including Chalk's AI router. Every function deployed from the
+`base_url`, including Chalk's AI router. Every function deployed from the
 same module imports that module, so give sibling functions an image with
 `pydantic` as well. A judge is generated
 at import time, so it cannot be deployed in strip mode.

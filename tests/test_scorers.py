@@ -225,8 +225,8 @@ def test_client_options(monkeypatch: pytest.MonkeyPatch) -> None:
         "base_url": "https://api.chalk.ai/v1/router",
         "default_headers": {"X-Chalk-Env-Id": "env-123"},
     }
-    # An explicit api_server wins over the environment.
-    explicit = _judge(api_server="https://vllm.local/v1")._func.__globals__[
+    # An explicit base_url wins over the environment.
+    explicit = _judge(base_url="https://vllm.local/v1")._func.__globals__[
         "__chalk_spec__"
     ]
     assert scorers._client_options(explicit)["base_url"] == "https://vllm.local/v1"
