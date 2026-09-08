@@ -242,8 +242,19 @@ be explicitly deployed before it can be used in an evaluation.
 ## Deployment revisions and rollback
 
 Scaling groups and functions have stable parent IDs with immutable deployment
-revisions beneath them. Calling `deploy()` again on the same handle appends and
-selects a new revision while preserving the parent ID:
+revisions beneath them. Scaling groups append a revision on each `deploy()`.
+Functions and class methods reuse an existing version when the source, image
+recipe, configuration, and managed secret revisions are unchanged—even across
+separate runs of your script. The unchanged path makes one ensure request without
+building an image or uploading source files. Only missing source content is
+uploaded on a change; unchanged images and source snapshots are shared within
+the environment.
+
+Use `deploy(force_new_version=True)` to create a fresh function version while
+still reusing image/source preparation. External secret providers and integration
+secrets conservatively disable function-version reuse because their values can
+rotate outside Chalk. Referenced data volumes retain their existing semantics.
+This requires a server with `EnsureExternalFunction` support.
 
 ```python
 group = cc.ScalingGroup(name="api", image="registry.example/api:v1").deploy()
@@ -257,6 +268,8 @@ def rank(query: str) -> str:
     return query
 
 rank.deploy()
+rank.deploy()  # reuses the unchanged version
+rank.deploy(force_new_version=True)  # explicitly creates a new version
 for version in rank.versions():
     print(version.id, version.created_at, version.is_current)
 rank.rollback("efv_previous")

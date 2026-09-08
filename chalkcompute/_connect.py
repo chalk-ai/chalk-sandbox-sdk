@@ -511,7 +511,16 @@ def build_image(
     if status == "failed":
         raise ConnectError(f"Image build failed: {response.error or 'unknown'}")
 
-    build_id = response.build_id
+    return wait_for_image_build(
+        client, response.build_id, poll_interval=poll_interval, timeout=timeout
+    )
+
+
+def wait_for_image_build(
+    client: ConnectClient, build_id: str, *, poll_interval: float, timeout: float
+) -> str:
+    """Wait for an already-submitted build without another get-or-build call."""
+    stub = client.stub(image_connect.CustomImageServiceClientSync)
     deadline = time.monotonic() + timeout
     transient_failures = 0
     max_transient_failures = 5
@@ -522,6 +531,10 @@ def build_image(
                 image_pb.GetCustomImageRequest(build_id=build_id),
             )
         except ConnectRpcError as exc:
+            if exc.code == Code.NOT_FOUND:
+                # Image retention outlives the workflow record. The ensure
+                # protocol can recover by checking the retained image.
+                raise
             transient_failures += 1
             if transient_failures >= max_transient_failures:
                 raise ConnectError(

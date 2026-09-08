@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from connectrpc.client import ConnectClientSync
 from connectrpc.method import IdempotencyLevel, MethodInfo
 
-from .service_pb import CallExternalFunctionRequest, CallExternalFunctionResponse, CreateExternalFunctionRequest, CreateExternalFunctionResponse, CreateExternalFunctionVersionRequest, CreateExternalFunctionVersionResponse, DeleteExternalFunctionRequest, DeleteExternalFunctionResponse, DeleteExternalFunctionVersionRequest, DeleteExternalFunctionVersionResponse, GetExternalFunctionRequest, GetExternalFunctionResponse, GetExternalFunctionVersionRequest, GetExternalFunctionVersionResponse, GetExternalFunctionVersionSourceRequest, GetExternalFunctionVersionSourceResponse, ListExternalFunctionScheduledRunsRequest, ListExternalFunctionScheduledRunsResponse, ListExternalFunctionVersionsRequest, ListExternalFunctionVersionsResponse, ListExternalFunctionsRequest, ListExternalFunctionsResponse, UpdateExternalFunctionRequest, UpdateExternalFunctionResponse
+from .service_pb import CallExternalFunctionRequest, CallExternalFunctionResponse, CreateExternalFunctionRequest, CreateExternalFunctionResponse, CreateExternalFunctionVersionRequest, CreateExternalFunctionVersionResponse, DeleteExternalFunctionRequest, DeleteExternalFunctionResponse, DeleteExternalFunctionVersionRequest, DeleteExternalFunctionVersionResponse, EnsureExternalFunctionRequest, EnsureExternalFunctionResponse, GetExternalFunctionRequest, GetExternalFunctionResponse, GetExternalFunctionVersionRequest, GetExternalFunctionVersionResponse, GetExternalFunctionVersionSourceRequest, GetExternalFunctionVersionSourceResponse, ListExternalFunctionScheduledRunsRequest, ListExternalFunctionScheduledRunsResponse, ListExternalFunctionVersionsRequest, ListExternalFunctionVersionsResponse, ListExternalFunctionsRequest, ListExternalFunctionsResponse, UpdateExternalFunctionRequest, UpdateExternalFunctionResponse
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -22,6 +22,25 @@ if TYPE_CHECKING:
     from connectrpc.request import Headers, RequestContext
 
 class ExternalFunctionCatalogServiceClientSync(ConnectClientSync):
+    def ensure_external_function(
+        self,
+        request: EnsureExternalFunctionRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> EnsureExternalFunctionResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="EnsureExternalFunction",
+                service_name="chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService",
+                input=EnsureExternalFunctionRequest,
+                output=EnsureExternalFunctionResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
     def create_external_function(
         self,
         request: CreateExternalFunctionRequest,

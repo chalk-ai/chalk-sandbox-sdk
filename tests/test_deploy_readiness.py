@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from protobuf import Oneof
+from chalkcompute._image import Image
+
 import chalkcompute._function as function_mod
 import chalkcompute._cls as cls_mod
 from chalkcompute._cls import RemoteClass, method
@@ -40,22 +43,28 @@ class _RemoteFunctionReadinessClient(StubbedConnectClient):
     ) -> Any:
         self.methods.append(method.name)
         self.requests[method.name] = request
-        if method.name == "create_external_function":
-            assert isinstance(request, catalog_pb.CreateExternalFunctionRequest)
-            assert request.spec is not None and request.spec.spec is not None
-            assert request.spec.spec.container_spec is not None
-            return catalog_pb.CreateExternalFunctionResponse(
-                external_function=catalog_pb.ExternalFunction(
-                    id="fn-version-1",
-                    name=request.function_name,
-                    current_version=catalog_pb.ExternalFunctionVersion(
-                        id="fn-version-1",
-                        function_id="fn-1",
-                        function_name=request.function_name,
-                        version=1,
-                        scaling_group_name=request.spec.spec.container_spec.name,
+        if method.name == "ensure_external_function":
+            assert isinstance(request, catalog_pb.EnsureExternalFunctionRequest)
+            assert request.spec is not None and request.spec.version_spec is not None
+            assert request.spec.version_spec.spec is not None
+            assert request.spec.version_spec.spec.container_spec is not None
+            return catalog_pb.EnsureExternalFunctionResponse(
+                result=Oneof(
+                    "complete",
+                    catalog_pb.EnsuredExternalFunction(
+                        external_function=catalog_pb.ExternalFunction(
+                            id="fn-version-1",
+                            name=request.function_name,
+                            current_version=catalog_pb.ExternalFunctionVersion(
+                                id="fn-version-1",
+                                function_id="fn-1",
+                                function_name=request.function_name,
+                                version=1,
+                                scaling_group_name=request.spec.version_spec.spec.container_spec.name,
+                            ),
+                        ),
                     ),
-                ),
+                )
             )
         if method.name == "get_scaling_group":
             assert isinstance(request, sg_pb.GetScalingGroupRequest)
@@ -137,23 +146,20 @@ def test_remote_function_deploy_waits_for_ready_replicas(monkeypatch) -> None:
     fn = RemoteFunction(add, name="fn-ready")
     fn._client = client  # type: ignore[assignment]
 
-    monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
     monkeypatch.setattr(
-        function_mod,
-        "_build_and_upload",
-        lambda *_, **__: ("image:test", [], None, []),
+        RemoteFunction, "_build_deploy_image", lambda _: Image("image:test")
     )
     monkeypatch.setattr(function_mod.time, "sleep", lambda _: None)
 
     fn.deploy(poll_interval=0, ready_timeout=10)
 
     assert client.methods == [
-        "create_external_function",
+        "ensure_external_function",
         "get_scaling_group",
         "get_scaling_group",
     ]
-    request = client.requests["create_external_function"]
-    probe = request.spec.spec.container_spec.startup_probe
+    request = client.requests["ensure_external_function"]
+    probe = request.spec.version_spec.spec.container_spec.startup_probe
     assert probe.check is not None and probe.check.field == "grpc"
     assert isinstance(probe.check.value, container_pb.GrpcProbe)
 
@@ -167,16 +173,13 @@ def test_remote_function_deploy_allows_zero_min_replicas(monkeypatch) -> None:
     fn = RemoteFunction(add, name="fn-zero", min_replicas=0)
     fn._client = client  # type: ignore[assignment]
 
-    monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
     monkeypatch.setattr(
-        function_mod,
-        "_build_and_upload",
-        lambda *_, **__: ("image:test", [], None, []),
+        RemoteFunction, "_build_deploy_image", lambda _: Image("image:test")
     )
 
     fn.deploy(poll_interval=0, ready_timeout=10)
 
-    assert client.methods == ["create_external_function", "get_scaling_group"]
+    assert client.methods == ["ensure_external_function", "get_scaling_group"]
 
 
 def test_remote_function_deploy_allows_scaled_to_zero(monkeypatch) -> None:
@@ -187,16 +190,13 @@ def test_remote_function_deploy_allows_scaled_to_zero(monkeypatch) -> None:
     fn = RemoteFunction(add, name="fn-zero", min_replicas=0)
     fn._client = client  # type: ignore[assignment]
 
-    monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
     monkeypatch.setattr(
-        function_mod,
-        "_build_and_upload",
-        lambda *_, **__: ("image:test", [], None, []),
+        RemoteFunction, "_build_deploy_image", lambda _: Image("image:test")
     )
 
     fn.deploy(poll_interval=0, ready_timeout=10)
 
-    assert client.methods == ["create_external_function", "get_scaling_group"]
+    assert client.methods == ["ensure_external_function", "get_scaling_group"]
 
 
 def test_scaling_group_deploy_waits_for_ready_replicas(monkeypatch) -> None:
@@ -245,23 +245,20 @@ def test_remote_class_deploy_waits_for_ready_replicas(monkeypatch) -> None:
     rc = RemoteClass(Adder, name="cls-ready")
     rc._client = client  # type: ignore[assignment]
 
-    monkeypatch.setattr(RemoteClass, "_build_deploy_image", lambda _: (object(), []))
     monkeypatch.setattr(
-        cls_mod,
-        "_build_and_upload",
-        lambda *_, **__: ("image:test", [], None, []),
+        RemoteClass, "_build_deploy_image", lambda _: (Image("image:test"), [])
     )
     monkeypatch.setattr(cls_mod.time, "sleep", lambda _: None)
 
     rc.deploy(poll_interval=0, ready_timeout=10)
 
     assert client.methods == [
-        "create_external_function",
+        "ensure_external_function",
         "get_scaling_group",
         "get_scaling_group",
     ]
-    request = client.requests["create_external_function"]
-    probe = request.spec.spec.container_spec.startup_probe
+    request = client.requests["ensure_external_function"]
+    probe = request.spec.version_spec.spec.container_spec.startup_probe
     assert probe.check is not None and probe.check.field == "grpc"
     assert isinstance(probe.check.value, container_pb.GrpcProbe)
 
@@ -277,16 +274,13 @@ def test_remote_class_deploy_allows_zero_min_replicas(monkeypatch) -> None:
     rc = RemoteClass(Adder, name="cls-zero", min_replicas=0)
     rc._client = client  # type: ignore[assignment]
 
-    monkeypatch.setattr(RemoteClass, "_build_deploy_image", lambda _: (object(), []))
     monkeypatch.setattr(
-        cls_mod,
-        "_build_and_upload",
-        lambda *_, **__: ("image:test", [], None, []),
+        RemoteClass, "_build_deploy_image", lambda _: (Image("image:test"), [])
     )
 
     rc.deploy(poll_interval=0, ready_timeout=10)
 
-    assert client.methods == ["create_external_function", "get_scaling_group"]
+    assert client.methods == ["ensure_external_function", "get_scaling_group"]
 
 
 def test_remote_class_deploy_allows_scaled_to_zero(monkeypatch) -> None:
@@ -299,51 +293,34 @@ def test_remote_class_deploy_allows_scaled_to_zero(monkeypatch) -> None:
     rc = RemoteClass(Adder, name="cls-zero", min_replicas=0)
     rc._client = client  # type: ignore[assignment]
 
-    monkeypatch.setattr(RemoteClass, "_build_deploy_image", lambda _: (object(), []))
     monkeypatch.setattr(
-        cls_mod,
-        "_build_and_upload",
-        lambda *_, **__: ("image:test", [], None, []),
+        RemoteClass, "_build_deploy_image", lambda _: (Image("image:test"), [])
     )
 
     rc.deploy(poll_interval=0, ready_timeout=10)
 
-    assert client.methods == ["create_external_function", "get_scaling_group"]
+    assert client.methods == ["ensure_external_function", "get_scaling_group"]
 
 
-def test_remote_function_deploy_forwards_volume_commits(monkeypatch) -> None:
-    from chalkcompute._volume import VolumeMount
-
+def test_remote_function_deploy_sends_source_spec_before_upload(
+    monkeypatch, tmp_path
+) -> None:
     def add(x: int) -> int:
         return x
 
     client = _RemoteFunctionReadinessClient()
-    fn = RemoteFunction(add, name="fn-commits")
-    fn._client = client  # type: ignore[assignment]
-
-    from chalkcompute._gen.chalk.volume.v2 import volume_pb
-
-    intent = volume_pb.CommitIntent(
-        volume=volume_pb.VolumeRef(name="fn-files-abc"),
-        author="chalk:env:agent:a",
-    )
-    mount = VolumeMount(name="fn-files-abc", mount_path="/app")
-    monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
-    monkeypatch.setattr(
-        function_mod,
-        "_build_and_upload",
-        lambda *_, **__: ("image:test", [mount], None, [intent]),
-    )
+    fn = RemoteFunction(add, name="fn-sources")
+    fn._client = client
+    source = tmp_path / "entry.py"
+    source.write_text("answer = 42\n")
+    image = Image("image:test").add_local_file(str(source), "/app/entry.py")
+    monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: image)
     monkeypatch.setattr(function_mod.time, "sleep", lambda _: None)
-
     fn.deploy(poll_interval=0, ready_timeout=10)
-
-    request = client.requests["create_external_function"]
-    assert isinstance(request, catalog_pb.CreateExternalFunctionRequest)
-    assert request.spec is not None
-    assert request.spec.volume_commits == [intent]
-    assert request.spec.spec is not None
-    assert request.spec.spec.container_spec is not None
-    assert any(
-        m.name == "fn-files-abc" for m in request.spec.spec.container_spec.volumes
-    )
+    request = client.requests["ensure_external_function"]
+    assert request.spec.version_spec.volume_commits == []
+    assert request.spec.version_spec.spec.container_spec.image == ""
+    assert request.spec.image.base_image == "image:test"
+    assert len(request.spec.sources) == 1
+    assert request.spec.sources[0].mount_path == "/app"
+    assert request.supplied_inputs.manifests[0].files[0].path == "entry.py"
