@@ -268,7 +268,9 @@ The scorer deploys as `trace-quality`, the model's name in kebab case; pass
 `name=` to choose another. `inputs` names the dataset columns the judge reads
 (default `("output",)`);
 `prompt_fn` replaces the default prompt; `parse_fn` replaces structured
-outputs for an endpoint without them. Any OpenAI-compatible endpoint works via
+outputs for an endpoint without them. `completion_kwargs` (for example
+`{"temperature": 0, "max_tokens": 400}`) go on every request as given. Any
+OpenAI-compatible endpoint works via
 `api_server`, including Chalk's AI router. Every function deployed from the
 same module imports that module, so give sibling functions an image with
 `pydantic` as well. A judge is generated

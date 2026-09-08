@@ -249,7 +249,13 @@ def _install_fake_openai(
 def test_complete_asks_for_structured_output(monkeypatch: pytest.MonkeyPatch) -> None:
     completions = _FakeCompletions(parsed=Grade(**REPLY))
     _install_fake_openai(monkeypatch, completions)
-    spec = _judge(max_tokens=300, temperature=0)._func.__globals__["__chalk_spec__"]
+    spec = _judge(
+        completion_kwargs={
+            "max_tokens": 300,
+            "temperature": 0,
+            "reasoning_effort": "low",
+        }
+    )._func.__globals__["__chalk_spec__"]
 
     graded = scorers._complete(spec, [{"role": "user", "content": "grade"}])
 
@@ -260,9 +266,15 @@ def test_complete_asks_for_structured_output(monkeypatch: pytest.MonkeyPatch) ->
             "messages": [{"role": "user", "content": "grade"}],
             "max_tokens": 300,
             "temperature": 0,
+            "reasoning_effort": "low",
             "response_format": Grade,
         }
     ]
+
+
+def test_completion_kwargs_cannot_override_what_the_judge_sets() -> None:
+    with pytest.raises(ValueError, match="messages, response_format"):
+        _judge(completion_kwargs={"messages": [], "response_format": {}})
 
 
 def test_complete_falls_back_to_the_beta_parse_on_older_clients(

@@ -38,8 +38,10 @@ class _JudgeSpec:
     parse_fn: Callable[[str], Any] | None
     api_server: str | None
     api_key_env: str
-    max_tokens: int | None
-    temperature: float | None
+    completion_kwargs: dict[str, Any]
+
+
+_RESERVED_COMPLETION_KWARGS = frozenset({"model", "messages", "response_format"})
 
 
 def llm_judge(
@@ -54,8 +56,7 @@ def llm_judge(
     parse_fn: Callable[[str], Any] | None = None,
     api_server: str | None = None,
     api_key: Secret | None = None,
-    max_tokens: int | None = None,
-    temperature: float | None = None,
+    completion_kwargs: Mapping[str, Any] | None = None,
     image: Image | None = None,
     **function_kwargs: Any,
 ) -> RemoteFunction | _NoOpFunction:
@@ -68,12 +69,15 @@ def llm_judge(
     ``inputs`` are the dataset columns to grade (``output`` is the task's).
     ``prompt_fn(response_model, **inputs)`` replaces the prompt; ``parse_fn``
     replaces structured outputs. ``api_server`` takes any OpenAI-compatible URL
-    and ``api_key`` a Secret read in the pod. ``name`` defaults to the model
-    class in kebab case; other keywords go to :func:`chalkcompute.function`.
+    and ``api_key`` a Secret read in the pod. ``completion_kwargs`` (say
+    ``{"temperature": 0, "max_tokens": 400}``) are sent with every request.
+    ``name`` defaults to the model class in kebab case; other keywords go to
+    :func:`chalkcompute.function`.
     """
     _assert_deployable()
     _assert_response_model(response_model)
     inputs = _validate_inputs(inputs)
+    completion_kwargs = _validate_completion_kwargs(completion_kwargs)
     name = name or _default_name(response_model)
     secrets = list(function_kwargs.pop("secrets", None) or [])
     api_key_env = _DEFAULT_API_KEY_ENV
@@ -91,8 +95,7 @@ def llm_judge(
         parse_fn=parse_fn,
         api_server=api_server,
         api_key_env=api_key_env,
-        max_tokens=max_tokens,
-        temperature=temperature,
+        completion_kwargs=completion_kwargs,
     )
 
     # Defined in the caller's module so the deploy ships that file, where the
@@ -188,6 +191,17 @@ def _dump(instance: Any) -> dict[str, Any]:
     if hasattr(instance, "model_dump"):
         return instance.model_dump(mode="json", by_alias=True)
     return json.loads(instance.json(by_alias=True))
+
+
+def _validate_completion_kwargs(kwargs: Mapping[str, Any] | None) -> dict[str, Any]:
+    kwargs = dict(kwargs or {})
+    reserved = sorted(_RESERVED_COMPLETION_KWARGS & kwargs.keys())
+    if reserved:
+        raise ValueError(
+            f"llm_judge: completion_kwargs cannot set {', '.join(reserved)}; "
+            "the judge sets those itself"
+        )
+    return kwargs
 
 
 def _validate_inputs(inputs: Sequence[str]) -> tuple[str, ...]:
@@ -306,11 +320,11 @@ def _complete(spec: _JudgeSpec, messages: list[dict[str, str]]) -> Any:
     from openai import OpenAI  # ty: ignore[unresolved-import]
 
     client = OpenAI(**_client_options(spec))
-    request: dict[str, Any] = {"model": spec.model, "messages": messages}
-    if spec.max_tokens is not None:
-        request["max_tokens"] = spec.max_tokens
-    if spec.temperature is not None:
-        request["temperature"] = spec.temperature
+    request: dict[str, Any] = {
+        "model": spec.model,
+        "messages": messages,
+        **spec.completion_kwargs,
+    }
     if spec.parse_fn is not None:
         text = client.chat.completions.create(**request).choices[0].message.content
         return spec.parse_fn(text or "")
