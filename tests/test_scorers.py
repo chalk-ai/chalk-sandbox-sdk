@@ -123,6 +123,24 @@ def test_generated_function_is_a_scorer_defined_in_the_caller() -> None:
     assert declared["properties"]["directness"]["maximum"] == 2
 
 
+def test_judges_in_one_module_keep_separate_specs(completion) -> None:
+    calls, _ = completion
+    strict = _judge(name="strict", instructions="Be strict.")
+    lenient = _judge(name="lenient", instructions="Be lenient.", model="gpt-4.1")
+
+    strict._func(output="a")
+    lenient._func(output="b")
+
+    # Each generated function closes over its own namespace, so the module
+    # can hold any number of judges.
+    assert [c[0]["content"] for c in calls] == ["Be strict.", "Be lenient."]
+    specs = [f._func.__globals__["__chalk_spec__"] for f in (strict, lenient)]
+    assert [s.model for s in specs] == ["gpt-5", "gpt-4.1"]
+    module = sys.modules[__name__]
+    assert module._chalk_llm_judge_strict is strict
+    assert module._chalk_llm_judge_lenient is lenient
+
+
 def test_api_key_secret_is_attached_and_named() -> None:
     secret = Secret.from_chalk_env("OPENAI_API_TOKEN", alias="OPENAI_API_KEY")
     judge = _judge(api_key=secret)
