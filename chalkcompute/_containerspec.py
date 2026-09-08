@@ -388,13 +388,17 @@ class ContainerSpec:
             gpu=self.gpu,
             env=self.env,
             entrypoint=self.entrypoint,
+            secrets=self.secret_refs,
+            port=self.port,
+            lifetime=self.lifetime,
+            security_policy=self.security_policy,
             network_policy=self.network_policy,
+            compute_class=self.compute_class,
+            tags=self.tags,
             restart_policy=self.restart_policy,
             chalk_identity=self.chalk_identity,
             managed_ssh=self.managed_ssh,
         )
-        if self.port is not None and not (1 <= self.port <= 65535):
-            raise ValueError(f"port must be between 1 and 65535, got {self.port!r}")
         object.__setattr__(
             self,
             "entrypoint",
@@ -437,7 +441,13 @@ class ContainerSpec:
         gpu: str | None = None,
         env: Mapping[str, str] | None = None,
         entrypoint: Sequence[str] | None = None,
+        secrets: Sequence[Secret | Mapping[str, Any]] | None = None,
+        port: int | None = None,
+        lifetime: str | None = None,
+        security_policy: ContainerSecurityPolicy | None = None,
         network_policy: NetworkPolicy | None = None,
+        compute_class: ComputeClass | None = None,
+        tags: Mapping[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool = False,
         managed_ssh: Mapping[str, SshDest] | None = None,
@@ -464,8 +474,43 @@ class ContainerSpec:
                 isinstance(part, str) for part in entrypoint
             ):
                 raise TypeError("entrypoint must be a list of strings")
+        if secrets is not None:
+            if isinstance(secrets, (str, bytes)) or not isinstance(secrets, Sequence):
+                raise TypeError("secrets must be a list of Secret")
+            for secret in secrets:
+                if isinstance(secret, Mapping):
+                    continue
+                if not isinstance(secret, Secret):
+                    raise TypeError("secrets must be a list of Secret")
+        if port is not None and not (1 <= port <= 65535):
+            raise ValueError(f"port must be between 1 and 65535, got {port!r}")
+        if lifetime is not None:
+            try:
+                parsed_lifetime = Duration.from_json(f'"{lifetime}"')
+            except ValueError:
+                raise ValueError(
+                    f"Invalid lifetime {lifetime!r}. "
+                    "Use a protobuf duration string (e.g. '30s', '1.5s', '300s')."
+                ) from None
+            if parsed_lifetime.seconds == 0 and parsed_lifetime.nanos == 0:
+                raise ValueError(
+                    f"Invalid lifetime {lifetime!r}: lifetime must be greater than 0 "
+                    "(e.g. '30s', '5m')."
+                )
+        if security_policy is not None and not isinstance(
+            security_policy, ContainerSecurityPolicy
+        ):
+            raise TypeError("security_policy must be a ContainerSecurityPolicy")
         if network_policy is not None and not isinstance(network_policy, NetworkPolicy):
             raise TypeError("network_policy must be a NetworkPolicy")
+        if compute_class is not None and not isinstance(compute_class, ComputeClass):
+            raise TypeError("compute_class must be a ComputeClass")
+        if tags is not None:
+            if not isinstance(tags, Mapping):
+                raise TypeError("tags must be a dict[str, str]")
+            for key, value in tags.items():
+                if not isinstance(key, str) or not isinstance(value, str):
+                    raise TypeError("tags must be a dict[str, str]")
         if restart_policy is not None and not isinstance(restart_policy, RestartPolicy):
             raise TypeError("restart_policy must be a RestartPolicy")
         if not isinstance(chalk_identity, bool):
@@ -631,6 +676,52 @@ class ContainerSpec:
                 container_pb.ChalkWorkloadIdentity() if self.chalk_identity else None
             ),
         )
+
+
+def validate_replica_and_utilization(
+    *,
+    min_replicas: int,
+    max_replicas: int,
+    gpu: str | None = None,
+    target_cpu_utilization_percentage: int | None = None,
+    target_gpu_utilization_percentage: int | None = None,
+) -> None:
+    """Validate replica counts and CPU/GPU utilization triggers.
+
+    Shared by :class:`~chalkcompute.ScalingGroup`,
+    :class:`~chalkcompute.RemoteFunction`, and
+    :class:`~chalkcompute.RemoteClass`.
+    """
+    if min_replicas < 0:
+        raise ValueError(f"min_replicas must be >= 0, got {min_replicas}")
+    if max_replicas < 0:
+        raise ValueError(f"max_replicas must be >= 0, got {max_replicas}")
+    if min_replicas > max_replicas:
+        raise ValueError(
+            f"min_replicas ({min_replicas}) must be <= max_replicas ({max_replicas})"
+        )
+    if target_cpu_utilization_percentage is not None and not (
+        0 < target_cpu_utilization_percentage <= 100
+    ):
+        raise ValueError(
+            "target_cpu_utilization_percentage must be between 1 and 100, "
+            f"got {target_cpu_utilization_percentage}"
+        )
+    if target_gpu_utilization_percentage is not None:
+        if not (0 < target_gpu_utilization_percentage <= 100):
+            raise ValueError(
+                "target_gpu_utilization_percentage must be between 1 and 100, "
+                f"got {target_gpu_utilization_percentage}"
+            )
+        if gpu is None:
+            raise ValueError("target_gpu_utilization_percentage requires gpu to be set")
+        # The utilization series only exists while replicas do, so a group that
+        # may reach zero would deactivate and never see a sample to scale back up.
+        if min_replicas < 1 and max_replicas != 0:
+            raise ValueError(
+                "target_gpu_utilization_percentage requires min_replicas >= 1, "
+                f"got {min_replicas}"
+            )
 
 
 def _secret_to_proto(secret: Secret) -> container_pb.SecretRef:

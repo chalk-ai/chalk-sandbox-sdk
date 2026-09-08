@@ -75,7 +75,7 @@ from chalkcompute._connect import (
     rpc_address_from_target,
     service_auth_context_from_env,
 )
-from chalkcompute._containerspec import ContainerSpec
+from chalkcompute._containerspec import ContainerSpec, validate_replica_and_utilization
 from chalkcompute._deployment_proto import function_config, scaling_spec
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import (
     service_connect as catalog_connect,
@@ -118,6 +118,10 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from chalkcompute._image import Image as _Image
     from chalkcompute._scaling_group import CronScalingTrigger as _CronScalingTrigger
+    from chalkcompute._scaling_group import ReadinessProbe as _ReadinessProbe
+    from chalkcompute._scaling_group import (
+        ScaleFromZeroRequestPolicy as _ScaleFromZeroRequestPolicy,
+    )
     from chalkcompute._secret import Secret as _Secret
 
 SerializationFormat = typing.Literal["pyarrow"]
@@ -2378,6 +2382,10 @@ class RemoteFunction:
         env: dict[str, str] | None = None,
         secrets: list[_Secret] | None = None,
         volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+        tags: dict[str, str] | None = None,
+        chalk_identity: bool = False,
+        authenticated: bool = False,
+        readiness_probe: _ReadinessProbe | None = None,
         min_replicas: int = 1,
         max_replicas: int = 1,
         shutdown_delay_seconds: int | None = None,
@@ -2386,6 +2394,7 @@ class RemoteFunction:
         target_gpu_utilization_percentage: int | None = None,
         target_queue_depth: int | None = None,
         cron_scaling_trigger: _CronScalingTrigger | None = None,
+        scale_from_zero_request_policy: _ScaleFromZeroRequestPolicy | None = None,
         serialization_format: SerializationFormat = "pyarrow",
         options: dict[str, str] | None = None,
         max_buffer_duration: int | None = None,
@@ -2436,6 +2445,16 @@ class RemoteFunction:
             memory=memory,
             gpu=gpu,
             env=env,
+            secrets=secrets,
+            tags=tags,
+            chalk_identity=chalk_identity,
+        )
+        validate_replica_and_utilization(
+            min_replicas=min_replicas,
+            max_replicas=max_replicas,
+            gpu=gpu,
+            target_cpu_utilization_percentage=target_cpu_utilization_percentage,
+            target_gpu_utilization_percentage=target_gpu_utilization_percentage,
         )
         self._explicit_name = name
         self._image = image
@@ -2453,41 +2472,31 @@ class RemoteFunction:
         # Populated at deploy time: referenced volumes plus any freshly
         # uploaded volumes.
         self._volumes: list[VolumeMount] = []
-        if min_replicas < 0:
-            raise ValueError(f"min_replicas must be >= 0, got {min_replicas}")
-        if max_replicas < 0:
-            raise ValueError(f"max_replicas must be >= 0, got {max_replicas}")
-        if min_replicas > max_replicas:
-            raise ValueError(
-                f"min_replicas ({min_replicas}) must be <= max_replicas ({max_replicas})"
-            )
+        self._tags = dict(tags or {})
+        self._chalk_identity = chalk_identity
+        self._authenticated = authenticated
+        if readiness_probe is not None:
+            from chalkcompute._scaling_group import ReadinessProbe
+
+            if not isinstance(readiness_probe, ReadinessProbe):
+                raise TypeError("readiness_probe must be a ReadinessProbe")
+        self._readiness_probe = readiness_probe
+        if scale_from_zero_request_policy is not None:
+            from chalkcompute._scaling_group import ScaleFromZeroRequestPolicy
+
+            if not isinstance(
+                scale_from_zero_request_policy, ScaleFromZeroRequestPolicy
+            ):
+                raise TypeError(
+                    "scale_from_zero_request_policy must be a ScaleFromZeroRequestPolicy"
+                )
+        self._scale_from_zero_request_policy = scale_from_zero_request_policy
         self._volume_driver: VolumeClient | None = None
         self._min_replicas = min_replicas
         self._max_replicas = max_replicas
         self._shutdown_delay_seconds = shutdown_delay_seconds
         self._scaling_interval_seconds = scaling_interval_seconds
-        if target_cpu_utilization_percentage is not None and not (
-            0 < target_cpu_utilization_percentage <= 100
-        ):
-            raise ValueError(
-                f"target_cpu_utilization_percentage must be between 1 and 100, got {target_cpu_utilization_percentage}"
-            )
         self._target_cpu_utilization_percentage = target_cpu_utilization_percentage
-        if target_gpu_utilization_percentage is not None:
-            if not (0 < target_gpu_utilization_percentage <= 100):
-                raise ValueError(
-                    f"target_gpu_utilization_percentage must be between 1 and 100, got {target_gpu_utilization_percentage}"
-                )
-            if gpu is None:
-                raise ValueError(
-                    "target_gpu_utilization_percentage requires gpu to be set"
-                )
-            # The utilization series only exists while replicas do, so a group that
-            # may reach zero would deactivate and never see a sample to scale back up.
-            if min_replicas < 1 and max_replicas != 0:
-                raise ValueError(
-                    f"target_gpu_utilization_percentage requires min_replicas >= 1, got {min_replicas}"
-                )
         self._target_gpu_utilization_percentage = target_gpu_utilization_percentage
         self._target_queue_depth = target_queue_depth
         self._cron_scaling_trigger = cron_scaling_trigger
@@ -2710,6 +2719,11 @@ class RemoteFunction:
         f._secrets = []
         f._referenced_volumes = []
         f._volumes = []
+        f._tags = {}
+        f._chalk_identity = False
+        f._authenticated = False
+        f._readiness_probe = None
+        f._scale_from_zero_request_policy = None
         f._volume_driver = None
         f._min_replicas = 1
         f._max_replicas = 1
@@ -3072,6 +3086,14 @@ class RemoteFunction:
                 port=6666,
                 protocol="grpc",
                 startup_probe=_remote_function_startup_probe(),
+                readiness_probe=(
+                    self._readiness_probe.to_dict()
+                    if self._readiness_probe is not None
+                    else None
+                ),
+                authentication="AUTHENTICATED" if self._authenticated else None,
+                tags=self._tags,
+                chalk_identity=self._chalk_identity,
             ).to_proto()
             spec = sg_pb.ScalingGroupSpec(
                 container_spec=container_spec,
@@ -3089,6 +3111,7 @@ class RemoteFunction:
                     function_name=self._explicit_name or self._func_name,
                     target_queue_depth=self._target_queue_depth,
                     cron_scaling_trigger=self._cron_scaling_trigger,
+                    scale_from_zero_request_policy=self._scale_from_zero_request_policy,
                 ),
             )
 
@@ -4176,6 +4199,10 @@ def function(
     env: dict[str, str] | None = None,
     secrets: list[_Secret] | None = None,
     volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+    tags: dict[str, str] | None = None,
+    chalk_identity: bool = False,
+    authenticated: bool = False,
+    readiness_probe: _ReadinessProbe | None = None,
     min_replicas: int = 1,
     max_replicas: int = 1,
     shutdown_delay_seconds: int | None = None,
@@ -4184,6 +4211,7 @@ def function(
     target_gpu_utilization_percentage: int | None = None,
     target_queue_depth: int | None = None,
     cron_scaling_trigger: _CronScalingTrigger | None = None,
+    scale_from_zero_request_policy: _ScaleFromZeroRequestPolicy | None = None,
     serialization_format: SerializationFormat = "pyarrow",
     options: dict[str, str] | None = None,
     max_buffer_duration: int | None = None,
@@ -4210,6 +4238,10 @@ def function(
     env: dict[str, str] | None = None,
     secrets: list[_Secret] | None = None,
     volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+    tags: dict[str, str] | None = None,
+    chalk_identity: bool = False,
+    authenticated: bool = False,
+    readiness_probe: _ReadinessProbe | None = None,
     min_replicas: int = 1,
     max_replicas: int = 1,
     shutdown_delay_seconds: int | None = None,
@@ -4218,6 +4250,7 @@ def function(
     target_gpu_utilization_percentage: int | None = None,
     target_queue_depth: int | None = None,
     cron_scaling_trigger: _CronScalingTrigger | None = None,
+    scale_from_zero_request_policy: _ScaleFromZeroRequestPolicy | None = None,
     serialization_format: SerializationFormat = "pyarrow",
     options: dict[str, str] | None = None,
     max_buffer_duration: int | None = None,
@@ -4245,6 +4278,10 @@ def function(
     env: dict[str, str] | None = None,
     secrets: list[_Secret] | None = None,
     volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+    tags: dict[str, str] | None = None,
+    chalk_identity: bool = False,
+    authenticated: bool = False,
+    readiness_probe: _ReadinessProbe | None = None,
     min_replicas: int = 1,
     max_replicas: int = 1,
     shutdown_delay_seconds: int | None = None,
@@ -4253,6 +4290,7 @@ def function(
     target_gpu_utilization_percentage: int | None = None,
     target_queue_depth: int | None = None,
     cron_scaling_trigger: _CronScalingTrigger | None = None,
+    scale_from_zero_request_policy: _ScaleFromZeroRequestPolicy | None = None,
     serialization_format: SerializationFormat = "pyarrow",
     options: dict[str, str] | None = None,
     max_buffer_duration: int | None = None,
@@ -4417,6 +4455,10 @@ def function(
             env=env,
             secrets=secrets,
             volumes=volumes,
+            tags=tags,
+            chalk_identity=chalk_identity,
+            authenticated=authenticated,
+            readiness_probe=readiness_probe,
             min_replicas=min_replicas,
             max_replicas=max_replicas,
             shutdown_delay_seconds=shutdown_delay_seconds,
@@ -4425,6 +4467,7 @@ def function(
             target_gpu_utilization_percentage=target_gpu_utilization_percentage,
             target_queue_depth=target_queue_depth,
             cron_scaling_trigger=cron_scaling_trigger,
+            scale_from_zero_request_policy=scale_from_zero_request_policy,
             serialization_format=serialization_format,
             options=options,
             max_buffer_duration=max_buffer_duration,

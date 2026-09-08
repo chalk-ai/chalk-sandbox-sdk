@@ -9,3 +9,4 @@ chalkcompute/_remote_call_native*.so
 .zoekt-index/
 .claude/worktrees
 /tmp/
+benchmark-results/

@@ -97,6 +97,28 @@ class _ErrorAfterBuildStub:
         )
 
 
+class _SucceededDuringCreationStub:
+    def create_sandbox(self, request: pb.CreateSandboxRequest, **_kwargs: object):
+        return pb.CreateSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id="sandbox-123",
+                status=pb.SandboxStatus.PENDING,
+                created_at=Timestamp(seconds=1),
+            )
+        )
+
+    def get_sandbox(self, request: pb.GetSandboxRequest, **_kwargs: object):
+        assert request.id == "sandbox-123"
+        return pb.GetSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id="sandbox-123",
+                status=pb.SandboxStatus.SUCCEEDED,
+                created_at=Timestamp(seconds=1),
+                status_message="Exit code 0",
+            )
+        )
+
+
 def test_sandbox_client_create_sends_image_uri_not_image_spec() -> None:
     client = SandboxClient()
     stub = _Stub()
@@ -151,6 +173,54 @@ def test_sandbox_rejects_non_bool_chalk_identity() -> None:
         )
 
 
+def test_sandbox_client_create_defaults_entrypoint_to_sleep_infinity() -> None:
+    client = SandboxClient()
+    stub = _Stub()
+    client._stub = stub  # type: ignore[assignment]
+    try:
+        sandbox = client.create("python:3.14-slim", wait=False)
+    finally:
+        client.close()
+
+    assert stub.request is not None
+    assert list(stub.request.source.value.entrypoint) == ["sleep", "infinity"]
+    assert sandbox.image_uri == "python:3.14-slim"
+
+
+def test_sandbox_client_create_forwards_container_fields() -> None:
+    from chalkcompute import ComputeClass, ContainerSecurityPolicy, KernelPolicy
+    from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
+
+    client = SandboxClient()
+    stub = _Stub()
+    client._stub = stub  # type: ignore[assignment]
+    try:
+        client.create(
+            "python:3.14-slim",
+            gpu="nvidia-l4",
+            port=8080,
+            lifetime="30s",
+            tags={"team": "compute"},
+            compute_class=ComputeClass.HOST,
+            security_policy=ContainerSecurityPolicy(
+                kernel_policy=KernelPolicy.RESTRICTED
+            ),
+            wait=False,
+        )
+    finally:
+        client.close()
+
+    assert stub.request is not None
+    spec = stub.request.source.value
+    assert spec.resources is not None
+    assert spec.resources.gpu == "nvidia-l4"
+    assert spec.port == 8080
+    assert dict(spec.tags) == {"team": "compute"}
+    assert spec.compute_class == container_pb.ComputeClass.HOST
+    assert spec.security_policy is not None
+    assert spec.has_field("lifetime")
+
+
 def test_sandbox_client_create_propagates_backend_error_details() -> None:
     client = SandboxClient()
     client._stub = _ErrorAfterBuildStub()  # type: ignore[assignment]
@@ -170,6 +240,18 @@ def test_sandbox_client_create_propagates_backend_error_details() -> None:
     assert error.status == "failed"
     assert error.status_message == "pod failed readiness probe: connection refused"
     assert error.build_id is None
+
+
+def test_sandbox_client_create_accepts_succeeded_during_readiness_poll() -> None:
+    client = SandboxClient()
+    client._stub = _SucceededDuringCreationStub()  # type: ignore[assignment]
+    try:
+        sandbox = client.create("python:3.14-slim", poll_interval=0, timeout=30)
+    finally:
+        client.close()
+
+    assert sandbox.info is not None
+    assert sandbox.info.status == "succeeded"
 
 
 class _ProcessStub:
@@ -457,6 +539,7 @@ def test_sandbox_uploads_lazy_local_files_to_a_volume(tmp_path) -> None:
     with (
         patch("chalkcompute._sandbox.build_image", return_value="img:built"),
         patch.object(VolumeClient, "from_connect", return_value=volume_client),
+        patch.object(Sandbox, "_wait_for_volume_files"),
     ):
         sandbox.run()
 

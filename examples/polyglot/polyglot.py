@@ -1,13 +1,16 @@
+#!/usr/bin/env -S uv run --script
+#
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["chalkcompute>=2.11.1", "pyqwest"]
+# ///
+
 """
-Polyglot code judge and sandbox safety demo built on Chalk containers.
+Polyglot code judge and sandbox safety demo built on Chalk sandboxes.
 
 Three acts that show what you can do when arbitrary untrusted code runs in
-an isolated container: judge submissions, contain dangerous scripts, and
+an isolated sandbox: judge submissions, contain dangerous scripts, and
 execute AI-generated code without reviewing it first.
-
-## Run the demo
-
-    python examples/polyglot/polyglot.py
 
   Act 1 — Code Judge (Python, Java, C++)
     Judges a "sum N integers" problem across three submissions.
@@ -15,11 +18,11 @@ execute AI-generated code without reviewing it first.
     killed cleanly after 5s each, no cleanup needed.
 
   Act 2 — Dangerous Code, Run Safely
-    Scripts that would damage a real machine, run inside a container:
-      rm -rf /       → exit=0,   container filesystem wiped, host untouched
+    Scripts that would damage a real machine, run inside a sandbox:
+      rm -rf /       → exit=0,   sandbox filesystem wiped, host untouched
       fork bomb      → killed,   PID namespace contained the explosion
       100 GB alloc   → exit=137, OOM-killed before touching host RAM
-      read ~/.ssh    → exit=0,   host filesystem not visible inside container
+      read ~/.ssh    → exit=0,   host filesystem not visible inside sandbox
 
   Act 3 — GPT-4o Writes Code, Sandbox Runs It
     GPT-4o generates solutions in Python, Java, and C++. Each is piped
@@ -27,23 +30,24 @@ execute AI-generated code without reviewing it first.
 
 ## How it works
 
-Each submission gets one container (cold-start paid once, not per test case):
+Each submission gets one sandbox (cold-start paid once, not per test case):
 
-1. Source is base64-encoded and written into the container — avoids shell
+1. Source is base64-encoded and written into the sandbox — avoids shell
    quoting limits that would break long Java/C++ sources.
 2. Compiled once (javac / g++). Failure → COMPILE_ERROR on all test cases.
-3. Each test case runs via container.exec() with a per-exec timeout. The
-   container stays alive between cases; stopped in a finally block.
+3. Each test case runs via sandbox.exec() with a per-exec timeout. The
+   sandbox stays alive between cases and is terminated in a finally block.
 
 Verdicts:
     PASS          — stdout matches expected (whitespace-stripped)
     WRONG_ANSWER  — exited cleanly but output didn't match
     RUNTIME_ERROR — non-zero exit code
-    TIMEOUT       — process killed after time_limit_secs; container survives
+    TIMEOUT       — process killed after time_limit_secs; sandbox survives
 
-## Library usage
+## Reusing the judge
 
-    from run_code import judge, run_once, Language, TestCase
+The ``judge``, ``run_once``, ``Language``, and ``TestCase`` definitions below
+can also be imported from this module:
 
     results = judge(
         Language.PYTHON,
@@ -62,17 +66,13 @@ from __future__ import annotations
 
 import base64
 import os
-import sys
 import time
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
 
 from pyqwest import SyncClient
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
-from chalkcompute import Container
+from chalkcompute import Sandbox
 
 
 # ---------------------------------------------------------------------------
@@ -231,9 +231,9 @@ def compile_source(
     language: Language,
     source: str,
     *,
-    container: Container,
+    sandbox: Sandbox,
 ) -> ExecutionResult:
-    """Compile ``source`` inside the container (write + build step).
+    """Compile ``source`` inside the sandbox (write + build step).
 
     For interpreted languages this just writes the source file.
     Returns an ``ExecutionResult`` — callers should check ``exit_code`` before running.
@@ -241,7 +241,7 @@ def compile_source(
     cfg = _CONFIGS[language]
     cmd = cfg["compile_cmd"](source)
     t0 = time.monotonic()
-    result = container.exec("bash", "-c", cmd, timeout_secs=cfg["compile_timeout"])
+    result = sandbox.exec("bash", "-c", cmd, timeout_secs=cfg["compile_timeout"])
     return ExecutionResult(
         language=language,
         stdout=result.stdout_text,
@@ -255,18 +255,18 @@ def run_code(
     language: Language,
     stdin: str = "",
     *,
-    container: Container,
+    sandbox: Sandbox,
     timeout_secs: int | None = None,
 ) -> ExecutionResult:
-    """Run the already-compiled program inside ``container``, feeding ``stdin``.
+    """Run the already-compiled program inside ``sandbox``, feeding ``stdin``.
 
-    Call ``compile_source`` first. The caller owns the container lifecycle.
+    Call ``compile_source`` first. The caller owns the sandbox lifecycle.
     """
     cfg = _CONFIGS[language]
     timeout = timeout_secs or cfg["run_timeout"]
     cmd = cfg["run_cmd"](stdin)
     t0 = time.monotonic()
-    result = container.exec("bash", "-c", cmd, timeout_secs=timeout)
+    result = sandbox.exec("bash", "-c", cmd, timeout_secs=timeout)
     return ExecutionResult(
         language=language,
         stdout=result.stdout_text,
@@ -290,12 +290,12 @@ def judge(
 ) -> list[JudgeResult]:
     """Judge ``source`` against each test case.
 
-    Starts one container per submission and runs all test cases inside it via
-    exec — paying the cold-start cost once, not per test case. The container
-    is stopped after all test cases complete.
+    Starts one sandbox per submission and runs all test cases inside it via
+    exec — paying the cold-start cost once, not per test case. The sandbox is
+    terminated after all test cases complete.
 
     The per-exec timeout ensures infinite loops are killed cleanly without
-    affecting the container itself or adjacent test cases.
+    affecting the sandbox itself or adjacent test cases.
 
     Verdicts:
         ``PASS``          — output matches expected (stripped)
@@ -305,12 +305,13 @@ def judge(
         ``COMPILE_ERROR`` — compile step failed (Java/C++ only, detected via stderr)
     """
     cfg = _CONFIGS[language]
-    container = Container(image=cfg["image"]).run()
+    sandbox = Sandbox(image=cfg["image"])
 
     results: list[JudgeResult] = []
     try:
+        sandbox.run()
         # --- Compile once ---
-        compile_result = compile_source(language, source, container=container)
+        compile_result = compile_source(language, source, sandbox=sandbox)
         if compile_result.exit_code != 0:
             # Fail all test cases with COMPILE_ERROR immediately.
             for tc in test_cases:
@@ -331,7 +332,7 @@ def judge(
                 exec_result = run_code(
                     language,
                     stdin=tc.stdin,
-                    container=container,
+                    sandbox=sandbox,
                     timeout_secs=time_limit_secs,
                 )
             except Exception as exc:
@@ -367,7 +368,8 @@ def judge(
                 )
             )
     finally:
-        container.stop()
+        if sandbox.id is not None:
+            sandbox.terminate()
 
     return results
 
@@ -384,18 +386,20 @@ def run_once(
     *,
     timeout_secs: int = 10,
 ) -> ExecutionResult:
-    """Spin up a container, run source once, stop the container, return the result."""
+    """Spin up a sandbox, run source once, terminate it, and return the result."""
     cfg = _CONFIGS[language]
-    container = Container(image=cfg["image"]).run()
+    sandbox = Sandbox(image=cfg["image"])
     try:
-        compile_result = compile_source(language, source, container=container)
+        sandbox.run()
+        compile_result = compile_source(language, source, sandbox=sandbox)
         if compile_result.exit_code != 0:
             return compile_result
         return run_code(
-            language, stdin=stdin, container=container, timeout_secs=timeout_secs
+            language, stdin=stdin, sandbox=sandbox, timeout_secs=timeout_secs
         )
     finally:
-        container.stop()
+        if sandbox.id is not None:
+            sandbox.terminate()
 
 
 # ---------------------------------------------------------------------------
@@ -462,8 +466,8 @@ int main() {
 # ---------------------------------------------------------------------------
 #
 # Each snippet below would cause real damage if run on your machine.
-# Inside a Chalk container it runs in a fully isolated filesystem and process
-# namespace. When the container stops, every effect disappears.
+# Inside a Chalk sandbox it runs in a fully isolated filesystem and process
+# namespace. When the sandbox terminates, every effect disappears.
 
 SAFETY_SUBMISSIONS: list[tuple[str, str]] = [
     (
@@ -472,7 +476,7 @@ SAFETY_SUBMISSIONS: list[tuple[str, str]] = [
 import subprocess, os
 print("About to delete everything...")
 subprocess.run(["rm", "-rf", "/"], check=False)
-print("Done. Container filesystem is gone.")
+print("Done. Sandbox filesystem is gone.")
 """,
     ),
     (
@@ -548,11 +552,7 @@ AI_LANGUAGES: list[tuple[Language, str]] = [
 
 
 def generate_solution(extra_instruction: str) -> str:
-    """Ask GPT-4o to write a solution for ``PROBLEM_STATEMENT``.
-
-    Uses pyqwest directly (already a chalkcompute dependency) so no extra
-    packages are required beyond what the SDK already installs.
-    """
+    """Ask an OpenAI model to write a solution for ``PROBLEM_STATEMENT``."""
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY environment variable not set")
@@ -564,7 +564,7 @@ def generate_solution(extra_instruction: str) -> str:
             "Content-Type": "application/json",
         },
         content={
-            "model": "gpt-4o",
+            "model": os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
             "temperature": 0,
             "messages": [
                 {
@@ -610,7 +610,7 @@ def main() -> None:
     print("=" * 50)
     print("  Act 2: Dangerous Code, Run Safely")
     print("  Each snippet below would damage a real machine.")
-    print("  Inside a Chalk container: fully contained.")
+    print("  Inside a Chalk sandbox: fully contained.")
     print("=" * 50 + "\n")
 
     for description, source in SAFETY_SUBMISSIONS:

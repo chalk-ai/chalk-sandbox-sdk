@@ -1,10 +1,18 @@
-#!/usr/bin/env -S uv run
+#!/usr/bin/env -S uv run --script
+#
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["chalkcompute>=2.11.1", "python-dotenv"]
+# ///
 
 """
 Run sandbox probes and report whether sandboxing held.
 
 `PASS` means the probe observed the sandbox blocking or hiding the risky action.
 `INFO` probes are descriptive only. All other probes are treated as tests.
+
+Sandboxes created by this script are terminated. A sandbox selected by ID or
+name is caller-owned and intentionally left running after inspection.
 """
 
 import argparse
@@ -16,11 +24,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
+from chalkcompute import ContainerSecurityPolicy, Image, KernelPolicy, Sandbox
 from dotenv import load_dotenv
 
 load_dotenv()
-
-from chalkcompute import Container, ContainerSecurityPolicy, Image, KernelPolicy
 
 
 THIS_DIR = Path(__file__).resolve().parent
@@ -531,7 +538,7 @@ HARDENING_PROBES: list[Probe] = [
 PROBES: list[Probe] = INFO_PROBES + DECISIVE_PROBES + HARDENING_PROBES
 
 
-def run_probe(container: Container, probe: Probe) -> ProbeResult:
+def run_probe(container: Sandbox, probe: Probe) -> ProbeResult:
     result = container.exec(*probe.command, timeout_secs=30)
     output = combined_output(result.stdout_text, result.stderr_text)
     status, detail = evaluate(probe, output, result.exit_code)
@@ -625,7 +632,7 @@ def parse_probe_results(raw_results: str, probes: list[Probe]) -> list[ProbeResu
     return results
 
 
-def run_probes(container: Container, probes: list[Probe]) -> list[ProbeResult]:
+def run_probes(container: Sandbox, probes: list[Probe]) -> list[ProbeResult]:
     script = render_probe_runner_script(probes)
     timeout_secs = max(30, len(probes) * 30)
     result = container.exec("bash", "-lc", script, timeout_secs=timeout_secs)
@@ -695,20 +702,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--name",
         default=f"sandbox-test-{uuid4().hex[:8]}",
-        help="Container name prefix.",
+        help="Sandbox name.",
     )
     parser.add_argument(
         "--restricted",
         action="store_true",
-        help="Create a sandboxed/restricted container.",
+        help="Use the restricted kernel policy.",
     )
     parser.add_argument(
-        "--container-id",
-        help="Attach to an existing running container by ID instead of creating one.",
+        "--sandbox-id",
+        help="Attach to an existing running sandbox by ID instead of creating one.",
     )
     parser.add_argument(
-        "--container-name",
-        help="Attach to an existing running container by name instead of creating one.",
+        "--sandbox-name",
+        help="Attach to an existing running sandbox by name instead of creating one.",
     )
     parser.add_argument(
         "-v",
@@ -738,14 +745,14 @@ def main() -> int:
             1 if any(not r.probe.is_info and r.status == "FAIL" for r in results) else 0
         )
 
-    if args.container_id and args.container_name:
-        raise SystemExit("pass only one of --container-id or --container-name")
+    if args.sandbox_id and args.sandbox_name:
+        raise SystemExit("pass only one of --sandbox-id or --sandbox-name")
 
-    created_container = False
-    if args.container_id:
-        container = Container.from_id(args.container_id)
-    elif args.container_name:
-        container = Container.from_name(args.container_name)
+    created_sandbox = False
+    if args.sandbox_id:
+        container = Sandbox.from_id(args.sandbox_id)
+    elif args.sandbox_name:
+        container = Sandbox.from_name(args.sandbox_name)
     else:
         image: Image | str = args.image if args.image else build_image()
         policy = (
@@ -753,15 +760,16 @@ def main() -> int:
             if args.restricted
             else None
         )
-        container = Container(image=image, name=args.name, security_policy=policy)
-        container.run()
-        created_container = True
+        container = Sandbox(image=image, name=args.name, security_policy=policy)
+        created_sandbox = True
 
     try:
+        if created_sandbox:
+            container.run()
         results = run_probes(container, PROBES)
     finally:
-        if created_container:
-            container.stop()
+        if created_sandbox and container.id is not None:
+            container.terminate()
 
     for result in results:
         print_probe(result, verbose=args.verbose)

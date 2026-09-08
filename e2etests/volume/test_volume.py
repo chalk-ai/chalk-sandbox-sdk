@@ -6,17 +6,20 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 import uuid
 import warnings
+from pathlib import Path
 
 import pytest
 
 from chalkcompute import (
     ConnectClient,
+    DatasetClient,
     Volume,
     VolumeClient,
     VolumeError,
     VolumeFileNotFoundError,
 )
 from e2etests.conftest import needs_staging
+from chalkcompute._gen.chalk.server.v1 import datasets_connect, datasets_pb
 
 MODEL_PATH = "models/latest.bin"
 TRAIN_PATH = "data/train.csv"
@@ -66,6 +69,75 @@ def test_put_file_from_path(volume: Volume, tmp_path) -> None:
     volume.put_file_from_path(LOCAL_NOTES_PATH, local_path)
 
     assert volume.read_file(LOCAL_NOTES_PATH) == local_notes.encode()
+
+
+@pytest.mark.parametrize("file_format", ["csv", "parquet"])
+@pytest.mark.parametrize("multiple", [False, True], ids=["single", "multiple"])
+def test_load_dataset_round_trip(
+    volume: Volume, tmp_path: Path, file_format: str, multiple: bool
+) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    source_paths = []
+    expected_rows = []
+    for index in range(2 if multiple else 1):
+        source_path = tmp_path / f"source-{index}.{file_format}"
+        rows = [
+            {"id": 2 * index + 1, "label": "approved"},
+            {"id": 2 * index + 2, "label": "declined"},
+        ]
+        if file_format == "parquet":
+            pq.write_table(pa.Table.from_pylist(rows), source_path)
+        else:
+            source_path.write_text(
+                "id,label\n" + "".join(f"{row['id']},{row['label']}\n" for row in rows)
+            )
+        source_paths.append(source_path)
+        expected_rows.extend(rows)
+
+    connect = ConnectClient()
+    revision = DatasetClient(connect_client=connect).upload(
+        f"a-test-dataset-{uuid.uuid4().hex[:8]}",
+        tmp_path.glob(f"*.{file_format}") if multiple else source_paths[0],
+    )
+    try:
+        first = volume.load_dataset(revision, dest_prefix="training")
+        parquet_files = [
+            item
+            for item in volume.listdir("training")
+            if item.kind == "file" and item.path.endswith(".parquet")
+        ]
+
+        assert len(parquet_files) == len(source_paths)
+        uploaded = {item.path: volume.read_file(item.path) for item in parquet_files}
+        actual_rows = [
+            row
+            for content in uploaded.values()
+            for row in pq.read_table(pa.BufferReader(content)).to_pylist()
+        ]
+        assert sorted(actual_rows, key=lambda row: row["id"]) == expected_rows
+        if file_format == "parquet":
+            assert sorted(uploaded.values()) == sorted(
+                path.read_bytes() for path in source_paths
+            )
+
+        second = volume.load_dataset(revision, dest_prefix="training")
+
+        assert second.id != first.id
+        assert {path: volume.read_file(path) for path in uploaded} == uploaded
+    finally:
+        try:
+            connect.call(
+                connect.stub(
+                    datasets_connect.DatasetMetadataServiceClientSync
+                ).delete_dataset,
+                datasets_pb.DeleteDatasetRequest(dataset_id=revision.dataset_id),
+            )
+        except Exception as exc:
+            warnings.warn(
+                f"Failed to clean up test dataset {revision.dataset_id}: {exc}"
+            )
 
 
 def test_versions_include_committed_writes(volume: Volume) -> None:

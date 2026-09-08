@@ -103,7 +103,8 @@ class DatasetClient:
     ) -> DatasetRevisionRef:
         """Upload data and return the registered dataset revision.
 
-        ``data`` may be one CSV/Parquet path, a sequence of CSV/Parquet paths,
+        ``data`` may be one CSV/Parquet path, an iterable of CSV/Parquet paths
+        (including lists, sets, and ``Path.glob()`` results),
         a PyArrow table or record batch, a mapping of column names to values, a
         sequence of row mappings, or a dataframe exposing ``to_arrow`` or the
         dataframe interchange protocol. CSV files and in-memory values are
@@ -429,9 +430,17 @@ def _prepare_dataset_files(
 def _dataset_paths(data: object) -> list[Path] | None:
     if isinstance(data, (str, os.PathLike)):
         return [Path(data)]
-    if isinstance(data, Sequence) and not isinstance(
-        data, (str, bytes, bytearray, memoryview)
-    ):
+    if isinstance(data, (Mapping, bytes, bytearray, memoryview)):
+        return None
+    # Tables and dataframes can also be iterable; do not consume their columns
+    # (or a record batch reader's batches) while looking for file paths.
+    if callable(getattr(data, "to_arrow", None)) or hasattr(data, "__dataframe__"):
+        return None
+    import pyarrow as pa
+
+    if isinstance(data, (pa.Table, pa.RecordBatch, pa.RecordBatchReader)):
+        return None
+    if isinstance(data, Iterable):
         values = list(data)
         if not values or all(isinstance(value, (str, os.PathLike)) for value in values):
             return [Path(value) for value in values]

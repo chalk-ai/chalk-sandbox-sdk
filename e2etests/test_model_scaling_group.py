@@ -10,21 +10,28 @@ Exercises:
 
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 import time
+from pathlib import Path
 
 import pyarrow as pa
 from pyarrow import ipc
 
 from chalk.client import ChalkClient
+from chalk.client.model_image import chalk_handler_volume_name, upload_model_to_volume
+from chalk.scalinggroup import AutoScalingSpec, ScalingGroupResourceRequest
+from chalkcompute import Image
 from chalkcompute._connect import grpc_target_from_url
 from chalkcompute._remote_call_client import RemoteCallClient
 
 from e2etests.conftest import (
     CHALK_ENVIRONMENT_ID,
-    _deploy_script,
     _get_access_token,
     needs_staging,
 )
+from e2etests.model_fixtures.handler_decorated import AffineHandler
 
 SG_NAME = "ex-trivial-double-sg"
 VOLUME_SG_NAME = "ex-volume-triple-sg"
@@ -32,6 +39,7 @@ HANDLER_SG_NAME = "ex-handler-affine-sg"
 COMBINED_SG_NAME = "ex-combined-affine-sg"
 READINESS_TIMEOUT = 180
 READINESS_POLL_INTERVAL = 5
+FIXTURES_DIR = Path(__file__).parent / "model_fixtures"
 
 
 def _wait_for_ready_replicas(client: ChalkClient, sg_name: str, timeout: float) -> str:
@@ -97,8 +105,45 @@ class TestModelScalingGroup:
 
     @classmethod
     def setup_class(cls):
-        _deploy_script("model", "deploy_trivial.py")
         client = ChalkClient(environment=CHALK_ENVIRONMENT_ID)
+        image = (
+            Image.debian_slim("3.11")
+            .pip_install(["chalk-remote-call-python", "pyarrow"])
+            .add_local_file(
+                str(FIXTURES_DIR / "handler.py"),
+                "/app/handler.py",
+                strategy="copy",
+            )
+            .env({"PYTHONPATH": "/app"})
+            .workdir("/app")
+            .entrypoint(
+                [
+                    "chalk-remote-call",
+                    "--handler",
+                    "handler.handler",
+                    "--port",
+                    "8080",
+                ]
+            )
+        )
+        version = client.register_model_version(
+            name="ex-trivial-double",
+            input_schema={"x": pa.float64()},
+            output_schema={"y": pa.float64()},
+            model_image=image,
+        )
+        client.deploy_model_version_to_scaling_group(
+            name=SG_NAME,
+            model_name="ex-trivial-double",
+            model_version=version.model_version,
+            handler="handler.handler",
+            scaling=AutoScalingSpec(
+                min_replicas=1,
+                max_replicas=1,
+                target_cpu_utilization_percentage=70,
+            ),
+            resources=ScalingGroupResourceRequest(cpu="500m", memory="512Mi"),
+        )
         cls._web_url = _wait_for_ready_replicas(client, SG_NAME, READINESS_TIMEOUT)
 
     @classmethod
@@ -142,8 +187,57 @@ class TestModelWithVolume:
 
     @classmethod
     def setup_class(cls):
-        _deploy_script("model", "deploy_volume.py")
         client = ChalkClient(environment=CHALK_ENVIRONMENT_ID)
+        image = (
+            Image.debian_slim("3.11")
+            .pip_install(["chalk-remote-call-python", "pyarrow"])
+            .add_local_file(
+                str(FIXTURES_DIR / "handler_with_volume.py"),
+                "/app/handler.py",
+                strategy="copy",
+            )
+            .env({"PYTHONPATH": "/app"})
+            .workdir("/app")
+            .entrypoint(
+                [
+                    "chalk-remote-call",
+                    "--handler",
+                    "handler.handler",
+                    "--on-startup",
+                    "handler.on_startup",
+                    "--port",
+                    "8080",
+                ]
+            )
+        )
+        version = client.register_model_version(
+            name="ex-volume-triple",
+            input_schema={"x": pa.float64()},
+            output_schema={"y": pa.float64()},
+            model_image=image,
+        )
+        with tempfile.NamedTemporaryFile(suffix=".json", mode="w") as config_file:
+            json.dump({"factor": 3.0}, config_file)
+            config_file.flush()
+            upload_model_to_volume(
+                volume_name=chalk_handler_volume_name(
+                    "ex-volume-triple", version.model_version
+                ),
+                model_filename="config.json",
+                model_file_path=config_file.name,
+            )
+        client.deploy_model_version_to_scaling_group(
+            name=VOLUME_SG_NAME,
+            model_name="ex-volume-triple",
+            model_version=version.model_version,
+            handler="handler.handler",
+            scaling=AutoScalingSpec(
+                min_replicas=1,
+                max_replicas=1,
+                target_cpu_utilization_percentage=70,
+            ),
+            resources=ScalingGroupResourceRequest(cpu="500m", memory="512Mi"),
+        )
         cls._web_url = _wait_for_ready_replicas(
             client, VOLUME_SG_NAME, READINESS_TIMEOUT
         )
@@ -182,8 +276,28 @@ class TestModelHandlerDecorator:
 
     @classmethod
     def setup_class(cls):
-        _deploy_script("model", "deploy_handler.py")
         client = ChalkClient(environment=CHALK_ENVIRONMENT_ID)
+        with tempfile.TemporaryDirectory(prefix="model-handler-") as weights_dir:
+            weights_path = os.path.join(weights_dir, "weights.json")
+            with open(weights_path, "w") as weights_file:
+                json.dump({"factor": 5.0, "bias": 2.0}, weights_file)
+            version = client.register_model_version(
+                name="ex-handler-affine",
+                model=AffineHandler(files=[weights_path]),
+                input_schema={"x": pa.float64()},
+                output_schema={"y": pa.float64()},
+            )
+        client.deploy_model_version_to_scaling_group(
+            name=HANDLER_SG_NAME,
+            model_name="ex-handler-affine",
+            model_version=version.model_version,
+            scaling=AutoScalingSpec(
+                min_replicas=1,
+                max_replicas=1,
+                target_cpu_utilization_percentage=70,
+            ),
+            resources=ScalingGroupResourceRequest(cpu="500m", memory="1Gi"),
+        )
         cls._web_url = _wait_for_ready_replicas(
             client, HANDLER_SG_NAME, READINESS_TIMEOUT
         )
@@ -221,8 +335,57 @@ class TestModelImageAndModelCombined:
 
     @classmethod
     def setup_class(cls):
-        _deploy_script("model", "deploy_image_and_model.py")
         client = ChalkClient(environment=CHALK_ENVIRONMENT_ID)
+        image = (
+            Image.debian_slim("3.11")
+            .pip_install(["chalk-remote-call-python", "pyarrow"])
+            .add_local_file(
+                str(FIXTURES_DIR / "handler_combined.py"),
+                "/app/handler_combined.py",
+                strategy="volume",
+            )
+            .add_local_file(
+                str(FIXTURES_DIR / "predict_combined.py"),
+                "/app/predict_combined.py",
+                strategy="volume",
+            )
+            .env({"PYTHONPATH": "/app"})
+            .workdir("/app")
+            .entrypoint(
+                [
+                    "chalk-remote-call",
+                    "--handler",
+                    "handler_combined.handler",
+                    "--on-startup",
+                    "handler_combined.on_startup",
+                    "--port",
+                    "8080",
+                ]
+            )
+        )
+        with tempfile.TemporaryDirectory(prefix="model-combined-") as weights_dir:
+            weights_path = os.path.join(weights_dir, "weights.json")
+            with open(weights_path, "w") as weights_file:
+                json.dump({"factor": 2.0, "bias": 1.0}, weights_file)
+            version = client.register_model_version(
+                name="ex-combined-affine",
+                input_schema={"x": pa.float64()},
+                output_schema={"y": pa.float64()},
+                model_image=image,
+                model_paths=[weights_path],
+            )
+        client.deploy_model_version_to_scaling_group(
+            name=COMBINED_SG_NAME,
+            model_name="ex-combined-affine",
+            model_version=version.model_version,
+            handler="handler_combined.handler",
+            scaling=AutoScalingSpec(
+                min_replicas=1,
+                max_replicas=1,
+                target_cpu_utilization_percentage=70,
+            ),
+            resources=ScalingGroupResourceRequest(cpu="500m", memory="512Mi"),
+        )
         cls._web_url = _wait_for_ready_replicas(
             client, COMBINED_SG_NAME, READINESS_TIMEOUT
         )

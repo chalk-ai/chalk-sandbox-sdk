@@ -177,6 +177,11 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     ),
     "VersionedVolume": ("chalkcompute._volume", "Volume"),
     "VersionedVolumeClient": ("chalkcompute._volume", "VolumeClient"),
+    # _training.py
+    "TrainingFunction": ("chalkcompute._training", "TrainingFunction"),
+    "TrainingRunHandle": ("chalkcompute._training", "TrainingRunHandle"),
+    "TrainingError": ("chalkcompute._training", "TrainingError"),
+    "training": ("chalkcompute._training", "training"),
 }
 
 

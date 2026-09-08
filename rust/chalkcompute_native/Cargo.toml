@@ -2,7 +2,7 @@
 name = "chalkcompute_native"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.95.0"
 publish = false
 
 [lib]
@@ -13,6 +13,6 @@ crate-type = ["cdylib"]
 bytes = "1"
 
 chalk_remote_call = { package = "chalk_remote_call_client", git = "https://github.com/chalk-ai/chalk-private.git", rev = "cad8bdc1d351755b119795628d2e4875aadf458c" }
-chalk_volume_client = { git = "https://github.com/chalk-ai/chalk-private.git", rev = "ef1a9ab9c6d2aa02f6e7e98274fbb2642e637466", features = ["py-extension"] }
+chalk_volume_client = { git = "https://github.com/chalk-ai/chalk-private.git", rev = "ae42e022cf1645efc8ee72eb60a97d9937317d11", features = ["py-extension"] }
 pyo3 = { version = "0.25.1", features = ["extension-module"] }
 tonic = { version = "0.9.2", default-features = false }

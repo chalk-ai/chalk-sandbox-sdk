@@ -129,6 +129,11 @@ from chalkcompute._volume import (
     resolve_referenced_volume_type as resolve_referenced_volume_type,
 )
 
+from chalkcompute._training import TrainingError as TrainingError
+from chalkcompute._training import TrainingFunction as TrainingFunction
+from chalkcompute._training import TrainingRunHandle as TrainingRunHandle
+from chalkcompute._training import training as training
+
 # Back-compat aliases: all volumes are versioned, so the qualifier is gone from
 # the canonical names. Keep the old spellings importable.
 from chalkcompute._volume import Volume as VersionedVolume
@@ -244,6 +249,10 @@ __all__ = [
     "resolve_referenced_volume_type",
     "VersionedVolume",
     "VersionedVolumeClient",
+    "TrainingFunction",
+    "TrainingRunHandle",
+    "TrainingError",
+    "training",
     "SessionSummary",
     "Span",
     "SpanKind",
