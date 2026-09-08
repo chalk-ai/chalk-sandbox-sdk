@@ -20,8 +20,9 @@ from chalkcompute._naming import sanitize_dns_label
 from chalkcompute._secret import Secret
 
 _DEFAULT_API_KEY_ENV = "OPENAI_API_KEY"
-# In the judge's image, not the SDK's.
-_JUDGE_PACKAGES = ["pydantic>=2", "openai>=1.99"]
+# In the judge's image, not the SDK's. Unbounded, so a user's own image keeps
+# the versions it has.
+_JUDGE_PACKAGES = ["pydantic", "openai"]
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -148,7 +149,7 @@ def _assert_response_model(response_model: Any) -> None:
     if not isinstance(response_model, type) or not hasattr(
         response_model, "model_fields"
     ):
-        raise TypeError("response_model must be a pydantic BaseModel class")
+        raise TypeError("response_model must be a pydantic v2 BaseModel class")
     if "score" not in response_model.model_fields:
         raise ValueError(
             "response_model must declare a `score` field; it becomes the scorer's "
@@ -277,12 +278,12 @@ def _complete(spec: _JudgeSpec, messages: list[dict[str, str]]) -> Any:
     if spec.parse_fn is not None:
         text = client.chat.completions.create(**request).choices[0].message.content
         return spec.parse_fn(text or "")
-    # The client derives the strict schema and validates the reply.
-    message = (
-        client.chat.completions.parse(response_format=spec.response_model, **request)
-        .choices[0]
-        .message
-    )
+    # The client derives the strict schema and validates the reply. parse()
+    # left beta in openai 1.92; older clients still have it under beta.
+    parse = getattr(client.chat.completions, "parse", None)
+    if parse is None:
+        parse = client.beta.chat.completions.parse
+    message = parse(response_format=spec.response_model, **request).choices[0].message
     if message.parsed is None:
         raise RuntimeError(
             f"llm_judge: the model returned no grade ({message.refusal or 'empty reply'})"

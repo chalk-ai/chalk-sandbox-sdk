@@ -265,6 +265,28 @@ def test_complete_asks_for_structured_output(monkeypatch: pytest.MonkeyPatch) ->
     ]
 
 
+def test_complete_falls_back_to_the_beta_parse_on_older_clients(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    beta = _FakeCompletions(parsed=Grade(**REPLY))
+    without_parse = types.SimpleNamespace(create=beta.create)
+
+    def fake_client(**options):
+        return types.SimpleNamespace(
+            chat=types.SimpleNamespace(completions=without_parse),
+            beta=types.SimpleNamespace(chat=types.SimpleNamespace(completions=beta)),
+        )
+
+    monkeypatch.setitem(
+        sys.modules, "openai", types.SimpleNamespace(OpenAI=fake_client)
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    spec = _judge()._func.__globals__["__chalk_spec__"]
+
+    assert scorers._complete(spec, []) == Grade(**REPLY)
+    assert beta.requests[0]["response_format"] is Grade
+
+
 def test_complete_reports_a_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_fake_openai(monkeypatch, _FakeCompletions(parsed=None, refusal="no"))
     spec = _judge()._func.__globals__["__chalk_spec__"]
