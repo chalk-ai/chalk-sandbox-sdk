@@ -180,6 +180,10 @@ name resolves to its latest revision when the evaluation is created, and the
 resolved revision is then pinned. Function parameters bind to dataset columns
 by name; scorers may additionally declare `output` and `trace` parameters.
 
+See [Evaluations](https://docs.chalk.ai/docs/compute/evaluations) for the full
+guide: datasets, scorer return types, LLM judges, reading task telemetry
+through `cc.Trace`, suites, runs, and the client API.
+
 ```python
 import chalkcompute as cc
 
@@ -238,6 +242,14 @@ evaluation = cc.Evaluation.create(
 time; evaluation creation then pins that version. `from_id` remains a
 compatibility alias for `from_version_id`. An imperative `RemoteFunction` must
 be explicitly deployed before it can be used in an evaluation.
+
+Scorers may return a numeric scalar, one `EvaluationScorerResult`, or a
+`list[EvaluationScorerResult]`. Returning a list lets one scorer emit multiple
+scores from shared computation; an empty list emits no scores for that row.
+Each result carries a normalized score and optional row-level JSON-serializable
+metadata. The return annotation declares the Arrow schema, and the class-level
+Arrow hooks handle nested serialization, so the generic function runtime does
+not need scorer-specific behavior.
 
 ### LLM judges
 
@@ -317,14 +329,6 @@ attach to a stable parent. `RemoteFunction.from_version_id(...)` attaches
 through an immutable version and still exposes its parent lifecycle. `refresh()`
 follows the parent's currently selected revision, and `delete()` deletes the
 stable parent and all of its revisions.
-
-Scorers may return a numeric scalar, one `EvaluationScorerResult`, or a
-`list[EvaluationScorerResult]`. Returning a list lets one scorer emit multiple
-scores from shared computation; an empty list emits no scores for that row.
-Each result carries a normalized score and optional row-level JSON-serializable
-metadata. The return annotation declares the Arrow schema, and the class-level
-Arrow hooks handle nested serialization, so the generic function runtime does
-not need scorer-specific behavior.
 
 ## Sandbox lifecycle
 
