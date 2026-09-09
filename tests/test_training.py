@@ -375,6 +375,95 @@ def test_run_training_with_dataclass_config() -> None:
     assert handle.run_id == "run-dc"
 
 
+def test_decorator_with_max_retries() -> None:
+    @training(data="ds", max_retries=3)
+    def train(df: Any, config: Any) -> str:
+        return "ok"
+
+    assert isinstance(train, TrainingFunction)
+    assert train._max_retries == 3
+
+
+def test_run_training_passes_max_retries() -> None:
+    from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
+
+    @training(data="my_ds", name="retry-run", max_retries=5)
+    def train(df: Any, config: Any) -> str:
+        return "ok"
+
+    mock_client = MagicMock()
+    mock_run = tr_pb.TrainingRun(id="run-retry")
+    mock_resp = tr_pb.CreateTrainingRunResponse(training_run=mock_run)
+    mock_client.call.return_value = mock_resp
+
+    with (
+        patch.object(
+            TrainingFunction, "_build_deploy_image", return_value=_mock_deploy_image()
+        ),
+        patch("chalkcompute._training.build_image", return_value="img:latest"),
+    ):
+        train.run_training(client=mock_client)
+
+    req = mock_client.call.call_args[0][1]
+    assert req.max_retries == 5
+
+
+def test_run_training_pythonpath_with_volume_commits() -> None:
+    from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
+    from chalkcompute._gen.chalk.volume.v2 import volume_pb
+
+    @training(data="my_ds", name="src-vol-run")
+    def train(df: Any, config: Any) -> str:
+        return "ok"
+
+    mock_client = MagicMock()
+    mock_run = tr_pb.TrainingRun(id="run-vol")
+    mock_resp = tr_pb.CreateTrainingRunResponse(training_run=mock_run)
+    mock_client.call.return_value = mock_resp
+
+    deploy_img = _mock_deploy_image()
+    deploy_img.lazy_local_files = [("local.py", "/app/local.py")]
+
+    mock_vclient = MagicMock()
+    commit = MagicMock(spec=volume_pb.CommitIntent)
+    mock_vclient.stage_lazy_files.return_value = ("vol-id", [commit])
+
+    with (
+        patch.object(TrainingFunction, "_build_deploy_image", return_value=deploy_img),
+        patch("chalkcompute._training.build_image", return_value="img:latest"),
+        patch("chalkcompute._volume.VolumeClient") as MockVC,
+    ):
+        MockVC.from_connect.return_value = mock_vclient
+        train.run_training(client=mock_client)
+
+    req = mock_client.call.call_args[0][1]
+    assert req.env["PYTHONPATH"] == "/volumes/training-src-src-vol-run"
+
+
+def test_run_training_pythonpath_without_volume_commits() -> None:
+    from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
+
+    @training(data="my_ds", name="no-vol-run")
+    def train(df: Any, config: Any) -> str:
+        return "ok"
+
+    mock_client = MagicMock()
+    mock_run = tr_pb.TrainingRun(id="run-novol")
+    mock_resp = tr_pb.CreateTrainingRunResponse(training_run=mock_run)
+    mock_client.call.return_value = mock_resp
+
+    with (
+        patch.object(
+            TrainingFunction, "_build_deploy_image", return_value=_mock_deploy_image()
+        ),
+        patch("chalkcompute._training.build_image", return_value="img:latest"),
+    ):
+        train.run_training(client=mock_client)
+
+    req = mock_client.call.call_args[0][1]
+    assert req.env["PYTHONPATH"] == "/app"
+
+
 def test_run_training_builds_image_when_provided() -> None:
     from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
 

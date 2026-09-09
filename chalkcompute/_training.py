@@ -230,6 +230,7 @@ class TrainingFunction:
         env: dict[str, str] | None = None,
         secrets: list[_Secret] | None = None,
         metadata: dict[str, Any] | None = None,
+        max_retries: int | None = None,
     ) -> None:
         _validate_data_source(data, dataset, input_sql)
 
@@ -256,6 +257,7 @@ class TrainingFunction:
         self._env = dict(env) if env else {}
         self._secrets: list[_Secret] = list(secrets or [])
         self._metadata = dict(metadata) if metadata else {}
+        self._max_retries = max_retries
 
     @property
     def func_name(self) -> str:
@@ -342,6 +344,7 @@ class TrainingFunction:
         image_uri = build_image(client, deploy_image)
 
         volume_commits: list[volume_pb.CommitIntent] = []
+        vol_name = ""
         if deploy_image.lazy_local_files:
             from chalkcompute._volume import VolumeClient
 
@@ -362,7 +365,10 @@ class TrainingFunction:
         meta = _metadata_to_proto(self._metadata) if self._metadata else None
 
         env = dict(self._env) if self._env else {}
-        env["PYTHONPATH"] = "/app"
+        if volume_commits:
+            env["PYTHONPATH"] = f"/volumes/{vol_name}"
+        else:
+            env["PYTHONPATH"] = "/app"
         module = self._func.__module__
         if module == "__main__":
             import __main__
@@ -384,6 +390,7 @@ class TrainingFunction:
             secret_refs=secret_refs or None,
             meta_data=meta,
             volume_commits=volume_commits or None,
+            max_retries=self._max_retries,
         )
 
         stub = client.stub(tr_connect.TrainingRunServiceClientSync)
@@ -438,6 +445,7 @@ def training(
     env: dict[str, str] | None = None,
     secrets: list[_Secret] | None = None,
     metadata: dict[str, Any] | None = None,
+    max_retries: int | None = None,
 ) -> TrainingFunction | _NoOpTrainingFunction: ...
 
 
@@ -455,6 +463,7 @@ def training(
     env: dict[str, str] | None = None,
     secrets: list[_Secret] | None = None,
     metadata: dict[str, Any] | None = None,
+    max_retries: int | None = None,
 ) -> Callable[..., TrainingFunction | _NoOpTrainingFunction]: ...
 
 
@@ -473,6 +482,7 @@ def training(
     env: dict[str, str] | None = None,
     secrets: list[_Secret] | None = None,
     metadata: dict[str, Any] | None = None,
+    max_retries: int | None = None,
 ) -> (
     Callable[..., TrainingFunction | _NoOpTrainingFunction]
     | TrainingFunction
@@ -516,6 +526,7 @@ def training(
             env=env,
             secrets=secrets,
             metadata=metadata,
+            max_retries=max_retries,
         )
 
     if func is not None:

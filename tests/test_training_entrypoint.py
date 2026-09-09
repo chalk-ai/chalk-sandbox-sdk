@@ -249,3 +249,225 @@ def test_main_function_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
         if c[0][1].update.status == tr_pb.TrainingRunStatus.FAILED
     ][0]
     assert "training crashed" in failed_call[0][1].update.error_message
+
+
+# --- data volume name from env ---
+
+
+def test_entrypoint_uses_data_volume_name_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from protobuf.wkt import Struct
+
+    monkeypatch.setenv("CHALK_TRAINING_RUN_ID", "abcdef12-0000-0000-0000-000000000000")
+    monkeypatch.setenv("CHALK_TRAINING_MODULE", "my_mod.train")
+    monkeypatch.setenv("CHALK_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("CHALK_CHECKPOINT_DIR", str(tmp_path / "ckpt"))
+    monkeypatch.setenv("CHALK_DATASET_REVISION_ID", "rev-42")
+    monkeypatch.setenv("CHALK_DATA_VOLUME_NAME", "training-data-my-run")
+
+    mock_run = tr_pb.TrainingRun(
+        id="abcdef12-0000-0000-0000-000000000000",
+        config=Struct.from_python({}),
+    )
+    mock_client = MagicMock()
+    mock_client.call.return_value = tr_pb.GetTrainingRunResponse(
+        training_run=mock_run,
+    )
+
+    fake_func = MagicMock(return_value="model")
+
+    with (
+        patch(
+            "chalkcompute.training.entrypoint.ConnectClient", return_value=mock_client
+        ),
+        patch(
+            "chalkcompute.training.entrypoint._discover_function",
+            return_value=fake_func,
+        ),
+        patch("chalkcompute.training.entrypoint._load_dataset") as mock_load,
+    ):
+        main()
+
+    mock_load.assert_called_once_with(
+        mock_client, "training-data-my-run", "rev-42", str(tmp_path)
+    )
+
+
+# --- retry logic ---
+
+
+def test_retry_first_attempt_succeeds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from protobuf.wkt import Struct
+
+    monkeypatch.setenv("CHALK_TRAINING_RUN_ID", "abcdef12-0000-0000-0000-000000000000")
+    monkeypatch.setenv("CHALK_TRAINING_MODULE", "my_mod.train")
+    monkeypatch.setenv("CHALK_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("CHALK_CHECKPOINT_DIR", str(tmp_path / "ckpt"))
+    monkeypatch.setenv("CHALK_DATASET_REVISION_ID", "")
+    monkeypatch.setenv("CHALK_MAX_RETRIES", "3")
+    monkeypatch.setenv("CHALK_TRAINING_RUN_NAME", "my-run")
+
+    mock_run = tr_pb.TrainingRun(
+        id="abcdef12-0000-0000-0000-000000000000",
+        config=Struct.from_python({}),
+    )
+    mock_client = MagicMock()
+    mock_client.call.return_value = tr_pb.GetTrainingRunResponse(
+        training_run=mock_run,
+    )
+
+    fake_func = MagicMock(return_value="model")
+    mock_commit = MagicMock()
+
+    with (
+        patch(
+            "chalkcompute.training.entrypoint.ConnectClient", return_value=mock_client
+        ),
+        patch(
+            "chalkcompute.training.entrypoint._discover_function",
+            return_value=fake_func,
+        ),
+        patch(
+            "chalkcompute.training.entrypoint._commit_retry_count", mock_commit
+        ),
+    ):
+        main()
+
+    assert mock_commit.call_count == 2
+    mock_commit.assert_any_call("training-ckpt-my-run", ".retry_count", 1)
+    mock_commit.assert_any_call("training-ckpt-my-run", ".retry_count", 0)
+
+
+def test_retry_increments_counter_on_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from protobuf.wkt import Struct
+
+    monkeypatch.setenv("CHALK_TRAINING_RUN_ID", "abcdef12-0000-0000-0000-000000000000")
+    monkeypatch.setenv("CHALK_TRAINING_MODULE", "my_mod.train")
+    monkeypatch.setenv("CHALK_DATA_DIR", str(tmp_path))
+    ckpt_dir = tmp_path / "ckpt"
+    ckpt_dir.mkdir()
+    monkeypatch.setenv("CHALK_CHECKPOINT_DIR", str(ckpt_dir))
+    monkeypatch.setenv("CHALK_DATASET_REVISION_ID", "")
+    monkeypatch.setenv("CHALK_MAX_RETRIES", "3")
+    monkeypatch.setenv("CHALK_TRAINING_RUN_NAME", "my-run")
+
+    mock_run = tr_pb.TrainingRun(
+        id="abcdef12-0000-0000-0000-000000000000",
+        config=Struct.from_python({}),
+    )
+    mock_client = MagicMock()
+    mock_client.call.return_value = tr_pb.GetTrainingRunResponse(
+        training_run=mock_run,
+    )
+
+    def boom(*args: Any, **kwargs: Any) -> None:
+        raise ValueError("crash")
+
+    mock_commit = MagicMock()
+
+    with (
+        patch(
+            "chalkcompute.training.entrypoint.ConnectClient", return_value=mock_client
+        ),
+        patch(
+            "chalkcompute.training.entrypoint._discover_function", return_value=boom
+        ),
+        patch(
+            "chalkcompute.training.entrypoint._commit_retry_count", mock_commit
+        ),
+        pytest.raises(SystemExit),
+    ):
+        main()
+
+    mock_commit.assert_called_once_with("training-ckpt-my-run", ".retry_count", 1)
+
+    update_calls = [
+        c
+        for c in mock_client.call.call_args_list
+        if len(c[0]) >= 2 and isinstance(c[0][1], tr_pb.UpdateTrainingRunRequest)
+    ]
+    statuses = [c[0][1].update.status for c in update_calls]
+    assert tr_pb.TrainingRunStatus.FAILED not in statuses
+
+
+def test_retry_exhausted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CHALK_TRAINING_RUN_ID", "abcdef12-0000-0000-0000-000000000000")
+    monkeypatch.setenv("CHALK_TRAINING_MODULE", "my_mod.train")
+    monkeypatch.setenv("CHALK_DATA_DIR", str(tmp_path))
+    ckpt_dir = tmp_path / "ckpt"
+    ckpt_dir.mkdir()
+    (ckpt_dir / ".retry_count").write_text("1")
+    monkeypatch.setenv("CHALK_CHECKPOINT_DIR", str(ckpt_dir))
+    monkeypatch.setenv("CHALK_DATASET_REVISION_ID", "")
+    monkeypatch.setenv("CHALK_MAX_RETRIES", "1")
+    monkeypatch.setenv("CHALK_TRAINING_RUN_NAME", "my-run")
+
+    mock_client = MagicMock()
+
+    with (
+        patch(
+            "chalkcompute.training.entrypoint.ConnectClient", return_value=mock_client
+        ),
+        pytest.raises(SystemExit),
+    ):
+        main()
+
+    update_calls = [
+        c
+        for c in mock_client.call.call_args_list
+        if len(c[0]) >= 2 and isinstance(c[0][1], tr_pb.UpdateTrainingRunRequest)
+    ]
+    assert len(update_calls) == 1
+    assert update_calls[0][0][1].update.status == tr_pb.TrainingRunStatus.FAILED
+    assert "Exhausted 1 retries" in update_calls[0][0][1].update.error_message
+
+
+def test_no_retries_reports_failed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from protobuf.wkt import Struct
+
+    monkeypatch.setenv("CHALK_TRAINING_RUN_ID", "abcdef12-0000-0000-0000-000000000000")
+    monkeypatch.setenv("CHALK_TRAINING_MODULE", "my_mod.train")
+    monkeypatch.setenv("CHALK_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("CHALK_CHECKPOINT_DIR", str(tmp_path / "ckpt"))
+    monkeypatch.setenv("CHALK_DATASET_REVISION_ID", "")
+    monkeypatch.delenv("CHALK_MAX_RETRIES", raising=False)
+
+    mock_run = tr_pb.TrainingRun(
+        id="abcdef12-0000-0000-0000-000000000000",
+        config=Struct.from_python({}),
+    )
+    mock_client = MagicMock()
+    mock_client.call.return_value = tr_pb.GetTrainingRunResponse(
+        training_run=mock_run,
+    )
+
+    def boom(*args: Any, **kwargs: Any) -> None:
+        raise ValueError("crash")
+
+    with (
+        patch(
+            "chalkcompute.training.entrypoint.ConnectClient", return_value=mock_client
+        ),
+        patch(
+            "chalkcompute.training.entrypoint._discover_function", return_value=boom
+        ),
+        pytest.raises(SystemExit),
+    ):
+        main()
+
+    update_calls = [
+        c
+        for c in mock_client.call.call_args_list
+        if len(c[0]) >= 2 and isinstance(c[0][1], tr_pb.UpdateTrainingRunRequest)
+    ]
+    statuses = [c[0][1].update.status for c in update_calls]
+    assert tr_pb.TrainingRunStatus.FAILED in statuses
