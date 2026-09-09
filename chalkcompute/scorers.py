@@ -787,3 +787,30 @@ def string_similarity(
         function_kwargs=function_kwargs,
         packages=_SIMILARITY_PACKAGES,
     )
+
+
+def json_valid(
+    *,
+    name: str = "json-valid",
+    inputs: Sequence[str] = ("output",),
+    image: Image | None = None,
+    **function_kwargs: Any,
+) -> RemoteFunction | _NoOpFunction:
+    """Deploy a scorer that gives 1.0 when a column parses as JSON.
+
+    Useful on its own for a task asked to answer in JSON. The parser's
+    complaint is recorded as metadata when it does not parse.
+    """
+    _assert_deployable("cc.scorers.json_valid")
+    column = _validate_single(inputs, "json_valid")
+
+    def compare(**columns: Any) -> EvaluationScorerResult:
+        try:
+            json.loads(_text(columns[column]))
+        except ValueError as exc:
+            return EvaluationScorerResult(score=0.0, metadata={"error": str(exc)})
+        return EvaluationScorerResult(score=1.0, metadata={})
+
+    return _declare_scorer(
+        name, (column,), compare, image=image, function_kwargs=function_kwargs
+    )
