@@ -263,6 +263,8 @@ evaluation = cc.Evaluation.create(
   and its named groups kept as metadata.
 - `contains` — expected substrings, one or a JSON array, scored as all, any,
   or the fraction present.
+- `numeric_close` — two columns as numbers, within an absolute or relative
+  tolerance, or graded by how far apart they are.
 
 ### LLM judges
 
