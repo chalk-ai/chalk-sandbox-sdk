@@ -208,9 +208,11 @@ class _FakeConnection:
         self._access_token = f"chalk-token-{type(self).instances}"
         self._api_server = "https://api.staging.chalk.dev/"
         self._env_id = "env-123"
+        self.auth_calls = 0
 
     def _ensure_auth(self) -> None:
-        return None
+        # The real client re-reads a rotating identity here.
+        self.auth_calls += 1
 
 
 @pytest.fixture
@@ -255,6 +257,32 @@ def test_the_router_credential_is_reused_until_it_goes_stale(
     # Re-read well before the credential could expire mid-run.
     clock["now"] += scorers._ROUTER_TOKEN_TTL_SECONDS + 1
     assert scorers._client_options(spec)["api_key"] == "chalk-token-2"
+
+
+def test_every_call_lets_the_credential_refresh_itself(chalk_credentials) -> None:
+    spec = _judge()._func.__globals__["__chalk_spec__"]
+
+    scorers._client_options(spec)
+    scorers._client_options(spec)
+
+    # One client, re-authenticated per call: a rotating identity expires on its
+    # own schedule, which this cache must not outlive.
+    connection = scorers._router_cache["connection"]
+    assert _FakeConnection.instances == 1
+    assert connection.auth_calls == 2
+
+
+def test_a_declared_key_that_did_not_arrive_is_reported(
+    chalk_credentials, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    judge = _judge(api_key=Secret.from_chalk_env("PROVIDER_KEY"))
+    spec = judge._func.__globals__["__chalk_spec__"]
+    monkeypatch.delenv("PROVIDER_KEY", raising=False)
+
+    # Naming a key and not getting one is a misconfiguration, not a reason to
+    # spend Chalk's providers instead.
+    with pytest.raises(RuntimeError, match="PROVIDER_KEY"):
+        scorers._client_options(spec)
 
 
 def test_an_unreachable_router_says_what_to_pass_instead(

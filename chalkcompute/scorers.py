@@ -52,6 +52,8 @@ class _JudgeSpec:
     parse_fn: Callable[[str], Any] | None
     base_url: str | None
     api_key_env: str
+    # Whether the caller named a key, as opposed to the default env var.
+    api_key_declared: bool
     completion_kwargs: dict[str, Any]
 
 
@@ -118,6 +120,7 @@ def llm_judge(
         parse_fn=parse_fn,
         base_url=base_url,
         api_key_env=api_key_env,
+        api_key_declared=api_key is not None,
         completion_kwargs=completion_kwargs,
     )
 
@@ -366,10 +369,15 @@ def _environment_id() -> str | None:
 def _client_options(spec: _JudgeSpec | _EmbeddingSpec) -> dict[str, Any]:
     base_url = spec.base_url or os.environ.get("OPENAI_BASE_URL")
     api_key = os.environ.get(spec.api_key_env)
-    # No endpoint and no key of the user's own: Chalk's router is one the
-    # function is already credentialed for. It serves completions, so only a
-    # judge falls back to it.
-    if base_url is None and api_key is None and isinstance(spec, _JudgeSpec):
+    # Only a judge that asked for nothing falls back: the router serves
+    # completions, and a declared api_key that did not arrive is a
+    # misconfiguration to report, not a reason to bill Chalk's providers.
+    if (
+        base_url is None
+        and api_key is None
+        and isinstance(spec, _JudgeSpec)
+        and not spec.api_key_declared
+    ):
         return _router_client_options()
     if not api_key:
         raise RuntimeError(
@@ -393,13 +401,16 @@ def _router_client_options() -> dict[str, Any]:
     now = time.monotonic()
     issued_at = float(_router_cache.get("issued_at", 0.0))
     connection = _router_cache.get("connection")
-    if connection is None or now - issued_at > _ROUTER_TOKEN_TTL_SECONDS:
-        try:
+    # A rotating web identity re-reads its token here, on its own expiry
+    # schedule; a client whose credential never refreshes is replaced instead.
+    try:
+        if connection is None or now - issued_at > _ROUTER_TOKEN_TTL_SECONDS:
             connection = ConnectClient()
-            connection._ensure_auth()
-        except Exception as exc:
-            raise RuntimeError(_ROUTER_UNREACHABLE) from exc
-        _router_cache.update(connection=connection, issued_at=now)
+            _router_cache.update(connection=connection, issued_at=now)
+        connection._ensure_auth()
+    except Exception as exc:
+        _router_cache.clear()
+        raise RuntimeError(_ROUTER_UNREACHABLE) from exc
     token = connection._access_token
     api_server = (connection._api_server or "").rstrip("/")
     if not token or not api_server:
