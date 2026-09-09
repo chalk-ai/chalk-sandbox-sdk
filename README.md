@@ -258,6 +258,7 @@ evaluation = cc.Evaluation.create(
 
 - `exact_match` — the two columns hold the same text, after optional trimming,
   whitespace collapsing, and case folding.
+- `levenshtein` — edit distance, normalized to `1 - distance / len(longer)`.
 
 ### LLM judges
 
