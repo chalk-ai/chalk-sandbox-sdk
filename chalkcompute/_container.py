@@ -1300,7 +1300,7 @@ class Container:
         ...         )
         ...     ),
         ...     cpu="1",
-        ...     memory="1Gi",
+        ...     memory="2Gi",
         ... ).run()
         >>> hello = c.exec(
         ...     "python",
