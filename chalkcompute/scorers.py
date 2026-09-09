@@ -174,13 +174,13 @@ def _declare_scorer(
     return deployed
 
 
-def _assert_deployable() -> None:
+def _assert_deployable(what: str = "cc.scorers.llm_judge") -> None:
     # Stripping removes the caller's chalkcompute import but keeps this call,
     # so the shipped module would not import.
     if should_strip_source():
         raise FunctionBuildError(
-            "cc.scorers.llm_judge cannot be deployed in strip mode "
-            "(CHALK_FUNCTION_STRIP_SOURCE, or a 0.0.0 source checkout): the judge "
+            f"{what} cannot be deployed in strip mode "
+            "(CHALK_FUNCTION_STRIP_SOURCE, or a 0.0.0 source checkout): the scorer "
             "is generated at import time and stripping removes the chalkcompute "
             "import the deployed module needs. Deploy with a published chalkcompute "
             "installed, or set CHALK_FUNCTION_LOCAL_SDK_COPY=1 with "
@@ -379,3 +379,81 @@ def _complete(spec: _JudgeSpec, messages: list[dict[str, str]]) -> Any:
             f"llm_judge: the model returned no grade ({message.refusal or 'empty reply'})"
         )
     return message.parsed
+
+
+# ---------------------------------------------------------------------------
+# Deterministic scorers
+# ---------------------------------------------------------------------------
+
+
+def _validate_pair(inputs: Sequence[str], what: str) -> tuple[str, str]:
+    """The candidate column, then the column it is compared against."""
+    columns = _validate_inputs(inputs)
+    if len(columns) != 2:
+        raise ValueError(
+            f"{what}: inputs must name the candidate column and the column it is "
+            f"compared against, not {columns}"
+        )
+    return columns[0], columns[1]
+
+
+def _text(value: Any) -> str:
+    """A missing column reads as empty rather than failing the row."""
+    return "" if value is None else str(value)
+
+
+def _normalized(
+    value: Any,
+    *,
+    case_insensitive: bool = False,
+    strip: bool = True,
+    normalize_whitespace: bool = False,
+) -> str:
+    text = _text(value)
+    if normalize_whitespace:
+        text = " ".join(text.split())
+    elif strip:
+        text = text.strip()
+    return text.casefold() if case_insensitive else text
+
+
+def exact_match(
+    *,
+    name: str = "exact-match",
+    inputs: Sequence[str] = ("output", "expected"),
+    case_insensitive: bool = False,
+    strip: bool = True,
+    normalize_whitespace: bool = False,
+    image: Image | None = None,
+    **function_kwargs: Any,
+) -> RemoteFunction | _NoOpFunction:
+    """Deploy a scorer that gives 1.0 when two columns hold the same text.
+
+    ``inputs`` names the candidate column and then the column it is compared
+    against. ``strip`` trims each side, ``normalize_whitespace`` collapses runs
+    of whitespace instead, and ``case_insensitive`` folds case. The metadata
+    records whether the two matched.
+    """
+    _assert_deployable("cc.scorers.exact_match")
+    candidate, reference = _validate_pair(inputs, "exact_match")
+
+    def compare(**columns: Any) -> EvaluationScorerResult:
+        options = {
+            "case_insensitive": case_insensitive,
+            "strip": strip,
+            "normalize_whitespace": normalize_whitespace,
+        }
+        matched = _normalized(columns[candidate], **options) == _normalized(
+            columns[reference], **options
+        )
+        return EvaluationScorerResult(
+            score=1.0 if matched else 0.0, metadata={"matched": matched}
+        )
+
+    return _declare_scorer(
+        name,
+        (candidate, reference),
+        compare,
+        image=image,
+        function_kwargs=function_kwargs,
+    )
