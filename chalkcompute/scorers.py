@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import json
 import keyword
 import math
@@ -702,4 +703,87 @@ def numeric_close(
         compare,
         image=image,
         function_kwargs=function_kwargs,
+    )
+
+
+# rapidfuzz backs the fuzzy ratios; Jaccard and difflib need nothing extra.
+_SIMILARITY_PACKAGES = ["rapidfuzz"]
+_SIMILARITY_METHODS = (
+    "jaro_winkler",
+    "jaccard",
+    "token_set",
+    "token_sort",
+    "partial",
+    "sequence",
+)
+
+
+def _jaccard_similarity(a: str, b: str) -> float:
+    """Character by character, as ``F.jaccard_similarity`` measures it."""
+    left, right = set(a), set(b)
+    union = left | right
+    return 1.0 if not union else len(left & right) / len(union)
+
+
+def _similarity(method: str, a: str, b: str) -> float:
+    if not a and not b:
+        return 1.0
+    if method == "jaccard":
+        return _jaccard_similarity(a, b)
+    if method == "sequence":
+        return difflib.SequenceMatcher(None, a, b).ratio()
+    # Present in the scorer's image, never in the SDK's environment.
+    from rapidfuzz import distance, fuzz  # ty: ignore[unresolved-import]
+
+    if method == "jaro_winkler":
+        return distance.JaroWinkler.normalized_similarity(a, b)
+    ratio = {
+        "token_set": fuzz.token_set_ratio,
+        "token_sort": fuzz.token_sort_ratio,
+        "partial": fuzz.partial_ratio,
+    }[method]
+    return ratio(a, b) / 100
+
+
+def string_similarity(
+    method: str,
+    /,
+    *,
+    name: str | None = None,
+    inputs: Sequence[str] = ("output", "expected"),
+    case_insensitive: bool = False,
+    image: Image | None = None,
+    **function_kwargs: Any,
+) -> RemoteFunction | _NoOpFunction:
+    """Deploy a scorer that grades two columns by string similarity.
+
+    ``method`` picks the measure: ``"jaro_winkler"``, ``"jaccard"``,
+    ``"token_set"``, ``"token_sort"``, ``"partial"``, or ``"sequence"``. Each
+    is the same quantity as the ``chalk.functions`` of that name, expressed as
+    a similarity in ``[0, 1]``, and the raw value is recorded as metadata.
+    Two empty columns score 1.0.
+    """
+    _assert_deployable("cc.scorers.string_similarity")
+    if method not in _SIMILARITY_METHODS:
+        raise ValueError(
+            f"string_similarity: method must be one of {_SIMILARITY_METHODS}, "
+            f"not {method!r}"
+        )
+    candidate, reference = _validate_pair(inputs, "string_similarity")
+
+    def compare(**columns: Any) -> EvaluationScorerResult:
+        a = _normalized(columns[candidate], case_insensitive=case_insensitive)
+        b = _normalized(columns[reference], case_insensitive=case_insensitive)
+        ratio = _similarity(method, a, b)
+        return EvaluationScorerResult(
+            score=ratio, metadata={"method": method, "ratio": ratio}
+        )
+
+    return _declare_scorer(
+        name or sanitize_dns_label(method.replace("_", "-")),
+        (candidate, reference),
+        compare,
+        image=image,
+        function_kwargs=function_kwargs,
+        packages=_SIMILARITY_PACKAGES,
     )

@@ -1,0 +1,1 @@
+- Add `cc.scorers.string_similarity`, wrapping the six string measures Chalk ships as functions

@@ -265,6 +265,8 @@ evaluation = cc.Evaluation.create(
   or the fraction present.
 - `numeric_close` — two columns as numbers, within an absolute or relative
   tolerance, or graded by how far apart they are.
+- `string_similarity` — `jaro_winkler`, `jaccard`, `token_set`, `token_sort`,
+  `partial`, or `sequence`, matching the `chalk.functions` of those names.
 
 ### LLM judges
 
