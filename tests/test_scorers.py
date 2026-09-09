@@ -32,13 +32,7 @@ class Grade(BaseModel):
 
 REPLY = {"score": 0.5, "directness": 2, "reason": "ok"}
 
-
-@pytest.fixture(autouse=True)
-def no_deploy(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Never start a deploy: a background thread outliving the test would reach
-    the real one after monkeypatch had restored it."""
-    monkeypatch.setattr(RemoteFunction, "_start_background_deploy", lambda self: None)
-    monkeypatch.setattr(scorers, "should_strip_source", lambda: False)
+pytestmark = pytest.mark.usefixtures("no_deploy")
 
 
 @pytest.fixture

@@ -79,7 +79,7 @@ def llm_judge(
     inputs = _validate_inputs(inputs)
     completion_kwargs = _validate_completion_kwargs(completion_kwargs)
     name = name or _default_name(response_model)
-    secrets = list(function_kwargs.pop("secrets", None) or [])
+    secrets: list[Secret] = []
     api_key_env = _DEFAULT_API_KEY_ENV
     if api_key is not None:
         api_key_env = _secret_env_var(api_key)
@@ -98,36 +98,76 @@ def llm_judge(
         completion_kwargs=completion_kwargs,
     )
 
-    # Defined in the caller's module so the deploy ships that file, where the
-    # response model lives, and the shim imports it back.
-    frame = sys._getframe(1)
+    def grade(**columns: Any) -> EvaluationScorerResult:
+        return _judge(spec, columns)
+
+    return _declare_scorer(
+        name,
+        inputs,
+        grade,
+        image=image,
+        function_kwargs=function_kwargs,
+        packages=_JUDGE_PACKAGES,
+        secrets=secrets,
+        stamp={
+            "__chalk_scorer_response_schema__": json.dumps(
+                _metadata_schema(response_model, score_key)
+            )
+        },
+        extra_globals={"__chalk_spec__": spec},
+        prefix="_chalk_llm_judge_",
+    )
+
+
+def _declare_scorer(
+    name: str,
+    inputs: tuple[str, ...],
+    body: Callable[..., EvaluationScorerResult],
+    *,
+    image: Image | None,
+    function_kwargs: dict[str, Any],
+    packages: Sequence[str] = (),
+    secrets: Sequence[Secret] = (),
+    stamp: Mapping[str, Any] | None = None,
+    extra_globals: Mapping[str, Any] | None = None,
+    prefix: str = "_chalk_scorer_",
+    frame_depth: int = 2,
+) -> RemoteFunction | _NoOpFunction:
+    """Deploy ``body`` as a scorer taking one ``str`` column per ``inputs``.
+
+    The generated function is defined in the caller's module so the deploy
+    ships that file, where anything the body closes over lives, and the
+    pod-side shim imports it back. ``stamp`` sets attributes on it and
+    ``extra_globals`` names values in its module namespace.
+    """
+    frame = sys._getframe(frame_depth)
     caller_module = frame.f_globals.get("__name__", "__main__")
-    py_name = "_chalk_llm_judge_" + re.sub(r"[^0-9A-Za-z_]", "_", name)
+    py_name = prefix + re.sub(r"[^0-9A-Za-z_]", "_", name)
     params = ", ".join(f"{column}: str" for column in inputs)
-    columns = ", ".join(f"{column!r}: {column}" for column in inputs)
+    columns = ", ".join(f"{column}={column}" for column in inputs)
     source = (
         f"def {py_name}({params}) -> __chalk_result__:\n"
-        f"    return __chalk_judge__(__chalk_spec__, {{{columns}}})\n"
+        f"    return __chalk_body__({columns})\n"
     )
     namespace: dict[str, Any] = {
         "__name__": caller_module,
         "__chalk_result__": EvaluationScorerResult,
-        "__chalk_judge__": _judge,
-        "__chalk_spec__": spec,
+        "__chalk_body__": body,
+        **(extra_globals or {}),
     }
     exec(compile(source, frame.f_code.co_filename, "exec"), namespace)
-    judge = namespace[py_name]
-    judge.__chalk_scorer_response_schema__ = json.dumps(
-        _metadata_schema(response_model, score_key)
-    )
+    scorer = namespace[py_name]
+    for attribute, value in (stamp or {}).items():
+        setattr(scorer, attribute, value)
 
     base_image = image if image is not None else Image.debian_slim()
+    declared = list(function_kwargs.pop("secrets", None) or []) + list(secrets)
     deployed = _function(
         name=name,
-        image=base_image.pip_install(_JUDGE_PACKAGES),
-        secrets=secrets or None,
+        image=base_image.pip_install(list(packages)) if packages else base_image,
+        secrets=declared or None,
         **function_kwargs,
-    )(judge)
+    )(scorer)
     module = sys.modules.get(caller_module)
     if module is not None:
         setattr(module, py_name, deployed)
