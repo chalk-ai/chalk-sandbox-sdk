@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 from chalkcompute import Image, Sandbox
@@ -477,6 +477,47 @@ def test_version_pinned_mount_is_serialized_to_proto() -> None:
 
     assert mount.version_id == 7
     assert mount.has_field("version_id")
+
+
+@pytest.mark.parametrize(
+    "version_id, ref, expected_ref",
+    [(None, "main", ""), (None, "sandbox-a", "sandbox-a"), (7, "main", "")],
+)
+def test_sandbox_client_create_serializes_volume_handle_tuple(
+    version_id: int | None, ref: str, expected_ref: str
+) -> None:
+    from chalkcompute import VersionedVolume
+
+    volume = VersionedVolume("code", client=MagicMock(), version_id=version_id, ref=ref)
+    client = SandboxClient()
+    stub = _Stub()
+    client._stub = stub  # type: ignore[assignment]
+    try:
+        with patch(
+            "chalkcompute._sandbox.referenced_volume_mount",
+            side_effect=lambda _connect, mount: mount,
+        ) as resolve:
+            client.create("ubuntu:latest", volumes=[(volume, "/code")], wait=False)
+        resolve.assert_called_once_with(
+            ANY,
+            VolumeMount(
+                "code", "/code", version_id=version_id, ref_name=expected_ref or None
+            ),
+        )
+    finally:
+        client.close()
+
+    assert stub.request is not None
+    mount = stub.request.source.value.volumes[0]
+    assert (mount.name, mount.mount_path, mount.type) == (
+        "code",
+        "/code",
+        "versioned_chalkfs",
+    )
+    assert mount.version_id == (version_id or 0)
+    assert mount.has_field("version_id") == (version_id is not None)
+    assert mount.ref_name == expected_ref
+    assert mount.has_field("ref_name") == bool(expected_ref)
 
 
 def test_fork_mount_is_serialized_to_proto() -> None:

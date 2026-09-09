@@ -2054,7 +2054,7 @@ class _BatchUpload:
 
 
 def normalize_volume_refs(
-    volumes: Iterable[tuple[str, str] | Volume | VolumeMount] | None,
+    volumes: Iterable[tuple[str | Volume, str] | Volume | VolumeMount] | None,
 ) -> builtins.list[VolumeMount]:
     """Validate and normalize caller-supplied volume references.
 
@@ -2074,14 +2074,19 @@ def normalize_volume_refs(
         if not (
             isinstance(item, (tuple, list))
             and len(item) == 2
-            and all(isinstance(s, str) for s in item)
+            and isinstance(item[0], (str, Volume))
+            and isinstance(item[1], str)
         ):
             raise ValueError(
                 "Each volumes entry must be a Volume, VolumeMount, or "
-                f"(name, mount_path) string tuple, got {item!r}. "
-                "Example: volumes=[('my-volume', '/data')]"
+                f"(name_or_volume, mount_path) tuple with a string mount path, got {item!r}. "
+                "Example: volumes=[('my-volume', '/data')] or [(volume, '/data')]"
             )
-        refs.append(VolumeMount(name=item[0], mount_path=item[1]))
+        volume, mount_path = item
+        if isinstance(volume, Volume):
+            refs.append(volume.mount(mount_path))
+        else:
+            refs.append(VolumeMount(name=volume, mount_path=mount_path))
     return refs
 
 
