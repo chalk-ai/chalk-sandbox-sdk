@@ -1,0 +1,1 @@
+- Add `cc.scorers.contains`, a scorer that looks for expected substrings in a column

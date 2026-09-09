@@ -261,6 +261,8 @@ evaluation = cc.Evaluation.create(
 - `levenshtein` — edit distance, normalized to `1 - distance / len(longer)`.
 - `regex_match` — a pattern appears in (or covers) one column, with the match
   and its named groups kept as metadata.
+- `contains` — expected substrings, one or a JSON array, scored as all, any,
+  or the fraction present.
 
 ### LLM judges
 
