@@ -268,6 +268,8 @@ evaluation = cc.Evaluation.create(
 - `string_similarity` — `jaro_winkler`, `jaccard`, `token_set`, `token_sort`,
   `partial`, or `sequence`, matching the `chalk.functions` of those names.
 - `json_valid` — one column parses as JSON.
+- `json_match` — two columns hold the same JSON, or agree on the dotted
+  `paths` you name.
 
 ### LLM judges
 
