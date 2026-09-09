@@ -259,6 +259,8 @@ evaluation = cc.Evaluation.create(
 - `exact_match` — the two columns hold the same text, after optional trimming,
   whitespace collapsing, and case folding.
 - `levenshtein` — edit distance, normalized to `1 - distance / len(longer)`.
+- `regex_match` — a pattern appears in (or covers) one column, with the match
+  and its named groups kept as metadata.
 
 ### LLM judges
 

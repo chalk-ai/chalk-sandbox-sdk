@@ -1,0 +1,1 @@
+- Add `cc.scorers.regex_match`, a scorer that grades a column against a regular expression
