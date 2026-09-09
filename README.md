@@ -194,11 +194,11 @@ dataset = cc.DatasetClient().upload(
 
 suite = cc.EvaluationSuite.create("Release")
 
-@cc.function(name="support-answer")
+@cc.function
 def answer(input: str) -> str:
     return call_support_model(input)
 
-@cc.function(name="response-quality")
+@cc.function
 def response_quality(input: str, output: str) -> cc.EvaluationScorerResult:
     score, details = score_response(input=input, output=output)
     return cc.EvaluationScorerResult(
@@ -233,7 +233,7 @@ instead be attached by reference:
 evaluation = cc.Evaluation.create(
     "Customer Support Chatbot",
     dataset=dataset,
-    task=cc.RemoteFunction.from_name("support-answer"),
+    task=cc.RemoteFunction.from_name("answer"),
     scorers=[cc.RemoteFunction.from_version_id("fn_brand_alignment_v2")],
 )
 ```
@@ -312,7 +312,7 @@ for revision in group.revisions():
     print(revision.id, revision.status, revision.is_current)
 group.rollback("sgr_previous")
 
-@cc.function(name="rank")
+@cc.function
 def rank(query: str) -> str:
     return query
 
