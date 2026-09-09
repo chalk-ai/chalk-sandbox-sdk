@@ -78,3 +78,38 @@ def test_rejects_an_empty_path_list() -> None:
     assert scorers.json_match()._explicit_name == "json-match"
     with pytest.raises(ValueError, match="at least one path"):
         scorers.json_match(paths=[])
+
+
+# Python holds True == 1, so a boolean and a number would pass for each other.
+@pytest.mark.parametrize(
+    ("output", "expected", "path"),
+    [
+        ('{"ok": true}', '{"ok": 1}', "ok"),
+        ('{"ok": false}', '{"ok": 0}', "ok"),
+        ('{"a": {"ok": true}}', '{"a": {"ok": 1}}', "a.ok"),
+        ('{"a": [true]}', '{"a": [1]}', "a.0"),
+    ],
+)
+def test_a_boolean_is_not_a_number(output, expected, path) -> None:
+    assert _score(scorers.json_match(), output, expected).score == 0.0
+    assert _score(scorers.json_match(paths=[path]), output, expected).score == 0.0
+    assert _score(scorers.json_match(), output, output).score == 1.0
+    assert _score(scorers.json_match(paths=[path]), output, output).score == 1.0
+
+
+def test_integers_and_floats_are_the_same_json_number() -> None:
+    assert _score(scorers.json_match(), '{"n": 1}', '{"n": 1.0}').score == 1.0
+
+
+def test_nan_and_infinity_are_not_accepted_as_json() -> None:
+    graded = _score(scorers.json_match(), '{"x": NaN}', '{"x": NaN}')
+
+    assert graded.score == 0.0
+    assert "not valid JSON" in graded.metadata["error"]
+
+
+# A bare string iterates into one path per character, and character paths are
+# missing on both sides, which would read as agreement.
+def test_rejects_a_single_path_passed_as_a_string() -> None:
+    with pytest.raises(TypeError, match="must be a sequence"):
+        scorers.json_match(paths="user.id")
