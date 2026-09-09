@@ -53,13 +53,26 @@ def test_text_that_is_not_a_number_scores_zero() -> None:
     scorer = scorers.numeric_close()
 
     assert _score(scorer, "about ten", "10") == scorers.EvaluationScorerResult(
-        score=0.0, metadata={"error": "not a number"}
+        score=0.0, metadata={"error": "not a finite number"}
     )
     assert _score(scorer, None, "10").score == 0.0
     assert _score(scorer, " 10 ", "10").score == 1.0
 
 
-def test_rejects_a_negative_tolerance() -> None:
+# float() takes these, and a relative tolerance would then compare inf <= inf
+# and call it perfect, while nan would lose every comparison.
+@pytest.mark.parametrize("text", ["inf", "-inf", "Infinity", "1e999", "nan"])
+def test_values_that_are_not_finite_score_zero(text) -> None:
+    graded = _score(scorers.numeric_close(tolerance=0.01, relative=True), text, "10")
+
+    assert graded == scorers.EvaluationScorerResult(
+        score=0.0, metadata={"error": "not a finite number"}
+    )
+    assert _score(scorers.numeric_close(), text, text).score == 0.0
+
+
+def test_rejects_a_tolerance_that_is_negative_or_not_finite() -> None:
     assert scorers.numeric_close()._explicit_name == "numeric-close"
-    with pytest.raises(ValueError, match="tolerance cannot be negative"):
-        scorers.numeric_close(tolerance=-1)
+    for tolerance in (-1, float("inf"), float("nan")):
+        with pytest.raises(ValueError, match="finite and not negative"):
+            scorers.numeric_close(tolerance=tolerance)

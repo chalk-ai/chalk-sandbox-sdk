@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import keyword
+import math
 import os
 import re
 import sys
@@ -643,9 +644,13 @@ def contains(
 
 def _number(value: Any) -> float | None:
     try:
-        return float(_text(value).strip())
+        parsed = float(_text(value).strip())
     except ValueError:
         return None
+    # "inf" and "nan" parse as floats but cannot be scored: a relative
+    # tolerance against infinity compares inf <= inf, and nan loses every
+    # comparison, so both would read as a perfect or a zero score.
+    return parsed if math.isfinite(parsed) else None
 
 
 def numeric_close(
@@ -663,18 +668,23 @@ def numeric_close(
     are within it, taken as a share of the larger value when ``relative``.
     Without one the score falls off with the gap between them, as
     ``1 - gap / max(abs(a), abs(b))``. The signed difference is recorded as
-    metadata, and a column that does not parse as a number scores 0.0.
+    metadata. A column that does not parse as a finite number scores 0.0,
+    which covers ``inf`` and ``nan`` as well as ordinary text.
     """
     _assert_deployable("cc.scorers.numeric_close")
     candidate, reference = _validate_pair(inputs, "numeric_close")
-    if tolerance is not None and tolerance < 0:
-        raise ValueError(f"numeric_close: tolerance cannot be negative ({tolerance})")
+    if tolerance is not None and not 0 <= tolerance < math.inf:
+        raise ValueError(
+            f"numeric_close: tolerance must be finite and not negative ({tolerance})"
+        )
 
     def compare(**columns: Any) -> EvaluationScorerResult:
         a = _number(columns[candidate])
         b = _number(columns[reference])
         if a is None or b is None:
-            return EvaluationScorerResult(score=0.0, metadata={"error": "not a number"})
+            return EvaluationScorerResult(
+                score=0.0, metadata={"error": "not a finite number"}
+            )
         gap = abs(a - b)
         largest = max(abs(a), abs(b))
         if tolerance is not None:
