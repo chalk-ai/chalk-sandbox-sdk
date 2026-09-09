@@ -330,9 +330,7 @@ def test_retry_first_attempt_succeeds(
             "chalkcompute.training.entrypoint._discover_function",
             return_value=fake_func,
         ),
-        patch(
-            "chalkcompute.training.entrypoint._commit_retry_count", mock_commit
-        ),
+        patch("chalkcompute.training.entrypoint._commit_retry_count", mock_commit),
     ):
         main()
 
@@ -374,12 +372,8 @@ def test_retry_increments_counter_on_failure(
         patch(
             "chalkcompute.training.entrypoint.ConnectClient", return_value=mock_client
         ),
-        patch(
-            "chalkcompute.training.entrypoint._discover_function", return_value=boom
-        ),
-        patch(
-            "chalkcompute.training.entrypoint._commit_retry_count", mock_commit
-        ),
+        patch("chalkcompute.training.entrypoint._discover_function", return_value=boom),
+        patch("chalkcompute.training.entrypoint._commit_retry_count", mock_commit),
         pytest.raises(SystemExit),
     ):
         main()
@@ -395,9 +389,7 @@ def test_retry_increments_counter_on_failure(
     assert tr_pb.TrainingRunStatus.FAILED not in statuses
 
 
-def test_retry_exhausted(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_retry_exhausted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("CHALK_TRAINING_RUN_ID", "abcdef12-0000-0000-0000-000000000000")
     monkeypatch.setenv("CHALK_TRAINING_MODULE", "my_mod.train")
     monkeypatch.setenv("CHALK_DATA_DIR", str(tmp_path))
@@ -457,9 +449,7 @@ def test_no_retries_reports_failed(
         patch(
             "chalkcompute.training.entrypoint.ConnectClient", return_value=mock_client
         ),
-        patch(
-            "chalkcompute.training.entrypoint._discover_function", return_value=boom
-        ),
+        patch("chalkcompute.training.entrypoint._discover_function", return_value=boom),
         pytest.raises(SystemExit),
     ):
         main()
