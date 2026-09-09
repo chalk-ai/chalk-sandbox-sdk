@@ -19,6 +19,17 @@ def test_anything_json_scores_one(text) -> None:
     assert graded.metadata == {}
 
 
+# Python's parser takes these, but the JSON grammar has no place for them.
+@pytest.mark.parametrize(
+    "text", ["NaN", "Infinity", "-Infinity", '{"x": Infinity}', "[NaN]"]
+)
+def test_the_nonstandard_constants_are_not_json(text) -> None:
+    graded = scorers.json_valid()._func(output=text)
+
+    assert graded.score == 0.0
+    assert "not valid JSON" in graded.metadata["error"]
+
+
 @pytest.mark.parametrize("text", ["{not json", "", "{'a': 1}", "undefined"])
 def test_anything_else_scores_zero_and_says_why(text) -> None:
     graded = scorers.json_valid()._func(output=text)
