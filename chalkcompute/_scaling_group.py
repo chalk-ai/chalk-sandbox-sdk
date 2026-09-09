@@ -270,7 +270,7 @@ class ScalingGroup:
         gpu: str | None = None,
         env: dict[str, str] | None = None,
         secrets: list[_Secret] | None = None,
-        volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+        volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
         entrypoint: list[str] | None = None,
         port: int | None = 8080,
         protocol: str = "http",

@@ -749,7 +749,7 @@ class RemoteClass:
         gpu: str | None = None,
         env: dict[str, str] | None = None,
         secrets: list[_Secret] | None = None,
-        volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+        volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
         tags: dict[str, str] | None = None,
         chalk_identity: bool = False,
         authenticated: bool = False,
@@ -1591,7 +1591,7 @@ def cls(
     name: str | None = None,
     env: dict[str, str] | None = None,
     secrets: list[_Secret] | None = None,
-    volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+    volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
     chalk_identity: bool = False,
     authenticated: bool = False,
@@ -1629,7 +1629,7 @@ def cls(
     name: str | None = None,
     env: dict[str, str] | None = None,
     secrets: list[_Secret] | None = None,
-    volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+    volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
     chalk_identity: bool = False,
     authenticated: bool = False,
@@ -1668,7 +1668,7 @@ def cls(
     name: str | None = None,
     env: dict[str, str] | None = None,
     secrets: list[_Secret] | None = None,
-    volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+    volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
     chalk_identity: bool = False,
     authenticated: bool = False,
@@ -1727,7 +1727,9 @@ def cls(
     secrets
         List of :class:`~chalkcompute.Secret` references to inject.
     volumes
-        List of ``(name, mount_path)`` tuples for persistent storage.
+        List of ``Volume`` handles, ``VolumeMount`` specifications, or
+        ``(name_or_volume, mount_path)`` tuples for persistent storage.
+        Volume handles preserve their selected ref or pinned version.
     min_replicas
         Minimum number of replicas per method.
     max_replicas

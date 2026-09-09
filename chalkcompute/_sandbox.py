@@ -83,7 +83,7 @@ from chalkcompute._volume import (
 # Aliases defined before SandboxClient, which has a ``.list()`` method that
 # would otherwise shadow the builtin ``list`` in class-scope name resolution.
 _GrpcMetadata = list[tuple[str, str]]
-_VolumeList = list[tuple[str, str] | Volume | VolumeMount]
+_VolumeList = list[tuple[str | Volume, str] | Volume | VolumeMount]
 _SecretList = list[Secret]
 
 
@@ -586,9 +586,10 @@ class Sandbox:
         secrets
             Optional :class:`~chalkcompute.Secret` references to inject.
         volumes
-            Optional ``(volume_name, mount_path)`` pairs to mount into the
-            sandbox. Each volume must already exist; :meth:`run` fails if one
-            is missing.
+            Optional ``Volume`` handles, ``VolumeMount`` specifications, or
+            ``(name_or_volume, mount_path)`` pairs to mount into the sandbox.
+            Volume handles preserve their selected ref or pinned version.
+            Each volume must already exist; :meth:`run` fails if one is missing.
         port
             Optional published port.
         entrypoint
@@ -813,8 +814,8 @@ class Sandbox:
             raise
         return _pb_to_sandbox_info(resp.sandbox)
 
-    def mount_volume(self, name: str, mount_path: str) -> Sandbox:
-        """Mount a named volume into the sandbox.
+    def mount_volume(self, name: str | Volume, mount_path: str) -> Sandbox:
+        """Mount a named volume or volume handle into the sandbox.
 
         Must be called before :meth:`run`. Returns ``self`` for chaining.
 
@@ -827,7 +828,7 @@ class Sandbox:
         ...     .run()
         ... )
         """
-        self._referenced_volumes.append(VolumeMount(name=name, mount_path=mount_path))
+        self._referenced_volumes.extend(normalize_volume_refs([(name, mount_path)]))
         return self
 
     @_instrumented("chalkcompute.sandbox.run")
@@ -1455,8 +1456,9 @@ class SandboxClient:
         env
             Optional environment variables.
         volumes
-            Optional ``(volume_name, mount_path)`` pairs to mount into the
-            sandbox.
+            Optional ``Volume`` handles, ``VolumeMount`` specifications, or
+            ``(name_or_volume, mount_path)`` pairs to mount into the sandbox.
+            Volume handles preserve their selected ref or pinned version.
         entrypoint
             Optional command to run as the sandbox container's main process.
         network_policy
