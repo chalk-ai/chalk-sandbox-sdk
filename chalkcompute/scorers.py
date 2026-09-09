@@ -733,7 +733,7 @@ def _similarity(method: str, a: str, b: str) -> float:
     if method == "sequence":
         return difflib.SequenceMatcher(None, a, b).ratio()
     # Present in the scorer's image, never in the SDK's environment.
-    from rapidfuzz import distance, fuzz  # ty: ignore[unresolved-import]
+    from rapidfuzz import distance, fuzz
 
     if method == "jaro_winkler":
         return distance.JaroWinkler.normalized_similarity(a, b)
