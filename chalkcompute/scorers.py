@@ -43,6 +43,13 @@ class _JudgeSpec:
     completion_kwargs: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class _EmbeddingSpec:
+    model: str
+    base_url: str | None
+    api_key_env: str
+
+
 _RESERVED_COMPLETION_KWARGS = frozenset({"model", "messages", "response_format"})
 
 
@@ -336,7 +343,7 @@ def _default_prompt(spec: _JudgeSpec, columns: Mapping[str, Any]) -> str:
     return "\n\n".join(parts)
 
 
-def _client_options(spec: _JudgeSpec) -> dict[str, Any]:
+def _client_options(spec: _JudgeSpec | _EmbeddingSpec) -> dict[str, Any]:
     api_key = os.environ.get(spec.api_key_env)
     if not api_key:
         raise RuntimeError(
@@ -932,4 +939,75 @@ def json_match(
         compare,
         image=image,
         function_kwargs=function_kwargs,
+    )
+
+
+_EMBEDDING_PACKAGES = ["openai"]
+
+
+def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
+    magnitude = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b))
+    if magnitude == 0:
+        return 0.0
+    return sum(x * y for x, y in zip(a, b)) / magnitude
+
+
+def _embed(spec: _EmbeddingSpec, texts: Sequence[str]) -> list[Sequence[float]]:
+    # Present in the scorer's image, never in the SDK's environment.
+    from openai import OpenAI  # ty: ignore[unresolved-import]
+
+    client = OpenAI(**_client_options(spec))
+    embedded = client.embeddings.create(model=spec.model, input=list(texts))
+    return [item.embedding for item in embedded.data]
+
+
+def embedding_similarity(
+    *,
+    name: str = "embedding-similarity",
+    inputs: Sequence[str] = ("output", "expected"),
+    model: str = "text-embedding-3-small",
+    base_url: str | None = None,
+    api_key: Secret | None = None,
+    image: Image | None = None,
+    **function_kwargs: Any,
+) -> RemoteFunction | _NoOpFunction:
+    """Deploy a scorer that grades two columns by how close their meanings are.
+
+    Both columns are embedded with ``model`` and scored by cosine similarity,
+    clipped into ``[0, 1]``, with the raw cosine recorded as metadata. This
+    catches an answer that is right but worded differently, which the string
+    scorers mark wrong. ``base_url`` and ``api_key`` name the endpoint and the
+    Secret holding its key, as they do for :func:`llm_judge`.
+    """
+    _assert_deployable("cc.scorers.embedding_similarity")
+    candidate, reference = _validate_pair(inputs, "embedding_similarity")
+    secrets: list[Secret] = []
+    api_key_env = _DEFAULT_API_KEY_ENV
+    if api_key is not None:
+        api_key_env = _secret_env_var(api_key)
+        secrets.append(api_key)
+    spec = _EmbeddingSpec(model=model, base_url=base_url, api_key_env=api_key_env)
+
+    def compare(**columns: Any) -> EvaluationScorerResult:
+        a = _text(columns[candidate]).strip()
+        b = _text(columns[reference]).strip()
+        if not a and not b:
+            return EvaluationScorerResult(score=1.0, metadata={"cosine": 1.0})
+        if not a or not b:
+            return EvaluationScorerResult(score=0.0, metadata={"cosine": 0.0})
+        left, right = _embed(spec, (a, b))
+        cosine = _cosine(left, right)
+        return EvaluationScorerResult(
+            score=max(0.0, min(1.0, cosine)), metadata={"cosine": cosine}
+        )
+
+    return _declare_scorer(
+        name,
+        (candidate, reference),
+        compare,
+        image=image,
+        function_kwargs=function_kwargs,
+        packages=_EMBEDDING_PACKAGES,
+        secrets=secrets,
+        extra_globals={"__chalk_spec__": spec},
     )
