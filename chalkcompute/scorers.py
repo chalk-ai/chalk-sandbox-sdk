@@ -639,3 +639,57 @@ def contains(
         image=image,
         function_kwargs=function_kwargs,
     )
+
+
+def _number(value: Any) -> float | None:
+    try:
+        return float(_text(value).strip())
+    except ValueError:
+        return None
+
+
+def numeric_close(
+    *,
+    name: str = "numeric-close",
+    inputs: Sequence[str] = ("output", "expected"),
+    tolerance: float | None = None,
+    relative: bool = False,
+    image: Image | None = None,
+    **function_kwargs: Any,
+) -> RemoteFunction | _NoOpFunction:
+    """Deploy a scorer that compares two columns as numbers.
+
+    With a ``tolerance`` the score is 1.0 or 0.0 depending on whether the two
+    are within it, taken as a share of the larger value when ``relative``.
+    Without one the score falls off with the gap between them, as
+    ``1 - gap / max(abs(a), abs(b))``. The signed difference is recorded as
+    metadata, and a column that does not parse as a number scores 0.0.
+    """
+    _assert_deployable("cc.scorers.numeric_close")
+    candidate, reference = _validate_pair(inputs, "numeric_close")
+    if tolerance is not None and tolerance < 0:
+        raise ValueError(f"numeric_close: tolerance cannot be negative ({tolerance})")
+
+    def compare(**columns: Any) -> EvaluationScorerResult:
+        a = _number(columns[candidate])
+        b = _number(columns[reference])
+        if a is None or b is None:
+            return EvaluationScorerResult(score=0.0, metadata={"error": "not a number"})
+        gap = abs(a - b)
+        largest = max(abs(a), abs(b))
+        if tolerance is not None:
+            allowed = tolerance * largest if relative else tolerance
+            score = 1.0 if gap <= allowed else 0.0
+        elif largest == 0:
+            score = 1.0
+        else:
+            score = 1.0 - min(1.0, gap / largest)
+        return EvaluationScorerResult(score=score, metadata={"difference": a - b})
+
+    return _declare_scorer(
+        name,
+        (candidate, reference),
+        compare,
+        image=image,
+        function_kwargs=function_kwargs,
+    )
