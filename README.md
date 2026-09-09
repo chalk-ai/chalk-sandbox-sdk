@@ -239,6 +239,26 @@ time; evaluation creation then pins that version. `from_id` remains a
 compatibility alias for `from_version_id`. An imperative `RemoteFunction` must
 be explicitly deployed before it can be used in an evaluation.
 
+### Built-in scorers
+
+`cc.scorers` deploys common scorers without a function body. Each one takes an
+`inputs` pair naming the candidate column and the column it is compared
+against, scores between 0 and 1, and records the raw quantity as row metadata.
+
+```python
+match = cc.scorers.exact_match(case_insensitive=True)
+
+evaluation = cc.Evaluation.create(
+    "Capitals",
+    dataset=dataset,
+    task=answer,
+    scorers=[match],
+)
+```
+
+- `exact_match` — the two columns hold the same text, after optional trimming,
+  whitespace collapsing, and case folding.
+
 ### LLM judges
 
 `cc.scorers.llm_judge` deploys a scorer from a pydantic model (v1 or v2)
