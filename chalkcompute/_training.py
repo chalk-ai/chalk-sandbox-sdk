@@ -281,44 +281,15 @@ class TrainingFunction:
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return self._func(*args, **kwargs)
 
-    def local(self, *, config: Any = None) -> Any:
+    def local(self, *, config: Any = None, **kwargs: Any) -> Any:
         """Run the training function in-process for local iteration.
-
-        The latest revision of the configured named dataset is downloaded as
-        a Polars ``DataFrame`` before the wrapped function is called. No
-        training container or offline query is started.
-
-        ``input_sql`` data sources cannot be executed locally and must first
-        be materialized as a named dataset.
 
         Parameters
         ----------
         config
             A dataclass or dict passed to the training function.
-
-        Returns
-        -------
-        Any
-            The value returned by the wrapped training function, typically a
-            trained model.
         """
-        if self._input_sql is not None:
-            raise TrainingError(
-                "TrainingFunction.local() cannot execute input_sql locally; "
-                "materialize the query as a named dataset and use data= or dataset="
-            )
-
-        try:
-            from chalk.client import ChalkClient
-        except ImportError as exc:
-            raise TrainingError(
-                "TrainingFunction.local() requires chalkpy with runtime "
-                "dependencies; install 'chalkpy[runtime]'"
-            ) from exc
-        client = ChalkClient()
-        dataset = client.get_dataset(dataset_name=self.data_source)
-        df = dataset.to_polars()
-        return self._func(df, config)
+        return self._func(None, config, **kwargs)
 
     def _build_deploy_image(self) -> _Image:
         """Build the deploy image with the user's training function source."""
