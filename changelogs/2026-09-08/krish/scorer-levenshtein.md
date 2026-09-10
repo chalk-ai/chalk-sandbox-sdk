@@ -1,0 +1,1 @@
+- Add `cc.scorers.levenshtein`, a scorer that grades two columns by normalized edit distance

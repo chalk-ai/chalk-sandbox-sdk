@@ -457,3 +457,61 @@ def exact_match(
         image=image,
         function_kwargs=function_kwargs,
     )
+
+
+def _levenshtein_distance(a: str, b: str) -> int:
+    """Edit distance, keeping one row of the matrix at a time."""
+    if a == b:
+        return 0
+    if not a or not b:
+        return len(a) or len(b)
+    previous = list(range(len(b) + 1))
+    for i, from_a in enumerate(a, start=1):
+        current = [i]
+        for j, from_b in enumerate(b, start=1):
+            current.append(
+                min(
+                    previous[j] + 1,
+                    current[j - 1] + 1,
+                    previous[j - 1] + (from_a != from_b),
+                )
+            )
+        previous = current
+    return previous[-1]
+
+
+def levenshtein(
+    *,
+    name: str = "levenshtein",
+    inputs: Sequence[str] = ("output", "expected"),
+    case_insensitive: bool = False,
+    image: Image | None = None,
+    **function_kwargs: Any,
+) -> RemoteFunction | _NoOpFunction:
+    """Deploy a scorer that grades two columns by their edit distance.
+
+    The score is ``1 - distance / len(longer)``, so identical text scores 1.0
+    and text sharing nothing scores 0.0. The edit distance itself is recorded
+    as metadata. This is the same quantity as ``F.levenshtein_distance``,
+    normalized into a score.
+    """
+    _assert_deployable("cc.scorers.levenshtein")
+    candidate, reference = _validate_pair(inputs, "levenshtein")
+
+    def compare(**columns: Any) -> EvaluationScorerResult:
+        a = _normalized(columns[candidate], case_insensitive=case_insensitive)
+        b = _normalized(columns[reference], case_insensitive=case_insensitive)
+        distance = _levenshtein_distance(a, b)
+        longest = max(len(a), len(b))
+        return EvaluationScorerResult(
+            score=1.0 if longest == 0 else 1.0 - distance / longest,
+            metadata={"distance": distance},
+        )
+
+    return _declare_scorer(
+        name,
+        (candidate, reference),
+        compare,
+        image=image,
+        function_kwargs=function_kwargs,
+    )
