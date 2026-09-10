@@ -13,6 +13,7 @@ from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as catalog_pb
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from chalkcompute._scaling_group import ScalingGroup
+from chalkcompute._volume import VolumeMount
 from tests._fakes import FakeMethod, StubbedConnectClient
 
 
@@ -302,7 +303,41 @@ def test_remote_class_deploy_allows_scaled_to_zero(monkeypatch) -> None:
     assert client.methods == ["ensure_external_function", "get_scaling_group"]
 
 
-def test_remote_function_deploy_sends_source_spec_before_upload(
+def test_remote_class_resolves_one_shared_source_volume(monkeypatch, tmp_path) -> None:
+    class Arithmetic:
+        @method
+        def add(self, x: int) -> int:
+            return x + 1
+
+        @method
+        def subtract(self, x: int) -> int:
+            return x - 1
+
+    source = tmp_path / "source.py"
+    source.write_text("answer = 42\n")
+    image = Image("image:test").add_local_file(str(source), "/app/source.py")
+    client = _RemoteClassReadinessClient()
+    rc = RemoteClass(Arithmetic, name="arithmetic")
+    rc._client = client  # type: ignore[assignment]
+    resolutions = []
+
+    monkeypatch.setattr(RemoteClass, "_build_deploy_image", lambda _: (image, []))
+    monkeypatch.setattr(RemoteClass, "_poll_until_ready", lambda *a, **kw: None)
+
+    def resolve(*args, **kwargs):
+        resolutions.append(kwargs)
+        return [VolumeMount("arithmetic", "/app", version_id=42)]
+
+    monkeypatch.setattr(cls_mod, "resolve_function_volumes", resolve)
+
+    rc.deploy(poll_interval=0, ready_timeout=10)
+
+    assert len(resolutions) == 1
+    assert resolutions[0]["volume_name"] == "arithmetic"
+    assert client.methods.count("ensure_external_function") == 2
+
+
+def test_remote_function_deploy_sends_pinned_source_mounts(
     monkeypatch, tmp_path
 ) -> None:
     def add(x: int) -> int:
@@ -316,11 +351,23 @@ def test_remote_function_deploy_sends_source_spec_before_upload(
     image = Image("image:test").add_local_file(str(source), "/app/entry.py")
     monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: image)
     monkeypatch.setattr(function_mod.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        function_mod,
+        "resolve_function_volumes",
+        lambda *a, **kw: [
+            VolumeMount(
+                name="source",
+                mount_path="/app",
+                version_id=42,
+            )
+        ],
+    )
     fn.deploy(poll_interval=0, ready_timeout=10)
     request = client.requests["ensure_external_function"]
     assert request.spec.version_spec.volume_commits == []
     assert request.spec.version_spec.spec.container_spec.image == ""
     assert request.spec.image.base_image == "image:test"
-    assert len(request.spec.sources) == 1
-    assert request.spec.sources[0].mount_path == "/app"
-    assert request.supplied_inputs.manifests[0].files[0].path == "entry.py"
+    mounts = request.spec.version_spec.spec.container_spec.volumes
+    assert len(mounts) == 1
+    assert mounts[0].mount_path == "/app"
+    assert mounts[0].version_id == 42

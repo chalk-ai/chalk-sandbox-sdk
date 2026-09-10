@@ -985,6 +985,77 @@ def test_stage_lazy_files_reuses_volume_and_replaces_base_tree(
     ]
 
 
+def test_resolve_lazy_files_prepares_and_pins_each_mount(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    app = tmp_path / "app.py"
+    model = tmp_path / "model.bin"
+    app.write_text("answer = 42\n")
+    model.write_bytes(b"model")
+    image = (
+        vv.Image("python")
+        .add_local_file(str(app), "/app/app.py", mode=0o755)
+        .add_local_file(str(model), "/models/model.bin")
+    )
+    client = _make_client(monkeypatch)
+    prepared = [MagicMock(), MagicMock()]
+    client._inner.prepare_files.side_effect = prepared
+    client._inner.resolve_prepared_files.side_effect = [
+        {"version_id": 11},
+        {"version_id": 12},
+    ]
+
+    mounts = client._resolve_lazy_files(
+        image,
+        volume_name="predict",
+        timeout=5,
+        poll_interval=0.25,
+    )
+
+    assert mounts == [
+        VolumeMount("predict", "/app", version_id=11),
+        VolumeMount("predict-models", "/models", version_id=12),
+    ]
+    assert client._inner.prepare_files.call_args_list[0].args == (
+        [("app.py", app, {"mode": 0o755})],
+        "main",
+    )
+    assert client._inner.prepare_files.call_args_list[1].args == (
+        [("model.bin", model)],
+        "main",
+    )
+    for index, name in enumerate(("predict", "predict-models")):
+        args = client._inner.resolve_prepared_files.call_args_list[index].args
+        assert args[:3] == (name, "source_code", prepared[index])
+        assert args[3]["upload"] == vv._default_upload_config()
+        assert args[3]["poll_interval_ms"] == 250
+        assert 0 < args[3]["timeout_ms"] <= 5_000
+
+
+def test_resolve_lazy_files_maps_native_errors(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    image, _ = _lazy_image(tmp_path)
+    client = _make_client(monkeypatch)
+    client._inner.prepare_files.side_effect = RuntimeError("unavailable", "retry")
+
+    with pytest.raises(VolumeError, match="retry") as raised:
+        client._resolve_lazy_files(image, volume_name="function")
+
+    assert raised.value.code == "unavailable"
+
+
+def test_resolve_lazy_files_requires_a_version(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    image, _ = _lazy_image(tmp_path)
+    client = _make_client(monkeypatch)
+    client._inner.resolve_prepared_files.return_value = {}
+
+    with pytest.raises(VolumeError, match="returned no version"):
+        client._resolve_lazy_files(image, volume_name="function")
+
+
 def test_native_client_symbol_is_bound() -> None:
     from chalkcompute import _volume
 

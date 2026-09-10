@@ -206,7 +206,7 @@ dependencies = [
 [[package]]
 name = "chalk-protos"
 version = "0.0.0"
-source = "git+https://github.com/chalk-ai/chalk-private.git?rev=ae42e022cf1645efc8ee72eb60a97d9937317d11#ae42e022cf1645efc8ee72eb60a97d9937317d11"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=9a760cc18c4bea5f06888a8cad51afc9bfb7aa77#9a760cc18c4bea5f06888a8cad51afc9bfb7aa77"
 dependencies = [
  "prost",
  "prost-build",
@@ -246,11 +246,11 @@ dependencies = [
 [[package]]
 name = "chalk_volume_client"
 version = "0.0.0"
-source = "git+https://github.com/chalk-ai/chalk-private.git?rev=ae42e022cf1645efc8ee72eb60a97d9937317d11#ae42e022cf1645efc8ee72eb60a97d9937317d11"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=9a760cc18c4bea5f06888a8cad51afc9bfb7aa77#9a760cc18c4bea5f06888a8cad51afc9bfb7aa77"
 dependencies = [
  "blake3",
  "bytes",
- "chalk-protos 0.0.0 (git+https://github.com/chalk-ai/chalk-private.git?rev=ae42e022cf1645efc8ee72eb60a97d9937317d11)",
+ "chalk-protos 0.0.0 (git+https://github.com/chalk-ai/chalk-private.git?rev=9a760cc18c4bea5f06888a8cad51afc9bfb7aa77)",
  "futures-util",
  "log",
  "prost",
@@ -269,7 +269,6 @@ dependencies = [
 name = "chalkcompute_native"
 version = "0.1.0"
 dependencies = [
- "blake3",
  "bytes",
  "chalk_remote_call_client",
  "chalk_volume_client",

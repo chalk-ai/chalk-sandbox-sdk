@@ -78,7 +78,7 @@ from chalkcompute._containerspec import ContainerSpec, validate_replica_and_util
 from chalkcompute._deployment_proto import function_config, scaling_spec
 from chalkcompute._function_deployment import (
     ensure_external_function,
-    prepare_function_image,
+    resolve_function_volumes,
 )
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import (
     service_connect as catalog_connect,
@@ -2876,10 +2876,17 @@ class RemoteFunction:
             # 1. Build deploy image
             deploy_image = self._build_deploy_image()
 
-            prepared = prepare_function_image(deploy_image)
             deploy_volumes = list(getattr(self, "_referenced_volumes", []))
             self._volumes = deploy_volumes
             self._volume_driver = None
+            deploy_volumes = resolve_function_volumes(
+                self._client,
+                image=deploy_image,
+                volume_name=registered_name,
+                referenced=deploy_volumes,
+                poll_interval=poll_interval,
+                timeout=build_timeout,
+            )
 
             # 3. Register function version
             input_schema_proto, output_schema_proto = _build_schemas(self._func)
@@ -2958,7 +2965,7 @@ class RemoteFunction:
             ensured = ensure_external_function(
                 self._client,
                 function_name=self._explicit_name or self._func_name,
-                prepared=prepared,
+                image=deploy_image,
                 local_secrets=local_secrets,
                 force_new_version=force_new_version,
                 poll_interval=poll_interval,

@@ -1,5 +1,4 @@
 use bytes::Bytes;
-mod source;
 use chalk_remote_call::{
     proto::chalk::auth::v1::Permission, BlockingRemoteCallClient, CallStatus, ChannelSecurity,
     PollBackoff, PollResult, RemoteCallClientConfig, RemoteCallError,
@@ -321,8 +320,6 @@ fn grpc_engine_target_from_url(url: &str) -> (String, bool) {
 
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(source::source_file_digests, m)?)?;
-    m.add_function(wrap_pyfunction!(source::source_tree_digest, m)?)?;
     m.add_class::<PyRemoteCallClient>()?;
     m.add(
         "RemoteCallUnavailableError",
