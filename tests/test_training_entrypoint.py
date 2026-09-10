@@ -335,8 +335,12 @@ def test_retry_first_attempt_succeeds(
         main()
 
     assert mock_commit.call_count == 2
-    mock_commit.assert_any_call("training-ckpt-my-run", ".retry_count", 1)
-    mock_commit.assert_any_call("training-ckpt-my-run", ".retry_count", 0)
+    mock_commit.assert_any_call(
+        "training-ckpt-my-run", ".retry_count_abcdef12-0000-0000-0000-000000000000", 1
+    )
+    mock_commit.assert_any_call(
+        "training-ckpt-my-run", ".retry_count_abcdef12-0000-0000-0000-000000000000", 0
+    )
 
 
 def test_retry_increments_counter_on_failure(
@@ -378,7 +382,9 @@ def test_retry_increments_counter_on_failure(
     ):
         main()
 
-    mock_commit.assert_called_once_with("training-ckpt-my-run", ".retry_count", 1)
+    mock_commit.assert_called_once_with(
+        "training-ckpt-my-run", ".retry_count_abcdef12-0000-0000-0000-000000000000", 1
+    )
 
     update_calls = [
         c
@@ -395,7 +401,7 @@ def test_retry_exhausted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     monkeypatch.setenv("CHALK_DATA_DIR", str(tmp_path))
     ckpt_dir = tmp_path / "ckpt"
     ckpt_dir.mkdir()
-    (ckpt_dir / ".retry_count").write_text("1")
+    (ckpt_dir / ".retry_count_abcdef12-0000-0000-0000-000000000000").write_text("1")
     monkeypatch.setenv("CHALK_CHECKPOINT_DIR", str(ckpt_dir))
     monkeypatch.setenv("CHALK_DATASET_REVISION_ID", "")
     monkeypatch.setenv("CHALK_MAX_RETRIES", "1")
@@ -407,7 +413,7 @@ def test_retry_exhausted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
         patch(
             "chalkcompute.training.entrypoint.ConnectClient", return_value=mock_client
         ),
-        pytest.raises(SystemExit),
+        pytest.raises(SystemExit, match="0"),
     ):
         main()
 
@@ -416,9 +422,10 @@ def test_retry_exhausted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
         for c in mock_client.call.call_args_list
         if len(c[0]) >= 2 and isinstance(c[0][1], tr_pb.UpdateTrainingRunRequest)
     ]
-    assert len(update_calls) == 1
-    assert update_calls[0][0][1].update.status == tr_pb.TrainingRunStatus.FAILED
-    assert "Exhausted 1 retries" in update_calls[0][0][1].update.error_message
+    assert len(update_calls) == 2
+    assert update_calls[0][0][1].update.status == tr_pb.TrainingRunStatus.WORKING
+    assert update_calls[1][0][1].update.status == tr_pb.TrainingRunStatus.FAILED
+    assert "Exhausted 1 retries" in update_calls[1][0][1].update.error_message
 
 
 def test_no_retries_reports_failed(

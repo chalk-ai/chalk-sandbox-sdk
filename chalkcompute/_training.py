@@ -28,6 +28,7 @@ import dataclasses
 import logging
 import os
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, overload
 
 from protobuf import Oneof
@@ -329,7 +330,29 @@ class TrainingFunction:
             _source_file_for_deploy,
         )
 
-        deploy_image = _make_base_image(self._image)
+        from chalkcompute import _local_dev
+
+        config = _local_dev.resolve_local_deploy_config()
+        if config.should_mount_sdk_source:
+            # Training entrypoint is server-controlled so we can't wrap it
+            # to extract an archive (like wrap_entrypoint_for_local_dev does
+            # for functions). Instead, add SDK source unarchived to /app so
+            # it lands in the same volume as the user's code and is directly
+            # importable via PYTHONPATH.
+            from chalkcompute._image import Image
+
+            base = self._image if self._image is not None else Image.debian_slim()
+            project_root = str(Path(__file__).resolve().parent.parent)
+            deploy_image = base.pip_install(
+                _local_dev._LOCAL_SDK_RUNTIME_PACKAGES
+            ).add_local_dir(
+                project_root,
+                "/app",
+                exclude=_local_dev._LOCAL_SDK_COPY_EXCLUDES,
+            )
+        else:
+            deploy_image = _make_base_image(self._image)
+
         module_name = _deploy_module_name(self._func)
         package_dir = _package_dir_for_module(module_name)
 
@@ -373,7 +396,7 @@ class TrainingFunction:
         image_uri = build_image(client, deploy_image)
 
         volume_commits: list[volume_pb.CommitIntent] = []
-        vol_name = ""
+        volume_mounts: list[Any] = []
         if deploy_image.lazy_local_files:
             from chalkcompute._volume import VolumeClient
 
@@ -383,7 +406,7 @@ class TrainingFunction:
             )
             vvclient = VolumeClient.from_connect(client)
             vol_name = f"training-src-{self._name or self._func_name}"
-            _, volume_commits = vvclient.stage_lazy_files(
+            volume_mounts, volume_commits = vvclient.stage_lazy_files(
                 deploy_image,
                 volume_name=vol_name,
             )
@@ -394,8 +417,8 @@ class TrainingFunction:
         meta = _metadata_to_proto(self._metadata) if self._metadata else None
 
         env = dict(self._env) if self._env else {}
-        if volume_commits:
-            env["PYTHONPATH"] = f"/volumes/{vol_name}"
+        if volume_mounts:
+            env["PYTHONPATH"] = f"/volumes/{volume_mounts[0].name}"
         else:
             env["PYTHONPATH"] = "/app"
         module = self._func.__module__
