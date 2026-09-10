@@ -428,6 +428,57 @@ def _normalized(
     return text.casefold() if case_insensitive else text
 
 
+def _sql_identifier(column: str) -> str:
+    return '"' + column.replace('"', '""') + '"'
+
+
+def _sql_string(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _sql_text(column: str) -> str:
+    """A missing column reads as empty, as :func:`_text` does."""
+    return f"coalesce(CAST({_sql_identifier(column)} AS VARCHAR), '')"
+
+
+def _sql_normalized(
+    column: str,
+    *,
+    case_insensitive: bool = False,
+    strip: bool = True,
+    normalize_whitespace: bool = False,
+) -> str:
+    """:func:`_normalized` as a ChalkSQL expression over ``column``.
+
+    ``lower`` stands in for Python's ``casefold``, which folds more than case
+    outside ASCII.
+    """
+    text = _sql_text(column)
+    if normalize_whitespace:
+        whitespace_run = _sql_string(r"\s+")
+        text = f"regexp_replace(trim({text}), {whitespace_run}, ' ')"
+    elif strip:
+        text = f"trim({text})"
+    return f"lower({text})" if case_insensitive else text
+
+
+def _sql_score(when: str) -> str:
+    """1.0 where ``when`` holds, 0.0 elsewhere, as a scorer must return a number."""
+    return f"CASE WHEN {when} THEN 1.0 ELSE 0.0 END"
+
+
+def _reject_deploy_options(
+    what: str, image: Image | None, function_kwargs: Any
+) -> None:
+    """A SQL scorer deploys nothing, so deployment options cannot be honored."""
+    unusable = sorted(function_kwargs) + (["image"] if image is not None else [])
+    if unusable:
+        raise ValueError(
+            f"{what}: {', '.join(unusable)} cannot apply to a SQL scorer, which "
+            "deploys nothing; pass sql=False to deploy this scorer as a function"
+        )
+
+
 def exact_match(
     *,
     name: str = "exact-match",
@@ -435,18 +486,36 @@ def exact_match(
     case_insensitive: bool = False,
     strip: bool = True,
     normalize_whitespace: bool = False,
+    sql: bool = True,
     image: Image | None = None,
     **function_kwargs: Any,
-) -> RemoteFunction | _NoOpFunction:
-    """Deploy a scorer that gives 1.0 when two columns hold the same text.
+) -> RemoteFunction | _NoOpFunction | SqlExpression:
+    """Score 1.0 when two columns hold the same text.
 
     ``inputs`` names the candidate column and then the column it is compared
     against. ``strip`` trims each side, ``normalize_whitespace`` collapses runs
-    of whitespace instead, and ``case_insensitive`` folds case. The metadata
-    records whether the two matched.
+    of whitespace instead, and ``case_insensitive`` folds case.
+
+    By default this is a ChalkSQL expression evaluated in the run's own query,
+    so nothing is deployed. Pass ``sql=False`` to deploy it as a function
+    instead, which also records whether the two matched as metadata.
     """
-    _assert_deployable("cc.scorers.exact_match")
     candidate, reference = _validate_pair(inputs, "exact_match")
+    if sql:
+        _reject_deploy_options("exact_match", image, function_kwargs)
+        options = {
+            "case_insensitive": case_insensitive,
+            "strip": strip,
+            "normalize_whitespace": normalize_whitespace,
+        }
+        return SqlExpression(
+            name,
+            _sql_score(
+                f"{_sql_normalized(candidate, **options)} = "
+                f"{_sql_normalized(reference, **options)}"
+            ),
+        )
+    _assert_deployable("cc.scorers.exact_match")
 
     def compare(**columns: Any) -> EvaluationScorerResult:
         options = {
