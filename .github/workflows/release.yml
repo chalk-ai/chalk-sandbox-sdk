@@ -406,6 +406,22 @@ jobs:
           packages-dir: dist/
           skip-existing: true
 
+  notify-docs:
+    name: "Regenerate ChalkCompute reference"
+    needs: [publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Dispatch docs generation
+        uses: peter-evans/repository-dispatch@v2
+        with:
+          # This token needs contents write access to chalk-ai/chalk-private.
+          token: ${{ secrets.CHALK_DOCS_PAT }}
+          repository: chalk-ai/chalk-private
+          event-type: chalkcompute-release
+          client-payload: '{"ref": "${{ github.ref }}", "sha": "${{ github.sha }}"}'
+
   notify:
     name: "Notify #proj-compute"
     needs: [build-linux, build-sdist, build-macos, verify-built-wheels, publish]
