@@ -218,7 +218,7 @@ def main() -> None:
     logger.info("Training entrypoint starting for run %s", run_id)
 
     retry_count = 0
-    retry_marker_path = ".retry_count"
+    retry_marker_path = f".retry_count_{run_id}"
     ckpt_vol_name = ""
     if max_retries > 0:
         run_name = os.environ.get("CHALK_TRAINING_RUN_NAME", "")
@@ -233,13 +233,21 @@ def main() -> None:
     client = ConnectClient()
 
     if max_retries > 0 and retry_count >= max_retries:
-        _update_status(
-            client,
-            run_id,
-            tr_pb.TrainingRunStatus.FAILED,
-            error_message=f"Exhausted {max_retries} retries",
-        )
-        sys.exit(1)
+        try:
+            _update_status(client, run_id, tr_pb.TrainingRunStatus.WORKING)
+        except Exception:
+            pass
+        try:
+            _update_status(
+                client,
+                run_id,
+                tr_pb.TrainingRunStatus.FAILED,
+                error_message=f"Exhausted {max_retries} retries",
+            )
+        except Exception:
+            pass
+        logger.info("Retries exhausted (%d/%d), exiting", retry_count, max_retries)
+        sys.exit(0)
 
     if max_retries > 0:
         _commit_retry_count(ckpt_vol_name, retry_marker_path, retry_count + 1)
@@ -287,11 +295,15 @@ def main() -> None:
         logger.error("Training run %s failed:\n%s", run_id, error_msg)
         if max_retries > 0 and retry_count < max_retries:
             logger.info(
-                "Retries remaining (%d/%d), exiting for restart",
-                retry_count + 1,
+                "%d/%d retries remaining, exiting for restart",
+                max_retries - retry_count - 1,
                 max_retries,
             )
             sys.exit(1)
+        try:
+            _update_status(client, run_id, tr_pb.TrainingRunStatus.WORKING)
+        except Exception:
+            pass
         try:
             _update_status(
                 client,

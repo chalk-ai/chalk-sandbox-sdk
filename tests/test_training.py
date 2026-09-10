@@ -426,7 +426,10 @@ def test_run_training_pythonpath_with_volume_commits() -> None:
 
     mock_vclient = MagicMock()
     commit = MagicMock(spec=volume_pb.CommitIntent)
-    mock_vclient.stage_lazy_files.return_value = ("vol-id", [commit])
+    mock_mount = MagicMock()
+    mock_mount.name = "training-src-src-vol-run-app"
+    mock_mount.mount_path = "/app"
+    mock_vclient.stage_lazy_files.return_value = ([mock_mount], [commit])
 
     with (
         patch.object(TrainingFunction, "_build_deploy_image", return_value=deploy_img),
@@ -437,7 +440,7 @@ def test_run_training_pythonpath_with_volume_commits() -> None:
         train.run_training(client=mock_client)
 
     req = mock_client.call.call_args[0][1]
-    assert req.env["PYTHONPATH"] == "/volumes/training-src-src-vol-run"
+    assert req.env["PYTHONPATH"] == "/volumes/training-src-src-vol-run-app"
 
 
 def test_run_training_pythonpath_without_volume_commits() -> None:
