@@ -335,8 +335,12 @@ def test_retry_first_attempt_succeeds(
         main()
 
     assert mock_commit.call_count == 2
-    mock_commit.assert_any_call("training-ckpt-my-run", ".retry_count_abcdef12-0000-0000-0000-000000000000", 1)
-    mock_commit.assert_any_call("training-ckpt-my-run", ".retry_count_abcdef12-0000-0000-0000-000000000000", 0)
+    mock_commit.assert_any_call(
+        "training-ckpt-my-run", ".retry_count_abcdef12-0000-0000-0000-000000000000", 1
+    )
+    mock_commit.assert_any_call(
+        "training-ckpt-my-run", ".retry_count_abcdef12-0000-0000-0000-000000000000", 0
+    )
 
 
 def test_retry_increments_counter_on_failure(
@@ -378,7 +382,9 @@ def test_retry_increments_counter_on_failure(
     ):
         main()
 
-    mock_commit.assert_called_once_with("training-ckpt-my-run", ".retry_count_abcdef12-0000-0000-0000-000000000000", 1)
+    mock_commit.assert_called_once_with(
+        "training-ckpt-my-run", ".retry_count_abcdef12-0000-0000-0000-000000000000", 1
+    )
 
     update_calls = [
         c
