@@ -65,7 +65,7 @@ class FioConfig:
     small_file_size: str = "4k"
     direct: str = "1"
     cpu: str = "2"
-    memory: str = "1Gi"
+    memory: str = "4Gi"
     timeout_secs: int = 3600
 
     def environment(self) -> dict[str, str]:

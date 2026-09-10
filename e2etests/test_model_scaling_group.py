@@ -39,6 +39,8 @@ HANDLER_SG_NAME = "ex-handler-affine-sg"
 COMBINED_SG_NAME = "ex-combined-affine-sg"
 READINESS_TIMEOUT = 180
 READINESS_POLL_INTERVAL = 5
+SCALING_GROUP_CPU = "500m"
+SCALING_GROUP_MEMORY = "1Gi"
 FIXTURES_DIR = Path(__file__).parent / "model_fixtures"
 
 
@@ -142,7 +144,9 @@ class TestModelScalingGroup:
                 max_replicas=1,
                 target_cpu_utilization_percentage=70,
             ),
-            resources=ScalingGroupResourceRequest(cpu="500m", memory="512Mi"),
+            resources=ScalingGroupResourceRequest(
+                cpu=SCALING_GROUP_CPU, memory=SCALING_GROUP_MEMORY
+            ),
         )
         cls._web_url = _wait_for_ready_replicas(client, SG_NAME, READINESS_TIMEOUT)
 
@@ -236,7 +240,9 @@ class TestModelWithVolume:
                 max_replicas=1,
                 target_cpu_utilization_percentage=70,
             ),
-            resources=ScalingGroupResourceRequest(cpu="500m", memory="512Mi"),
+            resources=ScalingGroupResourceRequest(
+                cpu=SCALING_GROUP_CPU, memory=SCALING_GROUP_MEMORY
+            ),
         )
         cls._web_url = _wait_for_ready_replicas(
             client, VOLUME_SG_NAME, READINESS_TIMEOUT
@@ -296,7 +302,9 @@ class TestModelHandlerDecorator:
                 max_replicas=1,
                 target_cpu_utilization_percentage=70,
             ),
-            resources=ScalingGroupResourceRequest(cpu="500m", memory="1Gi"),
+            resources=ScalingGroupResourceRequest(
+                cpu=SCALING_GROUP_CPU, memory=SCALING_GROUP_MEMORY
+            ),
         )
         cls._web_url = _wait_for_ready_replicas(
             client, HANDLER_SG_NAME, READINESS_TIMEOUT
@@ -384,7 +392,9 @@ class TestModelImageAndModelCombined:
                 max_replicas=1,
                 target_cpu_utilization_percentage=70,
             ),
-            resources=ScalingGroupResourceRequest(cpu="500m", memory="512Mi"),
+            resources=ScalingGroupResourceRequest(
+                cpu=SCALING_GROUP_CPU, memory=SCALING_GROUP_MEMORY
+            ),
         )
         cls._web_url = _wait_for_ready_replicas(
             client, COMBINED_SG_NAME, READINESS_TIMEOUT
