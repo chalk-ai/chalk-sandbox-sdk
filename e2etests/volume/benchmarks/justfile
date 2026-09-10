@@ -68,7 +68,7 @@ model-download environment:
         --small-shard-mib 35 \
         --extent-mib 4 \
         --cpu 2 \
-        --memory 2Gi
+        --memory 4Gi
 
 git-repo environment:
     #!/usr/bin/env bash

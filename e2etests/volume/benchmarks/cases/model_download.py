@@ -66,7 +66,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--small-shard-mib", type=positive_int, default=35)
     parser.add_argument("--extent-mib", type=positive_int, default=4)
     parser.add_argument("--cpu", default="2")
-    parser.add_argument("--memory", default="2Gi")
+    parser.add_argument("--memory", default="4Gi")
     parser.add_argument("--timeout-secs", type=positive_int, default=1800)
     parser.add_argument("--keep-volumes", action="store_true")
     return parser.parse_args()
