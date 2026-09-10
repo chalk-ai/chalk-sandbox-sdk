@@ -146,7 +146,10 @@ def test_generated_function_sources_are_stable_between_runs(monkeypatch):
             image = fn._build_deploy_image()
             images.append(image)
             sources.append(
-                {file.dest: Path(file.src).read_text() for file in image.lazy_local_files}
+                {
+                    file.dest: Path(file.src).read_text()
+                    for file in image.lazy_local_files
+                }
             )
             temporary.extend(fn._temp_files)
         assert sources[0] == sources[1]
