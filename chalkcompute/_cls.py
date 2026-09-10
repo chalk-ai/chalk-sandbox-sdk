@@ -60,7 +60,7 @@ from chalkcompute._containerspec import ContainerSpec, validate_replica_and_util
 from chalkcompute._deployment_proto import function_config, scaling_spec
 from chalkcompute._function_deployment import (
     ensure_external_function,
-    prepare_function_image,
+    resolve_function_volumes,
 )
 from chalkcompute._secret import prepare_lazy_secrets
 from chalkcompute._function import (
@@ -1193,9 +1193,16 @@ class RemoteClass:
         try:
             # 1. Build deploy image
             deploy_image, temp_files = self._build_deploy_image()
-            prepared = prepare_function_image(deploy_image)
             self._volumes = list(self._referenced_volumes)
             self._volume_driver = None
+            deploy_volumes = resolve_function_volumes(
+                self._client,
+                image=deploy_image,
+                volume_name=self._explicit_name or self._class_name,
+                referenced=self._volumes,
+                poll_interval=poll_interval,
+                timeout=build_timeout,
+            )
             resolved_secrets, local_secrets = prepare_lazy_secrets(self._secrets)
 
             # 3. Register each method as a function version
@@ -1225,7 +1232,7 @@ class RemoteClass:
                     cpu=self._cpu,
                     memory=self._memory,
                     gpu=self._gpu,
-                    volumes=self._volumes,
+                    volumes=deploy_volumes,
                     secret_refs=resolved_secrets,
                     port=6666,
                     protocol="grpc",
@@ -1280,7 +1287,7 @@ class RemoteClass:
                 ensured = ensure_external_function(
                     self._client,
                     function_name=func_name,
-                    prepared=prepared,
+                    image=deploy_image,
                     local_secrets=local_secrets,
                     force_new_version=force_new_version,
                     poll_interval=poll_interval,

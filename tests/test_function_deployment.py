@@ -4,7 +4,6 @@ import importlib.util
 import os
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from connectrpc.code import Code
@@ -13,14 +12,12 @@ from protobuf import Oneof
 
 import chalkcompute._function_deployment as deployment
 import chalkcompute._function as function_module
-from chalkcompute import _native
-from chalkcompute._connect import ConnectError
 from chalkcompute._function import RemoteFunction
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as pb
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb as sandbox
-from chalkcompute._gen.chalk.volume.v2 import volume_pb as volume
 from chalkcompute._image import Image
+from chalkcompute._volume import VolumeMount
 from tests._fakes import StubbedConnectClient
 
 
@@ -61,11 +58,11 @@ def complete():
     )
 
 
-def run(client, prepared):
+def run(client, image):
     return deployment.ensure_external_function(
         client,
         function_name="test",
-        prepared=prepared,
+        image=image,
         version_spec=pb.ExternalFunctionVersionSpec(),
         local_secrets={},
         force_new_version=False,
@@ -74,55 +71,13 @@ def run(client, prepared):
     )
 
 
-def test_source_identity_uses_bytes_destination_and_mode_not_mtime_or_local_path(
-    tmp_path,
-):
-    a, b = tmp_path / "a", tmp_path / "b"
-    a.write_bytes(b"hello")
-    b.write_bytes(b"hello")
-    a.chmod(0o644)
-    b.chmod(0o644)
-    first = deployment.prepare_function_image(
-        Image("python:3.11").add_local_file(str(a), "/app/a.py")
-    )
-    os.utime(a, (10, 10))
-    same = deployment.prepare_function_image(
-        Image("python:3.11").add_local_file(str(b), "/app/a.py")
-    )
-    touched = deployment.prepare_function_image(first.image)
-    assert first.sources == same.sources == touched.sources
-    b.chmod(0o755)
-    executable = deployment.prepare_function_image(same.image)
-    assert executable.sources != first.sources
-    b.write_bytes(b"HELLO")
-    assert deployment.prepare_function_image(same.image).sources != executable.sources
-    assert (
-        deployment.prepare_function_image(
-            Image("python:3.11").add_local_file(str(a), "/app/b.py")
-        ).sources
-        != first.sources
-    )
-
-
-def test_native_tree_digest_cross_language_golden(tmp_path):
-    source = tmp_path / "source"
-    source.write_bytes(b"hello")
-    digest, size, _ = _native.source_file_digests([str(source)])[0]
-    assert digest == "ea8f163db38682925e4491c5e58d4bb3506ef8c14eb78a86e908c5624a67200f"
-    assert size == 5
-    # Keep the Go sourceManifestDigest golden in sync with this test.
-    result = _native.source_tree_digest([("a.py", digest, 5, 0o644)])
-    assert result == "7585d7b30b541faa685013f553715a556864f0464c58eefc1bb5a56ac73a5c88"
-
-
 def test_warm_deployment_is_one_ensure_call(monkeypatch):
     def unexpected(*args, **kwargs):
         pytest.fail("warm deployment attempted preparation")
 
-    monkeypatch.setattr(deployment, "_supply_files", unexpected)
     monkeypatch.setattr(deployment, "wait_for_image_build", unexpected)
     client = Client([complete()])
-    result = run(client, deployment.prepare_function_image(Image("python:3.11")))
+    result = run(client, Image("python:3.11"))
     assert result.reused_version
     assert len(client.requests) == 1
 
@@ -145,9 +100,7 @@ def test_expired_build_returns_to_ensure(monkeypatch):
             complete(),
         ]
     )
-    assert run(
-        client, deployment.prepare_function_image(Image("python:3.11"))
-    ).reused_version
+    assert run(client, Image("python:3.11")).reused_version
     assert client.requests[0].request_id == client.requests[1].request_id
 
 
@@ -163,104 +116,19 @@ def test_image_wait_propagates_expired_workflow():
     assert error.value.code == Code.NOT_FOUND
 
 
-def test_missing_inputs_and_image_wait_keep_request_id(monkeypatch, tmp_path):
-    source = tmp_path / "source"
-    source.write_bytes(b"hello")
-    prepared = deployment.prepare_function_image(
-        Image("python:3.11").add_local_file(str(source), "/app/a.py")
-    )
-    tree = prepared.sources[0].tree_digest
-    digest = next(iter(prepared.files))
-    missing = pb.MissingFunctionDeploymentInputs(
-        file_digests=[digest], upload_volume=volume.VolumeRef(name="source")
-    )
-    responses = [
-        RpcError(Code.UNAVAILABLE, "retry"),
-        pb.EnsureExternalFunctionResponse(
-            result=Oneof(
-                "missing_inputs",
-                pb.MissingFunctionDeploymentInputs(tree_digests=[tree]),
-            )
-        ),
-        pb.EnsureExternalFunctionResponse(result=Oneof("missing_inputs", missing)),
-        pb.EnsureExternalFunctionResponse(
-            result=Oneof(
-                "pending_image_build",
-                sandbox.GetOrBuildCustomImageResponse(
-                    build_id="build", status="building"
-                ),
-            )
-        ),
-        complete(),
-    ]
-    uploads, waits = [], []
+def test_source_mount_rejects_user_volume_at_same_path(tmp_path):
+    source = tmp_path / "source.py"
+    source.write_text("answer = 42\n")
+    image = Image("python").add_local_file(str(source), "/app/source.py")
 
-    def supply(client, image, request):
-        uploads.append(request.file_digests)
-        return pb.FunctionDeploymentInputs(upload_volume=request.upload_volume)
-
-    monkeypatch.setattr(deployment, "_supply_files", supply)
-    monkeypatch.setattr(
-        deployment, "wait_for_image_build", lambda *a, **kw: waits.append(a[1])
-    )
-    client = Client(responses)
-    run(client, prepared)
-    assert len({request.request_id for request in client.requests}) == 1
-    assert client.requests[0].to_binary() == client.requests[1].to_binary()
-    assert client.requests[2].supplied_inputs.manifests == [prepared.manifests[tree]]
-    assert uploads == [[digest]]
-    assert waits == ["build"]
-
-
-def test_upload_rejects_source_changed_after_fingerprinting(monkeypatch, tmp_path):
-    source = tmp_path / "source"
-    source.write_bytes(b"hello")
-    prepared = deployment.prepare_function_image(
-        Image("python:3.11").add_local_file(str(source), "/app/a.py")
-    )
-    digest = next(iter(prepared.files))
-    receipt = volume.CommitIntent(
-        deltas=Oneof(
-            "path_deltas",
-            volume.PathDeltaList(
-                upserts=[
-                    volume.PathFileDelta(
-                        path=digest,
-                        node=volume.FileNode(
-                            node=Oneof(
-                                "file",
-                                volume.RegularFileNode(
-                                    content=volume.ContentRef(
-                                        content=Oneof(
-                                            "inline",
-                                            volume.InlineFileContent(
-                                                hash="changed", size=5, data=b"other"
-                                            ),
-                                        )
-                                    )
-                                ),
-                            )
-                        ),
-                    )
-                ]
-            ),
-        )
-    )
-    inner = SimpleNamespace(
-        stage=lambda *a: object(), staged_intent=lambda *a: receipt.to_binary()
-    )
-    monkeypatch.setattr(
-        deployment.VolumeClient,
-        "from_connect",
-        lambda client: SimpleNamespace(_inner=inner),
-    )
-    with pytest.raises(ConnectError, match="Source changed"):
-        deployment._supply_files(
+    with pytest.raises(ValueError, match="overlaps.*'/app'"):
+        deployment.resolve_function_volumes(
             Client([]),
-            prepared,
-            pb.MissingFunctionDeploymentInputs(
-                file_digests=[digest], upload_volume=volume.VolumeRef(name="source")
-            ),
+            image=image,
+            volume_name="function",
+            referenced=[VolumeMount("user", "/app")],
+            poll_interval=0,
+            timeout=5,
         )
 
 
@@ -272,13 +140,17 @@ def test_generated_function_sources_are_stable_between_runs(monkeypatch):
         return x + 1
 
     fn = RemoteFunction(add)
-    images, temporary = [], []
+    images, sources, temporary = [], [], []
     try:
         for _ in range(2):
-            images.append(deployment.prepare_function_image(fn._build_deploy_image()))
+            image = fn._build_deploy_image()
+            images.append(image)
+            sources.append(
+                {file.dest: Path(file.src).read_text() for file in image.lazy_local_files}
+            )
             temporary.extend(fn._temp_files)
-        assert images[0].sources == images[1].sources
-        assert images[0].image.to_proto() == images[1].image.to_proto()
+        assert sources[0] == sources[1]
+        assert images[0].to_proto() == images[1].to_proto()
     finally:
         for file in temporary:
             os.unlink(file)
@@ -338,14 +210,13 @@ def test_redeploy_preserves_callable_and_desired_spec(
     monkeypatch.setattr(function_module, "ConnectClient", lambda **kwargs: client)
     prepared_sources = []
 
-    def prepare(image):
-        prepared = deployment.prepare_function_image(image)
+    def resolve(client, *, image, referenced, **kwargs):
         prepared_sources.append(
             {file.dest: Path(file.src).read_text() for file in image.lazy_local_files}
         )
-        return prepared
+        return [*referenced, VolumeMount("source", "/app", version_id=1)]
 
-    monkeypatch.setattr(function_module, "prepare_function_image", prepare)
+    monkeypatch.setattr(function_module, "resolve_function_volumes", resolve)
     monkeypatch.setattr(
         RemoteFunction,
         "_poll_until_ready",
