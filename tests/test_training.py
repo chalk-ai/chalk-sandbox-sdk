@@ -73,12 +73,58 @@ def test_call_invokes_function_body() -> None:
     assert train(None, "myconfig") == "got-myconfig"
 
 
-def test_local_invokes_function_body() -> None:
-    @training(data="ds")
-    def train(df: Any, config: Any) -> str:
-        return f"local-{config}"
+def test_local_resolves_cached_dataset_and_returns_model() -> None:
+    model = object()
+    dataframe = object()
 
-    assert train.local(config="c") == "local-c"
+    @training(data="ds")
+    def train(df: Any, config: Any) -> object:
+        assert df is dataframe
+        assert config == {"epochs": 2}
+        return model
+
+    dataset = MagicMock()
+    dataset.to_polars.return_value = dataframe
+
+    with patch("chalk.client.ChalkClient") as client_cls:
+        client_cls.return_value.get_dataset.return_value = dataset
+
+        result = train.local(config={"epochs": 2})
+
+    assert result is model
+    client_cls.return_value.get_dataset.assert_called_once_with(dataset_name="ds")
+    client_cls.return_value.offline_query.assert_not_called()
+    dataset.to_polars.assert_called_once_with()
+
+
+def test_local_resolves_dataset_alias() -> None:
+    @training(dataset="cached-training-set")
+    def train(df: Any, config: Any) -> Any:
+        return df
+
+    dataset = MagicMock()
+    dataset.to_polars.return_value = "dataframe"
+
+    with patch("chalk.client.ChalkClient") as client_cls:
+        client_cls.return_value.get_dataset.return_value = dataset
+
+        assert train.local() == "dataframe"
+
+    client_cls.return_value.get_dataset.assert_called_once_with(
+        dataset_name="cached-training-set"
+    )
+
+
+def test_local_rejects_input_sql_without_running_offline_query() -> None:
+    @training(input_sql="SELECT * FROM training_features")
+    def train(df: Any, config: Any) -> Any:
+        return df, config
+
+    with patch("chalk.client.ChalkClient") as client_cls:
+        with pytest.raises(TrainingError, match="cannot execute input_sql locally"):
+            train.local(config="config")
+
+    client_cls.assert_not_called()
 
 
 def test_noop_inside_container(monkeypatch: pytest.MonkeyPatch) -> None:
