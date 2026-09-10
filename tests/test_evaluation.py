@@ -20,6 +20,7 @@ from chalkcompute._evaluation import (
     EvaluationRunStatus,
     EvaluationScorerResult,
     EvaluationSuite,
+    SqlScorer,
 )
 from chalkcompute._arrow_serde import arrow_encoder_for_annotation
 from chalkcompute._function import FunctionVersionInfo, RemoteFunction, _build_schemas
@@ -235,6 +236,69 @@ def test_create_pins_direct_function_versions() -> None:
     assert request.scorers[0].implementation is not None
     assert request.scorers[0].implementation.value.function_version_id == "fn-score-v2"
     assert json.loads(request.metadata.to_json()) == {"suite": "release"}
+
+
+def test_create_sends_sql_scorers_alongside_function_scorers() -> None:
+    evaluation_dict = _evaluation_dict()
+    evaluation_dict["scorers"].append(
+        {
+            "id": "scorer-2",
+            "spec": {
+                "sqlExpression": {
+                    "name": "Exact match",
+                    "expression": '"output" = "expected"',
+                }
+            },
+        }
+    )
+    connect = _FakeConnectClient(
+        {
+            "create_evaluation": [
+                _message(
+                    evaluation_pb.CreateEvaluationResponse,
+                    {"evaluation": evaluation_dict},
+                )
+            ]
+        }
+    )
+    client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]
+
+    evaluation = client.create(
+        "Support quality",
+        dataset=DatasetRevisionRef("dataset-1", "revision-1"),
+        task=_remote_function("fn-task-v2", name="support-answer"),
+        scorers=[
+            _remote_function("fn-score-v2", name="brand-alignment"),
+            SqlScorer("  Exact match  ", '  "output" = "expected"  '),
+        ],
+    )
+
+    _, request = connect.calls[0]
+    assert request.scorers[0].implementation.field == "function"
+    assert request.scorers[1].implementation.field == "sql_expression"
+    assert request.scorers[1].implementation.value.name == "Exact match"
+    assert request.scorers[1].implementation.value.expression == '"output" = "expected"'
+    # The scorer comes back as its expression, with no function version.
+    assert evaluation.scorers[1].sql_name == "Exact match"
+    assert evaluation.scorers[1].sql_expression == '"output" = "expected"'
+    assert evaluation.scorers[1].function_version_id is None
+    assert evaluation.scorers[0].sql_expression is None
+
+
+@pytest.mark.parametrize(
+    ("name", "expression"),
+    [
+        ("", "1.0"),
+        ("   ", "1.0"),
+        ("???", "1.0"),
+        ("grade", ""),
+        ("grade", "1.0; DROP TABLE t"),
+        ("grade", "1" * 4001),
+    ],
+)
+def test_sql_scorer_rejects_what_the_server_would(name: str, expression: str) -> None:
+    with pytest.raises(ValueError):
+        SqlScorer(name, expression)
 
 
 def test_create_and_list_suites() -> None:

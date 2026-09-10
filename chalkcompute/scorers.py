@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from chalkcompute._evaluation import EvaluationScorerResult
+from chalkcompute._evaluation import SqlScorer as SqlScorer
 from chalkcompute._function import FunctionBuildError, RemoteFunction, _NoOpFunction
 from chalkcompute._function import function as _function
 from chalkcompute._image import Image

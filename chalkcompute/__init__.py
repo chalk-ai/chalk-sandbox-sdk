@@ -123,6 +123,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "LazyLocalFile": ("chalkcompute._image", "LazyLocalFile"),
     # _secret.py
     "Secret": ("chalkcompute._secret", "Secret"),
+    "SqlScorer": ("chalkcompute._evaluation", "SqlScorer"),
     "SecretScope": ("chalkcompute._secret", "SecretScope"),
     "resolve_lazy_secrets": ("chalkcompute._secret", "resolve_lazy_secrets"),
     # _sandbox.py

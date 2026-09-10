@@ -47,6 +47,7 @@ from chalkcompute._evaluation import EvaluationRunStatus as EvaluationRunStatus
 from chalkcompute._evaluation import EvaluationScorer as EvaluationScorer
 from chalkcompute._evaluation import EvaluationScorerResult as EvaluationScorerResult
 from chalkcompute._evaluation import EvaluationSuite as EvaluationSuite
+from chalkcompute._evaluation import SqlScorer as SqlScorer
 from chalkcompute._function import DeployedFunction as DeployedFunction
 from chalkcompute._function import FunctionBuildError as FunctionBuildError
 from chalkcompute._function import FunctionCallHandle as FunctionCallHandle
@@ -194,6 +195,7 @@ __all__ = [
     "EvaluationScorer",
     "EvaluationScorerResult",
     "EvaluationSuite",
+    "SqlScorer",
     "RemoteCallClient",
     "RemoteCallClientUnavailable",
     "bind_model",

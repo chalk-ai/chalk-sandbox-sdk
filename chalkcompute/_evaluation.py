@@ -209,6 +209,48 @@ class DatasetRevisionRef:
         object.__setattr__(self, "revision_id", revision_id)
 
 
+# The server's own bound on a scorer expression; mirrored so an oversized
+# expression fails here rather than after a round trip.
+_MAX_SQL_EXPRESSION_LENGTH = 4000
+
+
+@dataclass(frozen=True)
+class SqlScorer:
+    """A scorer whose score is a ChalkSQL expression, evaluated in the run's query.
+
+    The expression is a select item over the evaluation's own columns: every
+    dataset column by name, plus ``output``, the task's result for the row. It
+    must yield a number, and unlike a function scorer it deploys nothing and
+    carries no metadata.
+    """
+
+    name: str
+    expression: str
+
+    def __post_init__(self) -> None:
+        name = self.name.strip()
+        if not name:
+            raise ValueError("SqlScorer: name is required")
+        if not any(character.isalnum() for character in name):
+            raise ValueError(
+                f"SqlScorer: name must contain a letter or digit, not {self.name!r}"
+            )
+        expression = self.expression.strip()
+        if not expression:
+            raise ValueError("SqlScorer: expression is required")
+        if len(expression) > _MAX_SQL_EXPRESSION_LENGTH:
+            raise ValueError(
+                f"SqlScorer: expression is longer than "
+                f"{_MAX_SQL_EXPRESSION_LENGTH} characters"
+            )
+        if ";" in expression:
+            raise ValueError(
+                "SqlScorer: expression is one select item, so it may not contain ';'"
+            )
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "expression", expression)
+
+
 @dataclass(frozen=True)
 class EvaluationScorer:
     """A versioned scorer attached to an evaluation."""
@@ -221,6 +263,12 @@ class EvaluationScorer:
 
     builtin_id: str | None = None
     """Immutable built-in scorer identifier, when built-in."""
+
+    sql_name: str | None = None
+    """Scorer name, when the scorer is a ChalkSQL expression."""
+
+    sql_expression: str | None = None
+    """The ChalkSQL expression, when the scorer is one."""
 
 
 class EvaluationRunStatus(str, Enum):
@@ -323,16 +371,17 @@ class Evaluation:
         *,
         dataset: DatasetRevisionRef | DatasetRevisionLike | DatasetNameLike,
         task: DeployedFunction,
-        scorers: Sequence[DeployedFunction],
+        scorers: Sequence[DeployedFunction | SqlScorer],
         metadata: Mapping[str, Any] | None = None,
         suite_id: str | None = None,
         chalk_client: Any | None = None,
     ) -> Evaluation:
         """Create an evaluation from deployed function handles.
 
-        ``task`` and every scorer must already be deployed. Handles returned by
-        ``@chalkcompute.function`` meet this requirement because resolving their
-        version waits for the decorator's background deployment.
+        ``task`` and every function scorer must already be deployed. Handles
+        returned by ``@chalkcompute.function`` meet this requirement because
+        resolving their version waits for the decorator's background deployment.
+        A :class:`SqlScorer` deploys nothing and is sent as its expression.
         """
         return EvaluationClient(chalk_client=chalk_client).create(
             name,
@@ -524,7 +573,7 @@ class EvaluationClient:
         *,
         dataset: DatasetRevisionRef | DatasetRevisionLike | DatasetNameLike,
         task: DeployedFunction,
-        scorers: Sequence[DeployedFunction],
+        scorers: Sequence[DeployedFunction | SqlScorer],
         metadata: Mapping[str, Any] | None = None,
         suite_id: str | None = None,
     ) -> Evaluation:
@@ -537,8 +586,8 @@ class EvaluationClient:
         scorer_handles = tuple(scorers)
         if not scorer_handles:
             raise ValueError("at least one scorer is required")
-        scorer_version_ids = [
-            _resolve_function_version(scorer, role=f"scorer {index}")
+        scorer_specs = [
+            _scorer_spec(scorer, role=f"scorer {index}")
             for index, scorer in enumerate(scorer_handles)
         ]
         metadata_dict = _metadata_dict(metadata)
@@ -552,17 +601,7 @@ class EvaluationClient:
                 dataset_id=dataset_ref.dataset_id or "",
                 dataset_revision_id=dataset_ref.revision_id or "",
                 task_function_version_id=task_version_id,
-                scorers=[
-                    evaluation_pb.EvaluationScorerSpec(
-                        implementation=Oneof(
-                            "function",
-                            evaluation_pb.FunctionScorer(
-                                function_version_id=version_id
-                            ),
-                        )
-                    )
-                    for version_id in scorer_version_ids
-                ],
+                scorers=scorer_specs,
                 metadata=(
                     None
                     if metadata is None
@@ -751,11 +790,34 @@ def _resolve_dataset_revision(
     )
 
 
+def _scorer_spec(
+    scorer: DeployedFunction | SqlScorer, *, role: str
+) -> evaluation_pb.EvaluationScorerSpec:
+    """One scorer as the wire spec: a pinned function version, or an expression."""
+    if isinstance(scorer, SqlScorer):
+        return evaluation_pb.EvaluationScorerSpec(
+            implementation=Oneof(
+                "sql_expression",
+                evaluation_pb.SqlExpressionScorer(
+                    name=scorer.name, expression=scorer.expression
+                ),
+            )
+        )
+    return evaluation_pb.EvaluationScorerSpec(
+        implementation=Oneof(
+            "function",
+            evaluation_pb.FunctionScorer(
+                function_version_id=_resolve_function_version(scorer, role=role)
+            ),
+        )
+    )
+
+
 def _resolve_function_version(function: DeployedFunction, *, role: str) -> str:
     if not isinstance(function, RemoteFunction):
         raise TypeError(
-            f"{role} must be a RemoteFunction returned by @chalkcompute.function "
-            "or RemoteFunction.from_name()/from_id()"
+            f"{role} must be a RemoteFunction returned by @chalkcompute.function, "
+            "RemoteFunction.from_name()/from_id(), or a SqlScorer"
         )
     version_info = function.version_info
     if version_info is None:
@@ -839,6 +901,16 @@ def _scorer_from_proto(raw: evaluation_pb.EvaluationScorer) -> EvaluationScorer:
         builtin_id=(
             implementation.value.id or None
             if implementation is not None and implementation.field == "builtin"
+            else None
+        ),
+        sql_name=(
+            implementation.value.name or None
+            if implementation is not None and implementation.field == "sql_expression"
+            else None
+        ),
+        sql_expression=(
+            implementation.value.expression or None
+            if implementation is not None and implementation.field == "sql_expression"
             else None
         ),
     )
