@@ -215,7 +215,7 @@ _MAX_SQL_EXPRESSION_LENGTH = 4000
 
 
 @dataclass(frozen=True)
-class SqlScorer:
+class SqlExpression:
     """A scorer whose score is a ChalkSQL expression, evaluated in the run's query.
 
     The expression is a select item over the evaluation's own columns: every
@@ -230,22 +230,22 @@ class SqlScorer:
     def __post_init__(self) -> None:
         name = self.name.strip()
         if not name:
-            raise ValueError("SqlScorer: name is required")
+            raise ValueError("SqlExpression: name is required")
         if not any(character.isalnum() for character in name):
             raise ValueError(
-                f"SqlScorer: name must contain a letter or digit, not {self.name!r}"
+                f"SqlExpression: name must contain a letter or digit, not {self.name!r}"
             )
         expression = self.expression.strip()
         if not expression:
-            raise ValueError("SqlScorer: expression is required")
+            raise ValueError("SqlExpression: expression is required")
         if len(expression) > _MAX_SQL_EXPRESSION_LENGTH:
             raise ValueError(
-                f"SqlScorer: expression is longer than "
+                f"SqlExpression: expression is longer than "
                 f"{_MAX_SQL_EXPRESSION_LENGTH} characters"
             )
         if ";" in expression:
             raise ValueError(
-                "SqlScorer: expression is one select item, so it may not contain ';'"
+                "SqlExpression: expression is one select item, so it may not contain ';'"
             )
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "expression", expression)
@@ -371,7 +371,7 @@ class Evaluation:
         *,
         dataset: DatasetRevisionRef | DatasetRevisionLike | DatasetNameLike,
         task: DeployedFunction,
-        scorers: Sequence[DeployedFunction | SqlScorer],
+        scorers: Sequence[DeployedFunction | SqlExpression],
         metadata: Mapping[str, Any] | None = None,
         suite_id: str | None = None,
         chalk_client: Any | None = None,
@@ -381,7 +381,7 @@ class Evaluation:
         ``task`` and every function scorer must already be deployed. Handles
         returned by ``@chalkcompute.function`` meet this requirement because
         resolving their version waits for the decorator's background deployment.
-        A :class:`SqlScorer` deploys nothing and is sent as its expression.
+        A :class:`SqlExpression` deploys nothing and is sent as its expression.
         """
         return EvaluationClient(chalk_client=chalk_client).create(
             name,
@@ -573,7 +573,7 @@ class EvaluationClient:
         *,
         dataset: DatasetRevisionRef | DatasetRevisionLike | DatasetNameLike,
         task: DeployedFunction,
-        scorers: Sequence[DeployedFunction | SqlScorer],
+        scorers: Sequence[DeployedFunction | SqlExpression],
         metadata: Mapping[str, Any] | None = None,
         suite_id: str | None = None,
     ) -> Evaluation:
@@ -791,10 +791,10 @@ def _resolve_dataset_revision(
 
 
 def _scorer_spec(
-    scorer: DeployedFunction | SqlScorer, *, role: str
+    scorer: DeployedFunction | SqlExpression, *, role: str
 ) -> evaluation_pb.EvaluationScorerSpec:
     """One scorer as the wire spec: a pinned function version, or an expression."""
-    if isinstance(scorer, SqlScorer):
+    if isinstance(scorer, SqlExpression):
         return evaluation_pb.EvaluationScorerSpec(
             implementation=Oneof(
                 "sql_expression",
@@ -817,7 +817,7 @@ def _resolve_function_version(function: DeployedFunction, *, role: str) -> str:
     if not isinstance(function, RemoteFunction):
         raise TypeError(
             f"{role} must be a RemoteFunction returned by @chalkcompute.function, "
-            "RemoteFunction.from_name()/from_id(), or a SqlScorer"
+            "RemoteFunction.from_name()/from_id(), or a SqlExpression"
         )
     version_info = function.version_info
     if version_info is None:

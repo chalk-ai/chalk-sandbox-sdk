@@ -20,8 +20,9 @@ from chalkcompute._evaluation import (
     EvaluationRunStatus,
     EvaluationScorerResult,
     EvaluationSuite,
-    SqlScorer,
+    SqlExpression,
 )
+from chalkcompute import scorers
 from chalkcompute._arrow_serde import arrow_encoder_for_annotation
 from chalkcompute._function import FunctionVersionInfo, RemoteFunction, _build_schemas
 from chalkcompute._gen.chalk.evaluation.v1 import service_pb as evaluation_pb
@@ -269,7 +270,7 @@ def test_create_sends_sql_scorers_alongside_function_scorers() -> None:
         task=_remote_function("fn-task-v2", name="support-answer"),
         scorers=[
             _remote_function("fn-score-v2", name="brand-alignment"),
-            SqlScorer("  Exact match  ", '  "output" = "expected"  '),
+            SqlExpression("  Exact match  ", '  "output" = "expected"  '),
         ],
     )
 
@@ -298,7 +299,13 @@ def test_create_sends_sql_scorers_alongside_function_scorers() -> None:
 )
 def test_sql_scorer_rejects_what_the_server_would(name: str, expression: str) -> None:
     with pytest.raises(ValueError):
-        SqlScorer(name, expression)
+        SqlExpression(name, expression)
+
+
+def test_scorers_sql_names_a_hand_written_expression() -> None:
+    assert scorers.sql("Exact", '"output" = "expected"') == SqlExpression(
+        "Exact", '"output" = "expected"'
+    )
 
 
 def test_create_and_list_suites() -> None:
