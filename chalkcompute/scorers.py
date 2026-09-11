@@ -14,7 +14,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from chalkcompute._evaluation import EvaluationScorerResult
+from chalkcompute._evaluation import EvaluationScorerResult, SqlExpression
 from chalkcompute._function import FunctionBuildError, RemoteFunction, _NoOpFunction
 from chalkcompute._function import function as _function
 from chalkcompute._image import Image
@@ -454,6 +454,17 @@ def _complete(spec: _JudgeSpec, messages: list[dict[str, str]]) -> Any:
 # ---------------------------------------------------------------------------
 # Deterministic scorers
 # ---------------------------------------------------------------------------
+
+
+def sql(name: str, expression: str, /) -> SqlExpression:
+    """Score rows with a ChalkSQL expression you write yourself.
+
+    ``expression`` is a select item over the evaluation's own columns: every
+    dataset column by name, plus ``output``, the task's result for the row. It
+    must yield a number. Nothing is deployed; ``name`` labels the result column
+    and the row in the compare table.
+    """
+    return SqlExpression(name, expression)
 
 
 def _validate_pair(inputs: Sequence[str], what: str) -> tuple[str, str]:
