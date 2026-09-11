@@ -926,6 +926,54 @@ class Sandbox:
             raise SandboxError("Sandbox is not running. Call .run() first.")
         return self._id
 
+    @_instrumented("chalkcompute.sandbox.exec_oneshot")
+    def _exec_oneshot(
+        self,
+        command: str,
+        *args: str,
+        timeout: float | None = None,
+        workdir: str | None = None,
+        env: dict[str, str] | None = None,
+        stdin: str | bytes | None = None,
+    ) -> ExecResult:
+        """Execute a synchronous command and return its buffered result."""
+        client = self._require_client()
+        sandbox_id = self._require_started()
+        request = process_pb.ExecCommandRequest(
+            sandbox_id=sandbox_id,
+            command=command,
+            args=list(args),
+        )
+        if timeout is not None:
+            seconds = int(timeout)
+            nanos = round((timeout - seconds) * 1_000_000_000)
+            if abs(nanos) == 1_000_000_000:
+                seconds += 1 if nanos > 0 else -1
+                nanos = 0
+            request.timeout = Duration(seconds=seconds, nanos=nanos)
+        if workdir is not None:
+            request.workdir = workdir
+        validate_env(env)
+        if env is not None:
+            for key, value in env.items():
+                request.env_vars[key] = value
+        if stdin is not None:
+            request.stdin = stdin.encode("utf-8") if isinstance(stdin, str) else stdin
+
+        try:
+            response = client._process_stub.exec_command(
+                request, headers=client._headers
+            )
+        except ConnectRpcError as e:
+            _handle_rpc_error(e, sandbox_id)
+            raise
+
+        return ExecResult(
+            stdout=response.stdout,
+            stderr=response.stderr,
+            exit_code=response.exit_code,
+        )
+
     @_instrumented("chalkcompute.sandbox.exec")
     def exec(
         self,
