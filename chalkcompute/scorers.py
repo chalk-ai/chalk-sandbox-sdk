@@ -787,3 +787,41 @@ def string_similarity(
         function_kwargs=function_kwargs,
         packages=_SIMILARITY_PACKAGES,
     )
+
+
+def _reject_constant(constant: str) -> Any:
+    raise ValueError(f"{constant} is not valid JSON")
+
+
+def _json_loads(text: str) -> Any:
+    """Parse strict JSON. Python's parser otherwise takes NaN and Infinity,
+    which no JSON document may contain."""
+    return json.loads(text, parse_constant=_reject_constant)
+
+
+def json_valid(
+    *,
+    name: str = "json-valid",
+    inputs: Sequence[str] = ("output",),
+    image: Image | None = None,
+    **function_kwargs: Any,
+) -> RemoteFunction | _NoOpFunction:
+    """Deploy a scorer that gives 1.0 when a column parses as JSON.
+
+    Useful on its own for a task asked to answer in JSON. The parser's
+    complaint is recorded as metadata when it does not parse. ``NaN`` and
+    ``Infinity`` are rejected, as the JSON grammar has no place for them.
+    """
+    _assert_deployable("cc.scorers.json_valid")
+    column = _validate_single(inputs, "json_valid")
+
+    def compare(**columns: Any) -> EvaluationScorerResult:
+        try:
+            _json_loads(_text(columns[column]))
+        except ValueError as exc:
+            return EvaluationScorerResult(score=0.0, metadata={"error": str(exc)})
+        return EvaluationScorerResult(score=1.0, metadata={})
+
+    return _declare_scorer(
+        name, (column,), compare, image=image, function_kwargs=function_kwargs
+    )

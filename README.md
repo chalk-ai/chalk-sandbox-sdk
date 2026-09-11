@@ -267,6 +267,7 @@ evaluation = cc.Evaluation.create(
   tolerance, or graded by how far apart they are.
 - `string_similarity` — `jaro_winkler`, `jaccard`, `token_set`, `token_sort`,
   `partial`, or `sequence`, matching the `chalk.functions` of those names.
+- `json_valid` — one column parses as JSON.
 
 ### LLM judges
 
