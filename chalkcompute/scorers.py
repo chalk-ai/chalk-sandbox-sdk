@@ -825,3 +825,111 @@ def json_valid(
     return _declare_scorer(
         name, (column,), compare, image=image, function_kwargs=function_kwargs
     )
+
+
+_MISSING = object()
+
+
+def _at_path(document: Any, path: str) -> Any:
+    """Walk a dotted path, taking digits as list indices."""
+    current = document
+    for step in path.split("."):
+        if isinstance(current, Mapping) and step in current:
+            current = current[step]
+        elif isinstance(current, (list, tuple)) and step.lstrip("-").isdigit():
+            index = int(step)
+            if not -len(current) <= index < len(current):
+                return _MISSING
+            current = current[index]
+        else:
+            return _MISSING
+    return current
+
+
+def _json_equal(a: Any, b: Any) -> bool:
+    """Compare as JSON does. Python holds ``True == 1``, so a boolean and a
+    number would otherwise pass for each other at any depth."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return a is b
+    if isinstance(a, Mapping) and isinstance(b, Mapping):
+        return len(a) == len(b) and all(
+            key in b and _json_equal(value, b[key]) for key, value in a.items()
+        )
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(
+            _json_equal(left, right) for left, right in zip(a, b)
+        )
+    return a == b
+
+
+def _mismatched_keys(a: Any, b: Any) -> list[str]:
+    """Top-level keys that differ, when both sides are objects."""
+    if not isinstance(a, Mapping) or not isinstance(b, Mapping):
+        return []
+    return sorted(
+        key
+        for key in set(a) | set(b)
+        if not _json_equal(a.get(key, _MISSING), b.get(key, _MISSING))
+    )
+
+
+def json_match(
+    *,
+    name: str = "json-match",
+    inputs: Sequence[str] = ("output", "expected"),
+    paths: Sequence[str] | None = None,
+    image: Image | None = None,
+    **function_kwargs: Any,
+) -> RemoteFunction | _NoOpFunction:
+    """Deploy a scorer that compares two columns as JSON documents.
+
+    Without ``paths`` the whole documents must be equal, so object key order
+    does not matter but list order does. With ``paths`` (dotted, as in
+    ``"user.id"`` or ``"items.0.sku"``) the score is the share of those paths
+    whose values agree. Either way the paths or keys that differed are recorded
+    as metadata, and a column that does not parse scores 0.0. Values are
+    compared as JSON, so ``true`` never passes for ``1``.
+    """
+    _assert_deployable("cc.scorers.json_match")
+    candidate, reference = _validate_pair(inputs, "json_match")
+    # A bare string would iterate into one path per character, and those
+    # paths are absent on both sides, which reads as agreement.
+    if isinstance(paths, str):
+        raise TypeError(f"json_match: paths must be a sequence, not {paths!r}")
+    wanted = tuple(paths) if paths is not None else None
+    if wanted is not None and not wanted:
+        raise ValueError("json_match: paths must name at least one path")
+
+    def compare(**columns: Any) -> EvaluationScorerResult:
+        parsed = []
+        for column in (candidate, reference):
+            try:
+                parsed.append(_json_loads(_text(columns[column])))
+            except ValueError as exc:
+                return EvaluationScorerResult(
+                    score=0.0, metadata={"error": f"{column}: {exc}"}
+                )
+        a, b = parsed
+        if wanted is None:
+            matched = _json_equal(a, b)
+            return EvaluationScorerResult(
+                score=1.0 if matched else 0.0,
+                metadata={"mismatched": [] if matched else _mismatched_keys(a, b)},
+            )
+        mismatched = [
+            path
+            for path in wanted
+            if not _json_equal(_at_path(a, path), _at_path(b, path))
+        ]
+        return EvaluationScorerResult(
+            score=1 - len(mismatched) / len(wanted),
+            metadata={"mismatched": mismatched},
+        )
+
+    return _declare_scorer(
+        name,
+        (candidate, reference),
+        compare,
+        image=image,
+        function_kwargs=function_kwargs,
+    )
