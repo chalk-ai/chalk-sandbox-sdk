@@ -566,3 +566,76 @@ def regex_match(
     return _declare_scorer(
         name, (column,), compare, image=image, function_kwargs=function_kwargs
     )
+
+
+_CONTAINS_MODES = ("all", "any", "fraction")
+
+
+def _expected_items(value: Any) -> list[str]:
+    """The reference column holds one substring, or a JSON array of them."""
+    text = _text(value).strip()
+    if text.startswith("["):
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            return [text]
+        if isinstance(parsed, list):
+            return [_text(item) for item in parsed]
+    return [text] if text else []
+
+
+def contains(
+    *,
+    name: str = "contains",
+    inputs: Sequence[str] = ("output", "expected"),
+    mode: str = "all",
+    case_insensitive: bool = False,
+    image: Image | None = None,
+    **function_kwargs: Any,
+) -> RemoteFunction | _NoOpFunction:
+    """Deploy a scorer that looks for expected substrings in a column.
+
+    The reference column holds one substring, or a JSON array of them. ``mode``
+    scores them together: ``"all"`` demands every one, ``"any"`` one of them,
+    and ``"fraction"`` gives the share that appeared. Which ones matched and
+    which were missing are recorded as metadata.
+    """
+    _assert_deployable("cc.scorers.contains")
+    candidate, reference = _validate_pair(inputs, "contains")
+    if mode not in _CONTAINS_MODES:
+        raise ValueError(
+            f"contains: mode must be one of {_CONTAINS_MODES}, not {mode!r}"
+        )
+
+    def compare(**columns: Any) -> EvaluationScorerResult:
+        haystack = _normalized(columns[candidate], case_insensitive=case_insensitive)
+        wanted = [
+            needle
+            for needle in (
+                _normalized(item, case_insensitive=case_insensitive)
+                for item in _expected_items(columns[reference])
+            )
+            if needle
+        ]
+        matched = [needle for needle in wanted if needle in haystack]
+        missing = [needle for needle in wanted if needle not in haystack]
+        if not wanted:
+            # Nothing was asked for, so everything asked for is present.
+            score = 1.0 if mode == "all" else 0.0
+        elif mode == "all":
+            score = 1.0 if not missing else 0.0
+        elif mode == "any":
+            score = 1.0 if matched else 0.0
+        else:
+            score = len(matched) / len(wanted)
+        return EvaluationScorerResult(
+            score=score, metadata={"matched": matched, "missing": missing}
+        )
+
+    return _declare_scorer(
+        name,
+        (candidate, reference),
+        compare,
+        image=image,
+        function_kwargs=function_kwargs,
+    )
