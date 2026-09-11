@@ -73,12 +73,58 @@ def test_call_invokes_function_body() -> None:
     assert train(None, "myconfig") == "got-myconfig"
 
 
-def test_local_invokes_function_body() -> None:
-    @training(data="ds")
-    def train(df: Any, config: Any) -> str:
-        return f"local-{config}"
+def test_local_resolves_cached_dataset_and_returns_model() -> None:
+    model = object()
+    dataframe = object()
 
-    assert train.local(config="c") == "local-c"
+    @training(data="ds")
+    def train(df: Any, config: Any) -> object:
+        assert df is dataframe
+        assert config == {"epochs": 2}
+        return model
+
+    dataset = MagicMock()
+    dataset.to_polars.return_value = dataframe
+
+    with patch("chalk.client.ChalkClient") as client_cls:
+        client_cls.return_value.get_dataset.return_value = dataset
+
+        result = train.local(config={"epochs": 2})
+
+    assert result is model
+    client_cls.return_value.get_dataset.assert_called_once_with(dataset_name="ds")
+    client_cls.return_value.offline_query.assert_not_called()
+    dataset.to_polars.assert_called_once_with()
+
+
+def test_local_resolves_dataset_alias() -> None:
+    @training(dataset="cached-training-set")
+    def train(df: Any, config: Any) -> Any:
+        return df
+
+    dataset = MagicMock()
+    dataset.to_polars.return_value = "dataframe"
+
+    with patch("chalk.client.ChalkClient") as client_cls:
+        client_cls.return_value.get_dataset.return_value = dataset
+
+        assert train.local() == "dataframe"
+
+    client_cls.return_value.get_dataset.assert_called_once_with(
+        dataset_name="cached-training-set"
+    )
+
+
+def test_local_rejects_input_sql_without_running_offline_query() -> None:
+    @training(input_sql="SELECT * FROM training_features")
+    def train(df: Any, config: Any) -> Any:
+        return df, config
+
+    with patch("chalk.client.ChalkClient") as client_cls:
+        with pytest.raises(TrainingError, match="cannot execute input_sql locally"):
+            train.local(config="config")
+
+    client_cls.assert_not_called()
 
 
 def test_noop_inside_container(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -373,6 +419,98 @@ def test_run_training_with_dataclass_config() -> None:
     ):
         handle = train.run_training(config=MyConfig(), client=mock_client)
     assert handle.run_id == "run-dc"
+
+
+def test_decorator_with_max_retries() -> None:
+    @training(data="ds", max_retries=3)
+    def train(df: Any, config: Any) -> str:
+        return "ok"
+
+    assert isinstance(train, TrainingFunction)
+    assert train._max_retries == 3
+
+
+def test_run_training_passes_max_retries() -> None:
+    from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
+
+    @training(data="my_ds", name="retry-run", max_retries=5)
+    def train(df: Any, config: Any) -> str:
+        return "ok"
+
+    mock_client = MagicMock()
+    mock_run = tr_pb.TrainingRun(id="run-retry")
+    mock_resp = tr_pb.CreateTrainingRunResponse(training_run=mock_run)
+    mock_client.call.return_value = mock_resp
+
+    with (
+        patch.object(
+            TrainingFunction, "_build_deploy_image", return_value=_mock_deploy_image()
+        ),
+        patch("chalkcompute._training.build_image", return_value="img:latest"),
+    ):
+        train.run_training(client=mock_client)
+
+    req = mock_client.call.call_args[0][1]
+    assert req.max_retries == 5
+
+
+def test_run_training_pythonpath_with_volume_commits() -> None:
+    from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
+    from chalkcompute._gen.chalk.volume.v2 import volume_pb
+
+    @training(data="my_ds", name="src-vol-run")
+    def train(df: Any, config: Any) -> str:
+        return "ok"
+
+    mock_client = MagicMock()
+    mock_run = tr_pb.TrainingRun(id="run-vol")
+    mock_resp = tr_pb.CreateTrainingRunResponse(training_run=mock_run)
+    mock_client.call.return_value = mock_resp
+
+    deploy_img = _mock_deploy_image()
+    deploy_img.lazy_local_files = [("local.py", "/app/local.py")]
+
+    mock_vclient = MagicMock()
+    commit = MagicMock(spec=volume_pb.CommitIntent)
+    mock_mount = MagicMock()
+    mock_mount.name = "training-src-src-vol-run-app"
+    mock_mount.mount_path = "/app"
+    mock_vclient.stage_lazy_files.return_value = ([mock_mount], [commit])
+
+    with (
+        patch.object(TrainingFunction, "_build_deploy_image", return_value=deploy_img),
+        patch("chalkcompute._training.build_image", return_value="img:latest"),
+        patch("chalkcompute._volume.VolumeClient") as MockVC,
+    ):
+        MockVC.from_connect.return_value = mock_vclient
+        train.run_training(client=mock_client)
+
+    req = mock_client.call.call_args[0][1]
+    assert req.env["PYTHONPATH"] == "/volumes/training-src-src-vol-run-app"
+
+
+def test_run_training_pythonpath_without_volume_commits() -> None:
+    from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
+
+    @training(data="my_ds", name="no-vol-run")
+    def train(df: Any, config: Any) -> str:
+        return "ok"
+
+    mock_client = MagicMock()
+    mock_run = tr_pb.TrainingRun(id="run-novol")
+    mock_resp = tr_pb.CreateTrainingRunResponse(training_run=mock_run)
+    mock_client.call.return_value = mock_resp
+
+    with (
+        patch.object(
+            TrainingFunction, "_build_deploy_image", return_value=_mock_deploy_image()
+        ),
+        patch("chalkcompute._training.build_image", return_value="img:latest"),
+    ):
+        train.run_training(client=mock_client)
+
+    req = mock_client.call.call_args[0][1]
+    assert req.env["PYTHONPATH"] == "/app"
 
 
 def test_run_training_builds_image_when_provided() -> None:

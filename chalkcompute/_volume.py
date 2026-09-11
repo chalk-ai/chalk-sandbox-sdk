@@ -19,6 +19,7 @@ import logging
 import math
 import os
 import tempfile
+import time
 import uuid
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
@@ -1499,6 +1500,69 @@ class VolumeClient:
             volumes.append(VolumeMount(name=vol.name, mount_path=dest_dir))
         return volumes, intents
 
+    @traced("chalkcompute.volume.resolve_lazy_files")
+    def _resolve_lazy_files(
+        self,
+        image: Image,
+        *,
+        volume_name: str,
+        timeout: float = 600.0,
+        poll_interval: float = 1.0,
+    ) -> builtins.list[VolumeMount]:
+        """Resolve lazy local files to immutable source volume mounts."""
+        from chalkcompute._naming import sanitize_dns_label
+
+        try:
+            groups = image.lazy_local_files_grouped_for_volume_mounts()
+        except ValueError as exc:
+            raise VolumeError(str(exc)) from exc
+
+        deadline = time.monotonic() + timeout
+        mounts: builtins.list[VolumeMount] = []
+        for mount_path, files in groups.items():
+            name = (
+                volume_name
+                if mount_path == "/app"
+                else sanitize_dns_label(f"{volume_name}-{mount_path}")
+            )
+            source: builtins.list[tuple[Any, ...]] = []
+            for file in files:
+                path = os.path.relpath(file.dest, mount_path).replace(os.sep, "/")
+                entry: tuple[Any, ...] = (path, Path(file.src))
+                if file.mode is not None:
+                    entry = (*entry, {"mode": file.mode})
+                source.append(entry)
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise VolumeError("Source file resolution timed out")
+            self._raise_if_closed()
+            try:
+                prepared = self._inner.prepare_files(source, "main")
+                version = self._inner.resolve_prepared_files(
+                    name,
+                    "source_code",
+                    prepared,
+                    {
+                        "upload": _default_upload_config(),
+                        "timeout_ms": max(1, int(remaining * 1_000)),
+                        "poll_interval_ms": max(1, int(poll_interval * 1_000)),
+                    },
+                )
+            except _native_error_types() as exc:
+                _raise_volume_error(exc, name)
+            version_id = version.get("version_id")
+            if not isinstance(version_id, int):
+                raise VolumeError("Source file resolution returned no version")
+            mounts.append(
+                VolumeMount(
+                    name=name,
+                    mount_path=mount_path,
+                    version_id=version_id,
+                )
+            )
+        return mounts
+
     def delete_volume(self, name: str) -> None:
         """Delete a volume by name.
 
@@ -2054,7 +2118,7 @@ class _BatchUpload:
 
 
 def normalize_volume_refs(
-    volumes: Iterable[tuple[str, str] | Volume | VolumeMount] | None,
+    volumes: Iterable[tuple[str | Volume, str] | Volume | VolumeMount] | None,
 ) -> builtins.list[VolumeMount]:
     """Validate and normalize caller-supplied volume references.
 
@@ -2074,14 +2138,19 @@ def normalize_volume_refs(
         if not (
             isinstance(item, (tuple, list))
             and len(item) == 2
-            and all(isinstance(s, str) for s in item)
+            and isinstance(item[0], (str, Volume))
+            and isinstance(item[1], str)
         ):
             raise ValueError(
                 "Each volumes entry must be a Volume, VolumeMount, or "
-                f"(name, mount_path) string tuple, got {item!r}. "
-                "Example: volumes=[('my-volume', '/data')]"
+                f"(name_or_volume, mount_path) tuple with a string mount path, got {item!r}. "
+                "Example: volumes=[('my-volume', '/data')] or [(volume, '/data')]"
             )
-        refs.append(VolumeMount(name=item[0], mount_path=item[1]))
+        volume, mount_path = item
+        if isinstance(volume, Volume):
+            refs.append(volume.mount(mount_path))
+        else:
+            refs.append(VolumeMount(name=volume, mount_path=mount_path))
     return refs
 
 

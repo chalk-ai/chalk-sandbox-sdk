@@ -12,6 +12,8 @@ Env vars set by ``buildContainerSpec`` (server-side):
     CHALK_DATA_DIR                 — data volume mount (default /chalk/data)
     CHALK_CHECKPOINT_DIR           — checkpoint volume mount (default /chalk/checkpoints)
     CHALK_DATASET_REVISION_ID      — immutable dataset revision to load
+    CHALK_DATA_VOLUME_NAME         — name of the data volume (server-assigned)
+    CHALK_MAX_RETRIES              — max retry attempts (0 = no retries)
 """
 
 from __future__ import annotations
@@ -183,6 +185,13 @@ def _load_dataframe(data_dir: str) -> object:
     return data_dir
 
 
+def _commit_retry_count(volume_name: str, path: str, count: int) -> None:
+    from chalkcompute._volume import Volume
+
+    vol = Volume(volume_name, create_if_missing=False)
+    vol.put_file(path, str(count))
+
+
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -202,12 +211,48 @@ def main() -> None:
     data_dir = os.environ.get("CHALK_DATA_DIR", "/chalk/data")
     checkpoint_dir = os.environ.get("CHALK_CHECKPOINT_DIR", "/chalk/checkpoints")
     revision_id = os.environ.get("CHALK_DATASET_REVISION_ID", "")
+    max_retries = int(os.environ.get("CHALK_MAX_RETRIES", "0"))
 
     os.environ.setdefault("CHALK_CHECKPOINT_DIR", checkpoint_dir)
 
     logger.info("Training entrypoint starting for run %s", run_id)
 
+    retry_count = 0
+    retry_marker_path = f".retry_count_{run_id}"
+    ckpt_vol_name = ""
+    if max_retries > 0:
+        run_name = os.environ.get("CHALK_TRAINING_RUN_NAME", "")
+        ckpt_vol_name = f"training-ckpt-{run_name}"
+        retry_marker_local = Path(checkpoint_dir) / retry_marker_path
+        if retry_marker_local.exists():
+            try:
+                retry_count = int(retry_marker_local.read_text().strip())
+            except (ValueError, OSError):
+                retry_count = 0
+
     client = ConnectClient()
+
+    if max_retries > 0 and retry_count >= max_retries:
+        try:
+            _update_status(client, run_id, tr_pb.TrainingRunStatus.WORKING)
+        except Exception:
+            pass
+        try:
+            _update_status(
+                client,
+                run_id,
+                tr_pb.TrainingRunStatus.FAILED,
+                error_message=f"Exhausted {max_retries} retries",
+            )
+        except Exception:
+            pass
+        logger.info("Retries exhausted (%d/%d), exiting", retry_count, max_retries)
+        sys.exit(0)
+
+    if max_retries > 0:
+        _commit_retry_count(ckpt_vol_name, retry_marker_path, retry_count + 1)
+        if retry_count > 0:
+            logger.info("Retry attempt %d of %d", retry_count, max_retries)
 
     try:
         _update_status(client, run_id, tr_pb.TrainingRunStatus.WORKING)
@@ -221,7 +266,9 @@ def main() -> None:
         config = _deserialize_config(run.config, func)
 
         if revision_id:
-            data_volume_name = f"training-data-{run_id[:8]}"
+            data_volume_name = os.environ.get(
+                "CHALK_DATA_VOLUME_NAME", f"training-data-{run_id[:8]}"
+            )
             _load_dataset(client, data_volume_name, revision_id, data_dir)
 
         df = _load_dataframe(data_dir)
@@ -235,6 +282,9 @@ def main() -> None:
                 type(result).__name__,
             )
 
+        if max_retries > 0:
+            _commit_retry_count(ckpt_vol_name, retry_marker_path, 0)
+
         _update_status(client, run_id, tr_pb.TrainingRunStatus.COMPLETED)
         logger.info("Training run %s completed", run_id)
 
@@ -243,6 +293,17 @@ def main() -> None:
     except Exception:
         error_msg = traceback.format_exc()
         logger.error("Training run %s failed:\n%s", run_id, error_msg)
+        if max_retries > 0 and retry_count < max_retries:
+            logger.info(
+                "%d/%d retries remaining, exiting for restart",
+                max_retries - retry_count - 1,
+                max_retries,
+            )
+            sys.exit(1)
+        try:
+            _update_status(client, run_id, tr_pb.TrainingRunStatus.WORKING)
+        except Exception:
+            pass
         try:
             _update_status(
                 client,

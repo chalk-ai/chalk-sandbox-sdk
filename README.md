@@ -239,11 +239,88 @@ time; evaluation creation then pins that version. `from_id` remains a
 compatibility alias for `from_version_id`. An imperative `RemoteFunction` must
 be explicitly deployed before it can be used in an evaluation.
 
+### Built-in scorers
+
+`cc.scorers` deploys common scorers without a function body. Each one takes an
+`inputs` pair naming the candidate column and the column it is compared
+against, scores between 0 and 1, and records the raw quantity as row metadata.
+
+```python
+match = cc.scorers.exact_match(case_insensitive=True)
+
+evaluation = cc.Evaluation.create(
+    "Capitals",
+    dataset=dataset,
+    task=answer,
+    scorers=[match],
+)
+```
+
+- `exact_match` — the two columns hold the same text, after optional trimming,
+  whitespace collapsing, and case folding.
+- `levenshtein` — edit distance, normalized to `1 - distance / len(longer)`.
+- `regex_match` — a pattern appears in (or covers) one column, with the match
+  and its named groups kept as metadata.
+- `contains` — expected substrings, one or a JSON array, scored as all, any,
+  or the fraction present.
+- `numeric_close` — two columns as numbers, within an absolute or relative
+  tolerance, or graded by how far apart they are.
+- `string_similarity` — `jaro_winkler`, `jaccard`, `token_set`, `token_sort`,
+  `partial`, or `sequence`, matching the `chalk.functions` of those names.
+
+### LLM judges
+
+`cc.scorers.llm_judge` deploys a scorer from a pydantic model (v1 or v2)
+instead of a function body. The model's `score` field becomes the score; every other field
+is recorded as row metadata. The reply is requested through the OpenAI client
+with structured outputs and validated against the model, so a malformed grade
+fails the row.
+
+```python
+from pydantic import BaseModel, Field
+
+class TraceQuality(BaseModel):
+    score: float = Field(ge=0, le=1, description="Overall quality.")
+    directness: int = Field(ge=0, le=2, description="Shortest reasonable path to the goal.")
+    task_correctness: int = Field(ge=0, le=2, description="Was the task actually completed?")
+    reason: str
+
+trace_quality = cc.scorers.llm_judge(
+    TraceQuality,
+    model="gpt-5",
+    instructions="You are grading a browser agent's login attempt.",
+    api_key=cc.Secret.from_chalk_env("OPENAI_API_KEY"),
+)
+```
+
+The scorer deploys as `trace-quality`, the model's name in kebab case; pass
+`name=` to choose another. `inputs` names the dataset columns the judge reads
+(default `("output",)`);
+`prompt_fn` replaces the default prompt; `parse_fn` replaces structured
+outputs for an endpoint without them. `completion_kwargs` (for example
+`{"temperature": 0, "max_tokens": 400}`) go on every request as given. Any
+OpenAI-compatible endpoint works via
+`base_url`, including Chalk's AI router. Every function deployed from the
+same module imports that module, so give sibling functions an image with
+`pydantic` as well. A judge is generated
+at import time, so it cannot be deployed in strip mode.
+
 ## Deployment revisions and rollback
 
 Scaling groups and functions have stable parent IDs with immutable deployment
-revisions beneath them. Calling `deploy()` again on the same handle appends and
-selects a new revision while preserving the parent ID:
+revisions beneath them. Scaling groups append a revision on each `deploy()`.
+Functions and class methods reuse an existing version when the source, image
+recipe, configuration, and managed secret revisions are unchanged—even across
+separate runs of your script. The unchanged path makes one ensure request without
+building an image or uploading source files. Only missing source content is
+uploaded on a change; unchanged images and source snapshots are shared within
+the environment.
+
+Use `deploy(force_new_version=True)` to create a fresh function version while
+still reusing image/source preparation. External secret providers and integration
+secrets conservatively disable function-version reuse because their values can
+rotate outside Chalk. Referenced data volumes retain their existing semantics.
+This requires a server with `EnsureExternalFunction` support.
 
 ```python
 group = cc.ScalingGroup(name="api", image="registry.example/api:v1").deploy()
@@ -257,6 +334,8 @@ def rank(query: str) -> str:
     return query
 
 rank.deploy()
+rank.deploy()  # reuses the unchanged version
+rank.deploy(force_new_version=True)  # explicitly creates a new version
 for version in rank.versions():
     print(version.id, version.created_at, version.is_current)
 rank.rollback("efv_previous")

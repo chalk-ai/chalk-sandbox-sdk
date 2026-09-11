@@ -70,13 +70,16 @@ from chalkcompute import _local_dev
 from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import (
     ConnectClient,
-    build_image,
     grpc_target_from_url,
     rpc_address_from_target,
     service_auth_context_from_env,
 )
 from chalkcompute._containerspec import ContainerSpec, validate_replica_and_utilization
 from chalkcompute._deployment_proto import function_config, scaling_spec
+from chalkcompute._function_deployment import (
+    ensure_external_function,
+    resolve_function_volumes,
+)
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import (
     service_connect as catalog_connect,
 )
@@ -84,7 +87,6 @@ from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as cat
 from chalkcompute._gen.chalk.runtime.v1 import remote_python_call_pb as remote_call_pb
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_connect as sg_connect
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
-from chalkcompute._gen.chalk.volume.v2 import volume_pb as volume_pb
 from chalkcompute._http import SYNC_HTTP_CLIENT
 from chalkcompute._naming import (
     sanitize_dns_label,
@@ -99,7 +101,7 @@ from chalkcompute._remote_function_tracing import (
 )
 from chalkcompute._retry import RetryPolicy
 from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
-from chalkcompute._secret import SecretScope, resolve_lazy_secrets
+from chalkcompute._secret import prepare_lazy_secrets
 from chalkcompute._tracing import (
     _instrumented,
     current_trace_metadata,
@@ -110,7 +112,6 @@ from chalkcompute._volume import (
     VolumeClient,
     VolumeMount,
     normalize_volume_refs,
-    referenced_volume_mount,
 )
 
 logger = logging.getLogger(__name__)
@@ -515,6 +516,9 @@ def _is_chalkcompute_decorator(
 
 
 _USER_MODULE_NAME = "user_module"
+
+# Output-schema metadata key carrying a declared scorer's response JSON Schema.
+SCORER_RESPONSE_SCHEMA_METADATA_KEY = "chalk.scorer.response_schema"
 _USER_MODULE_PATH = f"/app/{_USER_MODULE_NAME}.py"
 
 
@@ -1820,84 +1824,6 @@ def _preserve_functionlike_metadata(wrapper: Any, func: Callable) -> None:
     setattr(wrapper, "__kwdefaults__", getattr(func, "__kwdefaults__", None))
 
 
-def _build_and_upload(
-    client: ConnectClient,
-    deploy_image: _Image,
-    *,
-    label: str,
-    volume_name: str,
-    poll_interval: float,
-    build_timeout: float,
-    progress_parent: str | None = None,
-) -> tuple[str, list[VolumeMount], VolumeClient | None, list[volume_pb.CommitIntent]]:
-    """Build the container image and stage lazy local files.
-
-    Lazy files are uploaded into ``source_code``-kind volumes but not commited:
-    each staged upload is returned as a typed commit-intent for
-    ``CreateExternalFunctionVersionRequest.volume_commits``, so the server
-    commits automatically with the function version and pins the mount to the
-    resulting snapshot.
-
-    Parameters
-    ----------
-    client
-        Connect RPC client.
-    deploy_image
-        Declarative image to build.
-    label
-        Human-readable label used in progress output.
-    volume_name
-        Stable volume name for the lazy local files, derived from the
-        function or class name so redeploys reuse the same volume.
-    poll_interval
-        Seconds between build status polls.
-    build_timeout
-        Maximum seconds to wait for the build to finish.
-    progress_parent
-        Optional parent key for nested progress reporting.
-
-    Returns
-    -------
-    tuple of (str, list of VolumeMount, VolumeClient or None, list of CommitIntent)
-        ``(image_uri, new_volumes, driver, volume_commits)``. The driver is
-        returned only so the caller can later delete the uploaded volumes;
-        mount types live on the returned :class:`VolumeMount` objects, never
-        on the driver.
-    """
-    from chalkcompute._progress import progress_add, progress_done
-
-    ikey = f"image:{label}"
-    progress_add(ikey, "image", "Building image", parent=progress_parent)
-
-    logger.info("Building image for %s...", label)
-    image_uri = build_image(
-        client, deploy_image, poll_interval=poll_interval, timeout=build_timeout
-    )
-    logger.info("Image built: %s", image_uri)
-    progress_done(ikey)
-
-    new_volumes: list[VolumeMount] = []
-    driver: VolumeClient | None = None
-    volume_commits: list[volume_pb.CommitIntent] = []
-    if deploy_image.lazy_local_files:
-        vkey = f"upload:{label}"
-        progress_add(
-            vkey,
-            "volume",
-            f"Uploading {len(deploy_image.lazy_local_files)} file(s)",
-            parent=progress_parent,
-        )
-        logger.info("Uploading %d local file(s)...", len(deploy_image.lazy_local_files))
-        vvclient = VolumeClient.from_connect(client)
-        driver = vvclient
-        new_volumes, volume_commits = vvclient.stage_lazy_files(
-            deploy_image,
-            volume_name=volume_name,
-        )
-        progress_done(vkey)
-    return image_uri, new_volumes, driver, volume_commits
-
-
 def _cleanup_temp_files(paths: list[str]) -> None:
     """Remove temporary files or directories, ignoring errors.
 
@@ -1991,6 +1917,9 @@ def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
         output_schema.metadata["chalk.function.is_generator"] = "true"
     if is_async:
         output_schema.metadata["chalk.function.is_async"] = "true"
+    response_schema = getattr(func, "__chalk_scorer_response_schema__", None)
+    if response_schema is not None:
+        output_schema.metadata[SCORER_RESPONSE_SCHEMA_METADATA_KEY] = response_schema
 
     return input_schema, output_schema
 
@@ -2073,6 +2002,12 @@ def _apply_function_version(
 ) -> None:
     function._function_id = efv.function_id or None
     function._version_info = _parse_function_version(efv, is_current=is_current)
+    # A locally defined handle keeps its Python name, signature (including
+    # defaults), and Arrow serializers. Catalog names need not be valid Python
+    # identifiers, and replacing the callable name changes the next deploy's
+    # handler source. Only attached handles derive callable metadata from the API.
+    if function._has_local_func:
+        return
     function._func_name = efv.function_name
     function._explicit_name = sanitize_dns_label(efv.function_name)
     function._input_field_names = _extract_field_names(efv.input_arrow_schema)
@@ -2122,67 +2057,6 @@ def _get_external_function(
     if response.external_function is None:
         raise FunctionError("GetExternalFunction returned no function")
     return response
-
-
-def _find_external_function(
-    client: ConnectClient, function_name: str
-) -> catalog_pb.ExternalFunction | None:
-    try:
-        return _get_external_function(
-            client,
-            function_name=function_name,
-        ).external_function
-    except ConnectRpcError as exc:
-        if exc.code == Code.NOT_FOUND:
-            return None
-        raise
-
-
-def _deploy_external_function(
-    client: ConnectClient,
-    *,
-    function_name: str,
-    version_spec: catalog_pb.ExternalFunctionVersionSpec,
-    external_function_id: str | None = None,
-) -> catalog_pb.ExternalFunction:
-    """Create a stable function or append a version to an existing one."""
-    stub = client.stub(catalog_connect.ExternalFunctionCatalogServiceClientSync)
-    try:
-        if external_function_id is None:
-            response = client.call(
-                stub.create_external_function,
-                catalog_pb.CreateExternalFunctionRequest(
-                    function_name=function_name,
-                    spec=version_spec,
-                ),
-                timeout=60,
-            )
-        else:
-            response = client.call(
-                stub.update_external_function,
-                catalog_pb.UpdateExternalFunctionRequest(
-                    external_function_id=external_function_id,
-                    spec=version_spec,
-                    update_mask=FieldMask(paths=["spec"]),
-                ),
-                timeout=60,
-            )
-    except ConnectRpcError as exc:
-        if external_function_id is None and exc.code == Code.ALREADY_EXISTS:
-            existing = _find_external_function(client, function_name)
-            if existing is not None:
-                return _deploy_external_function(
-                    client,
-                    function_name=function_name,
-                    version_spec=version_spec,
-                    external_function_id=existing.id,
-                )
-        raise
-
-    external_function = response.external_function
-    if external_function is None:
-        raise FunctionError("External-function mutation returned no function")
-    return external_function
 
 
 def _normalize_schedule(schedule: str | None, *, owner: str = "schedule") -> str | None:
@@ -2381,7 +2255,7 @@ class RemoteFunction:
         gpu: str | None = None,
         env: dict[str, str] | None = None,
         secrets: list[_Secret] | None = None,
-        volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+        volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
         tags: dict[str, str] | None = None,
         chalk_identity: bool = False,
         authenticated: bool = False,
@@ -2957,8 +2831,9 @@ class RemoteFunction:
         poll_interval: float = 0.5,
         build_timeout: float = 600.0,
         ready_timeout: float = 300.0,
+        force_new_version: bool = False,
     ) -> RemoteFunction:
-        """Build a new version, register it, and wait until it is running.
+        """Ensure the definition is deployed, reusing an unchanged version.
 
         Parameters
         ----------
@@ -2968,6 +2843,8 @@ class RemoteFunction:
             Maximum seconds to wait for the image build.
         ready_timeout
             Maximum seconds to wait for the scaling group to become ready.
+        force_new_version
+            Create a new version even when unchanged, reusing image/source artifacts.
 
         Returns
         -------
@@ -2980,6 +2857,7 @@ class RemoteFunction:
                 poll_interval=poll_interval,
                 build_timeout=build_timeout,
                 ready_timeout=ready_timeout,
+                force_new_version=force_new_version,
             )
 
     @_instrumented("chalkcompute.function.deploy")
@@ -2989,6 +2867,7 @@ class RemoteFunction:
         poll_interval: float = 0.5,
         build_timeout: float = 600.0,
         ready_timeout: float = 300.0,
+        force_new_version: bool = False,
     ) -> RemoteFunction:
         """Build the image, register the function version, and wait until running.
 
@@ -3032,29 +2911,17 @@ class RemoteFunction:
             # 1. Build deploy image
             deploy_image = self._build_deploy_image()
 
-            # 2. Build image + upload lazy files
-            image_uri, new_vols, driver, volume_commits = _build_and_upload(
-                self._client,
-                deploy_image,
-                label=f"function '{self._func_name}'",
-                volume_name=f"fn-src-{self._explicit_name or self._func_name}",
-                poll_interval=poll_interval,
-                build_timeout=build_timeout,
-                progress_parent=fkey,
-            )
-            # A missing user-referenced volume fails the deploy.
-            referenced_volumes = [
-                referenced_volume_mount(self._client, mount)
-                for mount in getattr(self, "_referenced_volumes", [])
-            ]
-            deploy_volumes = [
-                *referenced_volumes,
-                *new_vols,
-            ]
+            deploy_volumes = list(getattr(self, "_referenced_volumes", []))
             self._volumes = deploy_volumes
-            self._volume_driver = driver
-            _cleanup_temp_files(getattr(self, "_temp_files", []))
-            self._temp_files = []
+            self._volume_driver = None
+            deploy_volumes = resolve_function_volumes(
+                self._client,
+                image=deploy_image,
+                volume_name=registered_name,
+                referenced=deploy_volumes,
+                poll_interval=poll_interval,
+                timeout=build_timeout,
+            )
 
             # 3. Register function version
             input_schema_proto, output_schema_proto = _build_schemas(self._func)
@@ -3065,17 +2932,11 @@ class RemoteFunction:
                 f"{self._handler_module}.handler",
             ]
 
-            # Resolve into a local so later deploys re-upsert lazy secrets.
-            resolved_secrets = self._secrets
-            if any(s.is_lazy for s in self._secrets):
-                scope = SecretScope.function(self._explicit_name or self._func_name)
-                resolved_secrets, _upserted = resolve_lazy_secrets(
-                    self._secrets, self._client, scope=scope
-                )
+            resolved_secrets, local_secrets = prepare_lazy_secrets(self._secrets)
 
             container_spec = ContainerSpec(
                 name=sg_name,
-                image=image_uri,
+                image="",
                 entrypoint=_local_install_entrypoint(handler_cmd),
                 env=_remote_call_container_env(self._env),
                 cpu=self._cpu,
@@ -3136,28 +2997,33 @@ class RemoteFunction:
                 "Registering function '%s'...", self._explicit_name or self._func_name
             )
 
-            external_function = _deploy_external_function(
+            ensured = ensure_external_function(
                 self._client,
                 function_name=self._explicit_name or self._func_name,
-                external_function_id=self._function_id,
+                image=deploy_image,
+                local_secrets=local_secrets,
+                force_new_version=force_new_version,
+                poll_interval=poll_interval,
+                timeout=build_timeout,
                 version_spec=catalog_pb.ExternalFunctionVersionSpec(
                     input_arrow_schema=input_schema_proto,
                     output_arrow_schema=output_schema_proto,
                     spec=spec,
                     config=config,
-                    volume_commits=volume_commits,
                 ),
             )
-            _apply_external_function(self, external_function)
+            _apply_external_function(
+                self, ensured.external_function, scaling_group=ensured.scaling_group
+            )
             # A redeploy may move the stable function to a different scaling
             # group endpoint. Force subsequent calls to establish fresh
             # transports for the newly selected version.
             self._drop_remote_call_clients()
             assert self._version_info is not None
-            sg_data = None
+            sg_data = ensured.scaling_group
 
             logger.info(
-                "Function version created: %s v%s (id=%s)",
+                "Function version selected: %s v%s (id=%s)",
                 self._version_info.function_name,
                 self._version_info.version,
                 self._version_info.id,
@@ -3185,6 +3051,8 @@ class RemoteFunction:
             progress_fail(fkey)
             raise
         finally:
+            _cleanup_temp_files(getattr(self, "_temp_files", []))
+            self._temp_files = []
             progress_finish()
 
         return self
@@ -4198,7 +4066,7 @@ def function(
     name: str | None = None,
     env: dict[str, str] | None = None,
     secrets: list[_Secret] | None = None,
-    volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+    volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
     chalk_identity: bool = False,
     authenticated: bool = False,
@@ -4237,7 +4105,7 @@ def function(
     name: str | None = None,
     env: dict[str, str] | None = None,
     secrets: list[_Secret] | None = None,
-    volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+    volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
     chalk_identity: bool = False,
     authenticated: bool = False,
@@ -4277,7 +4145,7 @@ def function(
     name: str | None = None,
     env: dict[str, str] | None = None,
     secrets: list[_Secret] | None = None,
-    volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+    volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
     chalk_identity: bool = False,
     authenticated: bool = False,
@@ -4344,7 +4212,9 @@ def function(
     secrets
         List of :class:`~chalkcompute.Secret` references to inject.
     volumes
-        List of ``(name, mount_path)`` tuples for persistent storage.
+        List of ``Volume`` handles, ``VolumeMount`` specifications, or
+        ``(name_or_volume, mount_path)`` tuples for persistent storage.
+        Volume handles preserve their selected ref or pinned version.
     min_replicas
         Minimum number of replicas.
     max_replicas

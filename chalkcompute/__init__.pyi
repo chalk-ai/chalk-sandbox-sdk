@@ -1,3 +1,4 @@
+from chalkcompute import scorers as scorers
 from chalkcompute._artifact import Artifact as Artifact
 from chalkcompute._artifact import ArtifactClient as ArtifactClient
 from chalkcompute._artifact import ArtifactError as ArtifactError
@@ -140,6 +141,7 @@ from chalkcompute._volume import Volume as VersionedVolume
 from chalkcompute._volume import VolumeClient as VersionedVolumeClient
 
 __all__ = [
+    "scorers",
     "Artifact",
     "ArtifactClient",
     "ArtifactError",

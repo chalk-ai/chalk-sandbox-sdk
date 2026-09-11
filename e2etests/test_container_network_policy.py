@@ -505,7 +505,16 @@ def _run_http_probe(container: Container, probe: HttpProbe) -> ProbeRecord:
         command += ["--header", probe.header]
     command.append(probe.url)
 
-    result = container.exec(*command, timeout_secs=max_time + 5)
+    retry_deadline = time.monotonic() + connect_timeout
+    while True:
+        result = container.exec(*command, timeout_secs=max_time + 5)
+        if not probe.expected_ok or result.exit_code not in {7, 28}:
+            break
+        retry_delay = min(0.5, retry_deadline - time.monotonic())
+        if retry_delay <= 0:
+            break
+        time.sleep(retry_delay)
+
     body, separator, status = result.stdout_text.rpartition("\n")
     if not separator:
         body = ""

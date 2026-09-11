@@ -34,7 +34,7 @@ steps:
       echo "--- :python: Bootstrap toolchain"
       source .buildkite/install-uv.sh
       echo "--- :package: Sync locked dependencies"
-      uv sync --locked --all-extras
+      uv sync --locked --all-extras --reinstall-package chalkcompute
       echo "--- :pytest: Unit test gate"
       uv run python -m pytest tests/ -v --tb=short
     agents:

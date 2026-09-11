@@ -699,7 +699,7 @@ class Container:
         gpu: str | None = None,
         env: dict[str, str] | None = None,
         secrets: list[Secret] | None = None,
-        volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+        volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
         port: int | None = None,
         entrypoint: list[str] | None = None,
         lifetime: str | None = None,
@@ -917,15 +917,16 @@ class Container:
 
     # -- Volume helpers --------------------------------------------------------
 
-    def mount_volume(self, name: str, mount_path: str) -> Container:
-        """Mount a named volume into the container.
+    def mount_volume(self, name: str | Volume, mount_path: str) -> Container:
+        """Mount a named volume or volume handle into the container.
 
         Must be called before :meth:`run`. Returns ``self`` for chaining.
 
         Parameters
         ----------
         name
-            Name of the Chalk volume to mount.
+            Name or handle of the Chalk volume to mount. Handles preserve
+            their selected ref or pinned version.
         mount_path
             Absolute path inside the container where the volume is mounted.
 
@@ -945,7 +946,7 @@ class Container:
         """
         # Referenced volume: its mount type is resolved from the backend at
         # run() time, not defaulted here.
-        self._referenced_volumes.append(VolumeMount(name=name, mount_path=mount_path))
+        self._referenced_volumes.extend(normalize_volume_refs([(name, mount_path)]))
         return self
 
     # -- Lifecycle -------------------------------------------------------------
@@ -1299,7 +1300,7 @@ class Container:
         ...         )
         ...     ),
         ...     cpu="1",
-        ...     memory="1Gi",
+        ...     memory="2Gi",
         ... ).run()
         >>> hello = c.exec(
         ...     "python",

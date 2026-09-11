@@ -35,7 +35,7 @@ steps:
           --mode all \
           --iterations 5 \
           --cpu 250m \
-          --memory 128Mi \
+          --memory 512Mi \
           --min-success-rate 1.0 \
           --max-p95-ms 60000
     agents:

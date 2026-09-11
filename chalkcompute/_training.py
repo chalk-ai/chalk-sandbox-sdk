@@ -28,6 +28,7 @@ import dataclasses
 import logging
 import os
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, overload
 
 from protobuf import Oneof
@@ -230,6 +231,7 @@ class TrainingFunction:
         env: dict[str, str] | None = None,
         secrets: list[_Secret] | None = None,
         metadata: dict[str, Any] | None = None,
+        max_retries: int | None = None,
     ) -> None:
         _validate_data_source(data, dataset, input_sql)
 
@@ -256,6 +258,7 @@ class TrainingFunction:
         self._env = dict(env) if env else {}
         self._secrets: list[_Secret] = list(secrets or [])
         self._metadata = dict(metadata) if metadata else {}
+        self._max_retries = max_retries
 
     @property
     def func_name(self) -> str:
@@ -279,15 +282,44 @@ class TrainingFunction:
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return self._func(*args, **kwargs)
 
-    def local(self, *, config: Any = None, **kwargs: Any) -> Any:
+    def local(self, *, config: Any = None) -> Any:
         """Run the training function in-process for local iteration.
+
+        The latest revision of the configured named dataset is downloaded as
+        a Polars ``DataFrame`` before the wrapped function is called. No
+        training container or offline query is started.
+
+        ``input_sql`` data sources cannot be executed locally and must first
+        be materialized as a named dataset.
 
         Parameters
         ----------
         config
             A dataclass or dict passed to the training function.
+
+        Returns
+        -------
+        Any
+            The value returned by the wrapped training function, typically a
+            trained model.
         """
-        return self._func(None, config, **kwargs)
+        if self._input_sql is not None:
+            raise TrainingError(
+                "TrainingFunction.local() cannot execute input_sql locally; "
+                "materialize the query as a named dataset and use data= or dataset="
+            )
+
+        try:
+            from chalk.client import ChalkClient
+        except ImportError as exc:
+            raise TrainingError(
+                "TrainingFunction.local() requires chalkpy with runtime "
+                "dependencies; install 'chalkpy[runtime]'"
+            ) from exc
+        client = ChalkClient()
+        dataset = client.get_dataset(dataset_name=self.data_source)
+        df = dataset.to_polars()
+        return self._func(df, config)
 
     def _build_deploy_image(self) -> _Image:
         """Build the deploy image with the user's training function source."""
@@ -298,7 +330,29 @@ class TrainingFunction:
             _source_file_for_deploy,
         )
 
-        deploy_image = _make_base_image(self._image)
+        from chalkcompute import _local_dev
+
+        config = _local_dev.resolve_local_deploy_config()
+        if config.should_mount_sdk_source:
+            # Training entrypoint is server-controlled so we can't wrap it
+            # to extract an archive (like wrap_entrypoint_for_local_dev does
+            # for functions). Instead, add SDK source unarchived to /app so
+            # it lands in the same volume as the user's code and is directly
+            # importable via PYTHONPATH.
+            from chalkcompute._image import Image
+
+            base = self._image if self._image is not None else Image.debian_slim()
+            project_root = str(Path(__file__).resolve().parent.parent)
+            deploy_image = base.pip_install(
+                _local_dev._LOCAL_SDK_RUNTIME_PACKAGES
+            ).add_local_dir(
+                project_root,
+                "/app",
+                exclude=_local_dev._LOCAL_SDK_COPY_EXCLUDES,
+            )
+        else:
+            deploy_image = _make_base_image(self._image)
+
         module_name = _deploy_module_name(self._func)
         package_dir = _package_dir_for_module(module_name)
 
@@ -342,6 +396,7 @@ class TrainingFunction:
         image_uri = build_image(client, deploy_image)
 
         volume_commits: list[volume_pb.CommitIntent] = []
+        volume_mounts: list[Any] = []
         if deploy_image.lazy_local_files:
             from chalkcompute._volume import VolumeClient
 
@@ -351,7 +406,7 @@ class TrainingFunction:
             )
             vvclient = VolumeClient.from_connect(client)
             vol_name = f"training-src-{self._name or self._func_name}"
-            _, volume_commits = vvclient.stage_lazy_files(
+            volume_mounts, volume_commits = vvclient.stage_lazy_files(
                 deploy_image,
                 volume_name=vol_name,
             )
@@ -362,7 +417,10 @@ class TrainingFunction:
         meta = _metadata_to_proto(self._metadata) if self._metadata else None
 
         env = dict(self._env) if self._env else {}
-        env["PYTHONPATH"] = "/app"
+        if volume_mounts:
+            env["PYTHONPATH"] = f"/volumes/{volume_mounts[0].name}"
+        else:
+            env["PYTHONPATH"] = "/app"
         module = self._func.__module__
         if module == "__main__":
             import __main__
@@ -384,6 +442,7 @@ class TrainingFunction:
             secret_refs=secret_refs or None,
             meta_data=meta,
             volume_commits=volume_commits or None,
+            max_retries=self._max_retries,
         )
 
         stub = client.stub(tr_connect.TrainingRunServiceClientSync)
@@ -438,6 +497,7 @@ def training(
     env: dict[str, str] | None = None,
     secrets: list[_Secret] | None = None,
     metadata: dict[str, Any] | None = None,
+    max_retries: int | None = None,
 ) -> TrainingFunction | _NoOpTrainingFunction: ...
 
 
@@ -455,6 +515,7 @@ def training(
     env: dict[str, str] | None = None,
     secrets: list[_Secret] | None = None,
     metadata: dict[str, Any] | None = None,
+    max_retries: int | None = None,
 ) -> Callable[..., TrainingFunction | _NoOpTrainingFunction]: ...
 
 
@@ -473,6 +534,7 @@ def training(
     env: dict[str, str] | None = None,
     secrets: list[_Secret] | None = None,
     metadata: dict[str, Any] | None = None,
+    max_retries: int | None = None,
 ) -> (
     Callable[..., TrainingFunction | _NoOpTrainingFunction]
     | TrainingFunction
@@ -516,6 +578,7 @@ def training(
             env=env,
             secrets=secrets,
             metadata=metadata,
+            max_retries=max_retries,
         )
 
     if func is not None:
