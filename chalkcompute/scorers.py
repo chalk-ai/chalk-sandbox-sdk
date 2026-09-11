@@ -459,6 +459,14 @@ def exact_match(
     )
 
 
+def _validate_single(inputs: Sequence[str], what: str) -> str:
+    """The one column this scorer reads."""
+    columns = _validate_inputs(inputs)
+    if len(columns) != 1:
+        raise ValueError(f"{what}: inputs must name exactly one column, not {columns}")
+    return columns[0]
+
+
 def _levenshtein_distance(a: str, b: str) -> int:
     """Edit distance, keeping one row of the matrix at a time."""
     if a == b:
@@ -514,4 +522,47 @@ def levenshtein(
         compare,
         image=image,
         function_kwargs=function_kwargs,
+    )
+
+
+def regex_match(
+    pattern: str,
+    /,
+    *,
+    name: str = "regex-match",
+    inputs: Sequence[str] = ("output",),
+    flags: int = 0,
+    full_match: bool = False,
+    image: Image | None = None,
+    **function_kwargs: Any,
+) -> RemoteFunction | _NoOpFunction:
+    """Deploy a scorer that gives 1.0 when a column matches ``pattern``.
+
+    ``full_match`` requires the pattern to cover the whole column instead of
+    appearing anywhere in it. The matched text and any named groups are
+    recorded as metadata, so a pattern can also pull a value out of the row.
+    An unusable pattern is rejected here rather than on every row.
+    """
+    _assert_deployable("cc.scorers.regex_match")
+    column = _validate_single(inputs, "regex_match")
+    try:
+        compiled = re.compile(pattern, flags)
+    except re.error as exc:
+        raise ValueError(
+            f"regex_match: {pattern!r} is not a usable regular expression ({exc})"
+        ) from exc
+
+    def compare(**columns: Any) -> EvaluationScorerResult:
+        text = _text(columns[column])
+        found = compiled.fullmatch(text) if full_match else compiled.search(text)
+        if found is None:
+            return EvaluationScorerResult(
+                score=0.0, metadata={"match": None, "groups": {}}
+            )
+        return EvaluationScorerResult(
+            score=1.0, metadata={"match": found.group(0), "groups": found.groupdict()}
+        )
+
+    return _declare_scorer(
+        name, (column,), compare, image=image, function_kwargs=function_kwargs
     )
