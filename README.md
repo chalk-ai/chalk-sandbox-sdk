@@ -270,6 +270,8 @@ evaluation = cc.Evaluation.create(
 - `json_valid` — one column parses as JSON.
 - `json_match` — two columns hold the same JSON, or agree on the dotted
   `paths` you name.
+- `embedding_similarity` — cosine similarity of the two columns' embeddings,
+  for an answer that is right but worded differently.
 
 ### LLM judges
 

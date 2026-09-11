@@ -1,0 +1,1 @@
+- Add `cc.scorers.embedding_similarity`, a scorer that grades two columns by embedding cosine similarity
