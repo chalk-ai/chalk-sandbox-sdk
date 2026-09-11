@@ -294,7 +294,6 @@ trace_quality = cc.scorers.llm_judge(
     TraceQuality,
     model="gpt-5",
     instructions="You are grading a browser agent's login attempt.",
-    api_key=cc.Secret.from_chalk_env("OPENAI_API_KEY"),
 )
 ```
 
@@ -303,9 +302,13 @@ The scorer deploys as `trace-quality`, the model's name in kebab case; pass
 (default `("output",)`);
 `prompt_fn` replaces the default prompt; `parse_fn` replaces structured
 outputs for an endpoint without them. `completion_kwargs` (for example
-`{"temperature": 0, "max_tokens": 400}`) go on every request as given. Any
-OpenAI-compatible endpoint works via
-`base_url`, including Chalk's AI router. Every function deployed from the
+`{"temperature": 0, "max_tokens": 400}`) go on every request as given.
+
+The judge above names no provider key: with neither `api_key` nor `base_url`
+it calls [Chalk's AI router](https://docs.chalk.ai/docs/ai-router) as the
+environment itself, and the router holds the provider credentials. To call a
+provider directly instead, pass `api_key=cc.Secret.from_chalk_env("OPENAI_API_KEY")`,
+and `base_url` for any other OpenAI-compatible endpoint. Every function deployed from the
 same module imports that module, so give sibling functions an image with
 `pydantic` as well. A judge is generated
 at import time, so it cannot be deployed in strip mode.

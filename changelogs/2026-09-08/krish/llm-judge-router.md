@@ -1,0 +1,1 @@
+- `cc.scorers.llm_judge` calls Chalk's AI router when no `api_key` or `base_url` is given, so a judge needs no provider key
