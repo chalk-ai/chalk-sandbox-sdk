@@ -42,6 +42,7 @@ dev = [
     "chalkpy[runtime]>=2.154.34",
     "python-dotenv>=1.1.0",
     "pytest>=9.0.2",
+    "rapidfuzz>=3.0.0",
 ]
 
 [tool.ruff]

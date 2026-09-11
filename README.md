@@ -261,6 +261,12 @@ evaluation = cc.Evaluation.create(
 - `levenshtein` — edit distance, normalized to `1 - distance / len(longer)`.
 - `regex_match` — a pattern appears in (or covers) one column, with the match
   and its named groups kept as metadata.
+- `contains` — expected substrings, one or a JSON array, scored as all, any,
+  or the fraction present.
+- `numeric_close` — two columns as numbers, within an absolute or relative
+  tolerance, or graded by how far apart they are.
+- `string_similarity` — `jaro_winkler`, `jaccard`, `token_set`, `token_sort`,
+  `partial`, or `sequence`, matching the `chalk.functions` of those names.
 
 ### LLM judges
 

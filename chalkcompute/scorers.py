@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import difflib
 import json
 import keyword
+import math
 import os
 import re
 import sys
@@ -565,4 +567,223 @@ def regex_match(
 
     return _declare_scorer(
         name, (column,), compare, image=image, function_kwargs=function_kwargs
+    )
+
+
+_CONTAINS_MODES = ("all", "any", "fraction")
+
+
+def _expected_items(value: Any) -> list[str]:
+    """The reference column holds one substring, or a JSON array of them."""
+    text = _text(value).strip()
+    if text.startswith("["):
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            return [text]
+        if isinstance(parsed, list):
+            return [_text(item) for item in parsed]
+    return [text] if text else []
+
+
+def contains(
+    *,
+    name: str = "contains",
+    inputs: Sequence[str] = ("output", "expected"),
+    mode: str = "all",
+    case_insensitive: bool = False,
+    image: Image | None = None,
+    **function_kwargs: Any,
+) -> RemoteFunction | _NoOpFunction:
+    """Deploy a scorer that looks for expected substrings in a column.
+
+    The reference column holds one substring, or a JSON array of them. ``mode``
+    scores them together: ``"all"`` demands every one, ``"any"`` one of them,
+    and ``"fraction"`` gives the share that appeared. Which ones matched and
+    which were missing are recorded as metadata.
+    """
+    _assert_deployable("cc.scorers.contains")
+    candidate, reference = _validate_pair(inputs, "contains")
+    if mode not in _CONTAINS_MODES:
+        raise ValueError(
+            f"contains: mode must be one of {_CONTAINS_MODES}, not {mode!r}"
+        )
+
+    def compare(**columns: Any) -> EvaluationScorerResult:
+        haystack = _normalized(columns[candidate], case_insensitive=case_insensitive)
+        wanted = [
+            needle
+            for needle in (
+                _normalized(item, case_insensitive=case_insensitive)
+                for item in _expected_items(columns[reference])
+            )
+            if needle
+        ]
+        matched = [needle for needle in wanted if needle in haystack]
+        missing = [needle for needle in wanted if needle not in haystack]
+        if not wanted:
+            # Nothing was asked for, so everything asked for is present.
+            score = 1.0 if mode == "all" else 0.0
+        elif mode == "all":
+            score = 1.0 if not missing else 0.0
+        elif mode == "any":
+            score = 1.0 if matched else 0.0
+        else:
+            score = len(matched) / len(wanted)
+        return EvaluationScorerResult(
+            score=score, metadata={"matched": matched, "missing": missing}
+        )
+
+    return _declare_scorer(
+        name,
+        (candidate, reference),
+        compare,
+        image=image,
+        function_kwargs=function_kwargs,
+    )
+
+
+def _number(value: Any) -> float | None:
+    try:
+        parsed = float(_text(value).strip())
+    except ValueError:
+        return None
+    # "inf" and "nan" parse as floats but cannot be scored: a relative
+    # tolerance against infinity compares inf <= inf, and nan loses every
+    # comparison, so both would read as a perfect or a zero score.
+    return parsed if math.isfinite(parsed) else None
+
+
+def numeric_close(
+    *,
+    name: str = "numeric-close",
+    inputs: Sequence[str] = ("output", "expected"),
+    tolerance: float | None = None,
+    relative: bool = False,
+    image: Image | None = None,
+    **function_kwargs: Any,
+) -> RemoteFunction | _NoOpFunction:
+    """Deploy a scorer that compares two columns as numbers.
+
+    With a ``tolerance`` the score is 1.0 or 0.0 depending on whether the two
+    are within it, taken as a share of the larger value when ``relative``.
+    Without one the score falls off with the gap between them, as
+    ``1 - gap / max(abs(a), abs(b))``. The signed difference is recorded as
+    metadata. A column that does not parse as a finite number scores 0.0,
+    which covers ``inf`` and ``nan`` as well as ordinary text.
+    """
+    _assert_deployable("cc.scorers.numeric_close")
+    candidate, reference = _validate_pair(inputs, "numeric_close")
+    if tolerance is not None and not 0 <= tolerance < math.inf:
+        raise ValueError(
+            f"numeric_close: tolerance must be finite and not negative ({tolerance})"
+        )
+
+    def compare(**columns: Any) -> EvaluationScorerResult:
+        a = _number(columns[candidate])
+        b = _number(columns[reference])
+        if a is None or b is None:
+            return EvaluationScorerResult(
+                score=0.0, metadata={"error": "not a finite number"}
+            )
+        gap = abs(a - b)
+        largest = max(abs(a), abs(b))
+        if tolerance is not None:
+            allowed = tolerance * largest if relative else tolerance
+            score = 1.0 if gap <= allowed else 0.0
+        elif largest == 0:
+            score = 1.0
+        else:
+            score = 1.0 - min(1.0, gap / largest)
+        return EvaluationScorerResult(score=score, metadata={"difference": a - b})
+
+    return _declare_scorer(
+        name,
+        (candidate, reference),
+        compare,
+        image=image,
+        function_kwargs=function_kwargs,
+    )
+
+
+# rapidfuzz backs the fuzzy ratios; Jaccard and difflib need nothing extra.
+_SIMILARITY_PACKAGES = ["rapidfuzz"]
+_SIMILARITY_METHODS = (
+    "jaro_winkler",
+    "jaccard",
+    "token_set",
+    "token_sort",
+    "partial",
+    "sequence",
+)
+
+
+def _jaccard_similarity(a: str, b: str) -> float:
+    """Character by character, as ``F.jaccard_similarity`` measures it."""
+    left, right = set(a), set(b)
+    union = left | right
+    return 1.0 if not union else len(left & right) / len(union)
+
+
+def _similarity(method: str, a: str, b: str) -> float:
+    if not a and not b:
+        return 1.0
+    if method == "jaccard":
+        return _jaccard_similarity(a, b)
+    if method == "sequence":
+        return difflib.SequenceMatcher(None, a, b).ratio()
+    # Present in the scorer's image, never in the SDK's environment.
+    from rapidfuzz import distance, fuzz
+
+    if method == "jaro_winkler":
+        return distance.JaroWinkler.normalized_similarity(a, b)
+    ratio = {
+        "token_set": fuzz.token_set_ratio,
+        "token_sort": fuzz.token_sort_ratio,
+        "partial": fuzz.partial_ratio,
+    }[method]
+    return ratio(a, b) / 100
+
+
+def string_similarity(
+    method: str,
+    /,
+    *,
+    name: str | None = None,
+    inputs: Sequence[str] = ("output", "expected"),
+    case_insensitive: bool = False,
+    image: Image | None = None,
+    **function_kwargs: Any,
+) -> RemoteFunction | _NoOpFunction:
+    """Deploy a scorer that grades two columns by string similarity.
+
+    ``method`` picks the measure: ``"jaro_winkler"``, ``"jaccard"``,
+    ``"token_set"``, ``"token_sort"``, ``"partial"``, or ``"sequence"``. Each
+    is the same quantity as the ``chalk.functions`` of that name, expressed as
+    a similarity in ``[0, 1]``, and the raw value is recorded as metadata.
+    Two empty columns score 1.0.
+    """
+    _assert_deployable("cc.scorers.string_similarity")
+    if method not in _SIMILARITY_METHODS:
+        raise ValueError(
+            f"string_similarity: method must be one of {_SIMILARITY_METHODS}, "
+            f"not {method!r}"
+        )
+    candidate, reference = _validate_pair(inputs, "string_similarity")
+
+    def compare(**columns: Any) -> EvaluationScorerResult:
+        a = _normalized(columns[candidate], case_insensitive=case_insensitive)
+        b = _normalized(columns[reference], case_insensitive=case_insensitive)
+        ratio = _similarity(method, a, b)
+        return EvaluationScorerResult(
+            score=ratio, metadata={"method": method, "ratio": ratio}
+        )
+
+    return _declare_scorer(
+        name or sanitize_dns_label(method.replace("_", "-")),
+        (candidate, reference),
+        compare,
+        image=image,
+        function_kwargs=function_kwargs,
+        packages=_SIMILARITY_PACKAGES,
     )
