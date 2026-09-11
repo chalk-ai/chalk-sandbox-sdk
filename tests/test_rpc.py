@@ -56,35 +56,20 @@ def test_rpc_span_contract(monkeypatch) -> None:
     assert span.status.status_code is StatusCode.UNSET
 
 
-def test_rpc_span_injects_current_trace_metadata(monkeypatch) -> None:
+def test_rpc_span_leaves_trace_metadata_to_transport(monkeypatch) -> None:
     interceptor, _exporter = _recording_interceptor(monkeypatch)
-    monkeypatch.setattr(
-        _rpc,
-        "current_trace_metadata",
-        lambda: [
-            ("traceparent", "00-trace-span-01"),
-            ("tracestate", "chalk=value"),
-        ],
-    )
     ctx = _context()
     ctx.request_headers["traceparent"] = "caller-value"
 
     token = interceptor.on_start_sync(ctx)
     interceptor.on_end_sync(token, ctx, None)
 
-    assert ctx.request_headers["traceparent"] == "00-trace-span-01"
-    assert ctx.request_headers["tracestate"] == "chalk=value"
+    assert ctx.request_headers["traceparent"] == "caller-value"
+    assert "tracestate" not in ctx.request_headers
 
 
-def test_suppress_rpc_tracing_skips_span_and_propagation(monkeypatch) -> None:
+def test_suppress_rpc_tracing_skips_span(monkeypatch) -> None:
     interceptor, exporter = _recording_interceptor(monkeypatch)
-    monkeypatch.setattr(
-        _rpc,
-        "current_trace_metadata",
-        lambda: (_ for _ in ()).throw(
-            AssertionError("suppressed RPC must not propagate trace metadata")
-        ),
-    )
     ctx = _context()
 
     with _rpc.suppress_rpc_tracing():

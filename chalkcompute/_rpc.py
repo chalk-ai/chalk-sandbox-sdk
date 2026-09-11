@@ -16,7 +16,7 @@ from connectrpc.request import RequestContext
 from opentelemetry import propagate
 from opentelemetry.trace import Span, StatusCode
 
-from chalkcompute._tracing import current_trace_metadata, get_tracer
+from chalkcompute._tracing import get_tracer
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ class _SpanToken:
 
 @contextmanager
 def suppress_rpc_tracing() -> Iterator[None]:
-    """Disable client spans and trace propagation for RPCs in this context."""
+    """Disable the SDK's logical RPC span in this context."""
     token = _RPC_TRACING_ENABLED.set(False)
     try:
         yield
@@ -72,10 +72,9 @@ class TracingInterceptor:
             return None
         context = get_tracer().start_as_current_span(_RPC_SPAN_NAME)
         span = context.__enter__()
-        # The RPC span is now current, so downstream services join it rather
-        # than becoming disconnected roots. Trace headers win over caller input.
-        for key, value in current_trace_metadata():
-            ctx.request_headers[key] = value
+        # The shared HTTP transport owns wire propagation and injects its client
+        # span here. Injecting at both layers creates a comma-joined traceparent
+        # that strict downstream propagators reject.
         span.set_attribute(
             _RPC_METHOD_ATTRIBUTE,
             f"{ctx.method.service_name}/{ctx.method.name}",
