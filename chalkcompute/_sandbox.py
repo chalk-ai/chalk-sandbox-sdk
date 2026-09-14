@@ -541,6 +541,8 @@ class Sandbox:
     '2.5.1'
     """
 
+    __chalk_type_id__ = "chalkcompute.Sandbox"
+
     __chalk_arrow_type__ = arrow_pb.ArrowType(
         arrow_type_enum=Oneof(
             "struct",

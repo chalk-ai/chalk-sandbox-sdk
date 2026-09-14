@@ -67,3 +67,37 @@ def test_invalid_handle_is_rejected_without_auth(value):
         with pytest.raises(ValueError):
             Sandbox.__chalk_deserialize__(value)
         bind.assert_not_called()
+
+
+def test_catalog_preserves_type_identity_description_and_defaults():
+    from chalkcompute._function import _build_schemas
+
+    def provision(project: str = "demo", limit: int = 2) -> Sandbox:
+        """Prepare a sandbox for data science."""
+        raise NotImplementedError
+
+    inputs, outputs = _build_schemas(provision)
+    assert inputs.columns[0].metadata["chalk.default"] == '"demo"'
+    assert inputs.columns[1].metadata["chalk.default"] == "2"
+    assert outputs.columns[0].metadata["chalk.python.type"] == "chalkcompute.Sandbox"
+    assert not outputs.columns[0].nullable
+    assert outputs.metadata["chalk.function.description"] == provision.__doc__
+
+
+def test_catalog_distinguishes_optional_list_and_generator_sandboxes():
+    from typing import Iterator
+    from chalkcompute._arrow_schema import rich_to_arrow_schema
+    from chalkcompute._function import _build_schemas
+
+    optional = rich_to_arrow_schema({"result": Sandbox | None}).columns[0]
+    assert optional.metadata["chalk.python.type"] == "chalkcompute.Sandbox"
+    assert optional.nullable
+    listed = rich_to_arrow_schema({"result": list[Sandbox]}).columns[0]
+    assert "chalk.python.type" not in listed.metadata
+
+    def generator():
+        yield Sandbox(sandbox_id="example")
+
+    generator.__annotations__ = {"return": Iterator[Sandbox]}
+    _, output = _build_schemas(generator)
+    assert output.metadata["chalk.function.is_generator"] == "true"
