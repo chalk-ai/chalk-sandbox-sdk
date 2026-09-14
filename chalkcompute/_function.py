@@ -2283,6 +2283,12 @@ class RemoteFunction:
     ) -> None:
         self._func = func
         self._has_local_func = True
+        from chalkcompute._notebook import notebook_source_for_function
+
+        try:
+            self._notebook_source = notebook_source_for_function(func)
+        except ValueError as error:
+            raise FunctionBuildError(str(error)) from error
         self._func_name = getattr(func, "__name__", "anonymous")
         self._call_parameter_names, self._bind_call_arguments = (
             _compile_argument_binder(inspect.signature(func))
@@ -2546,6 +2552,7 @@ class RemoteFunction:
         f = cls.__new__(cls)
         f._func = lambda *a, **kw: None  # type: ignore[assignment]
         f._has_local_func = False
+        f._notebook_source = None
         f._func_name = "unknown"
         f._call_parameter_names, f._bind_call_arguments = (
             _compile_catalog_argument_binder(())
@@ -2633,11 +2640,22 @@ class RemoteFunction:
         module_name: str,
     ) -> _Image:
         """Add the function's source file to the image as ``<module_name>.py``."""
-        source_file, source_is_temp = _prepare_source_file(
-            _source_file_for_deploy(self._func),
-            label=f"Function {self._func_name!r}",
-            entrypoint_sources=_entrypoint_source(self._func),
-        )
+        if self._notebook_source is not None:
+            source = self._notebook_source
+            if _should_strip_source():
+                source = _strip_source_for_deploy(
+                    source,
+                    strip=_strip_chalkcompute_from_source,
+                    label=f"Function {self._func_name!r}",
+                    entrypoint_sources=_entrypoint_source(self._func),
+                )
+            source_file, source_is_temp = _write_temp(source), True
+        else:
+            source_file, source_is_temp = _prepare_source_file(
+                _source_file_for_deploy(self._func),
+                label=f"Function {self._func_name!r}",
+                entrypoint_sources=_entrypoint_source(self._func),
+            )
         if source_is_temp:
             temp_files.append(source_file)
         return base_image.add_local_file(source_file, f"/app/{module_name}.py")
@@ -2734,9 +2752,17 @@ class RemoteFunction:
             raise FunctionError(
                 f"Background deployment already started for {self._func_name!r}"
             )
-        _assert_strip_mode_self_contained(
-            self._func, label=f"Function {self._func_name!r}"
-        )
+        if self._notebook_source is not None and _should_strip_source():
+            _strip_source_for_deploy(
+                self._notebook_source,
+                strip=_strip_chalkcompute_from_source,
+                label=f"Function {self._func_name!r}",
+                entrypoint_sources=_entrypoint_source(self._func),
+            )
+        elif self._notebook_source is None:
+            _assert_strip_mode_self_contained(
+                self._func, label=f"Function {self._func_name!r}"
+            )
         self._background_deploy_future = _schedule_background_deployment(self)
 
     def _wait_for_background_deploy(self, timeout: float | None = None) -> bool:

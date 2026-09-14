@@ -574,6 +574,32 @@ sandbox.terminate()
 client.close()
 ```
 
+### Functions defined in notebooks
+
+When `@chalkcompute.function()` runs in an IPython/Jupyter notebook (including
+Chalk notebooks), the SDK captures the function and its transitive source
+dependencies from executed cells through its definition. It uses the same Rust
+dependency analyzer as Chalk's notebook graph and run planner. Imports used only
+inside a helper or function body are included too.
+
+The snapshot is captured before background deployment starts. Rerun the defining
+cell after changing an upstream import, helper, or constant to deploy the updated
+code. The worker does not depend on the notebook kernel staying alive.
+
+Only required top-level imports, definitions, and assignments are included;
+unrelated plotting, display, and invocation statements are omitted. Required
+initialization expressions execute again when the worker imports the module.
+Pass computed notebook results as arguments or use explicit datasets/volumes
+when rerunning their initialization is inappropriate. Kernel-injected state,
+missing source, and dependencies produced by top-level control flow produce a
+build error with instructions for making the function portable. Mutations of
+existing objects and dynamic `exec`/wildcard imports cannot be inferred reliably
+from the source graph; move that setup into an explicit function or module.
+
+Packages still belong in the function's `image=Image...pip_install(...)` settings;
+copying an import does not install its package. Functions imported from ordinary
+Python files continue to use file/package deployment.
+
 ## Return sandbox handles from functions
 
 A provisioning function can return a `Sandbox` directly. Create the sandbox and
