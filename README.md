@@ -599,3 +599,46 @@ from the source graph; move that setup into an explicit function or module.
 Packages still belong in the function's `image=Image...pip_install(...)` settings;
 copying an import does not install its package. Functions imported from ordinary
 Python files continue to use file/package deployment.
+
+## Return sandbox handles from functions
+
+A provisioning function can return a `Sandbox` directly. Create the sandbox and
+finish its setup before returning; do not terminate it in a context manager.
+
+```python
+import chalkcompute as cc
+
+@cc.function(name="provision-agent")
+def provision_agent() -> cc.Sandbox:
+    sandbox = cc.Sandbox(
+        image="node:22-bookworm",
+        compute_class=cc.ComputeClass.HOST,
+        lifetime="3600s",
+        entrypoint=["sleep", "infinity"],
+        # secrets=[cc.Secret("ANTHROPIC_API_KEY")],
+    ).run()
+    sandbox.exec("mkdir", "-p", "/workspace")
+    return sandbox
+
+# After deployment, the annotated function restores a Sandbox handle.
+sandbox = provision_agent.remote()
+print(sandbox.exec("pwd").stdout_text)
+sandbox.terminate()
+```
+
+The function's identity needs sandbox creation permissions. The caller needs
+sandbox access in its own Chalk environment. Arrow transports one nonnullable
+struct field, `sandbox_id: large_utf8`, using the existing custom-object contract
+(`__chalk_arrow_type__`, `__chalk_serialize__`, `__chalk_deserialize__`). It never
+includes the creator's credentials, environment variables, secret references,
+client connection, or sandbox specification. Decoding performs no network I/O;
+the first operation authenticates using the receiving process's identity. A
+handle does not extend the server-enforced lifetime or recreate an expired sandbox.
+Unstarted sandboxes cannot be serialized. Optional and list annotations work,
+including empty lists.
+
+Herdr's Chalk plugin can consume the same Arrow result through `chalk function
+call --output-file`. It checks access and finite lifetime through the Chalk CLI
+and discovers existing PTY sessions using the run marker. Working directory and
+cleanup policy belong in Herdr's `provisionFunction` configuration; they are not
+part of a general-purpose `Sandbox` handle.
