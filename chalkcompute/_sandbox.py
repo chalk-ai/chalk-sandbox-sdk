@@ -55,6 +55,7 @@ from chalkcompute._containerspec import (
     RestartPolicy,
     SshDest,
 )
+from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
 from chalkcompute._gen.chalk.sandbox.v1 import runtime_service_pb as runtime_pb
 from chalkcompute._gen.chalk.sandbox.v1 import (
     runtime_service_connect as runtime_connect,
@@ -540,6 +541,48 @@ class Sandbox:
     '2.5.1'
     """
 
+    __chalk_arrow_type__ = arrow_pb.ArrowType(
+        arrow_type_enum=Oneof(
+            "struct",
+            arrow_pb.Struct(
+                sub_field_types=[
+                    arrow_pb.Field(
+                        name="sandbox_id",
+                        arrow_type=arrow_pb.ArrowType(
+                            arrow_type_enum=Oneof("large_utf8", arrow_pb.EmptyMessage())
+                        ),
+                        nullable=False,
+                    )
+                ]
+            ),
+        )
+    )
+
+    @staticmethod
+    def __chalk_pyarrow_type__() -> Any:
+        import pyarrow as pa
+
+        return pa.struct([pa.field("sandbox_id", pa.large_utf8(), nullable=False)])
+
+    def __chalk_serialize__(self) -> Any:
+        """Transport the existing sandbox ID, never its credentials or spec."""
+        import pyarrow as pa
+
+        return pa.scalar(
+            {"sandbox_id": self._require_started()},
+            type=self.__chalk_pyarrow_type__(),
+        )
+
+    @classmethod
+    def __chalk_deserialize__(cls, value: Any) -> Sandbox:
+        """Restore a handle without I/O; operations use the receiver's identity."""
+        if not value.is_valid or not value.type.equals(cls.__chalk_pyarrow_type__()):
+            raise ValueError("Invalid Sandbox Arrow scalar")
+        sandbox_id = value["sandbox_id"].as_py()
+        if not isinstance(sandbox_id, str) or not sandbox_id.strip():
+            raise ValueError("Invalid Sandbox ID")
+        return cls(sandbox_id=sandbox_id)
+
     def __init__(
         self,
         *,
@@ -617,6 +660,11 @@ class Sandbox:
             Optional SSH aliases mapped to :class:`SshDest` instances. Managed
             SSH sandboxes run on host compute.
 
+        sandbox_id
+            Existing sandbox ID. With no client, authentication is resolved lazily
+            from the receiver's environment on the first operation. This form
+            never creates a sandbox and cannot be mixed with image configuration.
+
         Notes
         -----
         Calling :meth:`run` without a client creates one from the environment.
@@ -688,10 +736,8 @@ class Sandbox:
                     "Sandbox(client=..., sandbox_id=...) cannot be combined with "
                     "Sandbox(image=...) configuration arguments"
                 )
-            if client is None or sandbox_id is None:
-                raise TypeError(
-                    "Sandbox(client=..., sandbox_id=...) requires both arguments"
-                )
+            if not isinstance(sandbox_id, str) or not sandbox_id.strip():
+                raise ValueError("Sandbox requires a nonempty sandbox_id")
             self._client = client
             self._id = sandbox_id
             return
@@ -918,7 +964,9 @@ class Sandbox:
 
     def _require_client(self) -> Any:
         if self._client is None:
-            raise SandboxError("Sandbox is not running. Call .run() first.")
+            self._require_started()
+            # Deserialized handles bind to the receiver, never the creator's token.
+            self._client = SandboxClient.from_env()
         return self._client
 
     def _require_started(self) -> str:
