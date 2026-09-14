@@ -452,10 +452,22 @@ class Volume:
         except VolumeNotFoundError:
             if not self._create_if_missing:
                 raise
-            response = self._client._create_volume(self._name)
-            if response.volume is None:
-                raise VolumeError("CreateVolume returned no volume metadata")
-            return _proto_to_volume_info(response.volume), None
+            try:
+                created = self._client._create_volume(self._name)
+            except VolumeError as exc:
+                if exc.code != "already_exists":
+                    raise
+                # Another caller can create the volume after our lookup. Read
+                # its metadata with the original selector; do not retry creation.
+                response = self._client._get_volume(
+                    self._name,
+                    version_id=self._version_id,
+                    ref_name=self._selector_ref(),
+                )
+            else:
+                if created.volume is None:
+                    raise VolumeError("CreateVolume returned no volume metadata")
+                return _proto_to_volume_info(created.volume), None
 
         if response.volume is None:
             raise VolumeError("GetVolume returned no volume metadata")

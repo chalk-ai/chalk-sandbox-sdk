@@ -239,6 +239,59 @@ def test_accepts_name_only_and_creates_missing_volume_lazily(
     )
 
 
+@pytest.mark.parametrize("selector", [{}, {"ref": "branch"}])
+def test_concurrent_volume_creation_reloads_original_selector(
+    monkeypatch: pytest.MonkeyPatch, selector: dict[str, Any]
+) -> None:
+    client = _make_client(monkeypatch)
+    client._rpc.get_volume.side_effect = [_not_found(), _get_volume_response()]
+    client._rpc.create_volume.side_effect = ConnectRpcError(
+        Code.ALREADY_EXISTS, "another caller created models"
+    )
+
+    vol = Volume("models", client=client, **selector)
+
+    assert vol.info.name == "models"
+    assert vol.version.id == 10
+    assert client._rpc.get_volume.call_count == 2
+    assert (
+        client._rpc.get_volume.call_args_list[0]
+        == client._rpc.get_volume.call_args_list[1]
+    )
+    client._rpc.create_volume.assert_called_once()
+
+
+def test_concurrent_creation_does_not_loop_on_missing_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._rpc.get_volume.side_effect = _not_found()
+    client._rpc.create_volume.side_effect = ConnectRpcError(
+        Code.ALREADY_EXISTS, "models exists"
+    )
+
+    with pytest.raises(VolumeNotFoundError):
+        Volume("models", client=client).reload()
+
+    assert client._rpc.get_volume.call_count == 2
+    client._rpc.create_volume.assert_called_once()
+
+
+def test_create_error_other_than_already_exists_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _make_client(monkeypatch)
+    client._rpc.get_volume.side_effect = _not_found()
+    client._rpc.create_volume.side_effect = ConnectRpcError(
+        Code.PERMISSION_DENIED, "creation denied"
+    )
+
+    with pytest.raises(VolumeError, match="creation denied"):
+        Volume("models", client=client).reload()
+
+    client._rpc.get_volume.assert_called_once()
+
+
 def test_create_if_missing_false_propagates_not_found(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
