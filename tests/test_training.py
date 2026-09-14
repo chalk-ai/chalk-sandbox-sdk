@@ -454,9 +454,9 @@ def test_run_training_passes_max_retries() -> None:
     assert req.max_retries == 5
 
 
-def test_run_training_pythonpath_with_volume_commits() -> None:
+def test_run_training_pythonpath_with_volume_mounts() -> None:
     from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
-    from chalkcompute._gen.chalk.volume.v2 import volume_pb
+    from chalkcompute._volume import VolumeMount
 
     @training(data="my_ds", name="src-vol-run")
     def train(df: Any, config: Any) -> str:
@@ -471,11 +471,11 @@ def test_run_training_pythonpath_with_volume_commits() -> None:
     deploy_img.lazy_local_files = [("local.py", "/app/local.py")]
 
     mock_vclient = MagicMock()
-    commit = MagicMock(spec=volume_pb.CommitIntent)
-    mock_mount = MagicMock()
-    mock_mount.name = "training-src-src-vol-run-app"
-    mock_mount.mount_path = "/app"
-    mock_vclient.stage_lazy_files.return_value = ([mock_mount], [commit])
+    mock_vclient._resolve_lazy_files.return_value = [
+        VolumeMount(
+            name="training-src-src-vol-run-app", mount_path="/app", version_id=1
+        ),
+    ]
 
     with (
         patch.object(TrainingFunction, "_build_deploy_image", return_value=deploy_img),
@@ -486,7 +486,12 @@ def test_run_training_pythonpath_with_volume_commits() -> None:
         train.run_training(client=mock_client)
 
     req = mock_client.call.call_args[0][1]
-    assert req.env["PYTHONPATH"] == "/volumes/training-src-src-vol-run-app"
+    assert req.env["PYTHONPATH"] == "/app"
+    assert req.volume_mounts is not None
+    assert len(req.volume_mounts) == 1
+    assert req.volume_mounts[0].name == "training-src-src-vol-run-app"
+    assert req.volume_mounts[0].mount_path == "/app"
+    assert req.volume_mounts[0].version_id == 1
 
 
 def test_run_training_pythonpath_without_volume_commits() -> None:
