@@ -472,7 +472,9 @@ def test_run_training_pythonpath_with_volume_mounts() -> None:
 
     mock_vclient = MagicMock()
     mock_vclient._resolve_lazy_files.return_value = [
-        VolumeMount(name="training-src-src-vol-run-app", mount_path="/app", version_id=1),
+        VolumeMount(
+            name="training-src-src-vol-run-app", mount_path="/app", version_id=1
+        ),
     ]
 
     with (
