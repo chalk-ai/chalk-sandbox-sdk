@@ -20,7 +20,6 @@ import pyarrow as pa
 from pyarrow import ipc
 
 from chalk.client import ChalkClient
-from chalk.client.model_image import chalk_handler_volume_name, upload_model_to_volume
 from chalk.scalinggroup import AutoScalingSpec, ScalingGroupResourceRequest
 from chalkcompute import Image
 from chalkcompute._connect import grpc_target_from_url
@@ -182,9 +181,8 @@ class TestModelWithVolume:
 
     The handler loads a config.json from /app/artifacts (the canonical
     volume mount path) at startup and uses its "factor" field to multiply
-    inputs. This validates the full volume flow: upload_model_to_volume
-    with chalk_handler_volume_name, automatic volume detection in
-    _ensure_model_image, and runtime loading from the mount.
+    inputs. Registering config.json through model_paths creates an artifact
+    volume and records it on the model version for mounting at deploy time.
     """
 
     _web_url: str
@@ -214,21 +212,15 @@ class TestModelWithVolume:
                 ]
             )
         )
-        version = client.register_model_version(
-            name="ex-volume-triple",
-            input_schema={"x": pa.float64()},
-            output_schema={"y": pa.float64()},
-            model_image=image,
-        )
-        with tempfile.NamedTemporaryFile(suffix=".json", mode="w") as config_file:
-            json.dump({"factor": 3.0}, config_file)
-            config_file.flush()
-            upload_model_to_volume(
-                volume_name=chalk_handler_volume_name(
-                    "ex-volume-triple", version.model_version
-                ),
-                model_filename="config.json",
-                model_file_path=config_file.name,
+        with tempfile.TemporaryDirectory(prefix="model-volume-") as config_dir:
+            config_path = Path(config_dir) / "config.json"
+            config_path.write_text(json.dumps({"factor": 3.0}))
+            version = client.register_model_version(
+                name="ex-volume-triple",
+                input_schema={"x": pa.float64()},
+                output_schema={"y": pa.float64()},
+                model_image=image,
+                model_paths=[str(config_path)],
             )
         client.deploy_model_version_to_scaling_group(
             name=VOLUME_SG_NAME,
