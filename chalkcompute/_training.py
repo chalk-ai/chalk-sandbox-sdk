@@ -41,7 +41,6 @@ from chalkcompute._gen.chalk.server.v1 import (
     training_runs_connect as tr_connect,
     training_runs_pb as tr_pb,
 )
-from chalkcompute._gen.chalk.volume.v2 import volume_pb
 
 if TYPE_CHECKING:
     from chalkcompute._image import Image as _Image
@@ -395,8 +394,7 @@ class TrainingFunction:
         deploy_image = self._build_deploy_image()
         image_uri = build_image(client, deploy_image)
 
-        volume_commits: list[volume_pb.CommitIntent] = []
-        volume_mounts: list[Any] = []
+        proto_mounts: list[container_pb.VolumeMount] = []
         if deploy_image.lazy_local_files:
             from chalkcompute._volume import VolumeClient
 
@@ -406,10 +404,19 @@ class TrainingFunction:
             )
             vvclient = VolumeClient.from_connect(client)
             vol_name = f"training-src-{self._name or self._func_name}"
-            volume_mounts, volume_commits = vvclient.stage_lazy_files(
+            resolved = vvclient._resolve_lazy_files(
                 deploy_image,
                 volume_name=vol_name,
             )
+            proto_mounts = [
+                container_pb.VolumeMount(
+                    name=m.name,
+                    mount_path=m.mount_path,
+                    type="versioned_chalkfs",
+                    version_id=m.version_id,
+                )
+                for m in resolved
+            ]
 
         data_source = self._build_data_source()
         resources = self._build_resources()
@@ -417,10 +424,7 @@ class TrainingFunction:
         meta = _metadata_to_proto(self._metadata) if self._metadata else None
 
         env = dict(self._env) if self._env else {}
-        if volume_mounts:
-            env["PYTHONPATH"] = f"/volumes/{volume_mounts[0].name}"
-        else:
-            env["PYTHONPATH"] = "/app"
+        env["PYTHONPATH"] = "/app"
         module = self._func.__module__
         if module == "__main__":
             import __main__
@@ -441,7 +445,7 @@ class TrainingFunction:
             env=env or None,
             secret_refs=secret_refs or None,
             meta_data=meta,
-            volume_commits=volume_commits or None,
+            volume_mounts=proto_mounts or None,
             max_retries=self._max_retries,
         )
 
