@@ -686,3 +686,26 @@ call --output-file`. It checks access and finite lifetime through the Chalk CLI
 and discovers existing PTY sessions using the run marker. Working directory and
 cleanup policy belong in Herdr's `provisionFunction` configuration; they are not
 part of a general-purpose `Sandbox` handle.
+
+### Remote execution errors
+
+Remote handler failures raise `chalkcompute.RemoteExecutionError`, a subclass of
+`FunctionError`. Its `exception_type`, `message`, and `remote_traceback` describe
+the original Python exception. `internal_traceback` retains runtime diagnostics;
+`call_id` and `trace_id` are available when supplied by the call path.
+
+IPython and Chalk notebooks show the local call site followed by the remote
+traceback, preserving exception chains. Notebook source locations refer to the
+snapshot deployed with the function, so editing a cell cannot change the source
+shown for an earlier deployment. Plain Python also gets a readable multiline
+error. User execution failures are not automatically retried.
+
+This presentation requires a function deployed with remote-call runtime 1.9.2
+or later. Upgrade the SDK in the calling environment before redeploying: function
+images pin the caller's installed runtime version. Existing deployments keep
+their existing error format until redeployed.
+
+The SDK honors `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` and
+`OTEL_EXPORTER_OTLP_PROTOCOL` (`grpc` or `http/protobuf`). SDK-owned trace export
+failures produce one warning per outage; exporter retry diagnostics remain
+available at debug level.

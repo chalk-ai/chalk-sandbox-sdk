@@ -255,6 +255,7 @@ def test_import_native_falls_back_to_site_packages(
         return importlib.machinery.ModuleSpec(name=name, loader=FakeLoader())
 
     with (
+        patch.dict(remote_call_client.sys.modules),
         patch.object(
             remote_call_client,
             "_PACKAGE_DIR",

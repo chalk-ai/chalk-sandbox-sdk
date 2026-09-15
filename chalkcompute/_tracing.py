@@ -323,12 +323,10 @@ def _install_tracer_provider(sample_rate: float) -> None:
     )
 
     if _is_enabled():
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
-            OTLPSpanExporter,
-        )
+        from chalkcompute._telemetry_export import create_span_exporter
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-        provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+        provider.add_span_processor(BatchSpanProcessor(create_span_exporter()))
 
     # Before set_tracer_provider, so no span can start unstamped.
     _install_session_processor(provider)

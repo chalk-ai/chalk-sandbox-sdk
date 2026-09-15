@@ -49,6 +49,7 @@ def _bundle_notebook_source(cells: Sequence[str], function_name: str) -> str:
     # invocation does not pull that unrelated invocation into module startup.
     indexes = notebook_source_dependencies([*sources, function_name])
     parts = [*future_imports]
+    source_map: dict[int, tuple[str, int, str]] = {}
     for index in indexes:
         if index == len(statements):
             continue
@@ -78,7 +79,18 @@ def _bundle_notebook_source(cells: Sequence[str], function_name: str) -> str:
                 f"Notebook deployment depends on kernel-only state in cell {cell_number}. "
                 "Pass notebook results as function arguments or use an explicit dataset or volume."
             )
+        start = min(
+            [node.lineno, *(d.lineno for d in getattr(node, "decorator_list", []))]
+        )
+        generated_start = len("\n\n".join(parts).splitlines()) + (2 if parts else 1)
+        for offset, line in enumerate(source.splitlines()):
+            source_map[generated_start + 1 + offset] = (
+                f"Notebook cell {cell_number} (deployed)",
+                start + offset,
+                line,
+            )
         parts.append(f"# Notebook cell {cell_number}\n{source}")
+    parts.append(f"__chalk_source_map__ = {source_map!r}")
     return "\n\n".join(parts) + "\n"
 
 

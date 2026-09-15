@@ -67,6 +67,11 @@ from protobuf import Oneof
 from protobuf.wkt import FieldMask
 
 from chalkcompute import _local_dev
+from chalkcompute._function_error import (
+    FunctionError,
+    decode_remote_error,
+    remote_error_from_exception,
+)
 from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import (
     ConnectClient,
@@ -334,10 +339,6 @@ atexit.register(_report_unobserved_background_deployments)
 # ---------------------------------------------------------------------------
 
 
-class FunctionError(Exception):
-    """Base exception for Function errors."""
-
-
 class FunctionBuildError(FunctionError):
     """Raised when the function image build fails."""
 
@@ -487,7 +488,9 @@ def _strip_chalkcompute_from_source(source: str) -> str:
         for ln in range(start, end + 1):
             removed_lines.add(ln)
 
-    kept = [line for i, line in enumerate(lines, start=1) if i not in removed_lines]
+    kept = [
+        "\n" if i in removed_lines else line for i, line in enumerate(lines, start=1)
+    ]
     return "".join(kept)
 
 
@@ -569,6 +572,7 @@ def _generate_handler_shim(
     )
     from chalkcompute._arrow_serde import handler_runtime_source
 
+    bootstrap += "__chalk_generated_handler__ = True\n"
     serde_runtime = handler_runtime_source()
     if batched:
         # Flatten all (caller_idx, row_idx, kwargs) across every caller so
@@ -955,6 +959,8 @@ def _remote_call_error_message(error: BaseException) -> str:
 
 
 def _is_stale_remote_call_error_message(message: str | None) -> bool:
+    if decode_remote_error(message, "") is not None:
+        return False
     if not message:
         return False
     lower = message.lower()
@@ -986,8 +992,18 @@ def _is_retryable_stale_remote_call_error_message(message: str | None) -> bool:
 
 
 def _is_stale_remote_call_error(error: BaseException) -> bool:
-    from chalkcompute._remote_call_client import RemoteCallTransportError
+    from chalkcompute._remote_call_client import (
+        RemoteCallStatusError,
+        RemoteCallTransportError,
+    )
 
+    if isinstance(error, RemoteCallStatusError):
+        return False
+    if (
+        isinstance(error, Exception)
+        and remote_error_from_exception(error, "") is not None
+    ):
+        return False
     if isinstance(error, RemoteCallTransportError):
         return True
     if isinstance(error, ConnectRpcError) and error.code == Code.UNAVAILABLE:
@@ -1072,7 +1088,10 @@ def _is_transient_call_error(error_message: str | None) -> bool:
     Unknown or unstructured errors are treated as non-retryable, so retry stays
     conservative: we never resubmit a call we can't positively classify as infra.
     """
-    return _failed_call_exc_type(error_message) in _RETRYABLE_EXC_TYPES
+    return (
+        decode_remote_error(error_message, "") is None
+        and _failed_call_exc_type(error_message) in _RETRYABLE_EXC_TYPES
+    )
 
 
 class FunctionCallHandle:
@@ -1166,7 +1185,12 @@ class FunctionCallHandle:
                     message = result.error_message or "Remote call failed"
                     if self._can_retry(attempt, message):
                         break
-                    raise FunctionError(message)
+                    raise (
+                        decode_remote_error(
+                            message, self._func_name, call_id=self._call_id
+                        )
+                        or FunctionError(message)
+                    ) from None
 
                 if result.is_completed:
                     return self._function._materialize_result_chunks(chunks)
@@ -1211,7 +1235,12 @@ class FunctionCallHandle:
                     # only retry a failure that happened before the first yield.
                     if not yielded_any and self._can_retry(attempt, message):
                         break
-                    raise FunctionError(message)
+                    raise (
+                        decode_remote_error(
+                            message, self._func_name, call_id=self._call_id
+                        )
+                        or FunctionError(message)
+                    ) from None
 
                 if result.is_completed:
                     return
@@ -1245,7 +1274,12 @@ class FunctionCallHandle:
                     message = result.error_message or "Remote call failed"
                     if not yielded_any and self._can_retry(attempt, message):
                         break
-                    raise FunctionError(message)
+                    raise (
+                        decode_remote_error(
+                            message, self._func_name, call_id=self._call_id
+                        )
+                        or FunctionError(message)
+                    ) from None
 
                 if result.is_completed:
                     return
@@ -3627,6 +3661,15 @@ class RemoteFunction:
         feather_bytes = self._serialize_call_args(*args, **kwargs)
         call_type = "api" if _should_call_via_api() else "direct"
 
+        try:
+            return self._invoke_remote(feather_bytes, call_type)
+        except Exception as exc:
+            remote_error = remote_error_from_exception(exc, self._queue_function_name())
+            if remote_error is None:
+                raise
+            raise remote_error from None
+
+    def _invoke_remote(self, feather_bytes: bytes, call_type: str) -> Any:
         with remote_function_call_span(self._queue_function_name(), call_type):
             if _should_call_via_api():
                 response_bytes = self._call_via_api_rpc(feather_bytes)

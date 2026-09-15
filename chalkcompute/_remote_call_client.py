@@ -146,6 +146,15 @@ class _RemoteCallUnavailableError(RuntimeError):
     pass
 
 
+class _RemoteCallStatusError(RuntimeError):
+    pass
+
+
+RemoteCallStatusError: type[Exception] = getattr(
+    _native, "RemoteCallStatusError", _RemoteCallStatusError
+)
+
+
 class _RemoteCallTransportError(RuntimeError):
     pass
 

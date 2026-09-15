@@ -61,6 +61,7 @@ from chalkcompute._function import FunctionVersionInfo as FunctionVersionInfo
 from chalkcompute._function import RemoteFunction as RemoteFunction
 from chalkcompute._function import function as function
 from chalkcompute._function import gather as gather
+from chalkcompute._function_error import RemoteExecutionError as RemoteExecutionError
 from chalkcompute._http import HTTPHeaders as HTTPHeaders
 from chalkcompute._http import HTTPResponse as HTTPResponse
 from chalkcompute._image import Image as Image
@@ -178,6 +179,7 @@ __all__ = [
     "RemoteFunction",
     "DeployedFunction",
     "FunctionError",
+    "RemoteExecutionError",
     "FunctionBuildError",
     "FunctionCallHandle",
     "FunctionVersionInfo",

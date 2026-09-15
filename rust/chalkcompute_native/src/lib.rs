@@ -26,6 +26,8 @@ pyo3::create_exception!(
     PyRuntimeError
 );
 
+pyo3::create_exception!(chalkcompute._native, RemoteCallStatusError, PyRuntimeError);
+
 #[pyclass(name = "RemoteCallClient", module = "chalkcompute._native")]
 struct PyRemoteCallClient {
     inner: BlockingRemoteCallClient,
@@ -227,6 +229,9 @@ fn to_py_err(error: RemoteCallError) -> PyErr {
             RemoteCallUnavailableError::new_err(message)
         }
         RemoteCallError::Transport(_) => RemoteCallTransportError::new_err(message),
+        RemoteCallError::Status(status) => {
+            RemoteCallStatusError::new_err((status.code() as i32, status.message().to_string()))
+        }
         _ => PyRuntimeError::new_err(message),
     }
 }
@@ -398,6 +403,10 @@ fn notebook_source_dependencies(sources: Vec<String>) -> PyResult<Vec<usize>> {
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRemoteCallClient>()?;
     m.add_function(wrap_pyfunction!(notebook_source_dependencies, m)?)?;
+    m.add(
+        "RemoteCallStatusError",
+        m.py().get_type::<RemoteCallStatusError>(),
+    )?;
     m.add(
         "RemoteCallUnavailableError",
         m.py().get_type::<RemoteCallUnavailableError>(),
