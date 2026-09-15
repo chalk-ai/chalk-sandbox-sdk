@@ -709,3 +709,20 @@ The SDK honors `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` and
 `OTEL_EXPORTER_OTLP_PROTOCOL` (`grpc` or `http/protobuf`). SDK-owned trace export
 failures produce one warning per outage; exporter retry diagnostics remain
 available at debug level.
+
+### Catalog discovery of typed functions
+
+The `Sandbox` Arrow field carries `metadata["chalk.python.type"] =
+"chalkcompute.Sandbox"`, derived from its `__chalk_type_id__` declaration. A
+catalog client can identify the return type without importing Python or treating
+an arbitrary lookalike struct as a Sandbox. Check the actual struct shape,
+nonnullable output, and `chalk.function.is_generator` metadata as well when a
+workflow needs exactly one Sandbox.
+
+Function registration also publishes the docstring in output-schema metadata
+`chalk.function.description` and JSON-serializable parameter defaults in each
+input field's `chalk.default` metadata. Defaults that cannot be encoded as JSON
+are omitted. These values are catalog-visible; keep secrets in Chalk-managed
+secret references rather than function defaults. Clients can show descriptions,
+collect required arguments, and reconstruct declared defaults without invoking
+the function. Record and invoke the same immutable version selected by the user.

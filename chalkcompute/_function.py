@@ -1919,6 +1919,14 @@ def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
             raise TypeError(f"Parameter '{param_name}' must have a type annotation")
         input_types[param_name] = param_type
     input_schema = rich_to_arrow_schema(input_types)
+    for column in input_schema.columns:
+        default = sig.parameters[column.name].default
+        if default is not inspect.Parameter.empty:
+            try:
+                column.metadata["chalk.default"] = json.dumps(default, allow_nan=False)
+            except (TypeError, ValueError):
+                # Non-JSON defaults cannot be reconstructed by catalog-only callers.
+                pass
 
     # Output: single column "result"
     # For generator functions (Iterator[T], Generator[T, ...]), unwrap to the yield type.
@@ -1944,6 +1952,10 @@ def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
                 return_type = args[0]
 
     output_schema = rich_to_arrow_schema({"result": return_type})
+
+    description = inspect.getdoc(func)
+    if description:
+        output_schema.metadata["chalk.function.description"] = description
 
     # Store function traits in schema metadata for client discovery.
     if is_generator:
