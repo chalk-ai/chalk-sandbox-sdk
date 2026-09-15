@@ -64,6 +64,7 @@ def factuality(
         inputs=inputs,
         instructions=_GRADER,
         prompt_fn=_factuality_prompt,
+        _frame_depth=3,
         **judge_kwargs,
     )
 

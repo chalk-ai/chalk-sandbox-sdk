@@ -55,6 +55,14 @@ def test_the_choice_and_reasoning_are_kept_as_metadata() -> None:
     assert sorted(schema["properties"]) == ["choice", "rationale"]
 
 
+def test_the_scorer_is_declared_in_the_callers_module_not_the_judges_one() -> None:
+    # The pod re-imports the module the scorer was declared in and expects the
+    # call that made it to run again, which only happens in the caller's file.
+    scorer = scorers.factuality(model="m")
+
+    assert scorer._func.__globals__["__name__"] == __name__
+
+
 def test_the_prompt_carries_the_rubric_and_the_row() -> None:
     prompt = _factuality_prompt(
         None, input="What is the capital?", output="Paris", expected="Paris, France"
