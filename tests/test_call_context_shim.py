@@ -487,3 +487,51 @@ class TestClassShim:
         }
 
         assert ns["handler"](event, {"k": "v"}) == [1]
+
+
+@pytest.mark.parametrize("batched", [False, True])
+@pytest.mark.parametrize("kind", ["function", "class"])
+def test_caller_auth_rejects_missing_credentials_before_user_body(
+    monkeypatch, batched, kind
+):
+    from chalkcompute._connect import ConnectError
+
+    monkeypatch.setenv("CHALK_FUNCTION_AUTH_MODE", "caller")
+    called = []
+
+    def echo(x: int) -> int:
+        called.append(x)
+        return x
+
+    if kind == "class":
+
+        class Svc:
+            def run(self, x: int) -> int:
+                return echo(x)
+
+        _install_user_module(Svc=Svc)
+        ns = TestClassShim()._shim(batched=batched)
+    else:
+        _install_user_module(echo=echo)
+        ns = _load_shim(_generate_handler_shim("echo", batched=batched))
+    event = {"x": pa.array([1])}
+    with pytest.raises(ConnectError, match="no delegated caller"):
+        ns["handler"]([event], [{}]) if batched else ns["handler"](event, {})
+    assert called == []
+
+
+def test_generator_authenticates_before_execution(monkeypatch):
+    from chalkcompute._connect import ConnectError
+
+    monkeypatch.setenv("CHALK_FUNCTION_AUTH_MODE", "caller")
+    called = []
+
+    def echo(x: int):
+        called.append(x)
+        yield x
+
+    _install_user_module(echo=echo)
+    ns = _load_shim(_generate_handler_shim("echo"))
+    with pytest.raises(ConnectError, match="no delegated caller"):
+        list(ns["handler"]({"x": pa.array([1])}, {}))
+    assert called == []

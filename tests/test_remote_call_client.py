@@ -42,6 +42,12 @@ def _read_input(payload: bytes) -> dict[str, list[object]]:
 
 
 class FakeConnectClient(StubbedConnectClient):
+    def function_invocation_metadata(self, function_name: str) -> list[tuple[str, str]]:
+        return [
+            ("x-chalk-function-invocation-token", "delegation-token"),
+            ("authorization", "Bearer delegated-working"),
+        ]
+
     _access_token = "access-token"
     _env_id = "env-id"
 
@@ -53,6 +59,12 @@ class FakeConnectClient(StubbedConnectClient):
 
 
 class ServiceAuthOnlyConnectClient:
+    def function_invocation_metadata(self, function_name: str) -> list[tuple[str, str]]:
+        return [
+            ("x-chalk-function-invocation-token", "delegation-token"),
+            ("authorization", "Bearer delegated-working"),
+        ]
+
     def _ensure_auth(self) -> None:
         raise AssertionError("client credentials auth should not be used")
 
@@ -61,6 +73,12 @@ class ServiceAuthOnlyConnectClient:
 
 
 class ServiceAuthDiscoveredEngineConnectClient:
+    def function_invocation_metadata(self, function_name: str) -> list[tuple[str, str]]:
+        return [
+            ("x-chalk-function-invocation-token", "delegation-token"),
+            ("authorization", "Bearer delegated-working"),
+        ]
+
     def grpc_engine_target(self) -> tuple[str, bool]:
         return "discovered-engine.chalk.test:443", True
 
@@ -293,7 +311,10 @@ def test_direct_call_uses_native_client_and_catalog_function_name() -> None:
     assert ("x-chalk-deployment-type", "function-queue") not in client.metadata
     assert client.calls[0][0] == "catalog-add"
     assert _read_input(client.calls[0][1]) == {"x": [41]}
-    assert client.calls[0][2] == []
+    assert client.calls[0][2] == [
+        ("x-chalk-function-invocation-token", "delegation-token"),
+        ("authorization", "Bearer delegated-working"),
+    ]
 
 
 def test_sync_direct_call_can_be_awaited_in_async_context() -> None:
@@ -627,7 +648,10 @@ def test_defer_get_and_purge_use_queue_client() -> None:
     assert ("x-chalk-deployment-type", "function-queue") in client.metadata
     assert client.enqueues[0][0] == "catalog-add"
     assert _read_input(client.enqueues[0][1]) == {"x": [98]}
-    assert client.enqueues[0][2] == []
+    assert client.enqueues[0][2] == [
+        ("x-chalk-function-invocation-token", "delegation-token"),
+        ("authorization", "Bearer delegated-working"),
+    ]
     assert client.purges == ["catalog-add"]
 
 

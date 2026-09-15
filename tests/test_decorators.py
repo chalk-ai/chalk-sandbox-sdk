@@ -117,7 +117,7 @@ def test_function_deploy_image_installs_tracing_runtime_by_default(
 
     assert image.to_proto().steps[0].step.value.packages == [
         _remote_call_runtime(tracing=True),
-        "chalkcompute==0.0.0",
+        f"chalkcompute=={pkg_version('chalkcompute')}",
     ]
     grouped = image.lazy_local_files_grouped_for_volume_mounts()
     assert set(grouped) == {"/app", "/app/tests"}
@@ -137,7 +137,7 @@ def test_function_deploy_image_installs_tracing_runtime_when_enabled(
 
     assert image.to_proto().steps[0].step.value.packages == [
         _remote_call_runtime(tracing=True),
-        "chalkcompute==0.0.0",
+        f"chalkcompute=={pkg_version('chalkcompute')}",
     ]
     grouped = image.lazy_local_files_grouped_for_volume_mounts()
     assert set(grouped) == {"/app", "/app/tests"}
@@ -157,7 +157,7 @@ def test_function_deploy_image_installs_lightweight_runtime_when_tracing_off(
 
     assert image.to_proto().steps[0].step.value.packages == [
         _remote_call_runtime(tracing=False),
-        "chalkcompute==0.0.0",
+        f"chalkcompute=={pkg_version('chalkcompute')}",
     ]
     grouped = image.lazy_local_files_grouped_for_volume_mounts()
     assert set(grouped) == {"/app", "/app/tests"}
@@ -176,7 +176,8 @@ def test_stripped_function_deploy_image_installs_tracing_runtime_when_enabled(
     image = fn._build_deploy_image()
 
     assert image.to_proto().steps[0].step.value.packages == [
-        _remote_call_runtime(tracing=True)
+        _remote_call_runtime(tracing=True),
+        f"chalkcompute=={pkg_version('chalkcompute')}",
     ]
 
 

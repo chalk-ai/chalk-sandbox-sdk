@@ -323,6 +323,13 @@ class RemoteCallClient:
         metadata: Sequence[tuple[str, str]] = (),
     ) -> list[bytes]:
         start = time.monotonic()
+        if not self._supports_per_call_metadata and any(
+            key.lower() in {"authorization", "x-chalk-function-invocation-token"}
+            for key, _ in metadata
+        ):
+            raise RemoteCallClientUnavailable(
+                "The native runtime must support per-call authentication metadata"
+            )
 
         def call() -> list[bytes]:
             if metadata and self._supports_per_call_metadata:
@@ -355,6 +362,13 @@ class RemoteCallClient:
         metadata: Sequence[tuple[str, str]] = (),
     ) -> str:
         start = time.monotonic()
+        if not self._supports_per_call_metadata and any(
+            key.lower() in {"authorization", "x-chalk-function-invocation-token"}
+            for key, _ in metadata
+        ):
+            raise RemoteCallClientUnavailable(
+                "The native runtime must support per-call authentication metadata"
+            )
         if metadata and self._supports_per_call_metadata:
             call_id = str(
                 self._inner_or_raise().enqueue(name, input_ipc, list(metadata))

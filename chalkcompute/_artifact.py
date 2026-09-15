@@ -189,9 +189,11 @@ class ArtifactClient:
         credentials: object | None = None,
         use_tls: bool | None = None,
         metadata: _GrpcMetadata | None = None,
+        _connect: ConnectClient | None = None,
     ) -> None:
         self._target = target
-        self._metadata = metadata
+        self._static_metadata = metadata
+        self._connect = _connect
         if use_tls is None:
             use_tls = credentials is not None
         self._stub = pb_connect.ArtifactServiceClientSync(
@@ -202,6 +204,12 @@ class ArtifactClient:
             read_max_bytes=RPC_READ_MAX_BYTES,
         )
 
+    @property
+    def _metadata(self) -> _GrpcMetadata | None:
+        if self._connect is not None:
+            return self._connect._rpc_metadata()
+        return self._static_metadata
+
     @classmethod
     def _from_connect(cls, connect: ConnectClient) -> ArtifactClient:
         """Internal: build an artifact client from shared Chalk authentication."""
@@ -209,7 +217,7 @@ class ArtifactClient:
         return cls(
             connect._api_server or "",
             use_tls=(connect._api_server or "").startswith("https://"),
-            metadata=connect._rpc_metadata(),
+            _connect=connect,
         )
 
     @classmethod

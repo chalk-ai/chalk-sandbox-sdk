@@ -172,8 +172,6 @@ def apply_local_dev_mounts(
             exclude=_LOCAL_SDK_COPY_EXCLUDES,
             archive=True,
         )
-    elif config.strip_source:
-        image = image.pip_install([remote_call_runtime_package])
     else:
         from importlib.metadata import version as _pkg_version
 

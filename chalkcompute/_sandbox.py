@@ -1201,6 +1201,7 @@ class Sandbox:
             client._address,
             use_tls=client._use_tls,
             metadata=client._metadata,
+            _connect=client._connect,
         )
 
         execution_id = ""
@@ -1413,7 +1414,11 @@ class SandboxClient:
         *,
         chalk_client: Any | None = None,
     ) -> SandboxClient:
-        """Create a ``SandboxClient`` from ambient Chalk credentials."""
+        """Create a ``SandboxClient`` from ambient Chalk credentials.
+
+        In a deployed function, the SDK uses the active invocation's delegated
+        caller identity and refreshes its working tokens automatically.
+        """
 
         connect = ConnectClient(chalk_client=chalk_client)
         connect._ensure_auth()
@@ -1424,11 +1429,7 @@ class SandboxClient:
             host,
             use_tls=use_tls,
             metadata=connect._rpc_metadata(),
-            _connect=(
-                connect
-                if getattr(connect, "_uses_web_identity_token", lambda: False)() is True
-                else None
-            ),
+            _connect=connect,
         )
 
     @property

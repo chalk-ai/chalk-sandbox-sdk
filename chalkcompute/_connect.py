@@ -11,6 +11,9 @@ import logging
 import os
 import re
 import time
+from threading import RLock
+from dataclasses import dataclass, field
+from chalkcompute._call_context import current_invocation
 from typing import TYPE_CHECKING, Any, Callable, Mapping, TypeVar
 from urllib.parse import urlparse
 
@@ -55,6 +58,37 @@ class ConnectError(Exception):
 
 
 def service_auth_context_from_env() -> ServiceAuthContext | None:
+    invocation = current_invocation()
+    if invocation is not None or os.environ.get("CHALK_FUNCTION_AUTH_MODE") == "caller":
+        if invocation is None or not invocation.exchange_token:
+            raise ConnectError(
+                "This function invocation has no delegated caller credentials"
+            )
+        endpoint = os.environ.get("CHALK_API_SERVER")
+        environment = os.environ.get("CHALK_ENVIRONMENT_ID")
+        if not endpoint or not environment:
+            raise ConnectError(
+                "Chalk function runtime is missing its API server or environment"
+            )
+        return ServiceAuthContext(
+            auth_endpoint=endpoint,
+            exchange_token=invocation.exchange_token,
+            environment_id=environment,
+            requested_permissions=(),
+            grpc_engine=None,
+        )
+    if os.environ.get("CHALK_FUNCTION_AUTH_MODE") == "service":
+        if not (
+            (
+                os.environ.get("CHALK_CLIENT_ID")
+                and os.environ.get("CHALK_CLIENT_SECRET")
+            )
+            or web_identity_token_file_from_env() is not None
+        ):
+            raise ConnectError(
+                "Service-authenticated functions require explicit service credentials"
+            )
+        return None
     try:
         return resolve_service_auth_context()
     except RemoteCallClientUnavailable as exc:
@@ -69,6 +103,14 @@ def chalk_client_from_env(
     additional_headers: dict[str, str] | None = None,
     **kwargs: Any,
 ) -> Any:
+    if (
+        current_invocation() is not None
+        or os.environ.get("CHALK_FUNCTION_AUTH_MODE") == "caller"
+    ):
+        raise ConnectError(
+            "chalk_client_from_env cannot provide invocation-scoped authentication to "
+            "ChalkPy; use chalkcompute clients inside caller-authenticated functions"
+        )
     from chalk.client import ChalkClient
 
     headers = additional_headers
@@ -77,7 +119,7 @@ def chalk_client_from_env(
     # A ChalkClient built here would cache the injected header indefinitely.
     service_auth = (
         None
-        if web_identity_token_file_from_env() is not None
+        if ConnectClient()._uses_web_identity_token()
         else service_auth_context_from_env()
     )
     if service_auth is not None and not has_authorization:
@@ -98,6 +140,21 @@ def chalk_client_from_env(
         kwargs["environment"] = environment
     kwargs["additional_headers"] = headers
     return ChalkClient(**kwargs)
+
+
+@dataclass
+class _AuthState:
+    _api_server: str | None = None
+    _access_token: str | None = None
+    _env_id: str | None = None
+    _headers: dict[str, str] | None = None
+    _grpc_engines: dict[str, str] = field(default_factory=dict)
+    _environment_id_to_name: dict[str, str] = field(default_factory=dict)
+    _primary_environment: str | None = None
+    _service_auth_refresh_at: float | None = None
+    _web_identity_token_file: str | None = None
+    _web_identity_cached_at: float | None = None
+    _web_identity_cache_ttl_seconds: float = _WEB_IDENTITY_MAX_CACHE_TTL_SECONDS
 
 
 class ConnectClient:
@@ -121,21 +178,124 @@ class ConnectClient:
         self,
         chalk_client: Any | None = None,
     ) -> None:
-        self._api_server: str | None = None
-        self._access_token: str | None = None
-        self._env_id: str | None = None
-        self._headers: dict[str, str] | None = None
-        self._grpc_engines: dict[str, str] = {}
-        self._environment_id_to_name: dict[str, str] = {}
-        self._primary_environment: str | None = None
+        self._local_auth_lock = RLock()
+        self._local_auth_state = _AuthState()
         self._chalk_client = chalk_client
         self._typed_clients: dict[Callable[..., Any], Any] = {}
-        self._web_identity_token_file: str | None = None
-        self._web_identity_cached_at: float | None = None
-        self._web_identity_cache_ttl_seconds = _WEB_IDENTITY_MAX_CACHE_TTL_SECONDS
+
+    @property
+    def _auth_lock(self) -> Any:
+        scope = current_invocation()
+        return scope.auth_lock if scope is not None else self._local_auth_lock
+
+    def _auth_state(self) -> _AuthState:
+        scope = current_invocation()
+        if scope is None:
+            return self._local_auth_state
+        with self._auth_lock:
+            if ConnectClient not in scope.auth_states:
+                scope.auth_states[ConnectClient] = _AuthState()
+            return scope.auth_states[ConnectClient]
+
+    @property
+    def _api_server(self) -> str | None:
+        return self._auth_state()._api_server
+
+    @_api_server.setter
+    def _api_server(self, value: str | None) -> None:
+        self._auth_state()._api_server = value
+
+    @property
+    def _access_token(self) -> str | None:
+        return self._auth_state()._access_token
+
+    @_access_token.setter
+    def _access_token(self, value: str | None) -> None:
+        self._auth_state()._access_token = value
+
+    @property
+    def _env_id(self) -> str | None:
+        return self._auth_state()._env_id
+
+    @_env_id.setter
+    def _env_id(self, value: str | None) -> None:
+        self._auth_state()._env_id = value
+
+    @property
+    def _headers(self) -> dict[str, str] | None:
+        return self._auth_state()._headers
+
+    @_headers.setter
+    def _headers(self, value: dict[str, str] | None) -> None:
+        self._auth_state()._headers = value
+
+    @property
+    def _grpc_engines(self) -> dict[str, str]:
+        return self._auth_state()._grpc_engines
+
+    @_grpc_engines.setter
+    def _grpc_engines(self, value: dict[str, str]) -> None:
+        self._auth_state()._grpc_engines = value
+
+    @property
+    def _environment_id_to_name(self) -> dict[str, str]:
+        return self._auth_state()._environment_id_to_name
+
+    @_environment_id_to_name.setter
+    def _environment_id_to_name(self, value: dict[str, str]) -> None:
+        self._auth_state()._environment_id_to_name = value
+
+    @property
+    def _primary_environment(self) -> str | None:
+        return self._auth_state()._primary_environment
+
+    @_primary_environment.setter
+    def _primary_environment(self, value: str | None) -> None:
+        self._auth_state()._primary_environment = value
+
+    @property
+    def _service_auth_refresh_at(self) -> float | None:
+        return self._auth_state()._service_auth_refresh_at
+
+    @_service_auth_refresh_at.setter
+    def _service_auth_refresh_at(self, value: float | None) -> None:
+        self._auth_state()._service_auth_refresh_at = value
+
+    @property
+    def _web_identity_token_file(self) -> str | None:
+        return self._auth_state()._web_identity_token_file
+
+    @_web_identity_token_file.setter
+    def _web_identity_token_file(self, value: str | None) -> None:
+        self._auth_state()._web_identity_token_file = value
+
+    @property
+    def _web_identity_cached_at(self) -> float | None:
+        return self._auth_state()._web_identity_cached_at
+
+    @_web_identity_cached_at.setter
+    def _web_identity_cached_at(self, value: float | None) -> None:
+        self._auth_state()._web_identity_cached_at = value
+
+    @property
+    def _web_identity_cache_ttl_seconds(self) -> float:
+        return self._auth_state()._web_identity_cache_ttl_seconds
+
+    @_web_identity_cache_ttl_seconds.setter
+    def _web_identity_cache_ttl_seconds(self, value: float) -> None:
+        self._auth_state()._web_identity_cache_ttl_seconds = value
 
     def _ensure_auth(self) -> None:
-        identity_token_file = web_identity_token_file_from_env()
+        with self._auth_lock:
+            self._authenticate()
+
+    def _authenticate(self) -> None:
+        identity_token_file = (
+            None
+            if current_invocation() is not None
+            or os.environ.get("CHALK_FUNCTION_AUTH_MODE") == "caller"
+            else web_identity_token_file_from_env()
+        )
         if identity_token_file is not None:
             if (
                 identity_token_file == self._web_identity_token_file
@@ -158,7 +318,7 @@ class ConnectClient:
             self._headers = {
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {identity.value}",
-                "X-Chalk-Env-Id": self._env_id,
+                "X-Chalk-Env-Id": self._env_id or "",
                 "X-Chalk-Server": "go-api",
             }
             self._grpc_engines = {}
@@ -177,13 +337,20 @@ class ConnectClient:
             return
 
         if self._access_token is not None:
-            return
+            if self._service_auth_refresh_at is None:
+                return
+            if time.monotonic() < self._service_auth_refresh_at:
+                return
 
         service_auth = service_auth_context_from_env()
+        if service_auth is None and self._service_auth_refresh_at is not None:
+            raise ConnectError(
+                "Chalk runtime identity is unavailable during token refresh"
+            )
         if service_auth is not None:
             self._api_server = service_auth.auth_endpoint.rstrip("/")
             auth_client = auth_connect.AuthServiceClientSync(
-                self._api_server,
+                service_auth.auth_endpoint.rstrip("/"),
                 protocol=ProtocolType.GRPC,
                 interceptors=rpc_interceptors(),
                 http_client=SYNC_HTTP_CLIENT,
@@ -205,6 +372,20 @@ class ConnectClient:
                 )
             finally:
                 auth_client.close()
+            if not data.access_token:
+                raise ConnectError("Working-token exchange returned no access token")
+            # Missing expiry is never cached; otherwise refresh before expiry,
+            # with a smaller margin for unusually short-lived tokens.
+            ttl = (
+                data.expires_at.seconds + data.expires_at.nanos / 1e9 - time.time()
+                if data.expires_at is not None
+                else 0.0
+            )
+            if data.expires_at is not None and ttl <= 0:
+                raise ConnectError("Working-token exchange returned an expired token")
+            self._service_auth_refresh_at = time.monotonic() + max(
+                0.0, ttl - min(60.0, ttl / 2)
+            )
             self._access_token = data.access_token
             self._grpc_engines = _string_map(data.grpc_engines or data.engines)
             self._environment_id_to_name = _string_map(data.environment_id_to_name)
@@ -330,7 +511,7 @@ class ConnectClient:
         if not self._env_id:
             raise ConnectError("No Chalk environment selected")
 
-        if web_identity_token_file_from_env() is not None:
+        if self._uses_web_identity_token():
             query_server = os.environ.get("CHALK_GRPC_ENGINE", "").strip()
             if not query_server:
                 raise ConnectError(
@@ -351,17 +532,43 @@ class ConnectClient:
         return grpc_engine_target_from_url(query_server)
 
     def _rpc_metadata(self) -> list[tuple[str, str]]:
-        """Return current RPC metadata, re-reading rotating identity files."""
-        self._ensure_auth()
-        return [
-            ("authorization", f"Bearer {self._access_token}"),
-            ("x-chalk-env-id", self._env_id or ""),
-            ("x-chalk-server", "go-api"),
-        ]
+        """Return RPC metadata after refreshing ambient credentials if needed."""
+        with self._auth_lock:
+            self._ensure_auth()
+            return [
+                ("authorization", f"Bearer {self._access_token}"),
+                ("x-chalk-env-id", self._env_id or ""),
+                ("x-chalk-server", "go-api"),
+            ]
 
     def _uses_web_identity_token(self) -> bool:
         """Return whether rotating web-identity authentication is configured."""
-        return web_identity_token_file_from_env() is not None
+        return (
+            current_invocation() is None
+            and os.environ.get("CHALK_FUNCTION_AUTH_MODE") != "caller"
+            and web_identity_token_file_from_env() is not None
+        )
+
+    def function_invocation_metadata(self, function_name: str) -> list[tuple[str, str]]:
+        """Delegate to the function without forwarding the caller's original token."""
+        stub = self.stub(auth_connect.AuthServiceClientSync)
+        response = self.call(
+            stub.create_function_invocation_token,
+            auth_pb.CreateFunctionInvocationTokenRequest(function_name=function_name),
+        )
+        if not response.exchange_token:
+            raise ConnectError("Function delegation returned no exchange token")
+        working = self.call(
+            stub.get_internal_working_token,
+            auth_pb.GetInternalWorkingTokenRequest(),
+            extra_headers={"authorization": f"Bearer {response.exchange_token}"},
+        )
+        if not working.access_token:
+            raise ConnectError("Function delegation returned no working token")
+        return [
+            ("x-chalk-function-invocation-token", response.exchange_token),
+            ("authorization", f"Bearer {working.access_token}"),
+        ]
 
     def get_workload_identity_token(
         self,
