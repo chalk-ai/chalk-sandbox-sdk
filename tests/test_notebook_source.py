@@ -55,6 +55,38 @@ def test_latest_global_and_original_default_bindings_are_both_preserved() -> Non
     assert namespace["score"]() == 6
 
 
+@pytest.mark.parametrize("strip", [False, True])
+def test_source_map_matches_deployed_lines_after_stripping(
+    strip: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from chalkcompute._function import _strip_chalkcompute_from_source
+
+    source = _bundle_notebook_source(
+        _cells(
+            "import math\nimport chalkcompute",
+            'def helper(x):\n    raise ValueError("old source")',
+            "@chalkcompute.function()\ndef score(x):\n    return helper(math.floor(x))",
+        ),
+        "score",
+    )
+    if strip:
+        source = _strip_chalkcompute_from_source(source)
+        assert "@chalkcompute.function()\ndef" not in source
+    monkeypatch.setenv("CHALK_REMOTE_FUNCTION", "1")
+    namespace: dict[str, Any] = {}
+    exec(compile(source, "deployed.py", "exec"), namespace)
+    with pytest.raises(ValueError) as caught:
+        namespace["score"](1)
+    tb = caught.value.__traceback__
+    while tb.tb_next is not None:
+        tb = tb.tb_next
+    assert namespace["__chalk_source_map__"][tb.tb_lineno] == (
+        "Notebook cell 2 (deployed)",
+        2,
+        '    raise ValueError("old source")',
+    )
+
+
 def test_shadowed_helper_excludes_old_dependencies() -> None:
     source = _bundle_notebook_source(
         _cells(
