@@ -11,7 +11,7 @@ from protobuf.wkt import Timestamp
 from chalkcompute._containerspec import ContainerSpec
 from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb as process_pb
 from chalkcompute._gen.chalk.sandbox.v2 import service_pb as pb
-from chalkcompute._sandbox import SandboxClient, SandboxCreationError
+from chalkcompute._sandbox import SandboxClient, SandboxCreationError, SandboxError
 from chalkcompute._volume import VolumeMount
 
 
@@ -98,6 +98,9 @@ class _ErrorAfterBuildStub:
 
 
 class _SucceededDuringCreationStub:
+    def __init__(self) -> None:
+        self.get_requests: list[pb.GetSandboxRequest] = []
+
     def create_sandbox(self, request: pb.CreateSandboxRequest, **_kwargs: object):
         return pb.CreateSandboxResponse(
             sandbox=pb.SandboxInfo(
@@ -109,6 +112,7 @@ class _SucceededDuringCreationStub:
 
     def get_sandbox(self, request: pb.GetSandboxRequest, **_kwargs: object):
         assert request.id == "sandbox-123"
+        self.get_requests.append(request)
         return pb.GetSandboxResponse(
             sandbox=pb.SandboxInfo(
                 id="sandbox-123",
@@ -164,6 +168,18 @@ def test_sandbox_mixed_env_serializes_secret_references(use_client_create) -> No
     assert dict(spec.env_vars) == {"GIT_AUTHOR_NAME": "Elliot Marx"}
     assert [ref.source.value for ref in spec.secret_refs] == ["OTHER", "TOKEN"]
     assert dict(spec.secret_refs[1].aliases) == {"TOKEN": "SUPER_SECRET_VALUE"}
+
+
+def test_sandbox_client_ready_create_does_not_get_sandbox() -> None:
+    client = SandboxClient()
+    client._stub = _Stub()  # type: ignore[assignment]
+    try:
+        sandbox = client.create("python:3.14-slim")
+    finally:
+        client.close()
+
+    assert sandbox.info is not None
+    assert sandbox.info.status == "running"
 
 
 def test_sandbox_client_create_can_request_chalk_identity() -> None:
@@ -271,7 +287,8 @@ def test_sandbox_client_create_propagates_backend_error_details() -> None:
 
 def test_sandbox_client_create_accepts_succeeded_during_readiness_poll() -> None:
     client = SandboxClient()
-    client._stub = _SucceededDuringCreationStub()  # type: ignore[assignment]
+    stub = _SucceededDuringCreationStub()
+    client._stub = stub  # type: ignore[assignment]
     try:
         sandbox = client.create("python:3.14-slim", poll_interval=0, timeout=30)
     finally:
@@ -279,6 +296,103 @@ def test_sandbox_client_create_accepts_succeeded_during_readiness_poll() -> None
 
     assert sandbox.info is not None
     assert sandbox.info.status == "succeeded"
+    assert len(stub.get_requests) == 1
+    assert stub.get_requests[0].wait_until_ready is True
+
+
+class _OldServerStub:
+    def __init__(self) -> None:
+        self.get_requests: list[pb.GetSandboxRequest] = []
+
+    def create_sandbox(self, request: pb.CreateSandboxRequest, **_kwargs: object):
+        return pb.CreateSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id="sandbox-123",
+                status=pb.SandboxStatus.PENDING,
+                created_at=Timestamp(seconds=1),
+            )
+        )
+
+    def get_sandbox(self, request: pb.GetSandboxRequest, **_kwargs: object):
+        self.get_requests.append(request)
+        status = (
+            pb.SandboxStatus.PENDING
+            if len(self.get_requests) == 1
+            else pb.SandboxStatus.RUNNING
+        )
+        return pb.GetSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id="sandbox-123",
+                status=status,
+                created_at=Timestamp(seconds=1),
+            )
+        )
+
+
+def test_sandbox_client_falls_back_to_polling_for_old_server() -> None:
+    client = SandboxClient()
+    stub = _OldServerStub()
+    client._stub = stub  # type: ignore[assignment]
+    try:
+        sandbox = client.create("python:3.14-slim", poll_interval=0, timeout=30)
+    finally:
+        client.close()
+
+    assert sandbox.info is not None
+    assert sandbox.info.status == "running"
+    assert [request.wait_until_ready for request in stub.get_requests] == [True, False]
+
+
+class _PendingWithoutWaitStub:
+    def __init__(self) -> None:
+        self.get_calls = 0
+
+    def create_sandbox(self, request: pb.CreateSandboxRequest, **_kwargs: object):
+        return pb.CreateSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id="sandbox-123",
+                status=pb.SandboxStatus.PENDING,
+                created_at=Timestamp(seconds=1),
+            )
+        )
+
+    def get_sandbox(self, request: pb.GetSandboxRequest, **_kwargs: object):
+        self.get_calls += 1
+        raise AssertionError("wait=False must not issue GetSandbox")
+
+
+def test_sandbox_client_wait_false_does_not_get_sandbox() -> None:
+    client = SandboxClient()
+    stub = _PendingWithoutWaitStub()
+    client._stub = stub  # type: ignore[assignment]
+    try:
+        sandbox = client.create("python:3.14-slim", wait=False)
+    finally:
+        client.close()
+
+    assert sandbox.info is not None
+    assert sandbox.info.status == "pending"
+    assert stub.get_calls == 0
+
+
+class _ReadinessDeadlineStub(_PendingWithoutWaitStub):
+    def get_sandbox(self, request: pb.GetSandboxRequest, **kwargs: object):
+        assert request.wait_until_ready is True
+        assert isinstance(kwargs.get("timeout_ms"), int)
+        raise ConnectRpcError(Code.DEADLINE_EXCEEDED, "deadline exceeded")
+
+
+def test_sandbox_client_maps_readiness_deadline_to_timeout() -> None:
+    client = SandboxClient()
+    client._stub = _ReadinessDeadlineStub()  # type: ignore[assignment]
+    try:
+        with pytest.raises(
+            SandboxError,
+            match="Timed out after 30s waiting for sandbox sandbox-123 to become ready",
+        ):
+            client.create("python:3.14-slim", timeout=30)
+    finally:
+        client.close()
 
 
 class _ProcessStub:
