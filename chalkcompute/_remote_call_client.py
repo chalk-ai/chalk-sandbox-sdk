@@ -38,6 +38,22 @@ def _is_retryable_unavailable_in_place(error: BaseException) -> bool:
     )
 
 
+def _is_retryable_enqueue_connect_error(error: BaseException) -> bool:
+    # Enqueue has no idempotency key. Retry only Envoy's explicit failure to
+    # establish an upstream connection; a reset/timeout could follow acceptance.
+    if not isinstance(error, RemoteCallUnavailableError):
+        return False
+    message = str(error).lower()
+    return all(
+        marker in message
+        for marker in (
+            "upstream connect error or disconnect/reset before headers",
+            "remote connection failure",
+            "delayed connect error: connection refused",
+        )
+    )
+
+
 def _retry_direct_call(
     function_name: str,
     call: Callable[[], _T],
@@ -346,12 +362,15 @@ class RemoteCallClient:
         metadata: Sequence[tuple[str, str]] = (),
     ) -> str:
         start = time.monotonic()
-        if metadata and self._supports_per_call_metadata:
-            call_id = str(
-                self._inner_or_raise().enqueue(name, input_ipc, list(metadata))
-            )
-        else:
-            call_id = str(self._inner_or_raise().enqueue(name, input_ipc))
+
+        def call() -> str:
+            if metadata and self._supports_per_call_metadata:
+                return str(
+                    self._inner_or_raise().enqueue(name, input_ipc, list(metadata))
+                )
+            return str(self._inner_or_raise().enqueue(name, input_ipc))
+
+        call_id = _retry_direct_call(name, call, _is_retryable_enqueue_connect_error)
         logger.debug(
             "RemoteCallClient enqueue function=%s request_bytes=%d elapsed_ms=%.1f",
             name,
