@@ -30,6 +30,20 @@ with SandboxClient.from_env() as client:
     sandbox.terminate()
 ```
 
+## Authentication inside deployed functions
+
+`SandboxClient.from_env()` and `Sandbox(...).run()` use the function's runtime
+identity automatically. Sandbox creation requests `deploy.create` and
+`deploy.redeploy` in addition to the runtime's default permissions; termination
+requests `deploy.create`. Read operations do not request provisioning permissions.
+The server checks these requests against the identity's existing grants.
+
+The SDK caches successful permission grants for the client and refreshes working
+tokens before expiry. Failed exchanges propagate before the sandbox operation is
+sent; the SDK does not retry sandbox creation. Local CLI credentials, explicitly
+supplied metadata, and rotating web-identity files retain their existing behavior.
+There is no need to import auth internals or exchange tokens in a provisioner.
+
 ## Declarative images
 
 Build custom container images with a fluent API instead of writing Dockerfiles.

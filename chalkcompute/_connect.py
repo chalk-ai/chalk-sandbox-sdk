@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import time
+from threading import RLock
 from typing import TYPE_CHECKING, Any, Callable, Mapping, TypeVar
 from urllib.parse import urlparse
 
@@ -121,6 +122,9 @@ class ConnectClient:
         self,
         chalk_client: Any | None = None,
     ) -> None:
+        self._auth_lock = RLock()
+        self._service_auth_permissions: set[int] = set()
+        self._service_auth_refresh_at: float | None = None
         self._api_server: str | None = None
         self._access_token: str | None = None
         self._env_id: str | None = None
@@ -135,6 +139,19 @@ class ConnectClient:
         self._web_identity_cache_ttl_seconds = _WEB_IDENTITY_MAX_CACHE_TTL_SECONDS
 
     def _ensure_auth(self) -> None:
+        with self._auth_lock:
+            self._authenticate(())
+
+    def require_permissions(self, permissions: tuple[int, ...]) -> None:
+        """Acquire additional runtime permissions, bounded by the identity's grant.
+
+        Explicit/local credentials and rotating web identities retain their own
+        permissions. A failed exchange leaves the existing permission set intact.
+        """
+        with self._auth_lock:
+            self._authenticate(permissions)
+
+    def _authenticate(self, required_permissions: tuple[int, ...]) -> None:
         identity_token_file = web_identity_token_file_from_env()
         if identity_token_file is not None:
             if (
@@ -177,10 +194,25 @@ class ConnectClient:
             return
 
         if self._access_token is not None:
-            return
+            if self._service_auth_refresh_at is None:
+                return
+            if (
+                time.monotonic() < self._service_auth_refresh_at
+                and set(required_permissions) <= self._service_auth_permissions
+            ):
+                return
 
         service_auth = service_auth_context_from_env()
+        if service_auth is None and self._service_auth_refresh_at is not None:
+            raise ConnectError(
+                "Chalk runtime identity is unavailable during token refresh"
+            )
         if service_auth is not None:
+            requested_permissions = sorted(
+                self._service_auth_permissions
+                | set(service_auth.requested_permissions)
+                | set(required_permissions)
+            )
             self._api_server = service_auth.auth_endpoint.rstrip("/")
             auth_client = auth_connect.AuthServiceClientSync(
                 self._api_server,
@@ -194,7 +226,7 @@ class ConnectClient:
                     auth_pb.GetInternalWorkingTokenRequest(
                         requested_permissions=[
                             permissions_pb.Permission(value)
-                            for value in service_auth.requested_permissions
+                            for value in requested_permissions
                         ],
                     ),
                     headers={
@@ -205,6 +237,21 @@ class ConnectClient:
                 )
             finally:
                 auth_client.close()
+            if not data.access_token:
+                raise ConnectError("Working-token exchange returned no access token")
+            # Missing expiry is never cached; otherwise refresh before expiry,
+            # with a smaller margin for unusually short-lived tokens.
+            ttl = (
+                data.expires_at.seconds + data.expires_at.nanos / 1e9 - time.time()
+                if data.expires_at is not None
+                else 0.0
+            )
+            if data.expires_at is not None and ttl <= 0:
+                raise ConnectError("Working-token exchange returned an expired token")
+            self._service_auth_refresh_at = time.monotonic() + max(
+                0.0, ttl - min(60.0, ttl / 2)
+            )
+            self._service_auth_permissions = set(requested_permissions)
             self._access_token = data.access_token
             self._grpc_engines = _string_map(data.grpc_engines or data.engines)
             self._environment_id_to_name = _string_map(data.environment_id_to_name)
@@ -351,13 +398,14 @@ class ConnectClient:
         return grpc_engine_target_from_url(query_server)
 
     def _rpc_metadata(self) -> list[tuple[str, str]]:
-        """Return current RPC metadata, re-reading rotating identity files."""
-        self._ensure_auth()
-        return [
-            ("authorization", f"Bearer {self._access_token}"),
-            ("x-chalk-env-id", self._env_id or ""),
-            ("x-chalk-server", "go-api"),
-        ]
+        """Return RPC metadata after refreshing ambient credentials if needed."""
+        with self._auth_lock:
+            self._ensure_auth()
+            return [
+                ("authorization", f"Bearer {self._access_token}"),
+                ("x-chalk-env-id", self._env_id or ""),
+                ("x-chalk-server", "go-api"),
+            ]
 
     def _uses_web_identity_token(self) -> bool:
         """Return whether rotating web-identity authentication is configured."""

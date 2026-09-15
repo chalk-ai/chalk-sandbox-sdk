@@ -22,6 +22,9 @@ class _RecordingSandboxClient:
         self.created_image: str | None = None
         self.create_kwargs: dict[str, object] | None = None
 
+    def _prepare_provisioning(self) -> None:
+        pass
+
     def _instantiate(self, sandbox: Sandbox, image: str, **kwargs: object) -> None:
         self.created_image = image
         self.create_kwargs = {
