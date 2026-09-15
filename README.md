@@ -656,8 +656,10 @@ snapshot deployed with the function, so editing a cell cannot change the source
 shown for an earlier deployment. Plain Python also gets a readable multiline
 error. User execution failures are not automatically retried.
 
-This presentation requires a function deployed with the updated remote-call
-runtime. Existing deployments keep their existing error format until redeployed.
+This presentation requires a function deployed with remote-call runtime 1.9.2
+or later. Upgrade the SDK in the calling environment before redeploying: function
+images pin the caller's installed runtime version. Existing deployments keep
+their existing error format until redeployed.
 
 The SDK honors `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` and
 `OTEL_EXPORTER_OTLP_PROTOCOL` (`grpc` or `http/protobuf`). SDK-owned trace export
