@@ -15,6 +15,15 @@ class BlockOptional(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         if fullname.split(".")[0] in {"chalk", "chalkdf", "pyarrow", "pandas"}:
             raise AssertionError("Optional dependency imported: " + fullname)
+        # SQL's resource settings must stay independent of the offline-query
+        # schema and its feature-graph/expression dependency tree.
+        if fullname in {
+            "chalkcompute._gen.chalk.common.v1.offline_query_pb",
+            "chalkcompute._gen.chalk.common.v1.online_query_pb",
+            "chalkcompute._gen.chalk.graph.v1.graph_pb",
+            "chalkcompute._gen.chalk.expression.v1.expression_pb",
+        }:
+            raise AssertionError("Heavy proto dependency imported: " + fullname)
 sys.meta_path.insert(0, BlockOptional())
 from chalkcompute import SQLClient
 from chalkcompute._gen.chalk.protosql.v1 import sql_service_pb as pb, sql_service_connect

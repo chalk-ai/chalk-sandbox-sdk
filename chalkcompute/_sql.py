@@ -18,7 +18,7 @@ from protobuf import Oneof
 from pyqwest import SyncClient
 
 from chalkcompute._connect import ConnectClient
-from chalkcompute._gen.chalk.common.v1 import chalk_error_pb, offline_query_pb
+from chalkcompute._gen.chalk.common.v1 import chalk_error_pb, resources_pb
 from chalkcompute._gen.chalk.protosql.v1 import (
     sql_service_connect,
     sql_service_pb as pb,
@@ -372,7 +372,7 @@ class SQLClient:
             execution_mode=pb.ExecuteSqlAsyncExecutionMode.ASYNC,
         )
         if resource_group is not None:
-            options.resources = offline_query_pb.ResourceRequests(
+            options.resources = resources_pb.ResourceRequests(
                 resource_group=_text(resource_group, "resource_group"),
             )
         stub = self._connect.stub(sql_service_connect.SqlServiceClientSync)
