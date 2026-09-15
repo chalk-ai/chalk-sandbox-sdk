@@ -7,7 +7,6 @@ import json
 import pytest
 
 from chalkcompute import scorers
-from chalkcompute._judges import _factuality_prompt
 
 pytestmark = pytest.mark.usefixtures("no_deploy")
 
@@ -64,7 +63,7 @@ def test_the_scorer_is_declared_in_the_callers_module_not_the_judges_one() -> No
 
 
 def test_the_prompt_carries_the_rubric_and_the_row() -> None:
-    prompt = _factuality_prompt(
+    prompt = _spec(scorers.factuality(model="m")).prompt_fn(
         None, input="What is the capital?", output="Paris", expected="Paris, France"
     )
 

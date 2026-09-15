@@ -1097,4 +1097,15 @@ def embedding_similarity(
 
 
 # At the bottom so the judges can import `llm_judge` from this module.
-from chalkcompute._judges import factuality as factuality  # noqa: E402
+from chalkcompute._judges import (  # noqa: E402
+    battle as battle,
+    closed_qa as closed_qa,
+    factuality as factuality,
+    humor as humor,
+    moderation as moderation,
+    possible as possible,
+    security as security,
+    sql_match as sql_match,
+    summary as summary,
+    translation as translation,
+)
