@@ -45,6 +45,12 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "FunctionCallHandle": ("chalkcompute._function", "FunctionCallHandle"),
     "FunctionVersionInfo": ("chalkcompute._function", "FunctionVersionInfo"),
     "gather": ("chalkcompute._function", "gather"),
+    # _sql.py
+    "SQLClient": ("chalkcompute._sql", "SQLClient"),
+    "SQLResult": ("chalkcompute._sql", "SQLResult"),
+    "SQLJob": ("chalkcompute._sql", "SQLJob"),
+    "SQLJobStatus": ("chalkcompute._sql", "SQLJobStatus"),
+    "SQLError": ("chalkcompute._sql", "SQLError"),
     # _dataset.py
     "DatasetClient": ("chalkcompute._dataset", "DatasetClient"),
     "DatasetError": ("chalkcompute._dataset", "DatasetError"),

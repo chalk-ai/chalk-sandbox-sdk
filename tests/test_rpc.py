@@ -136,3 +136,27 @@ def test_retry_backoff_caps_at_one_second(monkeypatch) -> None:
     with pytest.raises(ConnectError):
         _rpc.RetryInterceptor().intercept_unary_sync(call_next, "req", _context())
     assert sleeps == [0.1, 0.2, 0.4, 0.8, 1.0]
+
+
+@pytest.mark.parametrize("method", ["ExecuteSqlQuery", "PollSqlQuery"])
+def test_sql_execution_and_polling_are_not_retried_by_transport(method) -> None:
+    ctx = RequestContext(
+        method=MethodInfo(
+            name=method,
+            service_name="chalk.protosql.v1.SqlService",
+            input=object,
+            output=object,
+            idempotency_level=IdempotencyLevel.UNKNOWN,
+        ),
+        http_method="POST",
+        request_headers=Headers(),
+    )
+    attempts = []
+
+    def execute(request, context):
+        attempts.append(request)
+        raise ConnectError(Code.UNAVAILABLE, "response lost after submission")
+
+    with pytest.raises(ConnectError):
+        _rpc.RetryInterceptor().intercept_unary_sync(execute, "query", ctx)
+    assert len(attempts) == 1

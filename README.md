@@ -172,6 +172,50 @@ The token is scoped to the active Chalk environment. Its audience is the value
 passed to `get_workload_identity_token`, and its signing key is published by the
 Chalk API server at `/.well-known/jwks.json`.
 
+## Chalk SQL
+
+Run SQL against your Chalk environment without installing ChalkPy or defining
+features locally. Authentication uses the same environment variables,
+`~/.chalk.yml`, or Compute workload identity as the rest of this SDK.
+
+```python
+from chalkcompute import SQLClient
+
+with SQLClient() as sql:
+    result = sql.query("SELECT 1 AS value")
+    print(result.query_id)
+    table = result.to_arrow()
+    print(sql.explain("SELECT 1 AS value"))
+
+    job = sql.submit("SELECT * FROM chalk.datasets.support_examples",
+                     resource_group="batch")
+    print(job.query_id)  # Save this ID to resume with sql.get_job(id).
+    result = job.wait(timeout=600)
+    paths = result.download("./sql-results")
+```
+
+`query` waits for synchronous execution. Use `persist=True` to store results
+remotely and download them later; the default returns inline Parquet, subject
+to the RPC response-size limit. `submit` runs in the background and persists
+its output. Neither operation registers a named dataset.
+
+`job.refresh()` updates `job.status`; `job.wait()` returns a `SQLResult` or
+raises `SQLError`. A waiting timeout raises `TimeoutError` and leaves the
+remote job running. The polling service groups queued and running work into
+one state and reports canceled jobs as failures. SQL execution is not
+transparently retried after a transport failure because the query may already
+have run.
+
+`download(directory)` streams every Parquet shard to disk, refreshes older
+signed URLs, and refuses to overwrite existing files. Keep the client open
+while using its jobs and results. Use a fresh directory when retrying a
+partially completed multi-file download.
+
+Downloading needs no dataframe library. Install `chalkcompute[sql]` for
+`to_arrow()`, and additionally install `pandas` for `to_pandas()`. Both
+conversions load the full result into memory. These extras do not require
+ChalkPy.
+
 ## Evaluations
 
 Create a reusable evaluation by pinning a completed dataset revision to a

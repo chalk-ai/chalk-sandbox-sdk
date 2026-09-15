@@ -92,6 +92,14 @@ class RetryInterceptor:
         ctx: RequestContext[_REQ, _RES],
         /,
     ) -> _RES:
+        # SQL execution can submit a job or write via COPY. A lost response
+        # does not mean it is safe to execute the statement again. SQLJob.wait
+        # owns poll retries so their time counts toward its waiting deadline.
+        if (
+            ctx.method.service_name == "chalk.protosql.v1.SqlService"
+            and ctx.method.name in {"ExecuteSqlQuery", "PollSqlQuery"}
+        ):
+            return call_next(request, ctx)
         delay = RPC_RETRY_INITIAL_BACKOFF_SECONDS
         last_error: ConnectError | None = None
         for attempt in range(1, RPC_RETRY_MAX_ATTEMPTS + 1):

@@ -1,3 +1,8 @@
+from chalkcompute._sql import SQLClient as SQLClient
+from chalkcompute._sql import SQLResult as SQLResult
+from chalkcompute._sql import SQLJob as SQLJob
+from chalkcompute._sql import SQLJobStatus as SQLJobStatus
+from chalkcompute._sql import SQLError as SQLError
 from chalkcompute import scorers as scorers
 from chalkcompute._artifact import Artifact as Artifact
 from chalkcompute._artifact import ArtifactClient as ArtifactClient
@@ -142,6 +147,11 @@ from chalkcompute._volume import Volume as VersionedVolume
 from chalkcompute._volume import VolumeClient as VersionedVolumeClient
 
 __all__ = [
+    "SQLClient",
+    "SQLResult",
+    "SQLJob",
+    "SQLJobStatus",
+    "SQLError",
     "scorers",
     "Artifact",
     "ArtifactClient",
