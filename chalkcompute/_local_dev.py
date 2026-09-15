@@ -21,6 +21,7 @@ _LOCAL_SDK_COPY_EXCLUDES = [
     ".venv/**",
     ".*_venv/**",
     "venv/**",
+    "__pycache__/**",
     "**/__pycache__/**",
     "**/target/**",
 ]
@@ -126,13 +127,14 @@ def wrap_entrypoint_for_local_dev(handler_cmd: list[str]) -> list[str]:
     elif config.should_mount_sdk_source:
         from chalkcompute._image import _ARCHIVE_CHUNK_PREFIX, ARCHIVE_NAME
 
-        extract_dir = "/tmp/chalkcompute-sdk-src"
+        extract_root = "/tmp/chalkcompute-sdk-src"
+        extract_dir = f"{extract_root}/chalkcompute"
         archive_path = f"/tmp/{ARCHIVE_NAME}"
         prelude.extend(
             [
                 f"cat {_LOCAL_SDK_MOUNT}/{_ARCHIVE_CHUNK_PREFIX}* > {archive_path}",
-                f"rm -rf {extract_dir}; mkdir -p {extract_dir}; tar xzf {archive_path} -C {extract_dir}",
-                f"export PYTHONPATH={extract_dir}:$PYTHONPATH",
+                f"rm -rf {extract_root}; mkdir -p {extract_dir}; tar xzf {archive_path} -C {extract_dir}",
+                f"export PYTHONPATH={extract_root}:$PYTHONPATH",
             ]
         )
 
@@ -159,11 +161,13 @@ def apply_local_dev_mounts(
             [remote_call_runtime_package, *_LOCAL_SDK_RUNTIME_PACKAGES]
         ).add_local_file(str(path), f"{_LOCAL_SDK_MOUNT}/{path.name}")
     elif config.should_mount_sdk_source:
-        project_root = Path(__file__).resolve().parent.parent
+        # Installed SDKs live beside other packages in site-packages. Copying
+        # the parent would shadow the container's platform-specific runtime.
+        package_root = Path(__file__).resolve().parent
         image = image.pip_install(
             [remote_call_runtime_package, *_LOCAL_SDK_RUNTIME_PACKAGES]
         ).add_local_dir(
-            str(project_root),
+            str(package_root),
             _LOCAL_SDK_MOUNT,
             exclude=_LOCAL_SDK_COPY_EXCLUDES,
             archive=True,
