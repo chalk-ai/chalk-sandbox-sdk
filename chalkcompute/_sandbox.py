@@ -38,8 +38,6 @@ from connectrpc.protocol import ProtocolType
 from protobuf import Oneof
 from protobuf.wkt import Duration
 
-from chalkcompute._gen.chalk.auth.v1.permissions_pb import Permission
-
 from chalkcompute._artifact import Artifact, ArtifactClient, _artifact_from_proto
 from chalkcompute._connect import (
     ConnectError,
@@ -914,7 +912,6 @@ class Sandbox:
         if client is None:
             client = SandboxClient.from_env(chalk_client=self._chalk_client)
 
-        client._prepare_provisioning()
         image = self._image
         if isinstance(image, Image):
             image = self._build_image(
@@ -1204,6 +1201,7 @@ class Sandbox:
             client._address,
             use_tls=client._use_tls,
             metadata=client._metadata,
+            _connect=client._connect,
         )
 
         execution_id = ""
@@ -1277,8 +1275,6 @@ class Sandbox:
             else None,
         )
         try:
-            if client._connect is not None:
-                client._connect.require_permissions((Permission.DEPLOY_CREATE,))
             client._stub.terminate_sandbox(req, headers=client._headers)
         except ConnectRpcError as e:
             _handle_rpc_error(e, sandbox_id)
@@ -1420,9 +1416,8 @@ class SandboxClient:
     ) -> SandboxClient:
         """Create a ``SandboxClient`` from ambient Chalk credentials.
 
-        In a deployed function, the SDK exchanges its runtime identity and
-        refreshes working tokens automatically. Provisioning permissions are
-        requested when creating a sandbox, subject to the identity's grants.
+        In a deployed function, the SDK uses the active invocation's delegated
+        caller identity and refreshes its working tokens automatically.
         """
 
         connect = ConnectClient(chalk_client=chalk_client)
@@ -1436,13 +1431,6 @@ class SandboxClient:
             metadata=connect._rpc_metadata(),
             _connect=connect,
         )
-
-    def _prepare_provisioning(self) -> None:
-        if self._connect is not None:
-            # Image building and sandbox creation share the deployment path.
-            self._connect.require_permissions(
-                (Permission.DEPLOY_CREATE, Permission.DEPLOY_REDEPLOY)
-            )
 
     @property
     def _metadata(self) -> _GrpcMetadata | None:

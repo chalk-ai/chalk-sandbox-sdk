@@ -32,6 +32,8 @@ import atexit
 import asyncio
 import contextlib
 import contextvars
+from types import SimpleNamespace
+from chalkcompute._call_context import current_invocation
 import datetime as _dt
 import functools
 import inspect
@@ -149,11 +151,15 @@ _CALL_VIA_API_ENV_VAR = "CHALK_FUNCTION_CALL_VIA_API"
 
 
 def _remote_call_container_env(user_env: dict[str, str]) -> dict[str, str]:
+    mode = user_env.get("CHALK_FUNCTION_AUTH_MODE", "caller")
+    if mode not in {"caller", "service"}:
+        raise ValueError("CHALK_FUNCTION_AUTH_MODE must be caller or service")
     return {
         "PYTHONPATH": "/app",
         _REMOTE_ENV_VAR: "1",
         _FNQ_STREAMS_SUPPORTED_ENV_VAR: "true",
         **user_env,
+        "CHALK_FUNCTION_AUTH_MODE": mode,
     }
 
 
@@ -642,11 +648,13 @@ def _generate_handler_shim(
             def _scope(context, row_metadata):
                 # Returns None when chalkcompute is absent (strip-mode images), which
                 # _unscope treats as "nothing was published".
-                if not context and row_metadata is None:
+                if not context and row_metadata is None and __import__("os").environ.get("CHALK_FUNCTION_AUTH_MODE") not in ("caller", "service"):
                     return None
                 try:
                     from chalkcompute._call_context import set_call_scope
                 except ImportError:
+                    if __import__("os").environ.get("CHALK_FUNCTION_AUTH_MODE") in ("caller", "service"):
+                        raise RuntimeError("Caller authentication requires the current chalkcompute runtime")
                     return None
 
                 return set_call_scope(context, row_metadata)
@@ -747,7 +755,7 @@ def _generate_handler_shim(
             # consumed after handler() returns, so a scope opened around the loop would
             # already be closed. Imported lazily so a function that reads neither the call
             # context nor row metadata does not need chalkcompute installed in its image.
-            if not context and column is None:
+            if not context and column is None and __import__("os").environ.get("CHALK_FUNCTION_AUTH_MODE") not in ("caller", "service"):
                 yield
                 return
             try:
@@ -756,6 +764,8 @@ def _generate_handler_shim(
                     set_call_scope,
                 )
             except ImportError:
+                if __import__("os").environ.get("CHALK_FUNCTION_AUTH_MODE") in ("caller", "service"):
+                    raise RuntimeError("Caller authentication requires the current chalkcompute runtime")
                 # Deploy images built in strip mode ship only the remote-call runtime, so
                 # nothing in them can read these accessors either way.
                 yield
@@ -2899,6 +2909,15 @@ class RemoteFunction:
         validate_dns_label(sg_name, self._client._env_id)
 
         try:
+            if (
+                self._schedule is not None
+                and self._env.get("CHALK_FUNCTION_AUTH_MODE", "caller") != "service"
+            ):
+                raise FunctionBuildError(
+                    "Scheduled functions have no caller credentials. Set "
+                    'env={"CHALK_FUNCTION_AUTH_MODE": "service"} and inject '
+                    "an explicit service account using Chalk secrets."
+                )
             # 1. Build deploy image
             deploy_image = self._build_deploy_image()
 
@@ -3191,6 +3210,19 @@ class RemoteFunction:
             except Exception:
                 logger.debug("Failed to close remote-call client", exc_info=True)
 
+    def _remote_call_owner(self) -> Any:
+        scope = current_invocation()
+        if scope is None:
+            return self
+        if self not in scope.remote_clients:
+            scope.remote_clients[self] = SimpleNamespace(
+                _remote_call_client=None,
+                _queue_call_client=None,
+                _remote_call_auth_token=None,
+                _queue_call_auth_token=None,
+            )
+        return scope.remote_clients[self]
+
     def _drop_remote_call_clients(
         self,
         *,
@@ -3198,10 +3230,11 @@ class RemoteFunction:
         queue: bool = True,
     ) -> None:
         """Drop cached local call transports without touching server resources."""
+        owner = self._remote_call_owner()
         if direct:
-            client = self._remote_call_client
-            self._remote_call_client = None
-            self._remote_call_auth_token = None
+            client = owner._remote_call_client
+            owner._remote_call_client = None
+            owner._remote_call_auth_token = None
             if client is not None:
                 self._close_remote_call_client(client)
 
@@ -3211,9 +3244,9 @@ class RemoteFunction:
                 self._close_remote_call_client(stub)
 
         if queue:
-            client = self._queue_call_client
-            self._queue_call_client = None
-            self._queue_call_auth_token = None
+            client = owner._queue_call_client
+            owner._queue_call_client = None
+            owner._queue_call_auth_token = None
             if client is not None:
                 self._close_remote_call_client(client)
 
@@ -3316,13 +3349,18 @@ class RemoteFunction:
             metadata.append(("x-chalk-deployment-type", "function-queue"))
         return metadata
 
-    def _per_call_metadata(self) -> list[tuple[str, str]]:
+    def _per_call_metadata(self, *, delegate: bool = True) -> list[tuple[str, str]]:
         metadata = current_trace_metadata()
+        if delegate:
+            metadata.extend(
+                self._client.function_invocation_metadata(self._queue_function_name())
+            )
         if self._knowledge_cutoff is not None:
             metadata.append((_REQUEST_TIMESTAMP_HEADER, self._knowledge_cutoff))
         return metadata
 
     def _ensure_remote_call_client(self, *, queue: bool = False) -> Any:
+        owner = self._remote_call_owner()
         attr = "_queue_call_client" if queue else "_remote_call_client"
         token_attr = "_queue_call_auth_token" if queue else "_remote_call_auth_token"
         uses_web_identity = (
@@ -3333,9 +3371,9 @@ class RemoteFunction:
             self._client._ensure_auth()
             current_token = self._client._access_token
 
-        client = getattr(self, attr)
+        client = getattr(owner, attr)
         token_matches = (
-            not uses_web_identity or getattr(self, token_attr, None) == current_token
+            not uses_web_identity or getattr(owner, token_attr, None) == current_token
         )
         if (
             client is not None
@@ -3345,7 +3383,7 @@ class RemoteFunction:
             return client
         if client is not None:
             self._close_remote_call_client(client)
-            setattr(self, attr, None)
+            setattr(owner, attr, None)
 
         if self._web_url is None:
             raise FunctionError("Function is not deployed. Call .deploy() first.")
@@ -3377,8 +3415,8 @@ class RemoteFunction:
             ),
             initial_poll_delay_ms=5,
         )
-        setattr(self, attr, client)
-        setattr(self, token_attr, current_token)
+        setattr(owner, attr, client)
+        setattr(owner, token_attr, current_token)
         return client
 
     def _call_direct_chunks_python_grpc(
@@ -3535,7 +3573,7 @@ class RemoteFunction:
         if self._version_info is None:
             raise FunctionError("No function version — call .deploy() first.")
 
-        trace_metadata = self._per_call_metadata()
+        trace_metadata = self._per_call_metadata(delegate=False)
         stub = self._client.stub(
             catalog_connect.ExternalFunctionCatalogServiceClientSync
         )

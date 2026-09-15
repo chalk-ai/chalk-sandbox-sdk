@@ -38,7 +38,11 @@ Both are published as context variables, so they are correct under the shim's th
 from __future__ import annotations
 
 import functools
+from dataclasses import dataclass, field
+from threading import RLock
 import json
+import os
+import contextlib
 from contextvars import ContextVar, Token
 from types import MappingProxyType
 from typing import Any, Mapping, NamedTuple
@@ -57,12 +61,36 @@ _CALL_CONTEXT: ContextVar[Mapping[str, str]] = ContextVar(
 )
 _ROW_METADATA: ContextVar[bytes | None] = ContextVar("chalk_row_metadata", default=None)
 
+FUNCTION_INVOCATION_TOKEN_HEADER = "x-chalk-function-invocation-token"
+
+
+@dataclass(eq=False)
+class InvocationScope:
+    exchange_token: str | None
+    auth_lock: Any = field(default_factory=RLock)
+    auth_states: dict[object, Any] = field(default_factory=dict)
+    remote_clients: dict[object, Any] = field(default_factory=dict)
+    closed: bool = False
+
+
+_INVOCATION: ContextVar[InvocationScope | None] = ContextVar(
+    "chalk_invocation", default=None
+)
+
+
+def current_invocation() -> InvocationScope | None:
+    scope = _INVOCATION.get()
+    if scope is not None and scope.closed:
+        raise RuntimeError("Chalk invocation credentials are no longer active")
+    return scope
+
 
 class CallScopeToken(NamedTuple):
     """Undo tokens for what :func:`set_call_scope` set."""
 
     context: Token[Mapping[str, str]]
     row_metadata: Token[bytes | None]
+    invocation: Token[InvocationScope | None]
     session: object | None = None
     """OpenTelemetry session scope, when the caller sent a session id."""
 
@@ -110,15 +138,56 @@ def set_call_scope(
     request anyway. See :func:`chalkcompute._tracing.enter_session`.
     """
     resolved = _headers_from_context(context)
-    return CallScopeToken(
+    delegation = next(
+        (
+            value
+            for key, value in resolved.items()
+            if key.lower() == FUNCTION_INVOCATION_TOKEN_HEADER
+        ),
+        None,
+    )
+    resolved = MappingProxyType(
+        {
+            key: value
+            for key, value in resolved.items()
+            if key.lower() != FUNCTION_INVOCATION_TOKEN_HEADER
+        }
+    )
+    mode = os.environ.get("CHALK_FUNCTION_AUTH_MODE")
+    scope = (
+        InvocationScope(exchange_token=delegation)
+        if mode == "caller" or (delegation and mode != "service")
+        else None
+    )
+    token = CallScopeToken(
+        invocation=_INVOCATION.set(scope),
         context=_CALL_CONTEXT.set(resolved),
         row_metadata=_ROW_METADATA.set(row_metadata),
         session=_enter_session(resolved, row_metadata),
     )
+    try:
+        if mode in {"caller", "service"}:
+            from chalkcompute._connect import ConnectClient
+
+            ConnectClient()._ensure_auth()
+    except BaseException:
+        reset_call_scope(token)
+        raise
+    return token
 
 
 def reset_call_scope(token: CallScopeToken) -> None:
     """Restore whatever :func:`set_call_scope` replaced."""
+    scope = _INVOCATION.get()
+    if scope is not None:
+        scope.closed = True
+        for clients in scope.remote_clients.values():
+            for name in ("_remote_call_client", "_queue_call_client"):
+                client = getattr(clients, name, None)
+                if client is not None:
+                    with contextlib.suppress(Exception):
+                        client.close()
+    _INVOCATION.reset(token.invocation)
     _CALL_CONTEXT.reset(token.context)
     _ROW_METADATA.reset(token.row_metadata)
     if token.session is not None:

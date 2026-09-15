@@ -307,6 +307,23 @@ class TestScheduleValidationFunction:
         with pytest.raises(FunctionError, match="cannot have inputs"):
             RemoteFunction(add, schedule="1h")
 
+    def test_schedule_requires_explicit_service_identity_before_build(
+        self, monkeypatch
+    ):
+        from unittest.mock import Mock
+        from chalkcompute._function import FunctionBuildError
+
+        def tick() -> None:
+            pass
+
+        fn = RemoteFunction(tick, schedule="1h")
+        fn._client = _CapturingClient()
+        build = Mock()
+        monkeypatch.setattr(fn, "_build_deploy_image", build)
+        with pytest.raises(FunctionBuildError, match="no caller credentials"):
+            fn.deploy()
+        build.assert_not_called()
+
     def test_schedule_is_sent_in_function_config(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -315,7 +332,9 @@ class TestScheduleValidationFunction:
             pass
 
         client = _CapturingClient()
-        fn = RemoteFunction(tick, schedule=" 1h ")
+        fn = RemoteFunction(
+            tick, schedule=" 1h ", env={"CHALK_FUNCTION_AUTH_MODE": "service"}
+        )
         fn._client = client  # type: ignore[assignment]
         monkeypatch.setattr(
             RemoteFunction, "_build_deploy_image", lambda _: Image("image:test")

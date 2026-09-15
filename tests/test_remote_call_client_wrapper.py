@@ -285,3 +285,14 @@ def test_import_native_falls_back_to_site_packages(
 
     assert module.RemoteCallClient is LegacyNativeRemoteCallClient
     assert module.__file__ == str(native_path)
+
+
+@pytest.mark.parametrize("method", ["call_ipc", "enqueue"])
+@pytest.mark.parametrize("key", ["authorization", "x-chalk-function-invocation-token"])
+def test_legacy_native_cannot_drop_delegated_auth(method, key):
+    client = RemoteCallClient("remote.chalk.test:443")
+    with pytest.raises(
+        RemoteCallClientUnavailable, match="per-call authentication metadata"
+    ):
+        getattr(client, method)("handler", b"in", metadata=((key, "credential"),))
+    assert LegacyNativeRemoteCallClient.method_calls == []

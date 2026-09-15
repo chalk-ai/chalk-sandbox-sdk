@@ -554,7 +554,7 @@ def _generate_class_handler_shim(
             # consumed after handler() returns. Imported lazily so a method that reads
             # neither the call context nor row metadata does not need chalkcompute
             # installed in its image.
-            if not context and column is None:
+            if not context and column is None and __import__("os").environ.get("CHALK_FUNCTION_AUTH_MODE") not in ("caller", "service"):
                 yield
                 return
             try:
@@ -563,6 +563,8 @@ def _generate_class_handler_shim(
                     set_call_scope,
                 )
             except ImportError:
+                if __import__("os").environ.get("CHALK_FUNCTION_AUTH_MODE") in ("caller", "service"):
+                    raise RuntimeError("Caller authentication requires the current chalkcompute runtime")
                 # Deploy images built in strip mode ship only the remote-call runtime, so
                 # nothing in them can read these accessors either way.
                 yield

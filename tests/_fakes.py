@@ -46,6 +46,12 @@ class StubbedConnectClient:
     requests and responses remain protobuf messages throughout each test.
     """
 
+    def function_invocation_metadata(self, function_name: str) -> list[tuple[str, str]]:
+        return [
+            ("x-chalk-function-invocation-token", "delegated-seed"),
+            ("authorization", "Bearer delegated-working"),
+        ]
+
     def stub(self, stub_cls: type) -> _FakeStub:
         return _FakeStub(stub_cls)
 

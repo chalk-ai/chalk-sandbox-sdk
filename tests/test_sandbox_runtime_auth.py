@@ -1,5 +1,10 @@
-"""Exercise ambient runtime auth through the public sandbox client."""
+"""Credentials follow the invocation, including when clients are reused."""
 
+import asyncio
+import contextlib
+import contextvars
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -8,60 +13,60 @@ from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf.wkt import Timestamp
 
-from chalkcompute import Image, SandboxClient
+from chalkcompute import SandboxClient
+from chalkcompute._call_context import (
+    FUNCTION_INVOCATION_TOKEN_HEADER,
+    current_invocation,
+    get_call_context,
+    reset_call_scope,
+    set_call_scope,
+)
 from chalkcompute._connect import ConnectClient, ConnectError
-from chalkcompute._gen.chalk.auth.v1.permissions_pb import Permission as P
 from chalkcompute._gen.chalk.sandbox.v2 import service_pb as pb
 from chalkcompute._gen.chalk.server.v1 import auth_pb
-from chalkcompute._remote_call_client import ServiceAuthContext
 
-BASE = {P.AUTHENTICATED, P.QUERY_ONLINE, P.DEPLOY_READ}
-PROVISION = {P.DEPLOY_CREATE, P.DEPLOY_REDEPLOY}
+
+@contextlib.contextmanager
+def invocation(identity):
+    token = set_call_scope(
+        {"metadata": {FUNCTION_INVOCATION_TOKEN_HEADER: identity}}, None
+    )
+    try:
+        yield
+    finally:
+        reset_call_scope(token)
 
 
 @pytest.fixture
 def runtime(monkeypatch):
-    state = SimpleNamespace(
-        now=1000.0,
-        requests=[],
-        tokens={},
-        allowed=BASE | PROVISION,
-        fail=False,
-        exchanges=0,
-    )
-    monkeypatch.delenv("CHALK_WEB_IDENTITY_TOKEN_FILE", raising=False)
+    state = SimpleNamespace(now=1000.0, exchanges=[], fail=False)
+    monkeypatch.setenv("CHALK_FUNCTION_AUTH_MODE", "caller")
+    monkeypatch.setenv("CHALK_API_SERVER", "https://api.chalk.test")
+    monkeypatch.setenv("CHALK_ENVIRONMENT_ID", "env-test")
+    monkeypatch.setenv("CHALK_REMOTE_AUTH_EXCHANGE_TOKEN", "forbidden-ambient-token")
     monkeypatch.setattr("chalkcompute._connect.time.time", lambda: state.now)
     monkeypatch.setattr("chalkcompute._connect.time.monotonic", lambda: state.now)
     monkeypatch.setattr(
-        "chalkcompute._connect.service_auth_context_from_env",
-        lambda: ServiceAuthContext(
-            auth_endpoint="https://api.chalk.test",
-            exchange_token="runtime-identity",
-            environment_id="env-test",
-            requested_permissions=tuple(sorted(BASE)),
-            grpc_engine=None,
-        ),
+        "chalkcompute._connect.resolve_service_auth_context",
+        Mock(side_effect=AssertionError("ambient identity used")),
+    )
+    monkeypatch.setattr(
+        "chalkcompute._connect.load_token",
+        Mock(side_effect=AssertionError("local credentials used")),
     )
 
     class Auth:
         def __init__(self, *args, **kwargs):
             super().__init__()
 
-        def get_internal_working_token(self, request, **kwargs):
-            state.exchanges += 1
-            permissions = set(request.requested_permissions)
-            state.requests.append(permissions)
-            assert kwargs["headers"]["Authorization"] == "Bearer runtime-identity"
+        def get_internal_working_token(self, request, *, headers, **kwargs):
+            assert list(request.requested_permissions) == []
+            identity = headers["Authorization"].removeprefix("Bearer ")
+            state.exchanges.append(identity)
             if state.fail:
                 raise ConnectRpcError(Code.UNAVAILABLE, "exchange unavailable")
-            if not permissions <= state.allowed:
-                raise ConnectRpcError(
-                    Code.PERMISSION_DENIED, "provisioning permission denied"
-                )
-            token = f"token-{state.exchanges}"
-            state.tokens[f"Bearer {token}"] = permissions
             return auth_pb.GetInternalWorkingTokenResponse(
-                access_token=token,
+                access_token=f"{identity}-{state.now}",
                 expires_at=Timestamp(seconds=int(state.now + 120)),
             )
 
@@ -74,193 +79,187 @@ def runtime(monkeypatch):
     return state
 
 
-def sandbox_stub(runtime):
-    stub = Mock()
-
-    def check(headers, permissions):
-        assert headers["x-chalk-env-id"] == "env-test"
-        assert permissions <= runtime.tokens[headers["authorization"]]
-
-    def create(request, *, headers):
-        check(headers, PROVISION)
-        return pb.CreateSandboxResponse(
-            sandbox=pb.SandboxInfo(id="sandbox-test", status=pb.SandboxStatus.RUNNING)
-        )
-
-    def get(request, *, headers):
-        check(headers, {P.DEPLOY_READ})
-        return pb.GetSandboxResponse(
-            sandbox=pb.SandboxInfo(id=request.id, status=pb.SandboxStatus.RUNNING)
-        )
-
-    def terminate(request, *, headers):
-        check(headers, {P.DEPLOY_CREATE})
-        return pb.TerminateSandboxResponse()
-
-    stub.create_sandbox.side_effect = create
-    stub.get_sandbox.side_effect = get
-    stub.terminate_sandbox.side_effect = terminate
-    stub.list_sandboxes.return_value = pb.ListSandboxesResponse()
-    return stub
+def test_same_sandbox_client_switches_callers_and_refreshes(runtime):
+    with invocation("alice"):
+        client = SandboxClient.from_env()
+        assert client._headers["authorization"] == "Bearer alice-1000.0"
+        assert len(runtime.exchanges) == 1
+        runtime.now += 60
+        assert client._headers["authorization"] == "Bearer alice-1060.0"
+        assert len(runtime.exchanges) == 2
+    with invocation("bob"):
+        assert client._headers["authorization"] == "Bearer bob-1060.0"
+    with pytest.raises(ConnectError, match="no delegated caller"):
+        _ = client._headers
+    client.close()
 
 
-def test_create_refresh_and_terminate_with_same_client(runtime):
-    with SandboxClient.from_env() as client:
-        stub = sandbox_stub(runtime)
-        client._stub = stub
-        assert runtime.requests == [BASE]
-        sandbox = client.create("node:22-bookworm", wait=False)
-        assert runtime.requests == [BASE, BASE | PROVISION]
-        sandbox.refresh()
-        assert runtime.exchanges == 2
-        runtime.now += 59
-        sandbox.refresh()
-        assert runtime.exchanges == 2
-        runtime.now += 1
-        sandbox.refresh()
-        assert runtime.exchanges == 3
-        assert (
-            stub.get_sandbox.call_args.kwargs["headers"]["authorization"]
-            == "Bearer token-3"
-        )
-        sandbox.terminate()
-        assert runtime.exchanges == 3
-        stub.terminate_sandbox.assert_called_once()
+def test_concurrent_callers_on_shared_connect_client(runtime):
+    client = ConnectClient()
+    barrier = Barrier(2)
+
+    def call(identity):
+        with invocation(identity):
+            first = dict(client._rpc_metadata())["authorization"]
+            barrier.wait(timeout=5)
+            second = dict(client._rpc_metadata())["authorization"]
+            return first, second
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        alice = executor.submit(call, "alice")
+        bob = executor.submit(call, "bob")
+        assert alice.result() == ("Bearer alice-1000.0",) * 2
+        assert bob.result() == ("Bearer bob-1000.0",) * 2
+    assert sorted(runtime.exchanges) == ["alice", "bob"]
 
 
-def test_denied_provisioning_does_not_break_read_only_client(runtime):
-    runtime.allowed = BASE
-    with SandboxClient.from_env() as client:
-        client._stub = sandbox_stub(runtime)
-        assert client.list() == []
-        assert runtime.requests == [BASE]
-        with pytest.raises(
-            ConnectRpcError, match="provisioning permission denied"
-        ) as exc:
-            client.create("node:22-bookworm", wait=False)
-        assert exc.value.code == Code.PERMISSION_DENIED
-        client._stub.create_sandbox.assert_not_called()
-        assert client.list() == []
-        assert runtime.exchanges == 2
-        assert client._headers["authorization"] == "Bearer token-1"
+def test_async_callers_are_isolated(runtime):
+    client = ConnectClient()
+
+    async def call(identity):
+        with invocation(identity):
+            first = dict(client._rpc_metadata())["authorization"]
+            await asyncio.sleep(0)
+            return first, dict(client._rpc_metadata())["authorization"]
+
+    async def run():
+        return await asyncio.gather(call("alice"), call("bob"))
+
+    assert asyncio.run(run()) == [
+        ("Bearer alice-1000.0",) * 2,
+        ("Bearer bob-1000.0",) * 2,
+    ]
 
 
-def test_failed_refresh_does_not_send_stale_token_and_can_recover(runtime):
-    with SandboxClient.from_env() as client:
-        client._stub = sandbox_stub(runtime)
-        sandbox = client.create("node:22-bookworm", wait=False)
-        runtime.now += 121
-        runtime.fail = True
-        with pytest.raises(ConnectRpcError, match="exchange unavailable"):
-            sandbox.refresh()
-        client._stub.get_sandbox.assert_not_called()
-        runtime.fail = False
-        sandbox.refresh()
-        assert (
-            client._stub.get_sandbox.call_args.kwargs["headers"]["authorization"]
-            == "Bearer token-4"
-        )
-        client._stub.create_sandbox.assert_called_once()
+def test_missing_delegation_never_uses_worker_identity(runtime):
+    with pytest.raises(ConnectError, match="no delegated caller"):
+        set_call_scope({"metadata": {"traceparent": "trace"}}, None)
+    assert current_invocation() is None
+    assert runtime.exchanges == []
 
 
-def test_termination_of_existing_sandbox_requests_only_create(runtime):
-    runtime.allowed = BASE | {P.DEPLOY_CREATE}
-    with SandboxClient.from_env() as client:
-        client._stub = sandbox_stub(runtime)
-        sandbox = client.get("sandbox-test")
-        sandbox.terminate()
-        assert runtime.requests == [BASE, BASE | {P.DEPLOY_CREATE}]
+def test_delegation_is_not_exposed_in_public_call_context(runtime):
+    with invocation("alice"):
+        assert current_invocation().exchange_token == "alice"
+        assert FUNCTION_INVOCATION_TOKEN_HEADER not in get_call_context()
 
 
-def test_image_build_uses_provisioning_token(runtime, monkeypatch):
-    def build(connect, *args, **kwargs):
-        token = dict(connect._rpc_metadata())["authorization"]
-        assert PROVISION <= runtime.tokens[token]
-        return "registry/image:built"
-
-    monkeypatch.setattr("chalkcompute._sandbox.build_image", build)
-    with SandboxClient.from_env() as client:
-        client._stub = sandbox_stub(runtime)
-        client.create(Image.debian_slim(), wait=False)
-        assert runtime.requests == [BASE, BASE | PROVISION]
+def test_finished_invocation_cannot_be_reused_in_background(runtime):
+    with invocation("alice"):
+        copied = contextvars.copy_context()
+    with pytest.raises(RuntimeError, match="no longer active"):
+        copied.run(ConnectClient()._rpc_metadata)
 
 
-def test_expired_runtime_identity_does_not_fall_back_to_local_credentials(
+def test_refresh_failure_sends_no_sandbox_request(runtime):
+    with invocation("alice"):
+        with SandboxClient.from_env() as client:
+            client._stub = Mock()
+            runtime.now += 121
+            runtime.fail = True
+            with pytest.raises(ConnectRpcError, match="exchange unavailable"):
+                client.list()
+            client._stub.list_sandboxes.assert_not_called()
+            runtime.fail = False
+            client._stub.list_sandboxes.return_value = pb.ListSandboxesResponse()
+            assert client.list() == []
+
+
+def test_read_only_caller_cannot_provision(runtime):
+    with invocation("read-only"):
+        with SandboxClient.from_env() as client:
+            client._stub = Mock()
+            client._stub.list_sandboxes.return_value = pb.ListSandboxesResponse()
+            assert client.list() == []
+
+            def deny(request, *, headers):
+                assert headers["authorization"].startswith("Bearer read-only-")
+                raise ConnectRpcError(
+                    Code.PERMISSION_DENIED, "caller cannot create sandboxes"
+                )
+
+            client._stub.create_sandbox.side_effect = deny
+            with pytest.raises(ConnectRpcError, match="caller cannot create"):
+                client.create("node:22-bookworm", wait=False)
+            assert runtime.exchanges == ["read-only"]
+
+
+def test_direct_metadata_remains_explicit(runtime):
+    with SandboxClient(
+        "https://api.chalk.test", metadata=[("authorization", "Bearer explicit")]
+    ) as client:
+        with invocation("alice"):
+            assert client._headers["authorization"] == "Bearer explicit"
+    assert runtime.exchanges == ["alice"]
+
+
+def test_delegation_header_is_case_insensitive(runtime):
+    scope = set_call_scope(
+        {"metadata": {"X-Chalk-Function-Invocation-Token": "alice"}}, None
+    )
+    try:
+        assert current_invocation().exchange_token == "alice"
+        assert not get_call_context()
+    finally:
+        reset_call_scope(scope)
+
+
+def test_caller_identity_takes_precedence_over_ambient_web_identity(
     runtime, monkeypatch
 ):
-    with SandboxClient.from_env() as client:
-        runtime.now += 121
-        monkeypatch.setattr(
-            "chalkcompute._connect.service_auth_context_from_env", lambda: None
-        )
-        with pytest.raises(ConnectError, match="runtime identity is unavailable"):
-            client.list()
-
-
-def test_explicit_metadata_is_not_replaced_by_runtime_identity(runtime):
-    runtime.tokens["Bearer explicit-token"] = BASE | PROVISION
-    with SandboxClient(
-        "https://api.chalk.test",
-        metadata=[
-            ("authorization", "Bearer explicit-token"),
-            ("x-chalk-env-id", "env-test"),
-        ],
-    ) as client:
-        client._stub = sandbox_stub(runtime)
-        sandbox = client.create("node:22-bookworm", wait=False)
-        sandbox.terminate()
-        assert runtime.exchanges == 0
-
-
-def test_shared_connect_client_refreshes_without_sandbox(runtime):
-    client = ConnectClient()
-    assert dict(client._rpc_metadata())["authorization"] == "Bearer token-1"
-    runtime.now += 60
-    assert dict(client._rpc_metadata())["authorization"] == "Bearer token-2"
-    assert runtime.requests == [BASE, BASE]
-
-
-@pytest.mark.parametrize("lifetime,refresh_after", [(20, 10), (1800, 1740)])
-def test_refresh_margin_tracks_token_lifetime(
-    runtime, monkeypatch, lifetime, refresh_after
-):
-    def exchange(self, request, **kwargs):
-        runtime.exchanges += 1
-        return auth_pb.GetInternalWorkingTokenResponse(
-            access_token=f"token-{runtime.exchanges}",
-            expires_at=Timestamp(seconds=int(runtime.now + lifetime)),
+    monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", "/nonexistent/worker-token")
+    with invocation("alice"):
+        assert (
+            dict(ConnectClient()._rpc_metadata())["authorization"]
+            == "Bearer alice-1000.0"
         )
 
-    monkeypatch.setattr(
-        "chalkcompute._connect.auth_connect.AuthServiceClientSync.get_internal_working_token",
-        exchange,
-    )
+
+def test_static_chalkpy_client_cannot_capture_caller(runtime):
+    from chalkcompute._connect import chalk_client_from_env
+
+    with invocation("alice"):
+        with pytest.raises(ConnectError, match="invocation-scoped"):
+            chalk_client_from_env()
+
+
+def test_service_mode_requires_explicit_credentials(monkeypatch):
+    monkeypatch.setenv("CHALK_FUNCTION_AUTH_MODE", "service")
+    for name in (
+        "CHALK_CLIENT_ID",
+        "CHALK_CLIENT_SECRET",
+        "CHALK_WEB_IDENTITY_TOKEN_FILE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(ConnectError, match="explicit service credentials"):
+        set_call_scope({}, None)
+    assert current_invocation() is None
+
+
+def test_function_metadata_never_forwards_original_credentials(monkeypatch):
     client = ConnectClient()
-    client._rpc_metadata()
-    runtime.now += refresh_after - 0.1
-    client._rpc_metadata()
-    assert runtime.exchanges == 1
-    runtime.now += 0.1
-    client._rpc_metadata()
-    assert runtime.exchanges == 2
+    client._access_token = "original-caller"
+    client._env_id = "env-test"
+    client._api_server = "https://api.chalk.test"
+    monkeypatch.setattr(client, "_ensure_auth", lambda: None)
+    seen = []
 
+    class Auth:
+        def create_function_invocation_token(self, request, *, headers, **kwargs):
+            assert headers["authorization"] == "Bearer original-caller"
+            assert request.function_name == "provision"
+            seen.append("delegate")
+            return auth_pb.CreateFunctionInvocationTokenResponse(exchange_token="seed")
 
-@pytest.mark.parametrize(
-    "access_token,expires_at,message",
-    [
-        ("", 1120, "no access token"),
-        ("expired", 999, "expired token"),
-    ],
-)
-def test_invalid_exchange_response_is_rejected(
-    runtime, monkeypatch, access_token, expires_at, message
-):
-    monkeypatch.setattr(
-        "chalkcompute._connect.auth_connect.AuthServiceClientSync.get_internal_working_token",
-        lambda *args, **kwargs: auth_pb.GetInternalWorkingTokenResponse(
-            access_token=access_token,
-            expires_at=Timestamp(seconds=expires_at),
-        ),
-    )
-    with pytest.raises(ConnectError, match=message):
-        SandboxClient.from_env()
+        def get_internal_working_token(self, request, *, headers, **kwargs):
+            assert headers["authorization"] == "Bearer seed"
+            assert not request.requested_permissions
+            seen.append("exchange")
+            return auth_pb.GetInternalWorkingTokenResponse(access_token="working")
+
+    monkeypatch.setattr(client, "stub", lambda stub: Auth())
+    assert dict(client.function_invocation_metadata("provision")) == {
+        FUNCTION_INVOCATION_TOKEN_HEADER: "seed",
+        "authorization": "Bearer working",
+    }
+    assert seen == ["delegate", "exchange"]

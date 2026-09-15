@@ -32,17 +32,56 @@ with SandboxClient.from_env() as client:
 
 ## Authentication inside deployed functions
 
-`SandboxClient.from_env()` and `Sandbox(...).run()` use the function's runtime
-identity automatically. Sandbox creation requests `deploy.create` and
-`deploy.redeploy` in addition to the runtime's default permissions; termination
-requests `deploy.create`. Read operations do not request provisioning permissions.
-The server checks these requests against the identity's existing grants.
+New deployments use the **invoking caller's identity** by default.
+`SandboxClient.from_env()`, `Sandbox(...).run()`, and other chalkcompute clients
+act with that caller's permissions in the selected environment. A read-only
+caller cannot create a sandbox by invoking a provisioner. No token exchange code
+belongs in the function.
 
-The SDK caches successful permission grants for the client and refreshes working
-tokens before expiry. Failed exchanges propagate before the sandbox operation is
-sent; the SDK does not retry sandbox creation. Local CLI credentials, explicitly
-supplied metadata, and rotating web-identity files retain their existing behavior.
-There is no need to import auth internals or exchange tokens in a provisioner.
+The platform issues a bounded delegation, not the caller's original credentials.
+Working tokens last at most five minutes and refresh automatically. The delegation
+expires no later than the caller's credential or 24 hours after invocation;
+nested calls and sandboxes with `chalk_identity=True` cannot extend it. Queued
+calls carry this delegation and fail before user code if it expires or is revoked.
+Permission additions do not expand an existing delegation. Revocations and changed
+feature restrictions invalidate it when checked by the API.
+
+Credentials and native transport caches follow each invocation, including concurrent
+calls on a shared worker. Clients can be reused across callers. Caller mode never
+falls back to a worker token, local login, or ambient web-identity file when its
+credentials are missing. ChalkPy's internal `chalk_client_from_env` bridge cannot
+safely rotate per-invocation credentials and is rejected in caller mode; use
+chalkcompute clients for these operations. Explicitly supplied client credentials
+remain an explicit choice of identity.
+
+Scheduled jobs have no interactive caller. Configure an explicit service account:
+
+```python
+import chalkcompute as cc
+
+@cc.function(
+    schedule="1h",
+    env={"CHALK_FUNCTION_AUTH_MODE": "service"},
+    secrets=[cc.Secret("CHALK_CLIENT_ID"), cc.Secret("CHALK_CLIENT_SECRET")],
+)
+def scheduled_job() -> None:
+    # Runs with the account stored in these Chalk-managed secrets.
+    ...
+```
+
+Service mode deliberately grants every invocation the configured account's access;
+limit its permissions and who can invoke the function. It receives no automatic
+worker exchange token. A configured `CHALK_WEB_IDENTITY_TOKEN_FILE` is also supported.
+Class startup/shutdown hooks have no caller scope; use service mode if they need
+Chalk API access.
+
+**Rollout:** deploy the matching API and function-queue changes before releasing
+this SDK or redeploying functions. Older deployments keep their legacy auth until
+redeployed. Upgrade callers and workers together for direct and queued calls;
+Herdr's `chalk function call` path delegates in the API. Engine-side `catalog_call`
+and internal scheduler calls do not yet mint caller delegations, so their targets
+must explicitly use service mode. The `CHALK_FUNCTION_AUTH_MODE` container marker
+selects `caller` (the SDK default) or `service`; unknown values are rejected.
 
 ## Declarative images
 
@@ -640,8 +679,8 @@ print(sandbox.exec("pwd").stdout_text)
 sandbox.terminate()
 ```
 
-The function's identity needs sandbox creation permissions. The caller needs
-sandbox access in its own Chalk environment. Arrow transports one nonnullable
+The invoking caller needs sandbox creation and access permissions in its Chalk
+environment. The provisioner uses that same identity by default. Arrow transports one nonnullable
 struct field, `sandbox_id: large_utf8`, using the existing custom-object contract
 (`__chalk_arrow_type__`, `__chalk_serialize__`, `__chalk_deserialize__`). It never
 includes the creator's credentials, environment variables, secret references,
