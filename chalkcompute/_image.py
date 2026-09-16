@@ -716,7 +716,8 @@ class Image:
         Parameters
         ----------
         variables
-            Mapping of variable names to values.
+            Mapping of variable names to literal strings. Pass Secret values in
+            the runtime consumer's env instead (for example, Sandbox(env=...)).
 
         Returns
         -------

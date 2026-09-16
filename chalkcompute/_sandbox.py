@@ -55,6 +55,7 @@ from chalkcompute._containerspec import (
     RestartPolicy,
     SshDest,
 )
+from chalkcompute._env import normalize_env
 from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
 from chalkcompute._gen.chalk.sandbox.v1 import runtime_service_pb as runtime_pb
 from chalkcompute._gen.chalk.sandbox.v1 import (
@@ -593,7 +594,7 @@ class Sandbox:
         cpu: str | None = None,
         memory: str | None = None,
         gpu: str | None = None,
-        env: dict[str, str] | None = None,
+        env: Mapping[str, str | Secret] | None = None,
         secrets: list[Secret] | None = None,
         volumes: _VolumeList | None = None,
         port: int | None = None,
@@ -627,7 +628,8 @@ class Sandbox:
         gpu
             Optional GPU request, for example ``"nvidia-l4"``.
         env
-            Optional environment variables to set in the sandbox.
+            Environment variables as strings or single-value Secret references.
+            The mapping key sets the injected name, overriding aliases and prefixes.
         secrets
             Optional :class:`~chalkcompute.Secret` references to inject.
         volumes
@@ -746,6 +748,7 @@ class Sandbox:
 
         if image is None:
             raise TypeError("Sandbox() missing required keyword-only argument: 'image'")
+        env, secrets = normalize_env(env, secrets)
         ContainerSpec.validate_fields(
             image=image,
             name=name,
@@ -1468,7 +1471,7 @@ class SandboxClient:
         cpu: str | None = None,
         memory: str | None = None,
         gpu: str | None = None,
-        env: dict[str, str] | None = None,
+        env: Mapping[str, str | Secret] | None = None,
         secrets: _SecretList | None = None,
         volumes: _VolumeList | None = None,
         port: int | None = None,
@@ -1504,7 +1507,8 @@ class SandboxClient:
         memory
             Optional memory limit (e.g. ``"512Mi"``, ``"1Gi"``).
         env
-            Optional environment variables.
+            Environment variables as strings or single-value Secret references.
+            The mapping key sets the injected name.
         volumes
             Optional ``Volume`` handles, ``VolumeMount`` specifications, or
             ``(name_or_volume, mount_path)`` pairs to mount into the sandbox.

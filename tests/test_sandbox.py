@@ -3,7 +3,7 @@ from __future__ import annotations
 from unittest.mock import ANY, MagicMock, patch
 
 import pytest
-from chalkcompute import Image, Sandbox
+from chalkcompute import Image, Sandbox, Secret
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
@@ -137,6 +137,33 @@ def test_sandbox_client_create_sends_image_uri_not_image_spec() -> None:
     assert stub.request is not None
     assert stub.request.source.value.image == "registry/image:built"
     build.assert_called_once()
+
+
+@pytest.mark.parametrize("use_client_create", [False, True])
+def test_sandbox_mixed_env_serializes_secret_references(use_client_create) -> None:
+    client = SandboxClient()
+    stub = _Stub()
+    client._stub = stub  # type: ignore[assignment]
+    env = {
+        "GIT_AUTHOR_NAME": "Elliot Marx",
+        "SUPER_SECRET_VALUE": Secret.from_chalk_env("TOKEN"),
+    }
+    secrets = [Secret.from_chalk_env("OTHER")]
+    try:
+        if use_client_create:
+            client.create("ubuntu:latest", env=env, secrets=secrets, wait=False)
+        else:
+            Sandbox(
+                image="ubuntu:latest", env=env, secrets=secrets, sandbox_client=client
+            ).run(wait=False)
+    finally:
+        client.close()
+
+    assert stub.request is not None
+    spec = stub.request.source.value
+    assert dict(spec.env_vars) == {"GIT_AUTHOR_NAME": "Elliot Marx"}
+    assert [ref.source.value for ref in spec.secret_refs] == ["OTHER", "TOKEN"]
+    assert dict(spec.secret_refs[1].aliases) == {"TOKEN": "SUPER_SECRET_VALUE"}
 
 
 def test_sandbox_client_create_can_request_chalk_identity() -> None:

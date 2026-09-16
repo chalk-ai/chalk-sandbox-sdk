@@ -30,6 +30,38 @@ with SandboxClient.from_env() as client:
     sandbox.terminate()
 ```
 
+## Environment variables and secrets
+
+Deployment `env` mappings accept strings and `Secret` references together:
+
+```python
+import chalkcompute as cc
+
+sandbox = cc.Sandbox(
+    image="ubuntu:latest",
+    env={
+        "GIT_AUTHOR_NAME": "Elliot Marx",
+        "SUPER_SECRET_VALUE": cc.Secret.from_chalk_env("MY_CHALK_SECRET"),
+    },
+)
+```
+
+The dictionary key sets the injected environment variable name, overriding a
+secret's alias or prefix. Secret references use the existing secret injection
+path; they are not serialized as literal env values. This also works with
+`SandboxClient.create`, `Container`, `ScalingGroup`, `@cc.function`, `@cc.cls`,
+and `@cc.training`.
+
+Use `Secret.from_local_env("LOCAL_VAR")` for a value read at run/deploy time, or
+`Secret.from_chalk_integration("postgres", keys=["PASSWORD"])` to select one
+integration secret. Bulk integrations and `Secret.from_local_env_file(...)`
+belong in `secrets=[...]`, which can be used alongside `env`.
+Training supports Chalk secret references only; local secret resolution is
+not supported for training.
+
+`Image.env(...)` and per-exec env mappings accept literal strings only. Set
+secrets on the sandbox or other deployment so its processes inherit them.
+
 ## Declarative images
 
 Build custom container images with a fluent API instead of writing Dockerfiles.

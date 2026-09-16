@@ -24,7 +24,7 @@ import time
 import uuid
 import warnings
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, NoReturn
@@ -48,6 +48,7 @@ from chalkcompute._containerspec import (
     KernelPolicy as KernelPolicy,
     NetworkPolicy,
 )
+from chalkcompute._env import normalize_env
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._gen.chalk.container.v1 import (
     service_connect as container_connect,
@@ -697,7 +698,7 @@ class Container:
         cpu: str | None = None,
         memory: str | None = None,
         gpu: str | None = None,
-        env: dict[str, str] | None = None,
+        env: Mapping[str, str | Secret] | None = None,
         secrets: list[Secret] | None = None,
         volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
         port: int | None = None,
@@ -720,6 +721,7 @@ class Container:
             raise TypeError(
                 "image must be an Image or image reference string, got None"
             )
+        env, secrets = normalize_env(env, secrets)
         ContainerSpec.validate_fields(
             image=image,
             name=name,
