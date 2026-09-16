@@ -53,7 +53,7 @@ from chalkcompute._containerspec import (
     ContainerSpec,
     NetworkPolicy,
     RestartPolicy,
-    SshDest,
+    SSHDest,
 )
 from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
 from chalkcompute._gen.chalk.sandbox.v1 import runtime_service_pb as runtime_pb
@@ -605,7 +605,7 @@ class Sandbox:
         tags: dict[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool = False,
-        managed_ssh: Mapping[str, SshDest] | None = None,
+        managed_ssh: Mapping[str, SSHDest] | None = None,
         chalk_client: Any | None = None,
         sandbox_client: SandboxClient | None = None,
         client: Any | None = None,
@@ -659,7 +659,7 @@ class Sandbox:
             The identity is exposed inside the sandbox through the standard
             ``CHALK_WEB_IDENTITY_TOKEN_FILE`` environment variable.
         managed_ssh
-            Optional SSH aliases mapped to :class:`SshDest` instances. Managed
+            Optional SSH aliases mapped to :class:`SSHDest` instances. Managed
             SSH sandboxes run on host compute.
 
         sandbox_id
@@ -707,7 +707,7 @@ class Sandbox:
         self._tags: dict[str, str] = {}
         self._restart_policy: RestartPolicy | None = None
         self._chalk_identity = False
-        self._managed_ssh: dict[str, SshDest] = {}
+        self._managed_ssh: dict[str, SSHDest] = {}
         self._chalk_client: Any | None = None
         self._built_image_uri: str | None = None
 
@@ -1480,7 +1480,7 @@ class SandboxClient:
         tags: dict[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool = False,
-        managed_ssh: Mapping[str, SshDest] | None = None,
+        managed_ssh: Mapping[str, SSHDest] | None = None,
         wait: bool = True,
         poll_interval: float = 0.5,
         timeout: float = 600.0,
@@ -1522,7 +1522,7 @@ class SandboxClient:
             The identity is exposed inside the sandbox through the standard
             ``CHALK_WEB_IDENTITY_TOKEN_FILE`` environment variable.
         managed_ssh
-            Optional SSH aliases mapped to :class:`SshDest` instances.
+            Optional SSH aliases mapped to :class:`SSHDest` instances.
         wait
             If ``True``, poll until the sandbox is ready (default ``True``).
         poll_interval

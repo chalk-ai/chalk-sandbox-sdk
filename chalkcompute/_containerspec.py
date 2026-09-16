@@ -36,7 +36,7 @@ class RestartPolicy(Enum):
 
 
 @dataclass(frozen=True, slots=True)
-class SshDest:
+class SSHDest:
     """An SSH destination exposed inside a sandbox under a managed alias.
 
     Attributes
@@ -367,7 +367,7 @@ class ContainerSpec:
     secret_refs: Sequence[Secret | Mapping[str, Any]] = ()
     port: int | None = None
     lifetime: str | None = None
-    managed_ssh: Mapping[str, SshDest] = field(default_factory=dict)
+    managed_ssh: Mapping[str, SSHDest] = field(default_factory=dict)
     tags: Mapping[str, str] = field(default_factory=dict)
     protocol: str | None = None
     authentication: str | None = None
@@ -450,7 +450,7 @@ class ContainerSpec:
         tags: Mapping[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool = False,
-        managed_ssh: Mapping[str, SshDest] | None = None,
+        managed_ssh: Mapping[str, SSHDest] | None = None,
     ) -> None:
         if image is not None and not isinstance(image, str):
             if not isinstance(image, Image):
@@ -523,9 +523,9 @@ class ContainerSpec:
                     raise TypeError("managed_ssh aliases must be strings")
                 if not alias:
                     raise ValueError("managed_ssh aliases must not be empty")
-                if not isinstance(destination, SshDest):
+                if not isinstance(destination, SSHDest):
                     raise TypeError(
-                        "managed_ssh destinations must be SshDest instances"
+                        "managed_ssh destinations must be SSHDest instances"
                     )
 
     def to_dict(self) -> dict[str, Any]:

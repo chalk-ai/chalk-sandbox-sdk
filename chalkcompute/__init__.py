@@ -27,7 +27,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "ImageBuildError": ("chalkcompute._container", "ImageBuildError"),
     "KernelPolicy": ("chalkcompute._containerspec", "KernelPolicy"),
     "ComputeClass": ("chalkcompute._containerspec", "ComputeClass"),
-    "SshDest": ("chalkcompute._containerspec", "SshDest"),
+    "SSHDest": ("chalkcompute._containerspec", "SSHDest"),
     "NetworkPolicy": ("chalkcompute._containerspec", "NetworkPolicy"),
     # _cls.py
     "RemoteClass": ("chalkcompute._cls", "RemoteClass"),
