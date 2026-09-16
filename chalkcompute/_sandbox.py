@@ -191,6 +191,9 @@ class ExecResult:
     error: str | None = None
     """Error string if execution failed."""
 
+    session_id: str | None = None
+    """Execution session ID, when available; searchable as chalk.sandbox.session_id."""
+
     @property
     def stdout_text(self) -> str:
         """:attr:`stdout` decoded as UTF-8 (with ``errors="replace"``)."""
@@ -510,6 +513,7 @@ class ExecProcess:
             exit_code=exit_code,
             signal=exit_signal,
             error=error,
+            session_id=self.session_id,
         )
 
 
