@@ -293,6 +293,7 @@ def test_sandbox_exec_uses_v2_process_service() -> None:
     finally:
         client.close()
 
+    assert result.session_id == "session-123"
     assert result.stdout == b"hello\\n"
     assert result.stderr == b""
     assert result.exit_code == 0
@@ -354,6 +355,7 @@ def test_sandbox_reattach() -> None:
     finally:
         client.close()
 
+    assert result.session_id == "session-123"
     assert result.stdout == b"hello"
     assert result.exit_code == 0
 
