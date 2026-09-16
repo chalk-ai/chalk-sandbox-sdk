@@ -46,9 +46,8 @@ sandbox = cc.Sandbox(
 )
 ```
 
-The dictionary key sets the injected environment variable name, overriding a
-secret's alias or prefix. Secret references use the existing secret injection
-path; they are not serialized as literal env values. This also works with
+The dictionary key sets the injected environment variable name.
+This works across
 `SandboxClient.create`, `Container`, `ScalingGroup`, `@cc.function`, `@cc.cls`,
 and `@cc.training`.
 

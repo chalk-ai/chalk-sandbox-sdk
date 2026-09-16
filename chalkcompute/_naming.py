@@ -123,8 +123,6 @@ def validate_env(env: Mapping[str, str] | None) -> None:
     if secret_keys:
         raise TypeError(
             f"Secret values are not supported in this env mapping: {secret_keys!r}. "
-            "Pass them in env when creating a sandbox, container, scaling group, "
-            "function, or class instead. Image and per-exec env require strings."
         )
     bad = {k: v for k, v in env.items() if not isinstance(v, str)}
     if bad:

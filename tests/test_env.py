@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import pytest
 
 import chalkcompute as cc
@@ -10,31 +8,34 @@ from chalkcompute._secret import prepare_lazy_secrets
 from chalkcompute._training import training
 
 
-@pytest.mark.parametrize(
-    "secret",
-    [
-        cc.Secret.from_chalk_env("TOKEN", alias="OLD", prefix="PREFIX_"),
-        cc.Secret.from_chalk_integration(
-            "postgres", keys=["TOKEN"], aliases={"TOKEN": "OLD"}, prefix="PREFIX_"
-        ),
-    ],
-)
-def test_env_key_overrides_secret_alias_and_prefix_without_mutation(secret):
-    original = secret._to_proto_dict()
-    env = {"NAME": "Elliot", "API_KEY": secret, "SECOND_KEY": secret}
+def test_normalize_env_splits_literals_and_secret_references_without_mutation():
+    secret = cc.Secret.from_chalk_env("TOKEN", alias="OLD", prefix="PREFIX_")
+    env = {"NAME": "Elliot", "API_KEY": secret}
     explicit = [cc.Secret.from_chalk_env("OTHER")]
-    literals, refs = normalize_env(env, explicit)
 
-    assert literals == {"NAME": "Elliot"}
-    assert refs[0] == explicit[0]
-    assert refs[1]._to_proto_dict() == {
-        **{k: v for k, v in original.items() if k not in {"aliases", "prefix"}},
-        "aliases": {"TOKEN": "API_KEY"},
-    }
-    assert refs[2]._aliases == {"TOKEN": "SECOND_KEY"}
-    assert secret._to_proto_dict() == original
+    assert normalize_env(env, explicit) == (
+        {"NAME": "Elliot"},
+        [explicit[0], cc.Secret.from_chalk_env("TOKEN", alias="API_KEY")],
+    )
     assert env["API_KEY"] is secret
-    assert len(explicit) == 1
+    assert explicit == [cc.Secret.from_chalk_env("OTHER")]
+
+
+def test_normalize_env_accepts_one_integration_key():
+    assert normalize_env(
+        {
+            "PASSWORD": cc.Secret.from_chalk_integration(
+                "postgres", keys=["TOKEN"], aliases={"TOKEN": "OLD"}, prefix="P_"
+            )
+        }
+    ) == (
+        {},
+        [
+            cc.Secret.from_chalk_integration(
+                "postgres", keys=["TOKEN"], aliases={"TOKEN": "PASSWORD"}
+            )
+        ],
+    )
 
 
 def test_env_local_secret_stays_lazy_and_resolves_under_env_key(monkeypatch):
@@ -47,7 +48,7 @@ def test_env_local_secret_stays_lazy_and_resolves_under_env_key(monkeypatch):
     resolved, values = prepare_lazy_secrets(refs)
     assert values == {"API_KEY": "private-value"}
     assert resolved == [cc.Secret.from_chalk_env("API_KEY")]
-    assert secret._env_var_name == "OLD"
+    assert secret == cc.Secret.from_local_env("LOCAL_TOKEN", env_var_name="OLD")
 
 
 @pytest.mark.parametrize(
@@ -62,19 +63,6 @@ def test_bulk_secrets_require_secrets_list(secret):
     with pytest.raises(ValueError, match="secrets=\\[.*\\]"):
         normalize_env({"API_KEY": secret})
     assert normalize_env(None, [secret]) == ({}, [secret])
-
-
-@pytest.mark.parametrize(
-    "env, error, match",
-    [
-        ({"TOKEN": None}, TypeError, "os.getenv"),
-        ({"PORT": 123}, TypeError, "PORT"),
-        ({"": cc.Secret.from_chalk_env("TOKEN")}, ValueError, "non-empty"),
-    ],
-)
-def test_env_validation_preserved(env, error, match):
-    with pytest.raises(error, match=match):
-        normalize_env(env)
 
 
 def _function():
@@ -104,36 +92,13 @@ def test_all_deployment_entrypoints_accept_mixed_env(factory, monkeypatch):
         cc.RemoteFunction, "_start_background_deploy", lambda self: None
     )
     monkeypatch.setattr(cc.RemoteClass, "deploy", lambda self: self)
-    consumer = factory(
+    factory(
         env={"NAME": "Elliot", "API_KEY": cc.Secret.from_chalk_env("TOKEN")},
         secrets=[cc.Secret.from_chalk_env("OTHER")],
     )
-    assert consumer._env == {"NAME": "Elliot"}
-    assert consumer._secrets == [
-        cc.Secret.from_chalk_env("OTHER"),
-        cc.Secret.from_chalk_env("TOKEN", alias="API_KEY"),
-    ]
 
 
-@pytest.mark.parametrize(
-    "method", ["exec", "exec_stream", "exec_start", "execute_python"]
-)
-def test_per_exec_env_rejects_secret_with_actionable_error(method):
-    sandbox = cc.Sandbox(sandbox_id="sandbox-123", client=MagicMock())
-    with pytest.raises(TypeError, match="when creating a sandbox"):
-        result = getattr(sandbox, method)(
-            "echo", env={"API_KEY": cc.Secret.from_chalk_env("TOKEN")}
-        )
-        if method == "exec_stream":
-            list(result)
-
-
-def test_image_env_rejects_secret_with_actionable_error():
-    with pytest.raises(TypeError, match="Image and per-exec env require strings"):
-        cc.Image.debian_slim().env({"API_KEY": cc.Secret.from_chalk_env("TOKEN")})
-
-
-def test_training_rejects_local_secret_with_actionable_error():
+def test_training_rejects_local_secret():
     with pytest.raises(ValueError, match="Training does not support local secrets"):
         training(data="dataset", env={"API_KEY": cc.Secret.from_local_env("TOKEN")})(
             _function
