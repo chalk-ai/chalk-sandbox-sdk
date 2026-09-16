@@ -149,7 +149,7 @@ class CreateSandboxResponse(Message[_CreateSandboxResponseFields]):
 
         sandbox: SandboxInfo | None
 
-_GetSandboxRequestFields: TypeAlias = Literal["id"]
+_GetSandboxRequestFields: TypeAlias = Literal["id", "wait_until_ready"]
 
 class GetSandboxRequest(Message[_GetSandboxRequestFields]):
     """
@@ -162,9 +162,13 @@ class GetSandboxRequest(Message[_GetSandboxRequestFields]):
             ```proto
             string id = 1;
             ```
+        wait_until_ready:
+            ```proto
+            bool wait_until_ready = 2;
+            ```
     """
 
-    __slots__ = ("id",)
+    __slots__ = ("id", "wait_until_ready")
 
     if TYPE_CHECKING:
 
@@ -172,10 +176,12 @@ class GetSandboxRequest(Message[_GetSandboxRequestFields]):
             self,
             *,
             id: str = "",
+            wait_until_ready: bool = False,
         ) -> None:
             pass
 
         id: str
+        wait_until_ready: bool
 
 _GetSandboxResponseFields: TypeAlias = Literal["sandbox"]
 
@@ -512,8 +518,6 @@ class SandboxStatus(Enum):
             SANDBOX_STATUS_FAILED = 4
             ```
         TERMINATED:
-            Deprecated
-
             ```proto
             SANDBOX_STATUS_TERMINATED = 5
             ```
@@ -583,7 +587,7 @@ class SandboxSortOrder(Enum):
 
 
 _DESC = file_desc(
-    b'\n\x1echalk/sandbox/v2/service.proto\x12\x10chalk.sandbox.v2\x1a\x1fchalk/auth/v1/permissions.proto\x1a chalk/container/v1/service.proto\x1a\x1achalk/flags/v1/flags.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto"\x9c\x03\n\x0bSandboxInfo\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x127\n\x06status\x18\x03 \x01(\x0e2\x1f.chalk.sandbox.v2.SandboxStatusR\x06status\x12*\n\x0estatus_message\x18\x04 \x01(\tH\x00R\rstatusMessage\x88\x01\x01\x12:\n\x04spec\x18\x05 \x01(\x0b2&.chalk.container.v1.ChalkContainerSpecR\x04spec\x129\n\ncreated_at\x18\x06 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12@\n\x0bfinished_at\x18\x07 \x01(\x0b2\x1a.google.protobuf.TimestampH\x01R\nfinishedAt\x88\x01\x01\x12\x1c\n\x07web_url\x18\x08 \x01(\tH\x02R\x06webUrl\x88\x01\x01B\x11\n\x0f_status_messageB\x0e\n\x0c_finished_atB\n\n\x08_web_url"\x81\x01\n\x14CreateSandboxRequest\x12<\n\x04spec\x18\x01 \x01(\x0b2&.chalk.container.v1.ChalkContainerSpecH\x00R\x04spec\x12!\n\x0bsnapshot_id\x18\x02 \x01(\tH\x00R\nsnapshotIdB\x08\n\x06source"P\n\x15CreateSandboxResponse\x127\n\x07sandbox\x18\x01 \x01(\x0b2\x1d.chalk.sandbox.v2.SandboxInfoR\x07sandbox"#\n\x11GetSandboxRequest\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id"M\n\x12GetSandboxResponse\x127\n\x07sandbox\x18\x01 \x01(\x0b2\x1d.chalk.sandbox.v2.SandboxInfoR\x07sandbox"\x85\x01\n\x14ListSandboxesFilters\x12\x18\n\x05names\x18\x01 \x03(\tR\x05namesB\x02\x18\x01\x12;\n\x08statuses\x18\x02 \x03(\x0e2\x1f.chalk.sandbox.v2.SandboxStatusR\x08statuses\x12\x16\n\x06images\x18\x03 \x03(\tR\x06images"\xc6\x02\n\x14ListSandboxesRequest\x12\x19\n\x05limit\x18\x01 \x01(\x05H\x00R\x05limit\x88\x01\x01\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x01R\x06cursor\x88\x01\x01\x12\x16\n\x06search\x18\x03 \x01(\tR\x06search\x12@\n\x07filters\x18\x04 \x01(\x0b2&.chalk.sandbox.v2.ListSandboxesFiltersR\x07filters\x12D\n\x0bsort_column\x18\x05 \x01(\x0e2#.chalk.sandbox.v2.SandboxSortColumnR\nsortColumn\x12A\n\nsort_order\x18\x06 \x01(\x0e2".chalk.sandbox.v2.SandboxSortOrderR\tsortOrderB\x08\n\x06_limitB\t\n\x07_cursor"\x8a\x01\n\x15ListSandboxesResponse\x12;\n\tsandboxes\x18\x01 \x03(\x0b2\x1d.chalk.sandbox.v2.SandboxInfoR\tsandboxes\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"\'\n\x15SuspendSandboxRequest\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id"\x18\n\x16SuspendSandboxResponse"&\n\x14ResumeSandboxRequest\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id"\x17\n\x15ResumeSandboxResponse"}\n\x17TerminateSandboxRequest\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12A\n\x0cgrace_period\x18\x02 \x01(\x0b2\x19.google.protobuf.DurationH\x00R\x0bgracePeriod\x88\x01\x01B\x0f\n\r_grace_period"\x1a\n\x18TerminateSandboxResponse*\xf5\x01\n\rSandboxStatus\x12\x1e\n\x1aSANDBOX_STATUS_UNSPECIFIED\x10\x00\x12\x1a\n\x16SANDBOX_STATUS_PENDING\x10\x01\x12\x1a\n\x16SANDBOX_STATUS_RUNNING\x10\x02\x12\x1c\n\x18SANDBOX_STATUS_SUCCEEDED\x10\x03\x12\x19\n\x15SANDBOX_STATUS_FAILED\x10\x04\x12\x1d\n\x19SANDBOX_STATUS_TERMINATED\x10\x05\x12\x18\n\x14SANDBOX_STATUS_ERROR\x10\x06\x12\x1a\n\x16SANDBOX_STATUS_UNKNOWN\x10\x07*\\\n\x11SandboxSortColumn\x12#\n\x1fSANDBOX_SORT_COLUMN_UNSPECIFIED\x10\x00\x12"\n\x1eSANDBOX_SORT_COLUMN_CREATED_AT\x10\x01*o\n\x10SandboxSortOrder\x12"\n\x1eSANDBOX_SORT_ORDER_UNSPECIFIED\x10\x00\x12\x1b\n\x17SANDBOX_SORT_ORDER_DESC\x10\x01\x12\x1a\n\x16SANDBOX_SORT_ORDER_ASC\x10\x022\xb2\x06\n\x0eSandboxService\x12\xbc\x01\n\rCreateSandbox\x12&.chalk.sandbox.v2.CreateSandboxRequest\x1a\'.chalk.sandbox.v2.CreateSandboxResponse"Z\x80}\x0c\x92\xd3\x0eS\n\x16scaling_groups_enabled\x129This action is not enabled. Please contact Chalk Support.\x12\\\n\nGetSandbox\x12#.chalk.sandbox.v2.GetSandboxRequest\x1a$.chalk.sandbox.v2.GetSandboxResponse"\x03\x80}\x0b\x12e\n\rListSandboxes\x12&.chalk.sandbox.v2.ListSandboxesRequest\x1a\'.chalk.sandbox.v2.ListSandboxesResponse"\x03\x80}\x0b\x12\xc4\x01\n\x0eSuspendSandbox\x12\'.chalk.sandbox.v2.SuspendSandboxRequest\x1a(.chalk.sandbox.v2.SuspendSandboxResponse"_\x80}\x0c\x92\xd3\x0eX\n\x1bcontainer_snapshots_enabled\x129This action is not enabled. Please contact Chalk Support.\x12e\n\rResumeSandbox\x12&.chalk.sandbox.v2.ResumeSandboxRequest\x1a\'.chalk.sandbox.v2.ResumeSandboxResponse"\x03\x80}\x0c\x12n\n\x10TerminateSandbox\x12).chalk.sandbox.v2.TerminateSandboxRequest\x1a*.chalk.sandbox.v2.TerminateSandboxResponse"\x03\x80}\x0cB\x9c\x01\n\x14com.chalk.sandbox.v2B\x0cServiceProtoP\x01Z\x14sandbox/v2;sandboxv2\xa2\x02\x03CSX\xaa\x02\x10Chalk.Sandbox.V2\xca\x02\x10Chalk\\Sandbox\\V2\xe2\x02\x1cChalk\\Sandbox\\V2\\GPBMetadata\xea\x02\x12Chalk::Sandbox::V2b\x06proto3',
+    b'\n\x1echalk/sandbox/v2/service.proto\x12\x10chalk.sandbox.v2\x1a\x1fchalk/auth/v1/permissions.proto\x1a chalk/container/v1/service.proto\x1a\x1achalk/flags/v1/flags.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto"\x9c\x03\n\x0bSandboxInfo\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x127\n\x06status\x18\x03 \x01(\x0e2\x1f.chalk.sandbox.v2.SandboxStatusR\x06status\x12*\n\x0estatus_message\x18\x04 \x01(\tH\x00R\rstatusMessage\x88\x01\x01\x12:\n\x04spec\x18\x05 \x01(\x0b2&.chalk.container.v1.ChalkContainerSpecR\x04spec\x129\n\ncreated_at\x18\x06 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12@\n\x0bfinished_at\x18\x07 \x01(\x0b2\x1a.google.protobuf.TimestampH\x01R\nfinishedAt\x88\x01\x01\x12\x1c\n\x07web_url\x18\x08 \x01(\tH\x02R\x06webUrl\x88\x01\x01B\x11\n\x0f_status_messageB\x0e\n\x0c_finished_atB\n\n\x08_web_url"\x81\x01\n\x14CreateSandboxRequest\x12<\n\x04spec\x18\x01 \x01(\x0b2&.chalk.container.v1.ChalkContainerSpecH\x00R\x04spec\x12!\n\x0bsnapshot_id\x18\x02 \x01(\tH\x00R\nsnapshotIdB\x08\n\x06source"P\n\x15CreateSandboxResponse\x127\n\x07sandbox\x18\x01 \x01(\x0b2\x1d.chalk.sandbox.v2.SandboxInfoR\x07sandbox"M\n\x11GetSandboxRequest\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12(\n\x10wait_until_ready\x18\x02 \x01(\x08R\x0ewaitUntilReady"M\n\x12GetSandboxResponse\x127\n\x07sandbox\x18\x01 \x01(\x0b2\x1d.chalk.sandbox.v2.SandboxInfoR\x07sandbox"\x85\x01\n\x14ListSandboxesFilters\x12\x18\n\x05names\x18\x01 \x03(\tR\x05namesB\x02\x18\x01\x12;\n\x08statuses\x18\x02 \x03(\x0e2\x1f.chalk.sandbox.v2.SandboxStatusR\x08statuses\x12\x16\n\x06images\x18\x03 \x03(\tR\x06images"\xc6\x02\n\x14ListSandboxesRequest\x12\x19\n\x05limit\x18\x01 \x01(\x05H\x00R\x05limit\x88\x01\x01\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x01R\x06cursor\x88\x01\x01\x12\x16\n\x06search\x18\x03 \x01(\tR\x06search\x12@\n\x07filters\x18\x04 \x01(\x0b2&.chalk.sandbox.v2.ListSandboxesFiltersR\x07filters\x12D\n\x0bsort_column\x18\x05 \x01(\x0e2#.chalk.sandbox.v2.SandboxSortColumnR\nsortColumn\x12A\n\nsort_order\x18\x06 \x01(\x0e2".chalk.sandbox.v2.SandboxSortOrderR\tsortOrderB\x08\n\x06_limitB\t\n\x07_cursor"\x8a\x01\n\x15ListSandboxesResponse\x12;\n\tsandboxes\x18\x01 \x03(\x0b2\x1d.chalk.sandbox.v2.SandboxInfoR\tsandboxes\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"\'\n\x15SuspendSandboxRequest\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id"\x18\n\x16SuspendSandboxResponse"&\n\x14ResumeSandboxRequest\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id"\x17\n\x15ResumeSandboxResponse"}\n\x17TerminateSandboxRequest\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12A\n\x0cgrace_period\x18\x02 \x01(\x0b2\x19.google.protobuf.DurationH\x00R\x0bgracePeriod\x88\x01\x01B\x0f\n\r_grace_period"\x1a\n\x18TerminateSandboxResponse*\xf5\x01\n\rSandboxStatus\x12\x1e\n\x1aSANDBOX_STATUS_UNSPECIFIED\x10\x00\x12\x1a\n\x16SANDBOX_STATUS_PENDING\x10\x01\x12\x1a\n\x16SANDBOX_STATUS_RUNNING\x10\x02\x12\x1c\n\x18SANDBOX_STATUS_SUCCEEDED\x10\x03\x12\x19\n\x15SANDBOX_STATUS_FAILED\x10\x04\x12\x1d\n\x19SANDBOX_STATUS_TERMINATED\x10\x05\x12\x18\n\x14SANDBOX_STATUS_ERROR\x10\x06\x12\x1a\n\x16SANDBOX_STATUS_UNKNOWN\x10\x07*\\\n\x11SandboxSortColumn\x12#\n\x1fSANDBOX_SORT_COLUMN_UNSPECIFIED\x10\x00\x12"\n\x1eSANDBOX_SORT_COLUMN_CREATED_AT\x10\x01*o\n\x10SandboxSortOrder\x12"\n\x1eSANDBOX_SORT_ORDER_UNSPECIFIED\x10\x00\x12\x1b\n\x17SANDBOX_SORT_ORDER_DESC\x10\x01\x12\x1a\n\x16SANDBOX_SORT_ORDER_ASC\x10\x022\xb2\x06\n\x0eSandboxService\x12\xbc\x01\n\rCreateSandbox\x12&.chalk.sandbox.v2.CreateSandboxRequest\x1a\'.chalk.sandbox.v2.CreateSandboxResponse"Z\x80}\x0c\x92\xd3\x0eS\n\x16scaling_groups_enabled\x129This action is not enabled. Please contact Chalk Support.\x12\\\n\nGetSandbox\x12#.chalk.sandbox.v2.GetSandboxRequest\x1a$.chalk.sandbox.v2.GetSandboxResponse"\x03\x80}\x0b\x12e\n\rListSandboxes\x12&.chalk.sandbox.v2.ListSandboxesRequest\x1a\'.chalk.sandbox.v2.ListSandboxesResponse"\x03\x80}\x0b\x12\xc4\x01\n\x0eSuspendSandbox\x12\'.chalk.sandbox.v2.SuspendSandboxRequest\x1a(.chalk.sandbox.v2.SuspendSandboxResponse"_\x80}\x0c\x92\xd3\x0eX\n\x1bcontainer_snapshots_enabled\x129This action is not enabled. Please contact Chalk Support.\x12e\n\rResumeSandbox\x12&.chalk.sandbox.v2.ResumeSandboxRequest\x1a\'.chalk.sandbox.v2.ResumeSandboxResponse"\x03\x80}\x0c\x12n\n\x10TerminateSandbox\x12).chalk.sandbox.v2.TerminateSandboxRequest\x1a*.chalk.sandbox.v2.TerminateSandboxResponse"\x03\x80}\x0cB\x9c\x01\n\x14com.chalk.sandbox.v2B\x0cServiceProtoP\x01Z\x14sandbox/v2;sandboxv2\xa2\x02\x03CSX\xaa\x02\x10Chalk.Sandbox.V2\xca\x02\x10Chalk\\Sandbox\\V2\xe2\x02\x1cChalk\\Sandbox\\V2\\GPBMetadata\xea\x02\x12Chalk::Sandbox::V2b\x06proto3',
     [
         permissions_pb.desc(),
         service_pb.desc(),

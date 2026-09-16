@@ -899,9 +899,9 @@ class Sandbox:
         Parameters
         ----------
         wait
-            If ``True``, poll until the sandbox is ready (default ``True``).
+            If ``True``, wait until the sandbox is ready (default ``True``).
         poll_interval
-            Seconds between readiness polls.
+            Seconds between image-build polls and compatibility fallback polls.
         timeout
             Maximum seconds to wait for the sandbox to become ready.
 
@@ -1496,8 +1496,8 @@ class SandboxClient:
 
         If ``image`` is an ``Image`` spec, this method builds it first and sends
         the resulting image URI to the sandbox service. If ``wait`` is ``True``
-        (the default), this method polls ``GetSandbox`` until the sandbox
-        reaches "ready" (or "error").
+        (the default), this method waits until the sandbox reaches "ready" (or
+        "error").
 
         Parameters
         ----------
@@ -1532,9 +1532,10 @@ class SandboxClient:
         managed_ssh
             Optional SSH aliases mapped to :class:`SshDest` instances.
         wait
-            If ``True``, poll until the sandbox is ready (default ``True``).
+            If ``True``, wait until the sandbox is ready (default ``True``).
         poll_interval
-            Seconds between ``GetSandbox`` polls (default 0.5).
+            Seconds between image-build polls and compatibility fallback polls
+            (default 0.5).
         timeout
             Maximum seconds to wait for the sandbox to become ready
             (default 600).
@@ -1610,9 +1611,11 @@ class SandboxClient:
         info = _pb_to_sandbox_info(resp.sandbox)
 
         if wait and info.status == "pending":
-            info = self._poll_until_ready(
+            deadline = time.monotonic() + timeout
+            info = self._wait_until_ready(
                 info.id,
                 poll_interval=poll_interval,
+                deadline=deadline,
                 timeout=timeout,
             )
         elif wait and info.status in ("failed", "error", "unknown", "terminated"):
@@ -1621,15 +1624,59 @@ class SandboxClient:
         sandbox._id = info.id
         sandbox._info = info
 
+    def _wait_until_ready(
+        self,
+        sandbox_id: str,
+        *,
+        poll_interval: float,
+        deadline: float,
+        timeout: float,
+    ) -> SandboxInfo:
+        """Wait in one GetSandbox RPC, falling back only for an older server."""
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SandboxError(
+                f"Timed out after {timeout}s waiting for sandbox {sandbox_id} to become ready"
+            )
+        try:
+            resp = self._stub.get_sandbox(
+                pb.GetSandboxRequest(id=sandbox_id, wait_until_ready=True),
+                headers=self._headers,
+                timeout_ms=max(1, int(remaining * 1_000)),
+            )
+        except ConnectRpcError as e:
+            if e.code == Code.DEADLINE_EXCEEDED:
+                raise SandboxError(
+                    f"Timed out after {timeout}s waiting for sandbox {sandbox_id} to become ready"
+                ) from e
+            _handle_rpc_error(e, sandbox_id)
+            raise
+        if resp.sandbox is None:
+            raise SandboxCreationError("GetSandbox returned no sandbox")
+        info = _pb_to_sandbox_info(resp.sandbox)
+        if info.status in ("running", "succeeded"):
+            return info
+        if info.status in ("failed", "error", "unknown", "terminated"):
+            raise _sandbox_creation_error(info)
+
+        # A server that does not recognize wait_until_ready ignores the proto3 field
+        # and returns PENDING immediately. Poll only for that compatibility case.
+        return self._poll_until_ready(
+            sandbox_id,
+            poll_interval=poll_interval,
+            deadline=deadline,
+            timeout=timeout,
+        )
+
     def _poll_until_ready(
         self,
         sandbox_id: str,
         *,
         poll_interval: float,
+        deadline: float,
         timeout: float,
     ) -> SandboxInfo:
-        """Poll GetSandbox until the sandbox reaches a terminal state."""
-        deadline = time.monotonic() + timeout
+        """Compatibility fallback for servers without conditional GetSandbox."""
         while time.monotonic() < deadline:
             try:
                 resp = self._stub.get_sandbox(
