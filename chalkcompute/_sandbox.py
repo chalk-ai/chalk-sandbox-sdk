@@ -192,7 +192,7 @@ class ExecResult:
     """Error string if execution failed."""
 
     session_id: str | None = None
-    """Execution session ID, when available; searchable as chalk.sandbox.session_id."""
+    """Execution session ID, when available."""
 
     @property
     def stdout_text(self) -> str:
