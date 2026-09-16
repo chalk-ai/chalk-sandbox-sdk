@@ -28,9 +28,8 @@ import queue
 import signal
 import time
 import uuid
-from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING
 
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
@@ -38,7 +37,7 @@ from connectrpc.protocol import ProtocolType
 from protobuf import Oneof
 from protobuf.wkt import Duration
 
-from chalkcompute._artifact import Artifact, ArtifactClient, _artifact_from_proto
+from chalkcompute._artifact import ArtifactClient, _artifact_from_proto
 from chalkcompute._connect import (
     ConnectError,
     ConnectClient,
@@ -47,14 +46,7 @@ from chalkcompute._connect import (
     raise_for_rpc_error,
     rpc_address_from_target,
 )
-from chalkcompute._containerspec import (
-    ComputeClass,
-    ContainerSecurityPolicy,
-    ContainerSpec,
-    NetworkPolicy,
-    RestartPolicy,
-    SSHDest,
-)
+from chalkcompute._containerspec import ContainerSpec
 from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
 from chalkcompute._gen.chalk.sandbox.v1 import runtime_service_pb as runtime_pb
 from chalkcompute._gen.chalk.sandbox.v1 import (
@@ -69,23 +61,36 @@ from chalkcompute._gen.chalk.sandbox.v2 import service_connect as pb_connect
 from chalkcompute._http import SYNC_HTTP_CLIENT
 from chalkcompute._image import Image
 from chalkcompute._naming import validate_env
-from chalkcompute._secret import Secret, SecretScope, resolve_lazy_secrets
+from chalkcompute._secret import SecretScope, resolve_lazy_secrets
 from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
-    Volume,
     VolumeClient,
-    VolumeMount,
     cleanup_owned_volumes,
     normalize_volume_refs,
     referenced_volume_mount,
 )
 
-# Aliases defined before SandboxClient, which has a ``.list()`` method that
-# would otherwise shadow the builtin ``list`` in class-scope name resolution.
-_GrpcMetadata = list[tuple[str, str]]
-_VolumeList = list[tuple[str | Volume, str] | Volume | VolumeMount]
-_SecretList = list[Secret]
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Mapping
+    from typing import Any
+
+    from chalkcompute._artifact import Artifact
+    from chalkcompute._containerspec import (
+        ComputeClass,
+        ContainerSecurityPolicy,
+        NetworkPolicy,
+        RestartPolicy,
+        SSHDest,
+    )
+    from chalkcompute._secret import Secret
+    from chalkcompute._volume import Volume, VolumeMount
+
+    # Aliases defined before SandboxClient, which has a ``.list()`` method that
+    # would otherwise shadow the builtin ``list`` in class-scope name resolution.
+    _GrpcMetadata = list[tuple[str, str]]
+    _VolumeList = list[tuple[str | Volume, str] | Volume | VolumeMount]
+    _SecretList = list[Secret]
 
 
 # ---------------------------------------------------------------------------
