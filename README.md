@@ -726,3 +726,63 @@ are omitted. These values are catalog-visible; keep secrets in Chalk-managed
 secret references rather than function defaults. Clients can show descriptions,
 collect required arguments, and reconstruct declared defaults without invoking
 the function. Record and invoke the same immutable version selected by the user.
+
+
+### Replacing placeholders inside request headers
+
+Use `header_replacements_secrets` when the client constructs its own authorization
+header. Keys are literal placeholders and values are Chalk Secret names. The
+sandbox receives the placeholder; Chalk resolves the secret outside the sandbox
+and substitutes it in outgoing headers for the matching host rule.
+
+```py
+from chalkcompute import ComputeClass, Image, NetworkPolicy, Sandbox
+
+placeholder = "chalk-github-token-placeholder"
+sandbox = Sandbox(
+    image=Image.debian_slim(),
+    compute_class=ComputeClass.HOST,
+    env={"GH_TOKEN": placeholder},
+    network_policy=NetworkPolicy(
+        allowed_hosts={
+            "api.github.com": [
+                NetworkPolicy.Rule(transforms=[
+                    NetworkPolicy.Transformer(
+                        header_replacements_secrets={placeholder: "GITHUB_TOKEN"},
+                    ),
+                ]),
+            ],
+        },
+    ),
+).run()
+```
+
+Store a real GitHub token as the Chalk Secret `GITHUB_TOKEN` first. A client that
+sends `Authorization: Bearer chalk-github-token-placeholder` or
+`Authorization: token chalk-github-token-placeholder` will have only the
+placeholder replaced. The same substitution works in custom header values.
+This example configures credentials and networking; install `gh` in the image
+if you want to use it. It does not mint GitHub App tokens.
+
+`header_replacements` has the same behavior with literal replacement strings
+instead of secret names. Replacements are case-sensitive, replace every
+occurrence, and use the longest match at each position. Inserted values are
+never scanned again. A placeholder must be nonempty and unique across all
+transforms in a rule. An empty literal replacement deletes the matched text.
+Whole-header `headers` and `headers_secrets` overwrites apply afterward.
+
+Only ordinary request header values on traffic handled by the host-policy proxy
+are changed. Authority, framing, hop-by-hop, and Chalk routing headers are
+excluded. URLs, request bodies, and responses are unchanged. The placeholder
+must reach the header literally: base64 encoding it (as in HTTP Basic auth) will
+prevent a match. For Basic auth, use a placeholder for the complete pre-encoded
+credential instead. Trust the allowed destination: an upstream that echoes a
+credential in its response can reveal it to the sandbox. Use HTTPS destinations
+for credentials; an explicit HTTP forward target transmits them unencrypted.
+
+Secrets are resolved when provisioning the workload, following the existing
+secret scope and permission checks. These rules do not automatically refresh
+expiring credentials. They work the same way in a local provisioning script or
+a Chalk function returning `Sandbox`; the function does not need to fetch the
+secret value. `Sandbox(secrets=...)` still injects actual environment values and
+is a separate mechanism.
