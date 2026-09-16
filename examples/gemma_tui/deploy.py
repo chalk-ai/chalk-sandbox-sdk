@@ -59,8 +59,10 @@ sg = ScalingGroup(
         "0.90",
         "--enforce-eager",
     ],
-    env={"HF_HOME": "/root/.cache/huggingface"},
-    secrets=[Secret.from_local_env("HF_TOKEN")],
+    env={
+        "HF_HOME": "/root/.cache/huggingface",
+        "HF_TOKEN": Secret.from_local_env("HF_TOKEN"),
+    },
 )
 
 # -- Deploy and wait for vLLM health -----------------------------------------

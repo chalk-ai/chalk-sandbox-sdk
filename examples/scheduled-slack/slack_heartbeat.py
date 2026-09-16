@@ -59,8 +59,10 @@ SLACK_CHANNEL = os.environ["SLACK_CHANNEL"]
 
 @chalkcompute.function(
     image=chalkcompute.Image.debian_slim().pip_install(["httpx"]),
-    secrets=[chalkcompute.Secret.from_local_env("SLACK_BOT_TOKEN")],
-    env={"SLACK_CHANNEL": SLACK_CHANNEL},
+    env={
+        "SLACK_BOT_TOKEN": chalkcompute.Secret.from_local_env("SLACK_BOT_TOKEN"),
+        "SLACK_CHANNEL": SLACK_CHANNEL,
+    },
     schedule="1m",
 )
 def slack_heartbeat() -> None:

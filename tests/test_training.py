@@ -372,9 +372,15 @@ def _mock_deploy_image() -> MagicMock:
 
 
 def test_run_training_calls_create_rpc() -> None:
+    from chalkcompute import Secret
     from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
 
-    @training(data="my_ds", name="test-run", cpu="4")
+    @training(
+        data="my_ds",
+        name="test-run",
+        cpu="4",
+        env={"NAME": "Elliot", "API_KEY": Secret.from_chalk_env("TOKEN")},
+    )
     def train(df: Any, config: Any) -> str:
         return "ok"
 
@@ -393,6 +399,11 @@ def test_run_training_calls_create_rpc() -> None:
     assert isinstance(handle, TrainingRunHandle)
     assert handle.run_id == "run-xyz"
     mock_client.call.assert_called_once()
+    request = mock_client.call.call_args.args[1]
+    assert request.env["NAME"] == "Elliot"
+    assert "API_KEY" not in request.env
+    assert request.secret_refs[0].source.value == "TOKEN"
+    assert dict(request.secret_refs[0].aliases) == {"TOKEN": "API_KEY"}
 
 
 def test_run_training_with_dataclass_config() -> None:

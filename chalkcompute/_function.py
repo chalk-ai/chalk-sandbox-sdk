@@ -47,6 +47,7 @@ import threading
 import time
 import traceback
 import typing
+from collections.abc import Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
@@ -80,6 +81,7 @@ from chalkcompute._connect import (
     service_auth_context_from_env,
 )
 from chalkcompute._containerspec import ContainerSpec, validate_replica_and_utilization
+from chalkcompute._env import normalize_env
 from chalkcompute._deployment_proto import function_config, scaling_spec
 from chalkcompute._function_deployment import (
     ensure_external_function,
@@ -2298,7 +2300,7 @@ class RemoteFunction:
         cpu: str | None = None,
         memory: str | None = None,
         gpu: str | None = None,
-        env: dict[str, str] | None = None,
+        env: Mapping[str, str | _Secret] | None = None,
         secrets: list[_Secret] | None = None,
         volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
         tags: dict[str, str] | None = None,
@@ -2362,6 +2364,7 @@ class RemoteFunction:
         self._arrow_result_deserializer: Callable[[Any], Any] | None = (
             arrow_decoder_for_annotation(result_type)
         )
+        env, secrets = normalize_env(env, secrets)
         ContainerSpec.validate_fields(
             image=image,
             name=name,
@@ -4004,7 +4007,7 @@ def function(
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
     volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
@@ -4042,7 +4045,7 @@ def function(
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
     volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
@@ -4081,7 +4084,7 @@ def function(
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
     volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
@@ -4145,7 +4148,8 @@ def function(
     name
         Custom function name. Defaults to the function's ``__name__``.
     env
-        Environment variables to pass to the function.
+        Environment variables as strings or single-value Secret references.
+        The mapping key sets the injected name, overriding aliases and prefixes.
     secrets
         List of :class:`~chalkcompute.Secret` references to inject.
     volumes
