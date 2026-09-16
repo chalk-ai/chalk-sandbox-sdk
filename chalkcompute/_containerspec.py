@@ -95,6 +95,10 @@ class SSHDest:
         return destination
 
 
+# Preserve the original spelling for backwards compatibility.
+SshDest = SSHDest
+
+
 @dataclass
 class ContainerSecurityPolicy:
     """Security policy settings for a container."""
