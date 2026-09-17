@@ -54,18 +54,14 @@ def test_put_and_read_file(volume: Volume) -> None:
 def test_resolved_content_pins_and_separate_saves(
     volume: Volume, tmp_path: Path
 ) -> None:
-    from chalkcompute import Image, ResolvedImage, Sandbox, resolve_image
+    from chalkcompute import Image, Sandbox
 
     (tmp_path / "bridge.py").write_text("old bridge")
     volume.put_dir(tmp_path)
-    old = resolve_image(
-        Image.base("python:3.11-slim"), volumes=[volume.mount("/assets")]
-    )
+    old = Image.base("python:3.11-slim").build(volumes=[volume.mount("/assets")])
     (tmp_path / "bridge.py").write_text("new bridge")
     volume.put_dir(tmp_path)
-    new = resolve_image(
-        Image.base("python:3.11-slim"), volumes=[volume.mount("/assets")]
-    )
+    new = Image.base("python:3.11-slim").build(volumes=[volume.mount("/assets")])
     assert old.volumes[0].version_id != new.volumes[0].version_id
 
     with ExitStack() as resources:
@@ -78,7 +74,7 @@ def test_resolved_content_pins_and_separate_saves(
             resources.callback(saves.delete)
             saves.put_file("player.txt", player)
             sandbox = Sandbox(
-                image=ResolvedImage.from_json(spec.to_json()),
+                image=Image.from_json(spec.to_json()),
                 volumes=[saves.mount("/saves")],
                 lifetime="300s",
             )
@@ -110,23 +106,41 @@ def test_resolved_content_pins_and_separate_saves(
 
 
 def test_resolved_image_reuses_source_volume(tmp_path: Path) -> None:
-    from chalkcompute import Image, VolumeClient, resolve_image
+    from chalkcompute import Image, VolumeClient
+    from chalkcompute._image_build import default_source_volume_name
 
     source = tmp_path / "bridge.py"
     source.write_text("old bridge")
-    image = Image.base("python:3.11-slim").add_local_file(str(source), "/app/bridge.py")
+    run_id = uuid.uuid4().hex[:12]
+    image = (
+        Image.base("python:3.11-slim")
+        .env({"CHALK_E2E_RUN_ID": run_id})
+        .add_local_file(str(source), "/app/bridge.py")
+    )
+    explicit_name = f"e2e-resolved-src-{run_id}"
+    default_name = default_source_volume_name(image)
     try:
-        old = resolve_image(image, name="e2e-resolved-src")
+        old = image.build(name=explicit_name)
         source.write_text("new bridge")
-        new = resolve_image(image, name="e2e-resolved-src")
+        new = image.build(name=explicit_name)
 
-        assert old.volumes[0].name == "e2e-resolved-src"
-        assert new.volumes[0].name == "e2e-resolved-src"
+        assert old.volumes[0].name == explicit_name
+        assert new.volumes[0].name == explicit_name
         assert old.volumes[0].version_id != new.volumes[0].version_id
+
+        unnamed_old = image.build()
+        source.write_text("new unnamed bridge")
+        unnamed_new = image.build()
+        assert (
+            unnamed_old.volumes[0].name == unnamed_new.volumes[0].name == default_name
+        )
+        assert unnamed_old.volumes[0].version_id != unnamed_new.volumes[0].version_id
     finally:
         with VolumeClient.from_env() as client:
-            if client.exists("e2e-resolved-src"):
-                client.delete_volume("e2e-resolved-src")
+            with ExitStack() as cleanup:
+                for name in (explicit_name, default_name):
+                    if client.exists(name):
+                        cleanup.callback(client.delete_volume, name)
 
 
 def test_batch_upload_and_listdir(volume: Volume) -> None:

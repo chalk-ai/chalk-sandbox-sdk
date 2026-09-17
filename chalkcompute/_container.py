@@ -62,7 +62,7 @@ from chalkcompute._naming import (
     sanitize_dns_label,
     validate_env,
 )
-from chalkcompute._resolved_image import ResolvedImage, normalize_resolved_image
+from chalkcompute._image_build import normalize_image_volumes
 from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
@@ -694,7 +694,7 @@ class Container:
     def __init__(
         self,
         *,
-        image: _Image | ResolvedImage | str,
+        image: _Image | str,
         name: str | None = None,
         cpu: str | None = None,
         memory: str | None = None,
@@ -718,7 +718,7 @@ class Container:
             DeprecationWarning,
             stacklevel=2,
         )
-        normalized_image, resolved_volumes = normalize_resolved_image(image, volumes)
+        normalized_image, resolved_volumes = normalize_image_volumes(image, volumes)
         if normalized_image is None:
             raise TypeError(
                 "image must be an Image or image reference string, got None"

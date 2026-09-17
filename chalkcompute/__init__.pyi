@@ -18,8 +18,6 @@ from chalkcompute._cls import method as method
 from chalkcompute._concurrency import ConcurrencyPolicy as ConcurrencyPolicy
 from chalkcompute._connect import ConnectClient as ConnectClient
 from chalkcompute._connect import build_image_from_spec as build_image
-from chalkcompute._resolved_image import ResolvedImage as ResolvedImage
-from chalkcompute._resolved_image import resolve_image as resolve_image
 from chalkcompute._connect import (
     build_image_with_volumes_from_spec as build_image_with_volumes,
 )
@@ -229,8 +227,6 @@ __all__ = [
     "ModelNotDeployedError",
     "ConnectClient",
     "build_image",
-    "resolve_image",
-    "ResolvedImage",
     "build_image_with_volumes",
     "HTTPHeaders",
     "HTTPResponse",

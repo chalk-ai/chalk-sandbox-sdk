@@ -496,6 +496,7 @@ def build_image(
     ConnectError
         If the build fails or times out.
     """
+    image_spec = image.to_proto()
     image_uri = image.as_image_uri_if_possible()
     if image_uri is not None:
         return image_uri
@@ -503,7 +504,7 @@ def build_image(
     stub = client.stub(image_connect.CustomImageServiceClientSync)
     response = client.call(
         stub.get_or_build_custom_image,
-        image_pb.GetOrBuildCustomImageRequest(image_spec=image.to_proto()),
+        image_pb.GetOrBuildCustomImageRequest(image_spec=image_spec),
     )
     status = response.status
     if status in ("exists", "succeeded"):
@@ -580,15 +581,15 @@ def build_image_from_spec(image: Image, chalk_client: Any | None = None) -> str:
     Raises
     ------
     ValueError
-        If volume-backed local files are present. Use ``resolve_image`` or
+        If volume-backed files are present. Use ``Image.build()`` or
         ``build_image_with_volumes`` to include them.
     ConnectError
         If the image build fails or times out.
     """
-    if image.lazy_local_files:
+    if image.lazy_local_files or image._volume_mounts:
         raise ValueError(
             "build_image() drops volume-backed local files. "
-            "Use resolve_image() or build_image_with_volumes()."
+            "Use Image.build() or build_image_with_volumes()."
         )
     client = ConnectClient(chalk_client=chalk_client)
     return build_image(client, image)
@@ -634,17 +635,20 @@ def build_image_with_volumes(
     ConnectError
         If the build fails or times out.
     """
+    from chalkcompute._image import Image
+    from chalkcompute._image_build import normalize_image_volumes
     from chalkcompute._volume import VolumeClient
 
+    recipe, volumes = normalize_image_volumes(image, None)
+    assert isinstance(recipe, Image)
     image_uri = build_image(
         client,
-        image,
+        recipe,
         poll_interval=poll_interval,
         timeout=timeout,
     )
-    volumes: list[VolumeMount] = []
     if image.lazy_local_files:
-        volumes = VolumeClient.from_connect(client).upload_lazy_files(
+        volumes += VolumeClient.from_connect(client).upload_lazy_files(
             image,
             volume_prefix=volume_prefix,
         )
@@ -671,7 +675,7 @@ def build_image_with_volumes_from_spec(
     Returns
     -------
     tuple of str and list of VolumeMount
-        Image URI and mutable mounts for the uploaded files.
+        Image URI and pinned mounts for the image content.
 
     Raises
     ------

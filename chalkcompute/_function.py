@@ -86,6 +86,7 @@ from chalkcompute._deployment_proto import function_config, scaling_spec
 from chalkcompute._function_deployment import (
     ensure_external_function,
     resolve_function_volumes,
+    function_source_root,
 )
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import (
     service_connect as catalog_connect,
@@ -106,7 +107,7 @@ from chalkcompute._remote_function_tracing import (
     TracingPolicyConfig,
     normalize_remote_function_tracing,
 )
-from chalkcompute._resolved_image import ResolvedImage, normalize_resolved_image
+from chalkcompute._image_build import normalize_image_volumes
 from chalkcompute._retry import RetryPolicy
 from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
 from chalkcompute._secret import prepare_lazy_secrets
@@ -155,13 +156,21 @@ _STRIP_SOURCE_ENV_VAR = _local_dev._STRIP_SOURCE_ENV_VAR
 _CALL_VIA_API_ENV_VAR = "CHALK_FUNCTION_CALL_VIA_API"
 
 
-def _remote_call_container_env(user_env: dict[str, str]) -> dict[str, str]:
-    return {
+def _remote_call_container_env(
+    user_env: dict[str, str], pythonpath: str = "/app"
+) -> dict[str, str]:
+    env = {
         "PYTHONPATH": "/app",
         _REMOTE_ENV_VAR: "1",
         _FNQ_STREAMS_SUPPORTED_ENV_VAR: "true",
         **user_env,
     }
+    # Preserve legacy overrides unless relocated handlers need another path.
+    if pythonpath != "/app":
+        env["PYTHONPATH"] = ":".join(
+            dict.fromkeys((pythonpath + ":" + env["PYTHONPATH"]).split(":"))
+        )
+    return env
 
 
 def _remote_function_startup_probe() -> dict[str, dict[str, object]]:
@@ -523,7 +532,6 @@ _USER_MODULE_NAME = "user_module"
 
 # Output-schema metadata key carrying a declared scorer's response JSON Schema.
 SCORER_RESPONSE_SCHEMA_METADATA_KEY = "chalk.scorer.response_schema"
-_USER_MODULE_PATH = f"/app/{_USER_MODULE_NAME}.py"
 
 
 def _generate_handler_shim(
@@ -2295,7 +2303,7 @@ class RemoteFunction:
         self,
         func: Callable[..., Any],
         *,
-        image: _Image | ResolvedImage | None = None,
+        image: _Image | None = None,
         name: str | None = None,
         cpu: str | None = None,
         memory: str | None = None,
@@ -2365,7 +2373,7 @@ class RemoteFunction:
             arrow_decoder_for_annotation(result_type)
         )
         env, secrets = normalize_env(env, secrets)
-        normalized_image, resolved_volumes = normalize_resolved_image(image, volumes)
+        normalized_image, resolved_volumes = normalize_image_volumes(image, volumes)
         if isinstance(normalized_image, str):
             raise TypeError("function images must be Image instances")
         ContainerSpec.validate_fields(
@@ -2669,6 +2677,7 @@ class RemoteFunction:
         package_dir: str,
         module_name: str,
         temp_files: list[str],
+        source_root: str = "/app",
     ) -> _Image:
         """Add the function's whole top-level package to the image."""
         prepared_dir, dir_is_temp = _prepare_package_dir(
@@ -2681,7 +2690,7 @@ class RemoteFunction:
             temp_files.append(prepared_dir)
         return base_image.add_local_dir(
             prepared_dir,
-            f"/app/{module_name.split('.')[0]}",
+            f"{source_root}/{module_name.split('.')[0]}",
             exclude=["**/__pycache__/**", "**/*.pyc"],
         )
 
@@ -2690,6 +2699,7 @@ class RemoteFunction:
         base_image: _Image,
         temp_files: list[str],
         module_name: str,
+        source_root: str = "/app",
     ) -> _Image:
         """Add the function's source file to the image as ``<module_name>.py``."""
         if self._notebook_source is not None:
@@ -2710,7 +2720,7 @@ class RemoteFunction:
             )
         if source_is_temp:
             temp_files.append(source_file)
-        return base_image.add_local_file(source_file, f"/app/{module_name}.py")
+        return base_image.add_local_file(source_file, f"{source_root}/{module_name}.py")
 
     def _add_handler_shim(
         self,
@@ -2718,6 +2728,7 @@ class RemoteFunction:
         shim_module: str,
         temp_files: list[str],
         handler_module: str,
+        source_root: str = "/app",
     ) -> _Image:
         """Generate the handler shim and finalize the deploy image env."""
         from chalkcompute._model import MODELS_ENV_VAR
@@ -2731,8 +2742,15 @@ class RemoteFunction:
         shim_path = _write_temp(handler_shim)
         temp_files.append(shim_path)
 
-        return deploy_image.add_local_file(shim_path, f"/app/{handler_module}.py").env(
-            {"PYTHONPATH": "/app", _REMOTE_ENV_VAR: "1"}
+        return deploy_image.add_local_file(
+            shim_path, f"{source_root}/{handler_module}.py"
+        ).env(
+            {
+                "PYTHONPATH": source_root
+                if source_root == "/app"
+                else f"{source_root}:/app",
+                _REMOTE_ENV_VAR: "1",
+            }
         )
 
     def _build_deploy_image(self) -> _Image:
@@ -2758,6 +2776,11 @@ class RemoteFunction:
         """
         module_name = _deploy_module_name(self._func)
         package_dir = _package_dir_for_module(module_name)
+        source_root = function_source_root(
+            self._image,
+            self._referenced_volumes,
+            package=module_name.split(".")[0] if package_dir is not None else None,
+        )
 
         base_image = _make_base_image(
             self._image,
@@ -2771,7 +2794,7 @@ class RemoteFunction:
             taken.add(module_name.split(".")[0])
             shim_module = module_name
             deploy_image = self._add_package_source(
-                base_image, package_dir, module_name, temp_files
+                base_image, package_dir, module_name, temp_files, source_root
             )
         elif module_name == "__main__":
             # File run directly: error if it imports its own package, else ship one file.
@@ -2779,19 +2802,19 @@ class RemoteFunction:
             shim_module = _available_module_name(_USER_MODULE_NAME, taken)
             taken.add(shim_module)
             deploy_image = self._add_single_file_source(
-                base_image, temp_files, shim_module
+                base_image, temp_files, shim_module, source_root
             )
         else:
             # Loose non-package module: ship its single source file.
             shim_module = _available_module_name(_USER_MODULE_NAME, taken)
             taken.add(shim_module)
             deploy_image = self._add_single_file_source(
-                base_image, temp_files, shim_module
+                base_image, temp_files, shim_module, source_root
             )
 
         self._handler_module = _available_module_name("handler", taken)
         deploy_image = self._add_handler_shim(
-            deploy_image, shim_module, temp_files, self._handler_module
+            deploy_image, shim_module, temp_files, self._handler_module, source_root
         )
 
         self._temp_files = temp_files
@@ -2981,7 +3004,9 @@ class RemoteFunction:
                 name=sg_name,
                 image="",
                 entrypoint=_local_install_entrypoint(handler_cmd),
-                env=_remote_call_container_env(self._env),
+                env=_remote_call_container_env(
+                    self._env, deploy_image._env.get("PYTHONPATH", "/app")
+                ),
                 cpu=self._cpu,
                 memory=self._memory,
                 gpu=self._gpu,
@@ -4005,7 +4030,7 @@ def function(
     func: Callable[..., Any],
     /,
     *,
-    image: _Image | ResolvedImage | None = None,
+    image: _Image | None = None,
     cpu: str | None = None,
     memory: str | None = None,
     gpu: str | None = None,
@@ -4043,7 +4068,7 @@ def function(
 @overload
 def function(
     *,
-    image: _Image | ResolvedImage | None = None,
+    image: _Image | None = None,
     cpu: str | None = None,
     memory: str | None = None,
     gpu: str | None = None,
@@ -4082,7 +4107,7 @@ def function(
     func: Callable[..., Any] | None = None,
     /,
     *,
-    image: _Image | ResolvedImage | None = None,
+    image: _Image | None = None,
     cpu: str | None = None,
     memory: str | None = None,
     gpu: str | None = None,

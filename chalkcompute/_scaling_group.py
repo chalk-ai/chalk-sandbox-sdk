@@ -50,7 +50,7 @@ from chalkcompute._gen.chalk.scalinggroup.v1 import service_connect as sg_connec
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from chalkcompute._http import HTTPResponse, SYNC_HTTP_CLIENT
 from chalkcompute._naming import sanitize_dns_label
-from chalkcompute._resolved_image import ResolvedImage, normalize_resolved_image
+from chalkcompute._image_build import normalize_image_volumes
 from chalkcompute._secret import SecretScope, resolve_lazy_secrets
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
@@ -265,7 +265,7 @@ class ScalingGroup:
     def __init__(
         self,
         *,
-        image: _Image | ResolvedImage | str,
+        image: _Image | str,
         name: str | None = None,
         cpu: str | None = None,
         memory: str | None = None,
@@ -295,7 +295,7 @@ class ScalingGroup:
                 "image must be an Image or image reference string, got None"
             )
         env, secrets = normalize_env(env, secrets)
-        normalized_image, resolved_volumes = normalize_resolved_image(image, volumes)
+        normalized_image, resolved_volumes = normalize_image_volumes(image, volumes)
         if normalized_image is None:
             raise TypeError(
                 "image must be an Image or image reference string, got None"

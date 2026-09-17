@@ -63,8 +63,9 @@ from chalkcompute._deployment_proto import function_config, scaling_spec
 from chalkcompute._function_deployment import (
     ensure_external_function,
     resolve_function_volumes,
+    function_source_root,
 )
-from chalkcompute._resolved_image import ResolvedImage, normalize_resolved_image
+from chalkcompute._image_build import normalize_image_volumes
 from chalkcompute._secret import prepare_lazy_secrets
 from chalkcompute._function import (
     _REMOTE_ENV_VAR,
@@ -744,7 +745,7 @@ class RemoteClass:
         self,
         user_cls: type,
         *,
-        image: _Image | ResolvedImage | None = None,
+        image: _Image | None = None,
         name: str | None = None,
         cpu: str | None = None,
         memory: str | None = None,
@@ -781,7 +782,7 @@ class RemoteClass:
         self._user_cls: type | None = user_cls
         self._class_name = user_cls.__name__
         env, secrets = normalize_env(env, secrets)
-        normalized_image, resolved_volumes = normalize_resolved_image(image, volumes)
+        normalized_image, resolved_volumes = normalize_image_volumes(image, volumes)
         if isinstance(normalized_image, str):
             raise TypeError("class images must be Image instances")
         ContainerSpec.validate_fields(
@@ -1095,6 +1096,7 @@ class RemoteClass:
         """
         user_cls = self._require_user_cls()
         source_file = self._source_file_for_deploy()
+        source_root = function_source_root(self._image, self._referenced_volumes)
 
         temp_files: list[str] = []
         source_path = Path(source_file)
@@ -1118,7 +1120,7 @@ class RemoteClass:
         deploy_image = _make_base_image(
             self._image,
             remote_call_runtime_package=self._remote_call_runtime_package(),
-        ).add_local_file(source_file, "/app/user_module.py")
+        ).add_local_file(source_file, f"{source_root}/user_module.py")
 
         # Precompute has-self flags for lifecycle hooks
         before_func = (
@@ -1147,10 +1149,17 @@ class RemoteClass:
             shim_path = _write_temp(shim_content)
             temp_files.append(shim_path)
             deploy_image = deploy_image.add_local_file(
-                shim_path, f"/app/handler_{method_info.name}.py"
+                shim_path, f"{source_root}/handler_{method_info.name}.py"
             )
 
-        deploy_image = deploy_image.env({"PYTHONPATH": "/app", _REMOTE_ENV_VAR: "1"})
+        deploy_image = deploy_image.env(
+            {
+                "PYTHONPATH": source_root
+                if source_root == "/app"
+                else f"{source_root}:/app",
+                _REMOTE_ENV_VAR: "1",
+            }
+        )
 
         return deploy_image, temp_files
 
@@ -1234,7 +1243,9 @@ class RemoteClass:
                     name=sg_name,
                     image="",
                     entrypoint=_local_install_entrypoint(handler_cmd),
-                    env=_remote_call_container_env(self._env),
+                    env=_remote_call_container_env(
+                        self._env, deploy_image._env.get("PYTHONPATH", "/app")
+                    ),
                     cpu=self._cpu,
                     memory=self._memory,
                     gpu=self._gpu,
@@ -1597,7 +1608,7 @@ def cls(
     user_cls: type,
     /,
     *,
-    image: _Image | ResolvedImage | None = None,
+    image: _Image | None = None,
     cpu: str | None = None,
     memory: str | None = None,
     gpu: str | None = None,
@@ -1635,7 +1646,7 @@ def cls(
 @overload
 def cls(
     *,
-    image: _Image | ResolvedImage | None = None,
+    image: _Image | None = None,
     cpu: str | None = None,
     memory: str | None = None,
     gpu: str | None = None,
@@ -1674,7 +1685,7 @@ def cls(
     user_cls: type | None = None,
     /,
     *,
-    image: _Image | ResolvedImage | None = None,
+    image: _Image | None = None,
     cpu: str | None = None,
     memory: str | None = None,
     gpu: str | None = None,
