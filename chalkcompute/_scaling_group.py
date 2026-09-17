@@ -231,6 +231,7 @@ class ScalingGroupRevisionInfo:
     created_at: datetime | None = None
     deleted_at: datetime | None = None
     is_current: bool = False
+    status_details: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1040,6 +1041,7 @@ def _parse_scaling_group_revision(
         scaling_group_name=data.scaling_group_name,
         status=data.status,
         status_message=data.status_message or None,
+        status_details=data.status_details or None,
         created_at=None if data.created_at is None else data.created_at.to_datetime(),
         deleted_at=None if data.deleted_at is None else data.deleted_at.to_datetime(),
         is_current=data.latest,
