@@ -23,7 +23,7 @@ from chalkcompute._gen.chalk.auth.v1 import permissions_pb
 from chalkcompute._gen.chalk.sandbox.v1 import service_connect as image_connect
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb as image_pb
 from chalkcompute._gen.chalk.server.v1 import auth_connect, auth_pb
-from chalkcompute._http import SYNC_HTTP_CLIENT
+from chalkcompute._http import SYNC_HTTP_CLIENT, SYNC_UNTRACED_HTTP_CLIENT
 from chalkcompute._remote_call_client import (
     RemoteCallClientUnavailable,
     ServiceAuthContext,
@@ -130,6 +130,7 @@ class ConnectClient:
         self._primary_environment: str | None = None
         self._chalk_client = chalk_client
         self._typed_clients: dict[Callable[..., Any], Any] = {}
+        self._untraced_typed_clients: dict[Callable[..., Any], Any] = {}
         self._web_identity_token_file: str | None = None
         self._web_identity_cached_at: float | None = None
         self._web_identity_cache_ttl_seconds = _WEB_IDENTITY_MAX_CACHE_TTL_SECONDS
@@ -402,18 +403,34 @@ class ConnectClient:
 
         Clients always use the gRPC protocol over the shared HTTP/2 transport.
         """
+        return self._stub(stub_cls, SYNC_HTTP_CLIENT, self._typed_clients)
+
+    def _untraced_stub(self, stub_cls: Callable[..., _StubT]) -> _StubT:
+        """Return a client whose HTTP transport does not emit spans."""
+        return self._stub(
+            stub_cls,
+            SYNC_UNTRACED_HTTP_CLIENT,
+            self._untraced_typed_clients,
+        )
+
+    def _stub(
+        self,
+        stub_cls: Callable[..., _StubT],
+        http_client: Any,
+        clients: dict[Callable[..., Any], Any],
+    ) -> _StubT:
         self._ensure_auth()
         assert self._api_server is not None
-        client = self._typed_clients.get(stub_cls)
+        client = clients.get(stub_cls)
         if client is None:
             client = stub_cls(
                 self._api_server,
                 protocol=ProtocolType.GRPC,
                 interceptors=rpc_interceptors(),
-                http_client=SYNC_HTTP_CLIENT,
+                http_client=http_client,
                 read_max_bytes=RPC_READ_MAX_BYTES,
             )
-            self._typed_clients[stub_cls] = client
+            clients[stub_cls] = client
         return client
 
     def close(self) -> None:
@@ -423,6 +440,11 @@ class ConnectClient:
             if close is not None:
                 close()
         self._typed_clients.clear()
+        for client in self._untraced_typed_clients.values():
+            close = getattr(client, "close", None)
+            if close is not None:
+                close()
+        self._untraced_typed_clients.clear()
 
     def call(
         self,

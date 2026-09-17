@@ -72,9 +72,8 @@ class TracingInterceptor:
             return None
         context = get_tracer().start_as_current_span(_RPC_SPAN_NAME)
         span = context.__enter__()
-        # The shared HTTP transport owns wire propagation and injects its client
-        # span here. Injecting at both layers creates a comma-joined traceparent
-        # that strict downstream propagators reject.
+        # The shared HTTP transport owns wire propagation. Injecting at both layers creates a
+        # comma-joined traceparent that strict downstream propagators reject.
         span.set_attribute(
             _RPC_METHOD_ATTRIBUTE,
             f"{ctx.method.service_name}/{ctx.method.name}",

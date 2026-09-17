@@ -1221,13 +1221,12 @@ class Container:
         sleep_seconds = 0.0
         last_status: str | None = None
 
-        # One span covers the whole readiness wait. A span per poll would attach ~2/sec per
-        # container (~2k/sec across a 1000-container burst) to the boot trace, so instead the
-        # loop's cost is summarized as poll.* attributes here and each observed status change
-        # emits one short child span. Only the first poll propagates this trace downstream.
+        # One span covers the whole readiness wait. The first poll is traced end to end; later
+        # polls use an untraced transport and are summarized on this span.
         with tracer.start_as_current_span(
             "chalkcompute.wait_until_running"
         ) as wait_span:
+            wait_span.set_attribute("container.id", self._container_id)
 
             def _record(final_status: str) -> None:
                 set_current_span_attribute("chalk.poll_count", poll_count)
@@ -1250,6 +1249,9 @@ class Container:
                         trace=(poll_count == 0),
                     )
                 except BaseException:
+                    req_seconds = time.perf_counter() - req_start
+                    total_request_seconds += req_seconds
+                    max_request_seconds = max(max_request_seconds, req_seconds)
                     poll_count += 1
                     _record(last_status or "unknown")
                     raise
@@ -1263,6 +1265,9 @@ class Container:
                     with tracer.start_as_current_span(
                         "chalkcompute.status_transition"
                     ) as transition_span:
+                        transition_span.set_attribute(
+                            "container.id", self._container_id
+                        )
                         transition_span.set_attribute(
                             "container.status.from", last_status or "unknown"
                         )
@@ -1285,8 +1290,9 @@ class Container:
                     raise ContainerError(
                         f"Container {self._container_id} entered {info.status} state"
                     )
+                sleep_start = time.perf_counter()
                 time.sleep(poll_interval)
-                sleep_seconds += poll_interval
+                sleep_seconds += time.perf_counter() - sleep_start
             _record(self._container_info.status if self._container_info else "unknown")
             status = self._container_info.status if self._container_info else "unknown"
             raise ContainerError(
@@ -1566,12 +1572,15 @@ def _get_container_info(
     trace: bool,
 ) -> ContainerInfo:
     """Fetch a container via ``GetContainer`` and parse it, or raise ContainerError."""
-    stub = client.stub(container_connect.ContainerServiceClientSync)
     try:
         if trace:
+            stub = client.stub(container_connect.ContainerServiceClientSync)
             resp = client.call(stub.get_container, request)
         else:
             with suppress_rpc_tracing():
+                stub = client._untraced_stub(
+                    container_connect.ContainerServiceClientSync
+                )
                 resp = client.call(stub.get_container, request)
     except ConnectRpcError as e:
         raise ContainerError(f"GetContainer failed: {rpc_error_message(e)}") from e

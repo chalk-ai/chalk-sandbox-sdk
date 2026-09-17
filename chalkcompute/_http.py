@@ -87,15 +87,26 @@ if TYPE_CHECKING:
 # pyqwest has no HTTP/2 PING keepalive API.
 SYNC_HTTP_VERSION = HTTPVersion.HTTP2
 TCP_KEEPALIVE_INTERVAL_SECONDS = 60.0
-_SYNC_HTTP_TRANSPORT = SyncHTTPTransport(
-    http_version=SYNC_HTTP_VERSION,
-    tls_include_system_certs=True,
-    connect_timeout=30.0,
-    pool_idle_timeout=90.0,
-    tcp_keepalive_interval=TCP_KEEPALIVE_INTERVAL_SECONDS,
-    pool_max_idle_per_host=32,
-)
+
+
+def _sync_http_transport(*, enable_otel: bool) -> SyncHTTPTransport:
+    return SyncHTTPTransport(
+        http_version=SYNC_HTTP_VERSION,
+        tls_include_system_certs=True,
+        connect_timeout=30.0,
+        pool_idle_timeout=90.0,
+        tcp_keepalive_interval=TCP_KEEPALIVE_INTERVAL_SECONDS,
+        pool_max_idle_per_host=32,
+        enable_otel=enable_otel,
+    )
+
+
+_SYNC_HTTP_TRANSPORT = _sync_http_transport(enable_otel=True)
+# pyqwest configures OTel per transport, so steady-state readiness polls need a shared untraced
+# transport to avoid one client span per poll.
+_SYNC_UNTRACED_HTTP_TRANSPORT = _sync_http_transport(enable_otel=False)
 SYNC_HTTP_CLIENT = SyncClient(transport=_SYNC_HTTP_TRANSPORT)
+SYNC_UNTRACED_HTTP_CLIENT = SyncClient(transport=_SYNC_UNTRACED_HTTP_TRANSPORT)
 
 # pyqwest deliberately uses built-in connection/timeout exceptions alongside
 # its protocol and stream errors instead of defining one catch-all base class.
