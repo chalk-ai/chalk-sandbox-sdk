@@ -66,15 +66,17 @@ a sandbox before running it. Strings name existing Chalk secrets; use an
 explicit `Secret` for local credentials or aliases:
 
 ```python
-(
+sandbox = (
     cc.Sandbox(image="ubuntu:latest")
     .add_credentials("api.openai.com", "OPENAI_API_KEY")
     .add_credentials(
         ["api.slack.com", "*.slack.com"],
         cc.Secret.from_local_env("SLACK_BOT_TOKEN"),
     )
-    .run()
 )
+
+with cc.SandboxClient.from_env() as client:
+    client.run(sandbox)
 ```
 
 The corresponding environment variables contain placeholders. The network
@@ -83,7 +85,7 @@ hosts.
 
 ## Declarative images
 
-Build custom container images with a fluent API instead of writing Dockerfiles.
+Build custom container images in Python instead of writing Dockerfiles.
 The image spec is serialized as protobuf and transmitted to the sandbox service,
 which builds and caches the image before starting the container.
 
@@ -460,8 +462,11 @@ not need scorer-specific behavior.
 
 ## Sandbox lifecycle
 
+### Creating sandboxes
+
+Use `client.create(...)` to construct and immediately run a sandbox:
+
 ```python
-# Create with resource limits
 sandbox = client.create(
     image="ubuntu:latest",
     cpu="2",
@@ -469,7 +474,27 @@ sandbox = client.create(
     env={"DEBIAN_FRONTEND": "noninteractive"},
     chalk_identity=True,
 )
+```
 
+To configure a sandbox before running it, save it to a variable and pass it to
+`client.run(...)` when it is ready:
+
+```python
+sandbox = Sandbox(image="ubuntu:latest", cpu="2", memory="4Gi")
+if use_shared_cache:
+    sandbox.mount_volume("build-cache", "/cache")
+
+client.run(sandbox)
+```
+
+Set `chalk_identity=True` to give the sandbox a platform-managed Chalk
+identity. The sandbox receives `CHALK_WEB_IDENTITY_TOKEN_FILE` and the Chalk
+API/environment settings it needs to authenticate without caller credentials
+being copied into the workload.
+
+### Managing sandboxes
+
+```python
 # List all sandboxes
 for info in client.list():
     print(f"{info.id} {info.status} {info.name}")
@@ -485,11 +510,6 @@ print(info.status)
 sandbox.terminate()
 existing_sandbox.terminate(grace_period_seconds=30)
 ```
-
-Set `chalk_identity=True` to give the sandbox a platform-managed Chalk
-identity. The sandbox receives `CHALK_WEB_IDENTITY_TOKEN_FILE` and the Chalk
-API/environment settings it needs to authenticate without caller credentials
-being copied into the workload.
 
 ## Executing commands
 
