@@ -1168,15 +1168,6 @@ class Container:
                     timeout=ready_timeout,
                 )
 
-            # 6. Wait for ChalkFS volume files to become visible
-            if lazy_files:
-                from chalkcompute._progress import progress_update
-
-                fkey = f"filesync:{container_name}"
-                progress_add(fkey, "volume", "Syncing files", parent=ckey)
-                self._wait_for_volume_files(timeout=120.0, poll_interval=5.0)
-                progress_done(fkey)
-
             progress_done(ckey, detail="running")
         except BaseException:
             progress_fail(ckey)
@@ -1215,45 +1206,6 @@ class Container:
         status = self._container_info.status if self._container_info else "unknown"
         raise ContainerError(
             f"Container {self._container_id} timed out after {timeout}s (last status: {status})"
-        )
-
-    def _wait_for_volume_files(
-        self,
-        *,
-        timeout: float = 120.0,
-        poll_interval: float = 0.5,
-    ) -> None:
-        """Poll until at least one uploaded file is visible in the ChalkFS mount.
-
-        Parameters
-        ----------
-        timeout
-            Maximum seconds to wait before giving up.
-        poll_interval
-            Seconds between probes.
-
-        Raises
-        ------
-        ContainerError
-            If no uploaded file becomes visible before the timeout.
-        """
-        from chalkcompute._image import Image
-
-        assert isinstance(self._image, Image)
-        sample = next(iter(self._image.lazy_local_files))
-        probe_path = sample.dest
-        logger.info("Waiting for ChalkFS to sync (probing %s)...", probe_path)
-
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            result = self.exec("test", "-f", probe_path)
-            if result.exit_code == 0:
-                logger.info("ChalkFS files ready.")
-                return
-            time.sleep(poll_interval)
-
-        raise ContainerError(
-            f"ChalkFS files not visible after {timeout}s (probed {probe_path})"
         )
 
     @_instrumented("chalkcompute.container.exec")

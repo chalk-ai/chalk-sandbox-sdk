@@ -51,6 +51,46 @@ def test_put_and_read_file(volume: Volume) -> None:
     assert volume.read_file(MODEL_PATH) == model_bytes
 
 
+@pytest.mark.parametrize("kind", ["sandbox", "container"])
+def test_uploaded_files_are_readable_immediately_after_startup(
+    tmp_path: Path, kind: str
+) -> None:
+    from chalkcompute import Container, Image, Sandbox
+
+    assets = tmp_path / "data.txt"
+    assets.write_text("uploaded assets")
+    config = tmp_path / "settings.txt"
+    config.write_text("uploaded settings")
+    image = (
+        Image.base("python:3.11-slim")
+        .add_local_file(str(assets), "/assets/data.txt")
+        .add_local_file(str(config), "/config/settings.txt")
+    )
+    resource = (
+        Sandbox(image=image, lifetime="300s")
+        if kind == "sandbox"
+        else Container(image=image, lifetime="300s")
+    )
+    with ExitStack() as cleanup:
+        cleanup.callback(
+            resource.terminate if isinstance(resource, Sandbox) else resource.stop
+        )
+        resource.run()
+        result = resource.exec(
+            "python3",
+            "-c",
+            "from pathlib import Path\n"
+            "print(Path('/assets/data.txt').read_text())\n"
+            "print(Path('/config/settings.txt').read_text())\n",
+            timeout_secs=30,
+        )
+        assert result.exit_code == 0, result.stderr_text
+        assert result.stdout_text.splitlines() == [
+            "uploaded assets",
+            "uploaded settings",
+        ]
+
+
 def test_resolved_content_pins_and_separate_saves(
     volume: Volume, tmp_path: Path
 ) -> None:

@@ -794,20 +794,27 @@ def test_sandbox_missing_referenced_volume_fails_run() -> None:
             sandbox.run()
 
 
-def test_sandbox_uploads_lazy_local_files_to_a_volume(tmp_path) -> None:
-    from unittest.mock import MagicMock
-
+@pytest.mark.parametrize("wait", [False, True])
+def test_sandbox_uploads_lazy_local_files_without_exec_probe(tmp_path, wait) -> None:
     from chalkcompute._volume import VolumeClient, VolumeMount
 
     src = tmp_path / "src"
     src.mkdir()
     (src / "main.py").write_text("print('hi')\n")
 
-    client = _RecordingSandboxClient()
+    client = SandboxClient()
+    stub = MagicMock()
+    stub.create_sandbox.return_value = pb.CreateSandboxResponse(
+        sandbox=pb.SandboxInfo(id="sandbox-123", status=pb.SandboxStatus.PENDING)
+    )
+    stub.get_sandbox.return_value = pb.GetSandboxResponse(
+        sandbox=pb.SandboxInfo(id="sandbox-123", status=pb.SandboxStatus.RUNNING)
+    )
+    client._stub = stub
     image = Image.debian_slim().add_local_dir(str(src), "/app")
     sandbox = Sandbox(
         image=image,
-        sandbox_client=client,  # type: ignore[arg-type]
+        sandbox_client=client,
     )
 
     volume_client = MagicMock(spec=VolumeClient)
@@ -815,17 +822,34 @@ def test_sandbox_uploads_lazy_local_files_to_a_volume(tmp_path) -> None:
         VolumeMount(name="sandbox-files-abc", mount_path="/app")
     ]
 
-    with (
-        patch("chalkcompute._sandbox.build_image", return_value="img:built"),
-        patch.object(VolumeClient, "from_connect", return_value=volume_client),
-        patch.object(Sandbox, "_wait_for_volume_files"),
-    ):
-        sandbox.run()
+    try:
+        with (
+            patch("chalkcompute._sandbox.build_image", return_value="img:built"),
+            patch.object(VolumeClient, "from_connect", return_value=volume_client),
+            patch.object(
+                Sandbox,
+                "exec",
+                side_effect=AssertionError("Startup must not execute commands"),
+            ) as execute,
+        ):
+            assert sandbox.run(wait=wait) is sandbox
+    finally:
+        client.close()
 
+    execute.assert_not_called()
     volume_client.upload_lazy_files.assert_called_once_with(
         image, volume_prefix="sandbox-files"
     )
-    assert client.create_kwargs is not None
-    assert client.create_kwargs["volumes"] == [
-        VolumeMount(name="sandbox-files-abc", mount_path="/app")
+    stub.create_sandbox.assert_called_once()
+    spec = stub.create_sandbox.call_args.args[0].source.value
+    assert spec.image == "img:built"
+    assert [(mount.name, mount.mount_path) for mount in spec.volumes] == [
+        ("sandbox-files-abc", "/app")
     ]
+    assert sandbox.info is not None
+    if wait:
+        stub.get_sandbox.assert_called_once()
+        assert sandbox.info.status == "running"
+    else:
+        stub.get_sandbox.assert_not_called()
+        assert sandbox.info.status == "pending"

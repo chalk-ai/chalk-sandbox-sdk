@@ -1191,8 +1191,6 @@ class Sandbox:
         self._client = client
         self._terminated = False
 
-        if lazy_files:
-            self._wait_for_volume_files(timeout=120.0, poll_interval=5.0)
         return self
 
     def _require_client(self) -> Any:
@@ -1555,26 +1553,6 @@ class Sandbox:
             )
         except ConnectError as e:
             raise SandboxBuildError(str(e)) from e
-
-    def _wait_for_volume_files(
-        self,
-        *,
-        timeout: float = 120.0,
-        poll_interval: float = 0.5,
-    ) -> None:
-        """Poll until at least one uploaded file is visible in the ChalkFS mount."""
-        assert isinstance(self._image, Image)
-        sample = next(iter(self._image.lazy_local_files))
-        probe_path = sample.dest
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            result = self.exec("test", "-f", probe_path)
-            if result.exit_code == 0:
-                return
-            time.sleep(poll_interval)
-        raise SandboxError(
-            f"ChalkFS files not visible after {timeout}s (probed {probe_path})"
-        )
 
 
 # ---------------------------------------------------------------------------
