@@ -66,6 +66,7 @@ from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb as process_pb
 from chalkcompute._gen.chalk.sandbox.v2 import (
     process_service_connect as process_connect,
 )
+from chalkcompute._image_build import normalize_image_volumes
 from chalkcompute._gen.chalk.sandbox.v2 import service_pb as pb
 from chalkcompute._gen.chalk.sandbox.v2 import service_connect as pb_connect
 from chalkcompute._http import SYNC_HTTP_CLIENT
@@ -764,6 +765,7 @@ class Sandbox:
         if image is None:
             image = Image.sandbox()
         env, secrets = normalize_env(env, secrets)
+        image, resolved_volumes = normalize_image_volumes(image, volumes)
         ContainerSpec.validate_fields(
             image=image,
             name=name,
@@ -792,7 +794,7 @@ class Sandbox:
         self._gpu = gpu
         self._env = dict(env) if env else {}
         self._secrets = list(secrets or [])
-        self._referenced_volumes = normalize_volume_refs(volumes)
+        self._referenced_volumes = resolved_volumes
         self._port = port
         self._entrypoint = list(entrypoint) if entrypoint is not None else None
         self._lifetime = lifetime
@@ -1194,8 +1196,6 @@ class Sandbox:
         self._client = client
         self._terminated = False
 
-        if lazy_files:
-            self._wait_for_volume_files(timeout=120.0, poll_interval=5.0)
         return self
 
     def _require_client(self) -> Any:
@@ -1558,26 +1558,6 @@ class Sandbox:
             )
         except ConnectError as e:
             raise SandboxBuildError(str(e)) from e
-
-    def _wait_for_volume_files(
-        self,
-        *,
-        timeout: float = 120.0,
-        poll_interval: float = 0.5,
-    ) -> None:
-        """Poll until at least one uploaded file is visible in the ChalkFS mount."""
-        assert isinstance(self._image, Image)
-        sample = next(iter(self._image.lazy_local_files))
-        probe_path = sample.dest
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            result = self.exec("test", "-f", probe_path)
-            if result.exit_code == 0:
-                return
-            time.sleep(poll_interval)
-        raise SandboxError(
-            f"ChalkFS files not visible after {timeout}s (probed {probe_path})"
-        )
 
 
 # ---------------------------------------------------------------------------

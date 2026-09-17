@@ -50,6 +50,7 @@ from chalkcompute._gen.chalk.scalinggroup.v1 import service_connect as sg_connec
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from chalkcompute._http import HTTPResponse, SYNC_HTTP_CLIENT
 from chalkcompute._naming import sanitize_dns_label
+from chalkcompute._image_build import normalize_image_volumes
 from chalkcompute._secret import SecretScope, resolve_lazy_secrets
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
@@ -57,7 +58,6 @@ from chalkcompute._volume import (
     VolumeClient,
     VolumeMount,
     cleanup_owned_volumes,
-    normalize_volume_refs,
     referenced_volume_mount,
 )
 
@@ -296,8 +296,13 @@ class ScalingGroup:
                 "image must be an Image or image reference string, got None"
             )
         env, secrets = normalize_env(env, secrets)
+        normalized_image, resolved_volumes = normalize_image_volumes(image, volumes)
+        if normalized_image is None:
+            raise TypeError(
+                "image must be an Image or image reference string, got None"
+            )
         ContainerSpec.validate_fields(
-            image=image,
+            image=normalized_image,
             name=name,
             cpu=cpu,
             memory=memory,
@@ -316,7 +321,7 @@ class ScalingGroup:
             target_cpu_utilization_percentage=target_cpu_utilization_percentage,
             target_gpu_utilization_percentage=target_gpu_utilization_percentage,
         )
-        self._image: _Image | str | None = image
+        self._image: _Image | str | None = normalized_image
         self._name = name
         self._cpu = cpu
         self._memory = memory
@@ -324,7 +329,7 @@ class ScalingGroup:
         self._env = dict(env) if env else {}
         self._secrets: list[_Secret] = list(secrets or [])
         # Existence is checked at deploy time, not here.
-        self._referenced_volumes: list[VolumeMount] = normalize_volume_refs(volumes)
+        self._referenced_volumes: list[VolumeMount] = resolved_volumes
         # Populated at deploy time: referenced volumes plus any freshly
         # uploaded volumes.
         self._volumes: list[VolumeMount] = []
@@ -903,7 +908,9 @@ class ScalingGroup:
             # Driver is used here only to perform the delete action, not to
             # derive a mount type.
             driver = self._volume_driver or VolumeClient.from_connect(self._client)
-            cleanup_owned_volumes(driver, owned_volumes.values(), ())
+            cleanup_owned_volumes(
+                driver, owned_volumes.values(), self._referenced_volumes
+            )
         self._volumes = []
         self._owned_volumes = []
         self._volume_driver = None

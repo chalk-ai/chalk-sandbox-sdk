@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
+import posixpath
 from collections.abc import Sequence
 
 from connectrpc.code import Code
@@ -16,6 +17,39 @@ from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import (
 )
 from chalkcompute._image import Image
 from chalkcompute._volume import VolumeClient, VolumeMount
+
+
+def _paths_overlap(left: str, right: str) -> bool:
+    left, right = posixpath.normpath(left), posixpath.normpath(right)
+    return (
+        left == right
+        or left.startswith(right.rstrip("/") + "/")
+        or right.startswith(left.rstrip("/") + "/")
+    )
+
+
+def function_source_root(
+    image: Image | None,
+    referenced: Sequence[VolumeMount],
+    *,
+    package: str | None = None,
+) -> str:
+    """Select a source directory without covering mounted application content."""
+    occupied = {posixpath.normpath(mount.mount_path) for mount in referenced}
+    if "/" in occupied:
+        raise ValueError("A root volume mount leaves no location for function sources")
+    generated_paths = {"/app"}
+    if package is not None:
+        generated_paths.add(f"/app/{package}")
+    if not occupied & generated_paths:
+        return "/app"
+    occupied.update(image.lazy_local_files_grouped_for_volume_mounts() if image else ())
+    root = "/__chalk_source"
+    suffix = 0
+    while any(_paths_overlap(root, path) for path in occupied):
+        suffix += 1
+        root = f"/__chalk_source_{suffix}"
+    return root
 
 
 def resolve_function_volumes(
