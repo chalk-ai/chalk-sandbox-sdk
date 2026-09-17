@@ -147,7 +147,16 @@ from chalkcompute._training import training as training
 from chalkcompute._volume import Volume as VersionedVolume
 from chalkcompute._volume import VolumeClient as VersionedVolumeClient
 
+from chalkcompute._sandbox_fs import SandboxFileSystem as SandboxFileSystem
+from chalkcompute._sandbox_fs import SandboxFileSystemError as SandboxFileSystemError
+from chalkcompute._sandbox_fs import SandboxFileInfo as SandboxFileInfo
+from chalkcompute._sandbox_fs import FileMatch as FileMatch
+
 __all__ = [
+    "SandboxFileSystem",
+    "SandboxFileSystemError",
+    "SandboxFileInfo",
+    "FileMatch",
     "SQLClient",
     "SQLResult",
     "SQLJob",

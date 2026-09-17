@@ -567,6 +567,25 @@ sandbox.terminate()
 client.close()
 ```
 
+### Files inside a sandbox
+
+The runtime supplies a native filesystem entrypoint, so custom sandbox images
+need no additional packages for file operations.
+
+```python
+sandbox.fs.create_folder("data")
+sandbox.fs.write_file("data/notes.txt", "hello\n")
+print(sandbox.fs.read_text("data/notes.txt"))
+sandbox.fs.upload_file("local.bin", "data/large.bin")
+sandbox.fs.download_file("data/large.bin", "downloaded.bin")
+print(sandbox.fs.list_files("data"))
+```
+
+Uploads and downloads to local paths stream in bounded chunks and replace their
+destinations atomically. The API also supports metadata, permissions, directories,
+and text search/replacement. Requires a sandbox created on a runtime with native
+filesystem support. See [filesystem operations and guarantees](docs/sandbox-filesystem.md).
+
 ### Spawn an OpenCode agent in a sandbox
 
 [OpenCode](https://github.com/opencode-ai/opencode) is a terminal-based AI coding agent. You can run it inside a sandbox to give it an isolated environment to work in.

@@ -620,3 +620,95 @@ def test_sandbox_uploads_lazy_local_files_to_a_volume(tmp_path) -> None:
     assert client.create_kwargs["volumes"] == [
         VolumeMount(name="sandbox-files-abc", mount_path="/app")
     ]
+
+
+def _binary_process(events):
+    import queue
+
+    from chalkcompute._sandbox import ExecProcess
+
+    return ExecProcess(
+        _request_queue=queue.Queue(),
+        _response_iterator=iter(events),
+        _sandbox_id="test",
+        _client=MagicMock(),
+    )
+
+
+def test_stdout_bytes_preserves_binary_and_deduplicates_sequence():
+    data = bytes(range(256))
+    output = process_pb.OpenSessionResponse(
+        seq=2,
+        event=Oneof(
+            "output_data",
+            process_pb.OutputData(
+                stream=process_pb.OutputData.Stream.STDOUT, data=data
+            ),
+        ),
+    )
+    process = _binary_process(
+        [
+            process_pb.OpenSessionResponse(
+                seq=1,
+                event=Oneof(
+                    "session_attached",
+                    process_pb.SessionAttached(session_id="test-session"),
+                ),
+            ),
+            output,
+            output,
+            process_pb.OpenSessionResponse(
+                seq=3,
+                event=Oneof("process_exited", process_pb.ProcessExited(exit_code=0)),
+            ),
+        ]
+    )
+    assert list(process.stdout_bytes()) == [data]
+    assert process.session_id == "test-session"
+    assert process._request_queue.get_nowait() is None
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        Oneof("process_exited", process_pb.ProcessExited(exit_code=1)),
+        Oneof("process_exited", process_pb.ProcessExited(signal=9)),
+        Oneof("process_timed_out", process_pb.ProcessTimedOut()),
+        Oneof("process_failed", process_pb.ProcessFailed(message="failed")),
+    ],
+)
+def test_stdout_bytes_checks_terminal_failure(event):
+    from chalkcompute import ExecError
+
+    process = _binary_process([process_pb.OpenSessionResponse(event=event)])
+    with pytest.raises(ExecError):
+        list(process.stdout_bytes())
+    assert process._request_queue.get_nowait() is None
+
+
+def test_stdout_bytes_rejects_truncated_stream_and_bounds_stderr():
+    from chalkcompute import ExecError, SandboxError
+
+    process = _binary_process([])
+    with pytest.raises(SandboxError, match="before the process completed"):
+        list(process.stdout_bytes())
+    process = _binary_process(
+        [
+            process_pb.OpenSessionResponse(
+                event=Oneof(
+                    "output_data",
+                    process_pb.OutputData(
+                        stream=process_pb.OutputData.Stream.STDERR,
+                        data=b"x" * 100000 + b"TAIL",
+                    ),
+                )
+            ),
+            process_pb.OpenSessionResponse(
+                event=Oneof("process_exited", process_pb.ProcessExited(exit_code=1))
+            ),
+        ]
+    )
+    with pytest.raises(ExecError) as error:
+        list(process.stdout_bytes())
+    assert str(error.value).endswith("TAIL")
+    assert len(str(error.value)) < 66000

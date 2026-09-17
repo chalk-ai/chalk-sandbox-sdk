@@ -68,6 +68,7 @@ from chalkcompute._gen.chalk.sandbox.v2 import (
 from chalkcompute._gen.chalk.sandbox.v2 import service_pb as pb
 from chalkcompute._gen.chalk.sandbox.v2 import service_connect as pb_connect
 from chalkcompute._http import SYNC_HTTP_CLIENT
+from chalkcompute._sandbox_fs import SandboxFileSystem
 from chalkcompute._image import Image
 from chalkcompute._naming import validate_env
 from chalkcompute._secret import Secret, SecretScope, resolve_lazy_secrets
@@ -391,6 +392,51 @@ class ExecProcess:
             yield event
             if event.is_exited or event.is_error:
                 return
+
+    def stdout_bytes(self) -> Iterator[bytes]:
+        """Stream raw stdout with bounded stderr buffering and checked exit status.
+
+        Consume this instead of :meth:`output` or :meth:`wait`. Transport errors
+        propagate without restarting or replaying the process. Closing the
+        iterator closes the request stream; callers own process cancellation.
+        """
+        stderr = bytearray()
+        try:
+            for response in self._response_iterator:
+                if response.seq and response.seq <= self._last_seq:
+                    continue
+                if response.seq:
+                    self._last_seq = response.seq
+                match response.event:
+                    case Oneof(field="session_attached", value=attached):
+                        self.session_id = attached.session_id
+                    case Oneof(field="output_data", value=output):
+                        if output.stream == process_pb.OutputData.Stream.STDOUT:
+                            yield output.data
+                        else:
+                            stderr.extend(output.data)
+                            del stderr[:-65536]
+                    case Oneof(field="process_exited", value=exited):
+                        if (
+                            exited.has_field("exit_code")
+                            and exited.exit_code == 0
+                            and not exited.has_field("signal")
+                        ):
+                            return
+                        raise ExecError(
+                            "process_exited",
+                            stderr.decode("utf-8", "replace")
+                            or f"exit code {exited.exit_code}, signal {exited.signal}",
+                        )
+                    case Oneof(field="process_timed_out"):
+                        raise ExecError("timed_out", "Process timed out")
+                    case Oneof(field="process_failed", value=failed):
+                        raise ExecError("process_failed", failed.message)
+                    case Oneof(field="error", value=error):
+                        raise ExecError(error.code, error.message)
+            raise SandboxError("Exec stream ended before the process completed")
+        finally:
+            self._request_queue.put(None)
 
     def wait(self, *, auto_reattach: bool = True) -> ExecResult:
         """Consume all output and return the final result.
@@ -982,6 +1028,19 @@ class Sandbox:
         if self._id is None:
             raise SandboxError("Sandbox is not running. Call .run() first.")
         return self._id
+
+    @property
+    def fs(self) -> SandboxFileSystem:
+        """Filesystem operations through the runtime-provided native entrypoint."""
+        return SandboxFileSystem(self)
+
+    def get_work_dir(self) -> str:
+        """Return the default working directory used by sandbox commands."""
+        return self.fs.get_work_dir()
+
+    def get_user_home_dir(self) -> str:
+        """Return the home directory of the sandbox's execution user."""
+        return self.fs.get_user_home_dir()
 
     @_instrumented("chalkcompute.sandbox.exec")
     def exec(

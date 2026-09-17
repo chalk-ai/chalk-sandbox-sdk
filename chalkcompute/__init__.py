@@ -133,6 +133,10 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "SqlExpression": ("chalkcompute._evaluation", "SqlExpression"),
     "SecretScope": ("chalkcompute._secret", "SecretScope"),
     "resolve_lazy_secrets": ("chalkcompute._secret", "resolve_lazy_secrets"),
+    "SandboxFileSystem": ("chalkcompute._sandbox_fs", "SandboxFileSystem"),
+    "SandboxFileSystemError": ("chalkcompute._sandbox_fs", "SandboxFileSystemError"),
+    "SandboxFileInfo": ("chalkcompute._sandbox_fs", "SandboxFileInfo"),
+    "FileMatch": ("chalkcompute._sandbox_fs", "FileMatch"),
     # _sandbox.py
     "ExecError": ("chalkcompute._sandbox", "ExecError"),
     "ExecEvent": ("chalkcompute._sandbox", "ExecEvent"),
