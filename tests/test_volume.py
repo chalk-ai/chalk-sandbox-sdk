@@ -34,6 +34,7 @@ from chalkcompute._volume import (
     _MAX_PACK_BYTES,
     _RATE_LIMIT_MAX_RETRIES,
     _dataset_output_path,
+    pinned_volume_mount,
     _read_file_response,
 )
 
@@ -117,6 +118,114 @@ def _make_client(monkeypatch: pytest.MonkeyPatch) -> VolumeClient:
 
 def _not_found() -> ConnectRpcError:
     return ConnectRpcError(Code.NOT_FOUND, "missing")
+
+
+def test_put_dir_uploads_paths_and_updates_pin(tmp_path, monkeypatch):
+    client = _make_client(monkeypatch)
+    client._rpc.get_volume.return_value = _get_volume_response()
+    _prepare_upload(client, version_id=12)
+    (tmp_path / "wads").mkdir()
+    (tmp_path / "empty").mkdir()
+    (tmp_path / "bridge.py").write_text("pass")
+    (tmp_path / "wads" / "game.wad").write_bytes(b"wad")
+    volume = Volume("models", client=client, create_if_missing=False)
+    assert volume.put_dir(tmp_path, "assets") is volume
+    assert volume.version.id == 12
+    source = client._inner.upload.call_args.args[1]
+    assert source == [
+        ("assets/bridge.py", tmp_path / "bridge.py"),
+        ("assets/wads/game.wad", tmp_path / "wads" / "game.wad"),
+    ]
+    client._inner.remove_files.assert_not_called()
+
+
+def test_put_dir_empty_invalid_and_pinned(tmp_path, monkeypatch):
+    client = _make_client(monkeypatch)
+    volume = Volume("models", client=client)
+    assert volume.put_dir(tmp_path) is volume
+    assert not client._inner.mock_calls
+    assert not client._rpc.mock_calls
+    with pytest.raises(ValueError, match="traversal"):
+        volume.put_dir(tmp_path, "../escape")
+    (tmp_path / "link").symlink_to(tmp_path)
+    with pytest.raises(ValueError, match="Symlinks"):
+        volume.put_dir(tmp_path)
+    assert not client._inner.mock_calls
+    with pytest.raises(VolumeError):
+        volume.at_version(7).put_dir(tmp_path)
+
+
+def test_put_dir_propagates_upload_failure(tmp_path, monkeypatch):
+    client = _make_client(monkeypatch)
+    client._rpc.get_volume.return_value = _get_volume_response()
+    client._inner.upload.side_effect = RuntimeError("upload failed")
+    (tmp_path / "bridge.py").write_text("pass")
+    volume = Volume("models", client=client, create_if_missing=False)
+    with pytest.raises(VolumeError, match="upload failed"):
+        volume.put_dir(tmp_path)
+    assert volume.version.id == 10
+
+
+def test_upload_lazy_files_preserves_mutable_mount(tmp_path, monkeypatch):
+    from chalkcompute import Image
+
+    client = _make_client(monkeypatch)
+    client._rpc.create_volume.return_value = pb_v2.CreateVolumeResponse(
+        volume=_volume_proto()
+    )
+    _prepare_upload(client, version_id=12)
+    source = tmp_path / "bridge.py"
+    source.write_text("pass")
+    mounts = client.upload_lazy_files(
+        Image.base("engine:1").add_local_file(str(source), "/assets/bridge.py")
+    )
+    assert len(mounts) == 1
+    assert mounts[0].version_id is None
+    assert mounts[0].ref_name is None
+    assert "versionId" not in mounts[0].to_spec_dict()
+
+
+def test_volume_client_from_env(monkeypatch):
+    connect = MagicMock()
+    factory = MagicMock(return_value=connect)
+    driver = MagicMock()
+    from_connect = MagicMock(return_value=driver)
+    monkeypatch.setattr(vv, "ConnectClient", factory)
+    monkeypatch.setattr(VolumeClient, "from_connect", from_connect)
+    assert VolumeClient.from_env(chalk_client="configured") is driver
+    factory.assert_called_once_with(chalk_client="configured")
+    from_connect.assert_called_once_with(connect)
+
+
+def test_pinned_volume_mount_resolves_ref(monkeypatch):
+    client = _make_client(monkeypatch)
+    client._get_volume = MagicMock(return_value=_get_volume_response(version_id=9))
+    mount = VolumeMount("models", "/models", ref_name="released")
+
+    assert pinned_volume_mount(client, mount) == VolumeMount("models", "/models", 9)
+    client._get_volume.assert_called_once_with(
+        "models", version_id=None, ref_name="released"
+    )
+
+    client._get_volume.return_value = pb_v2.GetVolumeResponse(volume=_volume_proto())
+    with pytest.raises(VolumeError, match="no committed version"):
+        pinned_volume_mount(client, mount)
+
+
+def test_failed_lazy_upload_deletes_created_volume(tmp_path, monkeypatch):
+    from chalkcompute import Image
+
+    client = _make_client(monkeypatch)
+    client._rpc.create_volume.return_value = pb_v2.CreateVolumeResponse(
+        volume=_volume_proto()
+    )
+    client._inner.upload.side_effect = RuntimeError("upload failed")
+    source = tmp_path / "bridge.py"
+    source.write_text("pass")
+    image = Image.base("engine:1").add_local_file(str(source), "/assets/bridge.py")
+    with pytest.raises(VolumeError, match="upload failed"):
+        client.upload_lazy_files(image)
+    client._rpc.delete_volume.assert_called_once()
 
 
 def test_volume_error_preserves_connect_code_and_message(

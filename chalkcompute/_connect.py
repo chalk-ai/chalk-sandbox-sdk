@@ -564,6 +564,11 @@ def wait_for_image_build(
 
 def build_image_from_spec(image: Image, chalk_client: Any | None = None) -> str:
     """Build an Image and return the URI. Authenticates via env vars."""
+    if image.lazy_local_files:
+        raise ValueError(
+            "build_image() drops volume-backed local files. "
+            "Use resolve_image() or build_image_with_volumes()."
+        )
     client = ConnectClient(chalk_client=chalk_client)
     return build_image(client, image)
 

@@ -66,6 +66,7 @@ from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb as process_pb
 from chalkcompute._gen.chalk.sandbox.v2 import (
     process_service_connect as process_connect,
 )
+from chalkcompute._resolved_image import ResolvedImage, normalize_resolved_image
 from chalkcompute._gen.chalk.sandbox.v2 import service_pb as pb
 from chalkcompute._gen.chalk.sandbox.v2 import service_connect as pb_connect
 from chalkcompute._http import SYNC_HTTP_CLIENT
@@ -597,7 +598,7 @@ class Sandbox:
     def __init__(
         self,
         *,
-        image: str | Image | None = None,
+        image: str | Image | ResolvedImage | None = None,
         name: str | None = None,
         cpu: str | None = None,
         memory: str | None = None,
@@ -759,6 +760,7 @@ class Sandbox:
         if image is None:
             image = Image.sandbox()
         env, secrets = normalize_env(env, secrets)
+        image, resolved_volumes = normalize_resolved_image(image, volumes)
         ContainerSpec.validate_fields(
             image=image,
             name=name,
@@ -787,7 +789,7 @@ class Sandbox:
         self._gpu = gpu
         self._env = dict(env) if env else {}
         self._secrets = list(secrets or [])
-        self._referenced_volumes = normalize_volume_refs(volumes)
+        self._referenced_volumes = resolved_volumes
         self._port = port
         self._entrypoint = list(entrypoint) if entrypoint is not None else None
         self._lifetime = lifetime
@@ -1696,7 +1698,7 @@ class SandboxClient:
 
     def create(
         self,
-        image: str | Image | None = None,
+        image: str | Image | ResolvedImage | None = None,
         *,
         name: str | None = None,
         cpu: str | None = None,

@@ -132,6 +132,40 @@ def test_source_mount_rejects_user_volume_at_same_path(tmp_path):
         )
 
 
+@pytest.mark.parametrize("with_source", [False, True])
+def test_source_resolution_preserves_nested_and_duplicate_mounts(
+    tmp_path, monkeypatch, with_source
+):
+    from unittest.mock import MagicMock
+
+    image = Image("python")
+    sources = []
+    if with_source:
+        source = tmp_path / "source.py"
+        source.write_text("answer = 42\n")
+        image = image.add_local_file(str(source), "/app/source.py")
+        sources = [VolumeMount("function", "/app", version_id=7)]
+    mount = VolumeMount("data", "/app/data")
+    referenced = [mount, mount]
+    driver = MagicMock()
+    driver._resolve_lazy_files.return_value = sources
+    factory = MagicMock(return_value=driver)
+    monkeypatch.setattr(deployment.VolumeClient, "from_connect", factory)
+
+    mounts = deployment.resolve_function_volumes(
+        Client([]),
+        image=image,
+        volume_name="function",
+        referenced=referenced,
+        poll_interval=0,
+        timeout=5,
+    )
+
+    assert mounts == [*referenced, *sources]
+    if not with_source:
+        factory.assert_not_called()
+
+
 def test_generated_function_sources_are_stable_between_runs(monkeypatch):
     monkeypatch.setenv("CHALK_FUNCTION_STRIP_SOURCE", "0")
     monkeypatch.delenv("CHALK_FUNCTION_LOCAL_COPY", raising=False)

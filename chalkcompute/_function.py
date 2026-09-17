@@ -106,6 +106,7 @@ from chalkcompute._remote_function_tracing import (
     TracingPolicyConfig,
     normalize_remote_function_tracing,
 )
+from chalkcompute._resolved_image import ResolvedImage, normalize_resolved_image
 from chalkcompute._retry import RetryPolicy
 from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
 from chalkcompute._secret import prepare_lazy_secrets
@@ -118,7 +119,6 @@ from chalkcompute._volume import (
     Volume,
     VolumeClient,
     VolumeMount,
-    normalize_volume_refs,
 )
 
 logger = logging.getLogger(__name__)
@@ -2295,7 +2295,7 @@ class RemoteFunction:
         self,
         func: Callable[..., Any],
         *,
-        image: _Image | None = None,
+        image: _Image | ResolvedImage | None = None,
         name: str | None = None,
         cpu: str | None = None,
         memory: str | None = None,
@@ -2365,8 +2365,11 @@ class RemoteFunction:
             arrow_decoder_for_annotation(result_type)
         )
         env, secrets = normalize_env(env, secrets)
+        normalized_image, resolved_volumes = normalize_resolved_image(image, volumes)
+        if isinstance(normalized_image, str):
+            raise TypeError("function images must be Image instances")
         ContainerSpec.validate_fields(
-            image=image,
+            image=normalized_image,
             name=name,
             cpu=cpu,
             memory=memory,
@@ -2384,7 +2387,7 @@ class RemoteFunction:
             target_gpu_utilization_percentage=target_gpu_utilization_percentage,
         )
         self._explicit_name = name
-        self._image = image
+        self._image = normalized_image
         self._cpu = cpu
         self._memory = memory
         self._gpu = gpu
@@ -2395,7 +2398,7 @@ class RemoteFunction:
             self._env[MODELS_ENV_VAR] = encode_models_env(models)
         self._secrets: list[_Secret] = list(secrets or [])
         # Existence is checked at deploy time, not here.
-        self._referenced_volumes: list[VolumeMount] = normalize_volume_refs(volumes)
+        self._referenced_volumes: list[VolumeMount] = resolved_volumes
         # Populated at deploy time: referenced volumes plus any freshly
         # uploaded volumes.
         self._volumes: list[VolumeMount] = []
@@ -4002,7 +4005,7 @@ def function(
     func: Callable[..., Any],
     /,
     *,
-    image: _Image | None = None,
+    image: _Image | ResolvedImage | None = None,
     cpu: str | None = None,
     memory: str | None = None,
     gpu: str | None = None,
@@ -4040,7 +4043,7 @@ def function(
 @overload
 def function(
     *,
-    image: _Image | None = None,
+    image: _Image | ResolvedImage | None = None,
     cpu: str | None = None,
     memory: str | None = None,
     gpu: str | None = None,
@@ -4079,7 +4082,7 @@ def function(
     func: Callable[..., Any] | None = None,
     /,
     *,
-    image: _Image | None = None,
+    image: _Image | ResolvedImage | None = None,
     cpu: str | None = None,
     memory: str | None = None,
     gpu: str | None = None,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import ExitStack
 from concurrent.futures import ThreadPoolExecutor
 import uuid
 import warnings
@@ -48,6 +49,84 @@ def test_put_and_read_file(volume: Volume) -> None:
     volume.put_file(MODEL_PATH, model_bytes)
 
     assert volume.read_file(MODEL_PATH) == model_bytes
+
+
+def test_resolved_content_pins_and_separate_saves(
+    volume: Volume, tmp_path: Path
+) -> None:
+    from chalkcompute import Image, ResolvedImage, Sandbox, resolve_image
+
+    (tmp_path / "bridge.py").write_text("old bridge")
+    volume.put_dir(tmp_path)
+    old = resolve_image(
+        Image.base("python:3.11-slim"), volumes=[volume.mount("/assets")]
+    )
+    (tmp_path / "bridge.py").write_text("new bridge")
+    volume.put_dir(tmp_path)
+    new = resolve_image(
+        Image.base("python:3.11-slim"), volumes=[volume.mount("/assets")]
+    )
+    assert old.volumes[0].version_id != new.volumes[0].version_id
+
+    with ExitStack() as resources:
+        client = resources.enter_context(VolumeClient.from_env())
+        for spec, content, player in [
+            (old, "old bridge", "alice"),
+            (new, "new bridge", "bob"),
+        ]:
+            saves = client.create(f"a-test-saves-{uuid.uuid4().hex[:12]}")
+            resources.callback(saves.delete)
+            saves.put_file("player.txt", player)
+            sandbox = Sandbox(
+                image=ResolvedImage.from_json(spec.to_json()),
+                volumes=[saves.mount("/saves")],
+                lifetime="300s",
+            )
+            resources.callback(sandbox.terminate)
+            sandbox.run()
+            result = sandbox.exec(
+                "python3",
+                "-c",
+                "from pathlib import Path; "
+                "print(Path('/assets/bridge.py').read_text()); "
+                "print(Path('/saves/player.txt').read_text()); "
+                "print(','.join(sorted(p.name for p in Path('/saves').iterdir() "
+                "if not p.name.startswith('.'))))",
+                timeout_secs=30,
+            )
+            assert result.exit_code == 0
+            assert result.stdout_text.strip().splitlines() == [
+                content,
+                player,
+                "player.txt",
+            ]
+            sandbox.terminate()
+            assert client.exists(volume.name)
+            assert client.exists(saves.name)
+        assert (
+            volume.at_version(old.volumes[0].version_id).read_file("bridge.py")
+            == b"old bridge"
+        )
+
+
+def test_resolved_image_reuses_source_volume(tmp_path: Path) -> None:
+    from chalkcompute import Image, VolumeClient, resolve_image
+
+    source = tmp_path / "bridge.py"
+    source.write_text("old bridge")
+    image = Image.base("python:3.11-slim").add_local_file(str(source), "/app/bridge.py")
+    try:
+        old = resolve_image(image, name="e2e-resolved-src")
+        source.write_text("new bridge")
+        new = resolve_image(image, name="e2e-resolved-src")
+
+        assert old.volumes[0].name == "e2e-resolved-src"
+        assert new.volumes[0].name == "e2e-resolved-src"
+        assert old.volumes[0].version_id != new.volumes[0].version_id
+    finally:
+        with VolumeClient.from_env() as client:
+            if client.exists("e2e-resolved-src"):
+                client.delete_volume("e2e-resolved-src")
 
 
 def test_batch_upload_and_listdir(volume: Volume) -> None:

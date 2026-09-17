@@ -62,6 +62,7 @@ from chalkcompute._naming import (
     sanitize_dns_label,
     validate_env,
 )
+from chalkcompute._resolved_image import ResolvedImage, normalize_resolved_image
 from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
@@ -693,7 +694,7 @@ class Container:
     def __init__(
         self,
         *,
-        image: _Image | str,
+        image: _Image | ResolvedImage | str,
         name: str | None = None,
         cpu: str | None = None,
         memory: str | None = None,
@@ -717,13 +718,14 @@ class Container:
             DeprecationWarning,
             stacklevel=2,
         )
-        if image is None:
+        normalized_image, resolved_volumes = normalize_resolved_image(image, volumes)
+        if normalized_image is None:
             raise TypeError(
                 "image must be an Image or image reference string, got None"
             )
         env, secrets = normalize_env(env, secrets)
         ContainerSpec.validate_fields(
-            image=image,
+            image=normalized_image,
             name=name,
             cpu=cpu,
             memory=memory,
@@ -738,7 +740,7 @@ class Container:
             compute_class=compute_class,
             tags=tags,
         )
-        self._image: _Image | str | None = image
+        self._image: _Image | str | None = normalized_image
         self._name = name
         self._cpu = cpu
         self._memory = memory
@@ -746,7 +748,7 @@ class Container:
         self._env = dict(env) if env else {}
         self._secrets = list(secrets or [])
         # Existence is checked at run() time, not here.
-        self._referenced_volumes: list[VolumeMount] = normalize_volume_refs(volumes)
+        self._referenced_volumes: list[VolumeMount] = resolved_volumes
         # Populated at run() time: referenced volumes plus any freshly
         # uploaded volumes.
         self._volumes: list[VolumeMount] = []

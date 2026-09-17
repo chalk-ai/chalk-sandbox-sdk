@@ -64,6 +64,7 @@ from chalkcompute._function_deployment import (
     ensure_external_function,
     resolve_function_volumes,
 )
+from chalkcompute._resolved_image import ResolvedImage, normalize_resolved_image
 from chalkcompute._secret import prepare_lazy_secrets
 from chalkcompute._function import (
     _REMOTE_ENV_VAR,
@@ -110,7 +111,6 @@ from chalkcompute._volume import (
     VolumeClient,
     VolumeMount,
     cleanup_owned_volumes,
-    normalize_volume_refs,
 )
 
 if TYPE_CHECKING:
@@ -744,7 +744,7 @@ class RemoteClass:
         self,
         user_cls: type,
         *,
-        image: _Image | None = None,
+        image: _Image | ResolvedImage | None = None,
         name: str | None = None,
         cpu: str | None = None,
         memory: str | None = None,
@@ -781,8 +781,11 @@ class RemoteClass:
         self._user_cls: type | None = user_cls
         self._class_name = user_cls.__name__
         env, secrets = normalize_env(env, secrets)
+        normalized_image, resolved_volumes = normalize_resolved_image(image, volumes)
+        if isinstance(normalized_image, str):
+            raise TypeError("class images must be Image instances")
         ContainerSpec.validate_fields(
-            image=image,
+            image=normalized_image,
             name=name,
             cpu=cpu,
             memory=memory,
@@ -800,7 +803,7 @@ class RemoteClass:
             target_gpu_utilization_percentage=target_gpu_utilization_percentage,
         )
         self._explicit_name = name
-        self._image = image
+        self._image = normalized_image
         self._cpu = cpu
         self._memory = memory
         self._gpu = gpu
@@ -811,7 +814,7 @@ class RemoteClass:
             self._env[MODELS_ENV_VAR] = encode_models_env(models)
         self._secrets: list[_Secret] = list(secrets or [])
         # Existence is checked once at deploy time, not here.
-        self._referenced_volumes: list[VolumeMount] = normalize_volume_refs(volumes)
+        self._referenced_volumes: list[VolumeMount] = resolved_volumes
         # Populated at deploy time: referenced volumes plus any freshly
         # uploaded volumes.
         self._volumes: list[VolumeMount] = []
@@ -1594,7 +1597,7 @@ def cls(
     user_cls: type,
     /,
     *,
-    image: _Image | None = None,
+    image: _Image | ResolvedImage | None = None,
     cpu: str | None = None,
     memory: str | None = None,
     gpu: str | None = None,
@@ -1632,7 +1635,7 @@ def cls(
 @overload
 def cls(
     *,
-    image: _Image | None = None,
+    image: _Image | ResolvedImage | None = None,
     cpu: str | None = None,
     memory: str | None = None,
     gpu: str | None = None,
@@ -1671,7 +1674,7 @@ def cls(
     user_cls: type | None = None,
     /,
     *,
-    image: _Image | None = None,
+    image: _Image | ResolvedImage | None = None,
     cpu: str | None = None,
     memory: str | None = None,
     gpu: str | None = None,
