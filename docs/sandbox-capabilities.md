@@ -11,6 +11,7 @@ Daytona adapter.
 | Processes | Existing `exec`, `exec_stream`, `exec_start`, stdin, signals, and reconnectable output. Container sessions separately expose PTYs and session discovery. No redundant `process` alias. |
 | Code execution | Existing stateful `execute_python` with sessions and artifacts. Other installed runtimes can be invoked with `exec`. |
 | Directories | New `get_work_dir()` and `get_user_home_dir()` work on newly created and attached handles. |
+| tmux/system tools | `Image.sandbox().apt_install(["tmux"])` installs tmux at build time. Detached sessions are managed with ordinary `sandbox.exec` calls. |
 | Creation | New optional image: `Image.sandbox()` is a fresh, extensible Python/Git image spec. Existing explicit-image and attached-handle paths remain unchanged. |
 | Resources, env, secrets, storage, network, SSH | Existing creation-time CPU/memory/GPU, env/Secret references, volume mounts, lifetime, tags, network policy, published port and managed outbound SSH. |
 
@@ -48,6 +49,15 @@ waits for readiness by default with a 600-second timeout and 0.5-second polling.
 Git/file helper `timeout_secs=None` leaves the exec timeout unset. A multi-command
 operation applies a supplied timeout to each subprocess, not the whole operation.
 No idle-stop policy is added or simulated by a client-side timer.
+
+Daytona's [declarative image guide](https://www.daytona.io/docs/en/declarative-builder/)
+recommends `Image.run_commands()` for OS packages, combining apt update/install
+and cleanup in one layer. Its published image/process references do not expose
+a tmux-specific helper. Chalk's `apt_install([...])` packages that workflow in
+the same immutable builder style as `pip_install([...])`, and works wherever an
+Image is accepted. It requires apt-get and a root build user. tmux is opt-in;
+detached sessions persist between exec calls, not beyond sandbox termination.
+Interactive attachment still needs a PTY.
 
 ## Remaining platform work
 

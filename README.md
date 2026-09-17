@@ -74,9 +74,7 @@ from chalkcompute import Image, SandboxClient
 img = (
     Image.debian_slim()
     .pip_install(["pandas", "numpy", "scikit-learn"])
-    .run_commands(
-        "apt-get update && apt-get install -y git curl",
-    )
+    .apt_install(["git", "curl"])
     .workdir("/home/user/app")
     .env({"PYTHONDONTWRITEBYTECODE": "1"})
 )
@@ -112,9 +110,11 @@ img = (
     # Install from a requirements.txt (read locally, inlined into the spec)
     .pip_install_from_requirements("requirements.txt")
 
+    # Install Debian/Ubuntu system packages
+    .apt_install(["git", "tmux"])
+
     # Run shell commands (each becomes a Docker RUN layer)
     .run_commands(
-        "apt-get update && apt-get install -y git",
         "mkdir -p /app/data",
     )
 
@@ -594,6 +594,36 @@ as `sandbox.exec`; multi-command Git operations apply it to each command.
 
 For the reviewed Daytona capabilities, defaults, and remaining backend gaps, see
 [the sandbox capability comparison](docs/sandbox-capabilities.md).
+
+### Add tmux to a sandbox image
+
+Use `apt_install` like `pip_install` to add system packages to a Debian/Ubuntu
+image. It requires a root build user and installs at build time, so each sandbox
+starts with the tools ready to use. The builder returns a new image and supports
+version pins such as
+`"package=version"`.
+
+```python
+from chalkcompute import Image, SandboxClient
+
+image = Image.sandbox().apt_install(["tmux"])
+with SandboxClient.from_env() as client:
+    sandbox = client.create(image=image)
+    try:
+        # Start a detached shell; it survives this exec call completing.
+        sandbox.exec("tmux", "new-session", "-d", "-s", "work")
+        sandbox.exec("tmux", "send-keys", "-t", "work", "echo hello", "Enter")
+        print(sandbox.exec("tmux", "list-sessions").stdout_text)
+        print(sandbox.exec("tmux", "capture-pane", "-p", "-t", "work").stdout_text)
+        sandbox.exec("tmux", "kill-session", "-t", "work")
+    finally:
+        sandbox.terminate()
+```
+
+tmux sessions live inside the sandbox and end when it terminates. These commands
+use detached sessions through ordinary exec; interactive `tmux attach` requires
+a terminal with PTY support. For images using another package manager, install
+tmux with `run_commands` (for example, `apk add --no-cache tmux` on Alpine).
 
 ### Spawn an OpenCode agent in a sandbox
 

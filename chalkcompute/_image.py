@@ -25,6 +25,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+import shlex
 import tarfile
 import tempfile
 from collections.abc import Sequence
@@ -160,10 +161,7 @@ class Image:
         """
         return (
             cls.debian_slim(python_version)
-            .run_commands(
-                "apt-get update && apt-get install -y --no-install-recommends "
-                "git ca-certificates openssh-client && rm -rf /var/lib/apt/lists/*"
-            )
+            .apt_install(["git", "ca-certificates", "openssh-client"])
             .workdir("/workspace")
         )
 
@@ -258,6 +256,45 @@ class Image:
             _build_step("run_commands", pb.RunCommandsStep(commands=list(commands)))
         )
         return new
+
+    def apt_install(self, packages: Sequence[str]) -> Image:
+        """Install Debian/Ubuntu system packages during the image build.
+
+        Like :meth:`pip_install`, accepts a sequence and returns a new image.
+        Requires ``apt-get`` and a root build user. Updates package indexes,
+        installs noninteractively without recommended packages, and removes
+        indexes in one build layer. Package versions can be pinned with
+        ``name=version``. Other distributions can use :meth:`run_commands`
+        with their package manager.
+
+        Examples
+        --------
+        >>> image = Image.sandbox().apt_install(["tmux"])
+        >>> sandbox = Sandbox(image=image).run()
+        >>> sandbox.exec("tmux", "new-session", "-d", "-s", "work")
+        """
+        if isinstance(packages, (str, bytes)) or not isinstance(packages, Sequence):
+            raise TypeError(
+                "packages must be a sequence of package names, such as ['tmux']"
+            )
+        if not packages:
+            raise ValueError("packages must not be empty")
+        for package in packages:
+            if (
+                not isinstance(package, str)
+                or not package.strip()
+                or package.startswith("-")
+                or "\0" in package
+            ):
+                raise ValueError(
+                    "each package must be a nonempty name, not an apt option"
+                )
+        return self.run_commands(
+            "apt-get update && DEBIAN_FRONTEND=noninteractive "
+            "apt-get install -y --no-install-recommends -- "
+            + shlex.join(packages)
+            + " && rm -rf /var/lib/apt/lists/*"
+        )
 
     def uv_pip_install(self, packages: Sequence[str]) -> Image:
         """Install Python packages via ``uv pip install``.
