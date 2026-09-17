@@ -563,7 +563,28 @@ def wait_for_image_build(
 
 
 def build_image_from_spec(image: Image, chalk_client: Any | None = None) -> str:
-    """Build an Image and return the URI. Authenticates via env vars."""
+    """Build an image and return its URI.
+
+    Parameters
+    ----------
+    image : Image
+        Image definition without volume-backed local files.
+    chalk_client : Any, optional
+        Chalk client supplying authentication. Defaults to environment auth.
+
+    Returns
+    -------
+    str
+        Built or cached image URI.
+
+    Raises
+    ------
+    ValueError
+        If volume-backed local files are present. Use ``resolve_image`` or
+        ``build_image_with_volumes`` to include them.
+    ConnectError
+        If the image build fails or times out.
+    """
     if image.lazy_local_files:
         raise ValueError(
             "build_image() drops volume-backed local files. "
@@ -636,7 +657,29 @@ def build_image_with_volumes_from_spec(
     volume_prefix: str = "files",
     chalk_client: Any | None = None,
 ) -> tuple[str, list[VolumeMount]]:
-    """Build an Image and upload lazy files. Authenticates via env vars."""
+    """Build an image and upload its volume-backed local files.
+
+    Parameters
+    ----------
+    image : Image
+        Image definition and local files to upload.
+    volume_prefix : str, optional
+        Prefix for generated volume names. Defaults to ``"files"``.
+    chalk_client : Any, optional
+        Chalk client supplying authentication. Defaults to environment auth.
+
+    Returns
+    -------
+    tuple of str and list of VolumeMount
+        Image URI and mutable mounts for the uploaded files.
+
+    Raises
+    ------
+    ConnectError
+        If the image build fails or times out.
+    VolumeError
+        If local file validation or upload fails.
+    """
     client = ConnectClient(chalk_client=chalk_client)
     return build_image_with_volumes(client, image, volume_prefix=volume_prefix)
 

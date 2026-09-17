@@ -44,6 +44,18 @@ class ResolvedImage:
 
     Pins select immutable content versions. They do not specify runtime
     read-only enforcement. Deleting the backing volumes invalidates the spec.
+
+    Parameters
+    ----------
+    image_uri : str
+        Nonempty image reference.
+    volumes : tuple of VolumeMount, optional
+        Mounts with a version ID and no mutable ref selector.
+
+    Raises
+    ------
+    ValueError
+        If the image reference is empty or mounts are unpinned or conflicting.
     """
 
     image_uri: str
@@ -58,7 +70,13 @@ class ResolvedImage:
         object.__setattr__(self, "volumes", tuple(merge_mounts(self.volumes)))
 
     def to_json(self) -> str:
-        """Serialize without credentials or local filesystem references."""
+        """Serialize without credentials or local filesystem references.
+
+        Returns
+        -------
+        str
+            JSON containing the schema version, image URI, and volume pins.
+        """
         return json.dumps(
             {
                 "schema_version": 1,
@@ -77,7 +95,23 @@ class ResolvedImage:
 
     @classmethod
     def from_json(cls, value: str) -> ResolvedImage:
-        """Load a versioned spec without contacting any service."""
+        """Load a versioned spec without contacting any service.
+
+        Parameters
+        ----------
+        value : str
+            JSON produced by :meth:`to_json`.
+
+        Returns
+        -------
+        ResolvedImage
+            Image reference and pinned volume mounts.
+
+        Raises
+        ------
+        ValueError
+            If the JSON, schema version, or resolved spec is invalid.
+        """
         try:
             data = json.loads(value)
             if data["schema_version"] != 1:
@@ -99,8 +133,44 @@ def resolve_image(
 ) -> ResolvedImage:
     """Build the image once and pin every volume to an immutable version.
 
-    Volume-backed local files land in a stable source_code volume named from
-    ``name`` so re-resolving appends a version instead of creating a volume.
+    Parameters
+    ----------
+    image : Image
+        Image definition to build.
+    volumes : iterable, optional
+        Volume handles, mounts, or ``(name_or_volume, mount_path)`` pairs.
+        Each selector is captured as an immutable version.
+    name : str, optional
+        Stable source volume name. Required for volume-backed local files.
+        Mount directories other than ``/app`` receive a name suffix.
+    chalk_client : Any, optional
+        Chalk client supplying authentication. Defaults to environment auth.
+    poll_interval : float, optional
+        Seconds between build or source-resolution polls. Defaults to 0.5.
+    timeout : float, optional
+        Timeout in seconds for each build and source-resolution operation.
+        Defaults to 600.0.
+
+    Returns
+    -------
+    ResolvedImage
+        Built image URI with referenced mounts followed by source mounts,
+        all pinned to immutable versions.
+
+    Raises
+    ------
+    ValueError
+        If mounts conflict or local files require a missing source name.
+    ConnectError
+        If the image build fails or times out.
+    VolumeError
+        If volume lookup or source resolution fails.
+
+    Notes
+    -----
+    Local files use stable ``source_code`` volumes. Resolving changed content
+    with the same name publishes a new version. Retain backing volumes while
+    resolved specs remain in use.
     """
     mounts = normalize_volume_refs(volumes)
     lazy = image.lazy_local_files_grouped_for_volume_mounts()

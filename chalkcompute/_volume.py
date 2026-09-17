@@ -563,9 +563,30 @@ class Volume:
     def put_dir(self, local_path: str | Path, remote_path: str = "") -> Volume:
         """Upload a directory, overwriting files without deleting other content.
 
-        Symlinks and special files are rejected. Empty directories are omitted.
-        Returns after commits complete and updates the cached version. A failed
-        upload can leave earlier commits visible. This is not an atomic replace.
+        Parameters
+        ----------
+        local_path : str or pathlib.Path
+            Local directory to upload recursively.
+        remote_path : str, optional
+            Relative destination within the volume. Defaults to its root.
+
+        Returns
+        -------
+        Volume
+            ``self``, with its cached version updated after commits complete.
+
+        Raises
+        ------
+        ValueError
+            If paths are invalid or the directory contains symlinks or special
+            files.
+        VolumeError
+            If the volume is closed, pinned, or an upload fails.
+
+        Notes
+        -----
+        Empty directories are omitted. Uploads may make multiple commits.
+        A failed upload can leave earlier commits visible.
         """
         self._raise_if_closed()
         self._ensure_mutable()
@@ -1325,7 +1346,19 @@ class VolumeClient:
 
     @classmethod
     def from_env(cls, *, chalk_client: Any | None = None) -> VolumeClient:
-        """Create a volume client using environment authentication."""
+        """Create a volume client using environment authentication.
+
+        Parameters
+        ----------
+        chalk_client : Any, optional
+            Chalk client supplying authentication. Defaults to environment auth.
+
+        Returns
+        -------
+        VolumeClient
+            Client that owns its connection and closes it on context exit or
+            an explicit :meth:`close` call.
+        """
         client = cls.from_connect(ConnectClient(chalk_client=chalk_client))
         client._owns_connect = True
         return client
