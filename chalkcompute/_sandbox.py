@@ -24,11 +24,12 @@ Usage:
 
 from __future__ import annotations
 
+import copy
 import queue
 import signal
 import time
 import uuid
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -527,8 +528,10 @@ class ExecProcess:
 class Sandbox:
     """A managed sandbox backed by the Chalk ``SandboxService``.
 
-    Create sandboxes with :meth:`SandboxClient.create`. Use :meth:`exec` to run
-    commands and :meth:`terminate` to shut the sandbox down when you're done.
+    :meth:`SandboxClient.create` constructs and immediately runs a sandbox. To
+    configure a :class:`Sandbox` before running it, construct one and pass it
+    to :meth:`SandboxClient.run`. Use :meth:`exec` to run commands and
+    :meth:`terminate` to shut the sandbox down when you're done.
 
     Examples
     --------
@@ -678,14 +681,16 @@ class Sandbox:
         Notes
         -----
         Calling :meth:`run` without a client creates one from the environment.
-        Prefer creating a :class:`SandboxClient` explicitly and calling
-        :meth:`SandboxClient.create` instead of constructing a ``Sandbox``
-        directly.
+        Prefer using an explicit :class:`SandboxClient`. Its
+        :meth:`SandboxClient.create` method is a shortcut for constructing and
+        immediately running a sandbox. For other setup, construct a ``Sandbox``
+        and pass it to :meth:`SandboxClient.run`.
 
         Examples
         --------
+        >>> sandbox = Sandbox(image="ubuntu:latest")
         >>> with SandboxClient.from_env() as client:
-        ...     sandbox = client.create("ubuntu:latest")
+        ...     client.run(sandbox)
         """
         self._client: Any | None = None
         self._id: str | None = None
@@ -699,7 +704,6 @@ class Sandbox:
         self._gpu: str | None = None
         self._env: dict[str, str] = {}
         self._secrets: list[Secret] = []
-        self._resolved_secrets: list[Secret] = []
         # Existence is checked at run() time, not here.
         self._referenced_volumes: list[VolumeMount] = []
         # Populated at run() time: referenced volumes plus any freshly
@@ -874,18 +878,187 @@ class Sandbox:
     def mount_volume(self, name: str | Volume, mount_path: str) -> Sandbox:
         """Mount a named volume or volume handle into the sandbox.
 
-        Must be called before :meth:`run`. Returns ``self`` for chaining.
+        Must be called before the sandbox is run. Returns ``self`` for chaining.
 
         Examples
         --------
-        >>> from chalkcompute import Sandbox
-        >>> sandbox = (
-        ...     Sandbox(image="ubuntu:latest")
-        ...     .mount_volume("my-data", "/data")
-        ...     .run()
-        ... )
+        >>> from chalkcompute import Sandbox, SandboxClient
+        >>> sandbox = Sandbox(image="ubuntu:latest")
+        >>> sandbox.mount_volume("my-data", "/data")
+        >>> with SandboxClient.from_env() as client:
+        ...     client.run(sandbox)
         """
         self._referenced_volumes.extend(normalize_volume_refs([(name, mount_path)]))
+        return self
+
+    def add_credentials(
+        self,
+        hosts: str | Sequence[str],
+        *credentials: str | Secret,
+    ) -> Sandbox:
+        """Expose credentials to requests bound for specific hosts.
+
+        String credentials name existing Chalk secrets. Use
+        :meth:`Secret.from_local_env` to read a credential from the local
+        environment when the sandbox starts.
+
+        The sandbox receives a placeholder in each credential's environment
+        variable. Its network policy replaces that placeholder when it appears
+        in headers on requests to the supplied hosts.
+
+        Must be called before the sandbox is run. Returns ``self`` for chaining.
+
+        Parameters
+        ----------
+        hosts
+            A host pattern or sequence of host patterns allowed to use the
+            credentials.
+        credentials
+            Existing Chalk secret names or explicit :class:`Secret` references.
+
+        Examples
+        --------
+        >>> sandbox = (
+        ...     Sandbox(image="ubuntu:latest")
+        ...     .add_credentials("api.openai.com", "OPENAI_API_KEY")
+        ...     .add_credentials(
+        ...         ["api.slack.com", "*.slack.com"],
+        ...         Secret.from_local_env("SLACK_BOT_TOKEN"),
+        ...     )
+        ... )
+        >>> with SandboxClient.from_env() as client:
+        ...     client.run(sandbox)
+        """
+        if self._id is not None:
+            raise SandboxError("Credentials must be added before the sandbox is run.")
+
+        if isinstance(hosts, str):
+            normalized_hosts = [hosts]
+        elif isinstance(hosts, Sequence):
+            normalized_hosts = list(hosts)
+        else:
+            raise TypeError("hosts must be a string or a sequence of strings")
+        if not normalized_hosts:
+            raise ValueError("hosts must not be empty")
+        for host in normalized_hosts:
+            NetworkPolicy._validate_host(host)
+        if len(set(normalized_hosts)) != len(normalized_hosts):
+            raise ValueError("hosts must not contain duplicates")
+
+        if not credentials:
+            raise ValueError("at least one credential is required")
+
+        existing_placeholders = (
+            {
+                placeholder
+                for rules in self._network_policy.allowed_hosts.values()
+                for rule in rules
+                for transform in rule.transforms
+                for placeholder in transform.headers_secrets
+            }
+            if self._network_policy is not None
+            else set()
+        )
+        bindings: dict[str, tuple[str, Secret]] = {}
+        for value in credentials:
+            credential = (
+                Secret.from_chalk_env(value) if isinstance(value, str) else value
+            )
+            if not isinstance(credential, Secret):
+                raise TypeError("credentials must be secret names or Secret instances")
+
+            if credential._secret_name is not None:
+                secret_name = credential._secret_name
+                alias = credential._aliases.get(secret_name, secret_name)
+                env_var = f"{credential._prefix or ''}{alias}"
+            elif credential._local_env_var is not None:
+                secret_name = credential._env_var_name or credential._local_env_var
+                env_var = secret_name
+            else:
+                raise ValueError(
+                    "credentials must use Secret.from_chalk_env or "
+                    "Secret.from_local_env"
+                )
+
+            for injected_secret in self._secrets:
+                injected_env_vars: list[str] = []
+                if injected_secret._secret_name is not None:
+                    name = injected_secret._secret_name
+                    alias = injected_secret._aliases.get(name, name)
+                    injected_env_vars.append(f"{injected_secret._prefix or ''}{alias}")
+                elif injected_secret._local_env_var is not None:
+                    injected_env_vars.append(
+                        injected_secret._env_var_name or injected_secret._local_env_var
+                    )
+                elif injected_secret._integration_name is not None:
+                    injected_env_vars.extend(
+                        f"{injected_secret._prefix or ''}"
+                        f"{injected_secret._aliases.get(key, key)}"
+                        for key in injected_secret._keys
+                    )
+                if env_var in injected_env_vars:
+                    raise ValueError(
+                        f"environment variable {env_var!r} is already populated "
+                        "by secrets"
+                    )
+            if env_var in bindings:
+                raise ValueError(
+                    f"credential environment variable {env_var!r} was specified "
+                    "more than once"
+                )
+            placeholder = self._env.get(env_var)
+            if placeholder is None:
+                placeholder = f"__chalk-secret-{uuid.uuid4().hex}"
+            elif placeholder not in existing_placeholders:
+                raise ValueError(f"environment variable {env_var!r} is already set")
+            bindings[env_var] = (placeholder, credential)
+
+        credential_env = {
+            env_var: placeholder
+            for env_var, (placeholder, _credential) in bindings.items()
+        }
+        validate_env(credential_env)
+        self._env.update(credential_env)
+        headers_secrets = {
+            placeholder: credential for placeholder, credential in bindings.values()
+        }
+        if self._network_policy is None:
+            self._network_policy = NetworkPolicy()
+        for host in normalized_hosts:
+            rules = self._network_policy.allowed_hosts.setdefault(host, [])
+            new_bindings: dict[str, str | Secret] = {}
+            for placeholder, credential in headers_secrets.items():
+                existing = [
+                    transform.headers_secrets[placeholder]
+                    for rule in rules
+                    for transform in rule.transforms
+                    if placeholder in transform.headers_secrets
+                ]
+                secret_name = (
+                    credential._secret_name
+                    or credential._env_var_name
+                    or credential._local_env_var
+                )
+                if any(
+                    bound != credential and bound != secret_name for bound in existing
+                ):
+                    raise ValueError(
+                        f"credential environment variable for placeholder "
+                        f"{placeholder!r} is already bound to a different secret "
+                        f"for host {host!r}"
+                    )
+                if not existing:
+                    new_bindings[placeholder] = credential
+            if new_bindings:
+                rules.append(
+                    NetworkPolicy.Rule(
+                        transforms=[
+                            NetworkPolicy.Transformer(
+                                headers_secrets=new_bindings,
+                            )
+                        ]
+                    )
+                )
         return self
 
     @_instrumented("chalkcompute.sandbox.run")
@@ -951,17 +1124,64 @@ class Sandbox:
                 volume_prefix="sandbox-files",
             )
 
+        network_policy = copy.deepcopy(self._network_policy)
+        policy_secrets: list[Secret] = []
+        if network_policy is not None:
+            for rules in network_policy.allowed_hosts.values():
+                for rule in rules:
+                    for transform in rule.transforms:
+                        policy_secrets.extend(
+                            secret
+                            for secret in transform.headers_secrets.values()
+                            if isinstance(secret, Secret)
+                        )
+
+        scope: SecretScope | None = None
+        if any(s.is_lazy for s in (*self._secrets, *policy_secrets)):
+            scope_name = self._name or f"sandbox-{uuid.uuid4().hex[:8]}"
+            scope = SecretScope.sandbox(scope_name)
+
         resolved_secrets = self._secrets
         if any(s.is_lazy for s in self._secrets):
-            scope_name = self._name or f"sandbox-{uuid.uuid4().hex[:8]}"
             resolved_secrets, _upserted = resolve_lazy_secrets(
-                self._secrets, connect, scope=SecretScope.sandbox(scope_name)
+                self._secrets, connect, scope=scope
             )
-        self._resolved_secrets = resolved_secrets
-
+        resolved_credentials: list[tuple[Secret, str]] = []
+        if network_policy is not None:
+            for rules in network_policy.allowed_hosts.values():
+                for rule in rules:
+                    for transform in rule.transforms:
+                        for placeholder, secret in list(
+                            transform.headers_secrets.items()
+                        ):
+                            if not isinstance(secret, Secret):
+                                continue
+                            secret_name = next(
+                                (
+                                    name
+                                    for source, name in resolved_credentials
+                                    if source == secret
+                                ),
+                                None,
+                            )
+                            if secret_name is None:
+                                references, _upserted = resolve_lazy_secrets(
+                                    [secret], connect, scope=scope
+                                )
+                                resolved = references[0]
+                                if resolved._secret_name is None:
+                                    raise ValueError(
+                                        "network policy credentials must reference "
+                                        "a single Chalk secret"
+                                    )
+                                secret_name = resolved._secret_name
+                                resolved_credentials.append((secret, secret_name))
+                            transform.headers_secrets[placeholder] = secret_name
         client._instantiate(
             self,
             image,
+            secret_refs=resolved_secrets,
+            network_policy=network_policy,
             wait=wait,
             poll_interval=poll_interval,
             timeout=timeout,
@@ -1499,7 +1719,7 @@ class SandboxClient:
         poll_interval: float = 0.5,
         timeout: float = 600.0,
     ) -> Sandbox:
-        """Create a new sandbox.
+        """Construct and run a sandbox in one call.
 
         If ``image`` is an ``Image`` spec, this method builds it first and sends
         the resulting image URI to the sandbox service. If ``wait`` is ``True``
@@ -1552,27 +1772,64 @@ class SandboxClient:
         Sandbox
             A sandbox handle.
         """
-        return Sandbox(
-            image=image,
-            name=name,
-            cpu=cpu,
-            memory=memory,
-            gpu=gpu,
-            env=env,
-            secrets=secrets,
-            volumes=volumes,
-            port=port,
-            entrypoint=entrypoint,
-            lifetime=lifetime,
-            security_policy=security_policy,
-            network_policy=network_policy,
-            compute_class=compute_class,
-            tags=tags,
-            restart_policy=restart_policy,
-            chalk_identity=chalk_identity,
-            managed_ssh=managed_ssh,
-            sandbox_client=self,
-        ).run(wait=wait, poll_interval=poll_interval, timeout=timeout)
+        return self.run(
+            Sandbox(
+                image=image,
+                name=name,
+                cpu=cpu,
+                memory=memory,
+                gpu=gpu,
+                env=env,
+                secrets=secrets,
+                volumes=volumes,
+                port=port,
+                entrypoint=entrypoint,
+                lifetime=lifetime,
+                security_policy=security_policy,
+                network_policy=network_policy,
+                compute_class=compute_class,
+                tags=tags,
+                restart_policy=restart_policy,
+                chalk_identity=chalk_identity,
+                managed_ssh=managed_ssh,
+            ),
+            wait=wait,
+            poll_interval=poll_interval,
+            timeout=timeout,
+        )
+
+    def run(
+        self,
+        sandbox: Sandbox,
+        *,
+        wait: bool = True,
+        poll_interval: float = 0.5,
+        timeout: float = 600.0,
+    ) -> Sandbox:
+        """Create a configured sandbox using this client.
+
+        Parameters
+        ----------
+        sandbox
+            A configured sandbox that has not been run.
+        wait
+            If ``True``, poll until the sandbox is ready (default ``True``).
+        poll_interval
+            Seconds between readiness polls.
+        timeout
+            Maximum seconds to wait for the sandbox to become ready.
+
+        Returns
+        -------
+        Sandbox
+            The created sandbox.
+        """
+        if sandbox._id is not None:
+            raise SandboxError(
+                "Sandbox is already running. Call .terminate() before calling .run() again."
+            )
+        sandbox._client = self
+        return sandbox.run(wait=wait, poll_interval=poll_interval, timeout=timeout)
 
     @_instrumented("chalkcompute.sandbox.create")
     def _instantiate(
@@ -1580,6 +1837,8 @@ class SandboxClient:
         sandbox: Sandbox,
         image: str,
         *,
+        secret_refs: Sequence[Secret],
+        network_policy: NetworkPolicy | None,
         wait: bool,
         poll_interval: float,
         timeout: float,
@@ -1597,11 +1856,11 @@ class SandboxClient:
             gpu=sandbox._gpu,
             env=sandbox._env,
             volumes=sandbox._volumes,
-            secret_refs=sandbox._resolved_secrets or sandbox._secrets,
+            secret_refs=secret_refs,
             port=sandbox._port,
             lifetime=sandbox._lifetime,
             security_policy=sandbox._security_policy,
-            network_policy=sandbox._network_policy,
+            network_policy=network_policy,
             compute_class=sandbox._compute_class,
             tags=sandbox._tags,
             restart_policy=sandbox._restart_policy,
