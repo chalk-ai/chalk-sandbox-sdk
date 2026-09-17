@@ -1,11 +1,9 @@
-"""Exercise sandbox helpers with real Git/SFTP processes, without cloud access."""
+"""Exercise sandbox helpers with real Git processes, without cloud access."""
 
 from __future__ import annotations
 
 import os
 import subprocess
-import errno
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -17,7 +15,6 @@ from chalkcompute import (
     Sandbox,
     SandboxClient,
     SandboxError,
-    SandboxFileSystemError,
 )
 
 
@@ -45,13 +42,6 @@ class LocalProcess:
         stdout, stderr = self.process.communicate(timeout=20)
         return ExecResult(stdout, stderr, self.process.returncode)
 
-    def stdout_bytes(self):
-        while chunk := self.process.stdout.read1(32768):
-            yield chunk
-        stderr = self.process.stderr.read()
-        if self.process.wait(timeout=20):
-            raise SandboxError(stderr.decode())
-
 
 @pytest.fixture
 def sandbox(tmp_path):
@@ -64,36 +54,20 @@ def sandbox(tmp_path):
         "HOME": str(tmp_path),
     }
 
-    server = next(
-        (
-            path
-            for path in (
-                "/usr/libexec/sftp-server",
-                "/usr/lib/openssh/sftp-server",
-                "/usr/lib/ssh/sftp-server",
-            )
-            if Path(path).exists()
-        ),
-        None,
-    )
-    if server is None:
-        pytest.skip("OpenSSH sftp-server is required for local native filesystem tests")
-
     def start(command, *args, workdir=None, env=None, timeout_secs=None):
         assert command not in ("python", "python3", "sh", "bash")
-        if command == "/usr/lib/openssh/sftp-server":
-            command = server
         cwd = tmp_path / workdir if workdir else tmp_path
         return LocalProcess([command, *args], cwd=cwd, env={**base_env, **(env or {})})
 
     base_env = env
+    handle._test_root = tmp_path
     handle.exec_start = start
     return handle
 
 
 def seed(sandbox, path="repo"):
     sandbox.git.init(path, initial_branch="trunk")
-    sandbox.fs.write_file(f"{path}/initial.txt", "initial\n")
+    (sandbox._test_root / f"{path}/initial.txt").write_text("initial\n")
     sandbox.git.add(path, ["initial.txt"])
     return sandbox.git.commit(path, "initial", "Test Author", "test@example.com")
 
@@ -108,7 +82,7 @@ def test_git_lifecycle(sandbox):
     sandbox.git.checkout_branch("repo", "feature")
     assert sandbox.git.branches("repo") == ["feature", "trunk"]
     unusual = "space ' ; $file\nname.txt"
-    sandbox.fs.write_file("repo/" + unusual, "hello")
+    (sandbox._test_root / ("repo/" + unusual)).write_text("hello")
     status = sandbox.git.status("repo")
     assert status.file_status[0].name == unusual
     assert status.file_status[0].index == "?"
@@ -118,7 +92,9 @@ def test_git_lifecycle(sandbox):
     assert sandbox.git.status("repo").file_status[0].index == "?"
     sandbox.git.add("repo", [unusual])
     sandbox.git.commit("repo", "add unusual path", "Test", "test@example.com")
-    sandbox.fs.move_files("repo/" + unusual, "repo/renamed.txt")
+    (sandbox._test_root / ("repo/" + unusual)).rename(
+        sandbox._test_root / "repo/renamed.txt"
+    )
     sandbox.git.add("repo", ["."])
     status = sandbox.git.status("repo")
     assert status.file_status[0].index == "R"
@@ -135,7 +111,7 @@ def test_git_lifecycle(sandbox):
 
 def test_clone_defaults_shallow_and_detached(sandbox, tmp_path):
     first = seed(sandbox, "origin")
-    sandbox.fs.write_file("origin/initial.txt", "second")
+    (sandbox._test_root / "origin/initial.txt").write_text("second")
     sandbox.git.add("origin", ["."])
     sandbox.git.commit("origin", "second", "Test", "test@example.com")
     url = (tmp_path / "origin").as_uri()
@@ -157,7 +133,7 @@ def test_clone_defaults_shallow_and_detached(sandbox, tmp_path):
     )
     sandbox.git.clone(url, "detached", commit_id=first)
     assert sandbox.git.status("detached").current_branch is None
-    assert sandbox.fs.read_file("detached/initial.txt") == b"initial\n"
+    assert (sandbox._test_root / "detached/initial.txt").read_bytes() == b"initial\n"
 
 
 def test_remotes_push_pull_fetch_config(sandbox, tmp_path):
@@ -169,7 +145,7 @@ def test_remotes_push_pull_fetch_config(sandbox, tmp_path):
     assert sandbox.git.remotes("repo")[0].push_url == url
     sandbox.git.push("repo", set_upstream=True)
     sandbox.git.clone(url, "other")
-    sandbox.fs.write_file("repo/initial.txt", "changed")
+    (sandbox._test_root / "repo/initial.txt").write_text("changed")
     sandbox.git.add("repo", ["."])
     sandbox.git.commit("repo", "change", "Test", "test@example.com")
     assert sandbox.git.status("repo").ahead == 1
@@ -177,7 +153,7 @@ def test_remotes_push_pull_fetch_config(sandbox, tmp_path):
     sandbox.git.fetch("other")
     assert sandbox.git.status("other").behind == 1
     sandbox.git.pull("other")
-    assert sandbox.fs.read_file("other/initial.txt") == b"changed"
+    assert (sandbox._test_root / "other/initial.txt").read_bytes() == b"changed"
     sandbox.git.remote_add("other", "origin", url, overwrite=True, fetch=True)
     sandbox.git.configure_user("other", "Local User", "local@example.com")
     assert sandbox.git.get_config("other", "user.name") == "Local User"
@@ -214,7 +190,9 @@ def test_credentials_are_command_scoped_and_redacted(sandbox, tmp_path):
     args, kwargs = calls[-1]
     assert password not in repr(args)
     assert kwargs["env"]["CHALK_GIT_PASSWORD"] == password
-    assert password not in sandbox.fs.read_file("clone/.git/config").decode()
+    assert (
+        password not in (sandbox._test_root / "clone/.git/config").read_bytes().decode()
+    )
     # Ask Git itself to invoke the helper, including shell metacharacters.
     prefix = args[: args.index("clone")]
     process = sandbox.exec_start(*prefix, "credential", "fill", env=kwargs["env"])
@@ -250,59 +228,6 @@ def test_git_invalid_arguments_do_not_execute(operation):
     sandbox.exec.assert_not_called()
 
 
-def test_files_binary_paths_and_metadata(sandbox, tmp_path):
-    sandbox.fs.create_folder("dir", "700")
-    path = "dir/ - ' ; $(touch bad)\nfile.bin"
-    data = bytes(range(256)) * 1024
-    sandbox.fs.write_file(path, data)
-    assert sandbox.fs.read_file(path) == data
-    assert sandbox.fs.get_file_info(path).size == len(data)
-    assert sandbox.fs.list_files("dir")[0].name == Path(path).name
-    assert not (tmp_path / "bad").exists()
-    sandbox.fs.set_file_permissions(path, mode="600")
-    assert sandbox.fs.get_file_info(path).permissions == "600"
-    local = tmp_path / "download"
-    assert sandbox.fs.download_file(path, local) is None
-    assert local.read_bytes() == data
-    sandbox.fs.upload_file(local, "dir/upload")
-    assert sandbox.fs.read_file("dir/upload") == data
-    sandbox.fs.upload_file(b"", "dir/empty")
-    assert sandbox.fs.read_file("dir/empty") == b""
-    sandbox.fs.move_files("dir/empty", "dir/moved")
-    with pytest.raises(SandboxFileSystemError):
-        sandbox.fs.delete_file("dir")
-    sandbox.fs.delete_file("dir", recursive=True)
-    assert not (tmp_path / "dir").exists()
-    assert sandbox.get_work_dir() == str(tmp_path)
-    import pwd
-
-    assert sandbox.get_user_home_dir() == pwd.getpwuid(os.getuid()).pw_dir
-
-
-def test_find_replace_symlinks_errors(sandbox, tmp_path):
-    sandbox.fs.create_folder("dir/nested")
-    sandbox.fs.write_file("dir/nested/a.txt", "hello\nhello world\n")
-    sandbox.fs.write_file("dir/binary", b"\xff\x00")
-    (tmp_path / "outside.txt").write_text("hello")
-    (tmp_path / "dir/link").symlink_to(tmp_path / "outside.txt")
-    assert sandbox.fs.get_file_info("dir/link").is_symlink
-    assert sandbox.fs.search_files("dir", "*.txt") == ["dir/nested/a.txt"]
-    matches = sandbox.fs.find_files("dir", "hello")
-    assert [m.line_number for m in matches] == [1, 2]
-    assert sandbox.fs.replace_in_files(["dir/nested/a.txt"], "hello", "bye") == {
-        "dir/nested/a.txt": 2
-    }
-    assert sandbox.fs.read_file("dir/nested/a.txt") == b"bye\nbye world\n"
-    sandbox.fs.delete_file("dir/link", recursive=True)
-    assert (tmp_path / "outside.txt").exists()
-    with pytest.raises(SandboxFileSystemError):
-        sandbox.fs.read_file("missing")
-    with pytest.raises(SandboxFileSystemError):
-        sandbox.fs.search_files("missing", "*")
-    with pytest.raises(ValueError):
-        sandbox.fs.create_folder("bad", "999")
-
-
 def test_helpers_forward_timeout_and_fail_on_signal():
     sandbox = Sandbox(sandbox_id="test")
     sandbox.exec = MagicMock(return_value=ExecResult(b"", b"", 0))
@@ -317,8 +242,6 @@ def test_helpers_require_a_running_sandbox():
     sandbox = Sandbox()
     with pytest.raises(SandboxError, match="not running"):
         sandbox.git.init("repo")
-    with pytest.raises(SandboxError, match="not running"):
-        sandbox.fs.read_file("file")
 
 
 def test_default_image_for_both_creation_paths():
@@ -343,62 +266,6 @@ def test_default_image_for_both_creation_paths():
         client.close()
 
 
-def test_text_replacement_preserves_newlines(sandbox):
-    sandbox.fs.write_file("crlf.txt", b"one\r\ntwo\r\n")
-    sandbox.fs.replace_in_files(["crlf.txt"], "two", "three")
-    assert sandbox.fs.read_file("crlf.txt") == b"one\r\nthree\r\n"
-
-
-def test_upload_failure_preserves_destination_and_removes_temporary_file(
-    sandbox, tmp_path
-):
-    sandbox.fs.write_file("destination", b"original")
-
-    def broken_chunks():
-        yield b"partial"
-        raise RuntimeError("producer failed")
-
-    with pytest.raises(RuntimeError, match="producer failed"):
-        sandbox.fs.upload_file_stream(broken_chunks(), "destination")
-    assert sandbox.fs.read_file("destination") == b"original"
-    assert not list(tmp_path.glob(".chalk-upload-*"))
-
-
-def test_download_failure_preserves_local_destination(sandbox, tmp_path):
-    destination = tmp_path / "destination"
-    destination.write_bytes(b"original")
-
-    def broken_download(*args, **kwargs):
-        yield b"partial"
-        raise SandboxFileSystemError(errno.EIO, "stream disconnected")
-
-    fs = sandbox.fs
-    with patch.object(fs, "download_file_stream", broken_download):
-        with pytest.raises(SandboxFileSystemError):
-            fs.download_file("remote", destination)
-    assert destination.read_bytes() == b"original"
-    assert not list(tmp_path.glob(".chalk-download-*"))
-
-
-def test_streams_are_bounded_and_writes_preserve_permissions(sandbox, tmp_path):
-    sandbox.fs.upload_file_stream((b"a" * 4096 for _ in range(100)), "large")
-    chunks = list(sandbox.fs.download_file_stream("large"))
-    assert max(map(len, chunks)) <= 32768
-    assert b"".join(chunks) == b"a" * 409600
-    sandbox.fs.set_file_permissions("large", mode="640")
-    sandbox.fs.write_file("large", "replacement")
-    assert sandbox.fs.get_file_info("large").permissions == "640"
-    assert sandbox.fs.read_text("large") == "replacement"
-    (tmp_path / "link").symlink_to(tmp_path / "large")
-    with pytest.raises(SandboxFileSystemError) as error:
-        sandbox.fs.write_file("link", "bad")
-    assert error.value.errno == errno.ELOOP
-    assert sandbox.fs.read_text("large") == "replacement"
-    with pytest.raises(SandboxFileSystemError) as error:
-        sandbox.fs.read_file("missing")
-    assert error.value.errno == errno.ENOENT
-
-
 def test_git_relative_paths_use_git_c_instead_of_exec_workdir():
     sandbox = Sandbox(sandbox_id="test")
     sandbox.exec = MagicMock(return_value=ExecResult(b"", b"", 0))
@@ -412,26 +279,3 @@ def test_git_relative_paths_use_git_c_instead_of_exec_workdir():
         "file",
     )
     assert "workdir" not in sandbox.exec.call_args.kwargs
-
-
-def test_sftp_channel_handles_fragmented_and_empty_frames():
-    from chalkcompute._sandbox_fs import _ExecSocket
-
-    process = MagicMock()
-    process.stdout_bytes.return_value = iter([b"", b"ab", b"cdef"])
-    channel = _ExecSocket(process)
-    assert channel.recv(1) == b"a"
-    assert channel.recv(8) == b"b"
-    assert channel.recv(8) == b"cdef"
-    assert channel.recv(8) == b""
-    channel.close()
-    channel.close()
-    process.close_stdin.assert_called_once()
-
-
-def test_download_iterator_can_be_closed_early(sandbox):
-    sandbox.fs.write_file("large", b"a" * 100000)
-    stream = sandbox.fs.download_file_stream("large")
-    assert len(next(stream)) == 32768
-    stream.close()
-    assert sandbox.fs.read_file("large") == b"a" * 100000

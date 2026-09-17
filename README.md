@@ -539,13 +539,13 @@ result = sandbox.exec(
 
 ## Examples
 
-### Git and files inside a sandbox
+### Git inside a sandbox
 
 Omitting `image` uses `Image.sandbox()`: Python 3.14 on Debian slim with Git,
-CA certificates, OpenSSH, and its native SFTP server, working in `/workspace`.
+CA certificates and OpenSSH, working in `/workspace`.
 The image builds lazily through the normal image builder. Both `Sandbox().run()` and `client.create()`
 use this default. Explicit images retain their existing behavior; custom images
-need `git` for Git helpers and the native `sftp-server` binary for file helpers.
+need `git` for Git helpers.
 
 ```python
 from chalkcompute import SandboxClient
@@ -556,15 +556,7 @@ with SandboxClient.from_env() as client:
         # Uses the remote's default branch with depth=1.
         sandbox.git.clone("https://github.com/octocat/Hello-World.git", "repo")
         print(sandbox.git.status("repo").current_branch)
-        print(sandbox.fs.list_files("repo"))
-
-        sandbox.fs.write_file("repo/notes.txt", "Hello from Chalk!\n")
-        sandbox.git.add("repo", ["notes.txt"])
-        commit_id = sandbox.git.commit(
-            "repo", "Add notes", "Example Author", "author@example.com"
-        )
-        print(commit_id)
-        sandbox.fs.download_file("repo/notes.txt", "local-notes.txt")
+        print(sandbox.git.branches("repo"))
     finally:
         sandbox.terminate()
 ```
@@ -580,52 +572,9 @@ pull/push; they are scoped to the command without changing the remote URL or
 saving credentials. SSH remotes use the sandbox's existing SSH configuration.
 Git failures raise `GitError`.
 
-File helpers include `read_file`, `write_file`, `upload_file`, `download_file`,
-`create_folder`, `delete_file`, `get_file_info`, `list_files`, `move_files`,
-`set_file_permissions`, `search_files` (filename glob), `find_files` (literal
-text), and `replace_in_files`. File paths are relative to the image working
-directory; Git `path` identifies the repository root. Use `get_work_dir()` and
-`get_user_home_dir()` to discover directories on attached/custom sandboxes.
-Transfers use the native SFTP binary protocol over authenticated exec, with no
-remote Python or shell scripts. Local-file uploads and downloads stream in bounded
-chunks; reads returning `bytes` or text buffer the requested contents. File
-operations raise `SandboxFileSystemError` with the server errno when available.
-Directories require `recursive=True` to delete, and writes require an existing
-parent directory. Helpers accept `timeout_secs` with the same semantics
-as `sandbox.exec`; multi-command Git operations apply it to each command.
-
-For filesystem setup, transfer guarantees, and defaults, see
-[the sandbox capability guide](docs/sandbox-capabilities.md).
-
-### Streaming files without a remote Python runtime
-
-The default image includes `/usr/lib/openssh/sftp-server`. For a custom
-Debian/Ubuntu image, add `.apt_install(["openssh-sftp-server"])`; no Python runtime,
-SSH daemon, listening port, or SSH credentials are needed. An image with a different
-server location can use `SandboxFileSystem(sandbox, server_path="...")`.
-
-```python
-# Streams in bounded chunks; does not load the file into client memory.
-sandbox.fs.upload_file("local-large.bin", "/workspace/large.bin")
-sandbox.fs.download_file("/workspace/large.bin", "local-copy.bin")
-
-# Iterator-based transfers integrate with other streaming sources/sinks.
-sandbox.fs.upload_file_stream(chunks, "/workspace/generated.bin")
-for chunk in sandbox.fs.download_file_stream("/workspace/generated.bin"):
-    consume(chunk)
-
-text = sandbox.fs.read_text("/workspace/notes.txt")
-```
-
-Whole-file uploads and writes replace the destination atomically after the server
-acknowledges the complete transfer. Existing file permissions are preserved; new
-files use mode 0644. Symlink destinations are rejected. Downloads to a local path
-also replace it atomically and return `None`; omitting the local path returns
-`bytes`. Failures before the final rename preserve the previous destination.
-A lost connection can leave an adjacent temporary upload file, but cannot publish partially uploaded content.
-Streams are not replayed automatically. Close a download iterator if stopping
-before completion. Text search/replacement runs on the client over SFTP and buffers
-one candidate file at a time. Ownership changes take numeric user/group IDs.
+Git paths identify the repository root relative to the image working directory.
+Helpers accept `timeout_secs`; multi-command operations apply it to each command.
+See [the sandbox capability guide](docs/sandbox-capabilities.md) for defaults.
 
 ### Add tmux to a sandbox image
 
