@@ -61,6 +61,26 @@ not supported for training.
 `Image.env(...)` and per-exec env mappings accept literal strings only. Set
 secrets on the sandbox or other deployment so its processes inherit them.
 
+To make credentials available only to requests for specific hosts, add them to
+a sandbox before running it. Strings name existing Chalk secrets; use an
+explicit `Secret` for local credentials or aliases:
+
+```python
+(
+    cc.Sandbox(image="ubuntu:latest")
+    .add_credentials("api.openai.com", "OPENAI_API_KEY")
+    .add_credentials(
+        ["api.slack.com", "*.slack.com"],
+        cc.Secret.from_local_env("SLACK_BOT_TOKEN"),
+    )
+    .run()
+)
+```
+
+The corresponding environment variables contain placeholders. The network
+policy substitutes them when they appear in headers on requests to the listed
+hosts.
+
 ## Declarative images
 
 Build custom container images with a fluent API instead of writing Dockerfiles.

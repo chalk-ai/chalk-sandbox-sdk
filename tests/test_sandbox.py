@@ -3,7 +3,7 @@ from __future__ import annotations
 from unittest.mock import ANY, MagicMock, patch
 
 import pytest
-from chalkcompute import Image, Sandbox, Secret
+from chalkcompute import Image, NetworkPolicy, Sandbox, Secret
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
@@ -164,6 +164,225 @@ def test_sandbox_mixed_env_serializes_secret_references(use_client_create) -> No
     assert dict(spec.env_vars) == {"GIT_AUTHOR_NAME": "Elliot Marx"}
     assert [ref.source.value for ref in spec.secret_refs] == ["OTHER", "TOKEN"]
     assert dict(spec.secret_refs[1].aliases) == {"TOKEN": "SUPER_SECRET_VALUE"}
+
+
+def test_sandbox_add_credentials_configures_env_and_network_policy(monkeypatch) -> None:
+    def host_bindings(
+        sandbox: Sandbox, host: str
+    ) -> dict[str, str | Secret]:
+        assert sandbox._network_policy is not None
+        return {
+            placeholder: secret
+            for rule in sandbox._network_policy.allowed_hosts[host]
+            for transform in rule.transforms
+            for placeholder, secret in transform.headers_secrets.items()
+        }
+
+    # A single host and single secret produce one placeholder-backed host binding.
+    sandbox = Sandbox(image="ubuntu:latest").add_credentials(
+        "api.openai.com", "OPENAI_API_KEY"
+    )
+    openai_placeholder = sandbox._env["OPENAI_API_KEY"]
+    assert openai_placeholder.startswith("__chalk-secret-")
+    assert host_bindings(sandbox, "api.openai.com") == {
+        openai_placeholder: Secret.from_chalk_env("OPENAI_API_KEY")
+    }
+
+    # Multiple hosts and one secret reuse one placeholder across every host.
+    sandbox = Sandbox(image="ubuntu:latest").add_credentials(
+        ["api.openai.com", "*.openai.com"], "OPENAI_API_KEY"
+    )
+    openai_placeholder = sandbox._env["OPENAI_API_KEY"]
+    for host in ("api.openai.com", "*.openai.com"):
+        assert host_bindings(sandbox, host) == {
+            openai_placeholder: Secret.from_chalk_env("OPENAI_API_KEY")
+        }
+
+    # A single host and multiple secrets produce distinct placeholders on one host.
+    sandbox = Sandbox(image="ubuntu:latest").add_credentials(
+        "api.example.com",
+        "API_KEY",
+        Secret.from_local_env("LOCAL_TOKEN"),
+    )
+    api_placeholder = sandbox._env["API_KEY"]
+    local_placeholder = sandbox._env["LOCAL_TOKEN"]
+    assert api_placeholder != local_placeholder
+    assert host_bindings(sandbox, "api.example.com") == {
+        api_placeholder: Secret.from_chalk_env("API_KEY"),
+        local_placeholder: Secret.from_local_env("LOCAL_TOKEN"),
+    }
+
+    # Multiple hosts and multiple secrets install every binding on every host.
+    sandbox = Sandbox(image="ubuntu:latest").add_credentials(
+        ["sts.amazonaws.com", "*.amazonaws.com"],
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+    )
+    aws_bindings = {
+        sandbox._env["AWS_ACCESS_KEY_ID"]: Secret.from_chalk_env(
+            "AWS_ACCESS_KEY_ID"
+        ),
+        sandbox._env["AWS_SECRET_ACCESS_KEY"]: Secret.from_chalk_env(
+            "AWS_SECRET_ACCESS_KEY"
+        ),
+    }
+    assert host_bindings(sandbox, "sts.amazonaws.com") == aws_bindings
+    assert host_bindings(sandbox, "*.amazonaws.com") == aws_bindings
+
+    # Chaining different credentials onto one host preserves both bindings.
+    sandbox = (
+        Sandbox(image="ubuntu:latest")
+        .add_credentials("api.example.com", "FIRST_KEY")
+        .add_credentials("api.example.com", "SECOND_KEY")
+    )
+    assert host_bindings(sandbox, "api.example.com") == {
+        sandbox._env["FIRST_KEY"]: Secret.from_chalk_env("FIRST_KEY"),
+        sandbox._env["SECOND_KEY"]: Secret.from_chalk_env("SECOND_KEY"),
+    }
+
+    # Chaining one credential onto different hosts reuses its original placeholder.
+    sandbox = (
+        Sandbox(image="ubuntu:latest")
+        .add_credentials("openai.com", "API_KEY")
+        .add_credentials("*.openai.com", "API_KEY")
+    )
+    api_placeholder = sandbox._env["API_KEY"]
+    assert host_bindings(sandbox, "openai.com") == {
+        api_placeholder: Secret.from_chalk_env("API_KEY")
+    }
+    assert host_bindings(sandbox, "*.openai.com") == {
+        api_placeholder: Secret.from_chalk_env("API_KEY")
+    }
+
+    # Existing unrelated env, secrets, and policy entries remain unchanged.
+    existing_rule = NetworkPolicy.Rule(
+        transforms=[NetworkPolicy.Transformer(headers={"x-existing": "yes"})]
+    )
+    existing_secret = Secret.from_chalk_env("UNRELATED_SECRET")
+    network_policy = NetworkPolicy(
+        denied_routes=["169.254.0.0/16"],
+        allowed_hosts={"api.example.com": [existing_rule]},
+    )
+    sandbox = Sandbox(
+        image="ubuntu:latest",
+        env={"MODE": "test"},
+        secrets=[existing_secret],
+        network_policy=network_policy,
+    ).add_credentials("api.example.com", "API_KEY")
+    assert sandbox._env["MODE"] == "test"
+    assert sandbox._secrets == [existing_secret]
+    assert sandbox._network_policy is network_policy
+    assert sandbox._network_policy.denied_routes == ["169.254.0.0/16"]
+    assert (
+        sandbox._network_policy.allowed_hosts["api.example.com"][0] is existing_rule
+    )
+    assert host_bindings(sandbox, "api.example.com") == {
+        sandbox._env["API_KEY"]: Secret.from_chalk_env("API_KEY")
+    }
+
+    # Existing headers_secrets bindings are reused while new bindings are appended.
+    existing_placeholder = "some-user-placeholder"
+    existing_transform = NetworkPolicy.Transformer(
+        headers_secrets={
+            existing_placeholder: Secret.from_chalk_env("EXISTING_KEY")
+        }
+    )
+    network_policy = NetworkPolicy(
+        allowed_hosts={
+            "api.example.com": [
+                NetworkPolicy.Rule(transforms=[existing_transform])
+            ]
+        }
+    )
+    sandbox = Sandbox(
+        image="ubuntu:latest",
+        env={"EXISTING_KEY": existing_placeholder},
+        network_policy=network_policy,
+    ).add_credentials("api.example.com", "EXISTING_KEY", "NEW_KEY")
+    assert sandbox._network_policy is network_policy
+    assert existing_transform.headers_secrets == {
+        existing_placeholder: Secret.from_chalk_env("EXISTING_KEY")
+    }
+    assert host_bindings(sandbox, "api.example.com") == {
+        existing_placeholder: Secret.from_chalk_env("EXISTING_KEY"),
+        sandbox._env["NEW_KEY"]: Secret.from_chalk_env("NEW_KEY"),
+    }
+
+    # An existing literal env value blocks a credential with the same env name.
+    with pytest.raises(ValueError, match="environment variable 'API_KEY' is already set"):
+        Sandbox(image="ubuntu:latest", env={"API_KEY": "literal"}).add_credentials(
+            "api.example.com", "API_KEY"
+        )
+
+    # An existing standalone secret blocks a network credential with the same env name.
+    with pytest.raises(ValueError, match="already populated by secrets"):
+        Sandbox(
+            image="ubuntu:latest",
+            secrets=[Secret.from_chalk_env("API_KEY")],
+        ).add_credentials("api.example.com", "API_KEY")
+
+    # An env-mapped secret alias blocks a network credential using the same alias.
+    with pytest.raises(ValueError, match="already populated by secrets"):
+        Sandbox(
+            image="ubuntu:latest",
+            env={"API_KEY": Secret.from_chalk_env("SOURCE_KEY")},
+        ).add_credentials("api.example.com", "API_KEY")
+
+    # Re-adding an identical binding to the same host is a no-op.
+    sandbox = Sandbox(image="ubuntu:latest").add_credentials(
+        "api.example.com", "API_KEY"
+    )
+    assert sandbox._network_policy is not None
+    rule_count = len(sandbox._network_policy.allowed_hosts["api.example.com"])
+    sandbox.add_credentials("api.example.com", "API_KEY")
+    assert len(sandbox._network_policy.allowed_hosts["api.example.com"]) == rule_count
+
+    # Rebinding one placeholder to a different credential on the same host fails.
+    sandbox = Sandbox(image="ubuntu:latest").add_credentials(
+        "api.example.com", "API_KEY"
+    )
+    with pytest.raises(ValueError, match="already bound to a different secret"):
+        sandbox.add_credentials(
+            "api.example.com",
+            Secret.from_chalk_env("OTHER_KEY", alias="API_KEY"),
+        )
+
+    # Duplicate hosts in one call are rejected explicitly.
+    with pytest.raises(ValueError, match="hosts must not contain duplicates"):
+        Sandbox(image="ubuntu:latest").add_credentials(
+            ["api.example.com", "api.example.com"], "API_KEY"
+        )
+
+    # Duplicate credential env names in one call are rejected explicitly.
+    with pytest.raises(ValueError, match="specified more than once"):
+        Sandbox(image="ubuntu:latest").add_credentials(
+            "api.example.com", "API_KEY", "API_KEY"
+        )
+
+    # Local credentials resolve on a copied policy while the original remains reusable.
+    monkeypatch.setenv("LOCAL_TOKEN", "secret-value")
+    client = _RecordingSandboxClient()
+    sandbox = Sandbox(
+        image="ubuntu:latest",
+        sandbox_client=client,  # type: ignore[arg-type]
+    ).add_credentials("api.example.com", Secret.from_local_env("LOCAL_TOKEN"))
+    with patch("chalkcompute._secret._upsert_secret") as upsert:
+        sandbox.run()
+    upsert.assert_called_once_with(
+        client._connect, "LOCAL_TOKEN", "secret-value", ANY
+    )
+    assert client.create_kwargs is not None
+    resolved_policy = client.create_kwargs["network_policy"]
+    assert isinstance(resolved_policy, NetworkPolicy)
+    resolved_transform = resolved_policy.allowed_hosts["api.example.com"][0].transforms[
+        0
+    ]
+    assert resolved_transform.headers_secrets == {
+        sandbox._env["LOCAL_TOKEN"]: "LOCAL_TOKEN"
+    }
+    assert host_bindings(sandbox, "api.example.com") == {
+        sandbox._env["LOCAL_TOKEN"]: Secret.from_local_env("LOCAL_TOKEN")
+    }
 
 
 def test_sandbox_client_create_can_request_chalk_identity() -> None:
