@@ -1,75 +1,70 @@
 # Sandbox capabilities and defaults
 
-Reviewed Daytona's public Python SDK on 2026-09-16. The goal is equivalent
-capabilities using Chalk's existing exec transport, rather than an API-compatible
-Daytona adapter.
-
-| Surface | Chalk support after this change |
+| Surface | Supported API |
 | --- | --- |
-| Git | `sandbox.git`: clone/init, staging/commit, status, branches, fetch/pull/push, reset/restore, remotes, local config and identity. No persistent credential-storage helper or TLS-verification bypass. |
-| Files | `sandbox.fs`: binary upload/download/read/write, mkdir/delete/rename, metadata/listing, permissions/ownership, filename glob search, literal text search/replacement. Uses Python 3 in the sandbox; no new service required. |
-| Processes | Existing `exec`, `exec_stream`, `exec_start`, stdin, signals, and reconnectable output. Container sessions separately expose PTYs and session discovery. No redundant `process` alias. |
-| Code execution | Existing stateful `execute_python` with sessions and artifacts. Other installed runtimes can be invoked with `exec`. |
-| Directories | New `get_work_dir()` and `get_user_home_dir()` work on newly created and attached handles. |
-| tmux/system tools | `Image.sandbox().apt_install(["tmux"])` installs tmux at build time. Detached sessions are managed with ordinary `sandbox.exec` calls. |
-| Creation | New optional image: `Image.sandbox()` is a fresh, extensible Python/Git image spec. Existing explicit-image and attached-handle paths remain unchanged. |
-| Resources, env, secrets, storage, network, SSH | Existing creation-time CPU/memory/GPU, env/Secret references, volume mounts, lifetime, tags, network policy, published port and managed outbound SSH. |
+| Git | `sandbox.git`: clone/init, staging/commit, status, branches, fetch/pull/push, reset/restore, remotes, local config and identity. |
+| Files | `sandbox.fs`: native SFTP upload/download/read/write, directories, metadata/listing, permissions/ownership, filename glob search, literal text search/replacement. |
+| Processes | `exec`, `exec_stream`, `exec_start`, stdin, signals, reconnectable buffered output, and checked raw-byte stdout streaming. Container sessions separately expose PTYs and session discovery. |
+| Code execution | Stateful `execute_python` with sessions and artifacts. Other installed runtimes can be invoked with `exec`. |
+| Directories | `get_work_dir()` and `get_user_home_dir()` work on newly created and attached handles with SFTP support. |
+| System tools | `Image.sandbox().apt_install(["tmux"])` installs tools at build time. Detached tmux sessions are managed with ordinary exec calls. |
+| Resources | Creation-time CPU/memory/GPU, env/Secret references, volume mounts, lifetime, tags, network policy, published port and managed outbound SSH. |
 
-Daytona's [Git reference](https://www.daytona.io/docs/en/python-sdk/sync/git/)
-was used to review clone defaults and repository operations. Chalk clones the
-remote's default branch with full history, unless `branch`/`depth` are supplied.
-A selected `commit_id` produces detached HEAD and must be available in the fetched
-history. Credentials use a command-scoped helper. Pulls use fast-forward only,
-reset defaults to mixed/HEAD, and branch deletion defaults to merged branches.
-Return values are Chalk dataclasses, strings, and lists.
+## Git defaults
 
-The [filesystem reference](https://www.daytona.io/docs/en/python-sdk/sync/file-system/)
-also offers bulk and streaming transfers. Chalk's new transfers are buffered,
-with chunked stdin uploads; true bounded-memory download streaming needs a raw
-byte stream interface (the existing `ExecProcess.output()` emits decoded text).
-Downloads retry a hypervisor `RST_STREAM` error at most twice, discarding partial
-output; uploads fail on transport disconnect rather than reattaching with lost
-stdin. Use volumes for large files. Search/replacement use literal text, filename search
-uses globs, and recursive searches skip symlinks and invalid UTF-8 files. Deletes
-require an explicit recursive flag for directories. A replacement across several
-files is not transactional.
+Clones use the remote's default branch with **depth 1**. Pass `depth=None` for
+full history or a positive integer for a different depth. `commit_id` fetches the
+selected commit and checks it out as detached HEAD, including for shallow clones.
+HTTPS credentials are scoped to each command and are never written into Git
+config. Pulls use fast-forward only, reset defaults to mixed/HEAD, and branch
+deletion defaults to merged branches. Config changes are repository-local.
 
-## Defaults
+## Filesystem transport
 
-[Daytona creation](https://www.daytona.io/docs/en/python-sdk/sync/daytona/)
-selects its default snapshot and Python when omitted. Its
-[sandbox guide](https://www.daytona.io/docs/sandboxes) documents a default size of
-1 vCPU, 1 GB RAM, and 3 GiB disk, plus a 15-minute inactivity stop for container
-sandboxes. These are platform policies, not portable SDK-only defaults.
+Filesystem operations speak SFTP to the native OpenSSH `sftp-server` binary over
+Chalk's authenticated bidirectional exec connection. There is no remote Python,
+shell-script dispatch, SSH daemon, exposed port, or additional authentication.
+Paths are passed as binary protocol fields, not interpolated into commands. Each
+operation starts a server process and closes it after the operation completes.
 
-Chalk's omitted image builds Python 3.14 slim with Git, CA certificates, and
-OpenSSH, working in `/workspace`. Custom images are untouched. CPU/memory/GPU,
-entrypoint, lifetime, and network defaults remain server-owned. Creation still
-waits for readiness by default with a 600-second timeout and 0.5-second polling.
-Git/file helper `timeout_secs=None` leaves the exec timeout unset. A multi-command
-operation applies a supplied timeout to each subprocess, not the whole operation.
-No idle-stop policy is added or simulated by a client-side timer.
+The default image includes `/usr/lib/openssh/sftp-server`. Custom Debian/Ubuntu
+images can add `.apt_install(["openssh-sftp-server"])`. For a different binary
+location, use `SandboxFileSystem(sandbox, server_path="/path/to/sftp-server")`.
+File operations do not require a Python runtime inside the image.
 
-Daytona's [declarative image guide](https://www.daytona.io/docs/en/declarative-builder/)
-recommends `Image.run_commands()` for OS packages, combining apt update/install
-and cleanup in one layer. Its published image/process references do not expose
-a tmux-specific helper. Chalk's `apt_install([...])` packages that workflow in
-the same immutable builder style as `pip_install([...])`, and works wherever an
-Image is accepted. It requires apt-get and a root build user. tmux is opt-in;
-detached sessions persist between exec calls, not beyond sandbox termination.
-Interactive attachment still needs a PTY.
+- `upload_file(local_path, remote_path)` and `download_file(remote_path, local_path)`
+  stream in bounded chunks. `upload_file_stream` and `download_file_stream` accept
+  or yield byte chunks. No fixed maximum file size is imposed by the SDK.
+- `read_file` and `read_text` return the whole contents in memory. A download with
+  no local destination also returns bytes; a download to a local path returns None.
+- Whole-file uploads/writes use an exclusive temporary file next to the destination
+  and atomic rename after all writes are acknowledged. Failed transfers never
+  replace the destination with partial data. Temporary files are cleaned up when
+  the connection remains usable; a lost connection may leave an orphan temporary.
+- Existing file modes are preserved; new files use 0644. Replacements have the
+  execution user's ownership. Symlink write destinations are rejected. Downloads
+  to local paths also use temporary files and atomic replacement.
+- Streams are not restarted after disconnects. Consumers of a download iterator
+  must discard partial output after an error and close the iterator on early exit.
+- File errors raise `SandboxFileSystemError`, retaining the server errno where
+  available. Permissions follow the execution user's OS privileges; ownership
+  setters accept numeric UID/GID values.
+- Recursive search skips symlinks. Text search/replacement runs on the client and
+  reads one file into memory at a time. Invalid UTF-8 files are skipped by search.
+  Replacement preserves line endings and is atomic per file, not across the group.
+  Callers should coordinate concurrent edits to files they replace.
 
-## Remaining platform work
+## Image and lifecycle defaults
 
-The [Daytona Sandbox surface](https://www.daytona.io/docs/en/python-sdk/sync/sandbox/)
-includes lifecycle pause/archive/recovery, forks/snapshots, resizing, activity and
-auto-stop controls, metrics, signed preview URLs, live env/secret/network updates,
-inbound SSH tokens, LSP, and desktop automation. These need dedicated backend
-contracts/runtime support; they are not implemented by this SDK change. Chalk's
-generated service contains suspend/resume RPC names, but its status enum has no
-suspended state, so this change does not promise a functioning pause lifecycle.
+Omitting the image uses `Image.sandbox()`: Python 3.14 slim, Git, CA certificates,
+the OpenSSH client and native SFTP server, and `/workspace` as the working directory. Explicit
+images are unchanged. The image builds through the standard image builder.
+`apt_install([...])` returns a new image and requires apt-get and a root build user.
+It installs noninteractively without recommended packages and cleans up indexes.
 
-[Daytona processes](https://www.daytona.io/docs/en/python-sdk/sync/process/)
-include named sessions, entrypoint logs, and PTY management. Extending the sandbox
-process service and exposing raw streaming transfers are follow-up platform tasks;
-existing Chalk exec and Python execution remain the supported interfaces.
+CPU/memory/GPU, entrypoint, lifetime, and network defaults remain server-owned.
+Creation waits for readiness by default with a 600-second timeout and 0.5-second
+polling. Helper `timeout_secs=None` leaves the exec timeout unset. An SFTP timeout
+applies to the entire operation's server process; a multi-command Git operation
+applies it to each subprocess. tmux sessions end when the sandbox terminates;
+interactive attachment requires a PTY.

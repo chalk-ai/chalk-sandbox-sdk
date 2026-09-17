@@ -542,10 +542,10 @@ result = sandbox.exec(
 ### Git and files inside a sandbox
 
 Omitting `image` uses `Image.sandbox()`: Python 3.14 on Debian slim with Git,
-CA certificates, and OpenSSH, working in `/workspace`. The image builds lazily
-through the normal image builder. Both `Sandbox().run()` and `client.create()`
+CA certificates, OpenSSH, and its native SFTP server, working in `/workspace`.
+The image builds lazily through the normal image builder. Both `Sandbox().run()` and `client.create()`
 use this default. Explicit images retain their existing behavior; custom images
-need `git` for Git helpers and `python3` for file helpers.
+need `git` for Git helpers and the native `sftp-server` binary for file helpers.
 
 ```python
 from chalkcompute import SandboxClient
@@ -553,7 +553,7 @@ from chalkcompute import SandboxClient
 with SandboxClient.from_env() as client:
     sandbox = client.create()
     try:
-        # Uses the remote's default branch and full history.
+        # Uses the remote's default branch with depth=1.
         sandbox.git.clone("https://github.com/octocat/Hello-World.git", "repo")
         print(sandbox.git.status("repo").current_branch)
         print(sandbox.fs.list_files("repo"))
@@ -573,8 +573,8 @@ Git helpers also support `init`, `branches`, `create_branch`, `checkout_branch`,
 `delete_branch`, `fetch`, `pull`, `push`, `reset`, `restore`, `remote_add`,
 `remote_get`, `remotes`, `get_config`, `set_config`, and `configure_user`.
 Pass `branch`, `commit_id`, or `depth` to `clone` to select a branch, detached
-commit, or shallow history. Pulls fast-forward only; branch deletion requires
-`force=True` for unmerged work. Config changes apply only to that repository.
+commit, or history depth (`1` by default; `None` for full history). Pulls fast-forward
+only; branch deletion requires `force=True` for unmerged work. Config changes apply only to that repository.
 HTTPS credentials can be supplied as `username` and `password` to clone/fetch/
 pull/push; they are scoped to the command without changing the remote URL or
 saving credentials. SSH remotes use the sandbox's existing SSH configuration.
@@ -586,14 +586,46 @@ File helpers include `read_file`, `write_file`, `upload_file`, `download_file`,
 text), and `replace_in_files`. File paths are relative to the image working
 directory; Git `path` identifies the repository root. Use `get_work_dir()` and
 `get_user_home_dir()` to discover directories on attached/custom sandboxes.
-Transfers preserve raw bytes and buffer contents in client memory; use volumes
-for large datasets. File operations raise `SandboxFileSystemError` on command
-failure. Directories require `recursive=True` to delete, and writes require an
-existing parent directory. Helpers accept `timeout_secs` with the same semantics
+Transfers use the native SFTP binary protocol over authenticated exec, with no
+remote Python or shell scripts. Local-file uploads and downloads stream in bounded
+chunks; reads returning `bytes` or text buffer the requested contents. File
+operations raise `SandboxFileSystemError` with the server errno when available.
+Directories require `recursive=True` to delete, and writes require an existing
+parent directory. Helpers accept `timeout_secs` with the same semantics
 as `sandbox.exec`; multi-command Git operations apply it to each command.
 
-For the reviewed Daytona capabilities, defaults, and remaining backend gaps, see
-[the sandbox capability comparison](docs/sandbox-capabilities.md).
+For filesystem setup, transfer guarantees, and defaults, see
+[the sandbox capability guide](docs/sandbox-capabilities.md).
+
+### Streaming files without a remote Python runtime
+
+The default image includes `/usr/lib/openssh/sftp-server`. For a custom
+Debian/Ubuntu image, add `.apt_install(["openssh-sftp-server"])`; no Python runtime,
+SSH daemon, listening port, or SSH credentials are needed. An image with a different
+server location can use `SandboxFileSystem(sandbox, server_path="...")`.
+
+```python
+# Streams in bounded chunks; does not load the file into client memory.
+sandbox.fs.upload_file("local-large.bin", "/workspace/large.bin")
+sandbox.fs.download_file("/workspace/large.bin", "local-copy.bin")
+
+# Iterator-based transfers integrate with other streaming sources/sinks.
+sandbox.fs.upload_file_stream(chunks, "/workspace/generated.bin")
+for chunk in sandbox.fs.download_file_stream("/workspace/generated.bin"):
+    consume(chunk)
+
+text = sandbox.fs.read_text("/workspace/notes.txt")
+```
+
+Whole-file uploads and writes replace the destination atomically after the server
+acknowledges the complete transfer. Existing file permissions are preserved; new
+files use mode 0644. Symlink destinations are rejected. Downloads to a local path
+also replace it atomically and return `None`; omitting the local path returns
+`bytes`. Failures before the final rename preserve the previous destination.
+A lost connection can leave an adjacent temporary upload file, but cannot publish partially uploaded content.
+Streams are not replayed automatically. Close a download iterator if stopping
+before completion. Text search/replacement runs on the client over SFTP and buffers
+one candidate file at a time. Ownership changes take numeric user/group IDs.
 
 ### Add tmux to a sandbox image
 

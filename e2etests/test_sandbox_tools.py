@@ -81,3 +81,58 @@ def test_sandbox_tmux_image():
         finally:
             if sandbox.id is not None:
                 sandbox.terminate()
+
+
+@needs_staging
+def test_native_filesystem_without_python(tmp_path):
+    import errno
+
+    import pytest
+
+    from chalkcompute import Image, SandboxFileSystemError
+
+    with SandboxClient.from_env() as client:
+        sandbox = Sandbox(
+            image=Image.base("debian:trixie-slim")
+            .apt_install(["openssh-sftp-server"])
+            .workdir("/workspace"),
+            name=build_scoped_name("sandbox-native-fs"),
+            lifetime="600s",
+            sandbox_client=client,
+        )
+        try:
+            sandbox.run(timeout=300)
+            for interpreter in ("/usr/bin/python3", "/usr/local/bin/python3"):
+                assert sandbox.exec("test", "-e", interpreter).exit_code == 1
+            fs = sandbox.fs
+            fs.create_folder("data/nested")
+            data = bytes(range(256)) * 4096
+            local = tmp_path / "source.bin"
+            local.write_bytes(data)
+            fs.upload_file(local, "data/nested/file.bin")
+            downloaded = tmp_path / "download.bin"
+            assert fs.download_file("data/nested/file.bin", downloaded) is None
+            assert downloaded.read_bytes() == data
+            assert fs.get_file_info("data/nested/file.bin").size == len(data)
+            assert fs.search_files("data", "*.bin") == ["data/nested/file.bin"]
+            fs.set_file_permissions("data/nested/file.bin", mode="600")
+            fs.write_file("data/nested/file.bin", b"existing")
+
+            def interrupted():
+                yield b"partial"
+                raise RuntimeError("upload source failed")
+
+            with pytest.raises(RuntimeError, match="upload source failed"):
+                fs.upload_file_stream(interrupted(), "data/nested/file.bin")
+            assert fs.read_file("data/nested/file.bin") == b"existing"
+            assert fs.get_file_info("data/nested/file.bin").permissions == "600"
+            with pytest.raises(SandboxFileSystemError) as error:
+                fs.read_file("missing")
+            assert error.value.errno == errno.ENOENT
+            with pytest.raises(SandboxFileSystemError):
+                fs.delete_file("data")
+            fs.delete_file("data", recursive=True)
+            assert fs.list_files() == []
+        finally:
+            if sandbox.id is not None:
+                sandbox.terminate()

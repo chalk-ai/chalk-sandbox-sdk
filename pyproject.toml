@@ -16,6 +16,7 @@ dependencies = [
     # ConnectRPC 0.11.1 pins protobuf-py 0.1.1; upstream main supports 0.3.0.
     "connectrpc>=0.12.0",
     "pyqwest>=0.10.0",
+    "paramiko>=3.5,<5",
 ]
 
 [build-system]

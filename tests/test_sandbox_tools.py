@@ -1,10 +1,10 @@
-"""Exercise sandbox helpers with real Git/Python processes, without cloud access."""
+"""Exercise sandbox helpers with real Git/SFTP processes, without cloud access."""
 
 from __future__ import annotations
 
 import os
 import subprocess
-import sys
+import errno
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -23,25 +23,34 @@ from chalkcompute import (
 
 class LocalProcess:
     def __init__(self, command, *, cwd, env):
-        self.command, self.cwd, self.env = command, cwd, env
-        self.data = bytearray()
+        self.process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=cwd,
+            env=env,
+        )
 
     def write_stdin(self, data):
-        self.data.extend(data)
+        self.process.stdin.write(data)
+        self.process.stdin.flush()
 
     def close_stdin(self):
-        pass
+        if self.process.stdin is not None:
+            self.process.stdin.close()
+            self.process.stdin = None
 
     def wait(self, *, auto_reattach=True):
-        result = subprocess.run(
-            self.command,
-            input=bytes(self.data),
-            capture_output=True,
-            cwd=self.cwd,
-            env=self.env,
-            timeout=20,
-        )
-        return ExecResult(result.stdout, result.stderr, result.returncode)
+        stdout, stderr = self.process.communicate(timeout=20)
+        return ExecResult(stdout, stderr, self.process.returncode)
+
+    def stdout_bytes(self):
+        while chunk := self.process.stdout.read1(32768):
+            yield chunk
+        stderr = self.process.stderr.read()
+        if self.process.wait(timeout=20):
+            raise SandboxError(stderr.decode())
 
 
 @pytest.fixture
@@ -55,9 +64,25 @@ def sandbox(tmp_path):
         "HOME": str(tmp_path),
     }
 
+    server = next(
+        (
+            path
+            for path in (
+                "/usr/libexec/sftp-server",
+                "/usr/lib/openssh/sftp-server",
+                "/usr/lib/ssh/sftp-server",
+            )
+            if Path(path).exists()
+        ),
+        None,
+    )
+    if server is None:
+        pytest.skip("OpenSSH sftp-server is required for local native filesystem tests")
+
     def start(command, *args, workdir=None, env=None, timeout_secs=None):
-        if command == "python3":
-            command = sys.executable
+        assert command not in ("python", "python3", "sh", "bash")
+        if command == "/usr/lib/openssh/sftp-server":
+            command = server
         cwd = tmp_path / workdir if workdir else tmp_path
         return LocalProcess([command, *args], cwd=cwd, env={**base_env, **(env or {})})
 
@@ -114,7 +139,7 @@ def test_clone_defaults_shallow_and_detached(sandbox, tmp_path):
     sandbox.git.add("origin", ["."])
     sandbox.git.commit("origin", "second", "Test", "test@example.com")
     url = (tmp_path / "origin").as_uri()
-    sandbox.git.clone(url, "clone")
+    sandbox.git.clone(url, "clone", depth=None)
     assert sandbox.git.status("clone").current_branch == "trunk"
     assert sandbox.git.status("clone").branch_published
     assert (
@@ -123,7 +148,7 @@ def test_clone_defaults_shallow_and_detached(sandbox, tmp_path):
         ).stdout_text.strip()
         == "2"
     )
-    sandbox.git.clone(url, "shallow", depth=1, branch="trunk")
+    sandbox.git.clone(url, "shallow")
     assert (
         sandbox.exec(
             "git", "rev-list", "--count", "HEAD", workdir="shallow"
@@ -237,7 +262,8 @@ def test_files_binary_paths_and_metadata(sandbox, tmp_path):
     sandbox.fs.set_file_permissions(path, mode="600")
     assert sandbox.fs.get_file_info(path).permissions == "600"
     local = tmp_path / "download"
-    assert sandbox.fs.download_file(path, local) == data
+    assert sandbox.fs.download_file(path, local) is None
+    assert local.read_bytes() == data
     sandbox.fs.upload_file(local, "dir/upload")
     assert sandbox.fs.read_file("dir/upload") == data
     sandbox.fs.upload_file(b"", "dir/empty")
@@ -248,7 +274,9 @@ def test_files_binary_paths_and_metadata(sandbox, tmp_path):
     sandbox.fs.delete_file("dir", recursive=True)
     assert not (tmp_path / "dir").exists()
     assert sandbox.get_work_dir() == str(tmp_path)
-    assert sandbox.get_user_home_dir() == str(tmp_path)
+    import pwd
+
+    assert sandbox.get_user_home_dir() == pwd.getpwuid(os.getuid()).pw_dir
 
 
 def test_find_replace_symlinks_errors(sandbox, tmp_path):
@@ -280,13 +308,9 @@ def test_helpers_forward_timeout_and_fail_on_signal():
     sandbox.exec = MagicMock(return_value=ExecResult(b"", b"", 0))
     sandbox.git.clone("https://example.com/repo", "repo", timeout_secs=12)
     assert sandbox.exec.call_args.kwargs["timeout_secs"] == 12
-    sandbox.fs.read_file("file", timeout_secs=13)
-    assert sandbox.exec.call_args.kwargs["timeout_secs"] == 13
     sandbox.exec.return_value = ExecResult(b"", b"", None, signal=9)
     with pytest.raises(GitError):
         sandbox.git.status("repo")
-    with pytest.raises(SandboxFileSystemError):
-        sandbox.fs.read_file("file")
 
 
 def test_helpers_require_a_running_sandbox():
@@ -325,34 +349,54 @@ def test_text_replacement_preserves_newlines(sandbox):
     assert sandbox.fs.read_file("crlf.txt") == b"one\r\nthree\r\n"
 
 
-def test_upload_does_not_reattach_without_replaying_stdin():
-    sandbox = Sandbox(sandbox_id="test")
-    process = MagicMock()
-    process.wait.return_value = ExecResult(b"", b"", 0)
-    sandbox.exec_start = MagicMock(return_value=process)
-    sandbox.fs.write_file("empty", b"")
-    process.close_stdin.assert_called_once()
-    process.wait.assert_called_once_with(auto_reattach=False)
+def test_upload_failure_preserves_destination_and_removes_temporary_file(
+    sandbox, tmp_path
+):
+    sandbox.fs.write_file("destination", b"original")
+
+    def broken_chunks():
+        yield b"partial"
+        raise RuntimeError("producer failed")
+
+    with pytest.raises(RuntimeError, match="producer failed"):
+        sandbox.fs.upload_file_stream(broken_chunks(), "destination")
+    assert sandbox.fs.read_file("destination") == b"original"
+    assert not list(tmp_path.glob(".chalk-upload-*"))
 
 
-def test_download_retries_stream_resets_without_returning_partial_data():
-    sandbox = Sandbox(sandbox_id="test")
-    reset = ExecResult(b"partial", b"", None, error="hypervisor_error: RST_STREAM")
-    sandbox.exec = MagicMock(side_effect=[reset, ExecResult(b"complete", b"", 0)])
-    with patch("chalkcompute._sandbox_fs.time.sleep"):
-        assert sandbox.fs.read_file("file") == b"complete"
-    assert sandbox.exec.call_count == 2
-    sandbox.exec = MagicMock(return_value=reset)
-    with (
-        patch("chalkcompute._sandbox_fs.time.sleep"),
-        pytest.raises(SandboxFileSystemError),
-    ):
-        sandbox.fs.read_file("file")
-    assert sandbox.exec.call_count == 3
-    sandbox.exec.reset_mock()
-    with pytest.raises(SandboxFileSystemError):
-        sandbox.fs.delete_file("file")
-    assert sandbox.exec.call_count == 1
+def test_download_failure_preserves_local_destination(sandbox, tmp_path):
+    destination = tmp_path / "destination"
+    destination.write_bytes(b"original")
+
+    def broken_download(*args, **kwargs):
+        yield b"partial"
+        raise SandboxFileSystemError(errno.EIO, "stream disconnected")
+
+    fs = sandbox.fs
+    with patch.object(fs, "download_file_stream", broken_download):
+        with pytest.raises(SandboxFileSystemError):
+            fs.download_file("remote", destination)
+    assert destination.read_bytes() == b"original"
+    assert not list(tmp_path.glob(".chalk-download-*"))
+
+
+def test_streams_are_bounded_and_writes_preserve_permissions(sandbox, tmp_path):
+    sandbox.fs.upload_file_stream((b"a" * 4096 for _ in range(100)), "large")
+    chunks = list(sandbox.fs.download_file_stream("large"))
+    assert max(map(len, chunks)) <= 32768
+    assert b"".join(chunks) == b"a" * 409600
+    sandbox.fs.set_file_permissions("large", mode="640")
+    sandbox.fs.write_file("large", "replacement")
+    assert sandbox.fs.get_file_info("large").permissions == "640"
+    assert sandbox.fs.read_text("large") == "replacement"
+    (tmp_path / "link").symlink_to(tmp_path / "large")
+    with pytest.raises(SandboxFileSystemError) as error:
+        sandbox.fs.write_file("link", "bad")
+    assert error.value.errno == errno.ELOOP
+    assert sandbox.fs.read_text("large") == "replacement"
+    with pytest.raises(SandboxFileSystemError) as error:
+        sandbox.fs.read_file("missing")
+    assert error.value.errno == errno.ENOENT
 
 
 def test_git_relative_paths_use_git_c_instead_of_exec_workdir():
@@ -368,3 +412,26 @@ def test_git_relative_paths_use_git_c_instead_of_exec_workdir():
         "file",
     )
     assert "workdir" not in sandbox.exec.call_args.kwargs
+
+
+def test_sftp_channel_handles_fragmented_and_empty_frames():
+    from chalkcompute._sandbox_fs import _ExecSocket
+
+    process = MagicMock()
+    process.stdout_bytes.return_value = iter([b"", b"ab", b"cdef"])
+    channel = _ExecSocket(process)
+    assert channel.recv(1) == b"a"
+    assert channel.recv(8) == b"b"
+    assert channel.recv(8) == b"cdef"
+    assert channel.recv(8) == b""
+    channel.close()
+    channel.close()
+    process.close_stdin.assert_called_once()
+
+
+def test_download_iterator_can_be_closed_early(sandbox):
+    sandbox.fs.write_file("large", b"a" * 100000)
+    stream = sandbox.fs.download_file_stream("large")
+    assert len(next(stream)) == 32768
+    stream.close()
+    assert sandbox.fs.read_file("large") == b"a" * 100000

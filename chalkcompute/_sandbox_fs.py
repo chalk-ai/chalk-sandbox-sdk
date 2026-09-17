@@ -1,24 +1,37 @@
-"""File operations over sandbox exec, requiring only Python 3 in the image."""
+"""Native SFTP filesystem operations over the authenticated sandbox exec stream."""
 
 from __future__ import annotations
 
-import json
-import time
+import errno
+import fnmatch
+import io
+import os
+import posixpath
+import stat
+import tempfile
+import uuid
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, overload
+
+from paramiko import SFTPAttributes, SFTPClient, SSHException
 
 if TYPE_CHECKING:
-    from chalkcompute._sandbox import Sandbox
+    from chalkcompute._sandbox import ExecProcess, Sandbox
+
+_CHUNK_SIZE = 32 * 1024
+_DEFAULT_SERVER = "/usr/lib/openssh/sftp-server"
 
 
-class SandboxFileSystemError(RuntimeError):
-    """A file operation inside a sandbox failed."""
+class SandboxFileSystemError(OSError):
+    """Remote filesystem/transport failure, with errno when the server supplies it."""
 
 
 @dataclass(frozen=True)
 class SandboxFileInfo:
-    """Metadata for a sandbox path. Permissions are an octal string."""
+    """lstat metadata for a sandbox path; permissions are an octal string."""
 
     name: str
     path: str
@@ -38,182 +51,213 @@ class FileMatch:
     line: str
 
 
-# All caller data travels in JSON argv or raw stdin, never in executable source.
-_SCRIPT = r"""
-import fnmatch
-import json
-import os
-import pathlib
-import shutil
-import stat
-import sys
-
-operation, params = sys.argv[1], json.loads(sys.argv[2])
-p = pathlib.Path(params.get("path", "."))
-
-def info(path):
-    st = path.lstat()
-    return dict(name=path.name, path=str(path), size=st.st_size,
-                is_dir=stat.S_ISDIR(st.st_mode), is_symlink=stat.S_ISLNK(st.st_mode),
-                permissions=format(stat.S_IMODE(st.st_mode), "03o"), modified_time=st.st_mtime)
-
-def walk(path):
-    if not path.is_dir():
-        raise NotADirectoryError(str(path))
-    def fail(error):
-        raise error
-    for root, dirs, files in os.walk(path, followlinks=False, onerror=fail):
-        dirs.sort()
-        for name in sorted(files):
-            child = pathlib.Path(root) / name
-            if not child.is_symlink():
-                yield child
-
-result = None
-if operation == "read":
-    sys.stdout.buffer.write(p.read_bytes())
-elif operation == "write":
-    with p.open("wb") as dst:
-        shutil.copyfileobj(sys.stdin.buffer, dst)
-elif operation == "mkdir":
-    p.mkdir(mode=int(params["mode"], 8), parents=True, exist_ok=True)
-elif operation == "delete":
-    if p.is_dir() and not p.is_symlink():
-        if not params["recursive"]:
-            raise IsADirectoryError(str(p))
-        shutil.rmtree(p)
-    else:
-        p.unlink()
-elif operation == "info":
-    result = info(p)
-elif operation == "list":
-    result = [info(child) for child in sorted(p.iterdir())]
-elif operation == "move":
-    p.rename(params["destination"])
-elif operation == "permissions":
-    if params["mode"] is not None:
-        p.chmod(int(params["mode"], 8))
-    if params["owner"] is not None or params["group"] is not None:
-        shutil.chown(p, user=params["owner"], group=params["group"])
-elif operation == "search":
-    result = [str(child) for child in walk(p) if fnmatch.fnmatchcase(child.name, params["pattern"])]
-elif operation == "find":
-    result = []
-    for child in walk(p):
-        try:
-            content = child.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            continue
-        for number, line in enumerate(content.splitlines(), 1):
-            if params["text"] in line:
-                result.append(dict(path=str(child), line_number=number, line=line))
-elif operation == "replace":
-    result = {}
-    for name in params["files"]:
-        child = pathlib.Path(name)
-        with child.open("r", encoding="utf-8", newline="") as src:
-            content = src.read()
-        count = content.count(params["old"])
-        if count:
-            with child.open("w", encoding="utf-8", newline="") as dst:
-                dst.write(content.replace(params["old"], params["new"]))
-        result[name] = count
-elif operation == "home":
-    result = str(pathlib.Path.home())
-elif operation == "cwd":
-    result = os.getcwd()
-else:
-    raise ValueError("Unknown file operation: " + operation)
-if result is not None:
-    print(json.dumps(result))
-"""
-
-
 def _path(path: str) -> str:
     if not isinstance(path, str) or not path or "\0" in path:
         raise ValueError("path must be a nonempty string without NUL bytes")
     return path
 
 
-def _mode(mode: str) -> str:
+def _mode(mode: str) -> int:
     if (
         not isinstance(mode, str)
         or not 3 <= len(mode) <= 4
         or any(c not in "01234567" for c in mode)
     ):
         raise ValueError("mode must be a three- or four-digit octal string")
-    return mode
+    return int(mode, 8)
+
+
+class _ExecSocket:
+    """Socket-like SFTP channel; exec already supplies authentication/encryption.
+
+    SFTP writes wait for acknowledgments, bounding pending stdin as well as reads.
+    No SSH daemon, listening port, SSH keys, or remote interpreter is involved.
+    """
+
+    def __init__(self, process: ExecProcess) -> None:
+        self._process = process
+        self._stdout = process.stdout_bytes()
+        self._buffer = bytearray()
+        self._closed = False
+
+    def send(self, data: bytes) -> int:
+        self._process.write_stdin(data)
+        return len(data)
+
+    def get_name(self) -> str:
+        return "sandbox-exec"
+
+    def recv(self, size: int) -> bytes:
+        while not self._buffer:
+            try:
+                chunk = next(self._stdout)
+            except StopIteration:
+                return b""
+            self._buffer.extend(chunk)
+        result = bytes(self._buffer[:size])
+        del self._buffer[:size]
+        return result
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._process.close_stdin()
+        try:
+            # The native server exits on EOF. Drain to close its exec session.
+            for _ in self._stdout:
+                pass
+        finally:
+            close = getattr(self._stdout, "close", None)
+            if close is not None:
+                close()
 
 
 class SandboxFileSystem:
-    """Access as ``sandbox.fs``. Relative paths use the image working directory.
+    """Access via ``sandbox.fs``. Paths use the image's working directory.
 
-    Requires ``python3`` in custom images. File contents are binary-safe and
-    buffered in client memory; use volumes for large datasets. Errors raise
-    SandboxFileSystemError. Existing files are overwritten on write/upload.
+    Uses the native OpenSSH SFTP server over Chalk's existing authenticated exec
+    transport. The default image includes it; custom Debian/Ubuntu images can
+    use ``.apt_install(["openssh-sftp-server"])``. For other layouts construct
+    ``SandboxFileSystem(sandbox, server_path="/path/to/sftp-server")``.
+
+    Uploads and downloads to a local path stream in bounded chunks. Convenience
+    byte/text reads buffer the returned contents. Whole-file writes are atomic:
+    an adjacent temporary file is renamed only after every write is acknowledged.
+    Transport failures propagate; operations are never automatically restarted.
     """
 
-    def __init__(self, sandbox: Sandbox) -> None:
+    def __init__(self, sandbox: Sandbox, *, server_path: str = _DEFAULT_SERVER) -> None:
         self._sandbox = sandbox
+        self._server_path = _path(server_path)
 
-    def _run(
-        self,
-        operation: str,
-        params: dict[str, object],
-        *,
-        data: bytes | None = None,
-        timeout_secs: int | None = None,
-    ) -> bytes:
-        args = ("python3", "-c", _SCRIPT, operation, json.dumps(params))
-        if data is None:
-            result = self._sandbox.exec(*args, timeout_secs=timeout_secs)
-            # The hypervisor can reset its output stream before reporting exit.
-            # Only downloads are safe to restart; discard all partial output.
-            for delay in (0.1, 0.2):
-                if not (
-                    operation == "read"
-                    and result.error
-                    and result.error.startswith("hypervisor_error:")
-                    and "RST_STREAM" in result.error
-                ):
-                    break
-                time.sleep(delay)
-                result = self._sandbox.exec(*args, timeout_secs=timeout_secs)
-        else:
-            process = self._sandbox.exec_start(*args, timeout_secs=timeout_secs)
-            try:
-                for offset in range(0, len(data), 64 * 1024):
-                    process.write_stdin(data[offset : offset + 64 * 1024])
-            finally:
-                process.close_stdin()
-            # Reattaching cannot replay stdin that was lost on disconnect.
-            # Fail the upload instead of reporting a truncated file as success.
-            result = process.wait(auto_reattach=False)
-        if result.exit_code != 0 or result.error or result.signal:
-            message = (
-                result.error
-                or result.stderr_text
-                or f"exit code {result.exit_code}, signal {result.signal}"
-            )
+    @contextmanager
+    def _session(
+        self, *, timeout_secs: int | None = None, home: bool = False
+    ) -> Iterator[SFTPClient]:
+        # Import here to avoid a cycle with Sandbox.fs.
+        from chalkcompute._sandbox import SandboxError
+        from connectrpc.errors import ConnectError
+
+        process = self._sandbox.exec_start(
+            self._server_path,
+            *(["-d", "%d"] if home else []),
+            timeout_secs=timeout_secs,
+        )
+        channel = _ExecSocket(process)
+        client = None
+        try:
+            client = SFTPClient(channel)
+            yield client
+        except (OSError, EOFError, SSHException, SandboxError, ConnectError) as exc:
+            code = getattr(exc, "errno", None) or errno.EIO
             raise SandboxFileSystemError(
-                f"Sandbox file operation {operation!r} failed: {message.strip()}"
-            )
-        return result.stdout
+                code, f"Sandbox filesystem operation failed: {exc}"
+            ) from exc
+        finally:
+            # Cleanup should not mask an operation error or an interrupted caller.
+            with suppress(Exception):
+                if client is not None:
+                    client.close()
+                else:
+                    channel.close()
+
+    def get_work_dir(self) -> str:
+        """Return the server's initial working directory."""
+        with self._session() as client:
+            return client.normalize(".")
+
+    def get_user_home_dir(self) -> str:
+        """Return the execution user's home directory from the OS account database."""
+        with self._session(home=True) as client:
+            return client.normalize(".")
+
+    def download_file_stream(
+        self, remote_path: str, *, timeout_secs: int | None = None
+    ) -> Iterator[bytes]:
+        """Yield binary chunks without buffering the file; close on early exit.
+
+        A failure raises even after yielding data. Consumers must discard any
+        partial output; ``download_file(path, local_path)`` handles this for you.
+        """
+        _path(remote_path)
+        with self._session(timeout_secs=timeout_secs) as client:
+            with client.open(remote_path, "rb") as file:
+                while chunk := file.read(_CHUNK_SIZE):
+                    yield chunk
 
     def read_file(self, path: str, *, timeout_secs: int | None = None) -> bytes:
-        """Read a file as bytes."""
-        return self._run("read", {"path": _path(path)}, timeout_secs=timeout_secs)
+        """Read a file into memory as bytes."""
+        return b"".join(self.download_file_stream(path, timeout_secs=timeout_secs))
+
+    def read_text(
+        self, path: str, *, encoding: str = "utf-8", timeout_secs: int | None = None
+    ) -> str:
+        """Read text, rejecting invalid encoding rather than replacing bytes."""
+        return self.read_file(path, timeout_secs=timeout_secs).decode(encoding)
+
+    @staticmethod
+    def _write(client: SFTPClient, path: str, chunks: Iterable[bytes]) -> None:
+        # Refuse symlinks instead of silently replacing the link or writing its
+        # target. Preserve permissions of existing regular files on replacement.
+        mode = 0o644
+        try:
+            attrs = client.lstat(path)
+        except FileNotFoundError:
+            pass
+        else:
+            if stat.S_ISLNK(attrs.st_mode or 0):
+                raise OSError(errno.ELOOP, "Refusing to replace a symbolic link", path)
+            if not stat.S_ISREG(attrs.st_mode or 0):
+                raise OSError(errno.EISDIR, "Destination must be a regular file", path)
+            mode = stat.S_IMODE(attrs.st_mode or 0)
+        temporary = posixpath.join(
+            posixpath.dirname(path), f".chalk-upload-{uuid.uuid4().hex}"
+        )
+        published = False
+        try:
+            with client.open(temporary, "wx") as destination:
+                destination.chmod(0o600)
+                for chunk in chunks:
+                    if not isinstance(chunk, bytes):
+                        raise TypeError("upload chunks must be bytes")
+                    for offset in range(0, len(chunk), _CHUNK_SIZE):
+                        destination.write(chunk[offset : offset + _CHUNK_SIZE])
+                destination.chmod(mode)
+            # OpenSSH extension: atomic replacement even when target exists.
+            client.posix_rename(temporary, path)
+            published = True
+        finally:
+            if not published:
+                with suppress(Exception):
+                    client.remove(temporary)
+
+    def upload_file_stream(
+        self,
+        chunks: Iterable[bytes],
+        destination: str,
+        *,
+        timeout_secs: int | None = None,
+    ) -> None:
+        """Upload byte chunks atomically; the parent directory must exist.
+
+        Existing permissions are preserved. New files have mode 0644. Symlink
+        destinations are rejected. Failed transfers clean up temporary files
+        when the connection is usable; never rename incomplete data into place.
+        """
+        _path(destination)
+        with self._session(timeout_secs=timeout_secs) as client:
+            self._write(client, destination, chunks)
 
     def write_file(
         self, path: str, data: str | bytes, *, timeout_secs: int | None = None
     ) -> None:
-        """Write bytes or UTF-8 text; the parent directory must already exist."""
-        _path(path)
+        """Atomically replace a file with bytes or UTF-8 text."""
         if isinstance(data, str):
             data = data.encode("utf-8")
         if not isinstance(data, bytes):
             raise TypeError("data must be str or bytes")
-        self._run("write", {"path": path}, data=data, timeout_secs=timeout_secs)
+        self.upload_file_stream((data,), path, timeout_secs=timeout_secs)
 
     def upload_file(
         self,
@@ -222,140 +266,237 @@ class SandboxFileSystem:
         *,
         timeout_secs: int | None = None,
     ) -> None:
-        """Upload a local path or bytes to a remote path."""
+        """Stream a local file or upload bytes into an atomic remote replacement."""
         _path(destination)
-        data = source if isinstance(source, bytes) else Path(source).read_bytes()
-        self.write_file(destination, data, timeout_secs=timeout_secs)
+        with (
+            io.BytesIO(source) if isinstance(source, bytes) else open(source, "rb")
+        ) as file:
+            chunks = iter(lambda: file.read(_CHUNK_SIZE), b"")
+            self.upload_file_stream(chunks, destination, timeout_secs=timeout_secs)
 
+    @overload
+    def download_file(
+        self,
+        remote_path: str,
+        local_path: None = None,
+        *,
+        timeout_secs: int | None = None,
+    ) -> bytes: ...
+    @overload
+    def download_file(
+        self,
+        remote_path: str,
+        local_path: str | Path,
+        *,
+        timeout_secs: int | None = None,
+    ) -> None: ...
     def download_file(
         self,
         remote_path: str,
         local_path: str | Path | None = None,
         *,
         timeout_secs: int | None = None,
-    ) -> bytes:
-        """Return file bytes, optionally also saving them to a local path."""
-        data = self.read_file(remote_path, timeout_secs=timeout_secs)
-        if local_path is not None:
-            Path(local_path).write_bytes(data)
-        return data
+    ) -> bytes | None:
+        """Return bytes, or stream to a local path and atomically replace it.
 
-    def create_folder(
-        self, path: str, mode: str = "755", *, timeout_secs: int | None = None
-    ) -> None:
-        """Create directories recursively; existing directories are unchanged.
-
-        ``mode`` applies to the final directory, subject to the process umask.
+        A failed download preserves an existing local destination and deletes
+        its temporary file. Parent directories must already exist.
         """
-        self._run(
-            "mkdir",
-            {"path": _path(path), "mode": _mode(mode)},
-            timeout_secs=timeout_secs,
-        )
+        _path(remote_path)
+        if local_path is None:
+            return self.read_file(remote_path, timeout_secs=timeout_secs)
+        target = Path(local_path)
+        fd, temporary = tempfile.mkstemp(prefix=".chalk-download-", dir=target.parent)
+        try:
+            with os.fdopen(fd, "wb") as file:
+                for chunk in self.download_file_stream(
+                    remote_path, timeout_secs=timeout_secs
+                ):
+                    file.write(chunk)
+            os.replace(temporary, target)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+        return None
 
-    def delete_file(
-        self, path: str, *, recursive: bool = False, timeout_secs: int | None = None
-    ) -> None:
-        """Delete a file/symlink; directories require explicit recursive=True."""
-        self._run(
-            "delete",
-            {"path": _path(path), "recursive": recursive},
-            timeout_secs=timeout_secs,
+    @staticmethod
+    def _info(path: str, attrs: SFTPAttributes) -> SandboxFileInfo:
+        mode = attrs.st_mode or 0
+        return SandboxFileInfo(
+            posixpath.basename(path),
+            path,
+            attrs.st_size or 0,
+            stat.S_ISDIR(mode),
+            stat.S_ISLNK(mode),
+            format(stat.S_IMODE(mode), "03o"),
+            float(attrs.st_mtime or 0),
         )
 
     def get_file_info(
         self, path: str, *, timeout_secs: int | None = None
     ) -> SandboxFileInfo:
-        """Return lstat metadata without following a final symlink."""
-        return SandboxFileInfo(
-            **json.loads(
-                self._run("info", {"path": _path(path)}, timeout_secs=timeout_secs)
-            )
-        )
+        """Return metadata without following the final symlink."""
+        _path(path)
+        with self._session(timeout_secs=timeout_secs) as client:
+            return self._info(path, client.lstat(path))
 
     def list_files(
         self, path: str = ".", *, timeout_secs: int | None = None
     ) -> list[SandboxFileInfo]:
-        """List immediate children, including hidden files, sorted by name."""
-        return [
-            SandboxFileInfo(**item)
-            for item in json.loads(
-                self._run("list", {"path": _path(path)}, timeout_secs=timeout_secs)
-            )
-        ]
+        """List immediate children (including hidden files), sorted by name."""
+        _path(path)
+        with self._session(timeout_secs=timeout_secs) as client:
+            return [
+                self._info(posixpath.join(path, item.filename), item)
+                for item in sorted(
+                    client.listdir_attr(path), key=lambda item: item.filename
+                )
+            ]
+
+    @staticmethod
+    def _mkdir(client: SFTPClient, path: str, mode: int) -> None:
+        try:
+            attrs = client.stat(path)
+        except FileNotFoundError:
+            parent = posixpath.dirname(path)
+            if parent and parent != path:
+                SandboxFileSystem._mkdir(client, parent, 0o777)
+            try:
+                client.mkdir(path, mode)
+            except OSError:
+                if not stat.S_ISDIR(client.stat(path).st_mode or 0):
+                    raise
+        else:
+            if not stat.S_ISDIR(attrs.st_mode or 0):
+                raise NotADirectoryError(errno.ENOTDIR, "Not a directory", path)
+
+    def create_folder(
+        self, path: str, mode: str = "755", *, timeout_secs: int | None = None
+    ) -> None:
+        """Create missing directories; final mode is subject to server umask."""
+        _path(path)
+        parsed_mode = _mode(mode)
+        with self._session(timeout_secs=timeout_secs) as client:
+            self._mkdir(client, path, parsed_mode)
+
+    @staticmethod
+    def _delete(client: SFTPClient, path: str, recursive: bool) -> None:
+        if stat.S_ISDIR(client.lstat(path).st_mode or 0):
+            if not recursive:
+                raise IsADirectoryError(
+                    errno.EISDIR, "Directories require recursive=True", path
+                )
+            for item in client.listdir_attr(path):
+                SandboxFileSystem._delete(
+                    client, posixpath.join(path, item.filename), True
+                )
+            client.rmdir(path)
+        else:
+            client.remove(path)
+
+    def delete_file(
+        self, path: str, *, recursive: bool = False, timeout_secs: int | None = None
+    ) -> None:
+        """Delete a file/symlink; directories require explicit recursive=True."""
+        _path(path)
+        with self._session(timeout_secs=timeout_secs) as client:
+            self._delete(client, path, recursive)
 
     def move_files(
         self, source: str, destination: str, *, timeout_secs: int | None = None
     ) -> None:
-        """Rename a path using OS rename semantics (same filesystem)."""
-        self._run(
-            "move",
-            {"path": _path(source), "destination": _path(destination)},
-            timeout_secs=timeout_secs,
-        )
+        """Atomically rename on the same filesystem, replacing the destination."""
+        _path(source)
+        _path(destination)
+        with self._session(timeout_secs=timeout_secs) as client:
+            client.posix_rename(source, destination)
 
     def set_file_permissions(
         self,
         path: str,
         *,
         mode: str | None = None,
-        owner: str | None = None,
-        group: str | None = None,
+        owner: int | None = None,
+        group: int | None = None,
         timeout_secs: int | None = None,
     ) -> None:
-        """Change permissions/ownership; follows symlinks, subject to OS privileges."""
-        self._run(
-            "permissions",
-            {
-                "path": _path(path),
-                "mode": _mode(mode) if mode is not None else None,
-                "owner": owner,
-                "group": group,
-            },
-            timeout_secs=timeout_secs,
-        )
+        """Change mode and/or numeric UID/GID, subject to OS privileges."""
+        _path(path)
+        parsed_mode = _mode(mode) if mode is not None else None
+        for value in (owner, group):
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+            ):
+                raise ValueError("owner and group must be nonnegative numeric IDs")
+        with self._session(timeout_secs=timeout_secs) as client:
+            if parsed_mode is not None:
+                client.chmod(path, parsed_mode)
+            if owner is not None or group is not None:
+                attrs = client.stat(path)
+                client.chown(
+                    path,
+                    owner if owner is not None else attrs.st_uid,
+                    group if group is not None else attrs.st_gid,
+                )
+
+    @staticmethod
+    def _walk(client: SFTPClient, path: str) -> Iterator[str]:
+        for item in sorted(client.listdir_attr(path), key=lambda item: item.filename):
+            child = posixpath.join(path, item.filename)
+            if stat.S_ISDIR(item.st_mode or 0):
+                yield from SandboxFileSystem._walk(client, child)
+            elif stat.S_ISREG(item.st_mode or 0):
+                yield child
 
     def search_files(
         self, path: str, pattern: str, *, timeout_secs: int | None = None
     ) -> list[str]:
-        """Find filenames by glob recursively, without following symlinks."""
-        return json.loads(
-            self._run(
-                "search",
-                {"path": _path(path), "pattern": pattern},
-                timeout_secs=timeout_secs,
-            )
-        )
+        """Find filenames by glob recursively without following symlinks."""
+        _path(path)
+        with self._session(timeout_secs=timeout_secs) as client:
+            return [
+                name
+                for name in self._walk(client, path)
+                if fnmatch.fnmatchcase(posixpath.basename(name), pattern)
+            ]
 
     def find_files(
         self, path: str, text: str, *, timeout_secs: int | None = None
     ) -> list[FileMatch]:
-        """Find literal text in UTF-8 files; skip binary files and symlinks."""
-        return [
-            FileMatch(**item)
-            for item in json.loads(
-                self._run(
-                    "find",
-                    {"path": _path(path), "text": text},
-                    timeout_secs=timeout_secs,
+        """Search UTF-8 content on the client; skip invalid UTF-8 and symlinks."""
+        _path(path)
+        matches = []
+        with self._session(timeout_secs=timeout_secs) as client:
+            for name in self._walk(client, path):
+                try:
+                    with client.open(name, "rb") as file:
+                        lines = file.read().decode("utf-8").splitlines()
+                except UnicodeDecodeError:
+                    continue
+                matches.extend(
+                    FileMatch(name, n, line)
+                    for n, line in enumerate(lines, 1)
+                    if text in line
                 )
-            )
-        ]
+        return matches
 
     def replace_in_files(
         self, files: list[str], old: str, new: str, *, timeout_secs: int | None = None
     ) -> dict[str, int]:
-        """Replace literal text in UTF-8 files and return replacement counts.
+        """Replace literal UTF-8 text, preserving newlines and file permissions.
 
-        Each file is updated individually; a failure may leave earlier files
-        updated. Parent directories and permissions are unchanged.
+        Each file is read into client memory and atomically replaced. The group
+        of replacements is not transactional; concurrent edits can be overwritten.
         """
         if not isinstance(old, str) or not old:
             raise ValueError("old must be nonempty text")
-        return json.loads(
-            self._run(
-                "replace",
-                {"files": [_path(path) for path in files], "old": old, "new": new},
-                timeout_secs=timeout_secs,
-            )
-        )
+        for path in files:
+            _path(path)
+        result = {}
+        with self._session(timeout_secs=timeout_secs) as client:
+            for path in files:
+                with client.open(path, "rb") as file:
+                    text = file.read().decode("utf-8")
+                result[path] = text.count(old)
+                if result[path]:
+                    self._write(client, path, (text.replace(old, new).encode("utf-8"),))
+        return result

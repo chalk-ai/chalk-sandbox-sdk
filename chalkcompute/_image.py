@@ -161,7 +161,9 @@ class Image:
         """
         return (
             cls.debian_slim(python_version)
-            .apt_install(["git", "ca-certificates", "openssh-client"])
+            .apt_install(
+                ["git", "ca-certificates", "openssh-client", "openssh-sftp-server"]
+            )
             .workdir("/workspace")
         )
 

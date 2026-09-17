@@ -123,15 +123,15 @@ class SandboxGit:
         *,
         branch: str | None = None,
         commit_id: str | None = None,
-        depth: int | None = None,
+        depth: int | None = 1,
         username: str | None = None,
         password: str | None = None,
         timeout_secs: int | None = None,
     ) -> None:
-        """Clone the remote default branch with full history by default.
+        """Clone the remote default branch with one commit of history by default.
 
-        ``depth`` opts into a shallow clone. ``commit_id`` checks out a detached
-        HEAD; with a shallow clone the commit must be in the fetched history.
+        ``depth=None`` requests full history. ``commit_id`` fetches the selected
+        commit and checks out a detached HEAD, including with shallow history.
         TLS verification remains enabled. The destination must be empty/absent.
         """
         _argument(url, "url")
@@ -139,6 +139,8 @@ class SandboxGit:
         if commit_id is not None:
             _operand(commit_id, "commit_id")
         args = ["clone"]
+        if commit_id is not None:
+            args.append("--no-checkout")
         if branch is not None:
             args += ["--branch", _operand(branch, "branch")]
         if depth is not None:
@@ -156,9 +158,19 @@ class SandboxGit:
         )
         if commit_id is not None:
             self._run(
+                "fetch",
+                *(["--depth", str(depth)] if depth is not None else []),
+                "origin",
+                commit_id,
+                path=path,
+                username=username,
+                password=password,
+                timeout_secs=timeout_secs,
+            )
+            self._run(
                 "checkout",
                 "--detach",
-                commit_id,
+                "FETCH_HEAD",
                 "--",
                 path=path,
                 timeout_secs=timeout_secs,
