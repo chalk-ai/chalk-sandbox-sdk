@@ -93,6 +93,7 @@ class _ErrorAfterBuildStub:
                 status=pb.SandboxStatus.FAILED,
                 created_at=Timestamp(seconds=1),
                 status_message="pod failed readiness probe: connection refused",
+                status_details="Traceback:\n  load_config()\nValueError: invalid",
             )
         )
 
@@ -470,11 +471,13 @@ def test_sandbox_client_create_propagates_backend_error_details() -> None:
     error = exc_info.value
     assert str(error) == (
         "Sandbox sandbox-123 entered failed state during creation: "
-        "pod failed readiness probe: connection refused"
+        "pod failed readiness probe: connection refused\n"
+        "Traceback:\n  load_config()\nValueError: invalid"
     )
     assert error.sandbox_id == "sandbox-123"
     assert error.status == "failed"
     assert error.status_message == "pod failed readiness probe: connection refused"
+    assert error.status_details == "Traceback:\n  load_config()\nValueError: invalid"
     assert error.build_id is None
 
 
@@ -488,6 +491,7 @@ def test_sandbox_client_create_accepts_succeeded_during_readiness_poll() -> None
 
     assert sandbox.info is not None
     assert sandbox.info.status == "succeeded"
+    assert sandbox.info.status_details is None
 
 
 class _ProcessStub:

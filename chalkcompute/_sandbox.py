@@ -118,11 +118,13 @@ class SandboxStatusError(SandboxError):
         sandbox_id: str | None = None,
         status: str | None = None,
         status_message: str | None = None,
+        status_details: str | None = None,
         build_id: str | None = None,
     ) -> None:
         self.sandbox_id = sandbox_id
         self.status = status
         self.status_message = status_message
+        self.status_details = status_details
         self.build_id = build_id
         super().__init__(message)
 
@@ -173,6 +175,9 @@ class SandboxInfo:
 
     status_message: str | None = None
     """Backend-provided explanation for the current lifecycle status."""
+
+    status_details: str | None = None
+    """Additional diagnostic output for the current lifecycle status."""
 
 
 @dataclass
@@ -1966,6 +1971,9 @@ def _pb_to_sandbox_info(info: pb.SandboxInfo) -> SandboxInfo:
         status_message=(
             info.status_message if info.has_field("status_message") else None
         ),
+        status_details=(
+            info.status_details if info.has_field("status_details") else None
+        ),
     )
 
 
@@ -1979,11 +1987,14 @@ def _sandbox_creation_error(info: SandboxInfo) -> SandboxStatusError:
         message = f"Sandbox {info.id} entered {info.status} state during creation"
     if info.status_message:
         message = f"{message}: {info.status_message}"
+    if info.status_details:
+        message = f"{message}\n{info.status_details}"
     return exc_cls(
         message,
         sandbox_id=info.id,
         status=info.status,
         status_message=info.status_message,
+        status_details=info.status_details,
         build_id=info.build_id,
     )
 

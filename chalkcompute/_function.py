@@ -3114,12 +3114,14 @@ class RemoteFunction:
         deadline = time.monotonic() + timeout
         status = "unknown"
         status_message = ""
+        status_details = ""
         ready_replicas = 0
         available_replicas = 0
         while time.monotonic() < deadline:
             sg = _get_scaling_group(self._client, sg_name)
             status = sg.status
             status_message = sg.status_message or ""
+            status_details = sg.status_details or ""
             ready_replicas = sg.ready_replicas
             available_replicas = sg.available_replicas
             self._web_url = sg.web_url or None
@@ -3138,6 +3140,8 @@ class RemoteFunction:
                 message = f"Scaling group {sg_name} entered {status} state"
                 if status_message:
                     message = f"{message}: {status_message}"
+                if status_details:
+                    message = f"{message}\n{status_details}"
                 raise FunctionError(message)
             time.sleep(poll_interval)
         message = (
@@ -3147,6 +3151,8 @@ class RemoteFunction:
         )
         if status_message:
             message = f"{message}: {status_message}"
+        if status_details:
+            message = f"{message}\n{status_details}"
         raise FunctionError(message)
 
     def _requires_ready_replicas(self, sg: Any) -> bool:
