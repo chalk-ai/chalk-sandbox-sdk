@@ -143,7 +143,12 @@ def function_config(
             )
         ),
         queue=(
-            None if quota is None else catalog_pb.QueuePolicy(max_items=quota.max_items)
+            None
+            if quota is None
+            else catalog_pb.QueuePolicy(
+                max_items=quota.max_items,
+                result_ttl_seconds=quota.result_ttl_seconds,
+            )
         ),
         schedule=schedule,
         tracing=tracing_proto,

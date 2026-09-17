@@ -4445,11 +4445,12 @@ def function(
     quota
         Queue quota: cap on the number of pending items that may be enqueued
         for this function at once. Pass an ``int`` for the cap, or a
-        :class:`~chalkcompute.QueuePolicy` (currently equivalent —
-        ``QueuePolicy(max_items=N)``). Defaults to 500,000 items when unset.
-        Submitting past the cap raises a gRPC ``RESOURCE_EXHAUSTED`` error —
-        clients should back off or call ``purge()`` on the function to drain
-        the queue if items were erroneously added.
+        :class:`~chalkcompute.QueuePolicy` for full control, including
+        ``result_ttl_seconds``. Result streams are retained from enqueue time
+        for one day by default. Submitting past the cap
+        raises a gRPC ``RESOURCE_EXHAUSTED`` error — clients should back off or
+        call ``purge()`` on the function to drain the queue if items were
+        erroneously added.
     schedule
         Optional crontab or Chalk duration string for invoking a no-input
         function on a schedule (e.g. ``"0 * * * *"`` or ``"1h"``).

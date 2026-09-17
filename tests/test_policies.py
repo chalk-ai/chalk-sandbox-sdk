@@ -9,8 +9,10 @@ from protobuf import Oneof
 
 from chalkcompute._cls import ClassError, RemoteClass, method
 from chalkcompute._concurrency import ConcurrencyPolicy
+from chalkcompute._deployment_proto import function_config
 from chalkcompute._function import FunctionError, RemoteFunction
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as catalog_pb
+from chalkcompute._quota import DEFAULT_RESULT_TTL_SECONDS, QueuePolicy
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._remote_function_tracing import (
@@ -175,6 +177,42 @@ class TestConcurrencyPolicyFromIntOrPolicy:
     def test_bool_rejected(self):
         with pytest.raises(TypeError, match="bool"):
             ConcurrencyPolicy.from_int_or_policy(True)  # type: ignore[arg-type]
+
+
+class TestQueuePolicy:
+    def test_result_ttl_defaults_to_one_day(self):
+        assert QueuePolicy().result_ttl_seconds == DEFAULT_RESULT_TTL_SECONDS
+
+    def test_result_ttl_is_included_in_metadata(self):
+        assert QueuePolicy(result_ttl_seconds=3_600).to_dict() == {
+            "max_items": 500_000,
+            "result_ttl_seconds": 3_600,
+        }
+
+    @pytest.mark.parametrize("ttl", [0, -1])
+    def test_non_positive_result_ttl_is_rejected(self, ttl: int):
+        with pytest.raises(ValueError, match="result_ttl_seconds must be > 0"):
+            QueuePolicy(result_ttl_seconds=ttl)
+
+    def test_non_integer_result_ttl_is_rejected(self):
+        with pytest.raises(TypeError, match="result_ttl_seconds must be an int"):
+            QueuePolicy(result_ttl_seconds=True)  # type: ignore[arg-type]
+
+    def test_result_ttl_is_sent_in_function_config(self):
+        config = function_config(
+            serialization_format="pyarrow",
+            options={},
+            max_buffer_duration=None,
+            max_batching_size=None,
+            retries=None,
+            rate_limit=None,
+            concurrency=None,
+            quota=QueuePolicy(result_ttl_seconds=3_600),
+            schedule=None,
+        )
+
+        assert config.queue is not None
+        assert config.queue.result_ttl_seconds == 3_600
 
 
 class TestRetryPolicyKey:

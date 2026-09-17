@@ -1820,7 +1820,8 @@ def cls(
     quota
         Queue quota policy: cap on queued calls per key. Pass an ``int``
         for a simple ``max_queue_depth`` cap with a per-method key, or a
-        :class:`~chalkcompute.QueuePolicy` for full control.
+        :class:`~chalkcompute.QueuePolicy` for full control, including
+        asynchronous result retention via ``result_ttl_seconds``.
     schedule
         Optional crontab or Chalk duration string applied to every no-input
         ``@method`` in the class (e.g. ``"0 * * * *"`` or ``"1h"``).
