@@ -133,6 +133,11 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "SqlExpression": ("chalkcompute._evaluation", "SqlExpression"),
     "SecretScope": ("chalkcompute._secret", "SecretScope"),
     "resolve_lazy_secrets": ("chalkcompute._secret", "resolve_lazy_secrets"),
+    "SandboxGit": ("chalkcompute._sandbox_git", "SandboxGit"),
+    "GitFileStatus": ("chalkcompute._sandbox_git", "GitFileStatus"),
+    "GitStatus": ("chalkcompute._sandbox_git", "GitStatus"),
+    "GitRemote": ("chalkcompute._sandbox_git", "GitRemote"),
+    "GitError": ("chalkcompute._git", "GitError"),
     # _sandbox.py
     "ExecError": ("chalkcompute._sandbox", "ExecError"),
     "ExecEvent": ("chalkcompute._sandbox", "ExecEvent"),

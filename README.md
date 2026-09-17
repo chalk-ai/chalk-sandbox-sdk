@@ -74,9 +74,7 @@ from chalkcompute import Image, SandboxClient
 img = (
     Image.debian_slim()
     .pip_install(["pandas", "numpy", "scikit-learn"])
-    .run_commands(
-        "apt-get update && apt-get install -y git curl",
-    )
+    .apt_install(["git", "curl"])
     .workdir("/home/user/app")
     .env({"PYTHONDONTWRITEBYTECODE": "1"})
 )
@@ -112,9 +110,11 @@ img = (
     # Install from a requirements.txt (read locally, inlined into the spec)
     .pip_install_from_requirements("requirements.txt")
 
+    # Install Debian/Ubuntu system packages
+    .apt_install(["git", "tmux"])
+
     # Run shell commands (each becomes a Docker RUN layer)
     .run_commands(
-        "apt-get update && apt-get install -y git",
         "mkdir -p /app/data",
     )
 
@@ -539,33 +539,72 @@ result = sandbox.exec(
 
 ## Examples
 
-### Clone a GitHub repo into a sandbox
+### Git inside a sandbox
+
+Omitting `image` uses `Image.sandbox()`: Python 3.14 on Debian slim with Git,
+CA certificates and OpenSSH, working in `/workspace`.
+The image builds lazily through the normal image builder. Both `Sandbox().run()` and `client.create()`
+use this default. Explicit images retain their existing behavior; custom images
+need `git` for Git helpers.
 
 ```python
 from chalkcompute import SandboxClient
 
-client = SandboxClient.from_env()
-sandbox = client.create(image="ubuntu:latest")
-
-# Install git
-sandbox.exec("apt-get", "update")
-sandbox.exec("apt-get", "install", "-y", "git")
-
-# Clone
-result = sandbox.exec(
-    "git", "clone", "https://github.com/chalk-ai/chalk.git", "/workspace/chalk"
-)
-if result.exit_code != 0:
-    print(f"Clone failed: {result.stderr_text}")
-else:
-    # List what we got
-    result = sandbox.exec("ls", "-la", "/workspace/chalk")
-    for line in result.stdout:
-        print(line)
-
-sandbox.terminate()
-client.close()
+with SandboxClient.from_env() as client:
+    sandbox = client.create()
+    try:
+        # Uses the remote's default branch with depth=1.
+        sandbox.git.clone("https://github.com/octocat/Hello-World.git", "repo")
+        print(sandbox.git.status("repo").current_branch)
+        print(sandbox.git.branches("repo"))
+    finally:
+        sandbox.terminate()
 ```
+
+Git helpers also support `init`, `branches`, `create_branch`, `checkout_branch`,
+`delete_branch`, `fetch`, `pull`, `push`, `reset`, `restore`, `remote_add`,
+`remote_get`, `remotes`, `get_config`, `set_config`, and `configure_user`.
+Pass `branch`, `commit_id`, or `depth` to `clone` to select a branch, detached
+commit, or history depth (`1` by default; `None` for full history). Pulls fast-forward
+only; branch deletion requires `force=True` for unmerged work. Config changes apply only to that repository.
+HTTPS credentials can be supplied as `username` and `password` to clone/fetch/
+pull/push; they are scoped to the command without changing the remote URL or
+saving credentials. SSH remotes use the sandbox's existing SSH configuration.
+Git failures raise `GitError`.
+
+Git paths identify the repository root relative to the image working directory.
+Helpers accept `timeout_secs`; multi-command operations apply it to each command.
+See [the sandbox capability guide](docs/sandbox-capabilities.md) for defaults.
+
+### Add tmux to a sandbox image
+
+Use `apt_install` like `pip_install` to add system packages to a Debian/Ubuntu
+image. It requires a root build user and installs at build time, so each sandbox
+starts with the tools ready to use. The builder returns a new image and supports
+version pins such as
+`"package=version"`.
+
+```python
+from chalkcompute import Image, SandboxClient
+
+image = Image.sandbox().apt_install(["tmux"])
+with SandboxClient.from_env() as client:
+    sandbox = client.create(image=image)
+    try:
+        # Start a detached shell; it survives this exec call completing.
+        sandbox.exec("tmux", "new-session", "-d", "-s", "work")
+        sandbox.exec("tmux", "send-keys", "-t", "work", "echo hello", "Enter")
+        print(sandbox.exec("tmux", "list-sessions").stdout_text)
+        print(sandbox.exec("tmux", "capture-pane", "-p", "-t", "work").stdout_text)
+        sandbox.exec("tmux", "kill-session", "-t", "work")
+    finally:
+        sandbox.terminate()
+```
+
+tmux sessions live inside the sandbox and end when it terminates. These commands
+use detached sessions through ordinary exec; interactive `tmux attach` requires
+a terminal with PTY support. For images using another package manager, install
+tmux with `run_commands` (for example, `apk add --no-cache tmux` on Alpine).
 
 ### Spawn an OpenCode agent in a sandbox
 

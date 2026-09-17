@@ -71,6 +71,7 @@ from chalkcompute._http import SYNC_HTTP_CLIENT
 from chalkcompute._image import Image
 from chalkcompute._naming import validate_env
 from chalkcompute._secret import Secret, SecretScope, resolve_lazy_secrets
+from chalkcompute._sandbox_git import SandboxGit
 from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
@@ -622,7 +623,8 @@ class Sandbox:
         ----------
         image
             Container image to use, either a string reference such as
-            ``"ubuntu:latest"`` or a declarative :class:`Image`.
+            ``"ubuntu:latest"`` or a declarative :class:`Image`. If omitted,
+            uses :meth:`Image.sandbox` (Python, Git, SSH, and /workspace).
         name
             Optional DNS-safe sandbox name.
         cpu
@@ -751,7 +753,7 @@ class Sandbox:
             return
 
         if image is None:
-            raise TypeError("Sandbox() missing required keyword-only argument: 'image'")
+            image = Image.sandbox()
         env, secrets = normalize_env(env, secrets)
         ContainerSpec.validate_fields(
             image=image,
@@ -982,6 +984,11 @@ class Sandbox:
         if self._id is None:
             raise SandboxError("Sandbox is not running. Call .run() first.")
         return self._id
+
+    @property
+    def git(self) -> SandboxGit:
+        """Git operations inside this sandbox (requires Git in custom images)."""
+        return SandboxGit(self)
 
     @_instrumented("chalkcompute.sandbox.exec")
     def exec(
@@ -1469,7 +1476,7 @@ class SandboxClient:
 
     def create(
         self,
-        image: str | Image,
+        image: str | Image | None = None,
         *,
         name: str | None = None,
         cpu: str | None = None,
@@ -1504,6 +1511,7 @@ class SandboxClient:
         image
             Container image to use — either a string reference
             (e.g. ``"ubuntu:latest"``) or a declarative ``Image`` builder.
+            If omitted, uses :meth:`Image.sandbox`.
         name
             Optional name for the sandbox.
         cpu
