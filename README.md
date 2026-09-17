@@ -539,33 +539,61 @@ result = sandbox.exec(
 
 ## Examples
 
-### Clone a GitHub repo into a sandbox
+### Git and files inside a sandbox
+
+Omitting `image` uses `Image.sandbox()`: Python 3.14 on Debian slim with Git,
+CA certificates, and OpenSSH, working in `/workspace`. The image builds lazily
+through the normal image builder. Both `Sandbox().run()` and `client.create()`
+use this default. Explicit images retain their existing behavior; custom images
+need `git` for Git helpers and `python3` for file helpers.
 
 ```python
 from chalkcompute import SandboxClient
 
-client = SandboxClient.from_env()
-sandbox = client.create(image="ubuntu:latest")
+with SandboxClient.from_env() as client:
+    sandbox = client.create()
+    try:
+        # Uses the remote's default branch and full history.
+        sandbox.git.clone("https://github.com/octocat/Hello-World.git", "repo")
+        print(sandbox.git.status("repo").current_branch)
+        print(sandbox.fs.list_files("repo"))
 
-# Install git
-sandbox.exec("apt-get", "update")
-sandbox.exec("apt-get", "install", "-y", "git")
-
-# Clone
-result = sandbox.exec(
-    "git", "clone", "https://github.com/chalk-ai/chalk.git", "/workspace/chalk"
-)
-if result.exit_code != 0:
-    print(f"Clone failed: {result.stderr_text}")
-else:
-    # List what we got
-    result = sandbox.exec("ls", "-la", "/workspace/chalk")
-    for line in result.stdout:
-        print(line)
-
-sandbox.terminate()
-client.close()
+        sandbox.fs.write_file("repo/notes.txt", "Hello from Chalk!\n")
+        sandbox.git.add("repo", ["notes.txt"])
+        commit_id = sandbox.git.commit(
+            "repo", "Add notes", "Example Author", "author@example.com"
+        )
+        print(commit_id)
+        sandbox.fs.download_file("repo/notes.txt", "local-notes.txt")
+    finally:
+        sandbox.terminate()
 ```
+
+Git helpers also support `init`, `branches`, `create_branch`, `checkout_branch`,
+`delete_branch`, `fetch`, `pull`, `push`, `reset`, `restore`, `remote_add`,
+`remote_get`, `remotes`, `get_config`, `set_config`, and `configure_user`.
+Pass `branch`, `commit_id`, or `depth` to `clone` to select a branch, detached
+commit, or shallow history. Pulls fast-forward only; branch deletion requires
+`force=True` for unmerged work. Config changes apply only to that repository.
+HTTPS credentials can be supplied as `username` and `password` to clone/fetch/
+pull/push; they are scoped to the command without changing the remote URL or
+saving credentials. SSH remotes use the sandbox's existing SSH configuration.
+Git failures raise `GitError`.
+
+File helpers include `read_file`, `write_file`, `upload_file`, `download_file`,
+`create_folder`, `delete_file`, `get_file_info`, `list_files`, `move_files`,
+`set_file_permissions`, `search_files` (filename glob), `find_files` (literal
+text), and `replace_in_files`. File paths are relative to the image working
+directory; Git `path` identifies the repository root. Use `get_work_dir()` and
+`get_user_home_dir()` to discover directories on attached/custom sandboxes.
+Transfers preserve raw bytes and buffer contents in client memory; use volumes
+for large datasets. File operations raise `SandboxFileSystemError` on command
+failure. Directories require `recursive=True` to delete, and writes require an
+existing parent directory. Helpers accept `timeout_secs` with the same semantics
+as `sandbox.exec`; multi-command Git operations apply it to each command.
+
+For the reviewed Daytona capabilities, defaults, and remaining backend gaps, see
+[the sandbox capability comparison](docs/sandbox-capabilities.md).
 
 ### Spawn an OpenCode agent in a sandbox
 

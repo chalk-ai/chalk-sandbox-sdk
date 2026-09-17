@@ -151,6 +151,23 @@ class Image:
         return cls(f"python:{python_version}-slim-trixie")
 
     @classmethod
+    def sandbox(cls, python_version: str = "3.14") -> Image:
+        """Default sandbox image: Python, Git, TLS certificates, and SSH.
+
+        Uses Debian slim with ``/workspace`` as its working directory. Builds
+        lazily through the normal image builder, and can be extended with the
+        same methods as any other Image. A fresh spec is returned each time.
+        """
+        return (
+            cls.debian_slim(python_version)
+            .run_commands(
+                "apt-get update && apt-get install -y --no-install-recommends "
+                "git ca-certificates openssh-client && rm -rf /var/lib/apt/lists/*"
+            )
+            .workdir("/workspace")
+        )
+
+    @classmethod
     def from_dockerfile(cls, path: str) -> Image:
         """Create an image from an existing Dockerfile.
 

@@ -147,7 +147,26 @@ from chalkcompute._training import training as training
 from chalkcompute._volume import Volume as VersionedVolume
 from chalkcompute._volume import VolumeClient as VersionedVolumeClient
 
+from chalkcompute._sandbox_git import SandboxGit as SandboxGit
+from chalkcompute._sandbox_git import GitFileStatus as GitFileStatus
+from chalkcompute._sandbox_git import GitStatus as GitStatus
+from chalkcompute._sandbox_git import GitRemote as GitRemote
+from chalkcompute._sandbox_fs import SandboxFileSystem as SandboxFileSystem
+from chalkcompute._sandbox_fs import SandboxFileSystemError as SandboxFileSystemError
+from chalkcompute._sandbox_fs import SandboxFileInfo as SandboxFileInfo
+from chalkcompute._sandbox_fs import FileMatch as FileMatch
+from chalkcompute._git import GitError as GitError
+
 __all__ = [
+    "SandboxGit",
+    "GitFileStatus",
+    "GitStatus",
+    "GitRemote",
+    "SandboxFileSystem",
+    "SandboxFileSystemError",
+    "SandboxFileInfo",
+    "FileMatch",
+    "GitError",
     "SQLClient",
     "SQLResult",
     "SQLJob",
