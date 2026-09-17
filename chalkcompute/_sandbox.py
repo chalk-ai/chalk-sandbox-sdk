@@ -988,8 +988,7 @@ class Sandbox:
                     injected_env_vars.append(f"{injected_secret._prefix or ''}{alias}")
                 elif injected_secret._local_env_var is not None:
                     injected_env_vars.append(
-                        injected_secret._env_var_name
-                        or injected_secret._local_env_var
+                        injected_secret._env_var_name or injected_secret._local_env_var
                     )
                 elif injected_secret._integration_name is not None:
                     injected_env_vars.extend(
@@ -1021,8 +1020,7 @@ class Sandbox:
         validate_env(credential_env)
         self._env.update(credential_env)
         headers_secrets = {
-            placeholder: credential
-            for placeholder, credential in bindings.values()
+            placeholder: credential for placeholder, credential in bindings.values()
         }
         if self._network_policy is None:
             self._network_policy = NetworkPolicy()

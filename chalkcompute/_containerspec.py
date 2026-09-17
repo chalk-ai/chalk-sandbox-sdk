@@ -245,9 +245,7 @@ class NetworkPolicy:
             self.headers_secrets = dict(self.headers_secrets or {})
             for key, value in self.headers_secrets.items():
                 if not isinstance(key, str) or not isinstance(value, (str, Secret)):
-                    raise TypeError(
-                        "headers_secrets must be a dict[str, str | Secret]"
-                    )
+                    raise TypeError("headers_secrets must be a dict[str, str | Secret]")
 
         def _serialized_headers_secrets(self) -> dict[str, str]:
             serialized: dict[str, str] = {}

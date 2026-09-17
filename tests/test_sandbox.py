@@ -167,9 +167,7 @@ def test_sandbox_mixed_env_serializes_secret_references(use_client_create) -> No
 
 
 def test_sandbox_add_credentials_configures_env_and_network_policy(monkeypatch) -> None:
-    def host_bindings(
-        sandbox: Sandbox, host: str
-    ) -> dict[str, str | Secret]:
+    def host_bindings(sandbox: Sandbox, host: str) -> dict[str, str | Secret]:
         assert sandbox._network_policy is not None
         return {
             placeholder: secret
@@ -219,9 +217,7 @@ def test_sandbox_add_credentials_configures_env_and_network_policy(monkeypatch) 
         "AWS_SECRET_ACCESS_KEY",
     )
     aws_bindings = {
-        sandbox._env["AWS_ACCESS_KEY_ID"]: Secret.from_chalk_env(
-            "AWS_ACCESS_KEY_ID"
-        ),
+        sandbox._env["AWS_ACCESS_KEY_ID"]: Secret.from_chalk_env("AWS_ACCESS_KEY_ID"),
         sandbox._env["AWS_SECRET_ACCESS_KEY"]: Secret.from_chalk_env(
             "AWS_SECRET_ACCESS_KEY"
         ),
@@ -273,9 +269,7 @@ def test_sandbox_add_credentials_configures_env_and_network_policy(monkeypatch) 
     assert sandbox._secrets == [existing_secret]
     assert sandbox._network_policy is network_policy
     assert sandbox._network_policy.denied_routes == ["169.254.0.0/16"]
-    assert (
-        sandbox._network_policy.allowed_hosts["api.example.com"][0] is existing_rule
-    )
+    assert sandbox._network_policy.allowed_hosts["api.example.com"][0] is existing_rule
     assert host_bindings(sandbox, "api.example.com") == {
         sandbox._env["API_KEY"]: Secret.from_chalk_env("API_KEY")
     }
@@ -283,15 +277,11 @@ def test_sandbox_add_credentials_configures_env_and_network_policy(monkeypatch) 
     # Existing headers_secrets bindings are reused while new bindings are appended.
     existing_placeholder = "some-user-placeholder"
     existing_transform = NetworkPolicy.Transformer(
-        headers_secrets={
-            existing_placeholder: Secret.from_chalk_env("EXISTING_KEY")
-        }
+        headers_secrets={existing_placeholder: Secret.from_chalk_env("EXISTING_KEY")}
     )
     network_policy = NetworkPolicy(
         allowed_hosts={
-            "api.example.com": [
-                NetworkPolicy.Rule(transforms=[existing_transform])
-            ]
+            "api.example.com": [NetworkPolicy.Rule(transforms=[existing_transform])]
         }
     )
     sandbox = Sandbox(
@@ -309,7 +299,9 @@ def test_sandbox_add_credentials_configures_env_and_network_policy(monkeypatch) 
     }
 
     # An existing literal env value blocks a credential with the same env name.
-    with pytest.raises(ValueError, match="environment variable 'API_KEY' is already set"):
+    with pytest.raises(
+        ValueError, match="environment variable 'API_KEY' is already set"
+    ):
         Sandbox(image="ubuntu:latest", env={"API_KEY": "literal"}).add_credentials(
             "api.example.com", "API_KEY"
         )
@@ -368,9 +360,7 @@ def test_sandbox_add_credentials_configures_env_and_network_policy(monkeypatch) 
     ).add_credentials("api.example.com", Secret.from_local_env("LOCAL_TOKEN"))
     with patch("chalkcompute._secret._upsert_secret") as upsert:
         sandbox.run()
-    upsert.assert_called_once_with(
-        client._connect, "LOCAL_TOKEN", "secret-value", ANY
-    )
+    upsert.assert_called_once_with(client._connect, "LOCAL_TOKEN", "secret-value", ANY)
     assert client.create_kwargs is not None
     resolved_policy = client.create_kwargs["network_policy"]
     assert isinstance(resolved_policy, NetworkPolicy)
