@@ -528,8 +528,10 @@ class ExecProcess:
 class Sandbox:
     """A managed sandbox backed by the Chalk ``SandboxService``.
 
-    Create sandboxes with :meth:`SandboxClient.create`. Use :meth:`exec` to run
-    commands and :meth:`terminate` to shut the sandbox down when you're done.
+    :meth:`SandboxClient.create` constructs and immediately runs a sandbox. To
+    configure a :class:`Sandbox` before running it, construct one and pass it
+    to :meth:`SandboxClient.run`. Use :meth:`exec` to run commands and
+    :meth:`terminate` to shut the sandbox down when you're done.
 
     Examples
     --------
@@ -679,14 +681,16 @@ class Sandbox:
         Notes
         -----
         Calling :meth:`run` without a client creates one from the environment.
-        Prefer creating a :class:`SandboxClient` explicitly and calling
-        :meth:`SandboxClient.create` instead of constructing a ``Sandbox``
-        directly.
+        Prefer using an explicit :class:`SandboxClient`. Its
+        :meth:`SandboxClient.create` method is a shortcut for constructing and
+        immediately running a sandbox. For other setup, construct a ``Sandbox``
+        and pass it to :meth:`SandboxClient.run`.
 
         Examples
         --------
+        >>> sandbox = Sandbox(image="ubuntu:latest")
         >>> with SandboxClient.from_env() as client:
-        ...     sandbox = client.create("ubuntu:latest")
+        ...     client.run(sandbox)
         """
         self._client: Any | None = None
         self._id: str | None = None
@@ -874,16 +878,15 @@ class Sandbox:
     def mount_volume(self, name: str | Volume, mount_path: str) -> Sandbox:
         """Mount a named volume or volume handle into the sandbox.
 
-        Must be called before :meth:`run`. Returns ``self`` for chaining.
+        Must be called before the sandbox is run. Returns ``self`` for chaining.
 
         Examples
         --------
-        >>> from chalkcompute import Sandbox
-        >>> sandbox = (
-        ...     Sandbox(image="ubuntu:latest")
-        ...     .mount_volume("my-data", "/data")
-        ...     .run()
-        ... )
+        >>> from chalkcompute import Sandbox, SandboxClient
+        >>> sandbox = Sandbox(image="ubuntu:latest")
+        >>> sandbox.mount_volume("my-data", "/data")
+        >>> with SandboxClient.from_env() as client:
+        ...     client.run(sandbox)
         """
         self._referenced_volumes.extend(normalize_volume_refs([(name, mount_path)]))
         return self
@@ -903,7 +906,7 @@ class Sandbox:
         variable. Its network policy replaces that placeholder when it appears
         in headers on requests to the supplied hosts.
 
-        Must be called before :meth:`run`. Returns ``self`` for chaining.
+        Must be called before the sandbox is run. Returns ``self`` for chaining.
 
         Parameters
         ----------
@@ -922,8 +925,9 @@ class Sandbox:
         ...         ["api.slack.com", "*.slack.com"],
         ...         Secret.from_local_env("SLACK_BOT_TOKEN"),
         ...     )
-        ...     .run()
         ... )
+        >>> with SandboxClient.from_env() as client:
+        ...     client.run(sandbox)
         """
         if self._id is not None:
             raise SandboxError("Credentials must be added before the sandbox is run.")
@@ -1717,7 +1721,7 @@ class SandboxClient:
         poll_interval: float = 0.5,
         timeout: float = 600.0,
     ) -> Sandbox:
-        """Create a new sandbox.
+        """Construct and run a sandbox in one call.
 
         If ``image`` is an ``Image`` spec, this method builds it first and sends
         the resulting image URI to the sandbox service. If ``wait`` is ``True``
@@ -1770,27 +1774,64 @@ class SandboxClient:
         Sandbox
             A sandbox handle.
         """
-        return Sandbox(
-            image=image,
-            name=name,
-            cpu=cpu,
-            memory=memory,
-            gpu=gpu,
-            env=env,
-            secrets=secrets,
-            volumes=volumes,
-            port=port,
-            entrypoint=entrypoint,
-            lifetime=lifetime,
-            security_policy=security_policy,
-            network_policy=network_policy,
-            compute_class=compute_class,
-            tags=tags,
-            restart_policy=restart_policy,
-            chalk_identity=chalk_identity,
-            managed_ssh=managed_ssh,
-            sandbox_client=self,
-        ).run(wait=wait, poll_interval=poll_interval, timeout=timeout)
+        return self.run(
+            Sandbox(
+                image=image,
+                name=name,
+                cpu=cpu,
+                memory=memory,
+                gpu=gpu,
+                env=env,
+                secrets=secrets,
+                volumes=volumes,
+                port=port,
+                entrypoint=entrypoint,
+                lifetime=lifetime,
+                security_policy=security_policy,
+                network_policy=network_policy,
+                compute_class=compute_class,
+                tags=tags,
+                restart_policy=restart_policy,
+                chalk_identity=chalk_identity,
+                managed_ssh=managed_ssh,
+            ),
+            wait=wait,
+            poll_interval=poll_interval,
+            timeout=timeout,
+        )
+
+    def run(
+        self,
+        sandbox: Sandbox,
+        *,
+        wait: bool = True,
+        poll_interval: float = 0.5,
+        timeout: float = 600.0,
+    ) -> Sandbox:
+        """Create a configured sandbox using this client.
+
+        Parameters
+        ----------
+        sandbox
+            A configured sandbox that has not been run.
+        wait
+            If ``True``, poll until the sandbox is ready (default ``True``).
+        poll_interval
+            Seconds between readiness polls.
+        timeout
+            Maximum seconds to wait for the sandbox to become ready.
+
+        Returns
+        -------
+        Sandbox
+            The created sandbox.
+        """
+        if sandbox._id is not None:
+            raise SandboxError(
+                "Sandbox is already running. Call .terminate() before calling .run() again."
+            )
+        sandbox._client = self
+        return sandbox.run(wait=wait, poll_interval=poll_interval, timeout=timeout)
 
     @_instrumented("chalkcompute.sandbox.create")
     def _instantiate(
