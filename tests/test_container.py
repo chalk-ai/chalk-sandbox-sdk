@@ -92,6 +92,12 @@ def test_host_container_run_sends_network_policy() -> None:
                             NetworkPolicy.Transformer(
                                 headers={"x-added": "yes"},
                                 headers_secrets={"authorization": "API_TOKEN"},
+                                header_replacements={
+                                    "literal-placeholder": "literal-value"
+                                },
+                                header_replacements_secrets={
+                                    "secret-placeholder": "OTHER_TOKEN"
+                                },
                             )
                         ],
                         forward_url="https://proxy.example.com/api",
@@ -128,6 +134,12 @@ def test_host_container_run_sends_network_policy() -> None:
     (transform,) = rule.transform
     assert dict(transform.headers) == {"x-added": "yes"}
     assert dict(transform.headers_secrets) == {"authorization": "API_TOKEN"}
+    assert dict(transform.header_replacements) == {
+        "literal-placeholder": "literal-value"
+    }
+    assert dict(transform.header_replacements_secrets) == {
+        "secret-placeholder": "OTHER_TOKEN"
+    }
 
     assert spec.security_policy.kernel_policy == pb.KernelPolicy.RESTRICTED
     assert spec.compute_class == pb.ComputeClass.HOST
@@ -296,3 +308,62 @@ def test_container_run_omits_compute_class_when_unset() -> None:
 
     spec = client.calls[0].request.container.spec
     assert spec.compute_class == pb.ComputeClass.UNSPECIFIED
+
+
+def test_header_replacement_json_and_defensive_copy() -> None:
+    replacements = {"placeholder": "literal"}
+    secrets = {"secret-placeholder": "API_TOKEN"}
+    transform = NetworkPolicy.Transformer(
+        header_replacements=replacements, header_replacements_secrets=secrets
+    )
+    replacements.clear()
+    secrets.clear()
+    body = transform.to_dict()
+    assert body == {
+        "headers": {},
+        "headerReplacements": {"placeholder": "literal"},
+        "headerReplacementsSecrets": {"secret-placeholder": "API_TOKEN"},
+    }
+    body["headerReplacements"].clear()
+    assert transform.header_replacements == {"placeholder": "literal"}
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"header_replacements": {"": "value"}},
+        {"header_replacements": {"x\r": "value"}},
+        {"header_replacements": {"x": "value\nInjected: yes"}},
+        {"header_replacements_secrets": {"x": ""}},
+        {
+            "header_replacements": {"x": "a"},
+            "header_replacements_secrets": {"x": "SECRET"},
+        },
+    ],
+)
+def test_invalid_header_replacements(kwargs: dict[str, Any]) -> None:
+    with pytest.raises(ValueError):
+        NetworkPolicy.Transformer(**kwargs)
+
+
+def test_duplicate_header_replacements_across_transforms() -> None:
+    with pytest.raises(ValueError, match="duplicate"):
+        NetworkPolicy.Rule(
+            transforms=[
+                NetworkPolicy.Transformer(header_replacements={"x": "literal"}),
+                NetworkPolicy.Transformer(header_replacements_secrets={"x": "SECRET"}),
+            ]
+        )
+    NetworkPolicy.Rule(
+        transforms=[
+            NetworkPolicy.Transformer(header_replacements={"x": "", "X": "value"})
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    "field", ["header_replacements", "header_replacements_secrets"]
+)
+def test_header_replacements_require_strings(field: str) -> None:
+    with pytest.raises(TypeError):
+        NetworkPolicy.Transformer(**{field: {"placeholder": 123}})

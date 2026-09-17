@@ -236,6 +236,8 @@ class NetworkPolicy:
     class Transformer:
         headers: dict[str, str] = field(default_factory=dict)
         headers_secrets: dict[str, str] = field(default_factory=dict)
+        header_replacements: dict[str, str] = field(default_factory=dict)
+        header_replacements_secrets: dict[str, str] = field(default_factory=dict)
 
         def __post_init__(self) -> None:
             self.headers = dict(self.headers or {})
@@ -247,10 +249,42 @@ class NetworkPolicy:
                 if not isinstance(key, str) or not isinstance(value, str):
                     raise TypeError("headers_secrets must be a dict[str, str]")
 
+            for name in ("header_replacements", "header_replacements_secrets"):
+                replacements = dict(getattr(self, name) or {})
+                setattr(self, name, replacements)
+                for placeholder, value in replacements.items():
+                    if not isinstance(placeholder, str) or not isinstance(value, str):
+                        raise TypeError(f"{name} must be a dict[str, str]")
+                    if not placeholder or any(
+                        ord(c) < 32 or ord(c) == 127 for c in placeholder
+                    ):
+                        raise ValueError(
+                            "header replacement placeholder must be nonempty and contain no ASCII control characters"
+                        )
+                    if any(ord(c) < 32 or ord(c) == 127 for c in value):
+                        raise ValueError(
+                            "header replacement value must not contain ASCII control characters"
+                        )
+                    if name == "header_replacements_secrets" and not value:
+                        raise ValueError(
+                            "header replacement secret name must not be empty"
+                        )
+            if (
+                self.header_replacements.keys()
+                & self.header_replacements_secrets.keys()
+            ):
+                raise ValueError("duplicate header replacement placeholder")
+
         def to_dict(self) -> dict[str, Any]:
             body: dict[str, Any] = {"headers": dict(self.headers)}
             if self.headers_secrets:
                 body["headersSecrets"] = dict(self.headers_secrets)
+            if self.header_replacements:
+                body["headerReplacements"] = dict(self.header_replacements)
+            if self.header_replacements_secrets:
+                body["headerReplacementsSecrets"] = dict(
+                    self.header_replacements_secrets
+                )
             return body
 
     @dataclass
@@ -266,6 +300,15 @@ class NetworkPolicy:
                     raise TypeError(
                         "transforms must be a list of NetworkPolicy.Transformer"
                     )
+            placeholders: set[str] = set()
+            for transformer in self.transforms:
+                keys = (
+                    transformer.header_replacements.keys()
+                    | transformer.header_replacements_secrets.keys()
+                )
+                if placeholders & keys:
+                    raise ValueError("duplicate header replacement placeholder in rule")
+                placeholders.update(keys)
             if self.match is not None and not isinstance(
                 self.match, NetworkPolicy.Match
             ):
@@ -788,6 +831,12 @@ def _network_policy_to_proto(policy: NetworkPolicy) -> container_pb.NetworkPolic
                             container_pb.NetworkTransformer(
                                 headers=dict(transformer.headers),
                                 headers_secrets=dict(transformer.headers_secrets),
+                                header_replacements=dict(
+                                    transformer.header_replacements
+                                ),
+                                header_replacements_secrets=dict(
+                                    transformer.header_replacements_secrets
+                                ),
                             )
                             for transformer in rule.transforms
                         ],
