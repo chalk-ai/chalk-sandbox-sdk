@@ -108,8 +108,15 @@ details into examples.
 
 ## Names and concurrency
 
+For `@cc.function` and `@cc.cls`, omit `name=` and choose a descriptive Python
+name. The default registered name already supports cross-process lookup and
+reuse across runs. An override is appropriate only for an intentional naming
+contract or a uniquely named integration test. Keep existing overrides that
+callers depend on; removing one does not rename the deployed function.
+
 Avoid explicit names unless an example needs cross-process lookup, demonstrates naming,
-or deliberately reuses a resource across runs.
+or deliberately reuses a resource across runs. For functions and classes, use
+the default Python-derived name for those cases whenever possible.
 
 When an example owns a named ephemeral resource, add a UUID suffix. This prevents
 concurrent runs from replacing one another and ensures cleanup cannot delete an existing

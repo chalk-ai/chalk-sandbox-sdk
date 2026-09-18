@@ -269,6 +269,29 @@ Downloading needs no dataframe library. Install `chalkcompute[sql]` for
 conversions load the full result into memory. These extras do not require
 ChalkPy.
 
+## Function names
+
+Omit `name=` when defining functions. The registered name defaults to the Python
+function's name, including underscores:
+
+```python
+import chalkcompute as cc
+
+@cc.function
+def add_numbers(a: int, b: int) -> int:
+    return a + b
+```
+
+Other scripts can attach with `cc.RemoteFunction.from_name("add_numbers")`.
+Cross-process lookup and repeated deployment already work with the default name.
+The `@cc.cls` decorator likewise defaults to the Python class's name.
+
+Use `name=` only when you intentionally need a different registered name, such as
+preserving an existing deployment's name after renaming the Python function.
+Changing or removing an existing override changes which function you deploy; it
+does not rename the existing deployment. Function names containing underscores
+and hyphens are distinct, but can collide when converted to scaling-group names.
+
 ## Evaluations
 
 Create a reusable evaluation by pinning a completed dataset revision to a
@@ -287,11 +310,11 @@ dataset = cc.DatasetClient().upload(
 
 suite = cc.EvaluationSuite.create("Release")
 
-@cc.function(name="support-answer")
+@cc.function
 def answer(input: str) -> str:
     return call_support_model(input)
 
-@cc.function(name="response-quality")
+@cc.function
 def response_quality(input: str, output: str) -> cc.EvaluationScorerResult:
     score, details = score_response(input=input, output=output)
     return cc.EvaluationScorerResult(
@@ -326,7 +349,7 @@ instead be attached by reference:
 evaluation = cc.Evaluation.create(
     "Customer Support Chatbot",
     dataset=dataset,
-    task=cc.RemoteFunction.from_name("support-answer"),
+    task=cc.RemoteFunction.from_name("answer"),
     scorers=[cc.RemoteFunction.from_version_id("fn_brand_alignment_v2")],
 )
 ```
@@ -434,7 +457,7 @@ for revision in group.revisions():
     print(revision.id, revision.status, revision.is_current)
 group.rollback("sgr_previous")
 
-@cc.function(name="rank")
+@cc.function
 def rank(query: str) -> str:
     return query
 
@@ -762,7 +785,7 @@ finish its setup before returning; do not terminate it in a context manager.
 ```python
 import chalkcompute as cc
 
-@cc.function(name="provision-agent")
+@cc.function
 def provision_agent() -> cc.Sandbox:
     sandbox = cc.Sandbox(
         image="node:22-bookworm",

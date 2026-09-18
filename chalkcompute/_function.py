@@ -4148,6 +4148,10 @@ def function(
 ) -> Callable[..., RemoteFunction | _NoOpFunction] | RemoteFunction | _NoOpFunction:
     """Decorator that deploys a function as a versioned remote function.
 
+    Prefer ``@cc.function`` or ``@cc.function(image=...)`` without ``name=``.
+    The registered name defaults to the Python function's name, including
+    underscores, and can be used with ``RemoteFunction.from_name(...)``.
+
     **Locally**, decoration validates the function, starts deployment in a
     background worker, and returns. The worker:
 
@@ -4180,7 +4184,11 @@ def function(
         GPU resource request (e.g. ``"nvidia-l4"``, ``"2:nvidia-a100"``).
         Format is ``"<count>:<type>"`` or just ``"<type>"`` for a single GPU.
     name
-        Custom function name. Defaults to the function's ``__name__``.
+        Optional registered-name override. Omit this in normal usage to use
+        the function's ``__name__``. Set it only when a different registered
+        name is intentional, such as preserving an existing deployment's name
+        after renaming the Python function. Changing or removing an override
+        changes the target function; it does not rename an existing deployment.
     env
         Environment variables as strings or single-value Secret references.
         The mapping key sets the injected name, overriding aliases and prefixes.
