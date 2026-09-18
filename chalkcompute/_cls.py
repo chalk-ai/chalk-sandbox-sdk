@@ -1745,7 +1745,11 @@ def cls(
     gpu
         GPU resource request (e.g. ``"nvidia-l4"``, ``"2:nvidia-a100"``).
     name
-        Custom class name. Defaults to the class's ``__name__``.
+        Optional registered-name override. Omit this in normal usage to use
+        the class's ``__name__``. Set it only when a different registered name
+        is intentional, such as preserving existing deployments after renaming
+        the Python class. Changing or removing an override changes the target
+        functions; it does not rename existing deployments.
     env
         Environment variables as strings or single-value Secret references.
         The mapping key sets the injected name, overriding aliases and prefixes.
