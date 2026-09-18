@@ -12,15 +12,16 @@ Examples
 
 from __future__ import annotations
 
+import base64
 import builtins
 import datetime
+import hashlib
 import importlib
 import logging
 import math
 import os
 import tempfile
 import time
-import uuid
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -44,6 +45,8 @@ logger = logging.getLogger(__name__)
 
 #: Mount type stamped into container/sandbox specs for every Chalk volume.
 MOUNT_TYPE = "versioned_chalkfs"
+
+_SHARED_SOURCE_VOLUME_PREFIX = "cc-source-"
 
 
 # ---------------------------------------------------------------------------
@@ -1491,50 +1494,27 @@ class VolumeClient:
     def upload_lazy_files(
         self, image: Image, *, volume_prefix: str = "files"
     ) -> builtins.list[VolumeMount]:
-        """Upload an image's lazy local files into volumes.
+        """Resolve local files to reusable, pinned source-code volumes.
 
-        Creates one volume per destination directory and commits files in
-        batches. Returned mounts follow the default mutable ref.
+        Uses one stable volume per prefix and image recipe. Each destination
+        directory mounts its own resolved version of that volume.
+
+        Existing content is reused without re-uploading. New versions replace
+        the entire tree. Shared source volumes survive workload cleanup.
 
         Parameters
         ----------
         image
-            Image whose lazy local files should be uploaded.
+            Image whose lazy local files should be resolved.
         volume_prefix
-            Prefix used when naming the generated volumes.
+            Namespace for the shared source volumes.
 
         Returns
         -------
         list of VolumeMount
-            One :class:`VolumeMount` per created volume.
+            One immutable source mount per destination directory.
         """
-        try:
-            dir_to_files = image.lazy_local_files_grouped_for_volume_mounts()
-        except ValueError as e:
-            raise VolumeError(str(e)) from e
-
-        volumes: builtins.list[VolumeMount] = []
-        created: builtins.list[Volume] = []
-        try:
-            for dest_dir, files in dir_to_files.items():
-                vol = self.create(f"{volume_prefix}-{uuid.uuid4().hex[:12]}")
-                created.append(vol)
-                with vol.batch_upload() as batch:
-                    for lf in files:
-                        batch.put_file(os.path.relpath(lf.dest, dest_dir), lf.src)
-                volumes.append(VolumeMount(name=vol.name, mount_path=dest_dir))
-        except BaseException:
-            for vol in reversed(created):
-                try:
-                    vol.delete()
-                except Exception:
-                    logger.warning(
-                        "Could not delete failed upload volume %s",
-                        vol.name,
-                        exc_info=True,
-                    )
-            raise
-        return volumes
+        return self._resolve_lazy_files(image, volume_name=volume_prefix, shared=True)
 
     @traced("chalkcompute.volume.stage_lazy_files")
     def stage_lazy_files(
@@ -1618,6 +1598,7 @@ class VolumeClient:
         image: Image,
         *,
         volume_name: str,
+        shared: bool = False,
         timeout: float = 600.0,
         poll_interval: float = 1.0,
     ) -> builtins.list[VolumeMount]:
@@ -1629,14 +1610,28 @@ class VolumeClient:
         except ValueError as exc:
             raise VolumeError(str(exc)) from exc
 
+        fingerprint = ""
+        if shared:
+            from chalkcompute._image_build import image_spec_fingerprint
+
+            fingerprint = image_spec_fingerprint(image)
+
         deadline = time.monotonic() + timeout
         mounts: builtins.list[VolumeMount] = []
         for mount_path, files in groups.items():
-            name = (
-                volume_name
-                if mount_path == "/app"
-                else sanitize_dns_label(f"{volume_name}-{mount_path}")
-            )
+            if shared:
+                identity = f"{volume_name}\0{fingerprint}".encode()
+                # Keep the full digest within the 63-character name limit.
+                digest = base64.b32encode(hashlib.sha256(identity).digest())
+                name = (
+                    _SHARED_SOURCE_VOLUME_PREFIX + digest.decode().rstrip("=").lower()
+                )
+            else:
+                name = (
+                    volume_name
+                    if mount_path == "/app"
+                    else sanitize_dns_label(f"{volume_name}-{mount_path}")
+                )
             source: builtins.list[tuple[Any, ...]] = []
             for file in files:
                 path = os.path.relpath(file.dest, mount_path).replace(os.sep, "/")
@@ -2324,7 +2319,7 @@ def cleanup_owned_volumes(
     all_volumes: Iterable[VolumeMount],
     referenced_volumes: Iterable[VolumeMount],
 ) -> None:
-    """Delete only volumes the SDK created; never user-referenced ones.
+    """Delete disposable SDK volumes, retaining references and shared sources.
 
     ``all_volumes`` contains both volumes the SDK uploaded (e.g. for an
     image's lazy local files) and volumes the caller referenced via
@@ -2333,6 +2328,8 @@ def cleanup_owned_volumes(
     """
     referenced_names = {volume.name for volume in referenced_volumes}
     for v in all_volumes:
-        if v.name in referenced_names:
+        if v.name in referenced_names or v.name.startswith(
+            _SHARED_SOURCE_VOLUME_PREFIX
+        ):
             continue
         client.delete_volume(v.name)

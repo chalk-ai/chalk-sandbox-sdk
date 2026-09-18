@@ -1082,11 +1082,11 @@ class Container:
                 progress_add(
                     vkey,
                     "volume",
-                    f"Uploading {len(lazy_files)} file(s)",
+                    f"Resolving {len(lazy_files)} file(s)",
                     parent=ckey,
                 )
                 logger.info(
-                    "Uploading %d local file(s) to volume(s)...",
+                    "Resolving %d local file(s) to source volume(s)...",
                     len(lazy_files),
                 )
                 assert isinstance(self._image, Image)
@@ -1098,7 +1098,7 @@ class Container:
                 )
                 for v in self._volumes:
                     logger.info(
-                        "  Volume created: %s (mount: %s)", v.name, v.mount_path
+                        "  Volume resolved: %s (mount: %s)", v.name, v.mount_path
                     )
                 progress_done(vkey)
 

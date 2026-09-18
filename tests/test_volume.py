@@ -166,23 +166,187 @@ def test_put_dir_propagates_upload_failure(tmp_path, monkeypatch):
     assert volume.version.id == 10
 
 
-def test_upload_lazy_files_preserves_mutable_mount(tmp_path, monkeypatch):
+def test_upload_lazy_files_reuses_pinned_source_mount(tmp_path, monkeypatch):
     from chalkcompute import Image
 
     client = _make_client(monkeypatch)
-    client._rpc.create_volume.return_value = pb_v2.CreateVolumeResponse(
-        volume=_volume_proto()
-    )
-    _prepare_upload(client, version_id=12)
+    client._inner.resolve_prepared_files.return_value = {"version_id": 12}
     source = tmp_path / "bridge.py"
     source.write_text("pass")
-    mounts = client.upload_lazy_files(
-        Image.base("engine:1").add_local_file(str(source), "/assets/bridge.py")
-    )
+    image = Image.base("engine:1").add_local_file(str(source), "/assets/bridge.py")
+
+    mounts = client.upload_lazy_files(image)
+    assert client.upload_lazy_files(image) == mounts
     assert len(mounts) == 1
-    assert mounts[0].version_id is None
+    assert mounts[0].version_id == 12
     assert mounts[0].ref_name is None
-    assert "versionId" not in mounts[0].to_spec_dict()
+    assert mounts[0].to_spec_dict()["versionId"] == 12
+    name = mounts[0].name
+    assert name.startswith(vv._SHARED_SOURCE_VOLUME_PREFIX)
+    assert len(name) <= 63
+    for call in client._inner.resolve_prepared_files.call_args_list:
+        assert call.args[:3] == (
+            name,
+            "source_code",
+            client._inner.prepare_files.return_value,
+        )
+    client._inner.upload.assert_not_called()
+    client._rpc.create_volume.assert_not_called()
+
+
+def test_shared_sources_reuse_volume_across_mount_paths(tmp_path, monkeypatch):
+    from chalkcompute import Image
+
+    client = _make_client(monkeypatch)
+    client._inner.resolve_prepared_files.return_value = {"version_id": 12}
+    source = tmp_path / "bridge.py"
+    source.write_text("pass")
+    paths = ["/a_b", "/a-b", "/" + "a" * 80 + "b", "/" + "a" * 80 + "c"]
+    image = Image.base("engine:1")
+    for path in paths:
+        image = image.add_local_file(str(source), f"{path}/bridge.py")
+    first = client.upload_lazy_files(image, volume_prefix="one")
+    second = client.upload_lazy_files(image, volume_prefix="two")
+    assert len({mount.name for mount in first}) == 1
+    assert len({mount.name for mount in second}) == 1
+    assert first[0].name != second[0].name
+    assert {mount.mount_path for mount in first} == set(paths)
+    assert {mount.version_id for mount in first} == {12}
+
+
+def test_shared_source_mounts_preserve_distinct_versions(tmp_path, monkeypatch):
+    from chalkcompute import Image
+
+    client = _make_client(monkeypatch)
+    source = tmp_path / "bridge.py"
+    source.write_text("pass")
+    image = (
+        Image.base("engine:1")
+        .add_local_file(str(source), "/app/bridge.py")
+        .add_local_file(str(source), "/assets/other.py")
+    )
+    prepared = [MagicMock(), MagicMock()]
+    client._inner.prepare_files.side_effect = prepared
+    client._inner.resolve_prepared_files.side_effect = [
+        {"version_id": 12},
+        {"version_id": 13},
+    ]
+
+    mounts = client.upload_lazy_files(image)
+
+    assert len(mounts) == 2
+    assert mounts[0].name == mounts[1].name
+    assert {mount.mount_path for mount in mounts} == {"/app", "/assets"}
+    for mount, files, call in zip(
+        mounts, prepared, client._inner.resolve_prepared_files.call_args_list
+    ):
+        assert call.args[:3] == (mount.name, "source_code", files)
+    assert [mount.to_spec_dict()["versionId"] for mount in mounts] == [12, 13]
+
+
+def test_shared_sources_are_scoped_to_image_spec(tmp_path, monkeypatch):
+    from chalkcompute import Image
+
+    client = _make_client(monkeypatch)
+    client._inner.resolve_prepared_files.return_value = {"version_id": 12}
+    source = tmp_path / "bridge.py"
+    source.write_text("old content")
+    other = tmp_path / "other.py"
+    other.write_text("new content")
+    recipe = Image.base("engine:1").env({"A": "1", "B": "2"})
+    image = recipe.add_local_file(str(source), "/app/bridge.py")
+
+    def resolve(image):
+        return client.upload_lazy_files(image)[0]
+
+    original = resolve(image)
+    equivalent = Image.base("engine:1").env({"B": "2", "A": "1"})
+    assert resolve(equivalent.add_local_file(str(other), "/app/bridge.py")) == original
+
+    source.write_text("updated content")
+    client._inner.resolve_prepared_files.return_value = {"version_id": 13}
+    updated = resolve(image)
+    assert updated.name == original.name
+    assert updated.version_id == 13
+    assert original.version_id == 12
+
+    layout_variants = [
+        recipe.add_local_file(str(source), "/app/renamed.py"),
+        recipe.add_local_file(str(source), "/app/bridge.py", mode=0o755),
+        image.add_local_file(str(other), "/app/extra.py"),
+    ]
+    for variant in layout_variants:
+        assert resolve(variant).name == original.name
+
+    variants = [
+        Image.base("engine:2").add_local_file(str(source), "/app/bridge.py"),
+        image.run_commands("true"),
+        image.env({"A": "changed"}),
+    ]
+    names = {original.name, *(resolve(variant).name for variant in variants)}
+    assert len(names) == len(variants) + 1
+
+
+def test_cleanup_retains_shared_sources_and_deletes_legacy_uploads():
+    client = MagicMock()
+    shared = VolumeMount(vv._SHARED_SOURCE_VOLUME_PREFIX + "cached", "/app", 12)
+    legacy = VolumeMount("chalkcompute-sg-files-old", "/opt")
+    referenced = VolumeMount("user-data", "/data")
+
+    vv.cleanup_owned_volumes(client, [shared, legacy, referenced], [referenced])
+
+    client.delete_volume.assert_called_once_with(legacy.name)
+
+
+def test_scaling_group_deploy_pins_and_retains_lazy_sources(tmp_path, monkeypatch):
+    from chalkcompute import Image, ScalingGroup
+    from chalkcompute import _scaling_group as sg_mod
+    from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
+    from tests._fakes import FakeConnectClient
+
+    source = tmp_path / "gateway.py"
+    source.write_text("pass")
+    image = Image.base("engine:1").add_local_file(str(source), "/opt/gateway.py")
+    driver = _make_client(monkeypatch)
+    driver._inner.resolve_prepared_files.return_value = {"version_id": 42}
+    monkeypatch.setattr(VolumeClient, "from_connect", lambda _: driver)
+    monkeypatch.setattr(sg_mod, "build_image", lambda *_args, **_kwargs: "engine:1")
+    deployed_mounts = []
+
+    def handler(method, request):
+        if method in ("create_scaling_group", "update_scaling_group"):
+            deployed_mounts.append(request.spec.container_spec.volumes[0])
+            response_type = (
+                sg_pb.CreateScalingGroupResponse
+                if method == "create_scaling_group"
+                else sg_pb.UpdateScalingGroupResponse
+            )
+            return response_type(
+                scaling_group=sg_pb.ScalingGroupResponse(
+                    id="sg-1",
+                    name="doom",
+                    status="Running",
+                    ready_replicas=1,
+                    available_replicas=1,
+                )
+            )
+        if method == "list_scaling_group_revisions":
+            return sg_pb.ListScalingGroupRevisionsResponse()
+        assert method == "delete_scaling_group"
+        return sg_pb.DeleteScalingGroupResponse()
+
+    group = ScalingGroup(image=image, name="doom")
+    group._client = FakeConnectClient(handler=handler)
+    group.deploy()
+    group.deploy()
+    group.delete()
+
+    assert len(deployed_mounts) == 2
+    assert deployed_mounts[0] == deployed_mounts[1]
+    assert deployed_mounts[0].version_id == 42
+    assert deployed_mounts[0].mount_path == "/opt"
+    assert deployed_mounts[0].name.startswith(vv._SHARED_SOURCE_VOLUME_PREFIX)
+    driver._rpc.delete_volume.assert_not_called()
 
 
 def test_volume_client_from_env(monkeypatch):
@@ -212,20 +376,17 @@ def test_pinned_volume_mount_resolves_ref(monkeypatch):
         pinned_volume_mount(client, mount)
 
 
-def test_failed_lazy_upload_deletes_created_volume(tmp_path, monkeypatch):
+def test_failed_lazy_resolution_retains_shared_volume(tmp_path, monkeypatch):
     from chalkcompute import Image
 
     client = _make_client(monkeypatch)
-    client._rpc.create_volume.return_value = pb_v2.CreateVolumeResponse(
-        volume=_volume_proto()
-    )
-    client._inner.upload.side_effect = RuntimeError("upload failed")
+    client._inner.resolve_prepared_files.side_effect = RuntimeError("upload failed")
     source = tmp_path / "bridge.py"
     source.write_text("pass")
     image = Image.base("engine:1").add_local_file(str(source), "/assets/bridge.py")
     with pytest.raises(VolumeError, match="upload failed"):
         client.upload_lazy_files(image)
-    client._rpc.delete_volume.assert_called_once()
+    client._rpc.delete_volume.assert_not_called()
 
 
 def test_volume_error_preserves_connect_code_and_message(

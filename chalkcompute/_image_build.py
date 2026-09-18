@@ -72,6 +72,13 @@ def default_source_volume_name(image: Image) -> str:
     return f"chalkcompute-image-{digest.hexdigest()[:12]}"
 
 
+def image_spec_fingerprint(image: Image) -> str:
+    """Hash the image recipe, excluding volume-backed files."""
+    recipe = image._to_build_proto()
+    recipe.env = dict(sorted(recipe.env.items()))
+    return hashlib.sha256(recipe.to_binary()).hexdigest()
+
+
 def build_image_snapshot(
     image: Image,
     *,
