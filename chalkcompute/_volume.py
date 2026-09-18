@@ -15,13 +15,13 @@ from __future__ import annotations
 import base64
 import builtins
 import datetime
-import hashlib
 import importlib
 import logging
 import math
 import os
 import tempfile
 import time
+import uuid
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -46,7 +46,8 @@ logger = logging.getLogger(__name__)
 #: Mount type stamped into container/sandbox specs for every Chalk volume.
 MOUNT_TYPE = "versioned_chalkfs"
 
-_SHARED_SOURCE_VOLUME_PREFIX = "cc-source-"
+_SHARED_SOURCE_VOLUME_PREFIX = "cc-image-"
+_WORKLOAD_FORK_PREFIX = "cc-w-"
 
 
 # ---------------------------------------------------------------------------
@@ -1492,12 +1493,12 @@ class VolumeClient:
 
     @traced("chalkcompute.volume.upload_lazy_files")
     def upload_lazy_files(
-        self, image: Image, *, volume_prefix: str = "files"
+        self, image: Image, *, volume_prefix: str = "files", fork: bool = False
     ) -> builtins.list[VolumeMount]:
-        """Resolve local files to reusable, pinned source-code volumes.
+        """Resolve local files to source snapshots or owned workload forks.
 
-        Uses one stable volume per prefix and image recipe. Each destination
-        directory mounts its own resolved version of that volume.
+        Uses one stable volume per image recipe, also used by Image.build().
+        Each destination directory mounts its own resolved version of that volume.
 
         Existing content is reused without re-uploading. New versions replace
         the entire tree. Shared source volumes survive workload cleanup.
@@ -1507,14 +1508,45 @@ class VolumeClient:
         image
             Image whose lazy local files should be resolved.
         volume_prefix
-            Namespace for the shared source volumes.
+            Retained for compatibility. Volume names depend only on the image spec.
+        fork
+            Create an owned mutable fork per mount for workload cleanup.
 
         Returns
         -------
         list of VolumeMount
-            One immutable source mount per destination directory.
+            One source mount per destination directory, pinned unless fork is set.
         """
-        return self._resolve_lazy_files(image, volume_name=volume_prefix, shared=True)
+        from chalkcompute._image_build import default_source_volume_name
+
+        mounts = self._resolve_lazy_files(
+            image, volume_name=default_source_volume_name(image), shared=True
+        )
+        if not fork:
+            return mounts
+        forked: builtins.list[VolumeMount] = []
+        try:
+            for mount in mounts:
+                assert mount.version_id is not None
+                token = base64.b32encode(uuid.uuid4().bytes).decode().rstrip("=").lower()
+                ref_name = _WORKLOAD_FORK_PREFIX + token
+                self._create_ref(mount.name, ref_name, mount.version_id)
+                forked.append(
+                    VolumeMount(mount.name, mount.mount_path, ref_name=ref_name)
+                )
+        except BaseException:
+            for mount in reversed(forked):
+                try:
+                    assert mount.ref_name is not None
+                    self._delete_ref(mount.name, mount.ref_name)
+                except Exception:
+                    logger.warning(
+                        "Could not delete failed upload fork %s",
+                        mount.ref_name,
+                        exc_info=True,
+                    )
+            raise
+        return forked
 
     @traced("chalkcompute.volume.stage_lazy_files")
     def stage_lazy_files(
@@ -1610,22 +1642,11 @@ class VolumeClient:
         except ValueError as exc:
             raise VolumeError(str(exc)) from exc
 
-        fingerprint = ""
-        if shared:
-            from chalkcompute._image_build import image_spec_fingerprint
-
-            fingerprint = image_spec_fingerprint(image)
-
         deadline = time.monotonic() + timeout
         mounts: builtins.list[VolumeMount] = []
         for mount_path, files in groups.items():
             if shared:
-                identity = f"{volume_name}\0{fingerprint}".encode()
-                # Keep the full digest within the 63-character name limit.
-                digest = base64.b32encode(hashlib.sha256(identity).digest())
-                name = (
-                    _SHARED_SOURCE_VOLUME_PREFIX + digest.decode().rstrip("=").lower()
-                )
+                name = volume_name
             else:
                 name = (
                     volume_name
@@ -2314,22 +2335,43 @@ def resolve_referenced_volume_type(connect: ConnectClient, name: str) -> str:
     return MOUNT_TYPE
 
 
+def is_workload_fork(mount: VolumeMount) -> bool:
+    """Identify SDK-managed image forks."""
+    return mount.name.startswith(_SHARED_SOURCE_VOLUME_PREFIX) and bool(
+        mount.ref_name
+        and mount.ref_name.startswith((_WORKLOAD_FORK_PREFIX, "cc-workload-"))
+    )
+
+
 def cleanup_owned_volumes(
     client: VolumeClient,
     all_volumes: Iterable[VolumeMount],
     referenced_volumes: Iterable[VolumeMount],
 ) -> None:
-    """Delete disposable SDK volumes, retaining references and shared sources.
+    """Delete owned forks and disposable volumes, retaining shared sources.
 
     ``all_volumes`` contains both volumes the SDK uploaded (e.g. for an
     image's lazy local files) and volumes the caller referenced via
     ``volumes=[(name, path)]``. Caller-referenced volumes are owned by
     the caller and must outlive this lifecycle.
     """
+    referenced_volumes = list(referenced_volumes)
     referenced_names = {volume.name for volume in referenced_volumes}
+    referenced_forks = {(volume.name, volume.ref_name) for volume in referenced_volumes}
+    deleted_forks: set[tuple[str, str]] = set()
     for v in all_volumes:
+        if is_workload_fork(v):
+            assert v.ref_name is not None
+            key = (v.name, v.ref_name)
+            if key not in referenced_forks and key not in deleted_forks:
+                try:
+                    client._delete_ref(v.name, v.ref_name)
+                except VolumeNotFoundError:
+                    pass
+                deleted_forks.add(key)
+            continue
         if v.name in referenced_names or v.name.startswith(
-            _SHARED_SOURCE_VOLUME_PREFIX
+            (_SHARED_SOURCE_VOLUME_PREFIX, "cc-local-", "cc-source-")
         ):
             continue
         client.delete_volume(v.name)

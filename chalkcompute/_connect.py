@@ -651,7 +651,7 @@ def build_image_with_volumes(
     timeout
         Maximum seconds to wait for the build to complete.
     volume_prefix
-        Prefix used when naming the generated volumes.
+        Retained for compatibility. Volume names depend only on the image spec.
 
     Returns
     -------
@@ -697,7 +697,7 @@ def build_image_with_volumes_from_spec(
     image : Image
         Image definition and local files to upload.
     volume_prefix : str, optional
-        Prefix for generated volume names. Defaults to ``"files"``.
+        Retained for compatibility. Volume names depend only on the image spec.
     chalk_client : Any, optional
         Chalk client supplying authentication. Defaults to environment auth.
 

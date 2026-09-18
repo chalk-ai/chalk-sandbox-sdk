@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import posixpath
 from typing import Any, Iterable
@@ -54,7 +55,7 @@ def default_source_volume_name(image: Image) -> str:
     Parameters
     ----------
     image
-        Image whose recipe and volume file layout determine the name.
+        Image whose build specification determines the name.
 
     Returns
     -------
@@ -63,20 +64,9 @@ def default_source_volume_name(image: Image) -> str:
     """
     recipe = image._to_build_proto()
     recipe.env = dict(sorted(recipe.env.items()))
-    digest = hashlib.sha256(recipe.to_binary())
-    for lf in sorted(
-        image.lazy_local_files, key=lambda f: (f.dest, f.mount_root or "")
-    ):
-        mode = "" if lf.mode is None else str(lf.mode)
-        digest.update(f"{lf.dest}\0{lf.mount_root or ''}\0{mode}\n".encode())
-    return f"chalkcompute-image-{digest.hexdigest()[:12]}"
-
-
-def image_spec_fingerprint(image: Image) -> str:
-    """Hash the image recipe, excluding volume-backed files."""
-    recipe = image._to_build_proto()
-    recipe.env = dict(sorted(recipe.env.items()))
-    return hashlib.sha256(recipe.to_binary()).hexdigest()
+    digest = hashlib.sha256(recipe.to_binary()).digest()
+    fingerprint = base64.b32encode(digest).decode().rstrip("=").lower()
+    return f"cc-image-{fingerprint}"
 
 
 def build_image_snapshot(
@@ -128,6 +118,7 @@ def build_image_snapshot(
                 driver._resolve_lazy_files(
                     image,
                     volume_name=name,
+                    shared=True,
                     poll_interval=poll_interval,
                     timeout=timeout,
                 )

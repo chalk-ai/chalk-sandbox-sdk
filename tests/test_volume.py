@@ -182,7 +182,7 @@ def test_upload_lazy_files_reuses_pinned_source_mount(tmp_path, monkeypatch):
     assert mounts[0].ref_name is None
     assert mounts[0].to_spec_dict()["versionId"] == 12
     name = mounts[0].name
-    assert name.startswith(vv._SHARED_SOURCE_VOLUME_PREFIX)
+    assert name.startswith("cc-image-")
     assert len(name) <= 63
     for call in client._inner.resolve_prepared_files.call_args_list:
         assert call.args[:3] == (
@@ -209,7 +209,7 @@ def test_shared_sources_reuse_volume_across_mount_paths(tmp_path, monkeypatch):
     second = client.upload_lazy_files(image, volume_prefix="two")
     assert len({mount.name for mount in first}) == 1
     assert len({mount.name for mount in second}) == 1
-    assert first[0].name != second[0].name
+    assert first == second
     assert {mount.mount_path for mount in first} == set(paths)
     assert {mount.version_id for mount in first} == {12}
 
@@ -242,6 +242,81 @@ def test_shared_source_mounts_preserve_distinct_versions(tmp_path, monkeypatch):
     ):
         assert call.args[:3] == (mount.name, "source_code", files)
     assert [mount.to_spec_dict()["versionId"] for mount in mounts] == [12, 13]
+
+
+@pytest.mark.parametrize("name", [None, "retained-assets"])
+def test_image_build_and_lazy_uploads_share_source_resolution(tmp_path, monkeypatch, name):
+    from chalkcompute import Image, _image_build
+
+    client = _make_client(monkeypatch)
+    client._inner.resolve_prepared_files.return_value = {"version_id": 12}
+    source = tmp_path / "bridge.py"
+    source.write_text("pass")
+    image = (
+        Image.base("engine:1")
+        .add_local_file(str(source), "/app/bridge.py")
+        .add_local_file(str(source), "/assets/bridge.py")
+    )
+    automatic = client.upload_lazy_files(image)
+    monkeypatch.setattr(VolumeClient, "from_env", lambda **_: client)
+    monkeypatch.setattr(_image_build, "build_image", lambda *_args, **_kwargs: "engine:1")
+
+    built = image.build(name=name)
+
+    assert {mount.mount_path for mount in built.volumes} == {"/app", "/assets"}
+    if name is None:
+        assert built.volumes == tuple(automatic)
+    else:
+        assert {mount.name for mount in built.volumes} == {name}
+        assert {mount.version_id for mount in built.volumes} == {12}
+
+
+def test_workload_forks_are_unique_and_cleaned_independently(tmp_path, monkeypatch):
+    client = _make_client(monkeypatch)
+    client._inner.resolve_prepared_files.return_value = {"version_id": 12}
+    client._create_ref = MagicMock()
+    image, _ = _lazy_image(tmp_path)
+    first = client.upload_lazy_files(image, fork=True)
+    second = client.upload_lazy_files(image, fork=True)
+    assert first[0].name == second[0].name
+    assert first[0].ref_name != second[0].ref_name
+    assert first[0].ref_name.startswith("cc-w-")
+    assert len(first[0].ref_name) == 31
+    assert first[0].version_id is None
+    assert first[0].to_spec_dict()["refName"] == first[0].ref_name
+    for mount in [*first, *second]:
+        client._create_ref.assert_any_call(mount.name, mount.ref_name, 12)
+
+    vv.cleanup_owned_volumes(client, [*first, *second, *first], iter(second))
+
+    request = client._rpc.delete_ref.call_args.args[0]
+    assert request.volume.name == first[0].name
+    assert request.name == first[0].ref_name
+    client._rpc.delete_ref.assert_called_once()
+    client._rpc.delete_volume.assert_not_called()
+
+
+def test_partial_fork_creation_cleans_up_created_forks(tmp_path, monkeypatch):
+    client = _make_client(monkeypatch)
+    client._inner.resolve_prepared_files.return_value = {"version_id": 12}
+    client._create_ref = MagicMock(side_effect=[None, VolumeError("fork failed")])
+    source = tmp_path / "bridge.py"
+    source.write_text("pass")
+    image = (
+        vv.Image.base("engine:1")
+        .add_local_file(str(source), "/app/bridge.py")
+        .add_local_file(str(source), "/assets/bridge.py")
+    )
+
+    with pytest.raises(VolumeError, match="fork failed"):
+        client.upload_lazy_files(image, fork=True)
+
+    volume, ref_name, _ = client._create_ref.call_args_list[0].args
+    request = client._rpc.delete_ref.call_args.args[0]
+    assert request.volume.name == volume
+    assert request.name == ref_name
+    client._rpc.delete_ref.assert_called_once()
+    client._rpc.delete_volume.assert_not_called()
 
 
 def test_shared_sources_are_scoped_to_image_spec(tmp_path, monkeypatch):
@@ -290,15 +365,18 @@ def test_shared_sources_are_scoped_to_image_spec(tmp_path, monkeypatch):
 def test_cleanup_retains_shared_sources_and_deletes_legacy_uploads():
     client = MagicMock()
     shared = VolumeMount(vv._SHARED_SOURCE_VOLUME_PREFIX + "cached", "/app", 12)
+    previous_shared = VolumeMount("cc-source-cached", "/previous", 11)
     legacy = VolumeMount("chalkcompute-sg-files-old", "/opt")
     referenced = VolumeMount("user-data", "/data")
 
-    vv.cleanup_owned_volumes(client, [shared, legacy, referenced], [referenced])
+    vv.cleanup_owned_volumes(
+        client, [shared, previous_shared, legacy, referenced], [referenced]
+    )
 
     client.delete_volume.assert_called_once_with(legacy.name)
 
 
-def test_scaling_group_deploy_pins_and_retains_lazy_sources(tmp_path, monkeypatch):
+def test_scaling_group_deploy_forks_and_retains_lazy_sources(tmp_path, monkeypatch):
     from chalkcompute import Image, ScalingGroup
     from chalkcompute import _scaling_group as sg_mod
     from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
@@ -309,6 +387,7 @@ def test_scaling_group_deploy_pins_and_retains_lazy_sources(tmp_path, monkeypatc
     image = Image.base("engine:1").add_local_file(str(source), "/opt/gateway.py")
     driver = _make_client(monkeypatch)
     driver._inner.resolve_prepared_files.return_value = {"version_id": 42}
+    driver._create_ref = MagicMock()
     monkeypatch.setattr(VolumeClient, "from_connect", lambda _: driver)
     monkeypatch.setattr(sg_mod, "build_image", lambda *_args, **_kwargs: "engine:1")
     deployed_mounts = []
@@ -342,8 +421,13 @@ def test_scaling_group_deploy_pins_and_retains_lazy_sources(tmp_path, monkeypatc
     group.delete()
 
     assert len(deployed_mounts) == 2
-    assert deployed_mounts[0] == deployed_mounts[1]
-    assert deployed_mounts[0].version_id == 42
+    assert deployed_mounts[0].name == deployed_mounts[1].name
+    assert deployed_mounts[0].ref_name != deployed_mounts[1].ref_name
+    assert all(mount.ref_name.startswith("cc-w-") for mount in deployed_mounts)
+    assert all(not mount.has_field("version_id") for mount in deployed_mounts)
+    assert driver._create_ref.call_count == 2
+    assert all(call.args[2] == 42 for call in driver._create_ref.call_args_list)
+    assert driver._rpc.delete_ref.call_count == 2
     assert deployed_mounts[0].mount_path == "/opt"
     assert deployed_mounts[0].name.startswith(vv._SHARED_SOURCE_VOLUME_PREFIX)
     driver._rpc.delete_volume.assert_not_called()

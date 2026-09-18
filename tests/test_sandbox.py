@@ -1091,7 +1091,7 @@ def test_sandbox_uploads_lazy_local_files_without_exec_probe(tmp_path, wait) -> 
 
     execute.assert_not_called()
     volume_client.upload_lazy_files.assert_called_once_with(
-        image, volume_prefix="sandbox-files"
+        image, volume_prefix="sandbox-files", fork=True
     )
     stub.create_sandbox.assert_called_once()
     spec = stub.create_sandbox.call_args.args[0].source.value

@@ -1095,6 +1095,7 @@ class Container:
                 self._volumes += driver.upload_lazy_files(
                     self._image,
                     volume_prefix="container-files",
+                    fork=True,
                 )
                 for v in self._volumes:
                     logger.info(

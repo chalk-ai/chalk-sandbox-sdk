@@ -68,6 +68,7 @@ from chalkcompute._volume import (
     VolumeClient,
     VolumeMount,
     cleanup_owned_volumes,
+    is_workload_fork,
     referenced_volume_mount,
 )
 
@@ -626,6 +627,7 @@ class ScalingGroup:
             uploaded_volumes = driver.upload_lazy_files(
                 self._image,
                 volume_prefix=_OWNED_VOLUME_PREFIX,
+                fork=True,
             )
             self._volumes += uploaded_volumes
             self._owned_volumes += uploaded_volumes
@@ -998,7 +1000,9 @@ class ScalingGroup:
     @_instrumented("chalkcompute.scaling_group.delete")
     def delete(self) -> None:
         """Delete the scaling group and clean up associated volumes."""
-        owned_volumes = {volume.name: volume for volume in self._owned_volumes}
+        owned_volumes = {
+            (volume.name, volume.ref_name): volume for volume in self._owned_volumes
+        }
         if self._scaling_group_id is not None:
             try:
                 owned_volumes.update(self._owned_volumes_from_revisions())
@@ -1026,11 +1030,13 @@ class ScalingGroup:
         self._owned_volumes = []
         self._volume_driver = None
 
-    def _owned_volumes_from_revisions(self) -> dict[str, VolumeMount]:
-        """Find SDK-created lazy-file volumes retained by historical revisions."""
+    def _owned_volumes_from_revisions(
+        self,
+    ) -> dict[tuple[str, str | None], VolumeMount]:
+        """Find owned forks and legacy volumes retained by historical revisions."""
         assert self._scaling_group_id is not None
         stub = self._client.stub(sg_connect.ScalingGroupManagerServiceClientSync)
-        result: dict[str, VolumeMount] = {}
+        result: dict[tuple[str, str | None], VolumeMount] = {}
         cursor: str | None = None
         while True:
             try:
@@ -1055,8 +1061,15 @@ class ScalingGroup:
                 if container_spec is None:
                     continue
                 for volume in container_spec.volumes:
-                    if volume.name.startswith(f"{_OWNED_VOLUME_PREFIX}-"):
-                        result[volume.name] = VolumeMount(
+                    candidate = VolumeMount(
+                        volume.name,
+                        volume.mount_path,
+                        ref_name=volume.ref_name or None,
+                    )
+                    if volume.name.startswith(
+                        f"{_OWNED_VOLUME_PREFIX}-"
+                    ) or is_workload_fork(candidate):
+                        result[(volume.name, volume.ref_name or None)] = VolumeMount(
                             name=volume.name,
                             mount_path=volume.mount_path,
                             version_id=(

@@ -55,7 +55,7 @@ def test_delete_cleans_up_revision_volumes(
     driver = MagicMock()
     group._volume_driver = driver
 
-    assert group._owned_volumes_from_revisions()[volume.name] == VolumeMount(
+    assert group._owned_volumes_from_revisions()[(volume.name, ref_name)] == VolumeMount(
         volume.name, "/app", version_id=version_id, ref_name=ref_name
     )
     group.delete()
@@ -64,6 +64,46 @@ def test_delete_cleans_up_revision_volumes(
     assert client.calls[-1].method == "delete_scaling_group"
     assert group.id is None
     assert group.info is None
+
+
+def test_attached_group_deletes_all_revision_forks(monkeypatch):
+    mounts = [
+        container_pb.VolumeMount(
+            name="cc-image-shared", mount_path="/app", ref_name=f"cc-workload-{index}"
+        )
+        for index in range(3)
+    ]
+
+    def handler(method, request):
+        if method == "get_scaling_group":
+            return sg_pb.GetScalingGroupResponse(
+                scaling_group=sg_pb.ScalingGroupResponse(id="group-1", name="api")
+            )
+        if method == "list_scaling_group_revisions":
+            return sg_pb.ListScalingGroupRevisionsResponse(
+                revisions=[
+                    sg_pb.ScalingGroupRevisionResponse(
+                        spec=sg_pb.ScalingGroupSpec(
+                            container_spec=container_pb.ChalkContainerSpec(volumes=[mount])
+                        )
+                    )
+                    for mount in mounts
+                ]
+            )
+        assert method == "delete_scaling_group"
+        return sg_pb.DeleteScalingGroupResponse()
+
+    client = FakeConnectClient(handler=handler)
+    monkeypatch.setattr(scaling_group_mod, "ConnectClient", lambda **_: client)
+    group = ScalingGroup.from_id("group-1")
+    driver = MagicMock()
+    group._volume_driver = driver
+    group.delete()
+
+    assert driver._delete_ref.call_count == 3
+    for mount in mounts:
+        driver._delete_ref.assert_any_call(mount.name, mount.ref_name)
+    driver.delete_volume.assert_not_called()
 
 
 def test_delete_continues_after_invalid_revision_volume(
