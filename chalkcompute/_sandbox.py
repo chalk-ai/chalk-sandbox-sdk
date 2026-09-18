@@ -1212,7 +1212,21 @@ class Sandbox:
 
     @property
     def git(self) -> SandboxGit:
-        """Git operations inside this sandbox (requires Git in custom images)."""
+        """Access Git operations inside this running sandbox.
+
+        Returns
+        -------
+        SandboxGit
+            Helpers for cloning, staging, committing, branches, remotes, and
+            repository-local configuration. Paths refer to the sandbox filesystem,
+            relative to the image working directory or absolute. Custom images
+            must include Git; the default sandbox image already includes it.
+
+        Examples
+        --------
+        >>> sandbox.git.clone("https://github.com/octocat/Hello-World.git", "repo")
+        >>> status = sandbox.git.status("repo")
+        """
         return SandboxGit(self)
 
     @_instrumented("chalkcompute.sandbox.exec")

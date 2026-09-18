@@ -614,6 +614,7 @@ Git failures raise `GitError`.
 
 Git paths identify the repository root relative to the image working directory.
 Helpers accept `timeout_secs`; multi-command operations apply it to each command.
+See the [sandbox Git guide](docs/sandbox-git.md) for workflows and a method reference.
 See [the sandbox capability guide](docs/sandbox-capabilities.md) for defaults.
 
 ### Add tmux to a sandbox image

@@ -10,6 +10,8 @@
 
 ## Git defaults
 
+See the [sandbox Git guide](sandbox-git.md) for examples and the method reference.
+
 Clones use the remote's default branch with **depth 1**. Pass `depth=None` for
 full history or a positive integer for a different depth. `commit_id` fetches the
 selected commit and checks it out as detached HEAD, including for shallow clones.
