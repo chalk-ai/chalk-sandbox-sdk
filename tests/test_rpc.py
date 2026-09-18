@@ -69,15 +69,22 @@ def test_rpc_span_leaves_trace_metadata_to_transport(monkeypatch) -> None:
 
 
 def test_suppress_rpc_tracing_skips_span(monkeypatch) -> None:
+    from opentelemetry.trace import TraceFlags, get_current_span
+
     interceptor, exporter = _recording_interceptor(monkeypatch)
     ctx = _context()
 
-    with _rpc.suppress_rpc_tracing():
-        token = interceptor.on_start_sync(ctx)
+    with _rpc.get_tracer().start_as_current_span("parent") as parent:
+        parent_context = parent.get_span_context()
+        with _rpc.suppress_rpc_tracing():
+            suppressed_context = get_current_span().get_span_context()
+            token = interceptor.on_start_sync(ctx)
     interceptor.on_end_sync(token, ctx, None)
 
     assert token is None
-    assert exporter.get_finished_spans() == ()
+    assert suppressed_context.trace_id == parent_context.trace_id
+    assert not suppressed_context.trace_flags & TraceFlags.SAMPLED
+    assert [span.name for span in exporter.get_finished_spans()] == ["parent"]
 
 
 def test_rpc_span_marks_failed_calls_as_errors(monkeypatch) -> None:

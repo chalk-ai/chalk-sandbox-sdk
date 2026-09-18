@@ -121,17 +121,18 @@ class _SucceededDuringCreationStub:
 
 
 class _PollStub:
-    def __init__(self, status: pb.SandboxStatus) -> None:
-        self.status = status
+    def __init__(self, *statuses: pb.SandboxStatus) -> None:
+        self.statuses = statuses
         self.calls = 0
 
     def get_sandbox(self, request: pb.GetSandboxRequest, **_kwargs: object):
         assert request.id == "sandbox-123"
         self.calls += 1
+        status = self.statuses[min(self.calls - 1, len(self.statuses) - 1)]
         return pb.GetSandboxResponse(
             sandbox=pb.SandboxInfo(
                 id="sandbox-123",
-                status=self.status,
+                status=status,
                 created_at=Timestamp(seconds=1),
             )
         )
@@ -155,10 +156,8 @@ def test_sandbox_readiness_traces_first_poll_and_summarizes_the_rest(
     monkeypatch.setattr("chalkcompute._sandbox.time.sleep", lambda _seconds: None)
 
     client = SandboxClient()
-    traced = _PollStub(pb.SandboxStatus.PENDING)
-    untraced = _PollStub(pb.SandboxStatus.RUNNING)
+    traced = _PollStub(pb.SandboxStatus.PENDING, pb.SandboxStatus.RUNNING)
     client._stub = traced  # type: ignore[assignment]
-    client._untraced_stub = untraced  # type: ignore[assignment]
     try:
         info = client._poll_until_ready(
             "sandbox-123",
@@ -170,8 +169,7 @@ def test_sandbox_readiness_traces_first_poll_and_summarizes_the_rest(
         client.close()
 
     assert info.status == "running"
-    assert traced.calls == 1
-    assert untraced.calls == 1
+    assert traced.calls == 2
     spans = {span.name: span for span in exporter.get_finished_spans()}
     wait = spans["chalkcompute.wait_until_running"]
     assert wait.attributes is not None

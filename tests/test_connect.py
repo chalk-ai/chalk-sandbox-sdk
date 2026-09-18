@@ -17,7 +17,7 @@ from chalkcompute._connect import (
     grpc_target_from_url,
 )
 from chalkcompute._gen.chalk.server.v1 import auth_pb
-from chalkcompute._http import SYNC_HTTP_CLIENT, SYNC_UNTRACED_HTTP_CLIENT
+from chalkcompute._http import SYNC_HTTP_CLIENT
 from chalkcompute._remote_call_client import ServiceAuthContext
 
 
@@ -1070,6 +1070,3 @@ class TestStubAndCall:
             "http_client": SYNC_HTTP_CLIENT,
             "read_max_bytes": RPC_READ_MAX_BYTES,
         }
-
-        assert isinstance(client._untraced_stub(Stub), Stub)
-        assert captured["http_client"] is SYNC_UNTRACED_HTTP_CLIENT

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 import time
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
@@ -13,8 +14,16 @@ from typing import Any, TypeVar
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError
 from connectrpc.request import RequestContext
-from opentelemetry import propagate
-from opentelemetry.trace import Span, StatusCode
+from opentelemetry import context as otel_context
+from opentelemetry.trace import (
+    NonRecordingSpan,
+    Span,
+    SpanContext,
+    StatusCode,
+    TraceFlags,
+    get_current_span,
+    set_span_in_context,
+)
 
 from chalkcompute._tracing import get_tracer
 
@@ -49,23 +58,34 @@ class _SpanToken:
 
 @contextmanager
 def suppress_rpc_tracing() -> Iterator[None]:
-    """Disable the SDK's logical RPC span in this context."""
+    """Disable client spans and propagate an unsampled parent when one exists."""
     token = _RPC_TRACING_ENABLED.set(False)
+    context_token = None
+    parent = get_current_span().get_span_context()
+    if parent.is_valid:
+        # The normal HTTP transport remains the sole propagation owner. An unsampled
+        # parent prevents both client spans and sampled server roots for background polls.
+        span_id = secrets.randbits(64) or 1
+        unsampled_parent = NonRecordingSpan(
+            SpanContext(
+                trace_id=parent.trace_id,
+                span_id=span_id,
+                is_remote=False,
+                trace_flags=TraceFlags(0),
+                trace_state=parent.trace_state,
+            )
+        )
+        context_token = otel_context.attach(set_span_in_context(unsampled_parent))
     try:
         yield
     finally:
+        if context_token is not None:
+            otel_context.detach(context_token)
         _RPC_TRACING_ENABLED.reset(token)
 
 
 class TracingInterceptor:
-    """Emit one OpenTelemetry span around each synchronous RPC.
-
-    The span is also handed to the server as W3C ``traceparent``/``tracestate``/
-    ``baggage`` request headers, so the server's spans — and, through the
-    sandbox's per-exec ``TRACEPARENT`` env, the workload's — join the caller's
-    trace. The propagator writes nothing for a non-recording span, so a process
-    without tracing sends no extra headers.
-    """
+    """Emit one OpenTelemetry span around each synchronous RPC."""
 
     def on_start_sync(self, ctx: RequestContext[Any, Any]) -> _SpanToken | None:
         if not _RPC_TRACING_ENABLED.get():
@@ -78,10 +98,6 @@ class TracingInterceptor:
             _RPC_METHOD_ATTRIBUTE,
             f"{ctx.method.service_name}/{ctx.method.name}",
         )
-        carrier: dict[str, str] = {}
-        propagate.inject(carrier)
-        for key, value in carrier.items():
-            ctx.request_headers[key] = value
         return _SpanToken(context=context, span=span)
 
     def on_end_sync(

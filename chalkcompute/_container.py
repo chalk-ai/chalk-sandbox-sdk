@@ -1578,9 +1578,7 @@ def _get_container_info(
             resp = client.call(stub.get_container, request)
         else:
             with suppress_rpc_tracing():
-                stub = client._untraced_stub(
-                    container_connect.ContainerServiceClientSync
-                )
+                stub = client.stub(container_connect.ContainerServiceClientSync)
                 resp = client.call(stub.get_container, request)
     except ConnectRpcError as e:
         raise ContainerError(f"GetContainer failed: {rpc_error_message(e)}") from e

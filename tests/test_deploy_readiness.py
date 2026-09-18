@@ -471,7 +471,7 @@ def test_container_readiness_logs_transitions_instead_of_each_poll(
     states = iter(["Pending", "Pending", "Running"])
     monkeypatch.setattr(
         "chalkcompute._container._get_container_info",
-        lambda *args: SimpleNamespace(status=next(states)),
+        lambda *_args, **_kwargs: SimpleNamespace(status=next(states)),
     )
     monkeypatch.setattr(function_mod.time, "sleep", lambda _: None)
     container._poll_until_running(poll_interval=0, timeout=10)
