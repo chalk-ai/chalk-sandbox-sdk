@@ -631,7 +631,7 @@ def build_image_with_volumes(
     *,
     poll_interval: float = 0.5,
     timeout: float = 600.0,
-    volume_prefix: str = "files",
+    volume_prefix: str = "cc-image",
 ) -> tuple[str, list[VolumeMount]]:
     """Build an ``Image`` and upload any lazy local files to volumes.
 
@@ -651,7 +651,8 @@ def build_image_with_volumes(
     timeout
         Maximum seconds to wait for the build to complete.
     volume_prefix
-        Retained for compatibility. Volume names depend only on the image spec.
+        DNS label prefix for source volumes, at most 36 characters.
+        Defaults to ``"cc-image"``.
 
     Returns
     -------
@@ -687,7 +688,7 @@ def build_image_with_volumes(
 def build_image_with_volumes_from_spec(
     image: Image,
     *,
-    volume_prefix: str = "files",
+    volume_prefix: str = "cc-image",
     chalk_client: Any | None = None,
 ) -> tuple[str, list[VolumeMount]]:
     """Build an image and upload its volume-backed local files.
@@ -697,7 +698,8 @@ def build_image_with_volumes_from_spec(
     image : Image
         Image definition and local files to upload.
     volume_prefix : str, optional
-        Retained for compatibility. Volume names depend only on the image spec.
+        DNS label prefix for source volumes, at most 36 characters.
+        Defaults to ``"cc-image"``.
     chalk_client : Any, optional
         Chalk client supplying authentication. Defaults to environment auth.
 

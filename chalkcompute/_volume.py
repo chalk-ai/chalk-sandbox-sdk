@@ -1493,11 +1493,12 @@ class VolumeClient:
 
     @traced("chalkcompute.volume.upload_lazy_files")
     def upload_lazy_files(
-        self, image: Image, *, volume_prefix: str = "files", fork: bool = False
+        self, image: Image, *, volume_prefix: str = "cc-image", fork: bool = False
     ) -> builtins.list[VolumeMount]:
         """Resolve local files to source snapshots or owned workload forks.
 
-        Uses one stable volume per image recipe, also used by Image.build().
+        Uses one stable volume per prefix and image recipe. The default prefix
+        shares volumes with Image.build().
         Each destination directory mounts its own resolved version of that volume.
 
         Existing content is reused without re-uploading. New versions replace
@@ -1508,7 +1509,8 @@ class VolumeClient:
         image
             Image whose lazy local files should be resolved.
         volume_prefix
-            Retained for compatibility. Volume names depend only on the image spec.
+            DNS label prepended to the image-spec hash. Defaults to cc-image.
+            Must be at most 36 characters, leaving room for the hash.
         fork
             Create an owned mutable fork per mount for workload cleanup.
 
@@ -1520,7 +1522,9 @@ class VolumeClient:
         from chalkcompute._image_build import default_source_volume_name
 
         mounts = self._resolve_lazy_files(
-            image, volume_name=default_source_volume_name(image), shared=True
+            image,
+            volume_name=default_source_volume_name(image, prefix=volume_prefix),
+            shared=True,
         )
         if not fork:
             return mounts
@@ -1528,7 +1532,9 @@ class VolumeClient:
         try:
             for mount in mounts:
                 assert mount.version_id is not None
-                token = base64.b32encode(uuid.uuid4().bytes).decode().rstrip("=").lower()
+                token = (
+                    base64.b32encode(uuid.uuid4().bytes).decode().rstrip("=").lower()
+                )
                 ref_name = _WORKLOAD_FORK_PREFIX + token
                 self._create_ref(mount.name, ref_name, mount.version_id)
                 forked.append(
@@ -2337,7 +2343,7 @@ def resolve_referenced_volume_type(connect: ConnectClient, name: str) -> str:
 
 def is_workload_fork(mount: VolumeMount) -> bool:
     """Identify SDK-managed image forks."""
-    return mount.name.startswith(_SHARED_SOURCE_VOLUME_PREFIX) and bool(
+    return bool(
         mount.ref_name
         and mount.ref_name.startswith((_WORKLOAD_FORK_PREFIX, "cc-workload-"))
     )

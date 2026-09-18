@@ -620,13 +620,14 @@ class ScalingGroup:
         )
         if lazy_files:
             progress_update(key, detail=f"Resolving {len(lazy_files)} local file(s)")
-            logger.info("Resolving %d local file(s) to source volume(s)...", len(lazy_files))
+            logger.info(
+                "Resolving %d local file(s) to source volume(s)...", len(lazy_files)
+            )
             assert isinstance(self._image, Image)
             driver = VolumeClient.from_connect(self._client)
             self._volume_driver = driver
             uploaded_volumes = driver.upload_lazy_files(
                 self._image,
-                volume_prefix=_OWNED_VOLUME_PREFIX,
                 fork=True,
             )
             self._volumes += uploaded_volumes

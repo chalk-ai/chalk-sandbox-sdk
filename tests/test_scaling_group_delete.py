@@ -55,9 +55,9 @@ def test_delete_cleans_up_revision_volumes(
     driver = MagicMock()
     group._volume_driver = driver
 
-    assert group._owned_volumes_from_revisions()[(volume.name, ref_name)] == VolumeMount(
-        volume.name, "/app", version_id=version_id, ref_name=ref_name
-    )
+    assert group._owned_volumes_from_revisions()[
+        (volume.name, ref_name)
+    ] == VolumeMount(volume.name, "/app", version_id=version_id, ref_name=ref_name)
     group.delete()
 
     driver.delete_volume.assert_called_once_with(volume.name)
@@ -84,7 +84,9 @@ def test_attached_group_deletes_all_revision_forks(monkeypatch):
                 revisions=[
                     sg_pb.ScalingGroupRevisionResponse(
                         spec=sg_pb.ScalingGroupSpec(
-                            container_spec=container_pb.ChalkContainerSpec(volumes=[mount])
+                            container_spec=container_pb.ChalkContainerSpec(
+                                volumes=[mount]
+                            )
                         )
                     )
                     for mount in mounts

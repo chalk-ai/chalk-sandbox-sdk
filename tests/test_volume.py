@@ -209,9 +209,37 @@ def test_shared_sources_reuse_volume_across_mount_paths(tmp_path, monkeypatch):
     second = client.upload_lazy_files(image, volume_prefix="two")
     assert len({mount.name for mount in first}) == 1
     assert len({mount.name for mount in second}) == 1
-    assert first == second
+    assert first[0].name.startswith("one-")
+    assert second[0].name.startswith("two-")
+    assert first[0].name != second[0].name
+    assert client.upload_lazy_files(image, volume_prefix="one") == first
     assert {mount.mount_path for mount in first} == set(paths)
     assert {mount.version_id for mount in first} == {12}
+
+
+@pytest.mark.parametrize("prefix", ["", "Uppercase", "a" * 37])
+def test_lazy_upload_rejects_invalid_prefix_before_resolution(tmp_path, monkeypatch, prefix):
+    client = _make_client(monkeypatch)
+    image, _ = _lazy_image(tmp_path)
+
+    with pytest.raises(ValueError):
+        client.upload_lazy_files(image, volume_prefix=prefix)
+
+    client._inner.resolve_prepared_files.assert_not_called()
+
+
+def test_lazy_upload_long_prefix_preserves_hash(tmp_path, monkeypatch):
+    client = _make_client(monkeypatch)
+    client._inner.resolve_prepared_files.return_value = {"version_id": 12}
+    image, _ = _lazy_image(tmp_path)
+    prefix = "a" * 36
+
+    first = client.upload_lazy_files(image, volume_prefix=prefix)[0]
+    second = client.upload_lazy_files(image.run_commands("true"), volume_prefix=prefix)[0]
+
+    assert first.name.startswith(prefix + "-")
+    assert len(first.name) == 63
+    assert first.name != second.name
 
 
 def test_shared_source_mounts_preserve_distinct_versions(tmp_path, monkeypatch):
@@ -245,7 +273,9 @@ def test_shared_source_mounts_preserve_distinct_versions(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("name", [None, "retained-assets"])
-def test_image_build_and_lazy_uploads_share_source_resolution(tmp_path, monkeypatch, name):
+def test_image_build_and_lazy_uploads_share_source_resolution(
+    tmp_path, monkeypatch, name
+):
     from chalkcompute import Image, _image_build
 
     client = _make_client(monkeypatch)
@@ -259,7 +289,9 @@ def test_image_build_and_lazy_uploads_share_source_resolution(tmp_path, monkeypa
     )
     automatic = client.upload_lazy_files(image)
     monkeypatch.setattr(VolumeClient, "from_env", lambda **_: client)
-    monkeypatch.setattr(_image_build, "build_image", lambda *_args, **_kwargs: "engine:1")
+    monkeypatch.setattr(
+        _image_build, "build_image", lambda *_args, **_kwargs: "engine:1"
+    )
 
     built = image.build(name=name)
 
@@ -271,13 +303,14 @@ def test_image_build_and_lazy_uploads_share_source_resolution(tmp_path, monkeypa
         assert {mount.version_id for mount in built.volumes} == {12}
 
 
-def test_workload_forks_are_unique_and_cleaned_independently(tmp_path, monkeypatch):
+@pytest.mark.parametrize("prefix", ["cc-image", "custom"])
+def test_workload_forks_are_unique_and_cleaned_independently(tmp_path, monkeypatch, prefix):
     client = _make_client(monkeypatch)
     client._inner.resolve_prepared_files.return_value = {"version_id": 12}
     client._create_ref = MagicMock()
     image, _ = _lazy_image(tmp_path)
-    first = client.upload_lazy_files(image, fork=True)
-    second = client.upload_lazy_files(image, fork=True)
+    first = client.upload_lazy_files(image, volume_prefix=prefix, fork=True)
+    second = client.upload_lazy_files(image, volume_prefix=prefix, fork=True)
     assert first[0].name == second[0].name
     assert first[0].ref_name != second[0].ref_name
     assert first[0].ref_name.startswith("cc-w-")
