@@ -13,7 +13,21 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class GitFileStatus:
-    """Git porcelain status codes for a path (including untracked files)."""
+    """Git porcelain status codes for a path (including untracked files).
+
+    Attributes
+    ----------
+    name
+        Path relative to the repository root, including spaces or newlines.
+    index
+        Status in the staging area: "." for unchanged, "M" for modified,
+        "A" for added, "D" for deleted, "R" for renamed, "C" for copied,
+        "T" for type changed, "U" for unmerged, or "?" for untracked.
+    working_tree
+        Working-tree status using the same codes as index.
+    original_name
+        Previous path for a rename or copy; otherwise None.
+    """
 
     name: str
     index: str
@@ -23,7 +37,23 @@ class GitFileStatus:
 
 @dataclass(frozen=True)
 class GitStatus:
-    """Repository state, including upstream divergence and changed files."""
+    """Repository state, including upstream divergence and changed files.
+
+    Attributes
+    ----------
+    current_branch
+        Local branch name, or None for detached HEAD.
+    file_status
+        Changed and untracked paths. An empty list means a clean working tree;
+        ignored files are omitted.
+    ahead
+        Commits ahead of the locally known upstream; zero if unavailable.
+    behind
+        Commits behind the locally known upstream; zero if unavailable.
+    branch_published
+        Whether Git reports a configured upstream. This does not check whether
+        the branch currently exists on the remote server.
+    """
 
     current_branch: str | None
     file_status: list[GitFileStatus] = field(default_factory=list)
@@ -34,7 +64,17 @@ class GitStatus:
 
 @dataclass(frozen=True)
 class GitRemote:
-    """A named remote's fetch and push URLs."""
+    """A named remote's fetch and push URLs.
+
+    Attributes
+    ----------
+    name
+        Remote name, such as "origin".
+    fetch_url
+        First fetch URL returned by Git, including configured URL rewrites.
+    push_url
+        First push URL returned by Git; may differ from fetch_url.
+    """
 
     name: str
     fetch_url: str
@@ -130,9 +170,45 @@ class SandboxGit:
     ) -> None:
         """Clone the remote default branch with one commit of history by default.
 
-        ``depth=None`` requests full history. ``commit_id`` fetches the selected
-        commit and checks out a detached HEAD, including with shallow history.
-        TLS verification remains enabled. The destination must be empty/absent.
+        Parameters
+        ----------
+        url
+            Repository URL (HTTPS or SSH) or a Git-accessible local path.
+        path
+            Destination directory inside the sandbox, absolute or relative to
+            the image working directory. Must be absent or empty.
+        branch
+            Branch or tag to clone. None uses the remote default branch.
+        commit_id
+            Commit to fetch and check out as detached HEAD after cloning.
+            The remote must allow fetching that commit.
+        depth
+            Positive history depth; defaults to 1. None requests full history.
+        username
+            HTTPS username. Supply together with password; credentials are scoped
+            to this operation and are not saved in Git configuration.
+        password
+            HTTPS password or access token. Supply together with username.
+            Omit both to use existing Git/SSH authentication.
+        timeout_secs
+            Timeout in seconds for each Git subprocess, not the whole operation.
+            None leaves the sandbox exec timeout unset.
+
+        Raises
+        ------
+        GitError
+            A Git subprocess fails. Sandbox execution errors propagate unchanged.
+        ValueError
+            An argument fails local validation before the relevant Git command.
+
+        Examples
+        --------
+        >>> sandbox.git.clone("https://github.com/octocat/Hello-World.git", "repo", depth=None)
+
+        Notes
+        -----
+        TLS certificate verification remains enabled. Cloning a specific commit
+        runs clone, fetch, and checkout with a separate timeout for each command.
         """
         _argument(url, "url")
         _argument(path, "path")
@@ -184,7 +260,32 @@ class SandboxGit:
         initial_branch: str | None = None,
         timeout_secs: int | None = None,
     ) -> None:
-        """Initialize a repository; leave the initial branch to Git by default."""
+        """Initialize a repository; leave the initial branch to Git by default.
+
+        Parameters
+        ----------
+        path
+            Directory to initialize inside the sandbox, absolute or relative to
+            the image working directory.
+        bare
+            Create a bare repository without a working tree.
+        initial_branch
+            Initial branch name. None uses the Git installation default.
+        timeout_secs
+            Timeout in seconds for each Git subprocess, not the whole operation.
+            None leaves the sandbox exec timeout unset.
+
+        Raises
+        ------
+        GitError
+            A Git subprocess fails. Sandbox execution errors propagate unchanged.
+        ValueError
+            An argument fails local validation before the relevant Git command.
+
+        Examples
+        --------
+        >>> sandbox.git.init("repo", initial_branch="main")
+        """
         args = ["init"]
         if bare:
             args.append("--bare")
@@ -195,7 +296,31 @@ class SandboxGit:
     def add(
         self, path: str, files: list[str], *, timeout_secs: int | None = None
     ) -> None:
-        """Stage paths relative to the repository root."""
+        """Stage paths relative to the repository root.
+
+        Parameters
+        ----------
+        path
+            Repository directory inside the sandbox, absolute or relative to the
+            image working directory. Use the repository root for file operations.
+        files
+            Nonempty list of Git pathspecs relative to path. Use ["."] to stage
+            all changes beneath that directory, including deletions.
+        timeout_secs
+            Timeout in seconds for each Git subprocess, not the whole operation.
+            None leaves the sandbox exec timeout unset.
+
+        Raises
+        ------
+        GitError
+            A Git subprocess fails. Sandbox execution errors propagate unchanged.
+        ValueError
+            An argument fails local validation before the relevant Git command.
+
+        Examples
+        --------
+        >>> sandbox.git.add("repo", ["README.md"])
+        """
         self._run("add", "--", *_files(files), path=path, timeout_secs=timeout_secs)
 
     def commit(
@@ -208,7 +333,42 @@ class SandboxGit:
         allow_empty: bool = False,
         timeout_secs: int | None = None,
     ) -> str:
-        """Commit staged changes and return the commit ID, without changing config."""
+        """Commit staged changes and return the commit ID, without changing config.
+
+        Parameters
+        ----------
+        path
+            Repository directory inside the sandbox, absolute or relative to the
+            image working directory. Use the repository root for file operations.
+        message
+            Nonempty commit message.
+        author
+            Author and committer name for this commit.
+        email
+            Author and committer email for this commit.
+        allow_empty
+            Allow a commit with no staged changes. Defaults to False.
+        timeout_secs
+            Timeout in seconds for each Git subprocess, not the whole operation.
+            None leaves the sandbox exec timeout unset.
+
+        Returns
+        -------
+        str
+            The new commit ID. Identity is set only for this command; repository
+            configuration is unchanged.
+
+        Raises
+        ------
+        GitError
+            A Git subprocess fails. Sandbox execution errors propagate unchanged.
+        ValueError
+            An argument fails local validation before the relevant Git command.
+
+        Examples
+        --------
+        >>> commit_id = sandbox.git.commit("repo", "Update docs", "Example User", "user@example.com")
+        """
         env = {
             "GIT_AUTHOR_NAME": _argument(author, "author"),
             "GIT_AUTHOR_EMAIL": _argument(email, "email"),
@@ -231,7 +391,32 @@ class SandboxGit:
         )
 
     def status(self, path: str, *, timeout_secs: int | None = None) -> GitStatus:
-        """Return branch/divergence and NUL-delimited file status (safe for newlines)."""
+        """Inspect the branch, upstream divergence, and changed files.
+
+        Parameters
+        ----------
+        path
+            Repository directory inside the sandbox, absolute or relative to the
+            image working directory. Use the repository root for file operations.
+        timeout_secs
+            Timeout in seconds for each Git subprocess, not the whole operation.
+            None leaves the sandbox exec timeout unset.
+
+        Returns
+        -------
+        GitStatus
+            Current branch, locally known upstream divergence, and changed paths.
+            Does not fetch; upstream information may be stale.
+
+        Raises
+        ------
+        GitError
+            A Git subprocess fails. Sandbox execution errors propagate unchanged.
+
+        Examples
+        --------
+        >>> status = sandbox.git.status("repo")
+        """
         records = (
             self._run(
                 "status",
@@ -269,7 +454,31 @@ class SandboxGit:
         return GitStatus(branch, files, ahead, behind, published)
 
     def branches(self, path: str, *, timeout_secs: int | None = None) -> list[str]:
-        """List local branch names."""
+        """List local branch names.
+
+        Parameters
+        ----------
+        path
+            Repository directory inside the sandbox, absolute or relative to the
+            image working directory. Use the repository root for file operations.
+        timeout_secs
+            Timeout in seconds for each Git subprocess, not the whole operation.
+            None leaves the sandbox exec timeout unset.
+
+        Returns
+        -------
+        list[str]
+            Local branch names; excludes remote-tracking branches.
+
+        Raises
+        ------
+        GitError
+            A Git subprocess fails. Sandbox execution errors propagate unchanged.
+
+        Examples
+        --------
+        >>> branches = sandbox.git.branches("repo")
+        """
         return (
             self._run(
                 "for-each-ref",
@@ -285,7 +494,31 @@ class SandboxGit:
     def create_branch(
         self, path: str, name: str, *, timeout_secs: int | None = None
     ) -> None:
-        """Create a branch at HEAD without checking it out."""
+        """Create a branch at HEAD without checking it out.
+
+        Parameters
+        ----------
+        path
+            Repository directory inside the sandbox, absolute or relative to the
+            image working directory. Use the repository root for file operations.
+        name
+            New local branch name. The branch starts at the current HEAD;
+            the working tree stays on the current branch.
+        timeout_secs
+            Timeout in seconds for each Git subprocess, not the whole operation.
+            None leaves the sandbox exec timeout unset.
+
+        Raises
+        ------
+        GitError
+            A Git subprocess fails. Sandbox execution errors propagate unchanged.
+        ValueError
+            An argument fails local validation before the relevant Git command.
+
+        Examples
+        --------
+        >>> sandbox.git.create_branch("repo", "feature")
+        """
         self._run(
             "branch", "--", _operand(name, "name"), path=path, timeout_secs=timeout_secs
         )
@@ -293,7 +526,31 @@ class SandboxGit:
     def checkout_branch(
         self, path: str, branch: str, *, timeout_secs: int | None = None
     ) -> None:
-        """Switch to a branch, preserving uncommitted changes where possible."""
+        """Switch to a branch, preserving uncommitted changes where possible.
+
+        Parameters
+        ----------
+        path
+            Repository directory inside the sandbox, absolute or relative to the
+            image working directory. Use the repository root for file operations.
+        branch
+            Branch to switch to. Git may infer a local tracking branch from a
+            unique remote-tracking branch. Conflicting local changes cause failure.
+        timeout_secs
+            Timeout in seconds for each Git subprocess, not the whole operation.
+            None leaves the sandbox exec timeout unset.
+
+        Raises
+        ------
+        GitError
+            A Git subprocess fails. Sandbox execution errors propagate unchanged.
+        ValueError
+            An argument fails local validation before the relevant Git command.
+
+        Examples
+        --------
+        >>> sandbox.git.checkout_branch("repo", "feature")
+        """
         self._run(
             "switch",
             "--",
@@ -310,7 +567,32 @@ class SandboxGit:
         force: bool = False,
         timeout_secs: int | None = None,
     ) -> None:
-        """Delete a merged local branch; unmerged deletion requires ``force=True``."""
+        """Delete a merged local branch; unmerged deletion requires ``force=True``.
+
+        Parameters
+        ----------
+        path
+            Repository directory inside the sandbox, absolute or relative to the
+            image working directory. Use the repository root for file operations.
+        name
+            Local branch to delete. Git rejects deletion of a checked-out branch.
+        force
+            Allow deletion of an unmerged branch. Defaults to False.
+        timeout_secs
+            Timeout in seconds for each Git subprocess, not the whole operation.
+            None leaves the sandbox exec timeout unset.
+
+        Raises
+        ------
+        GitError
+            A Git subprocess fails. Sandbox execution errors propagate unchanged.
+        ValueError
+            An argument fails local validation before the relevant Git command.
+
+        Examples
+        --------
+        >>> sandbox.git.delete_branch("repo", "feature")
+        """
         self._run(
             "branch",
             "-D" if force else "-d",
@@ -330,7 +612,38 @@ class SandboxGit:
         password: str | None = None,
         timeout_secs: int | None = None,
     ) -> None:
-        """Fetch a remote, optionally limiting it to a branch."""
+        """Fetch a remote, optionally limiting it to a branch.
+
+        Parameters
+        ----------
+        path
+            Repository directory inside the sandbox, absolute or relative to the
+            image working directory. Use the repository root for file operations.
+        remote
+            Remote name or URL. Defaults to "origin".
+        branch
+            Branch or refspec to fetch. None uses the remote fetch configuration.
+        username
+            HTTPS username. Supply together with password; credentials are scoped
+            to this operation and are not saved in Git configuration.
+        password
+            HTTPS password or access token. Supply together with username.
+            Omit both to use existing Git/SSH authentication.
+        timeout_secs
+            Timeout in seconds for each Git subprocess, not the whole operation.
+            None leaves the sandbox exec timeout unset.
+
+        Raises
+        ------
+        GitError
+            A Git subprocess fails. Sandbox execution errors propagate unchanged.
+        ValueError
+            An argument fails local validation before the relevant Git command.
+
+        Examples
+        --------
+        >>> sandbox.git.fetch("repo", branch="main")
+        """
         self._run(
             "fetch",
             _operand(remote, "remote"),
@@ -351,7 +664,40 @@ class SandboxGit:
         password: str | None = None,
         timeout_secs: int | None = None,
     ) -> None:
-        """Fast-forward from the configured upstream by default; never auto-merge."""
+        """Fast-forward from the configured upstream by default; never auto-merge.
+
+        Parameters
+        ----------
+        path
+            Repository directory inside the sandbox, absolute or relative to the
+            image working directory. Use the repository root for file operations.
+        remote
+            Remote name or URL. None uses the configured upstream remote, or
+            "origin" when branch is supplied.
+        branch
+            Branch or refspec to pull. None leaves selection to Git configuration.
+            Diverged history raises GitError instead of creating a merge commit.
+        username
+            HTTPS username. Supply together with password; credentials are scoped
+            to this operation and are not saved in Git configuration.
+        password
+            HTTPS password or access token. Supply together with username.
+            Omit both to use existing Git/SSH authentication.
+        timeout_secs
+            Timeout in seconds for each Git subprocess, not the whole operation.
+            None leaves the sandbox exec timeout unset.
+
+        Raises
+        ------
+        GitError
+            A Git subprocess fails. Sandbox execution errors propagate unchanged.
+        ValueError
+            An argument fails local validation before the relevant Git command.
+
+        Examples
+        --------
+        >>> sandbox.git.pull("repo")
+        """
         args = ["pull", "--ff-only"]
         if remote is not None or branch is not None:
             args.append(_operand(remote if remote is not None else "origin", "remote"))
@@ -376,7 +722,40 @@ class SandboxGit:
         password: str | None = None,
         timeout_secs: int | None = None,
     ) -> None:
-        """Push the current branch to origin; never force-push."""
+        """Push HEAD to origin by default.
+
+        Parameters
+        ----------
+        path
+            Repository directory inside the sandbox, absolute or relative to the
+            image working directory. Use the repository root for file operations.
+        remote
+            Remote name or URL. Defaults to "origin".
+        branch
+            Branch or refspec to push. None pushes HEAD (the current branch).
+        set_upstream
+            Set tracking information for the pushed branch. Defaults to False.
+        username
+            HTTPS username. Supply together with password; credentials are scoped
+            to this operation and are not saved in Git configuration.
+        password
+            HTTPS password or access token. Supply together with username.
+            Omit both to use existing Git/SSH authentication.
+        timeout_secs
+            Timeout in seconds for each Git subprocess, not the whole operation.
+            None leaves the sandbox exec timeout unset.
+
+        Raises
+        ------
+        GitError
+            A Git subprocess fails. Sandbox execution errors propagate unchanged.
+        ValueError
+            An argument fails local validation before the relevant Git command.
+
+        Examples
+        --------
+        >>> sandbox.git.push("repo", branch="feature", set_upstream=True)
+        """
         self._run(
             "push",
             *(["--set-upstream"] if set_upstream else []),
@@ -397,7 +776,38 @@ class SandboxGit:
         files: list[str] | None = None,
         timeout_secs: int | None = None,
     ) -> None:
-        """Reset to HEAD by default, preserving working files (mixed reset)."""
+        """Reset to HEAD by default, preserving working files (mixed reset).
+
+        Parameters
+        ----------
+        path
+            Repository directory inside the sandbox, absolute or relative to the
+            image working directory. Use the repository root for file operations.
+        mode
+            Reset mode: "soft" moves HEAD; "mixed" also resets the index;
+            "hard" also overwrites working files and can discard local changes.
+            "merge" and "keep" preserve local changes where Git permits.
+            Defaults to "mixed"; files is supported only with this mode.
+        target
+            Commit or revision to reset to. Defaults to "HEAD".
+        files
+            Optional nonempty list of pathspecs relative to path. Resets only
+            those index entries to target without moving HEAD or changing files.
+        timeout_secs
+            Timeout in seconds for each Git subprocess, not the whole operation.
+            None leaves the sandbox exec timeout unset.
+
+        Raises
+        ------
+        GitError
+            A Git subprocess fails. Sandbox execution errors propagate unchanged.
+        ValueError
+            An argument fails local validation before the relevant Git command.
+
+        Examples
+        --------
+        >>> sandbox.git.reset("repo", files=["README.md"])
+        """
         if mode not in ("soft", "mixed", "hard", "merge", "keep"):
             raise ValueError("mode must be soft, mixed, hard, merge, or keep")
         if files is not None and mode != "mixed":
@@ -422,7 +832,39 @@ class SandboxGit:
         source: str | None = None,
         timeout_secs: int | None = None,
     ) -> None:
-        """Restore working files by default, or the index with ``staged=True``."""
+        """Restore working files by default, or the index with ``staged=True``.
+
+        Parameters
+        ----------
+        path
+            Repository directory inside the sandbox, absolute or relative to the
+            image working directory. Use the repository root for file operations.
+        files
+            Nonempty list of Git pathspecs relative to path to restore.
+        staged
+            Restore the index. Defaults to False.
+        worktree
+            Explicitly restore working files, optionally together with staged.
+            When neither flag is set, Git restores working files. Restoring working
+            files can discard local changes.
+        source
+            Revision to restore from. None uses HEAD when staged=True, or the
+            index otherwise.
+        timeout_secs
+            Timeout in seconds for each Git subprocess, not the whole operation.
+            None leaves the sandbox exec timeout unset.
+
+        Raises
+        ------
+        GitError
+            A Git subprocess fails. Sandbox execution errors propagate unchanged.
+        ValueError
+            An argument fails local validation before the relevant Git command.
+
+        Examples
+        --------
+        >>> sandbox.git.restore("repo", ["README.md"], staged=True)
+        """
         args = ["restore"]
         if staged:
             args.append("--staged")
@@ -442,7 +884,38 @@ class SandboxGit:
         overwrite: bool = False,
         timeout_secs: int | None = None,
     ) -> None:
-        """Add a remote. Replacing its URL requires ``overwrite=True``."""
+        """Add a remote. Replacing its URL requires ``overwrite=True``.
+
+        Parameters
+        ----------
+        path
+            Repository directory inside the sandbox, absolute or relative to the
+            image working directory. Use the repository root for file operations.
+        name
+            Remote name to add or update.
+        url
+            Fetch URL for the remote.
+        fetch
+            Fetch from the remote after adding or updating it. Uses existing
+            authentication; this method has no username/password arguments.
+        overwrite
+            Update the fetch URL if the remote already exists. Defaults to False;
+            an existing remote then raises GitError. An explicit push URL is retained.
+        timeout_secs
+            Timeout in seconds for each Git subprocess, not the whole operation.
+            None leaves the sandbox exec timeout unset.
+
+        Raises
+        ------
+        GitError
+            A Git subprocess fails. Sandbox execution errors propagate unchanged.
+        ValueError
+            An argument fails local validation before the relevant Git command.
+
+        Examples
+        --------
+        >>> sandbox.git.remote_add("repo", "origin", "git@github.com:example/repo.git")
+        """
         _operand(name, "name")
         _operand(url, "url")
         names = (
@@ -466,7 +939,35 @@ class SandboxGit:
     def remote_get(
         self, path: str, name: str, *, timeout_secs: int | None = None
     ) -> GitRemote:
-        """Get the fetch/push URL for a named remote."""
+        """Get the fetch/push URL for a named remote.
+
+        Parameters
+        ----------
+        path
+            Repository directory inside the sandbox, absolute or relative to the
+            image working directory. Use the repository root for file operations.
+        name
+            Existing remote name.
+        timeout_secs
+            Timeout in seconds for each Git subprocess, not the whole operation.
+            None leaves the sandbox exec timeout unset.
+
+        Returns
+        -------
+        GitRemote
+            Remote name and its first fetch and push URLs, as resolved by Git.
+
+        Raises
+        ------
+        GitError
+            A Git subprocess fails. Sandbox execution errors propagate unchanged.
+        ValueError
+            An argument fails local validation before the relevant Git command.
+
+        Examples
+        --------
+        >>> remote = sandbox.git.remote_get("repo", "origin")
+        """
         _operand(name, "name")
         fetch = (
             self._run("remote", "get-url", name, path=path, timeout_secs=timeout_secs)
@@ -488,7 +989,31 @@ class SandboxGit:
         return GitRemote(name, fetch, push)
 
     def remotes(self, path: str, *, timeout_secs: int | None = None) -> list[GitRemote]:
-        """List named remotes and their fetch/push URLs."""
+        """List named remotes and their fetch/push URLs.
+
+        Parameters
+        ----------
+        path
+            Repository directory inside the sandbox, absolute or relative to the
+            image working directory. Use the repository root for file operations.
+        timeout_secs
+            Timeout in seconds for each Git subprocess, not the whole operation.
+            None leaves the sandbox exec timeout unset.
+
+        Returns
+        -------
+        list[GitRemote]
+            Named remotes with their first fetch and push URLs, as resolved by Git.
+
+        Raises
+        ------
+        GitError
+            A Git subprocess fails. Sandbox execution errors propagate unchanged.
+
+        Examples
+        --------
+        >>> remotes = sandbox.git.remotes("repo")
+        """
         names = (
             self._run("remote", path=path, timeout_secs=timeout_secs)
             .decode()
@@ -501,7 +1026,32 @@ class SandboxGit:
     def set_config(
         self, path: str, key: str, value: str, *, timeout_secs: int | None = None
     ) -> None:
-        """Set repository-local Git configuration (never global configuration)."""
+        """Set repository-local Git configuration (never global configuration).
+
+        Parameters
+        ----------
+        path
+            Repository directory inside the sandbox, absolute or relative to the
+            image working directory. Use the repository root for file operations.
+        key
+            Repository-local configuration key, such as "user.name".
+        value
+            Configuration value to store. Global configuration is unchanged.
+        timeout_secs
+            Timeout in seconds for each Git subprocess, not the whole operation.
+            None leaves the sandbox exec timeout unset.
+
+        Raises
+        ------
+        GitError
+            A Git subprocess fails. Sandbox execution errors propagate unchanged.
+        ValueError
+            An argument fails local validation before the relevant Git command.
+
+        Examples
+        --------
+        >>> sandbox.git.set_config("repo", "pull.ff", "only")
+        """
         self._run(
             "config",
             "--local",
@@ -515,7 +1065,36 @@ class SandboxGit:
     def get_config(
         self, path: str, key: str, *, timeout_secs: int | None = None
     ) -> str:
-        """Read a required repository-local config value; missing keys raise GitError."""
+        """Read a required repository-local config value; missing keys raise GitError.
+
+        Parameters
+        ----------
+        path
+            Repository directory inside the sandbox, absolute or relative to the
+            image working directory. Use the repository root for file operations.
+        key
+            Required repository-local configuration key. Missing keys raise
+            GitError; global configuration is not consulted.
+        timeout_secs
+            Timeout in seconds for each Git subprocess, not the whole operation.
+            None leaves the sandbox exec timeout unset.
+
+        Returns
+        -------
+        str
+            Configuration value with trailing newlines removed.
+
+        Raises
+        ------
+        GitError
+            A Git subprocess fails. Sandbox execution errors propagate unchanged.
+        ValueError
+            An argument fails local validation before the relevant Git command.
+
+        Examples
+        --------
+        >>> name = sandbox.git.get_config("repo", "user.name")
+        """
         return (
             self._run(
                 "config",
@@ -533,7 +1112,33 @@ class SandboxGit:
     def configure_user(
         self, path: str, name: str, email: str, *, timeout_secs: int | None = None
     ) -> None:
-        """Set author identity for this repository only."""
+        """Set author identity for this repository only.
+
+        Parameters
+        ----------
+        path
+            Repository directory inside the sandbox, absolute or relative to the
+            image working directory. Use the repository root for file operations.
+        name
+            Author/committer name to persist as repository-local user.name.
+        email
+            Author/committer email to persist as repository-local user.email.
+            The commit helper still requires explicit author and email arguments.
+        timeout_secs
+            Timeout in seconds for each Git subprocess, not the whole operation.
+            None leaves the sandbox exec timeout unset.
+
+        Raises
+        ------
+        GitError
+            A Git subprocess fails. Sandbox execution errors propagate unchanged.
+        ValueError
+            An argument fails local validation before the relevant Git command.
+
+        Examples
+        --------
+        >>> sandbox.git.configure_user("repo", "Example User", "user@example.com")
+        """
         self.set_config(
             path, "user.name", _argument(name, "name"), timeout_secs=timeout_secs
         )
