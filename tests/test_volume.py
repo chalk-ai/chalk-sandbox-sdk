@@ -218,7 +218,9 @@ def test_shared_sources_reuse_volume_across_mount_paths(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("prefix", ["", "Uppercase", "a" * 37])
-def test_lazy_upload_rejects_invalid_prefix_before_resolution(tmp_path, monkeypatch, prefix):
+def test_lazy_upload_rejects_invalid_prefix_before_resolution(
+    tmp_path, monkeypatch, prefix
+):
     client = _make_client(monkeypatch)
     image, _ = _lazy_image(tmp_path)
 
@@ -235,7 +237,9 @@ def test_lazy_upload_long_prefix_preserves_hash(tmp_path, monkeypatch):
     prefix = "a" * 36
 
     first = client.upload_lazy_files(image, volume_prefix=prefix)[0]
-    second = client.upload_lazy_files(image.run_commands("true"), volume_prefix=prefix)[0]
+    second = client.upload_lazy_files(image.run_commands("true"), volume_prefix=prefix)[
+        0
+    ]
 
     assert first.name.startswith(prefix + "-")
     assert len(first.name) == 63
@@ -304,7 +308,9 @@ def test_image_build_and_lazy_uploads_share_source_resolution(
 
 
 @pytest.mark.parametrize("prefix", ["cc-image", "custom"])
-def test_workload_forks_are_unique_and_cleaned_independently(tmp_path, monkeypatch, prefix):
+def test_workload_forks_are_unique_and_cleaned_independently(
+    tmp_path, monkeypatch, prefix
+):
     client = _make_client(monkeypatch)
     client._inner.resolve_prepared_files.return_value = {"version_id": 12}
     client._create_ref = MagicMock()

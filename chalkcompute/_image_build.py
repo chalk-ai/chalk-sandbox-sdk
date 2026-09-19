@@ -73,7 +73,7 @@ def default_source_volume_name(image: Image, *, prefix: str = "cc-image") -> str
     recipe.env = dict(sorted(recipe.env.items()))
     digest = hashlib.sha256(recipe.to_binary()).digest()
     fingerprint = base64.b32encode(digest).decode().rstrip("=").lower()
-    return f"{prefix}-{fingerprint[:62 - len(prefix)]}"
+    return f"{prefix}-{fingerprint[: 62 - len(prefix)]}"
 
 
 def build_image_snapshot(
