@@ -82,6 +82,19 @@ def test_warm_deployment_is_one_ensure_call(monkeypatch):
     assert len(client.requests) == 1
 
 
+def test_deployment_conflict_preserves_recovery_message_without_retrying():
+    error = RpcError(
+        Code.FAILED_PRECONDITION,
+        "scaling group is already bound to an existing function\n"
+        "To replace it: chalk function delete --name='old-function' --environment='env'",
+    )
+    client = Client([error])
+    with pytest.raises(RpcError) as raised:
+        run(client, Image("python:3.11"))
+    assert raised.value is error
+    assert len(client.requests) == 1
+
+
 def test_expired_build_returns_to_ensure(monkeypatch):
     def expired(*args, **kwargs):
         raise RpcError(Code.NOT_FOUND, "workflow expired")

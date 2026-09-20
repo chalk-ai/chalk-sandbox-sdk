@@ -76,6 +76,7 @@ from chalkcompute._function_error import (
 from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import (
     ConnectClient,
+    ConnectError,
     grpc_target_from_url,
     rpc_address_from_target,
     service_auth_context_from_env,
@@ -186,7 +187,15 @@ _background_deploy_executor: ThreadPoolExecutor | None = None
 _background_deploy_executor_lock = threading.Lock()
 _background_deployments_lock = threading.Lock()
 _background_deployment_tails: dict[str, Future[None]] = {}
-_unobserved_background_deployments: dict[Future[None], str] = {}
+
+
+@dataclass(frozen=True)
+class _BackgroundDeployment:
+    registered_name: str
+    source: traceback.FrameSummary | None
+
+
+_unobserved_background_deployments: dict[Future[None], _BackgroundDeployment] = {}
 
 
 def _get_background_deploy_executor() -> ThreadPoolExecutor:
@@ -262,6 +271,16 @@ def _schedule_background_deployment(function: RemoteFunction) -> Future[None]:
     executor = _get_background_deploy_executor()
     context = contextvars.copy_context()
     registered_name = function._explicit_name or function._func_name
+    # The worker's traceback has no user call site. Save the definition's
+    # location without retaining the function or its caller's frame locals.
+    code = getattr(inspect.unwrap(function._func), "__code__", None)
+    source = (
+        traceback.FrameSummary(
+            code.co_filename, code.co_firstlineno, function._func_name
+        )
+        if code is not None
+        else None
+    )
 
     with _background_deployments_lock:
         predecessor = _background_deployment_tails.get(registered_name)
@@ -272,7 +291,9 @@ def _schedule_background_deployment(function: RemoteFunction) -> Future[None]:
 
         future = executor.submit(run)
         _background_deployment_tails[registered_name] = future
-        _unobserved_background_deployments[future] = registered_name
+        _unobserved_background_deployments[future] = _BackgroundDeployment(
+            registered_name, source
+        )
 
     def completed(done: Future[None]) -> None:
         with _background_deployments_lock:
@@ -310,18 +331,27 @@ def _report_unobserved_background_deployments() -> None:
         _unobserved_background_deployments.clear()
 
     failed = False
-    for future, registered_name in deployments:
+    for future, deployment in deployments:
         if not future.done() or future.cancelled():
             continue
         error = future.exception()
         if error is None:
             continue
         failed = True
+        status = f" [{error.code.name}]" if isinstance(error, ConnectRpcError) else ""
         print(
-            f"Background deployment for function {registered_name!r} failed:",
+            f"Background deployment for function {deployment.registered_name!r} failed{status}:",
             file=sys.stderr,
         )
-        traceback.print_exception(error, file=sys.stderr)
+        if deployment.source is not None:
+            sys.stderr.write("".join(traceback.format_list([deployment.source])))
+        if isinstance(error, (ConnectRpcError, ConnectError, FunctionError)):
+            # These exceptions already describe an actionable deployment
+            # failure. Keep messages, notes, and causes, without RPC plumbing.
+            traceback.print_exception(error, limit=0, file=sys.stderr)
+        else:
+            # Unexpected bugs still need their diagnostic frames by default.
+            traceback.print_exception(error, file=sys.stderr)
 
     if not failed:
         return

@@ -320,15 +320,55 @@ def test_definition_only_script_waits_for_all_deployments(tmp_path: Path) -> Non
     assert {path.name for path in output_dir.iterdir()} == {"first", "second"}
 
 
-def test_definition_only_script_reports_deployment_failure(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("error", "error_type", "expected_failure", "rpc_code"),
+    [
+        ('RuntimeError("deployment exploded")', "RuntimeError", False, None),
+        ('FunctionBuildError("deployment exploded")', "FunctionBuildError", True, None),
+        ('ConnectError("deployment exploded")', "ConnectError", True, None),
+        (
+            'ConnectRpcError(Code.ALREADY_EXISTS, "deployment exploded")',
+            "ConnectError",
+            True,
+            "ALREADY_EXISTS",
+        ),
+        (
+            'ConnectRpcError(Code.PERMISSION_DENIED, "deployment exploded")',
+            "ConnectError",
+            True,
+            "PERMISSION_DENIED",
+        ),
+        (
+            'ConnectRpcError(Code.FAILED_PRECONDITION, "deployment exploded\\n'
+            "To replace the existing function, delete it and deploy again:\\n"
+            "  chalk function delete --name='old-function' --environment='env'\\n"
+            '  https://console.chalk.ai/projects/project/environments/env/external-functions/old-function")',
+            "ConnectError",
+            True,
+            "FAILED_PRECONDITION",
+        ),
+    ],
+)
+def test_definition_only_script_reports_deployment_failure(
+    tmp_path: Path,
+    error: str,
+    error_type: str,
+    expected_failure: bool,
+    rpc_code: str | None,
+) -> None:
     script = tmp_path / "deploy_failure.py"
     script.write_text(
         textwrap.dedent(
-            """
-            from chalkcompute._function import RemoteFunction, function
+            f"""
+            from connectrpc.code import Code
+            from connectrpc.errors import ConnectError as ConnectRpcError
+            from chalkcompute._connect import ConnectError
+            from chalkcompute._function import FunctionBuildError, RemoteFunction, function
 
             def fake_deploy(self, **kwargs):
-                raise RuntimeError("deployment exploded")
+                error = {error}
+                error.add_note("deployment diagnostic note")
+                raise error from ValueError("original failure")
 
             RemoteFunction._deploy = fake_deploy
 
@@ -356,7 +396,35 @@ def test_definition_only_script_reports_deployment_failure(tmp_path: Path) -> No
     # A definition-only script must fail, not exit 0 on code that cannot serve.
     assert completed.returncode != 0
     assert "Background deployment for function 'broken' failed" in completed.stderr
-    assert "RuntimeError: deployment exploded" in completed.stderr
+    status = f" [{rpc_code}]" if rpc_code is not None else ""
+    assert (
+        f"Background deployment for function 'broken' failed{status}:"
+        in completed.stderr
+    )
+    assert f"{error_type}: deployment exploded" in completed.stderr
+    assert "ValueError: original failure" in completed.stderr
+    assert "deployment diagnostic note" in completed.stderr
+    if rpc_code == "FAILED_PRECONDITION":
+        assert (
+            "\n  chalk function delete --name='old-function' --environment='env'\n"
+            in completed.stderr
+        )
+        assert (
+            "https://console.chalk.ai/projects/project/environments/env/external-functions/old-function"
+            in completed.stderr
+        )
+    assert f'File "{script}", line 14, in broken' in completed.stderr
+    assert "@function" in completed.stderr
+    if not expected_failure:
+        assert "Traceback (most recent call last)" in completed.stderr
+        assert "concurrent/futures/thread.py" in completed.stderr
+        assert "chalkcompute/_function.py" in completed.stderr
+        assert "in fake_deploy" in completed.stderr
+    else:
+        assert "Traceback (most recent call last)" not in completed.stderr
+        assert "concurrent/futures" not in completed.stderr
+        assert "chalkcompute/_function.py" not in completed.stderr
+        assert "in fake_deploy" not in completed.stderr
 
 
 def _version_info(name: str) -> FunctionVersionInfo:
