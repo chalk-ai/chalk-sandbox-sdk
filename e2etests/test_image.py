@@ -10,6 +10,7 @@ import time
 import pytest
 
 from chalkcompute import Image
+from e2etests._infrastructure import retry_safe_operation
 from e2etests.conftest import _connect_rpc, needs_staging
 
 _SANDBOX_SVC = "chalk.sandbox.v1.SandboxService"
@@ -142,8 +143,18 @@ def test_build_custom_image(auth_headers: dict[str, str]) -> None:
     spec_dict = json.loads(img.to_proto().to_json())
     body = {"imageSpec": spec_dict}
 
-    resp = _connect_rpc(
-        _CUSTOM_IMAGE_SVC, "BuildCustomImage", body, auth_headers, timeout=600
+    # Rebuilding the same image spec is safe; a proxy reset can lose the result
+    # before headers even when the server has already completed the build.
+    resp = retry_safe_operation(
+        lambda: _connect_rpc(
+            _CUSTOM_IMAGE_SVC, "BuildCustomImage", body, auth_headers, timeout=600
+        ),
+        retry_response=lambda response: (
+            response.status == 503
+            and response.text().startswith(
+                "upstream connect error or disconnect/reset before headers"
+            )
+        ),
     )
     assert resp.status == 200, f"BuildCustomImage failed: {resp.text()}"
 

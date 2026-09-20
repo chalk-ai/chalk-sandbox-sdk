@@ -16,6 +16,7 @@ from protobuf import Oneof
 from chalkcompute import Container, Image, Secret, SecretScope
 from chalkcompute._gen.chalk.server.v1 import environment_secrets_connect
 from chalkcompute._gen.chalk.server.v1 import environment_secrets_pb as secrets_pb
+from e2etests._infrastructure import exec_read_only
 from e2etests.conftest import needs_staging
 from e2etests.container_metrics import assert_container_metrics
 
@@ -35,7 +36,7 @@ def test_container_add_local_file() -> None:
         c = Container(image=img, name=f"test-add-local-file-{uuid.uuid4().hex[:8]}")
         try:
             c.run()
-            result = c.exec("cat", "/app/data.txt")
+            result = exec_read_only(c, "cat", "/app/data.txt")
             assert result.exit_code == 0, (
                 f"cat exited with code {result.exit_code}: {result.stderr_text}"
             )
@@ -55,7 +56,7 @@ def test_container_run_commands_apt_install() -> None:
     c = Container(image=img, name=f"test-run-commands-{uuid.uuid4().hex[:8]}")
     try:
         c.run()
-        result = c.exec("jq", "--version")
+        result = exec_read_only(c, "jq", "--version")
         assert result.exit_code == 0, (
             f"jq --version exited with code {result.exit_code}: {result.stderr_text}"
         )
@@ -81,7 +82,7 @@ def test_container_from_dockerfile() -> None:
         c = Container(image=img, name=f"test-dockerfile-{uuid.uuid4().hex[:8]}")
         try:
             c.run()
-            result = c.exec("curl", "--version")
+            result = exec_read_only(c, "curl", "--version")
             assert result.exit_code == 0, (
                 f"curl --version exited with code {result.exit_code}: {result.stderr_text}"
             )
@@ -134,11 +135,11 @@ def test_container_add_local_dir() -> None:
         try:
             c.run()
 
-            r1 = c.exec("cat", "/app/mydir/greeting.txt")
+            r1 = exec_read_only(c, "cat", "/app/mydir/greeting.txt")
             assert r1.exit_code == 0, f"cat greeting.txt failed: {r1.stderr_text}"
             assert r1.stdout_text.strip() == "hello"
 
-            r2 = c.exec("cat", "/app/mydir/sub/nested.txt")
+            r2 = exec_read_only(c, "cat", "/app/mydir/sub/nested.txt")
             assert r2.exit_code == 0, f"cat sub/nested.txt failed: {r2.stderr_text}"
             assert r2.stdout_text.strip() == "world"
         finally:
@@ -178,7 +179,7 @@ def test_container_secret_from_env() -> None:
         )
         try:
             c.run()
-            result = c.exec("sh", "-c", f"echo ${secret_name}")
+            result = exec_read_only(c, "sh", "-c", f"echo ${secret_name}")
             assert result.exit_code == 0, (
                 f"echo ${secret_name} failed: {result.stderr_text}"
             )
@@ -212,7 +213,7 @@ def test_container_secret_from_local_env() -> None:
         )
         try:
             c.run()
-            result = c.exec("sh", "-c", f"echo ${local_var}")
+            result = exec_read_only(c, "sh", "-c", f"echo ${local_var}")
             assert result.exit_code == 0, (
                 f"echo ${local_var} failed: {result.stderr_text}"
             )
@@ -246,11 +247,11 @@ def test_container_secret_from_local_env_file() -> None:
         )
         try:
             c.run()
-            r1 = c.exec("sh", "-c", f"echo ${var_a}")
+            r1 = exec_read_only(c, "sh", "-c", f"echo ${var_a}")
             assert r1.exit_code == 0, f"echo ${var_a} failed: {r1.stderr_text}"
             assert r1.stdout_text.strip() == val_a
 
-            r2 = c.exec("sh", "-c", f"echo ${var_b}")
+            r2 = exec_read_only(c, "sh", "-c", f"echo ${var_b}")
             assert r2.exit_code == 0, f"echo ${var_b} failed: {r2.stderr_text}"
             assert r2.stdout_text.strip() == val_b
         finally:
@@ -266,11 +267,11 @@ def test_container_env_vars() -> None:
     c = Container(image=img, name=f"test-env-vars-{uuid.uuid4().hex[:8]}")
     try:
         c.run()
-        r1 = c.exec("sh", "-c", "echo $MY_VAR")
+        r1 = exec_read_only(c, "sh", "-c", "echo $MY_VAR")
         assert r1.exit_code == 0, f"echo $MY_VAR failed: {r1.stderr_text}"
         assert r1.stdout_text.strip() == "hello_world"
 
-        r2 = c.exec("sh", "-c", "echo $ANOTHER")
+        r2 = exec_read_only(c, "sh", "-c", "echo $ANOTHER")
         assert r2.exit_code == 0, f"echo $ANOTHER failed: {r2.stderr_text}"
         assert r2.stdout_text.strip() == "42"
     finally:
