@@ -243,6 +243,56 @@ def _install_sdk_provider(monkeypatch: pytest.MonkeyPatch) -> TracerProvider:
     return provider
 
 
+def test_concurrent_deployments_install_only_one_tracer_provider(monkeypatch):
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from opentelemetry.sdk import trace as sdk_trace
+
+    providers = []
+    installed = []
+    barrier = threading.Barrier(8, timeout=5)
+
+    class SlowProvider(TracerProvider):
+        def __init__(self, **kwargs):
+            # Cold initialization (imports/exporter setup) yields to other
+            # deployment threads before the process-wide provider is installed.
+            time.sleep(0.02)
+            super().__init__(**kwargs)
+            providers.append(self)
+
+    class TraceApi:
+        @staticmethod
+        def get_tracer_provider():
+            return installed[0] if installed else object()
+
+        @staticmethod
+        def set_tracer_provider(provider):
+            assert not installed, "attempted to override the process tracer provider"
+            installed.append(provider)
+
+    monkeypatch.setattr(_tracing, "_provider", None)
+    monkeypatch.setattr(_tracing, "_tracer", None)
+    monkeypatch.setattr(_tracing, "_is_enabled", lambda: False)
+    monkeypatch.setattr(_tracing, "_get_trace_api", lambda: TraceApi)
+    monkeypatch.setattr(sdk_trace, "TracerProvider", SlowProvider)
+
+    def deploy(_):
+        barrier.wait()
+        _tracing._install_tracer_provider(sample_rate=1.0)
+        return _tracing._provider
+
+    try:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(deploy, range(8)))
+        assert len(providers) == 1
+        assert installed == providers
+        assert all(provider is installed[0] for provider in results)
+    finally:
+        for provider in providers:
+            provider.shutdown()
+
+
 def test_sdk_provider_resource_includes_nonempty_environment_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

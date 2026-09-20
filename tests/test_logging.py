@@ -103,10 +103,9 @@ def test_default_status_survives_captured_output_and_logging_configuration(
     )
     assert result.stdout == "customer stdout\n"
     assert result.stderr.splitlines() == [
-        'Function "fraud"',
-        "  │ › Pending",
+        '› Function "fraud": Pending',
         "customer stderr",
-        "  └ ✓ Ready",
+        '✓ Function "fraud": Ready',
     ]
 
 
@@ -342,24 +341,21 @@ def test_logging_and_progress_work_without_site_packages():
     )
     assert result.stdout == '{"result": 42}\n'
     assert result.stderr.splitlines() == [
-        'Function "fraud"',
-        "  │ › Pending",
+        '› Function "fraud": Pending',
         "warning stays visible",
-        "  └ ✓ Ready",
+        '✓ Function "fraud": Ready',
         "INFO chalkcompute: finished",
     ]
 
 
-def test_sdk_runtime_dependencies_do_not_include_rich():
+def test_live_renderer_dependency_is_available_in_local_deployments():
     import tomllib
     from pathlib import Path
     from chalkcompute._local_dev import _LOCAL_SDK_RUNTIME_PACKAGES
 
     metadata = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())
-    assert not any(
-        dep.startswith("rich") for dep in metadata["project"]["dependencies"]
-    )
-    assert not any(dep.startswith("rich") for dep in _LOCAL_SDK_RUNTIME_PACKAGES)
+    assert any(dep.startswith("rich") for dep in metadata["project"]["dependencies"])
+    assert any(dep.startswith("rich") for dep in _LOCAL_SDK_RUNTIME_PACKAGES)
 
 
 @pytest.mark.parametrize("application_first", [False, True])

@@ -41,35 +41,46 @@ SDK's console diagnostics use stderr, leaving stdout available for script result
 
 | Context | Default output |
 | --- | --- |
-| Interactive terminal | Colored deployment status lines on stderr |
-| Notebook, CI, redirected stderr, or `TERM=dumb` | Plain deployment status lines on stderr |
-| Application with logging configured | Deployment status remains visible; diagnostic records also go to the application's handlers |
+| Supported interactive terminal (including SSH and IDE terminals) | One live deployment region on stderr, updated when steps change |
+| Notebook, CI, redirected stderr, or `TERM=dumb` / `unknown` | Append-only deployment status lines on stderr |
+| Custom stream, unknown terminal, or existing terminal logging handler | Append-only status; diagnostic records still go to the application's handlers |
 
 `CHALK_SANDBOX_TUI=false` (or `0`) disables progress, including in a terminal.
-`CHALK_SANDBOX_TUI=true` (or `1`) explicitly enables status lines, including plain
-text in notebooks. Unset it or use `auto` for the default behavior above. Terminal
-detection controls color, not visibility. Progress uses
-a named group with a vertical guide for its steps and a closing success/failure
-line. It prints only when a step changes. If concurrent deployments interleave,
-the group heading repeats with `(continued)` to identify the following steps.
-It never rewrites previous lines, replaces standard streams, or hides warnings
-and errors. No renderer dependency is required.
+`CHALK_SANDBOX_TUI=true` (or `1`) enables progress while still respecting terminal
+capabilities. Unset it or use `auto` for the default behavior above. Use
+`CHALK_SANDBOX_TUI=plain` for append-only output without color or cursor movement.
+This is also useful for accessibility tools, terminal recordings, other live UIs,
+or programs whose subprocesses/native code write directly to terminal file descriptors.
+
+An operation appears only once it has a step or status to report. Live output
+uses Rich to redraw only the progress region, without clearing the screen or using
+an alternate screen. Successful operations collapse to one summary line; running
+and failed operations retain their step details. Final results remain in scrollback.
+Ordinary Python stdout/stderr writes temporarily clear that
+region and pass through unchanged; updates resume after a complete output line.
+Redirected stdout is never captured by the renderer. Existing console logging
+handlers trigger append-only mode because their saved streams bypass this routing.
+The SDK does not change application logging handlers or levels.
+
+Append-only output includes the resource name on every changed step, so concurrent
+deployments remain understandable without repeated headers. Repeated identical
+polls are suppressed. This mode also works in minimal SDK copies without Rich.
 
 Color is automatic for interactive terminals. `NO_COLOR`, `TERM=dumb`, notebooks,
-CI, and redirected streams disable it. If a program controls a pseudo terminal,
-set `NO_COLOR=1` for plain status, or `CHALK_SANDBOX_TUI=false` to disable status.
+CI, and redirected streams disable it. `NO_COLOR` disables color but still allows
+live updates in a supported terminal; use `CHALK_SANDBOX_TUI=plain` to disable
+cursor movement too, or `CHALK_SANDBOX_TUI=false` to disable status entirely.
 Disabling progress does not disable diagnostics or customer output. To route SDK
 information only through your application's logging, disable progress and configure
 the `chalkcompute` logger as shown below.
 
 ```text
-Function "fraud"
-  │ › Registering function
-  │ ✓ Function registered
-  │ › Waiting for readiness
-  │ › Pending ready=0 available=0
-  │ › Pending ready=0 available=0 — waiting for startup probe
-  └ ✓ Ready
+› Function "fraud": Registering function
+✓ Function "fraud": Function registered
+› Function "fraud": Waiting for readiness
+› Function "fraud": Pending ready=0 available=0
+› Function "fraud": Pending ready=0 available=0 — waiting for startup probe
+✓ Function "fraud": Ready
 ```
 
 For additional console diagnostics in a script or notebook:

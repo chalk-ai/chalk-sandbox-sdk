@@ -14,6 +14,7 @@ import functools
 import importlib
 import inspect
 import os
+import threading
 import weakref
 from collections.abc import Callable, Iterator
 from typing import Any, NamedTuple, TypeVar, cast, overload
@@ -59,6 +60,7 @@ SESSION_ROOT_SPAN_NAME = "chalkcompute.session"
 
 _initialized = False
 _provider: Any | None = None
+_provider_lock = threading.Lock()
 _user_tracing_configured = False
 _tracer: Any | None = None
 _session_processor_providers: weakref.WeakSet[Any] = weakref.WeakSet()
@@ -290,6 +292,13 @@ def _installed_provider(trace_api: Any) -> Any | None:
 
 
 def _install_tracer_provider(sample_rate: float) -> None:
+    # Concurrent background deployments can both observe an empty provider and
+    # construct competing exporters. OTel only permits installation once.
+    with _provider_lock:
+        _install_tracer_provider_locked(sample_rate)
+
+
+def _install_tracer_provider_locked(sample_rate: float) -> None:
     global _provider, _tracer
     if _provider is not None:
         return

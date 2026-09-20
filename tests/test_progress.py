@@ -285,9 +285,7 @@ def test_scaling_group_progress_finishes_on_success_or_failure(monkeypatch, fail
 
 
 @pytest.mark.parametrize("no_color", [False, True])
-def test_progress_renders_only_changes_with_indented_terminal_markers(
-    monkeypatch, no_color
-):
+def test_progress_renders_only_changes_on_custom_streams(monkeypatch, no_color):
     import io
     import sys
 
@@ -310,15 +308,15 @@ def test_progress_renders_only_changes_with_indented_terminal_markers(
     progress.update("fn", status="done", detail="ready")
     progress.finish()
     output = stream.getvalue()
-    assert len(output.splitlines()) == 5
+    assert len(output.splitlines()) == 4
     if no_color:
         assert "\033" not in output
-        assert output.startswith("Fraud\n  │ › Build image\n")
-        assert output.endswith("  └ ✓ Ready\n")
+        assert output.startswith("› Fraud: Build image\n")
+        assert output.endswith("✓ Fraud: Ready\n")
     else:
         assert "\033[36m›\033[0m" in output
         assert "\033[32m✓\033[0m" in output
-        assert "\033[2m└\033[0m \033[32m✓\033[0m Ready" in output
+        assert "\033[32m✓\033[0m \033[1mFraud\033[0m: Ready" in output
     assert "\r" not in output
     assert "\033[2K" not in output
 
@@ -334,10 +332,10 @@ def test_progress_falls_back_for_ascii_streams(monkeypatch):
     progress.add("fn", "function", "Fraud")
     progress.update("fn", status="done", detail="ready")
     progress.finish()
-    assert data.getvalue() == b"Fraud\n  ` + Ready\n"
+    assert data.getvalue() == b"+ Fraud: Ready\n"
 
 
-def test_deployment_steps_share_one_group(capsys):
+def test_deployment_steps_identify_the_resource_on_every_line(capsys):
     progress = DeployProgress()
     progress.add("fn", "function", 'Function "fraud"')
     progress.add("register", "function", "Registering function", parent="fn")
@@ -351,13 +349,12 @@ def test_deployment_steps_share_one_group(capsys):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.splitlines() == [
-        'Function "fraud"',
-        "  │ › Registering function",
-        "  │ ✓ Function registered",
-        "  │ › Waiting for readiness",
-        "  │ › Pending ready=0 available=0",
-        "  │ › Available ready=1 available=1",
-        "  └ ✓ Ready",
+        '› Function "fraud": Registering function',
+        '✓ Function "fraud": Function registered',
+        '› Function "fraud": Waiting for readiness',
+        '› Function "fraud": Pending ready=0 available=0',
+        '› Function "fraud": Available ready=1 available=1',
+        '✓ Function "fraud": Ready',
     ]
 
 
@@ -371,14 +368,54 @@ def test_interleaved_groups_restate_identity_and_close_after_their_children(caps
     progress.update("a", status="failed", detail="")
     progress.finish()
     assert capsys.readouterr().err.splitlines() == [
-        'Function "A"',
-        "  │ › Build image",
-        'Function "B"',
-        'Function "A" (continued)',
-        "  │ › Pending",
-        'Function "B" (continued)',
-        "  └ ✓ Ready",
-        'Function "A" (continued)',
-        "  │ – Build image",
-        "  └ ✗ Failed",
+        '› Function "A": Build image',
+        '› Function "A": Pending',
+        '✓ Function "B": Ready',
+        '– Function "A": Build image',
+        '✗ Function "A": Failed',
     ]
+
+
+def test_declarations_alone_are_silent(capsys):
+    progress = DeployProgress()
+    progress.add("a", "function", 'Function "A"')
+    progress.add("b", "function", 'Function "B"')
+    assert capsys.readouterr().err == ""
+    progress.add("register", "function", "Registering function", parent="a")
+    assert capsys.readouterr().err == '› Function "A": Registering function\n'
+    progress.finish()
+
+
+def test_nested_steps_include_parent_identity(capsys):
+    progress = DeployProgress()
+    progress.add("cls", "class", 'Class "Fraud"')
+    progress.add("method", "method", ".score()", parent="cls")
+    progress.add("image", "image", "Building image", parent="method")
+    assert capsys.readouterr().err.splitlines() == [
+        '› Class "Fraud": .score()',
+        '› Class "Fraud" / .score(): Building image',
+    ]
+    progress.finish()
+
+
+@pytest.mark.parametrize("failure", [BrokenPipeError, ValueError])
+def test_closed_or_broken_stream_does_not_fail_deployment(monkeypatch, failure):
+    import io
+    import sys
+
+    class BrokenStream(io.StringIO):
+        def write(self, value):
+            raise failure("closed")
+
+    monkeypatch.setattr(sys, "stderr", BrokenStream())
+    progress = DeployProgress()
+    progress.add("fn", "function", "Fraud", detail="Registering")
+    progress.update("fn", status="done")
+    progress.finish()
+
+
+def test_status_text_cannot_inject_terminal_controls(capsys):
+    progress = DeployProgress()
+    progress.add("fn", "function", "[bold]Fraud\x1b[2J", detail="Pending\r\nNext\x07")
+    progress.finish()
+    assert capsys.readouterr().err == "› [bold]Fraud: Pending Next\n"
