@@ -1,3 +1,4 @@
+from chalkcompute._logging import configure_logging as configure_logging
 from chalkcompute._sql import SQLClient as SQLClient
 from chalkcompute._sql import SQLResult as SQLResult
 from chalkcompute._sql import SQLJob as SQLJob
@@ -36,6 +37,7 @@ from chalkcompute._containerspec import (
 from chalkcompute._containerspec import KernelPolicy as KernelPolicy
 from chalkcompute._containerspec import NetworkPolicy as NetworkPolicy
 from chalkcompute._containerspec import RestartPolicy as RestartPolicy
+from chalkcompute._containerspec import SSHDest as SSHDest
 from chalkcompute._containerspec import SshDest as SshDest
 from chalkcompute._evaluation import DatasetNameLike as DatasetNameLike
 from chalkcompute._evaluation import DatasetRevisionLike as DatasetRevisionLike
@@ -155,6 +157,7 @@ from chalkcompute._sandbox_git import GitRemote as GitRemote
 from chalkcompute._git import GitError as GitError
 
 __all__ = [
+    "configure_logging",
     "SandboxGit",
     "GitFileStatus",
     "GitStatus",
@@ -180,6 +183,7 @@ __all__ = [
     "ComputeClass",
     "KernelPolicy",
     "NetworkPolicy",
+    "SSHDest",
     "SshDest",
     "RemoteClass",
     "ClassError",

@@ -367,13 +367,28 @@ def test_definition_only_script_waits_for_all_deployments(tmp_path: Path) -> Non
         ),
     ],
 )
+@pytest.mark.parametrize(
+    "application_logging",
+    [
+        "",
+        'logging.basicConfig(format="APP %(levelname)s %(message)s")',
+        "logging.disable(logging.CRITICAL)",
+        'logging.getLogger("chalkcompute").disabled = True',
+        'logging.getLogger("chalkcompute").addHandler(logging.NullHandler())',
+        "logging.basicConfig(level=logging.CRITICAL)",
+    ],
+)
 def test_definition_only_script_reports_deployment_failure(
     tmp_path: Path,
     error: str,
     error_type: str,
     expected_failure: bool,
     rpc_code: str | None,
+    application_logging: str,
 ) -> None:
+    configuration = (
+        f"; import logging; {application_logging}" if application_logging else ""
+    )
     script = tmp_path / "deploy_failure.py"
     script.write_text(
         textwrap.dedent(
@@ -381,7 +396,7 @@ def test_definition_only_script_reports_deployment_failure(
             from connectrpc.code import Code
             from connectrpc.errors import ConnectError as ConnectRpcError
             from chalkcompute._connect import ConnectError
-            from chalkcompute._function import FunctionBuildError, RemoteFunction, function
+            from chalkcompute._function import FunctionBuildError, RemoteFunction, function{configuration}
 
             def fake_deploy(self, **kwargs):
                 error = {error}
@@ -398,6 +413,7 @@ def test_definition_only_script_reports_deployment_failure(
     )
 
     env = os.environ.copy()
+    env["CHALK_SANDBOX_TUI"] = "false"
     repo_root = Path(__file__).parents[1]
     env["PYTHONPATH"] = os.pathsep.join([str(repo_root), env.get("PYTHONPATH", "")])
 
@@ -413,7 +429,12 @@ def test_definition_only_script_reports_deployment_failure(
 
     # A definition-only script must fail, not exit 0 on code that cannot serve.
     assert completed.returncode != 0
-    assert "Background deployment for function 'broken' failed" in completed.stderr
+    assert completed.stdout == ""
+    assert (
+        completed.stderr.count("Background deployment for function 'broken' failed")
+        == 1
+    )
+    assert completed.stderr.startswith("Background deployment")
     status = f" [{rpc_code}]" if rpc_code is not None else ""
     assert (
         f"Background deployment for function 'broken' failed{status}:"
@@ -433,6 +454,8 @@ def test_definition_only_script_reports_deployment_failure(
         )
     assert f'File "{script}", line 14, in broken' in completed.stderr
     assert "@function" in completed.stderr
+    assert "  > 14 | @function" in completed.stderr
+    assert "15 | def broken(value: int) -> int:" in completed.stderr
     if not expected_failure:
         assert "Traceback (most recent call last)" in completed.stderr
         assert "concurrent/futures/thread.py" in completed.stderr
@@ -446,8 +469,74 @@ def test_definition_only_script_reports_deployment_failure(
 
 
 @pytest.mark.parametrize(
+    ("tty", "no_color", "ci", "term", "notebook", "expected_color"),
+    [
+        (True, False, False, "xterm", False, True),
+        (False, False, False, "xterm", False, False),
+        (True, True, False, "xterm", False, False),
+        (True, False, True, "xterm", False, False),
+        (True, False, False, "dumb", False, False),
+        (True, False, False, "xterm", True, False),
+    ],
+)
+def test_background_failure_color_policy(
+    tmp_path, tty, no_color, ci, term, notebook, expected_color
+):
+    script = tmp_path / "failure.py"
+    script.write_text(
+        textwrap.dedent(f"""\
+        import sys
+        from chalkcompute._function import FunctionBuildError, RemoteFunction, function
+        sys.stderr.isatty = lambda: {tty!r}
+        if {notebook!r}:
+            sys.modules["ipykernel"] = object()
+        def fail(self):
+            raise FunctionBuildError("deployment failed")
+        RemoteFunction._deploy = fail
+        @function
+        def broken(value: int) -> int:
+            return value
+    """)
+    )
+    env = os.environ.copy()
+    env["TERM"] = term
+    env["CHALK_SANDBOX_TUI"] = "false"
+    env["PYTHONPATH"] = str(Path(__file__).parents[1])
+    for name, enabled in [("NO_COLOR", no_color), ("CI", ci)]:
+        if enabled:
+            env[name] = "1"
+        else:
+            env.pop(name, None)
+    completed = subprocess.run(
+        [sys.executable, str(script)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert completed.returncode == 1, completed.stderr
+    assert ("\033[" in completed.stderr) == expected_color
+    if expected_color:
+        assert completed.stderr.startswith("\033[1;31mBackground deployment")
+        assert f"\033[36m{script}\033[0m" in completed.stderr
+        assert (
+            "\033[1;31mchalkcompute._function.FunctionBuildError\033[0m:"
+            in completed.stderr
+        )
+    else:
+        assert "FunctionBuildError: deployment failed" in completed.stderr
+    assert "def broken(value: int) -> int:" in completed.stderr
+
+
+@pytest.mark.parametrize(
     ("signature", "message", "hint"),
     [
+        (
+            "()",
+            "Function 'broken' must have a return type annotation",
+            "Add '-> None' if it returns nothing",
+        ),
         (
             "(value: int)",
             "Function 'broken' must have a return type annotation",
@@ -460,8 +549,9 @@ def test_definition_only_script_reports_deployment_failure(
         ),
     ],
 )
+@pytest.mark.parametrize("color", [False, True])
 def test_definition_only_script_reports_missing_annotations(
-    tmp_path: Path, signature: str, message: str, hint: str
+    tmp_path: Path, signature: str, message: str, hint: str, color: bool
 ) -> None:
     # Use real schema validation in a worker without building an image or
     # contacting the service. The subprocess exercises the exit-time reporter.
@@ -469,7 +559,7 @@ def test_definition_only_script_reports_missing_annotations(
     script.write_text(
         textwrap.dedent(
             f"""\
-            from chalkcompute._function import RemoteFunction, _build_schemas, function
+            from chalkcompute._function import RemoteFunction, _build_schemas, function; import sys; sys.stderr.isatty = lambda: {color!r}
 
             def validate(self):
                 _build_schemas(self._func)
@@ -478,11 +568,15 @@ def test_definition_only_script_reports_missing_annotations(
 
             @function
             def broken{signature}:
-                return value
+                return {"value" if "value" in signature else "'hello'"}
             """
         )
     )
     env = os.environ.copy()
+    env.pop("NO_COLOR", None)
+    env.pop("CI", None)
+    env["TERM"] = "xterm"
+    env["CHALK_SANDBOX_TUI"] = "false"
     repo_root = Path(__file__).parents[1]
     env["PYTHONPATH"] = os.pathsep.join([str(repo_root), env.get("PYTHONPATH", "")])
     completed = subprocess.run(
@@ -495,15 +589,26 @@ def test_definition_only_script_reports_missing_annotations(
         check=False,
     )
 
+    import re
+
     assert completed.returncode == 1, completed.stderr
-    assert "Background deployment for function 'broken' failed:" in completed.stderr
-    assert f'File "{script}", line 8, in broken' in completed.stderr
-    assert "@function" in completed.stderr
-    assert f"FunctionSignatureError: {message}" in completed.stderr
-    assert hint in completed.stderr
-    assert "Traceback (most recent call last)" not in completed.stderr
-    assert "concurrent/futures" not in completed.stderr
-    assert "chalkcompute/_function.py" not in completed.stderr
+    assert ("\033[" in completed.stderr) == color
+    rendered = re.sub(r"\x1b\[[0-9;]*m", "", completed.stderr)
+    assert "Background deployment for function 'broken' failed:" in rendered
+    assert f'File "{script}", line 8, in broken' in rendered
+    assert "  >  8 | @function" in rendered
+    assert f"9 | def broken{signature}:" in rendered
+    assert f"chalkcompute.FunctionSignatureError: {message}" in rendered
+    assert "chalkcompute._function.FunctionSignatureError" not in rendered
+    if color:
+        assert (
+            "\033[1;31mchalkcompute.FunctionSignatureError\033[0m:" in completed.stderr
+        )
+    assert hint in rendered
+    assert "Traceback (most recent call last)" not in rendered
+    assert "concurrent/futures" not in rendered
+    assert "chalkcompute/_function.py" not in rendered
+    assert rendered.count('  File "') == 1
 
 
 def _version_info(name: str) -> FunctionVersionInfo:

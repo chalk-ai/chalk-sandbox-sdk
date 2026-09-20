@@ -255,6 +255,9 @@ class TestRichToArrowSchema:
 
 class TestBuildSchemas:
     def test_missing_annotation_remains_a_type_error(self):
+        import pickle
+        import traceback
+
         from chalkcompute import FunctionError, FunctionSignatureError
         from chalkcompute._function import _build_schemas
 
@@ -265,6 +268,12 @@ class TestBuildSchemas:
             _build_schemas(missing_return)
         assert isinstance(exc_info.value, FunctionSignatureError)
         assert isinstance(exc_info.value, FunctionError)
+        assert "".join(traceback.format_exception_only(exc_info.value)).startswith(
+            "chalkcompute.FunctionSignatureError:"
+        )
+        restored = pickle.loads(pickle.dumps(exc_info.value))
+        assert type(restored) is FunctionSignatureError
+        assert str(restored) == str(exc_info.value)
 
     def test_explicit_none_return_is_valid(self):
         from chalkcompute._function import _build_schemas

@@ -2,13 +2,10 @@
 
 import importlib
 
-from chalkcompute._logging import setup_logging as _setup_logging
-
-_setup_logging()
-
 # Keep top-level imports lazy so `import chalkcompute` does not eagerly import
 # the grpc/protobuf/client modules. Update `__init__.pyi` when adding exports.
 _LAZY_MAP: dict[str, tuple[str, str]] = {
+    "configure_logging": ("chalkcompute._logging", "configure_logging"),
     # _artifact.py
     "Artifact": ("chalkcompute._artifact", "Artifact"),
     "ArtifactClient": ("chalkcompute._artifact", "ArtifactClient"),
@@ -27,6 +24,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "ImageBuildError": ("chalkcompute._container", "ImageBuildError"),
     "KernelPolicy": ("chalkcompute._containerspec", "KernelPolicy"),
     "ComputeClass": ("chalkcompute._containerspec", "ComputeClass"),
+    "SSHDest": ("chalkcompute._containerspec", "SSHDest"),
     "SshDest": ("chalkcompute._containerspec", "SshDest"),
     "NetworkPolicy": ("chalkcompute._containerspec", "NetworkPolicy"),
     # _cls.py
