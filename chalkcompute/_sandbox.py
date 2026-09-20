@@ -29,9 +29,9 @@ import queue
 import signal
 import time
 import uuid
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING
 
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
@@ -39,7 +39,7 @@ from connectrpc.protocol import ProtocolType
 from protobuf import Oneof
 from protobuf.wkt import Duration
 
-from chalkcompute._artifact import Artifact, ArtifactClient, _artifact_from_proto
+from chalkcompute._artifact import ArtifactClient, _artifact_from_proto
 from chalkcompute._connect import (
     ConnectError,
     ConnectClient,
@@ -48,14 +48,7 @@ from chalkcompute._connect import (
     raise_for_rpc_error,
     rpc_address_from_target,
 )
-from chalkcompute._containerspec import (
-    ComputeClass,
-    ContainerSecurityPolicy,
-    ContainerSpec,
-    NetworkPolicy,
-    RestartPolicy,
-    SshDest,
-)
+from chalkcompute._containerspec import ContainerSpec, NetworkPolicy
 from chalkcompute._env import normalize_env
 from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
 from chalkcompute._gen.chalk.sandbox.v1 import runtime_service_pb as runtime_pb
@@ -77,19 +70,30 @@ from chalkcompute._sandbox_git import SandboxGit
 from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
-    Volume,
     VolumeClient,
-    VolumeMount,
     cleanup_owned_volumes,
     normalize_volume_refs,
     referenced_volume_mount,
 )
 
-# Aliases defined before SandboxClient, which has a ``.list()`` method that
-# would otherwise shadow the builtin ``list`` in class-scope name resolution.
-_GrpcMetadata = list[tuple[str, str]]
-_VolumeList = list[tuple[str | Volume, str] | Volume | VolumeMount]
-_SecretList = list[Secret]
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Mapping
+    from typing import Any
+
+    from chalkcompute._artifact import Artifact
+    from chalkcompute._containerspec import (
+        ComputeClass,
+        ContainerSecurityPolicy,
+        RestartPolicy,
+        SSHDest,
+    )
+    from chalkcompute._volume import Volume, VolumeMount
+
+    # Aliases defined before SandboxClient, which has a ``.list()`` method that
+    # would otherwise shadow the builtin ``list`` in class-scope name resolution.
+    _GrpcMetadata = list[tuple[str, str]]
+    _VolumeList = list[tuple[str | Volume, str] | Volume | VolumeMount]
+    _SecretList = list[Secret]
 
 
 # ---------------------------------------------------------------------------
@@ -620,7 +624,7 @@ class Sandbox:
         tags: dict[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool = False,
-        managed_ssh: Mapping[str, SshDest] | None = None,
+        managed_ssh: Mapping[str, SSHDest] | None = None,
         chalk_client: Any | None = None,
         sandbox_client: SandboxClient | None = None,
         client: Any | None = None,
@@ -676,7 +680,7 @@ class Sandbox:
             The identity is exposed inside the sandbox through the standard
             ``CHALK_WEB_IDENTITY_TOKEN_FILE`` environment variable.
         managed_ssh
-            Optional SSH aliases mapped to :class:`SshDest` instances. Managed
+            Optional SSH aliases mapped to :class:`SSHDest` instances. Managed
             SSH sandboxes run on host compute.
 
         sandbox_id
@@ -725,7 +729,7 @@ class Sandbox:
         self._tags: dict[str, str] = {}
         self._restart_policy: RestartPolicy | None = None
         self._chalk_identity = False
-        self._managed_ssh: dict[str, SshDest] = {}
+        self._managed_ssh: dict[str, SSHDest] = {}
         self._chalk_client: Any | None = None
         self._built_image_uri: str | None = None
 
@@ -1713,7 +1717,7 @@ class SandboxClient:
         tags: dict[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool = False,
-        managed_ssh: Mapping[str, SshDest] | None = None,
+        managed_ssh: Mapping[str, SSHDest] | None = None,
         wait: bool = True,
         poll_interval: float = 0.5,
         timeout: float = 600.0,
@@ -1757,7 +1761,7 @@ class SandboxClient:
             The identity is exposed inside the sandbox through the standard
             ``CHALK_WEB_IDENTITY_TOKEN_FILE`` environment variable.
         managed_ssh
-            Optional SSH aliases mapped to :class:`SshDest` instances.
+            Optional SSH aliases mapped to :class:`SSHDest` instances.
         wait
             If ``True``, poll until the sandbox is ready (default ``True``).
         poll_interval
