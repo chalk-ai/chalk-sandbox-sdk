@@ -12,7 +12,6 @@ from dataclasses import dataclass
 import pytest
 
 from chalkcompute import ComputeClass, Container, ContainerError, NetworkPolicy
-from e2etests._infrastructure import exec_read_only
 from e2etests.conftest import CHALK_API_SERVER, needs_staging
 
 NETSHOOT_IMAGE = "nicolaka/netshoot:latest"
@@ -454,8 +453,7 @@ def _wait_for_local_echo(container: Container) -> None:
 def _run_probe(container: Container, probe: DnsProbe | HttpProbe) -> ProbeRecord:
     match probe:
         case DnsProbe():
-            result = exec_read_only(
-                container,
+            result = container.exec(
                 "dig",
                 "+time=1",
                 "+tries=1",
@@ -509,7 +507,7 @@ def _run_http_probe(container: Container, probe: HttpProbe) -> ProbeRecord:
 
     retry_deadline = time.monotonic() + connect_timeout
     while True:
-        result = exec_read_only(container, *command, timeout_secs=max_time + 5)
+        result = container.exec(*command, timeout_secs=max_time + 5)
         if not probe.expected_ok or result.exit_code not in {7, 28}:
             break
         retry_delay = min(0.5, retry_deadline - time.monotonic())
