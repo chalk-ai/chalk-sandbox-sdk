@@ -41,6 +41,23 @@ def _install_fake_remote_call(monkeypatch: pytest.MonkeyPatch, result: Any) -> N
     )
 
 
+def test_successful_background_deployment_does_not_capture_source(monkeypatch) -> None:
+    import chalkcompute._function as fn_module
+
+    def target(value: int) -> int:
+        return value
+
+    handle = RemoteFunction(target)
+    monkeypatch.setattr(RemoteFunction, "_deploy", lambda self: self)
+
+    def unexpected_source_lookup(*args, **kwargs):
+        pytest.fail("successful deployment looked up source for error reporting")
+
+    monkeypatch.setattr(fn_module.inspect, "unwrap", unexpected_source_lookup)
+    monkeypatch.setattr(fn_module.traceback, "FrameSummary", unexpected_source_lookup)
+    fn_module._schedule_background_deployment(handle).result(timeout=5)
+
+
 def test_decorated_functions_start_deploying_concurrently(monkeypatch) -> None:
     rendezvous = threading.Barrier(2)
     deployed: list[str] = []
