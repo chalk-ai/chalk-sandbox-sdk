@@ -3,7 +3,7 @@ from __future__ import annotations
 from unittest.mock import ANY, MagicMock, patch
 
 import pytest
-from chalkcompute import Image, Sandbox
+from chalkcompute import Image, NetworkPolicy, Sandbox, Secret
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
@@ -93,6 +93,7 @@ class _ErrorAfterBuildStub:
                 status=pb.SandboxStatus.FAILED,
                 created_at=Timestamp(seconds=1),
                 status_message="pod failed readiness probe: connection refused",
+                status_details="Traceback:\n  load_config()\nValueError: invalid",
             )
         )
 
@@ -137,6 +138,242 @@ def test_sandbox_client_create_sends_image_uri_not_image_spec() -> None:
     assert stub.request is not None
     assert stub.request.source.value.image == "registry/image:built"
     build.assert_called_once()
+
+
+@pytest.mark.parametrize("use_client_create", [False, True])
+def test_sandbox_mixed_env_serializes_secret_references(use_client_create) -> None:
+    client = SandboxClient()
+    stub = _Stub()
+    client._stub = stub  # type: ignore[assignment]
+    env = {
+        "GIT_AUTHOR_NAME": "Elliot Marx",
+        "SUPER_SECRET_VALUE": Secret.from_chalk_env("TOKEN"),
+    }
+    secrets = [Secret.from_chalk_env("OTHER")]
+    try:
+        if use_client_create:
+            client.create("ubuntu:latest", env=env, secrets=secrets, wait=False)
+        else:
+            Sandbox(
+                image="ubuntu:latest", env=env, secrets=secrets, sandbox_client=client
+            ).run(wait=False)
+    finally:
+        client.close()
+
+    assert stub.request is not None
+    spec = stub.request.source.value
+    assert dict(spec.env_vars) == {"GIT_AUTHOR_NAME": "Elliot Marx"}
+    assert [ref.source.value for ref in spec.secret_refs] == ["OTHER", "TOKEN"]
+    assert dict(spec.secret_refs[1].aliases) == {"TOKEN": "SUPER_SECRET_VALUE"}
+
+
+def test_sandbox_add_credentials_configures_env_and_network_policy(monkeypatch) -> None:
+    def host_bindings(sandbox: Sandbox, host: str) -> dict[str, str | Secret]:
+        assert sandbox._network_policy is not None
+        return {
+            placeholder: secret
+            for rule in sandbox._network_policy.allowed_hosts[host]
+            for transform in rule.transforms
+            for placeholder, secret in transform.headers_secrets.items()
+        }
+
+    # A single host and single secret produce one placeholder-backed host binding.
+    sandbox = Sandbox(image="ubuntu:latest").add_credentials(
+        "api.openai.com", "OPENAI_API_KEY"
+    )
+    openai_placeholder = sandbox._env["OPENAI_API_KEY"]
+    assert openai_placeholder.startswith("__chalk-secret-")
+    assert host_bindings(sandbox, "api.openai.com") == {
+        openai_placeholder: Secret.from_chalk_env("OPENAI_API_KEY")
+    }
+
+    # Multiple hosts and one secret reuse one placeholder across every host.
+    sandbox = Sandbox(image="ubuntu:latest").add_credentials(
+        ["api.openai.com", "*.openai.com"], "OPENAI_API_KEY"
+    )
+    openai_placeholder = sandbox._env["OPENAI_API_KEY"]
+    for host in ("api.openai.com", "*.openai.com"):
+        assert host_bindings(sandbox, host) == {
+            openai_placeholder: Secret.from_chalk_env("OPENAI_API_KEY")
+        }
+
+    # A single host and multiple secrets produce distinct placeholders on one host.
+    sandbox = Sandbox(image="ubuntu:latest").add_credentials(
+        "api.example.com",
+        "API_KEY",
+        Secret.from_local_env("LOCAL_TOKEN"),
+    )
+    api_placeholder = sandbox._env["API_KEY"]
+    local_placeholder = sandbox._env["LOCAL_TOKEN"]
+    assert api_placeholder != local_placeholder
+    assert host_bindings(sandbox, "api.example.com") == {
+        api_placeholder: Secret.from_chalk_env("API_KEY"),
+        local_placeholder: Secret.from_local_env("LOCAL_TOKEN"),
+    }
+
+    # Multiple hosts and multiple secrets install every binding on every host.
+    sandbox = Sandbox(image="ubuntu:latest").add_credentials(
+        ["sts.amazonaws.com", "*.amazonaws.com"],
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+    )
+    aws_bindings = {
+        sandbox._env["AWS_ACCESS_KEY_ID"]: Secret.from_chalk_env("AWS_ACCESS_KEY_ID"),
+        sandbox._env["AWS_SECRET_ACCESS_KEY"]: Secret.from_chalk_env(
+            "AWS_SECRET_ACCESS_KEY"
+        ),
+    }
+    assert host_bindings(sandbox, "sts.amazonaws.com") == aws_bindings
+    assert host_bindings(sandbox, "*.amazonaws.com") == aws_bindings
+
+    # Chaining different credentials onto one host preserves both bindings.
+    sandbox = (
+        Sandbox(image="ubuntu:latest")
+        .add_credentials("api.example.com", "FIRST_KEY")
+        .add_credentials("api.example.com", "SECOND_KEY")
+    )
+    assert host_bindings(sandbox, "api.example.com") == {
+        sandbox._env["FIRST_KEY"]: Secret.from_chalk_env("FIRST_KEY"),
+        sandbox._env["SECOND_KEY"]: Secret.from_chalk_env("SECOND_KEY"),
+    }
+
+    # Chaining one credential onto different hosts reuses its original placeholder.
+    sandbox = (
+        Sandbox(image="ubuntu:latest")
+        .add_credentials("openai.com", "API_KEY")
+        .add_credentials("*.openai.com", "API_KEY")
+    )
+    api_placeholder = sandbox._env["API_KEY"]
+    assert host_bindings(sandbox, "openai.com") == {
+        api_placeholder: Secret.from_chalk_env("API_KEY")
+    }
+    assert host_bindings(sandbox, "*.openai.com") == {
+        api_placeholder: Secret.from_chalk_env("API_KEY")
+    }
+
+    # Existing unrelated env, secrets, and policy entries remain unchanged.
+    existing_rule = NetworkPolicy.Rule(
+        transforms=[NetworkPolicy.Transformer(headers={"x-existing": "yes"})]
+    )
+    existing_secret = Secret.from_chalk_env("UNRELATED_SECRET")
+    network_policy = NetworkPolicy(
+        denied_routes=["169.254.0.0/16"],
+        allowed_hosts={"api.example.com": [existing_rule]},
+    )
+    sandbox = Sandbox(
+        image="ubuntu:latest",
+        env={"MODE": "test"},
+        secrets=[existing_secret],
+        network_policy=network_policy,
+    ).add_credentials("api.example.com", "API_KEY")
+    assert sandbox._env["MODE"] == "test"
+    assert sandbox._secrets == [existing_secret]
+    assert sandbox._network_policy is network_policy
+    assert sandbox._network_policy.denied_routes == ["169.254.0.0/16"]
+    assert sandbox._network_policy.allowed_hosts["api.example.com"][0] is existing_rule
+    assert host_bindings(sandbox, "api.example.com") == {
+        sandbox._env["API_KEY"]: Secret.from_chalk_env("API_KEY")
+    }
+
+    # Existing headers_secrets bindings are reused while new bindings are appended.
+    existing_placeholder = "some-user-placeholder"
+    existing_transform = NetworkPolicy.Transformer(
+        headers_secrets={existing_placeholder: Secret.from_chalk_env("EXISTING_KEY")}
+    )
+    network_policy = NetworkPolicy(
+        allowed_hosts={
+            "api.example.com": [NetworkPolicy.Rule(transforms=[existing_transform])]
+        }
+    )
+    sandbox = Sandbox(
+        image="ubuntu:latest",
+        env={"EXISTING_KEY": existing_placeholder},
+        network_policy=network_policy,
+    ).add_credentials("api.example.com", "EXISTING_KEY", "NEW_KEY")
+    assert sandbox._network_policy is network_policy
+    assert existing_transform.headers_secrets == {
+        existing_placeholder: Secret.from_chalk_env("EXISTING_KEY")
+    }
+    assert host_bindings(sandbox, "api.example.com") == {
+        existing_placeholder: Secret.from_chalk_env("EXISTING_KEY"),
+        sandbox._env["NEW_KEY"]: Secret.from_chalk_env("NEW_KEY"),
+    }
+
+    # An existing literal env value blocks a credential with the same env name.
+    with pytest.raises(
+        ValueError, match="environment variable 'API_KEY' is already set"
+    ):
+        Sandbox(image="ubuntu:latest", env={"API_KEY": "literal"}).add_credentials(
+            "api.example.com", "API_KEY"
+        )
+
+    # An existing standalone secret blocks a network credential with the same env name.
+    with pytest.raises(ValueError, match="already populated by secrets"):
+        Sandbox(
+            image="ubuntu:latest",
+            secrets=[Secret.from_chalk_env("API_KEY")],
+        ).add_credentials("api.example.com", "API_KEY")
+
+    # An env-mapped secret alias blocks a network credential using the same alias.
+    with pytest.raises(ValueError, match="already populated by secrets"):
+        Sandbox(
+            image="ubuntu:latest",
+            env={"API_KEY": Secret.from_chalk_env("SOURCE_KEY")},
+        ).add_credentials("api.example.com", "API_KEY")
+
+    # Re-adding an identical binding to the same host is a no-op.
+    sandbox = Sandbox(image="ubuntu:latest").add_credentials(
+        "api.example.com", "API_KEY"
+    )
+    assert sandbox._network_policy is not None
+    rule_count = len(sandbox._network_policy.allowed_hosts["api.example.com"])
+    sandbox.add_credentials("api.example.com", "API_KEY")
+    assert len(sandbox._network_policy.allowed_hosts["api.example.com"]) == rule_count
+
+    # Rebinding one placeholder to a different credential on the same host fails.
+    sandbox = Sandbox(image="ubuntu:latest").add_credentials(
+        "api.example.com", "API_KEY"
+    )
+    with pytest.raises(ValueError, match="already bound to a different secret"):
+        sandbox.add_credentials(
+            "api.example.com",
+            Secret.from_chalk_env("OTHER_KEY", alias="API_KEY"),
+        )
+
+    # Duplicate hosts in one call are rejected explicitly.
+    with pytest.raises(ValueError, match="hosts must not contain duplicates"):
+        Sandbox(image="ubuntu:latest").add_credentials(
+            ["api.example.com", "api.example.com"], "API_KEY"
+        )
+
+    # Duplicate credential env names in one call are rejected explicitly.
+    with pytest.raises(ValueError, match="specified more than once"):
+        Sandbox(image="ubuntu:latest").add_credentials(
+            "api.example.com", "API_KEY", "API_KEY"
+        )
+
+    # Local credentials resolve on a copied policy while the original remains reusable.
+    monkeypatch.setenv("LOCAL_TOKEN", "secret-value")
+    client = _RecordingSandboxClient()
+    sandbox = Sandbox(
+        image="ubuntu:latest",
+        sandbox_client=client,  # type: ignore[arg-type]
+    ).add_credentials("api.example.com", Secret.from_local_env("LOCAL_TOKEN"))
+    with patch("chalkcompute._secret._upsert_secret") as upsert:
+        sandbox.run()
+    upsert.assert_called_once_with(client._connect, "LOCAL_TOKEN", "secret-value", ANY)
+    assert client.create_kwargs is not None
+    resolved_policy = client.create_kwargs["network_policy"]
+    assert isinstance(resolved_policy, NetworkPolicy)
+    resolved_transform = resolved_policy.allowed_hosts["api.example.com"][0].transforms[
+        0
+    ]
+    assert resolved_transform.headers_secrets == {
+        sandbox._env["LOCAL_TOKEN"]: "LOCAL_TOKEN"
+    }
+    assert host_bindings(sandbox, "api.example.com") == {
+        sandbox._env["LOCAL_TOKEN"]: Secret.from_local_env("LOCAL_TOKEN")
+    }
 
 
 def test_sandbox_client_create_can_request_chalk_identity() -> None:
@@ -234,11 +471,13 @@ def test_sandbox_client_create_propagates_backend_error_details() -> None:
     error = exc_info.value
     assert str(error) == (
         "Sandbox sandbox-123 entered failed state during creation: "
-        "pod failed readiness probe: connection refused"
+        "pod failed readiness probe: connection refused\n"
+        "Traceback:\n  load_config()\nValueError: invalid"
     )
     assert error.sandbox_id == "sandbox-123"
     assert error.status == "failed"
     assert error.status_message == "pod failed readiness probe: connection refused"
+    assert error.status_details == "Traceback:\n  load_config()\nValueError: invalid"
     assert error.build_id is None
 
 
@@ -252,6 +491,7 @@ def test_sandbox_client_create_accepts_succeeded_during_readiness_poll() -> None
 
     assert sandbox.info is not None
     assert sandbox.info.status == "succeeded"
+    assert sandbox.info.status_details is None
 
 
 class _ProcessStub:
@@ -293,6 +533,7 @@ def test_sandbox_exec_uses_v2_process_service() -> None:
     finally:
         client.close()
 
+    assert result.session_id == "session-123"
     assert result.stdout == b"hello\\n"
     assert result.stderr == b""
     assert result.exit_code == 0
@@ -354,6 +595,7 @@ def test_sandbox_reattach() -> None:
     finally:
         client.close()
 
+    assert result.session_id == "session-123"
     assert result.stdout == b"hello"
     assert result.exit_code == 0
 
@@ -556,20 +798,27 @@ def test_sandbox_missing_referenced_volume_fails_run() -> None:
             sandbox.run()
 
 
-def test_sandbox_uploads_lazy_local_files_to_a_volume(tmp_path) -> None:
-    from unittest.mock import MagicMock
-
+@pytest.mark.parametrize("wait", [False, True])
+def test_sandbox_uploads_lazy_local_files_without_exec_probe(tmp_path, wait) -> None:
     from chalkcompute._volume import VolumeClient, VolumeMount
 
     src = tmp_path / "src"
     src.mkdir()
     (src / "main.py").write_text("print('hi')\n")
 
-    client = _RecordingSandboxClient()
+    client = SandboxClient()
+    stub = MagicMock()
+    stub.create_sandbox.return_value = pb.CreateSandboxResponse(
+        sandbox=pb.SandboxInfo(id="sandbox-123", status=pb.SandboxStatus.PENDING)
+    )
+    stub.get_sandbox.return_value = pb.GetSandboxResponse(
+        sandbox=pb.SandboxInfo(id="sandbox-123", status=pb.SandboxStatus.RUNNING)
+    )
+    client._stub = stub
     image = Image.debian_slim().add_local_dir(str(src), "/app")
     sandbox = Sandbox(
         image=image,
-        sandbox_client=client,  # type: ignore[arg-type]
+        sandbox_client=client,
     )
 
     volume_client = MagicMock(spec=VolumeClient)
@@ -577,17 +826,34 @@ def test_sandbox_uploads_lazy_local_files_to_a_volume(tmp_path) -> None:
         VolumeMount(name="sandbox-files-abc", mount_path="/app")
     ]
 
-    with (
-        patch("chalkcompute._sandbox.build_image", return_value="img:built"),
-        patch.object(VolumeClient, "from_connect", return_value=volume_client),
-        patch.object(Sandbox, "_wait_for_volume_files"),
-    ):
-        sandbox.run()
+    try:
+        with (
+            patch("chalkcompute._sandbox.build_image", return_value="img:built"),
+            patch.object(VolumeClient, "from_connect", return_value=volume_client),
+            patch.object(
+                Sandbox,
+                "exec",
+                side_effect=AssertionError("Startup must not execute commands"),
+            ) as execute,
+        ):
+            assert sandbox.run(wait=wait) is sandbox
+    finally:
+        client.close()
 
+    execute.assert_not_called()
     volume_client.upload_lazy_files.assert_called_once_with(
         image, volume_prefix="sandbox-files"
     )
-    assert client.create_kwargs is not None
-    assert client.create_kwargs["volumes"] == [
-        VolumeMount(name="sandbox-files-abc", mount_path="/app")
+    stub.create_sandbox.assert_called_once()
+    spec = stub.create_sandbox.call_args.args[0].source.value
+    assert spec.image == "img:built"
+    assert [(mount.name, mount.mount_path) for mount in spec.volumes] == [
+        ("sandbox-files-abc", "/app")
     ]
+    assert sandbox.info is not None
+    if wait:
+        stub.get_sandbox.assert_called_once()
+        assert sandbox.info.status == "running"
+    else:
+        stub.get_sandbox.assert_not_called()
+        assert sandbox.info.status == "pending"

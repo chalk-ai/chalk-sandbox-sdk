@@ -28,6 +28,7 @@ import dataclasses
 import logging
 import os
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, overload
 
@@ -36,6 +37,7 @@ from protobuf.wkt import Struct, Value
 
 from chalkcompute._connect import ConnectClient, build_image
 from chalkcompute._containerspec import ContainerSpec
+from chalkcompute._env import normalize_env
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._gen.chalk.server.v1 import (
     training_runs_connect as tr_connect,
@@ -227,7 +229,7 @@ class TrainingFunction:
         cpu: str | None = None,
         memory: str | None = None,
         gpu: str | None = None,
-        env: dict[str, str] | None = None,
+        env: Mapping[str, str | _Secret] | None = None,
         secrets: list[_Secret] | None = None,
         metadata: dict[str, Any] | None = None,
         max_retries: int | None = None,
@@ -241,6 +243,7 @@ class TrainingFunction:
         self._dataset = dataset
         self._input_sql = input_sql
 
+        env, secrets = normalize_env(env, secrets)
         ContainerSpec.validate_fields(
             image=image,
             name=name,
@@ -248,7 +251,13 @@ class TrainingFunction:
             memory=memory,
             gpu=gpu,
             env=env,
+            secrets=secrets,
         )
+        if any(secret.is_lazy for secret in secrets):
+            raise ValueError(
+                "Training does not support local secrets. "
+                "Use Secret.from_chalk_env or Secret.from_chalk_integration instead."
+            )
         self._image = image
         self._name = name
         self._cpu = cpu
@@ -498,7 +507,7 @@ def training(
     cpu: str | None = None,
     memory: str | None = None,
     gpu: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
     metadata: dict[str, Any] | None = None,
     max_retries: int | None = None,
@@ -516,7 +525,7 @@ def training(
     cpu: str | None = None,
     memory: str | None = None,
     gpu: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
     metadata: dict[str, Any] | None = None,
     max_retries: int | None = None,
@@ -535,7 +544,7 @@ def training(
     cpu: str | None = None,
     memory: str | None = None,
     gpu: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
     metadata: dict[str, Any] | None = None,
     max_retries: int | None = None,
@@ -560,6 +569,10 @@ def training(
     env var), the decorator is a no-op that returns the function body
     unchanged — the entrypoint handles dataset loading and config
     injection.
+
+    ``env`` accepts strings or single-value Chalk Secret references; the mapping
+    key sets the injected name, overriding aliases and prefixes. Local env
+    secrets are not supported for training.
 
     Outside a container, returns a :class:`TrainingFunction` that
     exposes ``.run_training()`` for remote execution and ``.local()``

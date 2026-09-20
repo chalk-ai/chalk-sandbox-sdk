@@ -239,7 +239,7 @@ class NetworkPolicy:
     @dataclass
     class Transformer:
         headers: dict[str, str] = field(default_factory=dict)
-        headers_secrets: dict[str, str] = field(default_factory=dict)
+        headers_secrets: dict[str, str | Secret] = field(default_factory=dict)
 
         def __post_init__(self) -> None:
             self.headers = dict(self.headers or {})
@@ -248,13 +248,27 @@ class NetworkPolicy:
                     raise TypeError("headers must be a dict[str, str]")
             self.headers_secrets = dict(self.headers_secrets or {})
             for key, value in self.headers_secrets.items():
-                if not isinstance(key, str) or not isinstance(value, str):
-                    raise TypeError("headers_secrets must be a dict[str, str]")
+                if not isinstance(key, str) or not isinstance(value, (str, Secret)):
+                    raise TypeError("headers_secrets must be a dict[str, str | Secret]")
+
+        def _serialized_headers_secrets(self) -> dict[str, str]:
+            serialized: dict[str, str] = {}
+            for placeholder, secret in self.headers_secrets.items():
+                if isinstance(secret, str):
+                    serialized[placeholder] = secret
+                elif secret._secret_name is not None:
+                    serialized[placeholder] = secret._secret_name
+                else:
+                    raise ValueError(
+                        "network policy secrets must resolve to a single Chalk "
+                        "secret before serialization"
+                    )
+            return serialized
 
         def to_dict(self) -> dict[str, Any]:
             body: dict[str, Any] = {"headers": dict(self.headers)}
             if self.headers_secrets:
-                body["headersSecrets"] = dict(self.headers_secrets)
+                body["headersSecrets"] = self._serialized_headers_secrets()
             return body
 
     @dataclass
@@ -791,7 +805,7 @@ def _network_policy_to_proto(policy: NetworkPolicy) -> container_pb.NetworkPolic
                         transform=[
                             container_pb.NetworkTransformer(
                                 headers=dict(transformer.headers),
-                                headers_secrets=dict(transformer.headers_secrets),
+                                headers_secrets=transformer._serialized_headers_secrets(),
                             )
                             for transformer in rule.transforms
                         ],

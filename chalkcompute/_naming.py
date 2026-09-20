@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 
+from chalkcompute._secret import Secret
+
 _DNS_LABEL_RE = re.compile(r"^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$")
 
 # Exclusive bound: a DNS label must be shorter than this (RFC 1123 caps it at 63).
@@ -117,6 +119,11 @@ def validate_env(env: Mapping[str, str] | None) -> None:
     for k in env:
         if not isinstance(k, str) or not k:
             raise ValueError(f"env keys must be non-empty strings, got {k!r}")
+    secret_keys = [k for k, v in env.items() if isinstance(v, Secret)]
+    if secret_keys:
+        raise TypeError(
+            f"Secret values are not supported in this env mapping: {secret_keys!r}. "
+        )
     bad = {k: v for k, v in env.items() if not isinstance(v, str)}
     if bad:
         offenders = ", ".join(

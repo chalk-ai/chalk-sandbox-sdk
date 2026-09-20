@@ -82,6 +82,19 @@ def test_warm_deployment_is_one_ensure_call(monkeypatch):
     assert len(client.requests) == 1
 
 
+def test_deployment_conflict_preserves_recovery_message_without_retrying():
+    error = RpcError(
+        Code.FAILED_PRECONDITION,
+        "scaling group is already bound to an existing function\n"
+        "To replace it: chalk function delete --name='old-function' --environment='env'",
+    )
+    client = Client([error])
+    with pytest.raises(RpcError) as raised:
+        run(client, Image("python:3.11"))
+    assert raised.value is error
+    assert len(client.requests) == 1
+
+
 def test_expired_build_returns_to_ensure(monkeypatch):
     def expired(*args, **kwargs):
         raise RpcError(Code.NOT_FOUND, "workflow expired")
@@ -130,6 +143,40 @@ def test_source_mount_rejects_user_volume_at_same_path(tmp_path):
             poll_interval=0,
             timeout=5,
         )
+
+
+@pytest.mark.parametrize("with_source", [False, True])
+def test_source_resolution_preserves_nested_and_duplicate_mounts(
+    tmp_path, monkeypatch, with_source
+):
+    from unittest.mock import MagicMock
+
+    image = Image("python")
+    sources = []
+    if with_source:
+        source = tmp_path / "source.py"
+        source.write_text("answer = 42\n")
+        image = image.add_local_file(str(source), "/app/source.py")
+        sources = [VolumeMount("function", "/app", version_id=7)]
+    mount = VolumeMount("data", "/app/data")
+    referenced = [mount, mount]
+    driver = MagicMock()
+    driver._resolve_lazy_files.return_value = sources
+    factory = MagicMock(return_value=driver)
+    monkeypatch.setattr(deployment.VolumeClient, "from_connect", factory)
+
+    mounts = deployment.resolve_function_volumes(
+        Client([]),
+        image=image,
+        volume_name="function",
+        referenced=referenced,
+        poll_interval=0,
+        timeout=5,
+    )
+
+    assert mounts == [*referenced, *sources]
+    if not with_source:
+        factory.assert_not_called()
 
 
 def test_generated_function_sources_are_stable_between_runs(monkeypatch):

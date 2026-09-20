@@ -1,0 +1,1 @@
+- Update ConnectRPC to 0.12.1 and use the published release for local SDK deployment overlays.

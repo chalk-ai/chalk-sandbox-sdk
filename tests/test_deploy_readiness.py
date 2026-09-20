@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from protobuf import Oneof
 from chalkcompute._image import Image
 
 import chalkcompute._function as function_mod
 import chalkcompute._cls as cls_mod
 from chalkcompute._cls import RemoteClass, method
-from chalkcompute._function import RemoteFunction
+from chalkcompute._function import FunctionError, RemoteFunction
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as catalog_pb
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
@@ -371,3 +373,39 @@ def test_remote_function_deploy_sends_pinned_source_mounts(
     assert len(mounts) == 1
     assert mounts[0].mount_path == "/app"
     assert mounts[0].version_id == 42
+
+
+@pytest.mark.parametrize("status", ["Failed", "Error", "Unhealthy"])
+@pytest.mark.parametrize(
+    "details", [None, "", "Traceback:\n  frame\nValueError: invalid"]
+)
+def test_remote_function_readiness_error_details(monkeypatch, status, details) -> None:
+    def add(x: int) -> int:
+        return x
+
+    client = _RemoteFunctionReadinessClient()
+    client.polls = [
+        sg_pb.ScalingGroupResponse(
+            status=status,
+            status_message="Exit code 1",
+            status_details=details,
+        )
+    ]
+    fn = RemoteFunction(add, name="fn-ready")
+    fn._client = client  # type: ignore[assignment]
+    times = iter([0, 0, 11])
+    monkeypatch.setattr(function_mod.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(function_mod.time, "sleep", lambda _: None)
+
+    with pytest.raises(FunctionError) as exc_info:
+        fn._poll_until_ready(sg_name="fn-ready", poll_interval=0, timeout=10)
+
+    expected = (
+        "Scaling group fn-ready not ready after 10s "
+        "(status=Unhealthy, ready=0, available=0): Exit code 1"
+        if status == "Unhealthy"
+        else f"Scaling group fn-ready entered {status} state: Exit code 1"
+    )
+    if details:
+        expected += "\n" + details
+    assert str(exc_info.value) == expected

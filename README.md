@@ -30,9 +30,62 @@ with SandboxClient.from_env() as client:
     sandbox.terminate()
 ```
 
+## Environment variables and secrets
+
+Deployment `env` mappings accept strings and `Secret` references together:
+
+```python
+import chalkcompute as cc
+
+sandbox = cc.Sandbox(
+    image="ubuntu:latest",
+    env={
+        "GIT_AUTHOR_NAME": "Elliot Marx",
+        "SUPER_SECRET_VALUE": cc.Secret.from_chalk_env("MY_CHALK_SECRET"),
+    },
+)
+```
+
+The dictionary key sets the injected environment variable name.
+This works across
+`SandboxClient.create`, `Container`, `ScalingGroup`, `@cc.function`, `@cc.cls`,
+and `@cc.training`.
+
+Use `Secret.from_local_env("LOCAL_VAR")` for a value read at run/deploy time, or
+`Secret.from_chalk_integration("postgres", keys=["PASSWORD"])` to select one
+integration secret. Bulk integrations and `Secret.from_local_env_file(...)`
+belong in `secrets=[...]`, which can be used alongside `env`.
+Training supports Chalk secret references only; local secret resolution is
+not supported for training.
+
+`Image.env(...)` and per-exec env mappings accept literal strings only. Set
+secrets on the sandbox or other deployment so its processes inherit them.
+
+To make credentials available only to requests for specific hosts, add them to
+a sandbox before running it. Strings name existing Chalk secrets; use an
+explicit `Secret` for local credentials or aliases:
+
+```python
+sandbox = (
+    cc.Sandbox(image="ubuntu:latest")
+    .add_credentials("api.openai.com", "OPENAI_API_KEY")
+    .add_credentials(
+        ["api.slack.com", "*.slack.com"],
+        cc.Secret.from_local_env("SLACK_BOT_TOKEN"),
+    )
+)
+
+with cc.SandboxClient.from_env() as client:
+    client.run(sandbox)
+```
+
+The corresponding environment variables contain placeholders. The network
+policy substitutes them when they appear in headers on requests to the listed
+hosts.
+
 ## Declarative images
 
-Build custom container images with a fluent API instead of writing Dockerfiles.
+Build custom container images in Python instead of writing Dockerfiles.
 The image spec is serialized as protobuf and transmitted to the sandbox service,
 which builds and caches the image before starting the container.
 
@@ -43,9 +96,7 @@ from chalkcompute import Image, SandboxClient
 img = (
     Image.debian_slim()
     .pip_install(["pandas", "numpy", "scikit-learn"])
-    .run_commands(
-        "apt-get update && apt-get install -y git curl",
-    )
+    .apt_install(["git", "curl"])
     .workdir("/home/user/app")
     .env({"PYTHONDONTWRITEBYTECODE": "1"})
 )
@@ -81,9 +132,11 @@ img = (
     # Install from a requirements.txt (read locally, inlined into the spec)
     .pip_install_from_requirements("requirements.txt")
 
+    # Install Debian/Ubuntu system packages
+    .apt_install(["git", "tmux"])
+
     # Run shell commands (each becomes a Docker RUN layer)
     .run_commands(
-        "apt-get update && apt-get install -y git",
         "mkdir -p /app/data",
     )
 
@@ -216,6 +269,29 @@ Downloading needs no dataframe library. Install `chalkcompute[sql]` for
 conversions load the full result into memory. These extras do not require
 ChalkPy.
 
+## Function names
+
+Omit `name=` when defining functions. The registered name defaults to the Python
+function's name, including underscores:
+
+```python
+import chalkcompute as cc
+
+@cc.function
+def add_numbers(a: int, b: int) -> int:
+    return a + b
+```
+
+Other scripts can attach with `cc.RemoteFunction.from_name("add_numbers")`.
+Cross-process lookup and repeated deployment already work with the default name.
+The `@cc.cls` decorator likewise defaults to the Python class's name.
+
+Use `name=` only when you intentionally need a different registered name, such as
+preserving an existing deployment's name after renaming the Python function.
+Changing or removing an existing override changes which function you deploy; it
+does not rename the existing deployment. Function names containing underscores
+and hyphens are distinct, but can collide when converted to scaling-group names.
+
 ## Evaluations
 
 Create a reusable evaluation by pinning a completed dataset revision to a
@@ -234,11 +310,11 @@ dataset = cc.DatasetClient().upload(
 
 suite = cc.EvaluationSuite.create("Release")
 
-@cc.function(name="support-answer")
+@cc.function
 def answer(input: str) -> str:
     return call_support_model(input)
 
-@cc.function(name="response-quality")
+@cc.function
 def response_quality(input: str, output: str) -> cc.EvaluationScorerResult:
     score, details = score_response(input=input, output=output)
     return cc.EvaluationScorerResult(
@@ -273,7 +349,7 @@ instead be attached by reference:
 evaluation = cc.Evaluation.create(
     "Customer Support Chatbot",
     dataset=dataset,
-    task=cc.RemoteFunction.from_name("support-answer"),
+    task=cc.RemoteFunction.from_name("answer"),
     scorers=[cc.RemoteFunction.from_version_id("fn_brand_alignment_v2")],
 )
 ```
@@ -381,7 +457,7 @@ for revision in group.revisions():
     print(revision.id, revision.status, revision.is_current)
 group.rollback("sgr_previous")
 
-@cc.function(name="rank")
+@cc.function
 def rank(query: str) -> str:
     return query
 
@@ -409,8 +485,11 @@ not need scorer-specific behavior.
 
 ## Sandbox lifecycle
 
+### Creating sandboxes
+
+Use `client.create(...)` to construct and immediately run a sandbox:
+
 ```python
-# Create with resource limits
 sandbox = client.create(
     image="ubuntu:latest",
     cpu="2",
@@ -418,7 +497,27 @@ sandbox = client.create(
     env={"DEBIAN_FRONTEND": "noninteractive"},
     chalk_identity=True,
 )
+```
 
+To configure a sandbox before running it, save it to a variable and pass it to
+`client.run(...)` when it is ready:
+
+```python
+sandbox = Sandbox(image="ubuntu:latest", cpu="2", memory="4Gi")
+if use_shared_cache:
+    sandbox.mount_volume("build-cache", "/cache")
+
+client.run(sandbox)
+```
+
+Set `chalk_identity=True` to give the sandbox a platform-managed Chalk
+identity. The sandbox receives `CHALK_WEB_IDENTITY_TOKEN_FILE` and the Chalk
+API/environment settings it needs to authenticate without caller credentials
+being copied into the workload.
+
+### Managing sandboxes
+
+```python
 # List all sandboxes
 for info in client.list():
     print(f"{info.id} {info.status} {info.name}")
@@ -434,11 +533,6 @@ print(info.status)
 sandbox.terminate()
 existing_sandbox.terminate(grace_period_seconds=30)
 ```
-
-Set `chalk_identity=True` to give the sandbox a platform-managed Chalk
-identity. The sandbox receives `CHALK_WEB_IDENTITY_TOKEN_FILE` and the Chalk
-API/environment settings it needs to authenticate without caller credentials
-being copied into the workload.
 
 ## Executing commands
 
@@ -508,33 +602,73 @@ result = sandbox.exec(
 
 ## Examples
 
-### Clone a GitHub repo into a sandbox
+### Git inside a sandbox
+
+Omitting `image` uses `Image.sandbox()`: Python 3.14 on Debian slim with Git,
+CA certificates and OpenSSH, working in `/workspace`.
+The image builds lazily through the normal image builder. Both `Sandbox().run()` and `client.create()`
+use this default. Explicit images retain their existing behavior; custom images
+need `git` for Git helpers.
 
 ```python
 from chalkcompute import SandboxClient
 
-client = SandboxClient.from_env()
-sandbox = client.create(image="ubuntu:latest")
-
-# Install git
-sandbox.exec("apt-get", "update")
-sandbox.exec("apt-get", "install", "-y", "git")
-
-# Clone
-result = sandbox.exec(
-    "git", "clone", "https://github.com/chalk-ai/chalk.git", "/workspace/chalk"
-)
-if result.exit_code != 0:
-    print(f"Clone failed: {result.stderr_text}")
-else:
-    # List what we got
-    result = sandbox.exec("ls", "-la", "/workspace/chalk")
-    for line in result.stdout:
-        print(line)
-
-sandbox.terminate()
-client.close()
+with SandboxClient.from_env() as client:
+    sandbox = client.create()
+    try:
+        # Uses the remote's default branch with depth=1.
+        sandbox.git.clone("https://github.com/octocat/Hello-World.git", "repo")
+        print(sandbox.git.status("repo").current_branch)
+        print(sandbox.git.branches("repo"))
+    finally:
+        sandbox.terminate()
 ```
+
+Git helpers also support `init`, `branches`, `create_branch`, `checkout_branch`,
+`delete_branch`, `fetch`, `pull`, `push`, `reset`, `restore`, `remote_add`,
+`remote_get`, `remotes`, `get_config`, `set_config`, and `configure_user`.
+Pass `branch`, `commit_id`, or `depth` to `clone` to select a branch, detached
+commit, or history depth (`1` by default; `None` for full history). Pulls fast-forward
+only; branch deletion requires `force=True` for unmerged work. Config changes apply only to that repository.
+HTTPS credentials can be supplied as `username` and `password` to clone/fetch/
+pull/push; they are scoped to the command without changing the remote URL or
+saving credentials. SSH remotes use the sandbox's existing SSH configuration.
+Git failures raise `GitError`.
+
+Git paths identify the repository root relative to the image working directory.
+Helpers accept `timeout_secs`; multi-command operations apply it to each command.
+See the [sandbox Git guide](docs/sandbox-git.md) for workflows and a method reference.
+See [the sandbox capability guide](docs/sandbox-capabilities.md) for defaults.
+
+### Add tmux to a sandbox image
+
+Use `apt_install` like `pip_install` to add system packages to a Debian/Ubuntu
+image. It requires a root build user and installs at build time, so each sandbox
+starts with the tools ready to use. The builder returns a new image and supports
+version pins such as
+`"package=version"`.
+
+```python
+from chalkcompute import Image, SandboxClient
+
+image = Image.sandbox().apt_install(["tmux"])
+with SandboxClient.from_env() as client:
+    sandbox = client.create(image=image)
+    try:
+        # Start a detached shell; it survives this exec call completing.
+        sandbox.exec("tmux", "new-session", "-d", "-s", "work")
+        sandbox.exec("tmux", "send-keys", "-t", "work", "echo hello", "Enter")
+        print(sandbox.exec("tmux", "list-sessions").stdout_text)
+        print(sandbox.exec("tmux", "capture-pane", "-p", "-t", "work").stdout_text)
+        sandbox.exec("tmux", "kill-session", "-t", "work")
+    finally:
+        sandbox.terminate()
+```
+
+tmux sessions live inside the sandbox and end when it terminates. These commands
+use detached sessions through ordinary exec; interactive `tmux attach` requires
+a terminal with PTY support. For images using another package manager, install
+tmux with `run_commands` (for example, `apk add --no-cache tmux` on Alpine).
 
 ### Spawn an OpenCode agent in a sandbox
 
@@ -652,7 +786,7 @@ finish its setup before returning; do not terminate it in a context manager.
 ```python
 import chalkcompute as cc
 
-@cc.function(name="provision-agent")
+@cc.function
 def provision_agent() -> cc.Sandbox:
     sandbox = cc.Sandbox(
         image="node:22-bookworm",
@@ -686,6 +820,16 @@ call --output-file`. It checks access and finite lifetime through the Chalk CLI
 and discovers existing PTY sessions using the run marker. Working directory and
 cleanup policy belong in Herdr's `provisionFunction` configuration; they are not
 part of a general-purpose `Sandbox` handle.
+
+### Background deployment errors
+
+If a script only defines decorated functions, failed background deployments are
+reported at exit with a nonzero status. Known API and function deployment errors
+show the function's source location and error messages without SDK or transport
+stack frames. RPC failures include the status code (such as `ALREADY_EXISTS`) in
+the failure heading. Server-provided recovery instructions, including CLI
+commands and dashboard links, are preserved in the output.
+Unexpected exceptions always include their full traceback.
 
 ### Remote execution errors
 

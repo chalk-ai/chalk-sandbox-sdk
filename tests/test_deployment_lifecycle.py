@@ -77,6 +77,8 @@ class _ScalingLifecycleClient(StubbedConnectClient):
                         scaling_group_id="group-1",
                         scaling_group_name="api",
                         status="Superseded",
+                        status_message="Exit code 1",
+                        status_details="Traceback:\n  frame\nValueError: invalid",
                     ),
                 ]
             )
@@ -153,6 +155,8 @@ def test_scaling_group_redeploy_history_and_rollback() -> None:
     revisions = group.revisions()
     assert [revision.id for revision in revisions] == ["revision-2", "revision-1"]
     assert revisions[0].is_current is True
+    assert revisions[0].status_details is None
+    assert revisions[1].status_details == "Traceback:\n  frame\nValueError: invalid"
 
     group.rollback("revision-1", wait_ready=False)
 

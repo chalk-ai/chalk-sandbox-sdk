@@ -27,7 +27,7 @@ FUNCTION_NAME = os.environ.get("REDIS_FUNCTION_NAME", "ex-redis-respond")
 @chalkcompute.function(
     name=FUNCTION_NAME,
     image=chalkcompute.Image.debian_slim().pip_install(["openai"]),
-    secrets=[chalkcompute.Secret.from_local_env("OPENAI_API_KEY")],
+    env={"OPENAI_API_KEY": chalkcompute.Secret.from_local_env("OPENAI_API_KEY")},
 )
 def respond(text: str) -> str:
     from openai import OpenAI
