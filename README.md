@@ -821,6 +821,16 @@ and discovers existing PTY sessions using the run marker. Working directory and
 cleanup policy belong in Herdr's `provisionFunction` configuration; they are not
 part of a general-purpose `Sandbox` handle.
 
+### Background deployment errors
+
+If a script only defines decorated functions, failed background deployments are
+reported at exit with a nonzero status. Known API and function deployment errors
+show the function's source location and error messages without SDK or transport
+stack frames. RPC failures include the status code (such as `ALREADY_EXISTS`) in
+the failure heading. Server-provided recovery instructions, including CLI
+commands and dashboard links, are preserved in the output.
+Unexpected exceptions always include their full traceback.
+
 ### Remote execution errors
 
 Remote handler failures raise `chalkcompute.RemoteExecutionError`, a subclass of
