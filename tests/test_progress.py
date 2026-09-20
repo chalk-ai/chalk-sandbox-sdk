@@ -285,7 +285,9 @@ def test_scaling_group_progress_finishes_on_success_or_failure(monkeypatch, fail
 
 
 @pytest.mark.parametrize("no_color", [False, True])
-def test_progress_renders_only_changes_on_custom_streams(monkeypatch, no_color):
+def test_progress_renders_only_changes_on_custom_streams(
+    monkeypatch, no_color, no_ci_environment
+):
     import io
     import sys
 

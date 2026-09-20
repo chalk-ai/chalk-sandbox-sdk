@@ -1,4 +1,4 @@
-"""Fixtures shared by the scorer tests."""
+"""Shared test fixtures."""
 
 from __future__ import annotations
 
@@ -6,6 +6,17 @@ import pytest
 
 from chalkcompute import scorers
 from chalkcompute._function import RemoteFunction
+
+
+@pytest.fixture
+def no_ci_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let terminal-policy tests choose CI state instead of inheriting the runner's.
+
+    Explicitly requested rather than autouse so other tests still exercise the
+    actual host environment, including subprocesses and deployment behavior.
+    """
+    for name in ("CI", "BUILDKITE", "GITHUB_ACTIONS", "TF_BUILD"):
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture

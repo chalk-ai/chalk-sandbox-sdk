@@ -264,6 +264,7 @@ def test_status_deduplication_is_per_operation(caplog) -> None:
 def test_console_color_policy(
     isolated_sdk_logger,
     monkeypatch,
+    no_ci_environment,
     tty,
     color,
     no_color,
@@ -307,6 +308,29 @@ def test_console_color_policy(
     assert ("\033[36m" in stream.getvalue()) == expected_color
     assert ("\033[1;31mValueError\033[0m:" in stream.getvalue()) == expected_color
     assert "\033[" not in plain.getvalue()
+
+
+@pytest.mark.parametrize(
+    "ci_variable", ["CI", "BUILDKITE", "GITHUB_ACTIONS", "TF_BUILD"]
+)
+def test_ci_provider_disables_console_color(
+    isolated_sdk_logger, monkeypatch, no_ci_environment, ci_variable
+):
+    stream = io.StringIO()
+    monkeypatch.setattr(stream, "isatty", lambda: True)
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delitem(sys.modules, "ipykernel", raising=False)
+    chalkcompute.configure_logging(stream=stream)
+
+    isolated_sdk_logger.warning("local terminal")
+    assert "\033[33mWARNING\033[0m" in stream.getvalue()
+    stream.seek(0)
+    stream.truncate()
+
+    monkeypatch.setenv(ci_variable, "true")
+    isolated_sdk_logger.warning("CI terminal")
+    assert stream.getvalue() == "WARNING chalkcompute: CI terminal\n"
 
 
 def test_logging_and_progress_work_without_site_packages():
@@ -361,7 +385,7 @@ def test_live_renderer_dependency_is_available_in_local_deployments():
 @pytest.mark.parametrize("application_first", [False, True])
 @pytest.mark.parametrize("color", [False, True])
 def test_console_exception_context_does_not_leak_to_application_handlers(
-    isolated_sdk_logger, application_first, color, monkeypatch
+    isolated_sdk_logger, application_first, color, monkeypatch, no_ci_environment
 ):
     console, application = io.StringIO(), io.StringIO()
     monkeypatch.setattr(console, "isatty", lambda: True)
