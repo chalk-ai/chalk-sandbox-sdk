@@ -453,14 +453,21 @@ def test_readiness_logs_transitions_instead_of_each_poll(resource, caplog, monke
     ]
 
 
-def test_container_readiness_logs_transitions_instead_of_each_poll(caplog, monkeypatch):
+def test_container_readiness_logs_transitions_instead_of_each_poll(
+    caplog, capsys, monkeypatch
+):
     import logging
     from types import SimpleNamespace
     from chalkcompute._container import Container
+    from chalkcompute import _progress
 
     caplog.set_level(logging.INFO, logger="chalkcompute")
     container = Container(image="ubuntu:latest")
     container._container_id = "fraud"
+    container._name = "fraud"
+    progress = _progress.DeployProgress()
+    progress.add("container:fraud", "container", 'Container "fraud"')
+    monkeypatch.setattr(_progress, "get_progress", lambda: progress)
     states = iter(["Pending", "Pending", "Running"])
     monkeypatch.setattr(
         "chalkcompute._container._get_container_info",
@@ -472,3 +479,6 @@ def test_container_readiness_logs_transitions_instead_of_each_poll(caplog, monke
         "Container fraud: Pending",
         "Container fraud: Running",
     ]
+    output = capsys.readouterr().err
+    assert output.count("› Pending") == 1
+    assert output.count("› Running") == 1

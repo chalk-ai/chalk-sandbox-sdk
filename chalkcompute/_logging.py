@@ -32,8 +32,8 @@ def configure_logging(
     output. Applications with their own logging configuration should configure
     ``logging.getLogger("chalkcompute")`` directly instead of using this helper.
     Use ``"DEBUG"`` for individual polls and transport retries, or ``"WARNING"``
-    for problems only. Configuring logging disables automatic progress; explicitly
-    opt in with ``CHALK_SANDBOX_TUI=true`` if desired.
+    for problems only. Diagnostic logging and deployment progress are independent.
+    Set ``CHALK_SANDBOX_TUI=false`` to disable progress if you want logs alone.
 
     Parameters
     ----------

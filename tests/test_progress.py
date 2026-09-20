@@ -138,10 +138,10 @@ def test_terminal_root_skips_its_unfinished_children(monkeypatch) -> None:
     [
         (None, True, False, "xterm", False, True),
         ("auto", True, False, "xterm", False, True),
-        (None, False, False, "xterm", False, False),
-        (None, True, True, "xterm", False, False),
-        (None, True, False, "dumb", False, False),
-        (None, True, False, "xterm", True, False),
+        (None, False, False, "xterm", False, True),
+        (None, True, True, "xterm", False, True),
+        (None, True, False, "dumb", False, True),
+        (None, True, False, "xterm", True, True),
         ("false", True, False, "xterm", False, False),
         ("0", True, False, "xterm", False, False),
         ("true", False, False, "xterm", True, True),
@@ -225,7 +225,7 @@ def test_forced_progress_uses_stderr_without_ansi_when_redirected(monkeypatch, c
     assert "\x1b" not in captured.err
 
 
-def test_application_logging_disables_automatic_progress(monkeypatch):
+def test_application_logging_does_not_disable_automatic_progress(monkeypatch):
     import logging
     import sys
     from types import SimpleNamespace
@@ -237,9 +237,9 @@ def test_application_logging_disables_automatic_progress(monkeypatch):
     monkeypatch.delitem(sys.modules, "ipykernel", raising=False)
     monkeypatch.setattr(sys, "stderr", SimpleNamespace(isatty=lambda: True))
     monkeypatch.setattr(logging.getLogger("chalkcompute"), "hasHandlers", lambda: True)
-    assert not tui_enabled()
-    monkeypatch.setenv("CHALK_SANDBOX_TUI", "true")
     assert tui_enabled()
+    monkeypatch.setenv("CHALK_SANDBOX_TUI", "false")
+    assert not tui_enabled()
 
 
 def test_disabling_progress_stops_existing_display(monkeypatch):

@@ -34,19 +34,21 @@ with SandboxClient.from_env() as client:
 
 The SDK leaves Python logging configuration to your application. Importing
 `chalkcompute` does not install handlers, change log levels, or configure the
-root logger. With no logging configuration, normal operations are quiet and
-Python's default stderr handler still reports warnings and errors. SDK diagnostics
-and progress do not write to stdout, so scripts can emit JSON or other results there.
+root logger. Deployment status is visible by default in terminals, notebooks, and
+captured scripts, independently of Python logging. With no logging configuration,
+Python's default stderr handler reports warnings and errors. Progress and the
+SDK's console diagnostics use stderr, leaving stdout available for script results.
 
 | Context | Default output |
 | --- | --- |
-| Interactive terminal, no logging configured | Colored deployment status lines on stderr |
-| Notebook, CI, redirected stderr, or `TERM=dumb` | No automatic progress; warnings and errors through logging |
-| Application with logging configured | SDK records go to the application's handlers; no automatic progress |
+| Interactive terminal | Colored deployment status lines on stderr |
+| Notebook, CI, redirected stderr, or `TERM=dumb` | Plain deployment status lines on stderr |
+| Application with logging configured | Deployment status remains visible; diagnostic records also go to the application's handlers |
 
 `CHALK_SANDBOX_TUI=false` (or `0`) disables progress, including in a terminal.
 `CHALK_SANDBOX_TUI=true` (or `1`) explicitly enables status lines, including plain
-text in notebooks. Unset it or use `auto` for automatic detection. Progress uses
+text in notebooks. Unset it or use `auto` for the default behavior above. Terminal
+detection controls color, not visibility. Progress uses
 a named group with a vertical guide for its steps and a closing success/failure
 line. It prints only when a step changes. If concurrent deployments interleave,
 the group heading repeats with `(continued)` to identify the following steps.
@@ -55,7 +57,10 @@ and errors. No renderer dependency is required.
 
 Color is automatic for interactive terminals. `NO_COLOR`, `TERM=dumb`, notebooks,
 CI, and redirected streams disable it. If a program controls a pseudo terminal,
-set `NO_COLOR=1` and `CHALK_SANDBOX_TUI=false` for plain diagnostic logs only.
+set `NO_COLOR=1` for plain status, or `CHALK_SANDBOX_TUI=false` to disable status.
+Disabling progress does not disable diagnostics or customer output. To route SDK
+information only through your application's logging, disable progress and configure
+the `chalkcompute` logger as shown below.
 
 ```text
 Function "fraud"
@@ -67,14 +72,14 @@ Function "fraud"
   └ ✓ Ready
 ```
 
-For a script or notebook where you want console diagnostics:
+For additional console diagnostics in a script or notebook:
 
 ```python
 import chalkcompute as cc
 
 cc.configure_logging()          # INFO: lifecycle events and readiness changes
 # cc.configure_logging("DEBUG") # Every readiness poll and transport retry
-# cc.configure_logging("WARNING") # Problems only
+# cc.configure_logging("WARNING") # Warning/error diagnostics only; progress remains
 ```
 
 The helper writes unwrapped text to stderr, with colored level labels on
@@ -82,8 +87,18 @@ interactive terminals and plain text elsewhere. It never interprets markup.
 Pass `color=False` to disable color, or `stream=` to use another text stream. It is
 safe to rerun in notebook cells: each call replaces only the helper's previous
 handler. It configures only the `chalkcompute` logger and disables propagation to
-the root logger to avoid duplicate output. Configuring logging also disables
-*automatic* progress; the explicit `CHALK_SANDBOX_TUI=true` override still applies.
+the root logger to avoid duplicate log records. Configuring logging does not change
+progress. INFO diagnostics include lifecycle events also shown in progress; set
+`CHALK_SANDBOX_TUI=false` if you prefer just the diagnostic format.
+
+Local customer `print()` output and application logging are untouched. Container
+and sandbox `.exec()` output remains captured in result objects; streaming APIs
+return output events for the caller to consume. Remote function stdout/stderr is
+not automatically forwarded to the caller by this SDK.
+
+An unobserved background deployment failure always writes its explanation to
+stderr and exits unsuccessfully, even when logging or progress is disabled. This
+fatal report is independent of diagnostic log levels and handlers.
 
 If your application already configures logging, use that configuration instead
 of the helper. All Python SDK loggers are under `chalkcompute`, so they work with

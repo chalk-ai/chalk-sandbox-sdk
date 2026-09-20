@@ -337,11 +337,11 @@ def _report_unobserved_background_deployments() -> None:
         else:
             # Unexpected bugs still need their diagnostic frames by default.
             details += "".join(traceback.format_exception(error))
-        logger.error(
-            "Background deployment for function %r failed%s:\n%s",
-            registered_name,
-            status,
-            details.rstrip(),
+        # This is the only explanation for the nonzero exit of a definition-only
+        # script. Report it independently of logging filters and progress settings.
+        sys.stderr.write(
+            f"Background deployment for function {registered_name!r} failed{status}:\n"
+            f"{details.rstrip()}\n"
         )
 
     if not failed:

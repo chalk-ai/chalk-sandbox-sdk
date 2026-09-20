@@ -366,19 +366,27 @@ def test_definition_only_script_waits_for_all_deployments(tmp_path: Path) -> Non
         ),
     ],
 )
-@pytest.mark.parametrize("application_logging", [False, True])
+@pytest.mark.parametrize(
+    "application_logging",
+    [
+        "",
+        'logging.basicConfig(format="APP %(levelname)s %(message)s")',
+        "logging.disable(logging.CRITICAL)",
+        'logging.getLogger("chalkcompute").disabled = True',
+        'logging.getLogger("chalkcompute").addHandler(logging.NullHandler())',
+        "logging.basicConfig(level=logging.CRITICAL)",
+    ],
+)
 def test_definition_only_script_reports_deployment_failure(
     tmp_path: Path,
     error: str,
     error_type: str,
     expected_failure: bool,
     rpc_code: str | None,
-    application_logging: bool,
+    application_logging: str,
 ) -> None:
     configuration = (
-        '; import logging; logging.basicConfig(format="APP %(levelname)s %(message)s")'
-        if application_logging
-        else ""
+        f"; import logging; {application_logging}" if application_logging else ""
     )
     script = tmp_path / "deploy_failure.py"
     script.write_text(
@@ -404,6 +412,7 @@ def test_definition_only_script_reports_deployment_failure(
     )
 
     env = os.environ.copy()
+    env["CHALK_SANDBOX_TUI"] = "false"
     repo_root = Path(__file__).parents[1]
     env["PYTHONPATH"] = os.pathsep.join([str(repo_root), env.get("PYTHONPATH", "")])
 
@@ -424,8 +433,7 @@ def test_definition_only_script_reports_deployment_failure(
         completed.stderr.count("Background deployment for function 'broken' failed")
         == 1
     )
-    if application_logging:
-        assert completed.stderr.startswith("APP ERROR Background deployment")
+    assert completed.stderr.startswith("Background deployment")
     status = f" [{rpc_code}]" if rpc_code is not None else ""
     assert (
         f"Background deployment for function 'broken' failed{status}:"

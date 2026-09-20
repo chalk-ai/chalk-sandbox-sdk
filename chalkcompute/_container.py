@@ -1188,7 +1188,11 @@ class Container:
         assert self._container_id is not None
         deadline = time.monotonic() + timeout
         request = container_pb.GetContainerRequest(id=self._container_id)
-        status_log = _StatusLogger(logger, f"Container {self._container_id}")
+        status_log = _StatusLogger(
+            logger,
+            f"Container {self._container_id}",
+            progress_key=f"container:{self._name}",
+        )
         while time.monotonic() < deadline:
             info = _get_container_info(self._client, request)
             self._container_info = info

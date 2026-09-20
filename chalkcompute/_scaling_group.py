@@ -523,9 +523,13 @@ class ScalingGroup:
         self, *, poll_interval: float, build_timeout: float, ready_timeout: float
     ) -> ScalingGroup:
         from chalkcompute._image import Image
+        from chalkcompute._progress import progress_update
+
+        key = f"scaling_group:{id(self)}"
 
         # 1. Resolve image URI
         if isinstance(self._image, Image):
+            progress_update(key, detail="Building image")
             logger.info("Building image from %r...", self._image)
             self._built_image_uri = build_image(
                 self._client,
@@ -534,6 +538,7 @@ class ScalingGroup:
                 timeout=build_timeout,
             )
             logger.info("Image built: %s", self._built_image_uri)
+            progress_update(key, detail="Image built")
         else:
             self._built_image_uri = self._image
 
@@ -550,6 +555,7 @@ class ScalingGroup:
             self._image.lazy_local_files if isinstance(self._image, Image) else set()
         )
         if lazy_files:
+            progress_update(key, detail=f"Uploading {len(lazy_files)} local file(s)")
             logger.info("Uploading %d local file(s) to volume(s)...", len(lazy_files))
             assert isinstance(self._image, Image)
             driver = VolumeClient.from_connect(self._client)
@@ -566,6 +572,7 @@ class ScalingGroup:
         # 3. Build the ScalingGroupSpec
         resolved_secrets = self._secrets
         if any(s.is_lazy for s in self._secrets):
+            progress_update(key, detail="Resolving secrets")
             scope = SecretScope.scaling_group(sg_name)
             resolved_secrets, _upserted = resolve_lazy_secrets(
                 self._secrets, self._client, scope=scope
@@ -613,6 +620,7 @@ class ScalingGroup:
         )
 
         logger.info("Deploying scaling group '%s'...", sg_name)
+        progress_update(key, label=f'Scaling group "{sg_name}"', detail="Deploying")
         stub = self._client.stub(sg_connect.ScalingGroupManagerServiceClientSync)
         try:
             if self._scaling_group_id is None:
@@ -655,6 +663,7 @@ class ScalingGroup:
             self._scaling_group_info,
             require_ready_replicas=self._min_replicas > 0,
         ):
+            progress_update(key, detail="Waiting for readiness")
             self._poll_until_ready(
                 poll_interval=poll_interval,
                 timeout=ready_timeout,

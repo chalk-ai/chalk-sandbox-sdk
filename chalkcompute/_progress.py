@@ -6,7 +6,6 @@ lines, replace standard streams, or change application logging configuration.
 
 from __future__ import annotations
 
-import logging
 import os
 import sys
 import threading
@@ -14,7 +13,6 @@ from typing import Literal
 
 from chalkcompute._terminal import (
     encodable,
-    interactive_terminal,
     styled,
     supports_color,
 )
@@ -42,16 +40,13 @@ _STATUS_MARKS: dict[StepStatus, tuple[str, str, str]] = {
 
 
 def tui_enabled() -> bool:
-    """Select progress independently of diagnostic log verbosity."""
+    """Show status in every environment unless explicitly disabled.
+
+    Terminal detection controls presentation only. Logging handlers and levels
+    never determine whether deployment status is visible.
+    """
     mode = os.environ.get("CHALK_SANDBOX_TUI", "auto").strip().lower()
-    if mode in ("true", "1"):
-        return True
-    if mode != "auto":
-        return False
-    return (
-        interactive_terminal(sys.stderr)
-        and not logging.getLogger("chalkcompute").hasHandlers()
-    )
+    return mode in ("auto", "true", "1")
 
 
 # ---------------------------------------------------------------------------
@@ -353,8 +348,8 @@ def get_progress() -> DeployProgress | None:
     global _global_progress
     with _global_lock:
         if not tui_enabled():
-            # Logging may be configured (or progress disabled) while a deployment
-            # is running. Discard its display state in that case.
+            # Progress may be disabled while a deployment is running.
+            # Discard its display state in that case.
             if _global_progress is not None:
                 _global_progress.finish()
                 _global_progress = None

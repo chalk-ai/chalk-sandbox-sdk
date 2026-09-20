@@ -68,6 +68,75 @@ def test_application_can_configure_logging_after_sdk_import() -> None:
     assert result.stderr == "APP registered\n"
 
 
+@pytest.mark.parametrize(
+    "configuration",
+    [
+        "pass",
+        'sys.modules["ipykernel"] = object()',
+        'os.environ["CI"] = "1"',
+        'os.environ["TERM"] = "dumb"',
+        "logging.basicConfig(level=logging.WARNING)",
+        "logging.getLogger().addHandler(logging.NullHandler())",
+        "logging.disable(logging.CRITICAL)",
+        'chalkcompute.configure_logging("WARNING")',
+    ],
+)
+def test_default_status_survives_captured_output_and_logging_configuration(
+    configuration,
+) -> None:
+    result = _run(
+        f"""
+        import logging
+        import os
+        import sys
+        import chalkcompute
+        from chalkcompute._progress import progress_add, progress_update, progress_finish
+        {configuration}
+        progress_add("fn", "function", 'Function "fraud"')
+        for _ in range(10):
+            progress_update("fn", detail="Pending")
+        print('customer stdout')
+        print('customer stderr', file=sys.stderr)
+        progress_update("fn", status="done", detail="ready")
+        progress_finish()
+        """
+    )
+    assert result.stdout == "customer stdout\n"
+    assert result.stderr.splitlines() == [
+        'Function "fraud"',
+        "  │ › Pending",
+        "customer stderr",
+        "  └ ✓ Ready",
+    ]
+
+
+def test_disabling_progress_preserves_customer_output_and_diagnostics() -> None:
+    result = _run(
+        """
+        import logging
+        import os
+        import sys
+        import chalkcompute
+        from chalkcompute._progress import progress_add, progress_update, progress_finish
+        os.environ["CHALK_SANDBOX_TUI"] = "false"
+        chalkcompute.configure_logging()
+        progress_add("fn", "function", 'Function "fraud"')
+        print('{"result": 42}')
+        print('customer stderr', file=sys.stderr)
+        logging.getLogger("chalkcompute").info("diagnostic")
+        logging.getLogger("chalkcompute").warning("warning")
+        progress_update("fn", status="done", detail="ready")
+        progress_finish()
+        """
+    )
+    assert result.stdout == '{"result": 42}\n'
+    assert result.stderr.splitlines() == [
+        "customer stderr",
+        "INFO chalkcompute: diagnostic",
+        "WARNING chalkcompute: warning",
+    ]
+
+
 @pytest.fixture
 def isolated_sdk_logger(monkeypatch):
     logger = logging.getLogger("chalkcompute")
