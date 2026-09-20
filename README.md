@@ -47,7 +47,9 @@ and progress do not write to stdout, so scripts can emit JSON or other results t
 `CHALK_SANDBOX_TUI=false` (or `0`) disables progress, including in a terminal.
 `CHALK_SANDBOX_TUI=true` (or `1`) explicitly enables status lines, including plain
 text in notebooks. Unset it or use `auto` for automatic detection. Progress uses
-colored status markers and indented steps, printing only when a step changes.
+a named group with a vertical guide for its steps and a closing success/failure
+line. It prints only when a step changes. If concurrent deployments interleave,
+the group heading repeats with `(continued)` to identify the following steps.
 It never rewrites previous lines, replaces standard streams, or hides warnings
 and errors. No renderer dependency is required.
 
@@ -56,12 +58,13 @@ CI, and redirected streams disable it. If a program controls a pseudo terminal,
 set `NO_COLOR=1` and `CHALK_SANDBOX_TUI=false` for plain diagnostic logs only.
 
 ```text
-› Function "fraud"
-  › Registering function
-  ✓ Registering function
-› Function "fraud" — Pending ready=0 available=0
-› Function "fraud" — Pending ready=0 available=0 — waiting for startup probe
-✓ Function "fraud" — ready
+Function "fraud"
+  │ › Registering function
+  │ ✓ Function registered
+  │ › Waiting for readiness
+  │ › Pending ready=0 available=0
+  │ › Pending ready=0 available=0 — waiting for startup probe
+  └ ✓ Ready
 ```
 
 For a script or notebook where you want console diagnostics:

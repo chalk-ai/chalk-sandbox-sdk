@@ -313,12 +313,12 @@ def test_progress_renders_only_changes_with_indented_terminal_markers(
     assert len(output.splitlines()) == 5
     if no_color:
         assert "\033" not in output
-        assert output.startswith("› Fraud\n  › Build image\n")
-        assert output.endswith("✓ Fraud — ready\n")
+        assert output.startswith("Fraud\n  │ › Build image\n")
+        assert output.endswith("  └ ✓ Ready\n")
     else:
         assert "\033[36m›\033[0m" in output
         assert "\033[32m✓\033[0m" in output
-        assert "\033[2m — ready\033[0m" in output
+        assert "\033[2m└\033[0m \033[32m✓\033[0m Ready" in output
     assert "\r" not in output
     assert "\033[2K" not in output
 
@@ -334,4 +334,51 @@ def test_progress_falls_back_for_ascii_streams(monkeypatch):
     progress.add("fn", "function", "Fraud")
     progress.update("fn", status="done", detail="ready")
     progress.finish()
-    assert data.getvalue() == b"> Fraud\n+ Fraud - ready\n"
+    assert data.getvalue() == b"Fraud\n  ` + Ready\n"
+
+
+def test_deployment_steps_share_one_group(capsys):
+    progress = DeployProgress()
+    progress.add("fn", "function", 'Function "fraud"')
+    progress.add("register", "function", "Registering function", parent="fn")
+    progress.update("register", status="done", label="Function registered")
+    progress.update("fn", detail="Waiting for readiness")
+    for _ in range(10):
+        progress.update("fn", detail="Pending ready=0 available=0")
+    progress.update("fn", detail="Available ready=1 available=1")
+    progress.update("fn", status="done", detail="ready")
+    progress.finish()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.splitlines() == [
+        'Function "fraud"',
+        "  │ › Registering function",
+        "  │ ✓ Function registered",
+        "  │ › Waiting for readiness",
+        "  │ › Pending ready=0 available=0",
+        "  │ › Available ready=1 available=1",
+        "  └ ✓ Ready",
+    ]
+
+
+def test_interleaved_groups_restate_identity_and_close_after_their_children(capsys):
+    progress = DeployProgress()
+    progress.add("a", "function", 'Function "A"')
+    progress.add("image", "image", "Build image", parent="a")
+    progress.add("b", "function", 'Function "B"')
+    progress.update("a", detail="Pending")
+    progress.update("b", status="done", detail="ready")
+    progress.update("a", status="failed", detail="")
+    progress.finish()
+    assert capsys.readouterr().err.splitlines() == [
+        'Function "A"',
+        "  │ › Build image",
+        'Function "B"',
+        'Function "A" (continued)',
+        "  │ › Pending",
+        'Function "B" (continued)',
+        "  └ ✓ Ready",
+        'Function "A" (continued)',
+        "  │ – Build image",
+        "  └ ✗ Failed",
+    ]

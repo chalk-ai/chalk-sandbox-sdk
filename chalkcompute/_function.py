@@ -3117,7 +3117,7 @@ class RemoteFunction:
                 self._version_info.version,
                 self._version_info.id,
             )
-            progress_done(rkey)
+            progress_update(rkey, status="done", label="Function registered")
 
             # 7. Poll until the backing pod is actually ready to serve.
             if not (
@@ -3127,7 +3127,7 @@ class RemoteFunction:
                     require_ready_replicas=self._min_replicas > 0,
                 )
             ):
-                progress_update(fkey, detail="waiting for ready")
+                progress_update(fkey, detail="Waiting for readiness")
                 self._poll_until_ready(
                     sg_name=self._version_info.scaling_group_name,
                     poll_interval=poll_interval,

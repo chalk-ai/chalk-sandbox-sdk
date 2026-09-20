@@ -264,10 +264,10 @@ def test_logging_and_progress_work_without_site_packages():
     )
     assert result.stdout == '{"result": 42}\n'
     assert result.stderr.splitlines() == [
-        '› Function "fraud"',
-        '› Function "fraud" — Pending',
+        'Function "fraud"',
+        "  │ › Pending",
         "warning stays visible",
-        '✓ Function "fraud" — ready',
+        "  └ ✓ Ready",
         "INFO chalkcompute: finished",
     ]
 

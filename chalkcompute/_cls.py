@@ -1355,7 +1355,7 @@ class RemoteClass:
 
             # 5. Poll scaling groups until their backing pods can serve.
             if sg_names:
-                progress_update(ckey, detail="waiting for ready")
+                progress_update(ckey, detail="Waiting for readiness")
             for sg_name in sg_names:
                 self._poll_until_ready(
                     sg_name=sg_name,

@@ -106,6 +106,8 @@ class DeployProgress:
         self._order: list[str] = []
         self._lock = threading.Lock()
         self._started = False
+        self._current_group: _ResourceState | None = None
+        self._current_label = ""
 
     # -- Public API --------------------------------------------------------
 
@@ -255,24 +257,66 @@ class DeployProgress:
         stream = sys.stderr
         color = supports_color(stream)
         lines: list[str] = []
-        pending = [(self._resources[key], 0) for key in reversed(self._order)]
-        while pending:
-            state, indent = pending.pop()
-            pending.extend((child, indent + 1) for child in reversed(state.children))
-            snapshot = (state.status, state.label, state.detail, indent)
-            if snapshot == state.last_rendered:
+        for key in self._order:
+            root = self._resources[key]
+            continued = root.last_rendered is not None
+            changes: list[tuple[_ResourceState, int]] = []
+            pending = [(root, 0)]
+            while pending:
+                state, depth = pending.pop()
+                pending.extend((child, depth + 1) for child in reversed(state.children))
+                snapshot = (state.status, state.label, state.detail, depth)
+                if snapshot != state.last_rendered:
+                    state.last_rendered = snapshot
+                    changes.append((state, depth))
+            if not changes:
                 continue
-            state.last_rendered = snapshot
-            mark, fallback, code = _STATUS_MARKS[state.status]
-            if encodable(mark, stream) != mark:
-                mark = fallback
-            label = " ".join(state.label.split())
-            detail = " ".join(state.detail.split())
-            line = "  " * indent + styled(mark, code, color=color) + " " + label
-            if detail:
-                separator = "—" if encodable("—", stream) == "—" else "-"
-                line += styled(f" {separator} {detail}", "2", color=color)
-            lines.append(encodable(line, stream))
+
+            label = " ".join(root.label.split())
+            if self._current_group is not root or self._current_label != label:
+                heading = styled(label, "1", color=color)
+                if continued:
+                    heading += styled(" (continued)", "2", color=color)
+                lines.append(encodable(heading, stream))
+                self._current_group = root
+                self._current_label = label
+
+            # Close the group after its last child, including children skipped
+            # when the parent fails. No step should appear below the end marker.
+            if root.status in _TERMINAL_STATUSES:
+                changes.sort(key=lambda item: item[0] is root)
+            for state, depth in changes:
+                detail = " ".join(state.detail.split())
+                is_root = state is root
+                terminal = is_root and state.status in _TERMINAL_STATUSES
+                if is_root:
+                    if terminal:
+                        label = {
+                            "done": "Done",
+                            "failed": "Failed",
+                            "skipped": "Skipped",
+                        }[state.status]
+                        if state.status == "done" and detail in ("ready", "running"):
+                            label, detail = detail.capitalize(), ""
+                    else:
+                        if not detail:
+                            continue  # The heading already introduces the operation.
+                        label, detail = detail, ""
+                else:
+                    label = " ".join(state.label.split())
+                mark, fallback, code = _STATUS_MARKS[state.status]
+                if encodable(mark, stream) != mark:
+                    mark = fallback
+                branch = "└" if terminal else "│"
+                if encodable(branch, stream) != branch:
+                    branch = "`" if terminal else "|"
+                prefix = "  " + styled(branch, "2", color=color) + " "
+                prefix += "  " * max(0, depth - 1)
+                line = prefix + styled(mark, code, color=color) + " " + label
+                if detail:
+                    separator = "—" if encodable("—", stream) == "—" else "-"
+                    line += styled(f" {separator} {detail}", "2", color=color)
+                lines.append(encodable(line, stream))
         if lines:
             try:
                 stream.write("\n".join(lines) + "\n")
@@ -286,6 +330,8 @@ class DeployProgress:
 
     def _stop(self) -> None:
         self._started = False
+        self._current_group = None
+        self._current_label = ""
 
 
 # ---------------------------------------------------------------------------
