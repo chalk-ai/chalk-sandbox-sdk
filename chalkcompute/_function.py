@@ -385,6 +385,8 @@ class FunctionBuildError(FunctionError):
 class FunctionSignatureError(TypeError, FunctionError):
     """Raised when a function is missing required type annotations."""
 
+    __module__ = "chalkcompute"
+
 
 # ---------------------------------------------------------------------------
 # Data classes

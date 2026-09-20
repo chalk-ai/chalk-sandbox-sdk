@@ -598,7 +598,12 @@ def test_definition_only_script_reports_missing_annotations(
     assert f'File "{script}", line 8, in broken' in rendered
     assert "  >  8 | @function" in rendered
     assert f"9 | def broken{signature}:" in rendered
-    assert f"FunctionSignatureError: {message}" in rendered
+    assert f"chalkcompute.FunctionSignatureError: {message}" in rendered
+    assert "chalkcompute._function.FunctionSignatureError" not in rendered
+    if color:
+        assert (
+            "\033[1;31mchalkcompute.FunctionSignatureError\033[0m:" in completed.stderr
+        )
     assert hint in rendered
     assert "Traceback (most recent call last)" not in rendered
     assert "concurrent/futures" not in rendered
