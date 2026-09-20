@@ -59,6 +59,7 @@ from chalkcompute._function import DeployedFunction as DeployedFunction
 from chalkcompute._function import FunctionBuildError as FunctionBuildError
 from chalkcompute._function import FunctionCallHandle as FunctionCallHandle
 from chalkcompute._function import FunctionError as FunctionError
+from chalkcompute._function import FunctionSignatureError as FunctionSignatureError
 from chalkcompute._function import FunctionVersionInfo as FunctionVersionInfo
 from chalkcompute._function import RemoteFunction as RemoteFunction
 from chalkcompute._function import function as function
@@ -196,6 +197,7 @@ __all__ = [
     "FunctionError",
     "RemoteExecutionError",
     "FunctionBuildError",
+    "FunctionSignatureError",
     "FunctionCallHandle",
     "FunctionVersionInfo",
     "gather",
