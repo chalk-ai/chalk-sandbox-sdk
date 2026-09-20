@@ -1,27 +1,24 @@
-"""
-Rich TUI progress display for chalkcompute deployments.
+"""Deployment progress, separate from application logging.
 
-Activated when ``CHALK_SANDBOX_TUI=true`` is set in the environment.
-Shows a hierarchical spinner tree of all resources being deployed:
-images, volumes, secrets, containers, functions, and classes.
-
-Falls back to normal logger output when disabled or when Rich is not installed.
+Auto-enabled for interactive stderr when application logging is unconfigured;
+disabled in notebooks, CI, and redirected scripts. ``CHALK_SANDBOX_TUI=true``
+explicitly opts in (including notebooks); ``false`` disables it. Progress never takes over stdout or changes log levels.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import sys
 import threading
 from typing import Literal
-
-logger = logging.getLogger(__name__)
 
 ResourceKind = Literal[
     "image",
     "volume",
     "secret",
     "container",
+    "scaling_group",
     "function",
     "class",
     "method",
@@ -34,6 +31,7 @@ _KIND_ICONS: dict[ResourceKind, str] = {
     "volume": "💾",
     "secret": "🔑",
     "container": "🐳",
+    "scaling_group": "☁",
     "function": "⚡",
     "class": "🏗️",
     "method": "  ↳",
@@ -44,6 +42,7 @@ _KIND_VERBS: dict[ResourceKind, str] = {
     "volume": "Creating volume",
     "secret": "Resolving secret",
     "container": "Starting container",
+    "scaling_group": "Deploying scaling group",
     "function": "Deploying function",
     "class": "Deploying class",
     "method": "Registering method",
@@ -51,14 +50,19 @@ _KIND_VERBS: dict[ResourceKind, str] = {
 
 
 def tui_enabled() -> bool:
-    """Check whether the Rich TUI progress display is enabled.
-
-    Returns
-    -------
-    bool
-        ``True`` when ``CHALK_SANDBOX_TUI`` is set to ``"true"`` or ``"1"``.
-    """
-    return os.environ.get("CHALK_SANDBOX_TUI", "").lower() in ("true", "1")
+    """Select live progress independently of diagnostic log verbosity."""
+    mode = os.environ.get("CHALK_SANDBOX_TUI", "auto").strip().lower()
+    if mode in ("true", "1"):
+        return True
+    if mode != "auto":
+        return False
+    return bool(
+        getattr(sys.stderr, "isatty", lambda: False)()
+        and os.environ.get("TERM") != "dumb"
+        and not os.environ.get("CI")
+        and "ipykernel" not in sys.modules
+        and not logging.getLogger("chalkcompute").hasHandlers()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +119,6 @@ class DeployProgress:
         self._lock = threading.Lock()
         self._live: Any = None  # rich.live.Live | None
         self._started = False
-        self._logger_suppressed = False
 
     # -- Public API --------------------------------------------------------
 
@@ -204,7 +207,7 @@ class DeployProgress:
             self._refresh()
 
     def finish(self) -> None:
-        """Stop the Live display and restore logger output."""
+        """Stop the Live display."""
         with self._lock:
             self._stop_live()
 
@@ -323,16 +326,19 @@ class DeployProgress:
         if self._started:
             return
         try:
+            from rich.console import Console
             from rich.live import Live
 
             self._live = Live(
                 self._render(),
-                refresh_per_second=12,
+                console=Console(stderr=True),
+                redirect_stdout=False,
+                redirect_stderr=True,
+                refresh_per_second=4,
                 transient=False,
             )
             self._live.start()
             self._started = True
-            self._suppress_logger()
         except ImportError:
             pass
 
@@ -352,30 +358,6 @@ class DeployProgress:
                 pass
             self._live = None
         self._started = False
-        self._restore_logger()
-
-    # SDK logs can corrupt the live display while it is rendering.
-    _SUPPRESSED_LOGGERS = ("chalkcompute",)
-
-    def _suppress_logger(self) -> None:
-        """Suppress noisy loggers while the TUI is active."""
-        if self._logger_suppressed:
-            return
-        self._saved_levels: dict[str, int] = {}
-        for name in self._SUPPRESSED_LOGGERS:
-            lg = logging.getLogger(name)
-            self._saved_levels[name] = lg.level
-            lg.setLevel(logging.CRITICAL + 1)
-        self._logger_suppressed = True
-
-    def _restore_logger(self) -> None:
-        """Restore logger levels saved before suppression."""
-        if not self._logger_suppressed:
-            return
-        for name, level in self._saved_levels.items():
-            logging.getLogger(name).setLevel(level)
-        self._saved_levels = {}
-        self._logger_suppressed = False
 
 
 # ---------------------------------------------------------------------------
@@ -395,9 +377,14 @@ def get_progress() -> DeployProgress | None:
         The singleton tracker, or ``None`` if the TUI is disabled.
     """
     global _global_progress
-    if not tui_enabled():
-        return None
     with _global_lock:
+        if not tui_enabled():
+            # Logging may be configured (or progress disabled) while a deployment
+            # is running. Always restore stderr and the cursor in that case.
+            if _global_progress is not None:
+                _global_progress.finish()
+                _global_progress = None
+            return None
         if _global_progress is None:
             _global_progress = DeployProgress()
         return _global_progress

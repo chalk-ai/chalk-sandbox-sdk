@@ -409,3 +409,66 @@ def test_remote_function_readiness_error_details(monkeypatch, status, details) -
     if details:
         expected += "\n" + details
     assert str(exc_info.value) == expected
+
+
+@pytest.mark.parametrize("resource", ["function", "class", "scaling_group"])
+def test_readiness_logs_transitions_instead_of_each_poll(resource, caplog, monkeypatch):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="chalkcompute")
+    if resource == "scaling_group":
+        client = _ScalingGroupReadinessClient()
+        handle = ScalingGroup(image="ubuntu:latest", name="fraud")
+        handle._scaling_group_id = "fraud"
+    elif resource == "class":
+
+        class Fraud:
+            @method
+            def score(self, x: int) -> int:
+                return x
+
+        client = _RemoteFunctionReadinessClient()
+        handle = RemoteClass(Fraud)
+    else:
+        client = _RemoteFunctionReadinessClient()
+        handle = RemoteFunction(lambda x: x)
+    client.polls = [
+        sg_pb.ScalingGroupResponse(status="Pending"),
+        sg_pb.ScalingGroupResponse(status="Pending"),
+        sg_pb.ScalingGroupResponse(
+            status="Pending", status_message="waiting for startup probe"
+        ),
+        sg_pb.ScalingGroupResponse(
+            status="Available", ready_replicas=1, available_replicas=1
+        ),
+    ]
+    handle._client = client
+    monkeypatch.setattr(function_mod.time, "sleep", lambda _: None)
+    kwargs = {} if resource == "scaling_group" else {"sg_name": "fraud"}
+    handle._poll_until_ready(poll_interval=0, timeout=10, **kwargs)
+    assert [record.getMessage() for record in caplog.records] == [
+        "Scaling group fraud: Pending ready=0 available=0",
+        "Scaling group fraud: Pending ready=0 available=0 — waiting for startup probe",
+        "Scaling group fraud: Available ready=1 available=1",
+    ]
+
+
+def test_container_readiness_logs_transitions_instead_of_each_poll(caplog, monkeypatch):
+    import logging
+    from types import SimpleNamespace
+    from chalkcompute._container import Container
+
+    caplog.set_level(logging.INFO, logger="chalkcompute")
+    container = Container(image="ubuntu:latest")
+    container._container_id = "fraud"
+    states = iter(["Pending", "Pending", "Running"])
+    monkeypatch.setattr(
+        "chalkcompute._container._get_container_info",
+        lambda *args: SimpleNamespace(status=next(states)),
+    )
+    monkeypatch.setattr(function_mod.time, "sleep", lambda _: None)
+    container._poll_until_running(poll_interval=0, timeout=10)
+    assert [record.getMessage() for record in caplog.records] == [
+        "Container fraud: Pending",
+        "Container fraud: Running",
+    ]

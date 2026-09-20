@@ -55,6 +55,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, TypeVar, overload
 
+from chalkcompute._logging import _StatusLogger
 from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import ConnectClient
 from chalkcompute._containerspec import ContainerSpec, validate_replica_and_utilization
@@ -1365,6 +1366,7 @@ class RemoteClass:
 
             self._deployed = True
             progress_done(ckey, detail="ready")
+            logger.info("Class ready: %s", self._class_name)
         except BaseException:
             progress_fail(ckey)
             raise
@@ -1384,6 +1386,9 @@ class RemoteClass:
     ) -> None:
         deadline = time.monotonic() + timeout
         status = "unknown"
+        status_log = _StatusLogger(
+            logger, f"Scaling group {sg_name}", progress_key=f"class:{self._class_name}"
+        )
         ready_replicas = 0
         available_replicas = 0
         while time.monotonic() < deadline:
@@ -1403,12 +1408,11 @@ class RemoteClass:
                 ):
                     rf._web_url = web_url
 
-            logger.info(
-                "  poll %s: status=%s ready=%s available=%s",
-                sg_name,
+            status_log.update(
                 status,
-                ready_replicas,
-                available_replicas,
+                ready=ready_replicas,
+                available=available_replicas,
+                message=sg.status_message or "",
             )
             if _scaling_group_is_ready(
                 sg, require_ready_replicas=require_ready_replicas

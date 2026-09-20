@@ -30,6 +30,71 @@ with SandboxClient.from_env() as client:
     sandbox.terminate()
 ```
 
+## Logging and progress
+
+The SDK leaves Python logging configuration to your application. Importing
+`chalkcompute` does not install handlers, change log levels, or configure the
+root logger. With no logging configuration, normal operations are quiet and
+Python's default stderr handler still reports warnings and errors. SDK diagnostics
+and progress do not write to stdout, so scripts can emit JSON or other results there.
+
+| Context | Default output |
+| --- | --- |
+| Interactive terminal, no logging configured | Live deployment progress on stderr |
+| Notebook, CI, redirected stderr, or `TERM=dumb` | No automatic progress; warnings and errors through logging |
+| Application with logging configured | SDK records go to the application's handlers; no automatic progress |
+
+`CHALK_SANDBOX_TUI=false` (or `0`) disables progress, including in a terminal.
+`CHALK_SANDBOX_TUI=true` (or `1`) explicitly enables the Rich display, including
+in notebooks. Unset it or use `auto` for automatic detection. Progress does not
+change logging levels or hide warnings and errors. If a program controls a pseudo
+terminal, set `CHALK_SANDBOX_TUI=false` for predictable text output.
+
+For a script or notebook where you want console diagnostics:
+
+```python
+import chalkcompute as cc
+
+cc.configure_logging()          # INFO: lifecycle events and readiness changes
+# cc.configure_logging("DEBUG") # Every readiness poll and transport retry
+# cc.configure_logging("WARNING") # Problems only
+```
+
+The helper writes plain, unwrapped text to stderr, with no ANSI color or Rich
+markup interpretation. You can pass `stream=` to use another text stream. It is
+safe to rerun in notebook cells: each call replaces only the helper's previous
+handler. It configures only the `chalkcompute` logger and disables propagation to
+the root logger to avoid duplicate output. Configuring logging also disables
+*automatic* progress; the explicit `CHALK_SANDBOX_TUI=true` override still applies.
+
+If your application already configures logging, use that configuration instead
+of the helper. All Python SDK loggers are under `chalkcompute`, so they work with
+your existing text, JSON, file, or telemetry handlers:
+
+```python
+import logging
+
+# In an application's logging setup:
+logging.basicConfig(format="%(levelname)s %(name)s: %(message)s")
+logging.getLogger("chalkcompute").setLevel(logging.INFO)
+```
+
+At INFO, functions, classes, containers, and scaling groups report readiness only
+when the state, replica counts, or status message changes. Repeated polls and
+routine transport recovery are DEBUG diagnostics. For example, a slow startup
+produces these status records rather than a line every half second:
+
+```text
+INFO chalkcompute._function: Scaling group fraud: Pending ready=0 available=0
+INFO chalkcompute._function: Scaling group fraud: Pending ready=0 available=0 — waiting for externally routed startup probe
+INFO chalkcompute._function: Scaling group fraud: Available ready=1 available=1
+```
+
+Background deployment failures are ERROR records, including the Python definition
+location and actionable exception details. Definition-only deploy scripts still
+exit unsuccessfully when a background deployment fails. Remote command stdout and
+stderr remain available in result objects and stream events for callers to handle.
+
 ## Environment variables and secrets
 
 Deployment `env` mappings accept strings and `Secret` references together:

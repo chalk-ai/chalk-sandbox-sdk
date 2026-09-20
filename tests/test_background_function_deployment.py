@@ -366,13 +366,20 @@ def test_definition_only_script_waits_for_all_deployments(tmp_path: Path) -> Non
         ),
     ],
 )
+@pytest.mark.parametrize("application_logging", [False, True])
 def test_definition_only_script_reports_deployment_failure(
     tmp_path: Path,
     error: str,
     error_type: str,
     expected_failure: bool,
     rpc_code: str | None,
+    application_logging: bool,
 ) -> None:
+    configuration = (
+        '; import logging; logging.basicConfig(format="APP %(levelname)s %(message)s")'
+        if application_logging
+        else ""
+    )
     script = tmp_path / "deploy_failure.py"
     script.write_text(
         textwrap.dedent(
@@ -380,7 +387,7 @@ def test_definition_only_script_reports_deployment_failure(
             from connectrpc.code import Code
             from connectrpc.errors import ConnectError as ConnectRpcError
             from chalkcompute._connect import ConnectError
-            from chalkcompute._function import FunctionBuildError, RemoteFunction, function
+            from chalkcompute._function import FunctionBuildError, RemoteFunction, function{configuration}
 
             def fake_deploy(self, **kwargs):
                 error = {error}
@@ -412,7 +419,13 @@ def test_definition_only_script_reports_deployment_failure(
 
     # A definition-only script must fail, not exit 0 on code that cannot serve.
     assert completed.returncode != 0
-    assert "Background deployment for function 'broken' failed" in completed.stderr
+    assert completed.stdout == ""
+    assert (
+        completed.stderr.count("Background deployment for function 'broken' failed")
+        == 1
+    )
+    if application_logging:
+        assert completed.stderr.startswith("APP ERROR Background deployment")
     status = f" [{rpc_code}]" if rpc_code is not None else ""
     assert (
         f"Background deployment for function 'broken' failed{status}:"

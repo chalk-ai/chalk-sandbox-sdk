@@ -42,6 +42,7 @@ from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
 from protobuf.wkt import FieldMask
 
+from chalkcompute._logging import _StatusLogger
 from chalkcompute._connect import ConnectClient, build_image
 from chalkcompute._containerspec import ContainerSpec, validate_replica_and_utilization
 from chalkcompute._env import normalize_env
@@ -494,6 +495,33 @@ class ScalingGroup:
         ScalingGroupError
             If deployment fails or times out.
         """
+        from chalkcompute._progress import (
+            progress_add,
+            progress_done,
+            progress_fail,
+            progress_finish,
+        )
+
+        key = f"scaling_group:{id(self)}"
+        progress_add(key, "scaling_group", self._name or "Scaling group")
+        try:
+            self._deploy(
+                poll_interval=poll_interval,
+                build_timeout=build_timeout,
+                ready_timeout=ready_timeout,
+            )
+            progress_done(key, detail="ready")
+            logger.info("Scaling group ready: %s", self._scaling_group_id)
+        except BaseException:
+            progress_fail(key)
+            raise
+        finally:
+            progress_finish()
+        return self
+
+    def _deploy(
+        self, *, poll_interval: float, build_timeout: float, ready_timeout: float
+    ) -> ScalingGroup:
         from chalkcompute._image import Image
 
         # 1. Resolve image URI
@@ -734,6 +762,11 @@ class ScalingGroup:
         assert self._scaling_group_id is not None
         deadline = time.monotonic() + timeout
         info = self._scaling_group_info
+        status_log = _StatusLogger(
+            logger,
+            f"Scaling group {self._scaling_group_id}",
+            progress_key=f"scaling_group:{id(self)}",
+        )
         while time.monotonic() < deadline:
             stub = self._client.stub(sg_connect.ScalingGroupManagerServiceClientSync)
             try:
@@ -747,11 +780,11 @@ class ScalingGroup:
                 raise ScalingGroupError("GetScalingGroup returned no scaling group")
             info = _parse_scaling_group_response(response.scaling_group)
             self._scaling_group_info = info
-            logger.info(
-                "  poll: status=%s ready=%s available=%s",
+            status_log.update(
                 info.status,
-                info.ready_replicas,
-                info.available_replicas,
+                ready=info.ready_replicas,
+                available=info.available_replicas,
+                message=response.scaling_group.status_message or "",
             )
             if _scaling_group_info_is_ready(
                 info,

@@ -68,6 +68,7 @@ from protobuf import Oneof
 from protobuf.wkt import FieldMask
 
 from chalkcompute import _local_dev
+from chalkcompute._logging import _StatusLogger
 from chalkcompute._function_error import (
     FunctionError,
     decode_remote_error,
@@ -320,10 +321,7 @@ def _report_unobserved_background_deployments() -> None:
         failed = True
         registered_name = function._explicit_name or function._func_name
         status = f" [{error.code.name}]" if isinstance(error, ConnectRpcError) else ""
-        print(
-            f"Background deployment for function {registered_name!r} failed{status}:",
-            file=sys.stderr,
-        )
+        details = ""
         # The worker's traceback has no user call site. Look up the definition
         # only when reporting a failure, avoiding source reads on success.
         code = getattr(inspect.unwrap(function._func), "__code__", None)
@@ -331,14 +329,20 @@ def _report_unobserved_background_deployments() -> None:
             source = traceback.FrameSummary(
                 code.co_filename, code.co_firstlineno, function._func_name
             )
-            sys.stderr.write("".join(traceback.format_list([source])))
+            details = "".join(traceback.format_list([source]))
         if isinstance(error, (ConnectRpcError, ConnectError, FunctionError)):
             # These exceptions already describe an actionable deployment
             # failure. Keep messages, notes, and causes, without RPC plumbing.
-            traceback.print_exception(error, limit=0, file=sys.stderr)
+            details += "".join(traceback.format_exception(error, limit=0))
         else:
             # Unexpected bugs still need their diagnostic frames by default.
-            traceback.print_exception(error, file=sys.stderr)
+            details += "".join(traceback.format_exception(error))
+        logger.error(
+            "Background deployment for function %r failed%s:\n%s",
+            registered_name,
+            status,
+            details.rstrip(),
+        )
 
     if not failed:
         return
@@ -3132,6 +3136,7 @@ class RemoteFunction:
                 )
 
             progress_done(fkey, detail="ready")
+            logger.info("Function ready: %s", registered_name)
         except BaseException:
             progress_fail(fkey)
             raise
@@ -3160,6 +3165,11 @@ class RemoteFunction:
         status = "unknown"
         status_message = ""
         status_details = ""
+        status_log = _StatusLogger(
+            logger,
+            f"Scaling group {sg_name}",
+            progress_key=f"function:{self._explicit_name or self._func_name}",
+        )
         ready_replicas = 0
         available_replicas = 0
         while time.monotonic() < deadline:
@@ -3170,12 +3180,11 @@ class RemoteFunction:
             ready_replicas = sg.ready_replicas
             available_replicas = sg.available_replicas
             self._web_url = sg.web_url or None
-            logger.info(
-                "  poll: status=%s ready=%s available=%s message=%s",
+            status_log.update(
                 status,
-                ready_replicas,
-                available_replicas,
-                status_message or "",
+                ready=ready_replicas,
+                available=available_replicas,
+                message=status_message,
             )
             if _scaling_group_is_ready(
                 sg, require_ready_replicas=require_ready_replicas
@@ -3337,7 +3346,7 @@ class RemoteFunction:
                     raise
                 self._drop_remote_call_client(queue=queue)
                 if attempt == 0 and _should_retry_stale_remote_call(retry_stale, exc):
-                    logger.info(
+                    logger.debug(
                         "Detected stale remote-call client during %s for %r; "
                         "refreshing and retrying",
                         operation,
@@ -3349,7 +3358,7 @@ class RemoteFunction:
             if stale_result is not None and stale_result(result):
                 self._drop_remote_call_client(queue=queue)
                 if attempt == 0:
-                    logger.info(
+                    logger.debug(
                         "Detected stale remote-call result during %s for %r; "
                         "refreshing and retrying",
                         operation,
