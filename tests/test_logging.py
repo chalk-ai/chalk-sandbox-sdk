@@ -179,3 +179,106 @@ def test_status_deduplication_is_per_operation(caplog) -> None:
         status.update("Pending")
         status.update("Pending")
     assert len(caplog.records) == 2
+
+
+@pytest.mark.parametrize(
+    ("tty", "color", "no_color", "term", "ci", "notebook", "expected_color"),
+    [
+        (True, True, False, "xterm", False, False, True),
+        (False, True, False, "xterm", False, False, False),
+        (True, False, False, "xterm", False, False, False),
+        (True, True, True, "xterm", False, False, False),
+        (True, True, False, "dumb", False, False, False),
+        (True, True, False, "xterm", True, False, False),
+        (True, True, False, "xterm", False, True, False),
+    ],
+)
+def test_console_color_policy(
+    isolated_sdk_logger,
+    monkeypatch,
+    tty,
+    color,
+    no_color,
+    term,
+    ci,
+    notebook,
+    expected_color,
+):
+    from types import SimpleNamespace
+
+    stream = io.StringIO()
+    monkeypatch.setattr(stream, "isatty", lambda: tty)
+    monkeypatch.setenv("TERM", term)
+    for name, enabled in [("NO_COLOR", no_color), ("CI", ci)]:
+        if enabled:
+            monkeypatch.setenv(name, "1")
+        else:
+            monkeypatch.delenv(name, raising=False)
+    if notebook:
+        monkeypatch.setitem(sys.modules, "ipykernel", SimpleNamespace())
+    else:
+        monkeypatch.delitem(sys.modules, "ipykernel", raising=False)
+
+    chalkcompute.configure_logging(stream=stream, color=color)
+    # A second application handler must see an unmodified record, even when it
+    # runs after the console formatter has applied its colors.
+    plain = io.StringIO()
+    handler = logging.StreamHandler(plain)
+    handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    isolated_sdk_logger.addHandler(handler)
+    isolated_sdk_logger.warning("[literal] warning")
+    prefix = "\033[33mWARNING\033[0m" if expected_color else "WARNING"
+    assert stream.getvalue() == f"{prefix} chalkcompute: [literal] warning\n"
+    assert plain.getvalue() == "WARNING: [literal] warning\n"
+
+
+def test_logging_and_progress_work_without_site_packages():
+    # -S makes third-party packages (including Rich) unavailable entirely.
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            "-c",
+            textwrap.dedent("""
+            import logging
+            import sys
+            import chalkcompute
+            from chalkcompute._progress import DeployProgress
+            progress = DeployProgress()
+            progress.add("fn", "function", 'Function "fraud"')
+            for _ in range(10):
+                progress.update("fn", detail="Pending")
+            logging.getLogger("chalkcompute").warning("warning stays visible")
+            progress.update("fn", status="done", detail="ready")
+            progress.finish()
+            chalkcompute.configure_logging()
+            logging.getLogger("chalkcompute").info("finished")
+            assert "rich" not in sys.modules
+            print('{"result": 42}')
+        """),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=10,
+    )
+    assert result.stdout == '{"result": 42}\n'
+    assert result.stderr.splitlines() == [
+        '› Function "fraud"',
+        '› Function "fraud" — Pending',
+        "warning stays visible",
+        '✓ Function "fraud" — ready',
+        "INFO chalkcompute: finished",
+    ]
+
+
+def test_sdk_runtime_dependencies_do_not_include_rich():
+    import tomllib
+    from pathlib import Path
+    from chalkcompute._local_dev import _LOCAL_SDK_RUNTIME_PACKAGES
+
+    metadata = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())
+    assert not any(
+        dep.startswith("rich") for dep in metadata["project"]["dependencies"]
+    )
+    assert not any(dep.startswith("rich") for dep in _LOCAL_SDK_RUNTIME_PACKAGES)

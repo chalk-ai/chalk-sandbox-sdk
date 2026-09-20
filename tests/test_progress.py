@@ -12,9 +12,9 @@ def test_progress_stays_live_until_all_concurrent_resources_finish(monkeypatch) 
     def start() -> None:
         progress._started = True
 
-    monkeypatch.setattr(progress, "_ensure_live", start)
+    monkeypatch.setattr(progress, "_start", start)
     monkeypatch.setattr(progress, "_refresh", lambda: None)
-    monkeypatch.setattr(progress, "_stop_live", lambda: stops.append(None))
+    monkeypatch.setattr(progress, "_stop", lambda: stops.append(None))
 
     progress.add("first", "function", "First")
     progress.add("second", "function", "Second")
@@ -38,9 +38,9 @@ def test_completed_progress_tracker_is_reused_without_old_rows(monkeypatch) -> N
     def stop() -> None:
         progress._started = False
 
-    monkeypatch.setattr(progress, "_ensure_live", start)
+    monkeypatch.setattr(progress, "_start", start)
     monkeypatch.setattr(progress, "_refresh", lambda: None)
-    monkeypatch.setattr(progress, "_stop_live", stop)
+    monkeypatch.setattr(progress, "_stop", stop)
 
     progress.add("first", "function", "First")
     progress.update("first", status="done")
@@ -55,9 +55,9 @@ def test_failed_root_can_finish_with_an_active_child(monkeypatch) -> None:
     progress = DeployProgress()
     stops: list[None] = []
 
-    monkeypatch.setattr(progress, "_ensure_live", lambda: None)
+    monkeypatch.setattr(progress, "_start", lambda: None)
     monkeypatch.setattr(progress, "_refresh", lambda: None)
-    monkeypatch.setattr(progress, "_stop_live", lambda: stops.append(None))
+    monkeypatch.setattr(progress, "_stop", lambda: stops.append(None))
 
     progress.add("function", "function", "Function")
     progress.add("image", "image", "Image", parent="function")
@@ -77,9 +77,9 @@ def test_reuse_clear_keeps_rows_of_a_still_running_operation(monkeypatch) -> Non
     def stop() -> None:
         progress._started = False
 
-    monkeypatch.setattr(progress, "_ensure_live", start)
+    monkeypatch.setattr(progress, "_start", start)
     monkeypatch.setattr(progress, "_refresh", lambda: None)
-    monkeypatch.setattr(progress, "_stop_live", stop)
+    monkeypatch.setattr(progress, "_stop", stop)
 
     # Operation A registers a root plus a child, then stalls mid-flight.
     progress.add("fn:a", "function", "A")
@@ -113,9 +113,9 @@ def test_terminal_root_skips_its_unfinished_children(monkeypatch) -> None:
         progress._started = False
         stops.append(None)
 
-    monkeypatch.setattr(progress, "_ensure_live", start)
+    monkeypatch.setattr(progress, "_start", start)
     monkeypatch.setattr(progress, "_refresh", lambda: None)
-    monkeypatch.setattr(progress, "_stop_live", stop)
+    monkeypatch.setattr(progress, "_stop", stop)
 
     progress.add("fn:a", "function", "A")
     progress.add("build:a", "image", "Building A", parent="fn:a")
@@ -175,15 +175,13 @@ def test_progress_environment_selection(
     assert tui_enabled() is expected
 
 
-def test_live_progress_preserves_logging_and_standard_streams(monkeypatch, caplog):
+def test_progress_preserves_logging_and_standard_streams(monkeypatch, caplog):
     import io
     import logging
     import sys
-    import rich.console
 
     stderr = io.StringIO()
-    console = rich.console.Console(file=stderr, force_terminal=True, width=120)
-    monkeypatch.setattr(rich.console, "Console", lambda **kwargs: console)
+    monkeypatch.setattr(sys, "stderr", stderr)
     caplog.set_level(logging.DEBUG, logger="chalkcompute")
     logger = logging.getLogger("chalkcompute")
     original_level = logger.level
@@ -265,8 +263,8 @@ def test_scaling_group_progress_finishes_on_success_or_failure(monkeypatch, fail
     progress = DeployProgress()
     stopped = []
     monkeypatch.setattr(_progress, "get_progress", lambda: progress)
-    monkeypatch.setattr(progress, "_ensure_live", lambda: None)
-    monkeypatch.setattr(progress, "_stop_live", lambda: stopped.append(True))
+    monkeypatch.setattr(progress, "_start", lambda: None)
+    monkeypatch.setattr(progress, "_stop", lambda: stopped.append(True))
     group = ScalingGroup(image="ubuntu:latest", name="fraud")
 
     def deploy(**kwargs):
@@ -284,3 +282,56 @@ def test_scaling_group_progress_finishes_on_success_or_failure(monkeypatch, fail
         "failed" if fails else "done"
     )
     assert stopped == [True]
+
+
+@pytest.mark.parametrize("no_color", [False, True])
+def test_progress_renders_only_changes_with_indented_terminal_markers(
+    monkeypatch, no_color
+):
+    import io
+    import sys
+
+    stream = io.StringIO()
+    monkeypatch.setattr(stream, "isatty", lambda: True)
+    monkeypatch.setattr(sys, "stderr", stream)
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delitem(sys.modules, "ipykernel", raising=False)
+    monkeypatch.setenv("TERM", "xterm")
+    if no_color:
+        monkeypatch.setenv("NO_COLOR", "1")
+    else:
+        monkeypatch.delenv("NO_COLOR", raising=False)
+    progress = DeployProgress()
+    progress.add("fn", "function", "Fraud")
+    progress.add("image", "image", "Build image", parent="fn")
+    for _ in range(10):
+        progress.update("image", detail="Building")
+    progress.update("image", status="done")
+    progress.update("fn", status="done", detail="ready")
+    progress.finish()
+    output = stream.getvalue()
+    assert len(output.splitlines()) == 5
+    if no_color:
+        assert "\033" not in output
+        assert output.startswith("› Fraud\n  › Build image\n")
+        assert output.endswith("✓ Fraud — ready\n")
+    else:
+        assert "\033[36m›\033[0m" in output
+        assert "\033[32m✓\033[0m" in output
+        assert "\033[2m — ready\033[0m" in output
+    assert "\r" not in output
+    assert "\033[2K" not in output
+
+
+def test_progress_falls_back_for_ascii_streams(monkeypatch):
+    import io
+    import sys
+
+    data = io.BytesIO()
+    stream = io.TextIOWrapper(data, encoding="ascii")
+    monkeypatch.setattr(sys, "stderr", stream)
+    progress = DeployProgress()
+    progress.add("fn", "function", "Fraud")
+    progress.update("fn", status="done", detail="ready")
+    progress.finish()
+    assert data.getvalue() == b"> Fraud\n+ Fraud - ready\n"

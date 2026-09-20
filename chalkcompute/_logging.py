@@ -11,17 +11,20 @@ import logging
 import threading
 from typing import TextIO
 
+from chalkcompute._terminal import styled, supports_color
+
 _configuration_lock = threading.Lock()
 _console_handler: logging.Handler | None = None
 
 
 def configure_logging(
-    level: int | str = logging.INFO, *, stream: TextIO | None = None
+    level: int | str = logging.INFO, *, stream: TextIO | None = None, color: bool = True
 ) -> None:
-    """Enable plain SDK console logs (stderr by default).
+    """Enable SDK console logs (stderr by default).
 
     Only the ``chalkcompute`` logger is configured. Records use literal text,
-    without color, markup, table wrapping, or terminal control sequences. Calling
+    with colored level labels on interactive terminals and plain text elsewhere.
+    There is no markup interpretation, table wrapping, or cursor rewriting. Calling
     this again replaces only the handler installed by this helper, which is useful
     when rerunning notebook cells. Existing application handlers are left intact.
 
@@ -38,11 +41,14 @@ def configure_logging(
         Standard Python logging level (integer or uppercase name).
     stream
         Optional text stream; defaults to the current ``sys.stderr``.
+    color
+        Allow terminal color. Set to ``False`` to disable it. Redirected output,
+        notebooks, CI, ``TERM=dumb``, and ``NO_COLOR`` always disable color.
     """
     global _console_handler
     handler = logging.StreamHandler(stream)
     handler.setLevel(level)  # Validate before changing any existing configuration.
-    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    handler.setFormatter(_ConsoleFormatter(handler.stream, color=color))
     with _configuration_lock:
         logger = logging.getLogger("chalkcompute")
         if _console_handler is not None:
@@ -52,6 +58,31 @@ def configure_logging(
         logger.setLevel(level)
         logger.propagate = False
         _console_handler = handler
+
+
+class _ConsoleFormatter(logging.Formatter):
+    def __init__(self, stream: TextIO, *, color: bool) -> None:
+        super().__init__("%(levelname)s %(name)s: %(message)s")
+        self._stream = stream
+        self._color = color
+
+    def format(self, record: logging.LogRecord) -> str:
+        text = super().format(record)
+        if not self._color or not supports_color(self._stream):
+            return text
+        if record.levelno >= logging.ERROR:
+            code = "31"
+        elif record.levelno >= logging.WARNING:
+            code = "33"
+        elif record.levelno >= logging.INFO:
+            code = "36"
+        else:
+            code = "2"
+        # Style the formatted prefix without mutating the record shared with
+        # application handlers (file/JSON handlers must never inherit our ANSI).
+        return (
+            styled(record.levelname, code, color=True) + text[len(record.levelname) :]
+        )
 
 
 class _StatusLogger:

@@ -40,15 +40,29 @@ and progress do not write to stdout, so scripts can emit JSON or other results t
 
 | Context | Default output |
 | --- | --- |
-| Interactive terminal, no logging configured | Live deployment progress on stderr |
+| Interactive terminal, no logging configured | Colored deployment status lines on stderr |
 | Notebook, CI, redirected stderr, or `TERM=dumb` | No automatic progress; warnings and errors through logging |
 | Application with logging configured | SDK records go to the application's handlers; no automatic progress |
 
 `CHALK_SANDBOX_TUI=false` (or `0`) disables progress, including in a terminal.
-`CHALK_SANDBOX_TUI=true` (or `1`) explicitly enables the Rich display, including
-in notebooks. Unset it or use `auto` for automatic detection. Progress does not
-change logging levels or hide warnings and errors. If a program controls a pseudo
-terminal, set `CHALK_SANDBOX_TUI=false` for predictable text output.
+`CHALK_SANDBOX_TUI=true` (or `1`) explicitly enables status lines, including plain
+text in notebooks. Unset it or use `auto` for automatic detection. Progress uses
+colored status markers and indented steps, printing only when a step changes.
+It never rewrites previous lines, replaces standard streams, or hides warnings
+and errors. No renderer dependency is required.
+
+Color is automatic for interactive terminals. `NO_COLOR`, `TERM=dumb`, notebooks,
+CI, and redirected streams disable it. If a program controls a pseudo terminal,
+set `NO_COLOR=1` and `CHALK_SANDBOX_TUI=false` for plain diagnostic logs only.
+
+```text
+› Function "fraud"
+  › Registering function
+  ✓ Registering function
+› Function "fraud" — Pending ready=0 available=0
+› Function "fraud" — Pending ready=0 available=0 — waiting for startup probe
+✓ Function "fraud" — ready
+```
 
 For a script or notebook where you want console diagnostics:
 
@@ -60,8 +74,9 @@ cc.configure_logging()          # INFO: lifecycle events and readiness changes
 # cc.configure_logging("WARNING") # Problems only
 ```
 
-The helper writes plain, unwrapped text to stderr, with no ANSI color or Rich
-markup interpretation. You can pass `stream=` to use another text stream. It is
+The helper writes unwrapped text to stderr, with colored level labels on
+interactive terminals and plain text elsewhere. It never interprets markup.
+Pass `color=False` to disable color, or `stream=` to use another text stream. It is
 safe to rerun in notebook cells: each call replaces only the helper's previous
 handler. It configures only the `chalkcompute` logger and disables propagation to
 the root logger to avoid duplicate output. Configuring logging also disables

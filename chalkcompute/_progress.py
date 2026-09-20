@@ -1,8 +1,7 @@
-"""Deployment progress, separate from application logging.
+"""Dependency-free deployment status output, separate from application logging.
 
-Auto-enabled for interactive stderr when application logging is unconfigured;
-disabled in notebooks, CI, and redirected scripts. ``CHALK_SANDBOX_TUI=true``
-explicitly opts in (including notebooks); ``false`` disables it. Progress never takes over stdout or changes log levels.
+Print only changed steps, with optional terminal color. Never rewrite previous
+lines, replace standard streams, or change application logging configuration.
 """
 
 from __future__ import annotations
@@ -12,6 +11,13 @@ import os
 import sys
 import threading
 from typing import Literal
+
+from chalkcompute._terminal import (
+    encodable,
+    interactive_terminal,
+    styled,
+    supports_color,
+)
 
 ResourceKind = Literal[
     "image",
@@ -26,41 +32,24 @@ ResourceKind = Literal[
 
 StepStatus = Literal["pending", "active", "done", "failed", "skipped"]
 
-_KIND_ICONS: dict[ResourceKind, str] = {
-    "image": "📦",
-    "volume": "💾",
-    "secret": "🔑",
-    "container": "🐳",
-    "scaling_group": "☁",
-    "function": "⚡",
-    "class": "🏗️",
-    "method": "  ↳",
-}
-
-_KIND_VERBS: dict[ResourceKind, str] = {
-    "image": "Building image",
-    "volume": "Creating volume",
-    "secret": "Resolving secret",
-    "container": "Starting container",
-    "scaling_group": "Deploying scaling group",
-    "function": "Deploying function",
-    "class": "Deploying class",
-    "method": "Registering method",
+_STATUS_MARKS: dict[StepStatus, tuple[str, str, str]] = {
+    "pending": ("·", ".", "2"),
+    "active": ("›", ">", "36"),
+    "done": ("✓", "+", "32"),
+    "failed": ("✗", "!", "31"),
+    "skipped": ("–", "-", "2"),
 }
 
 
 def tui_enabled() -> bool:
-    """Select live progress independently of diagnostic log verbosity."""
+    """Select progress independently of diagnostic log verbosity."""
     mode = os.environ.get("CHALK_SANDBOX_TUI", "auto").strip().lower()
     if mode in ("true", "1"):
         return True
     if mode != "auto":
         return False
-    return bool(
-        getattr(sys.stderr, "isatty", lambda: False)()
-        and os.environ.get("TERM") != "dumb"
-        and not os.environ.get("CI")
-        and "ipykernel" not in sys.modules
+    return (
+        interactive_terminal(sys.stderr)
         and not logging.getLogger("chalkcompute").hasHandlers()
     )
 
@@ -77,8 +66,8 @@ def _skip_unfinished_descendants(state: "_ResourceState") -> None:
     """Mark a terminal row's unfinished children as skipped.
 
     An operation that has finished — successfully or not — has no steps still
-    running, so leaving descendants "active" would keep the spinner alive and
-    make the two terminality checks disagree about whether the tree is idle.
+    running, so leaving descendants "active" would make the two terminality checks
+    disagree about whether the tree is idle.
     """
     pending = list(state.children)
     while pending:
@@ -89,7 +78,7 @@ def _skip_unfinished_descendants(state: "_ResourceState") -> None:
 
 
 class _ResourceState:
-    __slots__ = ("kind", "label", "status", "detail", "children")
+    __slots__ = ("kind", "label", "status", "detail", "children", "last_rendered")
 
     def __init__(self, kind: ResourceKind, label: str) -> None:
         self.kind = kind
@@ -97,6 +86,7 @@ class _ResourceState:
         self.status: StepStatus = "active"
         self.detail: str = ""
         self.children: list[_ResourceState] = []
+        self.last_rendered: tuple[StepStatus, str, str, int] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -105,19 +95,16 @@ class _ResourceState:
 
 
 class DeployProgress:
-    """Thread-safe global progress tracker rendered via Rich ``Live``.
+    """Thread-safe deployment tracker that prints a line for each changed step.
 
-    Call ``add`` to register a resource, ``update`` to change its
-    status, and the display auto-refreshes. The Rich ``Live`` context is
-    started lazily on the first ``add`` and stopped when ``finish``
-    is called (or all resources reach a terminal state).
+    Completed lines remain in scrollback. There are no refresh threads, cursor
+    controls, or stream proxies, so warnings and application output stay intact.
     """
 
     def __init__(self) -> None:
         self._resources: dict[str, _ResourceState] = {}
         self._order: list[str] = []
         self._lock = threading.Lock()
-        self._live: Any = None  # rich.live.Live | None
         self._started = False
 
     # -- Public API --------------------------------------------------------
@@ -139,9 +126,9 @@ class DeployProgress:
         key
             Unique identifier for the resource.
         kind
-            Resource kind for icon selection.
+            Resource kind.
         label
-            Human-readable label shown next to the spinner.
+            Human-readable label shown next to the status marker.
         parent
             Optional key of an existing resource to nest under.
         status
@@ -168,7 +155,7 @@ class DeployProgress:
             else:
                 self._order.append(key)
 
-            self._ensure_live()
+            self._start()
             self._refresh()
 
     def update(
@@ -207,9 +194,9 @@ class DeployProgress:
             self._refresh()
 
     def finish(self) -> None:
-        """Stop the Live display."""
+        """Finish the current group of operations."""
         with self._lock:
-            self._stop_live()
+            self._stop()
 
     def finish_if_idle(self) -> None:
         """Stop the display only when every top-level operation is terminal.
@@ -221,7 +208,7 @@ class DeployProgress:
         """
         with self._lock:
             if self._all_roots_terminal():
-                self._stop_live()
+                self._stop()
 
     def _all_roots_terminal(self) -> bool:
         return all(
@@ -264,99 +251,40 @@ class DeployProgress:
 
     # -- Rendering ---------------------------------------------------------
 
-    def _render(self) -> Any:
-        from rich.table import Table
-
-        grid = Table.grid(padding=(0, 0))
-        grid.add_column(width=3)  # icon
-        grid.add_column(width=3)  # status
-        grid.add_column()  # label + detail
-
-        for key in self._order:
-            state = self._resources[key]
-            self._render_row(grid, state, indent=0)
-
-        return grid
-
-    def _render_row(self, grid: Any, state: _ResourceState, indent: int) -> None:
-        from rich.spinner import Spinner
-        from rich.table import Table
-        from rich.text import Text
-
-        icon_str = _KIND_ICONS.get(state.kind, " ")
-        prefix = "  " * indent
-
-        if state.status == "active":
-            status_widget = Spinner("dots", style="cyan")
-        elif state.status == "done":
-            status_widget = Text("✓", style="bold green")
-        elif state.status == "failed":
-            status_widget = Text("✗", style="bold red")
-        elif state.status == "skipped":
-            status_widget = Text("–", style="dim")
-        else:  # pending
-            status_widget = Text("◌", style="dim")
-
-        label = state.label
-        if state.detail:
-            label = f"{label} — {state.detail}"
-
-        style = "dim" if state.status == "pending" else ""
-        if state.status == "failed":
-            style = "red"
-
-        icon_col = Text(f"{prefix}{icon_str}")
-        label_col = Text(f" {label}", style=style)
-
-        # Build a tight status + label row
-        row = Table.grid(padding=(0, 1))
-        row.add_column(width=2)
-        row.add_column()
-        row.add_row(status_widget, label_col)
-
-        grid.add_row(icon_col, Text(""), row)
-
-        for child in state.children:
-            self._render_row(grid, child, indent=indent + 1)
-
-    # -- Live management ---------------------------------------------------
-
-    def _ensure_live(self) -> None:
-        """Start the Rich ``Live`` display if not already started."""
-        if self._started:
-            return
-        try:
-            from rich.console import Console
-            from rich.live import Live
-
-            self._live = Live(
-                self._render(),
-                console=Console(stderr=True),
-                redirect_stdout=False,
-                redirect_stderr=True,
-                refresh_per_second=4,
-                transient=False,
-            )
-            self._live.start()
-            self._started = True
-        except ImportError:
-            pass
-
     def _refresh(self) -> None:
-        if self._live is not None:
+        stream = sys.stderr
+        color = supports_color(stream)
+        lines: list[str] = []
+        pending = [(self._resources[key], 0) for key in reversed(self._order)]
+        while pending:
+            state, indent = pending.pop()
+            pending.extend((child, indent + 1) for child in reversed(state.children))
+            snapshot = (state.status, state.label, state.detail, indent)
+            if snapshot == state.last_rendered:
+                continue
+            state.last_rendered = snapshot
+            mark, fallback, code = _STATUS_MARKS[state.status]
+            if encodable(mark, stream) != mark:
+                mark = fallback
+            label = " ".join(state.label.split())
+            detail = " ".join(state.detail.split())
+            line = "  " * indent + styled(mark, code, color=color) + " " + label
+            if detail:
+                separator = "—" if encodable("—", stream) == "—" else "-"
+                line += styled(f" {separator} {detail}", "2", color=color)
+            lines.append(encodable(line, stream))
+        if lines:
             try:
-                self._live.update(self._render())
-            except Exception:
+                stream.write("\n".join(lines) + "\n")
+                stream.flush()
+            except (OSError, ValueError):
+                # A closed/redirected console must not fail a deployment.
                 pass
 
-    def _stop_live(self) -> None:
-        if self._live is not None:
-            try:
-                self._live.update(self._render())
-                self._live.stop()
-            except Exception:
-                pass
-            self._live = None
+    def _start(self) -> None:
+        self._started = True
+
+    def _stop(self) -> None:
         self._started = False
 
 
@@ -380,7 +308,7 @@ def get_progress() -> DeployProgress | None:
     with _global_lock:
         if not tui_enabled():
             # Logging may be configured (or progress disabled) while a deployment
-            # is running. Always restore stderr and the cursor in that case.
+            # is running. Discard its display state in that case.
             if _global_progress is not None:
                 _global_progress.finish()
                 _global_progress = None
@@ -420,7 +348,7 @@ def progress_add(
     key
         Unique identifier for the resource.
     kind
-        Resource kind for icon selection.
+        Resource kind.
     label
         Human-readable label.
     parent
@@ -491,7 +419,3 @@ def progress_finish() -> None:
     p = get_progress()
     if p is not None:
         p.finish_if_idle()
-
-
-# Keep the old import name alive but unused (backwards compat)
-from typing import Any  # noqa: E402
