@@ -453,6 +453,8 @@ def test_definition_only_script_reports_deployment_failure(
         )
     assert f'File "{script}", line 14, in broken' in completed.stderr
     assert "@function" in completed.stderr
+    assert "  > 14 | @function" in completed.stderr
+    assert "15 | def broken(value: int) -> int:" in completed.stderr
     if not expected_failure:
         assert "Traceback (most recent call last)" in completed.stderr
         assert "concurrent/futures/thread.py" in completed.stderr

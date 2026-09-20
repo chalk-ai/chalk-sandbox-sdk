@@ -7,11 +7,14 @@ Small scripts and notebooks can use :func:`configure_logging` instead.
 
 from __future__ import annotations
 
+import copy
 import logging
 import threading
+from types import TracebackType
 from typing import TextIO
 
 from chalkcompute._terminal import styled, supports_color
+from chalkcompute._traceback import format_exception
 
 _configuration_lock = threading.Lock()
 _console_handler: logging.Handler | None = None
@@ -67,6 +70,11 @@ class _ConsoleFormatter(logging.Formatter):
         self._color = color
 
     def format(self, record: logging.LogRecord) -> str:
+        # Formatter caches exc_text on the record. Work on a copy so handlers
+        # before and after ours retain their own exception presentation.
+        record = copy.copy(record)
+        if record.exc_info:
+            record.exc_text = None
         text = super().format(record)
         if not self._color or not supports_color(self._stream):
             return text
@@ -83,6 +91,15 @@ class _ConsoleFormatter(logging.Formatter):
         return (
             styled(record.levelname, code, color=True) + text[len(record.levelname) :]
         )
+
+    def formatException(
+        self,
+        ei: tuple[type[BaseException], BaseException, TracebackType | None]
+        | tuple[None, None, None],
+    ) -> str:
+        if ei[1] is None:
+            return super().formatException(ei)
+        return format_exception(ei[1], ei[2]).rstrip()
 
 
 class _StatusLogger:

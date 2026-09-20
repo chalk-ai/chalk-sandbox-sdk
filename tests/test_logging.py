@@ -351,3 +351,42 @@ def test_sdk_runtime_dependencies_do_not_include_rich():
         dep.startswith("rich") for dep in metadata["project"]["dependencies"]
     )
     assert not any(dep.startswith("rich") for dep in _LOCAL_SDK_RUNTIME_PACKAGES)
+
+
+@pytest.mark.parametrize("application_first", [False, True])
+def test_console_exception_context_does_not_leak_to_application_handlers(
+    isolated_sdk_logger, application_first
+):
+    console, application = io.StringIO(), io.StringIO()
+    handler = logging.StreamHandler(application)
+    handler.setFormatter(logging.Formatter("APP %(message)s"))
+    if application_first:
+        isolated_sdk_logger.addHandler(handler)
+    chalkcompute.configure_logging(stream=console, color=False)
+    if not application_first:
+        isolated_sdk_logger.addHandler(handler)
+    try:
+        raise ValueError("logged failure")
+    except ValueError:
+        isolated_sdk_logger.exception("operation failed")
+    assert " | " in console.getvalue()
+    assert "  > " in console.getvalue()
+    assert "ValueError: logged failure" in console.getvalue()
+    assert "\033[" not in console.getvalue()
+    assert " | " not in application.getvalue()
+    assert (
+        "APP operation failed\nTraceback (most recent call last):"
+        in application.getvalue()
+    )
+
+
+def test_console_respects_explicit_exc_info_traceback(isolated_sdk_logger):
+    console = io.StringIO()
+    chalkcompute.configure_logging(stream=console)
+    try:
+        raise ValueError("message only")
+    except ValueError as error:
+        isolated_sdk_logger.error("failed", exc_info=(ValueError, error, None))
+    assert (
+        console.getvalue() == "ERROR chalkcompute: failed\nValueError: message only\n"
+    )

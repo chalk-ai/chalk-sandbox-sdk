@@ -927,7 +927,12 @@ show the function's source location and error messages without SDK or transport
 stack frames. RPC failures include the status code (such as `ALREADY_EXISTS`) in
 the failure heading. Server-provided recovery instructions, including CLI
 commands and dashboard links, are preserved in the output.
-Unexpected exceptions always include their full traceback.
+Source locations include numbered lines of surrounding code, with `>` marking
+the relevant line. Unexpected exceptions always include their full traceback,
+with the same source context for each frame. Exception causes, notes, and groups
+are preserved. `cc.configure_logging()` also uses this rendering for logged
+exceptions. Rendering uses the Python standard library and never displays local
+variable values or installs a global exception hook.
 
 ### Remote execution errors
 
