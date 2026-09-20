@@ -448,7 +448,7 @@ requires-dist = [
     { name = "chalk-remote-call-python", specifier = ">=1.9.2" },
     { name = "chalkdf", marker = "extra == 'dev'", specifier = ">=3.31.87" },
     { name = "chalkpy", extras = ["runtime"], marker = "extra == 'dev'", specifier = ">=2.154.34" },
-    { name = "connectrpc", specifier = ">=0.12.0" },
+    { name = "connectrpc", specifier = ">=0.12.1" },
     { name = "opentelemetry-api", specifier = ">=1.20.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.20.0" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.20.0" },
@@ -661,15 +661,15 @@ wheels = [
 
 [[package]]
 name = "connectrpc"
-version = "0.12.0"
+version = "0.12.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "protobuf-py" },
     { name = "pyqwest" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/87/c4/05c740ed32c66409f603dd0655f7a7565c8ce2982a53cc1ae4139b062233/connectrpc-0.12.0.tar.gz", hash = "sha256:808c0146581b26d46cdb805df16ebbae03907b38fda104bb6208eaaa704288e7", size = 50561, upload-time = "2026-09-04T01:29:03.594Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b8/43/025430769a6cc82a1e1c76cd9760639f6bf9b05577f90e38a0bb57b41b39/connectrpc-0.12.1.tar.gz", hash = "sha256:da7ca41c6cd8d9ce640ad86ae325a71cd83dfdd1e43748976315cb4b0546fb69", size = 50556, upload-time = "2026-09-04T15:23:31.327Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fa/24/77669006392d442d677c90bee47b2c9423035ae05775819e9024e305a1b9/connectrpc-0.12.0-py3-none-any.whl", hash = "sha256:aada621024d0f017010bc6dda39591a4c725dc91f52c3a40f55682cb21a69cf2", size = 70056, upload-time = "2026-09-04T01:29:02.276Z" },
+    { url = "https://files.pythonhosted.org/packages/0e/f8/b244edb73395c5a74bfeab13ace9e6ccda89d31fb5e493ca8a8c96106eae/connectrpc-0.12.1-py3-none-any.whl", hash = "sha256:ba85ff49b5b7e0f1b16d07b35a05e39ce92c1a7116a7ed1a271c76393323cd07", size = 70058, upload-time = "2026-09-04T15:23:28.686Z" },
 ]
 
 [[package]]
