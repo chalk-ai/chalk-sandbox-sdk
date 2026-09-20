@@ -1,3 +1,4 @@
+from chalkcompute._logging import configure_logging as configure_logging
 from chalkcompute._sql import SQLClient as SQLClient
 from chalkcompute._sql import SQLResult as SQLResult
 from chalkcompute._sql import SQLJob as SQLJob
@@ -154,6 +155,7 @@ from chalkcompute._sandbox_git import GitRemote as GitRemote
 from chalkcompute._git import GitError as GitError
 
 __all__ = [
+    "configure_logging",
     "SandboxGit",
     "GitFileStatus",
     "GitStatus",

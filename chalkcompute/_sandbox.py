@@ -2079,18 +2079,27 @@ def connect(target: str = "localhost:50051", **kwargs) -> SandboxClient:
 
 
 if __name__ == "__main__":
+    import logging
+
+    from chalkcompute._logging import configure_logging
+
+    configure_logging()
+    logger = logging.getLogger("chalkcompute._sandbox")
     client = SandboxClient()
 
-    print("Listing sandboxes:")
-    for sandbox_info in client.list():
-        print(
-            f"  - {sandbox_info.id} ({sandbox_info.status}) {sandbox_info.name or ''}"
+    logger.info("Listing sandboxes:")
+    sandboxes = client.list()
+    for sandbox_info in sandboxes:
+        logger.info(
+            "  - %s (%s) %s",
+            sandbox_info.id,
+            sandbox_info.status,
+            sandbox_info.name or "",
         )
 
-    sandboxes = client.list()
     if sandboxes:
         sandbox = client.get(id=sandboxes[0].id)
-        print(f"\nExecuting 'echo hello' on sandbox {sandbox.id}:")
+        logger.info("Executing 'echo hello' on sandbox %s:", sandbox.id)
         result = sandbox.exec("echo", "hello")
-        print(f"  stdout: {result.stdout_text.rstrip()}")
-        print(f"  exit_code: {result.exit_code}")
+        logger.info("  stdout: %s", result.stdout_text.rstrip())
+        logger.info("  exit_code: %s", result.exit_code)

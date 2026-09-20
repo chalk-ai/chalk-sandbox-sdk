@@ -35,6 +35,7 @@ from connectrpc.protocol import ProtocolType
 from protobuf import Oneof
 from protobuf.wkt import Duration
 
+from chalkcompute._logging import _StatusLogger
 from chalkcompute._connect import (
     ConnectClient,
     raise_for_rpc_error,
@@ -1169,6 +1170,7 @@ class Container:
                 )
 
             progress_done(ckey, detail="running")
+            logger.info("Container running: %s", self._container_id)
         except BaseException:
             progress_fail(ckey)
             raise
@@ -1186,10 +1188,15 @@ class Container:
         assert self._container_id is not None
         deadline = time.monotonic() + timeout
         request = container_pb.GetContainerRequest(id=self._container_id)
+        status_log = _StatusLogger(
+            logger,
+            f"Container {self._container_id}",
+            progress_key=f"container:{self._name}",
+        )
         while time.monotonic() < deadline:
             info = _get_container_info(self._client, request)
             self._container_info = info
-            logger.info("  poll: status=%s", info.status)
+            status_log.update(info.status)
             if info.status == "Running":
                 return
             if info.status in ("Failed", "Succeeded"):
