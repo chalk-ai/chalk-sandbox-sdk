@@ -467,6 +467,67 @@ def test_definition_only_script_reports_deployment_failure(
         assert "in fake_deploy" not in completed.stderr
 
 
+@pytest.mark.parametrize(
+    ("tty", "no_color", "ci", "term", "notebook", "expected_color"),
+    [
+        (True, False, False, "xterm", False, True),
+        (False, False, False, "xterm", False, False),
+        (True, True, False, "xterm", False, False),
+        (True, False, True, "xterm", False, False),
+        (True, False, False, "dumb", False, False),
+        (True, False, False, "xterm", True, False),
+    ],
+)
+def test_background_failure_color_policy(
+    tmp_path, tty, no_color, ci, term, notebook, expected_color
+):
+    script = tmp_path / "failure.py"
+    script.write_text(
+        textwrap.dedent(f"""\
+        import sys
+        from chalkcompute._function import FunctionBuildError, RemoteFunction, function
+        sys.stderr.isatty = lambda: {tty!r}
+        if {notebook!r}:
+            sys.modules["ipykernel"] = object()
+        def fail(self):
+            raise FunctionBuildError("deployment failed")
+        RemoteFunction._deploy = fail
+        @function
+        def broken(value: int) -> int:
+            return value
+    """)
+    )
+    env = os.environ.copy()
+    env["TERM"] = term
+    env["CHALK_SANDBOX_TUI"] = "false"
+    env["PYTHONPATH"] = str(Path(__file__).parents[1])
+    for name, enabled in [("NO_COLOR", no_color), ("CI", ci)]:
+        if enabled:
+            env[name] = "1"
+        else:
+            env.pop(name, None)
+    completed = subprocess.run(
+        [sys.executable, str(script)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert completed.returncode == 1, completed.stderr
+    assert ("\033[" in completed.stderr) == expected_color
+    if expected_color:
+        assert completed.stderr.startswith("\033[1;31mBackground deployment")
+        assert f"\033[36m{script}\033[0m" in completed.stderr
+        assert (
+            "\033[1;31mchalkcompute._function.FunctionBuildError\033[0m:"
+            in completed.stderr
+        )
+    else:
+        assert "FunctionBuildError: deployment failed" in completed.stderr
+    assert "def broken(value: int) -> int:" in completed.stderr
+
+
 def _version_info(name: str) -> FunctionVersionInfo:
     return FunctionVersionInfo(
         id="version-1",

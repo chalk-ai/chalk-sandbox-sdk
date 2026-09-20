@@ -929,7 +929,10 @@ the failure heading. Server-provided recovery instructions, including CLI
 commands and dashboard links, are preserved in the output.
 Source locations include numbered lines of surrounding code, with `>` marking
 the relevant line. Unexpected exceptions always include their full traceback,
-with the same source context for each frame. Exception causes, notes, and groups
+with the same source context for each frame. Interactive terminals show colored
+locations, failing lines, expression markers, and exception types. Redirected
+output, notebooks, CI, `TERM=dumb`, and `NO_COLOR` keep tracebacks plain.
+Exception causes, notes, and groups
 are preserved. `cc.configure_logging()` also uses this rendering for logged
 exceptions. Rendering uses the Python standard library and never displays local
 variable values or installs a global exception hook.

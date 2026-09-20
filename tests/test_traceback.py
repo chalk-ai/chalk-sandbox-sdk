@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import linecache
+import re
 import traceback
 
 import pytest
@@ -146,3 +147,39 @@ def test_recursive_stacks_are_folded_and_do_not_capture_locals():
         result = format_exception(error, error.__traceback__)
     assert "Previous line repeated" in result
     assert len(result) < 10000
+
+
+def test_colored_frame_preserves_text_and_highlights_location_and_expression(tmp_path):
+    source = tmp_path / "example.py"
+    source.write_text("value = 1 / 0\n")
+    frame = traceback.FrameSummary(
+        str(source), 1, "testing", end_lineno=1, colno=8, end_colno=13
+    )
+    colored = format_frame(frame, color=True)
+    assert re.sub(r"\x1b\[[0-9;]*m", "", colored) == format_frame(frame)
+    assert f"\033[36m{source}\033[0m" in colored
+    assert "\033[35mtesting\033[0m" in colored
+    assert "\033[1;31m  > 1 |\033[0m" in colored
+    assert "\033[1;33mvalue = 1 / 0\033[0m" in colored
+    assert "^^^^^\033[0m" in colored
+
+
+@pytest.mark.parametrize("compact", [False, True])
+def test_color_preserves_chains_groups_notes_and_messages(compact):
+    try:
+        try:
+            raise ValueError("original problem")
+        except ValueError as cause:
+            error = RuntimeError("failed\n  run this command\nhttps://example.com")
+            error.add_note("diagnostic note")
+            raise error from cause
+    except RuntimeError as error:
+        group = ExceptionGroup("failures", [error])
+    colored = format_exception(group, None, compact=compact, color=True)
+    plain = format_exception(group, None, compact=compact)
+    assert re.sub(r"\x1b\[[0-9;]*m", "", colored) == plain
+    for name in ["ExceptionGroup", "RuntimeError", "ValueError"]:
+        assert f"\033[1;31m{name}\033[0m:" in colored
+    assert "  run this command\n" in colored
+    assert "https://example.com\n" in colored
+    assert "diagnostic note\n" in colored

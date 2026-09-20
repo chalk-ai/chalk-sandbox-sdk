@@ -70,6 +70,7 @@ from protobuf.wkt import FieldMask
 from chalkcompute import _local_dev
 from chalkcompute._logging import _StatusLogger
 from chalkcompute._traceback import format_exception, format_frame
+from chalkcompute._terminal import styled, supports_color
 from chalkcompute._function_error import (
     FunctionError,
     decode_remote_error,
@@ -323,6 +324,7 @@ def _report_unobserved_background_deployments() -> None:
         registered_name = function._explicit_name or function._func_name
         status = f" [{error.code.name}]" if isinstance(error, ConnectRpcError) else ""
         details = ""
+        color = supports_color(sys.stderr)
         # The worker's traceback has no user call site. Look up the definition
         # only when reporting a failure, avoiding source reads on success.
         code = getattr(inspect.unwrap(function._func), "__code__", None)
@@ -330,19 +332,23 @@ def _report_unobserved_background_deployments() -> None:
             source = traceback.FrameSummary(
                 code.co_filename, code.co_firstlineno, function._func_name
             )
-            details = format_frame(source)
+            details = format_frame(source, color=color)
         if isinstance(error, (ConnectRpcError, ConnectError, FunctionError)):
             # These exceptions already describe an actionable deployment
             # failure. Keep messages, notes, and causes, without RPC plumbing.
-            details += format_exception(error, error.__traceback__, compact=True)
+            details += format_exception(
+                error, error.__traceback__, compact=True, color=color
+            )
         else:
             # Unexpected bugs still need their diagnostic frames by default.
-            details += format_exception(error, error.__traceback__)
+            details += format_exception(error, error.__traceback__, color=color)
         # This is the only explanation for the nonzero exit of a definition-only
         # script. Report it independently of logging filters and progress settings.
+        heading = (
+            f"Background deployment for function {registered_name!r} failed{status}:"
+        )
         sys.stderr.write(
-            f"Background deployment for function {registered_name!r} failed{status}:\n"
-            f"{details.rstrip()}\n"
+            styled(heading, "1;31", color=color) + f"\n{details.rstrip()}\n"
         )
 
     if not failed:

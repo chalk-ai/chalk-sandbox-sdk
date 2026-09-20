@@ -26,7 +26,8 @@ def configure_logging(
     """Enable SDK console logs (stderr by default).
 
     Only the ``chalkcompute`` logger is configured. Records use literal text,
-    with colored level labels on interactive terminals and plain text elsewhere.
+    with colored level labels and tracebacks on interactive terminals and plain
+    text elsewhere.
     There is no markup interpretation, table wrapping, or cursor rewriting. Calling
     this again replaces only the handler installed by this helper, which is useful
     when rerunning notebook cells. Existing application handlers are left intact.
@@ -99,7 +100,9 @@ class _ConsoleFormatter(logging.Formatter):
     ) -> str:
         if ei[1] is None:
             return super().formatException(ei)
-        return format_exception(ei[1], ei[2]).rstrip()
+        return format_exception(
+            ei[1], ei[2], color=self._color and supports_color(self._stream)
+        ).rstrip()
 
 
 class _StatusLogger:
