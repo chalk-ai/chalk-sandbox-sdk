@@ -937,6 +937,10 @@ are preserved. `cc.configure_logging()` also uses this rendering for logged
 exceptions. Rendering uses the Python standard library and never displays local
 variable values or installs a global exception hook.
 
+Missing parameter or return annotations raise `cc.FunctionSignatureError`
+(also a `TypeError`). Background deployments show just the function's source
+context and a fix hint for these validation errors, without worker or SDK frames.
+
 ### Remote execution errors
 
 Remote handler failures raise `chalkcompute.RemoteExecutionError`, a subclass of

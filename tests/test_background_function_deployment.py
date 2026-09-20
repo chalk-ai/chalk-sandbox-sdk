@@ -341,6 +341,7 @@ def test_definition_only_script_waits_for_all_deployments(tmp_path: Path) -> Non
     ("error", "error_type", "expected_failure", "rpc_code"),
     [
         ('RuntimeError("deployment exploded")', "RuntimeError", False, None),
+        ('TypeError("deployment exploded")', "TypeError", False, None),
         ('FunctionBuildError("deployment exploded")', "FunctionBuildError", True, None),
         ('ConnectError("deployment exploded")', "ConnectError", True, None),
         (
@@ -526,6 +527,83 @@ def test_background_failure_color_policy(
     else:
         assert "FunctionBuildError: deployment failed" in completed.stderr
     assert "def broken(value: int) -> int:" in completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("signature", "message", "hint"),
+    [
+        (
+            "()",
+            "Function 'broken' must have a return type annotation",
+            "Add '-> None' if it returns nothing",
+        ),
+        (
+            "(value: int)",
+            "Function 'broken' must have a return type annotation",
+            "Add '-> None' if it returns nothing",
+        ),
+        (
+            "(value) -> int",
+            "Parameter 'value' of function 'broken' must have a type annotation",
+            "'value: str'",
+        ),
+    ],
+)
+@pytest.mark.parametrize("color", [False, True])
+def test_definition_only_script_reports_missing_annotations(
+    tmp_path: Path, signature: str, message: str, hint: str, color: bool
+) -> None:
+    # Use real schema validation in a worker without building an image or
+    # contacting the service. The subprocess exercises the exit-time reporter.
+    script = tmp_path / "missing_annotation.py"
+    script.write_text(
+        textwrap.dedent(
+            f"""\
+            from chalkcompute._function import RemoteFunction, _build_schemas, function; import sys; sys.stderr.isatty = lambda: {color!r}
+
+            def validate(self):
+                _build_schemas(self._func)
+
+            RemoteFunction._deploy = validate
+
+            @function
+            def broken{signature}:
+                return {"value" if "value" in signature else "'hello'"}
+            """
+        )
+    )
+    env = os.environ.copy()
+    env.pop("NO_COLOR", None)
+    env.pop("CI", None)
+    env["TERM"] = "xterm"
+    env["CHALK_SANDBOX_TUI"] = "false"
+    repo_root = Path(__file__).parents[1]
+    env["PYTHONPATH"] = os.pathsep.join([str(repo_root), env.get("PYTHONPATH", "")])
+    completed = subprocess.run(
+        [sys.executable, str(script)],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    import re
+
+    assert completed.returncode == 1, completed.stderr
+    assert ("\033[" in completed.stderr) == color
+    rendered = re.sub(r"\x1b\[[0-9;]*m", "", completed.stderr)
+    assert "Background deployment for function 'broken' failed:" in rendered
+    assert f'File "{script}", line 8, in broken' in rendered
+    assert "  >  8 | @function" in rendered
+    assert f"9 | def broken{signature}:" in rendered
+    assert f"FunctionSignatureError: {message}" in rendered
+    assert hint in rendered
+    assert "Traceback (most recent call last)" not in rendered
+    assert "concurrent/futures" not in rendered
+    assert "chalkcompute/_function.py" not in rendered
+    assert rendered.count('  File "') == 1
 
 
 def _version_info(name: str) -> FunctionVersionInfo:
