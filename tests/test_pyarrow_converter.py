@@ -254,6 +254,27 @@ class TestRichToArrowSchema:
 
 
 class TestBuildSchemas:
+    def test_missing_annotation_remains_a_type_error(self):
+        from chalkcompute import FunctionError, FunctionSignatureError
+        from chalkcompute._function import _build_schemas
+
+        def missing_return(value: int):
+            return value
+
+        with pytest.raises(TypeError) as exc_info:
+            _build_schemas(missing_return)
+        assert isinstance(exc_info.value, FunctionSignatureError)
+        assert isinstance(exc_info.value, FunctionError)
+
+    def test_explicit_none_return_is_valid(self):
+        from chalkcompute._function import _build_schemas
+
+        def returns_nothing() -> None:
+            pass
+
+        _, output_proto = _build_schemas(returns_nothing)
+        assert output_proto.columns[0].name == "result"
+
     def test_simple_function(self):
         from chalkcompute._function import _build_schemas
 

@@ -371,6 +371,10 @@ class FunctionBuildError(FunctionError):
     """Raised when the function image build fails."""
 
 
+class FunctionSignatureError(TypeError, FunctionError):
+    """Raised when a function is missing required type annotations."""
+
+
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
@@ -1928,7 +1932,7 @@ def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
 
     Raises
     ------
-    TypeError
+    FunctionSignatureError
         If any parameter or the return type lacks an annotation.
     """
     import collections.abc as _cabc
@@ -1937,13 +1941,17 @@ def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
 
     hints = typing.get_type_hints(func, include_extras=True)
     sig = inspect.signature(func)
+    func_name = getattr(func, "__name__", type(func).__name__)
 
     # Input: one Field per parameter
     input_types: dict[str, type] = {}
     for param_name in sig.parameters:
         param_type = hints.get(param_name)
         if param_type is None:
-            raise TypeError(f"Parameter '{param_name}' must have a type annotation")
+            raise FunctionSignatureError(
+                f"Parameter '{param_name}' of function '{func_name}' must have "
+                f"a type annotation. Add its type, for example '{param_name}: str'."
+            )
         input_types[param_name] = param_type
     input_schema = rich_to_arrow_schema(input_types)
     for column in input_schema.columns:
@@ -1959,7 +1967,10 @@ def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
     # For generator functions (Iterator[T], Generator[T, ...]), unwrap to the yield type.
     return_type = hints.get("return")
     if return_type is None:
-        raise TypeError("Function must have a return type annotation")
+        raise FunctionSignatureError(
+            f"Function '{func_name}' must have a return type annotation. "
+            "Add '-> None' if it returns nothing, or annotate the returned value's type."
+        )
 
     is_generator = False
     is_async = inspect.iscoroutinefunction(func) or inspect.isasyncgenfunction(func)
