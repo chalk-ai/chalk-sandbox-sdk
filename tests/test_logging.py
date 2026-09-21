@@ -103,10 +103,9 @@ def test_default_status_survives_captured_output_and_logging_configuration(
     )
     assert result.stdout == "customer stdout\n"
     assert result.stderr.splitlines() == [
-        'Function "fraud"',
-        "  │ › Pending",
+        '› Function "fraud": Pending',
         "customer stderr",
-        "  └ ✓ Ready",
+        '✓ Function "fraud": Ready',
     ]
 
 
@@ -265,6 +264,7 @@ def test_status_deduplication_is_per_operation(caplog) -> None:
 def test_console_color_policy(
     isolated_sdk_logger,
     monkeypatch,
+    no_ci_environment,
     tty,
     color,
     no_color,
@@ -310,6 +310,29 @@ def test_console_color_policy(
     assert "\033[" not in plain.getvalue()
 
 
+@pytest.mark.parametrize(
+    "ci_variable", ["CI", "BUILDKITE", "GITHUB_ACTIONS", "TF_BUILD"]
+)
+def test_ci_provider_disables_console_color(
+    isolated_sdk_logger, monkeypatch, no_ci_environment, ci_variable
+):
+    stream = io.StringIO()
+    monkeypatch.setattr(stream, "isatty", lambda: True)
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delitem(sys.modules, "ipykernel", raising=False)
+    chalkcompute.configure_logging(stream=stream)
+
+    isolated_sdk_logger.warning("local terminal")
+    assert "\033[33mWARNING\033[0m" in stream.getvalue()
+    stream.seek(0)
+    stream.truncate()
+
+    monkeypatch.setenv(ci_variable, "true")
+    isolated_sdk_logger.warning("CI terminal")
+    assert stream.getvalue() == "WARNING chalkcompute: CI terminal\n"
+
+
 def test_logging_and_progress_work_without_site_packages():
     # -S makes third-party packages (including Rich) unavailable entirely.
     result = subprocess.run(
@@ -342,30 +365,27 @@ def test_logging_and_progress_work_without_site_packages():
     )
     assert result.stdout == '{"result": 42}\n'
     assert result.stderr.splitlines() == [
-        'Function "fraud"',
-        "  │ › Pending",
+        '› Function "fraud": Pending',
         "warning stays visible",
-        "  └ ✓ Ready",
+        '✓ Function "fraud": Ready',
         "INFO chalkcompute: finished",
     ]
 
 
-def test_sdk_runtime_dependencies_do_not_include_rich():
+def test_live_renderer_dependency_is_available_in_local_deployments():
     import tomllib
     from pathlib import Path
     from chalkcompute._local_dev import _LOCAL_SDK_RUNTIME_PACKAGES
 
     metadata = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())
-    assert not any(
-        dep.startswith("rich") for dep in metadata["project"]["dependencies"]
-    )
-    assert not any(dep.startswith("rich") for dep in _LOCAL_SDK_RUNTIME_PACKAGES)
+    assert any(dep.startswith("rich") for dep in metadata["project"]["dependencies"])
+    assert any(dep.startswith("rich") for dep in _LOCAL_SDK_RUNTIME_PACKAGES)
 
 
 @pytest.mark.parametrize("application_first", [False, True])
 @pytest.mark.parametrize("color", [False, True])
 def test_console_exception_context_does_not_leak_to_application_handlers(
-    isolated_sdk_logger, application_first, color, monkeypatch
+    isolated_sdk_logger, application_first, color, monkeypatch, no_ci_environment
 ):
     console, application = io.StringIO(), io.StringIO()
     monkeypatch.setattr(console, "isatty", lambda: True)

@@ -480,5 +480,5 @@ def test_container_readiness_logs_transitions_instead_of_each_poll(
         "Container fraud: Running",
     ]
     output = capsys.readouterr().err
-    assert output.count("› Pending") == 1
-    assert output.count("› Running") == 1
+    assert output.count('› Container "fraud": Pending') == 1
+    assert output.count('› Container "fraud": Running') == 1

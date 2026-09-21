@@ -480,7 +480,7 @@ def test_definition_only_script_reports_deployment_failure(
     ],
 )
 def test_background_failure_color_policy(
-    tmp_path, tty, no_color, ci, term, notebook, expected_color
+    tmp_path, no_ci_environment, tty, no_color, ci, term, notebook, expected_color
 ):
     script = tmp_path / "failure.py"
     script.write_text(
@@ -551,7 +551,12 @@ def test_background_failure_color_policy(
 )
 @pytest.mark.parametrize("color", [False, True])
 def test_definition_only_script_reports_missing_annotations(
-    tmp_path: Path, signature: str, message: str, hint: str, color: bool
+    tmp_path: Path,
+    no_ci_environment,
+    signature: str,
+    message: str,
+    hint: str,
+    color: bool,
 ) -> None:
     # Use real schema validation in a worker without building an image or
     # contacting the service. The subprocess exercises the exit-time reporter.

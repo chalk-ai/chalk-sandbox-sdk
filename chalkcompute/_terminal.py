@@ -9,12 +9,18 @@ from typing import TextIO
 
 def interactive_terminal(stream: TextIO) -> bool:
     """Whether this stream is an interactive terminal rather than captured output."""
-    return bool(
-        getattr(stream, "isatty", lambda: False)()
-        and os.environ.get("TERM") != "dumb"
-        and not os.environ.get("CI")
-        and "ipykernel" not in sys.modules
-    )
+    try:
+        return bool(
+            getattr(stream, "isatty", lambda: False)()
+            and os.environ.get("TERM", "").lower() not in ("dumb", "unknown")
+            and not any(
+                os.environ.get(name)
+                for name in ("CI", "BUILDKITE", "GITHUB_ACTIONS", "TF_BUILD")
+            )
+            and "ipykernel" not in sys.modules
+        )
+    except (OSError, ValueError):
+        return False
 
 
 def supports_color(stream: TextIO) -> bool:

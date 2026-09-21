@@ -34,6 +34,7 @@ _LOCAL_SDK_RUNTIME_PACKAGES = [
     "protobuf-py==0.3.0",
     "connectrpc>=0.12.1",
     "pyqwest>=0.9.0",
+    "rich>=13.7.0",
 ]
 
 

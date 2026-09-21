@@ -1,15 +1,15 @@
-"""Dependency-free deployment status output, separate from application logging.
-
-Print only changed steps, with optional terminal color. Never rewrite previous
-lines, replace standard streams, or change application logging configuration.
-"""
+"""Deployment status with live terminal updates and append-only fallback output."""
 
 from __future__ import annotations
 
+import atexit
 import os
+import re
 import sys
 import threading
 from typing import Literal
+
+from chalkcompute._progress_terminal import LiveDisplay
 
 from chalkcompute._terminal import (
     encodable,
@@ -46,7 +46,7 @@ def tui_enabled() -> bool:
     never determine whether deployment status is visible.
     """
     mode = os.environ.get("CHALK_SANDBOX_TUI", "auto").strip().lower()
-    return mode in ("auto", "true", "1")
+    return mode in ("auto", "true", "1", "plain")
 
 
 # ---------------------------------------------------------------------------
@@ -90,19 +90,19 @@ class _ResourceState:
 
 
 class DeployProgress:
-    """Thread-safe deployment tracker that prints a line for each changed step.
+    """Thread-safe deployment tracker shared by all concurrent operations.
 
-    Completed lines remain in scrollback. There are no refresh threads, cursor
-    controls, or stream proxies, so warnings and application output stay intact.
+    Live output is event-driven, with no refresh thread or alternate screen.
+    Captured output prints only changed steps, each with its resource identity.
     """
 
     def __init__(self) -> None:
         self._resources: dict[str, _ResourceState] = {}
         self._order: list[str] = []
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._started = False
-        self._current_group: _ResourceState | None = None
-        self._current_label = ""
+        self._display: LiveDisplay | None = None
+        self._presentation_selected = False
 
     # -- Public API --------------------------------------------------------
 
@@ -248,85 +248,139 @@ class DeployProgress:
 
     # -- Rendering ---------------------------------------------------------
 
+    @staticmethod
+    def _text(value: str) -> str:
+        # Status labels can contain server messages or user-supplied names.
+        # Never let embedded terminal controls move the cursor or style logs.
+        value = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value)
+        return "".join(c for c in " ".join(value.split()) if c.isprintable())
+
+    def _row(self, state: _ResourceState, *, root: bool) -> str:
+        detail = self._text(state.detail)
+        if not root:
+            label = self._text(state.label)
+            return f"{label} — {detail}" if detail else label
+        if state.status in _TERMINAL_STATUSES:
+            label = {"done": "Done", "failed": "Failed", "skipped": "Skipped"}[
+                state.status
+            ]
+            if state.status == "done" and detail in ("ready", "running"):
+                return detail.capitalize()
+            return f"{label} — {detail}" if detail else label
+        return detail
+
     def _refresh(self) -> None:
-        stream = sys.stderr
-        color = supports_color(stream)
+        stream = self._display.stream if self._display else sys.stderr
+        plain = os.environ.get("CHALK_SANDBOX_TUI", "").strip().lower() == "plain"
+        color = supports_color(stream) and not plain
         lines: list[str] = []
+        live_lines: list[str] = []
+        changed = False
         for key in self._order:
             root = self._resources[key]
-            continued = root.last_rendered is not None
-            changes: list[tuple[_ResourceState, int]] = []
-            pending = [(root, 0)]
+            root_label = self._text(root.label)
+            root_changed = (
+                root.last_rendered is not None and root.last_rendered[1] != root.label
+            )
+            pending = [(root, 0, root_label)]
+            root_lines: list[str] = []
+            root_changes: list[str] = []
+            final_line: str | None = None
             while pending:
-                state, depth = pending.pop()
-                pending.extend((child, depth + 1) for child in reversed(state.children))
+                state, depth, path = pending.pop()
+                pending.extend(
+                    (
+                        child,
+                        depth + 1,
+                        path
+                        if state is root
+                        else f"{path} / {self._text(state.label)}",
+                    )
+                    for child in reversed(state.children)
+                )
                 snapshot = (state.status, state.label, state.detail, depth)
-                if snapshot != state.last_rendered:
-                    state.last_rendered = snapshot
-                    changes.append((state, depth))
-            if not changes:
-                continue
-
-            label = " ".join(root.label.split())
-            if self._current_group is not root or self._current_label != label:
-                heading = styled(label, "1", color=color)
-                if continued:
-                    heading += styled(" (continued)", "2", color=color)
-                lines.append(encodable(heading, stream))
-                self._current_group = root
-                self._current_label = label
-
-            # Close the group after its last child, including children skipped
-            # when the parent fails. No step should appear below the end marker.
-            if root.status in _TERMINAL_STATUSES:
-                changes.sort(key=lambda item: item[0] is root)
-            for state, depth in changes:
-                detail = " ".join(state.detail.split())
-                is_root = state is root
-                terminal = is_root and state.status in _TERMINAL_STATUSES
-                if is_root:
-                    if terminal:
-                        label = {
-                            "done": "Done",
-                            "failed": "Failed",
-                            "skipped": "Skipped",
-                        }[state.status]
-                        if state.status == "done" and detail in ("ready", "running"):
-                            label, detail = detail.capitalize(), ""
-                    else:
-                        if not detail:
-                            continue  # The heading already introduces the operation.
-                        label, detail = detail, ""
-                else:
-                    label = " ".join(state.label.split())
+                row_changed = snapshot != state.last_rendered or root_changed
+                state.last_rendered = snapshot
+                row = self._row(state, root=state is root)
+                if not row:
+                    continue  # A resource declaration alone is not progress.
                 mark, fallback, code = _STATUS_MARKS[state.status]
                 if encodable(mark, stream) != mark:
                     mark = fallback
-                branch = "└" if terminal else "│"
-                if encodable(branch, stream) != branch:
-                    branch = "`" if terminal else "|"
-                prefix = "  " + styled(branch, "2", color=color) + " "
-                prefix += "  " * max(0, depth - 1)
-                line = prefix + styled(mark, code, color=color) + " " + label
-                if detail:
-                    separator = "—" if encodable("—", stream) == "—" else "-"
-                    line += styled(f" {separator} {detail}", "2", color=color)
-                lines.append(encodable(line, stream))
-        if lines:
-            try:
+                marker = styled(mark, code, color=color)
+                identity = styled(path, "1", color=color)
+                line = encodable(f"{marker} {identity}: {row}", stream)
+                if row_changed:
+                    if state is root and state.status in _TERMINAL_STATUSES:
+                        final_line = line
+                    else:
+                        root_changes.append(line)
+                    changed = True
+                if state is root:
+                    root_lines.append(
+                        encodable(
+                            f"{marker} {styled(root_label, '1', color=color)}: {row}",
+                            stream,
+                        )
+                    )
+                elif root.status != "done":
+                    # Successful operations collapse to their summary. Keep
+                    # step details while running and when diagnosing failures.
+                    root_lines.append(
+                        encodable(f"{'  ' * depth}{marker} {row}", stream)
+                    )
+            if root_lines:
+                if not self._row(root, root=True):
+                    root_lines.insert(
+                        0, encodable(styled(root_label, "1", color=color), stream)
+                    )
+                live_lines.extend(root_lines)
+            lines.extend(root_changes)
+            if final_line is not None:
+                lines.append(final_line)
+
+        if not changed:
+            return
+        try:
+            if self._display is not None and (
+                plain or not self._display.owns_streams()
+            ):
+                self._display.close()
+                self._display = None
+                stream = sys.stderr
+                # Re-render this change against the new stream/encoding.
+                for state in self._resources.values():
+                    state.last_rendered = None
+                self._refresh()
+                return
+            if not self._presentation_selected:
+                self._presentation_selected = True
+                if not plain:
+                    self._display = LiveDisplay.create(stream, self._lock)
+            if self._display is not None:
+                self._display.update(live_lines)
+            elif lines:
                 stream.write("\n".join(lines) + "\n")
                 stream.flush()
-            except (OSError, ValueError):
-                # A closed/redirected console must not fail a deployment.
-                pass
+        except (OSError, ValueError):
+            # A broken pipe or closed console must not fail a deployment.
+            self._close_display()
 
     def _start(self) -> None:
         self._started = True
 
+    def _close_display(self) -> None:
+        display, self._display = self._display, None
+        if display is not None:
+            try:
+                display.close()
+            except (OSError, ValueError):
+                pass
+
     def _stop(self) -> None:
+        self._close_display()
         self._started = False
-        self._current_group = None
-        self._current_label = ""
+        self._presentation_selected = False
 
 
 # ---------------------------------------------------------------------------
@@ -460,3 +514,7 @@ def progress_finish() -> None:
     p = get_progress()
     if p is not None:
         p.finish_if_idle()
+
+
+# Restore terminal state even when a script exits during a deployment.
+atexit.register(reset_progress)

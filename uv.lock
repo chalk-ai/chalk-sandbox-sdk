@@ -426,6 +426,7 @@ dependencies = [
     { name = "protobuf-py" },
     { name = "pyqwest" },
     { name = "pyyaml" },
+    { name = "rich" },
 ]
 
 [package.optional-dependencies]
@@ -459,6 +460,7 @@ requires-dist = [
     { name = "python-dotenv", marker = "extra == 'dev'", specifier = ">=1.1.0" },
     { name = "pyyaml", specifier = ">=6.0.0" },
     { name = "rapidfuzz", marker = "extra == 'dev'", specifier = ">=3.0.0" },
+    { name = "rich", specifier = ">=13.7.0" },
 ]
 provides-extras = ["sql", "dev"]
 
