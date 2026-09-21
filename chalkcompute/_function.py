@@ -1226,6 +1226,9 @@ class FunctionCallHandle:
                 last_status = result.status_name
                 chunks.extend(result.chunks)
 
+                if result.is_expired:
+                    raise FunctionError("Remote call results have expired")
+
                 if result.is_failed:
                     message = result.error_message or "Remote call failed"
                     if self._can_retry(attempt, message):
@@ -1273,6 +1276,9 @@ class FunctionCallHandle:
                         yielded_any = True
                         yield batch
 
+                if result.is_expired:
+                    raise FunctionError("Remote call results have expired")
+
                 if result.is_failed:
                     message = result.error_message or "Remote call failed"
                     # Once any batch has reached the caller the stream cannot be
@@ -1314,6 +1320,9 @@ class FunctionCallHandle:
                     for batch in reader:
                         yielded_any = True
                         yield batch
+
+                if result.is_expired:
+                    raise FunctionError("Remote call results have expired")
 
                 if result.is_failed:
                     message = result.error_message or "Remote call failed"

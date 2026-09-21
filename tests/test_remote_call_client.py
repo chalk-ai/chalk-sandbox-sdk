@@ -469,7 +469,7 @@ def _err(exc_type: str, message: str) -> str:
 
 
 def _poll(status_name, *, chunks=None, error_message=None):
-    status = {"pending": 1, "running": 2, "completed": 3, "failed": 4}[status_name]
+    status = {"pending": 1, "running": 2, "completed": 3, "failed": 4, "expired": 5}[status_name]
     return RemoteCallPollResult(
         status=status,
         status_name=status_name,
@@ -517,6 +517,16 @@ def test_deferred_get_does_not_retry_genuine_user_error(monkeypatch) -> None:
     with pytest.raises(FunctionError, match="bad input"):
         handle.get(timeout=60)
     # Non-transient error: enqueued once, never resubmitted.
+    assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
+
+
+def test_deferred_get_fails_when_results_have_expired() -> None:
+    FakeRemoteCallClient.poll_results = [_poll("expired")]
+
+    handle = _remote_function().defer(98)
+
+    with pytest.raises(FunctionError, match="results have expired"):
+        handle.get()
     assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
 
 
@@ -589,6 +599,16 @@ def test_sync_stream_does_not_retry_after_yielding(monkeypatch) -> None:
     assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
 
 
+def test_sync_stream_fails_when_results_have_expired() -> None:
+    FakeRemoteCallClient.poll_results = [_poll("expired")]
+
+    handle = _remote_function().defer(3)
+
+    with pytest.raises(FunctionError, match="results have expired"):
+        list(handle.stream())
+    assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
+
+
 def test_async_stream_retries_when_failure_precedes_any_output(monkeypatch) -> None:
     monkeypatch.setattr("chalkcompute._function.asyncio.sleep", _no_sleep)
     FakeRemoteCallClient.poll_results = [
@@ -604,6 +624,19 @@ def test_async_stream_retries_when_failure_precedes_any_output(monkeypatch) -> N
 
     assert asyncio.run(_collect()) == [[0]]
     assert len(FakeRemoteCallClient.instances[0].enqueues) == 2
+
+
+def test_async_stream_fails_when_results_have_expired() -> None:
+    FakeRemoteCallClient.poll_results = [_poll("expired")]
+
+    handle = _async_remote_function().defer(3)
+
+    async def _collect() -> list[list[int]]:
+        return [batch.column("result").to_pylist() async for batch in handle.stream()]
+
+    with pytest.raises(FunctionError, match="results have expired"):
+        asyncio.run(_collect())
+    assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
 
 
 def test_defer_get_and_purge_use_queue_client() -> None:

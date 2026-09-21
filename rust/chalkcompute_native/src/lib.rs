@@ -207,6 +207,7 @@ fn status_code(status: CallStatus) -> i32 {
         CallStatus::Running => 2,
         CallStatus::Completed => 3,
         CallStatus::Failed => 4,
+        CallStatus::Expired => 5,
         CallStatus::Unknown(raw) => raw,
     }
 }
@@ -218,6 +219,7 @@ fn status_name(status: CallStatus) -> &'static str {
         CallStatus::Running => "running",
         CallStatus::Completed => "completed",
         CallStatus::Failed => "failed",
+        CallStatus::Expired => "expired",
         CallStatus::Unknown(_) => "unknown",
     }
 }

@@ -196,6 +196,10 @@ class RemoteCallPollResult:
         return self.status_name.lower() == "completed"
 
     @property
+    def is_expired(self) -> bool:
+        return self.status_name.lower() == "expired"
+
+    @property
     def is_failed(self) -> bool:
         return self.status_name.lower() == "failed"
 
