@@ -229,6 +229,59 @@ def test_calling_runs_local_function_in_process_without_wire_call() -> None:
     assert FakeRemoteCallClient.instances == []
 
 
+@pytest.mark.parametrize("async_call", [False, True])
+def test_remote_execution_error_is_never_retried(async_call: bool) -> None:
+    import json
+    from chalkcompute import RemoteExecutionError
+    from chalkcompute._remote_call_client import RemoteCallStatusError
+    from tests.test_remote_execution_error import payload
+
+    wire = json.loads(payload())
+    wire["exception"]["message"] = "transport error: GOAWAY connection reset"
+    FakeRemoteCallClient.call_ipc_errors = [RemoteCallStatusError(2, json.dumps(wire))]
+    fn = _remote_function()
+
+    async def call():
+        return await fn.remote(1)
+
+    with pytest.raises(RemoteExecutionError):
+        asyncio.run(call()) if async_call else fn.remote(1)
+    assert len(FakeRemoteCallClient.instances) == 1
+    assert not FakeRemoteCallClient.instances[0].closed
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("async_call", [False, True])
+def test_deferred_remote_execution_error_preserves_details(
+    stream: bool, async_call: bool
+) -> None:
+    from chalkcompute import RemoteExecutionError
+    from tests.test_remote_execution_error import payload
+
+    FakeRemoteCallClient.poll_results = [
+        _poll("failed", error_message=_err("ProxyError", payload())),
+    ]
+    fn = _remote_function()
+    handle = fn.defer(1)
+
+    handle._is_async = async_call
+
+    async def call():
+        if stream:
+            return [item async for item in handle.stream()]
+        return await handle.get()
+
+    with pytest.raises(RemoteExecutionError) as caught:
+        if async_call:
+            asyncio.run(call())
+        elif stream:
+            list(handle.stream())
+        else:
+            handle.get()
+    assert caught.value.call_id == "call-1"
+    assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
+
+
 def test_calling_handle_without_local_func_raises() -> None:
     fn = RemoteFunction._make_empty()
     fn._func_name = "add"

@@ -36,7 +36,7 @@ class RestartPolicy(Enum):
 
 
 @dataclass(frozen=True, slots=True)
-class SshDest:
+class SSHDest:
     """An SSH destination exposed inside a sandbox under a managed alias.
 
     Attributes
@@ -93,6 +93,10 @@ class SshDest:
         if self.username is not None:
             destination["username"] = self.username
         return destination
+
+
+# Preserve the original spelling for backwards compatibility.
+SshDest = SSHDest
 
 
 @dataclass
@@ -235,7 +239,7 @@ class NetworkPolicy:
     @dataclass
     class Transformer:
         headers: dict[str, str] = field(default_factory=dict)
-        headers_secrets: dict[str, str] = field(default_factory=dict)
+        headers_secrets: dict[str, str | Secret] = field(default_factory=dict)
 
         def __post_init__(self) -> None:
             self.headers = dict(self.headers or {})
@@ -244,13 +248,27 @@ class NetworkPolicy:
                     raise TypeError("headers must be a dict[str, str]")
             self.headers_secrets = dict(self.headers_secrets or {})
             for key, value in self.headers_secrets.items():
-                if not isinstance(key, str) or not isinstance(value, str):
-                    raise TypeError("headers_secrets must be a dict[str, str]")
+                if not isinstance(key, str) or not isinstance(value, (str, Secret)):
+                    raise TypeError("headers_secrets must be a dict[str, str | Secret]")
+
+        def _serialized_headers_secrets(self) -> dict[str, str]:
+            serialized: dict[str, str] = {}
+            for placeholder, secret in self.headers_secrets.items():
+                if isinstance(secret, str):
+                    serialized[placeholder] = secret
+                elif secret._secret_name is not None:
+                    serialized[placeholder] = secret._secret_name
+                else:
+                    raise ValueError(
+                        "network policy secrets must resolve to a single Chalk "
+                        "secret before serialization"
+                    )
+            return serialized
 
         def to_dict(self) -> dict[str, Any]:
             body: dict[str, Any] = {"headers": dict(self.headers)}
             if self.headers_secrets:
-                body["headersSecrets"] = dict(self.headers_secrets)
+                body["headersSecrets"] = self._serialized_headers_secrets()
             return body
 
     @dataclass
@@ -367,7 +385,7 @@ class ContainerSpec:
     secret_refs: Sequence[Secret | Mapping[str, Any]] = ()
     port: int | None = None
     lifetime: str | None = None
-    managed_ssh: Mapping[str, SshDest] = field(default_factory=dict)
+    managed_ssh: Mapping[str, SSHDest] = field(default_factory=dict)
     tags: Mapping[str, str] = field(default_factory=dict)
     protocol: str | None = None
     authentication: str | None = None
@@ -450,7 +468,7 @@ class ContainerSpec:
         tags: Mapping[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool = False,
-        managed_ssh: Mapping[str, SshDest] | None = None,
+        managed_ssh: Mapping[str, SSHDest] | None = None,
     ) -> None:
         if image is not None and not isinstance(image, str):
             if not isinstance(image, Image):
@@ -523,9 +541,9 @@ class ContainerSpec:
                     raise TypeError("managed_ssh aliases must be strings")
                 if not alias:
                     raise ValueError("managed_ssh aliases must not be empty")
-                if not isinstance(destination, SshDest):
+                if not isinstance(destination, SSHDest):
                     raise TypeError(
-                        "managed_ssh destinations must be SshDest instances"
+                        "managed_ssh destinations must be SSHDest instances"
                     )
 
     def to_dict(self) -> dict[str, Any]:
@@ -787,7 +805,7 @@ def _network_policy_to_proto(policy: NetworkPolicy) -> container_pb.NetworkPolic
                         transform=[
                             container_pb.NetworkTransformer(
                                 headers=dict(transformer.headers),
-                                headers_secrets=dict(transformer.headers_secrets),
+                                headers_secrets=transformer._serialized_headers_secrets(),
                             )
                             for transformer in rule.transforms
                         ],

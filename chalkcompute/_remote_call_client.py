@@ -56,7 +56,7 @@ def _retry_direct_call(
             if remaining <= 0:
                 raise
             retry_delay = min(delay, remaining)
-            logger.info(
+            logger.debug(
                 "Remote call to %r is unavailable; retrying in %.1fs",
                 function_name,
                 retry_delay,
@@ -117,7 +117,7 @@ def _import_native() -> Any:
         native_path = _find_native_extension_path()
         if native_path is None:
             raise
-        logger.info(
+        logger.debug(
             "Falling back to native extension from %s",
             native_path,
         )
@@ -144,6 +144,15 @@ else:
 
 class _RemoteCallUnavailableError(RuntimeError):
     pass
+
+
+class _RemoteCallStatusError(RuntimeError):
+    pass
+
+
+RemoteCallStatusError: type[Exception] = getattr(
+    _native, "RemoteCallStatusError", _RemoteCallStatusError
+)
 
 
 class _RemoteCallTransportError(RuntimeError):

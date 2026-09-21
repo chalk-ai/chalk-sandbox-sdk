@@ -47,6 +47,7 @@ import threading
 import time
 import traceback
 import typing
+from collections.abc import Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
@@ -67,18 +68,29 @@ from protobuf import Oneof
 from protobuf.wkt import FieldMask
 
 from chalkcompute import _local_dev
+from chalkcompute._logging import _StatusLogger
+from chalkcompute._traceback import format_exception, format_frame
+from chalkcompute._terminal import styled, supports_color
+from chalkcompute._function_error import (
+    FunctionError,
+    decode_remote_error,
+    remote_error_from_exception,
+)
 from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import (
     ConnectClient,
+    ConnectError,
     grpc_target_from_url,
     rpc_address_from_target,
     service_auth_context_from_env,
 )
 from chalkcompute._containerspec import ContainerSpec, validate_replica_and_utilization
+from chalkcompute._env import normalize_env
 from chalkcompute._deployment_proto import function_config, scaling_spec
 from chalkcompute._function_deployment import (
     ensure_external_function,
     resolve_function_volumes,
+    function_source_root,
 )
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import (
     service_connect as catalog_connect,
@@ -99,6 +111,7 @@ from chalkcompute._remote_function_tracing import (
     TracingPolicyConfig,
     normalize_remote_function_tracing,
 )
+from chalkcompute._image_build import normalize_image_volumes
 from chalkcompute._retry import RetryPolicy
 from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
 from chalkcompute._secret import prepare_lazy_secrets
@@ -111,7 +124,6 @@ from chalkcompute._volume import (
     Volume,
     VolumeClient,
     VolumeMount,
-    normalize_volume_refs,
 )
 
 logger = logging.getLogger(__name__)
@@ -149,13 +161,21 @@ _STRIP_SOURCE_ENV_VAR = _local_dev._STRIP_SOURCE_ENV_VAR
 _CALL_VIA_API_ENV_VAR = "CHALK_FUNCTION_CALL_VIA_API"
 
 
-def _remote_call_container_env(user_env: dict[str, str]) -> dict[str, str]:
-    return {
+def _remote_call_container_env(
+    user_env: dict[str, str], pythonpath: str = "/app"
+) -> dict[str, str]:
+    env = {
         "PYTHONPATH": "/app",
         _REMOTE_ENV_VAR: "1",
         _FNQ_STREAMS_SUPPORTED_ENV_VAR: "true",
         **user_env,
     }
+    # Preserve legacy overrides unless relocated handlers need another path.
+    if pythonpath != "/app":
+        env["PYTHONPATH"] = ":".join(
+            dict.fromkeys((pythonpath + ":" + env["PYTHONPATH"]).split(":"))
+        )
+    return env
 
 
 def _remote_function_startup_probe() -> dict[str, dict[str, object]]:
@@ -171,7 +191,7 @@ _background_deploy_executor: ThreadPoolExecutor | None = None
 _background_deploy_executor_lock = threading.Lock()
 _background_deployments_lock = threading.Lock()
 _background_deployment_tails: dict[str, Future[None]] = {}
-_unobserved_background_deployments: dict[Future[None], str] = {}
+_unobserved_background_deployments: dict[Future[None], RemoteFunction] = {}
 
 
 def _get_background_deploy_executor() -> ThreadPoolExecutor:
@@ -257,7 +277,7 @@ def _schedule_background_deployment(function: RemoteFunction) -> Future[None]:
 
         future = executor.submit(run)
         _background_deployment_tails[registered_name] = future
-        _unobserved_background_deployments[future] = registered_name
+        _unobserved_background_deployments[future] = function
 
     def completed(done: Future[None]) -> None:
         with _background_deployments_lock:
@@ -295,18 +315,42 @@ def _report_unobserved_background_deployments() -> None:
         _unobserved_background_deployments.clear()
 
     failed = False
-    for future, registered_name in deployments:
+    for future, function in deployments:
         if not future.done() or future.cancelled():
             continue
         error = future.exception()
         if error is None:
             continue
         failed = True
-        print(
-            f"Background deployment for function {registered_name!r} failed:",
-            file=sys.stderr,
+        registered_name = function._explicit_name or function._func_name
+        status = f" [{error.code.name}]" if isinstance(error, ConnectRpcError) else ""
+        details = ""
+        color = supports_color(sys.stderr)
+        # The worker's traceback has no user call site. Look up the definition
+        # only when reporting a failure, avoiding source reads on success.
+        code = getattr(inspect.unwrap(function._func), "__code__", None)
+        if code is not None:
+            source = traceback.FrameSummary(
+                code.co_filename, code.co_firstlineno, function._func_name
+            )
+            details = format_frame(source, color=color)
+        if isinstance(error, (ConnectRpcError, ConnectError, FunctionError)):
+            # These exceptions already describe an actionable deployment
+            # failure. Keep messages, notes, and causes, without RPC plumbing.
+            details += format_exception(
+                error, error.__traceback__, compact=True, color=color
+            )
+        else:
+            # Unexpected bugs still need their diagnostic frames by default.
+            details += format_exception(error, error.__traceback__, color=color)
+        # This is the only explanation for the nonzero exit of a definition-only
+        # script. Report it independently of logging filters and progress settings.
+        heading = (
+            f"Background deployment for function {registered_name!r} failed{status}:"
         )
-        traceback.print_exception(error, file=sys.stderr)
+        sys.stderr.write(
+            styled(heading, "1;31", color=color) + f"\n{details.rstrip()}\n"
+        )
 
     if not failed:
         return
@@ -335,12 +379,14 @@ atexit.register(_report_unobserved_background_deployments)
 # ---------------------------------------------------------------------------
 
 
-class FunctionError(Exception):
-    """Base exception for Function errors."""
-
-
 class FunctionBuildError(FunctionError):
     """Raised when the function image build fails."""
+
+
+class FunctionSignatureError(TypeError, FunctionError):
+    """Raised when a function is missing required type annotations."""
+
+    __module__ = "chalkcompute"
 
 
 # ---------------------------------------------------------------------------
@@ -488,7 +534,9 @@ def _strip_chalkcompute_from_source(source: str) -> str:
         for ln in range(start, end + 1):
             removed_lines.add(ln)
 
-    kept = [line for i, line in enumerate(lines, start=1) if i not in removed_lines]
+    kept = [
+        "\n" if i in removed_lines else line for i, line in enumerate(lines, start=1)
+    ]
     return "".join(kept)
 
 
@@ -519,7 +567,6 @@ _USER_MODULE_NAME = "user_module"
 
 # Output-schema metadata key carrying a declared scorer's response JSON Schema.
 SCORER_RESPONSE_SCHEMA_METADATA_KEY = "chalk.scorer.response_schema"
-_USER_MODULE_PATH = f"/app/{_USER_MODULE_NAME}.py"
 
 
 def _generate_handler_shim(
@@ -570,6 +617,7 @@ def _generate_handler_shim(
     )
     from chalkcompute._arrow_serde import handler_runtime_source
 
+    bootstrap += "__chalk_generated_handler__ = True\n"
     serde_runtime = handler_runtime_source()
     if batched:
         # Flatten all (caller_idx, row_idx, kwargs) across every caller so
@@ -956,6 +1004,8 @@ def _remote_call_error_message(error: BaseException) -> str:
 
 
 def _is_stale_remote_call_error_message(message: str | None) -> bool:
+    if decode_remote_error(message, "") is not None:
+        return False
     if not message:
         return False
     lower = message.lower()
@@ -987,8 +1037,18 @@ def _is_retryable_stale_remote_call_error_message(message: str | None) -> bool:
 
 
 def _is_stale_remote_call_error(error: BaseException) -> bool:
-    from chalkcompute._remote_call_client import RemoteCallTransportError
+    from chalkcompute._remote_call_client import (
+        RemoteCallStatusError,
+        RemoteCallTransportError,
+    )
 
+    if isinstance(error, RemoteCallStatusError):
+        return False
+    if (
+        isinstance(error, Exception)
+        and remote_error_from_exception(error, "") is not None
+    ):
+        return False
     if isinstance(error, RemoteCallTransportError):
         return True
     if isinstance(error, ConnectRpcError) and error.code == Code.UNAVAILABLE:
@@ -1073,7 +1133,10 @@ def _is_transient_call_error(error_message: str | None) -> bool:
     Unknown or unstructured errors are treated as non-retryable, so retry stays
     conservative: we never resubmit a call we can't positively classify as infra.
     """
-    return _failed_call_exc_type(error_message) in _RETRYABLE_EXC_TYPES
+    return (
+        decode_remote_error(error_message, "") is None
+        and _failed_call_exc_type(error_message) in _RETRYABLE_EXC_TYPES
+    )
 
 
 class FunctionCallHandle:
@@ -1167,7 +1230,12 @@ class FunctionCallHandle:
                     message = result.error_message or "Remote call failed"
                     if self._can_retry(attempt, message):
                         break
-                    raise FunctionError(message)
+                    raise (
+                        decode_remote_error(
+                            message, self._func_name, call_id=self._call_id
+                        )
+                        or FunctionError(message)
+                    ) from None
 
                 if result.is_completed:
                     return self._function._materialize_result_chunks(chunks)
@@ -1212,7 +1280,12 @@ class FunctionCallHandle:
                     # only retry a failure that happened before the first yield.
                     if not yielded_any and self._can_retry(attempt, message):
                         break
-                    raise FunctionError(message)
+                    raise (
+                        decode_remote_error(
+                            message, self._func_name, call_id=self._call_id
+                        )
+                        or FunctionError(message)
+                    ) from None
 
                 if result.is_completed:
                     return
@@ -1246,7 +1319,12 @@ class FunctionCallHandle:
                     message = result.error_message or "Remote call failed"
                     if not yielded_any and self._can_retry(attempt, message):
                         break
-                    raise FunctionError(message)
+                    raise (
+                        decode_remote_error(
+                            message, self._func_name, call_id=self._call_id
+                        )
+                        or FunctionError(message)
+                    ) from None
 
                 if result.is_completed:
                     return
@@ -1868,7 +1946,7 @@ def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
 
     Raises
     ------
-    TypeError
+    FunctionSignatureError
         If any parameter or the return type lacks an annotation.
     """
     import collections.abc as _cabc
@@ -1877,21 +1955,36 @@ def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
 
     hints = typing.get_type_hints(func, include_extras=True)
     sig = inspect.signature(func)
+    func_name = getattr(func, "__name__", type(func).__name__)
 
     # Input: one Field per parameter
     input_types: dict[str, type] = {}
     for param_name in sig.parameters:
         param_type = hints.get(param_name)
         if param_type is None:
-            raise TypeError(f"Parameter '{param_name}' must have a type annotation")
+            raise FunctionSignatureError(
+                f"Parameter '{param_name}' of function '{func_name}' must have "
+                f"a type annotation. Add its type, for example '{param_name}: str'."
+            )
         input_types[param_name] = param_type
     input_schema = rich_to_arrow_schema(input_types)
+    for column in input_schema.columns:
+        default = sig.parameters[column.name].default
+        if default is not inspect.Parameter.empty:
+            try:
+                column.metadata["chalk.default"] = json.dumps(default, allow_nan=False)
+            except (TypeError, ValueError):
+                # Non-JSON defaults cannot be reconstructed by catalog-only callers.
+                pass
 
     # Output: single column "result"
     # For generator functions (Iterator[T], Generator[T, ...]), unwrap to the yield type.
     return_type = hints.get("return")
     if return_type is None:
-        raise TypeError("Function must have a return type annotation")
+        raise FunctionSignatureError(
+            f"Function '{func_name}' must have a return type annotation. "
+            "Add '-> None' if it returns nothing, or annotate the returned value's type."
+        )
 
     is_generator = False
     is_async = inspect.iscoroutinefunction(func) or inspect.isasyncgenfunction(func)
@@ -1911,6 +2004,10 @@ def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
                 return_type = args[0]
 
     output_schema = rich_to_arrow_schema({"result": return_type})
+
+    description = inspect.getdoc(func)
+    if description:
+        output_schema.metadata["chalk.function.description"] = description
 
     # Store function traits in schema metadata for client discovery.
     if is_generator:
@@ -2253,7 +2350,7 @@ class RemoteFunction:
         cpu: str | None = None,
         memory: str | None = None,
         gpu: str | None = None,
-        env: dict[str, str] | None = None,
+        env: Mapping[str, str | _Secret] | None = None,
         secrets: list[_Secret] | None = None,
         volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
         tags: dict[str, str] | None = None,
@@ -2285,6 +2382,12 @@ class RemoteFunction:
     ) -> None:
         self._func = func
         self._has_local_func = True
+        from chalkcompute._notebook import notebook_source_for_function
+
+        try:
+            self._notebook_source = notebook_source_for_function(func)
+        except ValueError as error:
+            raise FunctionBuildError(str(error)) from error
         self._func_name = getattr(func, "__name__", "anonymous")
         self._call_parameter_names, self._bind_call_arguments = (
             _compile_argument_binder(inspect.signature(func))
@@ -2312,8 +2415,12 @@ class RemoteFunction:
         self._arrow_result_deserializer: Callable[[Any], Any] | None = (
             arrow_decoder_for_annotation(result_type)
         )
+        env, secrets = normalize_env(env, secrets)
+        normalized_image, resolved_volumes = normalize_image_volumes(image, volumes)
+        if isinstance(normalized_image, str):
+            raise TypeError("function images must be Image instances")
         ContainerSpec.validate_fields(
-            image=image,
+            image=normalized_image,
             name=name,
             cpu=cpu,
             memory=memory,
@@ -2331,7 +2438,7 @@ class RemoteFunction:
             target_gpu_utilization_percentage=target_gpu_utilization_percentage,
         )
         self._explicit_name = name
-        self._image = image
+        self._image = normalized_image
         self._cpu = cpu
         self._memory = memory
         self._gpu = gpu
@@ -2342,7 +2449,7 @@ class RemoteFunction:
             self._env[MODELS_ENV_VAR] = encode_models_env(models)
         self._secrets: list[_Secret] = list(secrets or [])
         # Existence is checked at deploy time, not here.
-        self._referenced_volumes: list[VolumeMount] = normalize_volume_refs(volumes)
+        self._referenced_volumes: list[VolumeMount] = resolved_volumes
         # Populated at deploy time: referenced volumes plus any freshly
         # uploaded volumes.
         self._volumes: list[VolumeMount] = []
@@ -2580,6 +2687,7 @@ class RemoteFunction:
         f = cls.__new__(cls)
         f._func = lambda *a, **kw: None  # type: ignore[assignment]
         f._has_local_func = False
+        f._notebook_source = None
         f._func_name = "unknown"
         f._call_parameter_names, f._bind_call_arguments = (
             _compile_catalog_argument_binder(())
@@ -2645,6 +2753,7 @@ class RemoteFunction:
         package_dir: str,
         module_name: str,
         temp_files: list[str],
+        source_root: str = "/app",
     ) -> _Image:
         """Add the function's whole top-level package to the image."""
         prepared_dir, dir_is_temp = _prepare_package_dir(
@@ -2657,7 +2766,7 @@ class RemoteFunction:
             temp_files.append(prepared_dir)
         return base_image.add_local_dir(
             prepared_dir,
-            f"/app/{module_name.split('.')[0]}",
+            f"{source_root}/{module_name.split('.')[0]}",
             exclude=["**/__pycache__/**", "**/*.pyc"],
         )
 
@@ -2666,16 +2775,28 @@ class RemoteFunction:
         base_image: _Image,
         temp_files: list[str],
         module_name: str,
+        source_root: str = "/app",
     ) -> _Image:
         """Add the function's source file to the image as ``<module_name>.py``."""
-        source_file, source_is_temp = _prepare_source_file(
-            _source_file_for_deploy(self._func),
-            label=f"Function {self._func_name!r}",
-            entrypoint_sources=_entrypoint_source(self._func),
-        )
+        if self._notebook_source is not None:
+            source = self._notebook_source
+            if _should_strip_source():
+                source = _strip_source_for_deploy(
+                    source,
+                    strip=_strip_chalkcompute_from_source,
+                    label=f"Function {self._func_name!r}",
+                    entrypoint_sources=_entrypoint_source(self._func),
+                )
+            source_file, source_is_temp = _write_temp(source), True
+        else:
+            source_file, source_is_temp = _prepare_source_file(
+                _source_file_for_deploy(self._func),
+                label=f"Function {self._func_name!r}",
+                entrypoint_sources=_entrypoint_source(self._func),
+            )
         if source_is_temp:
             temp_files.append(source_file)
-        return base_image.add_local_file(source_file, f"/app/{module_name}.py")
+        return base_image.add_local_file(source_file, f"{source_root}/{module_name}.py")
 
     def _add_handler_shim(
         self,
@@ -2683,6 +2804,7 @@ class RemoteFunction:
         shim_module: str,
         temp_files: list[str],
         handler_module: str,
+        source_root: str = "/app",
     ) -> _Image:
         """Generate the handler shim and finalize the deploy image env."""
         from chalkcompute._model import MODELS_ENV_VAR
@@ -2696,8 +2818,15 @@ class RemoteFunction:
         shim_path = _write_temp(handler_shim)
         temp_files.append(shim_path)
 
-        return deploy_image.add_local_file(shim_path, f"/app/{handler_module}.py").env(
-            {"PYTHONPATH": "/app", _REMOTE_ENV_VAR: "1"}
+        return deploy_image.add_local_file(
+            shim_path, f"{source_root}/{handler_module}.py"
+        ).env(
+            {
+                "PYTHONPATH": source_root
+                if source_root == "/app"
+                else f"{source_root}:/app",
+                _REMOTE_ENV_VAR: "1",
+            }
         )
 
     def _build_deploy_image(self) -> _Image:
@@ -2723,6 +2852,11 @@ class RemoteFunction:
         """
         module_name = _deploy_module_name(self._func)
         package_dir = _package_dir_for_module(module_name)
+        source_root = function_source_root(
+            self._image,
+            self._referenced_volumes,
+            package=module_name.split(".")[0] if package_dir is not None else None,
+        )
 
         base_image = _make_base_image(
             self._image,
@@ -2736,7 +2870,7 @@ class RemoteFunction:
             taken.add(module_name.split(".")[0])
             shim_module = module_name
             deploy_image = self._add_package_source(
-                base_image, package_dir, module_name, temp_files
+                base_image, package_dir, module_name, temp_files, source_root
             )
         elif module_name == "__main__":
             # File run directly: error if it imports its own package, else ship one file.
@@ -2744,19 +2878,19 @@ class RemoteFunction:
             shim_module = _available_module_name(_USER_MODULE_NAME, taken)
             taken.add(shim_module)
             deploy_image = self._add_single_file_source(
-                base_image, temp_files, shim_module
+                base_image, temp_files, shim_module, source_root
             )
         else:
             # Loose non-package module: ship its single source file.
             shim_module = _available_module_name(_USER_MODULE_NAME, taken)
             taken.add(shim_module)
             deploy_image = self._add_single_file_source(
-                base_image, temp_files, shim_module
+                base_image, temp_files, shim_module, source_root
             )
 
         self._handler_module = _available_module_name("handler", taken)
         deploy_image = self._add_handler_shim(
-            deploy_image, shim_module, temp_files, self._handler_module
+            deploy_image, shim_module, temp_files, self._handler_module, source_root
         )
 
         self._temp_files = temp_files
@@ -2769,9 +2903,17 @@ class RemoteFunction:
             raise FunctionError(
                 f"Background deployment already started for {self._func_name!r}"
             )
-        _assert_strip_mode_self_contained(
-            self._func, label=f"Function {self._func_name!r}"
-        )
+        if self._notebook_source is not None and _should_strip_source():
+            _strip_source_for_deploy(
+                self._notebook_source,
+                strip=_strip_chalkcompute_from_source,
+                label=f"Function {self._func_name!r}",
+                entrypoint_sources=_entrypoint_source(self._func),
+            )
+        elif self._notebook_source is None:
+            _assert_strip_mode_self_contained(
+                self._func, label=f"Function {self._func_name!r}"
+            )
         self._background_deploy_future = _schedule_background_deployment(self)
 
     def _wait_for_background_deploy(self, timeout: float | None = None) -> bool:
@@ -2938,7 +3080,9 @@ class RemoteFunction:
                 name=sg_name,
                 image="",
                 entrypoint=_local_install_entrypoint(handler_cmd),
-                env=_remote_call_container_env(self._env),
+                env=_remote_call_container_env(
+                    self._env, deploy_image._env.get("PYTHONPATH", "/app")
+                ),
                 cpu=self._cpu,
                 memory=self._memory,
                 gpu=self._gpu,
@@ -3028,7 +3172,7 @@ class RemoteFunction:
                 self._version_info.version,
                 self._version_info.id,
             )
-            progress_done(rkey)
+            progress_update(rkey, status="done", label="Function registered")
 
             # 7. Poll until the backing pod is actually ready to serve.
             if not (
@@ -3038,7 +3182,7 @@ class RemoteFunction:
                     require_ready_replicas=self._min_replicas > 0,
                 )
             ):
-                progress_update(fkey, detail="waiting for ready")
+                progress_update(fkey, detail="Waiting for readiness")
                 self._poll_until_ready(
                     sg_name=self._version_info.scaling_group_name,
                     poll_interval=poll_interval,
@@ -3047,6 +3191,7 @@ class RemoteFunction:
                 )
 
             progress_done(fkey, detail="ready")
+            logger.info("Function ready: %s", registered_name)
         except BaseException:
             progress_fail(fkey)
             raise
@@ -3074,21 +3219,27 @@ class RemoteFunction:
         deadline = time.monotonic() + timeout
         status = "unknown"
         status_message = ""
+        status_details = ""
+        status_log = _StatusLogger(
+            logger,
+            f"Scaling group {sg_name}",
+            progress_key=f"function:{self._explicit_name or self._func_name}",
+        )
         ready_replicas = 0
         available_replicas = 0
         while time.monotonic() < deadline:
             sg = _get_scaling_group(self._client, sg_name)
             status = sg.status
             status_message = sg.status_message or ""
+            status_details = sg.status_details or ""
             ready_replicas = sg.ready_replicas
             available_replicas = sg.available_replicas
             self._web_url = sg.web_url or None
-            logger.info(
-                "  poll: status=%s ready=%s available=%s message=%s",
+            status_log.update(
                 status,
-                ready_replicas,
-                available_replicas,
-                status_message or "",
+                ready=ready_replicas,
+                available=available_replicas,
+                message=status_message,
             )
             if _scaling_group_is_ready(
                 sg, require_ready_replicas=require_ready_replicas
@@ -3098,6 +3249,8 @@ class RemoteFunction:
                 message = f"Scaling group {sg_name} entered {status} state"
                 if status_message:
                     message = f"{message}: {status_message}"
+                if status_details:
+                    message = f"{message}\n{status_details}"
                 raise FunctionError(message)
             time.sleep(poll_interval)
         message = (
@@ -3107,6 +3260,8 @@ class RemoteFunction:
         )
         if status_message:
             message = f"{message}: {status_message}"
+        if status_details:
+            message = f"{message}\n{status_details}"
         raise FunctionError(message)
 
     def _requires_ready_replicas(self, sg: Any) -> bool:
@@ -3320,7 +3475,7 @@ class RemoteFunction:
                     raise
                 self._drop_remote_call_client(queue=queue)
                 if attempt == 0 and _should_retry_stale_remote_call(retry_stale, exc):
-                    logger.info(
+                    logger.debug(
                         "Detected stale remote-call client during %s for %r; "
                         "refreshing and retrying",
                         operation,
@@ -3332,7 +3487,7 @@ class RemoteFunction:
             if stale_result is not None and stale_result(result):
                 self._drop_remote_call_client(queue=queue)
                 if attempt == 0:
-                    logger.info(
+                    logger.debug(
                         "Detected stale remote-call result during %s for %r; "
                         "refreshing and retrying",
                         operation,
@@ -3725,6 +3880,15 @@ class RemoteFunction:
         feather_bytes = self._serialize_call_args(*args, **kwargs)
         call_type = "api" if _should_call_via_api() else "direct"
 
+        try:
+            return self._invoke_remote(feather_bytes, call_type)
+        except Exception as exc:
+            remote_error = remote_error_from_exception(exc, self._queue_function_name())
+            if remote_error is None:
+                raise
+            raise remote_error from None
+
+    def _invoke_remote(self, feather_bytes: bytes, call_type: str) -> Any:
         with remote_function_call_span(self._queue_function_name(), call_type):
             if _should_call_via_api():
                 response_bytes = self._call_via_api_rpc(feather_bytes)
@@ -4064,7 +4228,7 @@ def function(
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
     volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
@@ -4103,7 +4267,7 @@ def function(
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
     volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
@@ -4143,7 +4307,7 @@ def function(
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
     volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
@@ -4173,6 +4337,10 @@ def function(
     call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
 ) -> Callable[..., RemoteFunction | _NoOpFunction] | RemoteFunction | _NoOpFunction:
     """Decorator that deploys a function as a versioned remote function.
+
+    Prefer ``@cc.function`` or ``@cc.function(image=...)`` without ``name=``.
+    The registered name defaults to the Python function's name, including
+    underscores, and can be used with ``RemoteFunction.from_name(...)``.
 
     **Locally**, decoration validates the function, starts deployment in a
     background worker, and returns. The worker:
@@ -4206,9 +4374,14 @@ def function(
         GPU resource request (e.g. ``"nvidia-l4"``, ``"2:nvidia-a100"``).
         Format is ``"<count>:<type>"`` or just ``"<type>"`` for a single GPU.
     name
-        Custom function name. Defaults to the function's ``__name__``.
+        Optional registered-name override. Omit this in normal usage to use
+        the function's ``__name__``. Set it only when a different registered
+        name is intentional, such as preserving an existing deployment's name
+        after renaming the Python function. Changing or removing an override
+        changes the target function; it does not rename an existing deployment.
     env
-        Environment variables to pass to the function.
+        Environment variables as strings or single-value Secret references.
+        The mapping key sets the injected name, overriding aliases and prefixes.
     secrets
         List of :class:`~chalkcompute.Secret` references to inject.
     volumes

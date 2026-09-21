@@ -28,7 +28,7 @@ import uuid
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
-from chalkcompute import Image, NetworkPolicy, SandboxClient, ScalingGroup
+from chalkcompute import Image, NetworkPolicy, Sandbox, SandboxClient, ScalingGroup
 
 
 HERE = Path(__file__).parent
@@ -160,7 +160,6 @@ with ExitStack() as stack:
                     transforms=[
                         NetworkPolicy.Transformer(
                             headers={"x-claude-intercept-token": proxy_token},
-                            headers_secrets={"x-api-key": "ANTHROPIC_API_KEY"},
                         )
                     ],
                     forward_url=proxy.web_url + "/",
@@ -169,20 +168,20 @@ with ExitStack() as stack:
         }
     )
 
-    client = stack.enter_context(SandboxClient.from_env())
-    sandbox = client.create(
-        workload_image,
+    sandbox = Sandbox(
+        image=workload_image,
         network_policy=policy,
         lifetime="1200s",
         env={
-            "ANTHROPIC_API_KEY": "network-policy-injects-the-real-key",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             "DISABLE_AUTOUPDATER": "1",
             "DISABLE_ERROR_REPORTING": "1",
             "DISABLE_TELEMETRY": "1",
         },
-        wait=False,
-    )
+    ).add_credentials("*.anthropic.com", "ANTHROPIC_API_KEY")
+
+    client = stack.enter_context(SandboxClient.from_env())
+    client.run(sandbox, wait=False)
     stack.enter_context(terminate_on_exit(sandbox))
     stack.enter_context(printing_proxy_logs(proxy, proxy_token))
 

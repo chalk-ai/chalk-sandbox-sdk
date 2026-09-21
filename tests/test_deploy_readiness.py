@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+
 from protobuf import Oneof
 from chalkcompute._image import Image
 
@@ -459,3 +460,112 @@ def test_wait_ready_fails_fast_on_unhealthy_scaling_group() -> None:
 
     # Failed on the first poll rather than looping until the 10s timeout.
     assert client.get_scaling_group_calls == 1
+
+
+@pytest.mark.parametrize("status", ["Failed", "Error", "Unhealthy"])
+@pytest.mark.parametrize(
+    "details", [None, "", "Traceback:\n  frame\nValueError: invalid"]
+)
+def test_remote_function_readiness_error_details(monkeypatch, status, details) -> None:
+    def add(x: int) -> int:
+        return x
+
+    client = _RemoteFunctionReadinessClient()
+    client.polls = [
+        sg_pb.ScalingGroupResponse(
+            status=status,
+            status_message="Exit code 1",
+            status_details=details,
+        )
+    ]
+    fn = RemoteFunction(add, name="fn-ready")
+    fn._client = client  # type: ignore[assignment]
+    times = iter([0, 0, 11])
+    monkeypatch.setattr(function_mod.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(function_mod.time, "sleep", lambda _: None)
+
+    with pytest.raises(FunctionError) as exc_info:
+        fn._poll_until_ready(sg_name="fn-ready", poll_interval=0, timeout=10)
+
+    expected = (
+        "Scaling group fn-ready not ready after 10s "
+        "(status=Unhealthy, ready=0, available=0): Exit code 1"
+        if status == "Unhealthy"
+        else f"Scaling group fn-ready entered {status} state: Exit code 1"
+    )
+    if details:
+        expected += "\n" + details
+    assert str(exc_info.value) == expected
+
+
+@pytest.mark.parametrize("resource", ["function", "class", "scaling_group"])
+def test_readiness_logs_transitions_instead_of_each_poll(resource, caplog, monkeypatch):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="chalkcompute")
+    if resource == "scaling_group":
+        client = _ScalingGroupReadinessClient()
+        handle = ScalingGroup(image="ubuntu:latest", name="fraud")
+        handle._scaling_group_id = "fraud"
+    elif resource == "class":
+
+        class Fraud:
+            @method
+            def score(self, x: int) -> int:
+                return x
+
+        client = _RemoteFunctionReadinessClient()
+        handle = RemoteClass(Fraud)
+    else:
+        client = _RemoteFunctionReadinessClient()
+        handle = RemoteFunction(lambda x: x)
+    client.polls = [
+        sg_pb.ScalingGroupResponse(status="Pending"),
+        sg_pb.ScalingGroupResponse(status="Pending"),
+        sg_pb.ScalingGroupResponse(
+            status="Pending", status_message="waiting for startup probe"
+        ),
+        sg_pb.ScalingGroupResponse(
+            status="Available", ready_replicas=1, available_replicas=1
+        ),
+    ]
+    handle._client = client
+    monkeypatch.setattr(function_mod.time, "sleep", lambda _: None)
+    kwargs = {} if resource == "scaling_group" else {"sg_name": "fraud"}
+    handle._poll_until_ready(poll_interval=0, timeout=10, **kwargs)
+    assert [record.getMessage() for record in caplog.records] == [
+        "Scaling group fraud: Pending ready=0 available=0",
+        "Scaling group fraud: Pending ready=0 available=0 — waiting for startup probe",
+        "Scaling group fraud: Available ready=1 available=1",
+    ]
+
+
+def test_container_readiness_logs_transitions_instead_of_each_poll(
+    caplog, capsys, monkeypatch
+):
+    import logging
+    from types import SimpleNamespace
+    from chalkcompute._container import Container
+    from chalkcompute import _progress
+
+    caplog.set_level(logging.INFO, logger="chalkcompute")
+    container = Container(image="ubuntu:latest")
+    container._container_id = "fraud"
+    container._name = "fraud"
+    progress = _progress.DeployProgress()
+    progress.add("container:fraud", "container", 'Container "fraud"')
+    monkeypatch.setattr(_progress, "get_progress", lambda: progress)
+    states = iter(["Pending", "Pending", "Running"])
+    monkeypatch.setattr(
+        "chalkcompute._container._get_container_info",
+        lambda *args: SimpleNamespace(status=next(states)),
+    )
+    monkeypatch.setattr(function_mod.time, "sleep", lambda _: None)
+    container._poll_until_running(poll_interval=0, timeout=10)
+    assert [record.getMessage() for record in caplog.records] == [
+        "Container fraud: Pending",
+        "Container fraud: Running",
+    ]
+    output = capsys.readouterr().err
+    assert output.count("› Pending") == 1
+    assert output.count("› Running") == 1

@@ -26,6 +26,8 @@ pyo3::create_exception!(
     PyRuntimeError
 );
 
+pyo3::create_exception!(chalkcompute._native, RemoteCallStatusError, PyRuntimeError);
+
 #[pyclass(name = "RemoteCallClient", module = "chalkcompute._native")]
 struct PyRemoteCallClient {
     inner: BlockingRemoteCallClient,
@@ -227,6 +229,9 @@ fn to_py_err(error: RemoteCallError) -> PyErr {
             RemoteCallUnavailableError::new_err(message)
         }
         RemoteCallError::Transport(_) => RemoteCallTransportError::new_err(message),
+        RemoteCallError::Status(status) => {
+            RemoteCallStatusError::new_err((status.code() as i32, status.message().to_string()))
+        }
         _ => PyRuntimeError::new_err(message),
     }
 }
@@ -318,9 +323,90 @@ fn grpc_engine_target_from_url(url: &str) -> (String, bool) {
     )
 }
 
+/// Use the notebook kernel/browser planner for deployment source selection too.
+#[pyfunction]
+fn notebook_source_dependencies(sources: Vec<String>) -> PyResult<Vec<usize>> {
+    use chalk_notebook_analysis::{plan_notebook, CellInput, PlanRequest, RunScope};
+    let Some(anchor) = sources.len().checked_sub(1) else {
+        return Ok(Vec::new());
+    };
+    let mut cells: Vec<CellInput> = sources
+        .into_iter()
+        .enumerate()
+        .map(|(index, source)| CellInput {
+            id: index.to_string(),
+            source: Some(source),
+            expressions: Vec::new(),
+            provides: Vec::new(),
+            requires: Vec::new(),
+            runnable: true,
+        })
+        .collect();
+    let mut required = std::collections::BTreeSet::new();
+    let plan = loop {
+        let plan = plan_notebook(PlanRequest {
+            cells: cells.clone(),
+            requested_cell_ids: vec![anchor.to_string()],
+            run_scope: RunScope::CellAndUpstream,
+        });
+        let count = required.len();
+        let selected: std::collections::HashSet<_> = plan.cell_ids.iter().collect();
+        for report in &plan.analysis.reports {
+            if selected.contains(&report.id) {
+                if let Some(error) = &report.parse_error {
+                    return Err(pyo3::exceptions::PyValueError::new_err(error.clone()));
+                }
+                required.extend(report.requires.iter().cloned());
+            }
+        }
+        if required.len() == count {
+            break plan;
+        }
+        // Helpers resolve globals when invoked. Include the latest providers at
+        // the snapshot boundary too, retaining original providers for defaults.
+        cells[anchor].requires = required.iter().cloned().collect();
+    };
+    let selected_ids: std::collections::HashSet<_> = plan.cell_ids.iter().collect();
+    let selected_reports: Vec<_> = plan
+        .analysis
+        .reports
+        .iter()
+        .filter(|report| selected_ids.contains(&report.id))
+        .collect();
+    let provided: std::collections::HashSet<_> = selected_reports
+        .iter()
+        .flat_map(|report| report.provides.iter())
+        .collect();
+    let missing: Vec<_> = required
+        .iter()
+        .filter(|name| !provided.contains(name))
+        .collect();
+    if !missing.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Notebook deployment cannot find source for: {}. Define these names in earlier cells, or pass runtime values as function arguments.",
+            missing.into_iter().map(String::as_str).collect::<Vec<_>>().join(", "),
+        )));
+    }
+    let selected = selected_reports
+        .into_iter()
+        .map(|report| {
+            report
+                .id
+                .parse::<usize>()
+                .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+    Ok(selected)
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRemoteCallClient>()?;
+    m.add_function(wrap_pyfunction!(notebook_source_dependencies, m)?)?;
+    m.add(
+        "RemoteCallStatusError",
+        m.py().get_type::<RemoteCallStatusError>(),
+    )?;
     m.add(
         "RemoteCallUnavailableError",
         m.py().get_type::<RemoteCallUnavailableError>(),

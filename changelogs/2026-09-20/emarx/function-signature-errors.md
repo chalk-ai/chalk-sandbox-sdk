@@ -1,0 +1,1 @@
+- Report missing function type annotations with the source location and a fix hint, without background worker and SDK stack frames. `FunctionSignatureError` remains catchable as `TypeError`.

@@ -50,18 +50,23 @@ import os
 import textwrap
 import time
 import typing
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, TypeVar, overload
 
+from chalkcompute._logging import _StatusLogger
 from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import ConnectClient
 from chalkcompute._containerspec import ContainerSpec, validate_replica_and_utilization
+from chalkcompute._env import normalize_env
 from chalkcompute._deployment_proto import function_config, scaling_spec
 from chalkcompute._function_deployment import (
     ensure_external_function,
     resolve_function_volumes,
+    function_source_root,
 )
+from chalkcompute._image_build import normalize_image_volumes
 from chalkcompute._secret import prepare_lazy_secrets
 from chalkcompute._function import (
     _REMOTE_ENV_VAR,
@@ -108,7 +113,6 @@ from chalkcompute._volume import (
     VolumeClient,
     VolumeMount,
     cleanup_owned_volumes,
-    normalize_volume_refs,
 )
 
 if TYPE_CHECKING:
@@ -747,7 +751,7 @@ class RemoteClass:
         cpu: str | None = None,
         memory: str | None = None,
         gpu: str | None = None,
-        env: dict[str, str] | None = None,
+        env: Mapping[str, str | _Secret] | None = None,
         secrets: list[_Secret] | None = None,
         volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
         tags: dict[str, str] | None = None,
@@ -778,8 +782,12 @@ class RemoteClass:
     ) -> None:
         self._user_cls: type | None = user_cls
         self._class_name = user_cls.__name__
+        env, secrets = normalize_env(env, secrets)
+        normalized_image, resolved_volumes = normalize_image_volumes(image, volumes)
+        if isinstance(normalized_image, str):
+            raise TypeError("class images must be Image instances")
         ContainerSpec.validate_fields(
-            image=image,
+            image=normalized_image,
             name=name,
             cpu=cpu,
             memory=memory,
@@ -797,7 +805,7 @@ class RemoteClass:
             target_gpu_utilization_percentage=target_gpu_utilization_percentage,
         )
         self._explicit_name = name
-        self._image = image
+        self._image = normalized_image
         self._cpu = cpu
         self._memory = memory
         self._gpu = gpu
@@ -808,7 +816,7 @@ class RemoteClass:
             self._env[MODELS_ENV_VAR] = encode_models_env(models)
         self._secrets: list[_Secret] = list(secrets or [])
         # Existence is checked once at deploy time, not here.
-        self._referenced_volumes: list[VolumeMount] = normalize_volume_refs(volumes)
+        self._referenced_volumes: list[VolumeMount] = resolved_volumes
         # Populated at deploy time: referenced volumes plus any freshly
         # uploaded volumes.
         self._volumes: list[VolumeMount] = []
@@ -1089,6 +1097,7 @@ class RemoteClass:
         """
         user_cls = self._require_user_cls()
         source_file = self._source_file_for_deploy()
+        source_root = function_source_root(self._image, self._referenced_volumes)
 
         temp_files: list[str] = []
         source_path = Path(source_file)
@@ -1112,7 +1121,7 @@ class RemoteClass:
         deploy_image = _make_base_image(
             self._image,
             remote_call_runtime_package=self._remote_call_runtime_package(),
-        ).add_local_file(source_file, "/app/user_module.py")
+        ).add_local_file(source_file, f"{source_root}/user_module.py")
 
         # Precompute has-self flags for lifecycle hooks
         before_func = (
@@ -1141,10 +1150,17 @@ class RemoteClass:
             shim_path = _write_temp(shim_content)
             temp_files.append(shim_path)
             deploy_image = deploy_image.add_local_file(
-                shim_path, f"/app/handler_{method_info.name}.py"
+                shim_path, f"{source_root}/handler_{method_info.name}.py"
             )
 
-        deploy_image = deploy_image.env({"PYTHONPATH": "/app", _REMOTE_ENV_VAR: "1"})
+        deploy_image = deploy_image.env(
+            {
+                "PYTHONPATH": source_root
+                if source_root == "/app"
+                else f"{source_root}:/app",
+                _REMOTE_ENV_VAR: "1",
+            }
+        )
 
         return deploy_image, temp_files
 
@@ -1228,7 +1244,9 @@ class RemoteClass:
                     name=sg_name,
                     image="",
                     entrypoint=_local_install_entrypoint(handler_cmd),
-                    env=_remote_call_container_env(self._env),
+                    env=_remote_call_container_env(
+                        self._env, deploy_image._env.get("PYTHONPATH", "/app")
+                    ),
                     cpu=self._cpu,
                     memory=self._memory,
                     gpu=self._gpu,
@@ -1337,7 +1355,7 @@ class RemoteClass:
 
             # 5. Poll scaling groups until their backing pods can serve.
             if sg_names:
-                progress_update(ckey, detail="waiting for ready")
+                progress_update(ckey, detail="Waiting for readiness")
             for sg_name in sg_names:
                 self._poll_until_ready(
                     sg_name=sg_name,
@@ -1348,6 +1366,7 @@ class RemoteClass:
 
             self._deployed = True
             progress_done(ckey, detail="ready")
+            logger.info("Class ready: %s", self._class_name)
         except BaseException:
             progress_fail(ckey)
             raise
@@ -1367,6 +1386,9 @@ class RemoteClass:
     ) -> None:
         deadline = time.monotonic() + timeout
         status = "unknown"
+        status_log = _StatusLogger(
+            logger, f"Scaling group {sg_name}", progress_key=f"class:{self._class_name}"
+        )
         ready_replicas = 0
         available_replicas = 0
         while time.monotonic() < deadline:
@@ -1386,12 +1408,11 @@ class RemoteClass:
                 ):
                     rf._web_url = web_url
 
-            logger.info(
-                "  poll %s: status=%s ready=%s available=%s",
-                sg_name,
+            status_log.update(
                 status,
-                ready_replicas,
-                available_replicas,
+                ready=ready_replicas,
+                available=available_replicas,
+                message=sg.status_message or "",
             )
             if _scaling_group_is_ready(
                 sg, require_ready_replicas=require_ready_replicas
@@ -1596,7 +1617,7 @@ def cls(
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
     volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
@@ -1634,7 +1655,7 @@ def cls(
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
     volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
@@ -1673,7 +1694,7 @@ def cls(
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
     volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
@@ -1728,9 +1749,14 @@ def cls(
     gpu
         GPU resource request (e.g. ``"nvidia-l4"``, ``"2:nvidia-a100"``).
     name
-        Custom class name. Defaults to the class's ``__name__``.
+        Optional registered-name override. Omit this in normal usage to use
+        the class's ``__name__``. Set it only when a different registered name
+        is intentional, such as preserving existing deployments after renaming
+        the Python class. Changing or removing an override changes the target
+        functions; it does not rename existing deployments.
     env
-        Environment variables to pass to the class containers.
+        Environment variables as strings or single-value Secret references.
+        The mapping key sets the injected name, overriding aliases and prefixes.
     secrets
         List of :class:`~chalkcompute.Secret` references to inject.
     volumes

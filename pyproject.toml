@@ -5,15 +5,14 @@ description = "SDK for Chalk sandboxes, containers, and volumes"
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
 dependencies = [
-    "chalk-remote-call-python>=1.9.0",
+    "chalk-remote-call-python>=1.10.0",
     "pyyaml>=6.0.0",
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",
     "opentelemetry-exporter-otlp-proto-http>=1.20.0",
-    "rich>=13.0.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.20.0",
     "protobuf-py>=0.3.0",
-    # ConnectRPC 0.11.1 pins protobuf-py 0.1.1; upstream main supports 0.3.0.
-    "connectrpc>=0.12.0",
+    "connectrpc>=0.12.1",
     "pyqwest>=0.10.0",
 ]
 
@@ -36,6 +35,7 @@ include = ["chalkcompute/**", "README.md"]
 exclude = ["examples/", ".env*", ".sops.yaml", "e2etests/", "test_*", "*.enc"]
 
 [project.optional-dependencies]
+sql = ["pyarrow>=14.0.0"]
 dev = [
     "attrs>=23.0.0",
     "chalkdf>=3.31.87",

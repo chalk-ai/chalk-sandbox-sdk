@@ -372,9 +372,15 @@ def _mock_deploy_image() -> MagicMock:
 
 
 def test_run_training_calls_create_rpc() -> None:
+    from chalkcompute import Secret
     from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
 
-    @training(data="my_ds", name="test-run", cpu="4")
+    @training(
+        data="my_ds",
+        name="test-run",
+        cpu="4",
+        env={"NAME": "Elliot", "API_KEY": Secret.from_chalk_env("TOKEN")},
+    )
     def train(df: Any, config: Any) -> str:
         return "ok"
 
@@ -393,6 +399,11 @@ def test_run_training_calls_create_rpc() -> None:
     assert isinstance(handle, TrainingRunHandle)
     assert handle.run_id == "run-xyz"
     mock_client.call.assert_called_once()
+    request = mock_client.call.call_args.args[1]
+    assert request.env["NAME"] == "Elliot"
+    assert "API_KEY" not in request.env
+    assert request.secret_refs[0].source.value == "TOKEN"
+    assert dict(request.secret_refs[0].aliases) == {"TOKEN": "API_KEY"}
 
 
 def test_run_training_with_dataclass_config() -> None:
@@ -454,9 +465,33 @@ def test_run_training_passes_max_retries() -> None:
     assert req.max_retries == 5
 
 
-def test_run_training_pythonpath_with_volume_commits() -> None:
+def test_run_training_passes_experiment_id() -> None:
     from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
-    from chalkcompute._gen.chalk.volume.v2 import volume_pb
+
+    @training(data="my_ds", name="exp-run")
+    def train(df: Any, config: Any) -> str:
+        return "ok"
+
+    mock_client = MagicMock()
+    mock_run = tr_pb.TrainingRun(id="run-exp")
+    mock_resp = tr_pb.CreateTrainingRunResponse(training_run=mock_run)
+    mock_client.call.return_value = mock_resp
+
+    with (
+        patch.object(
+            TrainingFunction, "_build_deploy_image", return_value=_mock_deploy_image()
+        ),
+        patch("chalkcompute._training.build_image", return_value="img:latest"),
+    ):
+        train.run_training(client=mock_client, experiment_id="exp-123")
+
+    req = mock_client.call.call_args[0][1]
+    assert req.experiment_id == "exp-123"
+
+
+def test_run_training_pythonpath_with_volume_mounts() -> None:
+    from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
+    from chalkcompute._volume import VolumeMount
 
     @training(data="my_ds", name="src-vol-run")
     def train(df: Any, config: Any) -> str:
@@ -471,11 +506,11 @@ def test_run_training_pythonpath_with_volume_commits() -> None:
     deploy_img.lazy_local_files = [("local.py", "/app/local.py")]
 
     mock_vclient = MagicMock()
-    commit = MagicMock(spec=volume_pb.CommitIntent)
-    mock_mount = MagicMock()
-    mock_mount.name = "training-src-src-vol-run-app"
-    mock_mount.mount_path = "/app"
-    mock_vclient.stage_lazy_files.return_value = ([mock_mount], [commit])
+    mock_vclient._resolve_lazy_files.return_value = [
+        VolumeMount(
+            name="training-src-src-vol-run-app", mount_path="/app", version_id=1
+        ),
+    ]
 
     with (
         patch.object(TrainingFunction, "_build_deploy_image", return_value=deploy_img),
@@ -486,7 +521,12 @@ def test_run_training_pythonpath_with_volume_commits() -> None:
         train.run_training(client=mock_client)
 
     req = mock_client.call.call_args[0][1]
-    assert req.env["PYTHONPATH"] == "/volumes/training-src-src-vol-run-app"
+    assert req.env["PYTHONPATH"] == "/app"
+    assert req.volume_mounts is not None
+    assert len(req.volume_mounts) == 1
+    assert req.volume_mounts[0].name == "training-src-src-vol-run-app"
+    assert req.volume_mounts[0].mount_path == "/app"
+    assert req.volume_mounts[0].version_id == 1
 
 
 def test_run_training_pythonpath_without_volume_commits() -> None:

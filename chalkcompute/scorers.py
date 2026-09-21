@@ -9,11 +9,12 @@ import math
 import os
 import re
 import sys
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from chalkcompute._evaluation import EvaluationScorerResult
+from chalkcompute._evaluation import EvaluationScorerResult, SqlExpression
 from chalkcompute._function import FunctionBuildError, RemoteFunction, _NoOpFunction
 from chalkcompute._function import function as _function
 from chalkcompute._image import Image
@@ -26,6 +27,17 @@ _DEFAULT_API_KEY_ENV = "OPENAI_API_KEY"
 # the versions it has.
 _JUDGE_PACKAGES = ["pydantic", "openai"]
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Chalk's AI router, under the environment's own API server.
+_ROUTER_PATH = "/v1/router"
+# Well inside the credential's lifetime, so a long scorer run does not carry a
+# token past its expiry.
+_ROUTER_TOKEN_TTL_SECONDS = 30 * 60
+_router_cache: dict[str, Any] = {}
+_ROUTER_UNREACHABLE = (
+    "llm_judge: no api_key and no base_url, and this environment has no Chalk "
+    "credentials to reach the AI router with. Pass api_key=Secret.from_chalk_env(...) "
+    "for a provider key, or base_url= for another OpenAI-compatible endpoint."
+)
 
 
 @dataclass(frozen=True)
@@ -40,7 +52,16 @@ class _JudgeSpec:
     parse_fn: Callable[[str], Any] | None
     base_url: str | None
     api_key_env: str
+    # Whether the caller named a key, as opposed to the default env var.
+    api_key_declared: bool
     completion_kwargs: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _EmbeddingSpec:
+    model: str
+    base_url: str | None
+    api_key_env: str
 
 
 _RESERVED_COMPLETION_KWARGS = frozenset({"model", "messages", "response_format"})
@@ -70,8 +91,10 @@ def llm_judge(
 
     ``inputs`` are the dataset columns to grade (``output`` is the task's).
     ``prompt_fn(response_model, **inputs)`` replaces the prompt; ``parse_fn``
-    replaces structured outputs. ``base_url`` takes any OpenAI-compatible URL
-    and ``api_key`` a Secret read in the pod. ``completion_kwargs`` (say
+    replaces structured outputs. With neither ``base_url`` nor ``api_key`` the
+    judge calls Chalk's AI router as the environment itself, so no provider key
+    is needed; ``base_url`` takes any other OpenAI-compatible URL and
+    ``api_key`` a Secret read in the pod. ``completion_kwargs`` (say
     ``{"temperature": 0, "max_tokens": 400}``) are sent with every request.
     ``name`` defaults to the model class in kebab case; other keywords go to
     :func:`chalkcompute.function`.
@@ -97,6 +120,7 @@ def llm_judge(
         parse_fn=parse_fn,
         base_url=base_url,
         api_key_env=api_key_env,
+        api_key_declared=api_key is not None,
         completion_kwargs=completion_kwargs,
     )
 
@@ -336,24 +360,68 @@ def _default_prompt(spec: _JudgeSpec, columns: Mapping[str, Any]) -> str:
     return "\n\n".join(parts)
 
 
-def _client_options(spec: _JudgeSpec) -> dict[str, Any]:
+def _environment_id() -> str | None:
+    return os.environ.get("CHALK_ENVIRONMENT_ID") or os.environ.get(
+        "CHALK_ACTIVE_ENVIRONMENT"
+    )
+
+
+def _client_options(spec: _JudgeSpec | _EmbeddingSpec) -> dict[str, Any]:
+    base_url = spec.base_url or os.environ.get("OPENAI_BASE_URL")
     api_key = os.environ.get(spec.api_key_env)
+    # Only a judge that asked for nothing falls back: the router serves
+    # completions, and a declared api_key that did not arrive is a
+    # misconfiguration to report, not a reason to bill Chalk's providers.
+    if (
+        base_url is None
+        and api_key is None
+        and isinstance(spec, _JudgeSpec)
+        and not spec.api_key_declared
+    ):
+        return _router_client_options()
     if not api_key:
         raise RuntimeError(
             f"llm_judge: {spec.api_key_env} is not set in the function environment; "
             "pass api_key=Secret.from_chalk_env(...) to llm_judge"
         )
     options: dict[str, Any] = {"api_key": api_key}
-    base_url = spec.base_url or os.environ.get("OPENAI_BASE_URL")
     if base_url:
         options["base_url"] = base_url
     # Chalk's AI router routes on this; other endpoints ignore it.
-    env_id = os.environ.get("CHALK_ENVIRONMENT_ID") or os.environ.get(
-        "CHALK_ACTIVE_ENVIRONMENT"
-    )
+    env_id = _environment_id()
     if env_id:
         options["default_headers"] = {"X-Chalk-Env-Id": env_id}
     return options
+
+
+def _router_client_options() -> dict[str, Any]:
+    """Chalk's AI router, which takes a Chalk credential rather than a provider key."""
+    from chalkcompute._connect import ConnectClient
+
+    now = time.monotonic()
+    issued_at = float(_router_cache.get("issued_at", 0.0))
+    connection = _router_cache.get("connection")
+    # A rotating web identity re-reads its token here, on its own expiry
+    # schedule; a client whose credential never refreshes is replaced instead.
+    try:
+        if connection is None or now - issued_at > _ROUTER_TOKEN_TTL_SECONDS:
+            connection = ConnectClient()
+            _router_cache.update(connection=connection, issued_at=now)
+        connection._ensure_auth()
+    except Exception as exc:
+        _router_cache.clear()
+        raise RuntimeError(_ROUTER_UNREACHABLE) from exc
+    token = connection._access_token
+    api_server = (connection._api_server or "").rstrip("/")
+    if not token or not api_server:
+        raise RuntimeError(_ROUTER_UNREACHABLE)
+    return {
+        "api_key": token,
+        "base_url": f"{api_server}{_ROUTER_PATH}",
+        "default_headers": {
+            "X-Chalk-Env-Id": connection._env_id or _environment_id() or ""
+        },
+    }
 
 
 def _complete(spec: _JudgeSpec, messages: list[dict[str, str]]) -> Any:
@@ -386,6 +454,17 @@ def _complete(spec: _JudgeSpec, messages: list[dict[str, str]]) -> Any:
 # ---------------------------------------------------------------------------
 # Deterministic scorers
 # ---------------------------------------------------------------------------
+
+
+def sql(name: str, expression: str, /) -> SqlExpression:
+    """Score rows with a ChalkSQL expression you write yourself.
+
+    ``expression`` is a select item over the evaluation's own columns: every
+    dataset column by name, plus ``output``, the task's result for the row. It
+    must yield a number. Nothing is deployed; ``name`` labels the result column
+    and the row in the compare table.
+    """
+    return SqlExpression(name, expression)
 
 
 def _validate_pair(inputs: Sequence[str], what: str) -> tuple[str, str]:
@@ -786,4 +865,221 @@ def string_similarity(
         image=image,
         function_kwargs=function_kwargs,
         packages=_SIMILARITY_PACKAGES,
+    )
+
+
+def _reject_constant(constant: str) -> Any:
+    raise ValueError(f"{constant} is not valid JSON")
+
+
+def _json_loads(text: str) -> Any:
+    """Parse strict JSON. Python's parser otherwise takes NaN and Infinity,
+    which no JSON document may contain."""
+    return json.loads(text, parse_constant=_reject_constant)
+
+
+def json_valid(
+    *,
+    name: str = "json-valid",
+    inputs: Sequence[str] = ("output",),
+    image: Image | None = None,
+    **function_kwargs: Any,
+) -> RemoteFunction | _NoOpFunction:
+    """Deploy a scorer that gives 1.0 when a column parses as JSON.
+
+    Useful on its own for a task asked to answer in JSON. The parser's
+    complaint is recorded as metadata when it does not parse. ``NaN`` and
+    ``Infinity`` are rejected, as the JSON grammar has no place for them.
+    """
+    _assert_deployable("cc.scorers.json_valid")
+    column = _validate_single(inputs, "json_valid")
+
+    def compare(**columns: Any) -> EvaluationScorerResult:
+        try:
+            _json_loads(_text(columns[column]))
+        except ValueError as exc:
+            return EvaluationScorerResult(score=0.0, metadata={"error": str(exc)})
+        return EvaluationScorerResult(score=1.0, metadata={})
+
+    return _declare_scorer(
+        name, (column,), compare, image=image, function_kwargs=function_kwargs
+    )
+
+
+_MISSING = object()
+
+
+def _at_path(document: Any, path: str) -> Any:
+    """Walk a dotted path, taking digits as list indices."""
+    current = document
+    for step in path.split("."):
+        if isinstance(current, Mapping) and step in current:
+            current = current[step]
+        elif isinstance(current, (list, tuple)) and step.lstrip("-").isdigit():
+            index = int(step)
+            if not -len(current) <= index < len(current):
+                return _MISSING
+            current = current[index]
+        else:
+            return _MISSING
+    return current
+
+
+def _json_equal(a: Any, b: Any) -> bool:
+    """Compare as JSON does. Python holds ``True == 1``, so a boolean and a
+    number would otherwise pass for each other at any depth."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return a is b
+    if isinstance(a, Mapping) and isinstance(b, Mapping):
+        return len(a) == len(b) and all(
+            key in b and _json_equal(value, b[key]) for key, value in a.items()
+        )
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(
+            _json_equal(left, right) for left, right in zip(a, b)
+        )
+    return a == b
+
+
+def _mismatched_keys(a: Any, b: Any) -> list[str]:
+    """Top-level keys that differ, when both sides are objects."""
+    if not isinstance(a, Mapping) or not isinstance(b, Mapping):
+        return []
+    return sorted(
+        key
+        for key in set(a) | set(b)
+        if not _json_equal(a.get(key, _MISSING), b.get(key, _MISSING))
+    )
+
+
+def json_match(
+    *,
+    name: str = "json-match",
+    inputs: Sequence[str] = ("output", "expected"),
+    paths: Sequence[str] | None = None,
+    image: Image | None = None,
+    **function_kwargs: Any,
+) -> RemoteFunction | _NoOpFunction:
+    """Deploy a scorer that compares two columns as JSON documents.
+
+    Without ``paths`` the whole documents must be equal, so object key order
+    does not matter but list order does. With ``paths`` (dotted, as in
+    ``"user.id"`` or ``"items.0.sku"``) the score is the share of those paths
+    whose values agree. Either way the paths or keys that differed are recorded
+    as metadata, and a column that does not parse scores 0.0. Values are
+    compared as JSON, so ``true`` never passes for ``1``.
+    """
+    _assert_deployable("cc.scorers.json_match")
+    candidate, reference = _validate_pair(inputs, "json_match")
+    # A bare string would iterate into one path per character, and those
+    # paths are absent on both sides, which reads as agreement.
+    if isinstance(paths, str):
+        raise TypeError(f"json_match: paths must be a sequence, not {paths!r}")
+    wanted = tuple(paths) if paths is not None else None
+    if wanted is not None and not wanted:
+        raise ValueError("json_match: paths must name at least one path")
+
+    def compare(**columns: Any) -> EvaluationScorerResult:
+        parsed = []
+        for column in (candidate, reference):
+            try:
+                parsed.append(_json_loads(_text(columns[column])))
+            except ValueError as exc:
+                return EvaluationScorerResult(
+                    score=0.0, metadata={"error": f"{column}: {exc}"}
+                )
+        a, b = parsed
+        if wanted is None:
+            matched = _json_equal(a, b)
+            return EvaluationScorerResult(
+                score=1.0 if matched else 0.0,
+                metadata={"mismatched": [] if matched else _mismatched_keys(a, b)},
+            )
+        mismatched = [
+            path
+            for path in wanted
+            if not _json_equal(_at_path(a, path), _at_path(b, path))
+        ]
+        return EvaluationScorerResult(
+            score=1 - len(mismatched) / len(wanted),
+            metadata={"mismatched": mismatched},
+        )
+
+    return _declare_scorer(
+        name,
+        (candidate, reference),
+        compare,
+        image=image,
+        function_kwargs=function_kwargs,
+    )
+
+
+_EMBEDDING_PACKAGES = ["openai"]
+
+
+def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
+    magnitude = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b))
+    if magnitude == 0:
+        return 0.0
+    return sum(x * y for x, y in zip(a, b)) / magnitude
+
+
+def _embed(spec: _EmbeddingSpec, texts: Sequence[str]) -> list[Sequence[float]]:
+    # Present in the scorer's image, never in the SDK's environment.
+    from openai import OpenAI  # ty: ignore[unresolved-import]
+
+    client = OpenAI(**_client_options(spec))
+    embedded = client.embeddings.create(model=spec.model, input=list(texts))
+    return [item.embedding for item in embedded.data]
+
+
+def embedding_similarity(
+    *,
+    name: str = "embedding-similarity",
+    inputs: Sequence[str] = ("output", "expected"),
+    model: str = "text-embedding-3-small",
+    base_url: str | None = None,
+    api_key: Secret | None = None,
+    image: Image | None = None,
+    **function_kwargs: Any,
+) -> RemoteFunction | _NoOpFunction:
+    """Deploy a scorer that grades two columns by how close their meanings are.
+
+    Both columns are embedded with ``model`` and scored by cosine similarity,
+    clipped into ``[0, 1]``, with the raw cosine recorded as metadata. This
+    catches an answer that is right but worded differently, which the string
+    scorers mark wrong. ``base_url`` and ``api_key`` name the endpoint and the
+    Secret holding its key, as they do for :func:`llm_judge`.
+    """
+    _assert_deployable("cc.scorers.embedding_similarity")
+    candidate, reference = _validate_pair(inputs, "embedding_similarity")
+    secrets: list[Secret] = []
+    api_key_env = _DEFAULT_API_KEY_ENV
+    if api_key is not None:
+        api_key_env = _secret_env_var(api_key)
+        secrets.append(api_key)
+    spec = _EmbeddingSpec(model=model, base_url=base_url, api_key_env=api_key_env)
+
+    def compare(**columns: Any) -> EvaluationScorerResult:
+        a = _text(columns[candidate]).strip()
+        b = _text(columns[reference]).strip()
+        if not a and not b:
+            return EvaluationScorerResult(score=1.0, metadata={"cosine": 1.0})
+        if not a or not b:
+            return EvaluationScorerResult(score=0.0, metadata={"cosine": 0.0})
+        left, right = _embed(spec, (a, b))
+        cosine = _cosine(left, right)
+        return EvaluationScorerResult(
+            score=max(0.0, min(1.0, cosine)), metadata={"cosine": cosine}
+        )
+
+    return _declare_scorer(
+        name,
+        (candidate, reference),
+        compare,
+        image=image,
+        function_kwargs=function_kwargs,
+        packages=_EMBEDDING_PACKAGES,
+        secrets=secrets,
+        extra_globals={"__chalk_spec__": spec},
     )

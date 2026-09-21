@@ -28,6 +28,7 @@ import dataclasses
 import logging
 import os
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, overload
 
@@ -36,12 +37,12 @@ from protobuf.wkt import Struct, Value
 
 from chalkcompute._connect import ConnectClient, build_image
 from chalkcompute._containerspec import ContainerSpec
+from chalkcompute._env import normalize_env
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._gen.chalk.server.v1 import (
     training_runs_connect as tr_connect,
     training_runs_pb as tr_pb,
 )
-from chalkcompute._gen.chalk.volume.v2 import volume_pb
 
 if TYPE_CHECKING:
     from chalkcompute._image import Image as _Image
@@ -228,7 +229,7 @@ class TrainingFunction:
         cpu: str | None = None,
         memory: str | None = None,
         gpu: str | None = None,
-        env: dict[str, str] | None = None,
+        env: Mapping[str, str | _Secret] | None = None,
         secrets: list[_Secret] | None = None,
         metadata: dict[str, Any] | None = None,
         max_retries: int | None = None,
@@ -242,6 +243,7 @@ class TrainingFunction:
         self._dataset = dataset
         self._input_sql = input_sql
 
+        env, secrets = normalize_env(env, secrets)
         ContainerSpec.validate_fields(
             image=image,
             name=name,
@@ -249,7 +251,13 @@ class TrainingFunction:
             memory=memory,
             gpu=gpu,
             env=env,
+            secrets=secrets,
         )
+        if any(secret.is_lazy for secret in secrets):
+            raise ValueError(
+                "Training does not support local secrets. "
+                "Use Secret.from_chalk_env or Secret.from_chalk_integration instead."
+            )
         self._image = image
         self._name = name
         self._cpu = cpu
@@ -377,6 +385,7 @@ class TrainingFunction:
         *,
         config: Any = None,
         client: ConnectClient | None = None,
+        experiment_id: str | None = None,
     ) -> TrainingRunHandle:
         """Submit a training run to chalkcompute.
 
@@ -388,6 +397,9 @@ class TrainingFunction:
         client
             An authenticated :class:`ConnectClient`. One is created
             automatically if not provided.
+        experiment_id
+            Optional ID of the experiment this training run should be
+            associated with.
         """
         if client is None:
             client = ConnectClient()
@@ -395,8 +407,7 @@ class TrainingFunction:
         deploy_image = self._build_deploy_image()
         image_uri = build_image(client, deploy_image)
 
-        volume_commits: list[volume_pb.CommitIntent] = []
-        volume_mounts: list[Any] = []
+        proto_mounts: list[container_pb.VolumeMount] = []
         if deploy_image.lazy_local_files:
             from chalkcompute._volume import VolumeClient
 
@@ -406,10 +417,19 @@ class TrainingFunction:
             )
             vvclient = VolumeClient.from_connect(client)
             vol_name = f"training-src-{self._name or self._func_name}"
-            volume_mounts, volume_commits = vvclient.stage_lazy_files(
+            resolved = vvclient._resolve_lazy_files(
                 deploy_image,
                 volume_name=vol_name,
             )
+            proto_mounts = [
+                container_pb.VolumeMount(
+                    name=m.name,
+                    mount_path=m.mount_path,
+                    type="versioned_chalkfs",
+                    version_id=m.version_id,
+                )
+                for m in resolved
+            ]
 
         data_source = self._build_data_source()
         resources = self._build_resources()
@@ -417,10 +437,7 @@ class TrainingFunction:
         meta = _metadata_to_proto(self._metadata) if self._metadata else None
 
         env = dict(self._env) if self._env else {}
-        if volume_mounts:
-            env["PYTHONPATH"] = f"/volumes/{volume_mounts[0].name}"
-        else:
-            env["PYTHONPATH"] = "/app"
+        env["PYTHONPATH"] = "/app"
         module = self._func.__module__
         if module == "__main__":
             import __main__
@@ -441,8 +458,9 @@ class TrainingFunction:
             env=env or None,
             secret_refs=secret_refs or None,
             meta_data=meta,
-            volume_commits=volume_commits or None,
+            volume_mounts=proto_mounts or None,
             max_retries=self._max_retries,
+            experiment_id=experiment_id,
         )
 
         stub = client.stub(tr_connect.TrainingRunServiceClientSync)
@@ -494,7 +512,7 @@ def training(
     cpu: str | None = None,
     memory: str | None = None,
     gpu: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
     metadata: dict[str, Any] | None = None,
     max_retries: int | None = None,
@@ -512,7 +530,7 @@ def training(
     cpu: str | None = None,
     memory: str | None = None,
     gpu: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
     metadata: dict[str, Any] | None = None,
     max_retries: int | None = None,
@@ -531,7 +549,7 @@ def training(
     cpu: str | None = None,
     memory: str | None = None,
     gpu: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
     metadata: dict[str, Any] | None = None,
     max_retries: int | None = None,
@@ -556,6 +574,10 @@ def training(
     env var), the decorator is a no-op that returns the function body
     unchanged — the entrypoint handles dataset loading and config
     injection.
+
+    ``env`` accepts strings or single-value Chalk Secret references; the mapping
+    key sets the injected name, overriding aliases and prefixes. Local env
+    secrets are not supported for training.
 
     Outside a container, returns a :class:`TrainingFunction` that
     exposes ``.run_training()`` for remote execution and ``.local()``
