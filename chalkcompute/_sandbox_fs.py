@@ -80,7 +80,7 @@ def _rpc_error(error: ConnectError) -> SandboxFileSystemError:
             continue
         if value is not None:
             filesystem_error = value.error
-            errno = value.errno if value.has_field("errno") else None
+            errno = value.posix_errno if value.has_field("posix_errno") else None
             break
     return SandboxFileSystemError(
         error.message,
