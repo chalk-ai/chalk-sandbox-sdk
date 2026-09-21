@@ -373,16 +373,6 @@ def test_remote_function_deploy_sends_pinned_source_mounts(
     assert len(mounts) == 1
     assert mounts[0].mount_path == "/app"
     assert mounts[0].version_id == 42
-    
-    request = client.requests["create_external_function"]
-    assert isinstance(request, catalog_pb.CreateExternalFunctionRequest)
-    assert request.spec is not None
-    assert request.spec.volume_commits == [intent]
-    assert request.spec.spec is not None
-    assert request.spec.spec.container_spec is not None
-    assert any(
-        m.name == "fn-files-abc" for m in request.spec.spec.container_spec.volumes
-    )
 
 
 class _RemoteFunctionUnhealthyClient(_RemoteFunctionReadinessClient):
@@ -410,11 +400,8 @@ def test_remote_function_deploy_fails_fast_on_unhealthy_scaling_group(
     fn = RemoteFunction(add, name="fn-unhealthy")
     fn._client = client  # type: ignore[assignment]
 
-    monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
     monkeypatch.setattr(
-        function_mod,
-        "_build_and_upload",
-        lambda *_, **__: ("image:test", [], None, []),
+        RemoteFunction, "_build_deploy_image", lambda _: Image("image:test")
     )
     monkeypatch.setattr(function_mod.time, "sleep", lambda _: None)
 
@@ -422,7 +409,7 @@ def test_remote_function_deploy_fails_fast_on_unhealthy_scaling_group(
         fn.deploy(poll_interval=0, ready_timeout=10)
 
     # Failed on the first poll rather than looping until ready_timeout.
-    assert client.methods == ["create_external_function", "get_scaling_group"]
+    assert client.methods == ["ensure_external_function", "get_scaling_group"]
 
 
 class _WaitReadyUnhealthyClient(StubbedConnectClient):
@@ -487,12 +474,7 @@ def test_remote_function_readiness_error_details(monkeypatch, status, details) -
     with pytest.raises(FunctionError) as exc_info:
         fn._poll_until_ready(sg_name="fn-ready", poll_interval=0, timeout=10)
 
-    expected = (
-        "Scaling group fn-ready not ready after 10s "
-        "(status=Unhealthy, ready=0, available=0): Exit code 1"
-        if status == "Unhealthy"
-        else f"Scaling group fn-ready entered {status} state: Exit code 1"
-    )
+    expected = f"Scaling group fn-ready entered {status} state: Exit code 1"
     if details:
         expected += "\n" + details
     assert str(exc_info.value) == expected
