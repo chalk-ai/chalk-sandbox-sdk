@@ -12,6 +12,7 @@ from typing import Any, TypeVar
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError
 from connectrpc.request import RequestContext
+from opentelemetry import propagate
 from opentelemetry.trace import Span, StatusCode
 
 from chalkcompute._tracing import get_tracer
@@ -43,7 +44,14 @@ class _SpanToken:
 
 
 class TracingInterceptor:
-    """Emit one OpenTelemetry span around each synchronous RPC."""
+    """Emit one OpenTelemetry span around each synchronous RPC.
+
+    The span is also handed to the server as W3C ``traceparent``/``tracestate``/
+    ``baggage`` request headers, so the server's spans — and, through the
+    sandbox's per-exec ``TRACEPARENT`` env, the workload's — join the caller's
+    trace. The propagator writes nothing for a non-recording span, so a process
+    without tracing sends no extra headers.
+    """
 
     def on_start_sync(self, ctx: RequestContext[Any, Any]) -> _SpanToken:
         context = get_tracer().start_as_current_span(_RPC_SPAN_NAME)
@@ -52,6 +60,10 @@ class TracingInterceptor:
             _RPC_METHOD_ATTRIBUTE,
             f"{ctx.method.service_name}/{ctx.method.name}",
         )
+        carrier: dict[str, str] = {}
+        propagate.inject(carrier)
+        for key, value in carrier.items():
+            ctx.request_headers[key] = value
         return _SpanToken(context=context, span=span)
 
     def on_end_sync(

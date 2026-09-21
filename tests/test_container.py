@@ -351,3 +351,25 @@ def test_container_run_omits_compute_class_when_unset() -> None:
 
     spec = client.calls[0].request.container.spec
     assert spec.compute_class == pb.ComputeClass.UNSPECIFIED
+
+
+def test_container_tracing_sets_otel_sampler_env() -> None:
+    from chalkcompute import TracingPolicy
+
+    with pytest.warns(DeprecationWarning):
+        container = Container(
+            image="ubuntu:latest",
+            env={"APP": "1"},
+            tracing=TracingPolicy(sample_rate=0.5),
+        )
+    assert container._env == {
+        "APP": "1",
+        "OTEL_TRACES_SAMPLER": "parentbased_traceidratio",
+        "OTEL_TRACES_SAMPLER_ARG": "0.5",
+    }
+
+
+def test_container_tracing_default_keeps_platform_sampler() -> None:
+    with pytest.warns(DeprecationWarning):
+        container = Container(image="ubuntu:latest", env={"APP": "1"})
+    assert container._env == {"APP": "1"}

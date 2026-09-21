@@ -65,10 +65,16 @@ from chalkcompute._gen.chalk.sandbox.v2 import service_connect as pb_connect
 from chalkcompute._http import SYNC_HTTP_CLIENT
 from chalkcompute._image import Image
 from chalkcompute._naming import validate_env
+from chalkcompute._remote_function_tracing import (
+    TracingPolicy,
+    TracingPolicyConfig,
+    merge_workload_tracing_env,
+    normalize_workload_tracing,
+)
 from chalkcompute._secret import Secret, SecretScope, resolve_lazy_secrets
 from chalkcompute._sandbox_git import SandboxGit
 from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
-from chalkcompute._tracing import _instrumented
+from chalkcompute._tracing import _instrumented, _request_tracing_intent, trace_env
 from chalkcompute._volume import (
     VolumeClient,
     cleanup_owned_volumes,
@@ -87,6 +93,7 @@ if TYPE_CHECKING:
         RestartPolicy,
         SSHDest,
     )
+    from chalkcompute._remote_function_tracing import _RemoteFunctionTracingPolicy
     from chalkcompute._volume import Volume, VolumeMount
 
     # Aliases defined before SandboxClient, which has a ``.list()`` method that
@@ -625,6 +632,7 @@ class Sandbox:
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool = False,
         managed_ssh: Mapping[str, SSHDest] | None = None,
+        tracing: TracingPolicyConfig | None = None,
         chalk_client: Any | None = None,
         sandbox_client: SandboxClient | None = None,
         client: Any | None = None,
@@ -682,6 +690,10 @@ class Sandbox:
         managed_ssh
             Optional SSH aliases mapped to :class:`SSHDest` instances. Managed
             SSH sandboxes run on host compute.
+        tracing
+            Trace sampling for processes inside the sandbox. ``True`` traces
+            every request; a :class:`~chalkcompute.TracingPolicy` sets the
+            root sample rate; ``False`` turns tracing off.
 
         sandbox_id
             Existing sandbox ID. With no client, authentication is resolved lazily
@@ -730,6 +742,7 @@ class Sandbox:
         self._restart_policy: RestartPolicy | None = None
         self._chalk_identity = False
         self._managed_ssh: dict[str, SSHDest] = {}
+        self._tracing: TracingPolicy | _RemoteFunctionTracingPolicy | None = None
         self._chalk_client: Any | None = None
         self._built_image_uri: str | None = None
 
@@ -753,6 +766,7 @@ class Sandbox:
                 or restart_policy is not None
                 or chalk_identity
                 or managed_ssh is not None
+                or tracing is not None
                 or chalk_client is not None
                 or sandbox_client is not None
             ):
@@ -769,6 +783,8 @@ class Sandbox:
         if image is None:
             image = Image.sandbox()
         env, secrets = normalize_env(env, secrets)
+        tracing_policy = normalize_workload_tracing(tracing)
+        env = merge_workload_tracing_env(env, tracing_policy)
         image, resolved_volumes = normalize_image_volumes(image, volumes)
         ContainerSpec.validate_fields(
             image=image,
@@ -809,7 +825,11 @@ class Sandbox:
         self._restart_policy = restart_policy
         self._chalk_identity = chalk_identity
         self._managed_ssh = dict(managed_ssh or {})
+        self._tracing = tracing_policy
         self._chalk_client = chalk_client
+        if isinstance(tracing_policy, TracingPolicy):
+            # The sandbox joins the caller's trace only if the caller has one.
+            _request_tracing_intent()
 
     @classmethod
     def from_id(cls, sandbox_id: str, *, chalk_client: Any | None = None) -> Sandbox:
@@ -1357,9 +1377,8 @@ class Sandbox:
         if workdir is not None:
             init.workdir = workdir
         validate_env(env)
-        if env is not None:
-            for k, v in env.items():
-                init.env_vars[k] = v
+        for k, v in _with_trace_env(env).items():
+            init.env_vars[k] = v
         if timeout_secs is not None:
             init.timeout = Duration(seconds=timeout_secs)
 
@@ -1447,9 +1466,8 @@ class Sandbox:
         if workdir is not None:
             spec.workdir = workdir
         validate_env(env)
-        if env is not None:
-            for k, v in env.items():
-                spec.env[k] = v
+        for k, v in _with_trace_env(env).items():
+            spec.env[k] = v
         if max_artifact_bytes is not None:
             spec.max_artifact_bytes = max_artifact_bytes
 
@@ -1718,6 +1736,7 @@ class SandboxClient:
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool = False,
         managed_ssh: Mapping[str, SSHDest] | None = None,
+        tracing: TracingPolicyConfig | None = None,
         wait: bool = True,
         poll_interval: float = 0.5,
         timeout: float = 600.0,
@@ -1762,6 +1781,10 @@ class SandboxClient:
             ``CHALK_WEB_IDENTITY_TOKEN_FILE`` environment variable.
         managed_ssh
             Optional SSH aliases mapped to :class:`SSHDest` instances.
+        tracing
+            ``True`` traces every request inside the sandbox, a
+            :class:`~chalkcompute.TracingPolicy` sets the root sample rate,
+            ``False`` turns tracing off. See :class:`Sandbox`.
         wait
             If ``True``, poll until the sandbox is ready (default ``True``).
         poll_interval
@@ -1795,6 +1818,7 @@ class SandboxClient:
                 restart_policy=restart_policy,
                 chalk_identity=chalk_identity,
                 managed_ssh=managed_ssh,
+                tracing=tracing,
             ),
             wait=wait,
             poll_interval=poll_interval,
@@ -2046,6 +2070,19 @@ def _response_to_event(response: process_pb.OpenSessionResponse) -> ExecEvent:
             )
         case _:
             return ExecEvent()
+
+
+def _with_trace_env(env: dict[str, str] | None) -> dict[str, str]:
+    """Add the caller's trace context to a process's env as ``TRACEPARENT`` etc.
+
+    Only when the caller has a valid trace, and never over a key the caller
+    set. This is what lets a process inside the sandbox parent its spans to
+    the ``exec`` that started it.
+    """
+    merged = dict(env or {})
+    for key, value in trace_env().items():
+        merged.setdefault(key, value)
+    return merged
 
 
 def _handle_rpc_error(e: ConnectRpcError, sandbox_id: str) -> None:

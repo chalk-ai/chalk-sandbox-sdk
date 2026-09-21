@@ -458,6 +458,158 @@ def test_sandbox_client_create_forwards_container_fields() -> None:
     assert spec.has_field("lifetime")
 
 
+@pytest.fixture
+def no_caller_tracing(monkeypatch: pytest.MonkeyPatch) -> list[None]:
+    """Record, instead of performing, the caller-side tracing setup ``tracing=`` triggers."""
+    calls: list[None] = []
+    monkeypatch.setattr(
+        "chalkcompute._sandbox._request_tracing_intent", lambda: calls.append(None)
+    )
+    return calls
+
+
+def _created_env(tracing: object, env: dict[str, str] | None = None) -> dict[str, str]:
+    client = SandboxClient()
+    stub = _Stub()
+    client._stub = stub  # type: ignore[assignment]
+    try:
+        client.create("python:3.14-slim", env=env, tracing=tracing, wait=False)
+    finally:
+        client.close()
+    assert stub.request is not None
+    return dict(stub.request.source.value.env_vars)
+
+
+def test_sandbox_tracing_true_traces_every_root(no_caller_tracing) -> None:
+    env = _created_env(True, env={"APP": "1"})
+    assert env == {
+        "APP": "1",
+        "OTEL_TRACES_SAMPLER": "parentbased_traceidratio",
+        "OTEL_TRACES_SAMPLER_ARG": "1.0",
+    }
+    assert no_caller_tracing == [None]
+
+
+def test_sandbox_tracing_policy_sets_root_sample_rate(no_caller_tracing) -> None:
+    from chalkcompute import TracingPolicy
+
+    env = _created_env(TracingPolicy(sample_rate=0.1))
+    assert env["OTEL_TRACES_SAMPLER"] == "parentbased_traceidratio"
+    assert env["OTEL_TRACES_SAMPLER_ARG"] == "0.1"
+    assert no_caller_tracing == [None]
+
+
+def test_sandbox_tracing_false_turns_tracing_off(no_caller_tracing) -> None:
+    env = _created_env(False)
+    assert env["OTEL_TRACES_SAMPLER"] == "always_off"
+    assert "OTEL_TRACES_SAMPLER_ARG" not in env
+    assert no_caller_tracing == []
+
+
+def test_sandbox_tracing_default_keeps_platform_sampler(no_caller_tracing) -> None:
+    env = _created_env(None, env={"APP": "1"})
+    assert env == {"APP": "1"}
+    assert no_caller_tracing == []
+
+
+def test_sandbox_tracing_conflicts_with_explicit_sampler_env(no_caller_tracing) -> None:
+    with pytest.raises(ValueError, match="OTEL_TRACES_SAMPLER"):
+        Sandbox(
+            image="ubuntu:latest",
+            env={"OTEL_TRACES_SAMPLER": "always_on"},
+            tracing=True,
+        )
+
+
+def test_sandbox_handle_rejects_tracing() -> None:
+    with pytest.raises(TypeError, match="cannot be combined"):
+        Sandbox(client=SandboxClient(), sandbox_id="sandbox-123", tracing=True)
+
+
+def test_sandbox_exec_hands_trace_context_to_the_process(monkeypatch) -> None:
+    traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    monkeypatch.setattr(
+        "chalkcompute._sandbox.trace_env",
+        lambda: {"TRACEPARENT": traceparent, "BAGGAGE": "session.id=abc"},
+    )
+    client = SandboxClient()
+    stub = _ProcessStub()
+    client._process_stub = stub  # type: ignore[assignment]
+    try:
+        Sandbox(client=client, sandbox_id="sandbox-123").exec(
+            "env", env={"APP": "1", "BAGGAGE": "mine=1"}
+        )
+    finally:
+        client.close()
+
+    assert stub.request is not None
+    assert dict(stub.request.command.value.env_vars) == {
+        "APP": "1",
+        "TRACEPARENT": traceparent,
+        # The caller's explicit value wins over the propagated one.
+        "BAGGAGE": "mine=1",
+    }
+
+
+class _RuntimeStub:
+    def __init__(self) -> None:
+        self.spec = None
+
+    def execute_python(self, requests, **_kwargs: object):
+        from chalkcompute._gen.chalk.sandbox.v1 import runtime_service_pb as runtime_pb
+
+        self.spec = next(requests).message.value
+        return iter(
+            [
+                runtime_pb.ExecutePythonResponse(
+                    message=Oneof(
+                        "completed",
+                        runtime_pb.PythonExecutionCompleted(
+                            exit_code=0,
+                            outcome=runtime_pb.PythonExecutionOutcome.SUCCEEDED,
+                        ),
+                    )
+                )
+            ]
+        )
+
+
+def test_sandbox_execute_python_hands_trace_context_to_the_process(
+    monkeypatch,
+) -> None:
+    traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    monkeypatch.setattr(
+        "chalkcompute._sandbox.trace_env", lambda: {"TRACEPARENT": traceparent}
+    )
+    client = SandboxClient()
+    stub = _RuntimeStub()
+    client._runtime_stub = stub  # type: ignore[assignment]
+    try:
+        execution = Sandbox(client=client, sandbox_id="sandbox-123").execute_python(
+            "print(1)", env={"APP": "1"}
+        )
+    finally:
+        client.close()
+
+    assert execution.succeeded
+    assert stub.spec is not None
+    assert dict(stub.spec.env) == {"APP": "1", "TRACEPARENT": traceparent}
+
+
+def test_sandbox_exec_without_a_trace_adds_no_env(monkeypatch) -> None:
+    monkeypatch.setattr("chalkcompute._sandbox.trace_env", lambda: {})
+    client = SandboxClient()
+    stub = _ProcessStub()
+    client._process_stub = stub  # type: ignore[assignment]
+    try:
+        Sandbox(client=client, sandbox_id="sandbox-123").exec("env")
+    finally:
+        client.close()
+
+    assert stub.request is not None
+    assert dict(stub.request.command.value.env_vars) == {}
+
+
 def test_sandbox_client_create_propagates_backend_error_details() -> None:
     client = SandboxClient()
     client._stub = _ErrorAfterBuildStub()  # type: ignore[assignment]
