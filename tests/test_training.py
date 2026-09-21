@@ -465,6 +465,30 @@ def test_run_training_passes_max_retries() -> None:
     assert req.max_retries == 5
 
 
+def test_run_training_passes_experiment_id() -> None:
+    from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
+
+    @training(data="my_ds", name="exp-run")
+    def train(df: Any, config: Any) -> str:
+        return "ok"
+
+    mock_client = MagicMock()
+    mock_run = tr_pb.TrainingRun(id="run-exp")
+    mock_resp = tr_pb.CreateTrainingRunResponse(training_run=mock_run)
+    mock_client.call.return_value = mock_resp
+
+    with (
+        patch.object(
+            TrainingFunction, "_build_deploy_image", return_value=_mock_deploy_image()
+        ),
+        patch("chalkcompute._training.build_image", return_value="img:latest"),
+    ):
+        train.run_training(client=mock_client, experiment_id="exp-123")
+
+    req = mock_client.call.call_args[0][1]
+    assert req.experiment_id == "exp-123"
+
+
 def test_run_training_pythonpath_with_volume_mounts() -> None:
     from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
     from chalkcompute._volume import VolumeMount
