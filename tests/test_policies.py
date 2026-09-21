@@ -15,7 +15,10 @@ from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._remote_function_tracing import (
     TracingPolicy,
+    merge_workload_tracing_env,
     normalize_remote_function_tracing,
+    normalize_workload_tracing,
+    workload_tracing_env,
 )
 from chalkcompute._retry import RetryPolicy
 from chalkcompute._scaling_group import ScalingGroup
@@ -216,6 +219,53 @@ class TestTracingPolicy:
     def test_invalid_tracing_config_rejected(self):
         with pytest.raises(TypeError, match="tracing must be a bool or TracingPolicy"):
             normalize_remote_function_tracing("on")  # type: ignore[arg-type]
+
+
+class TestWorkloadTracing:
+    """``tracing=`` on sandboxes, containers, and scaling groups."""
+
+    def test_none_keeps_platform_default(self):
+        assert normalize_workload_tracing(None) is None
+        assert workload_tracing_env(None) == {}
+        assert merge_workload_tracing_env({"A": "1"}, None) == {"A": "1"}
+
+    def test_true_traces_every_root(self):
+        policy = normalize_workload_tracing(True)
+        assert policy == TracingPolicy(sample_rate=1.0)
+        assert workload_tracing_env(policy) == {
+            "OTEL_TRACES_SAMPLER": "parentbased_traceidratio",
+            "OTEL_TRACES_SAMPLER_ARG": "1.0",
+        }
+
+    def test_policy_sets_root_sample_rate(self):
+        assert workload_tracing_env(TracingPolicy(sample_rate=0.25)) == {
+            "OTEL_TRACES_SAMPLER": "parentbased_traceidratio",
+            "OTEL_TRACES_SAMPLER_ARG": "0.25",
+        }
+
+    def test_false_turns_tracing_off(self):
+        assert workload_tracing_env(normalize_workload_tracing(False)) == {
+            "OTEL_TRACES_SAMPLER": "always_off"
+        }
+
+    def test_merge_preserves_user_env(self):
+        assert merge_workload_tracing_env(
+            {"A": "1"}, TracingPolicy(sample_rate=0.5)
+        ) == {
+            "A": "1",
+            "OTEL_TRACES_SAMPLER": "parentbased_traceidratio",
+            "OTEL_TRACES_SAMPLER_ARG": "0.5",
+        }
+
+    def test_merge_rejects_conflicting_env(self):
+        with pytest.raises(ValueError, match=r"OTEL_TRACES_SAMPLER_ARG"):
+            merge_workload_tracing_env(
+                {"OTEL_TRACES_SAMPLER_ARG": "0.1"}, TracingPolicy(sample_rate=1.0)
+            )
+
+    def test_invalid_config_rejected(self):
+        with pytest.raises(TypeError, match="tracing must be a bool or TracingPolicy"):
+            normalize_workload_tracing("on")  # type: ignore[arg-type]
 
 
 class TestBatchingGeneratorGuardFunction:

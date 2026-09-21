@@ -186,3 +186,21 @@ def test_from_name_recovers_authentication(
     sg = ScalingGroup.from_name("existing-group")
 
     assert sg._authenticated is True
+
+
+def test_scaling_group_tracing_sets_otel_sampler_env() -> None:
+    sg = ScalingGroup(
+        image="nginx:alpine", name="traced", env={"APP": "1"}, tracing=True
+    )
+    assert sg._env == {
+        "APP": "1",
+        "OTEL_TRACES_SAMPLER": "parentbased_traceidratio",
+        "OTEL_TRACES_SAMPLER_ARG": "1.0",
+    }
+
+
+def test_scaling_group_tracing_off_and_default() -> None:
+    assert ScalingGroup(image="nginx:alpine", name="off", tracing=False)._env == {
+        "OTEL_TRACES_SAMPLER": "always_off"
+    }
+    assert ScalingGroup(image="nginx:alpine", name="default")._env == {}

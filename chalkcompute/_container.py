@@ -65,6 +65,11 @@ from chalkcompute._naming import (
 )
 from chalkcompute._image_build import normalize_image_volumes
 from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
+from chalkcompute._remote_function_tracing import (
+    TracingPolicyConfig,
+    merge_workload_tracing_env,
+    normalize_workload_tracing,
+)
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
     Volume,
@@ -710,6 +715,7 @@ class Container:
         network_policy: NetworkPolicy | None = None,
         compute_class: ComputeClass | None = None,
         tags: dict[str, str] | None = None,
+        tracing: TracingPolicyConfig | None = None,
         chalk_client: Any | None = None,
     ) -> None:
         warnings.warn(
@@ -725,6 +731,8 @@ class Container:
                 "image must be an Image or image reference string, got None"
             )
         env, secrets = normalize_env(env, secrets)
+        self._tracing = normalize_workload_tracing(tracing)
+        env = merge_workload_tracing_env(env, self._tracing)
         ContainerSpec.validate_fields(
             image=normalized_image,
             name=name,

@@ -7,6 +7,7 @@
 | Code execution | Stateful `execute_python` with sessions and artifacts. Other installed runtimes can be invoked with `exec`. |
 | System tools | `Image.sandbox().apt_install(["tmux"])` installs tools at build time. Detached tmux sessions are managed with ordinary exec calls. |
 | Resources | Creation-time CPU/memory/GPU, env/Secret references, volume mounts, lifetime, tags, network policy, published port and managed outbound SSH. |
+| Tracing | `tracing=True` / `TracingPolicy(sample_rate=...)` / `False` at creation; the caller's trace context rides every RPC and reaches each `exec` as `TRACEPARENT`. |
 
 ## Git defaults
 
@@ -32,3 +33,10 @@ Creation waits for readiness by default with a 600-second timeout and 0.5-second
 polling. Helper `timeout_secs=None` leaves the exec timeout unset; a multi-command
 Git operation applies it to each subprocess. tmux sessions end when the sandbox terminates;
 interactive attachment requires a PTY.
+
+## Tracing defaults
+
+The platform gives every sandbox an OTLP exporter endpoint and a default
+parent-based sampler; those stay in effect unless `tracing=` is passed.
+`tracing=True` traces every root inside the sandbox, `TracingPolicy(sample_rate=...)`
+sets the root sample rate, and `False` turns tracing off.

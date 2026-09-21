@@ -23,7 +23,9 @@ F = TypeVar("F", bound=Callable[..., Any])
 _TRACER_NAME = "chalkcompute"
 _DEFAULT_PUBLIC_SPAN_NAME = "chalkcompute.span"
 _TRACE_CONTEXT_METADATA_KEYS = ("traceparent", "tracestate", "baggage")
+_TRACE_CONTEXT_ENV_VARS = tuple(key.upper() for key in _TRACE_CONTEXT_METADATA_KEYS)
 _REMOTE_FUNCTION_TRACE_POLICY_ENV_VAR = "CHALK_REMOTE_FUNCTION_TRACE_POLICY"
+_OTEL_TRACES_SAMPLER_ENV_VAR = "OTEL_TRACES_SAMPLER"
 
 SESSION_ID_ATTRIBUTE = "session.id"
 """Span attribute Chalk resolves an agent session from, first of six spellings.
@@ -60,6 +62,7 @@ SESSION_ROOT_SPAN_NAME = "chalkcompute.session"
 _initialized = False
 _provider: Any | None = None
 _user_tracing_configured = False
+_ambient_context_adopted = False
 _tracer: Any | None = None
 _session_processor_providers: weakref.WeakSet[Any] = weakref.WeakSet()
 
@@ -289,7 +292,18 @@ def _installed_provider(trace_api: Any) -> Any | None:
     return provider if hasattr(provider, "add_span_processor") else None
 
 
-def _install_tracer_provider(sample_rate: float) -> None:
+def _default_sample_rate() -> float | None:
+    """The root sample rate when the caller names none.
+
+    ``None`` defers to ``OTEL_TRACES_SAMPLER`` / ``OTEL_TRACES_SAMPLER_ARG``
+    when the environment sets them — inside a Chalk workload the platform (or
+    ``Sandbox(tracing=...)``) does — so ``chalkcompute`` samples exactly as
+    every other OpenTelemetry SDK in the container does. Otherwise 1.0.
+    """
+    return None if os.environ.get(_OTEL_TRACES_SAMPLER_ENV_VAR) else 1.0
+
+
+def _install_tracer_provider(sample_rate: float | None) -> None:
     global _provider, _tracer
     if _provider is not None:
         return
@@ -317,10 +331,12 @@ def _install_tracer_provider(sample_rate: float) -> None:
     if environment_id := os.environ.get("CHALK_ENVIRONMENT_ID"):
         resource_attributes["chalk.environment_id"] = environment_id
     resource = Resource.create(resource_attributes)
-    provider = TracerProvider(
-        resource=resource,
-        sampler=ParentBased(TraceIdRatioBased(sample_rate)),
+    # ``sampler=None`` makes the SDK read the OTEL_TRACES_SAMPLER environment;
+    # see ``_default_sample_rate``.
+    sampler = (
+        None if sample_rate is None else ParentBased(TraceIdRatioBased(sample_rate))
     )
+    provider = TracerProvider(resource=resource, sampler=sampler)
 
     if _is_enabled():
         from chalkcompute._telemetry_export import create_span_exporter
@@ -337,17 +353,56 @@ def _install_tracer_provider(sample_rate: float) -> None:
     atexit.register(provider.shutdown)
 
 
-def _configure_tracing(*, sample_rate: float = 1.0) -> None:
+def _configure_tracing(*, sample_rate: float | None = 1.0) -> None:
     """Configure caller-side tracing for this process.
 
     The sampler is parent-based: existing parent trace decisions are respected,
     and ``sample_rate`` is only used when this process starts a new root trace.
+    ``None`` defers the root rate to the ``OTEL_TRACES_SAMPLER`` environment.
     """
     global _initialized, _user_tracing_configured
-    rate = _validate_sample_rate(sample_rate)
+    rate = None if sample_rate is None else _validate_sample_rate(sample_rate)
     _install_tracer_provider(rate)
     _initialized = True
     _user_tracing_configured = True
+    _adopt_ambient_trace_context()
+
+
+def _adopt_ambient_trace_context() -> object | None:
+    """Parent this process's spans to ``TRACEPARENT``/``TRACESTATE``/``BAGGAGE``.
+
+    :meth:`Sandbox.exec` and :meth:`Sandbox.execute_python` hand the caller's
+    trace context to the process they start as these environment variables —
+    the W3C header names, spelled as env vars the way otel-cli and shell
+    integrations do — so a script inside a sandbox joins the caller's trace
+    without any code of its own. Attached once, to the thread that initializes
+    tracing, and never over a parent that is already current in-process.
+
+    Returns the attach token when a context was adopted, else ``None``.
+    """
+    global _ambient_context_adopted
+    if _ambient_context_adopted:
+        return None
+    _ambient_context_adopted = True
+
+    carrier = {
+        key.lower(): value
+        for key in _TRACE_CONTEXT_ENV_VARS
+        if (value := os.environ.get(key))
+    }
+    if "traceparent" not in carrier:
+        return None
+    otel_context = _get_context_api()
+    propagate_api = _get_propagate_api()
+    trace_api = _get_trace_api()
+    if otel_context is None or propagate_api is None or trace_api is None:
+        return None
+    if trace_api.get_current_span().get_span_context().is_valid:
+        return None
+    context = propagate_api.extract(carrier)
+    if not trace_api.get_current_span(context).get_span_context().is_valid:
+        return None
+    return otel_context.attach(context)
 
 
 def _ensure_initialized() -> None:
@@ -356,15 +411,28 @@ def _ensure_initialized() -> None:
         return
     _initialized = True
 
-    if not _is_enabled():
-        return
-
-    _install_tracer_provider(sample_rate=1.0)
+    if _is_enabled():
+        _install_tracer_provider(_default_sample_rate())
+    # Even without an exporter, joining the ambient parent lets
+    # ``current_trace_metadata`` carry it on to nested calls.
+    _adopt_ambient_trace_context()
 
 
 def _ensure_user_tracing_configured() -> None:
     if not _user_tracing_configured:
-        _configure_tracing(sample_rate=1.0)
+        _configure_tracing(sample_rate=_default_sample_rate())
+
+
+def _request_tracing_intent() -> None:
+    """Open the SDK's own spans because the caller asked for a traced workload.
+
+    ``Sandbox(tracing=True)`` calls this: the workload can only join the
+    caller's trace if the caller has one to hand over, and internal
+    ``_instrumented`` spans stay cold until something signals intent.
+    """
+    if _is_remote_tracing_off():
+        return
+    _ensure_user_tracing_configured()
 
 
 def _is_remote_tracing_off() -> bool:
@@ -423,6 +491,15 @@ def current_trace_metadata() -> list[tuple[str, str]]:
 def trace_headers() -> dict[str, str]:
     """Return W3C headers for the current trace context."""
     return dict(current_trace_metadata())
+
+
+def trace_env() -> dict[str, str]:
+    """Return the current trace context as ``TRACEPARENT``-style env vars.
+
+    The upper-cased W3C header names, for handing the context to a child
+    process; :func:`_adopt_ambient_trace_context` reads the same spelling.
+    """
+    return {key.upper(): value for key, value in current_trace_metadata()}
 
 
 def has_trace_metadata(metadata: list[tuple[str, str]]) -> bool:

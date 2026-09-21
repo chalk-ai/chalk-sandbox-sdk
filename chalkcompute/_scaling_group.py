@@ -53,6 +53,11 @@ from chalkcompute._http import HTTPResponse, SYNC_HTTP_CLIENT
 from chalkcompute._naming import sanitize_dns_label
 from chalkcompute._image_build import normalize_image_volumes
 from chalkcompute._secret import SecretScope, resolve_lazy_secrets
+from chalkcompute._remote_function_tracing import (
+    TracingPolicyConfig,
+    merge_workload_tracing_env,
+    normalize_workload_tracing,
+)
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
     Volume,
@@ -290,6 +295,7 @@ class ScalingGroup:
         scale_from_zero_request_policy: ScaleFromZeroRequestPolicy | None = None,
         tags: dict[str, str] | None = None,
         chalk_identity: bool = False,
+        tracing: TracingPolicyConfig | None = None,
         chalk_client: Any | None = None,
     ) -> None:
         if image is None:
@@ -297,6 +303,8 @@ class ScalingGroup:
                 "image must be an Image or image reference string, got None"
             )
         env, secrets = normalize_env(env, secrets)
+        self._tracing = normalize_workload_tracing(tracing)
+        env = merge_workload_tracing_env(env, self._tracing)
         normalized_image, resolved_volumes = normalize_image_volumes(image, volumes)
         if normalized_image is None:
             raise TypeError(
