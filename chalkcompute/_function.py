@@ -1166,11 +1166,18 @@ class FunctionCallHandle:
         return self._call_id
 
     def poll(self) -> Any:
-        result = self._function.poll(
-            self._call_id,
-            cursor=self._cursor,
-            poll_count=self._poll_count,
-        )
+        from chalkcompute._remote_call_client import RemoteCallNotFoundError
+
+        try:
+            result = self._function.poll(
+                self._call_id,
+                cursor=self._cursor,
+                poll_count=self._poll_count,
+            )
+        except RemoteCallNotFoundError:
+            raise FunctionError(
+                "Remote call was not found or is no longer retained"
+            ) from None
         self._cursor = result.cursor
         self._poll_count = result.poll_count
         return result

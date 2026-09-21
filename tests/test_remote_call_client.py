@@ -530,6 +530,20 @@ def test_deferred_get_fails_when_results_have_expired() -> None:
     assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
 
 
+def test_deferred_get_fails_when_call_is_no_longer_retained() -> None:
+    from chalkcompute._remote_call_client import RemoteCallNotFoundError
+
+    FakeRemoteCallClient.poll_errors = [
+        RemoteCallNotFoundError("remote call was not found or is no longer retained")
+    ]
+
+    handle = _remote_function().defer(98)
+
+    with pytest.raises(FunctionError, match="not found or is no longer retained"):
+        handle.get()
+    assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
+
+
 def test_deferred_get_does_not_retry_unstructured_error(monkeypatch) -> None:
     monkeypatch.setattr("chalkcompute._function.time.sleep", lambda _s: None)
     # A plain (non-JSON) error string can't be positively classified as infra,

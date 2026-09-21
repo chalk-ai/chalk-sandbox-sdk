@@ -155,6 +155,15 @@ RemoteCallStatusError: type[Exception] = getattr(
 )
 
 
+class _RemoteCallNotFoundError(RuntimeError):
+    pass
+
+
+RemoteCallNotFoundError: type[Exception] = getattr(
+    _native, "RemoteCallNotFoundError", _RemoteCallNotFoundError
+)
+
+
 class _RemoteCallTransportError(RuntimeError):
     pass
 
