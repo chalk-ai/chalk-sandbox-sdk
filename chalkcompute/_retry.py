@@ -16,7 +16,10 @@ class RetryPolicy:
     retries. A plain ``int`` passed to ``function(retries=3)`` is shorthand
     for ``RetryPolicy.exponential(attempts=3)``. By default all ``Exception``
     subclasses trigger a retry; pass a tuple of exception classes to
-    ``retry_on`` to narrow the set.
+    ``retry_on`` to narrow the set. Redis Stream function queues currently
+    enforce only ``max_retries`` and use their fixed pending-entry reclaim
+    delay; the remaining fields are retained in deployment metadata for other
+    invocation paths.
 
     Examples
     --------
@@ -51,6 +54,12 @@ class RetryPolicy:
     key: str | None = None
     """Shared-bucket identifier. Functions using the same key share one retry
     context. Defaults to the function's qualified name if omitted."""
+
+    def __post_init__(self) -> None:
+        if isinstance(self.max_retries, bool) or not isinstance(self.max_retries, int):
+            raise TypeError("max_retries must be an int")
+        if self.max_retries < 0:
+            raise ValueError("max_retries must be >= 0")
 
     @staticmethod
     def exponential(

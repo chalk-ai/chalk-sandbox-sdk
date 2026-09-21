@@ -1801,10 +1801,11 @@ def cls(
         Maximum number of items to accumulate before invoking the handler.
         Defaults to 10 when batching is enabled.
     retries
-        Retry policy for handler invocations. Pass an ``int`` for simple
-        max-attempts with default exponential backoff, or a
-        :class:`~chalkcompute.RetryPolicy` for full control. Enforced
-        before each outbound RPC, not in the handler.
+        Retry policy for handler invocations. An ``int`` is the number of
+        retries after the initial execution. Redis Stream function queues
+        currently honor ``max_retries`` with a fixed reclaim delay; the
+        backoff, jitter, key, and exception-filter fields are reserved for
+        other invocation paths.
     rate_limit
         Rate limit policy for outbound calls. Pass an ``int`` for a simple
         "N per second" cap with a per-method key, or a

@@ -259,6 +259,14 @@ class TestRetryPolicyKey:
         with pytest.raises(TypeError, match="bool"):
             RetryPolicy.from_int_or_policy(True)  # type: ignore[arg-type]
 
+    def test_negative_retries_rejected(self):
+        with pytest.raises(ValueError, match="max_retries must be >= 0"):
+            RetryPolicy.exponential(attempts=-1)
+
+    def test_non_integer_retries_rejected(self):
+        with pytest.raises(TypeError, match="max_retries must be an int"):
+            RetryPolicy(max_retries=1.5)  # type: ignore[arg-type]
+
 
 class TestTracingPolicy:
     def test_sample_rate_to_dict(self):
