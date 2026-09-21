@@ -385,6 +385,7 @@ class TrainingFunction:
         *,
         config: Any = None,
         client: ConnectClient | None = None,
+        experiment_id: str | None = None,
     ) -> TrainingRunHandle:
         """Submit a training run to chalkcompute.
 
@@ -396,6 +397,9 @@ class TrainingFunction:
         client
             An authenticated :class:`ConnectClient`. One is created
             automatically if not provided.
+        experiment_id
+            Optional ID of the experiment this training run should be
+            associated with.
         """
         if client is None:
             client = ConnectClient()
@@ -456,6 +460,7 @@ class TrainingFunction:
             meta_data=meta,
             volume_mounts=proto_mounts or None,
             max_retries=self._max_retries,
+            experiment_id=experiment_id,
         )
 
         stub = client.stub(tr_connect.TrainingRunServiceClientSync)
