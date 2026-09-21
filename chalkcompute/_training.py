@@ -386,7 +386,6 @@ class TrainingFunction:
         config: Any = None,
         client: ConnectClient | None = None,
         experiment_id: str | None = None,
-        experiment_name: str | None = None,
     ) -> TrainingRunHandle:
         """Submit a training run to chalkcompute.
 
@@ -401,9 +400,6 @@ class TrainingFunction:
         experiment_id
             Optional ID of the experiment this training run should be
             associated with.
-        experiment_name
-            Optional human-readable name of the experiment. Stored in the
-            training run's metadata under the ``experiment_name`` key.
         """
         if client is None:
             client = ConnectClient()
@@ -438,10 +434,7 @@ class TrainingFunction:
         data_source = self._build_data_source()
         resources = self._build_resources()
         secret_refs = [_secret_to_proto(s) for s in self._secrets]
-        metadata = dict(self._metadata)
-        if experiment_name is not None:
-            metadata["experiment_name"] = experiment_name
-        meta = _metadata_to_proto(metadata) if metadata else None
+        meta = _metadata_to_proto(self._metadata) if self._metadata else None
 
         env = dict(self._env) if self._env else {}
         env["PYTHONPATH"] = "/app"
