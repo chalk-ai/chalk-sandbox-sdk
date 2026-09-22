@@ -48,6 +48,15 @@ class _FakeHTTPClient:
     ) -> Any:
         return self._request("POST", url, headers, content, timeout)
 
+    def get(
+        self,
+        url: str,
+        headers: dict[str, str] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> Any:
+        return self._request("GET", url, headers, None, timeout)
+
     def _request(
         self,
         method: str,
@@ -446,3 +455,56 @@ def _prepared(path: Path) -> _PreparedDatasetFile:
         size=path.stat().st_size,
         schema=pa.schema([pa.field("value", pa.string())]),
     )
+
+
+def _download_links(*urls: str) -> Any:
+    return datasets_pb.GetDatasetRevisionDownloadLinksResponse(output_urls=list(urls))
+
+
+def test_read_returns_the_revision_as_one_arrow_table() -> None:
+    table = pa.table({"a": [1, 2], "output": ["x", "y"]})
+    buffer = pa.BufferOutputStream()
+    pq.write_table(table, buffer)
+    parquet = buffer.getvalue().to_pybytes()
+
+    http = _FakeHTTPClient()
+    http.responses = [_response(content=parquet)]
+    connect = FakeConnectClient(
+        handler=lambda name, request: _download_links("https://signed/part-0")
+    )
+
+    read = DatasetClient(connect_client=connect, http_client=http).read("rev-1")  # type: ignore[arg-type]
+
+    assert read.equals(table)
+    assert [request[0] for request in http.requests] == ["GET"]
+
+
+def test_read_concatenates_a_multi_file_revision_and_takes_a_ref() -> None:
+    first = pa.table({"a": [1]})
+    second = pa.table({"a": [2]})
+    parts = []
+    for part in (first, second):
+        buffer = pa.BufferOutputStream()
+        pq.write_table(part, buffer)
+        parts.append(_response(content=buffer.getvalue().to_pybytes()))
+
+    http = _FakeHTTPClient()
+    http.responses = parts
+    connect = FakeConnectClient(
+        handler=lambda name, request: _download_links("https://a", "https://b")
+    )
+
+    read = DatasetClient(connect_client=connect, http_client=http).read(  # type: ignore[arg-type]
+        DatasetRevisionRef(dataset_id="d", revision_id="rev-1")
+    )
+
+    assert read.equals(pa.concat_tables([first, second]))
+
+
+def test_read_rejects_an_empty_revision_and_a_revision_with_no_output() -> None:
+    with pytest.raises(ValueError, match="revision_id is required"):
+        DatasetClient(connect_client=FakeConnectClient()).read("  ")  # type: ignore[arg-type]
+
+    connect = FakeConnectClient(handler=lambda name, request: _download_links())
+    with pytest.raises(DatasetError, match="no output to read"):
+        DatasetClient(connect_client=connect).read("rev-1")  # type: ignore[arg-type]
