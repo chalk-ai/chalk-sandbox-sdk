@@ -469,7 +469,9 @@ def _err(exc_type: str, message: str) -> str:
 
 
 def _poll(status_name, *, chunks=None, error_message=None):
-    status = {"pending": 1, "running": 2, "completed": 3, "failed": 4, "expired": 5}[status_name]
+    status = {"pending": 1, "running": 2, "completed": 3, "failed": 4, "expired": 5}[
+        status_name
+    ]
     return RemoteCallPollResult(
         status=status,
         status_name=status_name,

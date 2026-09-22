@@ -99,7 +99,7 @@ from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import (
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as catalog_pb
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from chalkcompute._naming import sanitize_dns_label
-from chalkcompute._quota import QueuePolicy
+from chalkcompute._quota import QueuePolicy, normalize_queue_policy
 from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._remote_function_tracing import (
     TracingPolicy,
@@ -774,6 +774,7 @@ class RemoteClass:
         retries: int | RetryPolicy | None = None,
         rate_limit: int | RateLimitPolicy | None = None,
         concurrency: int | ConcurrencyPolicy | None = None,
+        queue: QueuePolicy | None = None,
         quota: int | QueuePolicy | None = None,
         schedule: str | None = None,
         tracing: TracingPolicyConfig | None = None,
@@ -869,8 +870,9 @@ class RemoteClass:
             if concurrency is not None
             else None
         )
-        self._quota = (
-            QueuePolicy.from_int_or_policy(quota) if quota is not None else None
+        self._queue_policy = normalize_queue_policy(
+            queue=queue,
+            quota=quota,
         )
         self._tracing = normalize_remote_function_tracing(tracing)
 
@@ -1048,7 +1050,7 @@ class RemoteClass:
         rc._retries = None
         rc._rate_limit = None
         rc._concurrency = None
-        rc._quota = None
+        rc._queue_policy = None
         rc._tracing = None
         rc._client = ConnectClient(chalk_client=chalk_client)
         rc._deployed = False
@@ -1296,7 +1298,7 @@ class RemoteClass:
                     retries=self._retries,
                     rate_limit=self._rate_limit,
                     concurrency=self._concurrency,
-                    quota=self._quota,
+                    queue=self._queue_policy,
                     schedule=self._schedule,
                     tracing=self._tracing,
                 )
@@ -1640,6 +1642,7 @@ def cls(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
+    queue: QueuePolicy | None = None,
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
@@ -1678,6 +1681,7 @@ def cls(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
+    queue: QueuePolicy | None = None,
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
@@ -1717,6 +1721,7 @@ def cls(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
+    queue: QueuePolicy | None = None,
     quota: int | QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
@@ -1817,11 +1822,14 @@ def cls(
         (``max_concurrent``, ``key``). Multiple methods sharing the same
         ``key`` share one gate — independent of ``rate_limit`` (which caps
         rate, not in-flight count).
+    queue
+        Queue configuration shared by the class's methods, including the
+        pending-item cap and asynchronous result retention. Pass a
+        :class:`~chalkcompute.QueuePolicy`; terminal results are retained for
+        one day by default or for ``result_ttl_seconds`` when configured.
     quota
-        Queue quota policy: cap on queued calls per key. Pass an ``int``
-        for a simple ``max_queue_depth`` cap with a per-method key, or a
-        :class:`~chalkcompute.QueuePolicy` for full control, including
-        asynchronous result retention via ``result_ttl_seconds``.
+        Deprecated alias for the queue's pending-item cap. Pass ``queue=``
+        instead.
     schedule
         Optional crontab or Chalk duration string applied to every no-input
         ``@method`` in the class (e.g. ``"0 * * * *"`` or ``"1h"``).
@@ -1861,6 +1869,7 @@ def cls(
             retries=retries,
             rate_limit=rate_limit,
             concurrency=concurrency,
+            queue=queue,
             quota=quota,
             schedule=schedule,
             tracing=tracing,

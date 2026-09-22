@@ -1,1 +1,2 @@
-- add QueuePolicy.result_ttl_seconds to configure async call result retention
+- add `queue=QueuePolicy(result_ttl_seconds=...)` to configure async call result retention
+- fail deferred handles clearly when their retained results expire or cannot be found

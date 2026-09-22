@@ -1,7 +1,8 @@
-"""Queue quota policy for remote function invocations."""
+"""Queue policy for remote function invocations."""
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,7 +18,7 @@ DEFAULT_RESULT_TTL_SECONDS = 86_400
 
 @dataclass(frozen=True)
 class QueuePolicy:
-    """Quota for a per-function Redis queue.
+    """Configuration for a per-function Redis queue.
 
     Caps the number of pending items that may be enqueued at once and controls
     how long asynchronous call result streams remain available. The queue server
@@ -32,7 +33,7 @@ class QueuePolicy:
     """Maximum number of pending items in the queue."""
 
     result_ttl_seconds: int = DEFAULT_RESULT_TTL_SECONDS
-    """Retention from enqueue time for asynchronous result streams."""
+    """Retention after completion for asynchronous result streams."""
 
     def __post_init__(self) -> None:
         if isinstance(self.result_ttl_seconds, bool) or not isinstance(
@@ -44,8 +45,7 @@ class QueuePolicy:
             )
         if self.result_ttl_seconds <= 0:
             raise ValueError(
-                "result_ttl_seconds must be > 0, "
-                f"got {self.result_ttl_seconds}"
+                f"result_ttl_seconds must be > 0, got {self.result_ttl_seconds}"
             )
 
     def to_dict(self) -> dict[str, Any]:
@@ -82,3 +82,25 @@ class QueuePolicy:
         if isinstance(value, int):
             return cls(max_items=value)
         return value
+
+
+def normalize_queue_policy(
+    *,
+    queue: QueuePolicy | None,
+    quota: int | QueuePolicy | None,
+) -> QueuePolicy | None:
+    """Resolve the queue policy while supporting the legacy quota argument."""
+    if queue is not None and quota is not None:
+        raise ValueError("queue and quota cannot both be specified")
+    if queue is not None:
+        if not isinstance(queue, QueuePolicy):
+            raise TypeError(f"queue must be a QueuePolicy, got {type(queue).__name__}")
+        return queue
+    if quota is None:
+        return None
+    warnings.warn(
+        "quota= is deprecated; use queue=QueuePolicy(max_items=...) instead",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+    return QueuePolicy.from_int_or_policy(quota)
