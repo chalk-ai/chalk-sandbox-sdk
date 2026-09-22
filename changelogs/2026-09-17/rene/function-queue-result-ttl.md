@@ -1,2 +1,3 @@
-- add `queue=QueuePolicy(result_ttl_seconds=...)` to configure async call result retention
+- **BREAKING:** replace the function and class `quota=` argument with `queue_policy=QueuePolicy(...)`
+- add `QueuePolicy.result_ttl_seconds` to configure async call result retention
 - fail deferred handles clearly when their retained results expire or cannot be found

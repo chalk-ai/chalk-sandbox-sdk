@@ -207,7 +207,7 @@ class TestQueuePolicy:
             retries=None,
             rate_limit=None,
             concurrency=None,
-            queue=QueuePolicy(result_ttl_seconds=3_600),
+            queue_policy=QueuePolicy(result_ttl_seconds=3_600),
             schedule=None,
         )
 
@@ -219,7 +219,7 @@ class TestQueuePolicy:
             return x + 1
 
         policy = QueuePolicy(result_ttl_seconds=3_600)
-        remote_function = RemoteFunction(add, queue=policy)
+        remote_function = RemoteFunction(add, queue_policy=policy)
 
         assert remote_function._queue_policy is policy
 
@@ -230,25 +230,16 @@ class TestQueuePolicy:
                 return 1
 
         policy = QueuePolicy(result_ttl_seconds=3_600)
-        remote_class = RemoteClass(Worker, queue=policy)
+        remote_class = RemoteClass(Worker, queue_policy=policy)
 
         assert remote_class._queue_policy is policy
 
-    def test_queue_and_quota_are_mutually_exclusive(self):
+    def test_queue_policy_rejects_other_types(self):
         def add(x: int) -> int:
             return x + 1
 
-        with pytest.raises(ValueError, match="queue and quota cannot both"):
-            RemoteFunction(add, queue=QueuePolicy(), quota=10)
-
-    def test_quota_is_a_deprecated_alias(self):
-        def add(x: int) -> int:
-            return x + 1
-
-        with pytest.warns(DeprecationWarning, match="use queue="):
-            remote_function = RemoteFunction(add, quota=10)
-
-        assert remote_function._queue_policy == QueuePolicy(max_items=10)
+        with pytest.raises(TypeError, match="queue_policy must be a QueuePolicy"):
+            RemoteFunction(add, queue_policy=10)  # type: ignore[arg-type]
 
 
 class TestRetryPolicyKey:

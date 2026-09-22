@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass
 from typing import Any
 
@@ -82,25 +81,3 @@ class QueuePolicy:
         if isinstance(value, int):
             return cls(max_items=value)
         return value
-
-
-def normalize_queue_policy(
-    *,
-    queue: QueuePolicy | None,
-    quota: int | QueuePolicy | None,
-) -> QueuePolicy | None:
-    """Resolve the queue policy while supporting the legacy quota argument."""
-    if queue is not None and quota is not None:
-        raise ValueError("queue and quota cannot both be specified")
-    if queue is not None:
-        if not isinstance(queue, QueuePolicy):
-            raise TypeError(f"queue must be a QueuePolicy, got {type(queue).__name__}")
-        return queue
-    if quota is None:
-        return None
-    warnings.warn(
-        "quota= is deprecated; use queue=QueuePolicy(max_items=...) instead",
-        DeprecationWarning,
-        stacklevel=3,
-    )
-    return QueuePolicy.from_int_or_policy(quota)

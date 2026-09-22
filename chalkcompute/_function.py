@@ -104,7 +104,7 @@ from chalkcompute._naming import (
     sanitize_dns_label,
     validate_dns_label,
 )
-from chalkcompute._quota import QueuePolicy, normalize_queue_policy
+from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._remote_function_tracing import (
     TracingPolicy,
@@ -2389,8 +2389,7 @@ class RemoteFunction:
         retries: int | RetryPolicy | None = None,
         rate_limit: int | RateLimitPolicy | None = None,
         concurrency: int | ConcurrencyPolicy | None = None,
-        queue: QueuePolicy | None = None,
-        quota: int | QueuePolicy | None = None,
+        queue_policy: QueuePolicy | None = None,
         schedule: str | None = None,
         tracing: TracingPolicyConfig | None = None,
         models: typing.Mapping[str, Any] | None = None,
@@ -2539,10 +2538,11 @@ class RemoteFunction:
             if concurrency is not None
             else None
         )
-        self._queue_policy = normalize_queue_policy(
-            queue=queue,
-            quota=quota,
-        )
+        if queue_policy is not None and not isinstance(queue_policy, QueuePolicy):
+            raise TypeError(
+                f"queue_policy must be a QueuePolicy, got {type(queue_policy).__name__}"
+            )
+        self._queue_policy = queue_policy
         self._tracing = normalize_remote_function_tracing(tracing)
         self._call_timeout = call_timeout
 
@@ -3147,7 +3147,7 @@ class RemoteFunction:
                 retries=self._retries,
                 rate_limit=self._rate_limit,
                 concurrency=self._concurrency,
-                queue=self._queue_policy,
+                queue_policy=self._queue_policy,
                 schedule=self._schedule,
                 tracing=self._tracing,
             )
@@ -4269,8 +4269,7 @@ def function(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
-    queue: QueuePolicy | None = None,
-    quota: int | QueuePolicy | None = None,
+    queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
     tracing: TracingPolicyConfig | None = None,
@@ -4309,8 +4308,7 @@ def function(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
-    queue: QueuePolicy | None = None,
-    quota: int | QueuePolicy | None = None,
+    queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
     tracing: TracingPolicyConfig | None = None,
@@ -4350,8 +4348,7 @@ def function(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
-    queue: QueuePolicy | None = None,
-    quota: int | QueuePolicy | None = None,
+    queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
     tracing: TracingPolicyConfig | None = None,
@@ -4463,7 +4460,7 @@ def function(
         (``max_concurrent``, ``key``). Multiple functions sharing the same
         ``key`` share one gate — independent of ``rate_limit`` (which caps
         rate, not in-flight count).
-    queue
+    queue_policy
         Queue configuration, including the pending-item cap and asynchronous
         result retention. Pass a :class:`~chalkcompute.QueuePolicy` and set
         ``result_ttl_seconds`` to retain terminal results for a custom period;
@@ -4471,9 +4468,6 @@ def function(
         raises a gRPC ``RESOURCE_EXHAUSTED`` error — clients should back off or
         call ``purge()`` on the function to drain the queue if items were
         erroneously added.
-    quota
-        Deprecated alias for the queue's pending-item cap. Pass ``queue=``
-        instead.
     schedule
         Optional crontab or Chalk duration string for invoking a no-input
         function on a schedule (e.g. ``"0 * * * *"`` or ``"1h"``).
@@ -4542,8 +4536,7 @@ def function(
             retries=retries,
             rate_limit=rate_limit,
             concurrency=concurrency,
-            queue=queue,
-            quota=quota,
+            queue_policy=queue_policy,
             schedule=schedule,
             tracing=tracing,
             models=models,
