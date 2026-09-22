@@ -155,6 +155,15 @@ RemoteCallStatusError: type[Exception] = getattr(
 )
 
 
+class _RemoteCallNotFoundError(RuntimeError):
+    pass
+
+
+RemoteCallNotFoundError: type[Exception] = getattr(
+    _native, "RemoteCallNotFoundError", _RemoteCallNotFoundError
+)
+
+
 class _RemoteCallTransportError(RuntimeError):
     pass
 
@@ -194,6 +203,10 @@ class RemoteCallPollResult:
     @property
     def is_completed(self) -> bool:
         return self.status_name.lower() == "completed"
+
+    @property
+    def is_expired(self) -> bool:
+        return self.status_name.lower() == "expired"
 
     @property
     def is_failed(self) -> bool:

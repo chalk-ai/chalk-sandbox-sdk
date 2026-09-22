@@ -1166,11 +1166,18 @@ class FunctionCallHandle:
         return self._call_id
 
     def poll(self) -> Any:
-        result = self._function.poll(
-            self._call_id,
-            cursor=self._cursor,
-            poll_count=self._poll_count,
-        )
+        from chalkcompute._remote_call_client import RemoteCallNotFoundError
+
+        try:
+            result = self._function.poll(
+                self._call_id,
+                cursor=self._cursor,
+                poll_count=self._poll_count,
+            )
+        except RemoteCallNotFoundError:
+            raise FunctionError(
+                "Remote call was not found or is no longer retained"
+            ) from None
         self._cursor = result.cursor
         self._poll_count = result.poll_count
         return result
@@ -1226,6 +1233,9 @@ class FunctionCallHandle:
                 last_status = result.status_name
                 chunks.extend(result.chunks)
 
+                if result.is_expired:
+                    raise FunctionError("Remote call results have expired")
+
                 if result.is_failed:
                     message = result.error_message or "Remote call failed"
                     if self._can_retry(attempt, message):
@@ -1273,6 +1283,9 @@ class FunctionCallHandle:
                         yielded_any = True
                         yield batch
 
+                if result.is_expired:
+                    raise FunctionError("Remote call results have expired")
+
                 if result.is_failed:
                     message = result.error_message or "Remote call failed"
                     # Once any batch has reached the caller the stream cannot be
@@ -1314,6 +1327,9 @@ class FunctionCallHandle:
                     for batch in reader:
                         yielded_any = True
                         yield batch
+
+                if result.is_expired:
+                    raise FunctionError("Remote call results have expired")
 
                 if result.is_failed:
                     message = result.error_message or "Remote call failed"
@@ -2373,7 +2389,7 @@ class RemoteFunction:
         retries: int | RetryPolicy | None = None,
         rate_limit: int | RateLimitPolicy | None = None,
         concurrency: int | ConcurrencyPolicy | None = None,
-        quota: int | QueuePolicy | None = None,
+        queue_policy: QueuePolicy | None = None,
         schedule: str | None = None,
         tracing: TracingPolicyConfig | None = None,
         models: typing.Mapping[str, Any] | None = None,
@@ -2522,9 +2538,11 @@ class RemoteFunction:
             if concurrency is not None
             else None
         )
-        self._quota = (
-            QueuePolicy.from_int_or_policy(quota) if quota is not None else None
-        )
+        if queue_policy is not None and not isinstance(queue_policy, QueuePolicy):
+            raise TypeError(
+                f"queue_policy must be a QueuePolicy, got {type(queue_policy).__name__}"
+            )
+        self._queue_policy = queue_policy
         self._tracing = normalize_remote_function_tracing(tracing)
         self._call_timeout = call_timeout
 
@@ -2723,7 +2741,7 @@ class RemoteFunction:
         f._retries = None
         f._rate_limit = None
         f._concurrency = None
-        f._quota = None
+        f._queue_policy = None
         f._tracing = None
         f._function_id = None
         f._version_info = None
@@ -3129,7 +3147,7 @@ class RemoteFunction:
                 retries=self._retries,
                 rate_limit=self._rate_limit,
                 concurrency=self._concurrency,
-                quota=self._quota,
+                queue_policy=self._queue_policy,
                 schedule=self._schedule,
                 tracing=self._tracing,
             )
@@ -4251,7 +4269,7 @@ def function(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
-    quota: int | QueuePolicy | None = None,
+    queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
     tracing: TracingPolicyConfig | None = None,
@@ -4290,7 +4308,7 @@ def function(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
-    quota: int | QueuePolicy | None = None,
+    queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
     tracing: TracingPolicyConfig | None = None,
@@ -4330,7 +4348,7 @@ def function(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
-    quota: int | QueuePolicy | None = None,
+    queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
     tracing: TracingPolicyConfig | None = None,
@@ -4442,14 +4460,14 @@ def function(
         (``max_concurrent``, ``key``). Multiple functions sharing the same
         ``key`` share one gate — independent of ``rate_limit`` (which caps
         rate, not in-flight count).
-    quota
-        Queue quota: cap on the number of pending items that may be enqueued
-        for this function at once. Pass an ``int`` for the cap, or a
-        :class:`~chalkcompute.QueuePolicy` (currently equivalent —
-        ``QueuePolicy(max_items=N)``). Defaults to 500,000 items when unset.
-        Submitting past the cap raises a gRPC ``RESOURCE_EXHAUSTED`` error —
-        clients should back off or call ``purge()`` on the function to drain
-        the queue if items were erroneously added.
+    queue_policy
+        Queue configuration, including the pending-item cap and asynchronous
+        result retention. Pass a :class:`~chalkcompute.QueuePolicy` and set
+        ``result_ttl_seconds`` to retain terminal results for a custom period;
+        the default is one day. Submitting past ``max_items``
+        raises a gRPC ``RESOURCE_EXHAUSTED`` error — clients should back off or
+        call ``purge()`` on the function to drain the queue if items were
+        erroneously added.
     schedule
         Optional crontab or Chalk duration string for invoking a no-input
         function on a schedule (e.g. ``"0 * * * *"`` or ``"1h"``).
@@ -4518,7 +4536,7 @@ def function(
             retries=retries,
             rate_limit=rate_limit,
             concurrency=concurrency,
-            quota=quota,
+            queue_policy=queue_policy,
             schedule=schedule,
             tracing=tracing,
             models=models,

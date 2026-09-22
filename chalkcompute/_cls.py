@@ -774,7 +774,7 @@ class RemoteClass:
         retries: int | RetryPolicy | None = None,
         rate_limit: int | RateLimitPolicy | None = None,
         concurrency: int | ConcurrencyPolicy | None = None,
-        quota: int | QueuePolicy | None = None,
+        queue_policy: QueuePolicy | None = None,
         schedule: str | None = None,
         tracing: TracingPolicyConfig | None = None,
         models: typing.Mapping[str, Any] | None = None,
@@ -869,9 +869,11 @@ class RemoteClass:
             if concurrency is not None
             else None
         )
-        self._quota = (
-            QueuePolicy.from_int_or_policy(quota) if quota is not None else None
-        )
+        if queue_policy is not None and not isinstance(queue_policy, QueuePolicy):
+            raise TypeError(
+                f"queue_policy must be a QueuePolicy, got {type(queue_policy).__name__}"
+            )
+        self._queue_policy = queue_policy
         self._tracing = normalize_remote_function_tracing(tracing)
 
         self._client = ConnectClient(chalk_client=chalk_client)
@@ -1048,7 +1050,7 @@ class RemoteClass:
         rc._retries = None
         rc._rate_limit = None
         rc._concurrency = None
-        rc._quota = None
+        rc._queue_policy = None
         rc._tracing = None
         rc._client = ConnectClient(chalk_client=chalk_client)
         rc._deployed = False
@@ -1296,7 +1298,7 @@ class RemoteClass:
                     retries=self._retries,
                     rate_limit=self._rate_limit,
                     concurrency=self._concurrency,
-                    quota=self._quota,
+                    queue_policy=self._queue_policy,
                     schedule=self._schedule,
                     tracing=self._tracing,
                 )
@@ -1640,7 +1642,7 @@ def cls(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
-    quota: int | QueuePolicy | None = None,
+    queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
     tracing: TracingPolicyConfig | None = None,
@@ -1678,7 +1680,7 @@ def cls(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
-    quota: int | QueuePolicy | None = None,
+    queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
     tracing: TracingPolicyConfig | None = None,
@@ -1717,7 +1719,7 @@ def cls(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
-    quota: int | QueuePolicy | None = None,
+    queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
     tracing: TracingPolicyConfig | None = None,
@@ -1817,10 +1819,11 @@ def cls(
         (``max_concurrent``, ``key``). Multiple methods sharing the same
         ``key`` share one gate — independent of ``rate_limit`` (which caps
         rate, not in-flight count).
-    quota
-        Queue quota policy: cap on queued calls per key. Pass an ``int``
-        for a simple ``max_queue_depth`` cap with a per-method key, or a
-        :class:`~chalkcompute.QueuePolicy` for full control.
+    queue_policy
+        Queue configuration shared by the class's methods, including the
+        pending-item cap and asynchronous result retention. Pass a
+        :class:`~chalkcompute.QueuePolicy`; terminal results are retained for
+        one day by default or for ``result_ttl_seconds`` when configured.
     schedule
         Optional crontab or Chalk duration string applied to every no-input
         ``@method`` in the class (e.g. ``"0 * * * *"`` or ``"1h"``).
@@ -1860,7 +1863,7 @@ def cls(
             retries=retries,
             rate_limit=rate_limit,
             concurrency=concurrency,
-            quota=quota,
+            queue_policy=queue_policy,
             schedule=schedule,
             tracing=tracing,
             models=models,

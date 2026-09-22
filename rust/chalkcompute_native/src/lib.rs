@@ -27,6 +27,11 @@ pyo3::create_exception!(
 );
 
 pyo3::create_exception!(chalkcompute._native, RemoteCallStatusError, PyRuntimeError);
+pyo3::create_exception!(
+    chalkcompute._native,
+    RemoteCallNotFoundError,
+    PyRuntimeError
+);
 
 #[pyclass(name = "RemoteCallClient", module = "chalkcompute._native")]
 struct PyRemoteCallClient {
@@ -207,6 +212,7 @@ fn status_code(status: CallStatus) -> i32 {
         CallStatus::Running => 2,
         CallStatus::Completed => 3,
         CallStatus::Failed => 4,
+        CallStatus::Expired => 5,
         CallStatus::Unknown(raw) => raw,
     }
 }
@@ -218,6 +224,7 @@ fn status_name(status: CallStatus) -> &'static str {
         CallStatus::Running => "running",
         CallStatus::Completed => "completed",
         CallStatus::Failed => "failed",
+        CallStatus::Expired => "expired",
         CallStatus::Unknown(_) => "unknown",
     }
 }
@@ -227,6 +234,9 @@ fn to_py_err(error: RemoteCallError) -> PyErr {
     match error {
         RemoteCallError::Status(status) if status.code() == tonic::Code::Unavailable => {
             RemoteCallUnavailableError::new_err(message)
+        }
+        RemoteCallError::Status(status) if status.code() == tonic::Code::NotFound => {
+            RemoteCallNotFoundError::new_err(status.message().to_string())
         }
         RemoteCallError::Transport(_) => RemoteCallTransportError::new_err(message),
         RemoteCallError::Status(status) => {
@@ -410,6 +420,10 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "RemoteCallUnavailableError",
         m.py().get_type::<RemoteCallUnavailableError>(),
+    )?;
+    m.add(
+        "RemoteCallNotFoundError",
+        m.py().get_type::<RemoteCallNotFoundError>(),
     )?;
     m.add(
         "RemoteCallTransportError",

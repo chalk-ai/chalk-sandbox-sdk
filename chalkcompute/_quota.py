@@ -1,4 +1,4 @@
-"""Queue quota policy for remote function invocations."""
+"""Queue policy for remote function invocations."""
 
 from __future__ import annotations
 
@@ -11,22 +11,41 @@ DEFAULT_MAX_ITEMS = 500_000
 ``maxmemory-policy noeviction`` is a separate backstop for total memory
 pressure."""
 
+DEFAULT_RESULT_TTL_SECONDS = 86_400
+"""Default retention for asynchronous call result streams in Redis."""
+
 
 @dataclass(frozen=True)
 class QueuePolicy:
-    """Quota for a per-function Redis queue.
+    """Configuration for a per-function Redis queue.
 
-    Caps the number of pending items that may be enqueued at once. Enforced
-    synchronously at Submit time by the function-queue server: an attempt to
-    enqueue past ``max_items`` raises a gRPC ``RESOURCE_EXHAUSTED`` error.
+    Caps the number of pending items that may be enqueued at once and controls
+    how long asynchronous call result streams remain available. The queue server
+    rejects an enqueue past ``max_items`` with ``RESOURCE_EXHAUSTED``.
 
     Examples
     --------
-    >>> QueuePolicy(max_items=100_000)
+    >>> QueuePolicy(max_items=100_000, result_ttl_seconds=3_600)
     """
 
     max_items: int = DEFAULT_MAX_ITEMS
     """Maximum number of pending items in the queue."""
+
+    result_ttl_seconds: int = DEFAULT_RESULT_TTL_SECONDS
+    """Retention after completion for asynchronous result streams."""
+
+    def __post_init__(self) -> None:
+        if isinstance(self.result_ttl_seconds, bool) or not isinstance(
+            self.result_ttl_seconds, int
+        ):
+            raise TypeError(
+                "result_ttl_seconds must be an int, "
+                f"got {type(self.result_ttl_seconds).__name__}"
+            )
+        if self.result_ttl_seconds <= 0:
+            raise ValueError(
+                f"result_ttl_seconds must be > 0, got {self.result_ttl_seconds}"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a plain dict for metadata / JSON export.
@@ -36,7 +55,10 @@ class QueuePolicy:
         dict[str, Any]
             A JSON-serializable dict representation of the policy.
         """
-        return {"max_items": self.max_items}
+        return {
+            "max_items": self.max_items,
+            "result_ttl_seconds": self.result_ttl_seconds,
+        }
 
     @classmethod
     def from_int_or_policy(cls, value: int | QueuePolicy) -> QueuePolicy:
