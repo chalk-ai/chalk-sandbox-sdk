@@ -64,11 +64,15 @@ from chalkcompute._naming import (
     validate_env,
 )
 from chalkcompute._image_build import normalize_image_volumes
-from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
 from chalkcompute._remote_function_tracing import (
     TracingPolicyConfig,
     merge_workload_tracing_env,
     normalize_workload_tracing,
+)
+from chalkcompute._rpc import (
+    RPC_READ_MAX_BYTES,
+    rpc_interceptors,
+    suppress_rpc_tracing,
 )
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
@@ -803,7 +807,9 @@ class Container:
         """
         c = cls._make_empty(chalk_client=chalk_client)
         c._container_info = _get_container_info(
-            c._client, container_pb.GetContainerRequest(id=container_id)
+            c._client,
+            container_pb.GetContainerRequest(id=container_id),
+            trace=True,
         )
         c._container_id = c._container_info.id
         return c
@@ -829,7 +835,9 @@ class Container:
         """
         c = cls._make_empty(chalk_client=chalk_client)
         c._container_info = _get_container_info(
-            c._client, container_pb.GetContainerRequest(name=name)
+            c._client,
+            container_pb.GetContainerRequest(name=name),
+            trace=True,
         )
         c._container_id = c._container_info.id
         c._name = name
@@ -1161,6 +1169,9 @@ class Container:
                 raise ContainerError("RunContainer returned no container")
             self._container_info = _parse_container_response(resp.container)
             self._container_id = self._container_info.id
+            from chalkcompute._tracing import set_current_span_attribute
+
+            set_current_span_attribute("container.id", self._container_id)
             logger.info(
                 "Container created: %s (status=%s)",
                 self._container_id,
@@ -1194,6 +1205,9 @@ class Container:
         timeout: float,
     ) -> None:
         assert self._container_id is not None
+        from chalkcompute._tracing import get_tracer, set_current_span_attribute
+
+        tracer = get_tracer()
         deadline = time.monotonic() + timeout
         request = container_pb.GetContainerRequest(id=self._container_id)
         status_log = _StatusLogger(
@@ -1201,27 +1215,90 @@ class Container:
             f"Container {self._container_id}",
             progress_key=f"container:{self._name}",
         )
-        while time.monotonic() < deadline:
-            info = _get_container_info(self._client, request)
-            self._container_info = info
-            status_log.update(info.status)
-            if info.status == "Running":
-                return
-            if info.status in ("Failed", "Succeeded"):
-                if info.status == "Succeeded" and self._lifetime is not None:
-                    raise ContainerError(
-                        f"Container {self._container_id} expired before becoming ready "
-                        f"(lifetime={self._lifetime!r}). The configured lifetime may be "
-                        f"shorter than pod scheduling time."
-                    )
-                raise ContainerError(
-                    f"Container {self._container_id} entered {info.status} state"
+        poll_count = 0
+        total_request_seconds = 0.0
+        max_request_seconds = 0.0
+        sleep_seconds = 0.0
+        last_status: str | None = None
+
+        # One span covers the whole readiness wait. The first poll is traced end to end; later
+        # polls use an untraced transport and are summarized on this span.
+        with tracer.start_as_current_span(
+            "chalkcompute.wait_until_running"
+        ) as wait_span:
+            wait_span.set_attribute("container.id", self._container_id)
+
+            def _record(final_status: str) -> None:
+                set_current_span_attribute("chalk.poll_count", poll_count)
+                wait_span.set_attribute("poll.count", poll_count)
+                wait_span.set_attribute(
+                    "poll.total_request_seconds", round(total_request_seconds, 4)
                 )
-            time.sleep(poll_interval)
-        status = self._container_info.status if self._container_info else "unknown"
-        raise ContainerError(
-            f"Container {self._container_id} timed out after {timeout}s (last status: {status})"
-        )
+                wait_span.set_attribute(
+                    "poll.max_request_seconds", round(max_request_seconds, 4)
+                )
+                wait_span.set_attribute("poll.sleep_seconds", round(sleep_seconds, 4))
+                wait_span.set_attribute("poll.final_status", final_status)
+
+            while time.monotonic() < deadline:
+                req_start = time.perf_counter()
+                try:
+                    info = _get_container_info(
+                        self._client,
+                        request,
+                        trace=(poll_count == 0),
+                    )
+                except BaseException:
+                    req_seconds = time.perf_counter() - req_start
+                    total_request_seconds += req_seconds
+                    max_request_seconds = max(max_request_seconds, req_seconds)
+                    poll_count += 1
+                    _record(last_status or "unknown")
+                    raise
+                req_seconds = time.perf_counter() - req_start
+                total_request_seconds += req_seconds
+                max_request_seconds = max(max_request_seconds, req_seconds)
+                poll_count += 1
+                self._container_info = info
+                status_log.update(info.status)
+                if info.status != last_status:
+                    with tracer.start_as_current_span(
+                        "chalkcompute.status_transition"
+                    ) as transition_span:
+                        transition_span.set_attribute(
+                            "container.id", self._container_id
+                        )
+                        transition_span.set_attribute(
+                            "container.status.from", last_status or "unknown"
+                        )
+                        transition_span.set_attribute(
+                            "container.status.to", info.status
+                        )
+                        transition_span.set_attribute("poll.count", poll_count)
+                    last_status = info.status
+                if info.status == "Running":
+                    _record(info.status)
+                    return
+                if info.status in ("Failed", "Succeeded"):
+                    _record(info.status)
+                    if info.status == "Succeeded" and self._lifetime is not None:
+                        raise ContainerError(
+                            f"Container {self._container_id} expired before becoming ready "
+                            f"(lifetime={self._lifetime!r}). The configured lifetime may be "
+                            f"shorter than pod scheduling time."
+                        )
+                    raise ContainerError(
+                        f"Container {self._container_id} entered {info.status} state"
+                    )
+                sleep_start = time.perf_counter()
+                time.sleep(poll_interval)
+                sleep_seconds += time.perf_counter() - sleep_start
+            _record(self._container_info.status if self._container_info else "unknown")
+            status = self._container_info.status if self._container_info else "unknown"
+            raise ContainerError(
+                f"Container {self._container_id} timed out after {timeout}s "
+                f"(last status: {status})"
+            )
 
     @_instrumented("chalkcompute.container.exec")
     def exec(
@@ -1294,6 +1371,10 @@ class Container:
 
         if not command:
             raise ValueError("exec() requires a command")
+
+        from chalkcompute._tracing import set_current_span_attribute
+
+        set_current_span_attribute("container.id", self._container_id)
 
         response = self._get_session_client().exec_command(
             self._container_id,
@@ -1380,6 +1461,9 @@ class Container:
         if self._container_id is None:
             raise ContainerError("container has not been started; call .run() first")
         if self._container_id is not None:
+            from chalkcompute._tracing import set_current_span_attribute
+
+            set_current_span_attribute("container.id", self._container_id)
             request = container_pb.StopContainerRequest(id=self._container_id)
             if grace_period_seconds is not None:
                 request.grace_period_seconds = grace_period_seconds
@@ -1424,7 +1508,9 @@ class Container:
         if self._container_id is None:
             raise ContainerError("No container ID — call .run() first.")
         self._container_info = _get_container_info(
-            self._client, container_pb.GetContainerRequest(id=self._container_id)
+            self._client,
+            container_pb.GetContainerRequest(id=self._container_id),
+            trace=True,
         )
         return self._container_info
 
@@ -1482,11 +1568,18 @@ def _parse_container_response(
 def _get_container_info(
     client: ConnectClient,
     request: container_pb.GetContainerRequest,
+    *,
+    trace: bool,
 ) -> ContainerInfo:
     """Fetch a container via ``GetContainer`` and parse it, or raise ContainerError."""
-    stub = client.stub(container_connect.ContainerServiceClientSync)
     try:
-        resp = client.call(stub.get_container, request)
+        if trace:
+            stub = client.stub(container_connect.ContainerServiceClientSync)
+            resp = client.call(stub.get_container, request)
+        else:
+            with suppress_rpc_tracing():
+                stub = client.stub(container_connect.ContainerServiceClientSync)
+                resp = client.call(stub.get_container, request)
     except ConnectRpcError as e:
         raise ContainerError(f"GetContainer failed: {rpc_error_message(e)}") from e
     if resp.container is None:

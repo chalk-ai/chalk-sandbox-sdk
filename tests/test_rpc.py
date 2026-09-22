@@ -56,31 +56,35 @@ def test_rpc_span_contract(monkeypatch) -> None:
     assert span.status.status_code is StatusCode.UNSET
 
 
-def test_rpc_span_is_propagated_as_request_headers(monkeypatch) -> None:
+def test_rpc_span_leaves_trace_metadata_to_transport(monkeypatch) -> None:
+    interceptor, _exporter = _recording_interceptor(monkeypatch)
+    ctx = _context()
+    ctx.request_headers["traceparent"] = "caller-value"
+
+    token = interceptor.on_start_sync(ctx)
+    interceptor.on_end_sync(token, ctx, None)
+
+    assert ctx.request_headers["traceparent"] == "caller-value"
+    assert "tracestate" not in ctx.request_headers
+
+
+def test_suppress_rpc_tracing_skips_span(monkeypatch) -> None:
+    from opentelemetry.trace import TraceFlags, get_current_span
+
     interceptor, exporter = _recording_interceptor(monkeypatch)
     ctx = _context()
-    token = interceptor.on_start_sync(ctx)
-    traceparent = ctx.request_headers.get("traceparent")
+
+    with _rpc.get_tracer().start_as_current_span("parent") as parent:
+        parent_context = parent.get_span_context()
+        with _rpc.suppress_rpc_tracing():
+            suppressed_context = get_current_span().get_span_context()
+            token = interceptor.on_start_sync(ctx)
     interceptor.on_end_sync(token, ctx, None)
 
-    (span,) = exporter.get_finished_spans()
-    assert traceparent is not None
-    _version, trace_id, span_id, flags = traceparent.split("-")
-    assert trace_id == format(span.context.trace_id, "032x")
-    assert span_id == format(span.context.span_id, "016x")
-    assert int(flags, 16) & 0x01, "sampled flag must be set"
-
-
-def test_rpc_without_tracing_adds_no_headers(monkeypatch) -> None:
-    from opentelemetry.trace import NoOpTracer
-
-    monkeypatch.setattr(_rpc, "get_tracer", lambda: NoOpTracer())
-    interceptor = _rpc.TracingInterceptor()
-    ctx = _context()
-    token = interceptor.on_start_sync(ctx)
-    interceptor.on_end_sync(token, ctx, None)
-
-    assert "traceparent" not in ctx.request_headers
+    assert token is None
+    assert suppressed_context.trace_id == parent_context.trace_id
+    assert not suppressed_context.trace_flags & TraceFlags.SAMPLED
+    assert [span.name for span in exporter.get_finished_spans()] == ["parent"]
 
 
 def test_rpc_span_marks_failed_calls_as_errors(monkeypatch) -> None:

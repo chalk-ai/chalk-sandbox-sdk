@@ -73,7 +73,11 @@ from chalkcompute._remote_function_tracing import (
 )
 from chalkcompute._secret import Secret, SecretScope, resolve_lazy_secrets
 from chalkcompute._sandbox_git import SandboxGit
-from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
+from chalkcompute._rpc import (
+    RPC_READ_MAX_BYTES,
+    rpc_interceptors,
+    suppress_rpc_tracing,
+)
 from chalkcompute._tracing import _instrumented, _request_tracing_intent, trace_env
 from chalkcompute._volume import (
     VolumeClient,
@@ -1219,6 +1223,10 @@ class Sandbox:
         )
         self._client = client
         self._terminated = False
+        assert self._id is not None
+        from chalkcompute._tracing import set_current_span_attribute
+
+        set_current_span_attribute("container.id", self._id)
 
         return self
 
@@ -1286,7 +1294,10 @@ class Sandbox:
         ExecResult
             Result with stdout/stderr and exit code.
         """
-        self._require_started()
+        sandbox_id = self._require_started()
+        from chalkcompute._tracing import set_current_span_attribute
+
+        set_current_span_attribute("container.id", sandbox_id)
         process = self.exec_start(
             command,
             *args,
@@ -1456,6 +1467,9 @@ class Sandbox:
         """
         client = self._require_client()
         sandbox_id = self._require_started()
+        from chalkcompute._tracing import set_current_span_attribute
+
+        set_current_span_attribute("container.id", sandbox_id)
         spec = runtime_pb.ExecutePythonSpec(
             sandbox_id=sandbox_id,
             source=source,
@@ -1544,6 +1558,9 @@ class Sandbox:
             return
         client = self._require_client()
         sandbox_id = self._require_started()
+        from chalkcompute._tracing import set_current_span_attribute
+
+        set_current_span_attribute("container.id", sandbox_id)
         req = pb.TerminateSandboxRequest(
             id=sandbox_id,
             grace_period=Duration(seconds=grace_period_seconds)
@@ -1710,7 +1727,11 @@ class SandboxClient:
 
     def close(self) -> None:
         """Close the underlying HTTP clients."""
-        for stub in (self._stub, self._process_stub, self._runtime_stub):
+        for stub in (
+            self._stub,
+            self._process_stub,
+            self._runtime_stub,
+        ):
             close = getattr(stub, "close", None)
             if close is not None:
                 close()
@@ -1902,10 +1923,14 @@ class SandboxClient:
         if resp.sandbox is None:
             raise SandboxCreationError("CreateSandbox returned no sandbox")
         info = _pb_to_sandbox_info(resp.sandbox)
+        from chalkcompute._tracing import set_current_span_attribute
+
+        set_current_span_attribute("container.id", info.id)
 
         if wait and info.status == "pending":
             info = self._poll_until_ready(
                 info.id,
+                initial_status=info.status,
                 poll_interval=poll_interval,
                 timeout=timeout,
             )
@@ -1919,28 +1944,89 @@ class SandboxClient:
         self,
         sandbox_id: str,
         *,
+        initial_status: str,
         poll_interval: float,
         timeout: float,
     ) -> SandboxInfo:
         """Poll GetSandbox until the sandbox reaches a terminal state."""
+        from chalkcompute._tracing import get_tracer
+
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            try:
-                resp = self._stub.get_sandbox(
-                    pb.GetSandboxRequest(id=sandbox_id),
-                    headers=self._headers,
+        poll_count = 0
+        total_request_seconds = 0.0
+        max_request_seconds = 0.0
+        sleep_seconds = 0.0
+        last_status = initial_status
+
+        with get_tracer().start_as_current_span(
+            "chalkcompute.wait_until_running"
+        ) as wait_span:
+            wait_span.set_attribute("container.id", sandbox_id)
+
+            def _record(final_status: str) -> None:
+                wait_span.set_attribute("poll.count", poll_count)
+                wait_span.set_attribute(
+                    "poll.total_request_seconds", round(total_request_seconds, 4)
                 )
-            except ConnectRpcError as e:
-                _handle_rpc_error(e, sandbox_id)
-                raise
-            if resp.sandbox is None:
-                raise SandboxCreationError("GetSandbox returned no sandbox")
-            info = _pb_to_sandbox_info(resp.sandbox)
-            if info.status in ("running", "succeeded"):
-                return info
-            if info.status in ("failed", "error", "unknown", "terminated"):
-                raise _sandbox_creation_error(info)
-            time.sleep(poll_interval)
+                wait_span.set_attribute(
+                    "poll.max_request_seconds", round(max_request_seconds, 4)
+                )
+                wait_span.set_attribute("poll.sleep_seconds", round(sleep_seconds, 4))
+                wait_span.set_attribute("poll.final_status", final_status)
+
+            while time.monotonic() < deadline:
+                req_start = time.perf_counter()
+                try:
+                    if poll_count == 0:
+                        resp = self._stub.get_sandbox(
+                            pb.GetSandboxRequest(id=sandbox_id),
+                            headers=self._headers,
+                        )
+                    else:
+                        with suppress_rpc_tracing():
+                            resp = self._stub.get_sandbox(
+                                pb.GetSandboxRequest(id=sandbox_id),
+                                headers=self._headers,
+                            )
+                except ConnectRpcError as e:
+                    req_seconds = time.perf_counter() - req_start
+                    total_request_seconds += req_seconds
+                    max_request_seconds = max(max_request_seconds, req_seconds)
+                    poll_count += 1
+                    _record(last_status)
+                    _handle_rpc_error(e, sandbox_id)
+                    raise
+                req_seconds = time.perf_counter() - req_start
+                total_request_seconds += req_seconds
+                max_request_seconds = max(max_request_seconds, req_seconds)
+                poll_count += 1
+                if resp.sandbox is None:
+                    _record(last_status)
+                    raise SandboxCreationError("GetSandbox returned no sandbox")
+                info = _pb_to_sandbox_info(resp.sandbox)
+                if info.status != last_status:
+                    with get_tracer().start_as_current_span(
+                        "chalkcompute.status_transition"
+                    ) as transition_span:
+                        transition_span.set_attribute("container.id", sandbox_id)
+                        transition_span.set_attribute(
+                            "container.status.from", last_status
+                        )
+                        transition_span.set_attribute(
+                            "container.status.to", info.status
+                        )
+                        transition_span.set_attribute("poll.count", poll_count)
+                    last_status = info.status
+                if info.status in ("running", "succeeded"):
+                    _record(info.status)
+                    return info
+                if info.status in ("failed", "error", "unknown", "terminated"):
+                    _record(info.status)
+                    raise _sandbox_creation_error(info)
+                sleep_start = time.perf_counter()
+                time.sleep(poll_interval)
+                sleep_seconds += time.perf_counter() - sleep_start
+            _record(last_status)
         raise SandboxError(
             f"Timed out after {timeout}s waiting for sandbox {sandbox_id} to become ready"
         )

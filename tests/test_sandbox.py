@@ -120,6 +120,68 @@ class _SucceededDuringCreationStub:
         )
 
 
+class _PollStub:
+    def __init__(self, *statuses: pb.SandboxStatus) -> None:
+        self.statuses = statuses
+        self.calls = 0
+
+    def get_sandbox(self, request: pb.GetSandboxRequest, **_kwargs: object):
+        assert request.id == "sandbox-123"
+        self.calls += 1
+        status = self.statuses[min(self.calls - 1, len(self.statuses) - 1)]
+        return pb.GetSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id="sandbox-123",
+                status=status,
+                created_at=Timestamp(seconds=1),
+            )
+        )
+
+
+def test_sandbox_readiness_traces_first_poll_and_summarizes_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(
+        "chalkcompute._tracing.get_tracer", lambda: provider.get_tracer("test")
+    )
+    monkeypatch.setattr("chalkcompute._sandbox.time.sleep", lambda _seconds: None)
+
+    client = SandboxClient()
+    traced = _PollStub(pb.SandboxStatus.PENDING, pb.SandboxStatus.RUNNING)
+    client._stub = traced  # type: ignore[assignment]
+    try:
+        info = client._poll_until_ready(
+            "sandbox-123",
+            initial_status="pending",
+            poll_interval=0,
+            timeout=30,
+        )
+    finally:
+        client.close()
+
+    assert info.status == "running"
+    assert traced.calls == 2
+    spans = {span.name: span for span in exporter.get_finished_spans()}
+    wait = spans["chalkcompute.wait_until_running"]
+    assert wait.attributes is not None
+    assert wait.attributes["container.id"] == "sandbox-123"
+    assert wait.attributes["poll.count"] == 2
+    assert wait.attributes["poll.final_status"] == "running"
+    transition = spans["chalkcompute.status_transition"]
+    assert transition.attributes is not None
+    assert transition.attributes["container.status.from"] == "pending"
+    assert transition.attributes["container.status.to"] == "running"
+
+
 def test_sandbox_client_create_sends_image_uri_not_image_spec() -> None:
     client = SandboxClient()
     stub = _Stub()
