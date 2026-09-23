@@ -101,13 +101,13 @@ def test_default_status_survives_captured_output_and_logging_configuration(
         progress_finish()
         """
     )
-    assert result.stdout == "customer stdout\n"
-    assert result.stderr.splitlines() == [
+    assert result.stdout.splitlines() == [
         'Function "fraud"',
         "  │ › Pending",
-        "customer stderr",
+        "customer stdout",
         "  └ ✓ Ready",
     ]
+    assert result.stderr == "customer stderr\n"
 
 
 def test_disabling_progress_preserves_customer_output_and_diagnostics() -> None:
@@ -340,12 +340,14 @@ def test_logging_and_progress_work_without_site_packages():
         check=True,
         timeout=10,
     )
-    assert result.stdout == '{"result": 42}\n'
-    assert result.stderr.splitlines() == [
+    assert result.stdout.splitlines() == [
         'Function "fraud"',
         "  │ › Pending",
-        "warning stays visible",
         "  └ ✓ Ready",
+        '{"result": 42}',
+    ]
+    assert result.stderr.splitlines() == [
+        "warning stays visible",
         "INFO chalkcompute: finished",
     ]
 
