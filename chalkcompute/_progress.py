@@ -249,7 +249,7 @@ class DeployProgress:
     # -- Rendering ---------------------------------------------------------
 
     def _refresh(self) -> None:
-        stream = sys.stderr
+        stream = sys.stdout
         color = supports_color(stream)
         lines: list[str] = []
         for key in self._order:

@@ -180,8 +180,8 @@ def test_progress_preserves_logging_and_standard_streams(monkeypatch, caplog):
     import logging
     import sys
 
-    stderr = io.StringIO()
-    monkeypatch.setattr(sys, "stderr", stderr)
+    stdout = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", stdout)
     caplog.set_level(logging.DEBUG, logger="chalkcompute")
     logger = logging.getLogger("chalkcompute")
     original_level = logger.level
@@ -189,7 +189,7 @@ def test_progress_preserves_logging_and_standard_streams(monkeypatch, caplog):
     progress = DeployProgress()
     try:
         progress.add("fn", "function", "[literal] fraud")
-        assert sys.stdout is original_streams[0]
+        assert sys.stderr is original_streams[1]
         assert logger.level == original_level
         logger.debug("debug remains available")
         logger.warning("warning remains visible")
@@ -206,10 +206,10 @@ def test_progress_preserves_logging_and_standard_streams(monkeypatch, caplog):
         "warning remains visible",
         "error remains visible",
     ]
-    assert "[literal] fraud" in stderr.getvalue()
+    assert "[literal] fraud" in stdout.getvalue()
 
 
-def test_forced_progress_uses_stderr_without_ansi_when_redirected(monkeypatch, capsys):
+def test_forced_progress_uses_stdout_without_ansi_when_redirected(monkeypatch, capsys):
     monkeypatch.setenv("CHALK_SANDBOX_TUI", "true")
     monkeypatch.delenv("FORCE_COLOR", raising=False)
     monkeypatch.delenv("TTY_COMPATIBLE", raising=False)
@@ -220,9 +220,9 @@ def test_forced_progress_uses_stderr_without_ansi_when_redirected(monkeypatch, c
     finally:
         progress.finish()
     captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "Fraud" in captured.err
-    assert "\x1b" not in captured.err
+    assert captured.err == ""
+    assert "Fraud" in captured.out
+    assert "\x1b" not in captured.out
 
 
 def test_application_logging_does_not_disable_automatic_progress(monkeypatch):
@@ -293,7 +293,7 @@ def test_progress_renders_only_changes_with_indented_terminal_markers(
 
     stream = io.StringIO()
     monkeypatch.setattr(stream, "isatty", lambda: True)
-    monkeypatch.setattr(sys, "stderr", stream)
+    monkeypatch.setattr(sys, "stdout", stream)
     monkeypatch.delenv("CI", raising=False)
     monkeypatch.delitem(sys.modules, "ipykernel", raising=False)
     monkeypatch.setenv("TERM", "xterm")
@@ -329,7 +329,7 @@ def test_progress_falls_back_for_ascii_streams(monkeypatch):
 
     data = io.BytesIO()
     stream = io.TextIOWrapper(data, encoding="ascii")
-    monkeypatch.setattr(sys, "stderr", stream)
+    monkeypatch.setattr(sys, "stdout", stream)
     progress = DeployProgress()
     progress.add("fn", "function", "Fraud")
     progress.update("fn", status="done", detail="ready")
@@ -349,8 +349,8 @@ def test_deployment_steps_share_one_group(capsys):
     progress.update("fn", status="done", detail="ready")
     progress.finish()
     captured = capsys.readouterr()
-    assert captured.out == ""
-    assert captured.err.splitlines() == [
+    assert captured.err == ""
+    assert captured.out.splitlines() == [
         'Function "fraud"',
         "  │ › Registering function",
         "  │ ✓ Function registered",
@@ -370,7 +370,7 @@ def test_interleaved_groups_restate_identity_and_close_after_their_children(caps
     progress.update("b", status="done", detail="ready")
     progress.update("a", status="failed", detail="")
     progress.finish()
-    assert capsys.readouterr().err.splitlines() == [
+    assert capsys.readouterr().out.splitlines() == [
         'Function "A"',
         "  │ › Build image",
         'Function "B"',
