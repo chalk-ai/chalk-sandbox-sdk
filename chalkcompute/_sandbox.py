@@ -62,6 +62,9 @@ from chalkcompute._gen.chalk.sandbox.v2 import (
 from chalkcompute._image_build import normalize_image_volumes
 from chalkcompute._gen.chalk.sandbox.v2 import service_pb as pb
 from chalkcompute._gen.chalk.sandbox.v2 import service_connect as pb_connect
+from chalkcompute._gen.chalk.sandbox.v2 import (
+    filesystem_service_connect as filesystem_connect,
+)
 from chalkcompute._http import SYNC_HTTP_CLIENT
 from chalkcompute._image import Image
 from chalkcompute._naming import validate_env
@@ -94,6 +97,7 @@ if TYPE_CHECKING:
         SSHDest,
     )
     from chalkcompute._remote_function_tracing import _RemoteFunctionTracingPolicy
+    from chalkcompute._sandbox_fs import SandboxFileSystem
     from chalkcompute._volume import Volume, VolumeMount
 
     # Aliases defined before SandboxClient, which has a ``.list()`` method that
@@ -1253,6 +1257,13 @@ class Sandbox:
         """
         return SandboxGit(self)
 
+    @property
+    def fs(self) -> SandboxFileSystem:
+        """Transfer files to and from this running sandbox."""
+        from chalkcompute._sandbox_fs import SandboxFileSystem
+
+        return SandboxFileSystem(self)
+
     @_instrumented("chalkcompute.sandbox.exec")
     def exec(
         self,
@@ -1663,6 +1674,13 @@ class SandboxClient:
             http_client=SYNC_HTTP_CLIENT,
             read_max_bytes=RPC_READ_MAX_BYTES,
         )
+        self._filesystem_stub = filesystem_connect.SandboxFilesystemServiceClientSync(
+            self._address,
+            protocol=ProtocolType.GRPC,
+            interceptors=interceptors,
+            http_client=SYNC_HTTP_CLIENT,
+            read_max_bytes=RPC_READ_MAX_BYTES,
+        )
 
     @classmethod
     def from_env(
@@ -1710,7 +1728,12 @@ class SandboxClient:
 
     def close(self) -> None:
         """Close the underlying HTTP clients."""
-        for stub in (self._stub, self._process_stub, self._runtime_stub):
+        for stub in (
+            self._stub,
+            self._process_stub,
+            self._runtime_stub,
+            self._filesystem_stub,
+        ):
             close = getattr(stub, "close", None)
             if close is not None:
                 close()

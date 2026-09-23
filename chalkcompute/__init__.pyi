@@ -97,6 +97,8 @@ from chalkcompute._sandbox import SandboxError as SandboxError
 from chalkcompute._sandbox import SandboxInfo as SandboxInfo
 from chalkcompute._sandbox import SandboxNotFoundError as SandboxNotFoundError
 from chalkcompute._sandbox import SandboxTerminatedError as SandboxTerminatedError
+from chalkcompute._sandbox_fs import FilesystemError as FilesystemError
+from chalkcompute._sandbox_fs import SandboxFileSystemError as SandboxFileSystemError
 from chalkcompute._scaling_group import CronScalingTrigger as CronScalingTrigger
 from chalkcompute._scaling_group import CronScalingWindow as CronScalingWindow
 from chalkcompute._scaling_group import ReadinessProbe as ReadinessProbe
@@ -259,6 +261,8 @@ __all__ = [
     "SandboxInfo",
     "SandboxNotFoundError",
     "SandboxTerminatedError",
+    "FilesystemError",
+    "SandboxFileSystemError",
     "ScalingGroup",
     "ScalingGroupBuildError",
     "ScalingGroupError",
