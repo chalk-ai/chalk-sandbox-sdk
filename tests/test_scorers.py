@@ -22,7 +22,6 @@ from chalkcompute._function import (
     _generate_handler_shim,
 )
 from chalkcompute._secret import Secret
-from chalkcompute._trace import Trace
 
 
 class Grade(BaseModel):
@@ -177,56 +176,6 @@ def test_prompt_fn_replaces_the_default_prompt(completion) -> None:
     _judge(prompt_fn=prompt_fn, instructions="")._func(output="done")
 
     assert calls[0] == [{"role": "user", "content": "grade Grade: done"}]
-
-
-def test_trace_input_is_declared_as_an_optional_trace() -> None:
-    """The runner binds `trace` to the row's session id; it is null when no telemetry was recorded."""
-    fn = _judge(inputs=("output", "trace"))._func
-
-    hints = typing.get_type_hints(fn)
-    assert hints["output"] is str and hints["trace"] == Trace | None
-    input_schema, _ = _build_schemas(fn)
-    trace_column = next(
-        column for column in input_schema.columns if column.name == "trace"
-    )
-    assert trace_column.nullable is True
-    assert trace_column.arrow_type.arrow_type_enum.field == "large_utf8"
-
-
-def test_default_prompt_renders_the_trace_as_its_transcript(
-    completion, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    calls, _ = completion
-    monkeypatch.setattr(Trace, "transcript", lambda self, **_: f"turns of {self.id}")
-
-    _judge(inputs=("output", "trace"))._func(output="done", trace=Trace("session-1"))
-
-    _, user = calls[0]
-    assert user["content"].endswith(
-        "## output\n\ndone\n\n## trace\n\nturns of session-1"
-    )
-
-
-def test_default_prompt_says_when_no_trace_was_recorded(completion) -> None:
-    calls, _ = completion
-
-    _judge(inputs=("output", "trace"))._func(output="done", trace=None)
-
-    _, user = calls[0]
-    assert user["content"].endswith("## trace\n\n(no trace was recorded for this row)")
-
-
-def test_prompt_fn_receives_the_trace_handle(completion) -> None:
-    calls, _ = completion
-
-    def prompt_fn(response_model, output, trace):
-        return f"{output}: {trace.id}"
-
-    _judge(inputs=("output", "trace"), prompt_fn=prompt_fn, instructions="")._func(
-        output="done", trace=Trace("session-1")
-    )
-
-    assert calls[0] == [{"role": "user", "content": "done: session-1"}]
 
 
 def test_aliased_fields_serialize_the_way_the_schema_names_them(completion) -> None:
@@ -503,34 +452,6 @@ def test_handler_shim_runs_the_generated_judge(completion) -> None:
     assert row["score"] == 0.5
     assert json.loads(row["metadata"]) == {"directness": 2, "reason": "ok"}
     assert results[0].type.equals(EvaluationScorerResult.__chalk_pyarrow_type__())
-
-
-def test_handler_shim_decodes_the_trace_column_into_a_handle(
-    completion, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A session id arrives as a Trace; a null row arrives as None, and both grade."""
-    monkeypatch.setattr(Trace, "transcript", lambda self, **_: f"turns of {self.id}")
-    judge = _judge(inputs=("output", "trace"))
-    module = types.ModuleType("user_module")
-    setattr(module, judge._func_name, judge._func)
-    sys.modules["user_module"] = module
-    ns: dict = {}
-    exec(compile(_generate_handler_shim(judge._func_name), "<shim>", "exec"), ns)
-
-    calls, _ = completion
-    results = ns["handler"](
-        {
-            "output": pa.array(["done", "done"]),
-            "trace": pa.array(["session-1", None], type=pa.large_utf8()),
-        },
-        None,
-    )
-
-    assert [result.as_py()["score"] for result in results] == [0.5, 0.5]
-    assert calls[0][1]["content"].endswith("## trace\n\nturns of session-1")
-    assert calls[1][1]["content"].endswith(
-        "## trace\n\n(no trace was recorded for this row)"
-    )
 
 
 def test_pydantic_v1_models_work_too(completion) -> None:

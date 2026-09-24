@@ -21,13 +21,8 @@ from chalkcompute._image import Image
 from chalkcompute._local_dev import should_strip_source
 from chalkcompute._naming import sanitize_dns_label
 from chalkcompute._secret import Secret
-from chalkcompute._trace import Trace
 
 _DEFAULT_API_KEY_ENV = "OPENAI_API_KEY"
-# The one input the evaluation runner binds itself: the row's session id, which
-# a scorer receives as a Trace rather than the string every other input is.
-_TRACE_INPUT = "trace"
-_NO_TRACE_NOTE = "(no trace was recorded for this row)"
 # In the judge's image, not the SDK's. Unbounded, so a user's own image keeps
 # the versions it has.
 _JUDGE_PACKAGES = ["pydantic", "openai"]
@@ -95,11 +90,7 @@ def llm_judge(
     validation fails the row.
 
     ``inputs`` are the dataset columns to grade (``output`` is the task's).
-    Naming ``trace`` among them hands the judge the row's
-    :class:`~chalkcompute.Trace`, rendered into the prompt with
-    :meth:`~chalkcompute.Trace.transcript`, or ``None`` for a row that recorded
-    no telemetry. ``prompt_fn(response_model, **inputs)`` replaces the prompt
-    and receives that same handle; ``parse_fn``
+    ``prompt_fn(response_model, **inputs)`` replaces the prompt; ``parse_fn``
     replaces structured outputs. With neither ``base_url`` nor ``api_key`` the
     judge calls Chalk's AI router as the environment itself, so no provider key
     is needed; ``base_url`` takes any other OpenAI-compatible URL and
@@ -170,11 +161,6 @@ def _declare_scorer(
 ) -> RemoteFunction | _NoOpFunction:
     """Deploy ``body`` as a scorer taking one ``str`` column per ``inputs``.
 
-    ``trace`` is the exception: the evaluation runner binds it to the row's
-    session id, so it is declared ``Trace | None`` and arrives as a handle, or
-    as ``None`` for a row that recorded no telemetry. The wire type is the same
-    ``large_utf8`` either way.
-
     The generated function is defined in the caller's module so the deploy
     ships that file, where anything the body closes over lives, and the
     pod-side shim imports it back. ``stamp`` sets attributes on it and
@@ -183,10 +169,7 @@ def _declare_scorer(
     frame = sys._getframe(frame_depth)
     caller_module = frame.f_globals.get("__name__", "__main__")
     py_name = prefix + re.sub(r"[^0-9A-Za-z_]", "_", name)
-    params = ", ".join(
-        f"{column}: __chalk_trace__" if column == _TRACE_INPUT else f"{column}: str"
-        for column in inputs
-    )
+    params = ", ".join(f"{column}: str" for column in inputs)
     columns = ", ".join(f"{column}={column}" for column in inputs)
     source = (
         f"def {py_name}({params}) -> __chalk_result__:\n"
@@ -195,7 +178,6 @@ def _declare_scorer(
     namespace: dict[str, Any] = {
         "__name__": caller_module,
         "__chalk_result__": EvaluationScorerResult,
-        "__chalk_trace__": Trace | None,
         "__chalk_body__": body,
         **(extra_globals or {}),
     }
@@ -374,17 +356,8 @@ def _default_prompt(spec: _JudgeSpec, columns: Mapping[str, Any]) -> str:
         json.dumps(fields, indent=1),
     ]
     for column, value in columns.items():
-        parts.extend([f"## {column}", _render_input(column, value)])
+        parts.extend([f"## {column}", str(value)])
     return "\n\n".join(parts)
-
-
-def _render_input(column: str, value: Any) -> str:
-    """A prompt section's body: the trace as its transcript, anything else as text."""
-    if isinstance(value, Trace):
-        return value.transcript()
-    if column == _TRACE_INPUT and value is None:
-        return _NO_TRACE_NOTE
-    return str(value)
 
 
 def _environment_id() -> str | None:
