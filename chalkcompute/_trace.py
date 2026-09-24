@@ -427,6 +427,7 @@ class Trace:
         wait: bool = True,
         timeout: float = 60.0,
         poll_interval: float = 2.0,
+        expect_min: int | None = None,
     ) -> str:
         """Render this session's LLM turns as text, oldest first.
 
@@ -445,18 +446,29 @@ class Trace:
         ----------
         max_chars_per_turn
             Characters kept of each prompt and of each completion.
-        wait, timeout, poll_interval
-            See :ref:`the settling rules <trace-waiting>` on :class:`Trace`. A
-            session with no LLM turns is a valid answer here, so the wait
-            settles on a steady count rather than requiring one.
+        wait, timeout, poll_interval, expect_min
+            See :ref:`the settling rules <trace-waiting>` on :class:`Trace`.
+            The wait settles on every span of the session, LLM turn or not,
+            because they all arrive through the same ingest: a session whose
+            turns are still landing is never read as empty. A session that
+            shows no span at all within ``timeout`` renders as the no-turns
+            note rather than raising, so a judge still grades the row; pass
+            ``expect_min=0`` to accept an empty session without waiting.
         """
-        spans = self.get_spans(
-            attribute_filters={_INPUT_VALUE_ATTRIBUTE: None},
-            wait=wait,
-            timeout=timeout,
-            poll_interval=poll_interval,
-            expect_min=0,
-        )
+        try:
+            spans = self.get_spans(
+                wait=wait,
+                timeout=timeout,
+                poll_interval=poll_interval,
+                expect_min=expect_min,
+            )
+        except TimeoutError:
+            # A session that never showed a span has no turns to wait for. One
+            # that is still receiving them must not be read short: the note
+            # would pass for a real result.
+            if self.get_spans(wait=False):
+                raise
+            spans = []
         return _format_transcript(spans, max_chars_per_turn=max_chars_per_turn)
 
     def _require_client(self) -> TraceClient:
