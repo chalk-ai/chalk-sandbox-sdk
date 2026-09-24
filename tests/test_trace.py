@@ -218,6 +218,110 @@ def test_transcript_rejects_a_non_positive_turn_budget() -> None:
         Trace("session-1", _client=client).transcript(wait=False, max_chars_per_turn=0)
 
 
+def _empty() -> Any:
+    return _response({"spans": []})
+
+
+def _one_turn() -> Any:
+    return _response(
+        {
+            "spans": [
+                _turn(
+                    "span-1",
+                    "2026-08-17T00:00:01Z",
+                    **{"input.value": "hi", "output.value": "yo"},
+                )
+            ]
+        }
+    )
+
+
+def _root_only() -> Any:
+    """The session root span every evaluation row has before any LLM call."""
+    return _response(
+        {"spans": [_turn("root", "2026-08-17T00:00:00Z", **{"chalk.session": "root"})]}
+    )
+
+
+def _root_and_turn() -> Any:
+    return _response(
+        {
+            "spans": [
+                _turn("root", "2026-08-17T00:00:00Z", **{"chalk.session": "root"}),
+                _turn(
+                    "span-1",
+                    "2026-08-17T00:00:01Z",
+                    **{"input.value": "hi", "output.value": "yo"},
+                ),
+            ]
+        }
+    )
+
+
+def test_transcript_waits_for_turns_still_being_ingested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two empty polls are not a settled session; the turn lands on the third."""
+    client, _ = _client({"list_span": [_empty(), _empty(), _one_turn(), _one_turn()]})
+    monkeypatch.setattr("chalkcompute._trace.time.sleep", lambda _: None)
+
+    text = Trace("session-1", _client=client).transcript(poll_interval=0)
+
+    assert text.startswith("### turn 1")
+
+
+def test_transcript_does_not_let_other_spans_end_the_wait_early(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A steady root span is not a settled transcript; only turns count."""
+    client, _ = _client(
+        {"list_span": [_root_only(), _root_only(), _root_and_turn(), _root_and_turn()]}
+    )
+    monkeypatch.setattr("chalkcompute._trace.time.sleep", lambda _: None)
+
+    text = Trace("session-1", _client=client).transcript(poll_interval=0)
+
+    assert text.startswith("### turn 1")
+
+
+def test_transcript_of_a_session_with_only_other_spans_says_so_after_the_wait() -> None:
+    client, _ = _client({"list_span": [_root_only(), _root_only()]})
+
+    text = Trace("session-1", _client=client).transcript(timeout=0, poll_interval=0)
+
+    assert text == "(no LLM turns were recorded in this session)"
+
+
+def test_transcript_of_a_session_that_never_records_a_span_says_so_after_the_wait() -> (
+    None
+):
+    client, connect = _client({"list_span": [_empty(), _empty()]})
+
+    text = Trace("session-1", _client=client).transcript(timeout=0, poll_interval=0)
+
+    assert text == "(no LLM turns were recorded in this session)"
+    # The wait timed out, then one unwaited read confirmed the session is empty.
+    assert len(connect.calls) == 2
+
+
+def test_transcript_does_not_read_a_session_short_while_spans_still_arrive() -> None:
+    client, _ = _client({"list_span": [_one_turn(), _one_turn()]})
+
+    with pytest.raises(TimeoutError, match="still receiving"):
+        Trace("session-1", _client=client).transcript(timeout=0, poll_interval=0)
+
+
+def test_transcript_accepts_an_empty_session_when_asked_to(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _ = _client({"list_span": [_empty(), _empty()]})
+    monkeypatch.setattr("chalkcompute._trace.time.sleep", lambda _: None)
+
+    text = Trace("session-1", _client=client).transcript(poll_interval=0, expect_min=0)
+
+    assert text == "(no LLM turns were recorded in this session)"
+
+
 # --- Span decoding --------------------------------------------------------
 
 
