@@ -121,6 +121,103 @@ def test_trace_strips_surrounding_whitespace() -> None:
     assert Trace(" session-1 ").id == "session-1"
 
 
+# --- Transcript -----------------------------------------------------------
+
+
+def _turn(span_id: str, start: str, **attributes: str) -> dict[str, Any]:
+    return {**_span_dict(span_id, **attributes), "startTime": start, "endTime": start}
+
+
+def test_transcript_renders_llm_turns_oldest_first() -> None:
+    """Only spans carrying a prompt are turns; they render in start order."""
+    client, connect = _client(
+        {
+            "list_span": [
+                _response(
+                    {
+                        "spans": [
+                            _turn(
+                                "span-2",
+                                "2026-08-17T00:00:05Z",
+                                **{
+                                    "input.value": "second prompt",
+                                    "output.value": "second answer",
+                                    "llm.model_name": "claude-sonnet-5",
+                                    "llm.token_count.total": "1234",
+                                },
+                            ),
+                            _turn(
+                                "span-1",
+                                "2026-08-17T00:00:01Z",
+                                **{
+                                    "input.value": "first prompt",
+                                    "output.value": "first answer",
+                                },
+                            ),
+                            _turn(
+                                "span-3",
+                                "2026-08-17T00:00:02Z",
+                                **{"db.statement": "select 1"},
+                            ),
+                        ]
+                    }
+                )
+            ]
+        }
+    )
+    text = Trace("session-1", _client=client).transcript(wait=False)
+
+    _, request = connect.calls[0]
+    assert request.query == "session:session-1"
+    assert text == (
+        "### turn 1 (unknown model)\n[prompt]\nfirst prompt\n[completion]\nfirst answer"
+        "\n\n"
+        "### turn 2 (claude-sonnet-5, 1,234 tokens)\n[prompt]\nsecond prompt\n[completion]\nsecond answer"
+    )
+
+
+def test_transcript_keeps_the_prompt_tail_and_the_completion_head() -> None:
+    """The newest context the model saw, and the start of what it said, survive."""
+    client, _ = _client(
+        {
+            "list_span": [
+                _response(
+                    {
+                        "spans": [
+                            _turn(
+                                "span-1",
+                                "2026-08-17T00:00:01Z",
+                                **{
+                                    "input.value": "p" * 10 + "END",
+                                    "output.value": "START" + "c" * 10,
+                                },
+                            )
+                        ]
+                    }
+                )
+            ]
+        }
+    )
+    text = Trace("session-1", _client=client).transcript(
+        wait=False, max_chars_per_turn=5
+    )
+
+    assert "[prompt]\n… [8 earlier characters]\nppEND" in text
+    assert "[completion]\nSTART\n… [10 more characters]" in text
+
+
+def test_transcript_of_a_session_with_no_llm_turns_says_so() -> None:
+    client, _ = _client({"list_span": [_response({"spans": []})]})
+    text = Trace("session-1", _client=client).transcript(wait=False)
+    assert text == "(no LLM turns were recorded in this session)"
+
+
+def test_transcript_rejects_a_non_positive_turn_budget() -> None:
+    client, _ = _client({"list_span": [_response({"spans": []})]})
+    with pytest.raises(ValueError, match="max_chars_per_turn"):
+        Trace("session-1", _client=client).transcript(wait=False, max_chars_per_turn=0)
+
+
 # --- Span decoding --------------------------------------------------------
 
 
