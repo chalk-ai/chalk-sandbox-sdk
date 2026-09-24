@@ -448,25 +448,37 @@ class Trace:
             Characters kept of each prompt and of each completion.
         wait, timeout, poll_interval, expect_min
             See :ref:`the settling rules <trace-waiting>` on :class:`Trace`.
-            The wait settles on every span of the session, LLM turn or not,
-            because they all arrive through the same ingest: a session whose
-            turns are still landing is never read as empty. A session that
-            shows no span at all within ``timeout`` renders as the no-turns
-            note rather than raising, so a judge still grades the row; pass
-            ``expect_min=0`` to accept an empty session without waiting.
+            The wait is scoped to LLM turns: it holds until at least one is
+            there and their number stays steady across a poll, so a turn that
+            is still being ingested is never mistaken for none, and the
+            session's other spans -- its root span lands before any turn --
+            cannot end the wait early. A session that shows no turn within
+            ``timeout`` renders as the no-turns note rather than raising, once
+            an unwaited read confirms it, so a judge still grades the row; pass
+            ``expect_min=0`` to accept an empty transcript without waiting.
         """
+        client = self._require_client()
+
+        def fetch() -> list[Span]:
+            return client.list_spans(
+                self.id, attribute_filters={_INPUT_VALUE_ATTRIBUTE: None}
+            )
+
         try:
-            spans = self.get_spans(
+            spans = _settle(
+                fetch,
+                spans_seen=_count_turns,
+                subject=f"session {self.id!r}",
                 wait=wait,
                 timeout=timeout,
                 poll_interval=poll_interval,
                 expect_min=expect_min,
             )
         except TimeoutError:
-            # A session that never showed a span has no turns to wait for. One
-            # that is still receiving them must not be read short: the note
-            # would pass for a real result.
-            if self.get_spans(wait=False):
+            # A session that has shown no turn after the wait has none to
+            # render. One whose turns are still arriving must not be read
+            # short: the note would pass for a real result.
+            if _count_turns(fetch()):
                 raise
             spans = []
         return _format_transcript(spans, max_chars_per_turn=max_chars_per_turn)
@@ -509,6 +521,11 @@ def _format_transcript(spans: Sequence[Span], *, max_chars_per_turn: int) -> str
             lines += ["[completion]", _keep_head(completion, max_chars_per_turn)]
         parts.append("\n".join(lines))
     return "\n\n".join(parts)
+
+
+def _count_turns(spans: Sequence[Span]) -> int:
+    """How many of ``spans`` a transcript renders: those carrying a prompt."""
+    return sum(1 for span in spans if _INPUT_VALUE_ATTRIBUTE in span.attributes)
 
 
 def _keep_head(text: str, limit: int) -> str:

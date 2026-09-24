@@ -236,6 +236,28 @@ def _one_turn() -> Any:
     )
 
 
+def _root_only() -> Any:
+    """The session root span every evaluation row has before any LLM call."""
+    return _response(
+        {"spans": [_turn("root", "2026-08-17T00:00:00Z", **{"chalk.session": "root"})]}
+    )
+
+
+def _root_and_turn() -> Any:
+    return _response(
+        {
+            "spans": [
+                _turn("root", "2026-08-17T00:00:00Z", **{"chalk.session": "root"}),
+                _turn(
+                    "span-1",
+                    "2026-08-17T00:00:01Z",
+                    **{"input.value": "hi", "output.value": "yo"},
+                ),
+            ]
+        }
+    )
+
+
 def test_transcript_waits_for_turns_still_being_ingested(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -246,6 +268,28 @@ def test_transcript_waits_for_turns_still_being_ingested(
     text = Trace("session-1", _client=client).transcript(poll_interval=0)
 
     assert text.startswith("### turn 1")
+
+
+def test_transcript_does_not_let_other_spans_end_the_wait_early(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A steady root span is not a settled transcript; only turns count."""
+    client, _ = _client(
+        {"list_span": [_root_only(), _root_only(), _root_and_turn(), _root_and_turn()]}
+    )
+    monkeypatch.setattr("chalkcompute._trace.time.sleep", lambda _: None)
+
+    text = Trace("session-1", _client=client).transcript(poll_interval=0)
+
+    assert text.startswith("### turn 1")
+
+
+def test_transcript_of_a_session_with_only_other_spans_says_so_after_the_wait() -> None:
+    client, _ = _client({"list_span": [_root_only(), _root_only()]})
+
+    text = Trace("session-1", _client=client).transcript(timeout=0, poll_interval=0)
+
+    assert text == "(no LLM turns were recorded in this session)"
 
 
 def test_transcript_of_a_session_that_never_records_a_span_says_so_after_the_wait() -> (
