@@ -6,6 +6,38 @@ from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 from chalkcompute._telemetry_export import _DiagnosticExporter, create_span_exporter
 
 
+def test_unix_socket_grpc_endpoint_pins_default_authority(monkeypatch):
+    """grpc-python derives a bogus ``:authority`` from a ``unix:`` target.
+
+    That bogus authority gets rejected by the collector (fronted by an Envoy
+    ``tcp_proxy`` that can't rewrite it), tearing down the stream with
+    ``RST_STREAM``/``StatusCode.INTERNAL`` -- so every span export from a
+    sandbox (whose OTLP endpoint is a unix socket) silently failed. Pinning
+    ``grpc.default_authority`` to a real hostname avoids the bad derivation.
+    """
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "unix:///run/chalk-otel/otlp.sock")
+    exporter = create_span_exporter()
+    try:
+        assert ("grpc.default_authority", "localhost") in exporter._exporter._channel_options
+    finally:
+        exporter.shutdown()
+
+
+def test_non_unix_socket_grpc_endpoint_leaves_default_authority_alone(monkeypatch):
+    """The ``:authority`` fix is only needed for ``unix:`` targets."""
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4317")
+    exporter = create_span_exporter()
+    try:
+        assert not any(
+            key == "grpc.default_authority"
+            for key, _ in exporter._exporter._channel_options
+        )
+    finally:
+        exporter.shutdown()
+
+
 def test_export_outage_is_reported_once_without_muting_other_exporters(caplog):
     class FailingExporter(SpanExporter):
         def export(self, spans):
