@@ -11,7 +11,7 @@ import re
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from chalkcompute._evaluation import EvaluationScorerResult, SqlExpression
@@ -60,6 +60,9 @@ class _JudgeSpec:
     # Whether the caller named a key, as opposed to the default env var.
     api_key_declared: bool
     completion_kwargs: dict[str, Any]
+    # A stronger model that re-grades a row the first judge was unsure of.
+    fallback_model: str | None = None
+    confidence_threshold: float = 0.9
 
 
 @dataclass(frozen=True)
@@ -85,6 +88,8 @@ def llm_judge(
     base_url: str | None = None,
     api_key: Secret | None = None,
     completion_kwargs: Mapping[str, Any] | None = None,
+    fallback_model: str | None = None,
+    confidence_threshold: float = 0.9,
     image: Image | None = None,
     **function_kwargs: Any,
 ) -> RemoteFunction | _NoOpFunction:
@@ -105,11 +110,29 @@ def llm_judge(
     is needed; ``base_url`` takes any other OpenAI-compatible URL and
     ``api_key`` a Secret read in the pod. ``completion_kwargs`` (say
     ``{"temperature": 0, "max_tokens": 400}``) are sent with every request.
+
+    ``fallback_model`` makes the judge a cascade: a row whose ``confidence``
+    field falls below ``confidence_threshold`` is re-graded by that stronger
+    model, and the metadata records which model decided. The response model
+    must then declare ``confidence`` in ``[0, 1]``. Confidence is a routing
+    signal rather than a guarantee, so check a run's escalations before
+    trusting a threshold on a new workload.
+
     ``name`` defaults to the model class in kebab case; other keywords go to
     :func:`chalkcompute.function`.
     """
     _assert_deployable()
     _assert_response_model(response_model)
+    if fallback_model is not None:
+        if not _has_field(response_model, "confidence"):
+            raise ValueError(
+                "fallback_model needs a `confidence` field on response_model, "
+                "which is what decides whether a row escalates"
+            )
+        if not 0 < confidence_threshold <= 1:
+            raise ValueError(
+                f"confidence_threshold must be in (0, 1], not {confidence_threshold}"
+            )
     inputs = _validate_inputs(inputs)
     completion_kwargs = _validate_completion_kwargs(completion_kwargs)
     name = name or _default_name(response_model)
@@ -131,6 +154,8 @@ def llm_judge(
         api_key_env=api_key_env,
         api_key_declared=api_key is not None,
         completion_kwargs=completion_kwargs,
+        fallback_model=fallback_model,
+        confidence_threshold=confidence_threshold,
     )
 
     def grade(**columns: Any) -> EvaluationScorerResult:
@@ -358,13 +383,42 @@ def _judge(spec: _JudgeSpec, columns: Mapping[str, Any]) -> EvaluationScorerResu
     if spec.instructions:
         messages.append({"role": "system", "content": spec.instructions})
     messages.append({"role": "user", "content": prompt})
+    data = _grade(spec, messages)
+    if spec.fallback_model is not None:
+        confidence = _confidence(data)
+        escalated = confidence < spec.confidence_threshold
+        if escalated:
+            data = _grade(replace(spec, model=spec.fallback_model), messages)
+        data.update(
+            judge_model=spec.fallback_model if escalated else spec.model,
+            escalated=escalated,
+            primary_confidence=confidence,
+        )
+    score = data.pop(spec.score_key)
+    return EvaluationScorerResult(score=float(score), metadata=data or None)
+
+
+def _grade(spec: _JudgeSpec, messages: list[dict[str, str]]) -> dict[str, Any]:
     graded = _complete(spec, messages)
     if not isinstance(graded, spec.response_model):
         graded = _validate(spec.response_model, graded)
     # By alias, the way the stamped schema names it.
-    data = _dump(graded)
-    score = data.pop(spec.score_key)
-    return EvaluationScorerResult(score=float(score), metadata=data or None)
+    return _dump(graded)
+
+
+def _confidence(data: Mapping[str, Any]) -> float:
+    """The judge's confidence, or 0 when it gave none usable, so that escalates."""
+    value = data.get("confidence")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return float(value) if 0 <= value <= 1 else 0.0
+
+
+def _has_field(cls: Any, name: str) -> bool:
+    fields = getattr(cls, "model_fields", None)
+    if fields is None:
+        return name in cls.__fields__
+    return name in fields or name in getattr(cls, "model_computed_fields", {})
 
 
 def _default_prompt(spec: _JudgeSpec, columns: Mapping[str, Any]) -> str:
