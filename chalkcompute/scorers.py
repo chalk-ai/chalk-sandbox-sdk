@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import functools
 import json
 import keyword
 import math
@@ -60,9 +61,6 @@ class _JudgeSpec:
     # Whether the caller named a key, as opposed to the default env var.
     api_key_declared: bool
     completion_kwargs: dict[str, Any]
-    # A stronger model that re-grades a row the first judge was unsure of.
-    fallback_model: str | None = None
-    confidence_threshold: float = 0.9
 
 
 @dataclass(frozen=True)
@@ -88,8 +86,6 @@ def llm_judge(
     base_url: str | None = None,
     api_key: Secret | None = None,
     completion_kwargs: Mapping[str, Any] | None = None,
-    fallback_model: str | None = None,
-    confidence_threshold: float = 0.9,
     image: Image | None = None,
     **function_kwargs: Any,
 ) -> RemoteFunction | _NoOpFunction:
@@ -110,29 +106,11 @@ def llm_judge(
     is needed; ``base_url`` takes any other OpenAI-compatible URL and
     ``api_key`` a Secret read in the pod. ``completion_kwargs`` (say
     ``{"temperature": 0, "max_tokens": 400}``) are sent with every request.
-
-    ``fallback_model`` makes the judge a cascade: a row whose ``confidence``
-    field falls below ``confidence_threshold`` is re-graded by that stronger
-    model, and the metadata records which model decided. The response model
-    must then declare ``confidence`` in ``[0, 1]``. Confidence is a routing
-    signal rather than a guarantee, so check a run's escalations before
-    trusting a threshold on a new workload.
-
     ``name`` defaults to the model class in kebab case; other keywords go to
     :func:`chalkcompute.function`.
     """
     _assert_deployable()
     _assert_response_model(response_model)
-    if fallback_model is not None:
-        if not _has_field(response_model, "confidence"):
-            raise ValueError(
-                "fallback_model needs a `confidence` field on response_model, "
-                "which is what decides whether a row escalates"
-            )
-        if not 0 < confidence_threshold <= 1:
-            raise ValueError(
-                f"confidence_threshold must be in (0, 1], not {confidence_threshold}"
-            )
     inputs = _validate_inputs(inputs)
     completion_kwargs = _validate_completion_kwargs(completion_kwargs)
     name = name or _default_name(response_model)
@@ -154,8 +132,6 @@ def llm_judge(
         api_key_env=api_key_env,
         api_key_declared=api_key is not None,
         completion_kwargs=completion_kwargs,
-        fallback_model=fallback_model,
-        confidence_threshold=confidence_threshold,
     )
 
     def grade(**columns: Any) -> EvaluationScorerResult:
@@ -383,42 +359,13 @@ def _judge(spec: _JudgeSpec, columns: Mapping[str, Any]) -> EvaluationScorerResu
     if spec.instructions:
         messages.append({"role": "system", "content": spec.instructions})
     messages.append({"role": "user", "content": prompt})
-    data = _grade(spec, messages)
-    if spec.fallback_model is not None:
-        confidence = _confidence(data)
-        escalated = confidence < spec.confidence_threshold
-        if escalated:
-            data = _grade(replace(spec, model=spec.fallback_model), messages)
-        data.update(
-            judge_model=spec.fallback_model if escalated else spec.model,
-            escalated=escalated,
-            primary_confidence=confidence,
-        )
-    score = data.pop(spec.score_key)
-    return EvaluationScorerResult(score=float(score), metadata=data or None)
-
-
-def _grade(spec: _JudgeSpec, messages: list[dict[str, str]]) -> dict[str, Any]:
     graded = _complete(spec, messages)
     if not isinstance(graded, spec.response_model):
         graded = _validate(spec.response_model, graded)
     # By alias, the way the stamped schema names it.
-    return _dump(graded)
-
-
-def _confidence(data: Mapping[str, Any]) -> float:
-    """The judge's confidence, or 0 when it gave none usable, so that escalates."""
-    value = data.get("confidence")
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return 0.0
-    return float(value) if 0 <= value <= 1 else 0.0
-
-
-def _has_field(cls: Any, name: str) -> bool:
-    fields = getattr(cls, "model_fields", None)
-    if fields is None:
-        return name in cls.__fields__
-    return name in fields or name in getattr(cls, "model_computed_fields", {})
+    data = _dump(graded)
+    score = data.pop(spec.score_key)
+    return EvaluationScorerResult(score=float(score), metadata=data or None)
 
 
 def _default_prompt(spec: _JudgeSpec, columns: Mapping[str, Any]) -> str:
@@ -530,6 +477,213 @@ def _complete(spec: _JudgeSpec, messages: list[dict[str, str]]) -> Any:
             f"llm_judge: the model returned no grade ({message.refusal or 'empty reply'})"
         )
     return message.parsed
+
+
+# ---------------------------------------------------------------------------
+# Escalating judge
+# ---------------------------------------------------------------------------
+
+_JEV_INSTRUCTIONS = (
+    "You are grading one row of an evaluation. Judge only what you are given, "
+    "follow the rubric exactly, and answer with the JSON object it asks for."
+)
+_JEV_REPLY = (
+    'Reply with a JSON object: {"choice": "<label>", "rationale": "<one sentence>", '
+    '"probabilities": [{"label": "<label>", "probability": <probability>}, ...]}, '
+    "giving your probability for every label."
+)
+# Written out rather than derived, so declaring the scorer needs no pydantic.
+_JEV_METADATA_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "choice": {"type": "string"},
+        "rationale": {"type": "string"},
+        "confidence": {"type": "number"},
+        "probabilities": {
+            "type": "object",
+            "additionalProperties": {"type": "number"},
+        },
+        "escalated": {"type": "boolean"},
+        "judge_model": {"type": "string"},
+        "primary_confidence": {"type": "number"},
+    },
+}
+
+
+def jev(
+    *,
+    labels: Mapping[str, float],
+    rubric: str,
+    model: str,
+    fallback_model: str,
+    threshold: float = 0.9,
+    name: str = "jev",
+    inputs: Sequence[str] = ("output",),
+    instructions: str = _JEV_INSTRUCTIONS,
+    base_url: str | None = None,
+    api_key: Secret | None = None,
+    completion_kwargs: Mapping[str, Any] | None = None,
+    image: Image | None = None,
+    **function_kwargs: Any,
+) -> RemoteFunction | _NoOpFunction:
+    """Deploy a judge that hands the rows it is unsure of to a stronger model.
+
+    The cascade from JEV-as-a-Judge (arXiv 2609.26550): ``model`` picks one of
+    ``labels`` for each row and gives a probability for every label. A row
+    whose probability on the chosen label is below ``threshold`` is graded
+    again by ``fallback_model``, whose grade stands. ``labels`` maps each label
+    to its score, and ``rubric`` says what the labels mean.
+
+    Metadata keeps the choice, the rationale, the label probabilities, and
+    which model graded the row, so a run shows its own escalation rate.
+    Self-reported confidence is not calibrated everywhere (the paper finds it
+    overconfident on hard reasoning), so choose ``threshold`` on a small
+    labeled sample rather than trusting the default. The remaining keywords
+    are as for :func:`llm_judge`.
+    """
+    _assert_deployable("cc.scorers.jev")
+    scores = _validate_labels(labels)
+    if isinstance(threshold, bool) or not 0 < threshold <= 1:
+        raise ValueError(f"jev: threshold must be in (0, 1], not {threshold!r}")
+    if not rubric.strip():
+        raise ValueError("jev: rubric must say what the labels mean")
+    inputs = _validate_inputs(inputs)
+    secrets: list[Secret] = []
+    api_key_env = _DEFAULT_API_KEY_ENV
+    if api_key is not None:
+        api_key_env = _secret_env_var(api_key)
+        secrets.append(api_key)
+    # The reply model is pydantic, which only the judge's image is sure to
+    # have, so it is filled in when a row is graded.
+    spec = _JudgeSpec(
+        response_model=None,
+        score_key="score",
+        model=model,
+        instructions=instructions,
+        inputs=inputs,
+        prompt_fn=None,
+        parse_fn=None,
+        base_url=base_url,
+        api_key_env=api_key_env,
+        api_key_declared=api_key is not None,
+        completion_kwargs=_validate_completion_kwargs(completion_kwargs),
+    )
+    listed = ", ".join(labels)
+
+    def grade(**columns: Any) -> EvaluationScorerResult:
+        parts = [rubric, f"Choose exactly one label: {listed}.", _JEV_REPLY]
+        for column, value in columns.items():
+            parts.extend([f"## {column}", _render_input(column, value)])
+        messages = [
+            {"role": "system", "content": instructions},
+            {"role": "user", "content": "\n\n".join(parts)},
+        ]
+        primary = replace(spec, response_model=_jev_reply_model())
+        graded = _jev_grade(primary, messages, scores)
+        confidence = graded["confidence"]
+        escalated = confidence < threshold
+        if escalated:
+            graded = _jev_grade(
+                replace(primary, model=fallback_model), messages, scores
+            )
+        score = graded.pop("score")
+        return EvaluationScorerResult(
+            score=score,
+            metadata={
+                **graded,
+                "escalated": escalated,
+                "judge_model": fallback_model if escalated else model,
+                "primary_confidence": confidence,
+            },
+        )
+
+    return _declare_scorer(
+        name,
+        inputs,
+        grade,
+        image=image,
+        function_kwargs=function_kwargs,
+        packages=_JUDGE_PACKAGES,
+        secrets=secrets,
+        stamp={"__chalk_scorer_response_schema__": json.dumps(_JEV_METADATA_SCHEMA)},
+        extra_globals={"__chalk_spec__": spec},
+    )
+
+
+def _label(value: str) -> str:
+    """A label as the model wrote it, give or take case and a trailing period."""
+    return value.strip().strip(".").strip().upper()
+
+
+def _validate_labels(labels: Mapping[str, float]) -> dict[str, float]:
+    """``labels`` keyed the way a reply is read back, each score in ``[0, 1]``."""
+    if not isinstance(labels, Mapping) or len(labels) < 2:
+        raise ValueError("jev: labels must map at least two labels to their scores")
+    scores: dict[str, float] = {}
+    for label, score in labels.items():
+        key = _label(label) if isinstance(label, str) else ""
+        if not key:
+            raise ValueError(f"jev: label {label!r} must be a non-empty string")
+        if key in scores:
+            raise ValueError(f"jev: labels repeat {label!r}, ignoring case")
+        if (
+            isinstance(score, bool)
+            or not isinstance(score, (int, float))
+            or not 0 <= score <= 1
+        ):
+            raise ValueError(
+                f"jev: label {label!r} must score in [0, 1], not {score!r}"
+            )
+        scores[key] = float(score)
+    return scores
+
+
+@functools.cache
+def _jev_reply_model() -> type:
+    from pydantic import BaseModel
+
+    class LabelProbability(BaseModel):
+        label: str
+        probability: float
+
+    class JevReply(BaseModel):
+        choice: str
+        rationale: str
+        # Fixed-shape entries rather than a dict: strict structured outputs
+        # accept neither open-ended keys nor an optional field.
+        probabilities: list[LabelProbability]
+
+    return JevReply
+
+
+def _jev_grade(
+    spec: _JudgeSpec, messages: list[dict[str, str]], scores: Mapping[str, float]
+) -> dict[str, Any]:
+    """One model's grade: its score, reasoning, and confidence in its choice."""
+    reply = _complete(spec, messages)
+    usable: dict[str, float] = {}
+    for entry in reply.probabilities:
+        label = _label(entry.label)
+        if (
+            label in scores
+            and math.isfinite(entry.probability)
+            and entry.probability >= 0
+        ):
+            usable[label] = entry.probability
+    total = sum(usable.values())
+    distribution = {label: p / total for label, p in usable.items()} if total else {}
+    choice = _label(reply.choice)
+    return {
+        # A choice outside the labels scores 0 and, having no probability,
+        # counts as unsure.
+        "score": scores.get(choice, 0.0),
+        "choice": reply.choice,
+        "rationale": reply.rationale,
+        # The paper's max probability when the choice is the likeliest label,
+        # and lower when the model picked one it rated less likely.
+        "confidence": distribution.get(choice, 0.0),
+        "probabilities": distribution,
+    }
 
 
 # ---------------------------------------------------------------------------
