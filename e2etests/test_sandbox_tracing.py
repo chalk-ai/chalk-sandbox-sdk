@@ -125,14 +125,14 @@ def test_span_export_from_sandbox_reproduces_and_fixes_authority_bug(
         TRACING_IMAGE, name="test-tracing-e2e", tracing=True, timeout=600
     )
     try:
-        sandbox.fs.write_bytes("/tmp/_telemetry_export.py", _TELEMETRY_EXPORT_SRC.encode())
+        sandbox.fs.write_bytes(
+            "/tmp/_telemetry_export.py", _TELEMETRY_EXPORT_SRC.encode()
+        )
 
         stdout_parts: list[str] = []
         stderr_parts: list[str] = []
         exit_code: int | None = None
-        for event in sandbox.exec_stream(
-            "python3", "-c", _HARNESS, timeout_secs=120
-        ):
+        for event in sandbox.exec_stream("python3", "-c", _HARNESS, timeout_secs=120):
             if event.stdout:
                 stdout_parts.append(event.stdout)
             if event.stderr:

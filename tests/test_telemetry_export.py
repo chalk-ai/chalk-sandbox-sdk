@@ -16,10 +16,15 @@ def test_unix_socket_grpc_endpoint_pins_default_authority(monkeypatch):
     ``grpc.default_authority`` to a real hostname avoids the bad derivation.
     """
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "unix:///run/chalk-otel/otlp.sock")
+    monkeypatch.setenv(
+        "OTEL_EXPORTER_OTLP_ENDPOINT", "unix:///run/chalk-otel/otlp.sock"
+    )
     exporter = create_span_exporter()
     try:
-        assert ("grpc.default_authority", "localhost") in exporter._exporter._channel_options
+        assert (
+            "grpc.default_authority",
+            "localhost",
+        ) in exporter._exporter._channel_options
     finally:
         exporter.shutdown()
 
