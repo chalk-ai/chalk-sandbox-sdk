@@ -17,7 +17,7 @@ def _spec(scorer):
 
 def _graded(scorer, choice: str) -> dict:
     model = _spec(scorer).response_model
-    return scorers._dump(model(choice=choice, rationale="because"))
+    return scorers._dump(model(choice=choice, rationale="because", probabilities=[]))
 
 
 def test_deploys_a_judge_over_the_question_answer_and_reference() -> None:
@@ -51,7 +51,12 @@ def test_the_choice_and_reasoning_are_kept_as_metadata() -> None:
     assert graded["choice"] == "c"
     assert graded["rationale"] == "because"
     schema = json.loads(scorer._func.__chalk_scorer_response_schema__)
-    assert sorted(schema["properties"]) == ["choice", "rationale"]
+    assert sorted(schema["properties"]) == [
+        "choice",
+        "confidence",
+        "probabilities",
+        "rationale",
+    ]
 
 
 def test_the_scorer_is_declared_in_the_callers_module_not_the_judges_one() -> None:

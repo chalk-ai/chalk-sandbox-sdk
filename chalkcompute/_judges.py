@@ -18,8 +18,15 @@ _GRADER = (
     "follow the rubric exactly, and answer with the JSON object it asks for."
 )
 _REPLY = (
-    'Reply with a JSON object: {"choice": "<letter>", "rationale": "<one sentence>"}'
+    'Reply with a JSON object: {"choice": "<letter>", "rationale": "<one sentence>", '
+    '"probabilities": [{"letter": "<letter>", "probability": <probability>}, ...]}, '
+    "giving your probability for every letter in the rubric."
 )
+
+
+def _letter(value: str) -> str:
+    """A rubric letter as the model wrote it, give or take case and punctuation."""
+    return value.strip().strip(".").upper()
 
 
 def _declare(
@@ -35,11 +42,18 @@ def _declare(
     """One letter-graded judge. ``scores`` maps each letter to its score."""
     from pydantic import BaseModel, computed_field
 
+    class LetterProbability(BaseModel):
+        letter: str
+        probability: float
+
     class Graded(BaseModel):
-        """The rubric choice the model made, and why."""
+        """The rubric choice the model made, why, and how sure it was."""
 
         choice: str
         rationale: str
+        # A list of fixed-shape entries rather than a dict: strict structured
+        # outputs accept neither open-ended keys nor an optional field.
+        probabilities: list[LetterProbability]
 
         @computed_field  # type: ignore[prop-decorator]
         @property
@@ -47,7 +61,20 @@ def _declare(
             # Exactly one of the rubric's letters, give or take punctuation. A
             # reply that is anything else scores 0 rather than failing the row,
             # and a safety judge reads that as flagged rather than clean.
-            return scores.get(self.choice.strip().strip(".").upper(), 0.0)
+            return scores.get(_letter(self.choice), 0.0)
+
+        @computed_field  # type: ignore[prop-decorator]
+        @property
+        def confidence(self) -> float:
+            # The share of the rubric's probability on the verdict given, which
+            # is the paper's max-probability when the two agree and lower when
+            # the model picked a letter it rated as less likely.
+            usable: dict[str, float] = {}
+            for entry in self.probabilities:
+                if _letter(entry.letter) in scores and entry.probability >= 0:
+                    usable[_letter(entry.letter)] = entry.probability
+            total = sum(usable.values())
+            return usable.get(_letter(self.choice), 0.0) / total if total else 0.0
 
     def prompt(_response_model: Any, **columns: Any) -> str:
         sections = "\n\n".join(f"## {key}\n{value}" for key, value in columns.items())

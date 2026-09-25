@@ -28,10 +28,17 @@ def _spec(scorer):
     return scorer._func.__globals__["__chalk_spec__"]
 
 
-def _score(scorer, choice: str) -> float:
-    return scorers._dump(_spec(scorer).response_model(choice=choice, rationale="r"))[
-        "score"
+def _graded(scorer, choice: str, probabilities: dict | None = None) -> dict:
+    entries = [
+        {"letter": letter, "probability": probability}
+        for letter, probability in (probabilities or {}).items()
     ]
+    model = _spec(scorer).response_model
+    return scorers._dump(model(choice=choice, rationale="r", probabilities=entries))
+
+
+def _score(scorer, choice: str) -> float:
+    return _graded(scorer, choice)["score"]
 
 
 @pytest.mark.parametrize("judge", _JUDGES)
@@ -54,7 +61,12 @@ def test_every_judge_keeps_the_choice_and_reasoning_as_metadata(judge: str) -> N
     scorer = getattr(scorers, judge)(model="m")
 
     schema = json.loads(scorer._func.__chalk_scorer_response_schema__)
-    assert sorted(schema["properties"]) == ["choice", "rationale"]
+    assert sorted(schema["properties"]) == [
+        "choice",
+        "confidence",
+        "probabilities",
+        "rationale",
+    ]
 
 
 @pytest.mark.parametrize("judge", _JUDGES)
@@ -131,3 +143,34 @@ def test_inputs_and_name_can_be_renamed() -> None:
 
     assert scorer._explicit_name == "query-match"
     assert _spec(scorer).inputs == ("q", "got", "want")
+
+
+def _confidence(scorer, choice: str, probabilities: dict) -> float:
+    return _graded(scorer, choice, probabilities)["confidence"]
+
+
+@pytest.mark.parametrize("judge", _JUDGES)
+def test_a_judge_that_gives_no_probabilities_is_unsure(judge: str) -> None:
+    scorer = getattr(scorers, judge)(model="m")
+
+    assert _confidence(scorer, "Y", {}) == 0.0
+
+
+def test_confidence_is_the_share_on_the_verdict_given() -> None:
+    scorer = scorers.closed_qa(model="m")
+
+    assert _confidence(scorer, "Y", {"Y": 0.8, "N": 0.2}) == pytest.approx(0.8)
+    # Unnormalized and differently cased still reads as a distribution.
+    assert _confidence(scorer, "y.", {"y": 3, "n": 1}) == pytest.approx(0.75)
+    # Choosing the letter it rated less likely is itself a reason to escalate.
+    assert _confidence(scorer, "Y", {"Y": 0.3, "N": 0.7}) == pytest.approx(0.3)
+    # Letters outside the rubric are ignored rather than diluting the verdict.
+    assert _confidence(scorer, "Y", {"Y": 0.5, "Z": 0.5}) == pytest.approx(1.0)
+
+
+def test_the_prompt_asks_for_a_probability_per_letter() -> None:
+    prompt = _spec(scorers.closed_qa(model="m")).prompt_fn(
+        None, input="q", output="a", criteria="c"
+    )
+
+    assert '"probabilities"' in prompt
