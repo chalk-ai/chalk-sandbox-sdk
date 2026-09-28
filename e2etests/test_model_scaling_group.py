@@ -25,6 +25,7 @@ from chalkcompute import Image
 from chalkcompute._connect import grpc_target_from_url
 from chalkcompute._remote_call_client import RemoteCallClient
 
+from e2etests._ci_resources import build_scoped_name
 from e2etests.conftest import (
     CHALK_ENVIRONMENT_ID,
     _get_access_token,
@@ -32,10 +33,14 @@ from e2etests.conftest import (
 )
 from e2etests.model_fixtures.handler_decorated import AffineHandler
 
-SG_NAME = "ex-trivial-double-sg"
-VOLUME_SG_NAME = "ex-volume-triple-sg"
-HANDLER_SG_NAME = "ex-handler-affine-sg"
-COMBINED_SG_NAME = "ex-combined-affine-sg"
+MODEL_NAME = build_scoped_name("ex-trivial-double")
+VOLUME_MODEL_NAME = build_scoped_name("ex-volume-triple")
+HANDLER_MODEL_NAME = build_scoped_name("ex-handler-affine")
+COMBINED_MODEL_NAME = build_scoped_name("ex-combined-affine")
+SG_NAME = build_scoped_name("ex-trivial-double-sg")
+VOLUME_SG_NAME = build_scoped_name("ex-volume-triple-sg")
+HANDLER_SG_NAME = build_scoped_name("ex-handler-affine-sg")
+COMBINED_SG_NAME = build_scoped_name("ex-combined-affine-sg")
 READINESS_TIMEOUT = 180
 READINESS_POLL_INTERVAL = 5
 SCALING_GROUP_CPU = "500m"
@@ -128,14 +133,14 @@ class TestModelScalingGroup:
             )
         )
         version = client.register_model_version(
-            name="ex-trivial-double",
+            name=MODEL_NAME,
             input_schema={"x": pa.float64()},
             output_schema={"y": pa.float64()},
             model_image=image,
         )
         client.deploy_model_version_to_scaling_group(
             name=SG_NAME,
-            model_name="ex-trivial-double",
+            model_name=MODEL_NAME,
             model_version=version.model_version,
             handler="handler.handler",
             scaling=AutoScalingSpec(
@@ -216,7 +221,7 @@ class TestModelWithVolume:
             config_path = Path(config_dir) / "config.json"
             config_path.write_text(json.dumps({"factor": 3.0}))
             version = client.register_model_version(
-                name="ex-volume-triple",
+                name=VOLUME_MODEL_NAME,
                 input_schema={"x": pa.float64()},
                 output_schema={"y": pa.float64()},
                 model_image=image,
@@ -224,7 +229,7 @@ class TestModelWithVolume:
             )
         client.deploy_model_version_to_scaling_group(
             name=VOLUME_SG_NAME,
-            model_name="ex-volume-triple",
+            model_name=VOLUME_MODEL_NAME,
             model_version=version.model_version,
             handler="handler.handler",
             scaling=AutoScalingSpec(
@@ -280,14 +285,14 @@ class TestModelHandlerDecorator:
             with open(weights_path, "w") as weights_file:
                 json.dump({"factor": 5.0, "bias": 2.0}, weights_file)
             version = client.register_model_version(
-                name="ex-handler-affine",
+                name=HANDLER_MODEL_NAME,
                 model=AffineHandler(files=[weights_path]),
                 input_schema={"x": pa.float64()},
                 output_schema={"y": pa.float64()},
             )
         client.deploy_model_version_to_scaling_group(
             name=HANDLER_SG_NAME,
-            model_name="ex-handler-affine",
+            model_name=HANDLER_MODEL_NAME,
             model_version=version.model_version,
             scaling=AutoScalingSpec(
                 min_replicas=1,
@@ -368,7 +373,7 @@ class TestModelImageAndModelCombined:
             with open(weights_path, "w") as weights_file:
                 json.dump({"factor": 2.0, "bias": 1.0}, weights_file)
             version = client.register_model_version(
-                name="ex-combined-affine",
+                name=COMBINED_MODEL_NAME,
                 input_schema={"x": pa.float64()},
                 output_schema={"y": pa.float64()},
                 model_image=image,
@@ -376,7 +381,7 @@ class TestModelImageAndModelCombined:
             )
         client.deploy_model_version_to_scaling_group(
             name=COMBINED_SG_NAME,
-            model_name="ex-combined-affine",
+            model_name=COMBINED_MODEL_NAME,
             model_version=version.model_version,
             handler="handler_combined.handler",
             scaling=AutoScalingSpec(
