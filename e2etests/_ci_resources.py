@@ -13,7 +13,7 @@ import os
 import re
 from datetime import datetime, timedelta
 
-# Only clean up names with a CI-generated suffix, 
+# Only clean up names with a CI-generated suffix,
 # like: ex-<resource-name>-<8 or 12 hexadecimal characters>
 SCOPED_NAME_RE = re.compile(r"^ex-[a-z0-9-]+-(?:[0-9a-f]{8}|[0-9a-f]{12})$")
 
