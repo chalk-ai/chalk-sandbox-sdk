@@ -30,6 +30,8 @@ FIXED_E2E_NAMES = [
     "ex-function-sandbox",
     "ex-trivial-double-sg",
     "ex-volume-triple-sg",
+    "ex-handler-affine-sg",
+    "ex-combined-affine-sg",
     # Unsuffixed generator names, i.e. what a local run outside CI creates.
     "ex-count-up",
     "ex-async-count-up",
@@ -47,6 +49,8 @@ def test_sweep_ignores_fixed_names(name: str) -> None:
         "ex-count-up-01a011e8",
         "ex-async-count-up-01a011e8",
         "ex-add-deadbeef",
+        "ex-count-up-44a136e21fc4",
+        "ex-combined-affine-sg-44a136e21fc4",
     ],
 )
 def test_sweep_matches_build_scoped_names(name: str) -> None:
@@ -57,8 +61,20 @@ def test_build_scoped_name_is_sweepable(monkeypatch: pytest.MonkeyPatch) -> None
     """Whatever ``build_scoped_name`` emits in CI must be reapable."""
     monkeypatch.setenv("BUILDKITE_JOB_ID", "01a01268-66f7-41d5-9ab4-7aefbc944c06")
     scoped = build_scoped_name("ex-count-up")
-    assert scoped == "ex-count-up-01a01268"
+    assert scoped == "ex-count-up-44a136e21fc4"
     assert SCOPED_NAME_RE.match(scoped) is not None
+
+
+def test_build_scoped_name_isolates_jobs_with_the_same_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrent scheduled and regular jobs can share the first eight digits."""
+    monkeypatch.setenv("BUILDKITE_JOB_ID", "01a0e8f5-a185-4d24-ad06-aec87742a894")
+    scheduled = build_scoped_name("ex-combined-affine-sg")
+    assert build_scoped_name("ex-combined-affine-sg") == scheduled
+
+    monkeypatch.setenv("BUILDKITE_JOB_ID", "01a0e8f5-c00e-402f-8c3c-d53e3b58444f")
+    assert build_scoped_name("ex-combined-affine-sg") != scheduled
 
 
 def test_build_scoped_name_prefers_job_over_build(
@@ -70,7 +86,7 @@ def test_build_scoped_name_prefers_job_over_build(
     """
     monkeypatch.setenv("BUILDKITE_BUILD_ID", "01a01253-4bb4-4ec7-9680-cfe878d36cfd")
     monkeypatch.setenv("BUILDKITE_JOB_ID", "01a01268-66f7-41d5-9ab4-7aefbc944c06")
-    assert build_scoped_name("ex-count-up") == "ex-count-up-01a01268"
+    assert build_scoped_name("ex-count-up") == "ex-count-up-44a136e21fc4"
 
 
 def test_build_scoped_name_falls_back_to_build_id(
@@ -80,7 +96,7 @@ def test_build_scoped_name_falls_back_to_build_id(
     monkeypatch.delenv("BUILDKITE_JOB_ID", raising=False)
     monkeypatch.setenv("BUILDKITE_BUILD_ID", "01a011e8-9f3c-4c2a-8d5e-6b1f0a2c3d4e")
     scoped = build_scoped_name("ex-count-up")
-    assert scoped == "ex-count-up-01a011e8"
+    assert scoped == "ex-count-up-58a9ff37128f"
     assert SCOPED_NAME_RE.match(scoped) is not None
 
 

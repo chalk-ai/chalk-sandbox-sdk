@@ -8,15 +8,14 @@ lives in ``conftest.py``.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from datetime import datetime, timedelta
 
-# Names built by ``build_scoped_name`` end in the first eight hex characters of a
-# Buildkite job id.  Fixed example names (``ex-add``, ``ex-slow-add``, ...) and
-# local runs -- which have no job id, so no suffix -- deliberately do not match,
-# so the sweep can only ever delete resources CI created.
-SCOPED_NAME_RE = re.compile(r"^ex-[a-z0-9-]+-[0-9a-f]{8}$")
+# Only clean up names with a CI-generated suffix, 
+# like: ex-<resource-name>-<8 or 12 hexadecimal characters>
+SCOPED_NAME_RE = re.compile(r"^ex-[a-z0-9-]+-(?:[0-9a-f]{8}|[0-9a-f]{12})$")
 
 # The longest integration-test step allows 30 minutes and two automatic retries,
 # so nothing older than this can belong to a build that is still running.
@@ -42,7 +41,9 @@ def build_scoped_name(base: str) -> str:
     ).replace("-", "")
     if not run_id:
         return base
-    return f"{base}-{run_id[:8]}"
+    # Hash the full run ID and take the first 12 characters.
+    suffix = hashlib.sha256(run_id.encode()).hexdigest()[:12]
+    return f"{base}-{suffix}"
 
 
 def parse_rfc3339(value: str | None) -> datetime | None:
