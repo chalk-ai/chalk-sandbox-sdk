@@ -1,0 +1,3 @@
+- Add `chalkcompute.run_workflow` and `chalkcompute.deploy_workflow_worker`: `uv run` a file containing `chalk.workflows` workflows and it bundles itself into a scale-to-zero scaling group that polls its own task queue, starts the workflow there, and waits for the result, with the environment's workflow orchestrator waking the group while workflows are open
+- Add `temporal_task_queue=` to `ScalingGroup`: the group scales from zero while its orchestrator has open workflows on that queue
+- Fix `ScalingGroup.delete()` failing with `ref_name must not be empty` for groups created with uploaded local files

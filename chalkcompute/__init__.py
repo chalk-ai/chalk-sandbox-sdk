@@ -175,6 +175,13 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "ReadinessProbe": ("chalkcompute._scaling_group", "ReadinessProbe"),
     "CronScalingTrigger": ("chalkcompute._scaling_group", "CronScalingTrigger"),
     "CronScalingWindow": ("chalkcompute._scaling_group", "CronScalingWindow"),
+    # _workflow_worker.py
+    "WorkflowWorker": ("chalkcompute._workflow_worker", "WorkflowWorker"),
+    "deploy_workflow_worker": (
+        "chalkcompute._workflow_worker",
+        "deploy_workflow_worker",
+    ),
+    "run_workflow": ("chalkcompute._workflow_worker", "run_workflow"),
     # _volume.py
     "FileInfo": ("chalkcompute._volume", "FileInfo"),
     "ForkInfo": ("chalkcompute._volume", "ForkInfo"),

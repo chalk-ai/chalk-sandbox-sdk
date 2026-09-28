@@ -100,6 +100,11 @@ from chalkcompute._sandbox import SandboxTerminatedError as SandboxTerminatedErr
 from chalkcompute._sandbox_fs import FilesystemError as FilesystemError
 from chalkcompute._sandbox_fs import SandboxFileSystemError as SandboxFileSystemError
 from chalkcompute._scaling_group import CronScalingTrigger as CronScalingTrigger
+from chalkcompute._workflow_worker import WorkflowWorker as WorkflowWorker
+from chalkcompute._workflow_worker import (
+    deploy_workflow_worker as deploy_workflow_worker,
+)
+from chalkcompute._workflow_worker import run_workflow as run_workflow
 from chalkcompute._scaling_group import CronScalingWindow as CronScalingWindow
 from chalkcompute._scaling_group import ReadinessProbe as ReadinessProbe
 from chalkcompute._scaling_group import ScalingGroup as ScalingGroup
@@ -272,6 +277,9 @@ __all__ = [
     "ReadinessProbe",
     "CronScalingTrigger",
     "CronScalingWindow",
+    "WorkflowWorker",
+    "deploy_workflow_worker",
+    "run_workflow",
     "FileInfo",
     "ForkInfo",
     "Volume",
