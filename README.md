@@ -531,6 +531,28 @@ same module imports that module, so give sibling functions an image with
 `pydantic` as well. A judge is generated
 at import time, so it cannot be deployed in strip mode.
 
+`cc.scorers.jev` is a judge that escalates when unsure, the cascade from
+[JEV-as-a-Judge](https://arxiv.org/abs/2609.26550). The cheap model picks a
+label and gives a probability for every label; a row whose probability on its
+choice is below `threshold` is graded again by `fallback_model`, whose grade
+stands.
+
+```python
+judge = cc.scorers.jev(
+    labels={"Y": 1.0, "N": 0.0},
+    rubric="Y. The answer meets the criteria.\nN. It does not.",
+    model="gpt-4o-mini",
+    fallback_model="gpt-4o",
+    threshold=0.9,
+    inputs=("input", "output", "criteria"),
+)
+```
+
+Metadata records `confidence`, `escalated`, `judge_model`, and
+`primary_confidence`, so a run shows its own escalation rate. Self-reported
+confidence is not calibrated on every task, so choose `threshold` on a small
+labeled sample. `jev` reaches models the same way `llm_judge` does.
+
 ## Deployment revisions and rollback
 
 Scaling groups and functions have stable parent IDs with immutable deployment
