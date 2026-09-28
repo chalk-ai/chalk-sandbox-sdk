@@ -10,12 +10,15 @@ import os
 import chalkcompute
 
 FUNCTION_NAME = os.environ.get("CHALK_E2E_FUNCTION_NAME", "ex-function-sandbox")
+FUNCTION_ENV = {"CHALK_E2E_SANDBOX_NAME": FUNCTION_NAME}
+if sandbox_image := os.environ.get("CHALK_SANDBOX_E2E_IMAGE"):
+    FUNCTION_ENV["CHALK_SANDBOX_E2E_IMAGE"] = sandbox_image
 
 
 @chalkcompute.function(
     name=FUNCTION_NAME,
     image=chalkcompute.Image.debian_slim("3.11").pip_install(["chalkcompute>=2.9.4"]),
-    env={"CHALK_E2E_SANDBOX_NAME": FUNCTION_NAME},
+    env=FUNCTION_ENV,
 )
 def create_sandbox() -> str:
     """Create, execute in, and terminate a sandbox with the pod's credentials."""
