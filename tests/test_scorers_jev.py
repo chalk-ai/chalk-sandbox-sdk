@@ -97,6 +97,23 @@ def test_the_threshold_is_the_lowest_confidence_accepted(replies) -> None:
         _reply("N", Y=0.7, N=0.3),
         # A choice that is not a label.
         _reply("Maybe", Y=0.5, N=0.5),
+        # A probability for only the choice, which would normalize to 1.
+        _reply("N", N=0.1),
+        # A label outside the rubric, a negative, a NaN, or nothing but zeros.
+        _reply("N", Y=0.05, N=0.95, Z=0.0),
+        _reply("N", Y=-0.05, N=0.95),
+        _reply("N", Y=float("nan"), N=0.95),
+        _reply("N", Y=0.0, N=0.0),
+        # The same label twice.
+        {
+            "choice": "N",
+            "rationale": "r",
+            "probabilities": [
+                {"label": "N", "probability": 0.95},
+                {"label": "n", "probability": 0.95},
+                {"label": "Y", "probability": 0.05},
+            ],
+        },
     ],
 )
 def test_a_reply_that_is_not_sure_of_its_choice_escalates(replies, reply) -> None:
@@ -110,16 +127,13 @@ def test_a_reply_that_is_not_sure_of_its_choice_escalates(replies, reply) -> Non
 
 def test_confidence_is_the_normalized_share_on_the_choice(replies) -> None:
     _, by_model = replies
-    # Unnormalized, differently cased, with a label outside the rubric and a
-    # negative entry, both ignored.
+    # Unnormalized and differently cased still reads as a distribution.
     by_model["cheap"] = {
         "choice": "n.",
         "rationale": "r",
         "probabilities": [
             {"label": "n", "probability": 3},
-            {"label": "y", "probability": 1},
-            {"label": "Z", "probability": 5},
-            {"label": "Y", "probability": -1},
+            {"label": "y.", "probability": 1},
         ],
     }
 
@@ -132,7 +146,7 @@ def test_confidence_is_the_normalized_share_on_the_choice(replies) -> None:
 
 def test_labels_may_score_anywhere_in_the_range(replies) -> None:
     _, by_model = replies
-    by_model["cheap"] = _reply("B", A=0.1, B=0.9)
+    by_model["cheap"] = _reply("B", A=0.05, B=0.9, C=0.05)
 
     result = _jev(labels={"A": 0.0, "B": 0.5, "C": 1.0})._func(output="x")
 

@@ -653,7 +653,38 @@ def _jev_reply_model() -> type:
         # accept neither open-ended keys nor an optional field.
         probabilities: list[LabelProbability]
 
+    # The annotations are strings here, and pydantic 1 resolves them against
+    # the module rather than this function, so it has to be told the name.
+    if not hasattr(JevReply, "model_rebuild"):
+        JevReply.update_forward_refs(LabelProbability=LabelProbability)
     return JevReply
+
+
+def _jev_distribution(
+    probabilities: Sequence[Any], scores: Mapping[str, float]
+) -> dict[str, float]:
+    """The reply's probabilities, normalized, or nothing if they are not usable.
+
+    Usable means one finite, non-negative probability for every label and
+    nothing else. Anything short of that reads as unsure, since normalizing a
+    partial answer would inflate whatever the model did say.
+    """
+    given: dict[str, float] = {}
+    for entry in probabilities:
+        label = _label(entry.label)
+        probability = entry.probability
+        if (
+            label not in scores
+            or label in given
+            or not math.isfinite(probability)
+            or probability < 0
+        ):
+            return {}
+        given[label] = probability
+    total = sum(given.values())
+    if given.keys() != scores.keys() or total <= 0:
+        return {}
+    return {label: p / total for label, p in given.items()}
 
 
 def _jev_grade(
@@ -661,17 +692,7 @@ def _jev_grade(
 ) -> dict[str, Any]:
     """One model's grade: its score, reasoning, and confidence in its choice."""
     reply = _complete(spec, messages)
-    usable: dict[str, float] = {}
-    for entry in reply.probabilities:
-        label = _label(entry.label)
-        if (
-            label in scores
-            and math.isfinite(entry.probability)
-            and entry.probability >= 0
-        ):
-            usable[label] = entry.probability
-    total = sum(usable.values())
-    distribution = {label: p / total for label, p in usable.items()} if total else {}
+    distribution = _jev_distribution(reply.probabilities, scores)
     choice = _label(reply.choice)
     return {
         # A choice outside the labels scores 0 and, having no probability,
