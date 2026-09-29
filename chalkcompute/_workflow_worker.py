@@ -6,15 +6,21 @@ own, starts the workflow on that queue, and waits for its result. The environmen
 workflow orchestrator drives the run: the dataplane scales the group up while any
 workflow is open on the queue and back to zero once none are, so a workflow that
 sleeps, retries, or outlives the script still finishes.
+
+A task declared with ``@task(image=...)`` runs on a worker of its own, one per distinct
+image, which polls its own queue and scales the same way: the workflow calls the task as
+a child workflow on that queue, so the image's group is up only while such a call is open.
 """
 
 from __future__ import annotations
 
+import hashlib
 import inspect
+import json
 import os
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Mapping
 
 from chalkcompute._image import Image
@@ -33,6 +39,13 @@ _MAX_WORKER_NAME_LENGTH = 40
 
 _SOURCE_DIR = "/app"
 
+# Where the worker running the workflows sends each task that has an image of its own;
+# read by `chalk.workflows.worker`.
+_TASK_QUEUES_ENV_VAR = "CHALK_WORKFLOW_TASK_QUEUES"
+
+# Hex digits of the image hash in a task worker's name.
+_IMAGE_KEY_LENGTH = 8
+
 # PEP 723 inline script metadata, e.g. the `# /// script` block `uv run` reads.
 _SCRIPT_METADATA_RE = re.compile(
     r"(?m)^# /// (?P<type>[a-zA-Z0-9-]+)$\s(?P<content>(^#(| .*)$\s)+)^# ///$"
@@ -45,6 +58,8 @@ class WorkflowWorker:
 
     scaling_group: ScalingGroup
     task_queue: str
+    task_workers: Mapping[str, ScalingGroup] = field(default_factory=dict)
+    """The group serving each task that has an image of its own, by task name."""
 
     def trigger(
         self,
@@ -138,6 +153,60 @@ def _source_path_for(workflow: Any) -> str:
     return os.path.abspath(inspect.getfile(inspect.unwrap(fn)))
 
 
+def _task_images(source: str) -> dict[str, Image]:
+    """The tasks defined in ``source`` that declare an image, by task name.
+
+    The running script's tasks are already registered; any other file is imported,
+    as its worker will import it, so that its decorators run.
+    """
+    from chalk.workflows import TASK_REGISTRY, WORKFLOW_REGISTRY
+    from chalk.workflows.worker import load_workflow_source
+
+    def defined_here(definition: Any) -> bool:
+        return os.path.abspath(definition.filename) == source
+
+    if not any(
+        defined_here(d) for d in (*WORKFLOW_REGISTRY.values(), *TASK_REGISTRY.values())
+    ):
+        load_workflow_source(source)
+    images: dict[str, Image] = {}
+    for definition in TASK_REGISTRY.values():
+        image = getattr(definition, "image", None)
+        if image is None or not defined_here(definition):
+            continue
+        if isinstance(image, str):
+            image = Image.base(image)
+        if not isinstance(image, Image):
+            raise TypeError(
+                f"@task {definition.name!r}: image must be a chalkcompute.Image or an image reference, "
+                f"got {type(image).__name__}"
+            )
+        images[definition.name] = image
+    return images
+
+
+def image_key(image: Image) -> str:
+    """A short hash identifying ``image``: tasks with equal images share a worker, and
+    a redeploy of the same image reuses its worker's name."""
+    identity = {
+        # Canonical JSON rather than proto bytes, which leave map (env) order unspecified.
+        "spec": json.loads(image._to_build_proto().to_json()),
+        "local_files": sorted(
+            [f.src, f.dest, f.mode, f.mount_root] for f in image.lazy_local_files
+        ),
+        "volumes": sorted(
+            [m.name, m.mount_path, m.version_id] for m in image._volume_mounts
+        ),
+    }
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True, default=str).encode())
+    return digest.hexdigest()[:_IMAGE_KEY_LENGTH]
+
+
+def task_worker_name(worker_name: str, key: str) -> str:
+    prefix = worker_name[: _MAX_WORKER_NAME_LENGTH - len(key) - 1]
+    return sanitize_dns_label(f"{prefix}-{key}", max_length=_MAX_WORKER_NAME_LENGTH)
+
+
 def _default_chalk_client() -> Any:
     from chalk.client import ChalkClient
 
@@ -174,6 +243,11 @@ def deploy_workflow_worker(
     image
         Base image for the worker. The source file is added to it, along with the
         packages from ``worker_requirements`` when no image is given.
+
+    Each distinct ``@task(image=...)`` image in ``source`` gets a group of its own,
+    ``<name>-<image hash>``, deployed with the same resources, env, and secrets. Its
+    image is the task's, plus the packages from ``worker_requirements`` and the
+    source file, since that worker imports the file too.
     """
     if source is None:
         source = getattr(sys.modules.get("__main__"), "__file__", None)
@@ -187,29 +261,79 @@ def deploy_workflow_worker(
     task_queue = f"{_TASK_QUEUE_PREFIX}{worker_name}"
     remote_path = f"{_SOURCE_DIR}/{os.path.basename(source)}"
 
+    requirements = worker_requirements(text)
     if image is None:
         python = f"{sys.version_info.major}.{sys.version_info.minor}"
-        image = Image.debian_slim(python).pip_install(worker_requirements(text))
+        image = Image.debian_slim(python).pip_install(requirements)
     image = image.add_local_file(source, remote_path)
 
-    scaling_group = ScalingGroup(
-        image=image,
-        name=worker_name,
-        cpu=cpu,
-        memory=memory,
-        env=env,
-        secrets=secrets,
-        # The worker polls its task queue rather than serving requests; the orchestrator address and the
-        # task queue arrive as CHALK_WORKFLOW_ORCHESTRATOR_* env vars set by the platform.
-        entrypoint=["python", "-m", "chalk.workflows.worker", remote_path],
-        port=None,
-        min_replicas=0,
-        max_replicas=max_replicas,
-        shutdown_delay_seconds=shutdown_delay_seconds,
-        workflow_task_queue=task_queue,
-        chalk_client=chalk_client,
-    ).deploy()
-    return WorkflowWorker(scaling_group=scaling_group, task_queue=task_queue)
+    def deploy_group(
+        group_name: str,
+        group_image: Image,
+        group_queue: str,
+        group_env: Mapping[str, str | Secret] | None,
+        worker_args: list[str],
+    ) -> ScalingGroup:
+        return ScalingGroup(
+            image=group_image,
+            name=group_name,
+            cpu=cpu,
+            memory=memory,
+            env=group_env,
+            secrets=secrets,
+            # The worker polls its task queue rather than serving requests; the orchestrator address and the
+            # task queue arrive as CHALK_WORKFLOW_ORCHESTRATOR_* env vars set by the platform.
+            entrypoint=[
+                "python",
+                "-m",
+                "chalk.workflows.worker",
+                remote_path,
+                *worker_args,
+            ],
+            port=None,
+            min_replicas=0,
+            max_replicas=max_replicas,
+            shutdown_delay_seconds=shutdown_delay_seconds,
+            workflow_task_queue=group_queue,
+            chalk_client=chalk_client,
+        ).deploy()
+
+    tasks_by_image: dict[str, list[str]] = {}
+    images_by_key: dict[str, Image] = {}
+    for task_name, task_image in _task_images(source).items():
+        key = image_key(task_image)
+        tasks_by_image.setdefault(key, []).append(task_name)
+        images_by_key[key] = task_image
+
+    # Task workers first, so the workflows never route a task to a queue nothing will serve.
+    task_workers: dict[str, ScalingGroup] = {}
+    task_queues: dict[str, str] = {}
+    for key, task_names in tasks_by_image.items():
+        group_name = task_worker_name(worker_name, key)
+        group_queue = f"{_TASK_QUEUE_PREFIX}{group_name}"
+        group = deploy_group(
+            group_name,
+            images_by_key[key]
+            .pip_install(requirements)
+            .add_local_file(source, remote_path),
+            group_queue,
+            env,
+            ["--tasks", ",".join(task_names)],
+        )
+        for task_name in task_names:
+            task_workers[task_name] = group
+            task_queues[task_name] = group_queue
+
+    main_env = env
+    if task_queues:
+        main_env = {
+            **(env or {}),
+            _TASK_QUEUES_ENV_VAR: json.dumps(task_queues, sort_keys=True),
+        }
+    scaling_group = deploy_group(worker_name, image, task_queue, main_env, [])
+    return WorkflowWorker(
+        scaling_group=scaling_group, task_queue=task_queue, task_workers=task_workers
+    )
 
 
 def run_workflow(

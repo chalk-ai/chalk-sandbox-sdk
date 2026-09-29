@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import textwrap
 from pathlib import Path
@@ -14,10 +15,13 @@ from chalkcompute._scaling_group import (
     CronScalingWindow,
     ScalingGroup,
 )
+from chalkcompute._image import Image
 from chalkcompute._workflow_worker import (
     default_worker_name,
     deploy_workflow_worker,
+    image_key,
     script_dependencies,
+    task_worker_name,
     worker_requirements,
 )
 from tests.test_deployment_lifecycle import _ScalingLifecycleClient
@@ -184,6 +188,126 @@ def test_deploy_workflow_worker_builds_a_task_queue_triggered_group(
     assert {(f.src, f.dest) for f in image.lazy_local_files} == {
         (str(source), "/app/nightly_scoring.py")
     }
+
+
+_IMAGE_TASKS_SCRIPT = _SCRIPT + textwrap.dedent(
+    """\
+    from chalk.workflows import task, workflow
+
+    heavy = cc.Image.debian_slim("3.12").pip_install(["torch"])
+
+    @task
+    def plain(x: int) -> int:
+        return x
+
+    @task(image=heavy)
+    def embed(x: int) -> int:
+        return x
+
+    @task(image=cc.Image.debian_slim("3.12").pip_install(["torch"]))
+    def rerank(x: int) -> int:
+        return x
+
+    @task(image="ghcr.io/acme/tools:1")
+    def tool(x: int) -> int:
+        return x
+
+    @workflow
+    async def pipeline(x: int) -> int:
+        return await tool(await rerank(await embed(await plain(x))))
+    """
+)
+
+
+def test_deploy_workflow_worker_gives_each_task_image_its_own_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "image_tasks.py"
+    source.write_text(_IMAGE_TASKS_SCRIPT)
+    _RecordingScalingGroup.instances.clear()
+    monkeypatch.setattr(workflow_worker_mod, "ScalingGroup", _RecordingScalingGroup)
+
+    worker = deploy_workflow_worker(str(source), env={"LOG_LEVEL": "debug"})
+
+    heavy_key = image_key(Image.debian_slim("3.12").pip_install(["torch"]))
+    tool_key = image_key(Image.base("ghcr.io/acme/tools:1"))
+    heavy_group, tool_group, main_group = _RecordingScalingGroup.instances
+    # Equal images share a group, whether or not they are the same object.
+    assert heavy_group.kwargs["name"] == f"wf-image-tasks-{heavy_key}"
+    assert heavy_group.kwargs["entrypoint"][-2:] == ["--tasks", "embed,rerank"]
+    assert tool_group.kwargs["name"] == f"wf-image-tasks-{tool_key}"
+    assert tool_group.kwargs["entrypoint"][-2:] == ["--tasks", "tool"]
+    assert worker.task_workers == {
+        "embed": heavy_group,
+        "rerank": heavy_group,
+        "tool": tool_group,
+    }
+
+    for group in (heavy_group, tool_group):
+        kwargs = group.kwargs
+        assert (
+            kwargs["workflow_task_queue"] == f"chalkcompute-workflows.{kwargs['name']}"
+        )
+        assert kwargs["min_replicas"] == 0
+        assert kwargs["env"] == {"LOG_LEVEL": "debug"}
+        assert kwargs["entrypoint"][:4] == [
+            "python",
+            "-m",
+            "chalk.workflows.worker",
+            "/app/image_tasks.py",
+        ]
+        # The task worker imports the file, so it gets the script's packages and the file itself.
+        assert {(f.src, f.dest) for f in kwargs["image"].lazy_local_files} == {
+            (str(source), "/app/image_tasks.py")
+        }
+    assert tool_group.kwargs["image"]._base_image == "ghcr.io/acme/tools:1"
+    assert heavy_group.kwargs["image"]._base_image == "python:3.12-slim-trixie"
+
+    assert main_group.kwargs["name"] == "wf-image-tasks"
+    assert main_group.kwargs["entrypoint"] == [
+        "python",
+        "-m",
+        "chalk.workflows.worker",
+        "/app/image_tasks.py",
+    ]
+    main_env = main_group.kwargs["env"]
+    assert main_env["LOG_LEVEL"] == "debug"
+    assert json.loads(main_env["CHALK_WORKFLOW_TASK_QUEUES"]) == {
+        "embed": f"chalkcompute-workflows.wf-image-tasks-{heavy_key}",
+        "rerank": f"chalkcompute-workflows.wf-image-tasks-{heavy_key}",
+        "tool": f"chalkcompute-workflows.wf-image-tasks-{tool_key}",
+    }
+
+
+def test_deploy_workflow_worker_without_task_images_sets_no_routes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "no_images.py"
+    source.write_text(_SCRIPT)
+    _RecordingScalingGroup.instances.clear()
+    monkeypatch.setattr(workflow_worker_mod, "ScalingGroup", _RecordingScalingGroup)
+
+    worker = deploy_workflow_worker(str(source))
+
+    (group,) = _RecordingScalingGroup.instances
+    assert group.kwargs["env"] is None
+    assert worker.task_workers == {}
+
+
+def test_image_key_tracks_the_whole_image() -> None:
+    base = Image.debian_slim("3.12")
+    assert image_key(base.pip_install(["numpy"])) == image_key(
+        Image.debian_slim("3.12").pip_install(["numpy"])
+    )
+    assert image_key(base) != image_key(base.pip_install(["numpy"]))
+    assert image_key(base) != image_key(base.add_local_file(__file__, "/app/x.py"))
+
+
+def test_task_worker_name_keeps_the_image_key() -> None:
+    name = task_worker_name("wf-" + "a" * 37, "0123abcd")
+    assert len(name) <= 40
+    assert name.endswith("-0123abcd")
+    assert task_worker_name("wf-demo", "0123abcd") == "wf-demo-0123abcd"
 
 
 class _RevisionHistoryClient(_ScalingLifecycleClient):
