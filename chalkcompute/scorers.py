@@ -713,7 +713,7 @@ def _jev_grade(
 
 
 def sql(name: str, expression: str, /) -> SqlExpression:
-    """Score rows with a ChalkSQL expression you write yourself.
+    """Score rows with a Chalk SQL expression you write yourself.
 
     ``expression`` is a select item over the evaluation's own columns: every
     dataset column by name, plus ``output``, the task's result for the row. It
