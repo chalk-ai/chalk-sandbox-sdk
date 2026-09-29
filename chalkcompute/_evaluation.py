@@ -808,7 +808,16 @@ class EvaluationClient:
         )
         if response.evaluation_run is None:
             raise EvaluationError("RescoreEvaluationRun returned no run")
-        return _evaluation_run_from_proto(response.evaluation_run, self)
+        run = _evaluation_run_from_proto(response.evaluation_run, self)
+        # A server that predates evaluation_id ignores it and scores with the
+        # run's own evaluation's scorers, which is not what was asked for.
+        if evaluation_id is not None and run.evaluation_id != evaluation_id:
+            raise EvaluationError(
+                f"RescoreEvaluationRun recorded run {run.id!r} under evaluation "
+                f"{run.evaluation_id!r} rather than {evaluation_id!r}; the server "
+                "does not support rescoring into another evaluation"
+            )
+        return run
 
     @_instrumented("chalkcompute.evaluation_run.get")
     def get_run(self, evaluation_run_id: str) -> EvaluationRun:

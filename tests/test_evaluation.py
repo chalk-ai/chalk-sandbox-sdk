@@ -779,3 +779,20 @@ def test_rescore_rejects_conflicting_arguments_without_rpc() -> None:
     with pytest.raises(ValueError, match="name applies only"):
         run.rescore(name="renamed")
     assert len(connect.calls) == 1
+
+
+def test_rescore_raises_when_the_server_ignores_the_target_evaluation() -> None:
+    connect = _FakeConnectClient(
+        {
+            "rescore_evaluation_run": [
+                _message(
+                    evaluation_pb.RescoreEvaluationRunResponse,
+                    {"evaluationRun": _run_dict("EVALUATION_RUN_STATUS_PENDING")},
+                )
+            ],
+        }
+    )
+    client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]
+
+    with pytest.raises(EvaluationError, match="does not support rescoring"):
+        client.rescore("run-0", evaluation_id="eval-2")
