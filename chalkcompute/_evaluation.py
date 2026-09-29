@@ -216,7 +216,7 @@ _MAX_SQL_EXPRESSION_LENGTH = 4000
 
 @dataclass(frozen=True)
 class SqlExpression:
-    """A scorer whose score is a ChalkSQL expression, evaluated in the run's query.
+    """A scorer whose score is a Chalk SQL expression, evaluated in the run's query.
 
     The expression is a select item over the evaluation's own columns: every
     dataset column by name, plus ``output``, the task's result for the row. It
@@ -265,10 +265,10 @@ class EvaluationScorer:
     """Immutable built-in scorer identifier, when built-in."""
 
     sql_name: str | None = None
-    """Scorer name, when the scorer is a ChalkSQL expression."""
+    """Scorer name, when the scorer is a Chalk SQL expression."""
 
     sql_expression: str | None = None
-    """The ChalkSQL expression, when the scorer is one."""
+    """The Chalk SQL expression, when the scorer is one."""
 
 
 class EvaluationRunStatus(str, Enum):
