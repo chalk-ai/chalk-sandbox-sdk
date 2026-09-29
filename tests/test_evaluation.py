@@ -627,3 +627,155 @@ def test_metadata_must_be_json_serializable() -> None:
             scorers=[_remote_function("fn-score-v2", name="score")],
             metadata={"bad": object()},
         )
+
+
+def test_rescore_with_new_scorers_creates_a_sibling_evaluation() -> None:
+    rescored_evaluation = {
+        **_evaluation_dict(),
+        "id": "eval-2",
+        "name": "Support quality (rescored)",
+        "scorers": [
+            {"id": "scorer-2", "spec": {"function": {"functionVersionId": "fn-new-v1"}}}
+        ],
+    }
+    connect = _FakeConnectClient(
+        {
+            "get_evaluation_run": [
+                _message(
+                    evaluation_pb.GetEvaluationRunResponse,
+                    {
+                        "evaluationRun": _run_dict(
+                            "EVALUATION_RUN_STATUS_SUCCEEDED", result=True
+                        )
+                    },
+                )
+            ],
+            "get_evaluation": [
+                _message(
+                    evaluation_pb.GetEvaluationResponse,
+                    {"evaluation": _evaluation_dict()},
+                )
+            ],
+            "create_evaluation": [
+                _message(
+                    evaluation_pb.CreateEvaluationResponse,
+                    {"evaluation": rescored_evaluation},
+                )
+            ],
+            "rescore_evaluation_run": [
+                _message(
+                    evaluation_pb.RescoreEvaluationRunResponse,
+                    {
+                        "evaluationRun": {
+                            **_run_dict("EVALUATION_RUN_STATUS_PENDING"),
+                            "id": "run-2",
+                            "evaluationId": "eval-2",
+                        }
+                    },
+                )
+            ],
+        }
+    )
+    client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]
+    run = client.get_run("run-1")
+
+    rescored = run.rescore(
+        scorers=[_remote_function("fn-new-v1", name="new_score")],
+        metadata={"why": "new scorer"},
+    )
+
+    assert rescored.id == "run-2"
+    assert rescored.evaluation_id == "eval-2"
+    assert [name for name, _ in connect.calls] == [
+        "get_evaluation_run",
+        "get_evaluation",
+        "create_evaluation",
+        "rescore_evaluation_run",
+    ]
+    create_request = connect.calls[2][1]
+    # Same dataset revision, task and suite; only the scorers change.
+    assert create_request.name == "Support quality (rescored)"
+    assert create_request.dataset_id == "dataset-1"
+    assert create_request.dataset_revision_id == "revision-1"
+    assert create_request.task_function_version_id == "fn-task-v2"
+    assert create_request.suite_id == "suite-1"
+    assert [
+        spec.implementation.value.function_version_id
+        for spec in create_request.scorers
+        if spec.implementation is not None
+    ] == ["fn-new-v1"]
+    rescore_request = connect.calls[3][1]
+    assert rescore_request.evaluation_run_id == "run-1"
+    assert rescore_request.evaluation_id == "eval-2"
+    assert json.loads(rescore_request.metadata.to_json()) == {"why": "new scorer"}
+
+
+def test_rescore_defaults_to_the_runs_own_evaluation() -> None:
+    connect = _FakeConnectClient(
+        {
+            "rescore_evaluation_run": [
+                _message(
+                    evaluation_pb.RescoreEvaluationRunResponse,
+                    {"evaluationRun": _run_dict("EVALUATION_RUN_STATUS_PENDING")},
+                )
+            ],
+        }
+    )
+    client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]
+
+    client.rescore("run-1")
+
+    request = connect.calls[0][1]
+    assert request.evaluation_run_id == "run-1"
+    assert "evaluationId" not in json.loads(request.to_json())
+
+
+def test_evaluation_rescore_scores_another_run_into_itself() -> None:
+    connect = _FakeConnectClient(
+        {
+            "get_evaluation": [
+                _message(
+                    evaluation_pb.GetEvaluationResponse,
+                    {"evaluation": _evaluation_dict()},
+                )
+            ],
+            "rescore_evaluation_run": [
+                _message(
+                    evaluation_pb.RescoreEvaluationRunResponse,
+                    {"evaluationRun": _run_dict("EVALUATION_RUN_STATUS_PENDING")},
+                )
+            ],
+        }
+    )
+    client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]
+    evaluation = client.get("eval-1")
+
+    evaluation.rescore("run-0")
+
+    request = connect.calls[1][1]
+    assert request.evaluation_run_id == "run-0"
+    assert request.evaluation_id == "eval-1"
+
+
+def test_rescore_rejects_conflicting_arguments_without_rpc() -> None:
+    connect = _FakeConnectClient(
+        {
+            "get_evaluation_run": [
+                _message(
+                    evaluation_pb.GetEvaluationRunResponse,
+                    {"evaluationRun": _run_dict("EVALUATION_RUN_STATUS_SUCCEEDED")},
+                )
+            ],
+        }
+    )
+    client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]
+    run = client.get_run("run-1")
+
+    with pytest.raises(ValueError, match="only one of scorers or evaluation"):
+        run.rescore(
+            scorers=[_remote_function("fn-new-v1", name="new_score")],
+            evaluation="eval-2",
+        )
+    with pytest.raises(ValueError, match="name applies only"):
+        run.rescore(name="renamed")
+    assert len(connect.calls) == 1
