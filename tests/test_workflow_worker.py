@@ -37,14 +37,14 @@ _SCRIPT = textwrap.dedent(
 )
 
 
-def test_scaling_group_sends_temporal_task_queue_trigger() -> None:
+def test_scaling_group_sends_task_queue_trigger() -> None:
     group = ScalingGroup(
         image="ubuntu:latest",
         name="wf-demo",
         port=None,
         min_replicas=0,
         max_replicas=2,
-        temporal_task_queue="chalkcompute-workflows.wf-demo",
+        workflow_task_queue="chalkcompute-workflows.wf-demo",
     )
     client = _ScalingLifecycleClient()
     group._client = client  # type: ignore[assignment]
@@ -53,10 +53,8 @@ def test_scaling_group_sends_temporal_task_queue_trigger() -> None:
 
     request = client.calls[0][1]
     assert (
-        request.spec.scaling_spec.temporal_task_queue_trigger
-        == sg_pb.TemporalTaskQueueScalingTrigger(
-            task_queue="chalkcompute-workflows.wf-demo"
-        )
+        request.spec.scaling_spec.task_queue_trigger
+        == sg_pb.TaskQueueScalingTrigger(task_queue="chalkcompute-workflows.wf-demo")
     )
     assert request.spec.scaling_spec.min_replicas == 0
 
@@ -68,18 +66,18 @@ def test_scaling_group_omits_trigger_by_default() -> None:
 
     group.deploy()
 
-    assert client.calls[0][1].spec.scaling_spec.temporal_task_queue_trigger is None
+    assert client.calls[0][1].spec.scaling_spec.task_queue_trigger is None
 
 
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        ({"temporal_task_queue": ""}, "non-empty"),
-        ({"temporal_task_queue": "q'x"}, "quotes"),
-        ({"temporal_task_queue": "q", "min_replicas": 1}, "min_replicas=0"),
+        ({"workflow_task_queue": ""}, "non-empty"),
+        ({"workflow_task_queue": "q'x"}, "quotes"),
+        ({"workflow_task_queue": "q", "min_replicas": 1}, "min_replicas=0"),
         (
             {
-                "temporal_task_queue": "q",
+                "workflow_task_queue": "q",
                 "cron_scaling_trigger": CronScalingTrigger(
                     timezone="UTC",
                     windows=[
@@ -93,7 +91,7 @@ def test_scaling_group_omits_trigger_by_default() -> None:
         ),
     ],
 )
-def test_scaling_group_rejects_invalid_temporal_trigger(
+def test_scaling_group_rejects_invalid_workflow_task_queue(
     kwargs: dict[str, Any], message: str
 ) -> None:
     kwargs = {"min_replicas": 0, **kwargs}
@@ -154,7 +152,7 @@ class _RecordingScalingGroup:
         return self
 
 
-def test_deploy_workflow_worker_builds_a_temporal_triggered_group(
+def test_deploy_workflow_worker_builds_a_task_queue_triggered_group(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = tmp_path / "nightly_scoring.py"
@@ -168,7 +166,7 @@ def test_deploy_workflow_worker_builds_a_temporal_triggered_group(
     (group,) = _RecordingScalingGroup.instances
     kwargs = group.kwargs
     assert kwargs["name"] == "wf-nightly-scoring"
-    assert kwargs["temporal_task_queue"] == worker.task_queue
+    assert kwargs["workflow_task_queue"] == worker.task_queue
     assert kwargs["min_replicas"] == 0
     assert kwargs["max_replicas"] == 3
     assert kwargs["port"] is None

@@ -199,19 +199,19 @@ class CronScalingTrigger:
         }
 
 
-def validate_temporal_task_queue(
+def validate_workflow_task_queue(
     task_queue: str, *, min_replicas: int, has_keda_trigger: bool
 ) -> None:
-    """Reject a Temporal trigger the server would refuse, before any image is built."""
+    """Reject a task queue trigger the server would refuse, before any image is built."""
     if not task_queue:
-        raise ValueError("temporal_task_queue must be a non-empty string")
+        raise ValueError("workflow_task_queue must be a non-empty string")
     if any(c in task_queue for c in "'\"\\"):
-        raise ValueError("temporal_task_queue must not contain quotes or backslashes")
+        raise ValueError("workflow_task_queue must not contain quotes or backslashes")
     if min_replicas != 0:
-        raise ValueError("temporal_task_queue requires min_replicas=0")
+        raise ValueError("workflow_task_queue requires min_replicas=0")
     if has_keda_trigger:
         raise ValueError(
-            "temporal_task_queue cannot be combined with target_gpu_utilization_percentage or cron_scaling_trigger"
+            "workflow_task_queue cannot be combined with target_gpu_utilization_percentage or cron_scaling_trigger"
         )
 
 
@@ -309,7 +309,7 @@ class ScalingGroup:
         target_gpu_utilization_percentage: int | None = None,
         cron_scaling_trigger: CronScalingTrigger | None = None,
         scale_from_zero_request_policy: ScaleFromZeroRequestPolicy | None = None,
-        temporal_task_queue: str | None = None,
+        workflow_task_queue: str | None = None,
         tags: dict[str, str] | None = None,
         chalk_identity: bool = False,
         tracing: TracingPolicyConfig | None = None,
@@ -380,16 +380,16 @@ class ScalingGroup:
                 "scale_from_zero_request_policy must be a ScaleFromZeroRequestPolicy"
             )
         self._scale_from_zero_request_policy = scale_from_zero_request_policy
-        if temporal_task_queue is not None:
-            validate_temporal_task_queue(
-                temporal_task_queue,
+        if workflow_task_queue is not None:
+            validate_workflow_task_queue(
+                workflow_task_queue,
                 min_replicas=min_replicas,
                 has_keda_trigger=(
                     target_gpu_utilization_percentage is not None
                     or cron_scaling_trigger is not None
                 ),
             )
-        self._temporal_task_queue = temporal_task_queue
+        self._workflow_task_queue = workflow_task_queue
         self._tags = dict(tags or {})
         self._chalk_identity = chalk_identity
 
@@ -489,7 +489,7 @@ class ScalingGroup:
         sg._target_cpu_utilization_percentage = None
         sg._target_gpu_utilization_percentage = None
         sg._cron_scaling_trigger = None
-        sg._temporal_task_queue = None
+        sg._workflow_task_queue = None
         sg._scale_from_zero_request_policy = None
         sg._tags = {}
         sg._chalk_identity = False
@@ -652,7 +652,7 @@ class ScalingGroup:
                 ),
                 cron_scaling_trigger=self._cron_scaling_trigger,
                 scale_from_zero_request_policy=self._scale_from_zero_request_policy,
-                temporal_task_queue=self._temporal_task_queue,
+                workflow_task_queue=self._workflow_task_queue,
             ),
         )
 

@@ -97,7 +97,7 @@ def worker_requirements(source: str) -> list[str]:
 
     A script's own inline dependencies are what ``uv run`` gave it locally, so they are
     what its worker gets too. ``chalkpy[workflows]`` is always added: the worker process
-    is chalkpy's, and it needs the Temporal extra even when the script only lists chalkpy.
+    is chalkpy's, and it needs that extra even when the script only lists chalkpy.
     """
     declared = script_dependencies(source)
     if declared is None:
@@ -199,14 +199,14 @@ def deploy_workflow_worker(
         memory=memory,
         env=env,
         secrets=secrets,
-        # The worker is a Temporal poller, not a server; the orchestrator address and the
+        # The worker polls its task queue rather than serving requests; the orchestrator address and the
         # task queue arrive as CHALK_WORKFLOW_ORCHESTRATOR_* env vars set by the platform.
         entrypoint=["python", "-m", "chalk.workflows.worker", remote_path],
         port=None,
         min_replicas=0,
         max_replicas=max_replicas,
         shutdown_delay_seconds=shutdown_delay_seconds,
-        temporal_task_queue=task_queue,
+        workflow_task_queue=task_queue,
         chalk_client=chalk_client,
     ).deploy()
     return WorkflowWorker(scaling_group=scaling_group, task_queue=task_queue)

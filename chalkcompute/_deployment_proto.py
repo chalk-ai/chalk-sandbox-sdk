@@ -25,7 +25,7 @@ def scaling_spec(
     target_queue_depth: int | None = None,
     cron_scaling_trigger: Any | None = None,
     scale_from_zero_request_policy: Any | None = None,
-    temporal_task_queue: str | None = None,
+    workflow_task_queue: str | None = None,
 ) -> sg_pb.ScalingSpec:
     """Build the shared autoscaling protobuf without an intermediate dict."""
     return sg_pb.ScalingSpec(
@@ -69,10 +69,10 @@ def scaling_spec(
             if scale_from_zero_request_policy is None
             else sg_pb.ScaleFromZeroRequestPolicy[scale_from_zero_request_policy.name]
         ),
-        temporal_task_queue_trigger=(
+        task_queue_trigger=(
             None
-            if temporal_task_queue is None
-            else sg_pb.TemporalTaskQueueScalingTrigger(task_queue=temporal_task_queue)
+            if workflow_task_queue is None
+            else sg_pb.TaskQueueScalingTrigger(task_queue=workflow_task_queue)
         ),
     )
 
