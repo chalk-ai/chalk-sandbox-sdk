@@ -30,9 +30,9 @@ Usage:
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
