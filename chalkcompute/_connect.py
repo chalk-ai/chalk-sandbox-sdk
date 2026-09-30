@@ -22,8 +22,13 @@ from chalkcompute._auth_config import active_environment_from_env, load_token
 from chalkcompute._gen.chalk.auth.v1 import permissions_pb
 from chalkcompute._gen.chalk.sandbox.v1 import service_connect as image_connect
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb as image_pb
-from chalkcompute._gen.chalk.server.v1 import auth_connect, auth_pb
-from chalkcompute._http import SYNC_HTTP_CLIENT
+from chalkcompute._gen.chalk.server.v1 import (
+    auth_connect,
+    auth_pb,
+    team_connect,
+    team_pb,
+)
+from chalkcompute._http import HTTP_TRANSPORT_ERRORS, SYNC_HTTP_CLIENT
 from chalkcompute._remote_call_client import (
     RemoteCallClientUnavailable,
     ServiceAuthContext,
@@ -332,12 +337,36 @@ class ConnectClient:
 
         if web_identity_token_file_from_env() is not None:
             query_server = os.environ.get("CHALK_GRPC_ENGINE", "").strip()
+            if query_server:
+                return grpc_engine_target_from_url(query_server)
+            query_server = self._grpc_engines.get(self._env_id)
             if not query_server:
-                raise ConnectError(
-                    "CHALK_GRPC_ENGINE must be set for queued function calls when "
-                    "CHALK_WEB_IDENTITY_TOKEN_FILE is used because Chalk identity "
-                    "JWTs do not contain gRPC engine routing"
-                )
+                stub = self.stub(team_connect.TeamServiceClientSync)
+                try:
+                    response = self.call(stub.get_env, team_pb.GetEnvRequest())
+                except (ConnectRpcError, *HTTP_TRANSPORT_ERRORS) as exc:
+                    raise ConnectError(
+                        "Unable to discover the gRPC engine endpoint for Chalk "
+                        f"environment {self._env_id!r}: {exc}. Discovery requires "
+                        "DEPLOY_READ permission; set CHALK_GRPC_ENGINE to override "
+                        "endpoint discovery."
+                    ) from exc
+                environment = response.environment
+                if environment is None or environment.id != self._env_id:
+                    raise ConnectError(
+                        "Endpoint discovery returned no matching Chalk environment "
+                        f"for {self._env_id!r}"
+                    )
+                query_server = (environment.grpc_engine_url or "").strip()
+                if not query_server:
+                    raise ConnectError(
+                        "No gRPC engine endpoint found for Chalk environment "
+                        f"{self._env_id!r}; set CHALK_GRPC_ENGINE to override "
+                        "endpoint discovery."
+                    )
+                # Identity refresh clears this cache, so routing is rediscovered
+                # with the current token and environment after rotation.
+                self._grpc_engines[self._env_id] = query_server
             return grpc_engine_target_from_url(query_server)
 
         query_server = self._grpc_engines.get(self._env_id)
