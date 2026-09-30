@@ -200,6 +200,10 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "TrainingRunHandle": ("chalkcompute._training", "TrainingRunHandle"),
     "TrainingError": ("chalkcompute._training", "TrainingError"),
     "training": ("chalkcompute._training", "training"),
+    # _workflow.py
+    "WorkflowError": ("chalkcompute._workflow", "WorkflowError"),
+    "run_workflow": ("chalkcompute._workflow", "run_workflow"),
+    "trigger_workflow": ("chalkcompute._workflow", "trigger_workflow"),
 }
 
 
