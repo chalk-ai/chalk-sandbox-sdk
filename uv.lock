@@ -469,7 +469,7 @@ provides-extras = ["sql", "workflows", "dev"]
 [[package]]
 name = "chalkdf"
 version = "3.34.20"
-source = { registry = "https://us-python.pkg.dev/chalk-infra/chalk-internal/simple" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "ddtrace" },
     { name = "frozendict" },
@@ -477,12 +477,12 @@ dependencies = [
     { name = "python-dateutil" },
 ]
 wheels = [
-    { url = "https://us-python.pkg.dev/chalk-infra/chalk-internal/chalkdf/chalkdf-3.34.20-cp311-cp311-macosx_15_0_arm64.whl", hash = "sha256:9e33a6ad0c865eef792b68ff3535b7dabbd8b215cc877c28372312acd3bc5aff" },
-    { url = "https://us-python.pkg.dev/chalk-infra/chalk-internal/chalkdf/chalkdf-3.34.20-cp311-cp311-manylinux_2_36_x86_64.whl", hash = "sha256:4510253dafd803fb2aa43ac2b98143e56d2a633c85ea17198e4533050f7f94ef" },
-    { url = "https://us-python.pkg.dev/chalk-infra/chalk-internal/chalkdf/chalkdf-3.34.20-cp312-cp312-macosx_15_0_arm64.whl", hash = "sha256:c2df0d2da951aba5c73f4592c4492d06f666a02c24e95ff7146a87d56293357c" },
-    { url = "https://us-python.pkg.dev/chalk-infra/chalk-internal/chalkdf/chalkdf-3.34.20-cp312-cp312-manylinux_2_36_x86_64.whl", hash = "sha256:fc7a82c4cb3095e74955e65ea3ab94b346aa15149a1a8c5a97203b40edac2e48" },
-    { url = "https://us-python.pkg.dev/chalk-infra/chalk-internal/chalkdf/chalkdf-3.34.20-cp313-cp313-macosx_15_0_arm64.whl", hash = "sha256:3acdde2d9cebf95647d86e8e791e809cdef7e6189f0949083a61d7ffa42d1dea" },
-    { url = "https://us-python.pkg.dev/chalk-infra/chalk-internal/chalkdf/chalkdf-3.34.20-cp313-cp313-manylinux_2_36_x86_64.whl", hash = "sha256:6c7c18a0339a5bc57ff73ee104d1910a8613376e0770a78377979ea79c25b17c" },
+    { url = "https://files.pythonhosted.org/packages/c7/00/efc8707e98fb8c904fd552749e916e88a51dc57d75236eb3e2bbf669b443/chalkdf-3.34.20-cp311-cp311-macosx_15_0_arm64.whl", hash = "sha256:9e33a6ad0c865eef792b68ff3535b7dabbd8b215cc877c28372312acd3bc5aff", size = 142368420, upload-time = "2026-05-21T09:58:22.57Z" },
+    { url = "https://files.pythonhosted.org/packages/76/83/bf8e738724aa37b30d2691f43ecb970afffe211d281c886172ea53662b92/chalkdf-3.34.20-cp311-cp311-manylinux_2_36_x86_64.whl", hash = "sha256:4510253dafd803fb2aa43ac2b98143e56d2a633c85ea17198e4533050f7f94ef", size = 178784003, upload-time = "2026-05-21T09:58:28.362Z" },
+    { url = "https://files.pythonhosted.org/packages/71/f6/d4bbda79e7669300adda65c509a517c94e91e5f4b1b2c5e6ea2ec6730847/chalkdf-3.34.20-cp312-cp312-macosx_15_0_arm64.whl", hash = "sha256:c2df0d2da951aba5c73f4592c4492d06f666a02c24e95ff7146a87d56293357c", size = 142360172, upload-time = "2026-05-21T09:58:33.988Z" },
+    { url = "https://files.pythonhosted.org/packages/17/b5/fae14570f2061a1a32be123a7540f1f0b43b5d482399c3729712617b9a96/chalkdf-3.34.20-cp312-cp312-manylinux_2_36_x86_64.whl", hash = "sha256:fc7a82c4cb3095e74955e65ea3ab94b346aa15149a1a8c5a97203b40edac2e48", size = 178785413, upload-time = "2026-05-21T09:58:39.727Z" },
+    { url = "https://files.pythonhosted.org/packages/06/f5/d3d9be37ec2a6ba05c011a801d9d386ab2f64588591550836193ee919e62/chalkdf-3.34.20-cp313-cp313-macosx_15_0_arm64.whl", hash = "sha256:3acdde2d9cebf95647d86e8e791e809cdef7e6189f0949083a61d7ffa42d1dea", size = 142374366, upload-time = "2026-05-21T09:58:45.884Z" },
+    { url = "https://files.pythonhosted.org/packages/d2/dd/a6421d3ac51974ad449f8436ced90d83d15270bded68fe78d5b18d6c34d8/chalkdf-3.34.20-cp313-cp313-manylinux_2_36_x86_64.whl", hash = "sha256:6c7c18a0339a5bc57ff73ee104d1910a8613376e0770a78377979ea79c25b17c", size = 178788495, upload-time = "2026-05-21T09:58:51.954Z" },
 ]
 
 [[package]]
