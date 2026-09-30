@@ -392,6 +392,7 @@ class ContainerSpec:
     security_policy: ContainerSecurityPolicy | None = None
     network_policy: NetworkPolicy | None = None
     compute_class: ComputeClass | None = None
+    host_pool_id: str | None = None
     startup_probe: Mapping[str, Any] | None = None
     readiness_probe: Mapping[str, Any] | None = None
     restart_policy: RestartPolicy | None = None
@@ -593,6 +594,8 @@ class ContainerSpec:
             spec["networkPolicy"] = self.network_policy.to_dict()
         if self.compute_class is not None:
             spec["computeClass"] = self.compute_class.value
+        if self.host_pool_id is not None:
+            spec["hostPlacement"] = {"hostPoolId": self.host_pool_id}
         if self.startup_probe is not None:
             spec["startupProbe"] = dict(self.startup_probe)
         if self.readiness_probe is not None:
@@ -682,6 +685,14 @@ class ContainerSpec:
                 None
                 if self.compute_class is None
                 else container_pb.ComputeClass[self.compute_class.name]
+            ),
+            placement=(
+                None
+                if self.host_pool_id is None
+                else Oneof(
+                    "host_placement",
+                    container_pb.HostPlacementOptions(host_pool_id=self.host_pool_id),
+                )
             ),
             startup_probe=startup_probe,
             readiness_probe=readiness_probe,
