@@ -167,6 +167,34 @@ def test_sandbox_mixed_env_serializes_secret_references(use_client_create) -> No
     assert dict(spec.secret_refs[1].aliases) == {"TOKEN": "SUPER_SECRET_VALUE"}
 
 
+@pytest.mark.parametrize("use_client_create", [False, True])
+@pytest.mark.parametrize("host_pool_id", [None, "cmg1a2b3c0000q8j9k0l1m2n3o"])
+def test_sandbox_host_pool_placement(
+    use_client_create: bool, host_pool_id: str | None
+) -> None:
+    client = SandboxClient()
+    stub = _Stub()
+    client._stub = stub  # type: ignore[assignment]
+    try:
+        if use_client_create:
+            client.create("ubuntu:latest", host_pool_id=host_pool_id, wait=False)
+        else:
+            Sandbox(
+                image="ubuntu:latest", host_pool_id=host_pool_id, sandbox_client=client
+            ).run(wait=False)
+    finally:
+        client.close()
+
+    assert stub.request is not None
+    placement = stub.request.source.value.placement
+    if host_pool_id is None:
+        assert placement is None
+    else:
+        assert placement is not None
+        assert placement.field == "host_placement"
+        assert placement.value.host_pool_id == host_pool_id
+
+
 def test_sandbox_add_credentials_configures_env_and_network_policy(monkeypatch) -> None:
     def host_bindings(sandbox: Sandbox, host: str) -> dict[str, str | Secret]:
         assert sandbox._network_policy is not None

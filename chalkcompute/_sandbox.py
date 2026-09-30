@@ -632,6 +632,7 @@ class Sandbox:
         security_policy: ContainerSecurityPolicy | None = None,
         network_policy: NetworkPolicy | None = None,
         compute_class: ComputeClass | None = None,
+        host_pool_id: str | None = None,
         tags: dict[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool = False,
@@ -682,6 +683,9 @@ class Sandbox:
             :class:`NetworkPolicy` type accepted by :class:`Container`.
         compute_class
             Optional :class:`ComputeClass` (``K8S`` or ``HOST``).
+        host_pool_id
+            Optional host pool ID to restrict placement of host compute class sandboxes.
+            Unstable; subject to change.
         tags
             Optional labels attached to the sandbox spec.
         restart_policy
@@ -742,6 +746,7 @@ class Sandbox:
         self._security_policy: ContainerSecurityPolicy | None = None
         self._network_policy: NetworkPolicy | None = None
         self._compute_class: ComputeClass | None = None
+        self._host_pool_id: str | None = None
         self._tags: dict[str, str] = {}
         self._restart_policy: RestartPolicy | None = None
         self._chalk_identity = False
@@ -766,6 +771,7 @@ class Sandbox:
                 or security_policy is not None
                 or network_policy is not None
                 or compute_class is not None
+                or host_pool_id is not None
                 or tags is not None
                 or restart_policy is not None
                 or chalk_identity
@@ -825,6 +831,7 @@ class Sandbox:
         self._security_policy = security_policy
         self._network_policy = network_policy
         self._compute_class = compute_class
+        self._host_pool_id = host_pool_id
         self._tags = dict(tags or {})
         self._restart_policy = restart_policy
         self._chalk_identity = chalk_identity
@@ -1755,6 +1762,7 @@ class SandboxClient:
         security_policy: ContainerSecurityPolicy | None = None,
         network_policy: NetworkPolicy | None = None,
         compute_class: ComputeClass | None = None,
+        host_pool_id: str | None = None,
         tags: dict[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool = False,
@@ -1795,6 +1803,9 @@ class SandboxClient:
         network_policy
             Optional network egress policy. Reuses the same ``NetworkPolicy``
             type accepted by containers.
+        host_pool_id
+            Optional host pool ID to restrict placement of host compute class sandboxes.
+            Unstable; subject to change.
         restart_policy
             Optional restart behavior. Use ``RestartPolicy.NEVER`` or
             ``RestartPolicy.ALWAYS``.
@@ -1837,6 +1848,7 @@ class SandboxClient:
                 security_policy=security_policy,
                 network_policy=network_policy,
                 compute_class=compute_class,
+                host_pool_id=host_pool_id,
                 tags=tags,
                 restart_policy=restart_policy,
                 chalk_identity=chalk_identity,
@@ -1912,6 +1924,7 @@ class SandboxClient:
             security_policy=sandbox._security_policy,
             network_policy=network_policy,
             compute_class=sandbox._compute_class,
+            host_pool_id=sandbox._host_pool_id,
             tags=sandbox._tags,
             restart_policy=sandbox._restart_policy,
             chalk_identity=sandbox._chalk_identity,
