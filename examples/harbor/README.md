@@ -5,6 +5,8 @@ image, an instruction, and a verifier that writes a reward. `chalk_harbor` is a 
 environment provider that runs every trial's container as a Chalk sandbox, so a benchmark
 runs on Chalk compute without Docker on the machine driving it.
 
+The provider is also published on its own as [chalk-ai/chalk-harbor](https://github.com/chalk-ai/chalk-harbor).
+
 ```
 harbor run -p <tasks> -a <agent> -e chalk_harbor:ChalkSandboxEnvironment
 ```
