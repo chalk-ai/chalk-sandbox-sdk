@@ -411,6 +411,24 @@ class Evaluation:
         """Iterate this evaluation's runs, newest first."""
         return self._require_client().list_runs(evaluation_id=self.id, limit=limit)
 
+    def rescore(
+        self,
+        run: EvaluationRun | str,
+        *,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> EvaluationRun:
+        """Score a finished run's outputs with this evaluation's scorers.
+
+        The task is not re-run: its outputs are read back out of ``run``'s
+        result. ``run`` may belong to this evaluation or to any other that uses
+        the same dataset revision and task function version, and the new run is
+        recorded under this one.
+        """
+        run_id = run.id if isinstance(run, EvaluationRun) else run
+        return self._require_client().rescore(
+            run_id, evaluation_id=self.id, metadata=metadata
+        )
+
     def _require_client(self) -> EvaluationClient:
         if self._client is None:
             raise EvaluationError(
@@ -510,6 +528,49 @@ class EvaluationRun:
             raise EvaluationRunFailedError(current)
         return current
 
+    def rescore(
+        self,
+        *,
+        scorers: Sequence[DeployedFunction | SqlExpression] | None = None,
+        evaluation: Evaluation | str | None = None,
+        name: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> EvaluationRun:
+        """Score this run's outputs again without re-running the task.
+
+        With no arguments, the outputs are scored by this run's own evaluation's
+        scorers. ``scorers`` scores them with new ones instead: an evaluation is
+        created from this run's, with the same dataset revision, task and suite
+        and only the scorers replaced, named ``name`` or
+        ``"<evaluation name> (rescored)"``. ``evaluation`` names an existing
+        evaluation to score them with, which must use this run's dataset
+        revision and task function version.
+
+        The new run is recorded under whichever evaluation scored it, and is
+        read, waited on and summarized like any other of its runs.
+        """
+        client = self._require_client()
+        if scorers is not None and evaluation is not None:
+            raise ValueError("pass only one of scorers or evaluation")
+        if name is not None and scorers is None:
+            raise ValueError("name applies only when scorers are given")
+        evaluation_id: str | None
+        if scorers is not None:
+            source = client.get(self.evaluation_id)
+            evaluation_id = client._create(
+                name if name is not None else f"{source.name} (rescored)",
+                dataset=source.dataset,
+                task_function_version_id=source.task_function_version_id,
+                scorers=scorers,
+                metadata=None,
+                suite_id=source.suite_id,
+            ).id
+        elif isinstance(evaluation, Evaluation):
+            evaluation_id = evaluation.id
+        else:
+            evaluation_id = evaluation
+        return client.rescore(self.id, evaluation_id=evaluation_id, metadata=metadata)
+
     def _require_client(self) -> EvaluationClient:
         if self._client is None:
             raise EvaluationError(
@@ -578,11 +639,29 @@ class EvaluationClient:
         suite_id: str | None = None,
     ) -> Evaluation:
         """Persist an evaluation pinned to deployed function versions."""
+        return self._create(
+            name,
+            dataset=dataset,
+            task_function_version_id=_resolve_function_version(task, role="task"),
+            scorers=scorers,
+            metadata=metadata,
+            suite_id=suite_id,
+        )
+
+    def _create(
+        self,
+        name: str,
+        *,
+        dataset: DatasetRevisionRef | DatasetRevisionLike | DatasetNameLike,
+        task_function_version_id: str,
+        scorers: Sequence[DeployedFunction | SqlExpression],
+        metadata: Mapping[str, Any] | None,
+        suite_id: str | None,
+    ) -> Evaluation:
         name = name.strip()
         if not name:
             raise ValueError("name is required")
         dataset_ref = _resolve_dataset_revision(dataset)
-        task_version_id = _resolve_function_version(task, role="task")
         scorer_handles = tuple(scorers)
         if not scorer_handles:
             raise ValueError("at least one scorer is required")
@@ -600,7 +679,7 @@ class EvaluationClient:
                 dataset_name=dataset_ref.dataset_name or "",
                 dataset_id=dataset_ref.dataset_id or "",
                 dataset_revision_id=dataset_ref.revision_id or "",
-                task_function_version_id=task_version_id,
+                task_function_version_id=task_function_version_id,
                 scorers=scorer_specs,
                 metadata=(
                     None
@@ -689,6 +768,56 @@ class EvaluationClient:
         if response.evaluation_run is None:
             raise EvaluationError("CreateEvaluationRun returned no run")
         return _evaluation_run_from_proto(response.evaluation_run, self)
+
+    @_instrumented("chalkcompute.evaluation_run.rescore")
+    def rescore(
+        self,
+        evaluation_run_id: str,
+        *,
+        evaluation_id: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> EvaluationRun:
+        """Queue a run that scores a finished run's outputs without its task.
+
+        ``evaluation_id`` names the evaluation whose scorers score the outputs
+        and that the new run is recorded under. It defaults to the finished
+        run's own, and otherwise must use the same dataset revision and task
+        function version.
+        """
+        evaluation_run_id = evaluation_run_id.strip()
+        if not evaluation_run_id:
+            raise ValueError("evaluation_run_id is required")
+        evaluation_id = _optional_id(evaluation_id, name="evaluation_id")
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
+        response = self._call(
+            stub.rescore_evaluation_run,
+            evaluation_pb.RescoreEvaluationRunRequest(
+                evaluation_run_id=evaluation_run_id,
+                evaluation_id=evaluation_id,
+                metadata=(
+                    None
+                    if metadata is None
+                    else struct_pb.Struct.from_json(
+                        json.dumps(_metadata_dict(metadata))
+                    )
+                ),
+            ),
+            not_found_subject=(
+                f"Evaluation run or evaluation not found: {evaluation_run_id}"
+            ),
+        )
+        if response.evaluation_run is None:
+            raise EvaluationError("RescoreEvaluationRun returned no run")
+        run = _evaluation_run_from_proto(response.evaluation_run, self)
+        # A server that predates evaluation_id ignores it and scores with the
+        # run's own evaluation's scorers, which is not what was asked for.
+        if evaluation_id is not None and run.evaluation_id != evaluation_id:
+            raise EvaluationError(
+                f"RescoreEvaluationRun recorded run {run.id!r} under evaluation "
+                f"{run.evaluation_id!r} rather than {evaluation_id!r}; the server "
+                "does not support rescoring into another evaluation"
+            )
+        return run
 
     @_instrumented("chalkcompute.evaluation_run.get")
     def get_run(self, evaluation_run_id: str) -> EvaluationRun:
