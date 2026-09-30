@@ -28,6 +28,7 @@ from chalkcompute._remote_call_client import RemoteCallClient
 from e2etests._ci_resources import build_scoped_name
 from e2etests.conftest import (
     CHALK_ENVIRONMENT_ID,
+    _delete_model_registration,
     _get_access_token,
     needs_staging,
 )
@@ -138,6 +139,7 @@ class TestModelScalingGroup:
             output_schema={"y": pa.float64()},
             model_image=image,
         )
+        cls.model_version = version.model_version
         client.deploy_model_version_to_scaling_group(
             name=SG_NAME,
             model_name=MODEL_NAME,
@@ -161,6 +163,7 @@ class TestModelScalingGroup:
             client.delete_scaling_group(name=SG_NAME)
         except Exception:
             pass
+        _delete_model_registration(MODEL_NAME, getattr(cls, "model_version", None))
 
     def test_single_input(self):
         """handler(x=3.0) should return 6.0."""
@@ -227,6 +230,7 @@ class TestModelWithVolume:
                 model_image=image,
                 model_paths=[str(config_path)],
             )
+        cls.model_version = version.model_version
         client.deploy_model_version_to_scaling_group(
             name=VOLUME_SG_NAME,
             model_name=VOLUME_MODEL_NAME,
@@ -252,6 +256,9 @@ class TestModelWithVolume:
             client.delete_scaling_group(name=VOLUME_SG_NAME)
         except Exception:
             pass
+        _delete_model_registration(
+            VOLUME_MODEL_NAME, getattr(cls, "model_version", None)
+        )
 
     def test_single_input(self):
         """handler(x=4.0) with factor=3.0 should return 12.0."""
@@ -290,6 +297,7 @@ class TestModelHandlerDecorator:
                 input_schema={"x": pa.float64()},
                 output_schema={"y": pa.float64()},
             )
+        cls.model_version = version.model_version
         client.deploy_model_version_to_scaling_group(
             name=HANDLER_SG_NAME,
             model_name=HANDLER_MODEL_NAME,
@@ -314,6 +322,9 @@ class TestModelHandlerDecorator:
             client.delete_scaling_group(name=HANDLER_SG_NAME)
         except Exception:
             pass
+        _delete_model_registration(
+            HANDLER_MODEL_NAME, getattr(cls, "model_version", None)
+        )
 
     def test_single_input(self):
         """predict(x=3.0) with factor=5.0, bias=2.0 should return 17.0."""
@@ -379,6 +390,7 @@ class TestModelImageAndModelCombined:
                 model_image=image,
                 model_paths=[weights_path],
             )
+        cls.model_version = version.model_version
         client.deploy_model_version_to_scaling_group(
             name=COMBINED_SG_NAME,
             model_name=COMBINED_MODEL_NAME,
@@ -404,6 +416,9 @@ class TestModelImageAndModelCombined:
             client.delete_scaling_group(name=COMBINED_SG_NAME)
         except Exception:
             pass
+        _delete_model_registration(
+            COMBINED_MODEL_NAME, getattr(cls, "model_version", None)
+        )
 
     def test_single_input(self):
         """handler(x=3.0) with factor=2.0, bias=1.0 should return 7.0."""

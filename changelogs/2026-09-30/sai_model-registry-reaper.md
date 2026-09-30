@@ -1,0 +1,1 @@
+- Reap stale CI-scoped model versions and registrations from e2e environments.
