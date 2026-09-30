@@ -50,6 +50,13 @@ class StagedFiles:
     def extend(self, other: StagedFiles) -> None: ...
     def __len__(self) -> int: ...
 
+class PreparedFiles:
+    @property
+    def commit_id(self) -> str: ...
+    @property
+    def ref_name(self) -> str: ...
+    def __len__(self) -> int: ...
+
 class VolumeNativeClient:
     def __init__(
         self,
@@ -59,6 +66,7 @@ class VolumeNativeClient:
         commit_author: str | None = None,
         extra_headers: Sequence[tuple[str, str]] | None = None,
         chalk_server: str | None = None,
+        token_refresher: Any | None = None,
     ) -> None: ...
     def upload(
         self,
@@ -73,6 +81,24 @@ class VolumeNativeClient:
         source: Any,
         config: dict[str, Any] | None = None,
     ) -> StagedFiles: ...
+    def prepare_files(
+        self,
+        source: Any,
+        ref_name: str | None = None,
+    ) -> PreparedFiles: ...
+    def stage_prepared_files(
+        self,
+        volume: str,
+        prepared: PreparedFiles,
+        config: dict[str, Any] | None = None,
+    ) -> StagedFiles: ...
+    def resolve_prepared_files(
+        self,
+        volume: str,
+        volume_kind: str,
+        prepared: PreparedFiles,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]: ...
     def stage_remote(
         self,
         volume: str,
@@ -84,6 +110,8 @@ class VolumeNativeClient:
         volume: str,
         staged: StagedFiles,
         ref_name: str | None = None,
+        removes: list[tuple[str, bool]] | None = None,
+        volume_type: str | None = None,
     ) -> bytes: ...
     def commit_staged(
         self,
@@ -165,3 +193,4 @@ def configure_volume_client_logging(
     logger_name: str = "chalk.volume.client",
 ) -> bool: ...
 def resolve_service_auth_context() -> dict[str, Any] | None: ...
+def notebook_source_dependencies(sources: list[str]) -> list[int]: ...

@@ -28,6 +28,8 @@ import dataclasses
 import logging
 import os
 import time
+from collections.abc import Mapping
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, overload
 
 from protobuf import Oneof
@@ -35,6 +37,7 @@ from protobuf.wkt import Struct, Value
 
 from chalkcompute._connect import ConnectClient, build_image
 from chalkcompute._containerspec import ContainerSpec
+from chalkcompute._env import normalize_env
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._gen.chalk.server.v1 import (
     training_runs_connect as tr_connect,
@@ -116,7 +119,12 @@ class TrainingRunHandle:
     """Handle for a submitted training run.
 
     Returned by :meth:`TrainingFunction.run_training`. Provides polling
-    for status and a blocking :meth:`wait` helper.
+    for status, a blocking :meth:`wait` helper, and access to checkpoints.
+
+    Examples
+    --------
+    >>> handle = train_fn.run_training(config=MyConfig())
+    >>> handle.wait().latest_checkpoint()
     """
 
     def __init__(self, run_id: str, client: ConnectClient) -> None:
@@ -146,11 +154,12 @@ class TrainingRunHandle:
         *,
         poll_interval: float = _DEFAULT_POLL_INTERVAL,
         timeout: float | None = None,
-    ) -> tr_pb.TrainingRun:
+    ) -> TrainingRunHandle:
         """Block until the training run reaches a terminal state.
 
-        Returns the final :class:`TrainingRun` proto. Raises
-        :class:`TrainingError` if the run failed or was canceled.
+        Returns ``self`` for chaining. Raises :class:`TrainingError`
+        if the run failed or was canceled, or :class:`TimeoutError`
+        if *timeout* seconds elapse first.
         """
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
@@ -162,13 +171,26 @@ class TrainingRunHandle:
                     )
                 if run.status == tr_pb.TrainingRunStatus.CANCELED:
                     raise TrainingError(f"training run {self._run_id} was canceled")
-                return run
+                return self
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError(
                     f"training run {self._run_id} timed out "
                     f"(last status: {run.status.name})"
                 )
             time.sleep(poll_interval)
+
+    def latest_checkpoint(self) -> Any | None:
+        """Fetch the latest checkpoint for this training run.
+
+        Returns the :class:`ModelArtifact` proto, or ``None`` if no
+        checkpoint has been uploaded yet.
+        """
+        stub = self._client.stub(tr_connect.TrainingRunServiceClientSync)
+        resp = self._client.call(
+            stub.get_latest_checkpoint,
+            tr_pb.GetLatestCheckpointRequest(training_run_id=self._run_id),
+        )
+        return resp.model_artifact
 
     def cancel(self) -> None:
         """Cancel this training run."""
@@ -207,9 +229,10 @@ class TrainingFunction:
         cpu: str | None = None,
         memory: str | None = None,
         gpu: str | None = None,
-        env: dict[str, str] | None = None,
+        env: Mapping[str, str | _Secret] | None = None,
         secrets: list[_Secret] | None = None,
         metadata: dict[str, Any] | None = None,
+        max_retries: int | None = None,
     ) -> None:
         _validate_data_source(data, dataset, input_sql)
 
@@ -220,6 +243,7 @@ class TrainingFunction:
         self._dataset = dataset
         self._input_sql = input_sql
 
+        env, secrets = normalize_env(env, secrets)
         ContainerSpec.validate_fields(
             image=image,
             name=name,
@@ -227,7 +251,13 @@ class TrainingFunction:
             memory=memory,
             gpu=gpu,
             env=env,
+            secrets=secrets,
         )
+        if any(secret.is_lazy for secret in secrets):
+            raise ValueError(
+                "Training does not support local secrets. "
+                "Use Secret.from_chalk_env or Secret.from_chalk_integration instead."
+            )
         self._image = image
         self._name = name
         self._cpu = cpu
@@ -236,6 +266,7 @@ class TrainingFunction:
         self._env = dict(env) if env else {}
         self._secrets: list[_Secret] = list(secrets or [])
         self._metadata = dict(metadata) if metadata else {}
+        self._max_retries = max_retries
 
     @property
     def func_name(self) -> str:
@@ -259,21 +290,102 @@ class TrainingFunction:
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return self._func(*args, **kwargs)
 
-    def local(self, *, config: Any = None, **kwargs: Any) -> Any:
+    def local(self, *, config: Any = None) -> Any:
         """Run the training function in-process for local iteration.
+
+        The latest revision of the configured named dataset is downloaded as
+        a Polars ``DataFrame`` before the wrapped function is called. No
+        training container or offline query is started.
+
+        ``input_sql`` data sources cannot be executed locally and must first
+        be materialized as a named dataset.
 
         Parameters
         ----------
         config
             A dataclass or dict passed to the training function.
+
+        Returns
+        -------
+        Any
+            The value returned by the wrapped training function, typically a
+            trained model.
         """
-        return self._func(None, config, **kwargs)
+        if self._input_sql is not None:
+            raise TrainingError(
+                "TrainingFunction.local() cannot execute input_sql locally; "
+                "materialize the query as a named dataset and use data= or dataset="
+            )
+
+        try:
+            from chalk.client import ChalkClient
+        except ImportError as exc:
+            raise TrainingError(
+                "TrainingFunction.local() requires chalkpy with runtime "
+                "dependencies; install 'chalkpy[runtime]'"
+            ) from exc
+        client = ChalkClient()
+        dataset = client.get_dataset(dataset_name=self.data_source)
+        df = dataset.to_polars()
+        return self._func(df, config)
+
+    def _build_deploy_image(self) -> _Image:
+        """Build the deploy image with the user's training function source."""
+        from chalkcompute._function import (
+            _deploy_module_name,
+            _make_base_image,
+            _package_dir_for_module,
+            _source_file_for_deploy,
+        )
+
+        from chalkcompute import _local_dev
+
+        config = _local_dev.resolve_local_deploy_config()
+        if config.should_mount_sdk_source:
+            # Training entrypoint is server-controlled so we can't wrap it
+            # to extract an archive (like wrap_entrypoint_for_local_dev does
+            # for functions). Instead, add SDK source unarchived to /app so
+            # it lands in the same volume as the user's code and is directly
+            # importable via PYTHONPATH.
+            from chalkcompute._image import Image
+
+            base = self._image if self._image is not None else Image.debian_slim()
+            project_root = str(Path(__file__).resolve().parent.parent)
+            deploy_image = base.pip_install(
+                _local_dev._LOCAL_SDK_RUNTIME_PACKAGES
+            ).add_local_dir(
+                project_root,
+                "/app",
+                exclude=_local_dev._LOCAL_SDK_COPY_EXCLUDES,
+            )
+        else:
+            deploy_image = _make_base_image(self._image)
+
+        module_name = _deploy_module_name(self._func)
+        package_dir = _package_dir_for_module(module_name)
+
+        if package_dir is not None:
+            top_pkg = module_name.split(".")[0]
+            deploy_image = deploy_image.add_local_dir(
+                package_dir,
+                f"/app/{top_pkg}",
+                exclude=["**/__pycache__/**", "**/*.pyc"],
+            )
+        else:
+            source_file = _source_file_for_deploy(self._func)
+            target_name = module_name if module_name != "__main__" else self._func_name
+            deploy_image = deploy_image.add_local_file(
+                source_file, f"/app/{target_name}.py"
+            )
+
+        return deploy_image
 
     def run_training(
         self,
         *,
         config: Any = None,
         client: ConnectClient | None = None,
+        experiment_id: str | None = None,
     ) -> TrainingRunHandle:
         """Submit a training run to chalkcompute.
 
@@ -285,18 +397,57 @@ class TrainingFunction:
         client
             An authenticated :class:`ConnectClient`. One is created
             automatically if not provided.
+        experiment_id
+            Optional ID of the experiment this training run should be
+            associated with.
         """
         if client is None:
             client = ConnectClient()
 
-        image_uri: str | None = None
-        if self._image is not None:
-            image_uri = build_image(client, self._image)
+        deploy_image = self._build_deploy_image()
+        image_uri = build_image(client, deploy_image)
+
+        proto_mounts: list[container_pb.VolumeMount] = []
+        if deploy_image.lazy_local_files:
+            from chalkcompute._volume import VolumeClient
+
+            logger.info(
+                "Uploading %d source file(s)...",
+                len(deploy_image.lazy_local_files),
+            )
+            vvclient = VolumeClient.from_connect(client)
+            vol_name = f"training-src-{self._name or self._func_name}"
+            resolved = vvclient._resolve_lazy_files(
+                deploy_image,
+                volume_name=vol_name,
+            )
+            proto_mounts = [
+                container_pb.VolumeMount(
+                    name=m.name,
+                    mount_path=m.mount_path,
+                    type="versioned_chalkfs",
+                    version_id=m.version_id,
+                )
+                for m in resolved
+            ]
 
         data_source = self._build_data_source()
         resources = self._build_resources()
         secret_refs = [_secret_to_proto(s) for s in self._secrets]
         meta = _metadata_to_proto(self._metadata) if self._metadata else None
+
+        env = dict(self._env) if self._env else {}
+        env["PYTHONPATH"] = "/app"
+        module = self._func.__module__
+        if module == "__main__":
+            import __main__
+
+            spec = getattr(__main__, "__spec__", None)
+            if spec and spec.name:
+                module = spec.name
+            else:
+                module = self._func_name
+        env["CHALK_TRAINING_MODULE"] = f"{module}.{self._func_name}"
 
         request = tr_pb.CreateTrainingRunRequest(
             name=self._name,
@@ -304,9 +455,12 @@ class TrainingFunction:
             config=_config_to_struct(config),
             resources=resources,
             image=image_uri,
-            env=self._env or None,
+            env=env or None,
             secret_refs=secret_refs or None,
             meta_data=meta,
+            volume_mounts=proto_mounts or None,
+            max_retries=self._max_retries,
+            experiment_id=experiment_id,
         )
 
         stub = client.stub(tr_connect.TrainingRunServiceClientSync)
@@ -358,9 +512,10 @@ def training(
     cpu: str | None = None,
     memory: str | None = None,
     gpu: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
     metadata: dict[str, Any] | None = None,
+    max_retries: int | None = None,
 ) -> TrainingFunction | _NoOpTrainingFunction: ...
 
 
@@ -375,9 +530,10 @@ def training(
     cpu: str | None = None,
     memory: str | None = None,
     gpu: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
     metadata: dict[str, Any] | None = None,
+    max_retries: int | None = None,
 ) -> Callable[..., TrainingFunction | _NoOpTrainingFunction]: ...
 
 
@@ -393,9 +549,10 @@ def training(
     cpu: str | None = None,
     memory: str | None = None,
     gpu: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
     metadata: dict[str, Any] | None = None,
+    max_retries: int | None = None,
 ) -> (
     Callable[..., TrainingFunction | _NoOpTrainingFunction]
     | TrainingFunction
@@ -418,6 +575,10 @@ def training(
     unchanged — the entrypoint handles dataset loading and config
     injection.
 
+    ``env`` accepts strings or single-value Chalk Secret references; the mapping
+    key sets the injected name, overriding aliases and prefixes. Local env
+    secrets are not supported for training.
+
     Outside a container, returns a :class:`TrainingFunction` that
     exposes ``.run_training()`` for remote execution and ``.local()``
     for in-process iteration.
@@ -439,6 +600,7 @@ def training(
             env=env,
             secrets=secrets,
             metadata=metadata,
+            max_retries=max_retries,
         )
 
     if func is not None:

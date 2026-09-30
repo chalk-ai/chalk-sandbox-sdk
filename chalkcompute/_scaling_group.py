@@ -32,6 +32,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -41,21 +42,28 @@ from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
 from protobuf.wkt import FieldMask
 
+from chalkcompute._logging import _StatusLogger
 from chalkcompute._connect import ConnectClient, build_image
 from chalkcompute._containerspec import ContainerSpec, validate_replica_and_utilization
+from chalkcompute._env import normalize_env
 from chalkcompute._deployment_proto import scaling_spec as build_scaling_spec
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_connect as sg_connect
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from chalkcompute._http import HTTPResponse, SYNC_HTTP_CLIENT
 from chalkcompute._naming import sanitize_dns_label
+from chalkcompute._image_build import normalize_image_volumes
 from chalkcompute._secret import SecretScope, resolve_lazy_secrets
+from chalkcompute._remote_function_tracing import (
+    TracingPolicyConfig,
+    merge_workload_tracing_env,
+    normalize_workload_tracing,
+)
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
     Volume,
     VolumeClient,
     VolumeMount,
     cleanup_owned_volumes,
-    normalize_volume_refs,
     referenced_volume_mount,
 )
 
@@ -229,6 +237,7 @@ class ScalingGroupRevisionInfo:
     created_at: datetime | None = None
     deleted_at: datetime | None = None
     is_current: bool = False
+    status_details: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -268,9 +277,9 @@ class ScalingGroup:
         cpu: str | None = None,
         memory: str | None = None,
         gpu: str | None = None,
-        env: dict[str, str] | None = None,
+        env: Mapping[str, str | _Secret] | None = None,
         secrets: list[_Secret] | None = None,
-        volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+        volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
         entrypoint: list[str] | None = None,
         port: int | None = 8080,
         protocol: str = "http",
@@ -286,14 +295,23 @@ class ScalingGroup:
         scale_from_zero_request_policy: ScaleFromZeroRequestPolicy | None = None,
         tags: dict[str, str] | None = None,
         chalk_identity: bool = False,
+        tracing: TracingPolicyConfig | None = None,
         chalk_client: Any | None = None,
     ) -> None:
         if image is None:
             raise TypeError(
                 "image must be an Image or image reference string, got None"
             )
+        env, secrets = normalize_env(env, secrets)
+        self._tracing = normalize_workload_tracing(tracing)
+        env = merge_workload_tracing_env(env, self._tracing)
+        normalized_image, resolved_volumes = normalize_image_volumes(image, volumes)
+        if normalized_image is None:
+            raise TypeError(
+                "image must be an Image or image reference string, got None"
+            )
         ContainerSpec.validate_fields(
-            image=image,
+            image=normalized_image,
             name=name,
             cpu=cpu,
             memory=memory,
@@ -312,7 +330,7 @@ class ScalingGroup:
             target_cpu_utilization_percentage=target_cpu_utilization_percentage,
             target_gpu_utilization_percentage=target_gpu_utilization_percentage,
         )
-        self._image: _Image | str | None = image
+        self._image: _Image | str | None = normalized_image
         self._name = name
         self._cpu = cpu
         self._memory = memory
@@ -320,7 +338,7 @@ class ScalingGroup:
         self._env = dict(env) if env else {}
         self._secrets: list[_Secret] = list(secrets or [])
         # Existence is checked at deploy time, not here.
-        self._referenced_volumes: list[VolumeMount] = normalize_volume_refs(volumes)
+        self._referenced_volumes: list[VolumeMount] = resolved_volumes
         # Populated at deploy time: referenced volumes plus any freshly
         # uploaded volumes.
         self._volumes: list[VolumeMount] = []
@@ -485,10 +503,41 @@ class ScalingGroup:
         ScalingGroupError
             If deployment fails or times out.
         """
+        from chalkcompute._progress import (
+            progress_add,
+            progress_done,
+            progress_fail,
+            progress_finish,
+        )
+
+        key = f"scaling_group:{id(self)}"
+        progress_add(key, "scaling_group", self._name or "Scaling group")
+        try:
+            self._deploy(
+                poll_interval=poll_interval,
+                build_timeout=build_timeout,
+                ready_timeout=ready_timeout,
+            )
+            progress_done(key, detail="ready")
+            logger.info("Scaling group ready: %s", self._scaling_group_id)
+        except BaseException:
+            progress_fail(key)
+            raise
+        finally:
+            progress_finish()
+        return self
+
+    def _deploy(
+        self, *, poll_interval: float, build_timeout: float, ready_timeout: float
+    ) -> ScalingGroup:
         from chalkcompute._image import Image
+        from chalkcompute._progress import progress_update
+
+        key = f"scaling_group:{id(self)}"
 
         # 1. Resolve image URI
         if isinstance(self._image, Image):
+            progress_update(key, detail="Building image")
             logger.info("Building image from %r...", self._image)
             self._built_image_uri = build_image(
                 self._client,
@@ -497,6 +546,7 @@ class ScalingGroup:
                 timeout=build_timeout,
             )
             logger.info("Image built: %s", self._built_image_uri)
+            progress_update(key, detail="Image built")
         else:
             self._built_image_uri = self._image
 
@@ -513,6 +563,7 @@ class ScalingGroup:
             self._image.lazy_local_files if isinstance(self._image, Image) else set()
         )
         if lazy_files:
+            progress_update(key, detail=f"Uploading {len(lazy_files)} local file(s)")
             logger.info("Uploading %d local file(s) to volume(s)...", len(lazy_files))
             assert isinstance(self._image, Image)
             driver = VolumeClient.from_connect(self._client)
@@ -529,6 +580,7 @@ class ScalingGroup:
         # 3. Build the ScalingGroupSpec
         resolved_secrets = self._secrets
         if any(s.is_lazy for s in self._secrets):
+            progress_update(key, detail="Resolving secrets")
             scope = SecretScope.scaling_group(sg_name)
             resolved_secrets, _upserted = resolve_lazy_secrets(
                 self._secrets, self._client, scope=scope
@@ -576,6 +628,7 @@ class ScalingGroup:
         )
 
         logger.info("Deploying scaling group '%s'...", sg_name)
+        progress_update(key, label=f'Scaling group "{sg_name}"', detail="Deploying")
         stub = self._client.stub(sg_connect.ScalingGroupManagerServiceClientSync)
         try:
             if self._scaling_group_id is None:
@@ -618,6 +671,7 @@ class ScalingGroup:
             self._scaling_group_info,
             require_ready_replicas=self._min_replicas > 0,
         ):
+            progress_update(key, detail="Waiting for readiness")
             self._poll_until_ready(
                 poll_interval=poll_interval,
                 timeout=ready_timeout,
@@ -725,6 +779,11 @@ class ScalingGroup:
         assert self._scaling_group_id is not None
         deadline = time.monotonic() + timeout
         info = self._scaling_group_info
+        status_log = _StatusLogger(
+            logger,
+            f"Scaling group {self._scaling_group_id}",
+            progress_key=f"scaling_group:{id(self)}",
+        )
         while time.monotonic() < deadline:
             stub = self._client.stub(sg_connect.ScalingGroupManagerServiceClientSync)
             try:
@@ -738,11 +797,11 @@ class ScalingGroup:
                 raise ScalingGroupError("GetScalingGroup returned no scaling group")
             info = _parse_scaling_group_response(response.scaling_group)
             self._scaling_group_info = info
-            logger.info(
-                "  poll: status=%s ready=%s available=%s",
+            status_log.update(
                 info.status,
-                info.ready_replicas,
-                info.available_replicas,
+                ready=info.ready_replicas,
+                available=info.available_replicas,
+                message=response.scaling_group.status_message or "",
             )
             if _scaling_group_info_is_ready(
                 info,
@@ -899,7 +958,9 @@ class ScalingGroup:
             # Driver is used here only to perform the delete action, not to
             # derive a mount type.
             driver = self._volume_driver or VolumeClient.from_connect(self._client)
-            cleanup_owned_volumes(driver, owned_volumes.values(), ())
+            cleanup_owned_volumes(
+                driver, owned_volumes.values(), self._referenced_volumes
+            )
         self._volumes = []
         self._owned_volumes = []
         self._volume_driver = None
@@ -1037,6 +1098,7 @@ def _parse_scaling_group_revision(
         scaling_group_name=data.scaling_group_name,
         status=data.status,
         status_message=data.status_message or None,
+        status_details=data.status_details or None,
         created_at=None if data.created_at is None else data.created_at.to_datetime(),
         deleted_at=None if data.deleted_at is None else data.deleted_at.to_datetime(),
         is_current=data.latest,

@@ -1,0 +1,1 @@
+- Add `cc.scorers.json_match`, a scorer that compares two columns as JSON documents

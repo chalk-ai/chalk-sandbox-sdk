@@ -7,9 +7,7 @@ set -euo pipefail
 unset VIRTUAL_ENV
 
 echo "--- :gear: Install sops"
-SOPS_VERSION=3.9.4
-curl -fsSL "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64" -o /tmp/sops
-chmod +x /tmp/sops
+.buildkite/sops.sh install
 
 echo "--- :key: Decrypt secrets"
 ENV_FILE="${BENCHMARK_ENV_FILE:-.env.enc}"

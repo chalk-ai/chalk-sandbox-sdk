@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from connectrpc.client import ConnectClientSync
 from connectrpc.method import IdempotencyLevel, MethodInfo
 
-from .service_pb import ArchiveEvaluationRunRequest, ArchiveEvaluationRunResponse, CreateEvaluationRequest, CreateEvaluationResponse, CreateEvaluationRunRequest, CreateEvaluationRunResponse, CreateEvaluationSuiteRequest, CreateEvaluationSuiteResponse, GetEvaluationRequest, GetEvaluationResponse, GetEvaluationRunRequest, GetEvaluationRunResponse, ListEvaluationRunsRequest, ListEvaluationRunsResponse, ListEvaluationSuitesRequest, ListEvaluationSuitesResponse, ListEvaluationsRequest, ListEvaluationsResponse, SetEvaluationRunBaselineRequest, SetEvaluationRunBaselineResponse
+from .service_pb import ArchiveEvaluationRunRequest, ArchiveEvaluationRunResponse, CreateEvaluationRequest, CreateEvaluationResponse, CreateEvaluationRunRequest, CreateEvaluationRunResponse, CreateEvaluationSuiteRequest, CreateEvaluationSuiteResponse, GetEvaluationRequest, GetEvaluationResponse, GetEvaluationRunRequest, GetEvaluationRunResponse, ListEvaluationRunsRequest, ListEvaluationRunsResponse, ListEvaluationSuitesRequest, ListEvaluationSuitesResponse, ListEvaluationsRequest, ListEvaluationsResponse, RescoreEvaluationRunRequest, RescoreEvaluationRunResponse, SetEvaluationRunBaselineRequest, SetEvaluationRunBaselineResponse
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -135,6 +135,31 @@ class EvaluationServiceClientSync(ConnectClientSync):
                 service_name="chalk.evaluation.v1.EvaluationService",
                 input=CreateEvaluationRunRequest,
                 output=CreateEvaluationRunResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def rescore_evaluation_run(
+        self,
+        request: RescoreEvaluationRunRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> RescoreEvaluationRunResponse:
+        """
+        Score a finished run's outputs again, with its own evaluation's scorers or
+        with another evaluation's over the same dataset revision and task. The task is the expensive half of an evaluation and the half you are not
+        changing while iterating on scorers, so its outputs are read back out of
+        the rescored run instead of being recomputed.
+        """
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="RescoreEvaluationRun",
+                service_name="chalk.evaluation.v1.EvaluationService",
+                input=RescoreEvaluationRunRequest,
+                output=RescoreEvaluationRunResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,

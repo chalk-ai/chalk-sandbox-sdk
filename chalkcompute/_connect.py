@@ -496,6 +496,7 @@ def build_image(
     ConnectError
         If the build fails or times out.
     """
+    image_spec = image.to_proto()
     image_uri = image.as_image_uri_if_possible()
     if image_uri is not None:
         return image_uri
@@ -503,7 +504,7 @@ def build_image(
     stub = client.stub(image_connect.CustomImageServiceClientSync)
     response = client.call(
         stub.get_or_build_custom_image,
-        image_pb.GetOrBuildCustomImageRequest(image_spec=image.to_proto()),
+        image_pb.GetOrBuildCustomImageRequest(image_spec=image_spec),
     )
     status = response.status
     if status in ("exists", "succeeded"):
@@ -511,7 +512,16 @@ def build_image(
     if status == "failed":
         raise ConnectError(f"Image build failed: {response.error or 'unknown'}")
 
-    build_id = response.build_id
+    return wait_for_image_build(
+        client, response.build_id, poll_interval=poll_interval, timeout=timeout
+    )
+
+
+def wait_for_image_build(
+    client: ConnectClient, build_id: str, *, poll_interval: float, timeout: float
+) -> str:
+    """Wait for an already-submitted build without another get-or-build call."""
+    stub = client.stub(image_connect.CustomImageServiceClientSync)
     deadline = time.monotonic() + timeout
     transient_failures = 0
     max_transient_failures = 5
@@ -522,6 +532,10 @@ def build_image(
                 image_pb.GetCustomImageRequest(build_id=build_id),
             )
         except ConnectRpcError as exc:
+            if exc.code == Code.NOT_FOUND:
+                # Image retention outlives the workflow record. The ensure
+                # protocol can recover by checking the retained image.
+                raise
             transient_failures += 1
             if transient_failures >= max_transient_failures:
                 raise ConnectError(
@@ -550,7 +564,33 @@ def build_image(
 
 
 def build_image_from_spec(image: Image, chalk_client: Any | None = None) -> str:
-    """Build an Image and return the URI. Authenticates via env vars."""
+    """Build an image and return its URI.
+
+    Parameters
+    ----------
+    image : Image
+        Image definition without volume-backed local files.
+    chalk_client : Any, optional
+        Chalk client supplying authentication. Defaults to environment auth.
+
+    Returns
+    -------
+    str
+        Built or cached image URI.
+
+    Raises
+    ------
+    ValueError
+        If volume-backed files are present. Use ``Image.build()`` or
+        ``build_image_with_volumes`` to include them.
+    ConnectError
+        If the image build fails or times out.
+    """
+    if image.lazy_local_files or image._volume_mounts:
+        raise ValueError(
+            "build_image() drops volume-backed local files. "
+            "Use Image.build() or build_image_with_volumes()."
+        )
     client = ConnectClient(chalk_client=chalk_client)
     return build_image(client, image)
 
@@ -595,17 +635,20 @@ def build_image_with_volumes(
     ConnectError
         If the build fails or times out.
     """
+    from chalkcompute._image import Image
+    from chalkcompute._image_build import normalize_image_volumes
     from chalkcompute._volume import VolumeClient
 
+    recipe, volumes = normalize_image_volumes(image, None)
+    assert isinstance(recipe, Image)
     image_uri = build_image(
         client,
-        image,
+        recipe,
         poll_interval=poll_interval,
         timeout=timeout,
     )
-    volumes: list[VolumeMount] = []
     if image.lazy_local_files:
-        volumes = VolumeClient.from_connect(client).upload_lazy_files(
+        volumes += VolumeClient.from_connect(client).upload_lazy_files(
             image,
             volume_prefix=volume_prefix,
         )
@@ -618,7 +661,29 @@ def build_image_with_volumes_from_spec(
     volume_prefix: str = "files",
     chalk_client: Any | None = None,
 ) -> tuple[str, list[VolumeMount]]:
-    """Build an Image and upload lazy files. Authenticates via env vars."""
+    """Build an image and upload its volume-backed local files.
+
+    Parameters
+    ----------
+    image : Image
+        Image definition and local files to upload.
+    volume_prefix : str, optional
+        Prefix for generated volume names. Defaults to ``"files"``.
+    chalk_client : Any, optional
+        Chalk client supplying authentication. Defaults to environment auth.
+
+    Returns
+    -------
+    tuple of str and list of VolumeMount
+        Image URI and pinned mounts for the image content.
+
+    Raises
+    ------
+    ConnectError
+        If the image build fails or times out.
+    VolumeError
+        If local file validation or upload fails.
+    """
     client = ConnectClient(chalk_client=chalk_client)
     return build_image_with_volumes(client, image, volume_prefix=volume_prefix)
 

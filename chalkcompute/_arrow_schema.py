@@ -140,6 +140,11 @@ def rich_to_arrow_schema(
                     name=name,
                     arrow_type=chalk_arrow_type(inner),
                     nullable=nullable,
+                    metadata=(
+                        {"chalk.python.type": inner.__chalk_type_id__}
+                        if isinstance(getattr(inner, "__chalk_type_id__", None), str)
+                        else {}
+                    ),
                 )
             )
             continue

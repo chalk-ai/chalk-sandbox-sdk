@@ -1,8 +1,13 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["chalkcompute>=2.11.1"]
+# ///
+
 """Deploy a chalkcompute function that uses chalkdf to compute a group-by sum.
 
-Run this file to deploy the function:
-
-    uv run python examples/df/deploy.py
+The deployment intentionally persists so ``call.py`` can invoke it and its
+ChalkDF behavior can be examined independently.
 """
 
 import logging

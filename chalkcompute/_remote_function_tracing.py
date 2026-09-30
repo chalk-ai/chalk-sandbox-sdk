@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -98,3 +99,76 @@ def normalize_remote_function_tracing(
     raise TypeError(
         f"tracing must be a bool or TracingPolicy, got {type(tracing).__name__}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Workload (sandbox / container / scaling group) tracing
+# ---------------------------------------------------------------------------
+
+OTEL_TRACES_SAMPLER_ENV_VAR = "OTEL_TRACES_SAMPLER"
+OTEL_TRACES_SAMPLER_ARG_ENV_VAR = "OTEL_TRACES_SAMPLER_ARG"
+
+# Standard OpenTelemetry sampler names (OTEL_TRACES_SAMPLER) for each mode.
+_MODE_TO_OTEL_SAMPLER: dict[str, str] = {
+    "parentbased_always_off": "parentbased_always_off",
+    "parentbased_traceidratio": "parentbased_traceidratio",
+    "always_off": "always_off",
+}
+
+
+def normalize_workload_tracing(
+    tracing: TracingPolicyConfig | None,
+) -> TracingPolicy | _RemoteFunctionTracingPolicy | None:
+    """Normalize ``tracing=`` for sandboxes, containers, and scaling groups.
+
+    Unlike :func:`normalize_remote_function_tracing`, ``None`` stays ``None``:
+    the workload keeps the platform's default sampler instead of opting in.
+    """
+    if tracing is None:
+        return None
+    return normalize_remote_function_tracing(tracing)
+
+
+def workload_tracing_env(
+    policy: TracingPolicy | _RemoteFunctionTracingPolicy | None,
+) -> dict[str, str]:
+    """Environment variables that apply ``policy`` inside a workload container.
+
+    The platform injects ``OTEL_EXPORTER_OTLP_ENDPOINT`` and a default
+    ``OTEL_TRACES_SAMPLER``/``OTEL_TRACES_SAMPLER_ARG`` into every workload but
+    never overwrites keys the spec already sets, so these two standard
+    OpenTelemetry variables are the per-workload override.
+    """
+    if policy is None:
+        return {}
+    if isinstance(policy, TracingPolicy):
+        return {
+            OTEL_TRACES_SAMPLER_ENV_VAR: _MODE_TO_OTEL_SAMPLER[
+                "parentbased_traceidratio"
+            ],
+            OTEL_TRACES_SAMPLER_ARG_ENV_VAR: repr(policy.sample_rate),
+        }
+    env = {OTEL_TRACES_SAMPLER_ENV_VAR: _MODE_TO_OTEL_SAMPLER[policy.mode]}
+    if policy.sample_rate is not None:
+        env[OTEL_TRACES_SAMPLER_ARG_ENV_VAR] = repr(policy.sample_rate)
+    return env
+
+
+def merge_workload_tracing_env(
+    env: Mapping[str, str],
+    policy: TracingPolicy | _RemoteFunctionTracingPolicy | None,
+) -> dict[str, str]:
+    """Return ``env`` with :func:`workload_tracing_env` added.
+
+    Raises ``ValueError`` when ``env`` already sets one of the sampler
+    variables: silently letting either side win would hide a misconfiguration,
+    so callers must pick ``tracing=`` or the raw variables, not both.
+    """
+    additions = workload_tracing_env(policy)
+    clashes = sorted(key for key in additions if key in env)
+    if clashes:
+        raise ValueError(
+            f"tracing= conflicts with env keys {clashes}; set the sampler through "
+            "tracing= or through env, not both"
+        )
+    return {**env, **additions}

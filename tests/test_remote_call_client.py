@@ -1,5 +1,7 @@
 import asyncio
 import contextvars
+import threading
+import time
 from datetime import datetime, timezone
 
 import pyarrow as pa
@@ -8,6 +10,7 @@ from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
 
+import chalkcompute._function as function_mod
 from chalkcompute._function import (
     FunctionError,
     FunctionVersionInfo,
@@ -21,6 +24,7 @@ from chalkcompute._remote_call_client import (
     RemoteCallTransportError,
     ServiceAuthContext,
 )
+from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from tests._fakes import FakeMethod, StubbedConnectClient
 
 REQUEST_TIMESTAMP_HEADER = "x-chalk-request-timestamp"
@@ -95,6 +99,9 @@ class FakeRemoteCallClient:
     enqueue_errors: list[BaseException] = []
     poll_errors: list[BaseException] = []
     purge_errors: list[BaseException] = []
+    # Simulates the native client hitting a crash-looping replica: call_ipc
+    # has no timeout param of its own, so it just never returns.
+    hang_forever: bool = False
 
     def __init__(
         self, endpoint: str, *, metadata, use_tls: bool | None, **kwargs
@@ -118,6 +125,10 @@ class FakeRemoteCallClient:
         input_ipc: bytes,
         metadata=(),
     ) -> list[bytes]:
+        if self.hang_forever:
+            import threading
+
+            threading.Event().wait()
         if self.call_ipc_errors:
             raise self.call_ipc_errors.pop(0)
         self.calls.append((name, input_ipc, list(metadata)))
@@ -163,6 +174,7 @@ def reset_fake_client(monkeypatch):
     FakeRemoteCallClient.enqueue_errors = []
     FakeRemoteCallClient.poll_errors = []
     FakeRemoteCallClient.purge_errors = []
+    FakeRemoteCallClient.hang_forever = False
     monkeypatch.setattr(remote_call_client, "RemoteCallClient", FakeRemoteCallClient)
     monkeypatch.setattr(
         "chalkcompute._function.service_auth_context_from_env", lambda: None
@@ -215,6 +227,59 @@ def test_calling_runs_local_function_in_process_without_wire_call() -> None:
 
     assert fn(41) == 42
     assert FakeRemoteCallClient.instances == []
+
+
+@pytest.mark.parametrize("async_call", [False, True])
+def test_remote_execution_error_is_never_retried(async_call: bool) -> None:
+    import json
+    from chalkcompute import RemoteExecutionError
+    from chalkcompute._remote_call_client import RemoteCallStatusError
+    from tests.test_remote_execution_error import payload
+
+    wire = json.loads(payload())
+    wire["exception"]["message"] = "transport error: GOAWAY connection reset"
+    FakeRemoteCallClient.call_ipc_errors = [RemoteCallStatusError(2, json.dumps(wire))]
+    fn = _remote_function()
+
+    async def call():
+        return await fn.remote(1)
+
+    with pytest.raises(RemoteExecutionError):
+        asyncio.run(call()) if async_call else fn.remote(1)
+    assert len(FakeRemoteCallClient.instances) == 1
+    assert not FakeRemoteCallClient.instances[0].closed
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("async_call", [False, True])
+def test_deferred_remote_execution_error_preserves_details(
+    stream: bool, async_call: bool
+) -> None:
+    from chalkcompute import RemoteExecutionError
+    from tests.test_remote_execution_error import payload
+
+    FakeRemoteCallClient.poll_results = [
+        _poll("failed", error_message=_err("ProxyError", payload())),
+    ]
+    fn = _remote_function()
+    handle = fn.defer(1)
+
+    handle._is_async = async_call
+
+    async def call():
+        if stream:
+            return [item async for item in handle.stream()]
+        return await handle.get()
+
+    with pytest.raises(RemoteExecutionError) as caught:
+        if async_call:
+            asyncio.run(call())
+        elif stream:
+            list(handle.stream())
+        else:
+            handle.get()
+    assert caught.value.call_id == "call-1"
+    assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
 
 
 def test_calling_handle_without_local_func_raises() -> None:
@@ -404,7 +469,9 @@ def _err(exc_type: str, message: str) -> str:
 
 
 def _poll(status_name, *, chunks=None, error_message=None):
-    status = {"pending": 1, "running": 2, "completed": 3, "failed": 4}[status_name]
+    status = {"pending": 1, "running": 2, "completed": 3, "failed": 4, "expired": 5}[
+        status_name
+    ]
     return RemoteCallPollResult(
         status=status,
         status_name=status_name,
@@ -452,6 +519,30 @@ def test_deferred_get_does_not_retry_genuine_user_error(monkeypatch) -> None:
     with pytest.raises(FunctionError, match="bad input"):
         handle.get(timeout=60)
     # Non-transient error: enqueued once, never resubmitted.
+    assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
+
+
+def test_deferred_get_fails_when_results_have_expired() -> None:
+    FakeRemoteCallClient.poll_results = [_poll("expired")]
+
+    handle = _remote_function().defer(98)
+
+    with pytest.raises(FunctionError, match="results have expired"):
+        handle.get()
+    assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
+
+
+def test_deferred_get_fails_when_call_is_no_longer_retained() -> None:
+    from chalkcompute._remote_call_client import RemoteCallNotFoundError
+
+    FakeRemoteCallClient.poll_errors = [
+        RemoteCallNotFoundError("remote call was not found or is no longer retained")
+    ]
+
+    handle = _remote_function().defer(98)
+
+    with pytest.raises(FunctionError, match="not found or is no longer retained"):
+        handle.get()
     assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
 
 
@@ -524,6 +615,16 @@ def test_sync_stream_does_not_retry_after_yielding(monkeypatch) -> None:
     assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
 
 
+def test_sync_stream_fails_when_results_have_expired() -> None:
+    FakeRemoteCallClient.poll_results = [_poll("expired")]
+
+    handle = _remote_function().defer(3)
+
+    with pytest.raises(FunctionError, match="results have expired"):
+        list(handle.stream())
+    assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
+
+
 def test_async_stream_retries_when_failure_precedes_any_output(monkeypatch) -> None:
     monkeypatch.setattr("chalkcompute._function.asyncio.sleep", _no_sleep)
     FakeRemoteCallClient.poll_results = [
@@ -539,6 +640,19 @@ def test_async_stream_retries_when_failure_precedes_any_output(monkeypatch) -> N
 
     assert asyncio.run(_collect()) == [[0]]
     assert len(FakeRemoteCallClient.instances[0].enqueues) == 2
+
+
+def test_async_stream_fails_when_results_have_expired() -> None:
+    FakeRemoteCallClient.poll_results = [_poll("expired")]
+
+    handle = _async_remote_function().defer(3)
+
+    async def _collect() -> list[list[int]]:
+        return [batch.column("result").to_pylist() async for batch in handle.stream()]
+
+    with pytest.raises(FunctionError, match="results have expired"):
+        asyncio.run(_collect())
+    assert len(FakeRemoteCallClient.instances[0].enqueues) == 1
 
 
 def test_defer_get_and_purge_use_queue_client() -> None:
@@ -878,3 +992,59 @@ def test_delete_drops_cached_call_clients() -> None:
     assert fn._remote_call_client is None
     assert fn._queue_call_client is None
     assert fn._version_info is None
+
+
+def test_direct_call_times_out_instead_of_hanging_forever() -> None:
+    # Simulates CHA-10415: the scaling group is crash-looping, so the native
+    # call_ipc (no timeout param of its own) never returns.
+    FakeRemoteCallClient.hang_forever = True
+
+    fn = _remote_function()
+    fn._call_timeout = 0.2
+
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match=r"timed out after 0\.2s"):
+        fn.remote(41)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 2.0
+
+
+def test_call_timeout_error_includes_scaling_group_status(monkeypatch) -> None:
+    FakeRemoteCallClient.hang_forever = True
+
+    fn = _remote_function()
+    fn._call_timeout = 0.2
+
+    monkeypatch.setattr(
+        function_mod,
+        "_get_scaling_group",
+        lambda client, name: sg_pb.ScalingGroupResponse(
+            name=name,
+            status="Unhealthy",
+            status_message="1/1 replicas unhealthy: Error (exit code 1)",
+        ),
+    )
+
+    with pytest.raises(
+        TimeoutError, match=r"Unhealthy.*1/1 replicas unhealthy: Error \(exit code 1\)"
+    ):
+        fn.remote(41)
+
+
+def test_call_timeout_none_disables_deadline() -> None:
+    # Explicit opt-out: call_timeout=None preserves the old unbounded wait.
+    FakeRemoteCallClient.hang_forever = True
+
+    fn = _remote_function()
+    fn._call_timeout = None
+
+    result: dict[str, object] = {}
+    thread = threading.Thread(
+        target=lambda: result.update(value=fn.remote(41)), daemon=True
+    )
+    thread.start()
+    thread.join(timeout=1.0)
+
+    assert thread.is_alive()
+    assert result == {}

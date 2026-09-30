@@ -50,14 +50,24 @@ import os
 import textwrap
 import time
 import typing
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, TypeVar, overload
 
+from chalkcompute._logging import _StatusLogger
 from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import ConnectClient
 from chalkcompute._containerspec import ContainerSpec, validate_replica_and_utilization
+from chalkcompute._env import normalize_env
 from chalkcompute._deployment_proto import function_config, scaling_spec
+from chalkcompute._function_deployment import (
+    ensure_external_function,
+    resolve_function_volumes,
+    function_source_root,
+)
+from chalkcompute._image_build import normalize_image_volumes
+from chalkcompute._secret import prepare_lazy_secrets
 from chalkcompute._function import (
     _REMOTE_ENV_VAR,
     _ROW_METADATA_COLUMN,
@@ -65,11 +75,9 @@ from chalkcompute._function import (
     RemoteFunction,
     SerializationFormat,
     _strip_source_for_deploy,
-    _build_and_upload,
     _callable_input_names,
     _cleanup_temp_files,
     _entrypoint_source,
-    _deploy_external_function,
     _get_external_function,
     _get_scaling_group,
     _is_chalkcompute_decorator,
@@ -105,8 +113,6 @@ from chalkcompute._volume import (
     VolumeClient,
     VolumeMount,
     cleanup_owned_volumes,
-    normalize_volume_refs,
-    referenced_volume_mount,
 )
 
 if TYPE_CHECKING:
@@ -745,9 +751,9 @@ class RemoteClass:
         cpu: str | None = None,
         memory: str | None = None,
         gpu: str | None = None,
-        env: dict[str, str] | None = None,
+        env: Mapping[str, str | _Secret] | None = None,
         secrets: list[_Secret] | None = None,
-        volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+        volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
         tags: dict[str, str] | None = None,
         chalk_identity: bool = False,
         authenticated: bool = False,
@@ -768,7 +774,7 @@ class RemoteClass:
         retries: int | RetryPolicy | None = None,
         rate_limit: int | RateLimitPolicy | None = None,
         concurrency: int | ConcurrencyPolicy | None = None,
-        quota: int | QueuePolicy | None = None,
+        queue_policy: QueuePolicy | None = None,
         schedule: str | None = None,
         tracing: TracingPolicyConfig | None = None,
         models: typing.Mapping[str, Any] | None = None,
@@ -776,8 +782,12 @@ class RemoteClass:
     ) -> None:
         self._user_cls: type | None = user_cls
         self._class_name = user_cls.__name__
+        env, secrets = normalize_env(env, secrets)
+        normalized_image, resolved_volumes = normalize_image_volumes(image, volumes)
+        if isinstance(normalized_image, str):
+            raise TypeError("class images must be Image instances")
         ContainerSpec.validate_fields(
-            image=image,
+            image=normalized_image,
             name=name,
             cpu=cpu,
             memory=memory,
@@ -795,7 +805,7 @@ class RemoteClass:
             target_gpu_utilization_percentage=target_gpu_utilization_percentage,
         )
         self._explicit_name = name
-        self._image = image
+        self._image = normalized_image
         self._cpu = cpu
         self._memory = memory
         self._gpu = gpu
@@ -806,7 +816,7 @@ class RemoteClass:
             self._env[MODELS_ENV_VAR] = encode_models_env(models)
         self._secrets: list[_Secret] = list(secrets or [])
         # Existence is checked once at deploy time, not here.
-        self._referenced_volumes: list[VolumeMount] = normalize_volume_refs(volumes)
+        self._referenced_volumes: list[VolumeMount] = resolved_volumes
         # Populated at deploy time: referenced volumes plus any freshly
         # uploaded volumes.
         self._volumes: list[VolumeMount] = []
@@ -859,9 +869,11 @@ class RemoteClass:
             if concurrency is not None
             else None
         )
-        self._quota = (
-            QueuePolicy.from_int_or_policy(quota) if quota is not None else None
-        )
+        if queue_policy is not None and not isinstance(queue_policy, QueuePolicy):
+            raise TypeError(
+                f"queue_policy must be a QueuePolicy, got {type(queue_policy).__name__}"
+            )
+        self._queue_policy = queue_policy
         self._tracing = normalize_remote_function_tracing(tracing)
 
         self._client = ConnectClient(chalk_client=chalk_client)
@@ -1038,7 +1050,7 @@ class RemoteClass:
         rc._retries = None
         rc._rate_limit = None
         rc._concurrency = None
-        rc._quota = None
+        rc._queue_policy = None
         rc._tracing = None
         rc._client = ConnectClient(chalk_client=chalk_client)
         rc._deployed = False
@@ -1087,6 +1099,7 @@ class RemoteClass:
         """
         user_cls = self._require_user_cls()
         source_file = self._source_file_for_deploy()
+        source_root = function_source_root(self._image, self._referenced_volumes)
 
         temp_files: list[str] = []
         source_path = Path(source_file)
@@ -1110,7 +1123,7 @@ class RemoteClass:
         deploy_image = _make_base_image(
             self._image,
             remote_call_runtime_package=self._remote_call_runtime_package(),
-        ).add_local_file(source_file, "/app/user_module.py")
+        ).add_local_file(source_file, f"{source_root}/user_module.py")
 
         # Precompute has-self flags for lifecycle hooks
         before_func = (
@@ -1139,10 +1152,17 @@ class RemoteClass:
             shim_path = _write_temp(shim_content)
             temp_files.append(shim_path)
             deploy_image = deploy_image.add_local_file(
-                shim_path, f"/app/handler_{method_info.name}.py"
+                shim_path, f"{source_root}/handler_{method_info.name}.py"
             )
 
-        deploy_image = deploy_image.env({"PYTHONPATH": "/app", _REMOTE_ENV_VAR: "1"})
+        deploy_image = deploy_image.env(
+            {
+                "PYTHONPATH": source_root
+                if source_root == "/app"
+                else f"{source_root}:/app",
+                _REMOTE_ENV_VAR: "1",
+            }
+        )
 
         return deploy_image, temp_files
 
@@ -1155,8 +1175,12 @@ class RemoteClass:
         poll_interval: float = 0.5,
         build_timeout: float = 600.0,
         ready_timeout: float = 300.0,
+        force_new_version: bool = False,
     ) -> RemoteClass:
-        """Build the image and deploy all methods as function versions.
+        """Deploy all methods, reusing unchanged function versions.
+
+        ``force_new_version=True`` creates fresh versions while still reusing
+        image builds and source uploads.
 
         Parameters
         ----------
@@ -1183,43 +1207,21 @@ class RemoteClass:
         ckey = f"class:{self._class_name}"
         progress_add(ckey, "class", f'Class "{self._class_name}"')
 
+        temp_files: list[str] = []
         try:
             # 1. Build deploy image
             deploy_image, temp_files = self._build_deploy_image()
-
-            # 2. Build image + upload lazy files
-            image_uri, new_vols, driver, volume_commits = _build_and_upload(
+            self._volumes = list(self._referenced_volumes)
+            self._volume_driver = None
+            deploy_volumes = resolve_function_volumes(
                 self._client,
-                deploy_image,
-                label=f"class '{self._class_name}'",
-                volume_name=f"cls-src-{self._explicit_name or self._class_name}",
+                image=deploy_image,
+                volume_name=self._explicit_name or self._class_name,
+                referenced=self._volumes,
                 poll_interval=poll_interval,
-                build_timeout=build_timeout,
-                progress_parent=ckey,
+                timeout=build_timeout,
             )
-            # A missing user-referenced volume fails the deploy. Checked once
-            # here, then reused across every per-method spec.
-            referenced_volumes = [
-                referenced_volume_mount(self._client, mount)
-                for mount in self._referenced_volumes
-            ]
-            self._volumes = [*referenced_volumes, *new_vols]
-            self._volume_driver = driver
-            _cleanup_temp_files(temp_files)
-
-            # Resolve lazy secrets once, into a local rather than
-            # self._secrets: they're shared by every method (one FUNCTION
-            # scope for the class), and keeping self._secrets as the user's
-            # lazy originals means a later .deploy() on the same object
-            # re-upserts instead of reusing a stale resolution.
-            resolved_secrets = self._secrets
-            if self._secrets and any(s.is_lazy for s in self._secrets):
-                from chalkcompute._secret import SecretScope, resolve_lazy_secrets
-
-                scope = SecretScope.function(self._explicit_name or self._class_name)
-                resolved_secrets, _upserted = resolve_lazy_secrets(
-                    self._secrets, self._client, scope=scope
-                )
+            resolved_secrets, local_secrets = prepare_lazy_secrets(self._secrets)
 
             # 3. Register each method as a function version
             sg_names: list[str] = []
@@ -1242,13 +1244,15 @@ class RemoteClass:
 
                 container_spec = ContainerSpec(
                     name=sg_name,
-                    image=image_uri,
+                    image="",
                     entrypoint=_local_install_entrypoint(handler_cmd),
-                    env=_remote_call_container_env(self._env),
+                    env=_remote_call_container_env(
+                        self._env, deploy_image._env.get("PYTHONPATH", "/app")
+                    ),
                     cpu=self._cpu,
                     memory=self._memory,
                     gpu=self._gpu,
-                    volumes=self._volumes,
+                    volumes=deploy_volumes,
                     secret_refs=resolved_secrets,
                     port=6666,
                     protocol="grpc",
@@ -1294,28 +1298,32 @@ class RemoteClass:
                     retries=self._retries,
                     rate_limit=self._rate_limit,
                     concurrency=self._concurrency,
-                    quota=self._quota,
+                    queue_policy=self._queue_policy,
                     schedule=self._schedule,
                     tracing=self._tracing,
                 )
 
                 logger.info("Registering method '%s'...", func_name)
-                external_function = _deploy_external_function(
+                ensured = ensure_external_function(
                     self._client,
                     function_name=func_name,
-                    external_function_id=(
-                        None
-                        if method_info.remote_function is None
-                        else method_info.remote_function.function_id
-                    ),
+                    image=deploy_image,
+                    local_secrets=local_secrets,
+                    force_new_version=force_new_version,
+                    poll_interval=poll_interval,
+                    timeout=build_timeout,
                     version_spec=catalog_pb.ExternalFunctionVersionSpec(
                         input_arrow_schema=input_schema,
                         output_arrow_schema=output_schema,
                         spec=spec,
                         config=config,
-                        volume_commits=volume_commits,
                     ),
                 )
+                external_function = ensured.external_function
+                if external_function is None:
+                    raise ClassBuildError(
+                        "Ensure response omitted the external function"
+                    )
                 efv = external_function.current_version
                 if efv is None:
                     progress_fail(mkey)
@@ -1325,11 +1333,13 @@ class RemoteClass:
 
                 # Build a RemoteFunction proxy for calling this method
                 rf = RemoteFunction._make_empty()
-                _apply_external_function(rf, external_function)
+                _apply_external_function(
+                    rf, external_function, scaling_group=ensured.scaling_group
+                )
                 method_info.remote_function = rf
                 version_info = rf.version_info
                 assert version_info is not None
-                sg_data = None
+                sg_data = ensured.scaling_group
 
                 logger.info(
                     "  %s v%s (id=%s)", func_name, version_info.version, version_info.id
@@ -1347,7 +1357,7 @@ class RemoteClass:
 
             # 5. Poll scaling groups until their backing pods can serve.
             if sg_names:
-                progress_update(ckey, detail="waiting for ready")
+                progress_update(ckey, detail="Waiting for readiness")
             for sg_name in sg_names:
                 self._poll_until_ready(
                     sg_name=sg_name,
@@ -1358,10 +1368,12 @@ class RemoteClass:
 
             self._deployed = True
             progress_done(ckey, detail="ready")
+            logger.info("Class ready: %s", self._class_name)
         except BaseException:
             progress_fail(ckey)
             raise
         finally:
+            _cleanup_temp_files(temp_files)
             progress_finish()
 
         return self
@@ -1376,6 +1388,9 @@ class RemoteClass:
     ) -> None:
         deadline = time.monotonic() + timeout
         status = "unknown"
+        status_log = _StatusLogger(
+            logger, f"Scaling group {sg_name}", progress_key=f"class:{self._class_name}"
+        )
         ready_replicas = 0
         available_replicas = 0
         while time.monotonic() < deadline:
@@ -1395,12 +1410,11 @@ class RemoteClass:
                 ):
                     rf._web_url = web_url
 
-            logger.info(
-                "  poll %s: status=%s ready=%s available=%s",
-                sg_name,
+            status_log.update(
                 status,
-                ready_replicas,
-                available_replicas,
+                ready=ready_replicas,
+                available=available_replicas,
+                message=sg.status_message or "",
             )
             if _scaling_group_is_ready(
                 sg, require_ready_replicas=require_ready_replicas
@@ -1605,9 +1619,9 @@ def cls(
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
-    volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+    volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
     chalk_identity: bool = False,
     authenticated: bool = False,
@@ -1628,7 +1642,7 @@ def cls(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
-    quota: int | QueuePolicy | None = None,
+    queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
     tracing: TracingPolicyConfig | None = None,
@@ -1643,9 +1657,9 @@ def cls(
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
-    volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+    volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
     chalk_identity: bool = False,
     authenticated: bool = False,
@@ -1666,7 +1680,7 @@ def cls(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
-    quota: int | QueuePolicy | None = None,
+    queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
     tracing: TracingPolicyConfig | None = None,
@@ -1682,9 +1696,9 @@ def cls(
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
-    volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+    volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
     chalk_identity: bool = False,
     authenticated: bool = False,
@@ -1705,7 +1719,7 @@ def cls(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
-    quota: int | QueuePolicy | None = None,
+    queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
     tracing: TracingPolicyConfig | None = None,
@@ -1737,13 +1751,20 @@ def cls(
     gpu
         GPU resource request (e.g. ``"nvidia-l4"``, ``"2:nvidia-a100"``).
     name
-        Custom class name. Defaults to the class's ``__name__``.
+        Optional registered-name override. Omit this in normal usage to use
+        the class's ``__name__``. Set it only when a different registered name
+        is intentional, such as preserving existing deployments after renaming
+        the Python class. Changing or removing an override changes the target
+        functions; it does not rename existing deployments.
     env
-        Environment variables to pass to the class containers.
+        Environment variables as strings or single-value Secret references.
+        The mapping key sets the injected name, overriding aliases and prefixes.
     secrets
         List of :class:`~chalkcompute.Secret` references to inject.
     volumes
-        List of ``(name, mount_path)`` tuples for persistent storage.
+        List of ``Volume`` handles, ``VolumeMount`` specifications, or
+        ``(name_or_volume, mount_path)`` tuples for persistent storage.
+        Volume handles preserve their selected ref or pinned version.
     min_replicas
         Minimum number of replicas per method.
     max_replicas
@@ -1780,10 +1801,11 @@ def cls(
         Maximum number of items to accumulate before invoking the handler.
         Defaults to 10 when batching is enabled.
     retries
-        Retry policy for handler invocations. Pass an ``int`` for simple
-        max-attempts with default exponential backoff, or a
-        :class:`~chalkcompute.RetryPolicy` for full control. Enforced
-        before each outbound RPC, not in the handler.
+        Retry policy for handler invocations. An ``int`` is the number of
+        retries after the initial execution. Redis Stream function queues
+        currently honor ``max_retries`` with a fixed reclaim delay; the
+        backoff, jitter, key, and exception-filter fields are reserved for
+        other invocation paths.
     rate_limit
         Rate limit policy for outbound calls. Pass an ``int`` for a simple
         "N per second" cap with a per-method key, or a
@@ -1798,10 +1820,11 @@ def cls(
         (``max_concurrent``, ``key``). Multiple methods sharing the same
         ``key`` share one gate — independent of ``rate_limit`` (which caps
         rate, not in-flight count).
-    quota
-        Queue quota policy: cap on queued calls per key. Pass an ``int``
-        for a simple ``max_queue_depth`` cap with a per-method key, or a
-        :class:`~chalkcompute.QueuePolicy` for full control.
+    queue_policy
+        Queue configuration shared by the class's methods, including the
+        pending-item cap and asynchronous result retention. Pass a
+        :class:`~chalkcompute.QueuePolicy`; terminal results are retained for
+        one day by default or for ``result_ttl_seconds`` when configured.
     schedule
         Optional crontab or Chalk duration string applied to every no-input
         ``@method`` in the class (e.g. ``"0 * * * *"`` or ``"1h"``).
@@ -1841,7 +1864,7 @@ def cls(
             retries=retries,
             rate_limit=rate_limit,
             concurrency=concurrency,
-            quota=quota,
+            queue_policy=queue_policy,
             schedule=schedule,
             tracing=tracing,
             models=models,

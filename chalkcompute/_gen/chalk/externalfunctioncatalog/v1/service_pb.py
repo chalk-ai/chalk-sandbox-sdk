@@ -16,7 +16,9 @@ from ...arrow.v1 import arrow_pb
 from ...auth.v1 import permissions_pb
 from ...flags.v1 import flags_pb
 from ...runtime.v1 import remote_python_call_pb
-from ...scalinggroup.v1 import service_pb
+from ...sandbox.v1 import service_pb
+from ...scalinggroup.v1 import service_pb as service_pb_
+from ...utils.v1 import sensitive_pb
 from ...volume.v2 import volume_pb
 
 if TYPE_CHECKING:
@@ -25,8 +27,9 @@ if TYPE_CHECKING:
 
     from ...arrow.v1.arrow_pb import Schema
     from ...runtime.v1.remote_python_call_pb import CallFunctionRequest, CallFunctionResponse, EnqueueRemoteCallRequest, EnqueueRemoteCallResponse
+    from ...sandbox.v1.service_pb import GetOrBuildCustomImageResponse, ImageSpec
     from ...scalinggroup.v1.service_pb import ScalingGroupResponse, ScalingGroupSpec, ScalingGroupVisibility
-    from ...volume.v2.volume_pb import CommitIntent
+    from ...volume.v2.volume_pb import CommitIntent, PathFileDelta, UploadedObjectReference, VolumeRef
 
 
 _RetryPolicyFields: TypeAlias = Literal["max_retries", "initial_backoff_ms", "backoff_multiplier", "max_backoff_ms", "key"]
@@ -171,7 +174,7 @@ class ConcurrencyPolicy(Message[_ConcurrencyPolicyFields]):
         max_concurrent: int
         key: str
 
-_QueuePolicyFields: TypeAlias = Literal["max_items", "key"]
+_QueuePolicyFields: TypeAlias = Literal["max_items", "key", "result_ttl_seconds"]
 
 class QueuePolicy(Message[_QueuePolicyFields]):
     """
@@ -198,9 +201,16 @@ class QueuePolicy(Message[_QueuePolicyFields]):
             ```proto
             optional string key = 2;
             ```
+        result_ttl_seconds:
+            How long asynchronous call results and their metadata remain in Redis after
+            the call is enqueued. Unset uses the platform default of 24 hours.
+
+            ```proto
+            optional int32 result_ttl_seconds = 3;
+            ```
     """
 
-    __slots__ = ("max_items", "key")
+    __slots__ = ("max_items", "key", "result_ttl_seconds")
 
     if TYPE_CHECKING:
 
@@ -209,11 +219,13 @@ class QueuePolicy(Message[_QueuePolicyFields]):
             *,
             max_items: int = 0,
             key: str | None = None,
+            result_ttl_seconds: int | None = None,
         ) -> None:
             pass
 
         max_items: int
         key: str
+        result_ttl_seconds: int
 
 _TracingPolicyFields: TypeAlias = Literal["mode", "sample_rate"]
 
@@ -584,6 +596,390 @@ class ExternalFunctionVersionSpec(Message[_ExternalFunctionVersionSpecFields]):
         spec: ScalingGroupSpec | None
         config: FunctionConfig | None
         volume_commits: list[CommitIntent]
+
+_DesiredFunctionSpecFields: TypeAlias = Literal["version_spec", "image", "sources", "local_secrets"]
+
+class DesiredFunctionSpec(Message[_DesiredFunctionSpecFields]):
+    """
+    The declarative inputs, before building images or materializing source volumes.
+
+    ```proto
+    message chalk.externalfunctioncatalog.v1.DesiredFunctionSpec
+    ```
+
+    Attributes:
+        version_spec:
+            container_spec.image and volume_commits must be empty. Existing user volume
+            mounts and secret references retain their normal semantics.
+
+            ```proto
+            optional chalk.externalfunctioncatalog.v1.ExternalFunctionVersionSpec version_spec = 1;
+            ```
+        image:
+            ```proto
+            optional chalk.sandbox.v1.ImageSpec image = 2;
+            ```
+        sources:
+            ```proto
+            repeated chalk.externalfunctioncatalog.v1.FunctionSourceMount sources = 3;
+            ```
+        local_secrets:
+            Local values are installed in the function's secret scope only on a miss.
+
+            ```proto
+            map<string, string> local_secrets = 4;
+            ```
+    """
+
+    __slots__ = ("version_spec", "image", "sources", "local_secrets")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            version_spec: ExternalFunctionVersionSpec | None = None,
+            image: ImageSpec | None = None,
+            sources: list[FunctionSourceMount] | None = None,
+            local_secrets: dict[str, str] | None = None,
+        ) -> None:
+            pass
+
+        version_spec: ExternalFunctionVersionSpec | None
+        image: ImageSpec | None
+        sources: list[FunctionSourceMount]
+        local_secrets: dict[str, str]
+
+_FunctionSourceMountFields: TypeAlias = Literal["tree_digest", "mount_path"]
+
+class FunctionSourceMount(Message[_FunctionSourceMountFields]):
+    """
+    ```proto
+    message chalk.externalfunctioncatalog.v1.FunctionSourceMount
+    ```
+
+    Attributes:
+        tree_digest:
+            ```proto
+            string tree_digest = 1;
+            ```
+        mount_path:
+            ```proto
+            string mount_path = 2;
+            ```
+    """
+
+    __slots__ = ("tree_digest", "mount_path")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            tree_digest: str = "",
+            mount_path: str = "",
+        ) -> None:
+            pass
+
+        tree_digest: str
+        mount_path: str
+
+_FunctionSourceFileFields: TypeAlias = Literal["path", "content_digest", "size", "mode"]
+
+class FunctionSourceFile(Message[_FunctionSourceFileFields]):
+    """
+    ```proto
+    message chalk.externalfunctioncatalog.v1.FunctionSourceFile
+    ```
+
+    Attributes:
+        path:
+            ```proto
+            string path = 1;
+            ```
+        content_digest:
+            Lowercase hex BLAKE3 of the uncompressed file bytes.
+
+            ```proto
+            string content_digest = 2;
+            ```
+        size:
+            ```proto
+            uint64 size = 3;
+            ```
+        mode:
+            ```proto
+            uint32 mode = 4;
+            ```
+    """
+
+    __slots__ = ("path", "content_digest", "size", "mode")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            path: str = "",
+            content_digest: str = "",
+            size: int = 0,
+            mode: int = 0,
+        ) -> None:
+            pass
+
+        path: str
+        content_digest: str
+        size: int
+        mode: int
+
+_FunctionSourceManifestFields: TypeAlias = Literal["tree_digest", "files"]
+
+class FunctionSourceManifest(Message[_FunctionSourceManifestFields]):
+    """
+    Sorted by relative POSIX path. The tree digest is BLAKE3 over the domain
+    "chalk.function-source.v1\\0" followed by each entry's length-prefixed UTF-8
+    path (u32 big endian), raw 32-byte digest, size (u64 BE), and mode (u32 BE).
+
+    ```proto
+    message chalk.externalfunctioncatalog.v1.FunctionSourceManifest
+    ```
+
+    Attributes:
+        tree_digest:
+            ```proto
+            string tree_digest = 1;
+            ```
+        files:
+            ```proto
+            repeated chalk.externalfunctioncatalog.v1.FunctionSourceFile files = 2;
+            ```
+    """
+
+    __slots__ = ("tree_digest", "files")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            tree_digest: str = "",
+            files: list[FunctionSourceFile] | None = None,
+        ) -> None:
+            pass
+
+        tree_digest: str
+        files: list[FunctionSourceFile]
+
+_FunctionDeploymentInputsFields: TypeAlias = Literal["manifests", "files", "uploaded_objects", "upload_volume"]
+
+class FunctionDeploymentInputs(Message[_FunctionDeploymentInputsFields]):
+    """
+    ```proto
+    message chalk.externalfunctioncatalog.v1.FunctionDeploymentInputs
+    ```
+
+    Attributes:
+        manifests:
+            ```proto
+            repeated chalk.externalfunctioncatalog.v1.FunctionSourceManifest manifests = 1;
+            ```
+        files:
+            Path is the content digest. Only file nodes are accepted. Metadata and
+            physical packing do not participate in source identity.
+
+            ```proto
+            repeated chalk.volume.v2.PathFileDelta files = 2;
+            ```
+        uploaded_objects:
+            ```proto
+            repeated chalk.volume.v2.UploadedObjectReference uploaded_objects = 3;
+            ```
+        upload_volume:
+            ```proto
+            optional chalk.volume.v2.VolumeRef upload_volume = 4;
+            ```
+    """
+
+    __slots__ = ("manifests", "files", "uploaded_objects", "upload_volume")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            manifests: list[FunctionSourceManifest] | None = None,
+            files: list[PathFileDelta] | None = None,
+            uploaded_objects: list[UploadedObjectReference] | None = None,
+            upload_volume: VolumeRef | None = None,
+        ) -> None:
+            pass
+
+        manifests: list[FunctionSourceManifest]
+        files: list[PathFileDelta]
+        uploaded_objects: list[UploadedObjectReference]
+        upload_volume: VolumeRef | None
+
+_EnsureExternalFunctionRequestFields: TypeAlias = Literal["request_id", "function_name", "spec", "force_new_version", "supplied_inputs"]
+
+class EnsureExternalFunctionRequest(Message[_EnsureExternalFunctionRequestFields]):
+    """
+    ```proto
+    message chalk.externalfunctioncatalog.v1.EnsureExternalFunctionRequest
+    ```
+
+    Attributes:
+        request_id:
+            Reuse for continuation/retry, not for a subsequent deployment attempt.
+
+            ```proto
+            string request_id = 1;
+            ```
+        function_name:
+            ```proto
+            string function_name = 2;
+            ```
+        spec:
+            ```proto
+            optional chalk.externalfunctioncatalog.v1.DesiredFunctionSpec spec = 3;
+            ```
+        force_new_version:
+            ```proto
+            bool force_new_version = 4;
+            ```
+        supplied_inputs:
+            ```proto
+            optional chalk.externalfunctioncatalog.v1.FunctionDeploymentInputs supplied_inputs = 5;
+            ```
+    """
+
+    __slots__ = ("request_id", "function_name", "spec", "force_new_version", "supplied_inputs")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            request_id: str = "",
+            function_name: str = "",
+            spec: DesiredFunctionSpec | None = None,
+            force_new_version: bool = False,
+            supplied_inputs: FunctionDeploymentInputs | None = None,
+        ) -> None:
+            pass
+
+        request_id: str
+        function_name: str
+        spec: DesiredFunctionSpec | None
+        force_new_version: bool
+        supplied_inputs: FunctionDeploymentInputs | None
+
+_MissingFunctionDeploymentInputsFields: TypeAlias = Literal["tree_digests", "file_digests", "upload_volume"]
+
+class MissingFunctionDeploymentInputs(Message[_MissingFunctionDeploymentInputsFields]):
+    """
+    ```proto
+    message chalk.externalfunctioncatalog.v1.MissingFunctionDeploymentInputs
+    ```
+
+    Attributes:
+        tree_digests:
+            ```proto
+            repeated string tree_digests = 1;
+            ```
+        file_digests:
+            ```proto
+            repeated string file_digests = 2;
+            ```
+        upload_volume:
+            ```proto
+            optional chalk.volume.v2.VolumeRef upload_volume = 3;
+            ```
+    """
+
+    __slots__ = ("tree_digests", "file_digests", "upload_volume")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            tree_digests: list[str] | None = None,
+            file_digests: list[str] | None = None,
+            upload_volume: VolumeRef | None = None,
+        ) -> None:
+            pass
+
+        tree_digests: list[str]
+        file_digests: list[str]
+        upload_volume: VolumeRef | None
+
+_EnsuredExternalFunctionFields: TypeAlias = Literal["external_function", "scaling_group", "reused_version"]
+
+class EnsuredExternalFunction(Message[_EnsuredExternalFunctionFields]):
+    """
+    ```proto
+    message chalk.externalfunctioncatalog.v1.EnsuredExternalFunction
+    ```
+
+    Attributes:
+        external_function:
+            ```proto
+            optional chalk.externalfunctioncatalog.v1.ExternalFunction external_function = 1;
+            ```
+        scaling_group:
+            ```proto
+            optional chalk.scalinggroup.v1.ScalingGroupResponse scaling_group = 2;
+            ```
+        reused_version:
+            ```proto
+            bool reused_version = 3;
+            ```
+    """
+
+    __slots__ = ("external_function", "scaling_group", "reused_version")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            external_function: ExternalFunction | None = None,
+            scaling_group: ScalingGroupResponse | None = None,
+            reused_version: bool = False,
+        ) -> None:
+            pass
+
+        external_function: ExternalFunction | None
+        scaling_group: ScalingGroupResponse | None
+        reused_version: bool
+
+_EnsureExternalFunctionResponseFields: TypeAlias = Literal["complete", "missing_inputs", "pending_image_build"]
+
+class EnsureExternalFunctionResponse(Message[_EnsureExternalFunctionResponseFields]):
+    """
+    ```proto
+    message chalk.externalfunctioncatalog.v1.EnsureExternalFunctionResponse
+    ```
+
+    Attributes:
+        result:
+            ```proto
+            oneof result
+            ```
+    """
+
+    __slots__ = ("result",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            result: Oneof[Literal["complete"], EnsuredExternalFunction] | Oneof[Literal["missing_inputs"], MissingFunctionDeploymentInputs] | Oneof[Literal["pending_image_build"], GetOrBuildCustomImageResponse] | None = None,
+        ) -> None:
+            pass
+
+        result: Oneof[Literal["complete"], EnsuredExternalFunction] | Oneof[Literal["missing_inputs"], MissingFunctionDeploymentInputs] | Oneof[Literal["pending_image_build"], GetOrBuildCustomImageResponse] | None
 
 _ExternalFunctionTrafficFields: TypeAlias = Literal["targets"]
 
@@ -2140,13 +2536,15 @@ class ExternalFunctionScheduledRunStatus(Enum):
 
 
 _DESC = file_desc(
-    b'\n.chalk/externalfunctioncatalog/v1/service.proto\x12 chalk.externalfunctioncatalog.v1\x1a\x1achalk/arrow/v1/arrow.proto\x1a\x1fchalk/auth/v1/permissions.proto\x1a\x1achalk/flags/v1/flags.proto\x1a)chalk/runtime/v1/remote_python_call.proto\x1a#chalk/scalinggroup/v1/service.proto\x1a\x1cchalk/volume/v2/volume.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a google/protobuf/field_mask.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto"\xa0\x02\n\x0bRetryPolicy\x12\x1f\n\x0bmax_retries\x18\x01 \x01(\x05R\nmaxRetries\x121\n\x12initial_backoff_ms\x18\x02 \x01(\x05H\x00R\x10initialBackoffMs\x88\x01\x01\x122\n\x12backoff_multiplier\x18\x03 \x01(\x01H\x01R\x11backoffMultiplier\x88\x01\x01\x12)\n\x0emax_backoff_ms\x18\x04 \x01(\x05H\x02R\x0cmaxBackoffMs\x88\x01\x01\x12\x15\n\x03key\x18\x05 \x01(\tH\x03R\x03key\x88\x01\x01B\x15\n\x13_initial_backoff_msB\x15\n\x13_backoff_multiplierB\x11\n\x0f_max_backoff_msB\x06\n\x04_key"\x86\x01\n\x0fRateLimitPolicy\x12\x12\n\x04rate\x18\x01 \x01(\x05R\x04rate\x12@\n\x03per\x18\x02 \x01(\x0e2..chalk.externalfunctioncatalog.v1.RateLimitPerR\x03per\x12\x15\n\x03key\x18\x03 \x01(\tH\x00R\x03key\x88\x01\x01B\x06\n\x04_key"Y\n\x11ConcurrencyPolicy\x12%\n\x0emax_concurrent\x18\x01 \x01(\x05R\rmaxConcurrent\x12\x15\n\x03key\x18\x02 \x01(\tH\x00R\x03key\x88\x01\x01B\x06\n\x04_key"I\n\x0bQueuePolicy\x12\x1b\n\tmax_items\x18\x01 \x01(\x05R\x08maxItems\x12\x15\n\x03key\x18\x02 \x01(\tH\x00R\x03key\x88\x01\x01B\x06\n\x04_key"\x88\x01\n\rTracingPolicy\x12A\n\x04mode\x18\x01 \x01(\x0e2-.chalk.externalfunctioncatalog.v1.TracingModeR\x04mode\x12$\n\x0bsample_rate\x18\x02 \x01(\x01H\x00R\nsampleRate\x88\x01\x01B\x0e\n\x0c_sample_rate"\xd9\x07\n\x0eFunctionConfig\x12m\n\x14serialization_format\x18\x01 \x01(\x0e25.chalk.externalfunctioncatalog.v1.SerializationFormatH\x00R\x13serializationFormat\x88\x01\x01\x12W\n\x07options\x18\x02 \x03(\x0b2=.chalk.externalfunctioncatalog.v1.FunctionConfig.OptionsEntryR\x07options\x123\n\x13max_buffer_duration\x18\x03 \x01(\x05H\x01R\x11maxBufferDuration\x88\x01\x01\x12/\n\x11max_batching_size\x18\x04 \x01(\x05H\x02R\x0fmaxBatchingSize\x88\x01\x01\x12U\n\x0cretry_policy\x18\x05 \x01(\x0b2-.chalk.externalfunctioncatalog.v1.RetryPolicyH\x03R\x0bretryPolicy\x88\x01\x01\x12U\n\nrate_limit\x18\x06 \x01(\x0b21.chalk.externalfunctioncatalog.v1.RateLimitPolicyH\x04R\trateLimit\x88\x01\x01\x12Z\n\x0bconcurrency\x18\x07 \x01(\x0b23.chalk.externalfunctioncatalog.v1.ConcurrencyPolicyH\x05R\x0bconcurrency\x88\x01\x01\x12H\n\x05queue\x18\x08 \x01(\x0b2-.chalk.externalfunctioncatalog.v1.QueuePolicyH\x06R\x05queue\x88\x01\x01\x12\x1f\n\x08schedule\x18\t \x01(\tH\x07R\x08schedule\x88\x01\x01\x12N\n\x07tracing\x18\n \x01(\x0b2/.chalk.externalfunctioncatalog.v1.TracingPolicyH\x08R\x07tracing\x88\x01\x01\x1a:\n\x0cOptionsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x17\n\x15_serialization_formatB\x16\n\x14_max_buffer_durationB\x14\n\x12_max_batching_sizeB\x0f\n\r_retry_policyB\r\n\x0b_rate_limitB\x0e\n\x0c_concurrencyB\x08\n\x06_queueB\x0b\n\t_scheduleB\n\n\x08_tracing"\xe4\x04\n\x17ExternalFunctionVersion\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n\x0bfunction_id\x18\x0b \x01(\tR\nfunctionId\x12#\n\rfunction_name\x18\x02 \x01(\tR\x0cfunctionName\x12\x18\n\x07version\x18\x03 \x01(\x05R\x07version\x12D\n\x12input_arrow_schema\x18\x04 \x01(\x0b2\x16.chalk.arrow.v1.SchemaR\x10inputArrowSchema\x12F\n\x13output_arrow_schema\x18\x05 \x01(\x0b2\x16.chalk.arrow.v1.SchemaR\x11outputArrowSchema\x12,\n\x12scaling_group_name\x18\x06 \x01(\tR\x10scalingGroupName\x129\n\x19scaling_group_revision_id\x18\x07 \x01(\tR\x16scalingGroupRevisionId\x129\n\ncreated_at\x18\x08 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12M\n\x06config\x18\t \x01(\x0b20.chalk.externalfunctioncatalog.v1.FunctionConfigH\x00R\x06config\x88\x01\x01\x12>\n\ndeleted_at\x18\n \x01(\x0b2\x1a.google.protobuf.TimestampH\x01R\tdeletedAt\x88\x01\x01B\t\n\x07_configB\r\n\x0b_deleted_at"\xb6\x03\n$CreateExternalFunctionVersionRequest\x12#\n\rfunction_name\x18\x01 \x01(\tR\x0cfunctionName\x12D\n\x12input_arrow_schema\x18\x02 \x01(\x0b2\x16.chalk.arrow.v1.SchemaR\x10inputArrowSchema\x12F\n\x13output_arrow_schema\x18\x03 \x01(\x0b2\x16.chalk.arrow.v1.SchemaR\x11outputArrowSchema\x12;\n\x04spec\x18\x04 \x01(\x0b2\'.chalk.scalinggroup.v1.ScalingGroupSpecR\x04spec\x12M\n\x06config\x18\x05 \x01(\x0b20.chalk.externalfunctioncatalog.v1.FunctionConfigH\x00R\x06config\x88\x01\x01\x12D\n\x0evolume_commits\x18\x06 \x03(\x0b2\x1d.chalk.volume.v2.CommitIntentR\rvolumeCommitsB\t\n\x07_config"\xf0\x01\n%CreateExternalFunctionVersionResponse\x12u\n\x19external_function_version\x18\x01 \x01(\x0b29.chalk.externalfunctioncatalog.v1.ExternalFunctionVersionR\x17externalFunctionVersion\x12P\n\rscaling_group\x18\x02 \x01(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseR\x0cscalingGroup"\x88\x03\n\x1bExternalFunctionVersionSpec\x12D\n\x12input_arrow_schema\x18\x01 \x01(\x0b2\x16.chalk.arrow.v1.SchemaR\x10inputArrowSchema\x12F\n\x13output_arrow_schema\x18\x02 \x01(\x0b2\x16.chalk.arrow.v1.SchemaR\x11outputArrowSchema\x12;\n\x04spec\x18\x03 \x01(\x0b2\'.chalk.scalinggroup.v1.ScalingGroupSpecR\x04spec\x12M\n\x06config\x18\x04 \x01(\x0b20.chalk.externalfunctioncatalog.v1.FunctionConfigH\x00R\x06config\x88\x01\x01\x12D\n\x0evolume_commits\x18\x05 \x03(\x0b2\x1d.chalk.volume.v2.CommitIntentR\rvolumeCommitsB\t\n\x07_config"t\n\x17ExternalFunctionTraffic\x12Y\n\x07targets\x18\x01 \x03(\x0b2?.chalk.externalfunctioncatalog.v1.ExternalFunctionTrafficTargetR\x07targets"\xcf\x01\n\x1dExternalFunctionTrafficTarget\x12A\n\x1cexternal_function_version_id\x18\x01 \x01(\tH\x00R\x19externalFunctionVersionId\x12?\n\x0elatest_version\x18\x02 \x01(\x0b2\x16.google.protobuf.EmptyH\x00R\rlatestVersion\x12\x18\n\x07percent\x18\x03 \x01(\rR\x07percentB\x10\n\x0eversion_target"\x97\x01\n\x1dCreateExternalFunctionRequest\x12#\n\rfunction_name\x18\x01 \x01(\tR\x0cfunctionName\x12Q\n\x04spec\x18\x02 \x01(\x0b2=.chalk.externalfunctioncatalog.v1.ExternalFunctionVersionSpecR\x04spec"\x81\x01\n\x1eCreateExternalFunctionResponse\x12_\n\x11external_function\x18\x01 \x01(\x0b22.chalk.externalfunctioncatalog.v1.ExternalFunctionR\x10externalFunction"\xb6\x02\n\x1dUpdateExternalFunctionRequest\x120\n\x14external_function_id\x18\x01 \x01(\tR\x12externalFunctionId\x12Q\n\x04spec\x18\x02 \x01(\x0b2=.chalk.externalfunctioncatalog.v1.ExternalFunctionVersionSpecR\x04spec\x12S\n\x07traffic\x18\x03 \x01(\x0b29.chalk.externalfunctioncatalog.v1.ExternalFunctionTrafficR\x07traffic\x12;\n\x0bupdate_mask\x18\x04 \x01(\x0b2\x1a.google.protobuf.FieldMaskR\nupdateMask"\x81\x01\n\x1eUpdateExternalFunctionResponse\x12_\n\x11external_function\x18\x01 \x01(\x0b22.chalk.externalfunctioncatalog.v1.ExternalFunctionR\x10externalFunction"\xdf\x02\n\x10ExternalFunction\x12\x0e\n\x02id\x18\x06 \x01(\tR\x02id\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12b\n\x0fcurrent_version\x18\x02 \x01(\x0b29.chalk.externalfunctioncatalog.v1.ExternalFunctionVersionR\x0ecurrentVersion\x129\n\ncreated_at\x18\x03 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n\nupdated_at\x18\x04 \x01(\x0b2\x1a.google.protobuf.TimestampR\tupdatedAt\x12>\n\ndeleted_at\x18\x05 \x01(\x0b2\x1a.google.protobuf.TimestampH\x00R\tdeletedAt\x88\x01\x01B\r\n\x0b_deleted_at"\xfc\x02\n\x1aGetExternalFunctionRequest\x12$\n\x0bfunction_id\x18\x01 \x01(\tH\x00R\nfunctionId\x88\x01\x01\x12(\n\rfunction_name\x18\x02 \x01(\tH\x01R\x0cfunctionName\x88\x01\x01\x12;\n\x17include_active_schedule\x18\x03 \x01(\x08H\x02R\x15includeActiveSchedule\x88\x01\x01\x127\n\x15include_scaling_group\x18\x04 \x01(\x08H\x03R\x13includeScalingGroup\x88\x01\x01\x12,\n\x0finclude_deleted\x18\x05 \x01(\x08H\x04R\x0eincludeDeleted\x88\x01\x01B\x0e\n\x0c_function_idB\x10\n\x0e_function_nameB\x1a\n\x18_include_active_scheduleB\x18\n\x16_include_scaling_groupB\x12\n\x10_include_deleted"\xdb\x02\n\x1bGetExternalFunctionResponse\x12_\n\x11external_function\x18\x01 \x01(\x0b22.chalk.externalfunctioncatalog.v1.ExternalFunctionR\x10externalFunction\x12^\n\x0factive_schedule\x18\x02 \x01(\x0b20.chalk.externalfunctioncatalog.v1.ActiveScheduleH\x00R\x0eactiveSchedule\x88\x01\x01\x12U\n\rscaling_group\x18\x03 \x01(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseH\x01R\x0cscalingGroup\x88\x01\x01B\x12\n\x10_active_scheduleB\x10\n\x0e_scaling_group"\xb9\x01\n\x1aExternalFunctionVersionKey\x12$\n\x0bfunction_id\x18\x03 \x01(\tH\x00R\nfunctionId\x88\x01\x01\x12(\n\rfunction_name\x18\x01 \x01(\tH\x01R\x0cfunctionName\x88\x01\x01\x12\x1d\n\x07version\x18\x02 \x01(\x05H\x02R\x07version\x88\x01\x01B\x0e\n\x0c_function_idB\x10\n\x0e_function_nameB\n\n\x08_version"\xe5\x03\n!GetExternalFunctionVersionRequest\x12\x10\n\x02id\x18\x01 \x01(\tH\x00R\x02id\x12P\n\x03key\x18\x02 \x01(\x0b2<.chalk.externalfunctioncatalog.v1.ExternalFunctionVersionKeyH\x00R\x03key\x127\n\x15include_scaling_group\x18\x03 \x01(\x08H\x01R\x13includeScalingGroup\x88\x01\x01\x12;\n\x17include_active_schedule\x18\x04 \x01(\x08H\x02R\x15includeActiveSchedule\x88\x01\x01\x12`\n\nvisibility\x18\x05 \x03(\x0e2<.chalk.externalfunctioncatalog.v1.ExternalFunctionVisibilityR\nvisibilityB\x02\x18\x01\x12,\n\x0finclude_deleted\x18\x06 \x01(\x08H\x03R\x0eincludeDeleted\x88\x01\x01B\x0c\n\nidentifierB\x18\n\x16_include_scaling_groupB\x1a\n\x18_include_active_scheduleB\x12\n\x10_include_deleted"\xf8\x02\n"GetExternalFunctionVersionResponse\x12u\n\x19external_function_version\x18\x01 \x01(\x0b29.chalk.externalfunctioncatalog.v1.ExternalFunctionVersionR\x17externalFunctionVersion\x12U\n\rscaling_group\x18\x02 \x01(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseH\x00R\x0cscalingGroup\x88\x01\x01\x12^\n\x0factive_schedule\x18\x03 \x01(\x0b20.chalk.externalfunctioncatalog.v1.ActiveScheduleH\x01R\x0eactiveSchedule\x88\x01\x01B\x10\n\x0e_scaling_groupB\x12\n\x10_active_schedule"K\n!ExternalFunctionVersionSourceFile\x12\x12\n\x04path\x18\x01 \x01(\tR\x04path\x12\x12\n\x04size\x18\x02 \x01(\x04R\x04size"Y\n\'GetExternalFunctionVersionSourceRequest\x12.\n\x13function_version_id\x18\x01 \x01(\tR\x11functionVersionId"\x82\x02\n(GetExternalFunctionVersionSourceResponse\x12\x1f\n\x0bvolume_name\x18\x01 \x01(\tR\nvolumeName\x12*\n\x11volume_version_id\x18\x02 \x01(\x04R\x0fvolumeVersionId\x12!\n\x0cprimary_path\x18\x03 \x01(\tR\x0bprimaryPath\x12f\n\x0csource_files\x18\x04 \x03(\x0b2C.chalk.externalfunctioncatalog.v1.ExternalFunctionVersionSourceFileR\x0bsourceFiles"$\n\x0eActiveSchedule\x12\x12\n\x04cron\x18\x01 \x01(\tR\x04cron"\xb8\x04\n#ListExternalFunctionVersionsRequest\x12$\n\x0bfunction_id\x18\t \x01(\tH\x00R\nfunctionId\x88\x01\x01\x12(\n\rfunction_name\x18\x04 \x01(\tH\x01R\x0cfunctionName\x88\x01\x01\x12\x10\n\x03ids\x18\x07 \x03(\tR\x03ids\x12\x1b\n\x06cursor\x18\x01 \x01(\tH\x02R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x02 \x01(\x05H\x03R\x05limit\x88\x01\x01\x127\n\x15include_scaling_group\x18\x03 \x01(\x08H\x04R\x13includeScalingGroup\x88\x01\x01\x12,\n\x0finclude_deleted\x18\x06 \x01(\x08H\x05R\x0eincludeDeleted\x88\x01\x01\x12_\n\x07filters\x18\x05 \x01(\x0b2E.chalk.externalfunctioncatalog.v1.ListExternalFunctionVersionsFiltersR\x07filters\x12<\n\tread_mask\x18\x08 \x01(\x0b2\x1a.google.protobuf.FieldMaskH\x06R\x08readMask\x88\x01\x01B\x0e\n\x0c_function_idB\x10\n\x0e_function_nameB\t\n\x07_cursorB\x08\n\x06_limitB\x18\n\x16_include_scaling_groupB\x12\n\x10_include_deletedB\x0c\n\n_read_mask"\x87\x01\n#ListExternalFunctionVersionsFilters\x12`\n\nvisibility\x18\x01 \x03(\x0e2<.chalk.externalfunctioncatalog.v1.ExternalFunctionVisibilityR\nvisibilityB\x02\x18\x01"\x83\x02\n!ListExternalFunctionVersionsEntry\x12u\n\x19external_function_version\x18\x01 \x01(\x0b29.chalk.externalfunctioncatalog.v1.ExternalFunctionVersionR\x17externalFunctionVersion\x12U\n\rscaling_group\x18\x02 \x01(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseH\x00R\x0cscalingGroup\x88\x01\x01B\x10\n\x0e_scaling_group"\xbb\x01\n$ListExternalFunctionVersionsResponse\x12]\n\x07entries\x18\x01 \x03(\x0b2C.chalk.externalfunctioncatalog.v1.ListExternalFunctionVersionsEntryR\x07entries\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"\x98\x01\n$DeleteExternalFunctionVersionRequest\x12\x10\n\x02id\x18\x01 \x01(\tH\x00R\x02id\x12P\n\x03key\x18\x02 \x01(\x0b2<.chalk.externalfunctioncatalog.v1.ExternalFunctionVersionKeyH\x00R\x03keyB\x0c\n\nidentifier"\'\n%DeleteExternalFunctionVersionResponse"\x91\x01\n\x1dDeleteExternalFunctionRequest\x12$\n\x0bfunction_id\x18\x02 \x01(\tH\x00R\nfunctionId\x88\x01\x01\x12(\n\rfunction_name\x18\x01 \x01(\tH\x01R\x0cfunctionName\x88\x01\x01B\x0e\n\x0c_function_idB\x10\n\x0e_function_name" \n\x1eDeleteExternalFunctionResponse"\xe6\x05\n\x17ExternalFunctionSummary\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12%\n\x0elatest_version\x18\x02 \x01(\x05R\rlatestVersion\x129\n\x19latest_scaling_group_name\x18\x03 \x01(\tR\x16latestScalingGroupName\x12F\n\x11latest_updated_at\x18\x04 \x01(\x0b2\x1a.google.protobuf.TimestampR\x0flatestUpdatedAt\x12M\n\x06config\x18\x05 \x01(\x0b20.chalk.externalfunctioncatalog.v1.FunctionConfigH\x00R\x06config\x88\x01\x01\x12U\n\rscaling_group\x18\x06 \x01(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseH\x01R\x0cscalingGroup\x88\x01\x01\x12^\n\x0factive_schedule\x18\x07 \x01(\x0b20.chalk.externalfunctioncatalog.v1.ActiveScheduleH\x02R\x0eactiveSchedule\x88\x01\x01\x12Q\n\nvisibility\x18\x08 \x01(\x0e2-.chalk.scalinggroup.v1.ScalingGroupVisibilityR\nvisibilityB\x02\x18\x01\x129\n\ncreated_at\x18\t \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12\'\n\x0fcurrent_version\x18\n \x01(\x05R\x0ecurrentVersion\x12\x1f\n\x0bfunction_id\x18\x0b \x01(\tR\nfunctionIdB\t\n\x07_configB\x10\n\x0e_scaling_groupB\x12\n\x10_active_schedule"\x86\x05\n\x1cListExternalFunctionsRequest\x12\x1b\n\x06cursor\x18\x01 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x02 \x01(\x05H\x01R\x05limit\x88\x01\x01\x127\n\x15include_scaling_group\x18\x03 \x01(\x08H\x02R\x13includeScalingGroup\x88\x01\x01\x12;\n\x17include_active_schedule\x18\x04 \x01(\x08H\x03R\x15includeActiveSchedule\x88\x01\x01\x12,\n\x0finclude_deleted\x18\t \x01(\x08H\x04R\x0eincludeDeleted\x88\x01\x01\x12X\n\x07filters\x18\x05 \x01(\x0b2>.chalk.externalfunctioncatalog.v1.ListExternalFunctionsFiltersR\x07filters\x12\x16\n\x06search\x18\x06 \x01(\tR\x06search\x12]\n\x0bsort_column\x18\x07 \x01(\x0e2<.chalk.externalfunctioncatalog.v1.ExternalFunctionSortColumnR\nsortColumn\x12Z\n\nsort_order\x18\x08 \x01(\x0e2;.chalk.externalfunctioncatalog.v1.ExternalFunctionSortOrderR\tsortOrderB\t\n\x07_cursorB\x08\n\x06_limitB\x18\n\x16_include_scaling_groupB\x1a\n\x18_include_active_scheduleB\x12\n\x10_include_deleted"\x9c\x01\n\x1cListExternalFunctionsFilters\x12`\n\nvisibility\x18\x01 \x03(\x0e2<.chalk.externalfunctioncatalog.v1.ExternalFunctionVisibilityR\nvisibilityB\x02\x18\x01\x12\x1a\n\x08statuses\x18\x02 \x03(\tR\x08statuses"\xae\x01\n\x1dListExternalFunctionsResponse\x12W\n\tfunctions\x18\x01 \x03(\x0b29.chalk.externalfunctioncatalog.v1.ExternalFunctionSummaryR\tfunctions\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"\xe9\x01\n(ListExternalFunctionScheduledRunsRequest\x12$\n\x0bfunction_id\x18\x04 \x01(\tH\x00R\nfunctionId\x88\x01\x01\x12(\n\rfunction_name\x18\x01 \x01(\tH\x01R\x0cfunctionName\x88\x01\x01\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x02R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x03 \x01(\x05H\x03R\x05limit\x88\x01\x01B\x0e\n\x0c_function_idB\x10\n\x0e_function_nameB\t\n\x07_cursorB\x08\n\x06_limit"\x86\x03\n\x1cExternalFunctionScheduledRun\x12\x0e\n\x02id\x18\x01 \x01(\x05R\x02id\x12\\\n\x06status\x18\x02 \x01(\x0e2D.chalk.externalfunctioncatalog.v1.ExternalFunctionScheduledRunStatusR\x06status\x129\n\ncreated_at\x18\x03 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12h\n\x08metadata\x18\x04 \x03(\x0b2L.chalk.externalfunctioncatalog.v1.ExternalFunctionScheduledRun.MetadataEntryR\x08metadata\x1aS\n\rMetadataEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12,\n\x05value\x18\x02 \x01(\x0b2\x16.google.protobuf.ValueR\x05value:\x028\x01"\xb5\x01\n)ListExternalFunctionScheduledRunsResponse\x12R\n\x04runs\x18\x01 \x03(\x0b2>.chalk.externalfunctioncatalog.v1.ExternalFunctionScheduledRunR\x04runs\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"\xc5\x02\n\x1bCallExternalFunctionRequest\x12X\n\x08function\x18\x01 \x01(\x0b2<.chalk.externalfunctioncatalog.v1.ExternalFunctionVersionKeyR\x08function\x12W\n\x13remote_call_request\x18\x02 \x01(\x0b2%.chalk.runtime.v1.CallFunctionRequestH\x00R\x11remoteCallRequest\x12k\n\x1benqueue_remote_call_request\x18\x03 \x01(\x0b2*.chalk.runtime.v1.EnqueueRemoteCallRequestH\x00R\x18enqueueRemoteCallRequestB\x06\n\x04body"\xf2\x01\n\x1cCallExternalFunctionResponse\x12Z\n\x14remote_call_response\x18\x01 \x01(\x0b2&.chalk.runtime.v1.CallFunctionResponseH\x00R\x12remoteCallResponse\x12n\n\x1cenqueue_remote_call_response\x18\x02 \x01(\x0b2+.chalk.runtime.v1.EnqueueRemoteCallResponseH\x00R\x19enqueueRemoteCallResponseB\x06\n\x04body*}\n\x0cRateLimitPer\x12\x1e\n\x1aRATE_LIMIT_PER_UNSPECIFIED\x10\x00\x12\x19\n\x15RATE_LIMIT_PER_SECOND\x10\x01\x12\x19\n\x15RATE_LIMIT_PER_MINUTE\x10\x02\x12\x17\n\x13RATE_LIMIT_PER_HOUR\x10\x03*]\n\x13SerializationFormat\x12$\n SERIALIZATION_FORMAT_UNSPECIFIED\x10\x00\x12 \n\x1cSERIALIZATION_FORMAT_PYARROW\x10\x01*\xa0\x01\n\x0bTracingMode\x12\x1c\n\x18TRACING_MODE_UNSPECIFIED\x10\x00\x12(\n$TRACING_MODE_PARENT_BASED_ALWAYS_OFF\x10\x01\x12,\n(TRACING_MODE_PARENT_BASED_TRACE_ID_RATIO\x10\x02\x12\x1b\n\x17TRACING_MODE_ALWAYS_OFF\x10\x03*\xa7\x01\n\x1aExternalFunctionSortColumn\x12-\n)EXTERNAL_FUNCTION_SORT_COLUMN_UNSPECIFIED\x10\x00\x12,\n(EXTERNAL_FUNCTION_SORT_COLUMN_CREATED_AT\x10\x01\x12,\n(EXTERNAL_FUNCTION_SORT_COLUMN_UPDATED_AT\x10\x02*\x96\x01\n\x19ExternalFunctionSortOrder\x12,\n(EXTERNAL_FUNCTION_SORT_ORDER_UNSPECIFIED\x10\x00\x12%\n!EXTERNAL_FUNCTION_SORT_ORDER_DESC\x10\x01\x12$\n EXTERNAL_FUNCTION_SORT_ORDER_ASC\x10\x02*\xa2\x01\n\x1aExternalFunctionVisibility\x12,\n(EXTERNAL_FUNCTION_VISIBILITY_UNSPECIFIED\x10\x00\x12\'\n#EXTERNAL_FUNCTION_VISIBILITY_ACTIVE\x10\x01\x12)\n%EXTERNAL_FUNCTION_VISIBILITY_ARCHIVED\x10\x02\x1a\x02\x18\x01*\xce\x03\n"ExternalFunctionScheduledRunStatus\x126\n2EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_UNSPECIFIED\x10\x00\x124\n0EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_SCHEDULED\x10\x01\x122\n.EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_RUNNING\x10\x02\x124\n0EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_COMPLETED\x10\x03\x121\n-EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_FAILED\x10\x04\x123\n/EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_CANCELED\x10\x05\x124\n0EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_NOT_READY\x10\x06\x122\n.EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_WAITING\x10\x072\xd6\x12\n\x1eExternalFunctionCatalogService\x12\xf7\x01\n\x16CreateExternalFunction\x12?.chalk.externalfunctioncatalog.v1.CreateExternalFunctionRequest\x1a@.chalk.externalfunctioncatalog.v1.CreateExternalFunctionResponse"Z\x80}\x0c\x92\xd3\x0eS\n\x16scaling_groups_enabled\x129This action is not enabled. Please contact Chalk Support.\x12\xf7\x01\n\x16UpdateExternalFunction\x12?.chalk.externalfunctioncatalog.v1.UpdateExternalFunctionRequest\x1a@.chalk.externalfunctioncatalog.v1.UpdateExternalFunctionResponse"Z\x80}\x0e\x92\xd3\x0eS\n\x16scaling_groups_enabled\x129This action is not enabled. Please contact Chalk Support.\x12\x9a\x01\n\x13GetExternalFunction\x12<.chalk.externalfunctioncatalog.v1.GetExternalFunctionRequest\x1a=.chalk.externalfunctioncatalog.v1.GetExternalFunctionResponse"\x06\x90\x02\x01\x80}\x0b\x12\xa0\x01\n\x15ListExternalFunctions\x12>.chalk.externalfunctioncatalog.v1.ListExternalFunctionsRequest\x1a?.chalk.externalfunctioncatalog.v1.ListExternalFunctionsResponse"\x06\x90\x02\x01\x80}\x0b\x12\xa3\x01\n\x16DeleteExternalFunction\x12?.chalk.externalfunctioncatalog.v1.DeleteExternalFunctionRequest\x1a@.chalk.externalfunctioncatalog.v1.DeleteExternalFunctionResponse"\x06\x90\x02\x02\x80}\x0e\x12\xc4\x01\n!ListExternalFunctionScheduledRuns\x12J.chalk.externalfunctioncatalog.v1.ListExternalFunctionScheduledRunsRequest\x1aK.chalk.externalfunctioncatalog.v1.ListExternalFunctionScheduledRunsResponse"\x06\x90\x02\x01\x80}\x0b\x12\x9a\x01\n\x14CallExternalFunction\x12=.chalk.externalfunctioncatalog.v1.CallExternalFunctionRequest\x1a>.chalk.externalfunctioncatalog.v1.CallExternalFunctionResponse"\x03\x80}\x0e\x12\x8c\x02\n\x1dCreateExternalFunctionVersion\x12F.chalk.externalfunctioncatalog.v1.CreateExternalFunctionVersionRequest\x1aG.chalk.externalfunctioncatalog.v1.CreateExternalFunctionVersionResponse"Z\x80}\x0c\x92\xd3\x0eS\n\x16scaling_groups_enabled\x129This action is not enabled. Please contact Chalk Support.\x12\xaf\x01\n\x1aGetExternalFunctionVersion\x12C.chalk.externalfunctioncatalog.v1.GetExternalFunctionVersionRequest\x1aD.chalk.externalfunctioncatalog.v1.GetExternalFunctionVersionResponse"\x06\x90\x02\x01\x80}\x0b\x12\xc1\x01\n GetExternalFunctionVersionSource\x12I.chalk.externalfunctioncatalog.v1.GetExternalFunctionVersionSourceRequest\x1aJ.chalk.externalfunctioncatalog.v1.GetExternalFunctionVersionSourceResponse"\x06\x90\x02\x01\x80}\x0b\x12\xb5\x01\n\x1cListExternalFunctionVersions\x12E.chalk.externalfunctioncatalog.v1.ListExternalFunctionVersionsRequest\x1aF.chalk.externalfunctioncatalog.v1.ListExternalFunctionVersionsResponse"\x06\x90\x02\x01\x80}\x0b\x12\xb8\x01\n\x1dDeleteExternalFunctionVersion\x12F.chalk.externalfunctioncatalog.v1.DeleteExternalFunctionVersionRequest\x1aG.chalk.externalfunctioncatalog.v1.DeleteExternalFunctionVersionResponse"\x06\x88\x02\x01\x80}\x0eB\x8c\x02\n$com.chalk.externalfunctioncatalog.v1B\x0cServiceProtoP\x01Z4externalfunctioncatalog/v1;externalfunctioncatalogv1\xa2\x02\x03CEX\xaa\x02 Chalk.Externalfunctioncatalog.V1\xca\x02 Chalk\\Externalfunctioncatalog\\V1\xe2\x02,Chalk\\Externalfunctioncatalog\\V1\\GPBMetadata\xea\x02"Chalk::Externalfunctioncatalog::V1b\x06proto3',
+    b'\n.chalk/externalfunctioncatalog/v1/service.proto\x12 chalk.externalfunctioncatalog.v1\x1a\x1achalk/arrow/v1/arrow.proto\x1a\x1fchalk/auth/v1/permissions.proto\x1a\x1achalk/flags/v1/flags.proto\x1a)chalk/runtime/v1/remote_python_call.proto\x1a\x1echalk/sandbox/v1/service.proto\x1a#chalk/scalinggroup/v1/service.proto\x1a\x1echalk/utils/v1/sensitive.proto\x1a\x1cchalk/volume/v2/volume.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a google/protobuf/field_mask.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto"\xa0\x02\n\x0bRetryPolicy\x12\x1f\n\x0bmax_retries\x18\x01 \x01(\x05R\nmaxRetries\x121\n\x12initial_backoff_ms\x18\x02 \x01(\x05H\x00R\x10initialBackoffMs\x88\x01\x01\x122\n\x12backoff_multiplier\x18\x03 \x01(\x01H\x01R\x11backoffMultiplier\x88\x01\x01\x12)\n\x0emax_backoff_ms\x18\x04 \x01(\x05H\x02R\x0cmaxBackoffMs\x88\x01\x01\x12\x15\n\x03key\x18\x05 \x01(\tH\x03R\x03key\x88\x01\x01B\x15\n\x13_initial_backoff_msB\x15\n\x13_backoff_multiplierB\x11\n\x0f_max_backoff_msB\x06\n\x04_key"\x86\x01\n\x0fRateLimitPolicy\x12\x12\n\x04rate\x18\x01 \x01(\x05R\x04rate\x12@\n\x03per\x18\x02 \x01(\x0e2..chalk.externalfunctioncatalog.v1.RateLimitPerR\x03per\x12\x15\n\x03key\x18\x03 \x01(\tH\x00R\x03key\x88\x01\x01B\x06\n\x04_key"Y\n\x11ConcurrencyPolicy\x12%\n\x0emax_concurrent\x18\x01 \x01(\x05R\rmaxConcurrent\x12\x15\n\x03key\x18\x02 \x01(\tH\x00R\x03key\x88\x01\x01B\x06\n\x04_key"\x93\x01\n\x0bQueuePolicy\x12\x1b\n\tmax_items\x18\x01 \x01(\x05R\x08maxItems\x12\x15\n\x03key\x18\x02 \x01(\tH\x00R\x03key\x88\x01\x01\x121\n\x12result_ttl_seconds\x18\x03 \x01(\x05H\x01R\x10resultTtlSeconds\x88\x01\x01B\x06\n\x04_keyB\x15\n\x13_result_ttl_seconds"\x88\x01\n\rTracingPolicy\x12A\n\x04mode\x18\x01 \x01(\x0e2-.chalk.externalfunctioncatalog.v1.TracingModeR\x04mode\x12$\n\x0bsample_rate\x18\x02 \x01(\x01H\x00R\nsampleRate\x88\x01\x01B\x0e\n\x0c_sample_rate"\xd9\x07\n\x0eFunctionConfig\x12m\n\x14serialization_format\x18\x01 \x01(\x0e25.chalk.externalfunctioncatalog.v1.SerializationFormatH\x00R\x13serializationFormat\x88\x01\x01\x12W\n\x07options\x18\x02 \x03(\x0b2=.chalk.externalfunctioncatalog.v1.FunctionConfig.OptionsEntryR\x07options\x123\n\x13max_buffer_duration\x18\x03 \x01(\x05H\x01R\x11maxBufferDuration\x88\x01\x01\x12/\n\x11max_batching_size\x18\x04 \x01(\x05H\x02R\x0fmaxBatchingSize\x88\x01\x01\x12U\n\x0cretry_policy\x18\x05 \x01(\x0b2-.chalk.externalfunctioncatalog.v1.RetryPolicyH\x03R\x0bretryPolicy\x88\x01\x01\x12U\n\nrate_limit\x18\x06 \x01(\x0b21.chalk.externalfunctioncatalog.v1.RateLimitPolicyH\x04R\trateLimit\x88\x01\x01\x12Z\n\x0bconcurrency\x18\x07 \x01(\x0b23.chalk.externalfunctioncatalog.v1.ConcurrencyPolicyH\x05R\x0bconcurrency\x88\x01\x01\x12H\n\x05queue\x18\x08 \x01(\x0b2-.chalk.externalfunctioncatalog.v1.QueuePolicyH\x06R\x05queue\x88\x01\x01\x12\x1f\n\x08schedule\x18\t \x01(\tH\x07R\x08schedule\x88\x01\x01\x12N\n\x07tracing\x18\n \x01(\x0b2/.chalk.externalfunctioncatalog.v1.TracingPolicyH\x08R\x07tracing\x88\x01\x01\x1a:\n\x0cOptionsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x17\n\x15_serialization_formatB\x16\n\x14_max_buffer_durationB\x14\n\x12_max_batching_sizeB\x0f\n\r_retry_policyB\r\n\x0b_rate_limitB\x0e\n\x0c_concurrencyB\x08\n\x06_queueB\x0b\n\t_scheduleB\n\n\x08_tracing"\xe4\x04\n\x17ExternalFunctionVersion\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n\x0bfunction_id\x18\x0b \x01(\tR\nfunctionId\x12#\n\rfunction_name\x18\x02 \x01(\tR\x0cfunctionName\x12\x18\n\x07version\x18\x03 \x01(\x05R\x07version\x12D\n\x12input_arrow_schema\x18\x04 \x01(\x0b2\x16.chalk.arrow.v1.SchemaR\x10inputArrowSchema\x12F\n\x13output_arrow_schema\x18\x05 \x01(\x0b2\x16.chalk.arrow.v1.SchemaR\x11outputArrowSchema\x12,\n\x12scaling_group_name\x18\x06 \x01(\tR\x10scalingGroupName\x129\n\x19scaling_group_revision_id\x18\x07 \x01(\tR\x16scalingGroupRevisionId\x129\n\ncreated_at\x18\x08 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12M\n\x06config\x18\t \x01(\x0b20.chalk.externalfunctioncatalog.v1.FunctionConfigH\x00R\x06config\x88\x01\x01\x12>\n\ndeleted_at\x18\n \x01(\x0b2\x1a.google.protobuf.TimestampH\x01R\tdeletedAt\x88\x01\x01B\t\n\x07_configB\r\n\x0b_deleted_at"\xb6\x03\n$CreateExternalFunctionVersionRequest\x12#\n\rfunction_name\x18\x01 \x01(\tR\x0cfunctionName\x12D\n\x12input_arrow_schema\x18\x02 \x01(\x0b2\x16.chalk.arrow.v1.SchemaR\x10inputArrowSchema\x12F\n\x13output_arrow_schema\x18\x03 \x01(\x0b2\x16.chalk.arrow.v1.SchemaR\x11outputArrowSchema\x12;\n\x04spec\x18\x04 \x01(\x0b2\'.chalk.scalinggroup.v1.ScalingGroupSpecR\x04spec\x12M\n\x06config\x18\x05 \x01(\x0b20.chalk.externalfunctioncatalog.v1.FunctionConfigH\x00R\x06config\x88\x01\x01\x12D\n\x0evolume_commits\x18\x06 \x03(\x0b2\x1d.chalk.volume.v2.CommitIntentR\rvolumeCommitsB\t\n\x07_config"\xf0\x01\n%CreateExternalFunctionVersionResponse\x12u\n\x19external_function_version\x18\x01 \x01(\x0b29.chalk.externalfunctioncatalog.v1.ExternalFunctionVersionR\x17externalFunctionVersion\x12P\n\rscaling_group\x18\x02 \x01(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseR\x0cscalingGroup"\x88\x03\n\x1bExternalFunctionVersionSpec\x12D\n\x12input_arrow_schema\x18\x01 \x01(\x0b2\x16.chalk.arrow.v1.SchemaR\x10inputArrowSchema\x12F\n\x13output_arrow_schema\x18\x02 \x01(\x0b2\x16.chalk.arrow.v1.SchemaR\x11outputArrowSchema\x12;\n\x04spec\x18\x03 \x01(\x0b2\'.chalk.scalinggroup.v1.ScalingGroupSpecR\x04spec\x12M\n\x06config\x18\x04 \x01(\x0b20.chalk.externalfunctioncatalog.v1.FunctionConfigH\x00R\x06config\x88\x01\x01\x12D\n\x0evolume_commits\x18\x05 \x03(\x0b2\x1d.chalk.volume.v2.CommitIntentR\rvolumeCommitsB\t\n\x07_config"\xb0\x03\n\x13DesiredFunctionSpec\x12`\n\x0cversion_spec\x18\x01 \x01(\x0b2=.chalk.externalfunctioncatalog.v1.ExternalFunctionVersionSpecR\x0bversionSpec\x121\n\x05image\x18\x02 \x01(\x0b2\x1b.chalk.sandbox.v1.ImageSpecR\x05image\x12O\n\x07sources\x18\x03 \x03(\x0b25.chalk.externalfunctioncatalog.v1.FunctionSourceMountR\x07sources\x12r\n\rlocal_secrets\x18\x04 \x03(\x0b2G.chalk.externalfunctioncatalog.v1.DesiredFunctionSpec.LocalSecretsEntryR\x0clocalSecretsB\x04\xd8\xa1\'\x01\x1a?\n\x11LocalSecretsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x028\x01"U\n\x13FunctionSourceMount\x12\x1f\n\x0btree_digest\x18\x01 \x01(\tR\ntreeDigest\x12\x1d\n\nmount_path\x18\x02 \x01(\tR\tmountPath"w\n\x12FunctionSourceFile\x12\x12\n\x04path\x18\x01 \x01(\tR\x04path\x12%\n\x0econtent_digest\x18\x02 \x01(\tR\rcontentDigest\x12\x12\n\x04size\x18\x03 \x01(\x04R\x04size\x12\x12\n\x04mode\x18\x04 \x01(\rR\x04mode"\x85\x01\n\x16FunctionSourceManifest\x12\x1f\n\x0btree_digest\x18\x01 \x01(\tR\ntreeDigest\x12J\n\x05files\x18\x02 \x03(\x0b24.chalk.externalfunctioncatalog.v1.FunctionSourceFileR\x05files"\xbe\x02\n\x18FunctionDeploymentInputs\x12V\n\tmanifests\x18\x01 \x03(\x0b28.chalk.externalfunctioncatalog.v1.FunctionSourceManifestR\tmanifests\x124\n\x05files\x18\x02 \x03(\x0b2\x1e.chalk.volume.v2.PathFileDeltaR\x05files\x12S\n\x10uploaded_objects\x18\x03 \x03(\x0b2(.chalk.volume.v2.UploadedObjectReferenceR\x0fuploadedObjects\x12?\n\rupload_volume\x18\x04 \x01(\x0b2\x1a.chalk.volume.v2.VolumeRefR\x0cuploadVolume"\xbf\x02\n\x1dEnsureExternalFunctionRequest\x12\x1d\n\nrequest_id\x18\x01 \x01(\tR\trequestId\x12#\n\rfunction_name\x18\x02 \x01(\tR\x0cfunctionName\x12I\n\x04spec\x18\x03 \x01(\x0b25.chalk.externalfunctioncatalog.v1.DesiredFunctionSpecR\x04spec\x12*\n\x11force_new_version\x18\x04 \x01(\x08R\x0fforceNewVersion\x12c\n\x0fsupplied_inputs\x18\x05 \x01(\x0b2:.chalk.externalfunctioncatalog.v1.FunctionDeploymentInputsR\x0esuppliedInputs"\xa8\x01\n\x1fMissingFunctionDeploymentInputs\x12!\n\x0ctree_digests\x18\x01 \x03(\tR\x0btreeDigests\x12!\n\x0cfile_digests\x18\x02 \x03(\tR\x0bfileDigests\x12?\n\rupload_volume\x18\x03 \x01(\x0b2\x1a.chalk.volume.v2.VolumeRefR\x0cuploadVolume"\xf3\x01\n\x17EnsuredExternalFunction\x12_\n\x11external_function\x18\x01 \x01(\x0b22.chalk.externalfunctioncatalog.v1.ExternalFunctionR\x10externalFunction\x12P\n\rscaling_group\x18\x02 \x01(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseR\x0cscalingGroup\x12%\n\x0ereused_version\x18\x03 \x01(\x08R\rreusedVersion"\xd2\x02\n\x1eEnsureExternalFunctionResponse\x12W\n\x08complete\x18\x01 \x01(\x0b29.chalk.externalfunctioncatalog.v1.EnsuredExternalFunctionH\x00R\x08complete\x12j\n\x0emissing_inputs\x18\x02 \x01(\x0b2A.chalk.externalfunctioncatalog.v1.MissingFunctionDeploymentInputsH\x00R\rmissingInputs\x12a\n\x13pending_image_build\x18\x03 \x01(\x0b2/.chalk.sandbox.v1.GetOrBuildCustomImageResponseH\x00R\x11pendingImageBuildB\x08\n\x06result"t\n\x17ExternalFunctionTraffic\x12Y\n\x07targets\x18\x01 \x03(\x0b2?.chalk.externalfunctioncatalog.v1.ExternalFunctionTrafficTargetR\x07targets"\xcf\x01\n\x1dExternalFunctionTrafficTarget\x12A\n\x1cexternal_function_version_id\x18\x01 \x01(\tH\x00R\x19externalFunctionVersionId\x12?\n\x0elatest_version\x18\x02 \x01(\x0b2\x16.google.protobuf.EmptyH\x00R\rlatestVersion\x12\x18\n\x07percent\x18\x03 \x01(\rR\x07percentB\x10\n\x0eversion_target"\x97\x01\n\x1dCreateExternalFunctionRequest\x12#\n\rfunction_name\x18\x01 \x01(\tR\x0cfunctionName\x12Q\n\x04spec\x18\x02 \x01(\x0b2=.chalk.externalfunctioncatalog.v1.ExternalFunctionVersionSpecR\x04spec"\x81\x01\n\x1eCreateExternalFunctionResponse\x12_\n\x11external_function\x18\x01 \x01(\x0b22.chalk.externalfunctioncatalog.v1.ExternalFunctionR\x10externalFunction"\xb6\x02\n\x1dUpdateExternalFunctionRequest\x120\n\x14external_function_id\x18\x01 \x01(\tR\x12externalFunctionId\x12Q\n\x04spec\x18\x02 \x01(\x0b2=.chalk.externalfunctioncatalog.v1.ExternalFunctionVersionSpecR\x04spec\x12S\n\x07traffic\x18\x03 \x01(\x0b29.chalk.externalfunctioncatalog.v1.ExternalFunctionTrafficR\x07traffic\x12;\n\x0bupdate_mask\x18\x04 \x01(\x0b2\x1a.google.protobuf.FieldMaskR\nupdateMask"\x81\x01\n\x1eUpdateExternalFunctionResponse\x12_\n\x11external_function\x18\x01 \x01(\x0b22.chalk.externalfunctioncatalog.v1.ExternalFunctionR\x10externalFunction"\xdf\x02\n\x10ExternalFunction\x12\x0e\n\x02id\x18\x06 \x01(\tR\x02id\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12b\n\x0fcurrent_version\x18\x02 \x01(\x0b29.chalk.externalfunctioncatalog.v1.ExternalFunctionVersionR\x0ecurrentVersion\x129\n\ncreated_at\x18\x03 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n\nupdated_at\x18\x04 \x01(\x0b2\x1a.google.protobuf.TimestampR\tupdatedAt\x12>\n\ndeleted_at\x18\x05 \x01(\x0b2\x1a.google.protobuf.TimestampH\x00R\tdeletedAt\x88\x01\x01B\r\n\x0b_deleted_at"\xfc\x02\n\x1aGetExternalFunctionRequest\x12$\n\x0bfunction_id\x18\x01 \x01(\tH\x00R\nfunctionId\x88\x01\x01\x12(\n\rfunction_name\x18\x02 \x01(\tH\x01R\x0cfunctionName\x88\x01\x01\x12;\n\x17include_active_schedule\x18\x03 \x01(\x08H\x02R\x15includeActiveSchedule\x88\x01\x01\x127\n\x15include_scaling_group\x18\x04 \x01(\x08H\x03R\x13includeScalingGroup\x88\x01\x01\x12,\n\x0finclude_deleted\x18\x05 \x01(\x08H\x04R\x0eincludeDeleted\x88\x01\x01B\x0e\n\x0c_function_idB\x10\n\x0e_function_nameB\x1a\n\x18_include_active_scheduleB\x18\n\x16_include_scaling_groupB\x12\n\x10_include_deleted"\xdb\x02\n\x1bGetExternalFunctionResponse\x12_\n\x11external_function\x18\x01 \x01(\x0b22.chalk.externalfunctioncatalog.v1.ExternalFunctionR\x10externalFunction\x12^\n\x0factive_schedule\x18\x02 \x01(\x0b20.chalk.externalfunctioncatalog.v1.ActiveScheduleH\x00R\x0eactiveSchedule\x88\x01\x01\x12U\n\rscaling_group\x18\x03 \x01(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseH\x01R\x0cscalingGroup\x88\x01\x01B\x12\n\x10_active_scheduleB\x10\n\x0e_scaling_group"\xb9\x01\n\x1aExternalFunctionVersionKey\x12$\n\x0bfunction_id\x18\x03 \x01(\tH\x00R\nfunctionId\x88\x01\x01\x12(\n\rfunction_name\x18\x01 \x01(\tH\x01R\x0cfunctionName\x88\x01\x01\x12\x1d\n\x07version\x18\x02 \x01(\x05H\x02R\x07version\x88\x01\x01B\x0e\n\x0c_function_idB\x10\n\x0e_function_nameB\n\n\x08_version"\xe5\x03\n!GetExternalFunctionVersionRequest\x12\x10\n\x02id\x18\x01 \x01(\tH\x00R\x02id\x12P\n\x03key\x18\x02 \x01(\x0b2<.chalk.externalfunctioncatalog.v1.ExternalFunctionVersionKeyH\x00R\x03key\x127\n\x15include_scaling_group\x18\x03 \x01(\x08H\x01R\x13includeScalingGroup\x88\x01\x01\x12;\n\x17include_active_schedule\x18\x04 \x01(\x08H\x02R\x15includeActiveSchedule\x88\x01\x01\x12`\n\nvisibility\x18\x05 \x03(\x0e2<.chalk.externalfunctioncatalog.v1.ExternalFunctionVisibilityR\nvisibilityB\x02\x18\x01\x12,\n\x0finclude_deleted\x18\x06 \x01(\x08H\x03R\x0eincludeDeleted\x88\x01\x01B\x0c\n\nidentifierB\x18\n\x16_include_scaling_groupB\x1a\n\x18_include_active_scheduleB\x12\n\x10_include_deleted"\xf8\x02\n"GetExternalFunctionVersionResponse\x12u\n\x19external_function_version\x18\x01 \x01(\x0b29.chalk.externalfunctioncatalog.v1.ExternalFunctionVersionR\x17externalFunctionVersion\x12U\n\rscaling_group\x18\x02 \x01(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseH\x00R\x0cscalingGroup\x88\x01\x01\x12^\n\x0factive_schedule\x18\x03 \x01(\x0b20.chalk.externalfunctioncatalog.v1.ActiveScheduleH\x01R\x0eactiveSchedule\x88\x01\x01B\x10\n\x0e_scaling_groupB\x12\n\x10_active_schedule"K\n!ExternalFunctionVersionSourceFile\x12\x12\n\x04path\x18\x01 \x01(\tR\x04path\x12\x12\n\x04size\x18\x02 \x01(\x04R\x04size"Y\n\'GetExternalFunctionVersionSourceRequest\x12.\n\x13function_version_id\x18\x01 \x01(\tR\x11functionVersionId"\x82\x02\n(GetExternalFunctionVersionSourceResponse\x12\x1f\n\x0bvolume_name\x18\x01 \x01(\tR\nvolumeName\x12*\n\x11volume_version_id\x18\x02 \x01(\x04R\x0fvolumeVersionId\x12!\n\x0cprimary_path\x18\x03 \x01(\tR\x0bprimaryPath\x12f\n\x0csource_files\x18\x04 \x03(\x0b2C.chalk.externalfunctioncatalog.v1.ExternalFunctionVersionSourceFileR\x0bsourceFiles"$\n\x0eActiveSchedule\x12\x12\n\x04cron\x18\x01 \x01(\tR\x04cron"\xb8\x04\n#ListExternalFunctionVersionsRequest\x12$\n\x0bfunction_id\x18\t \x01(\tH\x00R\nfunctionId\x88\x01\x01\x12(\n\rfunction_name\x18\x04 \x01(\tH\x01R\x0cfunctionName\x88\x01\x01\x12\x10\n\x03ids\x18\x07 \x03(\tR\x03ids\x12\x1b\n\x06cursor\x18\x01 \x01(\tH\x02R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x02 \x01(\x05H\x03R\x05limit\x88\x01\x01\x127\n\x15include_scaling_group\x18\x03 \x01(\x08H\x04R\x13includeScalingGroup\x88\x01\x01\x12,\n\x0finclude_deleted\x18\x06 \x01(\x08H\x05R\x0eincludeDeleted\x88\x01\x01\x12_\n\x07filters\x18\x05 \x01(\x0b2E.chalk.externalfunctioncatalog.v1.ListExternalFunctionVersionsFiltersR\x07filters\x12<\n\tread_mask\x18\x08 \x01(\x0b2\x1a.google.protobuf.FieldMaskH\x06R\x08readMask\x88\x01\x01B\x0e\n\x0c_function_idB\x10\n\x0e_function_nameB\t\n\x07_cursorB\x08\n\x06_limitB\x18\n\x16_include_scaling_groupB\x12\n\x10_include_deletedB\x0c\n\n_read_mask"\x87\x01\n#ListExternalFunctionVersionsFilters\x12`\n\nvisibility\x18\x01 \x03(\x0e2<.chalk.externalfunctioncatalog.v1.ExternalFunctionVisibilityR\nvisibilityB\x02\x18\x01"\x83\x02\n!ListExternalFunctionVersionsEntry\x12u\n\x19external_function_version\x18\x01 \x01(\x0b29.chalk.externalfunctioncatalog.v1.ExternalFunctionVersionR\x17externalFunctionVersion\x12U\n\rscaling_group\x18\x02 \x01(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseH\x00R\x0cscalingGroup\x88\x01\x01B\x10\n\x0e_scaling_group"\xbb\x01\n$ListExternalFunctionVersionsResponse\x12]\n\x07entries\x18\x01 \x03(\x0b2C.chalk.externalfunctioncatalog.v1.ListExternalFunctionVersionsEntryR\x07entries\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"\x98\x01\n$DeleteExternalFunctionVersionRequest\x12\x10\n\x02id\x18\x01 \x01(\tH\x00R\x02id\x12P\n\x03key\x18\x02 \x01(\x0b2<.chalk.externalfunctioncatalog.v1.ExternalFunctionVersionKeyH\x00R\x03keyB\x0c\n\nidentifier"\'\n%DeleteExternalFunctionVersionResponse"\x91\x01\n\x1dDeleteExternalFunctionRequest\x12$\n\x0bfunction_id\x18\x02 \x01(\tH\x00R\nfunctionId\x88\x01\x01\x12(\n\rfunction_name\x18\x01 \x01(\tH\x01R\x0cfunctionName\x88\x01\x01B\x0e\n\x0c_function_idB\x10\n\x0e_function_name" \n\x1eDeleteExternalFunctionResponse"\xe6\x05\n\x17ExternalFunctionSummary\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12%\n\x0elatest_version\x18\x02 \x01(\x05R\rlatestVersion\x129\n\x19latest_scaling_group_name\x18\x03 \x01(\tR\x16latestScalingGroupName\x12F\n\x11latest_updated_at\x18\x04 \x01(\x0b2\x1a.google.protobuf.TimestampR\x0flatestUpdatedAt\x12M\n\x06config\x18\x05 \x01(\x0b20.chalk.externalfunctioncatalog.v1.FunctionConfigH\x00R\x06config\x88\x01\x01\x12U\n\rscaling_group\x18\x06 \x01(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseH\x01R\x0cscalingGroup\x88\x01\x01\x12^\n\x0factive_schedule\x18\x07 \x01(\x0b20.chalk.externalfunctioncatalog.v1.ActiveScheduleH\x02R\x0eactiveSchedule\x88\x01\x01\x12Q\n\nvisibility\x18\x08 \x01(\x0e2-.chalk.scalinggroup.v1.ScalingGroupVisibilityR\nvisibilityB\x02\x18\x01\x129\n\ncreated_at\x18\t \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12\'\n\x0fcurrent_version\x18\n \x01(\x05R\x0ecurrentVersion\x12\x1f\n\x0bfunction_id\x18\x0b \x01(\tR\nfunctionIdB\t\n\x07_configB\x10\n\x0e_scaling_groupB\x12\n\x10_active_schedule"\x86\x05\n\x1cListExternalFunctionsRequest\x12\x1b\n\x06cursor\x18\x01 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x02 \x01(\x05H\x01R\x05limit\x88\x01\x01\x127\n\x15include_scaling_group\x18\x03 \x01(\x08H\x02R\x13includeScalingGroup\x88\x01\x01\x12;\n\x17include_active_schedule\x18\x04 \x01(\x08H\x03R\x15includeActiveSchedule\x88\x01\x01\x12,\n\x0finclude_deleted\x18\t \x01(\x08H\x04R\x0eincludeDeleted\x88\x01\x01\x12X\n\x07filters\x18\x05 \x01(\x0b2>.chalk.externalfunctioncatalog.v1.ListExternalFunctionsFiltersR\x07filters\x12\x16\n\x06search\x18\x06 \x01(\tR\x06search\x12]\n\x0bsort_column\x18\x07 \x01(\x0e2<.chalk.externalfunctioncatalog.v1.ExternalFunctionSortColumnR\nsortColumn\x12Z\n\nsort_order\x18\x08 \x01(\x0e2;.chalk.externalfunctioncatalog.v1.ExternalFunctionSortOrderR\tsortOrderB\t\n\x07_cursorB\x08\n\x06_limitB\x18\n\x16_include_scaling_groupB\x1a\n\x18_include_active_scheduleB\x12\n\x10_include_deleted"\x9c\x01\n\x1cListExternalFunctionsFilters\x12`\n\nvisibility\x18\x01 \x03(\x0e2<.chalk.externalfunctioncatalog.v1.ExternalFunctionVisibilityR\nvisibilityB\x02\x18\x01\x12\x1a\n\x08statuses\x18\x02 \x03(\tR\x08statuses"\xae\x01\n\x1dListExternalFunctionsResponse\x12W\n\tfunctions\x18\x01 \x03(\x0b29.chalk.externalfunctioncatalog.v1.ExternalFunctionSummaryR\tfunctions\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"\xe9\x01\n(ListExternalFunctionScheduledRunsRequest\x12$\n\x0bfunction_id\x18\x04 \x01(\tH\x00R\nfunctionId\x88\x01\x01\x12(\n\rfunction_name\x18\x01 \x01(\tH\x01R\x0cfunctionName\x88\x01\x01\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x02R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x03 \x01(\x05H\x03R\x05limit\x88\x01\x01B\x0e\n\x0c_function_idB\x10\n\x0e_function_nameB\t\n\x07_cursorB\x08\n\x06_limit"\x86\x03\n\x1cExternalFunctionScheduledRun\x12\x0e\n\x02id\x18\x01 \x01(\x05R\x02id\x12\\\n\x06status\x18\x02 \x01(\x0e2D.chalk.externalfunctioncatalog.v1.ExternalFunctionScheduledRunStatusR\x06status\x129\n\ncreated_at\x18\x03 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12h\n\x08metadata\x18\x04 \x03(\x0b2L.chalk.externalfunctioncatalog.v1.ExternalFunctionScheduledRun.MetadataEntryR\x08metadata\x1aS\n\rMetadataEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12,\n\x05value\x18\x02 \x01(\x0b2\x16.google.protobuf.ValueR\x05value:\x028\x01"\xb5\x01\n)ListExternalFunctionScheduledRunsResponse\x12R\n\x04runs\x18\x01 \x03(\x0b2>.chalk.externalfunctioncatalog.v1.ExternalFunctionScheduledRunR\x04runs\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"\xc5\x02\n\x1bCallExternalFunctionRequest\x12X\n\x08function\x18\x01 \x01(\x0b2<.chalk.externalfunctioncatalog.v1.ExternalFunctionVersionKeyR\x08function\x12W\n\x13remote_call_request\x18\x02 \x01(\x0b2%.chalk.runtime.v1.CallFunctionRequestH\x00R\x11remoteCallRequest\x12k\n\x1benqueue_remote_call_request\x18\x03 \x01(\x0b2*.chalk.runtime.v1.EnqueueRemoteCallRequestH\x00R\x18enqueueRemoteCallRequestB\x06\n\x04body"\xf2\x01\n\x1cCallExternalFunctionResponse\x12Z\n\x14remote_call_response\x18\x01 \x01(\x0b2&.chalk.runtime.v1.CallFunctionResponseH\x00R\x12remoteCallResponse\x12n\n\x1cenqueue_remote_call_response\x18\x02 \x01(\x0b2+.chalk.runtime.v1.EnqueueRemoteCallResponseH\x00R\x19enqueueRemoteCallResponseB\x06\n\x04body*}\n\x0cRateLimitPer\x12\x1e\n\x1aRATE_LIMIT_PER_UNSPECIFIED\x10\x00\x12\x19\n\x15RATE_LIMIT_PER_SECOND\x10\x01\x12\x19\n\x15RATE_LIMIT_PER_MINUTE\x10\x02\x12\x17\n\x13RATE_LIMIT_PER_HOUR\x10\x03*]\n\x13SerializationFormat\x12$\n SERIALIZATION_FORMAT_UNSPECIFIED\x10\x00\x12 \n\x1cSERIALIZATION_FORMAT_PYARROW\x10\x01*\xa0\x01\n\x0bTracingMode\x12\x1c\n\x18TRACING_MODE_UNSPECIFIED\x10\x00\x12(\n$TRACING_MODE_PARENT_BASED_ALWAYS_OFF\x10\x01\x12,\n(TRACING_MODE_PARENT_BASED_TRACE_ID_RATIO\x10\x02\x12\x1b\n\x17TRACING_MODE_ALWAYS_OFF\x10\x03*\xa7\x01\n\x1aExternalFunctionSortColumn\x12-\n)EXTERNAL_FUNCTION_SORT_COLUMN_UNSPECIFIED\x10\x00\x12,\n(EXTERNAL_FUNCTION_SORT_COLUMN_CREATED_AT\x10\x01\x12,\n(EXTERNAL_FUNCTION_SORT_COLUMN_UPDATED_AT\x10\x02*\x96\x01\n\x19ExternalFunctionSortOrder\x12,\n(EXTERNAL_FUNCTION_SORT_ORDER_UNSPECIFIED\x10\x00\x12%\n!EXTERNAL_FUNCTION_SORT_ORDER_DESC\x10\x01\x12$\n EXTERNAL_FUNCTION_SORT_ORDER_ASC\x10\x02*\xa2\x01\n\x1aExternalFunctionVisibility\x12,\n(EXTERNAL_FUNCTION_VISIBILITY_UNSPECIFIED\x10\x00\x12\'\n#EXTERNAL_FUNCTION_VISIBILITY_ACTIVE\x10\x01\x12)\n%EXTERNAL_FUNCTION_VISIBILITY_ARCHIVED\x10\x02\x1a\x02\x18\x01*\xce\x03\n"ExternalFunctionScheduledRunStatus\x126\n2EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_UNSPECIFIED\x10\x00\x124\n0EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_SCHEDULED\x10\x01\x122\n.EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_RUNNING\x10\x02\x124\n0EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_COMPLETED\x10\x03\x121\n-EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_FAILED\x10\x04\x123\n/EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_CANCELED\x10\x05\x124\n0EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_NOT_READY\x10\x06\x122\n.EXTERNAL_FUNCTION_SCHEDULED_RUN_STATUS_WAITING\x10\x072\xd0\x14\n\x1eExternalFunctionCatalogService\x12\xf7\x01\n\x16EnsureExternalFunction\x12?.chalk.externalfunctioncatalog.v1.EnsureExternalFunctionRequest\x1a@.chalk.externalfunctioncatalog.v1.EnsureExternalFunctionResponse"Z\x80}\x0c\x92\xd3\x0eS\n\x16scaling_groups_enabled\x129This action is not enabled. Please contact Chalk Support.\x12\xf7\x01\n\x16CreateExternalFunction\x12?.chalk.externalfunctioncatalog.v1.CreateExternalFunctionRequest\x1a@.chalk.externalfunctioncatalog.v1.CreateExternalFunctionResponse"Z\x80}\x0c\x92\xd3\x0eS\n\x16scaling_groups_enabled\x129This action is not enabled. Please contact Chalk Support.\x12\xf7\x01\n\x16UpdateExternalFunction\x12?.chalk.externalfunctioncatalog.v1.UpdateExternalFunctionRequest\x1a@.chalk.externalfunctioncatalog.v1.UpdateExternalFunctionResponse"Z\x80}\x0e\x92\xd3\x0eS\n\x16scaling_groups_enabled\x129This action is not enabled. Please contact Chalk Support.\x12\x9a\x01\n\x13GetExternalFunction\x12<.chalk.externalfunctioncatalog.v1.GetExternalFunctionRequest\x1a=.chalk.externalfunctioncatalog.v1.GetExternalFunctionResponse"\x06\x90\x02\x01\x80}\x0b\x12\xa0\x01\n\x15ListExternalFunctions\x12>.chalk.externalfunctioncatalog.v1.ListExternalFunctionsRequest\x1a?.chalk.externalfunctioncatalog.v1.ListExternalFunctionsResponse"\x06\x90\x02\x01\x80}\x0b\x12\xa3\x01\n\x16DeleteExternalFunction\x12?.chalk.externalfunctioncatalog.v1.DeleteExternalFunctionRequest\x1a@.chalk.externalfunctioncatalog.v1.DeleteExternalFunctionResponse"\x06\x90\x02\x02\x80}\x0e\x12\xc4\x01\n!ListExternalFunctionScheduledRuns\x12J.chalk.externalfunctioncatalog.v1.ListExternalFunctionScheduledRunsRequest\x1aK.chalk.externalfunctioncatalog.v1.ListExternalFunctionScheduledRunsResponse"\x06\x90\x02\x01\x80}\x0b\x12\x9a\x01\n\x14CallExternalFunction\x12=.chalk.externalfunctioncatalog.v1.CallExternalFunctionRequest\x1a>.chalk.externalfunctioncatalog.v1.CallExternalFunctionResponse"\x03\x80}\x0e\x12\x8c\x02\n\x1dCreateExternalFunctionVersion\x12F.chalk.externalfunctioncatalog.v1.CreateExternalFunctionVersionRequest\x1aG.chalk.externalfunctioncatalog.v1.CreateExternalFunctionVersionResponse"Z\x80}\x0c\x92\xd3\x0eS\n\x16scaling_groups_enabled\x129This action is not enabled. Please contact Chalk Support.\x12\xaf\x01\n\x1aGetExternalFunctionVersion\x12C.chalk.externalfunctioncatalog.v1.GetExternalFunctionVersionRequest\x1aD.chalk.externalfunctioncatalog.v1.GetExternalFunctionVersionResponse"\x06\x90\x02\x01\x80}\x0b\x12\xc1\x01\n GetExternalFunctionVersionSource\x12I.chalk.externalfunctioncatalog.v1.GetExternalFunctionVersionSourceRequest\x1aJ.chalk.externalfunctioncatalog.v1.GetExternalFunctionVersionSourceResponse"\x06\x90\x02\x01\x80}\x0b\x12\xb5\x01\n\x1cListExternalFunctionVersions\x12E.chalk.externalfunctioncatalog.v1.ListExternalFunctionVersionsRequest\x1aF.chalk.externalfunctioncatalog.v1.ListExternalFunctionVersionsResponse"\x06\x90\x02\x01\x80}\x0b\x12\xb8\x01\n\x1dDeleteExternalFunctionVersion\x12F.chalk.externalfunctioncatalog.v1.DeleteExternalFunctionVersionRequest\x1aG.chalk.externalfunctioncatalog.v1.DeleteExternalFunctionVersionResponse"\x06\x88\x02\x01\x80}\x0eB\x8c\x02\n$com.chalk.externalfunctioncatalog.v1B\x0cServiceProtoP\x01Z4externalfunctioncatalog/v1;externalfunctioncatalogv1\xa2\x02\x03CEX\xaa\x02 Chalk.Externalfunctioncatalog.V1\xca\x02 Chalk\\Externalfunctioncatalog\\V1\xe2\x02,Chalk\\Externalfunctioncatalog\\V1\\GPBMetadata\xea\x02"Chalk::Externalfunctioncatalog::V1b\x06proto3',
     [
         arrow_pb.desc(),
         permissions_pb.desc(),
         flags_pb.desc(),
         remote_python_call_pb.desc(),
         service_pb.desc(),
+        service_pb_.desc(),
+        sensitive_pb.desc(),
         volume_pb.desc(),
         empty_pb.desc(),
         field_mask_pb.desc(),
@@ -2164,6 +2562,15 @@ _DESC = file_desc(
         "CreateExternalFunctionVersionRequest": CreateExternalFunctionVersionRequest,
         "CreateExternalFunctionVersionResponse": CreateExternalFunctionVersionResponse,
         "ExternalFunctionVersionSpec": ExternalFunctionVersionSpec,
+        "DesiredFunctionSpec": DesiredFunctionSpec,
+        "FunctionSourceMount": FunctionSourceMount,
+        "FunctionSourceFile": FunctionSourceFile,
+        "FunctionSourceManifest": FunctionSourceManifest,
+        "FunctionDeploymentInputs": FunctionDeploymentInputs,
+        "EnsureExternalFunctionRequest": EnsureExternalFunctionRequest,
+        "MissingFunctionDeploymentInputs": MissingFunctionDeploymentInputs,
+        "EnsuredExternalFunction": EnsuredExternalFunction,
+        "EnsureExternalFunctionResponse": EnsureExternalFunctionResponse,
         "ExternalFunctionTraffic": ExternalFunctionTraffic,
         "ExternalFunctionTrafficTarget": ExternalFunctionTrafficTarget,
         "CreateExternalFunctionRequest": CreateExternalFunctionRequest,

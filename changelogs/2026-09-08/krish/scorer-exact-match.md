@@ -1,0 +1,1 @@
+- Add `cc.scorers.exact_match`, a scorer that compares two dataset columns as text

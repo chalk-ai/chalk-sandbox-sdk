@@ -20,8 +20,6 @@ RUN apk update && apk add --no-cache \
 
 WORKDIR /work
 COPY rawsock.c pidfd_open.c io_uring.c syscalls.c fanotify.c kexec_load.c .
-COPY probe.sh .
-RUN chmod +x probe.sh
 RUN for src in \
       rawsock \
       pidfd_open \

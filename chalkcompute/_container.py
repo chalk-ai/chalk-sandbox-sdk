@@ -24,7 +24,7 @@ import time
 import uuid
 import warnings
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, NoReturn
@@ -35,6 +35,7 @@ from connectrpc.protocol import ProtocolType
 from protobuf import Oneof
 from protobuf.wkt import Duration
 
+from chalkcompute._logging import _StatusLogger
 from chalkcompute._connect import (
     ConnectClient,
     raise_for_rpc_error,
@@ -48,6 +49,7 @@ from chalkcompute._containerspec import (
     KernelPolicy as KernelPolicy,
     NetworkPolicy,
 )
+from chalkcompute._env import normalize_env
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._gen.chalk.container.v1 import (
     service_connect as container_connect,
@@ -61,7 +63,13 @@ from chalkcompute._naming import (
     sanitize_dns_label,
     validate_env,
 )
+from chalkcompute._image_build import normalize_image_volumes
 from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
+from chalkcompute._remote_function_tracing import (
+    TracingPolicyConfig,
+    merge_workload_tracing_env,
+    normalize_workload_tracing,
+)
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
     Volume,
@@ -697,9 +705,9 @@ class Container:
         cpu: str | None = None,
         memory: str | None = None,
         gpu: str | None = None,
-        env: dict[str, str] | None = None,
+        env: Mapping[str, str | Secret] | None = None,
         secrets: list[Secret] | None = None,
-        volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+        volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
         port: int | None = None,
         entrypoint: list[str] | None = None,
         lifetime: str | None = None,
@@ -707,6 +715,7 @@ class Container:
         network_policy: NetworkPolicy | None = None,
         compute_class: ComputeClass | None = None,
         tags: dict[str, str] | None = None,
+        tracing: TracingPolicyConfig | None = None,
         chalk_client: Any | None = None,
     ) -> None:
         warnings.warn(
@@ -716,12 +725,16 @@ class Container:
             DeprecationWarning,
             stacklevel=2,
         )
-        if image is None:
+        normalized_image, resolved_volumes = normalize_image_volumes(image, volumes)
+        if normalized_image is None:
             raise TypeError(
                 "image must be an Image or image reference string, got None"
             )
+        env, secrets = normalize_env(env, secrets)
+        self._tracing = normalize_workload_tracing(tracing)
+        env = merge_workload_tracing_env(env, self._tracing)
         ContainerSpec.validate_fields(
-            image=image,
+            image=normalized_image,
             name=name,
             cpu=cpu,
             memory=memory,
@@ -736,7 +749,7 @@ class Container:
             compute_class=compute_class,
             tags=tags,
         )
-        self._image: _Image | str | None = image
+        self._image: _Image | str | None = normalized_image
         self._name = name
         self._cpu = cpu
         self._memory = memory
@@ -744,7 +757,7 @@ class Container:
         self._env = dict(env) if env else {}
         self._secrets = list(secrets or [])
         # Existence is checked at run() time, not here.
-        self._referenced_volumes: list[VolumeMount] = normalize_volume_refs(volumes)
+        self._referenced_volumes: list[VolumeMount] = resolved_volumes
         # Populated at run() time: referenced volumes plus any freshly
         # uploaded volumes.
         self._volumes: list[VolumeMount] = []
@@ -917,15 +930,16 @@ class Container:
 
     # -- Volume helpers --------------------------------------------------------
 
-    def mount_volume(self, name: str, mount_path: str) -> Container:
-        """Mount a named volume into the container.
+    def mount_volume(self, name: str | Volume, mount_path: str) -> Container:
+        """Mount a named volume or volume handle into the container.
 
         Must be called before :meth:`run`. Returns ``self`` for chaining.
 
         Parameters
         ----------
         name
-            Name of the Chalk volume to mount.
+            Name or handle of the Chalk volume to mount. Handles preserve
+            their selected ref or pinned version.
         mount_path
             Absolute path inside the container where the volume is mounted.
 
@@ -945,7 +959,7 @@ class Container:
         """
         # Referenced volume: its mount type is resolved from the backend at
         # run() time, not defaulted here.
-        self._referenced_volumes.append(VolumeMount(name=name, mount_path=mount_path))
+        self._referenced_volumes.extend(normalize_volume_refs([(name, mount_path)]))
         return self
 
     # -- Lifecycle -------------------------------------------------------------
@@ -1163,16 +1177,8 @@ class Container:
                     timeout=ready_timeout,
                 )
 
-            # 6. Wait for ChalkFS volume files to become visible
-            if lazy_files:
-                from chalkcompute._progress import progress_update
-
-                fkey = f"filesync:{container_name}"
-                progress_add(fkey, "volume", "Syncing files", parent=ckey)
-                self._wait_for_volume_files(timeout=120.0, poll_interval=5.0)
-                progress_done(fkey)
-
             progress_done(ckey, detail="running")
+            logger.info("Container running: %s", self._container_id)
         except BaseException:
             progress_fail(ckey)
             raise
@@ -1190,10 +1196,15 @@ class Container:
         assert self._container_id is not None
         deadline = time.monotonic() + timeout
         request = container_pb.GetContainerRequest(id=self._container_id)
+        status_log = _StatusLogger(
+            logger,
+            f"Container {self._container_id}",
+            progress_key=f"container:{self._name}",
+        )
         while time.monotonic() < deadline:
             info = _get_container_info(self._client, request)
             self._container_info = info
-            logger.info("  poll: status=%s", info.status)
+            status_log.update(info.status)
             if info.status == "Running":
                 return
             if info.status in ("Failed", "Succeeded"):
@@ -1210,45 +1221,6 @@ class Container:
         status = self._container_info.status if self._container_info else "unknown"
         raise ContainerError(
             f"Container {self._container_id} timed out after {timeout}s (last status: {status})"
-        )
-
-    def _wait_for_volume_files(
-        self,
-        *,
-        timeout: float = 120.0,
-        poll_interval: float = 0.5,
-    ) -> None:
-        """Poll until at least one uploaded file is visible in the ChalkFS mount.
-
-        Parameters
-        ----------
-        timeout
-            Maximum seconds to wait before giving up.
-        poll_interval
-            Seconds between probes.
-
-        Raises
-        ------
-        ContainerError
-            If no uploaded file becomes visible before the timeout.
-        """
-        from chalkcompute._image import Image
-
-        assert isinstance(self._image, Image)
-        sample = next(iter(self._image.lazy_local_files))
-        probe_path = sample.dest
-        logger.info("Waiting for ChalkFS to sync (probing %s)...", probe_path)
-
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            result = self.exec("test", "-f", probe_path)
-            if result.exit_code == 0:
-                logger.info("ChalkFS files ready.")
-                return
-            time.sleep(poll_interval)
-
-        raise ContainerError(
-            f"ChalkFS files not visible after {timeout}s (probed {probe_path})"
         )
 
     @_instrumented("chalkcompute.container.exec")
@@ -1299,7 +1271,7 @@ class Container:
         ...         )
         ...     ),
         ...     cpu="1",
-        ...     memory="1Gi",
+        ...     memory="2Gi",
         ... ).run()
         >>> hello = c.exec(
         ...     "python",

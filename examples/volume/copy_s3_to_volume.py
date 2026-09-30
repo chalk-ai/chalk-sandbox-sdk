@@ -1,6 +1,8 @@
+#!/usr/bin/env -S uv run --script
+#
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["boto3", "chalkcompute"]
+# dependencies = ["boto3", "chalkcompute>=2.11.1"]
 # ///
 """Copy object-store bucket contents into a Volume.
 
@@ -13,21 +15,12 @@ Disk usage is bounded to roughly `max_files_per_commit x avg_object_size`
 at any point: each batch is downloaded, committed, and cleaned up before
 the next batch begins.
 
-AWS S3 (credentials from env / ~/.aws/credentials / instance profile):
-    uv run python examples/volume/copy_s3_to_volume.py \\
-        --bucket my-bucket --volume my-volume
-    uv run python examples/volume/copy_s3_to_volume.py \\
-        --bucket my-bucket --prefix data/2024/ \\
-        --volume my-volume --dest-prefix imported/
-    uv run python examples/volume/copy_s3_to_volume.py \\
-        --bucket my-bucket --volume my-volume --dry-run
+Credentials can come from the environment, ``~/.aws/credentials``, or an
+instance profile. Google Cloud Storage works through its S3-compatible XML API
+when HMAC keys and ``--endpoint-url`` are provided.
 
-Google Cloud Storage via the S3-compatible XML API (requires HMAC keys):
-    export AWS_ACCESS_KEY_ID=$GOOGLE_ACCESS_KEY_ID
-    export AWS_SECRET_ACCESS_KEY=$GOOGLE_ACCESS_KEY_SECRET
-    uv run python examples/volume/copy_s3_to_volume.py \\
-        --bucket my-gcs-bucket --volume my-volume \\
-        --endpoint-url https://storage.googleapis.com
+The destination volume intentionally persists: it is the output of the copy,
+and deleting it would discard the imported data.
 """
 
 from __future__ import annotations
@@ -139,24 +132,34 @@ def copy_s3_to_volume(
     if dry_run or not objects:
         return len(objects), total_bytes
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        log.info(
-            "Downloading %d objects with %d workers", len(objects), max_download_workers
-        )
-        downloaded: list[tuple[_S3Object, Path]] = []
-        with ThreadPoolExecutor(max_workers=max_download_workers) as executor:
-            futures = {
-                executor.submit(_download_object, s3_client, bucket, obj, tmp_dir): obj
-                for obj in objects
-            }
-            for future in as_completed(futures):
-                result = future.result()
-                downloaded.append(result)
-                log.debug("Downloaded %s", result[0].key)
+    for offset in range(0, len(objects), max_files_per_commit):
+        chunk = objects[offset : offset + max_files_per_commit]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            log.info(
+                "Downloading objects %d-%d of %d with %d workers",
+                offset + 1,
+                offset + len(chunk),
+                len(objects),
+                max_download_workers,
+            )
+            downloaded: list[tuple[_S3Object, Path]] = []
+            with ThreadPoolExecutor(max_workers=max_download_workers) as executor:
+                futures = {
+                    executor.submit(
+                        _download_object, s3_client, bucket, obj, tmp_dir
+                    ): obj
+                    for obj in chunk
+                }
+                for future in as_completed(futures):
+                    result = future.result()
+                    downloaded.append(result)
+                    log.debug("Downloaded %s", result[0].key)
 
-        with volume.batch_upload(max_files_per_commit=max_files_per_commit) as batch:
-            for obj, local_path in downloaded:
-                batch.put_file(obj.dest_path, local_path)
+            with volume.batch_upload(
+                max_files_per_commit=max_files_per_commit
+            ) as batch:
+                for obj, local_path in downloaded:
+                    batch.put_file(obj.dest_path, local_path)
 
     return len(objects), total_bytes
 

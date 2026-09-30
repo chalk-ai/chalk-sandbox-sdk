@@ -10,28 +10,43 @@ Exercises:
 
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 import time
+from pathlib import Path
 
 import pyarrow as pa
 from pyarrow import ipc
 
 from chalk.client import ChalkClient
+from chalk.scalinggroup import AutoScalingSpec, ScalingGroupResourceRequest
+from chalkcompute import Image
 from chalkcompute._connect import grpc_target_from_url
 from chalkcompute._remote_call_client import RemoteCallClient
 
+from e2etests._ci_resources import build_scoped_name
 from e2etests.conftest import (
     CHALK_ENVIRONMENT_ID,
-    _deploy_script,
+    _delete_model_registration,
     _get_access_token,
     needs_staging,
 )
+from e2etests.model_fixtures.handler_decorated import AffineHandler
 
-SG_NAME = "ex-trivial-double-sg"
-VOLUME_SG_NAME = "ex-volume-triple-sg"
-HANDLER_SG_NAME = "ex-handler-affine-sg"
-COMBINED_SG_NAME = "ex-combined-affine-sg"
+MODEL_NAME = build_scoped_name("ex-trivial-double")
+VOLUME_MODEL_NAME = build_scoped_name("ex-volume-triple")
+HANDLER_MODEL_NAME = build_scoped_name("ex-handler-affine")
+COMBINED_MODEL_NAME = build_scoped_name("ex-combined-affine")
+SG_NAME = build_scoped_name("ex-trivial-double-sg")
+VOLUME_SG_NAME = build_scoped_name("ex-volume-triple-sg")
+HANDLER_SG_NAME = build_scoped_name("ex-handler-affine-sg")
+COMBINED_SG_NAME = build_scoped_name("ex-combined-affine-sg")
 READINESS_TIMEOUT = 180
 READINESS_POLL_INTERVAL = 5
+SCALING_GROUP_CPU = "500m"
+SCALING_GROUP_MEMORY = "1Gi"
+FIXTURES_DIR = Path(__file__).parent / "model_fixtures"
 
 
 def _wait_for_ready_replicas(client: ChalkClient, sg_name: str, timeout: float) -> str:
@@ -97,8 +112,48 @@ class TestModelScalingGroup:
 
     @classmethod
     def setup_class(cls):
-        _deploy_script("model", "deploy_trivial.py")
         client = ChalkClient(environment=CHALK_ENVIRONMENT_ID)
+        image = (
+            Image.debian_slim("3.11")
+            .pip_install(["chalk-remote-call-python", "pyarrow"])
+            .add_local_file(
+                str(FIXTURES_DIR / "handler.py"),
+                "/app/handler.py",
+                strategy="copy",
+            )
+            .env({"PYTHONPATH": "/app"})
+            .workdir("/app")
+            .entrypoint(
+                [
+                    "chalk-remote-call",
+                    "--handler",
+                    "handler.handler",
+                    "--port",
+                    "8080",
+                ]
+            )
+        )
+        version = client.register_model_version(
+            name=MODEL_NAME,
+            input_schema={"x": pa.float64()},
+            output_schema={"y": pa.float64()},
+            model_image=image,
+        )
+        cls.model_version = version.model_version
+        client.deploy_model_version_to_scaling_group(
+            name=SG_NAME,
+            model_name=MODEL_NAME,
+            model_version=version.model_version,
+            handler="handler.handler",
+            scaling=AutoScalingSpec(
+                min_replicas=1,
+                max_replicas=1,
+                target_cpu_utilization_percentage=70,
+            ),
+            resources=ScalingGroupResourceRequest(
+                cpu=SCALING_GROUP_CPU, memory=SCALING_GROUP_MEMORY
+            ),
+        )
         cls._web_url = _wait_for_ready_replicas(client, SG_NAME, READINESS_TIMEOUT)
 
     @classmethod
@@ -108,6 +163,7 @@ class TestModelScalingGroup:
             client.delete_scaling_group(name=SG_NAME)
         except Exception:
             pass
+        _delete_model_registration(MODEL_NAME, getattr(cls, "model_version", None))
 
     def test_single_input(self):
         """handler(x=3.0) should return 6.0."""
@@ -133,17 +189,62 @@ class TestModelWithVolume:
 
     The handler loads a config.json from /app/artifacts (the canonical
     volume mount path) at startup and uses its "factor" field to multiply
-    inputs. This validates the full volume flow: upload_model_to_volume
-    with chalk_handler_volume_name, automatic volume detection in
-    _ensure_model_image, and runtime loading from the mount.
+    inputs. Registering config.json through model_paths creates an artifact
+    volume and records it on the model version for mounting at deploy time.
     """
 
     _web_url: str
 
     @classmethod
     def setup_class(cls):
-        _deploy_script("model", "deploy_volume.py")
         client = ChalkClient(environment=CHALK_ENVIRONMENT_ID)
+        image = (
+            Image.debian_slim("3.11")
+            .pip_install(["chalk-remote-call-python", "pyarrow"])
+            .add_local_file(
+                str(FIXTURES_DIR / "handler_with_volume.py"),
+                "/app/handler.py",
+                strategy="copy",
+            )
+            .env({"PYTHONPATH": "/app"})
+            .workdir("/app")
+            .entrypoint(
+                [
+                    "chalk-remote-call",
+                    "--handler",
+                    "handler.handler",
+                    "--on-startup",
+                    "handler.on_startup",
+                    "--port",
+                    "8080",
+                ]
+            )
+        )
+        with tempfile.TemporaryDirectory(prefix="model-volume-") as config_dir:
+            config_path = Path(config_dir) / "config.json"
+            config_path.write_text(json.dumps({"factor": 3.0}))
+            version = client.register_model_version(
+                name=VOLUME_MODEL_NAME,
+                input_schema={"x": pa.float64()},
+                output_schema={"y": pa.float64()},
+                model_image=image,
+                model_paths=[str(config_path)],
+            )
+        cls.model_version = version.model_version
+        client.deploy_model_version_to_scaling_group(
+            name=VOLUME_SG_NAME,
+            model_name=VOLUME_MODEL_NAME,
+            model_version=version.model_version,
+            handler="handler.handler",
+            scaling=AutoScalingSpec(
+                min_replicas=1,
+                max_replicas=1,
+                target_cpu_utilization_percentage=70,
+            ),
+            resources=ScalingGroupResourceRequest(
+                cpu=SCALING_GROUP_CPU, memory=SCALING_GROUP_MEMORY
+            ),
+        )
         cls._web_url = _wait_for_ready_replicas(
             client, VOLUME_SG_NAME, READINESS_TIMEOUT
         )
@@ -155,6 +256,9 @@ class TestModelWithVolume:
             client.delete_scaling_group(name=VOLUME_SG_NAME)
         except Exception:
             pass
+        _delete_model_registration(
+            VOLUME_MODEL_NAME, getattr(cls, "model_version", None)
+        )
 
     def test_single_input(self):
         """handler(x=4.0) with factor=3.0 should return 12.0."""
@@ -182,8 +286,31 @@ class TestModelHandlerDecorator:
 
     @classmethod
     def setup_class(cls):
-        _deploy_script("model", "deploy_handler.py")
         client = ChalkClient(environment=CHALK_ENVIRONMENT_ID)
+        with tempfile.TemporaryDirectory(prefix="model-handler-") as weights_dir:
+            weights_path = os.path.join(weights_dir, "weights.json")
+            with open(weights_path, "w") as weights_file:
+                json.dump({"factor": 5.0, "bias": 2.0}, weights_file)
+            version = client.register_model_version(
+                name=HANDLER_MODEL_NAME,
+                model=AffineHandler(files=[weights_path]),
+                input_schema={"x": pa.float64()},
+                output_schema={"y": pa.float64()},
+            )
+        cls.model_version = version.model_version
+        client.deploy_model_version_to_scaling_group(
+            name=HANDLER_SG_NAME,
+            model_name=HANDLER_MODEL_NAME,
+            model_version=version.model_version,
+            scaling=AutoScalingSpec(
+                min_replicas=1,
+                max_replicas=1,
+                target_cpu_utilization_percentage=70,
+            ),
+            resources=ScalingGroupResourceRequest(
+                cpu=SCALING_GROUP_CPU, memory=SCALING_GROUP_MEMORY
+            ),
+        )
         cls._web_url = _wait_for_ready_replicas(
             client, HANDLER_SG_NAME, READINESS_TIMEOUT
         )
@@ -195,6 +322,9 @@ class TestModelHandlerDecorator:
             client.delete_scaling_group(name=HANDLER_SG_NAME)
         except Exception:
             pass
+        _delete_model_registration(
+            HANDLER_MODEL_NAME, getattr(cls, "model_version", None)
+        )
 
     def test_single_input(self):
         """predict(x=3.0) with factor=5.0, bias=2.0 should return 17.0."""
@@ -221,8 +351,60 @@ class TestModelImageAndModelCombined:
 
     @classmethod
     def setup_class(cls):
-        _deploy_script("model", "deploy_image_and_model.py")
         client = ChalkClient(environment=CHALK_ENVIRONMENT_ID)
+        image = (
+            Image.debian_slim("3.11")
+            .pip_install(["chalk-remote-call-python", "pyarrow"])
+            .add_local_file(
+                str(FIXTURES_DIR / "handler_combined.py"),
+                "/app/handler_combined.py",
+                strategy="volume",
+            )
+            .add_local_file(
+                str(FIXTURES_DIR / "predict_combined.py"),
+                "/app/predict_combined.py",
+                strategy="volume",
+            )
+            .env({"PYTHONPATH": "/app"})
+            .workdir("/app")
+            .entrypoint(
+                [
+                    "chalk-remote-call",
+                    "--handler",
+                    "handler_combined.handler",
+                    "--on-startup",
+                    "handler_combined.on_startup",
+                    "--port",
+                    "8080",
+                ]
+            )
+        )
+        with tempfile.TemporaryDirectory(prefix="model-combined-") as weights_dir:
+            weights_path = os.path.join(weights_dir, "weights.json")
+            with open(weights_path, "w") as weights_file:
+                json.dump({"factor": 2.0, "bias": 1.0}, weights_file)
+            version = client.register_model_version(
+                name=COMBINED_MODEL_NAME,
+                input_schema={"x": pa.float64()},
+                output_schema={"y": pa.float64()},
+                model_image=image,
+                model_paths=[weights_path],
+            )
+        cls.model_version = version.model_version
+        client.deploy_model_version_to_scaling_group(
+            name=COMBINED_SG_NAME,
+            model_name=COMBINED_MODEL_NAME,
+            model_version=version.model_version,
+            handler="handler_combined.handler",
+            scaling=AutoScalingSpec(
+                min_replicas=1,
+                max_replicas=1,
+                target_cpu_utilization_percentage=70,
+            ),
+            resources=ScalingGroupResourceRequest(
+                cpu=SCALING_GROUP_CPU, memory=SCALING_GROUP_MEMORY
+            ),
+        )
         cls._web_url = _wait_for_ready_replicas(
             client, COMBINED_SG_NAME, READINESS_TIMEOUT
         )
@@ -234,6 +416,9 @@ class TestModelImageAndModelCombined:
             client.delete_scaling_group(name=COMBINED_SG_NAME)
         except Exception:
             pass
+        _delete_model_registration(
+            COMBINED_MODEL_NAME, getattr(cls, "model_version", None)
+        )
 
     def test_single_input(self):
         """handler(x=3.0) with factor=2.0, bias=1.0 should return 7.0."""
