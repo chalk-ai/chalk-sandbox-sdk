@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, cast
 
 import pytest
@@ -115,3 +116,23 @@ def test_scaling_group_deploy_omits_port_when_none() -> None:
     )
 
     assert not _deployed_container_spec(sg).has_field("port")
+
+
+@pytest.mark.parametrize("probe", [{"http": {"path": "/health"}}, {"grpc": {}}, {}])
+def test_scaling_group_deploy_includes_startup_probe(probe: dict[str, Any]) -> None:
+    sg = ScalingGroup(image="ubuntu:latest", startup_probe=probe)
+    spec = _deployed_container_spec(sg)
+    assert spec.startup_probe == container_pb.StartupProbe.from_json(json.dumps(probe))
+    assert spec.readiness_probe is None
+
+
+def test_readiness_probe_does_not_enable_startup_probe() -> None:
+    sg = ScalingGroup(
+        image="ubuntu:latest", readiness_probe=ReadinessProbe.http("/ready")
+    )
+    assert _deployed_container_spec(sg).startup_probe is None
+
+
+def test_scaling_group_empty_initializes_startup_probe() -> None:
+    sg = ScalingGroup._make_empty()
+    assert sg._startup_probe is None

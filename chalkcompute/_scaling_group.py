@@ -251,6 +251,11 @@ class ScalingGroup:
     Orchestrates image building, local file upload via volumes, and
     scaling-group lifecycle in a single high-level API.
 
+    ``readiness_probe`` checks each replica directly. Optional ``startup_probe``
+    checks the externally routed endpoint before deployment becomes ready, e.g.
+    ``{"http": {"path": "/health"}}`` or ``{"grpc": {}}``. External startup
+    probes are not supported with ``authenticated=True``.
+
     Examples
     --------
     >>> from chalkcompute import ScalingGroup, Image
@@ -287,6 +292,7 @@ class ScalingGroup:
         min_replicas: int = 1,
         max_replicas: int = 1,
         readiness_probe: ReadinessProbe | None = None,
+        startup_probe: Mapping[str, Any] | None = None,
         shutdown_delay_seconds: int | None = None,
         scaling_interval_seconds: int | None = None,
         target_cpu_utilization_percentage: int | None = None,
@@ -351,6 +357,7 @@ class ScalingGroup:
         self._min_replicas = min_replicas
         self._max_replicas = max_replicas
         self._readiness_probe = readiness_probe
+        self._startup_probe = dict(startup_probe) if startup_probe is not None else None
         self._shutdown_delay_seconds = shutdown_delay_seconds
         self._scaling_interval_seconds = scaling_interval_seconds
         self._target_cpu_utilization_percentage = target_cpu_utilization_percentage
@@ -457,6 +464,7 @@ class ScalingGroup:
         sg._min_replicas = 1
         sg._max_replicas = 1
         sg._readiness_probe = None
+        sg._startup_probe = None
         sg._shutdown_delay_seconds = None
         sg._scaling_interval_seconds = None
         sg._target_cpu_utilization_percentage = None
@@ -491,7 +499,7 @@ class ScalingGroup:
             Maximum seconds to wait for the image build to complete.
         ready_timeout
             Maximum seconds to wait for the scaling group to have at least one
-            ready and available replica.
+            ready and available replica and pass any configured startup probe.
 
         Returns
         -------
@@ -605,6 +613,7 @@ class ScalingGroup:
                 if self._readiness_probe is not None
                 else None
             ),
+            startup_probe=self._startup_probe,
             tags=self._tags,
             chalk_identity=self._chalk_identity,
         ).to_proto()
