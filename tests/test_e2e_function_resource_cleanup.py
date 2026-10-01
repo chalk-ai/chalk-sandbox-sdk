@@ -51,3 +51,24 @@ def test_source_cleanup_waits_for_the_function_mount_to_release(
 
     assert volumes.delete_volume.call_count == 2
     e2e.time.sleep.assert_called_once_with(2)
+
+
+def test_source_metadata_failure_still_deletes_the_new_function(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    function = SimpleNamespace()
+    delete = Mock()
+    monkeypatch.setattr(
+        e2e.chalkcompute.RemoteFunction, "from_name", Mock(return_value=function)
+    )
+    monkeypatch.setattr(
+        e2e,
+        "_test_owned_source_volume_name",
+        Mock(side_effect=RuntimeError("source unavailable")),
+    )
+    monkeypatch.setattr(e2e, "_delete_function", delete)
+
+    with pytest.raises(RuntimeError, match="source unavailable"):
+        e2e._deployed_test_function_source("ex-count-up-test")
+
+    delete.assert_called_once_with("ex-count-up-test")

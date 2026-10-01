@@ -139,6 +139,18 @@ def _test_owned_source_volume_name(
     return source.volume_name if source.volume_name in owned_names else None
 
 
+def _deployed_test_function_source(
+    function_name: str,
+) -> tuple[chalkcompute.RemoteFunction, str | None]:
+    """Capture source ownership, deleting the new Function if inspection fails."""
+    try:
+        function = chalkcompute.RemoteFunction.from_name(function_name)
+        return function, _test_owned_source_volume_name(function, function_name)
+    except Exception:
+        _delete_function(function_name)
+        raise
+
+
 def _delete_test_owned_source_volume(
     function: chalkcompute.RemoteFunction, volume_name: str
 ) -> None:
