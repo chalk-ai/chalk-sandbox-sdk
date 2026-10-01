@@ -13,6 +13,8 @@ Run sandbox probes and report whether sandboxing held.
 
 Sandboxes created by this script are terminated. A sandbox selected by ID or
 name is caller-owned and intentionally left running after inspection.
+The default probe image is built before the sandbox starts, so the sandbox
+does not need outbound network access for setup.
 """
 
 import argparse
@@ -24,15 +26,27 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from chalkcompute import ContainerSecurityPolicy, Image, KernelPolicy, Sandbox
+from chalkcompute import (
+    ContainerSecurityPolicy,
+    Image,
+    KernelPolicy,
+    Sandbox,
+)
 from dotenv import load_dotenv
 
 load_dotenv()
 
 
 THIS_DIR = Path(__file__).resolve().parent
-DOCKERFILE = THIS_DIR / "Dockerfile"
 USE_COLOR = sys.stdout.isatty()
+PROBE_SOURCES = (
+    "rawsock.c",
+    "pidfd_open.c",
+    "io_uring.c",
+    "syscalls.c",
+    "fanotify.c",
+    "kexec_load.c",
+)
 
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -62,7 +76,29 @@ class ProbeResult:
 
 
 def build_image() -> Image:
-    return Image.from_dockerfile(str(DOCKERFILE))
+    image = (
+        Image.base("alpine:3.23")
+        .run_commands(
+            "apk add --no-cache "
+            "bash build-base e2fsprogs findutils iproute2 jq keyutils kubectl "
+            "libcap-utils linux-headers netcat-openbsd procps quota-tools strace "
+            "tree util-linux"
+        )
+        .workdir("/work")
+    )
+    for source in PROBE_SOURCES:
+        image = image.add_local_file(
+            str(THIS_DIR / source),
+            f"/work/{source}",
+            strategy="copy",
+        )
+
+    programs = " ".join(Path(source).stem for source in PROBE_SOURCES)
+    return image.run_commands(
+        f"for src in {programs}; do "
+        'gcc -O2 -Wall "/work/${src}.c" -o "/work/${src}" || exit; '
+        "done"
+    ).cmd(["sleep", "infinity"])
 
 
 def colorize(text: str, *styles: str) -> str:
@@ -697,7 +733,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--image",
-        help="Use an existing image URI instead of building from examples/sandboxed/Dockerfile.",
+        help="Use an existing image containing the probe tools instead of building one.",
     )
     parser.add_argument(
         "--name",
@@ -754,13 +790,16 @@ def main() -> int:
     elif args.sandbox_name:
         container = Sandbox.from_name(args.sandbox_name)
     else:
-        image: Image | str = args.image if args.image else build_image()
         policy = (
             ContainerSecurityPolicy(kernel_policy=KernelPolicy.RESTRICTED)
             if args.restricted
             else None
         )
-        container = Sandbox(image=image, name=args.name, security_policy=policy)
+        container = Sandbox(
+            image=args.image or build_image(),
+            name=args.name,
+            security_policy=policy,
+        )
         created_sandbox = True
 
     try:
