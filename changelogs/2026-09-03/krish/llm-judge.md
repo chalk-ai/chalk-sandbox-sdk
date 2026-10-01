@@ -1,0 +1,1 @@
+- Add `cc.scorers.llm_judge`, an LLM judge declared with a pydantic response model and deployed as an ordinary scorer function

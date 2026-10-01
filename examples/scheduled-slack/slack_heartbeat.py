@@ -2,7 +2,7 @@
 #
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["chalkcompute"]
+# dependencies = ["chalkcompute>=2.11.1"]
 # ///
 # # Scheduled Slack heartbeat
 #
@@ -10,6 +10,9 @@
 # UTC time to a Slack channel. The platform invokes the function on the
 # schedule — there is no caller and no return value, so the body just runs
 # its side effect.
+#
+# The deployment intentionally persists after this script exits; otherwise the
+# platform-managed schedule could not continue posting heartbeats.
 #
 # This example shows three things layered together:
 #
@@ -23,17 +26,11 @@
 #   3. The function imports `httpx` at call time and POSTs to Slack's
 #      `chat.postMessage` API. The pip dependency lives on the deploy
 #      image, not in the local script.
-#
-# Run it:
-#
-#     set -a && source ~/chalk/github-pinger/.env && set +a   # SLACK_BOT_TOKEN
-#     just env                                                  # CHALK_* creds
-#     set -a && source .env && set +a
-#     uv run python examples/scheduled-slack/slack_heartbeat.py
 
 from __future__ import annotations
 
 import logging
+import os
 
 import chalkcompute
 
@@ -46,7 +43,7 @@ log = logging.getLogger(__name__)
 # is plumbed through as a plain env var (not a secret) because the channel
 # name is not sensitive.
 
-SLACK_CHANNEL = "#chalk-compute-spam"
+SLACK_CHANNEL = os.environ["SLACK_CHANNEL"]
 
 
 # ## The scheduled function
@@ -62,8 +59,10 @@ SLACK_CHANNEL = "#chalk-compute-spam"
 
 @chalkcompute.function(
     image=chalkcompute.Image.debian_slim().pip_install(["httpx"]),
-    secrets=[chalkcompute.Secret.from_local_env("SLACK_BOT_TOKEN")],
-    env={"SLACK_CHANNEL": SLACK_CHANNEL},
+    env={
+        "SLACK_BOT_TOKEN": chalkcompute.Secret.from_local_env("SLACK_BOT_TOKEN"),
+        "SLACK_CHANNEL": SLACK_CHANNEL,
+    },
     schedule="1m",
 )
 def slack_heartbeat() -> None:

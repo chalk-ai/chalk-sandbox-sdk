@@ -29,9 +29,11 @@ def test_source_cleanup_uses_the_deployed_revision_and_rejects_shared_volumes() 
     )
     assert client.call.call_args.args[1].function_version_id == "version-1"
 
+    client.call.return_value = SimpleNamespace(volume_name=function_name)
+    assert e2e._test_owned_source_volume_name(function, function_name) == function_name
+
     client.call.return_value = SimpleNamespace(volume_name="chalk-fn-src-shared")
-    with pytest.raises(AssertionError, match="not unique to this test"):
-        e2e._test_owned_source_volume_name(function, function_name)
+    assert e2e._test_owned_source_volume_name(function, function_name) is None
 
 
 def test_source_cleanup_waits_for_the_function_mount_to_release(

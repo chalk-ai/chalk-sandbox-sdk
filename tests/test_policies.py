@@ -5,18 +5,22 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from protobuf import Oneof
 
-import chalkcompute._cls as cls_mod
-import chalkcompute._function as function_mod
 from chalkcompute._cls import ClassError, RemoteClass, method
 from chalkcompute._concurrency import ConcurrencyPolicy
+from chalkcompute._deployment_proto import function_config
 from chalkcompute._function import FunctionError, RemoteFunction
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as catalog_pb
+from chalkcompute._quota import DEFAULT_RESULT_TTL_SECONDS, QueuePolicy
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._remote_function_tracing import (
     TracingPolicy,
+    merge_workload_tracing_env,
     normalize_remote_function_tracing,
+    normalize_workload_tracing,
+    workload_tracing_env,
 )
 from chalkcompute._retry import RetryPolicy
 from chalkcompute._scaling_group import ScalingGroup
@@ -47,25 +51,31 @@ class _CapturingClient(StubbedConnectClient):
                     available_replicas=1,
                 )
             )
-        if method.name != "create_external_function":
+        if method.name != "ensure_external_function":
             raise AssertionError(f"unexpected method: {method.name}")
-        assert isinstance(request, catalog_pb.CreateExternalFunctionRequest)
-        assert request.spec is not None and request.spec.spec is not None
-        assert request.spec.spec.container_spec is not None
-        self.requests.append(request.spec)
-        return catalog_pb.CreateExternalFunctionResponse(
-            external_function=catalog_pb.ExternalFunction(
-                id=f"version-{len(self.requests)}",
-                name=request.function_name,
-                current_version=catalog_pb.ExternalFunctionVersion(
-                    id=f"version-{len(self.requests)}",
-                    function_id="function-1",
-                    function_name=request.function_name,
-                    version=len(self.requests),
-                    scaling_group_name=request.spec.spec.container_spec.name,
-                    input_arrow_schema=request.spec.input_arrow_schema,
+        assert isinstance(request, catalog_pb.EnsureExternalFunctionRequest)
+        assert request.spec is not None and request.spec.version_spec is not None
+        assert request.spec.version_spec.spec is not None
+        assert request.spec.version_spec.spec.container_spec is not None
+        self.requests.append(request.spec.version_spec)
+        return catalog_pb.EnsureExternalFunctionResponse(
+            result=Oneof(
+                "complete",
+                catalog_pb.EnsuredExternalFunction(
+                    external_function=catalog_pb.ExternalFunction(
+                        id=f"version-{len(self.requests)}",
+                        name=request.function_name,
+                        current_version=catalog_pb.ExternalFunctionVersion(
+                            id=f"version-{len(self.requests)}",
+                            function_id="function-1",
+                            function_name=request.function_name,
+                            version=len(self.requests),
+                            scaling_group_name=request.spec.version_spec.spec.container_spec.name,
+                            input_arrow_schema=request.spec.version_spec.input_arrow_schema,
+                        ),
+                    ),
                 ),
-            ),
+            )
         )
 
 
@@ -169,6 +179,69 @@ class TestConcurrencyPolicyFromIntOrPolicy:
             ConcurrencyPolicy.from_int_or_policy(True)  # type: ignore[arg-type]
 
 
+class TestQueuePolicy:
+    def test_result_ttl_defaults_to_one_day(self):
+        assert QueuePolicy().result_ttl_seconds == DEFAULT_RESULT_TTL_SECONDS
+
+    def test_result_ttl_is_included_in_metadata(self):
+        assert QueuePolicy(result_ttl_seconds=3_600).to_dict() == {
+            "max_items": 500_000,
+            "result_ttl_seconds": 3_600,
+        }
+
+    @pytest.mark.parametrize("ttl", [0, -1])
+    def test_non_positive_result_ttl_is_rejected(self, ttl: int):
+        with pytest.raises(ValueError, match="result_ttl_seconds must be > 0"):
+            QueuePolicy(result_ttl_seconds=ttl)
+
+    def test_non_integer_result_ttl_is_rejected(self):
+        with pytest.raises(TypeError, match="result_ttl_seconds must be an int"):
+            QueuePolicy(result_ttl_seconds=True)  # type: ignore[arg-type]
+
+    def test_result_ttl_is_sent_in_function_config(self):
+        config = function_config(
+            serialization_format="pyarrow",
+            options={},
+            max_buffer_duration=None,
+            max_batching_size=None,
+            retries=None,
+            rate_limit=None,
+            concurrency=None,
+            queue_policy=QueuePolicy(result_ttl_seconds=3_600),
+            schedule=None,
+        )
+
+        assert config.queue is not None
+        assert config.queue.result_ttl_seconds == 3_600
+
+    def test_remote_function_accepts_queue_policy(self):
+        def add(x: int) -> int:
+            return x + 1
+
+        policy = QueuePolicy(result_ttl_seconds=3_600)
+        remote_function = RemoteFunction(add, queue_policy=policy)
+
+        assert remote_function._queue_policy is policy
+
+    def test_remote_class_accepts_queue_policy(self):
+        class Worker:
+            @method
+            def run(self) -> int:
+                return 1
+
+        policy = QueuePolicy(result_ttl_seconds=3_600)
+        remote_class = RemoteClass(Worker, queue_policy=policy)
+
+        assert remote_class._queue_policy is policy
+
+    def test_queue_policy_rejects_other_types(self):
+        def add(x: int) -> int:
+            return x + 1
+
+        with pytest.raises(TypeError, match="queue_policy must be a QueuePolicy"):
+            RemoteFunction(add, queue_policy=10)  # type: ignore[arg-type]
+
+
 class TestRetryPolicyKey:
     def test_key_omitted_from_dict_by_default(self):
         assert "key" not in RetryPolicy.exponential(attempts=3).to_dict()
@@ -185,6 +258,14 @@ class TestRetryPolicyKey:
     def test_bool_rejected(self):
         with pytest.raises(TypeError, match="bool"):
             RetryPolicy.from_int_or_policy(True)  # type: ignore[arg-type]
+
+    def test_negative_retries_rejected(self):
+        with pytest.raises(ValueError, match="max_retries must be >= 0"):
+            RetryPolicy.exponential(attempts=-1)
+
+    def test_non_integer_retries_rejected(self):
+        with pytest.raises(TypeError, match="max_retries must be an int"):
+            RetryPolicy(max_retries=1.5)  # type: ignore[arg-type]
 
 
 class TestTracingPolicy:
@@ -211,6 +292,53 @@ class TestTracingPolicy:
     def test_invalid_tracing_config_rejected(self):
         with pytest.raises(TypeError, match="tracing must be a bool or TracingPolicy"):
             normalize_remote_function_tracing("on")  # type: ignore[arg-type]
+
+
+class TestWorkloadTracing:
+    """``tracing=`` on sandboxes, containers, and scaling groups."""
+
+    def test_none_keeps_platform_default(self):
+        assert normalize_workload_tracing(None) is None
+        assert workload_tracing_env(None) == {}
+        assert merge_workload_tracing_env({"A": "1"}, None) == {"A": "1"}
+
+    def test_true_traces_every_root(self):
+        policy = normalize_workload_tracing(True)
+        assert policy == TracingPolicy(sample_rate=1.0)
+        assert workload_tracing_env(policy) == {
+            "OTEL_TRACES_SAMPLER": "parentbased_traceidratio",
+            "OTEL_TRACES_SAMPLER_ARG": "1.0",
+        }
+
+    def test_policy_sets_root_sample_rate(self):
+        assert workload_tracing_env(TracingPolicy(sample_rate=0.25)) == {
+            "OTEL_TRACES_SAMPLER": "parentbased_traceidratio",
+            "OTEL_TRACES_SAMPLER_ARG": "0.25",
+        }
+
+    def test_false_turns_tracing_off(self):
+        assert workload_tracing_env(normalize_workload_tracing(False)) == {
+            "OTEL_TRACES_SAMPLER": "always_off"
+        }
+
+    def test_merge_preserves_user_env(self):
+        assert merge_workload_tracing_env(
+            {"A": "1"}, TracingPolicy(sample_rate=0.5)
+        ) == {
+            "A": "1",
+            "OTEL_TRACES_SAMPLER": "parentbased_traceidratio",
+            "OTEL_TRACES_SAMPLER_ARG": "0.5",
+        }
+
+    def test_merge_rejects_conflicting_env(self):
+        with pytest.raises(ValueError, match=r"OTEL_TRACES_SAMPLER_ARG"):
+            merge_workload_tracing_env(
+                {"OTEL_TRACES_SAMPLER_ARG": "0.1"}, TracingPolicy(sample_rate=1.0)
+            )
+
+    def test_invalid_config_rejected(self):
+        with pytest.raises(TypeError, match="tracing must be a bool or TracingPolicy"):
+            normalize_workload_tracing("on")  # type: ignore[arg-type]
 
 
 class TestBatchingGeneratorGuardFunction:
@@ -312,11 +440,8 @@ class TestScheduleValidationFunction:
         client = _CapturingClient()
         fn = RemoteFunction(tick, schedule=" 1h ")
         fn._client = client  # type: ignore[assignment]
-        monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
         monkeypatch.setattr(
-            function_mod,
-            "_build_and_upload",
-            lambda *_, **__: ("image:test", [], None, []),
+            RemoteFunction, "_build_deploy_image", lambda _: Image("image:test")
         )
 
         fn.deploy()
@@ -334,11 +459,8 @@ class TestScheduleValidationFunction:
         client = _CapturingClient()
         fn = RemoteFunction(add, tracing=TracingPolicy(sample_rate=0.25))
         fn._client = client  # type: ignore[assignment]
-        monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
         monkeypatch.setattr(
-            function_mod,
-            "_build_and_upload",
-            lambda *_, **__: ("image:test", [], None, []),
+            RemoteFunction, "_build_deploy_image", lambda _: Image("image:test")
         )
 
         fn.deploy()
@@ -360,11 +482,8 @@ class TestScheduleValidationFunction:
         client = _CapturingClient()
         fn = RemoteFunction(add, tracing=True)
         fn._client = client  # type: ignore[assignment]
-        monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
         monkeypatch.setattr(
-            function_mod,
-            "_build_and_upload",
-            lambda *_, **__: ("image:test", [], None, []),
+            RemoteFunction, "_build_deploy_image", lambda _: Image("image:test")
         )
 
         fn.deploy()
@@ -386,11 +505,8 @@ class TestScheduleValidationFunction:
         client = _CapturingClient()
         fn = RemoteFunction(add, tracing=False)
         fn._client = client  # type: ignore[assignment]
-        monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
         monkeypatch.setattr(
-            function_mod,
-            "_build_and_upload",
-            lambda *_, **__: ("image:test", [], None, []),
+            RemoteFunction, "_build_deploy_image", lambda _: Image("image:test")
         )
 
         fn.deploy()
@@ -414,12 +530,7 @@ class TestScheduleValidationFunction:
         remote_class = RemoteClass(Worker, tracing=TracingPolicy(sample_rate=0.25))
         remote_class._client = client  # type: ignore[assignment]
         monkeypatch.setattr(
-            RemoteClass, "_build_deploy_image", lambda _: (object(), [])
-        )
-        monkeypatch.setattr(
-            cls_mod,
-            "_build_and_upload",
-            lambda *_, **__: ("image:test", [], None, []),
+            RemoteClass, "_build_deploy_image", lambda _: (Image("image:test"), [])
         )
 
         remote_class.deploy()
@@ -441,11 +552,8 @@ class TestScheduleValidationFunction:
         client = _CapturingClient()
         fn = RemoteFunction(add)
         fn._client = client  # type: ignore[assignment]
-        monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
         monkeypatch.setattr(
-            function_mod,
-            "_build_and_upload",
-            lambda *_, **__: ("image:test", [], None, []),
+            RemoteFunction, "_build_deploy_image", lambda _: Image("image:test")
         )
 
         fn.deploy()
@@ -503,12 +611,7 @@ class TestScheduleValidationClass:
         rc = RemoteClass(Jobs, schedule="0 * * * *")
         rc._client = client  # type: ignore[assignment]
         monkeypatch.setattr(
-            RemoteClass, "_build_deploy_image", lambda _: (object(), [])
-        )
-        monkeypatch.setattr(
-            cls_mod,
-            "_build_and_upload",
-            lambda *_, **__: ("image:test", [], None, []),
+            RemoteClass, "_build_deploy_image", lambda _: (Image("image:test"), [])
         )
 
         rc.deploy()
@@ -532,11 +635,8 @@ class TestFunctionQueueProtocolAdvertisement:
         client = _CapturingClient()
         fn = RemoteFunction(run)
         fn._client = client  # type: ignore[assignment]
-        monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
         monkeypatch.setattr(
-            function_mod,
-            "_build_and_upload",
-            lambda *_, **__: ("image:test", [], None, []),
+            RemoteFunction, "_build_deploy_image", lambda _: Image("image:test")
         )
 
         fn.deploy()
@@ -556,11 +656,8 @@ class TestFunctionQueueProtocolAdvertisement:
         client = _CapturingClient()
         fn = RemoteFunction(run, env={"CHALK_FNQ_STREAMS_SUPPORTED": "false"})
         fn._client = client  # type: ignore[assignment]
-        monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
         monkeypatch.setattr(
-            function_mod,
-            "_build_and_upload",
-            lambda *_, **__: ("image:test", [], None, []),
+            RemoteFunction, "_build_deploy_image", lambda _: Image("image:test")
         )
 
         fn.deploy()
@@ -583,12 +680,7 @@ class TestFunctionQueueProtocolAdvertisement:
         remote_class = RemoteClass(Worker)
         remote_class._client = client  # type: ignore[assignment]
         monkeypatch.setattr(
-            RemoteClass, "_build_deploy_image", lambda _: (object(), [])
-        )
-        monkeypatch.setattr(
-            cls_mod,
-            "_build_and_upload",
-            lambda *_, **__: ("image:test", [], None, []),
+            RemoteClass, "_build_deploy_image", lambda _: (Image("image:test"), [])
         )
 
         remote_class.deploy()
@@ -694,11 +786,8 @@ def test_remote_function_forwards_shared_scaling_fields(
         scale_from_zero_request_policy=ScaleFromZeroRequestPolicy.HOLD,
     )
     fn._client = client  # type: ignore[assignment]
-    monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
     monkeypatch.setattr(
-        function_mod,
-        "_build_and_upload",
-        lambda *_, **__: ("image:test", [], None, []),
+        RemoteFunction, "_build_deploy_image", lambda _: Image("image:test")
     )
 
     fn.deploy()
@@ -739,11 +828,8 @@ def test_remote_class_forwards_shared_scaling_fields(
         scale_from_zero_request_policy=ScaleFromZeroRequestPolicy.HOLD,
     )
     remote_class._client = client  # type: ignore[assignment]
-    monkeypatch.setattr(RemoteClass, "_build_deploy_image", lambda _: (object(), []))
     monkeypatch.setattr(
-        cls_mod,
-        "_build_and_upload",
-        lambda *_, **__: ("image:test", [], None, []),
+        RemoteClass, "_build_deploy_image", lambda _: (Image("image:test"), [])
     )
 
     remote_class.deploy()

@@ -344,6 +344,28 @@ def _parse_env_file(path: str) -> dict[str, str]:
     return result
 
 
+def prepare_lazy_secrets(secrets: list[Secret]) -> tuple[list[Secret], dict[str, str]]:
+    """Read local declarations without performing remote secret mutations."""
+    resolved: list[Secret] = []
+    values: dict[str, str] = {}
+    for secret in secrets:
+        if secret._local_env_var is not None:
+            local_var = secret._local_env_var
+            value = os.environ.get(local_var)
+            if value is None:
+                raise ValueError(f"Local environment variable {local_var!r} is not set")
+            remote_name = secret._env_var_name or local_var
+            values[remote_name] = value
+            resolved.append(Secret.from_chalk_env(remote_name))
+        elif secret._local_env_file is not None:
+            for name, value in _parse_env_file(secret._local_env_file).items():
+                values[name] = value
+                resolved.append(Secret.from_chalk_env(name))
+        else:
+            resolved.append(secret)
+    return resolved, values
+
+
 def resolve_lazy_secrets(
     secrets: list[Secret],
     client: Any,
@@ -377,30 +399,14 @@ def resolve_lazy_secrets(
         already upserted before the failure are not rolled back.
     """
     resolved: list[Secret] = []
-    upserted_names: list[str] = []
-
+    upserted: list[str] = []
     for secret in secrets:
-        if secret._local_env_var is not None:
-            local_var = secret._local_env_var
-            value = os.environ.get(local_var)
-            if value is None:
-                raise ValueError(f"Local environment variable {local_var!r} is not set")
-            remote_name = secret._env_var_name or local_var
-            _upsert_secret(client, remote_name, value, scope)
-            upserted_names.append(remote_name)
-            resolved.append(Secret.from_chalk_env(remote_name))
-
-        elif secret._local_env_file is not None:
-            env_vars = _parse_env_file(secret._local_env_file)
-            for name, value in env_vars.items():
-                _upsert_secret(client, name, value, scope)
-                upserted_names.append(name)
-                resolved.append(Secret.from_chalk_env(name))
-
-        else:
-            resolved.append(secret)
-
-    return resolved, upserted_names
+        references, values = prepare_lazy_secrets([secret])
+        for name, value in values.items():
+            _upsert_secret(client, name, value, scope)
+            upserted.append(name)
+        resolved.extend(references)
+    return resolved, upserted
 
 
 def _upsert_secret(

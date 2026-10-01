@@ -2,39 +2,46 @@
 #
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["chalkcompute", "python-dotenv"]
+# dependencies = ["chalkcompute>=2.11.1", "python-dotenv"]
 # ///
 
-# # OpenCode on Chalk Containers
+# # OpenCode on Chalk Sandboxes
 #
-# Run [OpenCode](https://opencode.ai) as a persistent server inside a Chalk container,
+# Run [OpenCode](https://opencode.ai) as a persistent server inside a Chalk sandbox,
 # pointed at any GitHub repo. Connect from your local browser or terminal — useful for
 # coding sessions that need more compute than your laptop, or for sharing a live
 # environment with teammates.
 #
 # ## Overview
 #
-# 1. Start a container from a pre-built image with `curl`, `git`, and `opencode` baked in.
+# 1. Start sandboxes from a pre-built image with `curl`, `git`, and `opencode` baked in.
 # 2. Clone the target GitHub repo into `/root/code`.
 # 3. Launch `opencode serve` in the background and poll until it responds.
-# 4. Print the Web UI URL and TUI attach command, then hold the container alive.
-#
-# Run it:
-#
-#     python examples/opencode/opencode.py \
-#         --github-repo your-org/your-repo \
-#         --github-ref main
-#
+# 4. Print the Web UI URL and TUI attach command, then hold the sandbox alive.
 # All flags can also be set via environment variables or a `.env` file:
 #
 #     GITHUB_TOKEN              GitHub PAT — required for private repos (gh auth token)
 #     GITHUB_REF                Branch/tag/SHA to check out. Default: main
 #     OPENCODE_SERVER_PASSWORD  Password to protect the server. Optional.
-#     OPENAI_API_KEY            Forwarded into the container. Optional.
+#     OPENAI_API_KEY            Forwarded into the sandbox. Optional.
+#
+# This doubles as a sandbox fan-out stress example. It starts 100 sandboxes
+# by default, configures the last one as the interactive OpenCode server, and
+# stops every sandbox on exit. Pass ``--sandboxes 1`` for the basic workflow.
+#
+# This example temporarily uses the deprecated `Container` API because its public
+# info object exposes the published port's `web_url`; `Sandbox.info` does not. The
+# browser and TUI connection flow depends on that URL.
+#
+# **Privacy warning:** if `~/.config/opencode/opencode.json` exists, this script copies
+# it into the remote interactive container. That file may contain provider settings or
+# credentials. Review it before running this example.
 
 import argparse
+import base64
 import logging
 import os
+import shlex
 import time
 import uuid
 from pathlib import Path
@@ -50,11 +57,13 @@ log = logging.getLogger(__name__)
 OPENCODE_PORT = 4096
 OPENCODE_BIN = "/root/.opencode/bin/opencode"
 DEFAULT_GITHUB_REPO = "chalk-ai/chalk-sandbox-sdk"
+APP_SETUP_ALLOWANCE_SECS = 300
+SANDBOX_STARTUP_ALLOWANCE_SECS = 60
 
 # ## Base image — curl, git, and opencode pre-installed
 #
 # Baking dependencies into the image spec lets Chalk build and cache the image
-# once. Subsequent `Container.run()` calls reuse the cached image, skipping the
+# once. Subsequent sandbox starts reuse the cached image, skipping the
 # apt-get and opencode install entirely.
 
 OPENCODE_IMAGE = Image.debian_slim().run_commands(
@@ -68,22 +77,26 @@ OPENCODE_IMAGE = Image.debian_slim().run_commands(
 # We shallow-clone a single branch or tag to keep the operation fast. If a token is
 # provided it's injected via `GIT_ASKPASS` so the credential doesn't appear in logs.
 # We also upload your local `~/.config/opencode/opencode.json` if it exists, carrying
-# over model preferences and provider keys without re-configuring inside the container.
+# over model preferences and provider keys without re-configuring inside the sandbox.
 
 
 def clone_repo(container: Container, repo: str, ref: str, token: str | None) -> None:
     log.info("Cloning %s@%s into /root/code...", repo, ref)
     container.exec("git", "config", "--global", "advice.detachedHead", "false")
 
+    quoted_repo = shlex.quote(repo)
+    quoted_ref = shlex.quote(ref)
     if token:
         clone_cmd = (
-            f"GIT_ASKPASS=echo git clone --quiet --depth 1 --branch {ref}"
-            f" --no-single-branch https://oauth2:{token}@github.com/{repo}.git /root/code"
+            "printf '#!/bin/sh\\necho \"$GH_TOKEN\"\\n' > /tmp/git-askpass && "
+            "chmod 700 /tmp/git-askpass && "
+            f"GIT_ASKPASS=/tmp/git-askpass GIT_TERMINAL_PROMPT=0 git clone --quiet --depth 1 --branch {quoted_ref}"
+            f" --no-single-branch https://oauth2@github.com/{quoted_repo}.git /root/code"
         )
     else:
         clone_cmd = (
-            f"GIT_TERMINAL_PROMPT=0 git clone --quiet --depth 1 --branch {ref}"
-            f" --no-single-branch https://github.com/{repo}.git /root/code"
+            f"GIT_TERMINAL_PROMPT=0 git clone --quiet --depth 1 --branch {quoted_ref}"
+            f" --no-single-branch https://github.com/{quoted_repo}.git /root/code"
         )
     result = container.exec("bash", "-c", clone_cmd + " 2>&1", timeout_secs=120)
     if result.exit_code != 0:
@@ -96,13 +109,16 @@ def clone_repo(container: Container, repo: str, ref: str, token: str | None) -> 
     # Upload local opencode config if present — preserves model/provider settings.
     config_path = Path("~/.config/opencode/opencode.json").expanduser()
     if config_path.exists():
-        log.info("Uploading local opencode config...")
-        content = config_path.read_text()
+        log.warning(
+            "Copying %s into the remote container; it may contain provider credentials or configuration.",
+            config_path,
+        )
+        content = base64.b64encode(config_path.read_bytes()).decode()
         container.exec("bash", "-c", "mkdir -p /root/.config/opencode")
         container.exec(
             "bash",
             "-c",
-            f"cat > /root/.config/opencode/opencode.json << 'EOFCONFIG'\n{content}\nEOFCONFIG",
+            f"printf %s {shlex.quote(content)} | base64 -d > /root/.config/opencode/opencode.json",
         )
 
 
@@ -142,7 +158,7 @@ def start_server(container: Container) -> None:
             time.sleep(2)
     raise RuntimeError(
         "opencode server did not become ready after 2 minutes.\n"
-        "Check /tmp/opencode.log inside the container for details."
+        "Check /tmp/opencode.log inside the sandbox for details."
     )
 
 
@@ -156,7 +172,7 @@ def _print_access_info(container: Container, password: str | None) -> None:
         print(f"  TUI:     {password_prefix}opencode attach {web_url}")
     else:
         log.warning(
-            "No web_url returned; container is running but port may not be publicly reachable."
+            "No web_url returned; sandbox is running but port may not be publicly reachable."
         )
         print(f"  Container ID: {container.id}")
     print("-----------------------------\n")
@@ -164,18 +180,23 @@ def _print_access_info(container: Container, password: str | None) -> None:
 
 # ## Putting it all together
 #
-# `main()` starts the container, runs the three setup steps in order, then prints
+# `main()` starts the sandboxes, runs the setup steps on the last one, then prints
 # access info and sleeps until the timeout or Ctrl-C. The `finally` block guarantees
-# the container is stopped regardless of how we exit — no orphaned containers.
+# every sandbox is terminated regardless of how we exit. Each sandbox also has a
+# server-side lifetime longer than the requested session. The earliest sandboxes get
+# extra time for the remaining fan-out, while the interactive sandbox gets five
+# minutes for cloning the repo and starting OpenCode. This bounds resource lifetime
+# even if the local process is killed before `finally` runs.
 
 
 def main(
-    container_name: str,
+    sandbox_name: str,
     github_repo: str,
     github_ref: str,
     github_token: str | None,
     password: str | None,
     timeout_secs: int,
+    sandbox_count: int,
 ) -> None:
     env: dict[str, str] = {}
     if password:
@@ -185,20 +206,38 @@ def main(
     if openai_key := os.environ.get("OPENAI_API_KEY"):
         env["OPENAI_API_KEY"] = openai_key
 
-    for _ in range(100):
-        container = Container(
-            image=OPENCODE_IMAGE,
-            name=container_name,
-            env=env,
-            port=OPENCODE_PORT,
-            entrypoint=[
-                "bash",
-                "-c",
-                f"python3 -m http.server {OPENCODE_PORT} --bind 0.0.0.0 &>/dev/null & echo $! > /tmp/http_server.pid; tail -f /dev/null",
-            ],
-        ).run()
-
+    containers: list[Container] = []
     try:
+        for index in range(sandbox_count):
+            name = sandbox_name if sandbox_count == 1 else f"{sandbox_name}-{index + 1}"
+            log.info(
+                "Starting sandbox %d/%d (%s)...",
+                index + 1,
+                sandbox_count,
+                name,
+            )
+            remaining_starts = sandbox_count - index
+            lifetime_secs = (
+                timeout_secs
+                + APP_SETUP_ALLOWANCE_SECS
+                + remaining_starts * SANDBOX_STARTUP_ALLOWANCE_SECS
+            )
+            container = Container(
+                image=OPENCODE_IMAGE,
+                name=name,
+                env=env,
+                port=OPENCODE_PORT,
+                entrypoint=[
+                    "bash",
+                    "-c",
+                    f"python3 -m http.server {OPENCODE_PORT} --bind 0.0.0.0 &>/dev/null & echo $! > /tmp/http_server.pid; tail -f /dev/null",
+                ],
+                lifetime=f"{lifetime_secs}s",
+            )
+            containers.append(container)
+            container.run()
+
+        container = containers[-1]
         clone_repo(container, github_repo, github_ref, github_token)
         start_server(container)
         _print_access_info(container, password)
@@ -209,8 +248,16 @@ def main(
     except KeyboardInterrupt:
         print("\nShutting down...")
     finally:
-        container.stop()
-        log.info("Container stopped.")
+        stopped = 0
+        for container in reversed(containers):
+            if container.id is None:
+                continue
+            try:
+                container.stop()
+                stopped += 1
+            except Exception:
+                log.exception("Failed to stop container %s", container.id)
+        log.info("Stopped %d sandbox(es).", stopped)
 
 
 def _parse_timeout(value: str) -> int:
@@ -223,7 +270,13 @@ def _parse_timeout(value: str) -> int:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Launch OpenCode server in a Chalk container"
+        description="Launch OpenCode server in Chalk sandboxes"
+    )
+    parser.add_argument(
+        "--sandboxes",
+        type=int,
+        default=100,
+        help="Number of sandboxes to start for the fan-out stress run. Default: 100",
     )
     parser.add_argument(
         "--timeout",
@@ -235,7 +288,7 @@ if __name__ == "__main__":
         "--name",
         type=str,
         default=f"opencode-server-{uuid.uuid4().hex[:8]}",
-        help="Container name. Default: opencode-server-<random>",
+        help="Sandbox name prefix. Default: opencode-server-<random>",
     )
     parser.add_argument(
         "--password",
@@ -263,11 +316,14 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+    if args.sandboxes < 1:
+        parser.error("--sandboxes must be at least 1")
     main(
-        container_name=args.name,
+        sandbox_name=args.name,
         github_repo=args.github_repo,
         github_ref=args.github_ref,
         github_token=args.github_token,
         password=args.password,
         timeout_secs=_parse_timeout(args.timeout),
+        sandbox_count=args.sandboxes,
     )

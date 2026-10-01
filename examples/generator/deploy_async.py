@@ -1,6 +1,13 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["chalkcompute>=2.11.1"]
+# ///
+
 """Deploy the async generator function.
 
-uv run python examples/generator/deploy_async.py
+The deployment intentionally persists so clients can stream and inspect its
+yielded values independently of the deploy process.
 """
 
 from __future__ import annotations

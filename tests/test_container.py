@@ -272,6 +272,61 @@ def test_mount_volume_sent_in_run_container_rpc() -> None:
     )
 
 
+@pytest.mark.parametrize("initial_status", ["Running", "Pending"])
+def test_container_uploads_lazy_local_files_without_exec_probe(
+    tmp_path, initial_status
+) -> None:
+    from unittest.mock import MagicMock, patch
+
+    from chalkcompute import Image
+    from chalkcompute._volume import VolumeClient
+
+    from ._fakes import default_container_handler
+
+    source = tmp_path / "data.txt"
+    source.write_text("uploaded content")
+    image = Image.debian_slim().add_local_file(str(source), "/assets/data.txt")
+
+    def handle(method, request):
+        response = default_container_handler(method, request)
+        if method == "run_container":
+            response.container.status = initial_status
+        return response
+
+    client = FakeConnectClient(handler=handle)
+    container = Container(image=image)
+    container._client = client
+    volume_client = MagicMock(spec=VolumeClient)
+    volume_client.upload_lazy_files.return_value = [
+        VolumeMount(name="container-files-abc", mount_path="/assets")
+    ]
+
+    with (
+        patch("chalkcompute._connect.build_image", return_value="img:built"),
+        patch.object(VolumeClient, "from_connect", return_value=volume_client),
+        patch.object(
+            Container,
+            "exec",
+            side_effect=AssertionError("Startup must not execute commands"),
+        ) as execute,
+    ):
+        assert container.run() is container
+
+    execute.assert_not_called()
+    volume_client.upload_lazy_files.assert_called_once_with(
+        image, volume_prefix="container-files"
+    )
+    expected_calls = ["run_container"]
+    if initial_status == "Pending":
+        expected_calls.append("get_container")
+    assert [call.method for call in client.calls] == expected_calls
+    spec = client.calls[0].request.container.spec
+    assert spec.image == "img:built"
+    assert [(mount.name, mount.mount_path) for mount in spec.volumes] == [
+        ("container-files-abc", "/assets")
+    ]
+
+
 def test_container_run_sends_compute_class() -> None:
     client = FakeConnectClient()
     container = Container(
@@ -296,3 +351,25 @@ def test_container_run_omits_compute_class_when_unset() -> None:
 
     spec = client.calls[0].request.container.spec
     assert spec.compute_class == pb.ComputeClass.UNSPECIFIED
+
+
+def test_container_tracing_sets_otel_sampler_env() -> None:
+    from chalkcompute import TracingPolicy
+
+    with pytest.warns(DeprecationWarning):
+        container = Container(
+            image="ubuntu:latest",
+            env={"APP": "1"},
+            tracing=TracingPolicy(sample_rate=0.5),
+        )
+    assert container._env == {
+        "APP": "1",
+        "OTEL_TRACES_SAMPLER": "parentbased_traceidratio",
+        "OTEL_TRACES_SAMPLER_ARG": "0.5",
+    }
+
+
+def test_container_tracing_default_keeps_platform_sampler() -> None:
+    with pytest.warns(DeprecationWarning):
+        container = Container(image="ubuntu:latest", env={"APP": "1"})
+    assert container._env == {"APP": "1"}

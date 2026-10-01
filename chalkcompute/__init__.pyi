@@ -1,3 +1,10 @@
+from chalkcompute._logging import configure_logging as configure_logging
+from chalkcompute._sql import SQLClient as SQLClient
+from chalkcompute._sql import SQLResult as SQLResult
+from chalkcompute._sql import SQLJob as SQLJob
+from chalkcompute._sql import SQLJobStatus as SQLJobStatus
+from chalkcompute._sql import SQLError as SQLError
+from chalkcompute import scorers as scorers
 from chalkcompute._artifact import Artifact as Artifact
 from chalkcompute._artifact import ArtifactClient as ArtifactClient
 from chalkcompute._artifact import ArtifactError as ArtifactError
@@ -30,6 +37,7 @@ from chalkcompute._containerspec import (
 from chalkcompute._containerspec import KernelPolicy as KernelPolicy
 from chalkcompute._containerspec import NetworkPolicy as NetworkPolicy
 from chalkcompute._containerspec import RestartPolicy as RestartPolicy
+from chalkcompute._containerspec import SSHDest as SSHDest
 from chalkcompute._containerspec import SshDest as SshDest
 from chalkcompute._evaluation import DatasetNameLike as DatasetNameLike
 from chalkcompute._evaluation import DatasetRevisionLike as DatasetRevisionLike
@@ -46,14 +54,17 @@ from chalkcompute._evaluation import EvaluationRunStatus as EvaluationRunStatus
 from chalkcompute._evaluation import EvaluationScorer as EvaluationScorer
 from chalkcompute._evaluation import EvaluationScorerResult as EvaluationScorerResult
 from chalkcompute._evaluation import EvaluationSuite as EvaluationSuite
+from chalkcompute._evaluation import SqlExpression as SqlExpression
 from chalkcompute._function import DeployedFunction as DeployedFunction
 from chalkcompute._function import FunctionBuildError as FunctionBuildError
 from chalkcompute._function import FunctionCallHandle as FunctionCallHandle
 from chalkcompute._function import FunctionError as FunctionError
+from chalkcompute._function import FunctionSignatureError as FunctionSignatureError
 from chalkcompute._function import FunctionVersionInfo as FunctionVersionInfo
 from chalkcompute._function import RemoteFunction as RemoteFunction
 from chalkcompute._function import function as function
 from chalkcompute._function import gather as gather
+from chalkcompute._function_error import RemoteExecutionError as RemoteExecutionError
 from chalkcompute._http import HTTPHeaders as HTTPHeaders
 from chalkcompute._http import HTTPResponse as HTTPResponse
 from chalkcompute._image import Image as Image
@@ -86,6 +97,8 @@ from chalkcompute._sandbox import SandboxError as SandboxError
 from chalkcompute._sandbox import SandboxInfo as SandboxInfo
 from chalkcompute._sandbox import SandboxNotFoundError as SandboxNotFoundError
 from chalkcompute._sandbox import SandboxTerminatedError as SandboxTerminatedError
+from chalkcompute._sandbox_fs import FilesystemError as FilesystemError
+from chalkcompute._sandbox_fs import SandboxFileSystemError as SandboxFileSystemError
 from chalkcompute._scaling_group import CronScalingTrigger as CronScalingTrigger
 from chalkcompute._scaling_group import CronScalingWindow as CronScalingWindow
 from chalkcompute._scaling_group import ReadinessProbe as ReadinessProbe
@@ -139,7 +152,25 @@ from chalkcompute._training import training as training
 from chalkcompute._volume import Volume as VersionedVolume
 from chalkcompute._volume import VolumeClient as VersionedVolumeClient
 
+from chalkcompute._sandbox_git import SandboxGit as SandboxGit
+from chalkcompute._sandbox_git import GitFileStatus as GitFileStatus
+from chalkcompute._sandbox_git import GitStatus as GitStatus
+from chalkcompute._sandbox_git import GitRemote as GitRemote
+from chalkcompute._git import GitError as GitError
+
 __all__ = [
+    "configure_logging",
+    "SandboxGit",
+    "GitFileStatus",
+    "GitStatus",
+    "GitRemote",
+    "GitError",
+    "SQLClient",
+    "SQLResult",
+    "SQLJob",
+    "SQLJobStatus",
+    "SQLError",
+    "scorers",
     "Artifact",
     "ArtifactClient",
     "ArtifactError",
@@ -154,6 +185,7 @@ __all__ = [
     "ComputeClass",
     "KernelPolicy",
     "NetworkPolicy",
+    "SSHDest",
     "SshDest",
     "RemoteClass",
     "ClassError",
@@ -165,7 +197,9 @@ __all__ = [
     "RemoteFunction",
     "DeployedFunction",
     "FunctionError",
+    "RemoteExecutionError",
     "FunctionBuildError",
+    "FunctionSignatureError",
     "FunctionCallHandle",
     "FunctionVersionInfo",
     "gather",
@@ -192,6 +226,7 @@ __all__ = [
     "EvaluationScorer",
     "EvaluationScorerResult",
     "EvaluationSuite",
+    "SqlExpression",
     "RemoteCallClient",
     "RemoteCallClientUnavailable",
     "bind_model",
@@ -226,6 +261,8 @@ __all__ = [
     "SandboxInfo",
     "SandboxNotFoundError",
     "SandboxTerminatedError",
+    "FilesystemError",
+    "SandboxFileSystemError",
     "ScalingGroup",
     "ScalingGroupBuildError",
     "ScalingGroupError",

@@ -12,7 +12,7 @@ def _stub_exports(path: Path) -> set[str]:
 
     for node in tree.body:
         if isinstance(node, ast.ImportFrom) and node.module is not None:
-            if node.module.startswith("chalkcompute."):
+            if node.module == "chalkcompute" or node.module.startswith("chalkcompute."):
                 for alias in node.names:
                     exports.add(alias.asname or alias.name)
         elif isinstance(node, ast.FunctionDef):

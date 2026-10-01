@@ -1,9 +1,15 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["chalkcompute>=2.11.1", "redis"]
+# ///
+
 """Worker that subscribes to a Redis stream and dispatches to a remote function.
 
-This script runs *inside* a chalkcompute Container. It:
-  1. Connects to Redis (REDIS_URL env var)
+This script runs *inside* a chalkcompute Sandbox. It:
+  1. Connects to the Redis server running in the same sandbox
   2. Reads messages from the ``prompts`` stream via XREADGROUP
-  3. Calls the deployed ``respond`` chalkcompute.function via RemoteFunction.from_name()
+  3. Calls the deployed function via RemoteFunction.from_name()
   4. Writes each response to /tmp/output/<message_id>.txt
 """
 
@@ -23,6 +29,7 @@ CONSUMER = f"worker-{os.getpid()}"
 OUTPUT_DIR = "/tmp/output"
 
 REDIS_URL = os.environ["REDIS_URL"]
+FUNCTION_NAME = os.environ["REDIS_FUNCTION_NAME"]
 
 
 def ensure_group(r: redis.Redis) -> None:
@@ -41,7 +48,7 @@ def main() -> None:
     ensure_group(r)
 
     # Look up the deployed ``respond`` function by name.
-    respond = chalkcompute.RemoteFunction.from_name("respond")
+    respond = chalkcompute.RemoteFunction.from_name(FUNCTION_NAME)
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     log.info("Worker ready — listening on stream %r", STREAM)

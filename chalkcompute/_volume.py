@@ -19,11 +19,12 @@ import logging
 import math
 import os
 import tempfile
+import time
 import uuid
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn
 
 from connectrpc.code import Code
@@ -451,10 +452,22 @@ class Volume:
         except VolumeNotFoundError:
             if not self._create_if_missing:
                 raise
-            response = self._client._create_volume(self._name)
-            if response.volume is None:
-                raise VolumeError("CreateVolume returned no volume metadata")
-            return _proto_to_volume_info(response.volume), None
+            try:
+                created = self._client._create_volume(self._name)
+            except VolumeError as exc:
+                if exc.code != "already_exists":
+                    raise
+                # Another caller can create the volume after our lookup. Read
+                # its metadata with the original selector; do not retry creation.
+                response = self._client._get_volume(
+                    self._name,
+                    version_id=self._version_id,
+                    ref_name=self._selector_ref(),
+                )
+            else:
+                if created.volume is None:
+                    raise VolumeError("CreateVolume returned no volume metadata")
+                return _proto_to_volume_info(created.volume), None
 
         if response.volume is None:
             raise VolumeError("GetVolume returned no volume metadata")
@@ -544,6 +557,73 @@ class Volume:
             ref_name=self._selector_ref(),
         )
         self._update_version_from_statuses(statuses)
+        return self
+
+    @traced("chalkcompute.volume.put_dir")
+    def put_dir(self, local_path: str | Path, remote_path: str = "") -> Volume:
+        """Upload a directory, overwriting files without deleting other content.
+
+        Parameters
+        ----------
+        local_path : str or pathlib.Path
+            Local directory to upload recursively.
+        remote_path : str, optional
+            Relative destination within the volume. Defaults to its root.
+
+        Returns
+        -------
+        Volume
+            ``self``, with its cached version updated after commits complete.
+
+        Raises
+        ------
+        ValueError
+            If paths are invalid or the directory contains symlinks or special
+            files.
+        VolumeError
+            If the volume is closed, pinned, or an upload fails.
+
+        Notes
+        -----
+        Empty directories are omitted. Uploads may make multiple commits.
+        A failed upload can leave earlier commits visible.
+        """
+        self._raise_if_closed()
+        self._ensure_mutable()
+        root = Path(local_path)
+        if root.is_symlink() or not root.is_dir():
+            raise ValueError("local_path must be a directory, not a symlink")
+        destination = PurePosixPath(remote_path)
+        if (
+            destination.is_absolute()
+            or ".." in destination.parts
+            or "\\" in remote_path
+        ):
+            raise ValueError(
+                "remote_path must be relative and cannot contain traversal"
+            )
+        files: list[tuple[str, bytes | Path]] = []
+
+        def scan(directory: Path) -> None:
+            for path in sorted(directory.iterdir()):
+                if path.is_symlink():
+                    raise ValueError(f"Symlinks are not supported: {path}")
+                if path.is_dir():
+                    scan(path)
+                elif path.is_file():
+                    files.append(
+                        (str(destination / path.relative_to(root).as_posix()), path)
+                    )
+                else:
+                    raise ValueError(f"Special files are not supported: {path}")
+
+        scan(root)
+        if files:
+            self._ensure_ready()
+            statuses = self._client._upload(
+                self.name, files, ref_name=self._selector_ref()
+            )
+            self._update_version_from_statuses(statuses)
         return self
 
     @traced("chalkcompute.volume.load_git_repo")
@@ -1265,6 +1345,25 @@ class VolumeClient:
         )
 
     @classmethod
+    def from_env(cls, *, chalk_client: Any | None = None) -> VolumeClient:
+        """Create a volume client using environment authentication.
+
+        Parameters
+        ----------
+        chalk_client : Any, optional
+            Chalk client supplying authentication. Defaults to environment auth.
+
+        Returns
+        -------
+        VolumeClient
+            Client that owns its connection and closes it on context exit or
+            an explicit :meth:`close` call.
+        """
+        client = cls.from_connect(ConnectClient(chalk_client=chalk_client))
+        client._owns_connect = True
+        return client
+
+    @classmethod
     def from_connect(cls, connect: ConnectClient) -> VolumeClient:
         """Create a client from an authenticated :class:`ConnectClient`.
 
@@ -1394,8 +1493,8 @@ class VolumeClient:
     ) -> builtins.list[VolumeMount]:
         """Upload an image's lazy local files into volumes.
 
-        Creates one volume per destination directory and commits
-        all files for that directory as a single version.
+        Creates one volume per destination directory and commits files in
+        batches. Returned mounts follow the default mutable ref.
 
         Parameters
         ----------
@@ -1415,12 +1514,26 @@ class VolumeClient:
             raise VolumeError(str(e)) from e
 
         volumes: builtins.list[VolumeMount] = []
-        for dest_dir, files in dir_to_files.items():
-            vol = self.create(f"{volume_prefix}-{uuid.uuid4().hex[:12]}")
-            with vol.batch_upload() as batch:
-                for lf in files:
-                    batch.put_file(os.path.relpath(lf.dest, dest_dir), lf.src)
-            volumes.append(VolumeMount(name=vol.name, mount_path=dest_dir))
+        created: builtins.list[Volume] = []
+        try:
+            for dest_dir, files in dir_to_files.items():
+                vol = self.create(f"{volume_prefix}-{uuid.uuid4().hex[:12]}")
+                created.append(vol)
+                with vol.batch_upload() as batch:
+                    for lf in files:
+                        batch.put_file(os.path.relpath(lf.dest, dest_dir), lf.src)
+                volumes.append(VolumeMount(name=vol.name, mount_path=dest_dir))
+        except BaseException:
+            for vol in reversed(created):
+                try:
+                    vol.delete()
+                except Exception:
+                    logger.warning(
+                        "Could not delete failed upload volume %s",
+                        vol.name,
+                        exc_info=True,
+                    )
+            raise
         return volumes
 
     @traced("chalkcompute.volume.stage_lazy_files")
@@ -1498,6 +1611,69 @@ class VolumeClient:
             intents.append(intent)
             volumes.append(VolumeMount(name=vol.name, mount_path=dest_dir))
         return volumes, intents
+
+    @traced("chalkcompute.volume.resolve_lazy_files")
+    def _resolve_lazy_files(
+        self,
+        image: Image,
+        *,
+        volume_name: str,
+        timeout: float = 600.0,
+        poll_interval: float = 1.0,
+    ) -> builtins.list[VolumeMount]:
+        """Resolve lazy local files to immutable source volume mounts."""
+        from chalkcompute._naming import sanitize_dns_label
+
+        try:
+            groups = image.lazy_local_files_grouped_for_volume_mounts()
+        except ValueError as exc:
+            raise VolumeError(str(exc)) from exc
+
+        deadline = time.monotonic() + timeout
+        mounts: builtins.list[VolumeMount] = []
+        for mount_path, files in groups.items():
+            name = (
+                volume_name
+                if mount_path == "/app"
+                else sanitize_dns_label(f"{volume_name}-{mount_path}")
+            )
+            source: builtins.list[tuple[Any, ...]] = []
+            for file in files:
+                path = os.path.relpath(file.dest, mount_path).replace(os.sep, "/")
+                entry: tuple[Any, ...] = (path, Path(file.src))
+                if file.mode is not None:
+                    entry = (*entry, {"mode": file.mode})
+                source.append(entry)
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise VolumeError("Source file resolution timed out")
+            self._raise_if_closed()
+            try:
+                prepared = self._inner.prepare_files(source, "main")
+                version = self._inner.resolve_prepared_files(
+                    name,
+                    "source_code",
+                    prepared,
+                    {
+                        "upload": _default_upload_config(),
+                        "timeout_ms": max(1, int(remaining * 1_000)),
+                        "poll_interval_ms": max(1, int(poll_interval * 1_000)),
+                    },
+                )
+            except _native_error_types() as exc:
+                _raise_volume_error(exc, name)
+            version_id = version.get("version_id")
+            if not isinstance(version_id, int):
+                raise VolumeError("Source file resolution returned no version")
+            mounts.append(
+                VolumeMount(
+                    name=name,
+                    mount_path=mount_path,
+                    version_id=version_id,
+                )
+            )
+        return mounts
 
     def delete_volume(self, name: str) -> None:
         """Delete a volume by name.
@@ -2054,7 +2230,7 @@ class _BatchUpload:
 
 
 def normalize_volume_refs(
-    volumes: Iterable[tuple[str, str] | Volume | VolumeMount] | None,
+    volumes: Iterable[tuple[str | Volume, str] | Volume | VolumeMount] | None,
 ) -> builtins.list[VolumeMount]:
     """Validate and normalize caller-supplied volume references.
 
@@ -2074,14 +2250,19 @@ def normalize_volume_refs(
         if not (
             isinstance(item, (tuple, list))
             and len(item) == 2
-            and all(isinstance(s, str) for s in item)
+            and isinstance(item[0], (str, Volume))
+            and isinstance(item[1], str)
         ):
             raise ValueError(
                 "Each volumes entry must be a Volume, VolumeMount, or "
-                f"(name, mount_path) string tuple, got {item!r}. "
-                "Example: volumes=[('my-volume', '/data')]"
+                f"(name_or_volume, mount_path) tuple with a string mount path, got {item!r}. "
+                "Example: volumes=[('my-volume', '/data')] or [(volume, '/data')]"
             )
-        refs.append(VolumeMount(name=item[0], mount_path=item[1]))
+        volume, mount_path = item
+        if isinstance(volume, Volume):
+            refs.append(volume.mount(mount_path))
+        else:
+            refs.append(VolumeMount(name=volume, mount_path=mount_path))
     return refs
 
 
@@ -2110,6 +2291,22 @@ def referenced_volume_mount(connect: ConnectClient, mount: VolumeMount) -> Volum
             ref_name=mount.ref_name,
         )
     return mount
+
+
+def pinned_volume_mount(client: VolumeClient, mount: VolumeMount) -> VolumeMount:
+    """Resolve a volume selector to an immutable version mount."""
+    response = client._get_volume(
+        mount.name,
+        version_id=mount.version_id,
+        ref_name=mount.ref_name,
+    )
+    if response.version is None:
+        raise VolumeError(f"Volume {mount.name!r} has no committed version")
+    return VolumeMount(
+        mount.name,
+        mount.mount_path,
+        version_id=response.version.version_id,
+    )
 
 
 def resolve_referenced_volume_type(connect: ConnectClient, name: str) -> str:

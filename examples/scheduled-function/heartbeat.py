@@ -1,3 +1,9 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["chalkcompute>=2.11.1"]
+# ///
+
 """Deploy a scheduled remote function for testing.
 
 A scheduled function takes no inputs and is invoked automatically by the
@@ -5,7 +11,8 @@ platform on the given schedule (cron expression or shorthand like ``"10m"``).
 This example registers a heartbeat that fires every ten minutes — the body
 just logs a timestamp so the schedule's effect is observable in the pod logs.
 
-    uv run python examples/scheduled-function/heartbeat.py
+The deployment intentionally persists because exiting the deploy process must
+not disable the platform-managed schedule.
 """
 
 from __future__ import annotations

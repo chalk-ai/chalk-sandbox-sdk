@@ -26,6 +26,22 @@ a leaf module like `_naming.py` (e.g. `validate_env`) so the logic can't drift.
 Grep for the field name across `chalkcompute/` before assuming one call site is
 the only one.
 
+## SDK Examples
+
+When adding or updating SDK examples in the `examples/` directory, follow `examples/style_guide.md`.
+
+## Function and class names
+
+Omit `name=` from `@cc.function` and `@cc.cls` by default. Use a descriptive Python
+function or class name; the SDK derives the registered name from it. Cross-process
+lookup and repeated deployment do not require an explicit override. Do not add
+`name=` just to repeat the Python name or convert underscores to hyphens.
+
+Use an override only for an intentional naming contract, such as preserving an
+existing deployed name after a Python rename or isolating an integration test.
+Keep existing overrides that callers depend on: changing or removing one changes
+the target deployment and does not rename the existing function.
+
 ## Testing
 
 Tests run both **locally** and via **Buildkite** (PR-triggered). Credentials are SOPS-encrypted in `.env.enc`.

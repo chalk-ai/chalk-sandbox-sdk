@@ -1,0 +1,22 @@
+on:
+  schedule:
+    - label: "SOPS Update Check - Weekly"
+      cron: "0 9 * * 1 America/Los_Angeles"
+      branch: main
+      message: "Scheduled SOPS update check"
+
+notify:
+  - slack:
+      channels:
+        - "#proj-compute"
+      message: ":lock: <@U0AT4JH64Q4> SOPS promotion failed for the sandbox SDK Buildkite pipelines."
+    if: build.branch == "main" && pipeline.started_failing
+
+steps:
+  - label: ":lock: Promote latest SOPS"
+    command: |
+      set -euo pipefail
+      .buildkite/sops.sh promote
+    agents:
+      queue: default
+    timeout_in_minutes: 5

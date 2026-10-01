@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from protobuf import Oneof
+from chalkcompute._image import Image
+
 import chalkcompute._function as function_mod
 from chalkcompute import ScaleFromZeroRequestPolicy
 from chalkcompute._function import RemoteFunction
@@ -74,6 +77,8 @@ class _ScalingLifecycleClient(StubbedConnectClient):
                         scaling_group_id="group-1",
                         scaling_group_name="api",
                         status="Superseded",
+                        status_message="Exit code 1",
+                        status_details="Traceback:\n  frame\nValueError: invalid",
                     ),
                 ]
             )
@@ -87,9 +92,16 @@ class _FunctionLifecycleClient(StubbedConnectClient):
 
     def call(self, method: FakeMethod, request: Any, **_: Any) -> Any:
         self.calls.append((method.name, request))
-        if method.name == "create_external_function":
-            return catalog_pb.CreateExternalFunctionResponse(
-                external_function=_function(1)
+        if method.name == "ensure_external_function":
+            return catalog_pb.EnsureExternalFunctionResponse(
+                result=Oneof(
+                    "complete",
+                    catalog_pb.EnsuredExternalFunction(
+                        external_function=_function(
+                            2 if request.force_new_version else 1
+                        )
+                    ),
+                )
             )
         if method.name == "update_external_function":
             selected = 2 if request.spec is not None else 1
@@ -143,6 +155,8 @@ def test_scaling_group_redeploy_history_and_rollback() -> None:
     revisions = group.revisions()
     assert [revision.id for revision in revisions] == ["revision-2", "revision-1"]
     assert revisions[0].is_current is True
+    assert revisions[0].status_details is None
+    assert revisions[1].status_details == "Traceback:\n  frame\nValueError: invalid"
 
     group.rollback("revision-1", wait_ready=False)
 
@@ -190,26 +204,22 @@ def test_function_redeploy_history_rollback_refresh_and_delete(monkeypatch) -> N
     client = _FunctionLifecycleClient()
     function = RemoteFunction(add, name="add")
     function._client = client  # type: ignore[assignment]
-    monkeypatch.setattr(RemoteFunction, "_build_deploy_image", lambda _: object())
     monkeypatch.setattr(
-        function_mod,
-        "_build_and_upload",
-        lambda *_, **__: ("image:test", [], None, []),
+        RemoteFunction, "_build_deploy_image", lambda _: Image("image:test")
     )
     monkeypatch.setattr(RemoteFunction, "_poll_until_ready", lambda *_, **__: None)
 
-    function.deploy().deploy()
+    function.deploy().deploy(force_new_version=True)
 
     assert function.function_id == "function-1"
     assert function.version_info is not None
     assert function.version_info.id == "version-2"
-    update = next(
+    requests = [
         request
         for method, request in client.calls
-        if method == "update_external_function"
-    )
-    assert update.update_mask is not None
-    assert update.update_mask.paths == ["spec"]
+        if method == "ensure_external_function"
+    ]
+    assert [request.force_new_version for request in requests] == [False, True]
 
     versions = function.versions()
     assert [version.id for version in versions] == ["version-2", "version-1"]

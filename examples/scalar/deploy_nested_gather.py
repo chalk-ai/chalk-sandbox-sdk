@@ -1,6 +1,13 @@
-"""Deploy scalar functions that exercise nested gather/defer calls.
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["chalkcompute>=2.11.1"]
+# ///
 
-CHALK_FUNCTION_STRIP_SOURCE=1 uv run python examples/scalar/deploy_nested_gather.py
+"""Deploy a scalar function that exercises nested gather/defer calls.
+
+The deployment intentionally persists for subsequent calls and depends on the
+persistent ``ex-add`` deployment from ``deploy_sync.py``.
 """
 
 from __future__ import annotations
@@ -15,7 +22,7 @@ log = logging.getLogger(__name__)
 
 @chalkcompute.function(
     name="ex-nested-gather-add",
-    image=chalkcompute.Image.debian_slim("3.11").pip_install(["chalkcompute>=2.1.3"]),
+    image=chalkcompute.Image.debian_slim("3.11").pip_install(["chalkcompute>=2.11.1"]),
 )
 def nested_gather_add(values: list[int]) -> list[int]:
     """Fan out deferred calls from inside a remote function and gather them."""

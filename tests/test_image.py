@@ -1100,3 +1100,80 @@ class TestFromProto:
         assert fields == handled, (
             f"ImageSpec fields changed ({fields ^ handled}); update Image.from_proto/to_proto."
         )
+
+
+class TestImageAptInstall:
+    def test_preserves_image_configuration_and_input(self) -> None:
+        base = Image.debian_slim().workdir("/app").env({"APP_MODE": "test"})
+        packages = ["tmux", "curl"]
+        extended = base.apt_install(packages)
+        packages.append("git")
+        assert base.to_proto().steps == []
+        assert extended.to_proto().workdir == "/app"
+        assert dict(extended.to_proto().env) == {"APP_MODE": "test"}
+        assert "git" not in extended.to_proto().steps[0].step.value.commands[0]
+
+    @pytest.mark.parametrize(
+        "packages", [[], [""], [" "], ["--allow-unauthenticated"], ["tmux\0"], [1]]
+    )
+    def test_invalid_packages(self, packages) -> None:
+        with pytest.raises(ValueError):
+            Image.debian_slim().apt_install(packages)
+
+    @pytest.mark.parametrize("packages", ["tmux", b"tmux", None])
+    def test_requires_a_sequence_of_names(self, packages) -> None:
+        with pytest.raises(TypeError):
+            Image.debian_slim().apt_install(packages)
+
+    def test_package_arguments_are_not_shell_code(self, tmp_path) -> None:
+        import os
+        import subprocess
+        import sys
+
+        # Execute the generated shell with recording stand-ins. In particular,
+        # rm must be a stand-in: never clean the test host's apt indexes.
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        recorder = (
+            f"#!{sys.executable}\n"
+            "import json, os, sys\n"
+            "with open(os.environ['APT_TEST_LOG'], 'a') as f:\n"
+            "    f.write(json.dumps([os.path.basename(sys.argv[0]), sys.argv[1:], "
+            "os.environ.get('DEBIAN_FRONTEND')]) + '\\n')\n"
+        )
+        for executable in ("apt-get", "rm"):
+            script = bin_dir / executable
+            script.write_text(recorder)
+            script.chmod(0o755)
+        packages = [
+            "tmux=3.5a-3",
+            "libevent-2.1-7:amd64",
+            "$(touch injected); echo bad",
+        ]
+        command = (
+            Image.debian_slim()
+            .apt_install(packages)
+            .to_proto()
+            .steps[0]
+            .step.value.commands[0]
+        )
+        log = tmp_path / "commands.jsonl"
+        subprocess.run(
+            ["/bin/sh", "-c", command],
+            check=True,
+            cwd=tmp_path,
+            env={
+                **os.environ,
+                "PATH": str(bin_dir) + os.pathsep + os.defpath,
+                "APT_TEST_LOG": str(log),
+            },
+        )
+        calls = [json.loads(line) for line in log.read_text().splitlines()]
+        assert calls[0][0:2] == ["apt-get", ["update"]]
+        assert calls[1] == [
+            "apt-get",
+            ["install", "-y", "--no-install-recommends", "--", *packages],
+            "noninteractive",
+        ]
+        assert calls[2][0] == "rm"
+        assert not (tmp_path / "injected").exists()

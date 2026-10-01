@@ -12,6 +12,7 @@ import csv
 import math
 import os
 import tempfile
+from io import BytesIO
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -46,6 +47,14 @@ class DatasetError(Exception):
 
 
 class _UploadHTTPClient(Protocol):
+    def get(
+        self,
+        url: str,
+        headers: Mapping[str, str] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> HTTPResponse[bytes]: ...
+
     def put(
         self,
         url: str,
@@ -103,7 +112,8 @@ class DatasetClient:
     ) -> DatasetRevisionRef:
         """Upload data and return the registered dataset revision.
 
-        ``data`` may be one CSV/Parquet path, a sequence of CSV/Parquet paths,
+        ``data`` may be one CSV/Parquet path, an iterable of CSV/Parquet paths
+        (including lists, sets, and ``Path.glob()`` results),
         a PyArrow table or record batch, a mapping of column names to values, a
         sequence of row mappings, or a dataframe exposing ``to_arrow`` or the
         dataframe interchange protocol. CSV files and in-memory values are
@@ -187,6 +197,72 @@ class DatasetClient:
                 "FinalizeDatasetUpload returned an incomplete dataset revision"
             )
         return DatasetRevisionRef(dataset_id=dataset_id, revision_id=revision_id)
+
+    @_instrumented("chalkcompute.dataset.read")
+    def read(
+        self,
+        revision: DatasetRevisionRef | str,
+        *,
+        timeout: float = 300.0,
+    ) -> Any:
+        """Read a dataset revision and return it as a PyArrow table.
+
+        ``revision`` is a revision id, or a :class:`DatasetRevisionRef` such as
+        the one :meth:`upload` returns or an evaluation run's
+        ``result_dataset``. The revision's own columns come back as they were
+        written: for an evaluation result that is the dataset's columns plus
+        ``output``, ``output_error``, and one ``<scorer>_value``,
+        ``<scorer>_error`` and ``<scorer>_metadata`` per scorer.
+        """
+        revision_id = (
+            revision.revision_id
+            if isinstance(revision, DatasetRevisionRef)
+            else revision
+        )
+        if not revision_id or not revision_id.strip():
+            raise ValueError("revision_id is required")
+        if (
+            not isinstance(timeout, (int, float))
+            or isinstance(timeout, bool)
+            or not math.isfinite(timeout)
+            or timeout <= 0
+        ):
+            raise ValueError("timeout must be a positive finite number")
+
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        stub = self._connect.stub(datasets_connect.DatasetMetadataServiceClientSync)
+        response = self._call(
+            stub.get_dataset_revision_download_links,
+            datasets_pb.GetDatasetRevisionDownloadLinksRequest(
+                revision_id=revision_id.strip()
+            ),
+            timeout=timeout,
+        )
+        urls = list(response.output_urls)
+        if not urls:
+            raise DatasetError(
+                f"dataset revision {revision_id} has no output to read; it may "
+                "still be running, or have failed"
+            )
+        # One Parquet file per URL, so the revision is the concatenation.
+        tables = [
+            pq.read_table(BytesIO(self._download(url, timeout=timeout))) for url in urls
+        ]
+        return tables[0] if len(tables) == 1 else pa.concat_tables(tables)
+
+    def _download(self, url: str, *, timeout: float) -> bytes:
+        if not url:
+            raise DatasetError("dataset download returned an empty signed URL")
+        try:
+            response = self._http.get(url, timeout=timeout)
+        except TimeoutError as exc:
+            raise DatasetError("dataset download timed out") from exc
+        except HTTP_TRANSPORT_ERRORS as exc:
+            raise DatasetError(f"dataset download failed: {exc}") from exc
+        _raise_for_http_status(response, operation="dataset download")
+        return response.content
 
     def _call(self, method: Any, request: Any, *, timeout: float) -> Any:
         try:
@@ -429,9 +505,17 @@ def _prepare_dataset_files(
 def _dataset_paths(data: object) -> list[Path] | None:
     if isinstance(data, (str, os.PathLike)):
         return [Path(data)]
-    if isinstance(data, Sequence) and not isinstance(
-        data, (str, bytes, bytearray, memoryview)
-    ):
+    if isinstance(data, (Mapping, bytes, bytearray, memoryview)):
+        return None
+    # Tables and dataframes can also be iterable; do not consume their columns
+    # (or a record batch reader's batches) while looking for file paths.
+    if callable(getattr(data, "to_arrow", None)) or hasattr(data, "__dataframe__"):
+        return None
+    import pyarrow as pa
+
+    if isinstance(data, (pa.Table, pa.RecordBatch, pa.RecordBatchReader)):
+        return None
+    if isinstance(data, Iterable):
         values = list(data)
         if not values or all(isinstance(value, (str, os.PathLike)) for value in values):
             return [Path(value) for value in values]

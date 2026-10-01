@@ -2,13 +2,10 @@
 
 import importlib
 
-from chalkcompute._logging import setup_logging as _setup_logging
-
-_setup_logging()
-
 # Keep top-level imports lazy so `import chalkcompute` does not eagerly import
 # the grpc/protobuf/client modules. Update `__init__.pyi` when adding exports.
 _LAZY_MAP: dict[str, tuple[str, str]] = {
+    "configure_logging": ("chalkcompute._logging", "configure_logging"),
     # _artifact.py
     "Artifact": ("chalkcompute._artifact", "Artifact"),
     "ArtifactClient": ("chalkcompute._artifact", "ArtifactClient"),
@@ -27,6 +24,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "ImageBuildError": ("chalkcompute._container", "ImageBuildError"),
     "KernelPolicy": ("chalkcompute._containerspec", "KernelPolicy"),
     "ComputeClass": ("chalkcompute._containerspec", "ComputeClass"),
+    "SSHDest": ("chalkcompute._containerspec", "SSHDest"),
     "SshDest": ("chalkcompute._containerspec", "SshDest"),
     "NetworkPolicy": ("chalkcompute._containerspec", "NetworkPolicy"),
     # _cls.py
@@ -40,11 +38,19 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     # _function.py
     "RemoteFunction": ("chalkcompute._function", "RemoteFunction"),
     "DeployedFunction": ("chalkcompute._function", "DeployedFunction"),
+    "RemoteExecutionError": ("chalkcompute._function_error", "RemoteExecutionError"),
     "FunctionError": ("chalkcompute._function", "FunctionError"),
     "FunctionBuildError": ("chalkcompute._function", "FunctionBuildError"),
+    "FunctionSignatureError": ("chalkcompute._function", "FunctionSignatureError"),
     "FunctionCallHandle": ("chalkcompute._function", "FunctionCallHandle"),
     "FunctionVersionInfo": ("chalkcompute._function", "FunctionVersionInfo"),
     "gather": ("chalkcompute._function", "gather"),
+    # _sql.py
+    "SQLClient": ("chalkcompute._sql", "SQLClient"),
+    "SQLResult": ("chalkcompute._sql", "SQLResult"),
+    "SQLJob": ("chalkcompute._sql", "SQLJob"),
+    "SQLJobStatus": ("chalkcompute._sql", "SQLJobStatus"),
+    "SQLError": ("chalkcompute._sql", "SQLError"),
     # _dataset.py
     "DatasetClient": ("chalkcompute._dataset", "DatasetClient"),
     "DatasetError": ("chalkcompute._dataset", "DatasetError"),
@@ -123,8 +129,14 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "LazyLocalFile": ("chalkcompute._image", "LazyLocalFile"),
     # _secret.py
     "Secret": ("chalkcompute._secret", "Secret"),
+    "SqlExpression": ("chalkcompute._evaluation", "SqlExpression"),
     "SecretScope": ("chalkcompute._secret", "SecretScope"),
     "resolve_lazy_secrets": ("chalkcompute._secret", "resolve_lazy_secrets"),
+    "SandboxGit": ("chalkcompute._sandbox_git", "SandboxGit"),
+    "GitFileStatus": ("chalkcompute._sandbox_git", "GitFileStatus"),
+    "GitStatus": ("chalkcompute._sandbox_git", "GitStatus"),
+    "GitRemote": ("chalkcompute._sandbox_git", "GitRemote"),
+    "GitError": ("chalkcompute._git", "GitError"),
     # _sandbox.py
     "ExecError": ("chalkcompute._sandbox", "ExecError"),
     "ExecEvent": ("chalkcompute._sandbox", "ExecEvent"),
@@ -141,6 +153,12 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "SandboxInfo": ("chalkcompute._sandbox", "SandboxInfo"),
     "SandboxNotFoundError": ("chalkcompute._sandbox", "SandboxNotFoundError"),
     "SandboxTerminatedError": ("chalkcompute._sandbox", "SandboxTerminatedError"),
+    # _sandbox_fs.py
+    "FilesystemError": ("chalkcompute._sandbox_fs", "FilesystemError"),
+    "SandboxFileSystemError": (
+        "chalkcompute._sandbox_fs",
+        "SandboxFileSystemError",
+    ),
     # _scaling_group.py
     "ScalingGroup": ("chalkcompute._scaling_group", "ScalingGroup"),
     "ScalingGroupBuildError": ("chalkcompute._scaling_group", "ScalingGroupBuildError"),
@@ -186,6 +204,8 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
 
 
 def __getattr__(name: str) -> object:
+    if name == "scorers":
+        return importlib.import_module("chalkcompute.scorers")
     if name in _LAZY_MAP:
         module_path, attr_name = _LAZY_MAP[name]
         mod = importlib.import_module(module_path)
@@ -193,4 +213,4 @@ def __getattr__(name: str) -> object:
     raise AttributeError(f"module 'chalkcompute' has no attribute {name}")
 
 
-__all__ = list(_LAZY_MAP.keys())
+__all__ = [*_LAZY_MAP.keys(), "scorers"]

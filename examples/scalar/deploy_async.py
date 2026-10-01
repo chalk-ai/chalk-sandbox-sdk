@@ -1,6 +1,12 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["chalkcompute>=2.11.1"]
+# ///
+
 """Deploy an async scalar function for testing.
 
-uv run python examples/scalar/deploy_async.py
+The deployment intentionally persists for subsequent remote calls.
 """
 
 from __future__ import annotations

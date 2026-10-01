@@ -80,7 +80,7 @@ def function_config(
     retries: RetryPolicy | None,
     rate_limit: RateLimitPolicy | None,
     concurrency: ConcurrencyPolicy | None,
-    quota: QueuePolicy | None,
+    queue_policy: QueuePolicy | None,
     schedule: str | None,
     tracing: Any | None = None,
 ) -> catalog_pb.FunctionConfig:
@@ -143,7 +143,12 @@ def function_config(
             )
         ),
         queue=(
-            None if quota is None else catalog_pb.QueuePolicy(max_items=quota.max_items)
+            None
+            if queue_policy is None
+            else catalog_pb.QueuePolicy(
+                max_items=queue_policy.max_items,
+                result_ttl_seconds=queue_policy.result_ttl_seconds,
+            )
         ),
         schedule=schedule,
         tracing=tracing_proto,

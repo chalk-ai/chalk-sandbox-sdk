@@ -14,13 +14,26 @@ fio environment:
       --case volume-fio \
       --tags "sandbox,volume,fio,$environment" \
       -- uv run python -m e2etests.volume.benchmarks.cases.fio \
-        --size 1G \
-        --jobs 1 \
-        --small-files 1000 \
-        --small-file-size 4k \
-        --direct 1 \
-        --cpu 2 \
-        --memory 1Gi
+        --provider chalk
+
+# Run FIO locally and save JSON plus a Markdown table.
+[positional-arguments]
+fio-run provider="chalk" *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    provider="$1"
+    shift
+    dependency_group="$(uv run python -m e2etests.volume.benchmarks.cases.fio.providers "$provider")"
+    group=()
+    if [[ -n "$dependency_group" ]]; then group=(--group "$dependency_group"); fi
+    uv run "${group[@]}" python -m e2etests.volume.benchmarks.cases.fio "$@" --provider "$provider" --local
+
+# Compare saved results from any two providers.
+[positional-arguments]
+fio-compare candidate baseline *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    uv run python -m e2etests.volume.benchmarks.cases.fio.report "$@"
 
 model-load environment:
     #!/usr/bin/env bash
@@ -55,7 +68,7 @@ model-download environment:
         --small-shard-mib 35 \
         --extent-mib 4 \
         --cpu 2 \
-        --memory 2Gi
+        --memory 4Gi
 
 git-repo environment:
     #!/usr/bin/env bash

@@ -21,6 +21,7 @@ from chalkcompute import (
 )
 
 HOST_CAPACITY_ERROR = "all registered host-pool capacity is allocated"
+SANDBOX_PREEMPTED_MESSAGE = "container was preempted"
 BENCHMARK_RESULTS_VOLUME = "volume-bench-results"
 BENCHMARK_RESULTS_PREFIX = "pyperf"
 VOLUME_SPOOL_EXHAUSTED_EXIT_CODE = 75
@@ -29,6 +30,10 @@ T = TypeVar("T")
 
 
 class VolumeSpoolExhaustedError(RuntimeError):
+    pass
+
+
+class SandboxPreemptedError(RuntimeError):
     pass
 
 
@@ -64,6 +69,10 @@ KNOWN_ERRORS = (
         error_type="sandbox-capacity-exhausted",
         exception_type=SandboxCreationError,
         message_contains=HOST_CAPACITY_ERROR,
+    ),
+    KnownError(
+        error_type="sandbox-preempted",
+        exception_type=SandboxPreemptedError,
     ),
     KnownError(
         error_type="volume-spool-exhausted",
@@ -231,6 +240,10 @@ def _wait_for_sandbox(
             f"{phase} sandbox completed with status {status}: "
             f"{VOLUME_SPOOL_EXHAUSTED_MESSAGE}"
         )
+    if status_message == SANDBOX_PREEMPTED_MESSAGE:
+        raise SandboxPreemptedError(
+            f"{phase} sandbox completed with status {status}: {status_message}"
+        )
     detail = f": {status_message}" if status_message else ""
     raise RuntimeError(f"{phase} sandbox completed with status {status}{detail}")
 
@@ -310,6 +323,7 @@ def publish_benchmark_results(
     *,
     error_count: int | None = None,
     error_type: str | None = None,
+    archive: bool = True,
 ) -> None:
     if error_count is not None:
         append_status(
@@ -319,18 +333,28 @@ def publish_benchmark_results(
             error_type=error_type,
         )
     output.write_text(json.dumps(results, sort_keys=True))
-    archive_benchmark_results(output, request_type)
+    if archive:
+        archive_benchmark_results(output, request_type)
 
 
-def run_benchmark(request_type: str, benchmark: Callable[[], dict[str, Any]]) -> None:
-    output = os.environ.get("CHALK_BENCHMARK_PYPERF_OUTPUT")
-    if not output:
+def run_benchmark(
+    request_type: str,
+    benchmark: Callable[[], dict[str, Any]],
+    *,
+    output: Path | None = None,
+    archive: bool = True,
+) -> None:
+    output_value = output or os.environ.get("CHALK_BENCHMARK_PYPERF_OUTPUT")
+    if not output_value:
         raise RuntimeError("CHALK_BENCHMARK_PYPERF_OUTPUT must be set")
-    output_path = Path(output)
+    output_path = Path(output_value)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         results = benchmark()
     except BenchmarkFailure as error:
-        publish_benchmark_results(output_path, request_type, error.results)
+        publish_benchmark_results(
+            output_path, request_type, error.results, archive=archive
+        )
         raise
     except Exception as error:
         known_error = find_known_error(error)
@@ -344,6 +368,7 @@ def run_benchmark(request_type: str, benchmark: Callable[[], dict[str, Any]]) ->
             {"version": "1.0", "benchmarks": []},
             error_count=1,
             error_type=known_error.error_type,
+            archive=archive,
         )
         if known_error.reraise:
             raise
@@ -353,4 +378,5 @@ def run_benchmark(request_type: str, benchmark: Callable[[], dict[str, Any]]) ->
             request_type,
             results,
             error_count=0,
+            archive=archive,
         )

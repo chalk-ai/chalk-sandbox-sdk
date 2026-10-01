@@ -20,6 +20,10 @@ siblings, not descendants, and only a session id groups them.  See
 The id travels as a ``large_utf8`` scalar, exactly as ``str`` would, so a
 function may equally declare ``trace: str`` and call :meth:`Trace.from_id`.
 
+:meth:`Trace.transcript` renders the session's LLM turns as text. It is what
+:func:`chalkcompute.scorers.llm_judge` shows the model when a judge names
+``trace`` among its inputs, and what a notebook reads to follow an agent run.
+
 An image built in strip mode does not install ``chalkcompute``, so the handler
 shim publishes no call context there (it degrades rather than failing the call).
 A function deployed that way is never placed in its caller's session, and
@@ -30,7 +34,7 @@ a published ``chalkcompute`` for session-aware scoring.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
@@ -52,6 +56,14 @@ from chalkcompute._tracing import (
 _T = TypeVar("_T")
 
 _MAX_PAGE_SIZE = 1000
+
+# OpenInference names for what an LLM span carries; chalk-router and the
+# OpenInference instrumentations both write them.
+_INPUT_VALUE_ATTRIBUTE = "input.value"
+_OUTPUT_VALUE_ATTRIBUTE = "output.value"
+_MODEL_NAME_ATTRIBUTE = "llm.model_name"
+_TOKEN_TOTAL_ATTRIBUTE = "llm.token_count.total"
+_NO_TURNS_NOTE = "(no LLM turns were recorded in this session)"
 
 
 class TraceError(Exception):
@@ -408,12 +420,124 @@ class Trace:
             expect_min=expect_min,
         )
 
+    def transcript(
+        self,
+        *,
+        max_chars_per_turn: int = 4000,
+        wait: bool = True,
+        timeout: float = 60.0,
+        poll_interval: float = 2.0,
+        expect_min: int | None = None,
+    ) -> str:
+        """Render this session's LLM turns as text, oldest first.
+
+        A turn is a span carrying the OpenInference ``input.value`` attribute
+        (the prompt); ``output.value`` is its completion, when the span has
+        one. Each turn is headed by the model and its token total. Prompts keep
+        their *last* ``max_chars_per_turn`` characters and completions their
+        *first*, so truncation preserves the newest context the model saw and
+        the start of what it said. A session with no turns renders as a
+        one-line note rather than an empty string.
+
+        This is what :func:`chalkcompute.scorers.llm_judge` shows the model when
+        a judge names ``trace`` among its inputs.
+
+        Parameters
+        ----------
+        max_chars_per_turn
+            Characters kept of each prompt and of each completion.
+        wait, timeout, poll_interval, expect_min
+            See :ref:`the settling rules <trace-waiting>` on :class:`Trace`.
+            The wait is scoped to LLM turns: it holds until at least one is
+            there and their number stays steady across a poll, so a turn that
+            is still being ingested is never mistaken for none, and the
+            session's other spans -- its root span lands before any turn --
+            cannot end the wait early. A session that shows no turn within
+            ``timeout`` renders as the no-turns note rather than raising, once
+            an unwaited read confirms it, so a judge still grades the row; pass
+            ``expect_min=0`` to accept an empty transcript without waiting.
+        """
+        client = self._require_client()
+
+        def fetch() -> list[Span]:
+            return client.list_spans(
+                self.id, attribute_filters={_INPUT_VALUE_ATTRIBUTE: None}
+            )
+
+        try:
+            spans = _settle(
+                fetch,
+                spans_seen=_count_turns,
+                subject=f"session {self.id!r}",
+                wait=wait,
+                timeout=timeout,
+                poll_interval=poll_interval,
+                expect_min=expect_min,
+            )
+        except TimeoutError:
+            # A session that has shown no turn after the wait has none to
+            # render. One whose turns are still arriving must not be read
+            # short: the note would pass for a real result.
+            if _count_turns(fetch()):
+                raise
+            spans = []
+        return _format_transcript(spans, max_chars_per_turn=max_chars_per_turn)
+
     def _require_client(self) -> TraceClient:
         if self._client is None:
             object.__setattr__(self, "_client", TraceClient())
         client = self._client
         assert client is not None
         return client
+
+
+def _format_transcript(spans: Sequence[Span], *, max_chars_per_turn: int) -> str:
+    """Render the LLM turns among ``spans``; see :meth:`Trace.transcript`."""
+    if max_chars_per_turn <= 0:
+        raise ValueError("max_chars_per_turn must be positive")
+    turns = sorted(
+        (span for span in spans if _INPUT_VALUE_ATTRIBUTE in span.attributes),
+        # Spans without a start time sort last, in the order they arrived.
+        key=lambda span: (
+            span.start_time is None,
+            span.start_time.timestamp() if span.start_time is not None else 0.0,
+        ),
+    )
+    if not turns:
+        return _NO_TURNS_NOTE
+    parts: list[str] = []
+    for index, span in enumerate(turns, start=1):
+        model = span.attributes.get(_MODEL_NAME_ATTRIBUTE) or "unknown model"
+        tokens = span.attribute_int(_TOKEN_TOTAL_ATTRIBUTE)
+        heading = f"### turn {index} ({model}"
+        heading += f", {tokens:,} tokens)" if tokens is not None else ")"
+        lines = [
+            heading,
+            "[prompt]",
+            _keep_tail(span.attributes[_INPUT_VALUE_ATTRIBUTE], max_chars_per_turn),
+        ]
+        completion = span.attributes.get(_OUTPUT_VALUE_ATTRIBUTE)
+        if completion is not None:
+            lines += ["[completion]", _keep_head(completion, max_chars_per_turn)]
+        parts.append("\n".join(lines))
+    return "\n\n".join(parts)
+
+
+def _count_turns(spans: Sequence[Span]) -> int:
+    """How many of ``spans`` a transcript renders: those carrying a prompt."""
+    return sum(1 for span in spans if _INPUT_VALUE_ATTRIBUTE in span.attributes)
+
+
+def _keep_head(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}\n… [{len(text) - limit:,} more characters]"
+
+
+def _keep_tail(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return f"… [{len(text) - limit:,} earlier characters]\n{text[-limit:]}"
 
 
 class TraceClient:

@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from ...container.v1.service_pb import ChalkContainerSpec
 
 
-_SandboxInfoFields: TypeAlias = Literal["id", "name", "status", "status_message", "spec", "created_at", "finished_at", "web_url"]
+_SandboxInfoFields: TypeAlias = Literal["id", "name", "status", "status_message", "spec", "created_at", "finished_at", "web_url", "region", "created_by", "status_details"]
 
 class SandboxInfo(Message[_SandboxInfoFields]):
     """
@@ -45,6 +45,8 @@ class SandboxInfo(Message[_SandboxInfoFields]):
             chalk.sandbox.v2.SandboxStatus status = 3;
             ```
         status_message:
+            Top-level summary for the current status.
+
             ```proto
             optional string status_message = 4;
             ```
@@ -64,9 +66,27 @@ class SandboxInfo(Message[_SandboxInfoFields]):
             ```proto
             optional string web_url = 8;
             ```
+        region:
+            Cloud region of the stored sandbox cluster. Empty when unknown.
+
+            ```proto
+            string region = 9;
+            ```
+        created_by:
+            User or service-token ID, absent when the creator is unknown.
+
+            ```proto
+            optional string created_by = 10;
+            ```
+        status_details:
+            Additional diagnostic info for status_message.
+
+            ```proto
+            optional string status_details = 11;
+            ```
     """
 
-    __slots__ = ("id", "name", "status", "status_message", "spec", "created_at", "finished_at", "web_url")
+    __slots__ = ("id", "name", "status", "status_message", "spec", "created_at", "finished_at", "web_url", "region", "created_by", "status_details")
 
     if TYPE_CHECKING:
 
@@ -81,6 +101,9 @@ class SandboxInfo(Message[_SandboxInfoFields]):
             created_at: Timestamp | None = None,
             finished_at: Timestamp | None = None,
             web_url: str | None = None,
+            region: str = "",
+            created_by: str | None = None,
+            status_details: str | None = None,
         ) -> None:
             pass
 
@@ -92,6 +115,9 @@ class SandboxInfo(Message[_SandboxInfoFields]):
         created_at: Timestamp | None
         finished_at: Timestamp | None
         web_url: str
+        region: str
+        created_by: str
+        status_details: str
 
 _CreateSandboxRequestFields: TypeAlias = Literal["spec", "snapshot_id"]
 
@@ -205,7 +231,7 @@ class GetSandboxResponse(Message[_GetSandboxResponseFields]):
 
         sandbox: SandboxInfo | None
 
-_ListSandboxesFiltersFields: TypeAlias = Literal["names", "statuses", "images"]
+_ListSandboxesFiltersFields: TypeAlias = Literal["names", "statuses", "images", "created_by"]
 
 class ListSandboxesFilters(Message[_ListSandboxesFiltersFields]):
     """
@@ -226,9 +252,13 @@ class ListSandboxesFilters(Message[_ListSandboxesFiltersFields]):
             ```proto
             repeated string images = 3;
             ```
+        created_by:
+            ```proto
+            repeated string created_by = 4;
+            ```
     """
 
-    __slots__ = ("names", "statuses", "images")
+    __slots__ = ("names", "statuses", "images", "created_by")
 
     if TYPE_CHECKING:
 
@@ -238,12 +268,14 @@ class ListSandboxesFilters(Message[_ListSandboxesFiltersFields]):
             names: list[str] | None = None,
             statuses: list[SandboxStatus] | None = None,
             images: list[str] | None = None,
+            created_by: list[str] | None = None,
         ) -> None:
             pass
 
         names: list[str]
         statuses: list[SandboxStatus]
         images: list[str]
+        created_by: list[str]
 
 _ListSandboxesRequestFields: TypeAlias = Literal["limit", "cursor", "search", "filters", "sort_column", "sort_order"]
 
@@ -484,6 +516,219 @@ class TerminateSandboxResponse(Message[_TerminateSandboxResponseFields]):
         ) -> None:
             pass
 
+_SandboxResourceFields: TypeAlias = Literal["id", "sandbox_id", "kind", "resource_id", "version_id", "created_at", "agent_id", "name"]
+
+class SandboxResource(Message[_SandboxResourceFields]):
+    """
+    ```proto
+    message chalk.sandbox.v2.SandboxResource
+    ```
+
+    Attributes:
+        id:
+            ```proto
+            string id = 1;
+            ```
+        sandbox_id:
+            ```proto
+            string sandbox_id = 2;
+            ```
+        kind:
+            ```proto
+            chalk.sandbox.v2.SandboxResourceKind kind = 3;
+            ```
+        resource_id:
+            ```proto
+            string resource_id = 4;
+            ```
+        version_id:
+            Empty for resources without an independently addressable version.
+
+            ```proto
+            string version_id = 5;
+            ```
+        created_at:
+            First capture time. Retained when the same operation is observed again.
+
+            ```proto
+            optional google.protobuf.Timestamp created_at = 6;
+            ```
+        agent_id:
+            ```proto
+            string agent_id = 7;
+            ```
+        name:
+            Current display name, when available in metadata. Absent for unnamed or missing resources.
+
+            ```proto
+            optional string name = 8;
+            ```
+    """
+
+    __slots__ = ("id", "sandbox_id", "kind", "resource_id", "version_id", "created_at", "agent_id", "name")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            id: str = "",
+            sandbox_id: str = "",
+            kind: SandboxResourceKind | None = None,
+            resource_id: str = "",
+            version_id: str = "",
+            created_at: Timestamp | None = None,
+            agent_id: str = "",
+            name: str | None = None,
+        ) -> None:
+            pass
+
+        id: str
+        sandbox_id: str
+        kind: SandboxResourceKind
+        resource_id: str
+        version_id: str
+        created_at: Timestamp | None
+        agent_id: str
+        name: str
+
+_ListSandboxResourcesFiltersFields: TypeAlias = Literal["kinds", "resource_ids", "created_after", "created_before"]
+
+class ListSandboxResourcesFilters(Message[_ListSandboxResourcesFiltersFields]):
+    """
+    ```proto
+    message chalk.sandbox.v2.ListSandboxResourcesFilters
+    ```
+
+    Attributes:
+        kinds:
+            ```proto
+            repeated chalk.sandbox.v2.SandboxResourceKind kinds = 1 [packed = true];
+            ```
+        resource_ids:
+            ```proto
+            repeated string resource_ids = 2;
+            ```
+        created_after:
+            Inclusive lower bound and exclusive upper bound on first capture time.
+
+            ```proto
+            optional google.protobuf.Timestamp created_after = 3;
+            ```
+        created_before:
+            ```proto
+            optional google.protobuf.Timestamp created_before = 4;
+            ```
+    """
+
+    __slots__ = ("kinds", "resource_ids", "created_after", "created_before")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            kinds: list[SandboxResourceKind] | None = None,
+            resource_ids: list[str] | None = None,
+            created_after: Timestamp | None = None,
+            created_before: Timestamp | None = None,
+        ) -> None:
+            pass
+
+        kinds: list[SandboxResourceKind]
+        resource_ids: list[str]
+        created_after: Timestamp | None
+        created_before: Timestamp | None
+
+_ListSandboxResourcesRequestFields: TypeAlias = Literal["sandbox_id", "filters", "page_size", "page_token"]
+
+class ListSandboxResourcesRequest(Message[_ListSandboxResourcesRequestFields]):
+    """
+    ```proto
+    message chalk.sandbox.v2.ListSandboxResourcesRequest
+    ```
+
+    Attributes:
+        sandbox_id:
+            ```proto
+            string sandbox_id = 1;
+            ```
+        filters:
+            ```proto
+            optional chalk.sandbox.v2.ListSandboxResourcesFilters filters = 2;
+            ```
+        page_size:
+            Defaults to 50. Must be between 0 and 200.
+
+            ```proto
+            int32 page_size = 3;
+            ```
+        page_token:
+            Opaque cursor. Sandbox and filters must match the first request.
+
+            ```proto
+            string page_token = 4;
+            ```
+    """
+
+    __slots__ = ("sandbox_id", "filters", "page_size", "page_token")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            sandbox_id: str = "",
+            filters: ListSandboxResourcesFilters | None = None,
+            page_size: int = 0,
+            page_token: str = "",
+        ) -> None:
+            pass
+
+        sandbox_id: str
+        filters: ListSandboxResourcesFilters | None
+        page_size: int
+        page_token: str
+
+_ListSandboxResourcesResponseFields: TypeAlias = Literal["resources", "next_page_token"]
+
+class ListSandboxResourcesResponse(Message[_ListSandboxResourcesResponseFields]):
+    """
+    ```proto
+    message chalk.sandbox.v2.ListSandboxResourcesResponse
+    ```
+
+    Attributes:
+        resources:
+            Newest first, ordered by (created_at, id). References survive deletion of
+            their source resource and do not grant permission to read that resource.
+            Query references survive execution-history expiration. Capture covers Go API
+            entry points and is best effort for queries observed after acceptance/execution.
+
+            ```proto
+            repeated chalk.sandbox.v2.SandboxResource resources = 1;
+            ```
+        next_page_token:
+            ```proto
+            string next_page_token = 2;
+            ```
+    """
+
+    __slots__ = ("resources", "next_page_token")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            resources: list[SandboxResource] | None = None,
+            next_page_token: str = "",
+        ) -> None:
+            pass
+
+        resources: list[SandboxResource]
+        next_page_token: str
+
 class SandboxStatus(Enum):
     """
     ```proto
@@ -512,8 +757,6 @@ class SandboxStatus(Enum):
             SANDBOX_STATUS_FAILED = 4
             ```
         TERMINATED:
-            Deprecated
-
             ```proto
             SANDBOX_STATUS_TERMINATED = 5
             ```
@@ -581,9 +824,58 @@ class SandboxSortOrder(Enum):
     DESC = 1
     ASC = 2
 
+class SandboxResourceKind(Enum):
+    """
+    A durable reference to a resource produced using sandbox credentials.
+    Query references identify observed operations, not execution success.
+    Function references identify versions.
+
+    ```proto
+    enum chalk.sandbox.v2.SandboxResourceKind
+    ```
+
+    Attributes:
+        UNSPECIFIED:
+            ```proto
+            SANDBOX_RESOURCE_KIND_UNSPECIFIED = 0
+            ```
+        NOTEBOOK:
+            ```proto
+            SANDBOX_RESOURCE_KIND_NOTEBOOK = 1
+            ```
+        CHALKCOMPUTE_FUNCTION:
+            ```proto
+            SANDBOX_RESOURCE_KIND_CHALKCOMPUTE_FUNCTION = 2
+            ```
+        ONLINE_QUERY:
+            ```proto
+            SANDBOX_RESOURCE_KIND_ONLINE_QUERY = 3
+            ```
+        OFFLINE_QUERY:
+            ```proto
+            SANDBOX_RESOURCE_KIND_OFFLINE_QUERY = 4
+            ```
+        SQL_QUERY:
+            ```proto
+            SANDBOX_RESOURCE_KIND_SQL_QUERY = 5
+            ```
+        STORED_ARTIFACT:
+            ```proto
+            SANDBOX_RESOURCE_KIND_STORED_ARTIFACT = 6
+            ```
+    """
+
+    UNSPECIFIED = 0
+    NOTEBOOK = 1
+    CHALKCOMPUTE_FUNCTION = 2
+    ONLINE_QUERY = 3
+    OFFLINE_QUERY = 4
+    SQL_QUERY = 5
+    STORED_ARTIFACT = 6
+
 
 _DESC = file_desc(
-    b'\n\x1echalk/sandbox/v2/service.proto\x12\x10chalk.sandbox.v2\x1a\x1fchalk/auth/v1/permissions.proto\x1a chalk/container/v1/service.proto\x1a\x1achalk/flags/v1/flags.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto"\x9c\x03\n\x0bSandboxInfo\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x127\n\x06status\x18\x03 \x01(\x0e2\x1f.chalk.sandbox.v2.SandboxStatusR\x06status\x12*\n\x0estatus_message\x18\x04 \x01(\tH\x00R\rstatusMessage\x88\x01\x01\x12:\n\x04spec\x18\x05 \x01(\x0b2&.chalk.container.v1.ChalkContainerSpecR\x04spec\x129\n\ncreated_at\x18\x06 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12@\n\x0bfinished_at\x18\x07 \x01(\x0b2\x1a.google.protobuf.TimestampH\x01R\nfinishedAt\x88\x01\x01\x12\x1c\n\x07web_url\x18\x08 \x01(\tH\x02R\x06webUrl\x88\x01\x01B\x11\n\x0f_status_messageB\x0e\n\x0c_finished_atB\n\n\x08_web_url"\x81\x01\n\x14CreateSandboxRequest\x12<\n\x04spec\x18\x01 \x01(\x0b2&.chalk.container.v1.ChalkContainerSpecH\x00R\x04spec\x12!\n\x0bsnapshot_id\x18\x02 \x01(\tH\x00R\nsnapshotIdB\x08\n\x06source"P\n\x15CreateSandboxResponse\x127\n\x07sandbox\x18\x01 \x01(\x0b2\x1d.chalk.sandbox.v2.SandboxInfoR\x07sandbox"#\n\x11GetSandboxRequest\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id"M\n\x12GetSandboxResponse\x127\n\x07sandbox\x18\x01 \x01(\x0b2\x1d.chalk.sandbox.v2.SandboxInfoR\x07sandbox"\x85\x01\n\x14ListSandboxesFilters\x12\x18\n\x05names\x18\x01 \x03(\tR\x05namesB\x02\x18\x01\x12;\n\x08statuses\x18\x02 \x03(\x0e2\x1f.chalk.sandbox.v2.SandboxStatusR\x08statuses\x12\x16\n\x06images\x18\x03 \x03(\tR\x06images"\xc6\x02\n\x14ListSandboxesRequest\x12\x19\n\x05limit\x18\x01 \x01(\x05H\x00R\x05limit\x88\x01\x01\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x01R\x06cursor\x88\x01\x01\x12\x16\n\x06search\x18\x03 \x01(\tR\x06search\x12@\n\x07filters\x18\x04 \x01(\x0b2&.chalk.sandbox.v2.ListSandboxesFiltersR\x07filters\x12D\n\x0bsort_column\x18\x05 \x01(\x0e2#.chalk.sandbox.v2.SandboxSortColumnR\nsortColumn\x12A\n\nsort_order\x18\x06 \x01(\x0e2".chalk.sandbox.v2.SandboxSortOrderR\tsortOrderB\x08\n\x06_limitB\t\n\x07_cursor"\x8a\x01\n\x15ListSandboxesResponse\x12;\n\tsandboxes\x18\x01 \x03(\x0b2\x1d.chalk.sandbox.v2.SandboxInfoR\tsandboxes\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"\'\n\x15SuspendSandboxRequest\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id"\x18\n\x16SuspendSandboxResponse"&\n\x14ResumeSandboxRequest\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id"\x17\n\x15ResumeSandboxResponse"}\n\x17TerminateSandboxRequest\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12A\n\x0cgrace_period\x18\x02 \x01(\x0b2\x19.google.protobuf.DurationH\x00R\x0bgracePeriod\x88\x01\x01B\x0f\n\r_grace_period"\x1a\n\x18TerminateSandboxResponse*\xf5\x01\n\rSandboxStatus\x12\x1e\n\x1aSANDBOX_STATUS_UNSPECIFIED\x10\x00\x12\x1a\n\x16SANDBOX_STATUS_PENDING\x10\x01\x12\x1a\n\x16SANDBOX_STATUS_RUNNING\x10\x02\x12\x1c\n\x18SANDBOX_STATUS_SUCCEEDED\x10\x03\x12\x19\n\x15SANDBOX_STATUS_FAILED\x10\x04\x12\x1d\n\x19SANDBOX_STATUS_TERMINATED\x10\x05\x12\x18\n\x14SANDBOX_STATUS_ERROR\x10\x06\x12\x1a\n\x16SANDBOX_STATUS_UNKNOWN\x10\x07*\\\n\x11SandboxSortColumn\x12#\n\x1fSANDBOX_SORT_COLUMN_UNSPECIFIED\x10\x00\x12"\n\x1eSANDBOX_SORT_COLUMN_CREATED_AT\x10\x01*o\n\x10SandboxSortOrder\x12"\n\x1eSANDBOX_SORT_ORDER_UNSPECIFIED\x10\x00\x12\x1b\n\x17SANDBOX_SORT_ORDER_DESC\x10\x01\x12\x1a\n\x16SANDBOX_SORT_ORDER_ASC\x10\x022\xb2\x06\n\x0eSandboxService\x12\xbc\x01\n\rCreateSandbox\x12&.chalk.sandbox.v2.CreateSandboxRequest\x1a\'.chalk.sandbox.v2.CreateSandboxResponse"Z\x80}\x0c\x92\xd3\x0eS\n\x16scaling_groups_enabled\x129This action is not enabled. Please contact Chalk Support.\x12\\\n\nGetSandbox\x12#.chalk.sandbox.v2.GetSandboxRequest\x1a$.chalk.sandbox.v2.GetSandboxResponse"\x03\x80}\x0b\x12e\n\rListSandboxes\x12&.chalk.sandbox.v2.ListSandboxesRequest\x1a\'.chalk.sandbox.v2.ListSandboxesResponse"\x03\x80}\x0b\x12\xc4\x01\n\x0eSuspendSandbox\x12\'.chalk.sandbox.v2.SuspendSandboxRequest\x1a(.chalk.sandbox.v2.SuspendSandboxResponse"_\x80}\x0c\x92\xd3\x0eX\n\x1bcontainer_snapshots_enabled\x129This action is not enabled. Please contact Chalk Support.\x12e\n\rResumeSandbox\x12&.chalk.sandbox.v2.ResumeSandboxRequest\x1a\'.chalk.sandbox.v2.ResumeSandboxResponse"\x03\x80}\x0c\x12n\n\x10TerminateSandbox\x12).chalk.sandbox.v2.TerminateSandboxRequest\x1a*.chalk.sandbox.v2.TerminateSandboxResponse"\x03\x80}\x0cB\x9c\x01\n\x14com.chalk.sandbox.v2B\x0cServiceProtoP\x01Z\x14sandbox/v2;sandboxv2\xa2\x02\x03CSX\xaa\x02\x10Chalk.Sandbox.V2\xca\x02\x10Chalk\\Sandbox\\V2\xe2\x02\x1cChalk\\Sandbox\\V2\\GPBMetadata\xea\x02\x12Chalk::Sandbox::V2b\x06proto3',
+    b'\n\x1echalk/sandbox/v2/service.proto\x12\x10chalk.sandbox.v2\x1a\x1fchalk/auth/v1/permissions.proto\x1a chalk/container/v1/service.proto\x1a\x1achalk/flags/v1/flags.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto"\xa6\x04\n\x0bSandboxInfo\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x127\n\x06status\x18\x03 \x01(\x0e2\x1f.chalk.sandbox.v2.SandboxStatusR\x06status\x12*\n\x0estatus_message\x18\x04 \x01(\tH\x00R\rstatusMessage\x88\x01\x01\x12:\n\x04spec\x18\x05 \x01(\x0b2&.chalk.container.v1.ChalkContainerSpecR\x04spec\x129\n\ncreated_at\x18\x06 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12@\n\x0bfinished_at\x18\x07 \x01(\x0b2\x1a.google.protobuf.TimestampH\x01R\nfinishedAt\x88\x01\x01\x12\x1c\n\x07web_url\x18\x08 \x01(\tH\x02R\x06webUrl\x88\x01\x01\x12\x16\n\x06region\x18\t \x01(\tR\x06region\x12"\n\ncreated_by\x18\n \x01(\tH\x03R\tcreatedBy\x88\x01\x01\x12*\n\x0estatus_details\x18\x0b \x01(\tH\x04R\rstatusDetails\x88\x01\x01B\x11\n\x0f_status_messageB\x0e\n\x0c_finished_atB\n\n\x08_web_urlB\r\n\x0b_created_byB\x11\n\x0f_status_details"\x81\x01\n\x14CreateSandboxRequest\x12<\n\x04spec\x18\x01 \x01(\x0b2&.chalk.container.v1.ChalkContainerSpecH\x00R\x04spec\x12!\n\x0bsnapshot_id\x18\x02 \x01(\tH\x00R\nsnapshotIdB\x08\n\x06source"P\n\x15CreateSandboxResponse\x127\n\x07sandbox\x18\x01 \x01(\x0b2\x1d.chalk.sandbox.v2.SandboxInfoR\x07sandbox"#\n\x11GetSandboxRequest\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id"M\n\x12GetSandboxResponse\x127\n\x07sandbox\x18\x01 \x01(\x0b2\x1d.chalk.sandbox.v2.SandboxInfoR\x07sandbox"\xa4\x01\n\x14ListSandboxesFilters\x12\x18\n\x05names\x18\x01 \x03(\tR\x05namesB\x02\x18\x01\x12;\n\x08statuses\x18\x02 \x03(\x0e2\x1f.chalk.sandbox.v2.SandboxStatusR\x08statuses\x12\x16\n\x06images\x18\x03 \x03(\tR\x06images\x12\x1d\n\ncreated_by\x18\x04 \x03(\tR\tcreatedBy"\xc6\x02\n\x14ListSandboxesRequest\x12\x19\n\x05limit\x18\x01 \x01(\x05H\x00R\x05limit\x88\x01\x01\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x01R\x06cursor\x88\x01\x01\x12\x16\n\x06search\x18\x03 \x01(\tR\x06search\x12@\n\x07filters\x18\x04 \x01(\x0b2&.chalk.sandbox.v2.ListSandboxesFiltersR\x07filters\x12D\n\x0bsort_column\x18\x05 \x01(\x0e2#.chalk.sandbox.v2.SandboxSortColumnR\nsortColumn\x12A\n\nsort_order\x18\x06 \x01(\x0e2".chalk.sandbox.v2.SandboxSortOrderR\tsortOrderB\x08\n\x06_limitB\t\n\x07_cursor"\x8a\x01\n\x15ListSandboxesResponse\x12;\n\tsandboxes\x18\x01 \x03(\x0b2\x1d.chalk.sandbox.v2.SandboxInfoR\tsandboxes\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"\'\n\x15SuspendSandboxRequest\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id"\x18\n\x16SuspendSandboxResponse"&\n\x14ResumeSandboxRequest\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id"\x17\n\x15ResumeSandboxResponse"}\n\x17TerminateSandboxRequest\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12A\n\x0cgrace_period\x18\x02 \x01(\x0b2\x19.google.protobuf.DurationH\x00R\x0bgracePeriod\x88\x01\x01B\x0f\n\r_grace_period"\x1a\n\x18TerminateSandboxResponse"\xb3\x02\n\x0fSandboxResource\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n\nsandbox_id\x18\x02 \x01(\tR\tsandboxId\x129\n\x04kind\x18\x03 \x01(\x0e2%.chalk.sandbox.v2.SandboxResourceKindR\x04kind\x12\x1f\n\x0bresource_id\x18\x04 \x01(\tR\nresourceId\x12\x1d\n\nversion_id\x18\x05 \x01(\tR\tversionId\x129\n\ncreated_at\x18\x06 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12\x19\n\x08agent_id\x18\x07 \x01(\tR\x07agentId\x12\x17\n\x04name\x18\x08 \x01(\tH\x00R\x04name\x88\x01\x01B\x07\n\x05_name"\x81\x02\n\x1bListSandboxResourcesFilters\x12;\n\x05kinds\x18\x01 \x03(\x0e2%.chalk.sandbox.v2.SandboxResourceKindR\x05kinds\x12!\n\x0cresource_ids\x18\x02 \x03(\tR\x0bresourceIds\x12?\n\rcreated_after\x18\x03 \x01(\x0b2\x1a.google.protobuf.TimestampR\x0ccreatedAfter\x12A\n\x0ecreated_before\x18\x04 \x01(\x0b2\x1a.google.protobuf.TimestampR\rcreatedBefore"\xc1\x01\n\x1bListSandboxResourcesRequest\x12\x1d\n\nsandbox_id\x18\x01 \x01(\tR\tsandboxId\x12G\n\x07filters\x18\x02 \x01(\x0b2-.chalk.sandbox.v2.ListSandboxResourcesFiltersR\x07filters\x12\x1b\n\tpage_size\x18\x03 \x01(\x05R\x08pageSize\x12\x1d\n\npage_token\x18\x04 \x01(\tR\tpageToken"\x87\x01\n\x1cListSandboxResourcesResponse\x12?\n\tresources\x18\x01 \x03(\x0b2!.chalk.sandbox.v2.SandboxResourceR\tresources\x12&\n\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken*\xf5\x01\n\rSandboxStatus\x12\x1e\n\x1aSANDBOX_STATUS_UNSPECIFIED\x10\x00\x12\x1a\n\x16SANDBOX_STATUS_PENDING\x10\x01\x12\x1a\n\x16SANDBOX_STATUS_RUNNING\x10\x02\x12\x1c\n\x18SANDBOX_STATUS_SUCCEEDED\x10\x03\x12\x19\n\x15SANDBOX_STATUS_FAILED\x10\x04\x12\x1d\n\x19SANDBOX_STATUS_TERMINATED\x10\x05\x12\x18\n\x14SANDBOX_STATUS_ERROR\x10\x06\x12\x1a\n\x16SANDBOX_STATUS_UNKNOWN\x10\x07*\\\n\x11SandboxSortColumn\x12#\n\x1fSANDBOX_SORT_COLUMN_UNSPECIFIED\x10\x00\x12"\n\x1eSANDBOX_SORT_COLUMN_CREATED_AT\x10\x01*o\n\x10SandboxSortOrder\x12"\n\x1eSANDBOX_SORT_ORDER_UNSPECIFIED\x10\x00\x12\x1b\n\x17SANDBOX_SORT_ORDER_DESC\x10\x01\x12\x1a\n\x16SANDBOX_SORT_ORDER_ASC\x10\x02*\xb2\x02\n\x13SandboxResourceKind\x12%\n!SANDBOX_RESOURCE_KIND_UNSPECIFIED\x10\x00\x12"\n\x1eSANDBOX_RESOURCE_KIND_NOTEBOOK\x10\x01\x12/\n+SANDBOX_RESOURCE_KIND_CHALKCOMPUTE_FUNCTION\x10\x02\x12&\n"SANDBOX_RESOURCE_KIND_ONLINE_QUERY\x10\x03\x12\'\n#SANDBOX_RESOURCE_KIND_OFFLINE_QUERY\x10\x04\x12#\n\x1fSANDBOX_RESOURCE_KIND_SQL_QUERY\x10\x05\x12)\n%SANDBOX_RESOURCE_KIND_STORED_ARTIFACT\x10\x062\xb2\x06\n\x0eSandboxService\x12\xbc\x01\n\rCreateSandbox\x12&.chalk.sandbox.v2.CreateSandboxRequest\x1a\'.chalk.sandbox.v2.CreateSandboxResponse"Z\x80}\x0c\x92\xd3\x0eS\n\x16scaling_groups_enabled\x129This action is not enabled. Please contact Chalk Support.\x12\\\n\nGetSandbox\x12#.chalk.sandbox.v2.GetSandboxRequest\x1a$.chalk.sandbox.v2.GetSandboxResponse"\x03\x80}\x0b\x12e\n\rListSandboxes\x12&.chalk.sandbox.v2.ListSandboxesRequest\x1a\'.chalk.sandbox.v2.ListSandboxesResponse"\x03\x80}\x0b\x12\xc4\x01\n\x0eSuspendSandbox\x12\'.chalk.sandbox.v2.SuspendSandboxRequest\x1a(.chalk.sandbox.v2.SuspendSandboxResponse"_\x80}\x0c\x92\xd3\x0eX\n\x1bcontainer_snapshots_enabled\x129This action is not enabled. Please contact Chalk Support.\x12e\n\rResumeSandbox\x12&.chalk.sandbox.v2.ResumeSandboxRequest\x1a\'.chalk.sandbox.v2.ResumeSandboxResponse"\x03\x80}\x0c\x12n\n\x10TerminateSandbox\x12).chalk.sandbox.v2.TerminateSandboxRequest\x1a*.chalk.sandbox.v2.TerminateSandboxResponse"\x03\x80}\x0c2\x94\x01\n\x16SandboxResourceService\x12z\n\x14ListSandboxResources\x12-.chalk.sandbox.v2.ListSandboxResourcesRequest\x1a..chalk.sandbox.v2.ListSandboxResourcesResponse"\x03\x80}\x0bB\x9c\x01\n\x14com.chalk.sandbox.v2B\x0cServiceProtoP\x01Z\x14sandbox/v2;sandboxv2\xa2\x02\x03CSX\xaa\x02\x10Chalk.Sandbox.V2\xca\x02\x10Chalk\\Sandbox\\V2\xe2\x02\x1cChalk\\Sandbox\\V2\\GPBMetadata\xea\x02\x12Chalk::Sandbox::V2b\x06proto3',
     [
         permissions_pb.desc(),
         service_pb.desc(),
@@ -606,9 +898,14 @@ _DESC = file_desc(
         "ResumeSandboxResponse": ResumeSandboxResponse,
         "TerminateSandboxRequest": TerminateSandboxRequest,
         "TerminateSandboxResponse": TerminateSandboxResponse,
+        "SandboxResource": SandboxResource,
+        "ListSandboxResourcesFilters": ListSandboxResourcesFilters,
+        "ListSandboxResourcesRequest": ListSandboxResourcesRequest,
+        "ListSandboxResourcesResponse": ListSandboxResourcesResponse,
         "SandboxStatus": SandboxStatus,
         "SandboxSortColumn": SandboxSortColumn,
         "SandboxSortOrder": SandboxSortOrder,
+        "SandboxResourceKind": SandboxResourceKind,
     },
 )
 

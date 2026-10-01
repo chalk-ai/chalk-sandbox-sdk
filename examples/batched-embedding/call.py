@@ -1,27 +1,19 @@
-"""Embed a batch of texts using chunked_call for parallel execution.
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["chalkcompute>=2.11.1"]
+# ///
 
-This example assumes the ``embed`` function from
-``examples/embedding-function/embed.py`` is already deployed.
+"""Fan out a batch to the deployed ``ex-embed`` function through the public API.
 
-Prerequisites:
-  1. Deploy the embed function:  uv run python examples/embedding-function/embed.py
-  2. Ensure CHALK_CLIENT_ID / CHALK_CLIENT_SECRET / CHALK_API_SERVER / CHALK_ENVIRONMENT_ID are set.
-  3. Port-forward the fnq-server:
-       kubectl port-forward svc/fnq-server 50051:50051 -n <namespace>
-
-Usage:
-    source ~/chalk/chalk-sandbox-sdk/.env
-    cd ~/chalk/chalk-private/dataframe && uv run python ~/chalk/chalk-sandbox-sdk/examples/batched-embedding/call.py
+This entry point requires the function defined by
+``examples/embedding-function/embed.py`` to be deployed first. That deployment
+intentionally persists so this separate client can call it.
 """
 
 import logging
-import time
 
-import pyarrow as pa
-
-from chalkdf.remote import AsyncFunction
-
-from libchalk.runtime.remote_call import AsyncRemoteCallClient
+import chalkcompute
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
@@ -51,14 +43,11 @@ TEXTS = [
 
 
 def main() -> None:
-    # Connect to the function queue server (port-forwarded to localhost:50051).
-    client = AsyncRemoteCallClient.create("localhost:50051")
-    embed = AsyncFunction(client, "embed", pa.large_list(pa.float32()), None)
-    args = pa.table({"text": pa.array(TEXTS, type=pa.large_utf8())})
-    log.info("Embedding %d texts with chunk_size=5, concurrent_chunks=4 ...", len(args))
-    result = embed.chunked_call(args, chunk_size=5, concurrent_chunks=4, timeout=120)
-
-    print(result)
+    embed = chalkcompute.RemoteFunction.from_name("ex-embed")
+    embed.wait_ready()
+    log.info("Embedding %d texts concurrently", len(TEXTS))
+    embeddings = chalkcompute.gather([embed.defer(text) for text in TEXTS], timeout=120)
+    print(f"Embedded {len(embeddings)} texts ({len(embeddings[0])} dimensions each)")
 
 
 if __name__ == "__main__":

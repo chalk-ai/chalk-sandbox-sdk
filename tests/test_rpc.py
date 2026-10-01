@@ -56,6 +56,33 @@ def test_rpc_span_contract(monkeypatch) -> None:
     assert span.status.status_code is StatusCode.UNSET
 
 
+def test_rpc_span_is_propagated_as_request_headers(monkeypatch) -> None:
+    interceptor, exporter = _recording_interceptor(monkeypatch)
+    ctx = _context()
+    token = interceptor.on_start_sync(ctx)
+    traceparent = ctx.request_headers.get("traceparent")
+    interceptor.on_end_sync(token, ctx, None)
+
+    (span,) = exporter.get_finished_spans()
+    assert traceparent is not None
+    _version, trace_id, span_id, flags = traceparent.split("-")
+    assert trace_id == format(span.context.trace_id, "032x")
+    assert span_id == format(span.context.span_id, "016x")
+    assert int(flags, 16) & 0x01, "sampled flag must be set"
+
+
+def test_rpc_without_tracing_adds_no_headers(monkeypatch) -> None:
+    from opentelemetry.trace import NoOpTracer
+
+    monkeypatch.setattr(_rpc, "get_tracer", lambda: NoOpTracer())
+    interceptor = _rpc.TracingInterceptor()
+    ctx = _context()
+    token = interceptor.on_start_sync(ctx)
+    interceptor.on_end_sync(token, ctx, None)
+
+    assert "traceparent" not in ctx.request_headers
+
+
 def test_rpc_span_marks_failed_calls_as_errors(monkeypatch) -> None:
     from opentelemetry.trace import StatusCode
 
@@ -136,3 +163,27 @@ def test_retry_backoff_caps_at_one_second(monkeypatch) -> None:
     with pytest.raises(ConnectError):
         _rpc.RetryInterceptor().intercept_unary_sync(call_next, "req", _context())
     assert sleeps == [0.1, 0.2, 0.4, 0.8, 1.0]
+
+
+@pytest.mark.parametrize("method", ["ExecuteSqlQuery", "PollSqlQuery"])
+def test_sql_execution_and_polling_are_not_retried_by_transport(method) -> None:
+    ctx = RequestContext(
+        method=MethodInfo(
+            name=method,
+            service_name="chalk.protosql.v1.SqlService",
+            input=object,
+            output=object,
+            idempotency_level=IdempotencyLevel.UNKNOWN,
+        ),
+        http_method="POST",
+        request_headers=Headers(),
+    )
+    attempts = []
+
+    def execute(request, context):
+        attempts.append(request)
+        raise ConnectError(Code.UNAVAILABLE, "response lost after submission")
+
+    with pytest.raises(ConnectError):
+        _rpc.RetryInterceptor().intercept_unary_sync(execute, "query", ctx)
+    assert len(attempts) == 1
