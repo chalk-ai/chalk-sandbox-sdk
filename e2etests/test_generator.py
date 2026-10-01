@@ -15,8 +15,7 @@ from e2etests._ci_resources import build_scoped_name
 from e2etests.conftest import (
     _delete_function,
     _delete_test_owned_source_volume,
-    _deployed_test_function_source,
-    _deploy_script,
+    _deploy_test_function_source,
     needs_staging,
 )
 
@@ -43,8 +42,9 @@ class TestSyncGenerator:
 
     @classmethod
     def setup_class(cls):
-        _deploy_script("generator", "deploy_sync.py", function_name=cls.function_name)
-        cls.source = _deployed_test_function_source(cls.function_name)
+        cls.source = _deploy_test_function_source(
+            "generator", "deploy_sync.py", cls.function_name
+        )
 
     @classmethod
     def teardown_class(cls):
@@ -83,8 +83,9 @@ class TestAsyncGenerator:
 
     @classmethod
     def setup_class(cls):
-        _deploy_script("generator", "deploy_async.py", function_name=cls.function_name)
-        cls.source = _deployed_test_function_source(cls.function_name)
+        cls.source = _deploy_test_function_source(
+            "generator", "deploy_async.py", cls.function_name
+        )
 
     @classmethod
     def teardown_class(cls):

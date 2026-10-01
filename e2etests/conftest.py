@@ -151,6 +151,28 @@ def _deployed_test_function_source(
         raise
 
 
+def _deploy_test_function_source(
+    example_subdir: str, script_name: str, function_name: str
+) -> tuple[chalkcompute.RemoteFunction, str | None]:
+    """Deploy and capture an owned source, including cleanup after partial deploy."""
+    try:
+        _deploy_script(example_subdir, script_name, function_name=function_name)
+    except BaseException:
+        try:
+            function, source_volume_name = _deployed_test_function_source(function_name)
+            _delete_function(function_name)
+            if source_volume_name is not None:
+                _delete_test_owned_source_volume(function, source_volume_name)
+        except Exception as error:
+            # Keep the deploy failure visible; unknown sources are never deleted.
+            print(
+                f"warning: partial Function cleanup for {function_name}: {error}",
+                file=sys.stderr,
+            )
+        raise
+    return _deployed_test_function_source(function_name)
+
+
 def _delete_test_owned_source_volume(
     function: chalkcompute.RemoteFunction, volume_name: str
 ) -> None:

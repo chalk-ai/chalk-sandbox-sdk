@@ -72,3 +72,29 @@ def test_source_metadata_failure_still_deletes_the_new_function(
         e2e._deployed_test_function_source("ex-count-up-test")
 
     delete.assert_called_once_with("ex-count-up-test")
+
+
+def test_partial_deploy_deletes_only_its_verified_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    function = SimpleNamespace()
+    delete_function = Mock()
+    delete_volume = Mock()
+    monkeypatch.setattr(
+        e2e, "_deploy_script", Mock(side_effect=RuntimeError("deploy failed"))
+    )
+    monkeypatch.setattr(
+        e2e,
+        "_deployed_test_function_source",
+        Mock(return_value=(function, "ex-count-up-test")),
+    )
+    monkeypatch.setattr(e2e, "_delete_function", delete_function)
+    monkeypatch.setattr(e2e, "_delete_test_owned_source_volume", delete_volume)
+
+    with pytest.raises(RuntimeError, match="deploy failed"):
+        e2e._deploy_test_function_source(
+            "generator", "deploy_sync.py", "ex-count-up-test"
+        )
+
+    delete_function.assert_called_once_with("ex-count-up-test")
+    delete_volume.assert_called_once_with(function, "ex-count-up-test")

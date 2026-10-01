@@ -8,8 +8,7 @@ from e2etests._ci_resources import build_scoped_name
 from e2etests.conftest import (
     _delete_function,
     _delete_test_owned_source_volume,
-    _deployed_test_function_source,
-    _deploy_script,
+    _deploy_test_function_source,
     needs_function_sandbox_identity,
     needs_staging,
 )
@@ -23,12 +22,9 @@ class TestFunctionSandbox:
 
     @classmethod
     def setup_class(cls) -> None:
-        _deploy_script(
-            "function-sandbox",
-            "deploy.py",
-            function_name=cls.function_name,
+        cls.source = _deploy_test_function_source(
+            "function-sandbox", "deploy.py", cls.function_name
         )
-        cls.source = _deployed_test_function_source(cls.function_name)
 
     @classmethod
     def teardown_class(cls) -> None:
