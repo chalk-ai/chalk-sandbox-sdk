@@ -15,12 +15,18 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 
 import chalkcompute
 import pytest
+from chalkcompute import VolumeClient, VolumeError
+from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import (
+    service_connect as catalog_connect,
+)
+from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as catalog_pb
 from pyqwest import FullResponse, SyncClient
 from dotenv import load_dotenv
 
@@ -110,6 +116,44 @@ def _delete_function(function_name: str) -> None:
         chalkcompute.RemoteFunction.from_name(function_name).delete()
     except Exception as exc:
         print(f"warning: could not delete function {function_name}: {exc}")
+
+
+def _test_owned_source_volume_name(
+    function: chalkcompute.RemoteFunction, function_name: str
+) -> str:
+    """Read the deployed revision's source mount before deleting a test Function."""
+    version = function.version_info
+    assert version is not None
+    stub = function._client.stub(
+        catalog_connect.ExternalFunctionCatalogServiceClientSync
+    )
+    source = function._client.call(
+        stub.get_external_function_version_source,
+        catalog_pb.GetExternalFunctionVersionSourceRequest(
+            function_version_id=version.id
+        ),
+    )
+    expected = f"fn-src-{function_name}-app"
+    assert source.volume_name == expected, (
+        f"source volume is not unique to this test: {source.volume_name!r}"
+    )
+    return source.volume_name
+
+
+def _delete_test_owned_source_volume(
+    function: chalkcompute.RemoteFunction, volume_name: str
+) -> None:
+    """Wait for a deleted Function's pod to release its exact source mount."""
+    deadline = time.monotonic() + 120
+    with VolumeClient.from_connect(function._client) as volumes:
+        while volumes.exists(volume_name):
+            try:
+                volumes.delete_volume(volume_name)
+                return
+            except VolumeError as error:
+                if "still mounted" not in str(error) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(2)
 
 
 def _get_access_token() -> str:
