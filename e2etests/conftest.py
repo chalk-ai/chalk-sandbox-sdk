@@ -25,7 +25,12 @@ import pytest
 from pyqwest import FullResponse, SyncClient
 from dotenv import load_dotenv
 
-from e2etests._ci_resources import SCOPED_NAME_RE, STALE_AFTER, parse_rfc3339
+from e2etests._ci_resources import (
+    MODEL_SCALING_GROUP_NAME_RE,
+    SCOPED_NAME_RE,
+    STALE_AFTER,
+    parse_rfc3339,
+)
 
 load_dotenv()
 
@@ -113,46 +118,37 @@ def _delete_function(function_name: str) -> None:
         print(f"warning: could not delete function {function_name}: {exc}")
 
 
-def _delete_model_registration(model_name: str, model_version: int | None) -> None:
-    """Best-effort delete of an e2e model version and its model registration."""
+def _delete_model_with_client(client: Any, stub: Any, model_name: str) -> bool:
+    """Delete a model; an absent or already archived model needs no cleanup."""
+    from connectrpc.code import Code
+    from connectrpc.errors import ConnectError
     from protobuf import Oneof
 
+    from chalkcompute._gen.chalk.server.v1 import model_registry_pb
+
+    try:
+        client.call(
+            stub.delete_model,
+            model_registry_pb.DeleteModelRequest(
+                model_identifier=Oneof("model_name", model_name)
+            ),
+        )
+        return True
+    except ConnectError as exc:
+        if exc.code == Code.NOT_FOUND:
+            return False
+        raise
+
+
+def _delete_model_registration(model_name: str) -> None:
+    """Delete an e2e model and its versions after its scaling group is gone."""
     from chalkcompute._connect import ConnectClient
-    from chalkcompute._gen.chalk.server.v1 import (
-        model_registry_connect,
-        model_registry_pb,
-    )
+    from chalkcompute._gen.chalk.server.v1 import model_registry_connect
 
     client = ConnectClient()
     try:
         stub = client.stub(model_registry_connect.ModelRegistryServiceClientSync)
-        if model_version is not None:
-            try:
-                client.call(
-                    stub.delete_model_version,
-                    model_registry_pb.DeleteModelVersionRequest(
-                        model_version_key=model_registry_pb.ModelVersionKey(
-                            model_name=model_name,
-                            version=model_version,
-                        )
-                    ),
-                )
-            except Exception as exc:
-                print(
-                    f"warning: could not delete model version "
-                    f"{model_name} v{model_version}: {exc}"
-                )
-        try:
-            client.call(
-                stub.delete_model,
-                model_registry_pb.DeleteModelRequest(
-                    model_identifier=Oneof("model_name", model_name)
-                ),
-            )
-        except Exception as exc:
-            print(f"warning: could not delete model {model_name}: {exc}")
-    except Exception as exc:
-        print(f"warning: could not initialize model cleanup for {model_name}: {exc}")
+        _delete_model_with_client(client, stub, model_name)
     finally:
         client.close()
 
@@ -222,6 +218,7 @@ def auth_headers(access_token: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 _SG_SERVICE = "chalk.scalinggroup.v1.ScalingGroupManagerService"
+_MODEL_DEPLOYMENT_SERVICE = "chalk.modeldeployment.v1.ModelDeploymentService"
 
 _LIST_PAGE_SIZE = 100
 _LIST_PAGE_CAP = 50
@@ -244,6 +241,40 @@ def _iter_scaling_groups(headers: dict[str, str]) -> Iterator[dict]:
         cursor = page.get("nextCursor") or ""
         if not cursor:
             return
+    raise RuntimeError("ListScalingGroups exceeded the pagination page cap")
+
+
+def _scaling_group_absent(name: str, headers: dict[str, str]) -> bool:
+    """Confirm a group is gone after another CI job wins the delete race."""
+    return not any(
+        sg.get("name") == name and not sg.get("deletedAt")
+        for sg in _iter_scaling_groups(headers)
+    )
+
+
+def _delete_model_scaling_group(
+    name: str, *, headers: dict[str, str] | None = None
+) -> None:
+    """Delete a model-owned scaling group by name through its owning service."""
+    if headers is None:
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {_get_access_token()}",
+            "X-Chalk-Env-Id": CHALK_ENVIRONMENT_ID,
+        }
+    resp = _connect_rpc(
+        _MODEL_DEPLOYMENT_SERVICE,
+        "DeleteModelScalingGroup",
+        {"modelScalingGroupName": name},
+        headers,
+    )
+    if resp.status == 404 and _scaling_group_absent(name, headers):
+        return  # Partial deploy or another CI job already removed the group.
+    if not 200 <= resp.status < 300:
+        raise RuntimeError(
+            f"DeleteModelScalingGroup({name}) failed with status "
+            f"{resp.status}: {resp.text()}"
+        )
 
 
 def _sweep_stale_scoped_scaling_groups() -> None:
@@ -259,6 +290,7 @@ def _sweep_stale_scoped_scaling_groups() -> None:
         "X-Chalk-Env-Id": CHALK_ENVIRONMENT_ID,
     }
     now = datetime.now(timezone.utc)
+    failures: list[str] = []
     for sg in _iter_scaling_groups(headers):
         name = sg.get("name", "")
         if sg.get("deletedAt") or not SCOPED_NAME_RE.match(name):
@@ -266,17 +298,42 @@ def _sweep_stale_scoped_scaling_groups() -> None:
         created_at = parse_rfc3339(sg.get("createdAt"))
         if created_at is None or now - created_at < STALE_AFTER:
             continue
-        resp = _connect_rpc(
-            _SG_SERVICE, "DeleteScalingGroup", {"id": sg["id"]}, headers
+        if MODEL_SCALING_GROUP_NAME_RE.fullmatch(name):
+            try:
+                _delete_model_scaling_group(name, headers=headers)
+                print(f"stale scaling group {name} ({created_at.isoformat()}): deleted")
+            except Exception as exc:
+                failures.append(name)
+                print(
+                    f"stale scaling group {name} ({created_at.isoformat()}): "
+                    f"cleanup failed: {exc}"
+                )
+        else:
+            resp = _connect_rpc(
+                _SG_SERVICE, "DeleteScalingGroup", {"id": sg["id"]}, headers
+            )
+            if 200 <= resp.status < 300:
+                print(f"stale scaling group {name} ({created_at.isoformat()}): deleted")
+            elif resp.status == 404 and _scaling_group_absent(name, headers):
+                print(
+                    f"stale scaling group {name} ({created_at.isoformat()}): "
+                    "already deleted"
+                )
+            else:
+                failures.append(name)
+                print(
+                    f"stale scaling group {name} ({created_at.isoformat()}): "
+                    f"cleanup failed ({resp.status}): {resp.text()}"
+                )
+    if failures:
+        raise RuntimeError(
+            f"{len(failures)} stale scaling-group cleanup attempts failed: "
+            f"{', '.join(failures[:5])}"
         )
-        outcome = "deleted" if 200 <= resp.status < 300 else f"failed ({resp.status})"
-        print(f"stale scaling group {name} ({created_at.isoformat()}): {outcome}")
 
 
 def _sweep_stale_scoped_models() -> None:
     """Delete stale CI-scoped model versions and registrations."""
-    from protobuf import Oneof
-
     from chalkcompute._connect import ConnectClient
     from chalkcompute._gen.chalk.server.v1 import (
         model_registry_connect,
@@ -315,61 +372,25 @@ def _sweep_stale_scoped_models() -> None:
         else:
             raise RuntimeError("ListModels exceeded the pagination page cap")
 
+        failures: list[str] = []
         for name, created_at in stale_models:
             try:
-                _delete_model_versions(client, stub, name)
-                client.call(
-                    stub.delete_model,
-                    model_registry_pb.DeleteModelRequest(
-                        model_identifier=Oneof("model_name", name)
-                    ),
-                )
-                print(f"stale model {name} ({created_at.isoformat()}): deleted")
+                deleted = _delete_model_with_client(client, stub, name)
+                outcome = "deleted" if deleted else "already deleted"
+                print(f"stale model {name} ({created_at.isoformat()}): {outcome}")
             except Exception as exc:
+                failures.append(name)
                 print(
                     f"stale model {name} ({created_at.isoformat()}): "
                     f"cleanup failed: {exc}"
                 )
+        if failures:
+            raise RuntimeError(
+                f"{len(failures)} stale model cleanup attempts failed: "
+                f"{', '.join(failures[:5])}"
+            )
     finally:
         client.close()
-
-
-def _delete_model_versions(client: Any, stub: Any, model_name: str) -> None:
-    """Delete every version for a model, following the registry cursor."""
-    from chalkcompute._gen.chalk.server.v1 import model_registry_pb
-
-    cursor = ""
-    versions: list[int] = []
-    for _ in range(_LIST_PAGE_CAP):
-        request: dict[str, object] = {
-            "model_name": model_name,
-            "limit": _LIST_PAGE_SIZE,
-        }
-        if cursor:
-            request["cursor"] = cursor
-        page = client.call(
-            stub.list_model_versions,
-            model_registry_pb.ListModelVersionsRequest(**request),
-        )
-        versions.extend(version.version for version in page.model_versions)
-        cursor = page.next_cursor or ""
-        if not cursor:
-            break
-    else:
-        raise RuntimeError(
-            f"ListModelVersions({model_name}) exceeded the pagination page cap"
-        )
-
-    for version in versions:
-        client.call(
-            stub.delete_model_version,
-            model_registry_pb.DeleteModelVersionRequest(
-                model_version_key=model_registry_pb.ModelVersionKey(
-                    model_name=model_name,
-                    version=version,
-                )
-            ),
-        )
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -377,11 +398,12 @@ def sweep_stale_ci_resources() -> None:
     """Reap scoped resources leaked by earlier builds before any test runs."""
     if not CHALK_CLIENT_ID or not CHALK_API_SERVER:
         return
-    for sweep in (
-        _sweep_stale_scoped_scaling_groups,
-        _sweep_stale_scoped_models,
-    ):
-        try:
-            sweep()
-        except Exception as exc:
-            print(f"warning: {sweep.__name__} skipped: {exc}")
+    try:
+        _sweep_stale_scoped_scaling_groups()
+    except Exception as exc:
+        # Leave model registrations in place for the next deletion attempt.
+        pytest.fail(f"stale scaling-group cleanup failed: {exc}")
+    try:
+        _sweep_stale_scoped_models()
+    except Exception as exc:
+        pytest.fail(f"stale model cleanup failed: {exc}")

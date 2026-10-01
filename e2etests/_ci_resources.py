@@ -17,6 +17,13 @@ from datetime import datetime, timedelta
 # like: ex-<resource-name>-<8 or 12 hexadecimal characters>
 SCOPED_NAME_RE = re.compile(r"^ex-[a-z0-9-]+-(?:[0-9a-f]{8}|[0-9a-f]{12})$")
 
+# These four e2e groups belong to model deployments. They must be deleted via
+# ModelDeploymentService, not the standalone scaling-group API.
+MODEL_SCALING_GROUP_NAME_RE = re.compile(
+    r"^ex-(?:trivial-double|volume-triple|handler-affine|combined-affine)-sg-"
+    r"(?:[0-9a-f]{8}|[0-9a-f]{12})$"
+)
+
 # The longest integration-test step allows 30 minutes and two automatic retries,
 # so nothing older than this can belong to a build that is still running.
 STALE_AFTER = timedelta(hours=3)

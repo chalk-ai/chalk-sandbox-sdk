@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 import pyarrow as pa
+import pytest
 from pyarrow import ipc
 
 from chalk.client import ChalkClient
@@ -28,6 +29,7 @@ from chalkcompute._remote_call_client import RemoteCallClient
 from e2etests._ci_resources import build_scoped_name
 from e2etests.conftest import (
     CHALK_ENVIRONMENT_ID,
+    _delete_model_scaling_group,
     _delete_model_registration,
     _get_access_token,
     needs_staging,
@@ -47,6 +49,19 @@ READINESS_POLL_INTERVAL = 5
 SCALING_GROUP_CPU = "500m"
 SCALING_GROUP_MEMORY = "1Gi"
 FIXTURES_DIR = Path(__file__).parent / "model_fixtures"
+
+
+def _cleanup_model_test(sg_name: str, model_name: str) -> None:
+    _delete_model_scaling_group(sg_name)
+    _delete_model_registration(model_name)
+
+
+@pytest.fixture(scope="class", autouse=True)
+def cleanup_model_test(request: pytest.FixtureRequest) -> None:
+    """Register cleanup before setup_class makes its first remote change."""
+    cls = request.cls
+    if cls is not None:
+        request.addfinalizer(lambda: _cleanup_model_test(cls._sg_name, cls._model_name))
 
 
 def _wait_for_ready_replicas(client: ChalkClient, sg_name: str, timeout: float) -> str:
@@ -109,6 +124,8 @@ def _call_model(web_url: str, input_data: dict[str, list]) -> list[float]:
 @needs_staging
 class TestModelScalingGroup:
     _web_url: str
+    _model_name = MODEL_NAME
+    _sg_name = SG_NAME
 
     @classmethod
     def setup_class(cls):
@@ -139,7 +156,6 @@ class TestModelScalingGroup:
             output_schema={"y": pa.float64()},
             model_image=image,
         )
-        cls.model_version = version.model_version
         client.deploy_model_version_to_scaling_group(
             name=SG_NAME,
             model_name=MODEL_NAME,
@@ -155,15 +171,6 @@ class TestModelScalingGroup:
             ),
         )
         cls._web_url = _wait_for_ready_replicas(client, SG_NAME, READINESS_TIMEOUT)
-
-    @classmethod
-    def teardown_class(cls):
-        try:
-            client = ChalkClient(environment=CHALK_ENVIRONMENT_ID)
-            client.delete_scaling_group(name=SG_NAME)
-        except Exception:
-            pass
-        _delete_model_registration(MODEL_NAME, getattr(cls, "model_version", None))
 
     def test_single_input(self):
         """handler(x=3.0) should return 6.0."""
@@ -194,6 +201,8 @@ class TestModelWithVolume:
     """
 
     _web_url: str
+    _model_name = VOLUME_MODEL_NAME
+    _sg_name = VOLUME_SG_NAME
 
     @classmethod
     def setup_class(cls):
@@ -230,7 +239,6 @@ class TestModelWithVolume:
                 model_image=image,
                 model_paths=[str(config_path)],
             )
-        cls.model_version = version.model_version
         client.deploy_model_version_to_scaling_group(
             name=VOLUME_SG_NAME,
             model_name=VOLUME_MODEL_NAME,
@@ -247,17 +255,6 @@ class TestModelWithVolume:
         )
         cls._web_url = _wait_for_ready_replicas(
             client, VOLUME_SG_NAME, READINESS_TIMEOUT
-        )
-
-    @classmethod
-    def teardown_class(cls):
-        try:
-            client = ChalkClient(environment=CHALK_ENVIRONMENT_ID)
-            client.delete_scaling_group(name=VOLUME_SG_NAME)
-        except Exception:
-            pass
-        _delete_model_registration(
-            VOLUME_MODEL_NAME, getattr(cls, "model_version", None)
         )
 
     def test_single_input(self):
@@ -283,6 +280,8 @@ class TestModelHandlerDecorator:
     """
 
     _web_url: str
+    _model_name = HANDLER_MODEL_NAME
+    _sg_name = HANDLER_SG_NAME
 
     @classmethod
     def setup_class(cls):
@@ -297,7 +296,6 @@ class TestModelHandlerDecorator:
                 input_schema={"x": pa.float64()},
                 output_schema={"y": pa.float64()},
             )
-        cls.model_version = version.model_version
         client.deploy_model_version_to_scaling_group(
             name=HANDLER_SG_NAME,
             model_name=HANDLER_MODEL_NAME,
@@ -313,17 +311,6 @@ class TestModelHandlerDecorator:
         )
         cls._web_url = _wait_for_ready_replicas(
             client, HANDLER_SG_NAME, READINESS_TIMEOUT
-        )
-
-    @classmethod
-    def teardown_class(cls):
-        try:
-            client = ChalkClient(environment=CHALK_ENVIRONMENT_ID)
-            client.delete_scaling_group(name=HANDLER_SG_NAME)
-        except Exception:
-            pass
-        _delete_model_registration(
-            HANDLER_MODEL_NAME, getattr(cls, "model_version", None)
         )
 
     def test_single_input(self):
@@ -348,6 +335,8 @@ class TestModelImageAndModelCombined:
     """
 
     _web_url: str
+    _model_name = COMBINED_MODEL_NAME
+    _sg_name = COMBINED_SG_NAME
 
     @classmethod
     def setup_class(cls):
@@ -390,7 +379,6 @@ class TestModelImageAndModelCombined:
                 model_image=image,
                 model_paths=[weights_path],
             )
-        cls.model_version = version.model_version
         client.deploy_model_version_to_scaling_group(
             name=COMBINED_SG_NAME,
             model_name=COMBINED_MODEL_NAME,
@@ -407,17 +395,6 @@ class TestModelImageAndModelCombined:
         )
         cls._web_url = _wait_for_ready_replicas(
             client, COMBINED_SG_NAME, READINESS_TIMEOUT
-        )
-
-    @classmethod
-    def teardown_class(cls):
-        try:
-            client = ChalkClient(environment=CHALK_ENVIRONMENT_ID)
-            client.delete_scaling_group(name=COMBINED_SG_NAME)
-        except Exception:
-            pass
-        _delete_model_registration(
-            COMBINED_MODEL_NAME, getattr(cls, "model_version", None)
         )
 
     def test_single_input(self):
