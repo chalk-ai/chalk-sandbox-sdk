@@ -29,6 +29,10 @@ class SqlServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> GetOfflineQueryInputsResponse:
+        """
+        Deprecated: returns UNIMPLEMENTED. Query the offline query's data with ChalkSQL
+        (ExecuteSqlQuery) and get_dataset_revision / get_dataset_givens instead.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -48,6 +52,9 @@ class SqlServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> GetOfflineQueryPreviewResponse:
+        """
+        Deprecated: returns UNIMPLEMENTED; see GetOfflineQueryInputs.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -67,6 +74,9 @@ class SqlServiceClientSync(ConnectClientSync):
         headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> GetOfflineQueryStatsResponse:
+        """
+        Deprecated: returns UNIMPLEMENTED; see GetOfflineQueryInputs.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
