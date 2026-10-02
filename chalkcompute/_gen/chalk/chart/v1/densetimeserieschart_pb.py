@@ -51,7 +51,7 @@ class DensePoint(Message[_DensePointFields]):
 
         value: float
 
-_GroupTagFields: TypeAlias = Literal["group_key", "value"]
+_GroupTagFields: TypeAlias = Literal["group_key", "value", "value_display"]
 
 class GroupTag(Message[_GroupTagFields]):
     """
@@ -68,12 +68,22 @@ class GroupTag(Message[_GroupTagFields]):
             string group_key = 1;
             ```
         value:
+            Raw backend value. Differs between metrics backends for mapped group kinds
+            (TimescaleDB stores enum codes where VictoriaMetrics stores names).
+
             ```proto
             optional chalk.arrow.v1.ScalarValue value = 2;
             ```
+        value_display:
+            Display string for the value, stable across backends. Matches the value
+            persisted in IncidentGroup so a series can be matched to its incident.
+
+            ```proto
+            string value_display = 3;
+            ```
     """
 
-    __slots__ = ("group_key", "value")
+    __slots__ = ("group_key", "value", "value_display")
 
     if TYPE_CHECKING:
 
@@ -82,11 +92,13 @@ class GroupTag(Message[_GroupTagFields]):
             *,
             group_key: str = "",
             value: ScalarValue | None = None,
+            value_display: str = "",
         ) -> None:
             pass
 
         group_key: str
         value: ScalarValue | None
+        value_display: str
 
 _DenseTimeSeriesFields: TypeAlias = Literal["points", "label", "unit", "group_tags"]
 
@@ -187,7 +199,7 @@ class DenseTimeSeriesChart(Message[_DenseTimeSeriesChartFields]):
 
 
 _DESC = file_desc(
-    b'\n)chalk/chart/v1/densetimeserieschart.proto\x12\x0echalk.chart.v1\x1a\x1achalk/arrow/v1/arrow.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto"1\n\nDensePoint\x12\x19\n\x05value\x18\x01 \x01(\x01H\x00R\x05value\x88\x01\x01B\x08\n\x06_value"Z\n\x08GroupTag\x12\x1b\n\tgroup_key\x18\x01 \x01(\tR\x08groupKey\x121\n\x05value\x18\x02 \x01(\x0b2\x1b.chalk.arrow.v1.ScalarValueR\x05value"\xa8\x01\n\x0fDenseTimeSeries\x122\n\x06points\x18\x01 \x03(\x0b2\x1a.chalk.chart.v1.DensePointR\x06points\x12\x14\n\x05label\x18\x02 \x01(\tR\x05label\x12\x12\n\x04unit\x18\x03 \x01(\tR\x04unit\x127\n\ngroup_tags\x18\x04 \x03(\x0b2\x18.chalk.chart.v1.GroupTagR\tgroupTags"\xdc\x01\n\x14DenseTimeSeriesChart\x12\x14\n\x05title\x18\x01 \x01(\tR\x05title\x127\n\x06series\x18\x02 \x03(\x0b2\x1f.chalk.chart.v1.DenseTimeSeriesR\x06series\x125\n\x08x_series\x18\x03 \x03(\x0b2\x1a.google.protobuf.TimestampR\x07xSeries\x12>\n\rwindow_period\x18\x04 \x01(\x0b2\x19.google.protobuf.DurationR\x0cwindowPeriodB\x9d\x01\n\x12com.chalk.chart.v1B\x19DensetimeserieschartProtoP\x01Z\x12server/v1;serverv1\xa2\x02\x03CCX\xaa\x02\x0eChalk.Chart.V1\xca\x02\x0eChalk\\Chart\\V1\xe2\x02\x1aChalk\\Chart\\V1\\GPBMetadata\xea\x02\x10Chalk::Chart::V1b\x06proto3',
+    b'\n)chalk/chart/v1/densetimeserieschart.proto\x12\x0echalk.chart.v1\x1a\x1achalk/arrow/v1/arrow.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto"1\n\nDensePoint\x12\x19\n\x05value\x18\x01 \x01(\x01H\x00R\x05value\x88\x01\x01B\x08\n\x06_value"\x7f\n\x08GroupTag\x12\x1b\n\tgroup_key\x18\x01 \x01(\tR\x08groupKey\x121\n\x05value\x18\x02 \x01(\x0b2\x1b.chalk.arrow.v1.ScalarValueR\x05value\x12#\n\rvalue_display\x18\x03 \x01(\tR\x0cvalueDisplay"\xa8\x01\n\x0fDenseTimeSeries\x122\n\x06points\x18\x01 \x03(\x0b2\x1a.chalk.chart.v1.DensePointR\x06points\x12\x14\n\x05label\x18\x02 \x01(\tR\x05label\x12\x12\n\x04unit\x18\x03 \x01(\tR\x04unit\x127\n\ngroup_tags\x18\x04 \x03(\x0b2\x18.chalk.chart.v1.GroupTagR\tgroupTags"\xdc\x01\n\x14DenseTimeSeriesChart\x12\x14\n\x05title\x18\x01 \x01(\tR\x05title\x127\n\x06series\x18\x02 \x03(\x0b2\x1f.chalk.chart.v1.DenseTimeSeriesR\x06series\x125\n\x08x_series\x18\x03 \x03(\x0b2\x1a.google.protobuf.TimestampR\x07xSeries\x12>\n\rwindow_period\x18\x04 \x01(\x0b2\x19.google.protobuf.DurationR\x0cwindowPeriodB\x9d\x01\n\x12com.chalk.chart.v1B\x19DensetimeserieschartProtoP\x01Z\x12server/v1;serverv1\xa2\x02\x03CCX\xaa\x02\x0eChalk.Chart.V1\xca\x02\x0eChalk\\Chart\\V1\xe2\x02\x1aChalk\\Chart\\V1\\GPBMetadata\xea\x02\x10Chalk::Chart::V1b\x06proto3',
     [
         arrow_pb.desc(),
         duration_pb.desc(),
