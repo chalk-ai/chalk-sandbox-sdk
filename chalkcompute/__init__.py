@@ -173,6 +173,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "ScaleFromZeroRequestPolicy",
     ),
     "ReadinessProbe": ("chalkcompute._scaling_group", "ReadinessProbe"),
+    "StartupProbe": ("chalkcompute._scaling_group", "StartupProbe"),
     "CronScalingTrigger": ("chalkcompute._scaling_group", "CronScalingTrigger"),
     "CronScalingWindow": ("chalkcompute._scaling_group", "CronScalingWindow"),
     # _volume.py

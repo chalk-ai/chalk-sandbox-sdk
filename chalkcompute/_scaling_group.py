@@ -162,6 +162,37 @@ class ReadinessProbe:
 
 
 @dataclass(frozen=True)
+class StartupProbe:
+    """One-time check of the externally routed endpoint before deploy is ready."""
+
+    _kind: Literal["http", "grpc"]
+    _value: str | None
+
+    @classmethod
+    def http(cls, path: str | None = None) -> StartupProbe:
+        """Create an HTTP GET startup probe. An unset path uses ``/``."""
+        return cls(_kind="http", _value=path)
+
+    @classmethod
+    def grpc(cls, method: str | None = None) -> StartupProbe:
+        """Create a gRPC startup probe.
+
+        ``method`` is a fully-qualified method that must return OK. An unset
+        method calls ``/chalk.health.v1.Probe/Check``, not the standard
+        ``grpc.health.v1.Health/Check``.
+        """
+        return cls(_kind="grpc", _value=method)
+
+    def to_dict(self) -> dict[str, Any]:
+        check = (
+            {}
+            if self._value is None
+            else {"path" if self._kind == "http" else "method": self._value}
+        )
+        return {self._kind: check}
+
+
+@dataclass(frozen=True)
 class CronScalingWindow:
     """A single cron-based scaling window."""
 
@@ -253,8 +284,8 @@ class ScalingGroup:
 
     ``readiness_probe`` checks each replica directly. Optional ``startup_probe``
     checks the externally routed endpoint before deployment becomes ready, e.g.
-    ``{"http": {"path": "/health"}}`` or ``{"grpc": {}}``. External startup
-    probes are not supported with ``authenticated=True``.
+    ``StartupProbe.http("/health")``. External startup probes are not supported
+    with ``authenticated=True``.
 
     Examples
     --------
@@ -292,7 +323,7 @@ class ScalingGroup:
         min_replicas: int = 1,
         max_replicas: int = 1,
         readiness_probe: ReadinessProbe | None = None,
-        startup_probe: Mapping[str, Any] | None = None,
+        startup_probe: StartupProbe | None = None,
         shutdown_delay_seconds: int | None = None,
         scaling_interval_seconds: int | None = None,
         target_cpu_utilization_percentage: int | None = None,
@@ -357,7 +388,7 @@ class ScalingGroup:
         self._min_replicas = min_replicas
         self._max_replicas = max_replicas
         self._readiness_probe = readiness_probe
-        self._startup_probe = dict(startup_probe) if startup_probe is not None else None
+        self._startup_probe = startup_probe
         self._shutdown_delay_seconds = shutdown_delay_seconds
         self._scaling_interval_seconds = scaling_interval_seconds
         self._target_cpu_utilization_percentage = target_cpu_utilization_percentage
@@ -613,7 +644,11 @@ class ScalingGroup:
                 if self._readiness_probe is not None
                 else None
             ),
-            startup_probe=self._startup_probe,
+            startup_probe=(
+                self._startup_probe.to_dict()
+                if self._startup_probe is not None
+                else None
+            ),
             tags=self._tags,
             chalk_identity=self._chalk_identity,
         ).to_proto()

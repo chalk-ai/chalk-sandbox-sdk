@@ -5,7 +5,7 @@ from typing import Any, cast
 
 import pytest
 
-from chalkcompute import ReadinessProbe, ScalingGroup
+from chalkcompute import ReadinessProbe, ScalingGroup, StartupProbe
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from tests._fakes import FakeMethod, StubbedConnectClient
@@ -118,11 +118,26 @@ def test_scaling_group_deploy_omits_port_when_none() -> None:
     assert not _deployed_container_spec(sg).has_field("port")
 
 
-@pytest.mark.parametrize("probe", [{"http": {"path": "/health"}}, {"grpc": {}}, {}])
-def test_scaling_group_deploy_includes_startup_probe(probe: dict[str, Any]) -> None:
+@pytest.mark.parametrize(
+    ("probe", "expected"),
+    [
+        (StartupProbe.http("/health"), {"http": {"path": "/health"}}),
+        (StartupProbe.http(), {"http": {}}),
+        (
+            StartupProbe.grpc("/grpc.health.v1.Health/Check"),
+            {"grpc": {"method": "/grpc.health.v1.Health/Check"}},
+        ),
+        (StartupProbe.grpc(), {"grpc": {}}),
+    ],
+)
+def test_scaling_group_deploy_includes_startup_probe(
+    probe: StartupProbe, expected: dict[str, Any]
+) -> None:
     sg = ScalingGroup(image="ubuntu:latest", startup_probe=probe)
     spec = _deployed_container_spec(sg)
-    assert spec.startup_probe == container_pb.StartupProbe.from_json(json.dumps(probe))
+    assert spec.startup_probe == container_pb.StartupProbe.from_json(
+        json.dumps(expected)
+    )
     assert spec.readiness_probe is None
 
 

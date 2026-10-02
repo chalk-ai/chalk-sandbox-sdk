@@ -106,6 +106,7 @@ from chalkcompute._scaling_group import ScalingGroup as ScalingGroup
 from chalkcompute._scaling_group import ScalingGroupBuildError as ScalingGroupBuildError
 from chalkcompute._scaling_group import ScalingGroupError as ScalingGroupError
 from chalkcompute._scaling_group import ScalingGroupInfo as ScalingGroupInfo
+from chalkcompute._scaling_group import StartupProbe as StartupProbe
 from chalkcompute._scaling_group import (
     ScalingGroupRevisionInfo as ScalingGroupRevisionInfo,
 )
@@ -270,6 +271,7 @@ __all__ = [
     "ScalingGroupRevisionInfo",
     "ScaleFromZeroRequestPolicy",
     "ReadinessProbe",
+    "StartupProbe",
     "CronScalingTrigger",
     "CronScalingWindow",
     "FileInfo",
