@@ -286,7 +286,7 @@ def _sweep_stale_scoped_scaling_groups() -> None:
         "X-Chalk-Env-Id": CHALK_ENVIRONMENT_ID,
     }
     now = datetime.now(timezone.utc)
-    failures: list[str] = []
+    failures: dict[str, str] = {}  # group id -> name
     for sg in _iter_scaling_groups(headers):
         name = sg.get("name", "")
         if sg.get("deletedAt") or not SCOPED_NAME_RE.match(name):
@@ -308,13 +308,23 @@ def _sweep_stale_scoped_scaling_groups() -> None:
             deleted = _delete_group(*rpc, headers)
             outcome = "deleted" if deleted else "already deleted"
         except Exception as exc:
-            failures.append(name)
+            failures[sg["id"]] = name
             outcome = f"cleanup failed: {exc}"
         print(f"stale scaling group {name} ({created_at.isoformat()}): {outcome}")
-    if failures:
+    if not failures:
+        return
+    # Parallel CI steps sweep the same groups. When another step deletes a group
+    # mid-request, the server answers 500 ("no rows in result set"), so a failure
+    # counts only if the group is still live on a fresh list.
+    live = {sg["id"] for sg in _iter_scaling_groups(headers) if not sg.get("deletedAt")}
+    remaining = [name for sg_id, name in failures.items() if sg_id in live]
+    for sg_id, name in failures.items():
+        if sg_id not in live:
+            print(f"stale scaling group {name}: deleted by another job")
+    if remaining:
         raise RuntimeError(
-            f"{len(failures)} stale scaling-group cleanup attempts failed: "
-            f"{', '.join(failures[:5])}"
+            f"{len(remaining)} stale scaling-group cleanup attempts failed: "
+            f"{', '.join(remaining[:5])}"
         )
 
 

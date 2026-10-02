@@ -249,6 +249,47 @@ def test_sweep_fails_when_stale_group_cannot_be_deleted(
         conftest._sweep_stale_scoped_scaling_groups()
 
 
+@pytest.mark.parametrize("still_live", [False, True])
+def test_sweep_rechecks_failed_deletes_for_parallel_jobs(
+    monkeypatch: pytest.MonkeyPatch, still_live: bool
+) -> None:
+    from e2etests import conftest
+
+    old = (datetime.now(timezone.utc) - timedelta(hours=4)).isoformat()
+    group = {
+        "name": "ex-trivial-double-sg-44a136e21fc4",
+        "id": "model-id",
+        "createdAt": old,
+        "metadata": {"model_name": "ex-trivial-double-44a136e21fc4"},
+    }
+    lists = 0
+
+    def groups(headers: dict[str, str]):
+        nonlocal lists
+        lists += 1
+        return iter([group] if lists == 1 or still_live else [])
+
+    monkeypatch.setattr(conftest, "_get_access_token", lambda: "test-token")
+    monkeypatch.setattr(conftest, "_iter_scaling_groups", groups)
+    monkeypatch.setattr(
+        conftest,
+        "_connect_rpc",
+        lambda *args, **kwargs: SimpleNamespace(
+            status=500,
+            text=lambda: "deleting scaling group in database: no rows in result set",
+        ),
+    )
+
+    if still_live:
+        with pytest.raises(
+            RuntimeError, match="1 stale scaling-group cleanup attempts failed"
+        ):
+            conftest._sweep_stale_scoped_scaling_groups()
+    else:
+        conftest._sweep_stale_scoped_scaling_groups()
+    assert lists == 2
+
+
 def test_class_finalizer_runs_when_setup_fails(pytester: pytest.Pytester) -> None:
     """Exercise pytest's real class fixture and xunit setup order."""
     events = pytester.path / "cleanup-events.txt"
