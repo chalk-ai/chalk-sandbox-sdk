@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import warnings
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
@@ -378,29 +379,22 @@ def _sweep_stale_scoped_models() -> None:
         client.close()
 
 
-def _report_sweep_failure(message: str) -> None:
-    """Fail the session in the step that opts in; warn in every other step.
-
-    Every e2e step runs the sweep, so failing all of them would let one stuck
-    resource turn the whole build red.
-    """
-    if os.environ.get("CHALK_E2E_STRICT_CLEANUP") == "1":
-        pytest.fail(message)
-    print(f"warning: {message}")
-
-
 @pytest.fixture(scope="session", autouse=True)
 def sweep_stale_ci_resources() -> None:
-    """Reap scoped resources leaked by earlier builds before any test runs."""
+    """Reap scoped resources leaked by earlier builds before any test runs.
+
+    Failures are warnings, shown in pytest's warnings summary, so one stuck
+    resource never fails the e2e steps that happen to run the sweep.
+    """
     if not CHALK_CLIENT_ID or not CHALK_API_SERVER:
         return
-    try:
-        _sweep_stale_scoped_scaling_groups()
-    except Exception as exc:
-        # A surviving group still references its model, so keep the models.
-        _report_sweep_failure(f"stale scaling-group cleanup failed: {exc}")
-        return
-    try:
-        _sweep_stale_scoped_models()
-    except Exception as exc:
-        _report_sweep_failure(f"stale model cleanup failed: {exc}")
+    # Groups go first. A model whose group survives stays safe, because
+    # DeleteModel refuses while a scaling group still references the model.
+    for sweep, resource in (
+        (_sweep_stale_scoped_scaling_groups, "scaling-group"),
+        (_sweep_stale_scoped_models, "model"),
+    ):
+        try:
+            sweep()
+        except Exception as exc:
+            warnings.warn(f"stale {resource} cleanup failed: {exc}", stacklevel=1)

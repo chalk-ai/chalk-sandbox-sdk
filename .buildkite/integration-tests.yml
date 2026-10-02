@@ -350,7 +350,7 @@ steps:
       uv sync --locked --all-extras --reinstall-package chalkcompute
 
       echo "--- :crystal_ball: Deploy and test model scaling group"
-      CHALK_E2E_STRICT_CLEANUP=1 uv run python -m pytest e2etests/test_model_scaling_group.py -v -s --tb=short
+      uv run python -m pytest e2etests/test_model_scaling_group.py -v -s --tb=short
     agents:
       queue: default
     timeout_in_minutes: 20

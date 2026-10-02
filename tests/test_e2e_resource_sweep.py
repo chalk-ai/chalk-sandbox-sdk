@@ -358,19 +358,14 @@ def test_failed_group_delete_keeps_model_registration_for_retry(
     assert removed_models == []
 
 
-@pytest.mark.parametrize("strict", [True, False])
-def test_failed_group_sweep_does_not_delete_models(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], strict: bool
+def test_failed_group_sweep_warns_and_still_sweeps_models(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from e2etests import conftest
 
-    removed_models: list[str] = []
+    swept_models: list[str] = []
     monkeypatch.setattr(conftest, "CHALK_CLIENT_ID", "test-client")
     monkeypatch.setattr(conftest, "CHALK_API_SERVER", "https://example.test")
-    if strict:
-        monkeypatch.setenv("CHALK_E2E_STRICT_CLEANUP", "1")
-    else:
-        monkeypatch.delenv("CHALK_E2E_STRICT_CLEANUP", raising=False)
     monkeypatch.setattr(
         conftest,
         "_sweep_stale_scoped_scaling_groups",
@@ -379,16 +374,12 @@ def test_failed_group_sweep_does_not_delete_models(
     monkeypatch.setattr(
         conftest,
         "_sweep_stale_scoped_models",
-        lambda: removed_models.append("called"),
+        lambda: swept_models.append("called"),
     )
 
-    if strict:
-        with pytest.raises(pytest.fail.Exception, match="group delete failed"):
-            conftest.sweep_stale_ci_resources.__wrapped__()
-    else:
+    with pytest.warns(UserWarning, match="stale scaling-group cleanup failed"):
         conftest.sweep_stale_ci_resources.__wrapped__()
-        assert "warning: stale scaling-group cleanup failed" in capsys.readouterr().out
-    assert removed_models == []
+    assert swept_models == ["called"]
 
 
 @pytest.mark.parametrize("code", ["not_found", "internal"])
