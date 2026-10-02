@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Literal, TYPE_CHECKING, TypeAlias
+from typing import Literal, NoReturn, TYPE_CHECKING, TypeAlias
 
 from protobuf import Enum, Message
 from protobuf._codegen import file_desc
@@ -186,6 +186,456 @@ class EnqueueRemoteCallResponse(Message[_EnqueueRemoteCallResponseFields]):
             pass
 
         call_id: str
+
+_OpenRemoteCallBatchFields: TypeAlias = Literal["name", "batch_id", "result_cursor"]
+
+class OpenRemoteCallBatch(Message[_OpenRemoteCallBatchFields]):
+    """
+    Open a queue-backed batch of logically independent remote calls. When
+    batch_id is empty the server creates a new batch. Supplying a prior batch_id
+    and result_cursor resumes result delivery after a disconnected stream.
+
+    ```proto
+    message chalk.runtime.v1.OpenRemoteCallBatch
+    ```
+
+    Attributes:
+        name:
+            ```proto
+            string name = 1;
+            ```
+        batch_id:
+            ```proto
+            string batch_id = 2;
+            ```
+        result_cursor:
+            ```proto
+            string result_cursor = 3;
+            ```
+    """
+
+    __slots__ = ("name", "batch_id", "result_cursor")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            name: str = "",
+            batch_id: str = "",
+            result_cursor: str = "",
+        ) -> None:
+            pass
+
+        name: str
+        batch_id: str
+        result_cursor: str
+
+_SubmitRemoteCallBatchChunkFields: TypeAlias = Literal["chunk_index", "first_row_index", "args"]
+
+class SubmitRemoteCallBatchChunk(Message[_SubmitRemoteCallBatchChunkFields]):
+    """
+    A transport chunk containing consecutive input rows. The server assigns one
+    call ID and enqueues one independently schedulable work item per row.
+
+    ```proto
+    message chalk.runtime.v1.SubmitRemoteCallBatchChunk
+    ```
+
+    Attributes:
+        chunk_index:
+            ```proto
+            uint64 chunk_index = 1;
+            ```
+        first_row_index:
+            ```proto
+            uint64 first_row_index = 2;
+            ```
+        args:
+            ```proto
+            optional chalk.runtime.v1.RemoteCallArgs args = 3;
+            ```
+    """
+
+    __slots__ = ("chunk_index", "first_row_index", "args")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            chunk_index: int = 0,
+            first_row_index: int = 0,
+            args: RemoteCallArgs | None = None,
+        ) -> None:
+            pass
+
+        chunk_index: int
+        first_row_index: int
+        args: RemoteCallArgs | None
+
+_FinishRemoteCallBatchSubmissionFields: TypeAlias = NoReturn
+
+class FinishRemoteCallBatchSubmission(Message[_FinishRemoteCallBatchSubmissionFields]):
+    """
+    ```proto
+    message chalk.runtime.v1.FinishRemoteCallBatchSubmission
+    ```
+    """
+
+    __slots__ = ()
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+        ) -> None:
+            pass
+
+_CancelRemoteCallBatchFields: TypeAlias = Literal["reason"]
+
+class CancelRemoteCallBatch(Message[_CancelRemoteCallBatchFields]):
+    """
+    ```proto
+    message chalk.runtime.v1.CancelRemoteCallBatch
+    ```
+
+    Attributes:
+        reason:
+            ```proto
+            string reason = 1;
+            ```
+    """
+
+    __slots__ = ("reason",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            reason: str = "",
+        ) -> None:
+            pass
+
+        reason: str
+
+_StreamRemoteCallBatchRequestFields: TypeAlias = Literal["open", "submit", "finish", "cancel"]
+
+class StreamRemoteCallBatchRequest(Message[_StreamRemoteCallBatchRequestFields]):
+    """
+    ```proto
+    message chalk.runtime.v1.StreamRemoteCallBatchRequest
+    ```
+
+    Attributes:
+        request:
+            ```proto
+            oneof request
+            ```
+    """
+
+    __slots__ = ("request",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            request: Oneof[Literal["open"], OpenRemoteCallBatch] | Oneof[Literal["submit"], SubmitRemoteCallBatchChunk] | Oneof[Literal["finish"], FinishRemoteCallBatchSubmission] | Oneof[Literal["cancel"], CancelRemoteCallBatch] | None = None,
+        ) -> None:
+            pass
+
+        request: Oneof[Literal["open"], OpenRemoteCallBatch] | Oneof[Literal["submit"], SubmitRemoteCallBatchChunk] | Oneof[Literal["finish"], FinishRemoteCallBatchSubmission] | Oneof[Literal["cancel"], CancelRemoteCallBatch] | None
+
+_RemoteCallBatchOpenedFields: TypeAlias = Literal["batch_id", "submission_finished", "next_chunk_index", "next_row_index"]
+
+class RemoteCallBatchOpened(Message[_RemoteCallBatchOpenedFields]):
+    """
+    ```proto
+    message chalk.runtime.v1.RemoteCallBatchOpened
+    ```
+
+    Attributes:
+        batch_id:
+            ```proto
+            string batch_id = 1;
+            ```
+        submission_finished:
+            True once the server has durably observed FinishRemoteCallBatchSubmission.
+
+            ```proto
+            bool submission_finished = 2;
+            ```
+        next_chunk_index:
+            The next transport chunk the server will accept for this batch.
+
+            ```proto
+            uint64 next_chunk_index = 3;
+            ```
+        next_row_index:
+            The first row index the server expects in next_chunk_index.
+
+            ```proto
+            uint64 next_row_index = 4;
+            ```
+    """
+
+    __slots__ = ("batch_id", "submission_finished", "next_chunk_index", "next_row_index")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            batch_id: str = "",
+            submission_finished: bool = False,
+            next_chunk_index: int = 0,
+            next_row_index: int = 0,
+        ) -> None:
+            pass
+
+        batch_id: str
+        submission_finished: bool
+        next_chunk_index: int
+        next_row_index: int
+
+_RemoteCallBatchCallFields: TypeAlias = Literal["row_index", "call_id"]
+
+class RemoteCallBatchCall(Message[_RemoteCallBatchCallFields]):
+    """
+    ```proto
+    message chalk.runtime.v1.RemoteCallBatchCall
+    ```
+
+    Attributes:
+        row_index:
+            ```proto
+            uint64 row_index = 1;
+            ```
+        call_id:
+            ```proto
+            string call_id = 2;
+            ```
+    """
+
+    __slots__ = ("row_index", "call_id")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            row_index: int = 0,
+            call_id: str = "",
+        ) -> None:
+            pass
+
+        row_index: int
+        call_id: str
+
+_RemoteCallBatchChunkAcceptedFields: TypeAlias = Literal["chunk_index", "calls"]
+
+class RemoteCallBatchChunkAccepted(Message[_RemoteCallBatchChunkAcceptedFields]):
+    """
+    Acknowledges that every row in a transport chunk has been durably admitted.
+    Resubmitting an acknowledged chunk returns the same row-to-call-ID mapping.
+
+    ```proto
+    message chalk.runtime.v1.RemoteCallBatchChunkAccepted
+    ```
+
+    Attributes:
+        chunk_index:
+            ```proto
+            uint64 chunk_index = 1;
+            ```
+        calls:
+            ```proto
+            repeated chalk.runtime.v1.RemoteCallBatchCall calls = 2;
+            ```
+    """
+
+    __slots__ = ("chunk_index", "calls")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            chunk_index: int = 0,
+            calls: list[RemoteCallBatchCall] | None = None,
+        ) -> None:
+            pass
+
+        chunk_index: int
+        calls: list[RemoteCallBatchCall]
+
+_RemoteCallBatchResultFields: TypeAlias = Literal["row_index", "call_id", "sequence", "status", "result", "errors"]
+
+class RemoteCallBatchResult(Message[_RemoteCallBatchResultFields]):
+    """
+    One incremental or terminal event for a logical row call. Events can arrive
+    out of row order; sequence is monotonic within an individual call.
+
+    ```proto
+    message chalk.runtime.v1.RemoteCallBatchResult
+    ```
+
+    Attributes:
+        row_index:
+            ```proto
+            uint64 row_index = 1;
+            ```
+        call_id:
+            ```proto
+            string call_id = 2;
+            ```
+        sequence:
+            ```proto
+            uint64 sequence = 3;
+            ```
+        status:
+            ```proto
+            chalk.runtime.v1.RemoteCallStatus status = 4;
+            ```
+        result:
+            ```proto
+            optional chalk.runtime.v1.CallFunctionResponse result = 5;
+            ```
+        errors:
+            ```proto
+            repeated chalk.common.v1.ChalkError errors = 6;
+            ```
+    """
+
+    __slots__ = ("row_index", "call_id", "sequence", "status", "result", "errors")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            row_index: int = 0,
+            call_id: str = "",
+            sequence: int = 0,
+            status: RemoteCallStatus | None = None,
+            result: CallFunctionResponse | None = None,
+            errors: list[ChalkError] | None = None,
+        ) -> None:
+            pass
+
+        row_index: int
+        call_id: str
+        sequence: int
+        status: RemoteCallStatus
+        result: CallFunctionResponse | None
+        errors: list[ChalkError]
+
+_RemoteCallBatchResultChunkFields: TypeAlias = Literal["results", "cursor"]
+
+class RemoteCallBatchResultChunk(Message[_RemoteCallBatchResultChunkFields]):
+    """
+    Several independently completed call events carried in one transport
+    message. cursor can be supplied to OpenRemoteCallBatch when reconnecting.
+
+    ```proto
+    message chalk.runtime.v1.RemoteCallBatchResultChunk
+    ```
+
+    Attributes:
+        results:
+            ```proto
+            repeated chalk.runtime.v1.RemoteCallBatchResult results = 1;
+            ```
+        cursor:
+            ```proto
+            string cursor = 2;
+            ```
+    """
+
+    __slots__ = ("results", "cursor")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            results: list[RemoteCallBatchResult] | None = None,
+            cursor: str = "",
+        ) -> None:
+            pass
+
+        results: list[RemoteCallBatchResult]
+        cursor: str
+
+_RemoteCallBatchCompletedFields: TypeAlias = Literal["total_calls", "completed_calls", "failed_calls"]
+
+class RemoteCallBatchCompleted(Message[_RemoteCallBatchCompletedFields]):
+    """
+    ```proto
+    message chalk.runtime.v1.RemoteCallBatchCompleted
+    ```
+
+    Attributes:
+        total_calls:
+            ```proto
+            uint64 total_calls = 1;
+            ```
+        completed_calls:
+            ```proto
+            uint64 completed_calls = 2;
+            ```
+        failed_calls:
+            ```proto
+            uint64 failed_calls = 3;
+            ```
+    """
+
+    __slots__ = ("total_calls", "completed_calls", "failed_calls")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            total_calls: int = 0,
+            completed_calls: int = 0,
+            failed_calls: int = 0,
+        ) -> None:
+            pass
+
+        total_calls: int
+        completed_calls: int
+        failed_calls: int
+
+_StreamRemoteCallBatchResponseFields: TypeAlias = Literal["opened", "accepted", "results", "completed"]
+
+class StreamRemoteCallBatchResponse(Message[_StreamRemoteCallBatchResponseFields]):
+    """
+    ```proto
+    message chalk.runtime.v1.StreamRemoteCallBatchResponse
+    ```
+
+    Attributes:
+        response:
+            ```proto
+            oneof response
+            ```
+    """
+
+    __slots__ = ("response",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            response: Oneof[Literal["opened"], RemoteCallBatchOpened] | Oneof[Literal["accepted"], RemoteCallBatchChunkAccepted] | Oneof[Literal["results"], RemoteCallBatchResultChunk] | Oneof[Literal["completed"], RemoteCallBatchCompleted] | None = None,
+        ) -> None:
+            pass
+
+        response: Oneof[Literal["opened"], RemoteCallBatchOpened] | Oneof[Literal["accepted"], RemoteCallBatchChunkAccepted] | Oneof[Literal["results"], RemoteCallBatchResultChunk] | Oneof[Literal["completed"], RemoteCallBatchCompleted] | None
 
 _PollRemoteCallRequestFields: TypeAlias = Literal["call_id", "cursor"]
 
@@ -420,7 +870,7 @@ class FunctionCallInfo(Message[_FunctionCallInfoFields]):
         result_summary: str
         trace_id: str
 
-_GetRecentCallsRequestFields: TypeAlias = Literal["function_name", "limit"]
+_GetRecentCallsRequestFields: TypeAlias = Literal["function_name", "limit", "page_token"]
 
 class GetRecentCallsRequest(Message[_GetRecentCallsRequestFields]):
     """
@@ -444,9 +894,16 @@ class GetRecentCallsRequest(Message[_GetRecentCallsRequestFields]):
             ```proto
             uint32 limit = 2;
             ```
+        page_token:
+            Opaque token returned by a previous request. When set, calls immediately
+            older than the token are returned.
+
+            ```proto
+            string page_token = 3;
+            ```
     """
 
-    __slots__ = ("function_name", "limit")
+    __slots__ = ("function_name", "limit", "page_token")
 
     if TYPE_CHECKING:
 
@@ -455,13 +912,15 @@ class GetRecentCallsRequest(Message[_GetRecentCallsRequestFields]):
             *,
             function_name: str = "",
             limit: int = 0,
+            page_token: str = "",
         ) -> None:
             pass
 
         function_name: str
         limit: int
+        page_token: str
 
-_GetRecentCallsResponseFields: TypeAlias = Literal["calls"]
+_GetRecentCallsResponseFields: TypeAlias = Literal["calls", "next_page_token"]
 
 class GetRecentCallsResponse(Message[_GetRecentCallsResponseFields]):
     """
@@ -474,9 +933,15 @@ class GetRecentCallsResponse(Message[_GetRecentCallsResponseFields]):
             ```proto
             repeated chalk.runtime.v1.FunctionCallInfo calls = 1;
             ```
+        next_page_token:
+            Opaque token for the next page, or empty when there are no older calls.
+
+            ```proto
+            string next_page_token = 2;
+            ```
     """
 
-    __slots__ = ("calls",)
+    __slots__ = ("calls", "next_page_token")
 
     if TYPE_CHECKING:
 
@@ -484,10 +949,12 @@ class GetRecentCallsResponse(Message[_GetRecentCallsResponseFields]):
             self,
             *,
             calls: list[FunctionCallInfo] | None = None,
+            next_page_token: str = "",
         ) -> None:
             pass
 
         calls: list[FunctionCallInfo]
+        next_page_token: str
 
 _GetCallResultsRequestFields: TypeAlias = Literal["call_ids"]
 
@@ -682,6 +1149,12 @@ class RemoteCallStatus(Enum):
             ```proto
             REMOTE_CALL_STATUS_FAILED = 4
             ```
+        EXPIRED:
+            The queue's result stream has passed its retention TTL.
+
+            ```proto
+            REMOTE_CALL_STATUS_EXPIRED = 5
+            ```
     """
 
     UNSPECIFIED = 0
@@ -689,10 +1162,11 @@ class RemoteCallStatus(Enum):
     RUNNING = 2
     COMPLETED = 3
     FAILED = 4
+    EXPIRED = 5
 
 
 _DESC = file_desc(
-    b'\n)chalk/runtime/v1/remote_python_call.proto\x12\x10chalk.runtime.v1\x1a\x1fchalk/auth/v1/permissions.proto\x1a!chalk/common/v1/chalk_error.proto\x1a\x1fgoogle/protobuf/timestamp.proto"P\n\x13CallFunctionRequest\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12%\n\x0efeather_stream\x18\x02 \x01(\x0cR\rfeatherStream"=\n\x14CallFunctionResponse\x12%\n\x0efeather_stream\x18\x01 \x01(\x0cR\rfeatherStream"m\n\x0eRemoteCallArgs\x12%\n\rfeather_bytes\x18\x01 \x01(\x0cH\x00R\x0cfeatherBytes\x12,\n\x11storage_object_id\x18\x02 \x01(\tH\x00R\x0fstorageObjectIdB\x06\n\x04args"d\n\x18EnqueueRemoteCallRequest\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x124\n\x04args\x18\x02 \x01(\x0b2 .chalk.runtime.v1.RemoteCallArgsR\x04args"4\n\x19EnqueueRemoteCallResponse\x12\x17\n\x07call_id\x18\x01 \x01(\tR\x06callId"H\n\x15PollRemoteCallRequest\x12\x17\n\x07call_id\x18\x01 \x01(\tR\x06callId\x12\x16\n\x06cursor\x18\x02 \x01(\tR\x06cursor"\xe3\x01\n\x16PollRemoteCallResponse\x12:\n\x06status\x18\x01 \x01(\x0e2".chalk.runtime.v1.RemoteCallStatusR\x06status\x12@\n\x07results\x18\x02 \x03(\x0b2&.chalk.runtime.v1.CallFunctionResponseR\x07results\x12\x16\n\x06cursor\x18\x03 \x01(\tR\x06cursor\x123\n\x06errors\x18\x04 \x03(\x0b2\x1b.chalk.common.v1.ChalkErrorR\x06errors"Y\n\x11PurgeQueueRequest\x12%\n\rfunction_name\x18\x01 \x01(\tH\x00R\x0cfunctionName\x12\x12\n\x03all\x18\x02 \x01(\x08H\x00R\x03allB\t\n\x07request"\xdc\x01\n\x12PurgeQueueResponse\x12{\n\x19items_removed_by_function\x18\x01 \x03(\x0b2@.chalk.runtime.v1.PurgeQueueResponse.ItemsRemovedByFunctionEntryR\x16itemsRemovedByFunction\x1aI\n\x1bItemsRemovedByFunctionEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01"\x8b\x02\n\x10FunctionCallInfo\x12\x17\n\x07call_id\x18\x01 \x01(\tR\x06callId\x12#\n\rfunction_name\x18\x02 \x01(\tR\x0cfunctionName\x12;\n\x0benqueued_at\x18\x03 \x01(\x0b2\x1a.google.protobuf.TimestampR\nenqueuedAt\x12:\n\x06status\x18\x04 \x01(\x0e2".chalk.runtime.v1.RemoteCallStatusR\x06status\x12%\n\x0eresult_summary\x18\x05 \x01(\tR\rresultSummary\x12\x19\n\x08trace_id\x18\x06 \x01(\tR\x07traceId"R\n\x15GetRecentCallsRequest\x12#\n\rfunction_name\x18\x01 \x01(\tR\x0cfunctionName\x12\x14\n\x05limit\x18\x02 \x01(\rR\x05limit"R\n\x16GetRecentCallsResponse\x128\n\x05calls\x18\x01 \x03(\x0b2".chalk.runtime.v1.FunctionCallInfoR\x05calls"2\n\x15GetCallResultsRequest\x12\x19\n\x08call_ids\x18\x01 \x03(\tR\x07callIds"\x90\x01\n\nCallResult\x12\x17\n\x07call_id\x18\x01 \x01(\tR\x06callId\x12D\n\x08response\x18\x02 \x01(\x0b2(.chalk.runtime.v1.PollRemoteCallResponseR\x08response\x12#\n\rerror_message\x18\x03 \x01(\tR\x0cerrorMessage"P\n\x16GetCallResultsResponse\x126\n\x07results\x18\x01 \x03(\x0b2\x1c.chalk.runtime.v1.CallResultR\x07results":\n\x13GetCallCountRequest\x12#\n\rfunction_name\x18\x01 \x01(\tR\x0cfunctionName",\n\x14GetCallCountResponse\x12\x14\n\x05count\x18\x01 \x01(\x04R\x05count*\xb7\x01\n\x10RemoteCallStatus\x12"\n\x1eREMOTE_CALL_STATUS_UNSPECIFIED\x10\x00\x12\x1e\n\x1aREMOTE_CALL_STATUS_PENDING\x10\x01\x12\x1e\n\x1aREMOTE_CALL_STATUS_RUNNING\x10\x02\x12 \n\x1cREMOTE_CALL_STATUS_COMPLETED\x10\x03\x12\x1d\n\x19REMOTE_CALL_STATUS_FAILED\x10\x042x\n\x11RemoteCallService\x12c\n\x0cCallFunction\x12%.chalk.runtime.v1.CallFunctionRequest\x1a&.chalk.runtime.v1.CallFunctionResponse"\x00(\x010\x012\xca\x02\n\x16AsyncRemoteCallService\x12n\n\x11EnqueueRemoteCall\x12*.chalk.runtime.v1.EnqueueRemoteCallRequest\x1a+.chalk.runtime.v1.EnqueueRemoteCallResponse"\x00\x12e\n\x0ePollRemoteCall\x12\'.chalk.runtime.v1.PollRemoteCallRequest\x1a(.chalk.runtime.v1.PollRemoteCallResponse"\x00\x12Y\n\nPurgeQueue\x12#.chalk.runtime.v1.PurgeQueueRequest\x1a$.chalk.runtime.v1.PurgeQueueResponse"\x002\xd2\x02\n\x18FunctionQueueMetaService\x12h\n\x0eGetRecentCalls\x12\'.chalk.runtime.v1.GetRecentCallsRequest\x1a(.chalk.runtime.v1.GetRecentCallsResponse"\x03\x80}\x03\x12h\n\x0eGetCallResults\x12\'.chalk.runtime.v1.GetCallResultsRequest\x1a(.chalk.runtime.v1.GetCallResultsResponse"\x03\x80}\x03\x12b\n\x0cGetCallCount\x12%.chalk.runtime.v1.GetCallCountRequest\x1a&.chalk.runtime.v1.GetCallCountResponse"\x03\x80}\x03B\x8f\x01\n\x14com.chalk.runtime.v1B\x15RemotePythonCallProtoP\x01\xa2\x02\x03CRX\xaa\x02\x10Chalk.Runtime.V1\xca\x02\x10Chalk\\Runtime\\V1\xe2\x02\x1cChalk\\Runtime\\V1\\GPBMetadata\xea\x02\x12Chalk::Runtime::V1b\x06proto3',
+    b'\n)chalk/runtime/v1/remote_python_call.proto\x12\x10chalk.runtime.v1\x1a\x1fchalk/auth/v1/permissions.proto\x1a!chalk/common/v1/chalk_error.proto\x1a\x1fgoogle/protobuf/timestamp.proto"P\n\x13CallFunctionRequest\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12%\n\x0efeather_stream\x18\x02 \x01(\x0cR\rfeatherStream"=\n\x14CallFunctionResponse\x12%\n\x0efeather_stream\x18\x01 \x01(\x0cR\rfeatherStream"m\n\x0eRemoteCallArgs\x12%\n\rfeather_bytes\x18\x01 \x01(\x0cH\x00R\x0cfeatherBytes\x12,\n\x11storage_object_id\x18\x02 \x01(\tH\x00R\x0fstorageObjectIdB\x06\n\x04args"d\n\x18EnqueueRemoteCallRequest\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x124\n\x04args\x18\x02 \x01(\x0b2 .chalk.runtime.v1.RemoteCallArgsR\x04args"4\n\x19EnqueueRemoteCallResponse\x12\x17\n\x07call_id\x18\x01 \x01(\tR\x06callId"i\n\x13OpenRemoteCallBatch\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x19\n\x08batch_id\x18\x02 \x01(\tR\x07batchId\x12#\n\rresult_cursor\x18\x03 \x01(\tR\x0cresultCursor"\x9b\x01\n\x1aSubmitRemoteCallBatchChunk\x12\x1f\n\x0bchunk_index\x18\x01 \x01(\x04R\nchunkIndex\x12&\n\x0ffirst_row_index\x18\x02 \x01(\x04R\rfirstRowIndex\x124\n\x04args\x18\x03 \x01(\x0b2 .chalk.runtime.v1.RemoteCallArgsR\x04args"!\n\x1fFinishRemoteCallBatchSubmission"/\n\x15CancelRemoteCallBatch\x12\x16\n\x06reason\x18\x01 \x01(\tR\x06reason"\xbe\x02\n\x1cStreamRemoteCallBatchRequest\x12;\n\x04open\x18\x01 \x01(\x0b2%.chalk.runtime.v1.OpenRemoteCallBatchH\x00R\x04open\x12F\n\x06submit\x18\x02 \x01(\x0b2,.chalk.runtime.v1.SubmitRemoteCallBatchChunkH\x00R\x06submit\x12K\n\x06finish\x18\x03 \x01(\x0b21.chalk.runtime.v1.FinishRemoteCallBatchSubmissionH\x00R\x06finish\x12A\n\x06cancel\x18\x04 \x01(\x0b2\'.chalk.runtime.v1.CancelRemoteCallBatchH\x00R\x06cancelB\t\n\x07request"\xb3\x01\n\x15RemoteCallBatchOpened\x12\x19\n\x08batch_id\x18\x01 \x01(\tR\x07batchId\x12/\n\x13submission_finished\x18\x02 \x01(\x08R\x12submissionFinished\x12(\n\x10next_chunk_index\x18\x03 \x01(\x04R\x0enextChunkIndex\x12$\n\x0enext_row_index\x18\x04 \x01(\x04R\x0cnextRowIndex"K\n\x13RemoteCallBatchCall\x12\x1b\n\trow_index\x18\x01 \x01(\x04R\x08rowIndex\x12\x17\n\x07call_id\x18\x02 \x01(\tR\x06callId"|\n\x1cRemoteCallBatchChunkAccepted\x12\x1f\n\x0bchunk_index\x18\x01 \x01(\x04R\nchunkIndex\x12;\n\x05calls\x18\x02 \x03(\x0b2%.chalk.runtime.v1.RemoteCallBatchCallR\x05calls"\x9a\x02\n\x15RemoteCallBatchResult\x12\x1b\n\trow_index\x18\x01 \x01(\x04R\x08rowIndex\x12\x17\n\x07call_id\x18\x02 \x01(\tR\x06callId\x12\x1a\n\x08sequence\x18\x03 \x01(\x04R\x08sequence\x12:\n\x06status\x18\x04 \x01(\x0e2".chalk.runtime.v1.RemoteCallStatusR\x06status\x12>\n\x06result\x18\x05 \x01(\x0b2&.chalk.runtime.v1.CallFunctionResponseR\x06result\x123\n\x06errors\x18\x06 \x03(\x0b2\x1b.chalk.common.v1.ChalkErrorR\x06errors"w\n\x1aRemoteCallBatchResultChunk\x12A\n\x07results\x18\x01 \x03(\x0b2\'.chalk.runtime.v1.RemoteCallBatchResultR\x07results\x12\x16\n\x06cursor\x18\x02 \x01(\tR\x06cursor"\x87\x01\n\x18RemoteCallBatchCompleted\x12\x1f\n\x0btotal_calls\x18\x01 \x01(\x04R\ntotalCalls\x12\'\n\x0fcompleted_calls\x18\x02 \x01(\x04R\x0ecompletedCalls\x12!\n\x0cfailed_calls\x18\x03 \x01(\x04R\x0bfailedCalls"\xd2\x02\n\x1dStreamRemoteCallBatchResponse\x12A\n\x06opened\x18\x01 \x01(\x0b2\'.chalk.runtime.v1.RemoteCallBatchOpenedH\x00R\x06opened\x12L\n\x08accepted\x18\x02 \x01(\x0b2..chalk.runtime.v1.RemoteCallBatchChunkAcceptedH\x00R\x08accepted\x12H\n\x07results\x18\x03 \x01(\x0b2,.chalk.runtime.v1.RemoteCallBatchResultChunkH\x00R\x07results\x12J\n\tcompleted\x18\x04 \x01(\x0b2*.chalk.runtime.v1.RemoteCallBatchCompletedH\x00R\tcompletedB\n\n\x08response"H\n\x15PollRemoteCallRequest\x12\x17\n\x07call_id\x18\x01 \x01(\tR\x06callId\x12\x16\n\x06cursor\x18\x02 \x01(\tR\x06cursor"\xe3\x01\n\x16PollRemoteCallResponse\x12:\n\x06status\x18\x01 \x01(\x0e2".chalk.runtime.v1.RemoteCallStatusR\x06status\x12@\n\x07results\x18\x02 \x03(\x0b2&.chalk.runtime.v1.CallFunctionResponseR\x07results\x12\x16\n\x06cursor\x18\x03 \x01(\tR\x06cursor\x123\n\x06errors\x18\x04 \x03(\x0b2\x1b.chalk.common.v1.ChalkErrorR\x06errors"Y\n\x11PurgeQueueRequest\x12%\n\rfunction_name\x18\x01 \x01(\tH\x00R\x0cfunctionName\x12\x12\n\x03all\x18\x02 \x01(\x08H\x00R\x03allB\t\n\x07request"\xdc\x01\n\x12PurgeQueueResponse\x12{\n\x19items_removed_by_function\x18\x01 \x03(\x0b2@.chalk.runtime.v1.PurgeQueueResponse.ItemsRemovedByFunctionEntryR\x16itemsRemovedByFunction\x1aI\n\x1bItemsRemovedByFunctionEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01"\x8b\x02\n\x10FunctionCallInfo\x12\x17\n\x07call_id\x18\x01 \x01(\tR\x06callId\x12#\n\rfunction_name\x18\x02 \x01(\tR\x0cfunctionName\x12;\n\x0benqueued_at\x18\x03 \x01(\x0b2\x1a.google.protobuf.TimestampR\nenqueuedAt\x12:\n\x06status\x18\x04 \x01(\x0e2".chalk.runtime.v1.RemoteCallStatusR\x06status\x12%\n\x0eresult_summary\x18\x05 \x01(\tR\rresultSummary\x12\x19\n\x08trace_id\x18\x06 \x01(\tR\x07traceId"q\n\x15GetRecentCallsRequest\x12#\n\rfunction_name\x18\x01 \x01(\tR\x0cfunctionName\x12\x14\n\x05limit\x18\x02 \x01(\rR\x05limit\x12\x1d\n\npage_token\x18\x03 \x01(\tR\tpageToken"z\n\x16GetRecentCallsResponse\x128\n\x05calls\x18\x01 \x03(\x0b2".chalk.runtime.v1.FunctionCallInfoR\x05calls\x12&\n\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken"2\n\x15GetCallResultsRequest\x12\x19\n\x08call_ids\x18\x01 \x03(\tR\x07callIds"\x90\x01\n\nCallResult\x12\x17\n\x07call_id\x18\x01 \x01(\tR\x06callId\x12D\n\x08response\x18\x02 \x01(\x0b2(.chalk.runtime.v1.PollRemoteCallResponseR\x08response\x12#\n\rerror_message\x18\x03 \x01(\tR\x0cerrorMessage"P\n\x16GetCallResultsResponse\x126\n\x07results\x18\x01 \x03(\x0b2\x1c.chalk.runtime.v1.CallResultR\x07results":\n\x13GetCallCountRequest\x12#\n\rfunction_name\x18\x01 \x01(\tR\x0cfunctionName",\n\x14GetCallCountResponse\x12\x14\n\x05count\x18\x01 \x01(\x04R\x05count*\xd7\x01\n\x10RemoteCallStatus\x12"\n\x1eREMOTE_CALL_STATUS_UNSPECIFIED\x10\x00\x12\x1e\n\x1aREMOTE_CALL_STATUS_PENDING\x10\x01\x12\x1e\n\x1aREMOTE_CALL_STATUS_RUNNING\x10\x02\x12 \n\x1cREMOTE_CALL_STATUS_COMPLETED\x10\x03\x12\x1d\n\x19REMOTE_CALL_STATUS_FAILED\x10\x04\x12\x1e\n\x1aREMOTE_CALL_STATUS_EXPIRED\x10\x052x\n\x11RemoteCallService\x12c\n\x0cCallFunction\x12%.chalk.runtime.v1.CallFunctionRequest\x1a&.chalk.runtime.v1.CallFunctionResponse"\x00(\x010\x012\xca\x03\n\x16AsyncRemoteCallService\x12n\n\x11EnqueueRemoteCall\x12*.chalk.runtime.v1.EnqueueRemoteCallRequest\x1a+.chalk.runtime.v1.EnqueueRemoteCallResponse"\x00\x12e\n\x0ePollRemoteCall\x12\'.chalk.runtime.v1.PollRemoteCallRequest\x1a(.chalk.runtime.v1.PollRemoteCallResponse"\x00\x12~\n\x15StreamRemoteCallBatch\x12..chalk.runtime.v1.StreamRemoteCallBatchRequest\x1a/.chalk.runtime.v1.StreamRemoteCallBatchResponse"\x00(\x010\x01\x12Y\n\nPurgeQueue\x12#.chalk.runtime.v1.PurgeQueueRequest\x1a$.chalk.runtime.v1.PurgeQueueResponse"\x002\xd2\x02\n\x18FunctionQueueMetaService\x12h\n\x0eGetRecentCalls\x12\'.chalk.runtime.v1.GetRecentCallsRequest\x1a(.chalk.runtime.v1.GetRecentCallsResponse"\x03\x80}\x03\x12h\n\x0eGetCallResults\x12\'.chalk.runtime.v1.GetCallResultsRequest\x1a(.chalk.runtime.v1.GetCallResultsResponse"\x03\x80}\x03\x12b\n\x0cGetCallCount\x12%.chalk.runtime.v1.GetCallCountRequest\x1a&.chalk.runtime.v1.GetCallCountResponse"\x03\x80}\x03B\x8f\x01\n\x14com.chalk.runtime.v1B\x15RemotePythonCallProtoP\x01\xa2\x02\x03CRX\xaa\x02\x10Chalk.Runtime.V1\xca\x02\x10Chalk\\Runtime\\V1\xe2\x02\x1cChalk\\Runtime\\V1\\GPBMetadata\xea\x02\x12Chalk::Runtime::V1b\x06proto3',
     [
         permissions_pb.desc(),
         chalk_error_pb.desc(),
@@ -704,6 +1178,18 @@ _DESC = file_desc(
         "RemoteCallArgs": RemoteCallArgs,
         "EnqueueRemoteCallRequest": EnqueueRemoteCallRequest,
         "EnqueueRemoteCallResponse": EnqueueRemoteCallResponse,
+        "OpenRemoteCallBatch": OpenRemoteCallBatch,
+        "SubmitRemoteCallBatchChunk": SubmitRemoteCallBatchChunk,
+        "FinishRemoteCallBatchSubmission": FinishRemoteCallBatchSubmission,
+        "CancelRemoteCallBatch": CancelRemoteCallBatch,
+        "StreamRemoteCallBatchRequest": StreamRemoteCallBatchRequest,
+        "RemoteCallBatchOpened": RemoteCallBatchOpened,
+        "RemoteCallBatchCall": RemoteCallBatchCall,
+        "RemoteCallBatchChunkAccepted": RemoteCallBatchChunkAccepted,
+        "RemoteCallBatchResult": RemoteCallBatchResult,
+        "RemoteCallBatchResultChunk": RemoteCallBatchResultChunk,
+        "RemoteCallBatchCompleted": RemoteCallBatchCompleted,
+        "StreamRemoteCallBatchResponse": StreamRemoteCallBatchResponse,
         "PollRemoteCallRequest": PollRemoteCallRequest,
         "PollRemoteCallResponse": PollRemoteCallResponse,
         "PurgeQueueRequest": PurgeQueueRequest,

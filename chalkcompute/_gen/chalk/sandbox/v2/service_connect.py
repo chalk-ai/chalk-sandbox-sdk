@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from connectrpc.client import ConnectClientSync
 from connectrpc.method import IdempotencyLevel, MethodInfo
 
-from .service_pb import CreateSandboxRequest, CreateSandboxResponse, GetSandboxRequest, GetSandboxResponse, ListSandboxesRequest, ListSandboxesResponse, ResumeSandboxRequest, ResumeSandboxResponse, SuspendSandboxRequest, SuspendSandboxResponse, TerminateSandboxRequest, TerminateSandboxResponse
+from .service_pb import CreateSandboxRequest, CreateSandboxResponse, GetSandboxRequest, GetSandboxResponse, ListSandboxResourcesRequest, ListSandboxResourcesResponse, ListSandboxesRequest, ListSandboxesResponse, ResumeSandboxRequest, ResumeSandboxResponse, SuspendSandboxRequest, SuspendSandboxResponse, TerminateSandboxRequest, TerminateSandboxResponse
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -131,6 +131,27 @@ class SandboxServiceClientSync(ConnectClientSync):
                 service_name="chalk.sandbox.v2.SandboxService",
                 input=TerminateSandboxRequest,
                 output=TerminateSandboxResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+
+class SandboxResourceServiceClientSync(ConnectClientSync):
+    def list_sandbox_resources(
+        self,
+        request: ListSandboxResourcesRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> ListSandboxResourcesResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="ListSandboxResources",
+                service_name="chalk.sandbox.v2.SandboxResourceService",
+                input=ListSandboxResourcesRequest,
+                output=ListSandboxResourcesResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,

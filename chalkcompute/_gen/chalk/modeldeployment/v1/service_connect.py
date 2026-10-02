@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from connectrpc.client import ConnectClientSync
 from connectrpc.method import IdempotencyLevel, MethodInfo
 
-from .service_pb import CallModelRequest, CallModelResponse, CreateModelScalingGroupRequest, CreateModelScalingGroupResponse, ListModelScalingGroupsRequest, ListModelScalingGroupsResponse
+from .service_pb import CallModelRequest, CallModelResponse, CreateModelScalingGroupRequest, CreateModelScalingGroupResponse, DeleteModelScalingGroupRequest, DeleteModelScalingGroupResponse, GetModelScalingGroupRequest, GetModelScalingGroupResponse, GetModelScalingGroupRevisionRequest, GetModelScalingGroupRevisionResponse, ListModelScalingGroupRevisionsRequest, ListModelScalingGroupRevisionsResponse, ListModelScalingGroupsRequest, ListModelScalingGroupsResponse, UpdateModelScalingGroupRequest, UpdateModelScalingGroupResponse
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -30,7 +30,7 @@ class ModelDeploymentServiceClientSync(ConnectClientSync):
         timeout_ms: int | None = None,
     ) -> CreateModelScalingGroupResponse:
         """
-        CreateModelScalingGroup creates a scaling group for a model version
+        Creates a model deployment or appends and selects a revision on redeploy.
         """
         return self.execute_unary(
             request=request,
@@ -39,6 +39,50 @@ class ModelDeploymentServiceClientSync(ConnectClientSync):
                 service_name="chalk.modeldeployment.v1.ModelDeploymentService",
                 input=CreateModelScalingGroupRequest,
                 output=CreateModelScalingGroupResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def update_model_scaling_group(
+        self,
+        request: UpdateModelScalingGroupRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> UpdateModelScalingGroupResponse:
+        """
+        UpdateModelScalingGroup updates a model scaling group's spec, traffic, or both.
+        """
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="UpdateModelScalingGroup",
+                service_name="chalk.modeldeployment.v1.ModelDeploymentService",
+                input=UpdateModelScalingGroupRequest,
+                output=UpdateModelScalingGroupResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def get_model_scaling_group(
+        self,
+        request: GetModelScalingGroupRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> GetModelScalingGroupResponse:
+        """
+        GetModelScalingGroup retrieves a model-owned scaling group.
+        """
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="GetModelScalingGroup",
+                service_name="chalk.modeldeployment.v1.ModelDeploymentService",
+                input=GetModelScalingGroupRequest,
+                output=GetModelScalingGroupResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,
@@ -66,6 +110,72 @@ class ModelDeploymentServiceClientSync(ConnectClientSync):
             headers=headers,
             timeout_ms=timeout_ms,
         )
+    def delete_model_scaling_group(
+        self,
+        request: DeleteModelScalingGroupRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> DeleteModelScalingGroupResponse:
+        """
+        DeleteModelScalingGroup deletes a model scaling group and its Kubernetes resources.
+        """
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="DeleteModelScalingGroup",
+                service_name="chalk.modeldeployment.v1.ModelDeploymentService",
+                input=DeleteModelScalingGroupRequest,
+                output=DeleteModelScalingGroupResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def get_model_scaling_group_revision(
+        self,
+        request: GetModelScalingGroupRevisionRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> GetModelScalingGroupRevisionResponse:
+        """
+        GetModelScalingGroupRevision retrieves one model deployment revision.
+        """
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="GetModelScalingGroupRevision",
+                service_name="chalk.modeldeployment.v1.ModelDeploymentService",
+                input=GetModelScalingGroupRevisionRequest,
+                output=GetModelScalingGroupRevisionResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def list_model_scaling_group_revisions(
+        self,
+        request: ListModelScalingGroupRevisionsRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> ListModelScalingGroupRevisionsResponse:
+        """
+        ListModelScalingGroupRevisions lists a model deployment's revisions.
+        """
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="ListModelScalingGroupRevisions",
+                service_name="chalk.modeldeployment.v1.ModelDeploymentService",
+                input=ListModelScalingGroupRevisionsRequest,
+                output=ListModelScalingGroupRevisionsResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
     def call_model(
         self,
         request: CallModelRequest,
@@ -74,8 +184,7 @@ class ModelDeploymentServiceClientSync(ConnectClientSync):
         timeout_ms: int | None = None,
     ) -> CallModelResponse:
         """
-        CallModel synchronously invokes a model deployed to a scaling group, forwarding the request to the
-        container's RemoteCallService over gRPC.
+        CallModel synchronously invokes a model scaling group or asynchronously enqueues a model call.
         """
         return self.execute_unary(
             request=request,
