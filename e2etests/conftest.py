@@ -25,12 +25,7 @@ import pytest
 from pyqwest import FullResponse, SyncClient
 from dotenv import load_dotenv
 
-from e2etests._ci_resources import (
-    MODEL_SCALING_GROUP_NAME_RE,
-    SCOPED_NAME_RE,
-    STALE_AFTER,
-    parse_rfc3339,
-)
+from e2etests._ci_resources import SCOPED_NAME_RE, STALE_AFTER, parse_rfc3339
 
 load_dotenv()
 
@@ -244,43 +239,43 @@ def _iter_scaling_groups(headers: dict[str, str]) -> Iterator[dict]:
     raise RuntimeError("ListScalingGroups exceeded the pagination page cap")
 
 
-def _scaling_group_absent(name: str, headers: dict[str, str]) -> bool:
-    """Confirm a group is gone after another CI job wins the delete race."""
-    return not any(
-        sg.get("name") == name and not sg.get("deletedAt")
-        for sg in _iter_scaling_groups(headers)
-    )
+def _delete_group(
+    service: str, method: str, body: dict[str, str], headers: dict[str, str]
+) -> bool:
+    """Call a scaling-group delete RPC; return False if the group never existed.
+
+    Deleting an already-deleted group returns success, so a 404 means the group
+    was never created, not that a delete is still in progress.
+    """
+    resp = _connect_rpc(service, method, body, headers)
+    if resp.status == 404:
+        return False
+    if not 200 <= resp.status < 300:
+        raise RuntimeError(
+            f"{method}({body}) failed with status {resp.status}: {resp.text()}"
+        )
+    return True
 
 
-def _delete_model_scaling_group(
-    name: str, *, headers: dict[str, str] | None = None
-) -> None:
+def _delete_model_scaling_group(name: str) -> None:
     """Delete a model-owned scaling group by name through its owning service."""
-    if headers is None:
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {_get_access_token()}",
-            "X-Chalk-Env-Id": CHALK_ENVIRONMENT_ID,
-        }
-    resp = _connect_rpc(
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {_get_access_token()}",
+        "X-Chalk-Env-Id": CHALK_ENVIRONMENT_ID,
+    }
+    _delete_group(
         _MODEL_DEPLOYMENT_SERVICE,
         "DeleteModelScalingGroup",
         {"modelScalingGroupName": name},
         headers,
     )
-    if resp.status == 404 and _scaling_group_absent(name, headers):
-        return  # Partial deploy or another CI job already removed the group.
-    if not 200 <= resp.status < 300:
-        raise RuntimeError(
-            f"DeleteModelScalingGroup({name}) failed with status "
-            f"{resp.status}: {resp.text()}"
-        )
 
 
 def _sweep_stale_scoped_scaling_groups() -> None:
     """Delete CI-scoped scaling groups left behind by earlier builds.
 
-    ``teardown_class`` covers the happy path, but it never runs when a Buildkite
+    Test finalizers cover the normal path, but they never run when a Buildkite
     job times out, is cancelled, or loses its agent.  Without this net every such
     build leaks a scaling group -- and its running replicas -- indefinitely.
     """
@@ -298,33 +293,23 @@ def _sweep_stale_scoped_scaling_groups() -> None:
         created_at = parse_rfc3339(sg.get("createdAt"))
         if created_at is None or now - created_at < STALE_AFTER:
             continue
-        if MODEL_SCALING_GROUP_NAME_RE.fullmatch(name):
-            try:
-                _delete_model_scaling_group(name, headers=headers)
-                print(f"stale scaling group {name} ({created_at.isoformat()}): deleted")
-            except Exception as exc:
-                failures.append(name)
-                print(
-                    f"stale scaling group {name} ({created_at.isoformat()}): "
-                    f"cleanup failed: {exc}"
-                )
-        else:
-            resp = _connect_rpc(
-                _SG_SERVICE, "DeleteScalingGroup", {"id": sg["id"]}, headers
+        # The server writes metadata.model_name only on model-owned groups, and
+        # the general delete refuses those groups.
+        if (sg.get("metadata") or {}).get("model_name"):
+            rpc = (
+                _MODEL_DEPLOYMENT_SERVICE,
+                "DeleteModelScalingGroup",
+                {"modelScalingGroupId": sg["id"]},
             )
-            if 200 <= resp.status < 300:
-                print(f"stale scaling group {name} ({created_at.isoformat()}): deleted")
-            elif resp.status == 404 and _scaling_group_absent(name, headers):
-                print(
-                    f"stale scaling group {name} ({created_at.isoformat()}): "
-                    "already deleted"
-                )
-            else:
-                failures.append(name)
-                print(
-                    f"stale scaling group {name} ({created_at.isoformat()}): "
-                    f"cleanup failed ({resp.status}): {resp.text()}"
-                )
+        else:
+            rpc = (_SG_SERVICE, "DeleteScalingGroup", {"id": sg["id"]})
+        try:
+            deleted = _delete_group(*rpc, headers)
+            outcome = "deleted" if deleted else "already deleted"
+        except Exception as exc:
+            failures.append(name)
+            outcome = f"cleanup failed: {exc}"
+        print(f"stale scaling group {name} ({created_at.isoformat()}): {outcome}")
     if failures:
         raise RuntimeError(
             f"{len(failures)} stale scaling-group cleanup attempts failed: "
@@ -393,6 +378,17 @@ def _sweep_stale_scoped_models() -> None:
         client.close()
 
 
+def _report_sweep_failure(message: str) -> None:
+    """Fail the session in the step that opts in; warn in every other step.
+
+    Every e2e step runs the sweep, so failing all of them would let one stuck
+    resource turn the whole build red.
+    """
+    if os.environ.get("CHALK_E2E_STRICT_CLEANUP") == "1":
+        pytest.fail(message)
+    print(f"warning: {message}")
+
+
 @pytest.fixture(scope="session", autouse=True)
 def sweep_stale_ci_resources() -> None:
     """Reap scoped resources leaked by earlier builds before any test runs."""
@@ -401,9 +397,10 @@ def sweep_stale_ci_resources() -> None:
     try:
         _sweep_stale_scoped_scaling_groups()
     except Exception as exc:
-        # Leave model registrations in place for the next deletion attempt.
-        pytest.fail(f"stale scaling-group cleanup failed: {exc}")
+        # A surviving group still references its model, so keep the models.
+        _report_sweep_failure(f"stale scaling-group cleanup failed: {exc}")
+        return
     try:
         _sweep_stale_scoped_models()
     except Exception as exc:
-        pytest.fail(f"stale model cleanup failed: {exc}")
+        _report_sweep_failure(f"stale model cleanup failed: {exc}")

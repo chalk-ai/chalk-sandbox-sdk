@@ -13,12 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from e2etests._ci_resources import (
-    MODEL_SCALING_GROUP_NAME_RE,
-    SCOPED_NAME_RE,
-    build_scoped_name,
-    parse_rfc3339,
-)
+from e2etests._ci_resources import SCOPED_NAME_RE, build_scoped_name, parse_rfc3339
 
 pytest_plugins = ("pytester",)
 
@@ -141,22 +136,7 @@ def test_parse_rfc3339_returns_none_for_unusable_values(value: str | None) -> No
     assert parse_rfc3339(value) is None
 
 
-@pytest.mark.parametrize(
-    "name, expected",
-    [
-        ("ex-trivial-double-sg-44a136e21fc4", True),
-        ("ex-volume-triple-sg-44a136e21fc4", True),
-        ("ex-handler-affine-sg-44a136e21fc4", True),
-        ("ex-combined-affine-sg-44a136e21fc4", True),
-        ("ex-combined-affine-sg", False),
-        ("ex-count-up-44a136e21fc4", False),
-    ],
-)
-def test_model_group_names_are_narrow(name: str, expected: bool) -> None:
-    assert bool(MODEL_SCALING_GROUP_NAME_RE.fullmatch(name)) is expected
-
-
-def test_sweep_uses_owner_specific_delete_for_model_groups(
+def test_sweep_routes_by_model_metadata_not_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from e2etests import conftest
@@ -165,15 +145,17 @@ def test_sweep_uses_owner_specific_delete_for_model_groups(
     recent = datetime.now(timezone.utc).isoformat()
     groups = [
         {
-            "name": "ex-trivial-double-sg-44a136e21fc4",
+            "name": "ex-any-new-model-sg-44a136e21fc4",
             "id": "model-id",
             "createdAt": old,
+            "metadata": {"model_name": "ex-any-new-model-44a136e21fc4"},
         },
         {"name": "ex-count-up-44a136e21fc4", "id": "function-id", "createdAt": old},
         {
             "name": "ex-volume-triple-sg-deadbeef1234",
             "id": "recent-id",
             "createdAt": recent,
+            "metadata": {"model_name": "ex-volume-triple-deadbeef1234"},
         },
     ]
     calls: list[tuple[str, str, dict]] = []
@@ -191,7 +173,7 @@ def test_sweep_uses_owner_specific_delete_for_model_groups(
         (
             "chalk.modeldeployment.v1.ModelDeploymentService",
             "DeleteModelScalingGroup",
-            {"modelScalingGroupName": "ex-trivial-double-sg-44a136e21fc4"},
+            {"modelScalingGroupId": "model-id"},
         ),
         (
             "chalk.scalinggroup.v1.ScalingGroupManagerService",
@@ -216,45 +198,21 @@ def test_model_delete_reports_server_error(monkeypatch: pytest.MonkeyPatch) -> N
         conftest._delete_model_scaling_group("ex-trivial-double-sg-44a136e21fc4")
 
 
-def test_model_delete_allows_group_missing_after_partial_deploy(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("status, expected", [(200, True), (404, False)])
+def test_delete_treats_not_found_as_absent(
+    monkeypatch: pytest.MonkeyPatch, status: int, expected: bool
 ) -> None:
     from e2etests import conftest
 
-    monkeypatch.setattr(conftest, "_get_access_token", lambda: "test-token")
     monkeypatch.setattr(
         conftest,
         "_connect_rpc",
-        lambda *args, **kwargs: SimpleNamespace(
-            status=404, json=lambda: {"code": "not_found"}
-        ),
+        lambda *args, **kwargs: SimpleNamespace(status=status, text=lambda: ""),
     )
-    monkeypatch.setattr(conftest, "_iter_scaling_groups", lambda headers: iter([]))
-    conftest._delete_model_scaling_group("ex-trivial-double-sg-44a136e21fc4")
-
-
-def test_model_delete_rejects_missing_record_with_live_group(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from e2etests import conftest
-
-    monkeypatch.setattr(conftest, "_get_access_token", lambda: "test-token")
-    monkeypatch.setattr(
-        conftest,
-        "_connect_rpc",
-        lambda *args, **kwargs: SimpleNamespace(
-            status=404,
-            json=lambda: {"code": "not_found"},
-            text=lambda: "model deployment record missing",
-        ),
+    assert (
+        conftest._delete_group("service", "DeleteScalingGroup", {"id": "x"}, {})
+        is expected
     )
-    monkeypatch.setattr(
-        conftest,
-        "_iter_scaling_groups",
-        lambda headers: iter([{"name": "ex-trivial-double-sg-44a136e21fc4"}]),
-    )
-    with pytest.raises(RuntimeError, match="model deployment record missing"):
-        conftest._delete_model_scaling_group("ex-trivial-double-sg-44a136e21fc4")
 
 
 def test_sweep_fails_when_stale_group_cannot_be_deleted(
@@ -273,6 +231,7 @@ def test_sweep_fails_when_stale_group_cannot_be_deleted(
                     "name": "ex-trivial-double-sg-44a136e21fc4",
                     "id": "model-id",
                     "createdAt": old,
+                    "metadata": {"model_name": "ex-trivial-double-44a136e21fc4"},
                 }
             ]
         ),
@@ -288,43 +247,6 @@ def test_sweep_fails_when_stale_group_cannot_be_deleted(
         RuntimeError, match="1 stale scaling-group cleanup attempts failed"
     ):
         conftest._sweep_stale_scoped_scaling_groups()
-
-
-@pytest.mark.parametrize("still_present", [False, True])
-def test_generic_delete_race_requires_confirmed_absence(
-    monkeypatch: pytest.MonkeyPatch, still_present: bool
-) -> None:
-    from e2etests import conftest
-
-    old = (datetime.now(timezone.utc) - timedelta(hours=4)).isoformat()
-    group = {
-        "name": "ex-count-up-44a136e21fc4",
-        "id": "function-id",
-        "createdAt": old,
-    }
-    calls = 0
-
-    def groups(headers: dict[str, str]):
-        nonlocal calls
-        calls += 1
-        return iter([group] if calls == 1 or still_present else [])
-
-    monkeypatch.setattr(conftest, "_get_access_token", lambda: "test-token")
-    monkeypatch.setattr(conftest, "_iter_scaling_groups", groups)
-    monkeypatch.setattr(
-        conftest,
-        "_connect_rpc",
-        lambda *args, **kwargs: SimpleNamespace(status=404, text=lambda: "not found"),
-    )
-
-    if still_present:
-        with pytest.raises(
-            RuntimeError, match="1 stale scaling-group cleanup attempts failed"
-        ):
-            conftest._sweep_stale_scoped_scaling_groups()
-    else:
-        conftest._sweep_stale_scoped_scaling_groups()
-    assert calls == 2
 
 
 def test_class_finalizer_runs_when_setup_fails(pytester: pytest.Pytester) -> None:
@@ -436,14 +358,19 @@ def test_failed_group_delete_keeps_model_registration_for_retry(
     assert removed_models == []
 
 
+@pytest.mark.parametrize("strict", [True, False])
 def test_failed_group_sweep_does_not_delete_models(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], strict: bool
 ) -> None:
     from e2etests import conftest
 
     removed_models: list[str] = []
     monkeypatch.setattr(conftest, "CHALK_CLIENT_ID", "test-client")
     monkeypatch.setattr(conftest, "CHALK_API_SERVER", "https://example.test")
+    if strict:
+        monkeypatch.setenv("CHALK_E2E_STRICT_CLEANUP", "1")
+    else:
+        monkeypatch.delenv("CHALK_E2E_STRICT_CLEANUP", raising=False)
     monkeypatch.setattr(
         conftest,
         "_sweep_stale_scoped_scaling_groups",
@@ -455,8 +382,12 @@ def test_failed_group_sweep_does_not_delete_models(
         lambda: removed_models.append("called"),
     )
 
-    with pytest.raises(pytest.fail.Exception, match="group delete failed"):
+    if strict:
+        with pytest.raises(pytest.fail.Exception, match="group delete failed"):
+            conftest.sweep_stale_ci_resources.__wrapped__()
+    else:
         conftest.sweep_stale_ci_resources.__wrapped__()
+        assert "warning: stale scaling-group cleanup failed" in capsys.readouterr().out
     assert removed_models == []
 
 
