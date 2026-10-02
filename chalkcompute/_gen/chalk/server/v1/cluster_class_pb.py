@@ -48,7 +48,7 @@ class ClusterClass(Enum):
 
 
 _DESC = file_desc(
-    b'\n#chalk/server/v1/cluster_class.proto\x12\x0fchalk.server.v1*e\n\x0cClusterClass\x12\x1d\n\x19CLUSTER_CLASS_UNSPECIFIED\x10\x00\x12\x18\n\x14CLUSTER_CLASS_HOSTED\x10\x01\x12\x1c\n\x18CLUSTER_CLASS_SERVERLESS\x10\x02B\x14Z\x12server/v1;serverv1b\x06proto3',
+    b'\n#chalk/server/v1/cluster_class.proto\x12\x0fchalk.server.v1*e\n\x0cClusterClass\x12\x1d\n\x19CLUSTER_CLASS_UNSPECIFIED\x10\x00\x12\x18\n\x14CLUSTER_CLASS_HOSTED\x10\x01\x12\x1c\n\x18CLUSTER_CLASS_SERVERLESS\x10\x02B\x9a\x01\n\x13com.chalk.server.v1B\x11ClusterClassProtoP\x01Z\x12server/v1;serverv1\xa2\x02\x03CSX\xaa\x02\x0fChalk.Server.V1\xca\x02\x0fChalk\\Server\\V1\xe2\x02\x1bChalk\\Server\\V1\\GPBMetadata\xea\x02\x11Chalk::Server::V1b\x06proto3',
     [],
     {
         "ClusterClass": ClusterClass,
