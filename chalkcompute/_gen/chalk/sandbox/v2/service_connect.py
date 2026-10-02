@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from connectrpc.client import ConnectClientSync
 from connectrpc.method import IdempotencyLevel, MethodInfo
 
-from .service_pb import CreateSandboxRequest, CreateSandboxResponse, GetSandboxRequest, GetSandboxResponse, ListSandboxResourcesRequest, ListSandboxResourcesResponse, ListSandboxesRequest, ListSandboxesResponse, ResumeSandboxRequest, ResumeSandboxResponse, SuspendSandboxRequest, SuspendSandboxResponse, TerminateSandboxRequest, TerminateSandboxResponse
+from .service_pb import CreateSandboxRequest, CreateSandboxResponse, GetSandboxRequest, GetSandboxResponse, ListSandboxResourcesRequest, ListSandboxResourcesResponse, ListSandboxesRequest, ListSandboxesResponse, RecordSandboxResourceRequest, RecordSandboxResourceResponse, ResumeSandboxRequest, ResumeSandboxResponse, SuspendSandboxRequest, SuspendSandboxResponse, TerminateSandboxRequest, TerminateSandboxResponse
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -152,6 +152,25 @@ class SandboxResourceServiceClientSync(ConnectClientSync):
                 service_name="chalk.sandbox.v2.SandboxResourceService",
                 input=ListSandboxResourcesRequest,
                 output=ListSandboxResourcesResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def record_sandbox_resource(
+        self,
+        request: RecordSandboxResourceRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> RecordSandboxResourceResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="RecordSandboxResource",
+                service_name="chalk.sandbox.v2.SandboxResourceService",
+                input=RecordSandboxResourceRequest,
+                output=RecordSandboxResourceResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,

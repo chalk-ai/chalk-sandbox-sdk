@@ -113,7 +113,7 @@ class NestedChange(Message[_NestedChangeFields]):
 
 
 _DESC = file_desc(
-    b'\n!chalk/utils/v1/field_change.proto\x12\x0echalk.utils.v1"\xe0\x01\n\x0bFieldChange\x12\x1d\n\nfield_name\x18\x01 \x01(\tR\tfieldName\x12*\n\x0eprevious_value\x18\x02 \x01(\tH\x00R\rpreviousValue\x88\x01\x01\x12 \n\tnew_value\x18\x03 \x01(\tH\x01R\x08newValue\x88\x01\x01\x12C\n\x0enested_changes\x18\x04 \x03(\x0b2\x1c.chalk.utils.v1.NestedChangeR\rnestedChangesB\x11\n\x0f_previous_valueB\x0c\n\n_new_value"\x91\x01\n\x0cNestedChange\x12\x12\n\x04path\x18\x01 \x01(\tR\x04path\x12*\n\x0eprevious_value\x18\x02 \x01(\tH\x00R\rpreviousValue\x88\x01\x01\x12 \n\tnew_value\x18\x03 \x01(\tH\x01R\x08newValue\x88\x01\x01B\x11\n\x0f_previous_valueB\x0c\n\n_new_valueb\x06proto3',
+    b'\n!chalk/utils/v1/field_change.proto\x12\x0echalk.utils.v1"\xe0\x01\n\x0bFieldChange\x12\x1d\n\nfield_name\x18\x01 \x01(\tR\tfieldName\x12*\n\x0eprevious_value\x18\x02 \x01(\tH\x00R\rpreviousValue\x88\x01\x01\x12 \n\tnew_value\x18\x03 \x01(\tH\x01R\x08newValue\x88\x01\x01\x12C\n\x0enested_changes\x18\x04 \x03(\x0b2\x1c.chalk.utils.v1.NestedChangeR\rnestedChangesB\x11\n\x0f_previous_valueB\x0c\n\n_new_value"\x91\x01\n\x0cNestedChange\x12\x12\n\x04path\x18\x01 \x01(\tR\x04path\x12*\n\x0eprevious_value\x18\x02 \x01(\tH\x00R\rpreviousValue\x88\x01\x01\x12 \n\tnew_value\x18\x03 \x01(\tH\x01R\x08newValue\x88\x01\x01B\x11\n\x0f_previous_valueB\x0c\n\n_new_valueB\x80\x01\n\x12com.chalk.utils.v1B\x10FieldChangeProtoP\x01\xa2\x02\x03CUX\xaa\x02\x0eChalk.Utils.V1\xca\x02\x0eChalk\\Utils\\V1\xe2\x02\x1aChalk\\Utils\\V1\\GPBMetadata\xea\x02\x10Chalk::Utils::V1b\x06proto3',
     [],
     {
         "FieldChange": FieldChange,
