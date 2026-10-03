@@ -44,7 +44,11 @@ from protobuf.wkt import FieldMask
 
 from chalkcompute._logging import _StatusLogger
 from chalkcompute._connect import ConnectClient, build_image
-from chalkcompute._containerspec import ContainerSpec, validate_replica_and_utilization
+from chalkcompute._containerspec import (
+    ComputeClass,
+    ContainerSpec,
+    validate_replica_and_utilization,
+)
 from chalkcompute._env import normalize_env
 from chalkcompute._deployment_proto import scaling_spec as build_scaling_spec
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_connect as sg_connect
@@ -275,6 +279,7 @@ class ScalingGroup:
         image: _Image | str,
         name: str | None = None,
         cpu: str | None = None,
+        compute_class: ComputeClass | None = None,
         memory: str | None = None,
         gpu: str | None = None,
         env: Mapping[str, str | _Secret] | None = None,
@@ -314,6 +319,7 @@ class ScalingGroup:
             image=normalized_image,
             name=name,
             cpu=cpu,
+            compute_class=compute_class,
             memory=memory,
             gpu=gpu,
             env=env,
@@ -333,6 +339,7 @@ class ScalingGroup:
         self._image: _Image | str | None = normalized_image
         self._name = name
         self._cpu = cpu
+        self._compute_class = compute_class
         self._memory = memory
         self._gpu = gpu
         self._env = dict(env) if env else {}
@@ -442,6 +449,7 @@ class ScalingGroup:
         sg._image = None
         sg._name = None
         sg._cpu = None
+        sg._compute_class = None
         sg._memory = None
         sg._gpu = None
         sg._env = {}
@@ -592,6 +600,7 @@ class ScalingGroup:
             image=self._built_image_uri,
             entrypoint=self._entrypoint,
             cpu=self._cpu,
+            compute_class=self._compute_class,
             memory=self._memory,
             gpu=self._gpu,
             env=self._env,

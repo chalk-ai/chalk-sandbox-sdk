@@ -58,7 +58,11 @@ from typing import TYPE_CHECKING, Any, Callable, TypeVar, overload
 from chalkcompute._logging import _StatusLogger
 from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import ConnectClient
-from chalkcompute._containerspec import ContainerSpec, validate_replica_and_utilization
+from chalkcompute._containerspec import (
+    ComputeClass,
+    ContainerSpec,
+    validate_replica_and_utilization,
+)
 from chalkcompute._env import normalize_env
 from chalkcompute._deployment_proto import function_config, scaling_spec
 from chalkcompute._function_deployment import (
@@ -749,6 +753,7 @@ class RemoteClass:
         image: _Image | None = None,
         name: str | None = None,
         cpu: str | None = None,
+        compute_class: ComputeClass | None = None,
         memory: str | None = None,
         gpu: str | None = None,
         env: Mapping[str, str | _Secret] | None = None,
@@ -790,6 +795,7 @@ class RemoteClass:
             image=normalized_image,
             name=name,
             cpu=cpu,
+            compute_class=compute_class,
             memory=memory,
             gpu=gpu,
             env=env,
@@ -807,6 +813,7 @@ class RemoteClass:
         self._explicit_name = name
         self._image = normalized_image
         self._cpu = cpu
+        self._compute_class = compute_class
         self._memory = memory
         self._gpu = gpu
         self._env = dict(env) if env else {}
@@ -1022,6 +1029,7 @@ class RemoteClass:
         rc._explicit_name = name
         rc._image = None
         rc._cpu = None
+        rc._compute_class = None
         rc._memory = None
         rc._gpu = None
         rc._env = {}
@@ -1250,6 +1258,7 @@ class RemoteClass:
                         self._env, deploy_image._env.get("PYTHONPATH", "/app")
                     ),
                     cpu=self._cpu,
+                    compute_class=self._compute_class,
                     memory=self._memory,
                     gpu=self._gpu,
                     volumes=deploy_volumes,
@@ -1616,6 +1625,7 @@ def cls(
     *,
     image: _Image | None = None,
     cpu: str | None = None,
+    compute_class: ComputeClass | None = None,
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
@@ -1654,6 +1664,7 @@ def cls(
     *,
     image: _Image | None = None,
     cpu: str | None = None,
+    compute_class: ComputeClass | None = None,
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
@@ -1693,6 +1704,7 @@ def cls(
     *,
     image: _Image | None = None,
     cpu: str | None = None,
+    compute_class: ComputeClass | None = None,
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
@@ -1746,6 +1758,9 @@ def cls(
         Container image to deploy in. Defaults to ``Image.debian_slim()``.
     cpu
         CPU resource request (e.g. ``"1"``, ``"500m"``).
+    compute_class
+        Where to run replicas. Omit to use the server default; HOST requires fixed,
+        positive replica counts.
     memory
         Memory resource request (e.g. ``"1Gi"``, ``"512Mi"``).
     gpu
@@ -1839,6 +1854,7 @@ def cls(
             image=image,
             name=name,
             cpu=cpu,
+            compute_class=compute_class,
             memory=memory,
             gpu=gpu,
             env=env,
