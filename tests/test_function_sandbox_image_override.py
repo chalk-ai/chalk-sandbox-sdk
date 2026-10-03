@@ -10,12 +10,18 @@ import pytest
 
 
 @pytest.mark.parametrize(
-    "image_override",
-    [None, "python:3.13-slim"],
+    ("image_override", "command", "expected_output"),
+    [
+        (None, ["echo", "sandbox-exec-ok"], "sandbox-exec-ok\n"),
+        ("alpine:3.20", ["echo", "sandbox-exec-ok"], "sandbox-exec-ok\n"),
+        ("python:3.13-slim", ["python", "--version"], "Python 3.13.0\n"),
+    ],
 )
 def test_function_sandbox_image_override(
     monkeypatch: pytest.MonkeyPatch,
     image_override: str | None,
+    command: list[str],
+    expected_output: str,
 ) -> None:
     seen: dict[str, Any] = {}
     if image_override is None:
@@ -39,8 +45,7 @@ def test_function_sandbox_image_override(
         def exec(self, *command: str) -> SimpleNamespace:
             seen.setdefault("commands", []).append(command)
             if command[0] == "python":
-                version = "3.13" if seen["sandbox_image"] == image_override else "3.12"
-                output = f"Python {version}.0\n"
+                output = "Python 3.13.0\n"
             else:
                 output = "sandbox-exec-ok\n"
             return SimpleNamespace(exit_code=0, stdout_text=output, stderr_text="")
@@ -53,16 +58,19 @@ def test_function_sandbox_image_override(
     script = Path(__file__).resolve().parents[1] / "examples/function-sandbox/deploy.py"
     deployed_function = runpy.run_path(str(script))["create_sandbox"]
 
-    assert seen["function_env"] == (
+    expected_env = (
         {"CHALK_SANDBOX_E2E_IMAGE": image_override}
         if image_override is not None
         else None
     )
-    output = deployed_function()
-    if image_override is None:
-        assert output == "sandbox-exec-ok\n"
-    else:
-        assert output.startswith("sandbox-exec-ok\nPython 3.13.")
+    assert seen["function_env"] == expected_env
+    monkeypatch.delenv("CHALK_SANDBOX_E2E_IMAGE", raising=False)
+    if expected_env is not None:
+        monkeypatch.setenv(
+            "CHALK_SANDBOX_E2E_IMAGE", expected_env["CHALK_SANDBOX_E2E_IMAGE"]
+        )
+    assert deployed_function(command) == expected_output
+    assert seen["commands"] == [tuple(command)]
     assert (
         seen["sandbox_image"] == image_override
         if image_override is not None

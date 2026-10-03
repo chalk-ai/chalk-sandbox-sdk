@@ -27,8 +27,8 @@ SANDBOX_E2E_IMAGE = os.environ.get("CHALK_SANDBOX_E2E_IMAGE")
     image=chalkcompute.Image.debian_slim("3.12").pip_install(["chalkcompute>=2.11.1"]),
     env={"CHALK_SANDBOX_E2E_IMAGE": SANDBOX_E2E_IMAGE} if SANDBOX_E2E_IMAGE else None,
 )
-def create_sandbox() -> str:
-    """Create, execute in, and terminate a sandbox with the pod's credentials."""
+def create_sandbox(command: list[str]) -> str:
+    """Run a command in a nested sandbox using the pod's credentials."""
     import os
 
     from chalkcompute import Image, Sandbox
@@ -38,17 +38,12 @@ def create_sandbox() -> str:
     )
     try:
         sandbox.run()
-        result = sandbox.exec("echo", "sandbox-exec-ok")
+        result = sandbox.exec(*command)
         if result.exit_code != 0:
             raise RuntimeError(
                 "Sandbox exec failed: "
                 f"exit_code={result.exit_code}, stderr={result.stderr_text}"
             )
-        if os.environ.get("CHALK_SANDBOX_E2E_IMAGE"):
-            version = sandbox.exec("python", "--version")
-            if version.exit_code != 0:
-                raise RuntimeError(f"Sandbox version check failed: {version!r}")
-            return result.stdout_text + version.stdout_text
         return result.stdout_text
     finally:
         if sandbox.id is not None:
