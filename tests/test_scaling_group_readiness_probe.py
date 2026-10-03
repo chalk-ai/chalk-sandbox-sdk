@@ -133,12 +133,33 @@ def test_scaling_group_deploy_omits_port_when_none() -> None:
 def test_scaling_group_deploy_includes_startup_probe(
     probe: StartupProbe, expected: dict[str, Any]
 ) -> None:
-    sg = ScalingGroup(image="ubuntu:latest", startup_probe=probe)
+    protocol = "grpc" if probe._kind == "grpc" else "http"
+    sg = ScalingGroup(image="ubuntu:latest", protocol=protocol, startup_probe=probe)
     spec = _deployed_container_spec(sg)
     assert spec.startup_probe == container_pb.StartupProbe.from_json(
         json.dumps(expected)
     )
+    assert spec.protocol == protocol
     assert spec.readiness_probe is None
+
+
+def test_grpc_startup_probe_requires_grpc_protocol() -> None:
+    with pytest.raises(ValueError, match="requires protocol='grpc'"):
+        ScalingGroup(image="ubuntu:latest", startup_probe=StartupProbe.grpc())
+
+
+def test_http_startup_probe_rejects_grpc_protocol() -> None:
+    with pytest.raises(ValueError, match="requires an HTTP protocol"):
+        ScalingGroup(
+            image="ubuntu:latest", protocol="grpc", startup_probe=StartupProbe.http()
+        )
+
+
+def test_startup_probe_requires_port() -> None:
+    with pytest.raises(ValueError, match="requires port"):
+        ScalingGroup(
+            image="ubuntu:latest", port=None, startup_probe=StartupProbe.http()
+        )
 
 
 def test_readiness_probe_does_not_enable_startup_probe() -> None:

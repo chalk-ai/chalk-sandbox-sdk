@@ -177,9 +177,9 @@ class StartupProbe:
     def grpc(cls, method: str | None = None) -> StartupProbe:
         """Create a gRPC startup probe.
 
-        ``method`` is a fully-qualified method that must return OK. An unset
-        method calls ``/chalk.health.v1.Probe/Check``, not the standard
-        ``grpc.health.v1.Health/Check``.
+        An explicit ``method`` must be fully qualified and return OK. An unset
+        method calls ``/chalk.health.v1.Probe/Check`` and expects UNIMPLEMENTED
+        to confirm that the routed endpoint speaks gRPC.
         """
         return cls(_kind="grpc", _value=method)
 
@@ -284,8 +284,9 @@ class ScalingGroup:
 
     ``readiness_probe`` checks each replica directly. Optional ``startup_probe``
     checks the externally routed endpoint before deployment becomes ready, e.g.
-    ``StartupProbe.http("/health")``. External startup probes are not supported
-    with ``authenticated=True``.
+    ``StartupProbe.http("/health")``. Use ``protocol="grpc"`` with
+    ``StartupProbe.grpc(...)``. External startup probes are not supported with
+    ``authenticated=True``.
 
     Examples
     --------
@@ -367,6 +368,13 @@ class ScalingGroup:
             target_cpu_utilization_percentage=target_cpu_utilization_percentage,
             target_gpu_utilization_percentage=target_gpu_utilization_percentage,
         )
+        if startup_probe is not None:
+            if port is None:
+                raise ValueError("startup_probe requires port")
+            if startup_probe._kind == "grpc" and protocol != "grpc":
+                raise ValueError("StartupProbe.grpc requires protocol='grpc'")
+            if startup_probe._kind == "http" and protocol == "grpc":
+                raise ValueError("StartupProbe.http requires an HTTP protocol")
         self._image: _Image | str | None = normalized_image
         self._name = name
         self._cpu = cpu
