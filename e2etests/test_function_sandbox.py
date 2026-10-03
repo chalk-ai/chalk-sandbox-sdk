@@ -42,12 +42,9 @@ class TestFunctionSandbox:
                 "function-sandbox",
                 "deploy.py",
                 function_name=function_name,
-                extra_env={
-                    "CHALK_SANDBOX_E2E_IMAGE": "python:3.13-slim",
-                    "CHALK_SANDBOX_E2E_EXPECTED_PYTHON": "3.13",
-                },
+                extra_env={"CHALK_SANDBOX_E2E_IMAGE": "python:3.13-slim"},
             )
             output = chalkcompute.RemoteFunction.from_name(function_name).remote()
-            assert output == "sandbox-exec-ok\n"
+            assert output.startswith("sandbox-exec-ok\nPython 3.13.")
         finally:
             _delete_function(function_name)

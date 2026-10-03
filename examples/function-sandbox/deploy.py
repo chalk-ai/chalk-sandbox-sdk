@@ -20,22 +20,12 @@ import os
 import chalkcompute
 
 SANDBOX_E2E_IMAGE = os.environ.get("CHALK_SANDBOX_E2E_IMAGE")
-SANDBOX_E2E_EXPECTED_PYTHON = os.environ.get("CHALK_SANDBOX_E2E_EXPECTED_PYTHON")
-
-FUNCTION_ENV = {
-    key: value
-    for key, value in (
-        ("CHALK_SANDBOX_E2E_IMAGE", SANDBOX_E2E_IMAGE),
-        ("CHALK_SANDBOX_E2E_EXPECTED_PYTHON", SANDBOX_E2E_EXPECTED_PYTHON),
-    )
-    if value
-}
 
 
 @chalkcompute.function(
     name=os.environ.get("CHALK_E2E_FUNCTION_NAME", "ex-function-sandbox"),
     image=chalkcompute.Image.debian_slim("3.12").pip_install(["chalkcompute>=2.11.1"]),
-    env=FUNCTION_ENV or None,
+    env={"CHALK_SANDBOX_E2E_IMAGE": SANDBOX_E2E_IMAGE} if SANDBOX_E2E_IMAGE else None,
 )
 def create_sandbox() -> str:
     """Create, execute in, and terminate a sandbox with the pod's credentials."""
@@ -54,15 +44,11 @@ def create_sandbox() -> str:
                 "Sandbox exec failed: "
                 f"exit_code={result.exit_code}, stderr={result.stderr_text}"
             )
-        expected_python = os.environ.get("CHALK_SANDBOX_E2E_EXPECTED_PYTHON")
-        if expected_python:
+        if os.environ.get("CHALK_SANDBOX_E2E_IMAGE"):
             version = sandbox.exec("python", "--version")
-            if version.exit_code != 0 or not version.stdout_text.startswith(
-                f"Python {expected_python}."
-            ):
-                raise RuntimeError(
-                    f"Nested sandbox used an unexpected Python version: {version!r}"
-                )
+            if version.exit_code != 0:
+                raise RuntimeError(f"Sandbox version check failed: {version!r}")
+            return result.stdout_text + version.stdout_text
         return result.stdout_text
     finally:
         if sandbox.id is not None:

@@ -10,23 +10,18 @@ import pytest
 
 
 @pytest.mark.parametrize(
-    ("image_override", "expected_python"),
-    [(None, None), ("python:3.13-slim", "3.13")],
+    "image_override",
+    [None, "python:3.13-slim"],
 )
 def test_function_sandbox_image_override(
     monkeypatch: pytest.MonkeyPatch,
     image_override: str | None,
-    expected_python: str | None,
 ) -> None:
     seen: dict[str, Any] = {}
-    for key, value in (
-        ("CHALK_SANDBOX_E2E_IMAGE", image_override),
-        ("CHALK_SANDBOX_E2E_EXPECTED_PYTHON", expected_python),
-    ):
-        if value is None:
-            monkeypatch.delenv(key, raising=False)
-        else:
-            monkeypatch.setenv(key, value)
+    if image_override is None:
+        monkeypatch.delenv("CHALK_SANDBOX_E2E_IMAGE", raising=False)
+    else:
+        monkeypatch.setenv("CHALK_SANDBOX_E2E_IMAGE", image_override)
 
     def capture_function(**kwargs: Any) -> Any:
         seen["function_env"] = kwargs["env"]
@@ -59,14 +54,15 @@ def test_function_sandbox_image_override(
     deployed_function = runpy.run_path(str(script))["create_sandbox"]
 
     assert seen["function_env"] == (
-        {
-            "CHALK_SANDBOX_E2E_IMAGE": image_override,
-            "CHALK_SANDBOX_E2E_EXPECTED_PYTHON": expected_python,
-        }
+        {"CHALK_SANDBOX_E2E_IMAGE": image_override}
         if image_override is not None
         else None
     )
-    assert deployed_function() == "sandbox-exec-ok\n"
+    output = deployed_function()
+    if image_override is None:
+        assert output == "sandbox-exec-ok\n"
+    else:
+        assert output.startswith("sandbox-exec-ok\nPython 3.13.")
     assert (
         seen["sandbox_image"] == image_override
         if image_override is not None
