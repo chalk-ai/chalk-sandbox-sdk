@@ -1,0 +1,1 @@
+- Add per-row traces to the Harbor example: each evaluation row now replays its trial as OpenInference spans (phases, agent turns with tokens and cost, tool calls) under the row's session

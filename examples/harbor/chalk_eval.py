@@ -32,7 +32,7 @@ AGENT = "oracle"
 
 IMAGE = (
     Image.debian_slim("3.13")
-    .pip_install(["harbor", "chalkcompute", "dockerfile-parse"])
+    .pip_install(["harbor", "chalkcompute", "dockerfile-parse", "opentelemetry-api"])
     .add_local_dir(str(HERE / "chalk_harbor"), "/opt/harbor/chalk_harbor")
     .add_local_dir(str(HERE / "smoke"), "/opt/harbor/tasks")
 )
@@ -72,6 +72,17 @@ def harbor_trial(task_name: str) -> str:
             }
         )
     result = json.loads(trials[0].read_text())
+
+    # Harbor emits no telemetry and the agent runs in another sandbox, so replay the
+    # trial's record as spans here, where the row's session is the current context.
+    sys.path.insert(0, "/opt/harbor")
+    from chalk_harbor.tracing import emit_trial_spans
+
+    instruction = Path("/opt/harbor/tasks", task_name, "instruction.md")
+    emit_trial_spans(
+        trials[0].parent,
+        instruction=instruction.read_text() if instruction.exists() else None,
+    )
     rewards = (result.get("verifier_result") or {}).get("rewards") or {}
     exception = result.get("exception_info") or {}
     return json.dumps(
