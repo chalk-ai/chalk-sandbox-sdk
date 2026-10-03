@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 from protobuf import Oneof
+from chalkcompute import ComputeClass
 from chalkcompute._image import Image
 
 import chalkcompute._function as function_mod
@@ -141,12 +142,15 @@ class _RemoteClassScaledToZeroClient(_RemoteFunctionScaledToZeroClient):
     pass
 
 
-def test_remote_function_deploy_waits_for_ready_replicas(monkeypatch) -> None:
+@pytest.mark.parametrize("compute_class", [None, ComputeClass.K8S, ComputeClass.HOST])
+def test_remote_function_deploy_waits_for_ready_replicas(
+    monkeypatch, compute_class
+) -> None:
     def add(x: int) -> int:
         return x
 
     client = _RemoteFunctionReadinessClient()
-    fn = RemoteFunction(add, name="fn-ready")
+    fn = RemoteFunction(add, name="fn-ready", compute_class=compute_class)
     fn._client = client  # type: ignore[assignment]
 
     monkeypatch.setattr(
@@ -162,6 +166,12 @@ def test_remote_function_deploy_waits_for_ready_replicas(monkeypatch) -> None:
         "get_scaling_group",
     ]
     request = client.requests["ensure_external_function"]
+    spec = request.spec.version_spec.spec.container_spec
+    assert spec.compute_class == (
+        container_pb.ComputeClass.UNSPECIFIED
+        if compute_class is None
+        else container_pb.ComputeClass[compute_class.name]
+    )
     probe = request.spec.version_spec.spec.container_spec.startup_probe
     assert probe.check is not None and probe.check.field == "grpc"
     assert isinstance(probe.check.value, container_pb.GrpcProbe)
@@ -238,14 +248,17 @@ def test_scaling_group_deploy_allows_scaled_to_zero(monkeypatch) -> None:
     assert client.methods == ["create_scaling_group", "get_scaling_group"]
 
 
-def test_remote_class_deploy_waits_for_ready_replicas(monkeypatch) -> None:
+@pytest.mark.parametrize("compute_class", [None, ComputeClass.K8S, ComputeClass.HOST])
+def test_remote_class_deploy_waits_for_ready_replicas(
+    monkeypatch, compute_class
+) -> None:
     class Adder:
         @method
         def add(self, x: int) -> int:
             return x
 
     client = _RemoteClassReadinessClient()
-    rc = RemoteClass(Adder, name="cls-ready")
+    rc = RemoteClass(Adder, name="cls-ready", compute_class=compute_class)
     rc._client = client  # type: ignore[assignment]
 
     monkeypatch.setattr(
@@ -261,6 +274,12 @@ def test_remote_class_deploy_waits_for_ready_replicas(monkeypatch) -> None:
         "get_scaling_group",
     ]
     request = client.requests["ensure_external_function"]
+    spec = request.spec.version_spec.spec.container_spec
+    assert spec.compute_class == (
+        container_pb.ComputeClass.UNSPECIFIED
+        if compute_class is None
+        else container_pb.ComputeClass[compute_class.name]
+    )
     probe = request.spec.version_spec.spec.container_spec.startup_probe
     assert probe.check is not None and probe.check.field == "grpc"
     assert isinstance(probe.check.value, container_pb.GrpcProbe)

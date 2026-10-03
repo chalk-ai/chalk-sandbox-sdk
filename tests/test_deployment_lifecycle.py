@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from protobuf import Oneof
 from chalkcompute._image import Image
 
 import chalkcompute._function as function_mod
-from chalkcompute import ScaleFromZeroRequestPolicy
+from chalkcompute import ComputeClass, ScaleFromZeroRequestPolicy
+from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._function import RemoteFunction
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as catalog_pb
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
@@ -137,12 +139,20 @@ class _FunctionLifecycleClient(StubbedConnectClient):
         raise AssertionError(f"unexpected method: {method.name}")
 
 
-def test_scaling_group_redeploy_history_and_rollback() -> None:
+@pytest.mark.parametrize("compute_class", [None, ComputeClass.K8S, ComputeClass.HOST])
+def test_scaling_group_redeploy_history_and_rollback(compute_class) -> None:
     client = _ScalingLifecycleClient()
-    group = ScalingGroup(image="ubuntu:latest", name="api")
+    group = ScalingGroup(image="ubuntu:latest", name="api", compute_class=compute_class)
     group._client = client  # type: ignore[assignment]
 
     group.deploy().deploy()
+
+    for _, request in client.calls:
+        assert request.spec.container_spec.compute_class == (
+            container_pb.ComputeClass.UNSPECIFIED
+            if compute_class is None
+            else container_pb.ComputeClass[compute_class.name]
+        )
 
     assert group.id == "group-1"
     assert group.current_revision_id == "revision-2"
