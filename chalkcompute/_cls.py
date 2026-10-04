@@ -106,7 +106,6 @@ from chalkcompute._naming import sanitize_dns_label
 from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._remote_function_tracing import (
-    TracingPolicy,
     TracingPolicyConfig,
     normalize_remote_function_tracing,
 )
@@ -1079,7 +1078,7 @@ class RemoteClass:
 
     def _remote_call_runtime_package(self) -> str:
         extras: list[str] = []
-        if isinstance(self._tracing, TracingPolicy):
+        if self._tracing is not None and getattr(self._tracing, "mode", None) != "always_off":
             extras.append("tracing")
         return _remote_call_runtime_package_with_extras(extras)
 

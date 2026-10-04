@@ -1,0 +1,3 @@
+Add remote function call stage spans for serialization, RPCs, polling, and decoding. Preserve trace context across deadline threads and propagate isolated per-poll metadata to the queue service, while retaining compatibility with older native extensions.
+
+Make detailed function tracing opt-in: newly deployed functions and classes default to following sampled caller traces without starting unparented traces. Explicit tracing=True/TracingPolicy enables root sampling; tracing=False disables worker tracing. Skip detailed SDK span construction when there is no sampled parent, and document selective calls using chalkcompute.span. Existing deployments keep their current policy until redeployed.

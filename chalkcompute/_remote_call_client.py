@@ -282,6 +282,15 @@ class RemoteCallClient:
         self._supports_per_call_metadata: bool = (
             self._detect_per_call_metadata_support()
         )
+        import inspect
+
+        try:
+            self._supports_poll_metadata = (
+                "metadata"
+                in inspect.signature(self._inner_or_raise().poll_next).parameters
+            )
+        except (ValueError, TypeError):
+            self._supports_poll_metadata = True
         logger.debug(
             "RemoteCallClient connected endpoint=%s use_tls=%s elapsed_ms=%.1f",
             endpoint,
@@ -387,9 +396,15 @@ class RemoteCallClient:
         call_id: str,
         cursor: str = "",
         poll_count: int = 0,
+        metadata: Sequence[tuple[str, str]] = (),
     ) -> RemoteCallPollResult:
         start = time.monotonic()
-        raw = self._inner_or_raise().poll_next(call_id, cursor, poll_count)
+        if metadata and self._supports_poll_metadata:
+            raw = self._inner_or_raise().poll_next(
+                call_id, cursor, poll_count, metadata=list(metadata)
+            )
+        else:
+            raw = self._inner_or_raise().poll_next(call_id, cursor, poll_count)
         result = RemoteCallPollResult(
             status=int(raw["status"]),
             status_name=str(raw["status_name"]),

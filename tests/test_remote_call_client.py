@@ -150,6 +150,7 @@ class FakeRemoteCallClient:
         call_id: str,
         cursor: str = "",
         poll_count: int = 0,
+        metadata=(),
     ) -> RemoteCallPollResult:
         assert call_id == "call-1"
         if self.poll_errors:

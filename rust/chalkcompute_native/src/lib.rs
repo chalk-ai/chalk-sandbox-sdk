@@ -153,17 +153,25 @@ impl PyRemoteCallClient {
         .map_err(to_py_err)
     }
 
-    #[pyo3(signature = (call_id, cursor=None, poll_count=0))]
+    #[pyo3(signature = (call_id, cursor=None, poll_count=0, metadata=None))]
     fn poll_next(
         &self,
         py: Python<'_>,
         call_id: String,
         cursor: Option<String>,
         poll_count: u64,
+        metadata: Option<Vec<(String, String)>>,
     ) -> PyResult<Py<PyDict>> {
         let cursor = cursor.unwrap_or_default();
         let result = py
-            .allow_threads(|| self.inner.poll_next(call_id, cursor, poll_count))
+            .allow_threads(|| {
+                self.inner.poll_next_with_metadata(
+                    call_id,
+                    cursor,
+                    poll_count,
+                    metadata.unwrap_or_default(),
+                )
+            })
             .map_err(to_py_err)?;
         poll_result_to_pydict(py, result)
     }
