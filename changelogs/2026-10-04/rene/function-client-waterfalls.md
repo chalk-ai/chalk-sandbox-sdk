@@ -1,0 +1,1 @@
+Add remote function call stage spans for serialization, RPCs, polling, and decoding. Preserve trace context across deadline threads and propagate isolated per-poll metadata to the queue service, while retaining compatibility with older native extensions.
