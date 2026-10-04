@@ -82,6 +82,10 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "chalkcompute._evaluation",
         "EvaluationRunFailedError",
     ),
+    "EvaluationRunExecutionMode": (
+        "chalkcompute._evaluation",
+        "EvaluationRunExecutionMode",
+    ),
     "EvaluationRunStatus": ("chalkcompute._evaluation", "EvaluationRunStatus"),
     "EvaluationScorer": ("chalkcompute._evaluation", "EvaluationScorer"),
     "EvaluationScorerResult": (

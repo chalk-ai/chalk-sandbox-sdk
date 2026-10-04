@@ -50,6 +50,9 @@ from chalkcompute._evaluation import EvaluationRun as EvaluationRun
 from chalkcompute._evaluation import (
     EvaluationRunFailedError as EvaluationRunFailedError,
 )
+from chalkcompute._evaluation import (
+    EvaluationRunExecutionMode as EvaluationRunExecutionMode,
+)
 from chalkcompute._evaluation import EvaluationRunStatus as EvaluationRunStatus
 from chalkcompute._evaluation import EvaluationScorer as EvaluationScorer
 from chalkcompute._evaluation import EvaluationScorerResult as EvaluationScorerResult
@@ -222,6 +225,7 @@ __all__ = [
     "EvaluationNotFoundError",
     "EvaluationRun",
     "EvaluationRunFailedError",
+    "EvaluationRunExecutionMode",
     "EvaluationRunStatus",
     "EvaluationScorer",
     "EvaluationScorerResult",
