@@ -127,6 +127,11 @@ def main(argv: list[str]) -> int:
     tasks = argv or sorted(
         p.name for p in (HERE / "smoke").iterdir() if (p / "task.toml").exists()
     )
+    # The decorators deploy in the background, and Python waits for those deploys at
+    # exit (up to 600s of build plus 300s of readiness each). Waiting here surfaces a slow
+    # or broken deploy before the evaluation instead of as a hang after the results.
+    for function in (harbor_trial, harbor_reward):
+        function.wait_ready(timeout=900)
     dataset = chalkcompute.DatasetClient().upload("harbor-smoke", {"task_name": tasks})
     evaluation = chalkcompute.EvaluationClient().create(
         f"harbor-smoke-{int(time.time())}",
