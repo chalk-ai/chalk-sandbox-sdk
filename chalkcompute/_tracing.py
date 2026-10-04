@@ -623,6 +623,8 @@ def _instrumented(name: str, *, sampled_only: bool = False) -> Callable[[F], F]:
 
 def _has_sampled_trace_context() -> bool:
     """Check the active parent before constructing detailed call spans."""
+    if not has_current_trace_context():
+        return False
     trace_api = _get_trace_api()
     if trace_api is None:
         return False

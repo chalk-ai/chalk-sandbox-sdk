@@ -161,6 +161,57 @@ def test_ordinary_calls_skip_detailed_span_construction(
     assert exporter.get_finished_spans() == ()
 
 
+def test_sampled_ambient_parent_is_adopted_before_first_call_stages(
+    tracing, function, monkeypatch
+):
+    _, exporter = tracing
+    fn, _ = function
+    parent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    monkeypatch.setenv("TRACEPARENT", parent)
+    monkeypatch.setattr(_tracing, "_initialized", False)
+    monkeypatch.setattr(_tracing, "_ambient_context_adopted", False)
+    with trace_api.use_span(trace_api.INVALID_SPAN):
+        assert fn.remote(100, 232) == 332
+    spans = exporter.get_finished_spans()
+    assert "chalkcompute.remote_function.serialize_args" in {s.name for s in spans}
+    assert all(s.context.trace_id == int(parent.split("-")[1], 16) for s in spans)
+
+
+def test_untraced_queue_calls_skip_detailed_span_construction(
+    tracing, function, monkeypatch
+):
+    _, exporter = tracing
+    fn, response = function
+    result = SimpleNamespace(
+        error_message=None,
+        cursor="done",
+        poll_count=1,
+        status_name="completed",
+        chunks=[response],
+        is_expired=False,
+        is_failed=False,
+        is_completed=True,
+    )
+    monkeypatch.setattr(
+        fn,
+        "_ensure_remote_call_client",
+        lambda **kwargs: SimpleNamespace(
+            enqueue=lambda *args, **kwargs: "call-id",
+            poll_next=lambda *args, **kwargs: result,
+        ),
+    )
+
+    def unexpected_tracer():
+        pytest.fail("ordinary queue calls must not construct detailed spans")
+
+    monkeypatch.setattr(_tracing, "get_tracer", unexpected_tracer)
+    with trace_api.use_span(trace_api.INVALID_SPAN):
+        handle = fn.defer(100, 232)
+        assert fn.poll(handle.call_id) is result
+        assert handle.get() == 332
+    assert exporter.get_finished_spans() == ()
+
+
 def test_deadline_worker_preserves_and_isolates_context(function):
     fn, _ = function
     value = contextvars.ContextVar("request_value", default="unset")
