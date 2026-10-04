@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pyarrow as pa
 import pytest
+from opentelemetry import trace as trace_api
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -132,6 +133,32 @@ def test_remote_tracing_off_suppresses_call_stage_spans(tracing, function, monke
     with tracer.start_as_current_span("request"):
         assert fn.remote(100, 232) == 332
     assert [s.name for s in exporter.get_finished_spans()] == ["request"]
+
+
+@pytest.mark.parametrize("unsampled_parent", [False, True])
+def test_ordinary_calls_skip_detailed_span_construction(
+    tracing, function, monkeypatch, unsampled_parent
+):
+    """Exporter sampling alone would not catch creating unsampled spans."""
+    _, exporter = tracing
+    fn, _ = function
+    context = trace_api.SpanContext(
+        trace_id=123 if unsampled_parent else 0,
+        span_id=456 if unsampled_parent else 0,
+        is_remote=True,
+        trace_flags=trace_api.TraceFlags(0),
+    )
+
+    def unexpected_tracer():
+        pytest.fail("ordinary calls must not obtain a tracer or construct spans")
+
+    monkeypatch.setattr(_tracing, "get_tracer", unexpected_tracer)
+    with trace_api.use_span(trace_api.NonRecordingSpan(context)):
+        assert fn.remote(100, 232) == 332
+        metadata = dict(_tracing.current_trace_metadata())
+        if unsampled_parent:
+            assert metadata["traceparent"].endswith("-00")
+    assert exporter.get_finished_spans() == ()
 
 
 def test_deadline_worker_preserves_and_isolates_context(function):

@@ -283,7 +283,9 @@ class TestTracingPolicy:
             TracingPolicy(sample_rate=True)  # type: ignore[arg-type]
 
     def test_bool_tracing_config_normalization(self):
-        assert normalize_remote_function_tracing(None) == TracingPolicy(sample_rate=1.0)
+        assert normalize_remote_function_tracing(None).to_dict() == {
+            "mode": "TRACING_MODE_PARENT_BASED_ALWAYS_OFF"
+        }
         assert normalize_remote_function_tracing(True) == TracingPolicy(sample_rate=1.0)
         assert normalize_remote_function_tracing(False).to_dict() == {
             "mode": "TRACING_MODE_ALWAYS_OFF"
@@ -562,8 +564,7 @@ class TestScheduleValidationFunction:
             client.requests[0].config.tracing if client.requests[0].config else None
         )
         assert tracing is not None
-        assert tracing.mode == catalog_pb.TracingMode.PARENT_BASED_TRACE_ID_RATIO
-        assert tracing.sample_rate == 1.0
+        assert tracing.mode == catalog_pb.TracingMode.PARENT_BASED_ALWAYS_OFF
 
 
 class TestScheduleValidationClass:

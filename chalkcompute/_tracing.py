@@ -605,18 +605,29 @@ def _decorate_traced(func: F, name: str | None) -> F:
     return _wrap_with_span(func, lambda: _span(span_name))
 
 
-def _instrumented(name: str) -> Callable[[F], F]:
+def _instrumented(name: str, *, sampled_only: bool = False) -> Callable[[F], F]:
     """Trace internal SDK work without treating it as user tracing intent."""
 
     def decorator(func: F) -> F:
         def span_factory() -> contextlib.AbstractContextManager[Any]:
             if _is_remote_tracing_off() or not _has_tracing_intent():
                 return contextlib.nullcontext()
+            if sampled_only and not _has_sampled_trace_context():
+                return contextlib.nullcontext()
             return get_tracer().start_as_current_span(name)
 
         return _wrap_with_span(func, span_factory)
 
     return decorator
+
+
+def _has_sampled_trace_context() -> bool:
+    """Check the active parent before constructing detailed call spans."""
+    trace_api = _get_trace_api()
+    if trace_api is None:
+        return False
+    span_context = trace_api.get_current_span().get_span_context()
+    return bool(span_context.is_valid and span_context.trace_flags.sampled)
 
 
 @overload
@@ -651,7 +662,7 @@ def traced(arg: str | F | None = None) -> Callable[[F], F] | F:
 @contextlib.contextmanager
 def remote_function_call_span(function_name: str, call_type: str) -> Iterator[Any]:
     """Trace one outbound call from this process to another compute function."""
-    if _is_remote_tracing_off() or not has_current_trace_context():
+    if _is_remote_tracing_off() or not _has_sampled_trace_context():
         yield None
         return
 

@@ -87,7 +87,7 @@ def normalize_remote_function_tracing(
     tracing: TracingPolicyConfig | None,
 ) -> TracingPolicy | _RemoteFunctionTracingPolicy | None:
     if tracing is None:
-        return TracingPolicy(sample_rate=1.0)
+        return _RemoteFunctionTracingPolicy(mode="parentbased_always_off")
     if isinstance(tracing, bool):
         return (
             TracingPolicy(sample_rate=1.0)

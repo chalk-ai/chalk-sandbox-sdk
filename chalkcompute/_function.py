@@ -107,7 +107,6 @@ from chalkcompute._naming import (
 from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
 from chalkcompute._remote_function_tracing import (
-    TracingPolicy,
     TracingPolicyConfig,
     normalize_remote_function_tracing,
 )
@@ -1165,7 +1164,7 @@ class FunctionCallHandle:
     def call_id(self) -> str:
         return self._call_id
 
-    @_instrumented("chalkcompute.remote_function.poll")
+    @_instrumented("chalkcompute.remote_function.poll", sampled_only=True)
     def poll(self) -> Any:
         from chalkcompute._remote_call_client import RemoteCallNotFoundError
 
@@ -1219,7 +1218,7 @@ class FunctionCallHandle:
             return self._async_get(timeout)
         return self._sync_get(timeout)
 
-    @_instrumented("chalkcompute.remote_function.get")
+    @_instrumented("chalkcompute.remote_function.get", sampled_only=True)
     def _sync_get(self, timeout: float | None = None) -> Any:
         deadline = None if timeout is None else time.monotonic() + timeout
         attempt = 1
@@ -3224,7 +3223,7 @@ class RemoteFunction:
 
     def _remote_call_runtime_package(self) -> str:
         extras: list[str] = []
-        if isinstance(self._tracing, TracingPolicy):
+        if self._tracing is not None and getattr(self._tracing, "mode", None) != "always_off":
             extras.append("tracing")
         return _remote_call_runtime_package_with_extras(extras)
 
@@ -3705,7 +3704,7 @@ class RemoteFunction:
             )
         return client.call_ipc(function_name, feather_bytes, metadata=metadata)
 
-    @_instrumented("chalkcompute.remote_function.direct_rpc")
+    @_instrumented("chalkcompute.remote_function.direct_rpc", sampled_only=True)
     def _call_direct_chunks(self, feather_bytes: bytes) -> list[bytes]:
         from chalkcompute._remote_call_client import (
             RemoteCallTransportError,
@@ -3735,7 +3734,7 @@ class RemoteFunction:
             return self._version_info.function_name
         return self._func_name
 
-    @_instrumented("chalkcompute.remote_function.serialize_args")
+    @_instrumented("chalkcompute.remote_function.serialize_args", sampled_only=True)
     def _serialize_call_args(self, *args: Any, **kwargs: Any) -> bytes:
         import pyarrow as pa
         import pyarrow.ipc as ipc
@@ -3761,7 +3760,7 @@ class RemoteFunction:
             writer.write_batch(batch)
         return sink.getvalue().to_pybytes()
 
-    @_instrumented("chalkcompute.remote_function.decode_result")
+    @_instrumented("chalkcompute.remote_function.decode_result", sampled_only=True)
     def _decode_result_chunks(self, chunks: list[bytes]) -> list[Any]:
         import pyarrow.ipc as ipc
 
@@ -3789,7 +3788,7 @@ class RemoteFunction:
             return results[0]
         return results
 
-    @_instrumented("chalkcompute.remote_function.api_rpc")
+    @_instrumented("chalkcompute.remote_function.api_rpc", sampled_only=True)
     def _call_via_api_rpc(self, feather_bytes: bytes) -> bytes:
         """Call the remote function via the API server's ``CallExternalFunction`` RPC.
 
@@ -4490,9 +4489,11 @@ def function(
         (``version``, ``method_name``, ``qualified_name``) call
         :func:`~chalkcompute.bind_model` directly inside the function.
     tracing
-        Server-side remote-function tracing is enabled by default. Use
-        :class:`~chalkcompute.TracingPolicy` for sampling. Set ``False`` to
-        explicitly turn tracing off.
+        By default, server-side tracing follows a sampled caller trace and
+        does not start traces for ordinary calls. Set ``True`` to trace root
+        requests, or use :class:`~chalkcompute.TracingPolicy` for sampling.
+        Set ``False`` to disable tracing, including sampled caller traces.
+        Trace selected calls with ``with chalkcompute.span("request")``.
     call_timeout
         Maximum seconds to wait on a single ``.remote()``/``.defer()``/
         ``.poll()`` call before raising :class:`FunctionError` — including
