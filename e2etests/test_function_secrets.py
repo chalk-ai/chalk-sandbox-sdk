@@ -13,6 +13,11 @@ from dotenv import load_dotenv
 import chalkcompute
 from chalkcompute import Image, Secret
 from e2etests._fn_read_secret import read_secret
+from e2etests.conftest import (
+    _delete_function,
+    _delete_test_owned_source_volume,
+    _test_owned_source_volume_name,
+)
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -53,17 +58,20 @@ def test_function_secret_from_local_env() -> None:
     """Secret.from_local_env() injects a local env var into a deployed function."""
     local_var = f"TEST_FN_SECRET_{uuid.uuid4().hex[:8].upper()}"
     secret_value = f"fn-secret-{uuid.uuid4().hex[:8]}"
+    function_name = f"test-fn-secret-{uuid.uuid4().hex[:8]}"
     os.environ[local_var] = secret_value
 
     fn: chalkcompute.RemoteFunction | None = None
+    source_volume_name: str | None = None
     try:
         fn = chalkcompute.RemoteFunction(
             read_secret,
             image=Image.debian_slim(),
-            name=f"test-fn-secret-{uuid.uuid4().hex[:8]}",
+            name=function_name,
             secrets=[Secret.from_local_env(local_var)],
         )
         fn.deploy()
+        source_volume_name = _test_owned_source_volume_name(fn, function_name)
         fn.wait_ready()
 
         result = _call_with_retry(fn, local_var)
@@ -71,4 +79,17 @@ def test_function_secret_from_local_env() -> None:
     finally:
         del os.environ[local_var]
         if fn is not None:
-            fn.delete()
+            cleanup_fn = fn
+            if source_volume_name is None:
+                try:
+                    cleanup_fn = chalkcompute.RemoteFunction.from_name(function_name)
+                    source_volume_name = _test_owned_source_volume_name(
+                        cleanup_fn, function_name
+                    )
+                except Exception as exc:
+                    print(
+                        f"warning: could not inspect source for {function_name}: {exc}"
+                    )
+            _delete_function(function_name)
+            if source_volume_name is not None:
+                _delete_test_owned_source_volume(cleanup_fn, source_volume_name)
