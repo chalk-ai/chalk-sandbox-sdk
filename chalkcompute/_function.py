@@ -133,6 +133,7 @@ from chalkcompute._volume import (
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from chalkcompute._model import _ModelBindingValue
     from chalkcompute._image import Image as _Image
     from chalkcompute._scaling_group import CronScalingTrigger as _CronScalingTrigger
     from chalkcompute._scaling_group import ReadinessProbe as _ReadinessProbe
@@ -2397,7 +2398,7 @@ class RemoteFunction:
         queue_policy: QueuePolicy | None = None,
         schedule: str | None = None,
         tracing: TracingPolicyConfig | None = None,
-        models: typing.Mapping[str, Any] | None = None,
+        models: typing.Mapping[str, _ModelBindingValue] | None = None,
         call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
         chalk_client: Any | None = None,
     ) -> None:
@@ -4281,7 +4282,7 @@ def function(
     concurrency: int | ConcurrencyPolicy | None = None,
     queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
-    models: typing.Mapping[str, Any] | None = None,
+    models: typing.Mapping[str, _ModelBindingValue] | None = None,
     tracing: TracingPolicyConfig | None = None,
     call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
 ) -> RemoteFunction | _NoOpFunction: ...
@@ -4321,7 +4322,7 @@ def function(
     concurrency: int | ConcurrencyPolicy | None = None,
     queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
-    models: typing.Mapping[str, Any] | None = None,
+    models: typing.Mapping[str, _ModelBindingValue] | None = None,
     tracing: TracingPolicyConfig | None = None,
     call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
 ) -> Callable[..., RemoteFunction | _NoOpFunction]: ...
@@ -4362,7 +4363,7 @@ def function(
     concurrency: int | ConcurrencyPolicy | None = None,
     queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
-    models: typing.Mapping[str, Any] | None = None,
+    models: typing.Mapping[str, _ModelBindingValue] | None = None,
     tracing: TracingPolicyConfig | None = None,
     call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
 ) -> Callable[..., RemoteFunction | _NoOpFunction] | RemoteFunction | _NoOpFunction:
@@ -4488,13 +4489,13 @@ def function(
         Optional crontab or Chalk duration string for invoking a no-input
         function on a schedule (e.g. ``"0 * * * *"`` or ``"1h"``).
     models
-        Mapping of ``model_name -> output_type`` for Chalk models that should
-        be auto-bound into the local chalkdf catalog before the function body
-        runs. Each entry becomes a :func:`~chalkcompute.bind_model` call
-        invoked by the handler shim on import, so
-        ``F.catalog_call("model.<name>", ..., output_type=<type>)`` resolves
-        without any explicit setup in the function body. For advanced overrides
-        (``version``, ``method_name``, ``qualified_name``) call
+        Mapping of model names to Arrow output types or
+        :class:`~chalkcompute.ModelBindingSpec` values. The handler shim binds
+        these before importing the user module, so ``F.catalog_call("model.<name>",
+        ...)`` resolves without setup in the function body. Use a binding spec
+        to select an exact deployment or model version. The deployed image must
+        contain an SDK supporting binding specs with selectors. For overrides
+        of ``method_name`` or ``qualified_name``, call
         :func:`~chalkcompute.bind_model` directly inside the function.
     tracing
         Server-side remote-function tracing is enabled by default. Use

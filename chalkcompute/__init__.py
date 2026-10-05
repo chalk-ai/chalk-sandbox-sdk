@@ -106,6 +106,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "RemoteCallClientUnavailable",
     ),
     # _model.py
+    "ModelBindingSpec": ("chalkcompute._model", "ModelBindingSpec"),
     "bind_model": ("chalkcompute._model", "bind_model"),
     "ModelError": ("chalkcompute._model", "ModelError"),
     "ModelNotFoundError": ("chalkcompute._model", "ModelNotFoundError"),

@@ -120,6 +120,7 @@ from chalkcompute._volume import (
 )
 
 if TYPE_CHECKING:
+    from chalkcompute._model import _ModelBindingValue
     from chalkcompute._image import Image as _Image
     from chalkcompute._scaling_group import CronScalingTrigger as _CronScalingTrigger
     from chalkcompute._scaling_group import ReadinessProbe as _ReadinessProbe
@@ -782,7 +783,7 @@ class RemoteClass:
         queue_policy: QueuePolicy | None = None,
         schedule: str | None = None,
         tracing: TracingPolicyConfig | None = None,
-        models: typing.Mapping[str, Any] | None = None,
+        models: typing.Mapping[str, _ModelBindingValue] | None = None,
         chalk_client: Any | None = None,
     ) -> None:
         self._user_cls: type | None = user_cls
@@ -1654,7 +1655,7 @@ def cls(
     concurrency: int | ConcurrencyPolicy | None = None,
     queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
-    models: typing.Mapping[str, Any] | None = None,
+    models: typing.Mapping[str, _ModelBindingValue] | None = None,
     tracing: TracingPolicyConfig | None = None,
 ) -> RemoteClass | _NoOpClass: ...
 
@@ -1693,7 +1694,7 @@ def cls(
     concurrency: int | ConcurrencyPolicy | None = None,
     queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
-    models: typing.Mapping[str, Any] | None = None,
+    models: typing.Mapping[str, _ModelBindingValue] | None = None,
     tracing: TracingPolicyConfig | None = None,
 ) -> Callable[..., RemoteClass | _NoOpClass]: ...
 
@@ -1733,7 +1734,7 @@ def cls(
     concurrency: int | ConcurrencyPolicy | None = None,
     queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
-    models: typing.Mapping[str, Any] | None = None,
+    models: typing.Mapping[str, _ModelBindingValue] | None = None,
     tracing: TracingPolicyConfig | None = None,
 ) -> Callable[..., RemoteClass | _NoOpClass] | RemoteClass | _NoOpClass:
     """Decorator that deploys a class as versioned remote functions.
@@ -1843,6 +1844,12 @@ def cls(
     schedule
         Optional crontab or Chalk duration string applied to every no-input
         ``@method`` in the class (e.g. ``"0 * * * *"`` or ``"1h"``).
+    models
+        Mapping of model names to Arrow output types or
+        :class:`~chalkcompute.ModelBindingSpec` values, bound into each method's
+        local chalkdf catalog before importing the user module. Use a binding
+        spec to select an exact deployment or model version. The deployed image
+        must contain an SDK supporting binding specs with selectors.
     """
 
     def decorator(user_cls: type) -> RemoteClass | _NoOpClass:
