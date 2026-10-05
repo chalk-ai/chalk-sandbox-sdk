@@ -166,6 +166,37 @@ class ReadinessProbe:
 
 
 @dataclass(frozen=True)
+class StartupProbe:
+    """One-time check of the externally routed endpoint before deploy is ready."""
+
+    _kind: Literal["http", "grpc"]
+    _value: str | None
+
+    @classmethod
+    def http(cls, path: str | None = None) -> StartupProbe:
+        """Create an HTTP GET startup probe. An unset path uses ``/``."""
+        return cls(_kind="http", _value=path)
+
+    @classmethod
+    def grpc(cls, method: str | None = None) -> StartupProbe:
+        """Create a gRPC startup probe.
+
+        An explicit ``method`` must be fully qualified and return OK. An unset
+        method calls ``/chalk.health.v1.Probe/Check`` and expects UNIMPLEMENTED
+        to confirm that the routed endpoint speaks gRPC.
+        """
+        return cls(_kind="grpc", _value=method)
+
+    def to_dict(self) -> dict[str, Any]:
+        check = (
+            {}
+            if self._value is None
+            else {"path" if self._kind == "http" else "method": self._value}
+        )
+        return {self._kind: check}
+
+
+@dataclass(frozen=True)
 class CronScalingWindow:
     """A single cron-based scaling window."""
 
@@ -255,6 +286,12 @@ class ScalingGroup:
     Orchestrates image building, local file upload via volumes, and
     scaling-group lifecycle in a single high-level API.
 
+    ``readiness_probe`` checks each replica directly. Optional ``startup_probe``
+    checks the externally routed endpoint before deployment becomes ready, e.g.
+    ``StartupProbe.http("/health")``. Use ``protocol="grpc"`` with
+    ``StartupProbe.grpc(...)``. External startup probes are not supported with
+    ``authenticated=True``.
+
     Examples
     --------
     >>> from chalkcompute import ScalingGroup, Image
@@ -292,6 +329,7 @@ class ScalingGroup:
         min_replicas: int = 1,
         max_replicas: int = 1,
         readiness_probe: ReadinessProbe | None = None,
+        startup_probe: StartupProbe | None = None,
         shutdown_delay_seconds: int | None = None,
         scaling_interval_seconds: int | None = None,
         target_cpu_utilization_percentage: int | None = None,
@@ -336,6 +374,13 @@ class ScalingGroup:
             target_cpu_utilization_percentage=target_cpu_utilization_percentage,
             target_gpu_utilization_percentage=target_gpu_utilization_percentage,
         )
+        if startup_probe is not None:
+            if port is None:
+                raise ValueError("startup_probe requires port")
+            if startup_probe._kind == "grpc" and protocol != "grpc":
+                raise ValueError("StartupProbe.grpc requires protocol='grpc'")
+            if startup_probe._kind == "http" and protocol == "grpc":
+                raise ValueError("StartupProbe.http requires an HTTP protocol")
         self._image: _Image | str | None = normalized_image
         self._name = name
         self._cpu = cpu
@@ -358,6 +403,7 @@ class ScalingGroup:
         self._min_replicas = min_replicas
         self._max_replicas = max_replicas
         self._readiness_probe = readiness_probe
+        self._startup_probe = startup_probe
         self._shutdown_delay_seconds = shutdown_delay_seconds
         self._scaling_interval_seconds = scaling_interval_seconds
         self._target_cpu_utilization_percentage = target_cpu_utilization_percentage
@@ -465,6 +511,7 @@ class ScalingGroup:
         sg._min_replicas = 1
         sg._max_replicas = 1
         sg._readiness_probe = None
+        sg._startup_probe = None
         sg._shutdown_delay_seconds = None
         sg._scaling_interval_seconds = None
         sg._target_cpu_utilization_percentage = None
@@ -499,7 +546,7 @@ class ScalingGroup:
             Maximum seconds to wait for the image build to complete.
         ready_timeout
             Maximum seconds to wait for the scaling group to have at least one
-            ready and available replica.
+            ready and available replica and pass any configured startup probe.
 
         Returns
         -------
@@ -612,6 +659,11 @@ class ScalingGroup:
             readiness_probe=(
                 self._readiness_probe.to_dict()
                 if self._readiness_probe is not None
+                else None
+            ),
+            startup_probe=(
+                self._startup_probe.to_dict()
+                if self._startup_probe is not None
                 else None
             ),
             tags=self._tags,
