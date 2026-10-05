@@ -32,7 +32,7 @@ AGENT = "oracle"
 
 IMAGE = (
     Image.debian_slim("3.13")
-    .pip_install(["harbor", "chalkcompute", "dockerfile-parse"])
+    .pip_install(["harbor", "chalkcompute", "dockerfile-parse", "opentelemetry-api"])
     .add_local_dir(str(HERE / "chalk_harbor"), "/opt/harbor/chalk_harbor")
     .add_local_dir(str(HERE / "smoke"), "/opt/harbor/tasks")
 )
@@ -72,6 +72,17 @@ def harbor_trial(task_name: str) -> str:
             }
         )
     result = json.loads(trials[0].read_text())
+
+    # Harbor emits no telemetry and the agent runs in another sandbox, so replay the
+    # trial's record as spans here, where the row's session is the current context.
+    sys.path.insert(0, "/opt/harbor")
+    from chalk_harbor.tracing import emit_trial_spans
+
+    instruction = Path("/opt/harbor/tasks", task_name, "instruction.md")
+    emit_trial_spans(
+        trials[0].parent,
+        instruction=instruction.read_text() if instruction.exists() else None,
+    )
     rewards = (result.get("verifier_result") or {}).get("rewards") or {}
     exception = result.get("exception_info") or {}
     return json.dumps(
@@ -116,6 +127,11 @@ def main(argv: list[str]) -> int:
     tasks = argv or sorted(
         p.name for p in (HERE / "smoke").iterdir() if (p / "task.toml").exists()
     )
+    # The decorators deploy in the background, and Python waits for those deploys at
+    # exit (up to 600s of build plus 300s of readiness each). Waiting here surfaces a slow
+    # or broken deploy before the evaluation instead of as a hang after the results.
+    for function in (harbor_trial, harbor_reward):
+        function.wait_ready(timeout=900)
     dataset = chalkcompute.DatasetClient().upload("harbor-smoke", {"task_name": tasks})
     evaluation = chalkcompute.EvaluationClient().create(
         f"harbor-smoke-{int(time.time())}",

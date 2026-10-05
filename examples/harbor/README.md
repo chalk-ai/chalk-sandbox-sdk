@@ -66,6 +66,17 @@ The task function runs one Harbor trial per dataset row; the trial's own environ
 further sandbox, created with the function's platform identity (`chalk_identity=True`). The
 scorer's metadata keeps the trial name, all rewards, any exception, and wall time.
 
+Each row's trace shows the trial. Harbor emits no telemetry, and the agent runs inside
+the trial's sandbox, so `chalk_harbor.tracing.emit_trial_spans` replays the trial's record
+afterwards, under the row's session and with the original timestamps:
+- a `harbor.trial` span for the whole trial, with one child per phase (environment setup,
+  agent setup, agent execution, verifier);
+- an LLM span per agent turn, with model, tokens and cost;
+- a TOOL span per tool call, with its arguments and observation.
+
+Per-turn spans need an agent that writes an ATIF trajectory, such as codex, claude-code or
+terminus. The `oracle` agent writes none, so oracle rows show only the phases.
+
 ## Environment kwargs
 
 Pass with `--ek key=value`:
