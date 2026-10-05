@@ -434,11 +434,12 @@ run = evaluation.run(metadata={"git_sha": "abc123"}).wait()
 print(run.status, run.result_dataset)
 ```
 
-By default the server finishes a run's SQL job and computes its score summary
-when the run is read. Pass `execution_mode="workflow"` (or
-`cc.EvaluationRunExecutionMode.WORKFLOW`) to have a workflow on the
-environment's workflow orchestrator drive the run instead; the environment must
-have a workflow orchestrator. `run.execution_mode` reports the mode a run uses.
+By default a run is driven by a workflow on the environment's workflow
+orchestrator when the environment has one, and otherwise the server finishes
+the run's SQL job and computes its score summary when the run is read. Pass
+`execution_mode="workflow"` or `"on_read"` (or the matching
+`cc.EvaluationRunExecutionMode` member) to choose; `"workflow"` requires a
+workflow orchestrator. `run.execution_mode` reports the mode a run uses.
 
 `DatasetClient.upload` accepts CSV or Parquet paths, multiple same-schema
 files, PyArrow tables and record batches, column/row mappings, and dataframes
