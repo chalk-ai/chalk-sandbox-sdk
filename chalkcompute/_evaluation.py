@@ -23,7 +23,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
@@ -283,6 +283,18 @@ class EvaluationRunStatus(str, Enum):
     CANCELED = "canceled"
 
 
+class EvaluationRunExecutionMode(str, Enum):
+    """How the server drives a run's SQL query and score summary to completion."""
+
+    UNSPECIFIED = "unspecified"
+    ON_READ = "on_read"
+    """The server reconciles the run and computes its summary when the run is read."""
+    WORKFLOW = "workflow"
+    """A workflow on the environment's workflow orchestrator watches the run's SQL
+    job and computes its summary. Requires the environment to have a workflow
+    orchestrator."""
+
+
 _TERMINAL_RUN_STATUSES = frozenset(
     {
         EvaluationRunStatus.SUCCEEDED,
@@ -403,9 +415,22 @@ class Evaluation:
         """Return the latest server representation of this evaluation."""
         return self._require_client().get(self.id)
 
-    def run(self, *, metadata: Mapping[str, Any] | None = None) -> EvaluationRun:
-        """Queue a run of this evaluation and return its handle."""
-        return self._require_client().run(self.id, metadata=metadata)
+    def run(
+        self,
+        *,
+        metadata: Mapping[str, Any] | None = None,
+        execution_mode: EvaluationRunExecutionMode
+        | Literal["on_read", "workflow"]
+        | None = None,
+    ) -> EvaluationRun:
+        """Queue a run of this evaluation and return its handle.
+
+        ``execution_mode`` selects how the server drives the run to completion;
+        the server defaults to ``"on_read"`` when it is omitted.
+        """
+        return self._require_client().run(
+            self.id, metadata=metadata, execution_mode=execution_mode
+        )
 
     def runs(self, *, limit: int | None = None) -> Iterator[EvaluationRun]:
         """Iterate this evaluation's runs, newest first."""
@@ -455,6 +480,8 @@ class EvaluationRun:
     result_dataset_id: str | None = None
     result_dataset_revision_id: str | None = None
     error_message: str | None = None
+    execution_mode: EvaluationRunExecutionMode = EvaluationRunExecutionMode.UNSPECIFIED
+    """How the server drives this run to completion."""
     _client: EvaluationClient | None = field(default=None, repr=False, compare=False)
 
     @property
@@ -746,11 +773,23 @@ class EvaluationClient:
         evaluation_id: str,
         *,
         metadata: Mapping[str, Any] | None = None,
+        execution_mode: EvaluationRunExecutionMode
+        | Literal["on_read", "workflow"]
+        | None = None,
     ) -> EvaluationRun:
-        """Queue a run for an existing evaluation."""
+        """Queue a run for an existing evaluation.
+
+        ``execution_mode`` selects how the server drives the run to completion;
+        the server defaults to ``"on_read"`` when it is omitted.
+        """
         evaluation_id = evaluation_id.strip()
         if not evaluation_id:
             raise ValueError("evaluation_id is required")
+        execution_mode_pb = (
+            None
+            if execution_mode is None
+            else _run_execution_mode_to_proto(execution_mode)
+        )
         stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
         response = self._call(
             stub.create_evaluation_run,
@@ -763,6 +802,7 @@ class EvaluationClient:
                         json.dumps(_metadata_dict(metadata))
                     )
                 ),
+                execution_mode=execution_mode_pb,
             ),
         )
         if response.evaluation_run is None:
@@ -1064,8 +1104,34 @@ def _evaluation_run_from_proto(
         result_dataset_id=raw.result_dataset_id or None,
         result_dataset_revision_id=raw.result_dataset_revision_id or None,
         error_message=raw.error_message or None,
+        execution_mode=_parse_run_execution_mode(raw.execution_mode),
         _client=client,
     )
+
+
+def _run_execution_mode_to_proto(
+    value: EvaluationRunExecutionMode | str,
+) -> evaluation_pb.EvaluationRunExecutionMode:
+    try:
+        mode = EvaluationRunExecutionMode(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"execution_mode must be 'on_read' or 'workflow', got {value!r}"
+        ) from exc
+    if mode is EvaluationRunExecutionMode.UNSPECIFIED:
+        raise ValueError("execution_mode must be 'on_read' or 'workflow'")
+    return evaluation_pb.EvaluationRunExecutionMode[mode.name]
+
+
+def _parse_run_execution_mode(
+    value: evaluation_pb.EvaluationRunExecutionMode,
+) -> EvaluationRunExecutionMode:
+    # A mode added on the server after this SDK was built reads as unspecified
+    # rather than failing the whole run lookup.
+    try:
+        return EvaluationRunExecutionMode(value.name.lower())
+    except (AttributeError, ValueError):
+        return EvaluationRunExecutionMode.UNSPECIFIED
 
 
 def _parse_run_status(value: evaluation_pb.EvaluationRunStatus) -> EvaluationRunStatus:

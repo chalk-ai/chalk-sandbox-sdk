@@ -16,6 +16,7 @@ from chalkcompute._evaluation import (
     EvaluationClient,
     EvaluationError,
     EvaluationNotFoundError,
+    EvaluationRunExecutionMode,
     EvaluationRunFailedError,
     EvaluationRunStatus,
     EvaluationScorerResult,
@@ -545,6 +546,89 @@ def test_run_waits_until_success_and_exposes_result_dataset() -> None:
     assert isinstance(run_request, evaluation_pb.CreateEvaluationRunRequest)
     assert run_request.evaluation_id == "eval-1"
     assert json.loads(run_request.metadata.to_json()) == {"git_sha": "abc123"}
+
+
+def _create_run_client(run: dict[str, Any]) -> tuple[_FakeConnectClient, Any]:
+    connect = _FakeConnectClient(
+        {
+            "get_evaluation": [
+                _message(
+                    evaluation_pb.GetEvaluationResponse,
+                    {"evaluation": _evaluation_dict()},
+                )
+            ],
+            "create_evaluation_run": [
+                _message(
+                    evaluation_pb.CreateEvaluationRunResponse,
+                    {"evaluationRun": run},
+                )
+            ],
+        }
+    )
+    client = EvaluationClient(connect_client=connect)  # type: ignore[arg-type]
+    return connect, client.get("eval-1")
+
+
+def test_run_omits_execution_mode_by_default() -> None:
+    connect, evaluation = _create_run_client(_run_dict("EVALUATION_RUN_STATUS_PENDING"))
+
+    run = evaluation.run()
+
+    run_request = connect.calls[-1][1]
+    assert isinstance(run_request, evaluation_pb.CreateEvaluationRunRequest)
+    assert "executionMode" not in json.loads(run_request.to_json())
+    assert run.execution_mode is EvaluationRunExecutionMode.UNSPECIFIED
+
+
+@pytest.mark.parametrize(
+    ("execution_mode", "expected_pb", "expected_json"),
+    [
+        (
+            EvaluationRunExecutionMode.WORKFLOW,
+            evaluation_pb.EvaluationRunExecutionMode.WORKFLOW,
+            "EVALUATION_RUN_EXECUTION_MODE_WORKFLOW",
+        ),
+        (
+            "workflow",
+            evaluation_pb.EvaluationRunExecutionMode.WORKFLOW,
+            "EVALUATION_RUN_EXECUTION_MODE_WORKFLOW",
+        ),
+        (
+            "on_read",
+            evaluation_pb.EvaluationRunExecutionMode.ON_READ,
+            "EVALUATION_RUN_EXECUTION_MODE_ON_READ",
+        ),
+    ],
+)
+def test_run_sends_execution_mode_and_exposes_it_on_run(
+    execution_mode: EvaluationRunExecutionMode | str,
+    expected_pb: evaluation_pb.EvaluationRunExecutionMode,
+    expected_json: str,
+) -> None:
+    connect, evaluation = _create_run_client(
+        {
+            **_run_dict("EVALUATION_RUN_STATUS_PENDING"),
+            "executionMode": expected_json,
+        }
+    )
+
+    run = evaluation.run(execution_mode=execution_mode)  # type: ignore[arg-type]
+
+    run_request = connect.calls[-1][1]
+    assert isinstance(run_request, evaluation_pb.CreateEvaluationRunRequest)
+    assert run_request.execution_mode == expected_pb
+    assert json.loads(run_request.to_json())["executionMode"] == expected_json
+    assert run.execution_mode is EvaluationRunExecutionMode(execution_mode)
+
+
+@pytest.mark.parametrize("execution_mode", ["unspecified", "eventually"])
+def test_run_rejects_invalid_execution_mode(execution_mode: str) -> None:
+    connect, evaluation = _create_run_client(_run_dict("EVALUATION_RUN_STATUS_PENDING"))
+
+    with pytest.raises(ValueError, match="execution_mode"):
+        evaluation.run(execution_mode=execution_mode)  # type: ignore[arg-type]
+
+    assert [method for method, _request in connect.calls] == ["get_evaluation"]
 
 
 def test_wait_raises_typed_error_for_failed_run() -> None:
