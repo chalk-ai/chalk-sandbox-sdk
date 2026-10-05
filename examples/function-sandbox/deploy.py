@@ -27,11 +27,14 @@ SANDBOX_E2E_IMAGE = os.environ.get("CHALK_SANDBOX_E2E_IMAGE")
     image=chalkcompute.Image.debian_slim("3.12").pip_install(["chalkcompute>=2.11.1"]),
     env={"CHALK_SANDBOX_E2E_IMAGE": SANDBOX_E2E_IMAGE} if SANDBOX_E2E_IMAGE else None,
 )
-def create_sandbox(command: list[str]) -> str:
-    """Run a command in a nested sandbox using the pod's credentials."""
+def create_sandbox(command: list[str] | None = None) -> str:
+    """Run a command in a nested sandbox, defaulting to a simple echo."""
     import os
 
     from chalkcompute import Image, Sandbox
+
+    if command is None:
+        command = ["echo", "sandbox-exec-ok"]
 
     sandbox = Sandbox(
         image=os.environ.get("CHALK_SANDBOX_E2E_IMAGE") or Image.debian_slim("3.12")
