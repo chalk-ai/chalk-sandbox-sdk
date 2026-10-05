@@ -31,7 +31,9 @@ class TestFunctionSandbox:
         _delete_function(cls.function_name)
 
     def test_deployed_function_executes_in_sandbox_with_pod_identity(self) -> None:
-        output = chalkcompute.RemoteFunction.from_name(self.function_name).remote()
+        output = chalkcompute.RemoteFunction.from_name(self.function_name).remote(
+            ["echo", "sandbox-exec-ok"]
+        )
 
         assert output == "sandbox-exec-ok\n"
 

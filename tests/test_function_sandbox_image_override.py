@@ -12,7 +12,7 @@ import pytest
 @pytest.mark.parametrize(
     ("image_override", "command", "expected_output"),
     [
-        (None, None, "sandbox-exec-ok\n"),
+        (None, ["echo", "sandbox-exec-ok"], "sandbox-exec-ok\n"),
         ("alpine:3.20", ["echo", "sandbox-exec-ok"], "sandbox-exec-ok\n"),
         ("python:3.13-slim", ["python", "--version"], "Python 3.13.0\n"),
     ],
@@ -20,7 +20,7 @@ import pytest
 def test_function_sandbox_image_override(
     monkeypatch: pytest.MonkeyPatch,
     image_override: str | None,
-    command: list[str] | None,
+    command: list[str],
     expected_output: str,
 ) -> None:
     seen: dict[str, Any] = {}
@@ -69,12 +69,8 @@ def test_function_sandbox_image_override(
         monkeypatch.setenv(
             "CHALK_SANDBOX_E2E_IMAGE", expected_env["CHALK_SANDBOX_E2E_IMAGE"]
         )
-    if command is None:
-        assert deployed_function() == expected_output
-    else:
-        assert deployed_function(command) == expected_output
-    expected_command = command if command is not None else ["echo", "sandbox-exec-ok"]
-    assert seen["commands"] == [tuple(expected_command)]
+    assert deployed_function(command) == expected_output
+    assert seen["commands"] == [tuple(command)]
     assert (
         seen["sandbox_image"] == image_override
         if image_override is not None
