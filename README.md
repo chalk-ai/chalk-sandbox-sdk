@@ -561,6 +561,34 @@ Metadata records `confidence`, `escalated`, `judge_model`, and
 confidence is not calibrated on every task, so choose `threshold` on a small
 labeled sample. `jev` reaches models the same way `llm_judge` does.
 
+## Training with prime-rl
+
+`cc.prime_rl.train` runs an unmodified [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl)
+config as a Chalk model training run. The stock prime-rl image runs `rl @ <config>` on the
+GPUs you ask for, and each step's reward, loss, entropy, grad norm and learning rate appear
+on the run's Metrics tab.
+
+```python
+run = cc.prime_rl.train(
+    "my_run.toml",                    # uploaded with the run; or a path inside the image
+    gpu="nvidia-l4:2",                # prime-rl needs at least 2: trainer + inference server
+    env_packages=["./dsgym_env"],     # local verifiers environments, installed into prime-rl
+    secrets=["HF_TOKEN"],             # Chalk secrets exposed as env vars of the same name
+    args=["--orchestrator.batch-size", "64"],  # passed through to `rl`
+)
+run.wait()
+```
+
+The same thing from a shell, which also prints the run's dashboard link:
+
+```bash
+python -m chalkcompute.prime_rl train my_run.toml --gpu nvidia-l4:2 -- --max-steps 15
+python -m chalkcompute.prime_rl wait <run-id>     # or: cancel <run-id>
+```
+
+A training run must name a dataset, so one called `prime-rl-placeholder` is uploaded unless
+`data=` is given; RL tasks come from prime-rl's environment, not from a dataset.
+
 ## Deployment revisions and rollback
 
 Scaling groups and functions have stable parent IDs with immutable deployment

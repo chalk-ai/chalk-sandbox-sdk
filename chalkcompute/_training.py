@@ -362,6 +362,10 @@ class TrainingFunction:
             deploy_image = _make_base_image(self._image)
 
         module_name = _deploy_module_name(self._func)
+        if module_name.split(".")[0] == "chalkcompute":
+            # A training function shipped with the SDK (e.g. ``chalkcompute.prime_rl``) is
+            # already in the image's chalkcompute install; uploading the package would shadow it.
+            return deploy_image
         package_dir = _package_dir_for_module(module_name)
 
         if package_dir is not None:
