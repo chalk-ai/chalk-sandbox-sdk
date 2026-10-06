@@ -22,6 +22,9 @@ from chalkcompute import (
 
 HOST_CAPACITY_ERROR = "all registered host-pool capacity is allocated"
 SANDBOX_PREEMPTED_MESSAGE = "container was preempted"
+SANDBOX_HOST_UNAVAILABLE_MESSAGE = (
+    "Container marked terminated because its host became unavailable"
+)
 BENCHMARK_RESULTS_VOLUME = "volume-bench-results"
 BENCHMARK_RESULTS_PREFIX = "pyperf"
 VOLUME_SPOOL_EXHAUSTED_EXIT_CODE = 75
@@ -34,6 +37,10 @@ class VolumeSpoolExhaustedError(RuntimeError):
 
 
 class SandboxPreemptedError(RuntimeError):
+    pass
+
+
+class SandboxHostUnavailableError(RuntimeError):
     pass
 
 
@@ -73,6 +80,10 @@ KNOWN_ERRORS = (
     KnownError(
         error_type="sandbox-preempted",
         exception_type=SandboxPreemptedError,
+    ),
+    KnownError(
+        error_type="sandbox-host-unavailable",
+        exception_type=SandboxHostUnavailableError,
     ),
     KnownError(
         error_type="volume-spool-exhausted",
@@ -242,6 +253,10 @@ def _wait_for_sandbox(
         )
     if status_message == SANDBOX_PREEMPTED_MESSAGE:
         raise SandboxPreemptedError(
+            f"{phase} sandbox completed with status {status}: {status_message}"
+        )
+    if status_message and status_message.startswith(SANDBOX_HOST_UNAVAILABLE_MESSAGE):
+        raise SandboxHostUnavailableError(
             f"{phase} sandbox completed with status {status}: {status_message}"
         )
     detail = f": {status_message}" if status_message else ""
