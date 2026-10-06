@@ -19,7 +19,7 @@ import pytest
         ("python:3.13-slim", ["python", "--version"], "Python 3.13.0\n"),
     ],
 )
-def test_function_sandbox_image_override(
+def test_function_sandbox_override(
     monkeypatch: pytest.MonkeyPatch,
     image_override: str | None,
     command_override: list[str] | None,
