@@ -21,7 +21,11 @@ from chalkcompute import (
 )
 
 HOST_CAPACITY_ERROR = "all registered host-pool capacity is allocated"
+HOST_UNSCHEDULABLE_ERROR = "no eligible registered host has available capacity"
 SANDBOX_PREEMPTED_MESSAGE = "container was preempted"
+SANDBOX_HOST_UNAVAILABLE_MESSAGE = (
+    "Container marked terminated because its host became unavailable"
+)
 BENCHMARK_RESULTS_VOLUME = "volume-bench-results"
 BENCHMARK_RESULTS_PREFIX = "pyperf"
 VOLUME_SPOOL_EXHAUSTED_EXIT_CODE = 75
@@ -34,6 +38,10 @@ class VolumeSpoolExhaustedError(RuntimeError):
 
 
 class SandboxPreemptedError(RuntimeError):
+    pass
+
+
+class SandboxHostUnavailableError(RuntimeError):
     pass
 
 
@@ -55,12 +63,13 @@ class CommittedVolumeResult(Generic[T]):
 class KnownError:
     error_type: str
     exception_type: type[Exception]
-    message_contains: str | None = None
+    message_contains: tuple[str, ...] = ()
     reraise: bool = False
 
     def matches(self, error: Exception) -> bool:
         return isinstance(error, self.exception_type) and (
-            self.message_contains is None or self.message_contains in str(error)
+            not self.message_contains
+            or any(message in str(error) for message in self.message_contains)
         )
 
 
@@ -68,11 +77,15 @@ KNOWN_ERRORS = (
     KnownError(
         error_type="sandbox-capacity-exhausted",
         exception_type=SandboxCreationError,
-        message_contains=HOST_CAPACITY_ERROR,
+        message_contains=(HOST_CAPACITY_ERROR, HOST_UNSCHEDULABLE_ERROR),
     ),
     KnownError(
         error_type="sandbox-preempted",
         exception_type=SandboxPreemptedError,
+    ),
+    KnownError(
+        error_type="sandbox-host-unavailable",
+        exception_type=SandboxHostUnavailableError,
     ),
     KnownError(
         error_type="volume-spool-exhausted",
@@ -244,6 +257,10 @@ def _wait_for_sandbox(
         raise SandboxPreemptedError(
             f"{phase} sandbox completed with status {status}: {status_message}"
         )
+    if status_message and status_message.startswith(SANDBOX_HOST_UNAVAILABLE_MESSAGE):
+        raise SandboxHostUnavailableError(
+            f"{phase} sandbox completed with status {status}: {status_message}"
+        )
     detail = f": {status_message}" if status_message else ""
     raise RuntimeError(f"{phase} sandbox completed with status {status}{detail}")
 
@@ -272,7 +289,11 @@ def run_sandbox_workload(
 
 
 def build_status_benchmark(
-    *, request_type: str, error_count: int, error_type: str | None = None
+    *,
+    request_type: str,
+    error_count: int,
+    error_type: str | None = None,
+    exception_class: str | None = None,
 ) -> dict[str, Any]:
     metadata: dict[str, Any] = {
         "name": "benchmark-status",
@@ -281,6 +302,8 @@ def build_status_benchmark(
     }
     if error_type is not None:
         metadata["error_type"] = error_type
+    if exception_class is not None:
+        metadata["exception_class"] = exception_class
     return {"metadata": metadata, "runs": [{"values": []}]}
 
 
@@ -290,6 +313,7 @@ def append_status(
     request_type: str,
     error_count: int,
     error_type: str | None = None,
+    exception_class: str | None = None,
 ) -> None:
     benchmarks = results.get("benchmarks")
     if not isinstance(benchmarks, list):
@@ -299,6 +323,7 @@ def append_status(
             request_type=request_type,
             error_count=error_count,
             error_type=error_type,
+            exception_class=exception_class,
         )
     )
 
@@ -323,6 +348,7 @@ def publish_benchmark_results(
     *,
     error_count: int | None = None,
     error_type: str | None = None,
+    exception_class: str | None = None,
     archive: bool = True,
 ) -> None:
     if error_count is not None:
@@ -331,6 +357,7 @@ def publish_benchmark_results(
             request_type=request_type,
             error_count=error_count,
             error_type=error_type,
+            exception_class=exception_class,
         )
     output.write_text(json.dumps(results, sort_keys=True))
     if archive:
@@ -353,12 +380,27 @@ def run_benchmark(
         results = benchmark()
     except BenchmarkFailure as error:
         publish_benchmark_results(
-            output_path, request_type, error.results, archive=archive
+            output_path,
+            request_type,
+            error.results,
+            error_count=1,
+            error_type="benchmark-failure",
+            exception_class=type(error).__name__,
+            archive=archive,
         )
         raise
     except Exception as error:
         known_error = find_known_error(error)
         if known_error is None:
+            publish_benchmark_results(
+                output_path,
+                request_type,
+                {"version": "1.0", "benchmarks": []},
+                error_count=1,
+                error_type="unclassified",
+                exception_class=type(error).__name__,
+                archive=archive,
+            )
             raise
         if not known_error.reraise:
             print(error, file=sys.stderr)
@@ -368,6 +410,7 @@ def run_benchmark(
             {"version": "1.0", "benchmarks": []},
             error_count=1,
             error_type=known_error.error_type,
+            exception_class=type(error).__name__,
             archive=archive,
         )
         if known_error.reraise:
