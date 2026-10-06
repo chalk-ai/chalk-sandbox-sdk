@@ -68,6 +68,7 @@ from protobuf import Oneof
 from protobuf.wkt import FieldMask
 
 from chalkcompute import _local_dev
+from chalkcompute._client_cache import ClientCache
 from chalkcompute._logging import _StatusLogger
 from chalkcompute._traceback import format_exception, format_frame
 from chalkcompute._terminal import styled, supports_color
@@ -2570,13 +2571,7 @@ class RemoteFunction:
             func
         ) or inspect.isasyncgenfunction(func)
 
-        # ConnectRPC fallback client (lazily created on first call if needed).
-        self._call_stub: Any = None
-        self._remote_call_client: Any = None
-        self._queue_call_client: Any = None
         self._init_remote_call_client_state()
-        self._remote_call_auth_token: str | None = None
-        self._queue_call_auth_token: str | None = None
         self._knowledge_cutoff: str | None = None
         self._background_deploy_future: Future[None] | None = None
 
@@ -2761,12 +2756,7 @@ class RemoteFunction:
         f._arrow_result_deserializer = None
         f._is_generator = False
         f._is_async = False
-        f._call_stub = None
-        f._remote_call_client = None
-        f._queue_call_client = None
         f._init_remote_call_client_state()
-        f._remote_call_auth_token = None
-        f._queue_call_auth_token = None
         f._knowledge_cutoff = None
         f._call_timeout = call_timeout
         f._background_deploy_future = None
@@ -3373,60 +3363,15 @@ class RemoteFunction:
     # -- Call ------------------------------------------------------------------
 
     def _init_remote_call_client_state(self) -> None:
-        self._remote_call_condition = threading.Condition()
-        self._remote_call_connecting: set[bool] = set()
-        self._remote_call_generations = {False: 0, True: 0}
-        self._remote_call_leases: dict[int, int] = {}
-        self._retired_remote_call_clients: dict[int, Any] = {}
+        self._direct_transport: ClientCache[Any] = ClientCache(
+            lambda: self._create_remote_call_transport(queue=False)
+        )
+        self._queue_transport: ClientCache[Any] = ClientCache(
+            lambda: self._create_remote_call_transport(queue=True)
+        )
 
-    def _retire_remote_call_client_locked(self, client: Any) -> Any:
-        """Return an idle client to close, or defer closing until its last lease."""
-        if client is not None and self._remote_call_leases.get(id(client), 0):
-            self._retired_remote_call_clients[id(client)] = client
-            return None
-        return client
-
-    @contextlib.contextmanager
-    def _borrow_remote_call_client(self, *, queue: bool) -> typing.Iterator[Any]:
-        from chalkcompute._remote_call_client import RemoteCallClientUnavailable
-
-        attr = "_queue_call_client" if queue else "_remote_call_client"
-        while True:
-            try:
-                client = self._ensure_remote_call_client(queue=queue)
-                client_attr = attr
-            except RemoteCallClientUnavailable:
-                if queue:
-                    raise
-                self._ensure_call_stub()
-                client = self._call_stub
-                client_attr = "_call_stub"
-            with self._remote_call_condition:
-                # Retirement may have happened between lookup and acquisition.
-                # Retry locally before dispatch; no RPC has been sent yet.
-                if (
-                    client is not None
-                    and getattr(self, client_attr) is client
-                    and not self._remote_call_client_is_closed(client)
-                ):
-                    key = id(client)
-                    self._remote_call_leases[key] = (
-                        self._remote_call_leases.get(key, 0) + 1
-                    )
-                    break
-        try:
-            yield client
-        finally:
-            close = None
-            with self._remote_call_condition:
-                remaining = self._remote_call_leases[key] - 1
-                if remaining:
-                    self._remote_call_leases[key] = remaining
-                else:
-                    del self._remote_call_leases[key]
-                    close = self._retired_remote_call_clients.pop(key, None)
-            if close is not None:
-                self._close_remote_call_client(close)
+    def _transport_cache(self, *, queue: bool) -> ClientCache[Any]:
+        return self._queue_transport if queue else self._direct_transport
 
     def _using_remote_call_client(
         self,
@@ -3437,7 +3382,8 @@ class RemoteFunction:
     ) -> _RemoteCallResult:
         # This scope lives in the RPC worker, so a Python deadline does not
         # release a lease while the uncancelled native RPC is still running.
-        with self._borrow_remote_call_client(queue=queue) as client:
+        cache = self._transport_cache(queue=queue)
+        with cache.borrow(key=self._remote_call_identity_token()) as client:
             try:
                 result = call(client)
             except Exception as exc:
@@ -3448,54 +3394,17 @@ class RemoteFunction:
                 self._drop_remote_call_client(queue=queue, expected=client)
             return result
 
-    @staticmethod
-    def _remote_call_client_is_closed(client: Any) -> bool:
-        return bool(
-            getattr(client, "_closed", False) or getattr(client, "closed", False)
-        )
-
-    @staticmethod
-    def _close_remote_call_client(client: Any) -> None:
-        close = getattr(client, "close", None)
-        if callable(close):
-            try:
-                close()
-            except Exception:
-                logger.debug("Failed to close remote-call client", exc_info=True)
-
     def _drop_remote_call_clients(
-        self,
-        *,
-        direct: bool = True,
-        queue: bool = True,
+        self, *, direct: bool = True, queue: bool = True
     ) -> None:
-        """Drop cached local call transports without touching server resources."""
-        for queue_client, enabled in ((False, direct), (True, queue)):
-            if enabled:
-                self._drop_remote_call_client(queue=queue_client)
+        """Retire cached transports without touching server resources."""
+        if direct:
+            self._direct_transport.retire()
+        if queue:
+            self._queue_transport.retire()
 
     def _drop_remote_call_client(self, *, queue: bool, expected: Any = None) -> None:
-        """Retire only the failing generation, leaving active borrowers alive."""
-        attr = "_queue_call_client" if queue else "_remote_call_client"
-        token_attr = "_queue_call_auth_token" if queue else "_remote_call_auth_token"
-        close = []
-        with self._remote_call_condition:
-            attrs = [attr] if queue else [attr, "_call_stub"]
-            if expected is not None:
-                attrs = [name for name in attrs if getattr(self, name) is expected]
-                if not attrs:
-                    return  # A late failure from an already retired generation.
-            self._remote_call_generations[queue] += 1
-            for name in attrs:
-                client = getattr(self, name)
-                setattr(self, name, None)
-                retired = self._retire_remote_call_client_locked(client)
-                if retired is not None:
-                    close.append(retired)
-            if attr in attrs:
-                setattr(self, token_attr, None)
-        for client in close:
-            self._close_remote_call_client(client)
+        self._transport_cache(queue=queue).retire(expected=expected)
 
     def _call_timeout_error(self, timeout: float | None) -> TimeoutError:
         """Best-effort enrich a deadline-exceeded error with scaling-group state.
@@ -3611,34 +3520,16 @@ class RemoteFunction:
             f"Remote call {operation} failed after refreshing stale client"
         )
 
-    def _ensure_call_stub(self) -> None:
-        with self._remote_call_condition:
-            self._ensure_call_stub_locked()
-
-    def _ensure_call_stub_locked(self) -> None:
-        """Lazily create the ConnectRPC client for calling the remote function.
-
-        Raises
-        ------
-        FunctionError
-            If the function has not been deployed.
-        """
-        if self._call_stub is not None:
-            return
-
+    def _create_call_stub(self) -> Any:
+        """Create the Python gRPC fallback when the native client is unavailable."""
         from chalkcompute._gen.chalk.runtime.v1 import (
             remote_python_call_connect as call_connect,
         )
 
         if self._web_url is None:
             raise FunctionError("Function is not deployed. Call .deploy() first.")
-
-        target, use_tls = grpc_target_from_url(
-            self._web_url,
-            insecure_port=self._port,
-        )
-
-        self._call_stub = call_connect.RemoteCallServiceClientSync(
+        target, use_tls = grpc_target_from_url(self._web_url, insecure_port=self._port)
+        return call_connect.RemoteCallServiceClientSync(
             rpc_address_from_target(target, use_tls=use_tls),
             protocol=ProtocolType.GRPC,
             interceptors=rpc_interceptors(),
@@ -3672,65 +3563,31 @@ class RemoteFunction:
             metadata.append((_REQUEST_TIMESTAMP_HEADER, self._knowledge_cutoff))
         return metadata
 
+    def _remote_call_identity_token(self) -> str | None:
+        if getattr(self._client, "_uses_web_identity_token", lambda: False)() is True:
+            self._client._ensure_auth()
+            return self._client._access_token
+        return None
+
     def _ensure_remote_call_client(self, *, queue: bool = False) -> Any:
-        attr = "_queue_call_client" if queue else "_remote_call_client"
-        token_attr = "_queue_call_auth_token" if queue else "_remote_call_auth_token"
+        return self._transport_cache(queue=queue).get(
+            key=self._remote_call_identity_token()
+        )
+
+    def _create_remote_call_transport(self, *, queue: bool) -> Any:
+        from chalkcompute._remote_call_client import RemoteCallClientUnavailable
+
         uses_web_identity = (
             getattr(self._client, "_uses_web_identity_token", lambda: False)() is True
         )
-        current_token: str | None = None
-        if uses_web_identity:
-            self._client._ensure_auth()
-            current_token = self._client._access_token
-
-        while True:
-            close = None
-            with self._remote_call_condition:
-                client = getattr(self, attr)
-                token_matches = (
-                    not uses_web_identity
-                    or getattr(self, token_attr, None) == current_token
-                )
-                if (
-                    client is not None
-                    and not self._remote_call_client_is_closed(client)
-                    and token_matches
-                ):
-                    return client
-                if queue in self._remote_call_connecting:
-                    self._remote_call_condition.wait()
-                    continue
-                if client is not None:
-                    close = self._retire_remote_call_client_locked(client)
-                    setattr(self, attr, None)
-                    setattr(self, token_attr, None)
-                self._remote_call_connecting.add(queue)
-                generation = self._remote_call_generations[queue]
-
-            # Connect/authentication and native teardown can block. Neither
-            # runs under the cache lock, nor serializes RPCs already in flight.
-            try:
-                if close is not None:
-                    self._close_remote_call_client(close)
-                client = self._create_remote_call_client(
-                    queue=queue, uses_web_identity=uses_web_identity
-                )
-            except BaseException:
-                with self._remote_call_condition:
-                    self._remote_call_connecting.remove(queue)
-                    self._remote_call_condition.notify_all()
+        try:
+            return self._create_remote_call_client(
+                queue=queue, uses_web_identity=uses_web_identity
+            )
+        except RemoteCallClientUnavailable:
+            if queue:
                 raise
-            with self._remote_call_condition:
-                self._remote_call_connecting.remove(queue)
-                current = generation == self._remote_call_generations[queue]
-                if current:
-                    setattr(self, attr, client)
-                    setattr(self, token_attr, current_token)
-                self._remote_call_condition.notify_all()
-            if current:
-                return client
-            # Deployment/reset invalidated this connection while it was built.
-            self._close_remote_call_client(client)
+            return self._create_call_stub()
 
     def _create_remote_call_client(
         self, *, queue: bool, uses_web_identity: bool

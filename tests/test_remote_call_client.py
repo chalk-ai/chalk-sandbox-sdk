@@ -69,8 +69,6 @@ def test_retired_transport_keeps_borrowers_alive_and_preserves_replacement(
     assert first.closed
     assert fn._ensure_remote_call_client(queue=queue) is replacement
     assert not replacement.closed
-    assert not fn._remote_call_leases
-    assert not fn._retired_remote_call_clients
 
 
 def test_python_deadline_does_not_release_native_transport_lease() -> None:
@@ -107,7 +105,6 @@ def test_python_deadline_does_not_release_native_transport_lease() -> None:
         assert finished.wait(3)
     # Worker signals finished after the lease's finally has run.
     assert first.closed
-    assert not fn._remote_call_leases
 
 
 @pytest.mark.parametrize("queue", [False, True])
@@ -166,36 +163,25 @@ def test_cache_reset_discards_connection_built_before_reset(monkeypatch) -> None
     assert len(creations) == 2
     assert creations[0].closed
     assert client is creations[1]
-    assert fn._remote_call_client is client
+    assert fn._direct_transport.client is client
 
 
 @pytest.mark.parametrize("queue", [False, True])
-def test_retirement_between_lookup_and_borrow_reacquires_before_dispatch(
-    monkeypatch, queue
-) -> None:
+def test_borrow_uses_replacement_before_dispatch(queue) -> None:
     fn = _remote_function()
-    original = fn._ensure_remote_call_client
-    first = original(queue=queue)
-    looked_up = []
+    first = fn._ensure_remote_call_client(queue=queue)
+    fn._drop_remote_call_client(queue=queue, expected=first)
     dispatched = []
 
-    def lookup(**kwargs):
-        client = original(**kwargs)
-        looked_up.append(client)
-        if len(looked_up) == 1:
-            fn._drop_remote_call_client(queue=queue, expected=client)
-        return client
-
     def call(client):
+        assert client is not first
         assert not client.closed
         dispatched.append(client)
         return 42
 
-    monkeypatch.setattr(fn, "_ensure_remote_call_client", lookup)
     assert fn._using_remote_call_client(queue=queue, call=call) == 42
     assert first.closed
-    assert len(looked_up) == 2
-    assert dispatched == [looked_up[1]]
+    assert dispatched == [fn._ensure_remote_call_client(queue=queue)]
 
 
 def test_failed_connection_creation_wakes_other_callers(monkeypatch) -> None:
@@ -226,7 +212,6 @@ def test_failed_connection_creation_wakes_other_callers(monkeypatch) -> None:
         clients = [future.result(timeout=3) for future in others]
     assert len(attempts) == 2
     assert all(client is clients[0] for client in clients)
-    assert not fn._remote_call_connecting
 
 
 def test_python_grpc_fallback_keeps_its_transport_until_rpc_finishes(monkeypatch):
@@ -236,7 +221,7 @@ def test_python_grpc_fallback_keeps_its_transport_until_rpc_finishes(monkeypatch
     def unavailable(**kwargs):
         raise RemoteCallClientUnavailable("native client unavailable")
 
-    monkeypatch.setattr(fn, "_ensure_remote_call_client", unavailable)
+    monkeypatch.setattr(fn, "_create_remote_call_client", unavailable)
 
     class Stub:
         def __init__(self, retire=False):
@@ -247,7 +232,7 @@ def test_python_grpc_fallback_keeps_its_transport_until_rpc_finishes(monkeypatch
             request = next(requests)
             if self.retire:
                 fn._drop_remote_call_client(queue=False, expected=self)
-                fn._ensure_call_stub()
+                fn._ensure_remote_call_client()
                 assert not self.closed
             value = _read_input(request.feather_stream)["x"][0]
             return [
@@ -261,14 +246,14 @@ def test_python_grpc_fallback_keeps_its_transport_until_rpc_finishes(monkeypatch
 
     first = Stub(retire=True)
     replacement = Stub()
-    fn._call_stub = first
+    stubs = iter([first, replacement])
     monkeypatch.setattr(
         "chalkcompute._gen.chalk.runtime.v1.remote_python_call_connect.RemoteCallServiceClientSync",
-        lambda *args, **kwargs: replacement,
+        lambda *args, **kwargs: next(stubs),
     )
     assert fn.remote(41) == 42
     assert first.closed
-    assert fn._call_stub is replacement
+    assert fn._direct_transport.client is replacement
     assert not replacement.closed
     assert fn.remote(42) == 43
 
@@ -667,7 +652,7 @@ def test_direct_call_drops_non_retryable_stale_client_for_next_call() -> None:
 
     assert len(FakeRemoteCallClient.instances) == 1
     assert FakeRemoteCallClient.instances[0].closed is True
-    assert fn._remote_call_client is None
+    assert fn._direct_transport.client is None
 
     assert fn.remote(41) == 42
     assert len(FakeRemoteCallClient.instances) == 2
@@ -1232,8 +1217,8 @@ def test_delete_drops_cached_call_clients() -> None:
 
     assert direct_client.closed is True
     assert queue_client.closed is True
-    assert fn._remote_call_client is None
-    assert fn._queue_call_client is None
+    assert fn._direct_transport.client is None
+    assert fn._queue_transport.client is None
     assert fn._version_info is None
 
 
