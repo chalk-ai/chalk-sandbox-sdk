@@ -121,37 +121,3 @@ def test_gather_propagates_model_error() -> None:
     handle = ModelCallHandle(lambda: client, "model", "call")
     with pytest.raises(ModelRemoteError, match="inference failed"):
         chalkcompute.gather([handle])
-
-
-@pytest.mark.parametrize("async_context", [False, True])
-def test_gather_timeout_bounds_blocking_wait(async_context: bool) -> None:
-    release = threading.Event()
-    finished = threading.Event()
-
-    def get(timeout: float | None) -> int:
-        try:
-            assert release.wait(5), "gather did not return before the poll finished"
-            return 1
-        finally:
-            finished.set()
-
-    handle = Mock()
-    handle.get.side_effect = get
-
-    async def run() -> list[Any]:
-        return await chalkcompute.gather([handle], timeout=0.1)
-
-    try:
-        with pytest.raises(TimeoutError):
-            if async_context:
-                asyncio.run(run())
-            else:
-                chalkcompute.gather([handle], timeout=0.1)
-        assert not finished.is_set()
-    finally:
-        release.set()
-        assert finished.wait(5)
-
-
-def test_gather_empty_iterable_with_zero_timeout() -> None:
-    assert chalkcompute.gather([], timeout=0) == []

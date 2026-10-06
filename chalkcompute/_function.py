@@ -984,15 +984,9 @@ async def _run_in_worker_thread(
         try:
             value = context.run(func, *args, **kwargs)
         except BaseException as exc:
-            callback, result = complete_with_exception, exc
+            loop.call_soon_threadsafe(complete_with_exception, exc)
         else:
-            callback, result = complete_with_result, value
-        try:
-            loop.call_soon_threadsafe(callback, result)
-        except RuntimeError:
-            # A timed-out synchronous gather can close its loop before polling finishes.
-            if not loop.is_closed():
-                raise
+            loop.call_soon_threadsafe(complete_with_result, value)
 
     threading.Thread(target=run, daemon=True).start()
     return await future
@@ -1380,13 +1374,8 @@ async def _gather_async(
     *,
     timeout: float | None = None,
 ) -> list[Any]:
-    if not handles:
-        return []
     return list(
-        await asyncio.wait_for(
-            asyncio.gather(*(_gather_get(handle, timeout) for handle in handles)),
-            timeout=timeout,
-        )
+        await asyncio.gather(*(_gather_get(handle, timeout) for handle in handles))
     )
 
 
@@ -1399,7 +1388,6 @@ def gather(
 
     In synchronous code this blocks and returns ``list[Any]``. Inside a running
     event loop it returns an awaitable, matching :meth:`FunctionCallHandle.get`.
-    ``timeout`` bounds the entire wait; it does not cancel the remote calls.
     """
     handle_list = list(handles)
     for i, handle in enumerate(handle_list):
