@@ -142,11 +142,12 @@ SANDBOX_ENV = {
 # on stdin and writes one JSON reply per line, in the output format DSGym's
 # Jupyter executor returns: "stream" items for stdout and stderr, a "result"
 # item for the value of a trailing expression, and an "error" item with a
-# traceback. It keeps the reply channel on a private copy of stdout and points
-# file descriptor 1 at stderr, so output from subprocesses or C extensions
-# cannot corrupt a reply.
+# traceback. It keeps the reply channel on a private copy of stdout; while a
+# cell runs, file descriptors 1 and 2 point at temporary files, so output
+# written below Python (subprocesses, C extensions) comes back as stream
+# output like Jupyter's does and cannot corrupt a reply.
 KERNEL = r"""
-import ast, io, json, os, signal, sys, traceback
+import ast, io, json, os, signal, sys, tempfile, traceback
 
 class _Timeout(BaseException):
     pass
@@ -180,14 +181,37 @@ def _error(exc, lines):
     return {"type": "error", "name": type(exc).__name__, "value": str(exc),
             "traceback": [line.rstrip("\n") for line in lines]}
 
+def _capture_fds():
+    # Writes that bypass sys.stdout/sys.stderr (subprocesses, C extensions) land in
+    # per-cell temporary files and are returned with the cell's output.
+    files = (tempfile.TemporaryFile(), tempfile.TemporaryFile())
+    saved = (os.dup(1), os.dup(2))
+    os.dup2(files[0].fileno(), 1)
+    os.dup2(files[1].fileno(), 2)
+    return files, saved
+
+def _release_fds(captured):
+    files, saved = captured
+    for fd, original in zip((1, 2), saved):
+        os.dup2(original, fd)
+        os.close(original)
+    for name, f in zip(("stdout", "stderr"), files):
+        f.seek(0)
+        text = f.read().decode(errors="replace")
+        f.close()
+        if text:
+            chunks.append({"type": "stream", "name": name, "text": text})
+
 def run(code, timeout):
     chunks.clear()
     tail = []
+    timed_out = False
     try:
         tree = ast.parse(code, "<cell>")
     except SyntaxError as exc:
         return [_error(exc, traceback.format_exception_only(type(exc), exc))], False
     last = tree.body.pop() if tree.body and isinstance(tree.body[-1], ast.Expr) else None
+    captured = _capture_fds()
     signal.alarm(timeout)
     try:
         exec(compile(tree, "<cell>", "exec"), namespace)
@@ -197,17 +221,17 @@ def run(code, timeout):
                 namespace["_"] = value
                 tail.append({"type": "result", "data": {"text/plain": repr(value)}})
     except _Timeout:
-        signal.alarm(0)
+        timed_out = True
         tail.append({"type": "error", "name": "TimeoutError",
                      "value": f"Execution timed out after {timeout} seconds", "traceback": []})
-        return list(chunks) + tail, True
     except BaseException as exc:
         # Skip this driver's frame so the traceback starts in the cell.
         tb = exc.__traceback__.tb_next if exc.__traceback__ else None
         tail.append(_error(exc, traceback.format_exception(type(exc), exc, tb)))
     finally:
         signal.alarm(0)
-    return list(chunks) + tail, False
+        _release_fds(captured)
+    return list(chunks) + tail, timed_out
 
 for line in requests:
     request = json.loads(line)
