@@ -1379,16 +1379,12 @@ async def _gather_async(
     )
 
 
-def gather(
+def _gather_handles(
     handles: typing.Iterable[_DeferredCallHandle],
     *,
-    timeout: float | None = None,
+    timeout: float | None,
 ) -> Any:
-    """Wait for deferred function or model calls and return results in input order.
-
-    In synchronous code this blocks and returns ``list[Any]``. Inside a running
-    event loop it returns an awaitable, matching :meth:`FunctionCallHandle.get`.
-    """
+    """Shared implementation for chalkcompute's function and chalkpy's model APIs."""
     handle_list = list(handles)
     for i, handle in enumerate(handle_list):
         if not callable(getattr(handle, "get", None)):
@@ -1401,6 +1397,19 @@ def gather(
     if _has_running_event_loop():
         return _gather_async(handle_list, timeout=timeout)
     return asyncio.run(_gather_async(handle_list, timeout=timeout))
+
+
+def gather(
+    handles: typing.Iterable[FunctionCallHandle],
+    *,
+    timeout: float | None = None,
+) -> Any:
+    """Wait for deferred function calls concurrently and return results in order.
+
+    In synchronous code this blocks and returns ``list[Any]``. Inside a running
+    event loop it returns an awaitable, matching :meth:`FunctionCallHandle.get`.
+    """
+    return _gather_handles(handles, timeout=timeout)
 
 
 def _source_text_for_deploy(source_file: str) -> str:

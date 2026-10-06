@@ -9,7 +9,7 @@ import chalkcompute
 import pyarrow as pa
 import pytest
 from chalk.client._model_remote import ModelCallHandle, ModelRemoteError
-from chalkcompute._function import FunctionCallHandle
+from chalkcompute._function import FunctionCallHandle, _gather_handles
 
 
 class _AsyncHandle:
@@ -69,7 +69,8 @@ def test_gather_rejects_non_handles_with_helpful_message() -> None:
 
 
 @pytest.mark.parametrize("async_context", [False, True])
-def test_gather_model_and_function_handles_concurrently(async_context: bool) -> None:
+@pytest.mark.parametrize("kind", ["models", "functions", "mixed"])
+def test_gather_handles_concurrently(async_context: bool, kind: str) -> None:
     barrier = threading.Barrier(3, timeout=5)
 
     def poll(*args: Any, **kwargs: Any) -> Mock:
@@ -91,24 +92,30 @@ def test_gather_model_and_function_handles_concurrently(async_context: bool) -> 
 
     client = Mock()
     client.poll_next.side_effect = poll
-    models = [ModelCallHandle(lambda: client, "model", f"call-{i}") for i in range(2)]
+    models = [ModelCallHandle(lambda: client, "model", f"call-{i}") for i in range(3)]
     function = Mock(_func_name="function", _is_async=False)
     function.poll.side_effect = poll
     function._materialize_result_chunks.return_value = "function result"
-    handles = [models[0], FunctionCallHandle(function, "fn-call"), models[1]]
+    functions = [FunctionCallHandle(function, f"fn-call-{i}") for i in range(3)]
+    if kind == "models":
+        handles = models
+        expected = [7.5, 7.5, 7.5]
+    elif kind == "functions":
+        handles = functions
+        expected = ["function result"] * 3
+    else:
+        handles = [models[0], functions[0], models[1]]
+        expected = [7.5, "function result", 7.5]
+    collect = chalkcompute.gather if kind == "functions" else _gather_handles
 
     async def run() -> list[Any]:
-        return await chalkcompute.gather(handles, timeout=10)
+        return await collect(handles, timeout=10)
 
-    results = (
-        asyncio.run(run())
-        if async_context
-        else chalkcompute.gather(handles, timeout=10)
-    )
-    assert results == [7.5, "function result", 7.5]
+    results = asyncio.run(run()) if async_context else collect(handles, timeout=10)
+    assert results == expected
 
 
-def test_gather_propagates_model_error() -> None:
+def test_gather_handles_propagates_model_error() -> None:
     client = Mock()
     client.poll_next.return_value = Mock(
         cursor="done",
@@ -120,4 +127,4 @@ def test_gather_propagates_model_error() -> None:
     )
     handle = ModelCallHandle(lambda: client, "model", "call")
     with pytest.raises(ModelRemoteError, match="inference failed"):
-        chalkcompute.gather([handle])
+        _gather_handles([handle], timeout=None)
