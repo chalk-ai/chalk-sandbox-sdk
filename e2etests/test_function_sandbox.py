@@ -31,9 +31,7 @@ class TestFunctionSandbox:
         _delete_function(cls.function_name)
 
     def test_deployed_function_executes_in_sandbox_with_pod_identity(self) -> None:
-        output = chalkcompute.RemoteFunction.from_name(self.function_name).remote(
-            ["echo", "sandbox-exec-ok"]
-        )
+        output = chalkcompute.RemoteFunction.from_name(self.function_name).remote()
 
         assert output == "sandbox-exec-ok\n"
 
@@ -44,11 +42,12 @@ class TestFunctionSandbox:
                 "function-sandbox",
                 "deploy.py",
                 function_name=function_name,
-                extra_env={"CHALK_SANDBOX_E2E_IMAGE": "python:3.13-slim"},
+                extra_env={
+                    "CHALK_SANDBOX_E2E_IMAGE": "python:3.13-slim",
+                    "CHALK_SANDBOX_E2E_COMMAND": '["python", "--version"]',
+                },
             )
-            output = chalkcompute.RemoteFunction.from_name(function_name).remote(
-                ["python", "--version"]
-            )
+            output = chalkcompute.RemoteFunction.from_name(function_name).remote()
             assert output.startswith("Python 3.13.")
         finally:
             _delete_function(function_name)
