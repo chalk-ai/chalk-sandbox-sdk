@@ -36,6 +36,7 @@ from chalkcompute._containerspec import (
 )
 from chalkcompute._containerspec import KernelPolicy as KernelPolicy
 from chalkcompute._containerspec import NetworkPolicy as NetworkPolicy
+from chalkcompute._containerspec import ResourceDetector as ResourceDetector
 from chalkcompute._containerspec import RestartPolicy as RestartPolicy
 from chalkcompute._containerspec import SSHDest as SSHDest
 from chalkcompute._containerspec import SshDest as SshDest
@@ -257,6 +258,7 @@ __all__ = [
     "ExecResult",
     "PythonExecution",
     "PythonSkippedArtifact",
+    "ResourceDetector",
     "RestartPolicy",
     "Sandbox",
     "SandboxBuildError",

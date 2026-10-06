@@ -48,7 +48,11 @@ from chalkcompute._connect import (
     raise_for_rpc_error,
     rpc_address_from_target,
 )
-from chalkcompute._containerspec import ContainerSpec, NetworkPolicy
+from chalkcompute._containerspec import (
+    ContainerSpec,
+    NetworkPolicy,
+    ResourceDetector,
+)
 from chalkcompute._env import normalize_env
 from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
 from chalkcompute._gen.chalk.sandbox.v1 import runtime_service_pb as runtime_pb
@@ -632,6 +636,7 @@ class Sandbox:
         security_policy: ContainerSecurityPolicy | None = None,
         network_policy: NetworkPolicy | None = None,
         compute_class: ComputeClass | None = None,
+        resource_detectors: Sequence[ResourceDetector] | None = None,
         host_pool_id: str | None = None,
         tags: dict[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
@@ -683,6 +688,11 @@ class Sandbox:
             :class:`NetworkPolicy` type accepted by :class:`Container`.
         compute_class
             Optional :class:`ComputeClass` (``K8S`` or ``HOST``).
+        resource_detectors
+            Optional :class:`ResourceDetector` values. Each detector inspects
+            egress traffic to the hosts it recognizes and records resources the
+            sandbox creates, such as GitHub pull requests, against the sandbox.
+            The recognized hosts must be allowed by ``network_policy``.
         host_pool_id
             Optional host pool ID to restrict placement of host compute class sandboxes.
             Unstable; subject to change.
@@ -746,6 +756,7 @@ class Sandbox:
         self._security_policy: ContainerSecurityPolicy | None = None
         self._network_policy: NetworkPolicy | None = None
         self._compute_class: ComputeClass | None = None
+        self._resource_detectors: tuple[ResourceDetector, ...] = ()
         self._host_pool_id: str | None = None
         self._tags: dict[str, str] = {}
         self._restart_policy: RestartPolicy | None = None
@@ -771,6 +782,7 @@ class Sandbox:
                 or security_policy is not None
                 or network_policy is not None
                 or compute_class is not None
+                or resource_detectors is not None
                 or host_pool_id is not None
                 or tags is not None
                 or restart_policy is not None
@@ -810,6 +822,7 @@ class Sandbox:
             security_policy=security_policy,
             network_policy=network_policy,
             compute_class=compute_class,
+            resource_detectors=resource_detectors,
             tags=tags,
             restart_policy=restart_policy,
             chalk_identity=chalk_identity,
@@ -831,6 +844,7 @@ class Sandbox:
         self._security_policy = security_policy
         self._network_policy = network_policy
         self._compute_class = compute_class
+        self._resource_detectors = tuple(resource_detectors or ())
         self._host_pool_id = host_pool_id
         self._tags = dict(tags or {})
         self._restart_policy = restart_policy
@@ -1762,6 +1776,7 @@ class SandboxClient:
         security_policy: ContainerSecurityPolicy | None = None,
         network_policy: NetworkPolicy | None = None,
         compute_class: ComputeClass | None = None,
+        resource_detectors: Sequence[ResourceDetector] | None = None,
         host_pool_id: str | None = None,
         tags: dict[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
@@ -1803,6 +1818,11 @@ class SandboxClient:
         network_policy
             Optional network egress policy. Reuses the same ``NetworkPolicy``
             type accepted by containers.
+        resource_detectors
+            Optional :class:`ResourceDetector` values. Each detector inspects
+            egress traffic to the hosts it recognizes and records resources the
+            sandbox creates, such as GitHub pull requests, against the sandbox.
+            The recognized hosts must be allowed by ``network_policy``.
         host_pool_id
             Optional host pool ID to restrict placement of host compute class sandboxes.
             Unstable; subject to change.
@@ -1848,6 +1868,7 @@ class SandboxClient:
                 security_policy=security_policy,
                 network_policy=network_policy,
                 compute_class=compute_class,
+                resource_detectors=resource_detectors,
                 host_pool_id=host_pool_id,
                 tags=tags,
                 restart_policy=restart_policy,
@@ -1924,6 +1945,7 @@ class SandboxClient:
             security_policy=sandbox._security_policy,
             network_policy=network_policy,
             compute_class=sandbox._compute_class,
+            resource_detectors=sandbox._resource_detectors,
             host_pool_id=sandbox._host_pool_id,
             tags=sandbox._tags,
             restart_policy=sandbox._restart_policy,

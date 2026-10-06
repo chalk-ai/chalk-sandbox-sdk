@@ -3,7 +3,7 @@ from __future__ import annotations
 from unittest.mock import ANY, MagicMock, patch
 
 import pytest
-from chalkcompute import Image, NetworkPolicy, Sandbox, Secret
+from chalkcompute import Image, NetworkPolicy, ResourceDetector, Sandbox, Secret
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
@@ -11,6 +11,7 @@ from protobuf.wkt import Timestamp
 from chalkcompute._containerspec import ContainerSpec
 from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb as process_pb
 from chalkcompute._gen.chalk.sandbox.v2 import service_pb as pb
+from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._sandbox import SandboxClient, SandboxCreationError
 from chalkcompute._volume import VolumeMount
 
@@ -428,6 +429,49 @@ def test_sandbox_client_create_omits_chalk_identity_by_default() -> None:
 
     assert stub.request is not None
     assert not stub.request.source.value.has_field("chalk_workload_identity")
+
+
+def test_sandbox_client_create_sends_resource_detectors() -> None:
+    client = SandboxClient()
+    stub = _Stub()
+    client._stub = stub  # type: ignore[assignment]
+    try:
+        client.create(
+            "python:3.14-slim",
+            network_policy=NetworkPolicy(allowed_hosts={"api.github.com": []}),
+            resource_detectors=[ResourceDetector.GITHUB_PULL_REQUESTS],
+            wait=False,
+        )
+    finally:
+        client.close()
+
+    assert stub.request is not None
+    detection = stub.request.source.value.resource_detection
+    assert detection is not None
+    assert list(detection.detectors) == [
+        container_pb.ResourceDetector.GITHUB_PULL_REQUESTS
+    ]
+
+
+def test_sandbox_client_create_omits_resource_detection_by_default() -> None:
+    client = SandboxClient()
+    stub = _Stub()
+    client._stub = stub  # type: ignore[assignment]
+    try:
+        client.create("python:3.14-slim", wait=False)
+    finally:
+        client.close()
+
+    assert stub.request is not None
+    assert not stub.request.source.value.has_field("resource_detection")
+
+
+def test_sandbox_rejects_invalid_resource_detectors() -> None:
+    with pytest.raises(TypeError, match="resource_detectors must be a list"):
+        Sandbox(
+            image="python:3.14-slim",
+            resource_detectors=["github_pull_requests"],  # type: ignore[list-item]
+        )
 
 
 def test_sandbox_rejects_non_bool_chalk_identity() -> None:
