@@ -68,6 +68,8 @@ from protobuf import Oneof
 from protobuf.wkt import FieldMask
 
 from chalkcompute import _local_dev
+from chalkcompute._async import _has_running_event_loop, _run_in_worker_thread
+from chalkcompute._gather import gather_handles
 from chalkcompute._logging import _StatusLogger
 from chalkcompute._traceback import format_exception, format_frame
 from chalkcompute._terminal import styled, supports_color
@@ -896,14 +898,6 @@ def _should_call_via_api() -> bool:
     return os.environ.get(_CALL_VIA_API_ENV_VAR, "") == "1"
 
 
-def _has_running_event_loop() -> bool:
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return False
-    return True
-
-
 def _replica_count(value: Any) -> int:
     if value is None:
         return 0
@@ -963,33 +957,6 @@ def _format_knowledge_cutoff(value: KnowledgeCutoff) -> str:
     else:
         value = value.astimezone(_dt.timezone.utc)
     return value.isoformat()
-
-
-async def _run_in_worker_thread(
-    func: Callable[..., Any], *args: Any, **kwargs: Any
-) -> Any:
-    loop = asyncio.get_running_loop()
-    future: asyncio.Future[Any] = loop.create_future()
-    context = contextvars.copy_context()
-
-    def complete_with_result(value: Any) -> None:
-        if not future.cancelled():
-            future.set_result(value)
-
-    def complete_with_exception(exc: BaseException) -> None:
-        if not future.cancelled():
-            future.set_exception(exc)
-
-    def run() -> None:
-        try:
-            value = context.run(func, *args, **kwargs)
-        except BaseException as exc:
-            loop.call_soon_threadsafe(complete_with_exception, exc)
-        else:
-            loop.call_soon_threadsafe(complete_with_result, value)
-
-    threading.Thread(target=run, daemon=True).start()
-    return await future
 
 
 def _remote_call_error_message(error: BaseException) -> str:
@@ -1357,48 +1324,6 @@ class FunctionCallHandle:
             await asyncio.to_thread(self._resubmit)
 
 
-class _DeferredCallHandle(Protocol):
-    def get(self, timeout: float | None = None) -> Any: ...
-
-
-async def _gather_get(handle: _DeferredCallHandle, timeout: float | None) -> Any:
-    # Model handles block in get(); invoke them off-loop so every call can progress.
-    result = await _run_in_worker_thread(handle.get, timeout=timeout)
-    if inspect.isawaitable(result):
-        return await result
-    return result
-
-
-async def _gather_async(
-    handles: list[_DeferredCallHandle],
-    *,
-    timeout: float | None = None,
-) -> list[Any]:
-    return list(
-        await asyncio.gather(*(_gather_get(handle, timeout) for handle in handles))
-    )
-
-
-def _gather_handles(
-    handles: typing.Iterable[_DeferredCallHandle],
-    *,
-    timeout: float | None,
-) -> Any:
-    """Shared implementation for chalkcompute's function and chalkpy's model APIs."""
-    handle_list = list(handles)
-    for i, handle in enumerate(handle_list):
-        if not callable(getattr(handle, "get", None)):
-            raise TypeError(
-                f"gather() expects deferred-call handles from .defer(), but item "
-                f"{i} is a {type(handle).__name__}. .remote() runs the call and "
-                f"returns its result, not a handle — use .defer() to fan out, e.g. "
-                f"gather(fn.defer(x) for x in xs)."
-            )
-    if _has_running_event_loop():
-        return _gather_async(handle_list, timeout=timeout)
-    return asyncio.run(_gather_async(handle_list, timeout=timeout))
-
-
 def gather(
     handles: typing.Iterable[FunctionCallHandle],
     *,
@@ -1409,7 +1334,7 @@ def gather(
     In synchronous code this blocks and returns ``list[Any]``. Inside a running
     event loop it returns an awaitable, matching :meth:`FunctionCallHandle.get`.
     """
-    return _gather_handles(handles, timeout=timeout)
+    return gather_handles(handles, timeout=timeout)
 
 
 def _source_text_for_deploy(source_file: str) -> str:

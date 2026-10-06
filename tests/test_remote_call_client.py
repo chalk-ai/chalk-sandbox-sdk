@@ -11,11 +11,11 @@ from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
 
 import chalkcompute._function as function_mod
+from chalkcompute._async import _run_in_worker_thread
 from chalkcompute._function import (
     FunctionError,
     FunctionVersionInfo,
     RemoteFunction,
-    _run_in_worker_thread,
 )
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as catalog_pb
 from chalkcompute._gen.chalk.runtime.v1 import remote_python_call_pb as remote_call_pb

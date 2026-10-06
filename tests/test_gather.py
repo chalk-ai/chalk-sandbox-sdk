@@ -1,5 +1,7 @@
 import asyncio
 import inspect
+import subprocess
+import sys
 import threading
 import time
 from typing import Any
@@ -9,7 +11,22 @@ import chalkcompute
 import pyarrow as pa
 import pytest
 from chalk.client._model_remote import ModelCallHandle, ModelRemoteError
-from chalkcompute._function import FunctionCallHandle, _gather_handles
+from chalkcompute._function import FunctionCallHandle
+
+
+def test_gather_handles_import_without_function_dependencies() -> None:
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; "
+            "sys.modules['chalkcompute._function'] = None; "
+            "sys.modules['chalk'] = None; "
+            "from chalkcompute import gather_handles; "
+            "assert gather_handles([]) == []",
+        ],
+        check=True,
+    )
 
 
 class _AsyncHandle:
@@ -106,7 +123,9 @@ def test_gather_handles_concurrently(async_context: bool, kind: str) -> None:
     else:
         handles = [models[0], functions[0], models[1]]
         expected = [7.5, "function result", 7.5]
-    collect = chalkcompute.gather if kind == "functions" else _gather_handles
+    collect = (
+        chalkcompute.gather if kind == "functions" else chalkcompute.gather_handles
+    )
 
     async def run() -> list[Any]:
         return await collect(handles, timeout=10)
@@ -127,4 +146,4 @@ def test_gather_handles_propagates_model_error() -> None:
     )
     handle = ModelCallHandle(lambda: client, "model", "call")
     with pytest.raises(ModelRemoteError, match="inference failed"):
-        _gather_handles([handle], timeout=None)
+        chalkcompute.gather_handles([handle])
