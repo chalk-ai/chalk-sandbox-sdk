@@ -984,9 +984,15 @@ async def _run_in_worker_thread(
         try:
             value = context.run(func, *args, **kwargs)
         except BaseException as exc:
-            loop.call_soon_threadsafe(complete_with_exception, exc)
+            callback, result = complete_with_exception, exc
         else:
-            loop.call_soon_threadsafe(complete_with_result, value)
+            callback, result = complete_with_result, value
+        try:
+            loop.call_soon_threadsafe(callback, result)
+        except RuntimeError:
+            # A timed-out synchronous gather can close its loop before polling finishes.
+            if not loop.is_closed():
+                raise
 
     threading.Thread(target=run, daemon=True).start()
     return await future
@@ -1357,25 +1363,43 @@ class FunctionCallHandle:
             await asyncio.to_thread(self._resubmit)
 
 
+class _DeferredCallHandle(Protocol):
+    def get(self, timeout: float | None = None) -> Any: ...
+
+
+async def _gather_get(handle: _DeferredCallHandle, timeout: float | None) -> Any:
+    # Model handles block in get(); invoke them off-loop so every call can progress.
+    result = await _run_in_worker_thread(handle.get, timeout=timeout)
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
 async def _gather_async(
-    handles: list[FunctionCallHandle],
+    handles: list[_DeferredCallHandle],
     *,
     timeout: float | None = None,
 ) -> list[Any]:
+    if not handles:
+        return []
     return list(
-        await asyncio.gather(*(handle.get(timeout=timeout) for handle in handles))
+        await asyncio.wait_for(
+            asyncio.gather(*(_gather_get(handle, timeout) for handle in handles)),
+            timeout=timeout,
+        )
     )
 
 
 def gather(
-    handles: typing.Iterable[FunctionCallHandle],
+    handles: typing.Iterable[_DeferredCallHandle],
     *,
     timeout: float | None = None,
 ) -> Any:
-    """Wait for deferred function calls concurrently and return results in order.
+    """Wait for deferred function or model calls and return results in input order.
 
     In synchronous code this blocks and returns ``list[Any]``. Inside a running
     event loop it returns an awaitable, matching :meth:`FunctionCallHandle.get`.
+    ``timeout`` bounds the entire wait; it does not cancel the remote calls.
     """
     handle_list = list(handles)
     for i, handle in enumerate(handle_list):

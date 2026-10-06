@@ -1,9 +1,15 @@
 import asyncio
 import inspect
+import threading
 import time
 from typing import Any
+from unittest.mock import Mock
 
 import chalkcompute
+import pyarrow as pa
+import pytest
+from chalk.client._model_remote import ModelCallHandle, ModelRemoteError
+from chalkcompute._function import FunctionCallHandle
 
 
 class _AsyncHandle:
@@ -58,7 +64,94 @@ def test_gather_empty_iterable() -> None:
 
 def test_gather_rejects_non_handles_with_helpful_message() -> None:
     # A common mistake: gather(fn.remote(x) ...) passes results, not handles.
-    import pytest
-
     with pytest.raises(TypeError, match="use .defer"):
         chalkcompute.gather([_AsyncHandle("ok"), [1.0, 2.0, 3.0]])
+
+
+@pytest.mark.parametrize("async_context", [False, True])
+def test_gather_model_and_function_handles_concurrently(async_context: bool) -> None:
+    barrier = threading.Barrier(3, timeout=5)
+
+    def poll(*args: Any, **kwargs: Any) -> Mock:
+        # All three polls must start before any returns, including in async code.
+        barrier.wait()
+        sink = pa.BufferOutputStream()
+        batch = pa.record_batch([[7.5]], names=["prediction"])
+        with pa.ipc.new_stream(sink, batch.schema) as writer:
+            writer.write_batch(batch)
+        return Mock(
+            cursor="done",
+            poll_count=1,
+            status_name="completed",
+            chunks=[sink.getvalue().to_pybytes()],
+            is_completed=True,
+            is_failed=False,
+            is_expired=False,
+        )
+
+    client = Mock()
+    client.poll_next.side_effect = poll
+    models = [ModelCallHandle(lambda: client, "model", f"call-{i}") for i in range(2)]
+    function = Mock(_func_name="function", _is_async=False)
+    function.poll.side_effect = poll
+    function._materialize_result_chunks.return_value = "function result"
+    handles = [models[0], FunctionCallHandle(function, "fn-call"), models[1]]
+
+    async def run() -> list[Any]:
+        return await chalkcompute.gather(handles, timeout=10)
+
+    results = (
+        asyncio.run(run())
+        if async_context
+        else chalkcompute.gather(handles, timeout=10)
+    )
+    assert results == [7.5, "function result", 7.5]
+
+
+def test_gather_propagates_model_error() -> None:
+    client = Mock()
+    client.poll_next.return_value = Mock(
+        cursor="done",
+        poll_count=1,
+        status_name="failed",
+        chunks=[],
+        is_failed=True,
+        error_message="inference failed",
+    )
+    handle = ModelCallHandle(lambda: client, "model", "call")
+    with pytest.raises(ModelRemoteError, match="inference failed"):
+        chalkcompute.gather([handle])
+
+
+@pytest.mark.parametrize("async_context", [False, True])
+def test_gather_timeout_bounds_blocking_wait(async_context: bool) -> None:
+    release = threading.Event()
+    finished = threading.Event()
+
+    def get(timeout: float | None) -> int:
+        try:
+            assert release.wait(5), "gather did not return before the poll finished"
+            return 1
+        finally:
+            finished.set()
+
+    handle = Mock()
+    handle.get.side_effect = get
+
+    async def run() -> list[Any]:
+        return await chalkcompute.gather([handle], timeout=0.1)
+
+    try:
+        with pytest.raises(TimeoutError):
+            if async_context:
+                asyncio.run(run())
+            else:
+                chalkcompute.gather([handle], timeout=0.1)
+        assert not finished.is_set()
+    finally:
+        release.set()
+        assert finished.wait(5)
+
+
+def test_gather_empty_iterable_with_zero_timeout() -> None:
+    assert chalkcompute.gather([], timeout=0) == []

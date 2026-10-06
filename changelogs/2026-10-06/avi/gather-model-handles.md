@@ -1,0 +1,2 @@
+- fix gather to collect deferred model and function calls concurrently in synchronous and asynchronous code
+- enforce the gather timeout across the entire batch without cancelling remote calls
