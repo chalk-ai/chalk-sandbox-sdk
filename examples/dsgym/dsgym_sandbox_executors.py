@@ -163,16 +163,20 @@ sys.stdin = io.StringIO()
 namespace = {"__name__": "__main__"}
 chunks = []
 
+def _append(name, text):
+    if chunks and chunks[-1]["name"] == name:
+        chunks[-1]["text"] += text
+    else:
+        chunks.append({"type": "stream", "name": name, "text": text})
+
 class _Stream(io.TextIOBase):
     def __init__(self, name):
         self.name = name
     def writable(self):
         return True
     def write(self, text):
-        if chunks and chunks[-1]["name"] == self.name:
-            chunks[-1]["text"] += text
-        else:
-            chunks.append({"type": "stream", "name": self.name, "text": text})
+        _drain_fds()  # keeps output written below Python in order with this write
+        _append(self.name, text)
         return len(text)
 
 sys.stdout, sys.stderr = _Stream("stdout"), _Stream("stderr")
@@ -181,26 +185,41 @@ def _error(exc, lines):
     return {"type": "error", "name": type(exc).__name__, "value": str(exc),
             "traceback": [line.rstrip("\n") for line in lines]}
 
+capture = None  # the running cell's (files, saved fds, bytes already read)
+
 def _capture_fds():
     # Writes that bypass sys.stdout/sys.stderr (subprocesses, C extensions) land in
     # per-cell temporary files and are returned with the cell's output.
+    global capture
     files = (tempfile.TemporaryFile(), tempfile.TemporaryFile())
     saved = (os.dup(1), os.dup(2))
     os.dup2(files[0].fileno(), 1)
     os.dup2(files[1].fileno(), 2)
-    return files, saved
+    capture = (files, saved, [0, 0])
 
-def _release_fds(captured):
-    files, saved = captured
+def _drain_fds():
+    # pread leaves the file offset alone: writers share it through the dup'd fds.
+    if capture is None:
+        return
+    files, _, positions = capture
+    for i, name in enumerate(("stdout", "stderr")):
+        fd = files[i].fileno()
+        pending = os.fstat(fd).st_size - positions[i]
+        if pending > 0:
+            data = os.pread(fd, pending, positions[i])
+            positions[i] += len(data)
+            _append(name, data.decode(errors="replace"))
+
+def _release_fds():
+    global capture
+    files, saved, _ = capture
     for fd, original in zip((1, 2), saved):
         os.dup2(original, fd)
         os.close(original)
-    for name, f in zip(("stdout", "stderr"), files):
-        f.seek(0)
-        text = f.read().decode(errors="replace")
+    _drain_fds()
+    for f in files:
         f.close()
-        if text:
-            chunks.append({"type": "stream", "name": name, "text": text})
+    capture = None
 
 def run(code, timeout):
     chunks.clear()
@@ -211,7 +230,7 @@ def run(code, timeout):
     except SyntaxError as exc:
         return [_error(exc, traceback.format_exception_only(type(exc), exc))], False
     last = tree.body.pop() if tree.body and isinstance(tree.body[-1], ast.Expr) else None
-    captured = _capture_fds()
+    _capture_fds()
     signal.alarm(timeout)
     try:
         exec(compile(tree, "<cell>", "exec"), namespace)
@@ -230,7 +249,7 @@ def run(code, timeout):
         tail.append(_error(exc, traceback.format_exception(type(exc), exc, tb)))
     finally:
         signal.alarm(0)
-        _release_fds(captured)
+        _release_fds()
     return list(chunks) + tail, timed_out
 
 for line in requests:
@@ -464,10 +483,16 @@ class SandboxPool:
                 raise RuntimeError("pool is shutting down")
             self._sandboxes.add(sandbox)
         try:
-            return sandbox.run(timeout=900)
+            sandbox.run(timeout=900)
         except BaseException:
             self.terminate(sandbox)
             raise
+        # close() cannot terminate a sandbox that had no id yet, so one that finished
+        # starting after shutdown began is terminated here.
+        if self._closed.is_set():
+            self.terminate(sandbox)
+            raise RuntimeError("pool is shutting down")
+        return sandbox
 
     def terminate(self, sandbox: Sandbox) -> None:
         with self._sandboxes_lock:
@@ -774,6 +799,9 @@ def main() -> None:
         logger.info("building the executor image (cached after the first build)")
         image_uri = chalkcompute.build_image(executor_image())
     pool = SandboxPool(args, image_uri, data_volume)
+    # Until uvicorn installs its own handlers, SIGTERM would end the process without
+    # reaching pool.close() and leave the sandboxes started so far running.
+    signal.signal(signal.SIGTERM, exit_on_signal)
     try:
         pool.start()
         logger.info("serving DSGym's manager API on http://%s:%d", args.host, args.port)
@@ -782,6 +810,10 @@ def main() -> None:
         )
     finally:
         pool.close()
+
+
+def exit_on_signal(signum: int, _frame: object) -> None:
+    raise SystemExit(128 + signum)
 
 
 if __name__ == "__main__":
