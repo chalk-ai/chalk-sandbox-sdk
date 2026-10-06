@@ -10,6 +10,7 @@ import ipaddress
 import typing
 import uuid
 from datetime import date, datetime, time, timedelta
+from protobuf import Oneof
 from typing import (
     Annotated,
     Any,
@@ -107,7 +108,7 @@ def _is_pydantic_basemodel(typ: Any) -> bool:
 def rich_to_arrow_schema(
     params: dict[str, Any],
 ) -> Any:
-    """Convert a mapping of ``{name: python_type}`` to an ``arrow_pb2.Schema``.
+    """Convert a mapping of ``{name: python_type}`` to an ``arrow_pb.Schema``.
 
     Each entry becomes a column/field in the schema.
 
@@ -118,10 +119,10 @@ def rich_to_arrow_schema(
 
     Returns
     -------
-    arrow_pb2.Schema
+    arrow_pb.Schema
         The serialized Arrow schema.
     """
-    from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
+    from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
     from chalkcompute._arrow_serde import (
         chalk_arrow_type,
         has_chalk_arrow_contract,
@@ -135,27 +136,32 @@ def rich_to_arrow_schema(
         inner, nullable = _unwrap_optional(typ)
         if has_chalk_arrow_contract(inner):
             columns.append(
-                arrow_pb2.Field(
+                arrow_pb.Field(
                     name=name,
                     arrow_type=chalk_arrow_type(inner),
                     nullable=nullable,
+                    metadata=(
+                        {"chalk.python.type": inner.__chalk_type_id__}
+                        if isinstance(getattr(inner, "__chalk_type_id__", None), str)
+                        else {}
+                    ),
                 )
             )
             continue
         columns.append(
-            arrow_pb2.Field(
+            arrow_pb.Field(
                 name=name,
                 arrow_type=_rich_to_arrow_type(inner),
                 nullable=nullable,
             )
         )
-    return arrow_pb2.Schema(columns=columns)
+    return arrow_pb.Schema(columns=columns)
 
 
 def _rich_to_arrow_type(
     python_type: Any, *, allow_custom_contract: bool = False
 ) -> Any:
-    """Recursively convert a Python type to an ``arrow_pb2.ArrowType``.
+    """Recursively convert a Python type to an ``arrow_pb.ArrowType``.
 
     Parameters
     ----------
@@ -166,7 +172,7 @@ def _rich_to_arrow_type(
 
     Returns
     -------
-    arrow_pb2.ArrowType
+    arrow_pb.ArrowType
         The Arrow type equivalent.
 
     Raises
@@ -174,13 +180,18 @@ def _rich_to_arrow_type(
     TypeError
         If the Python type cannot be represented as an Arrow type.
     """
-    from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
+    from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
     from chalkcompute._arrow_serde import (
         chalk_arrow_type,
         has_chalk_arrow_contract,
     )
 
-    E = arrow_pb2.EmptyMessage
+    E = arrow_pb.EmptyMessage
+
+    def arrow_type(field: str, value: Any) -> arrow_pb.ArrowType:
+        return arrow_pb.ArrowType(
+            arrow_type_enum=Oneof(field, value)  # ty: ignore[invalid-argument-type]
+        )
 
     python_type = _unwrap_annotated(python_type)
     if _is_optional(python_type):
@@ -200,9 +211,10 @@ def _rich_to_arrow_type(
 
         if origin in (list, List, set, Set, frozenset, FrozenSet):
             inner, nullable = _unwrap_optional(args[0])
-            return arrow_pb2.ArrowType(
-                large_list=arrow_pb2.List(
-                    field_type=arrow_pb2.Field(
+            return arrow_type(
+                "large_list",
+                arrow_pb.List(
+                    field_type=arrow_pb.Field(
                         name="item",
                         arrow_type=_rich_to_arrow_type(
                             inner,
@@ -211,20 +223,21 @@ def _rich_to_arrow_type(
                         ),
                         nullable=nullable,
                     )
-                )
+                ),
             )
 
         if origin in (tuple, Tuple):
             if len(args) == 2 and args[1] is ...:
                 inner, nullable = _unwrap_optional(args[0])
-                return arrow_pb2.ArrowType(
-                    large_list=arrow_pb2.List(
-                        field_type=arrow_pb2.Field(
+                return arrow_type(
+                    "large_list",
+                    arrow_pb.List(
+                        field_type=arrow_pb.Field(
                             name="item",
                             arrow_type=_rich_to_arrow_type(inner),
                             nullable=nullable,
                         )
-                    )
+                    ),
                 )
             raise TypeError(
                 "Only variable-length homogeneous tuples are supported (e.g. Tuple[int, ...])."
@@ -235,19 +248,20 @@ def _rich_to_arrow_type(
                 raise TypeError("Dict types must have key and value annotations.")
             key_type, value_type = args
             val_inner, val_nullable = _unwrap_optional(value_type)
-            return arrow_pb2.ArrowType(
-                map=arrow_pb2.Map(
-                    key_field=arrow_pb2.Field(
+            return arrow_type(
+                "map",
+                arrow_pb.Map(
+                    key_field=arrow_pb.Field(
                         name="key",
                         arrow_type=_rich_to_arrow_type(key_type),
                         nullable=False,
                     ),
-                    item_field=arrow_pb2.Field(
+                    item_field=arrow_pb.Field(
                         name="value",
                         arrow_type=_rich_to_arrow_type(val_inner),
                         nullable=val_nullable,
                     ),
-                )
+                ),
             )
 
         raise TypeError(f"Unsupported generic type: {origin}")
@@ -276,47 +290,48 @@ def _rich_to_arrow_type(
                 continue
             inner, nullable = _unwrap_optional(field_type)
             sub_fields.append(
-                arrow_pb2.Field(
+                arrow_pb.Field(
                     name=field_name,
                     arrow_type=_rich_to_arrow_type(inner),
                     nullable=nullable,
                 )
             )
-        return arrow_pb2.ArrowType(struct=arrow_pb2.Struct(sub_field_types=sub_fields))
+        return arrow_type("struct", arrow_pb.Struct(sub_field_types=sub_fields))
 
     # ---- Scalar / primitive types ----
     if issubclass(python_type, type(None)):
-        return arrow_pb2.ArrowType(none=E())
+        return arrow_type("none", E())
     if issubclass(python_type, bool):
-        return arrow_pb2.ArrowType(bool=E())
+        return arrow_type("bool", E())
     if issubclass(python_type, int):
-        return arrow_pb2.ArrowType(int64=E())
+        return arrow_type("int64", E())
     if issubclass(python_type, float):
-        return arrow_pb2.ArrowType(float64=E())
+        return arrow_type("float64", E())
     if issubclass(python_type, str):
-        return arrow_pb2.ArrowType(large_utf8=E())
+        return arrow_type("large_utf8", E())
     if issubclass(python_type, datetime):
-        return arrow_pb2.ArrowType(
-            timestamp=arrow_pb2.Timestamp(
-                time_unit=arrow_pb2.TIME_UNIT_MICROSECOND,
+        return arrow_type(
+            "timestamp",
+            arrow_pb.Timestamp(
+                time_unit=arrow_pb.TimeUnit.MICROSECOND,
                 timezone="UTC",
-            )
+            ),
         )
     if issubclass(python_type, date):
-        return arrow_pb2.ArrowType(date64=E())
+        return arrow_type("date64", E())
     if issubclass(python_type, time):
-        return arrow_pb2.ArrowType(time64=arrow_pb2.TIME_UNIT_MICROSECOND)
+        return arrow_type("time64", arrow_pb.TimeUnit.MICROSECOND)
     if issubclass(python_type, timedelta):
-        return arrow_pb2.ArrowType(duration=arrow_pb2.TIME_UNIT_MICROSECOND)
+        return arrow_type("duration", arrow_pb.TimeUnit.MICROSECOND)
     if issubclass(python_type, bytes):
-        return arrow_pb2.ArrowType(large_binary=E())
+        return arrow_type("large_binary", E())
     if issubclass(python_type, decimal.Decimal):
-        return arrow_pb2.ArrowType(large_utf8=E())
+        return arrow_type("large_utf8", E())
     if issubclass(python_type, uuid.UUID):
-        return arrow_pb2.ArrowType(large_utf8=E())
+        return arrow_type("large_utf8", E())
     if issubclass(python_type, ipaddress.IPv4Address):
-        return arrow_pb2.ArrowType(uint32=E())
+        return arrow_type("uint32", E())
     if issubclass(python_type, ipaddress.IPv6Address):
-        return arrow_pb2.ArrowType(large_utf8=E())
+        return arrow_type("large_utf8", E())
 
     raise TypeError(f"Unable to convert type `{python_type}` to Arrow proto.")

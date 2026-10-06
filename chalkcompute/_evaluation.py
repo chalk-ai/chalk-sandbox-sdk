@@ -8,12 +8,14 @@ queues a separate execution of it.
 The task and scorers may be handles returned directly by
 ``@chalkcompute.function`` or references created with
 ``RemoteFunction.from_name`` / ``RemoteFunction.from_id``.  In either case,
-the handle must already expose a function version.  Evaluation creation never
-silently deploys an imperative, undeployed ``RemoteFunction``.
+decorated handles wait for their automatic background deployment when their
+version is read. Evaluation creation never silently deploys an imperative,
+undeployed ``RemoteFunction``.
 """
 
 from __future__ import annotations
 
+import builtins
 import json
 import math
 import time
@@ -21,14 +23,19 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
-from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
+from connectrpc.code import Code
+from connectrpc.errors import ConnectError as ConnectRpcError
+from protobuf import Oneof
+from protobuf.wkt import struct_pb
+
+from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
 from chalkcompute._connect import ConnectClient
 from chalkcompute._function import DeployedFunction, RemoteFunction
+from chalkcompute._gen.chalk.evaluation.v1 import service_connect as evaluation_connect
+from chalkcompute._gen.chalk.evaluation.v1 import service_pb as evaluation_pb
 from chalkcompute._tracing import _instrumented
-
-_EVALUATION_SERVICE = "chalk.evaluation.v1.EvaluationService"
 
 
 class EvaluationError(Exception):
@@ -69,20 +76,27 @@ class EvaluationScorerResult:
     metadata: Mapping[str, Any] | None = None
     """Optional JSON-serializable metadata retained with the scored row."""
 
-    __chalk_arrow_type__ = arrow_pb2.ArrowType(
-        struct=arrow_pb2.Struct(
-            sub_field_types=[
-                arrow_pb2.Field(
-                    name="score",
-                    arrow_type=arrow_pb2.ArrowType(float64=arrow_pb2.EmptyMessage()),
-                    nullable=False,
-                ),
-                arrow_pb2.Field(
-                    name="metadata",
-                    arrow_type=arrow_pb2.ArrowType(large_utf8=arrow_pb2.EmptyMessage()),
-                    nullable=True,
-                ),
-            ]
+    __chalk_arrow_type__ = arrow_pb.ArrowType(
+        arrow_type_enum=Oneof(
+            "struct",
+            arrow_pb.Struct(
+                sub_field_types=[
+                    arrow_pb.Field(
+                        name="score",
+                        arrow_type=arrow_pb.ArrowType(
+                            arrow_type_enum=Oneof("float64", arrow_pb.EmptyMessage())
+                        ),
+                        nullable=False,
+                    ),
+                    arrow_pb.Field(
+                        name="metadata",
+                        arrow_type=arrow_pb.ArrowType(
+                            arrow_type_enum=Oneof("large_utf8", arrow_pb.EmptyMessage())
+                        ),
+                        nullable=True,
+                    ),
+                ],
+            ),
         )
     )
     __chalk_pyarrow_type__ = staticmethod(_scorer_result_pyarrow_type)
@@ -195,6 +209,48 @@ class DatasetRevisionRef:
         object.__setattr__(self, "revision_id", revision_id)
 
 
+# The server's own bound on a scorer expression; mirrored so an oversized
+# expression fails here rather than after a round trip.
+_MAX_SQL_EXPRESSION_LENGTH = 4000
+
+
+@dataclass(frozen=True)
+class SqlExpression:
+    """A scorer whose score is a Chalk SQL expression, evaluated in the run's query.
+
+    The expression is a select item over the evaluation's own columns: every
+    dataset column by name, plus ``output``, the task's result for the row. It
+    must yield a number, and unlike a function scorer it deploys nothing and
+    carries no metadata.
+    """
+
+    name: str
+    expression: str
+
+    def __post_init__(self) -> None:
+        name = self.name.strip()
+        if not name:
+            raise ValueError("SqlExpression: name is required")
+        if not any(character.isalnum() for character in name):
+            raise ValueError(
+                f"SqlExpression: name must contain a letter or digit, not {self.name!r}"
+            )
+        expression = self.expression.strip()
+        if not expression:
+            raise ValueError("SqlExpression: expression is required")
+        if len(expression) > _MAX_SQL_EXPRESSION_LENGTH:
+            raise ValueError(
+                f"SqlExpression: expression is longer than "
+                f"{_MAX_SQL_EXPRESSION_LENGTH} characters"
+            )
+        if ";" in expression:
+            raise ValueError(
+                "SqlExpression: expression is one select item, so it may not contain ';'"
+            )
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "expression", expression)
+
+
 @dataclass(frozen=True)
 class EvaluationScorer:
     """A versioned scorer attached to an evaluation."""
@@ -208,6 +264,12 @@ class EvaluationScorer:
     builtin_id: str | None = None
     """Immutable built-in scorer identifier, when built-in."""
 
+    sql_name: str | None = None
+    """Scorer name, when the scorer is a Chalk SQL expression."""
+
+    sql_expression: str | None = None
+    """The Chalk SQL expression, when the scorer is one."""
+
 
 class EvaluationRunStatus(str, Enum):
     """Lifecycle state of an evaluation run."""
@@ -215,9 +277,22 @@ class EvaluationRunStatus(str, Enum):
     UNSPECIFIED = "unspecified"
     PENDING = "pending"
     RUNNING = "running"
+    FINALIZING = "finalizing"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELED = "canceled"
+
+
+class EvaluationRunExecutionMode(str, Enum):
+    """How the server drives a run's SQL query and score summary to completion."""
+
+    UNSPECIFIED = "unspecified"
+    ON_READ = "on_read"
+    """The server reconciles the run and computes its summary when the run is read."""
+    WORKFLOW = "workflow"
+    """A workflow on the environment's workflow orchestrator watches the run's SQL
+    job and computes its summary. Requires the environment to have a workflow
+    orchestrator."""
 
 
 _TERMINAL_RUN_STATUSES = frozenset(
@@ -227,6 +302,45 @@ _TERMINAL_RUN_STATUSES = frozenset(
         EvaluationRunStatus.CANCELED,
     }
 )
+
+
+@dataclass
+class EvaluationSuite:
+    """A named collection of evaluations and their runs."""
+
+    id: str
+    name: str
+    team_id: str | None = None
+    environment_id: str | None = None
+    created_by: str | None = None
+    created_at: datetime | None = None
+    _client: EvaluationClient | None = field(default=None, repr=False, compare=False)
+
+    @classmethod
+    def create(cls, name: str, *, chalk_client: Any | None = None) -> EvaluationSuite:
+        """Create an evaluation suite in the active environment."""
+        return EvaluationClient(chalk_client=chalk_client).create_suite(name)
+
+    @classmethod
+    def list_all(cls, *, chalk_client: Any | None = None) -> list[EvaluationSuite]:
+        """List the evaluation suites in the active environment."""
+        return EvaluationClient(chalk_client=chalk_client).list_suites()
+
+    def evaluations(self, *, limit: int | None = None) -> Iterator[Evaluation]:
+        """Iterate the evaluations in this suite, newest first."""
+        return self._require_client().list(suite_id=self.id, limit=limit)
+
+    def runs(self, *, limit: int | None = None) -> Iterator[EvaluationRun]:
+        """Iterate the evaluation runs in this suite, newest first."""
+        return self._require_client().list_runs(suite_id=self.id, limit=limit)
+
+    def _require_client(self) -> EvaluationClient:
+        if self._client is None:
+            raise EvaluationError(
+                "EvaluationSuite has no attached client. Fetch or create it through "
+                "EvaluationClient."
+            )
+        return self._client
 
 
 @dataclass
@@ -243,6 +357,7 @@ class Evaluation:
     environment_id: str | None = None
     created_by: str | None = None
     created_at: datetime | None = None
+    suite_id: str | None = None
     _client: EvaluationClient | None = field(default=None, repr=False, compare=False)
 
     @property
@@ -268,15 +383,17 @@ class Evaluation:
         *,
         dataset: DatasetRevisionRef | DatasetRevisionLike | DatasetNameLike,
         task: DeployedFunction,
-        scorers: Sequence[DeployedFunction],
+        scorers: Sequence[DeployedFunction | SqlExpression],
         metadata: Mapping[str, Any] | None = None,
+        suite_id: str | None = None,
         chalk_client: Any | None = None,
     ) -> Evaluation:
         """Create an evaluation from deployed function handles.
 
-        ``task`` and every scorer must already be deployed.  Handles returned
-        by ``@chalkcompute.function`` meet this requirement because the
-        decorator deploys synchronously before returning.
+        ``task`` and every function scorer must already be deployed. Handles
+        returned by ``@chalkcompute.function`` meet this requirement because
+        resolving their version waits for the decorator's background deployment.
+        A :class:`SqlExpression` deploys nothing and is sent as its expression.
         """
         return EvaluationClient(chalk_client=chalk_client).create(
             name,
@@ -284,6 +401,7 @@ class Evaluation:
             task=task,
             scorers=scorers,
             metadata=metadata,
+            suite_id=suite_id,
         )
 
     @classmethod
@@ -297,13 +415,44 @@ class Evaluation:
         """Return the latest server representation of this evaluation."""
         return self._require_client().get(self.id)
 
-    def run(self, *, metadata: Mapping[str, Any] | None = None) -> EvaluationRun:
-        """Queue a run of this evaluation and return its handle."""
-        return self._require_client().run(self.id, metadata=metadata)
+    def run(
+        self,
+        *,
+        metadata: Mapping[str, Any] | None = None,
+        execution_mode: EvaluationRunExecutionMode
+        | Literal["on_read", "workflow"]
+        | None = None,
+    ) -> EvaluationRun:
+        """Queue a run of this evaluation and return its handle.
+
+        ``execution_mode`` selects how the server drives the run to completion;
+        the server defaults to ``"on_read"`` when it is omitted.
+        """
+        return self._require_client().run(
+            self.id, metadata=metadata, execution_mode=execution_mode
+        )
 
     def runs(self, *, limit: int | None = None) -> Iterator[EvaluationRun]:
         """Iterate this evaluation's runs, newest first."""
         return self._require_client().list_runs(evaluation_id=self.id, limit=limit)
+
+    def rescore(
+        self,
+        run: EvaluationRun | str,
+        *,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> EvaluationRun:
+        """Score a finished run's outputs with this evaluation's scorers.
+
+        The task is not re-run: its outputs are read back out of ``run``'s
+        result. ``run`` may belong to this evaluation or to any other that uses
+        the same dataset revision and task function version, and the new run is
+        recorded under this one.
+        """
+        run_id = run.id if isinstance(run, EvaluationRun) else run
+        return self._require_client().rescore(
+            run_id, evaluation_id=self.id, metadata=metadata
+        )
 
     def _require_client(self) -> EvaluationClient:
         if self._client is None:
@@ -331,6 +480,8 @@ class EvaluationRun:
     result_dataset_id: str | None = None
     result_dataset_revision_id: str | None = None
     error_message: str | None = None
+    execution_mode: EvaluationRunExecutionMode = EvaluationRunExecutionMode.UNSPECIFIED
+    """How the server drives this run to completion."""
     _client: EvaluationClient | None = field(default=None, repr=False, compare=False)
 
     @property
@@ -404,6 +555,49 @@ class EvaluationRun:
             raise EvaluationRunFailedError(current)
         return current
 
+    def rescore(
+        self,
+        *,
+        scorers: Sequence[DeployedFunction | SqlExpression] | None = None,
+        evaluation: Evaluation | str | None = None,
+        name: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> EvaluationRun:
+        """Score this run's outputs again without re-running the task.
+
+        With no arguments, the outputs are scored by this run's own evaluation's
+        scorers. ``scorers`` scores them with new ones instead: an evaluation is
+        created from this run's, with the same dataset revision, task and suite
+        and only the scorers replaced, named ``name`` or
+        ``"<evaluation name> (rescored)"``. ``evaluation`` names an existing
+        evaluation to score them with, which must use this run's dataset
+        revision and task function version.
+
+        The new run is recorded under whichever evaluation scored it, and is
+        read, waited on and summarized like any other of its runs.
+        """
+        client = self._require_client()
+        if scorers is not None and evaluation is not None:
+            raise ValueError("pass only one of scorers or evaluation")
+        if name is not None and scorers is None:
+            raise ValueError("name applies only when scorers are given")
+        evaluation_id: str | None
+        if scorers is not None:
+            source = client.get(self.evaluation_id)
+            evaluation_id = client._create(
+                name if name is not None else f"{source.name} (rescored)",
+                dataset=source.dataset,
+                task_function_version_id=source.task_function_version_id,
+                scorers=scorers,
+                metadata=None,
+                suite_id=source.suite_id,
+            ).id
+        elif isinstance(evaluation, Evaluation):
+            evaluation_id = evaluation.id
+        else:
+            evaluation_id = evaluation
+        return client.rescore(self.id, evaluation_id=evaluation_id, metadata=metadata)
+
     def _require_client(self) -> EvaluationClient:
         if self._client is None:
             raise EvaluationError(
@@ -435,6 +629,31 @@ class EvaluationClient:
             raise ValueError("pass only one of chalk_client or connect_client")
         self._connect = connect_client or ConnectClient(chalk_client=chalk_client)
 
+    @_instrumented("chalkcompute.evaluation_suite.create")
+    def create_suite(self, name: str) -> EvaluationSuite:
+        """Create an evaluation suite in the active environment."""
+        name = name.strip()
+        if not name:
+            raise ValueError("name is required")
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
+        response = self._call(
+            stub.create_evaluation_suite,
+            evaluation_pb.CreateEvaluationSuiteRequest(name=name),
+        )
+        if response.suite is None:
+            raise EvaluationError("CreateEvaluationSuite returned no suite")
+        return _evaluation_suite_from_proto(response.suite, self)
+
+    @_instrumented("chalkcompute.evaluation_suite.list")
+    def list_suites(self) -> builtins.list[EvaluationSuite]:
+        """List the evaluation suites in the active environment."""
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
+        response = self._call(
+            stub.list_evaluation_suites,
+            evaluation_pb.ListEvaluationSuitesRequest(),
+        )
+        return [_evaluation_suite_from_proto(raw, self) for raw in response.suites]
+
     @_instrumented("chalkcompute.evaluation.create")
     def create(
         self,
@@ -442,41 +661,64 @@ class EvaluationClient:
         *,
         dataset: DatasetRevisionRef | DatasetRevisionLike | DatasetNameLike,
         task: DeployedFunction,
-        scorers: Sequence[DeployedFunction],
+        scorers: Sequence[DeployedFunction | SqlExpression],
         metadata: Mapping[str, Any] | None = None,
+        suite_id: str | None = None,
     ) -> Evaluation:
         """Persist an evaluation pinned to deployed function versions."""
+        return self._create(
+            name,
+            dataset=dataset,
+            task_function_version_id=_resolve_function_version(task, role="task"),
+            scorers=scorers,
+            metadata=metadata,
+            suite_id=suite_id,
+        )
+
+    def _create(
+        self,
+        name: str,
+        *,
+        dataset: DatasetRevisionRef | DatasetRevisionLike | DatasetNameLike,
+        task_function_version_id: str,
+        scorers: Sequence[DeployedFunction | SqlExpression],
+        metadata: Mapping[str, Any] | None,
+        suite_id: str | None,
+    ) -> Evaluation:
         name = name.strip()
         if not name:
             raise ValueError("name is required")
         dataset_ref = _resolve_dataset_revision(dataset)
-        task_version_id = _resolve_function_version(task, role="task")
         scorer_handles = tuple(scorers)
         if not scorer_handles:
             raise ValueError("at least one scorer is required")
-        scorer_version_ids = [
-            _resolve_function_version(scorer, role=f"scorer {index}")
+        scorer_specs = [
+            _scorer_spec(scorer, role=f"scorer {index}")
             for index, scorer in enumerate(scorer_handles)
         ]
         metadata_dict = _metadata_dict(metadata)
-
-        request: dict[str, Any] = {
-            "name": name,
-            "taskFunctionVersionId": task_version_id,
-            "scorers": [
-                {"function": {"functionVersionId": version_id}}
-                for version_id in scorer_version_ids
-            ],
-        }
-        if dataset_ref.dataset_name is not None:
-            request["datasetName"] = dataset_ref.dataset_name
-        else:
-            request["datasetId"] = dataset_ref.dataset_id
-            request["datasetRevisionId"] = dataset_ref.revision_id
-        if metadata is not None:
-            request["metadata"] = metadata_dict
-        response = self._rpc("CreateEvaluation", request)
-        return _evaluation_from_response(response, self)
+        suite_id = _optional_id(suite_id, name="suite_id")
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
+        response = self._call(
+            stub.create_evaluation,
+            evaluation_pb.CreateEvaluationRequest(
+                name=name,
+                dataset_name=dataset_ref.dataset_name or "",
+                dataset_id=dataset_ref.dataset_id or "",
+                dataset_revision_id=dataset_ref.revision_id or "",
+                task_function_version_id=task_function_version_id,
+                scorers=scorer_specs,
+                metadata=(
+                    None
+                    if metadata is None
+                    else struct_pb.Struct.from_json(json.dumps(metadata_dict))
+                ),
+                suite_id=suite_id,
+            ),
+        )
+        if response.evaluation is None:
+            raise EvaluationError("CreateEvaluation returned no evaluation")
+        return _evaluation_from_proto(response.evaluation, self)
 
     @_instrumented("chalkcompute.evaluation.get")
     def get(self, evaluation_id: str) -> Evaluation:
@@ -484,38 +726,44 @@ class EvaluationClient:
         evaluation_id = evaluation_id.strip()
         if not evaluation_id:
             raise ValueError("evaluation_id is required")
-        response = self._rpc(
-            "GetEvaluation",
-            {"evaluationId": evaluation_id},
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
+        response = self._call(
+            stub.get_evaluation,
+            evaluation_pb.GetEvaluationRequest(evaluation_id=evaluation_id),
             not_found_subject=f"Evaluation not found: {evaluation_id}",
         )
-        return _evaluation_from_response(response, self)
+        if response.evaluation is None:
+            raise EvaluationError("GetEvaluation returned no evaluation")
+        return _evaluation_from_proto(response.evaluation, self)
 
     @_instrumented("chalkcompute.evaluation.list")
-    def list(self, *, limit: int | None = None) -> Iterator[Evaluation]:
-        """Iterate evaluations, newest first, paging transparently."""
+    def list(
+        self, *, suite_id: str | None = None, limit: int | None = None
+    ) -> Iterator[Evaluation]:
+        """Iterate evaluations, optionally filtered by suite."""
+        suite_id = _optional_id(suite_id, name="suite_id")
         if limit is not None and limit < 0:
             raise ValueError("limit must be >= 0 or None")
         remaining = limit
         cursor: str | None = None
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
         while remaining is None or remaining > 0:
-            request: dict[str, Any] = {
-                "limit": min(remaining, 100) if remaining is not None else 100
-            }
-            if cursor is not None:
-                request["cursor"] = cursor
-            response = self._rpc("ListEvaluations", request)
-            raw_evaluations = response.get("evaluations", [])
-            if not isinstance(raw_evaluations, list):
-                raise EvaluationError("ListEvaluations returned invalid evaluations")
-            for raw in raw_evaluations:
-                evaluation = _evaluation_from_dict(raw, self)
+            response = self._call(
+                stub.list_evaluations,
+                evaluation_pb.ListEvaluationsRequest(
+                    limit=min(remaining, 100) if remaining is not None else 100,
+                    cursor=cursor,
+                    suite_id=suite_id,
+                ),
+            )
+            for raw in response.evaluations:
+                evaluation = _evaluation_from_proto(raw, self)
                 yield evaluation
                 if remaining is not None:
                     remaining -= 1
                     if remaining <= 0:
                         return
-            cursor = _optional_string(response.get("nextCursor"))
+            cursor = response.next_cursor or None
             if cursor is None:
                 return
 
@@ -525,16 +773,91 @@ class EvaluationClient:
         evaluation_id: str,
         *,
         metadata: Mapping[str, Any] | None = None,
+        execution_mode: EvaluationRunExecutionMode
+        | Literal["on_read", "workflow"]
+        | None = None,
     ) -> EvaluationRun:
-        """Queue a run for an existing evaluation."""
+        """Queue a run for an existing evaluation.
+
+        ``execution_mode`` selects how the server drives the run to completion;
+        the server defaults to ``"on_read"`` when it is omitted.
+        """
         evaluation_id = evaluation_id.strip()
         if not evaluation_id:
             raise ValueError("evaluation_id is required")
-        request: dict[str, Any] = {"evaluationId": evaluation_id}
-        if metadata is not None:
-            request["metadata"] = _metadata_dict(metadata)
-        response = self._rpc("CreateEvaluationRun", request)
-        return _evaluation_run_from_response(response, self)
+        execution_mode_pb = (
+            None
+            if execution_mode is None
+            else _run_execution_mode_to_proto(execution_mode)
+        )
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
+        response = self._call(
+            stub.create_evaluation_run,
+            evaluation_pb.CreateEvaluationRunRequest(
+                evaluation_id=evaluation_id,
+                metadata=(
+                    None
+                    if metadata is None
+                    else struct_pb.Struct.from_json(
+                        json.dumps(_metadata_dict(metadata))
+                    )
+                ),
+                execution_mode=execution_mode_pb,
+            ),
+        )
+        if response.evaluation_run is None:
+            raise EvaluationError("CreateEvaluationRun returned no run")
+        return _evaluation_run_from_proto(response.evaluation_run, self)
+
+    @_instrumented("chalkcompute.evaluation_run.rescore")
+    def rescore(
+        self,
+        evaluation_run_id: str,
+        *,
+        evaluation_id: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> EvaluationRun:
+        """Queue a run that scores a finished run's outputs without its task.
+
+        ``evaluation_id`` names the evaluation whose scorers score the outputs
+        and that the new run is recorded under. It defaults to the finished
+        run's own, and otherwise must use the same dataset revision and task
+        function version.
+        """
+        evaluation_run_id = evaluation_run_id.strip()
+        if not evaluation_run_id:
+            raise ValueError("evaluation_run_id is required")
+        evaluation_id = _optional_id(evaluation_id, name="evaluation_id")
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
+        response = self._call(
+            stub.rescore_evaluation_run,
+            evaluation_pb.RescoreEvaluationRunRequest(
+                evaluation_run_id=evaluation_run_id,
+                evaluation_id=evaluation_id,
+                metadata=(
+                    None
+                    if metadata is None
+                    else struct_pb.Struct.from_json(
+                        json.dumps(_metadata_dict(metadata))
+                    )
+                ),
+            ),
+            not_found_subject=(
+                f"Evaluation run or evaluation not found: {evaluation_run_id}"
+            ),
+        )
+        if response.evaluation_run is None:
+            raise EvaluationError("RescoreEvaluationRun returned no run")
+        run = _evaluation_run_from_proto(response.evaluation_run, self)
+        # A server that predates evaluation_id ignores it and scores with the
+        # run's own evaluation's scorers, which is not what was asked for.
+        if evaluation_id is not None and run.evaluation_id != evaluation_id:
+            raise EvaluationError(
+                f"RescoreEvaluationRun recorded run {run.id!r} under evaluation "
+                f"{run.evaluation_id!r} rather than {evaluation_id!r}; the server "
+                "does not support rescoring into another evaluation"
+            )
+        return run
 
     @_instrumented("chalkcompute.evaluation_run.get")
     def get_run(self, evaluation_run_id: str) -> EvaluationRun:
@@ -542,77 +865,77 @@ class EvaluationClient:
         evaluation_run_id = evaluation_run_id.strip()
         if not evaluation_run_id:
             raise ValueError("evaluation_run_id is required")
-        response = self._rpc(
-            "GetEvaluationRun",
-            {"evaluationRunId": evaluation_run_id},
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
+        response = self._call(
+            stub.get_evaluation_run,
+            evaluation_pb.GetEvaluationRunRequest(evaluation_run_id=evaluation_run_id),
             not_found_subject=f"Evaluation run not found: {evaluation_run_id}",
         )
-        return _evaluation_run_from_response(response, self)
+        if response.evaluation_run is None:
+            raise EvaluationError("GetEvaluationRun returned no run")
+        return _evaluation_run_from_proto(response.evaluation_run, self)
 
     @_instrumented("chalkcompute.evaluation_run.list")
     def list_runs(
         self,
         *,
         evaluation_id: str | None = None,
+        suite_id: str | None = None,
         limit: int | None = None,
     ) -> Iterator[EvaluationRun]:
-        """Iterate evaluation runs, optionally filtered by evaluation."""
+        """Iterate runs, optionally filtered by evaluation or suite."""
         if evaluation_id is not None and not evaluation_id.strip():
             raise ValueError("evaluation_id must not be empty")
+        suite_id = _optional_id(suite_id, name="suite_id")
         if limit is not None and limit < 0:
             raise ValueError("limit must be >= 0 or None")
         remaining = limit
         cursor: str | None = None
+        stub = self._connect.stub(evaluation_connect.EvaluationServiceClientSync)
         while remaining is None or remaining > 0:
-            request: dict[str, Any] = {
-                "limit": min(remaining, 100) if remaining is not None else 100
-            }
-            if evaluation_id is not None:
-                request["evaluationId"] = evaluation_id.strip()
-            if cursor is not None:
-                request["cursor"] = cursor
-            response = self._rpc("ListEvaluationRuns", request)
-            raw_runs = response.get("evaluationRuns", [])
-            if not isinstance(raw_runs, list):
-                raise EvaluationError(
-                    "ListEvaluationRuns returned invalid evaluation runs"
-                )
-            for raw in raw_runs:
-                run = _evaluation_run_from_dict(raw, self)
+            response = self._call(
+                stub.list_evaluation_runs,
+                evaluation_pb.ListEvaluationRunsRequest(
+                    evaluation_id=(
+                        None if evaluation_id is None else evaluation_id.strip()
+                    ),
+                    limit=min(remaining, 100) if remaining is not None else 100,
+                    cursor=cursor,
+                    suite_id=suite_id,
+                ),
+            )
+            for raw in response.evaluation_runs:
+                run = _evaluation_run_from_proto(raw, self)
                 yield run
                 if remaining is not None:
                     remaining -= 1
                     if remaining <= 0:
                         return
-            cursor = _optional_string(response.get("nextCursor"))
+            cursor = response.next_cursor or None
             if cursor is None:
                 return
 
-    def _rpc(
+    def _call(
         self,
-        method: str,
-        request: dict[str, Any],
+        method: Any,
+        request: Any,
         *,
         not_found_subject: str | None = None,
-    ) -> dict[str, Any]:
-        response = self._connect.rpc(_EVALUATION_SERVICE, method, request)
-        if response.status_code != 200:
-            message = _response_error_message(response)
-            if response.status_code == 404 and not_found_subject is not None:
-                if message:
-                    not_found_subject = f"{not_found_subject}: {message}"
+    ) -> Any:
+        try:
+            return self._connect.call(method, request)
+        except ConnectRpcError as exc:
+            status_code = _http_status_for_code(exc.code)
+            if exc.code == Code.NOT_FOUND and not_found_subject is not None:
+                if str(exc):
+                    not_found_subject = f"{not_found_subject}: {exc}"
                 raise EvaluationNotFoundError(
-                    not_found_subject, status_code=response.status_code
-                )
-            detail = f": {message}" if message else ""
+                    not_found_subject, status_code=status_code
+                ) from exc
             raise EvaluationError(
-                f"{method} failed with HTTP {response.status_code}{detail}",
-                status_code=response.status_code,
-            )
-        payload = response.json()
-        if not isinstance(payload, dict):
-            raise EvaluationError(f"{method} returned an invalid response")
-        return payload
+                f"{getattr(method, '__name__', 'evaluation RPC')} failed: {exc}",
+                status_code=status_code,
+            ) from exc
 
 
 def _resolve_dataset_revision(
@@ -636,11 +959,34 @@ def _resolve_dataset_revision(
     )
 
 
+def _scorer_spec(
+    scorer: DeployedFunction | SqlExpression, *, role: str
+) -> evaluation_pb.EvaluationScorerSpec:
+    """One scorer as the wire spec: a pinned function version, or an expression."""
+    if isinstance(scorer, SqlExpression):
+        return evaluation_pb.EvaluationScorerSpec(
+            implementation=Oneof(
+                "sql_expression",
+                evaluation_pb.SqlExpressionScorer(
+                    name=scorer.name, expression=scorer.expression
+                ),
+            )
+        )
+    return evaluation_pb.EvaluationScorerSpec(
+        implementation=Oneof(
+            "function",
+            evaluation_pb.FunctionScorer(
+                function_version_id=_resolve_function_version(scorer, role=role)
+            ),
+        )
+    )
+
+
 def _resolve_function_version(function: DeployedFunction, *, role: str) -> str:
     if not isinstance(function, RemoteFunction):
         raise TypeError(
-            f"{role} must be a RemoteFunction returned by @chalkcompute.function "
-            "or RemoteFunction.from_name()/from_id()"
+            f"{role} must be a RemoteFunction returned by @chalkcompute.function, "
+            "RemoteFunction.from_name()/from_id(), or a SqlExpression"
         )
     version_info = function.version_info
     if version_info is None:
@@ -666,152 +1012,152 @@ def _metadata_dict(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
     return value
 
 
-def _evaluation_from_response(
-    response: Mapping[str, Any], client: EvaluationClient
-) -> Evaluation:
-    raw = response.get("evaluation")
-    if not isinstance(raw, Mapping):
-        raise EvaluationError("evaluation response did not include an evaluation")
-    return _evaluation_from_dict(raw, client)
-
-
-def _evaluation_from_dict(
-    raw: Mapping[str, Any], client: EvaluationClient
-) -> Evaluation:
-    scorer_values = raw.get("scorers", [])
-    if not isinstance(scorer_values, list):
-        raise EvaluationError("evaluation response contained invalid scorers")
-    scorers = tuple(_scorer_from_dict(value) for value in scorer_values)
-    return Evaluation(
-        id=_required_string(raw, "id"),
-        name=_required_string(raw, "name"),
-        dataset=DatasetRevisionRef(
-            dataset_id=_required_string(raw, "datasetId"),
-            revision_id=_required_string(raw, "datasetRevisionId"),
-        ),
-        task_function_version_id=_required_string(raw, "taskFunctionVersionId"),
-        scorers=scorers,
-        metadata=_mapping_dict(raw.get("metadata")),
-        team_id=_optional_string(raw.get("teamId")),
-        environment_id=_optional_string(raw.get("environmentId")),
-        created_by=_optional_string(raw.get("createdBy")),
-        created_at=_parse_timestamp(raw.get("createdAt")),
-        _client=client,
-    )
-
-
-def _scorer_from_dict(raw: object) -> EvaluationScorer:
-    if not isinstance(raw, Mapping):
-        raise EvaluationError("evaluation response contained an invalid scorer")
-    spec = raw.get("spec")
-    if not isinstance(spec, Mapping):
-        spec = {}
-    function = spec.get("function")
-    builtin = spec.get("builtin")
-    return EvaluationScorer(
-        id=_required_string(raw, "id"),
-        function_version_id=(
-            _optional_string(function.get("functionVersionId"))
-            if isinstance(function, Mapping)
-            else None
-        ),
-        builtin_id=(
-            _optional_string(builtin.get("id"))
-            if isinstance(builtin, Mapping)
-            else None
-        ),
-    )
-
-
-def _evaluation_run_from_response(
-    response: Mapping[str, Any], client: EvaluationClient
-) -> EvaluationRun:
-    raw = response.get("evaluationRun")
-    if not isinstance(raw, Mapping):
-        raise EvaluationError(
-            "evaluation run response did not include an evaluation run"
-        )
-    return _evaluation_run_from_dict(raw, client)
-
-
-def _evaluation_run_from_dict(
-    raw: Mapping[str, Any], client: EvaluationClient
-) -> EvaluationRun:
-    return EvaluationRun(
-        id=_required_string(raw, "id"),
-        evaluation_id=_required_string(raw, "evaluationId"),
-        status=_parse_run_status(raw.get("status")),
-        metadata=_mapping_dict(raw.get("metadata")),
-        team_id=_optional_string(raw.get("teamId")),
-        environment_id=_optional_string(raw.get("environmentId")),
-        created_by=_optional_string(raw.get("createdBy")),
-        created_at=_parse_timestamp(raw.get("createdAt")),
-        started_at=_parse_timestamp(raw.get("startedAt")),
-        completed_at=_parse_timestamp(raw.get("completedAt")),
-        result_dataset_id=_optional_string(raw.get("resultDatasetId")),
-        result_dataset_revision_id=_optional_string(raw.get("resultDatasetRevisionId")),
-        error_message=_optional_string(raw.get("errorMessage")),
-        _client=client,
-    )
-
-
-def _parse_run_status(value: object) -> EvaluationRunStatus:
-    if isinstance(value, int):
-        return {
-            1: EvaluationRunStatus.PENDING,
-            2: EvaluationRunStatus.RUNNING,
-            3: EvaluationRunStatus.SUCCEEDED,
-            4: EvaluationRunStatus.FAILED,
-            5: EvaluationRunStatus.CANCELED,
-        }.get(value, EvaluationRunStatus.UNSPECIFIED)
-    if isinstance(value, str):
-        normalized = value.removeprefix("EVALUATION_RUN_STATUS_").lower()
-        try:
-            return EvaluationRunStatus(normalized)
-        except ValueError:
-            pass
-    return EvaluationRunStatus.UNSPECIFIED
-
-
-def _parse_timestamp(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value:
+def _optional_id(value: str | None, *, name: str) -> str | None:
+    if value is None:
         return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise EvaluationError(
-            f"invalid timestamp in evaluation response: {value!r}"
-        ) from exc
-
-
-def _required_string(value: Mapping[str, Any], key: str) -> str:
-    result = _optional_string(value.get(key))
-    if result is None:
-        raise EvaluationError(f"evaluation response is missing {key}")
-    return result
-
-
-def _optional_string(value: object) -> str | None:
-    if not isinstance(value, str) or not value:
-        return None
+    value = value.strip()
+    if not value:
+        raise ValueError(f"{name} must not be empty")
     return value
 
 
-def _mapping_dict(value: object) -> dict[str, Any]:
+def _evaluation_suite_from_proto(
+    raw: evaluation_pb.EvaluationSuite, client: EvaluationClient
+) -> EvaluationSuite:
+    return EvaluationSuite(
+        id=raw.id,
+        name=raw.name,
+        team_id=raw.team_id or None,
+        environment_id=raw.environment_id or None,
+        created_by=raw.created_by or None,
+        created_at=None if raw.created_at is None else raw.created_at.to_datetime(),
+        _client=client,
+    )
+
+
+def _evaluation_from_proto(
+    raw: evaluation_pb.Evaluation, client: EvaluationClient
+) -> Evaluation:
+    scorers = tuple(_scorer_from_proto(value) for value in raw.scorers)
+    return Evaluation(
+        id=raw.id,
+        name=raw.name,
+        dataset=DatasetRevisionRef(
+            dataset_id=raw.dataset_id,
+            revision_id=raw.dataset_revision_id,
+        ),
+        task_function_version_id=raw.task_function_version_id,
+        scorers=scorers,
+        metadata=_struct_dict(raw.metadata),
+        suite_id=raw.suite_id or None,
+        team_id=raw.team_id or None,
+        environment_id=raw.environment_id or None,
+        created_by=raw.created_by or None,
+        created_at=None if raw.created_at is None else raw.created_at.to_datetime(),
+        _client=client,
+    )
+
+
+def _scorer_from_proto(raw: evaluation_pb.EvaluationScorer) -> EvaluationScorer:
+    implementation = None if raw.spec is None else raw.spec.implementation
+    return EvaluationScorer(
+        id=raw.id,
+        function_version_id=(
+            implementation.value.function_version_id or None
+            if implementation is not None and implementation.field == "function"
+            else None
+        ),
+        builtin_id=(
+            implementation.value.id or None
+            if implementation is not None and implementation.field == "builtin"
+            else None
+        ),
+        sql_name=(
+            implementation.value.name or None
+            if implementation is not None and implementation.field == "sql_expression"
+            else None
+        ),
+        sql_expression=(
+            implementation.value.expression or None
+            if implementation is not None and implementation.field == "sql_expression"
+            else None
+        ),
+    )
+
+
+def _evaluation_run_from_proto(
+    raw: evaluation_pb.EvaluationRun, client: EvaluationClient
+) -> EvaluationRun:
+    return EvaluationRun(
+        id=raw.id,
+        evaluation_id=raw.evaluation_id,
+        status=_parse_run_status(raw.status),
+        metadata=_struct_dict(raw.metadata),
+        team_id=raw.team_id or None,
+        environment_id=raw.environment_id or None,
+        created_by=raw.created_by or None,
+        created_at=None if raw.created_at is None else raw.created_at.to_datetime(),
+        started_at=None if raw.started_at is None else raw.started_at.to_datetime(),
+        completed_at=(
+            None if raw.completed_at is None else raw.completed_at.to_datetime()
+        ),
+        result_dataset_id=raw.result_dataset_id or None,
+        result_dataset_revision_id=raw.result_dataset_revision_id or None,
+        error_message=raw.error_message or None,
+        execution_mode=_parse_run_execution_mode(raw.execution_mode),
+        _client=client,
+    )
+
+
+def _run_execution_mode_to_proto(
+    value: EvaluationRunExecutionMode | str,
+) -> evaluation_pb.EvaluationRunExecutionMode:
+    try:
+        mode = EvaluationRunExecutionMode(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"execution_mode must be 'on_read' or 'workflow', got {value!r}"
+        ) from exc
+    if mode is EvaluationRunExecutionMode.UNSPECIFIED:
+        raise ValueError("execution_mode must be 'on_read' or 'workflow'")
+    return evaluation_pb.EvaluationRunExecutionMode[mode.name]
+
+
+def _parse_run_execution_mode(
+    value: evaluation_pb.EvaluationRunExecutionMode,
+) -> EvaluationRunExecutionMode:
+    # A mode added on the server after this SDK was built reads as unspecified
+    # rather than failing the whole run lookup.
+    try:
+        return EvaluationRunExecutionMode(value.name.lower())
+    except (AttributeError, ValueError):
+        return EvaluationRunExecutionMode.UNSPECIFIED
+
+
+def _parse_run_status(value: evaluation_pb.EvaluationRunStatus) -> EvaluationRunStatus:
+    try:
+        return EvaluationRunStatus(value.name.lower())
+    except ValueError as exc:
+        raise EvaluationError(f"unknown evaluation run status: {value}") from exc
+
+
+def _struct_dict(value: struct_pb.Struct | None) -> dict[str, Any]:
     if value is None:
         return {}
-    if not isinstance(value, Mapping):
+    parsed = json.loads(value.to_json())
+    if not isinstance(parsed, dict):
         raise EvaluationError("evaluation response contained invalid metadata")
-    return dict(value)
+    return parsed
 
 
-def _response_error_message(response: Any) -> str:
-    try:
-        payload = response.json()
-    except Exception:
-        return str(getattr(response, "text", "")).strip()
-    if isinstance(payload, Mapping):
-        message = payload.get("message")
-        if isinstance(message, str) and message:
-            return message
-    return str(getattr(response, "text", "")).strip()
+def _http_status_for_code(code: Code) -> int | None:
+    return {
+        Code.INVALID_ARGUMENT: 400,
+        Code.UNAUTHENTICATED: 401,
+        Code.PERMISSION_DENIED: 403,
+        Code.NOT_FOUND: 404,
+        Code.ALREADY_EXISTS: 409,
+        Code.RESOURCE_EXHAUSTED: 429,
+        Code.INTERNAL: 500,
+        Code.UNAVAILABLE: 503,
+    }.get(code)

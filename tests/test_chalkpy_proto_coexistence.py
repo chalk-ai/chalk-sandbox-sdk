@@ -1,11 +1,9 @@
 """Regression test: chalkcompute protos must coexist with chalkpy in one process.
 
-chalkcompute's generated `_pb2.py` modules used to register file descriptors
-into protobuf's process-wide Default pool. Importing chalkcompute alongside
-chalkpy (which registers the same file names — `chalk/auth/v1/permissions.proto`,
-etc.) then raised `TypeError: Couldn't build proto file into descriptor pool:
-duplicate file name ...`. The fix routes chalkcompute through a private
-`DescriptorPool` (`chalkcompute._proto_pool.DESCRIPTOR_POOL`).
+Google-generated modules register descriptors in a process-wide default pool.
+The protobuf-py runtime uses explicit registries instead, so chalkcompute's
+generated modules must remain importable alongside chalkpy's Google-generated
+modules even though they describe some of the same proto files.
 
 This test spins up a fresh `uv run --with chalkpy==X.Y.Z` subprocess for each
 pinned chalkpy version and imports the overlapping proto modules from both
@@ -29,11 +27,13 @@ OVERLAPPING_MODULES = [
     "chalk._gen.chalk.auth.v1.permissions_pb2",
     "chalk._gen.chalk.utils.v1.encoding_pb2",
     "chalk._gen.chalk.arrow.v1.arrow_pb2",
+    "chalk._gen.chalk.server.v1.datasets_pb2",
 ]
 CHALKCOMPUTE_MIRRORS = [
-    "chalkcompute._gen.chalk.auth.v1.permissions_pb2",
-    "chalkcompute._gen.chalk.utils.v1.encoding_pb2",
-    "chalkcompute._gen.chalk.arrow.v1.arrow_pb2",
+    "chalkcompute._gen.chalk.auth.v1.permissions_pb",
+    "chalkcompute._gen.chalk.utils.v1.encoding_pb",
+    "chalkcompute._gen.chalk.arrow.v1.arrow_pb",
+    "chalkcompute._gen.chalk.server.v1.datasets_pb",
 ]
 
 
@@ -45,7 +45,7 @@ def _import_script(chalkpy_first: bool) -> str:
         if chalkpy_first
         else (chalkcompute_imports, chalkpy_imports)
     )
-    # Importing both sets of generated _pb2 modules in one process is what
+    # Importing both sets of generated modules in one process is what
     # used to raise `TypeError: Couldn't build proto file into descriptor pool:
     # duplicate file name chalk/auth/v1/permissions.proto`. If the imports
     # succeed and we print "OK", the descriptor pools are isolated.

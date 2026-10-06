@@ -10,11 +10,6 @@ from rich.text import Text
 
 console = Console()
 
-DASHBOARD_BASE = (
-    "https://staging.chalk.dev/projects/tmnmau5shs3qe"
-    "/environments/tmnmc9beyujew/containers"
-)
-
 
 def _truncate(s, n):
     s = str(s)
@@ -33,17 +28,14 @@ def volume_added(name, size):
 
 def build_starting():
     console.print(
-        "[bold cyan]\\[build][/] building image + starting investigator container..."
+        "[bold cyan]\\[build][/] building image + starting investigator sandbox..."
     )
 
 
-def container_started(container):
-    cid = container._container_id or "(unknown)"
-    short = cid.split("-")[0] if "-" in cid else cid[:8]
-    url = f"{DASHBOARD_BASE}/{cid}"
+def sandbox_started(sandbox):
+    info = sandbox.info
     console.print(
-        f"[bold cyan]\\[ready][/] [bold]{container._name}[/] "
-        f"[dim]→[/] [link={url}]dashboard ({short}…)[/]"
+        f"[bold cyan]\\[ready][/] [bold]{info.name or info.id}[/] [dim]({info.id})[/]"
     )
 
 
@@ -119,7 +111,7 @@ def tool_output(item):
         for line in lines:
             console.print(f"    [dim]{line}[/]", highlight=False)
     else:
-        first = next((l for l in lines if l.strip()), "")[:80]
+        first = next((line for line in lines if line.strip()), "")[:80]
         console.print(f'    [dim]→ {len(lines)} lines: [italic]"{first}…"[/][/]')
 
 
@@ -166,13 +158,9 @@ async def stream(result):
             tool_output(item)
 
 
-def container_kept(container):
-    cid = container._container_id
-    url = f"{DASHBOARD_BASE}/{cid}"
-    stop_cmd = (
-        f"""uv run python -c "from dotenv import load_dotenv; load_dotenv(); """
-        f"""from chalkcompute import Container; Container.from_id('{cid}').stop()" """
-    ).strip()
-    console.print(f"\n[bold yellow]\\[kept][/] container left running for inspection")
-    console.print(f"        [dim]dashboard:[/] [link={url}]{url}[/]")
-    console.print(f"        [dim]stop with:[/] [bold]{stop_cmd}[/]")
+def sandbox_stopping(sandbox):
+    console.print(f"\n[bold cyan]\\[cleanup][/] terminating sandbox {sandbox.id}")
+
+
+def volume_deleted(name):
+    console.print(f"[bold cyan]\\[cleanup][/] deleted volume {name}")

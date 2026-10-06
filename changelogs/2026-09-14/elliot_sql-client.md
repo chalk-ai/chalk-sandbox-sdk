@@ -1,0 +1,1 @@
+- Add a standalone SQLClient for Chalk SQL queries, background jobs, query plans, and Parquet downloads with optional Arrow and Pandas conversion, without a ChalkPy dependency.

@@ -21,19 +21,19 @@ _LOCAL_SDK_COPY_EXCLUDES = [
     ".venv/**",
     ".*_venv/**",
     "venv/**",
+    "__pycache__/**",
     "**/__pycache__/**",
     "**/target/**",
 ]
 _LOCAL_SDK_RUNTIME_PACKAGES = [
-    "grpcio>=1.60.0",
-    "protobuf>=4.25.0",
-    "httpx>=0.25.0",
-    "blake3>=1.0.0",
     "pyyaml>=6.0.0",
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.20.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.20.0",
-    "rich>=13.0.0",
+    "protobuf-py==0.3.0",
+    "connectrpc>=0.12.1",
+    "pyqwest>=0.9.0",
 ]
 
 
@@ -118,17 +118,21 @@ def wrap_entrypoint_for_local_dev(handler_cmd: list[str]) -> list[str]:
     if config.should_install_sdk_wheel:
         assert config.sdk_wheel_path is not None
         wheel_name = shlex.quote(Path(config.sdk_wheel_path).name)
-        prelude.append(f"python -m pip install {_LOCAL_SDK_MOUNT}/{wheel_name}")
+        prelude.append(
+            "python -m pip install --force-reinstall --no-deps "
+            f"{_LOCAL_SDK_MOUNT}/{wheel_name}"
+        )
     elif config.should_mount_sdk_source:
         from chalkcompute._image import _ARCHIVE_CHUNK_PREFIX, ARCHIVE_NAME
 
-        extract_dir = "/tmp/chalkcompute-sdk-src"
+        extract_root = "/tmp/chalkcompute-sdk-src"
+        extract_dir = f"{extract_root}/chalkcompute"
         archive_path = f"/tmp/{ARCHIVE_NAME}"
         prelude.extend(
             [
                 f"cat {_LOCAL_SDK_MOUNT}/{_ARCHIVE_CHUNK_PREFIX}* > {archive_path}",
-                f"rm -rf {extract_dir}; mkdir -p {extract_dir}; tar xzf {archive_path} -C {extract_dir}",
-                f"export PYTHONPATH={extract_dir}:$PYTHONPATH",
+                f"rm -rf {extract_root}; mkdir -p {extract_dir}; tar xzf {archive_path} -C {extract_dir}",
+                f"export PYTHONPATH={extract_root}:$PYTHONPATH",
             ]
         )
 
@@ -151,13 +155,17 @@ def apply_local_dev_mounts(
     if config.should_install_sdk_wheel:
         assert config.sdk_wheel_path is not None
         path = Path(config.sdk_wheel_path)
-        image = image.add_local_file(str(path), f"{_LOCAL_SDK_MOUNT}/{path.name}")
+        image = image.pip_install(
+            [remote_call_runtime_package, *_LOCAL_SDK_RUNTIME_PACKAGES]
+        ).add_local_file(str(path), f"{_LOCAL_SDK_MOUNT}/{path.name}")
     elif config.should_mount_sdk_source:
-        project_root = Path(__file__).resolve().parent.parent
+        # Installed SDKs live beside other packages in site-packages. Copying
+        # the parent would shadow the container's platform-specific runtime.
+        package_root = Path(__file__).resolve().parent
         image = image.pip_install(
             [remote_call_runtime_package, *_LOCAL_SDK_RUNTIME_PACKAGES]
         ).add_local_dir(
-            str(project_root),
+            str(package_root),
             _LOCAL_SDK_MOUNT,
             exclude=_LOCAL_SDK_COPY_EXCLUDES,
             archive=True,

@@ -4,10 +4,10 @@ These tests require CHALK_CLIENT_ID/CHALK_API_SERVER env vars.
 Unit tests have been moved to tests/test_image.py.
 """
 
+import json
 import time
 
 import pytest
-from google.protobuf.json_format import MessageToDict
 
 from chalkcompute import Image
 from e2etests.conftest import _connect_rpc, needs_staging
@@ -26,7 +26,7 @@ def _poll_until_ready(sandbox_id: str, headers: dict[str, str]) -> dict:
         resp = _connect_rpc(
             _SANDBOX_SVC, "GetSandbox", {"sandboxId": sandbox_id}, headers
         )
-        assert resp.status_code == 200, f"GetSandbox failed: {resp.text}"
+        assert resp.status == 200, f"GetSandbox failed: {resp.text()}"
         data = resp.json()
         state = data.get("sandbox", {}).get("state", "")
         build_id = data.get("sandbox", {}).get("buildId", "")
@@ -45,7 +45,7 @@ def _poll_until_ready(sandbox_id: str, headers: dict[str, str]) -> dict:
 def test_list_sandboxes(auth_headers: dict[str, str]) -> None:
     """Verify we can authenticate and call ListSandboxes."""
     resp = _connect_rpc(_SANDBOX_SVC, "ListSandboxes", {}, auth_headers)
-    assert resp.status_code == 200, f"ListSandboxes failed: {resp.text}"
+    assert resp.status == 200, f"ListSandboxes failed: {resp.text()}"
     data = resp.json()
     assert isinstance(data, dict)
     print(f"ListSandboxes response: {data}")
@@ -65,14 +65,14 @@ def test_create_sandbox_with_debian_image(auth_headers: dict[str, str]) -> None:
         .env({"TEST_VAR": "hello"})
     )
 
-    spec_dict = MessageToDict(img.to_proto())
+    spec_dict = json.loads(img.to_proto().to_json())
     body = {
         "imageSpec": spec_dict,
         "name": "test-debian-slim",
     }
 
     resp = _connect_rpc(_SANDBOX_SVC, "CreateSandbox", body, auth_headers, timeout=30)
-    assert resp.status_code == 200, f"CreateSandbox failed: {resp.text}"
+    assert resp.status == 200, f"CreateSandbox failed: {resp.text()}"
 
     data = resp.json()
     print(f"CreateSandbox response: {data}")
@@ -108,7 +108,7 @@ def test_create_sandbox_with_plain_image(auth_headers: dict[str, str]) -> None:
     }
 
     resp = _connect_rpc(_SANDBOX_SVC, "CreateSandbox", body, auth_headers, timeout=30)
-    assert resp.status_code == 200, f"CreateSandbox failed: {resp.text}"
+    assert resp.status == 200, f"CreateSandbox failed: {resp.text()}"
 
     data = resp.json()
     print(f"CreateSandbox (plain) response: {data}")
@@ -139,13 +139,13 @@ def test_build_custom_image(auth_headers: dict[str, str]) -> None:
         .run_commands("echo 'custom image built'")
     )
 
-    spec_dict = MessageToDict(img.to_proto())
+    spec_dict = json.loads(img.to_proto().to_json())
     body = {"imageSpec": spec_dict}
 
     resp = _connect_rpc(
         _CUSTOM_IMAGE_SVC, "BuildCustomImage", body, auth_headers, timeout=600
     )
-    assert resp.status_code == 200, f"BuildCustomImage failed: {resp.text}"
+    assert resp.status == 200, f"BuildCustomImage failed: {resp.text()}"
 
     data = resp.json()
     print(f"BuildCustomImage response: {data}")
@@ -158,7 +158,7 @@ def test_build_custom_image(auth_headers: dict[str, str]) -> None:
     get_resp = _connect_rpc(
         _CUSTOM_IMAGE_SVC, "GetCustomImage", {"buildId": build_id}, auth_headers
     )
-    assert get_resp.status_code == 200, f"GetCustomImage failed: {get_resp.text}"
+    assert get_resp.status == 200, f"GetCustomImage failed: {get_resp.text()}"
 
     get_data = get_resp.json()
     print(f"GetCustomImage response: {get_data}")

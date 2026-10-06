@@ -1,3 +1,14 @@
+on:
+  schedule:
+    - label: "Sandbox TTI Benchmark - Daily at 6am Pacific"
+      cron: "0 6 * * * America/Los_Angeles"
+      branch: main
+      message: "Scheduled sandbox TTI benchmark"
+    - label: "Sandbox Volume Benchmarks - Every 30 Minutes"
+      cron: "*/30 * * * * America/Los_Angeles"
+      branch: main
+      message: "Scheduled sandbox volume benchmarks"
+
 env:
   UV_VERSION: "0.11.14"
   BENCHMARK_RESULTS_URL: "https://benchmark-results-server-290587571767.us-central1.run.app"
@@ -9,6 +20,7 @@ steps:
   #   2. Add a step that sources setup-benchmark-env.sh then calls run-benchmark.sh
 
   - label: ":bar_chart: Sandbox TTI ({{matrix}})"
+    if: build.message != "Scheduled sandbox volume benchmarks"
     matrix:
       - "staging/ftqa"
       - "meta-ci"
@@ -21,12 +33,44 @@ steps:
         --tags  "sandbox,compute,tti,{{matrix}}" \
         -- uv run python -m sandbox_benchmark.pyperf_adapter \
           --mode all \
-          --iterations 10 \
+          --iterations 5 \
+          --cpu 250m \
+          --memory 512Mi \
           --min-success-rate 1.0 \
           --max-p95-ms 60000
     agents:
       queue: default
     timeout_in_minutes: 60
+    retry:
+      automatic:
+        - exit_status: -1
+          limit: 2
+
+  - label: ":bar_chart: Volume {{matrix.benchmark}} ({{matrix.environment}})"
+    if: build.message != "Scheduled sandbox TTI benchmark"
+    command: >-
+      just --justfile e2etests/volume/benchmarks/justfile
+      "{{matrix.benchmark}}"
+      "{{matrix.environment}}"
+    matrix:
+      setup:
+        environment:
+          - "staging/ftqa"
+          - "meta-ci"
+        benchmark:
+          - "fio"
+          - "model-load"
+          - "model-download"
+          - "git-repo"
+    agents:
+      queue: default
+    timeout_in_minutes: 90
+    notify:
+      - slack:
+          channels:
+            - "#proj-compute-volumes"
+          message: ":floppy_disk: <@U0AT4JH64Q4> sandbox volume benchmark failed on main."
+        if: build.branch == "main" && step.outcome == "hard_failed"
     retry:
       automatic:
         - exit_status: -1

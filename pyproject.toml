@@ -5,16 +5,15 @@ description = "SDK for Chalk sandboxes, containers, and volumes"
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
 dependencies = [
-    "grpcio>=1.60.0",
-    "protobuf>=4.25.0",
-    "httpx>=0.25.0",
-    "blake3>=1.0.0",
-    "chalk-remote-call-python>=1.8.7",
+    "chalk-remote-call-python>=1.10.2",
     "pyyaml>=6.0.0",
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.20.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.20.0",
-    "rich>=13.0.0",
+    "protobuf-py>=0.3.0",
+    "connectrpc>=0.12.1",
+    "pyqwest>=0.10.0",
 ]
 
 [build-system]
@@ -36,12 +35,14 @@ include = ["chalkcompute/**", "README.md"]
 exclude = ["examples/", ".env*", ".sops.yaml", "e2etests/", "test_*", "*.enc"]
 
 [project.optional-dependencies]
+sql = ["pyarrow>=14.0.0"]
 dev = [
     "attrs>=23.0.0",
     "chalkdf>=3.31.87",
-    "chalkpy[runtime]>=2.114.0",
+    "chalkpy[runtime]>=2.154.34",
     "python-dotenv>=1.1.0",
     "pytest>=9.0.2",
+    "rapidfuzz>=3.0.0",
 ]
 
 [tool.ruff]

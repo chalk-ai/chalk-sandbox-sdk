@@ -23,19 +23,33 @@ sandbox container.
 from __future__ import annotations
 
 import io
+import json
 import logging
 import os
+import shlex
 import tarfile
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from chalkcompute._gen.chalk.sandbox.v1 import service_pb2 as pb
+if TYPE_CHECKING:
+    from chalkcompute._volume import Volume, VolumeMount
+
+from protobuf import Oneof
+
+import chalkcompute._proto_compat  # noqa: F401
+from chalkcompute._gen.chalk.sandbox.v1 import service_pb as pb
 from chalkcompute._naming import validate_env
 
 logger = logging.getLogger(__name__)
+
+
+def _build_step(field: str, value: object) -> pb.BuildStep:
+    return pb.BuildStep(
+        step=Oneof(field, value)  # ty: ignore[invalid-argument-type]
+    )
 
 
 ARCHIVE_NAME = "_archive.tar.gz"
@@ -73,6 +87,10 @@ class Image:
     Uses a fluent (method-chaining) API. Each method returns a new ``Image``
     instance so that intermediate images can be shared and extended.
 
+    Call :meth:`build` to capture a reusable image with pinned file contents.
+    Built images work with every ``image=`` parameter and can be transferred
+    between processes using :meth:`to_json` and :meth:`from_json`.
+
     Examples
     --------
     >>> from chalkcompute import Image
@@ -91,6 +109,185 @@ class Image:
         self._workdir: str | None = None
         self._env: dict[str, str] = {}
         self._lazy_local_files: set[LazyLocalFile] = set()
+        self._volume_mounts: tuple[VolumeMount, ...] = ()
+        self._built = False
+
+    @property
+    def volumes(self) -> tuple[VolumeMount, ...]:
+        """Return pinned volumes retained by this image.
+
+        Returns
+        -------
+        tuple of VolumeMount
+            Pinned volumes retained independently of worker cleanup.
+        """
+        return self._volume_mounts
+
+    def build(
+        self,
+        *,
+        volumes: Iterable[tuple[str | Volume, str] | Volume | VolumeMount]
+        | None = None,
+        name: str | None = None,
+        chalk_client: Any | None = None,
+        poll_interval: float = 0.5,
+        timeout: float = 600.0,
+    ) -> Image:
+        """Build a reusable image and capture immutable versions of its files.
+
+        Parameters
+        ----------
+        volumes
+            Additional volume references, accepting the same forms as Sandbox.
+        name
+            Optional retained source volume name for local volume files.
+            Defaults to a stable name derived from the build recipe and file
+            layout, excluding local source paths and volume file contents.
+            Pass a name to share source volumes across recipes or make cleanup
+            discoverable. Requires local volume files to upload.
+        chalk_client
+            Optional client for authentication. Defaults to the environment.
+        poll_interval
+            Polling interval in seconds for each build and source upload.
+        timeout
+            Timeout in seconds for each build and source upload.
+
+        Returns
+        -------
+        Image
+            A new built image with pinned volumes, leaving this recipe unchanged.
+
+        Raises
+        ------
+        ValueError
+            If a name is supplied without local volume files, or mounts conflict.
+
+        Notes
+        -----
+        With no additional volumes, building an already built image returns
+        an equivalent copy without network calls. Authentication, polling,
+        and timeout settings only apply when a build or volume lookup is needed.
+
+        Backing volumes persist independently of workers. Keep them while
+        built images remain in use. Pins do not enforce runtime read-only access.
+        """
+        from chalkcompute._image_build import build_image_snapshot
+
+        if name is not None and not self._lazy_local_files:
+            raise ValueError(
+                "Image.build(name=...) requires local volume files to upload"
+            )
+        if self._built:
+            volumes = list(volumes) if volumes is not None else []
+            if not volumes:
+                return self._from_built(self._base_image, self._volume_mounts)
+        return build_image_snapshot(
+            self,
+            volumes=volumes,
+            name=name,
+            chalk_client=chalk_client,
+            poll_interval=poll_interval,
+            timeout=timeout,
+        )
+
+    @classmethod
+    def _from_built(cls, uri: str, volumes: Iterable[VolumeMount]) -> Image:
+        """Create a built image from an image URI and pinned volumes.
+
+        Parameters
+        ----------
+        uri
+            Image reference for the built image.
+        volumes
+            Pinned volumes retained by the image.
+
+        Returns
+        -------
+        Image
+            A built image carrying the supplied volume pins.
+        """
+        image = cls.base(uri)
+        image._volume_mounts = tuple(volumes)
+        image._built = True
+        return image
+
+    def to_json(self) -> str:
+        """Serialize a built image without local paths or credentials.
+
+        Returns
+        -------
+        str
+            JSON containing the image URI and pinned volumes.
+
+        Raises
+        ------
+        ValueError
+            If this image has not been built.
+        """
+        if not self._built:
+            raise ValueError("Call Image.build() before serializing an image")
+        return json.dumps(
+            {
+                "schema_version": 1,
+                "image_uri": self._base_image,
+                "volumes": [
+                    {
+                        "name": mount.name,
+                        "mount_path": mount.mount_path,
+                        "version_id": mount.version_id,
+                    }
+                    for mount in self._volume_mounts
+                ],
+            },
+            sort_keys=True,
+        )
+
+    @classmethod
+    def from_json(cls, value: str) -> Image:
+        """Load a built image without contacting any service.
+
+        Parameters
+        ----------
+        value
+            JSON produced by :meth:`to_json`.
+
+        Returns
+        -------
+        Image
+            The built image represented by the JSON value.
+
+        Raises
+        ------
+        ValueError
+            If the JSON value is invalid or does not describe a built image.
+        """
+        from chalkcompute._image_build import merge_mounts
+        from chalkcompute._volume import VolumeMount
+
+        try:
+            data = json.loads(value)
+            if not isinstance(data, dict):
+                raise ValueError("Invalid built image spec")
+            if type(data["schema_version"]) is not int or data["schema_version"] != 1:
+                raise ValueError("Unsupported built image schema version")
+            if not isinstance(data["image_uri"], str):
+                raise ValueError("image_uri must be a string")
+            if not isinstance(data["volumes"], list):
+                raise ValueError("volumes must be a list")
+            mounts = [VolumeMount(**mount) for mount in data["volumes"]]
+            for mount in mounts:
+                if (
+                    not isinstance(mount.name, str)
+                    or not mount.name
+                    or not isinstance(mount.mount_path, str)
+                    or type(mount.version_id) is not int
+                    or mount.version_id < 0
+                    or mount.ref_name is not None
+                ):
+                    raise ValueError("Invalid pinned image mount")
+            return cls._from_built(data["image_uri"], merge_mounts(mounts))
+        except (TypeError, KeyError) as exc:
+            raise ValueError("Invalid built image spec") from exc
 
     # -- Constructors ----------------------------------------------------------
 
@@ -142,6 +339,20 @@ class Image:
         return cls(f"python:{python_version}-slim-trixie")
 
     @classmethod
+    def sandbox(cls, python_version: str = "3.14") -> Image:
+        """Default sandbox image: Python, Git, TLS certificates, and SSH.
+
+        Uses Debian slim with ``/workspace`` as its working directory. Builds
+        lazily through the normal image builder, and can be extended with the
+        same methods as any other Image. A fresh spec is returned each time.
+        """
+        return (
+            cls.debian_slim(python_version)
+            .apt_install(["git", "ca-certificates", "openssh-client"])
+            .workdir("/workspace")
+        )
+
+    @classmethod
     def from_dockerfile(cls, path: str) -> Image:
         """Create an image from an existing Dockerfile.
 
@@ -181,8 +392,9 @@ class Image:
         img = cls(base)
         if commands:
             img._steps.append(
-                pb.BuildStep(
-                    dockerfile_commands=pb.DockerfileCommandsStep(commands=commands)
+                _build_step(
+                    "dockerfile_commands",
+                    pb.DockerfileCommandsStep(commands=commands),
                 )
             )
         return img
@@ -198,6 +410,7 @@ class Image:
         new._workdir = self._workdir
         new._env = dict(self._env)
         new._lazy_local_files = set(self._lazy_local_files)
+        new._volume_mounts = self._volume_mounts
         return new
 
     def run_commands(self, *commands: str) -> Image:
@@ -228,9 +441,48 @@ class Image:
         """
         new = self._copy()
         new._steps.append(
-            pb.BuildStep(run_commands=pb.RunCommandsStep(commands=list(commands)))
+            _build_step("run_commands", pb.RunCommandsStep(commands=list(commands)))
         )
         return new
+
+    def apt_install(self, packages: Sequence[str]) -> Image:
+        """Install Debian/Ubuntu system packages during the image build.
+
+        Like :meth:`pip_install`, accepts a sequence and returns a new image.
+        Requires ``apt-get`` and a root build user. Updates package indexes,
+        installs noninteractively without recommended packages, and removes
+        indexes in one build layer. Package versions can be pinned with
+        ``name=version``. Other distributions can use :meth:`run_commands`
+        with their package manager.
+
+        Examples
+        --------
+        >>> image = Image.sandbox().apt_install(["tmux"])
+        >>> sandbox = Sandbox(image=image).run()
+        >>> sandbox.exec("tmux", "new-session", "-d", "-s", "work")
+        """
+        if isinstance(packages, (str, bytes)) or not isinstance(packages, Sequence):
+            raise TypeError(
+                "packages must be a sequence of package names, such as ['tmux']"
+            )
+        if not packages:
+            raise ValueError("packages must not be empty")
+        for package in packages:
+            if (
+                not isinstance(package, str)
+                or not package.strip()
+                or package.startswith("-")
+                or "\0" in package
+            ):
+                raise ValueError(
+                    "each package must be a nonempty name, not an apt option"
+                )
+        return self.run_commands(
+            "apt-get update && DEBIAN_FRONTEND=noninteractive "
+            "apt-get install -y --no-install-recommends -- "
+            + shlex.join(packages)
+            + " && rm -rf /var/lib/apt/lists/*"
+        )
 
     def uv_pip_install(self, packages: Sequence[str]) -> Image:
         """Install Python packages via ``uv pip install``.
@@ -259,7 +511,7 @@ class Image:
         """
         new = self._copy()
         new._steps.append(
-            pb.BuildStep(uv_pip_install=pb.UvPipInstallStep(packages=list(packages)))
+            _build_step("uv_pip_install", pb.UvPipInstallStep(packages=list(packages)))
         )
         return new
 
@@ -321,7 +573,7 @@ class Image:
         """
         new = self._copy()
         new._steps.append(
-            pb.BuildStep(pip_install=pb.PipInstallStep(packages=list(packages)))
+            _build_step("pip_install", pb.PipInstallStep(packages=list(packages)))
         )
         return new
 
@@ -454,7 +706,7 @@ class Image:
             step = pb.AddFileStep(destination=dest, content=content)
             if mode is not None:
                 step.mode = mode
-            new._steps.append(pb.BuildStep(add_file=step))
+            new._steps.append(_build_step("add_file", step))
         return new
 
     def add_local_dir(
@@ -595,8 +847,9 @@ class Image:
                     path=file_path,
                 )
                 new._steps.append(
-                    pb.BuildStep(
-                        add_file=pb.AddFileStep(destination=file_dest, content=content)
+                    _build_step(
+                        "add_file",
+                        pb.AddFileStep(destination=file_dest, content=content),
                     )
                 )
         return new
@@ -604,9 +857,9 @@ class Image:
     def _app_module_names(self) -> set[str]:
         """Top-level module names already claimed under ``/app``."""
         dests = [lazy_file.dest for lazy_file in self._lazy_local_files] + [
-            step.add_file.destination
+            step.step.value.destination
             for step in self._steps
-            if step.HasField("add_file")
+            if step.step is not None and step.step.field == "add_file"
         ]
         return {
             dest[len("/app/") :].split("/")[0].removesuffix(".py")
@@ -692,8 +945,9 @@ class Image:
         """
         new = self._copy()
         new._steps.append(
-            pb.BuildStep(
-                dockerfile_commands=pb.DockerfileCommandsStep(commands=list(commands))
+            _build_step(
+                "dockerfile_commands",
+                pb.DockerfileCommandsStep(commands=list(commands)),
             )
         )
         return new
@@ -704,7 +958,8 @@ class Image:
         Parameters
         ----------
         variables
-            Mapping of variable names to values.
+            Mapping of variable names to literal strings. Pass Secret values in
+            the runtime consumer's env instead (for example, Sandbox(env=...)).
 
         Returns
         -------
@@ -909,10 +1164,29 @@ class Image:
     def to_proto(self) -> pb.ImageSpec:
         """Serialize this image definition to a protobuf ``ImageSpec``.
 
+        Local volume files remain separate, as with from_proto(). Built
+        images carrying volume pins must use to_json() because ImageSpec
+        cannot represent those mounts.
+
         Returns
         -------
         pb.ImageSpec
             The protobuf representation of this image.
+        """
+        if self._volume_mounts:
+            raise ValueError(
+                "ImageSpec cannot preserve built image volumes. Use Image.to_json() "
+                "or pass the Image directly to a compute resource."
+            )
+        return self._to_build_proto()
+
+    def _to_build_proto(self) -> pb.ImageSpec:
+        """Serialize the build recipe without runtime volume mounts.
+
+        Returns
+        -------
+        pb.ImageSpec
+            The protobuf representation of the build recipe.
         """
         spec = pb.ImageSpec(
             base_image=self._base_image,
@@ -933,19 +1207,21 @@ class Image:
         img._steps = list(spec.steps)
         img._entrypoint = list(spec.entrypoint)
         img._cmd = list(spec.cmd)
-        img._workdir = spec.workdir if spec.HasField("workdir") else None
+        img._workdir = spec.workdir if spec.has_field("workdir") else None
         img._env = dict(spec.env)
         return img
 
     @classmethod
     def from_proto_bytes(cls, data: bytes) -> Image:
         """Reconstruct an ``Image`` from a serialized ``ImageSpec`` byte string."""
-        spec = pb.ImageSpec()
-        spec.ParseFromString(data)
-        return cls.from_proto(spec)
+        return cls.from_proto(pb.ImageSpec.from_binary(data))
 
     def __repr__(self) -> str:
         parts = [f"Image(base={self._base_image!r}"]
+        if self._built:
+            parts.append(", built=True")
+        if self._volume_mounts:
+            parts.append(f", volumes={len(self._volume_mounts)}")
         if self._steps:
             parts.append(f", steps={len(self._steps)}")
         if self._workdir:
@@ -986,9 +1262,9 @@ def _read_copy_file(path: Path) -> bytes:
 def _inline_copy_size(steps: Sequence[pb.BuildStep]) -> int:
     """Return the raw bytes already embedded by copy-based add-file steps."""
     return sum(
-        len(step.add_file.content)
+        len(step.step.value.content)
         for step in steps
-        if step.WhichOneof("step") == "add_file"
+        if step.step is not None and step.step.field == "add_file"
     )
 
 

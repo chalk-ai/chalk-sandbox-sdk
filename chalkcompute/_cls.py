@@ -50,39 +50,66 @@ import os
 import textwrap
 import time
 import typing
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, TypeVar, overload
 
+from chalkcompute._logging import _StatusLogger
 from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import ConnectClient
-from chalkcompute._containerspec import ContainerSpec
+from chalkcompute._containerspec import (
+    ComputeClass,
+    ContainerSpec,
+    validate_replica_and_utilization,
+)
+from chalkcompute._env import normalize_env
+from chalkcompute._deployment_proto import function_config, scaling_spec
+from chalkcompute._function_deployment import (
+    ensure_external_function,
+    resolve_function_volumes,
+    function_source_root,
+)
+from chalkcompute._image_build import normalize_image_volumes
+from chalkcompute._secret import prepare_lazy_secrets
 from chalkcompute._function import (
-    _CATALOG_SVC,
     _REMOTE_ENV_VAR,
     _ROW_METADATA_COLUMN,
-    _SG_SVC,
     FunctionVersionInfo,
     RemoteFunction,
     SerializationFormat,
-    _assert_stripped_source_self_contained,
-    _build_and_upload,
+    _strip_source_for_deploy,
     _callable_input_names,
     _cleanup_temp_files,
     _entrypoint_source,
-    _extract_field_names,
+    _get_external_function,
+    _get_scaling_group,
     _is_chalkcompute_decorator,
     _local_install_entrypoint,
     _make_base_image,
     _normalize_schedule,
+    _remote_call_container_env,
+    _remote_call_runtime_package_with_extras,
+    _remote_function_startup_probe,
     _scaling_group_is_ready,
     _should_strip_source,
     _source_text_for_deploy,
     _write_temp,
+    _apply_external_function,
 )
+from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import (
+    service_connect as catalog_connect,
+)
+from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as catalog_pb
+from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from chalkcompute._naming import sanitize_dns_label
 from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
+from chalkcompute._remote_function_tracing import (
+    TracingPolicy,
+    TracingPolicyConfig,
+    normalize_remote_function_tracing,
+)
 from chalkcompute._retry import RetryPolicy
 from chalkcompute._tracing import _instrumented
 from chalkcompute._volume import (
@@ -90,13 +117,15 @@ from chalkcompute._volume import (
     VolumeClient,
     VolumeMount,
     cleanup_owned_volumes,
-    normalize_volume_refs,
-    referenced_volume_mount,
 )
 
 if TYPE_CHECKING:
     from chalkcompute._image import Image as _Image
     from chalkcompute._scaling_group import CronScalingTrigger as _CronScalingTrigger
+    from chalkcompute._scaling_group import ReadinessProbe as _ReadinessProbe
+    from chalkcompute._scaling_group import (
+        ScaleFromZeroRequestPolicy as _ScaleFromZeroRequestPolicy,
+    )
     from chalkcompute._secret import Secret as _Secret
 
 logger = logging.getLogger(__name__)
@@ -447,6 +476,7 @@ def _generate_class_handler_shim(
     after_has_self: bool,
     *,
     batched: bool = False,
+    bind_models: bool = False,
 ) -> str:
     """Generate a handler shim for a single method on a class.
 
@@ -484,7 +514,14 @@ def _generate_class_handler_shim(
     str
         Python source for the handler shim.
     """
-    parts: list[str] = ["import contextlib", "import inspect"]
+    parts: list[str] = []
+    if bind_models:
+        parts += [
+            "from chalkcompute._model import apply_models_from_env as _apply_models",
+            "_apply_models()",
+            "",
+        ]
+    parts += ["import contextlib", "import inspect"]
 
     if after_name is not None:
         parts.append("import atexit")
@@ -716,11 +753,16 @@ class RemoteClass:
         image: _Image | None = None,
         name: str | None = None,
         cpu: str | None = None,
+        compute_class: ComputeClass | None = None,
         memory: str | None = None,
         gpu: str | None = None,
-        env: dict[str, str] | None = None,
+        env: Mapping[str, str | _Secret] | None = None,
         secrets: list[_Secret] | None = None,
-        volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+        volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
+        tags: dict[str, str] | None = None,
+        chalk_identity: bool = False,
+        authenticated: bool = False,
+        readiness_probe: _ReadinessProbe | None = None,
         min_replicas: int = 1,
         max_replicas: int = 1,
         shutdown_delay_seconds: int | None = None,
@@ -729,6 +771,7 @@ class RemoteClass:
         target_gpu_utilization_percentage: int | None = None,
         target_queue_depth: int | None = None,
         cron_scaling_trigger: _CronScalingTrigger | None = None,
+        scale_from_zero_request_policy: _ScaleFromZeroRequestPolicy | None = None,
         serialization_format: SerializationFormat = "pyarrow",
         options: dict[str, str] | None = None,
         max_buffer_duration: int | None = None,
@@ -736,61 +779,79 @@ class RemoteClass:
         retries: int | RetryPolicy | None = None,
         rate_limit: int | RateLimitPolicy | None = None,
         concurrency: int | ConcurrencyPolicy | None = None,
-        quota: int | QueuePolicy | None = None,
+        queue_policy: QueuePolicy | None = None,
         schedule: str | None = None,
+        tracing: TracingPolicyConfig | None = None,
+        models: typing.Mapping[str, Any] | None = None,
         chalk_client: Any | None = None,
     ) -> None:
         self._user_cls: type | None = user_cls
         self._class_name = user_cls.__name__
+        env, secrets = normalize_env(env, secrets)
+        normalized_image, resolved_volumes = normalize_image_volumes(image, volumes)
+        if isinstance(normalized_image, str):
+            raise TypeError("class images must be Image instances")
         ContainerSpec.validate_fields(
-            image=image,
+            image=normalized_image,
             name=name,
             cpu=cpu,
+            compute_class=compute_class,
             memory=memory,
             gpu=gpu,
             env=env,
+            secrets=secrets,
+            tags=tags,
+            chalk_identity=chalk_identity,
+        )
+        validate_replica_and_utilization(
+            min_replicas=min_replicas,
+            max_replicas=max_replicas,
+            gpu=gpu,
+            target_cpu_utilization_percentage=target_cpu_utilization_percentage,
+            target_gpu_utilization_percentage=target_gpu_utilization_percentage,
         )
         self._explicit_name = name
-        self._image = image
+        self._image = normalized_image
         self._cpu = cpu
+        self._compute_class = compute_class
         self._memory = memory
         self._gpu = gpu
         self._env = dict(env) if env else {}
+        if models:
+            from chalkcompute._model import MODELS_ENV_VAR, encode_models_env
+
+            self._env[MODELS_ENV_VAR] = encode_models_env(models)
         self._secrets: list[_Secret] = list(secrets or [])
         # Existence is checked once at deploy time, not here.
-        self._referenced_volumes: list[VolumeMount] = normalize_volume_refs(volumes)
+        self._referenced_volumes: list[VolumeMount] = resolved_volumes
         # Populated at deploy time: referenced volumes plus any freshly
         # uploaded volumes.
         self._volumes: list[VolumeMount] = []
-        if min_replicas < 0:
-            raise ValueError(f"min_replicas must be >= 0, got {min_replicas}")
-        if max_replicas < 0:
-            raise ValueError(f"max_replicas must be >= 0, got {max_replicas}")
-        if min_replicas > max_replicas:
-            raise ValueError(
-                f"min_replicas ({min_replicas}) must be <= max_replicas ({max_replicas})"
-            )
+        self._tags = dict(tags or {})
+        self._chalk_identity = chalk_identity
+        self._authenticated = authenticated
+        if readiness_probe is not None:
+            from chalkcompute._scaling_group import ReadinessProbe
+
+            if not isinstance(readiness_probe, ReadinessProbe):
+                raise TypeError("readiness_probe must be a ReadinessProbe")
+        self._readiness_probe = readiness_probe
+        if scale_from_zero_request_policy is not None:
+            from chalkcompute._scaling_group import ScaleFromZeroRequestPolicy
+
+            if not isinstance(
+                scale_from_zero_request_policy, ScaleFromZeroRequestPolicy
+            ):
+                raise TypeError(
+                    "scale_from_zero_request_policy must be a ScaleFromZeroRequestPolicy"
+                )
+        self._scale_from_zero_request_policy = scale_from_zero_request_policy
         self._volume_driver: VolumeClient | None = None
         self._min_replicas = min_replicas
         self._max_replicas = max_replicas
         self._shutdown_delay_seconds = shutdown_delay_seconds
         self._scaling_interval_seconds = scaling_interval_seconds
         self._target_cpu_utilization_percentage = target_cpu_utilization_percentage
-        if target_gpu_utilization_percentage is not None:
-            if not (0 < target_gpu_utilization_percentage <= 100):
-                raise ValueError(
-                    f"target_gpu_utilization_percentage must be between 1 and 100, got {target_gpu_utilization_percentage}"
-                )
-            if gpu is None:
-                raise ValueError(
-                    "target_gpu_utilization_percentage requires gpu to be set"
-                )
-            # The utilization series only exists while replicas do, so a group that
-            # may reach zero would deactivate and never see a sample to scale back up.
-            if min_replicas < 1:
-                raise ValueError(
-                    f"target_gpu_utilization_percentage requires min_replicas >= 1, got {min_replicas}"
-                )
         self._target_gpu_utilization_percentage = target_gpu_utilization_percentage
         self._target_queue_depth = target_queue_depth
         self._cron_scaling_trigger = cron_scaling_trigger
@@ -815,9 +876,12 @@ class RemoteClass:
             if concurrency is not None
             else None
         )
-        self._quota = (
-            QueuePolicy.from_int_or_policy(quota) if quota is not None else None
-        )
+        if queue_policy is not None and not isinstance(queue_policy, QueuePolicy):
+            raise TypeError(
+                f"queue_policy must be a QueuePolicy, got {type(queue_policy).__name__}"
+            )
+        self._queue_policy = queue_policy
+        self._tracing = normalize_remote_function_tracing(tracing)
 
         self._client = ConnectClient(chalk_client=chalk_client)
         self._deployed = False
@@ -904,50 +968,49 @@ class RemoteClass:
         """
         rc = cls._make_empty(name, chalk_client=chalk_client)
 
-        # List all function versions, paginating, and collect those matching
-        entries: list[tuple[dict, dict | None]] = []
-        cursor = ""
+        # Find stable function parents for every deployed class method.
+        function_ids: list[str] = []
+        cursor: str | None = None
+        stub = rc._client.stub(catalog_connect.ExternalFunctionCatalogServiceClientSync)
         while True:
-            req: dict[str, Any] = {"includeScalingGroup": True, "limit": 100}
-            if cursor:
-                req["cursor"] = cursor
-            resp = rc._client.rpc(
-                _CATALOG_SVC,
-                "ListExternalFunctionVersions",
-                req,
+            response = rc._client.call(
+                stub.list_external_functions,
+                catalog_pb.ListExternalFunctionsRequest(
+                    limit=100,
+                    cursor=cursor,
+                    search=f"{name}.",
+                ),
             )
-            if resp.status_code != 200:
-                raise ClassError(f"ListExternalFunctionVersions failed: {resp.text}")
-            data = resp.json()
-            for entry in data.get("entries", []):
-                efv = entry["externalFunctionVersion"]
-                if efv["functionName"].startswith(f"{name}."):
-                    entries.append((efv, entry.get("scalingGroup")))
-            cursor = data.get("nextCursor", "")
-            if not cursor:
+            function_ids.extend(
+                summary.function_id
+                for summary in response.functions
+                if summary.name.startswith(f"{name}.")
+            )
+            cursor = response.next_cursor or None
+            if cursor is None:
                 break
 
-        if not entries:
+        if not function_ids:
             raise ClassError(f"No function versions found for class '{name}'")
 
-        for efv, sg in entries:
-            method_name = efv["functionName"].split(".", 1)[1]
+        for function_id in function_ids:
+            function_response = _get_external_function(
+                rc._client,
+                function_id=function_id,
+                include_scaling_group=True,
+            )
+            external_function = function_response.external_function
+            if external_function is None or external_function.current_version is None:
+                continue
+            efv = external_function.current_version
+            method_name = efv.function_name.split(".", 1)[1]
 
             rf = RemoteFunction._make_empty()
-            rf._func_name = efv["functionName"]
-            rf._explicit_name = sanitize_dns_label(efv["functionName"])
-            rf._version_info = FunctionVersionInfo(
-                id=efv["id"],
-                function_name=efv["functionName"],
-                version=efv.get("version", 0),
-                scaling_group_name=efv.get("scalingGroupName", ""),
+            _apply_external_function(
+                rf,
+                external_function,
+                scaling_group=function_response.scaling_group,
             )
-            rf._input_field_names = _extract_field_names(efv.get("inputArrowSchema"))
-            if sg:
-                rf._web_url = sg.get("webUrl")
-                rf._port = sg.get("port", 6666)
-            else:
-                rf._port = 6666
 
             rc._methods[method_name] = _MethodInfo(
                 name=method_name,
@@ -966,12 +1029,18 @@ class RemoteClass:
         rc._explicit_name = name
         rc._image = None
         rc._cpu = None
+        rc._compute_class = None
         rc._memory = None
         rc._gpu = None
         rc._env = {}
         rc._secrets = []
         rc._referenced_volumes = []
         rc._volumes = []
+        rc._tags = {}
+        rc._chalk_identity = False
+        rc._authenticated = False
+        rc._readiness_probe = None
+        rc._scale_from_zero_request_policy = None
         rc._volume_driver = None
         rc._min_replicas = 1
         rc._max_replicas = 1
@@ -989,7 +1058,8 @@ class RemoteClass:
         rc._retries = None
         rc._rate_limit = None
         rc._concurrency = None
-        rc._quota = None
+        rc._queue_policy = None
+        rc._tracing = None
         rc._client = ConnectClient(chalk_client=chalk_client)
         rc._deployed = False
         rc._local_instance_cache = None
@@ -1006,6 +1076,12 @@ class RemoteClass:
                 f"Class {self._class_name!r} has no local implementation to deploy"
             )
         return self._user_cls
+
+    def _remote_call_runtime_package(self) -> str:
+        extras: list[str] = []
+        if isinstance(self._tracing, TracingPolicy):
+            extras.append("tracing")
+        return _remote_call_runtime_package_with_extras(extras)
 
     def _source_file_for_deploy(self) -> str:
         user_cls = self._require_user_cls()
@@ -1031,19 +1107,18 @@ class RemoteClass:
         """
         user_cls = self._require_user_cls()
         source_file = self._source_file_for_deploy()
+        source_root = function_source_root(self._image, self._referenced_volumes)
 
         temp_files: list[str] = []
         source_path = Path(source_file)
 
         if _should_strip_source():
-            source = _source_text_for_deploy(source_file)
-            stripped = _strip_chalkcompute_from_class_source(source)
             entrypoint_sources: list[str] = []
             for method_info in self._methods.values():
                 entrypoint_sources.extend(_entrypoint_source(method_info.func))
-            _assert_stripped_source_self_contained(
-                source,
-                stripped,
+            stripped = _strip_source_for_deploy(
+                _source_text_for_deploy(source_file),
+                strip=_strip_chalkcompute_from_class_source,
                 label=f"Class {self._class_name!r}",
                 entrypoint_sources=entrypoint_sources,
             )
@@ -1053,9 +1128,10 @@ class RemoteClass:
             source_file = _write_temp(_source_text_for_deploy(source_file))
             temp_files.append(source_file)
 
-        deploy_image = _make_base_image(self._image).add_local_file(
-            source_file, "/app/user_module.py"
-        )
+        deploy_image = _make_base_image(
+            self._image,
+            remote_call_runtime_package=self._remote_call_runtime_package(),
+        ).add_local_file(source_file, f"{source_root}/user_module.py")
 
         # Precompute has-self flags for lifecycle hooks
         before_func = (
@@ -1065,6 +1141,9 @@ class RemoteClass:
             user_cls.__dict__.get(self._after_name) if self._after_name else None
         )
 
+        from chalkcompute._model import MODELS_ENV_VAR
+
+        bind_models = bool(self._env.get(MODELS_ENV_VAR))
         # Generate one handler shim per method
         for method_info in self._methods.values():
             shim_content = _generate_class_handler_shim(
@@ -1076,14 +1155,22 @@ class RemoteClass:
                 after_name=self._after_name,
                 after_has_self=_has_self(after_func) if after_func else False,
                 batched=self._max_batching_size is not None,
+                bind_models=bind_models,
             )
             shim_path = _write_temp(shim_content)
             temp_files.append(shim_path)
             deploy_image = deploy_image.add_local_file(
-                shim_path, f"/app/handler_{method_info.name}.py"
+                shim_path, f"{source_root}/handler_{method_info.name}.py"
             )
 
-        deploy_image = deploy_image.env({"PYTHONPATH": "/app", _REMOTE_ENV_VAR: "1"})
+        deploy_image = deploy_image.env(
+            {
+                "PYTHONPATH": source_root
+                if source_root == "/app"
+                else f"{source_root}:/app",
+                _REMOTE_ENV_VAR: "1",
+            }
+        )
 
         return deploy_image, temp_files
 
@@ -1096,8 +1183,12 @@ class RemoteClass:
         poll_interval: float = 0.5,
         build_timeout: float = 600.0,
         ready_timeout: float = 300.0,
+        force_new_version: bool = False,
     ) -> RemoteClass:
-        """Build the image and deploy all methods as function versions.
+        """Deploy all methods, reusing unchanged function versions.
+
+        ``force_new_version=True`` creates fresh versions while still reusing
+        image builds and source uploads.
 
         Parameters
         ----------
@@ -1113,8 +1204,6 @@ class RemoteClass:
         RemoteClass
             ``self`` for chaining.
         """
-        from google.protobuf.json_format import MessageToDict
-
         from chalkcompute._progress import (
             progress_add,
             progress_done,
@@ -1126,43 +1215,21 @@ class RemoteClass:
         ckey = f"class:{self._class_name}"
         progress_add(ckey, "class", f'Class "{self._class_name}"')
 
+        temp_files: list[str] = []
         try:
             # 1. Build deploy image
             deploy_image, temp_files = self._build_deploy_image()
-
-            # 2. Build image + upload lazy files
-            image_uri, new_vols, driver, volume_commits = _build_and_upload(
+            self._volumes = list(self._referenced_volumes)
+            self._volume_driver = None
+            deploy_volumes = resolve_function_volumes(
                 self._client,
-                deploy_image,
-                label=f"class '{self._class_name}'",
-                volume_name=f"cls-src-{self._explicit_name or self._class_name}",
+                image=deploy_image,
+                volume_name=self._explicit_name or self._class_name,
+                referenced=self._volumes,
                 poll_interval=poll_interval,
-                build_timeout=build_timeout,
-                progress_parent=ckey,
+                timeout=build_timeout,
             )
-            # A missing user-referenced volume fails the deploy. Checked once
-            # here, then reused across every per-method spec.
-            referenced_volumes = [
-                referenced_volume_mount(self._client, mount)
-                for mount in self._referenced_volumes
-            ]
-            self._volumes = [*referenced_volumes, *new_vols]
-            self._volume_driver = driver
-            _cleanup_temp_files(temp_files)
-
-            # Resolve lazy secrets once, into a local rather than
-            # self._secrets: they're shared by every method (one FUNCTION
-            # scope for the class), and keeping self._secrets as the user's
-            # lazy originals means a later .deploy() on the same object
-            # re-upserts instead of reusing a stale resolution.
-            resolved_secrets = self._secrets
-            if self._secrets and any(s.is_lazy for s in self._secrets):
-                from chalkcompute._secret import SecretScope, resolve_lazy_secrets
-
-                scope = SecretScope.function(self._explicit_name or self._class_name)
-                resolved_secrets, _upserted = resolve_lazy_secrets(
-                    self._secrets, self._client, scope=scope
-                )
+            resolved_secrets, local_secrets = prepare_lazy_secrets(self._secrets)
 
             # 3. Register each method as a function version
             sg_names: list[str] = []
@@ -1185,118 +1252,103 @@ class RemoteClass:
 
                 container_spec = ContainerSpec(
                     name=sg_name,
-                    image=image_uri,
+                    image="",
                     entrypoint=_local_install_entrypoint(handler_cmd),
-                    env={"PYTHONPATH": "/app", _REMOTE_ENV_VAR: "1", **self._env},
+                    env=_remote_call_container_env(
+                        self._env, deploy_image._env.get("PYTHONPATH", "/app")
+                    ),
                     cpu=self._cpu,
+                    compute_class=self._compute_class,
                     memory=self._memory,
                     gpu=self._gpu,
-                    volumes=self._volumes,
+                    volumes=deploy_volumes,
                     secret_refs=resolved_secrets,
                     port=6666,
                     protocol="grpc",
-                ).to_dict()
+                    startup_probe=_remote_function_startup_probe(),
+                    readiness_probe=(
+                        self._readiness_probe.to_dict()
+                        if self._readiness_probe is not None
+                        else None
+                    ),
+                    authentication="AUTHENTICATED" if self._authenticated else None,
+                    tags=self._tags,
+                    chalk_identity=self._chalk_identity,
+                ).to_proto()
 
-                scaling_spec: dict[str, Any] = {
-                    "minReplicas": self._min_replicas,
-                    "maxReplicas": self._max_replicas,
-                }
-                if self._shutdown_delay_seconds is not None:
-                    scaling_spec["shutdownDelaySeconds"] = self._shutdown_delay_seconds
-                if self._scaling_interval_seconds is not None:
-                    scaling_spec["windowSeconds"] = self._scaling_interval_seconds
-                if self._target_cpu_utilization_percentage is not None:
-                    scaling_spec["targetCpuUtilizationPercentage"] = (
-                        self._target_cpu_utilization_percentage
-                    )
-                if self._target_gpu_utilization_percentage is not None:
-                    scaling_spec["gpuUtilizationTrigger"] = {
-                        "targetUtilizationPercentage": self._target_gpu_utilization_percentage
-                    }
-                if self._target_queue_depth is not None:
-                    scaling_spec["functionQueueDepthTrigger"] = {
-                        "functionName": func_name,
-                        "targetQueueDepth": self._target_queue_depth,
-                    }
-                if self._cron_scaling_trigger is not None:
-                    scaling_spec["cronScalingTrigger"] = (
-                        self._cron_scaling_trigger.to_dict()
-                    )
-
-                spec: dict[str, Any] = {
-                    "containerSpec": container_spec,
-                    "scalingSpec": scaling_spec,
-                }
+                spec = sg_pb.ScalingGroupSpec(
+                    container_spec=container_spec,
+                    scaling_spec=scaling_spec(
+                        min_replicas=self._min_replicas,
+                        max_replicas=self._max_replicas,
+                        shutdown_delay_seconds=self._shutdown_delay_seconds,
+                        window_seconds=self._scaling_interval_seconds,
+                        target_cpu_utilization_percentage=(
+                            self._target_cpu_utilization_percentage
+                        ),
+                        target_gpu_utilization_percentage=(
+                            self._target_gpu_utilization_percentage
+                        ),
+                        function_name=func_name,
+                        target_queue_depth=self._target_queue_depth,
+                        cron_scaling_trigger=self._cron_scaling_trigger,
+                        scale_from_zero_request_policy=(
+                            self._scale_from_zero_request_policy
+                        ),
+                    ),
+                )
 
                 # Build function-level config
-                function_config: dict[str, Any] = {}
-                if self._serialization_format != "pyarrow":
-                    function_config["serializationFormat"] = self._serialization_format
-                if self._options:
-                    function_config["options"] = self._options
-                if self._max_buffer_duration is not None:
-                    function_config["maxBufferDuration"] = self._max_buffer_duration
-                if self._max_batching_size is not None:
-                    function_config["maxBatchingSize"] = self._max_batching_size
-                if self._retries is not None:
-                    function_config["retryPolicy"] = self._retries.to_dict()
-                if self._rate_limit is not None:
-                    function_config["rateLimit"] = self._rate_limit.to_dict()
-                if self._concurrency is not None:
-                    function_config["concurrency"] = self._concurrency.to_dict()
-                if self._quota is not None:
-                    function_config["queue"] = self._quota.to_dict()
-                if self._schedule is not None:
-                    function_config["schedule"] = self._schedule
+                config = function_config(
+                    serialization_format=self._serialization_format,
+                    options=self._options,
+                    max_buffer_duration=self._max_buffer_duration,
+                    max_batching_size=self._max_batching_size,
+                    retries=self._retries,
+                    rate_limit=self._rate_limit,
+                    concurrency=self._concurrency,
+                    queue_policy=self._queue_policy,
+                    schedule=self._schedule,
+                    tracing=self._tracing,
+                )
 
                 logger.info("Registering method '%s'...", func_name)
-                create_request: dict[str, Any] = {
-                    "functionName": func_name,
-                    "inputArrowSchema": MessageToDict(input_schema),
-                    "outputArrowSchema": MessageToDict(output_schema),
-                    "spec": spec,
-                }
-                if function_config:
-                    create_request["config"] = function_config
-                if volume_commits:
-                    create_request["volumeCommits"] = volume_commits
-
-                resp = self._client.rpc(
-                    _CATALOG_SVC,
-                    "CreateExternalFunctionVersion",
-                    create_request,
-                    timeout=60,
+                ensured = ensure_external_function(
+                    self._client,
+                    function_name=func_name,
+                    image=deploy_image,
+                    local_secrets=local_secrets,
+                    force_new_version=force_new_version,
+                    poll_interval=poll_interval,
+                    timeout=build_timeout,
+                    version_spec=catalog_pb.ExternalFunctionVersionSpec(
+                        input_arrow_schema=input_schema,
+                        output_arrow_schema=output_schema,
+                        spec=spec,
+                        config=config,
+                    ),
                 )
-                if resp.status_code != 200:
+                external_function = ensured.external_function
+                if external_function is None:
+                    raise ClassBuildError(
+                        "Ensure response omitted the external function"
+                    )
+                efv = external_function.current_version
+                if efv is None:
                     progress_fail(mkey)
                     raise ClassBuildError(
-                        f"CreateExternalFunctionVersion failed for '{func_name}': {resp.text}"
+                        f"External-function mutation returned no version for {func_name!r}"
                     )
-
-                data = resp.json()
-                efv = data["externalFunctionVersion"]
-                version_info = FunctionVersionInfo(
-                    id=efv["id"],
-                    function_name=efv["functionName"],
-                    version=efv.get("version", 0),
-                    scaling_group_name=efv.get("scalingGroupName", sg_name),
-                )
-
-                sg_data = data.get("scalingGroup")
-                web_url = sg_data.get("webUrl") if sg_data else None
-                port = sg_data.get("port", 6666) if sg_data else 6666
 
                 # Build a RemoteFunction proxy for calling this method
                 rf = RemoteFunction._make_empty()
-                rf._func_name = func_name
-                rf._explicit_name = sg_name
-                rf._version_info = version_info
-                rf._web_url = web_url
-                rf._port = port
-                rf._input_field_names = _extract_field_names(
-                    efv.get("inputArrowSchema")
+                _apply_external_function(
+                    rf, external_function, scaling_group=ensured.scaling_group
                 )
                 method_info.remote_function = rf
+                version_info = rf.version_info
+                assert version_info is not None
+                sg_data = ensured.scaling_group
 
                 logger.info(
                     "  %s v%s (id=%s)", func_name, version_info.version, version_info.id
@@ -1314,7 +1366,7 @@ class RemoteClass:
 
             # 5. Poll scaling groups until their backing pods can serve.
             if sg_names:
-                progress_update(ckey, detail="waiting for ready")
+                progress_update(ckey, detail="Waiting for readiness")
             for sg_name in sg_names:
                 self._poll_until_ready(
                     sg_name=sg_name,
@@ -1325,10 +1377,12 @@ class RemoteClass:
 
             self._deployed = True
             progress_done(ckey, detail="ready")
+            logger.info("Class ready: %s", self._class_name)
         except BaseException:
             progress_fail(ckey)
             raise
         finally:
+            _cleanup_temp_files(temp_files)
             progress_finish()
 
         return self
@@ -1343,19 +1397,19 @@ class RemoteClass:
     ) -> None:
         deadline = time.monotonic() + timeout
         status = "unknown"
+        status_log = _StatusLogger(
+            logger, f"Scaling group {sg_name}", progress_key=f"class:{self._class_name}"
+        )
         ready_replicas = 0
         available_replicas = 0
         while time.monotonic() < deadline:
-            resp = self._client.rpc(_SG_SVC, "GetScalingGroup", {"name": sg_name})
-            if resp.status_code != 200:
-                raise ClassError(f"GetScalingGroup failed: {resp.text}")
-            sg = resp.json()["scalingGroup"]
-            status = sg.get("status", "")
-            ready_replicas = sg.get("readyReplicas", 0)
-            available_replicas = sg.get("availableReplicas", 0)
+            sg = _get_scaling_group(self._client, sg_name)
+            status = sg.status
+            ready_replicas = sg.ready_replicas
+            available_replicas = sg.available_replicas
 
             # Update the web_url on the corresponding RemoteFunction
-            web_url = sg.get("webUrl")
+            web_url = sg.web_url or None
             for method_info in self._methods.values():
                 rf = method_info.remote_function
                 if (
@@ -1365,12 +1419,11 @@ class RemoteClass:
                 ):
                     rf._web_url = web_url
 
-            logger.info(
-                "  poll %s: status=%s ready=%s available=%s",
-                sg_name,
+            status_log.update(
                 status,
-                ready_replicas,
-                available_replicas,
+                ready=ready_replicas,
+                available=available_replicas,
+                message=sg.status_message or "",
             )
             if _scaling_group_is_ready(
                 sg, require_ready_replicas=require_ready_replicas
@@ -1572,12 +1625,17 @@ def cls(
     *,
     image: _Image | None = None,
     cpu: str | None = None,
+    compute_class: ComputeClass | None = None,
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
-    volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+    volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
+    tags: dict[str, str] | None = None,
+    chalk_identity: bool = False,
+    authenticated: bool = False,
+    readiness_probe: _ReadinessProbe | None = None,
     min_replicas: int = 1,
     max_replicas: int = 1,
     shutdown_delay_seconds: int | None = None,
@@ -1586,6 +1644,7 @@ def cls(
     target_gpu_utilization_percentage: int | None = None,
     target_queue_depth: int | None = None,
     cron_scaling_trigger: _CronScalingTrigger | None = None,
+    scale_from_zero_request_policy: _ScaleFromZeroRequestPolicy | None = None,
     serialization_format: SerializationFormat = "pyarrow",
     options: dict[str, str] | None = None,
     max_buffer_duration: int | None = None,
@@ -1593,8 +1652,10 @@ def cls(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
-    quota: int | QueuePolicy | None = None,
+    queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
+    models: typing.Mapping[str, Any] | None = None,
+    tracing: TracingPolicyConfig | None = None,
 ) -> RemoteClass | _NoOpClass: ...
 
 
@@ -1603,12 +1664,17 @@ def cls(
     *,
     image: _Image | None = None,
     cpu: str | None = None,
+    compute_class: ComputeClass | None = None,
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
-    volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+    volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
+    tags: dict[str, str] | None = None,
+    chalk_identity: bool = False,
+    authenticated: bool = False,
+    readiness_probe: _ReadinessProbe | None = None,
     min_replicas: int = 1,
     max_replicas: int = 1,
     shutdown_delay_seconds: int | None = None,
@@ -1617,6 +1683,7 @@ def cls(
     target_gpu_utilization_percentage: int | None = None,
     target_queue_depth: int | None = None,
     cron_scaling_trigger: _CronScalingTrigger | None = None,
+    scale_from_zero_request_policy: _ScaleFromZeroRequestPolicy | None = None,
     serialization_format: SerializationFormat = "pyarrow",
     options: dict[str, str] | None = None,
     max_buffer_duration: int | None = None,
@@ -1624,8 +1691,10 @@ def cls(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
-    quota: int | QueuePolicy | None = None,
+    queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
+    models: typing.Mapping[str, Any] | None = None,
+    tracing: TracingPolicyConfig | None = None,
 ) -> Callable[..., RemoteClass | _NoOpClass]: ...
 
 
@@ -1635,12 +1704,17 @@ def cls(
     *,
     image: _Image | None = None,
     cpu: str | None = None,
+    compute_class: ComputeClass | None = None,
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
-    volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+    volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
+    tags: dict[str, str] | None = None,
+    chalk_identity: bool = False,
+    authenticated: bool = False,
+    readiness_probe: _ReadinessProbe | None = None,
     min_replicas: int = 1,
     max_replicas: int = 1,
     shutdown_delay_seconds: int | None = None,
@@ -1649,6 +1723,7 @@ def cls(
     target_gpu_utilization_percentage: int | None = None,
     target_queue_depth: int | None = None,
     cron_scaling_trigger: _CronScalingTrigger | None = None,
+    scale_from_zero_request_policy: _ScaleFromZeroRequestPolicy | None = None,
     serialization_format: SerializationFormat = "pyarrow",
     options: dict[str, str] | None = None,
     max_buffer_duration: int | None = None,
@@ -1656,8 +1731,10 @@ def cls(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
-    quota: int | QueuePolicy | None = None,
+    queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
+    models: typing.Mapping[str, Any] | None = None,
+    tracing: TracingPolicyConfig | None = None,
 ) -> Callable[..., RemoteClass | _NoOpClass] | RemoteClass | _NoOpClass:
     """Decorator that deploys a class as versioned remote functions.
 
@@ -1681,18 +1758,28 @@ def cls(
         Container image to deploy in. Defaults to ``Image.debian_slim()``.
     cpu
         CPU resource request (e.g. ``"1"``, ``"500m"``).
+    compute_class
+        Where to run replicas. Omit to use the server default; HOST requires fixed,
+        positive replica counts.
     memory
         Memory resource request (e.g. ``"1Gi"``, ``"512Mi"``).
     gpu
         GPU resource request (e.g. ``"nvidia-l4"``, ``"2:nvidia-a100"``).
     name
-        Custom class name. Defaults to the class's ``__name__``.
+        Optional registered-name override. Omit this in normal usage to use
+        the class's ``__name__``. Set it only when a different registered name
+        is intentional, such as preserving existing deployments after renaming
+        the Python class. Changing or removing an override changes the target
+        functions; it does not rename existing deployments.
     env
-        Environment variables to pass to the class containers.
+        Environment variables as strings or single-value Secret references.
+        The mapping key sets the injected name, overriding aliases and prefixes.
     secrets
         List of :class:`~chalkcompute.Secret` references to inject.
     volumes
-        List of ``(name, mount_path)`` tuples for persistent storage.
+        List of ``Volume`` handles, ``VolumeMount`` specifications, or
+        ``(name_or_volume, mount_path)`` tuples for persistent storage.
+        Volume handles preserve their selected ref or pinned version.
     min_replicas
         Minimum number of replicas per method.
     max_replicas
@@ -1729,10 +1816,11 @@ def cls(
         Maximum number of items to accumulate before invoking the handler.
         Defaults to 10 when batching is enabled.
     retries
-        Retry policy for handler invocations. Pass an ``int`` for simple
-        max-attempts with default exponential backoff, or a
-        :class:`~chalkcompute.RetryPolicy` for full control. Enforced
-        before each outbound RPC, not in the handler.
+        Retry policy for handler invocations. An ``int`` is the number of
+        retries after the initial execution. Redis Stream function queues
+        currently honor ``max_retries`` with a fixed reclaim delay; the
+        backoff, jitter, key, and exception-filter fields are reserved for
+        other invocation paths.
     rate_limit
         Rate limit policy for outbound calls. Pass an ``int`` for a simple
         "N per second" cap with a per-method key, or a
@@ -1747,10 +1835,11 @@ def cls(
         (``max_concurrent``, ``key``). Multiple methods sharing the same
         ``key`` share one gate — independent of ``rate_limit`` (which caps
         rate, not in-flight count).
-    quota
-        Queue quota policy: cap on queued calls per key. Pass an ``int``
-        for a simple ``max_queue_depth`` cap with a per-method key, or a
-        :class:`~chalkcompute.QueuePolicy` for full control.
+    queue_policy
+        Queue configuration shared by the class's methods, including the
+        pending-item cap and asynchronous result retention. Pass a
+        :class:`~chalkcompute.QueuePolicy`; terminal results are retained for
+        one day by default or for ``result_ttl_seconds`` when configured.
     schedule
         Optional crontab or Chalk duration string applied to every no-input
         ``@method`` in the class (e.g. ``"0 * * * *"`` or ``"1h"``).
@@ -1765,11 +1854,16 @@ def cls(
             image=image,
             name=name,
             cpu=cpu,
+            compute_class=compute_class,
             memory=memory,
             gpu=gpu,
             env=env,
             secrets=secrets,
             volumes=volumes,
+            tags=tags,
+            chalk_identity=chalk_identity,
+            authenticated=authenticated,
+            readiness_probe=readiness_probe,
             min_replicas=min_replicas,
             max_replicas=max_replicas,
             shutdown_delay_seconds=shutdown_delay_seconds,
@@ -1778,6 +1872,7 @@ def cls(
             target_gpu_utilization_percentage=target_gpu_utilization_percentage,
             target_queue_depth=target_queue_depth,
             cron_scaling_trigger=cron_scaling_trigger,
+            scale_from_zero_request_policy=scale_from_zero_request_policy,
             serialization_format=serialization_format,
             options=options,
             max_buffer_duration=max_buffer_duration,
@@ -1785,8 +1880,10 @@ def cls(
             retries=retries,
             rate_limit=rate_limit,
             concurrency=concurrency,
-            quota=quota,
+            queue_policy=queue_policy,
             schedule=schedule,
+            tracing=tracing,
+            models=models,
         )
         rc.deploy()
         return rc

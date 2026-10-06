@@ -1,28 +1,20 @@
 from __future__ import annotations
 
 from typing import Any, cast
+from unittest.mock import MagicMock
 
-import httpx
 import pytest
 
 import chalkcompute._scaling_group as scaling_group_mod
 from chalkcompute import ScalingGroup
+from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
+from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
+from tests._fakes import FakeMethod, StubbedConnectClient
 
 
-class _Response:
-    status_code = 200
-    text = ""
-
-    def __init__(self, scaling_group: dict[str, Any]) -> None:
-        self._scaling_group = scaling_group
-
-    def json(self) -> dict[str, Any]:
-        return {"scalingGroup": self._scaling_group}
-
-
-class _CapturingClient:
+class _CapturingClient(StubbedConnectClient):
     def __init__(self, *, authentication: str | None = None) -> None:
-        self.requests: list[dict[str, Any]] = []
+        self.requests: list[Any] = []
         self._access_token = "test-token"
         self.ensure_auth_calls = 0
         self.authentication = authentication
@@ -30,36 +22,40 @@ class _CapturingClient:
     def _ensure_auth(self) -> None:
         self.ensure_auth_calls += 1
 
-    def rpc(
+    def call(
         self,
-        _service: str,
-        method: str,
-        request: dict[str, Any],
+        method: FakeMethod,
+        request: Any,
         **_: Any,
-    ) -> _Response:
+    ) -> Any:
         self.requests.append(request)
-        if method == "CreateScalingGroup":
-            spec = request["spec"]
-            name = spec["containerSpec"]["name"]
-        elif method == "GetScalingGroup":
-            name = request.get("name", "existing-group")
-            spec = {
-                "containerSpec": {
-                    "authentication": self.authentication,
-                }
-            }
+        if method.name == "create_scaling_group":
+            assert isinstance(request, sg_pb.CreateScalingGroupRequest)
+            assert request.spec is not None and request.spec.container_spec is not None
+            spec = request.spec
+            name = spec.container_spec.name
+            response_type = sg_pb.CreateScalingGroupResponse
+        elif method.name == "get_scaling_group":
+            assert isinstance(request, sg_pb.GetScalingGroupRequest)
+            name = request.name or "existing-group"
+            spec = sg_pb.ScalingGroupSpec(
+                container_spec=container_pb.ChalkContainerSpec(
+                    authentication=self.authentication
+                )
+            )
+            response_type = sg_pb.GetScalingGroupResponse
         else:
-            raise AssertionError(f"unexpected method: {method}")
-        return _Response(
-            {
-                "id": "sg-1",
-                "name": name,
-                "status": "Available",
-                "webUrl": "https://example.com",
-                "readyReplicas": 1,
-                "availableReplicas": 1,
-                "spec": spec,
-            }
+            raise AssertionError(f"unexpected method: {method.name}")
+        return response_type(
+            scaling_group=sg_pb.ScalingGroupResponse(
+                id="sg-1",
+                name=name,
+                status="Available",
+                web_url="https://example.com",
+                ready_replicas=1,
+                available_replicas=1,
+                spec=spec,
+            )
         )
 
 
@@ -80,8 +76,29 @@ def test_scaling_group_deploy_serializes_authentication(
 
     sg.deploy()
 
-    container_spec = client.requests[0]["spec"]["containerSpec"]
-    assert container_spec.get("authentication") == expected
+    request = client.requests[0]
+    assert isinstance(request, sg_pb.CreateScalingGroupRequest)
+    assert request.spec is not None and request.spec.container_spec is not None
+    assert (request.spec.container_spec.authentication or None) == expected
+
+
+def test_scaling_group_deploy_forwards_tags_and_chalk_identity() -> None:
+    client = _CapturingClient()
+    sg = ScalingGroup(
+        image="nginx:alpine",
+        name="tagged-group",
+        tags={"team": "compute"},
+        chalk_identity=True,
+    )
+    sg._client = cast(Any, client)
+
+    sg.deploy()
+
+    request = client.requests[0]
+    assert isinstance(request, sg_pb.CreateScalingGroupRequest)
+    assert request.spec is not None and request.spec.container_spec is not None
+    assert dict(request.spec.container_spec.tags) == {"team": "compute"}
+    assert request.spec.container_spec.has_field("chalk_workload_identity")
 
 
 def test_authenticated_scaling_group_call_adds_chalk_token(
@@ -96,22 +113,42 @@ def test_authenticated_scaling_group_call_adds_chalk_token(
     sg._client = cast(Any, client)
     sg.deploy()
     original_headers = {"X-Test": "value"}
-    captured: dict[str, Any] = {}
-
-    def request(method: str, url: str, **kwargs: Any) -> object:
-        captured.update(method=method, url=url, **kwargs)
-        return object()
-
-    monkeypatch.setattr(httpx, "request", request)
+    http_client = MagicMock()
+    monkeypatch.setattr(scaling_group_mod, "SYNC_HTTP_CLIENT", http_client)
 
     sg.call("/health", method="GET", headers=original_headers)
 
-    assert captured["headers"] == {
+    assert http_client.execute.call_args.kwargs["headers"] == {
         "X-Test": "value",
         "Authorization": "Bearer test-token",
     }
     assert original_headers == {"X-Test": "value"}
     assert client.ensure_auth_calls == 1
+
+
+@pytest.mark.parametrize(
+    ("json", "data", "expected"),
+    [
+        ({"hello": "world"}, None, {"hello": "world"}),
+        ({"ignored": True}, b"raw", b"raw"),
+    ],
+)
+def test_scaling_group_call_sends_pyqwest_content(
+    monkeypatch: pytest.MonkeyPatch,
+    json: dict[str, object],
+    data: bytes | None,
+    expected: object,
+) -> None:
+    client = _CapturingClient()
+    sg = ScalingGroup(image="nginx:alpine", name="content-test")
+    sg._client = cast(Any, client)
+    sg.deploy()
+    http_client = MagicMock()
+    monkeypatch.setattr(scaling_group_mod, "SYNC_HTTP_CLIENT", http_client)
+
+    sg.call("/echo", json=json, data=data)
+
+    assert http_client.execute.call_args.kwargs["content"] == expected
 
 
 def test_scaling_group_call_preserves_explicit_authorization(
@@ -125,17 +162,14 @@ def test_scaling_group_call_preserves_explicit_authorization(
     )
     sg._client = cast(Any, client)
     sg.deploy()
-    captured: dict[str, Any] = {}
-
-    def request(_method: str, _url: str, **kwargs: Any) -> object:
-        captured.update(kwargs)
-        return object()
-
-    monkeypatch.setattr(httpx, "request", request)
+    http_client = MagicMock()
+    monkeypatch.setattr(scaling_group_mod, "SYNC_HTTP_CLIENT", http_client)
 
     sg.call(headers={"authorization": "Bearer caller-token"})
 
-    assert captured["headers"] == {"authorization": "Bearer caller-token"}
+    assert http_client.execute.call_args.kwargs["headers"] == {
+        "authorization": "Bearer caller-token"
+    }
     assert client.ensure_auth_calls == 0
 
 
@@ -152,3 +186,21 @@ def test_from_name_recovers_authentication(
     sg = ScalingGroup.from_name("existing-group")
 
     assert sg._authenticated is True
+
+
+def test_scaling_group_tracing_sets_otel_sampler_env() -> None:
+    sg = ScalingGroup(
+        image="nginx:alpine", name="traced", env={"APP": "1"}, tracing=True
+    )
+    assert sg._env == {
+        "APP": "1",
+        "OTEL_TRACES_SAMPLER": "parentbased_traceidratio",
+        "OTEL_TRACES_SAMPLER_ARG": "1.0",
+    }
+
+
+def test_scaling_group_tracing_off_and_default() -> None:
+    assert ScalingGroup(image="nginx:alpine", name="off", tracing=False)._env == {
+        "OTEL_TRACES_SAMPLER": "always_off"
+    }
+    assert ScalingGroup(image="nginx:alpine", name="default")._env == {}

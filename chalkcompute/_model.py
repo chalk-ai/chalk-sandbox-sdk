@@ -40,20 +40,26 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any, Mapping
 
+from connectrpc.code import Code
+from connectrpc.errors import ConnectError as ConnectRpcError
+from protobuf import Oneof
+
 from chalkcompute._connect import (
     ConnectClient,
     grpc_target_from_url,
     service_auth_context_from_env,
 )
+from chalkcompute._gen.chalk.modeldeployment.v1 import service_connect as deploy_connect
+from chalkcompute._gen.chalk.modeldeployment.v1 import service_pb as deploy_pb
+from chalkcompute._gen.chalk.models.v1 import model_version_pb
+from chalkcompute._gen.chalk.scalinggroup.v1 import service_connect as sg_connect
+from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
+from chalkcompute._gen.chalk.server.v1 import model_registry_connect, model_registry_pb
 
 if TYPE_CHECKING:
     import pyarrow as pa
 
 logger = logging.getLogger(__name__)
-
-_REGISTRY_SVC = "chalk.server.v1.ModelRegistryService"
-_DEPLOYMENT_SVC = "chalk.modeldeployment.v1.ModelDeploymentService"
-_SG_SVC = "chalk.scalinggroup.v1.ScalingGroupManagerService"
 
 MODELS_ENV_VAR = "_CHALK_BIND_MODELS"
 """Env var name read by :func:`apply_models_from_env`.
@@ -181,57 +187,73 @@ def _resolve_web_url(client: ConnectClient, name: str, *, version: int | None) -
     Raises one of :class:`ModelNotFoundError`, :class:`ModelNotDeployedError`,
     or :class:`ModelError`.
     """
-    sg_resp = client.rpc(_SG_SVC, "GetScalingGroup", {"name": name})
-    if sg_resp.status_code == 200:
+    sg_stub = client.stub(sg_connect.ScalingGroupManagerServiceClientSync)
+    try:
+        sg_response = client.call(
+            sg_stub.get_scaling_group,
+            sg_pb.GetScalingGroupRequest(name=name),
+        )
+    except ConnectRpcError as exc:
+        if exc.code != Code.NOT_FOUND:
+            raise ModelError(f"GetScalingGroup({name!r}) failed: {exc}") from exc
+    else:
         if version is not None:
             raise ModelError(
                 f"version={version!r} is ambiguous: {name!r} resolved directly "
                 f"as a scaling group name. Pass the model name (not the scaling "
                 f"group name) when pinning a version."
             )
-        sg = (sg_resp.json() or {}).get("scalingGroup") or {}
-        url = sg.get("webUrl")
+        sg = sg_response.scaling_group
+        url = None if sg is None else sg.web_url or None
         if not url:
             raise ModelNotDeployedError(
-                f"Scaling group {name!r} has no webUrl (status={sg.get('status')!r})"
+                f"Scaling group {name!r} has no webUrl "
+                f"(status={None if sg is None else sg.status!r})"
             )
         return url
-    if sg_resp.status_code != 404:
-        raise ModelError(f"GetScalingGroup({name!r}) failed: {sg_resp.text}")
 
     # Fallback: treat name as a model name in the registry.
     if version is None:
-        model_resp = client.rpc(_REGISTRY_SVC, "GetModel", {"modelName": name})
-        if model_resp.status_code == 404:
+        registry_stub = client.stub(
+            model_registry_connect.ModelRegistryServiceClientSync
+        )
+        try:
+            model_response = client.call(
+                registry_stub.get_model,
+                model_registry_pb.GetModelRequest(
+                    model_identifier=Oneof("model_name", name)
+                ),
+            )
+        except ConnectRpcError as exc:
+            if exc.code != Code.NOT_FOUND:
+                raise ModelError(f"GetModel({name!r}) failed: {exc}") from exc
             raise ModelNotFoundError(
                 f"{name!r} is neither a scaling group name nor a model name in "
                 f"this environment"
-            )
-        if model_resp.status_code != 200:
-            raise ModelError(f"GetModel({name!r}) failed: {model_resp.text}")
-        latest = (model_resp.json().get("model") or {}).get("latestModelVersion") or {}
-        version = latest.get("version")
-        if version is None:
+            ) from exc
+        model = model_response.model
+        latest = None if model is None else model.latest_model_version
+        version = None if latest is None else latest.version
+        if not version:
             raise ModelNotDeployedError(
                 f"Model {name!r} has no published versions in the registry"
             )
 
-    list_resp = client.rpc(
-        _DEPLOYMENT_SVC,
-        "ListModelScalingGroups",
-        {
-            "modelVersion": {
-                "modelName": name,
-                "identifier": {"version": int(version)},
-            }
-        },
+    deployment_stub = client.stub(deploy_connect.ModelDeploymentServiceClientSync)
+    list_response = client.call(
+        deployment_stub.list_model_scaling_groups,
+        deploy_pb.ListModelScalingGroupsRequest(
+            model_version=deploy_pb.ModelVersionSelector(
+                model_name=name,
+                identifier=model_version_pb.ModelVersionIdentifier(
+                    identifier=Oneof("version", int(version))
+                ),
+            )
+        ),
     )
-    if list_resp.status_code != 200:
-        raise ModelError(
-            f"ListModelScalingGroups({name!r} v{version}) failed: {list_resp.text}"
-        )
-    groups = list_resp.json().get("scalingGroups") or []
-    url = next((g.get("webUrl") for g in groups if g.get("webUrl")), None)
+    url = next(
+        (group.web_url for group in list_response.scaling_groups if group.web_url), None
+    )
     if url is None:
         raise ModelNotDeployedError(
             f"Model {name!r} v{version} has no scaling group with a webUrl"

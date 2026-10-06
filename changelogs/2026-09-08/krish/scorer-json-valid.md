@@ -1,0 +1,1 @@
+- Add `cc.scorers.json_valid`, a scorer that checks a column parses as JSON

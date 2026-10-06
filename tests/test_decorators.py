@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from chalkcompute import traced
+from chalkcompute import ComputeClass, traced
 from chalkcompute._cls import RemoteClass, _NoOpClass, after, before, cls, method
 from chalkcompute._cls import _strip_chalkcompute_from_class_source
 from chalkcompute._function import (
@@ -44,19 +44,25 @@ def test_function_decorator_accepts_called_and_uncalled_forms(
         deployed.append(self)
         return self
 
-    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
 
     @function
     def bare(x: int) -> int:
         return x
 
-    @function()
+    @function(compute_class=ComputeClass.HOST)
     def called(x: int) -> int:
         return x
 
+    bare._wait_for_background_deploy()
+    called._wait_for_background_deploy()
     assert isinstance(bare, RemoteFunction)
     assert isinstance(called, RemoteFunction)
-    assert [deployed_fn._func_name for deployed_fn in deployed] == ["bare", "called"]
+    assert bare._compute_class is None
+    assert called._compute_class == ComputeClass.HOST
+    # Distinct registered names deploy concurrently, so completion order is
+    # not deterministic — assert on membership rather than sequence.
+    assert {deployed_fn._func_name for deployed_fn in deployed} == {"bare", "called"}
 
 
 def test_function_decorator_passes_schedule(
@@ -68,12 +74,13 @@ def test_function_decorator_passes_schedule(
         deployed.append(self)
         return self
 
-    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
 
     @function(schedule=" 1h ")
     def scheduled() -> None:
         pass
 
+    scheduled._wait_for_background_deploy()
     assert isinstance(scheduled, RemoteFunction)
     assert deployed[0]._schedule == "1h"
 
@@ -87,12 +94,13 @@ def test_function_decorator_passes_tracing(
         deployed.append(self)
         return self
 
-    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
 
     @function(tracing=True)
     def traced_function() -> None:
         pass
 
+    traced_function._wait_for_background_deploy()
     assert isinstance(traced_function, RemoteFunction)
     assert deployed[0]._tracing == TracingPolicy(sample_rate=1.0)
 
@@ -109,7 +117,7 @@ def test_function_deploy_image_installs_tracing_runtime_by_default(
 
     image = fn._build_deploy_image()
 
-    assert image.to_proto().steps[0].pip_install.packages == [
+    assert image.to_proto().steps[0].step.value.packages == [
         _remote_call_runtime(tracing=True),
         "chalkcompute==0.0.0",
     ]
@@ -129,7 +137,7 @@ def test_function_deploy_image_installs_tracing_runtime_when_enabled(
 
     image = fn._build_deploy_image()
 
-    assert image.to_proto().steps[0].pip_install.packages == [
+    assert image.to_proto().steps[0].step.value.packages == [
         _remote_call_runtime(tracing=True),
         "chalkcompute==0.0.0",
     ]
@@ -149,7 +157,7 @@ def test_function_deploy_image_installs_lightweight_runtime_when_tracing_off(
 
     image = fn._build_deploy_image()
 
-    assert image.to_proto().steps[0].pip_install.packages == [
+    assert image.to_proto().steps[0].step.value.packages == [
         _remote_call_runtime(tracing=False),
         "chalkcompute==0.0.0",
     ]
@@ -169,7 +177,7 @@ def test_stripped_function_deploy_image_installs_tracing_runtime_when_enabled(
 
     image = fn._build_deploy_image()
 
-    assert image.to_proto().steps[0].pip_install.packages == [
+    assert image.to_proto().steps[0].step.value.packages == [
         _remote_call_runtime(tracing=True)
     ]
 
@@ -290,7 +298,7 @@ def test_class_decorators_accept_called_and_uncalled_forms(
         def shutdown(self) -> None:
             pass
 
-    @cls()
+    @cls(compute_class=ComputeClass.HOST)
     class CalledAdder:
         @before()
         def startup(self) -> None:
@@ -306,6 +314,8 @@ def test_class_decorators_accept_called_and_uncalled_forms(
 
     assert isinstance(BareAdder, RemoteClass)
     assert isinstance(CalledAdder, RemoteClass)
+    assert BareAdder._compute_class is None
+    assert CalledAdder._compute_class == ComputeClass.HOST
     assert [deployed_class.class_name for deployed_class in deployed] == [
         "BareAdder",
         "CalledAdder",
@@ -616,12 +626,13 @@ def test_function_accepts_string_env_values(
         deployed.append(self)
         return self
 
-    monkeypatch.setattr(RemoteFunction, "deploy", fake_deploy)
+    monkeypatch.setattr(RemoteFunction, "_deploy", fake_deploy)
 
     @function(env={"OPENAI_API_KEY": "sk-test"})
     def fn(x: int) -> int:
         return x
 
+    fn._wait_for_background_deploy()
     assert deployed[0]._env["OPENAI_API_KEY"] == "sk-test"
 
 

@@ -1,0 +1,1 @@
+- Use generated `chalk.volume.v2` ConnectRPC requests and responses for volume control-plane operations and commits. The native client remains responsible for hashing, packing, signed-URL transfers, and downloads, but RPC metadata no longer crosses the Python/Rust boundary as untyped dictionaries.

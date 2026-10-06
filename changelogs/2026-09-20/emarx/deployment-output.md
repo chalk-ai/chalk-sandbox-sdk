@@ -1,0 +1,2 @@
+- Keep deployment status visible by default in terminals, notebooks, CI, and captured scripts, with color only on supported terminals and updates only when state changes. Disable progress explicitly with `CHALK_SANDBOX_TUI=false`; logging configuration and customer output remain independent.
+- Always report unobserved background deployment failures to stderr before exiting unsuccessfully, including when diagnostic logging is disabled or filtered.

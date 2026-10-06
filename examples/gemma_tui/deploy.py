@@ -2,37 +2,31 @@
 #
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["chalkcompute>=2.11.1", "python-dotenv"]
 # ///
 """
 Deploy Gemma 3 4B on an L4 GPU via vLLM, served as an OpenAI-compatible API.
 
-Prerequisites:
-    just env                                    # decrypt .env (first time)
-    export HF_TOKEN=hf_...                      # huggingface.co token with Gemma access
+This example intentionally leaves the named scaling group running: `chat.py`
+and other clients need the service after this deployment process exits. It also
+leaves failures after deployment running so their logs and state can be examined.
+The group reserves a GPU while it remains deployed. Remove it through the Chalk
+SDK or dashboard when finished.
 
-Usage:
-    uv run python examples/gemma_tui/deploy.py
+Prerequisites:
+    export HF_TOKEN=hf_...  # huggingface.co token with Gemma access
 """
 
 from __future__ import annotations
 
-import os
+import json
 import sys
 import time
 
-# -- Load .env for Chalk credentials -----------------------------------------
+from chalkcompute import ScalingGroup, Secret
+from dotenv import load_dotenv
 
-_env_path = os.path.join(os.path.dirname(__file__), "../../.env")
-if os.path.exists(_env_path):
-    with open(_env_path) as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip())
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+load_dotenv()
 
 # -- Config -------------------------------------------------------------------
 
@@ -41,12 +35,10 @@ PORT = 8000
 
 # -- Image + ScalingGroup ----------------------------------------------------
 
-from chalkcompute import ScalingGroup
-
 sg = ScalingGroup(
     image="vllm/vllm-openai:latest",
     name="gemma-vllm",
-    gpu="nvidia-l4:1",
+    gpu="nvidia-l4",
     cpu="4",
     memory="16Gi",
     port=PORT,
@@ -68,8 +60,8 @@ sg = ScalingGroup(
         "--enforce-eager",
     ],
     env={
-        "HF_TOKEN": os.environ.get("HF_TOKEN", ""),
         "HF_HOME": "/root/.cache/huggingface",
+        "HF_TOKEN": Secret.from_local_env("HF_TOKEN"),
     },
 )
 
@@ -83,7 +75,7 @@ print("Waiting for vLLM to load the model...")
 for _ in range(60):
     try:
         resp = sg.call("/health", method="GET", timeout=10)
-        if resp.status_code == 200:
+        if resp.status == 200:
             break
     except Exception:
         pass
@@ -105,12 +97,14 @@ for attempt in range(10):
         },
         timeout=120,
     )
-    if resp.status_code == 200:
+    if resp.status == 200:
         break
-    print(f"  attempt {attempt + 1}: {resp.status_code}, retrying...")
+    print(f"  attempt {attempt + 1}: {resp.status}, retrying...")
     time.sleep(15)
-resp.raise_for_status()
-print(f"Response: {resp.json()['choices'][0]['message']['content']}")
+if not 200 <= resp.status < 300:
+    raise RuntimeError(f"Completion request failed with status {resp.status}")
+response_body = json.loads(resp.content)
+print(f"Response: {response_body['choices'][0]['message']['content']}")
 
 print(f"\nServing at: {sg.web_url}")
-print("To tear down: sg.delete()")
+print("Scaling group left running for chat clients and inspection.")

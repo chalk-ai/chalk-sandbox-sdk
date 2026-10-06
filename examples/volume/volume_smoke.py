@@ -1,15 +1,25 @@
+#!/usr/bin/env -S uv run --script
+#
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["chalkcompute>=2.11.1"]
+# ///
+
 """Volume SDK example.
 
-This mirrors the Python SDK flow from the volume documentation, using
-Volume instead of Volume:
+This walks through the current direct ``Volume`` API end to end:
 
 1. Open a named volume with ``Volume("my-data")``.
 2. Upload files directly and with ``batch_upload``.
 3. Read files and list directories.
 4. Inspect versions and read a previous immutable snapshot.
 
-Volumes are not mountable into containers or sandboxes yet, so this
-example intentionally uses only the direct Volume Python APIs.
+This example focuses on the direct Volume APIs. ``volume_integration.py``
+demonstrates mounting a volume into functions and sandboxes.
+
+The randomly named default volume is deleted on exit. A volume explicitly
+named with ``VOLUME_NAME`` is preserved because it may contain caller-owned
+data; ``KEEP_VOLUME=1`` also preserves the random volume for later inspection.
 """
 
 from __future__ import annotations
@@ -51,10 +61,10 @@ def _print_versions(volume: Volume) -> None:
 
 def main() -> None:
     volume_name = os.environ.get(
-        "VERSIONED_VOLUME_NAME",
+        "VOLUME_NAME",
         f"volume-example-{uuid.uuid4().hex[:8]}",
     )
-    keep_volume = os.environ.get("KEEP_VERSIONED_VOLUME") == "1"
+    keep_volume = "VOLUME_NAME" in os.environ or os.environ.get("KEEP_VOLUME") == "1"
 
     print(f"Volume: {volume_name}")
     print("Opening with lazy get-or-create semantics...")
@@ -133,9 +143,7 @@ def main() -> None:
 
         finally:
             if keep_volume:
-                print(
-                    f"\nKeeping volume because KEEP_VERSIONED_VOLUME=1: {volume_name}"
-                )
+                print(f"\nKeeping volume because KEEP_VOLUME=1: {volume_name}")
             else:
                 log.info("Deleting volume %s", volume_name)
                 volume.delete()

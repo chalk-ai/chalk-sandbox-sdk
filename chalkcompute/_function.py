@@ -28,7 +28,9 @@ Or imperatively:
 from __future__ import annotations
 
 import ast
+import atexit
 import asyncio
+import contextlib
 import contextvars
 import datetime as _dt
 import functools
@@ -43,8 +45,12 @@ import tempfile
 import textwrap
 import threading
 import time
+import traceback
 import typing
+from collections.abc import Mapping
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -55,16 +61,49 @@ from typing import (
     overload,
     runtime_checkable,
 )
+from connectrpc.code import Code
+from connectrpc.errors import ConnectError as ConnectRpcError
+from connectrpc.protocol import ProtocolType
+from protobuf import Oneof
+from protobuf.wkt import FieldMask
 
 from chalkcompute import _local_dev
+from chalkcompute._logging import _StatusLogger
+from chalkcompute._traceback import format_exception, format_frame
+from chalkcompute._terminal import styled, supports_color
+from chalkcompute._function_error import (
+    FunctionError,
+    decode_remote_error,
+    remote_error_from_exception,
+)
 from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import (
     ConnectClient,
-    build_image,
+    ConnectError,
     grpc_target_from_url,
+    rpc_address_from_target,
     service_auth_context_from_env,
 )
-from chalkcompute._containerspec import ContainerSpec
+from chalkcompute._containerspec import (
+    ComputeClass,
+    ContainerSpec,
+    validate_replica_and_utilization,
+)
+from chalkcompute._env import normalize_env
+from chalkcompute._deployment_proto import function_config, scaling_spec
+from chalkcompute._function_deployment import (
+    ensure_external_function,
+    resolve_function_volumes,
+    function_source_root,
+)
+from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import (
+    service_connect as catalog_connect,
+)
+from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as catalog_pb
+from chalkcompute._gen.chalk.runtime.v1 import remote_python_call_pb as remote_call_pb
+from chalkcompute._gen.chalk.scalinggroup.v1 import service_connect as sg_connect
+from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
+from chalkcompute._http import SYNC_HTTP_CLIENT
 from chalkcompute._naming import (
     sanitize_dns_label,
     validate_dns_label,
@@ -76,8 +115,10 @@ from chalkcompute._remote_function_tracing import (
     TracingPolicyConfig,
     normalize_remote_function_tracing,
 )
+from chalkcompute._image_build import normalize_image_volumes
 from chalkcompute._retry import RetryPolicy
-from chalkcompute._secret import SecretScope, resolve_lazy_secrets
+from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
+from chalkcompute._secret import prepare_lazy_secrets
 from chalkcompute._tracing import (
     _instrumented,
     current_trace_metadata,
@@ -87,8 +128,6 @@ from chalkcompute._volume import (
     Volume,
     VolumeClient,
     VolumeMount,
-    normalize_volume_refs,
-    referenced_volume_mount,
 )
 
 logger = logging.getLogger(__name__)
@@ -96,15 +135,22 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from chalkcompute._image import Image as _Image
     from chalkcompute._scaling_group import CronScalingTrigger as _CronScalingTrigger
+    from chalkcompute._scaling_group import ReadinessProbe as _ReadinessProbe
+    from chalkcompute._scaling_group import (
+        ScaleFromZeroRequestPolicy as _ScaleFromZeroRequestPolicy,
+    )
     from chalkcompute._secret import Secret as _Secret
 
 SerializationFormat = typing.Literal["pyarrow"]
 F = TypeVar("F", bound=Callable[..., Any])
 _RemoteCallResult = TypeVar("_RemoteCallResult")
+
 KnowledgeCutoff = str | _dt.datetime
 
 _REMOTE_ENV_VAR = "CHALK_REMOTE_FUNCTION"
+_FNQ_STREAMS_SUPPORTED_ENV_VAR = "CHALK_FNQ_STREAMS_SUPPORTED"
 _REQUEST_TIMESTAMP_HEADER = "x-chalk-request-timestamp"
+_DEFAULT_CALL_TIMEOUT: float | None = 60.0
 _NO_ARGS_SENTINEL_COLUMN = "__chalk_no_args__"
 # Reserved column carrying the caller's per-row metadata blob. Stripped from the argument
 # mapping by the handler shim and published through a context variable instead, so a
@@ -117,21 +163,234 @@ _STRIP_SOURCE_ENV_VAR = _local_dev._STRIP_SOURCE_ENV_VAR
 # When enabled, route __call__ through the API server's CallExternalFunction
 # RPC instead of connecting directly to the scaling group's web URL.
 _CALL_VIA_API_ENV_VAR = "CHALK_FUNCTION_CALL_VIA_API"
-_CATALOG_SVC = "chalk.externalfunctioncatalog.v1.ExternalFunctionCatalogService"
-_SG_SVC = "chalk.scalinggroup.v1.ScalingGroupManagerService"
 
+
+def _remote_call_container_env(
+    user_env: dict[str, str], pythonpath: str = "/app"
+) -> dict[str, str]:
+    env = {
+        "PYTHONPATH": "/app",
+        _REMOTE_ENV_VAR: "1",
+        _FNQ_STREAMS_SUPPORTED_ENV_VAR: "true",
+        **user_env,
+    }
+    # Preserve legacy overrides unless relocated handlers need another path.
+    if pythonpath != "/app":
+        env["PYTHONPATH"] = ":".join(
+            dict.fromkeys((pythonpath + ":" + env["PYTHONPATH"]).split(":"))
+        )
+    return env
+
+
+def _remote_function_startup_probe() -> dict[str, dict[str, object]]:
+    return {"grpc": {}}
+
+
+# ---------------------------------------------------------------------------
+# Background decorator deployments
+# ---------------------------------------------------------------------------
+
+
+_background_deploy_executor: ThreadPoolExecutor | None = None
+_background_deploy_executor_lock = threading.Lock()
+_background_deployments_lock = threading.Lock()
+_background_deployment_tails: dict[str, Future[None]] = {}
+_unobserved_background_deployments: dict[Future[None], RemoteFunction] = {}
+
+
+def _get_background_deploy_executor() -> ThreadPoolExecutor:
+    """Return the process-wide pool used by ``@function`` deployments.
+
+    A pre-shutdown hook drains this pool before Python disables executor
+    submissions globally. A script containing only decorated function definitions
+    therefore waits for every queued deployment, while deployments may still use
+    their own worker pools during teardown.
+    """
+    global _background_deploy_executor
+    with _background_deploy_executor_lock:
+        if _background_deploy_executor is None:
+            _background_deploy_executor = ThreadPoolExecutor(
+                thread_name_prefix="chalk-function-deploy"
+            )
+        return _background_deploy_executor
+
+
+def _await_deploy_predecessor(predecessor: Future[None] | None) -> None:
+    """Wait for the previous deploy of a registered name, ignoring its outcome.
+
+    The chain exists to order version selection, not to propagate failures: a
+    deploy that inherited its predecessor's exception would never run its own
+    attempt, and would report an error belonging to someone else's.
+    """
+    if predecessor is None:
+        return
+    try:
+        predecessor.result()
+    except Exception:
+        pass
+
+
+@contextlib.contextmanager
+def _manual_deploy_slot(registered_name: str) -> typing.Iterator[None]:
+    """Hold a caller-initiated deploy's place in its registered name's chain.
+
+    Without a slot a manual ``deploy()`` is invisible to the chain, so a
+    function decorated while one is in flight would select a version
+    concurrently with it.
+
+    Publishing and releasing are paired in one context manager because
+    everything after publication must release: waiting on the predecessor can
+    raise something ``_await_deploy_predecessor`` deliberately does not swallow
+    (a ``KeyboardInterrupt``, say), and an unreleased barrier would block every
+    later deploy of that name forever — including at interpreter exit, where
+    the executor shutdown waits on queued deployments.
+    """
+    barrier: Future[None] = Future()
+    barrier.set_running_or_notify_cancel()
+    with _background_deployments_lock:
+        predecessor = _background_deployment_tails.get(registered_name)
+        _background_deployment_tails[registered_name] = barrier
+    try:
+        _await_deploy_predecessor(predecessor)
+        yield
+    finally:
+        with _background_deployments_lock:
+            if _background_deployment_tails.get(registered_name) is barrier:
+                _background_deployment_tails.pop(registered_name, None)
+        if not barrier.done():
+            barrier.set_result(None)
+
+
+def _schedule_background_deployment(function: RemoteFunction) -> Future[None]:
+    """Schedule one decorator-triggered deployment and return its barrier.
+
+    Deployments for distinct registered names may overlap. Deployments selecting
+    versions of the same stable function are chained in declaration order so
+    their final traffic selection remains deterministic.
+    """
+    executor = _get_background_deploy_executor()
+    context = contextvars.copy_context()
+    registered_name = function._explicit_name or function._func_name
+
+    with _background_deployments_lock:
+        predecessor = _background_deployment_tails.get(registered_name)
+
+        def run() -> None:
+            _await_deploy_predecessor(predecessor)
+            context.run(function._deploy)
+
+        future = executor.submit(run)
+        _background_deployment_tails[registered_name] = future
+        _unobserved_background_deployments[future] = function
+
+    def completed(done: Future[None]) -> None:
+        with _background_deployments_lock:
+            if _background_deployment_tails.get(registered_name) is done:
+                _background_deployment_tails.pop(registered_name, None)
+            if not done.cancelled() and done.exception() is None:
+                _unobserved_background_deployments.pop(done, None)
+
+    future.add_done_callback(completed)
+    return future
+
+
+def _mark_background_deployment_observed(future: Future[None]) -> None:
+    with _background_deployments_lock:
+        _unobserved_background_deployments.pop(future, None)
+
+
+def _shutdown_background_deploy_executor() -> None:
+    """Drain decorator deployments before Python shuts down thread pools."""
+    with _background_deploy_executor_lock:
+        executor = _background_deploy_executor
+    if executor is not None:
+        executor.shutdown(wait=True)
+
+
+def _report_unobserved_background_deployments() -> None:
+    """Report failures from definition-only deploy scripts and fail the process.
+
+    A script that only defines functions never touches a handle, so nothing
+    would otherwise surface a failed deployment and the process would exit
+    successfully on code that cannot serve.
+    """
+    with _background_deployments_lock:
+        deployments = list(_unobserved_background_deployments.items())
+        _unobserved_background_deployments.clear()
+
+    failed = False
+    for future, function in deployments:
+        if not future.done() or future.cancelled():
+            continue
+        error = future.exception()
+        if error is None:
+            continue
+        failed = True
+        registered_name = function._explicit_name or function._func_name
+        status = f" [{error.code.name}]" if isinstance(error, ConnectRpcError) else ""
+        details = ""
+        color = supports_color(sys.stderr)
+        # The worker's traceback has no user call site. Look up the definition
+        # only when reporting a failure, avoiding source reads on success.
+        code = getattr(inspect.unwrap(function._func), "__code__", None)
+        if code is not None:
+            source = traceback.FrameSummary(
+                code.co_filename, code.co_firstlineno, function._func_name
+            )
+            details = format_frame(source, color=color)
+        if isinstance(error, (ConnectRpcError, ConnectError, FunctionError)):
+            # These exceptions already describe an actionable deployment
+            # failure. Keep messages, notes, and causes, without RPC plumbing.
+            details += format_exception(
+                error, error.__traceback__, compact=True, color=color
+            )
+        else:
+            # Unexpected bugs still need their diagnostic frames by default.
+            details += format_exception(error, error.__traceback__, color=color)
+        # This is the only explanation for the nonzero exit of a definition-only
+        # script. Report it independently of logging filters and progress settings.
+        heading = (
+            f"Background deployment for function {registered_name!r} failed{status}:"
+        )
+        sys.stderr.write(
+            styled(heading, "1;31", color=color) + f"\n{details.rstrip()}\n"
+        )
+
+    if not failed:
+        return
+
+    # An atexit callback cannot set the exit status the ordinary way: SystemExit
+    # raised here is reported as "Exception ignored" and the process still exits
+    # 0. os._exit can, at the cost of skipping atexit callbacks registered
+    # before this module was imported, so flush what those would have flushed.
+    # Callbacks run newest-first and this one is registered at import, so
+    # anything registered later (the OTel provider shutdown in _tracing, say)
+    # has already run.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    logging.shutdown()
+    os._exit(1)
+
+
+# ``ThreadPoolExecutor`` registers its own callback through this hook. Callbacks
+# run newest-first, so registering after importing the executor lets deployments
+# finish before concurrent.futures globally rejects nested executor submissions.
+getattr(threading, "_register_atexit")(_shutdown_background_deploy_executor)
+atexit.register(_report_unobserved_background_deployments)
 
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
 
 
-class FunctionError(Exception):
-    """Base exception for Function errors."""
-
-
 class FunctionBuildError(FunctionError):
     """Raised when the function image build fails."""
+
+
+class FunctionSignatureError(TypeError, FunctionError):
+    """Raised when a function is missing required type annotations."""
+
+    __module__ = "chalkcompute"
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +413,18 @@ class FunctionVersionInfo:
 
     scaling_group_name: str
     """Name of the scaling group backing this version."""
+
+    function_id: str | None = None
+    """Stable identifier of the parent external function."""
+
+    scaling_group_revision_id: str | None = None
+    """Immutable scaling-group revision linked to this version."""
+
+    created_at: datetime | None = None
+    """Time at which this immutable version was created."""
+
+    is_current: bool = False
+    """Whether the parent external function currently serves this version."""
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +538,9 @@ def _strip_chalkcompute_from_source(source: str) -> str:
         for ln in range(start, end + 1):
             removed_lines.add(ln)
 
-    kept = [line for i, line in enumerate(lines, start=1) if i not in removed_lines]
+    kept = [
+        "\n" if i in removed_lines else line for i, line in enumerate(lines, start=1)
+    ]
     return "".join(kept)
 
 
@@ -295,7 +568,9 @@ def _is_chalkcompute_decorator(
 
 
 _USER_MODULE_NAME = "user_module"
-_USER_MODULE_PATH = f"/app/{_USER_MODULE_NAME}.py"
+
+# Output-schema metadata key carrying a declared scorer's response JSON Schema.
+SCORER_RESPONSE_SCHEMA_METADATA_KEY = "chalk.scorer.response_schema"
 
 
 def _generate_handler_shim(
@@ -346,6 +621,7 @@ def _generate_handler_shim(
     )
     from chalkcompute._arrow_serde import handler_runtime_source
 
+    bootstrap += "__chalk_generated_handler__ = True\n"
     serde_runtime = handler_runtime_source()
     if batched:
         # Flatten all (caller_idx, row_idx, kwargs) across every caller so
@@ -638,17 +914,37 @@ def _replica_count(value: Any) -> int:
 
 
 def _scaling_group_is_ready(
-    sg: dict[str, Any], *, require_ready_replicas: bool = True
+    sg: sg_pb.ScalingGroupResponse | dict[str, Any],
+    *,
+    require_ready_replicas: bool = True,
 ) -> bool:
-    status = sg.get("status", "")
+    if isinstance(sg, sg_pb.ScalingGroupResponse):
+        status = sg.status
+        ready_replicas = sg.ready_replicas
+        available_replicas = sg.available_replicas
+    else:
+        status = sg.get("status", "")
+        ready_replicas = _replica_count(sg.get("readyReplicas"))
+        available_replicas = _replica_count(sg.get("availableReplicas"))
     if not require_ready_replicas:
         return status in ("Running", "Available", "ScaledToZero")
     if status not in ("Running", "Available"):
         return False
-    return (
-        _replica_count(sg.get("readyReplicas")) > 0
-        and _replica_count(sg.get("availableReplicas")) > 0
-    )
+    return ready_replicas > 0 and available_replicas > 0
+
+
+def _get_scaling_group(client: ConnectClient, name: str) -> sg_pb.ScalingGroupResponse:
+    stub = client.stub(sg_connect.ScalingGroupManagerServiceClientSync)
+    try:
+        response = client.call(
+            stub.get_scaling_group,
+            sg_pb.GetScalingGroupRequest(name=name),
+        )
+    except ConnectRpcError as exc:
+        raise FunctionError(f"GetScalingGroup failed: {exc}") from exc
+    if response.scaling_group is None:
+        raise FunctionError("GetScalingGroup returned no scaling group")
+    return response.scaling_group
 
 
 def _format_knowledge_cutoff(value: KnowledgeCutoff) -> str:
@@ -712,6 +1008,8 @@ def _remote_call_error_message(error: BaseException) -> str:
 
 
 def _is_stale_remote_call_error_message(message: str | None) -> bool:
+    if decode_remote_error(message, "") is not None:
+        return False
     if not message:
         return False
     lower = message.lower()
@@ -743,21 +1041,27 @@ def _is_retryable_stale_remote_call_error_message(message: str | None) -> bool:
 
 
 def _is_stale_remote_call_error(error: BaseException) -> bool:
-    try:
-        import grpc
-    except ImportError:  # pragma: no cover - grpc is a runtime dependency
-        return _is_stale_remote_call_error_message(_remote_call_error_message(error))
+    from chalkcompute._remote_call_client import (
+        RemoteCallStatusError,
+        RemoteCallTransportError,
+    )
 
-    if isinstance(error, grpc.RpcError):
-        code_fn = getattr(error, "code", None)
-        if callable(code_fn):
-            try:
-                if code_fn() == grpc.StatusCode.UNAVAILABLE:
-                    return True
-            except Exception:
-                pass
+    if isinstance(error, RemoteCallStatusError):
+        return False
+    if (
+        isinstance(error, Exception)
+        and remote_error_from_exception(error, "") is not None
+    ):
+        return False
+    if isinstance(error, RemoteCallTransportError):
+        return True
+    if isinstance(error, ConnectRpcError) and error.code == Code.UNAVAILABLE:
+        return True
+    code_fn = getattr(error, "code", None)
+    if callable(code_fn):
         try:
-            if grpc.StatusCode.UNAVAILABLE.name in _remote_call_error_message(error):
+            code = code_fn()
+            if getattr(code, "name", None) == "UNAVAILABLE":
                 return True
         except Exception:
             pass
@@ -833,7 +1137,10 @@ def _is_transient_call_error(error_message: str | None) -> bool:
     Unknown or unstructured errors are treated as non-retryable, so retry stays
     conservative: we never resubmit a call we can't positively classify as infra.
     """
-    return _failed_call_exc_type(error_message) in _RETRYABLE_EXC_TYPES
+    return (
+        decode_remote_error(error_message, "") is None
+        and _failed_call_exc_type(error_message) in _RETRYABLE_EXC_TYPES
+    )
 
 
 class FunctionCallHandle:
@@ -863,11 +1170,18 @@ class FunctionCallHandle:
         return self._call_id
 
     def poll(self) -> Any:
-        result = self._function.poll(
-            self._call_id,
-            cursor=self._cursor,
-            poll_count=self._poll_count,
-        )
+        from chalkcompute._remote_call_client import RemoteCallNotFoundError
+
+        try:
+            result = self._function.poll(
+                self._call_id,
+                cursor=self._cursor,
+                poll_count=self._poll_count,
+            )
+        except RemoteCallNotFoundError:
+            raise FunctionError(
+                "Remote call was not found or is no longer retained"
+            ) from None
         self._cursor = result.cursor
         self._poll_count = result.poll_count
         return result
@@ -923,11 +1237,19 @@ class FunctionCallHandle:
                 last_status = result.status_name
                 chunks.extend(result.chunks)
 
+                if result.is_expired:
+                    raise FunctionError("Remote call results have expired")
+
                 if result.is_failed:
                     message = result.error_message or "Remote call failed"
                     if self._can_retry(attempt, message):
                         break
-                    raise FunctionError(message)
+                    raise (
+                        decode_remote_error(
+                            message, self._func_name, call_id=self._call_id
+                        )
+                        or FunctionError(message)
+                    ) from None
 
                 if result.is_completed:
                     return self._function._materialize_result_chunks(chunks)
@@ -965,6 +1287,9 @@ class FunctionCallHandle:
                         yielded_any = True
                         yield batch
 
+                if result.is_expired:
+                    raise FunctionError("Remote call results have expired")
+
                 if result.is_failed:
                     message = result.error_message or "Remote call failed"
                     # Once any batch has reached the caller the stream cannot be
@@ -972,7 +1297,12 @@ class FunctionCallHandle:
                     # only retry a failure that happened before the first yield.
                     if not yielded_any and self._can_retry(attempt, message):
                         break
-                    raise FunctionError(message)
+                    raise (
+                        decode_remote_error(
+                            message, self._func_name, call_id=self._call_id
+                        )
+                        or FunctionError(message)
+                    ) from None
 
                 if result.is_completed:
                     return
@@ -1002,11 +1332,19 @@ class FunctionCallHandle:
                         yielded_any = True
                         yield batch
 
+                if result.is_expired:
+                    raise FunctionError("Remote call results have expired")
+
                 if result.is_failed:
                     message = result.error_message or "Remote call failed"
                     if not yielded_any and self._can_retry(attempt, message):
                         break
-                    raise FunctionError(message)
+                    raise (
+                        decode_remote_error(
+                            message, self._func_name, call_id=self._call_id
+                        )
+                        or FunctionError(message)
+                    ) from None
 
                 if result.is_completed:
                     return
@@ -1096,6 +1434,80 @@ def _package_dir_for_module(module_name: str) -> str | None:
     return paths[0]
 
 
+def _deploy_module_name(func: Callable[..., Any]) -> str:
+    """Module name to deploy ``func`` from, seeing through module execution.
+
+    ``uv run -m mypkg.mod`` executes the module as ``__main__`` but records
+    its real dotted name and file on ``__main__.__spec__``. The ``samefile``
+    check ensures the function really was defined in the module being run.
+    Direct script runs have no spec and keep ``__main__``.
+    """
+    module_name = func.__module__ or ""
+    if module_name != "__main__":
+        return module_name
+    spec = getattr(sys.modules.get("__main__"), "__spec__", None)
+    if spec is None or "." not in spec.name or not spec.origin:
+        return module_name
+    try:
+        if os.path.samefile(spec.origin, _source_file_for_deploy(func)):
+            return spec.name
+    except (OSError, TypeError):
+        pass
+    return module_name
+
+
+def _ancestor_package_names(source_file: str) -> set[str]:
+    """Names of the packages ``source_file`` sits inside (nearest to top-most)."""
+    packages: set[str] = set()
+    directory = os.path.dirname(os.path.abspath(source_file))
+    while os.path.exists(os.path.join(directory, "__init__.py")):
+        packages.add(os.path.basename(directory))
+        parent = os.path.dirname(directory)
+        if parent == directory:  # filesystem root: stop, never loop
+            break
+        directory = parent
+    return packages
+
+
+def _check_direct_run_from_package(func: Callable[..., Any], func_name: str) -> None:
+    """Raise when a directly-run package file imports its own package.
+
+    The file executed as ``__main__`` with no module spec, so its package
+    name is unrecoverable and the package cannot ship — any import of an
+    ancestor package is guaranteed to fail remotely. Files that don't
+    import their own package (self-contained, or flat imports declared via
+    ``add_local_python_source``) deploy fine as a single file, so they
+    pass silently.
+    """
+    source_file = _source_file_for_deploy(func)
+    packages = _ancestor_package_names(source_file)
+    if not packages:
+        return
+    try:
+        tree = ast.parse(_source_text_for_deploy(source_file))
+    except (FunctionBuildError, SyntaxError):
+        # Unreadable or unparsable source: skip the check rather than block;
+        # a real read failure resurfaces when the deploy ships the file.
+        return
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names = [node.module]
+        else:
+            continue
+        for name in names:
+            if name.split(".")[0] in packages:
+                raise FunctionError(
+                    f"Function {func_name!r} is defined in {source_file}, which "
+                    f"imports its own package via {name!r}, but the file was run "
+                    f"directly, so the package cannot be shipped and this import "
+                    f"would fail remotely. Run it with 'python -m <pkg>.<module>' "
+                    f"or import it from a separate entrypoint to ship the whole "
+                    f"package."
+                )
+
+
 def _strip_chalkcompute_for_package(source: str) -> str:
     from chalkcompute._cls import _strip_chalkcompute_from_class_source
 
@@ -1140,11 +1552,11 @@ def _prepare_package_dir(
         return package_dir, False
 
     original = _source_text_for_deploy(entrypoint_file)
-    _assert_stripped_source_self_contained(
+    _strip_source_for_deploy(
         original,
-        _strip_chalkcompute_for_package(original),
+        strip=_strip_chalkcompute_for_package,
         label=label,
-        entrypoint_sources=list(entrypoint_sources),
+        entrypoint_sources=entrypoint_sources,
     )
 
     temp_dir = tempfile.mkdtemp(prefix="chalkfn_pkg_")
@@ -1354,14 +1766,93 @@ def _prepare_source_file(
         return _write_temp(_source_text_for_deploy(source_file)), True
 
     source = _source_text_for_deploy(source_file)
-    stripped = _strip_chalkcompute_from_source(source)
+    stripped = _strip_source_for_deploy(
+        source,
+        strip=_strip_chalkcompute_from_source,
+        label=label or f"Function source {source_file!r}",
+        entrypoint_sources=entrypoint_sources or [],
+    )
+    return _write_temp(stripped), True
+
+
+def _strip_source_for_deploy(
+    source: str,
+    *,
+    strip: Callable[[str], str],
+    label: str,
+    entrypoint_sources: typing.Sequence[str],
+) -> str:
+    """Strip chalkcompute from ``source`` and assert the result is usable.
+
+    Stripping and validating are paired here so no deploy surface can do one
+    without the other. Callers pass the strip pass their deploy mode uses:
+    ``_strip_chalkcompute_from_source`` for a single function file,
+    ``_strip_chalkcompute_for_package`` for a package (function + class passes),
+    ``_strip_chalkcompute_from_class_source`` for a ``@cls`` file. The passes
+    remove different name sets, so a mismatch would let a real violation
+    through.
+
+    Parameters
+    ----------
+    source
+        Original source text of the file being deployed.
+    strip
+        Strip pass matching the caller's deploy mode.
+    label
+        Human-readable identifier used in the guard's error message.
+    entrypoint_sources
+        Source of the deployed function(s)/method(s) whose bodies the guard
+        inspects for dangling chalkcompute references.
+
+    Returns
+    -------
+    str
+        The stripped source.
+    """
+    stripped = strip(source)
     _assert_stripped_source_self_contained(
         source,
         stripped,
-        label=label or f"Function source {source_file!r}",
-        entrypoint_sources=list(entrypoint_sources or []),
+        label=label,
+        entrypoint_sources=list(entrypoint_sources),
     )
-    return _write_temp(stripped), True
+    return stripped
+
+
+def _assert_strip_mode_self_contained(func: Callable[..., Any], *, label: str) -> None:
+    """Run the strip-mode guard without building anything.
+
+    The guard is a pure function of the source text and
+    ``CHALK_FUNCTION_STRIP_SOURCE``, so it can run before a deploy is even
+    scheduled. Callers use this to keep a strip-mode violation a synchronous
+    error on the defining thread rather than a background-thread failure that a
+    definition-only script only reports at interpreter exit — by which point the
+    process has already exited successfully.
+
+    ``@cls`` needs no equivalent: its decorator deploys synchronously, so its
+    guard already raises on the defining thread.
+
+    Parameters
+    ----------
+    func
+        The undecorated user function about to be deployed.
+    label
+        Human-readable identifier used in the guard's error message.
+    """
+    if not _should_strip_source():
+        return
+
+    package_dir = _package_dir_for_module(_deploy_module_name(func))
+    _strip_source_for_deploy(
+        _source_text_for_deploy(_source_file_for_deploy(func)),
+        strip=(
+            _strip_chalkcompute_for_package
+            if package_dir is not None
+            else _strip_chalkcompute_from_source
+        ),
+        label=label,
+        entrypoint_sources=_entrypoint_source(func),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1431,84 +1922,6 @@ def _preserve_functionlike_metadata(wrapper: Any, func: Callable) -> None:
     setattr(wrapper, "__kwdefaults__", getattr(func, "__kwdefaults__", None))
 
 
-def _build_and_upload(
-    client: ConnectClient,
-    deploy_image: _Image,
-    *,
-    label: str,
-    volume_name: str,
-    poll_interval: float,
-    build_timeout: float,
-    progress_parent: str | None = None,
-) -> tuple[str, list[VolumeMount], VolumeClient | None, list[dict[str, Any]]]:
-    """Build the container image and stage lazy local files.
-
-    Lazy files are uploaded into ``source_code``-kind versioned volumes but
-    not committed: each staged upload is returned as a commit-intent dict for
-    ``CreateExternalFunctionVersionRequest.volume_commits``, so the server
-    commits atomically with the function version and pins the mount to the
-    resulting snapshot.
-
-    Parameters
-    ----------
-    client
-        Connect RPC client.
-    deploy_image
-        Declarative image to build.
-    label
-        Human-readable label used in progress output.
-    volume_name
-        Stable volume name for the lazy local files, derived from the
-        function or class name so redeploys reuse the same volume.
-    poll_interval
-        Seconds between build status polls.
-    build_timeout
-        Maximum seconds to wait for the build to finish.
-    progress_parent
-        Optional parent key for nested progress reporting.
-
-    Returns
-    -------
-    tuple of (str, list of VolumeMount, VolumeClient or None, list of dict)
-        ``(image_uri, new_volumes, driver, volume_commits)``. The driver is
-        returned only so the caller can later delete the uploaded volumes;
-        mount types live on the returned :class:`VolumeMount` objects, never
-        on the driver.
-    """
-    from chalkcompute._progress import progress_add, progress_done
-
-    ikey = f"image:{label}"
-    progress_add(ikey, "image", "Building image", parent=progress_parent)
-
-    logger.info("Building image for %s...", label)
-    image_uri = build_image(
-        client, deploy_image, poll_interval=poll_interval, timeout=build_timeout
-    )
-    logger.info("Image built: %s", image_uri)
-    progress_done(ikey)
-
-    new_volumes: list[VolumeMount] = []
-    driver: VolumeClient | None = None
-    volume_commits: list[dict[str, Any]] = []
-    if deploy_image.lazy_local_files:
-        vkey = f"upload:{label}"
-        progress_add(
-            vkey,
-            "volume",
-            f"Uploading {len(deploy_image.lazy_local_files)} file(s)",
-            parent=progress_parent,
-        )
-        logger.info("Uploading %d local file(s)...", len(deploy_image.lazy_local_files))
-        vvclient = VolumeClient.from_connect(client)
-        driver = vvclient
-        new_volumes, volume_commits = vvclient.stage_lazy_files(
-            deploy_image,
-            volume_name=volume_name,
-        )
-        progress_done(vkey)
-    return image_uri, new_volumes, driver, volume_commits
-
-
 def _cleanup_temp_files(paths: list[str]) -> None:
     """Remove temporary files or directories, ignoring errors.
 
@@ -1533,9 +1946,9 @@ def _cleanup_temp_files(paths: list[str]) -> None:
 
 
 def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
-    """Derive input/output ``arrow_pb2.Schema`` protos from function type hints.
+    """Derive input/output ``arrow_pb.Schema`` protos from function type hints.
 
-    Goes directly from Python type annotations to ``arrow_pb2.Schema`` protos
+    Goes directly from Python type annotations to ``arrow_pb.Schema`` protos
     without an intermediate PyArrow representation.
 
     Also stores function traits (``is_generator``, ``is_async``) in the output
@@ -1553,7 +1966,7 @@ def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
 
     Raises
     ------
-    TypeError
+    FunctionSignatureError
         If any parameter or the return type lacks an annotation.
     """
     import collections.abc as _cabc
@@ -1562,21 +1975,36 @@ def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
 
     hints = typing.get_type_hints(func, include_extras=True)
     sig = inspect.signature(func)
+    func_name = getattr(func, "__name__", type(func).__name__)
 
     # Input: one Field per parameter
     input_types: dict[str, type] = {}
     for param_name in sig.parameters:
         param_type = hints.get(param_name)
         if param_type is None:
-            raise TypeError(f"Parameter '{param_name}' must have a type annotation")
+            raise FunctionSignatureError(
+                f"Parameter '{param_name}' of function '{func_name}' must have "
+                f"a type annotation. Add its type, for example '{param_name}: str'."
+            )
         input_types[param_name] = param_type
     input_schema = rich_to_arrow_schema(input_types)
+    for column in input_schema.columns:
+        default = sig.parameters[column.name].default
+        if default is not inspect.Parameter.empty:
+            try:
+                column.metadata["chalk.default"] = json.dumps(default, allow_nan=False)
+            except (TypeError, ValueError):
+                # Non-JSON defaults cannot be reconstructed by catalog-only callers.
+                pass
 
     # Output: single column "result"
     # For generator functions (Iterator[T], Generator[T, ...]), unwrap to the yield type.
     return_type = hints.get("return")
     if return_type is None:
-        raise TypeError("Function must have a return type annotation")
+        raise FunctionSignatureError(
+            f"Function '{func_name}' must have a return type annotation. "
+            "Add '-> None' if it returns nothing, or annotate the returned value's type."
+        )
 
     is_generator = False
     is_async = inspect.iscoroutinefunction(func) or inspect.isasyncgenfunction(func)
@@ -1597,39 +2025,49 @@ def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
 
     output_schema = rich_to_arrow_schema({"result": return_type})
 
+    description = inspect.getdoc(func)
+    if description:
+        output_schema.metadata["chalk.function.description"] = description
+
     # Store function traits in schema metadata for client discovery.
     if is_generator:
         output_schema.metadata["chalk.function.is_generator"] = "true"
     if is_async:
         output_schema.metadata["chalk.function.is_async"] = "true"
+    response_schema = getattr(func, "__chalk_scorer_response_schema__", None)
+    if response_schema is not None:
+        output_schema.metadata[SCORER_RESPONSE_SCHEMA_METADATA_KEY] = response_schema
 
     return input_schema, output_schema
 
 
-def _extract_field_names(schema_dict: dict | None) -> list[str]:
-    """Extract field names from an Arrow schema JSON dict.
+def _extract_field_names(schema: Any | None) -> list[str]:
+    """Extract field names from a typed Arrow schema.
 
     Parameters
     ----------
-    schema_dict
-        Arrow schema JSON dict, or ``None``.
+    schema
+        Arrow schema protobuf, legacy JSON dict, or ``None``.
 
     Returns
     -------
     list of str
         Field names in declaration order.
     """
-    if not schema_dict:
+    if schema is None:
         return []
-    return [f["name"] for f in schema_dict.get("columns", []) if "name" in f]
+    if hasattr(schema, "columns"):
+        return [field.name for field in schema.columns]
+    return [f["name"] for f in schema.get("columns", []) if "name" in f]
 
 
-def _extract_schema_metadata(schema_dict: dict | None) -> dict[str, str]:
-    """Return Arrow schema metadata from a Connect JSON schema dict."""
-    if not schema_dict:
+def _extract_schema_metadata(schema: Any | None) -> dict[str, str]:
+    """Return Arrow schema metadata from a typed or legacy JSON schema."""
+    if schema is None:
         return {}
-
-    metadata = schema_dict.get("metadata") or {}
+    if hasattr(schema, "metadata"):
+        return dict(schema.metadata)
+    metadata = schema.get("metadata") or {}
     if isinstance(metadata, dict):
         return {str(k): str(v) for k, v in metadata.items()}
     if isinstance(metadata, list):
@@ -1641,13 +2079,101 @@ def _extract_schema_metadata(schema_dict: dict | None) -> dict[str, str]:
     return {}
 
 
-def _extract_function_traits(efv: dict[str, Any]) -> tuple[bool, bool]:
+def _extract_function_traits(
+    efv: catalog_pb.ExternalFunctionVersion | dict[str, Any],
+) -> tuple[bool, bool]:
     """Return ``(is_generator, is_async)`` from catalog function metadata."""
-    metadata = _extract_schema_metadata(efv.get("outputArrowSchema"))
+    metadata = _extract_schema_metadata(
+        efv.output_arrow_schema
+        if isinstance(efv, catalog_pb.ExternalFunctionVersion)
+        else efv.get("outputArrowSchema")
+    )
     return (
         metadata.get("chalk.function.is_generator") == "true",
         metadata.get("chalk.function.is_async") == "true",
     )
+
+
+def _parse_function_version(
+    efv: catalog_pb.ExternalFunctionVersion,
+    *,
+    is_current: bool,
+) -> FunctionVersionInfo:
+    return FunctionVersionInfo(
+        id=efv.id,
+        function_id=efv.function_id or None,
+        function_name=efv.function_name,
+        version=efv.version,
+        scaling_group_name=efv.scaling_group_name,
+        scaling_group_revision_id=efv.scaling_group_revision_id or None,
+        created_at=None if efv.created_at is None else efv.created_at.to_datetime(),
+        is_current=is_current,
+    )
+
+
+def _apply_function_version(
+    function: RemoteFunction,
+    efv: catalog_pb.ExternalFunctionVersion,
+    *,
+    is_current: bool,
+) -> None:
+    function._function_id = efv.function_id or None
+    function._version_info = _parse_function_version(efv, is_current=is_current)
+    # A locally defined handle keeps its Python name, signature (including
+    # defaults), and Arrow serializers. Catalog names need not be valid Python
+    # identifiers, and replacing the callable name changes the next deploy's
+    # handler source. Only attached handles derive callable metadata from the API.
+    if function._has_local_func:
+        return
+    function._func_name = efv.function_name
+    function._explicit_name = sanitize_dns_label(efv.function_name)
+    function._input_field_names = _extract_field_names(efv.input_arrow_schema)
+    function._call_parameter_names, function._bind_call_arguments = (
+        _compile_catalog_argument_binder(function._input_field_names)
+    )
+    function._arrow_input_serializers = (None,) * len(function._call_parameter_names)
+    function._is_generator, function._is_async = _extract_function_traits(efv)
+
+
+def _apply_external_function(
+    function: RemoteFunction,
+    external_function: catalog_pb.ExternalFunction | None,
+    *,
+    scaling_group: sg_pb.ScalingGroupResponse | None = None,
+) -> None:
+    if external_function is None:
+        raise FunctionError("External-function response contained no function")
+    if external_function.current_version is None:
+        raise FunctionError("External function has no selected version")
+    _apply_function_version(
+        function,
+        external_function.current_version,
+        is_current=True,
+    )
+    function._function_id = external_function.id
+    function._web_url = None if scaling_group is None else scaling_group.web_url or None
+    function._port = 6666
+
+
+def _get_external_function(
+    client: ConnectClient,
+    *,
+    function_id: str | None = None,
+    function_name: str | None = None,
+    include_scaling_group: bool = False,
+) -> catalog_pb.GetExternalFunctionResponse:
+    stub = client.stub(catalog_connect.ExternalFunctionCatalogServiceClientSync)
+    response = client.call(
+        stub.get_external_function,
+        catalog_pb.GetExternalFunctionRequest(
+            function_id=function_id,
+            function_name=function_name,
+            include_scaling_group=include_scaling_group,
+        ),
+    )
+    if response.external_function is None:
+        raise FunctionError("GetExternalFunction returned no function")
+    return response
 
 
 def _normalize_schedule(schedule: str | None, *, owner: str = "schedule") -> str | None:
@@ -1813,7 +2339,6 @@ class RemoteFunction:
     ... def embed(text: str) -> list[float]:
     ...     import numpy as np
     ...     return np.ones(8).tolist()
-    >>> embed.deploy()
     >>> embed.remote("hello world")
     [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
@@ -1843,11 +2368,16 @@ class RemoteFunction:
         image: _Image | None = None,
         name: str | None = None,
         cpu: str | None = None,
+        compute_class: ComputeClass | None = None,
         memory: str | None = None,
         gpu: str | None = None,
-        env: dict[str, str] | None = None,
+        env: Mapping[str, str | _Secret] | None = None,
         secrets: list[_Secret] | None = None,
-        volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+        volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
+        tags: dict[str, str] | None = None,
+        chalk_identity: bool = False,
+        authenticated: bool = False,
+        readiness_probe: _ReadinessProbe | None = None,
         min_replicas: int = 1,
         max_replicas: int = 1,
         shutdown_delay_seconds: int | None = None,
@@ -1856,6 +2386,7 @@ class RemoteFunction:
         target_gpu_utilization_percentage: int | None = None,
         target_queue_depth: int | None = None,
         cron_scaling_trigger: _CronScalingTrigger | None = None,
+        scale_from_zero_request_policy: _ScaleFromZeroRequestPolicy | None = None,
         serialization_format: SerializationFormat = "pyarrow",
         options: dict[str, str] | None = None,
         max_buffer_duration: int | None = None,
@@ -1863,14 +2394,21 @@ class RemoteFunction:
         retries: int | RetryPolicy | None = None,
         rate_limit: int | RateLimitPolicy | None = None,
         concurrency: int | ConcurrencyPolicy | None = None,
-        quota: int | QueuePolicy | None = None,
+        queue_policy: QueuePolicy | None = None,
         schedule: str | None = None,
         tracing: TracingPolicyConfig | None = None,
         models: typing.Mapping[str, Any] | None = None,
+        call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
         chalk_client: Any | None = None,
     ) -> None:
         self._func = func
         self._has_local_func = True
+        from chalkcompute._notebook import notebook_source_for_function
+
+        try:
+            self._notebook_source = notebook_source_for_function(func)
+        except ValueError as error:
+            raise FunctionBuildError(str(error)) from error
         self._func_name = getattr(func, "__name__", "anonymous")
         self._call_parameter_names, self._bind_call_arguments = (
             _compile_argument_binder(inspect.signature(func))
@@ -1898,17 +2436,33 @@ class RemoteFunction:
         self._arrow_result_deserializer: Callable[[Any], Any] | None = (
             arrow_decoder_for_annotation(result_type)
         )
+        env, secrets = normalize_env(env, secrets)
+        normalized_image, resolved_volumes = normalize_image_volumes(image, volumes)
+        if isinstance(normalized_image, str):
+            raise TypeError("function images must be Image instances")
         ContainerSpec.validate_fields(
-            image=image,
+            image=normalized_image,
             name=name,
             cpu=cpu,
+            compute_class=compute_class,
             memory=memory,
             gpu=gpu,
             env=env,
+            secrets=secrets,
+            tags=tags,
+            chalk_identity=chalk_identity,
+        )
+        validate_replica_and_utilization(
+            min_replicas=min_replicas,
+            max_replicas=max_replicas,
+            gpu=gpu,
+            target_cpu_utilization_percentage=target_cpu_utilization_percentage,
+            target_gpu_utilization_percentage=target_gpu_utilization_percentage,
         )
         self._explicit_name = name
-        self._image = image
+        self._image = normalized_image
         self._cpu = cpu
+        self._compute_class = compute_class
         self._memory = memory
         self._gpu = gpu
         self._env = dict(env) if env else {}
@@ -1918,45 +2472,35 @@ class RemoteFunction:
             self._env[MODELS_ENV_VAR] = encode_models_env(models)
         self._secrets: list[_Secret] = list(secrets or [])
         # Existence is checked at deploy time, not here.
-        self._referenced_volumes: list[VolumeMount] = normalize_volume_refs(volumes)
+        self._referenced_volumes: list[VolumeMount] = resolved_volumes
         # Populated at deploy time: referenced volumes plus any freshly
         # uploaded volumes.
         self._volumes: list[VolumeMount] = []
-        if min_replicas < 0:
-            raise ValueError(f"min_replicas must be >= 0, got {min_replicas}")
-        if max_replicas < 0:
-            raise ValueError(f"max_replicas must be >= 0, got {max_replicas}")
-        if min_replicas > max_replicas:
-            raise ValueError(
-                f"min_replicas ({min_replicas}) must be <= max_replicas ({max_replicas})"
-            )
+        self._tags = dict(tags or {})
+        self._chalk_identity = chalk_identity
+        self._authenticated = authenticated
+        if readiness_probe is not None:
+            from chalkcompute._scaling_group import ReadinessProbe
+
+            if not isinstance(readiness_probe, ReadinessProbe):
+                raise TypeError("readiness_probe must be a ReadinessProbe")
+        self._readiness_probe = readiness_probe
+        if scale_from_zero_request_policy is not None:
+            from chalkcompute._scaling_group import ScaleFromZeroRequestPolicy
+
+            if not isinstance(
+                scale_from_zero_request_policy, ScaleFromZeroRequestPolicy
+            ):
+                raise TypeError(
+                    "scale_from_zero_request_policy must be a ScaleFromZeroRequestPolicy"
+                )
+        self._scale_from_zero_request_policy = scale_from_zero_request_policy
         self._volume_driver: VolumeClient | None = None
         self._min_replicas = min_replicas
         self._max_replicas = max_replicas
         self._shutdown_delay_seconds = shutdown_delay_seconds
         self._scaling_interval_seconds = scaling_interval_seconds
-        if target_cpu_utilization_percentage is not None and not (
-            0 < target_cpu_utilization_percentage <= 100
-        ):
-            raise ValueError(
-                f"target_cpu_utilization_percentage must be between 1 and 100, got {target_cpu_utilization_percentage}"
-            )
         self._target_cpu_utilization_percentage = target_cpu_utilization_percentage
-        if target_gpu_utilization_percentage is not None:
-            if not (0 < target_gpu_utilization_percentage <= 100):
-                raise ValueError(
-                    f"target_gpu_utilization_percentage must be between 1 and 100, got {target_gpu_utilization_percentage}"
-                )
-            if gpu is None:
-                raise ValueError(
-                    "target_gpu_utilization_percentage requires gpu to be set"
-                )
-            # The utilization series only exists while replicas do, so a group that
-            # may reach zero would deactivate and never see a sample to scale back up.
-            if min_replicas < 1:
-                raise ValueError(
-                    f"target_gpu_utilization_percentage requires min_replicas >= 1, got {min_replicas}"
-                )
         self._target_gpu_utilization_percentage = target_gpu_utilization_percentage
         self._target_queue_depth = target_queue_depth
         self._cron_scaling_trigger = cron_scaling_trigger
@@ -2001,12 +2545,16 @@ class RemoteFunction:
             if concurrency is not None
             else None
         )
-        self._quota = (
-            QueuePolicy.from_int_or_policy(quota) if quota is not None else None
-        )
+        if queue_policy is not None and not isinstance(queue_policy, QueuePolicy):
+            raise TypeError(
+                f"queue_policy must be a QueuePolicy, got {type(queue_policy).__name__}"
+            )
+        self._queue_policy = queue_policy
         self._tracing = normalize_remote_function_tracing(tracing)
+        self._call_timeout = call_timeout
 
         # Set after .deploy()
+        self._function_id: str | None = None
         self._version_info: FunctionVersionInfo | None = None
         self._web_url: str | None = None
         self._port: int = 8080
@@ -2022,14 +2570,14 @@ class RemoteFunction:
             func
         ) or inspect.isasyncgenfunction(func)
 
-        # gRPC call channel (lazily created on first __call__)
-        self._call_channel: Any = None
+        # ConnectRPC fallback client (lazily created on first call if needed).
         self._call_stub: Any = None
         self._remote_call_client: Any = None
         self._queue_call_client: Any = None
         self._remote_call_auth_token: str | None = None
         self._queue_call_auth_token: str | None = None
         self._knowledge_cutoff: str | None = None
+        self._background_deploy_future: Future[None] | None = None
 
         self._client = ConnectClient(chalk_client=chalk_client)
 
@@ -2040,99 +2588,131 @@ class RemoteFunction:
 
     @classmethod
     def from_id(
-        cls, version_id: str, *, chalk_client: Any | None = None
+        cls,
+        version_id: str,
+        *,
+        chalk_client: Any | None = None,
+        call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
     ) -> RemoteFunction:
         """Attach to an existing function version by ID.
+
+        This compatibility alias retains the historical version-ID meaning.
+        Prefer :meth:`from_version_id` or :meth:`from_function_id` in new code.
+        """
+        return cls.from_version_id(
+            version_id, chalk_client=chalk_client, call_timeout=call_timeout
+        )
+
+    @classmethod
+    def from_version_id(
+        cls,
+        version_id: str,
+        *,
+        chalk_client: Any | None = None,
+        call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
+    ) -> RemoteFunction:
+        """Attach through an immutable version ID.
 
         Parameters
         ----------
         version_id
             Identifier of the function version.
+        call_timeout
+            Maximum seconds to wait on a single ``.remote()``/``.defer()``/
+            ``.poll()`` call before raising. ``None`` disables the deadline.
 
         Returns
         -------
         RemoteFunction
             A handle bound to the existing version.
         """
-        f = cls._make_empty(chalk_client=chalk_client)
-        resp = f._client.rpc(
-            _CATALOG_SVC,
-            "GetExternalFunctionVersion",
-            {"id": version_id, "includeScalingGroup": True},
+        f = cls._make_empty(chalk_client=chalk_client, call_timeout=call_timeout)
+        stub = f._client.stub(catalog_connect.ExternalFunctionCatalogServiceClientSync)
+        response = f._client.call(
+            stub.get_external_function_version,
+            catalog_pb.GetExternalFunctionVersionRequest(
+                identifier=Oneof("id", version_id),
+                include_scaling_group=True,
+            ),
         )
-        if resp.status_code != 200:
-            raise FunctionError(f"GetExternalFunctionVersion failed: {resp.text}")
-        data = resp.json()
-        efv = data["externalFunctionVersion"]
-        f._version_info = FunctionVersionInfo(
-            id=efv["id"],
-            function_name=efv["functionName"],
-            version=efv.get("version", 0),
-            scaling_group_name=efv.get("scalingGroupName", ""),
-        )
-        f._func_name = efv["functionName"]
-        f._explicit_name = sanitize_dns_label(efv["functionName"])
-        f._input_field_names = _extract_field_names(efv.get("inputArrowSchema"))
-        f._call_parameter_names, f._bind_call_arguments = (
-            _compile_catalog_argument_binder(f._input_field_names)
-        )
-        f._arrow_input_serializers = (None,) * len(f._call_parameter_names)
-        f._is_generator, f._is_async = _extract_function_traits(efv)
-        sg = data.get("scalingGroup")
-        if sg:
-            f._web_url = sg.get("webUrl")
-            f._port = sg.get("port", 8080)
+        efv = response.external_function_version
+        if efv is None:
+            raise FunctionError("GetExternalFunctionVersion returned no version")
+        _apply_function_version(f, efv, is_current=False)
+        if response.scaling_group is not None:
+            f._web_url = response.scaling_group.web_url or None
+            f._port = 6666
         return f
 
     @classmethod
-    def from_name(cls, name: str, *, chalk_client: Any | None = None) -> RemoteFunction:
-        """Attach to an existing function version by name.
+    def from_name(
+        cls,
+        name: str,
+        *,
+        chalk_client: Any | None = None,
+        call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
+    ) -> RemoteFunction:
+        """Attach to an external function's currently selected version.
 
         Parameters
         ----------
         name
             Name of the function.
+        call_timeout
+            Maximum seconds to wait on a single ``.remote()``/``.defer()``/
+            ``.poll()`` call before raising. ``None`` disables the deadline.
 
         Returns
         -------
         RemoteFunction
             A handle bound to the existing version.
         """
-        f = cls._make_empty(chalk_client=chalk_client)
-        resp = f._client.rpc(
-            _CATALOG_SVC,
-            "GetExternalFunctionVersion",
-            {"key": {"functionName": name}, "includeScalingGroup": True},
+        f = cls._make_empty(chalk_client=chalk_client, call_timeout=call_timeout)
+        response = _get_external_function(
+            f._client,
+            function_name=name,
+            include_scaling_group=True,
         )
-        if resp.status_code != 200:
-            raise FunctionError(f"GetExternalFunctionVersion failed: {resp.text}")
-        data = resp.json()
-        efv = data["externalFunctionVersion"]
-        f._version_info = FunctionVersionInfo(
-            id=efv["id"],
-            function_name=efv["functionName"],
-            version=efv.get("version", 0),
-            scaling_group_name=efv.get("scalingGroupName", ""),
+        _apply_external_function(
+            f,
+            response.external_function,
+            scaling_group=response.scaling_group,
         )
-        f._func_name = efv["functionName"]
-        f._explicit_name = sanitize_dns_label(efv["functionName"])
-        f._input_field_names = _extract_field_names(efv.get("inputArrowSchema"))
-        f._call_parameter_names, f._bind_call_arguments = (
-            _compile_catalog_argument_binder(f._input_field_names)
-        )
-        f._arrow_input_serializers = (None,) * len(f._call_parameter_names)
-        f._is_generator, f._is_async = _extract_function_traits(efv)
-        sg = data.get("scalingGroup")
-        if sg:
-            f._web_url = sg.get("webUrl")
-            f._port = sg.get("port", 8080)
         return f
 
     @classmethod
-    def _make_empty(cls, *, chalk_client: Any | None = None) -> RemoteFunction:
+    def from_function_id(
+        cls,
+        function_id: str,
+        *,
+        chalk_client: Any | None = None,
+        call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
+    ) -> RemoteFunction:
+        """Attach to a stable external function by ID."""
+        f = cls._make_empty(chalk_client=chalk_client, call_timeout=call_timeout)
+        response = _get_external_function(
+            f._client,
+            function_id=function_id,
+            include_scaling_group=True,
+        )
+        _apply_external_function(
+            f,
+            response.external_function,
+            scaling_group=response.scaling_group,
+        )
+        return f
+
+    @classmethod
+    def _make_empty(
+        cls,
+        *,
+        chalk_client: Any | None = None,
+        call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
+    ) -> RemoteFunction:
         f = cls.__new__(cls)
         f._func = lambda *a, **kw: None  # type: ignore[assignment]
         f._has_local_func = False
+        f._notebook_source = None
         f._func_name = "unknown"
         f._call_parameter_names, f._bind_call_arguments = (
             _compile_catalog_argument_binder(())
@@ -2140,12 +2720,18 @@ class RemoteFunction:
         f._explicit_name = "unknown"
         f._image = None
         f._cpu = None
+        f._compute_class = None
         f._memory = None
         f._gpu = None
         f._env = {}
         f._secrets = []
         f._referenced_volumes = []
         f._volumes = []
+        f._tags = {}
+        f._chalk_identity = False
+        f._authenticated = False
+        f._readiness_probe = None
+        f._scale_from_zero_request_policy = None
         f._volume_driver = None
         f._min_replicas = 1
         f._max_replicas = 1
@@ -2163,8 +2749,9 @@ class RemoteFunction:
         f._retries = None
         f._rate_limit = None
         f._concurrency = None
-        f._quota = None
+        f._queue_policy = None
         f._tracing = None
+        f._function_id = None
         f._version_info = None
         f._web_url = None
         f._port = 6666
@@ -2173,13 +2760,14 @@ class RemoteFunction:
         f._arrow_result_deserializer = None
         f._is_generator = False
         f._is_async = False
-        f._call_channel = None
         f._call_stub = None
         f._remote_call_client = None
         f._queue_call_client = None
         f._remote_call_auth_token = None
         f._queue_call_auth_token = None
         f._knowledge_cutoff = None
+        f._call_timeout = call_timeout
+        f._background_deploy_future = None
         f._client = ConnectClient(chalk_client=chalk_client)
         return f
 
@@ -2191,6 +2779,7 @@ class RemoteFunction:
         package_dir: str,
         module_name: str,
         temp_files: list[str],
+        source_root: str = "/app",
     ) -> _Image:
         """Add the function's whole top-level package to the image."""
         prepared_dir, dir_is_temp = _prepare_package_dir(
@@ -2203,7 +2792,7 @@ class RemoteFunction:
             temp_files.append(prepared_dir)
         return base_image.add_local_dir(
             prepared_dir,
-            f"/app/{module_name.split('.')[0]}",
+            f"{source_root}/{module_name.split('.')[0]}",
             exclude=["**/__pycache__/**", "**/*.pyc"],
         )
 
@@ -2212,16 +2801,28 @@ class RemoteFunction:
         base_image: _Image,
         temp_files: list[str],
         module_name: str,
+        source_root: str = "/app",
     ) -> _Image:
         """Add the function's source file to the image as ``<module_name>.py``."""
-        source_file, source_is_temp = _prepare_source_file(
-            _source_file_for_deploy(self._func),
-            label=f"Function {self._func_name!r}",
-            entrypoint_sources=_entrypoint_source(self._func),
-        )
+        if self._notebook_source is not None:
+            source = self._notebook_source
+            if _should_strip_source():
+                source = _strip_source_for_deploy(
+                    source,
+                    strip=_strip_chalkcompute_from_source,
+                    label=f"Function {self._func_name!r}",
+                    entrypoint_sources=_entrypoint_source(self._func),
+                )
+            source_file, source_is_temp = _write_temp(source), True
+        else:
+            source_file, source_is_temp = _prepare_source_file(
+                _source_file_for_deploy(self._func),
+                label=f"Function {self._func_name!r}",
+                entrypoint_sources=_entrypoint_source(self._func),
+            )
         if source_is_temp:
             temp_files.append(source_file)
-        return base_image.add_local_file(source_file, f"/app/{module_name}.py")
+        return base_image.add_local_file(source_file, f"{source_root}/{module_name}.py")
 
     def _add_handler_shim(
         self,
@@ -2229,6 +2830,7 @@ class RemoteFunction:
         shim_module: str,
         temp_files: list[str],
         handler_module: str,
+        source_root: str = "/app",
     ) -> _Image:
         """Generate the handler shim and finalize the deploy image env."""
         from chalkcompute._model import MODELS_ENV_VAR
@@ -2242,8 +2844,15 @@ class RemoteFunction:
         shim_path = _write_temp(handler_shim)
         temp_files.append(shim_path)
 
-        return deploy_image.add_local_file(shim_path, f"/app/{handler_module}.py").env(
-            {"PYTHONPATH": "/app", _REMOTE_ENV_VAR: "1"}
+        return deploy_image.add_local_file(
+            shim_path, f"{source_root}/{handler_module}.py"
+        ).env(
+            {
+                "PYTHONPATH": source_root
+                if source_root == "/app"
+                else f"{source_root}:/app",
+                _REMOTE_ENV_VAR: "1",
+            }
         )
 
     def _build_deploy_image(self) -> _Image:
@@ -2252,8 +2861,10 @@ class RemoteFunction:
         When the function is defined in a package (its module name is
         dotted), the whole top-level package is shipped and the shim imports
         the function from its real module, so sibling-module helpers resolve
-        remotely. Otherwise the single source file is shipped as
-        ``user_module.py``.
+        remotely. This includes running the module via ``uv run -m
+        mypkg.mod``: the real dotted name is recovered from
+        ``__main__.__spec__``. Otherwise the single source file is shipped
+        as ``user_module.py``.
 
         The shim (and, in single-file mode, the renamed source module) get
         generated names that dodge any top-level ``/app`` name the user's
@@ -2265,8 +2876,13 @@ class RemoteFunction:
         Image
             Declarative image ready to be built.
         """
-        module_name = self._func.__module__ or ""
+        module_name = _deploy_module_name(self._func)
         package_dir = _package_dir_for_module(module_name)
+        source_root = function_source_root(
+            self._image,
+            self._referenced_volumes,
+            package=module_name.split(".")[0] if package_dir is not None else None,
+        )
 
         base_image = _make_base_image(
             self._image,
@@ -2276,21 +2892,31 @@ class RemoteFunction:
 
         temp_files: list[str] = []
         if package_dir is not None:
+            # Function lives in a package: ship the whole top-level package.
             taken.add(module_name.split(".")[0])
             shim_module = module_name
             deploy_image = self._add_package_source(
-                base_image, package_dir, module_name, temp_files
+                base_image, package_dir, module_name, temp_files, source_root
             )
-        else:
+        elif module_name == "__main__":
+            # File run directly: error if it imports its own package, else ship one file.
+            _check_direct_run_from_package(self._func, self._func_name)
             shim_module = _available_module_name(_USER_MODULE_NAME, taken)
             taken.add(shim_module)
             deploy_image = self._add_single_file_source(
-                base_image, temp_files, shim_module
+                base_image, temp_files, shim_module, source_root
+            )
+        else:
+            # Loose non-package module: ship its single source file.
+            shim_module = _available_module_name(_USER_MODULE_NAME, taken)
+            taken.add(shim_module)
+            deploy_image = self._add_single_file_source(
+                base_image, temp_files, shim_module, source_root
             )
 
         self._handler_module = _available_module_name("handler", taken)
         deploy_image = self._add_handler_shim(
-            deploy_image, shim_module, temp_files, self._handler_module
+            deploy_image, shim_module, temp_files, self._handler_module, source_root
         )
 
         self._temp_files = temp_files
@@ -2298,15 +2924,124 @@ class RemoteFunction:
 
     # -- Lifecycle -------------------------------------------------------------
 
-    @_instrumented("chalkcompute.function.deploy")
+    def _start_background_deploy(self) -> None:
+        if self._background_deploy_future is not None:
+            raise FunctionError(
+                f"Background deployment already started for {self._func_name!r}"
+            )
+        if self._notebook_source is not None and _should_strip_source():
+            _strip_source_for_deploy(
+                self._notebook_source,
+                strip=_strip_chalkcompute_from_source,
+                label=f"Function {self._func_name!r}",
+                entrypoint_sources=_entrypoint_source(self._func),
+            )
+        elif self._notebook_source is None:
+            _assert_strip_mode_self_contained(
+                self._func, label=f"Function {self._func_name!r}"
+            )
+        self._background_deploy_future = _schedule_background_deployment(self)
+
+    def _wait_for_background_deploy(self, timeout: float | None = None) -> bool:
+        """Wait for the decorator-triggered deployment, if this handle has one."""
+        future = self._background_deploy_future
+        if future is None:
+            return False
+        try:
+            future.result(timeout=timeout)
+        except TimeoutError as exc:
+            if not future.done():
+                raise FunctionError(
+                    f"Function {self._func_name!r} is still deploying after {timeout}s"
+                ) from exc
+            _mark_background_deployment_observed(future)
+            raise
+        except BaseException:
+            if future.done():
+                _mark_background_deployment_observed(future)
+            raise
+        _mark_background_deployment_observed(future)
+        return True
+
+    def _settle_background_deploy(self) -> None:
+        """Wait for the decorator's deployment, then release this handle from it.
+
+        Used by :meth:`deploy`, which is a caller-initiated retry: it must
+        serialize behind the decorator's attempt so both do not select versions
+        of the same registered name concurrently, but it must not inherit that
+        attempt's failure. A stored exception would otherwise be re-raised on
+        every later ``.deploy()`` — the future is never reset — leaving the
+        handle permanently unable to retry.
+
+        The future is cleared either way, so a successful retry also leaves a
+        clean handle instead of one whose ``.remote()`` still re-raises the old
+        build error.
+        """
+        future = self._background_deploy_future
+        if future is None:
+            return
+        try:
+            future.result()
+        except Exception as exc:
+            logger.warning(
+                "Background deployment for function '%s' failed (%s); "
+                "retrying with an explicit deploy.",
+                self._explicit_name or self._func_name,
+                exc,
+            )
+        finally:
+            _mark_background_deployment_observed(future)
+            self._background_deploy_future = None
+
     def deploy(
         self,
         *,
         poll_interval: float = 0.5,
         build_timeout: float = 600.0,
         ready_timeout: float = 300.0,
+        force_new_version: bool = False,
+    ) -> RemoteFunction:
+        """Ensure the definition is deployed, reusing an unchanged version.
+
+        Parameters
+        ----------
+        poll_interval
+            Seconds between status polls.
+        build_timeout
+            Maximum seconds to wait for the image build.
+        ready_timeout
+            Maximum seconds to wait for the scaling group to become ready.
+        force_new_version
+            Create a new version even when unchanged, reusing image/source artifacts.
+
+        Returns
+        -------
+        RemoteFunction
+            ``self`` for chaining.
+        """
+        self._settle_background_deploy()
+        with _manual_deploy_slot(self._explicit_name or self._func_name):
+            return self._deploy(
+                poll_interval=poll_interval,
+                build_timeout=build_timeout,
+                ready_timeout=ready_timeout,
+                force_new_version=force_new_version,
+            )
+
+    @_instrumented("chalkcompute.function.deploy")
+    def _deploy(
+        self,
+        *,
+        poll_interval: float = 0.5,
+        build_timeout: float = 600.0,
+        ready_timeout: float = 300.0,
+        force_new_version: bool = False,
     ) -> RemoteFunction:
         """Build the image, register the function version, and wait until running.
+
+        This is the deploy body without the background-deployment barrier, so
+        the decorator's own worker can call it without waiting on itself.
+        Callers other than that worker should use :meth:`deploy`.
 
         Parameters
         ----------
@@ -2322,8 +3057,6 @@ class RemoteFunction:
         RemoteFunction
             ``self`` for chaining.
         """
-        from google.protobuf.json_format import MessageToDict
-
         from chalkcompute._progress import (
             progress_add,
             progress_done,
@@ -2332,7 +3065,8 @@ class RemoteFunction:
             progress_update,
         )
 
-        fkey = f"function:{self._func_name}"
+        registered_name = self._explicit_name or self._func_name
+        fkey = f"function:{registered_name}"
         progress_add(fkey, "function", f'Function "{self._func_name}"')
 
         # Fail fast on the hostname-length limit before the expensive build.
@@ -2345,29 +3079,17 @@ class RemoteFunction:
             # 1. Build deploy image
             deploy_image = self._build_deploy_image()
 
-            # 2. Build image + upload lazy files
-            image_uri, new_vols, driver, volume_commits = _build_and_upload(
-                self._client,
-                deploy_image,
-                label=f"function '{self._func_name}'",
-                volume_name=f"fn-src-{self._explicit_name or self._func_name}",
-                poll_interval=poll_interval,
-                build_timeout=build_timeout,
-                progress_parent=fkey,
-            )
-            # A missing user-referenced volume fails the deploy.
-            referenced_volumes = [
-                referenced_volume_mount(self._client, mount)
-                for mount in getattr(self, "_referenced_volumes", [])
-            ]
-            deploy_volumes = [
-                *referenced_volumes,
-                *new_vols,
-            ]
+            deploy_volumes = list(getattr(self, "_referenced_volumes", []))
             self._volumes = deploy_volumes
-            self._volume_driver = driver
-            _cleanup_temp_files(getattr(self, "_temp_files", []))
-            self._temp_files = []
+            self._volume_driver = None
+            deploy_volumes = resolve_function_volumes(
+                self._client,
+                image=deploy_image,
+                volume_name=registered_name,
+                referenced=deploy_volumes,
+                poll_interval=poll_interval,
+                timeout=build_timeout,
+            )
 
             # 3. Register function version
             input_schema_proto, output_schema_proto = _build_schemas(self._func)
@@ -2378,133 +3100,106 @@ class RemoteFunction:
                 f"{self._handler_module}.handler",
             ]
 
-            # Resolve into a local so later deploys re-upsert lazy secrets.
-            resolved_secrets = self._secrets
-            if any(s.is_lazy for s in self._secrets):
-                scope = SecretScope.function(self._explicit_name or self._func_name)
-                resolved_secrets, _upserted = resolve_lazy_secrets(
-                    self._secrets, self._client, scope=scope
-                )
+            resolved_secrets, local_secrets = prepare_lazy_secrets(self._secrets)
 
             container_spec = ContainerSpec(
                 name=sg_name,
-                image=image_uri,
+                image="",
                 entrypoint=_local_install_entrypoint(handler_cmd),
-                env={"PYTHONPATH": "/app", _REMOTE_ENV_VAR: "1", **self._env},
+                env=_remote_call_container_env(
+                    self._env, deploy_image._env.get("PYTHONPATH", "/app")
+                ),
                 cpu=self._cpu,
+                compute_class=self._compute_class,
                 memory=self._memory,
                 gpu=self._gpu,
                 volumes=deploy_volumes,
                 secret_refs=resolved_secrets,
                 port=6666,
                 protocol="grpc",
-            ).to_dict()
-            scaling_spec: dict[str, Any] = {
-                "minReplicas": self._min_replicas,
-                "maxReplicas": self._max_replicas,
-            }
-            if self._shutdown_delay_seconds is not None:
-                scaling_spec["shutdownDelaySeconds"] = self._shutdown_delay_seconds
-            if self._scaling_interval_seconds is not None:
-                scaling_spec["windowSeconds"] = self._scaling_interval_seconds
-            if self._target_cpu_utilization_percentage is not None:
-                scaling_spec["targetCpuUtilizationPercentage"] = (
-                    self._target_cpu_utilization_percentage
-                )
-            if self._target_gpu_utilization_percentage is not None:
-                scaling_spec["gpuUtilizationTrigger"] = {
-                    "targetUtilizationPercentage": self._target_gpu_utilization_percentage
-                }
-            if self._target_queue_depth is not None:
-                scaling_spec["functionQueueDepthTrigger"] = {
-                    "functionName": self._explicit_name or self._func_name,
-                    "targetQueueDepth": self._target_queue_depth,
-                }
-            if self._cron_scaling_trigger is not None:
-                scaling_spec["cronScalingTrigger"] = (
-                    self._cron_scaling_trigger.to_dict()
-                )
-
-            spec: dict[str, Any] = {
-                "containerSpec": container_spec,
-                "scalingSpec": scaling_spec,
-            }
+                startup_probe=_remote_function_startup_probe(),
+                readiness_probe=(
+                    self._readiness_probe.to_dict()
+                    if self._readiness_probe is not None
+                    else None
+                ),
+                authentication="AUTHENTICATED" if self._authenticated else None,
+                tags=self._tags,
+                chalk_identity=self._chalk_identity,
+            ).to_proto()
+            spec = sg_pb.ScalingGroupSpec(
+                container_spec=container_spec,
+                scaling_spec=scaling_spec(
+                    min_replicas=self._min_replicas,
+                    max_replicas=self._max_replicas,
+                    shutdown_delay_seconds=self._shutdown_delay_seconds,
+                    window_seconds=self._scaling_interval_seconds,
+                    target_cpu_utilization_percentage=(
+                        self._target_cpu_utilization_percentage
+                    ),
+                    target_gpu_utilization_percentage=(
+                        self._target_gpu_utilization_percentage
+                    ),
+                    function_name=self._explicit_name or self._func_name,
+                    target_queue_depth=self._target_queue_depth,
+                    cron_scaling_trigger=self._cron_scaling_trigger,
+                    scale_from_zero_request_policy=self._scale_from_zero_request_policy,
+                ),
+            )
 
             # 5b. Build function-level config
-            function_config: dict[str, Any] = {}
-            if self._serialization_format != "pyarrow":
-                function_config["serializationFormat"] = self._serialization_format
-            if self._options:
-                function_config["options"] = self._options
-            if self._max_buffer_duration is not None:
-                function_config["maxBufferDuration"] = self._max_buffer_duration
-            if self._max_batching_size is not None:
-                function_config["maxBatchingSize"] = self._max_batching_size
-            if self._retries is not None:
-                function_config["retryPolicy"] = self._retries.to_dict()
-            if self._rate_limit is not None:
-                function_config["rateLimit"] = self._rate_limit.to_dict()
-            if self._concurrency is not None:
-                function_config["concurrency"] = self._concurrency.to_dict()
-            if self._quota is not None:
-                function_config["queue"] = self._quota.to_dict()
-            if self._schedule is not None:
-                function_config["schedule"] = self._schedule
-            if self._tracing is not None:
-                function_config["tracing"] = self._tracing.to_dict()
+            config = function_config(
+                serialization_format=self._serialization_format,
+                options=self._options,
+                max_buffer_duration=self._max_buffer_duration,
+                max_batching_size=self._max_batching_size,
+                retries=self._retries,
+                rate_limit=self._rate_limit,
+                concurrency=self._concurrency,
+                queue_policy=self._queue_policy,
+                schedule=self._schedule,
+                tracing=self._tracing,
+            )
 
-            # 6. Call CreateExternalFunctionVersion
-            rkey = f"register:{self._func_name}"
+            # 6. Create the stable function or append and select a new version.
+            rkey = f"register:{registered_name}"
             progress_add(rkey, "function", "Registering function", parent=fkey)
             logger.info(
                 "Registering function '%s'...", self._explicit_name or self._func_name
             )
 
-            create_request: dict[str, Any] = {
-                "functionName": self._explicit_name or self._func_name,
-                "inputArrowSchema": MessageToDict(input_schema_proto),
-                "outputArrowSchema": MessageToDict(output_schema_proto),
-                "spec": spec,
-            }
-            if function_config:
-                create_request["config"] = function_config
-            if volume_commits:
-                create_request["volumeCommits"] = volume_commits
-
-            resp = self._client.rpc(
-                _CATALOG_SVC,
-                "CreateExternalFunctionVersion",
-                create_request,
-                timeout=60,
+            ensured = ensure_external_function(
+                self._client,
+                function_name=self._explicit_name or self._func_name,
+                image=deploy_image,
+                local_secrets=local_secrets,
+                force_new_version=force_new_version,
+                poll_interval=poll_interval,
+                timeout=build_timeout,
+                version_spec=catalog_pb.ExternalFunctionVersionSpec(
+                    input_arrow_schema=input_schema_proto,
+                    output_arrow_schema=output_schema_proto,
+                    spec=spec,
+                    config=config,
+                ),
             )
-            if resp.status_code != 200:
-                raise FunctionError(
-                    f"CreateExternalFunctionVersion failed: {resp.text}"
-                )
-
-            data = resp.json()
-            efv = data["externalFunctionVersion"]
-            self._version_info = FunctionVersionInfo(
-                id=efv["id"],
-                function_name=efv["functionName"],
-                version=efv.get("version", 0),
-                scaling_group_name=efv.get("scalingGroupName", sg_name),
+            _apply_external_function(
+                self, ensured.external_function, scaling_group=ensured.scaling_group
             )
-
-            sg_data = data.get("scalingGroup")
-            if sg_data:
-                self._web_url = sg_data.get("webUrl")
-                self._port = sg_data.get("port", 6666)
-            else:
-                self._port = 6666
+            # A redeploy may move the stable function to a different scaling
+            # group endpoint. Force subsequent calls to establish fresh
+            # transports for the newly selected version.
+            self._drop_remote_call_clients()
+            assert self._version_info is not None
+            sg_data = ensured.scaling_group
 
             logger.info(
-                "Function version created: %s v%s (id=%s)",
+                "Function version selected: %s v%s (id=%s)",
                 self._version_info.function_name,
                 self._version_info.version,
                 self._version_info.id,
             )
-            progress_done(rkey)
+            progress_update(rkey, status="done", label="Function registered")
 
             # 7. Poll until the backing pod is actually ready to serve.
             if not (
@@ -2514,7 +3209,7 @@ class RemoteFunction:
                     require_ready_replicas=self._min_replicas > 0,
                 )
             ):
-                progress_update(fkey, detail="waiting for ready")
+                progress_update(fkey, detail="Waiting for readiness")
                 self._poll_until_ready(
                     sg_name=self._version_info.scaling_group_name,
                     poll_interval=poll_interval,
@@ -2523,10 +3218,13 @@ class RemoteFunction:
                 )
 
             progress_done(fkey, detail="ready")
+            logger.info("Function ready: %s", registered_name)
         except BaseException:
             progress_fail(fkey)
             raise
         finally:
+            _cleanup_temp_files(getattr(self, "_temp_files", []))
+            self._temp_files = []
             progress_finish()
 
         return self
@@ -2548,37 +3246,38 @@ class RemoteFunction:
         deadline = time.monotonic() + timeout
         status = "unknown"
         status_message = ""
+        status_details = ""
+        status_log = _StatusLogger(
+            logger,
+            f"Scaling group {sg_name}",
+            progress_key=f"function:{self._explicit_name or self._func_name}",
+        )
         ready_replicas = 0
         available_replicas = 0
         while time.monotonic() < deadline:
-            resp = self._client.rpc(
-                _SG_SVC,
-                "GetScalingGroup",
-                {"name": sg_name},
-            )
-            if resp.status_code != 200:
-                raise FunctionError(f"GetScalingGroup failed: {resp.text}")
-            sg = resp.json()["scalingGroup"]
-            status = sg.get("status", "")
-            status_message = sg.get("statusMessage", "")
-            ready_replicas = sg.get("readyReplicas")
-            available_replicas = sg.get("availableReplicas")
-            self._web_url = sg.get("webUrl")
-            logger.info(
-                "  poll: status=%s ready=%s available=%s message=%s",
+            sg = _get_scaling_group(self._client, sg_name)
+            status = sg.status
+            status_message = sg.status_message or ""
+            status_details = sg.status_details or ""
+            ready_replicas = sg.ready_replicas
+            available_replicas = sg.available_replicas
+            self._web_url = sg.web_url or None
+            status_log.update(
                 status,
-                ready_replicas,
-                available_replicas,
-                status_message or "",
+                ready=ready_replicas,
+                available=available_replicas,
+                message=status_message,
             )
             if _scaling_group_is_ready(
                 sg, require_ready_replicas=require_ready_replicas
             ):
                 return
-            if status in ("Failed", "Error"):
+            if status in ("Failed", "Error", "Unhealthy"):
                 message = f"Scaling group {sg_name} entered {status} state"
                 if status_message:
                     message = f"{message}: {status_message}"
+                if status_details:
+                    message = f"{message}\n{status_details}"
                 raise FunctionError(message)
             time.sleep(poll_interval)
         message = (
@@ -2588,7 +3287,27 @@ class RemoteFunction:
         )
         if status_message:
             message = f"{message}: {status_message}"
+        if status_details:
+            message = f"{message}\n{status_details}"
         raise FunctionError(message)
+
+    def _requires_ready_replicas(self, sg: Any) -> bool:
+        """Whether readiness demands a live replica for this scaling group.
+
+        Prefers the server's own spec over the local ``min_replicas``: a handle
+        from ``from_name``/``from_id`` never learns the deployed value, so
+        trusting the local default would demand a replica from a scale-to-zero
+        function that will never have one.
+
+        ``spec`` is a ``ScalingGroupSpec`` wrapper and both it and its nested
+        ``scaling_spec`` are optional, so each level is checked before use.
+        """
+        if isinstance(sg, sg_pb.ScalingGroupResponse) and sg.has_field("spec"):
+            group_spec = sg.spec
+            scaling_spec = None if group_spec is None else group_spec.scaling_spec
+            if scaling_spec is not None:
+                return scaling_spec.min_replicas > 0
+        return self._min_replicas > 0
 
     def wait_ready(
         self,
@@ -2596,7 +3315,10 @@ class RemoteFunction:
         timeout: float = 120.0,
         poll_interval: float = 2.0,
     ) -> RemoteFunction:
-        """Wait until the backing scaling group has at least one ready replica.
+        """Wait until the backing scaling group is ready to serve.
+
+        A ``min_replicas=0`` function counts as ready once it reaches
+        ``ScaledToZero``, matching what :meth:`deploy` waits for.
 
         Parameters
         ----------
@@ -2615,22 +3337,31 @@ class RemoteFunction:
         FunctionError
             If the function has not been deployed or never becomes ready.
         """
+        deadline = time.monotonic() + timeout
+        self._wait_for_background_deploy(timeout=timeout)
         if self._version_info is None:
             raise FunctionError("No function version — call .deploy() first.")
 
         sg_name = self._version_info.scaling_group_name
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            resp = self._client.rpc(_SG_SVC, "GetScalingGroup", {"name": sg_name})
-            if resp.status_code != 200:
-                raise FunctionError(f"GetScalingGroup failed: {resp.text}")
-            sg = resp.json()["scalingGroup"]
-            status = sg.get("status", "")
-            self._web_url = sg.get("webUrl")
-            if status in ("Failed", "Error"):
-                raise FunctionError(f"Scaling group {sg_name} entered {status} state")
-            if _scaling_group_is_ready(sg):
+        # Poll at least once even if the deployment consumed the whole budget:
+        # a zero-poll timeout would report "not ready" without ever asking, and
+        # the deploy only waits for readiness conditionally, so the function may
+        # well be serving by now.
+        while True:
+            sg = _get_scaling_group(self._client, sg_name)
+            status = sg.status
+            self._web_url = sg.web_url or None
+            if status in ("Failed", "Error", "Unhealthy"):
+                message = f"Scaling group {sg_name} entered {status} state"
+                if sg.status_message:
+                    message = f"{message}: {sg.status_message}"
+                raise FunctionError(message)
+            if _scaling_group_is_ready(
+                sg, require_ready_replicas=self._requires_ready_replicas(sg)
+            ):
                 return self
+            if time.monotonic() >= deadline:
+                break
             time.sleep(poll_interval)
 
         raise FunctionError(
@@ -2668,11 +3399,10 @@ class RemoteFunction:
             if client is not None:
                 self._close_remote_call_client(client)
 
-            channel = self._call_channel
+            stub = self._call_stub
             self._call_stub = None
-            self._call_channel = None
-            if channel is not None:
-                self._close_remote_call_client(channel)
+            if stub is not None:
+                self._close_remote_call_client(stub)
 
         if queue:
             client = self._queue_call_client
@@ -2684,6 +3414,73 @@ class RemoteFunction:
     def _drop_remote_call_client(self, *, queue: bool) -> None:
         self._drop_remote_call_clients(direct=not queue, queue=queue)
 
+    def _call_timeout_error(self, timeout: float | None) -> TimeoutError:
+        """Best-effort enrich a deadline-exceeded error with scaling-group state.
+
+        Never raises itself — a failed lookup just falls back to the plain
+        message, since this runs on the caller's last nerve already.
+        """
+        function_name = self._queue_function_name()
+        if timeout is None:
+            message = f"Remote call to function {function_name!r} timed out"
+        else:
+            message = f"Remote call to function {function_name!r} timed out after {timeout:g}s"
+        sg_name = self._version_info.scaling_group_name if self._version_info else None
+        if sg_name:
+            try:
+                sg = _get_scaling_group(self._client, sg_name)
+            except Exception:
+                sg = None
+            if sg is not None:
+                message = f"{message} (scaling group {sg_name!r} status={sg.status!r}"
+                if sg.status_message:
+                    message = f"{message}: {sg.status_message}"
+                message = f"{message})"
+        return TimeoutError(message)
+
+    def _call_with_deadline(
+        self,
+        call: Callable[[], _RemoteCallResult],
+        deadline: float | None,
+        *,
+        configured_timeout: float | None,
+    ) -> _RemoteCallResult:
+        """Run ``call`` on a worker thread, bounded by ``deadline``.
+
+        ``configured_timeout`` is only for the error message (the original,
+        full timeout the caller configured — ``deadline`` may be much closer
+        now if this is a retry). A hung call (e.g. the native remote-call
+        client has no timeout param of its own, so a crash-looping replica
+        blocks it forever) can't be canceled — this only bounds how long the
+        *caller* waits. The worker thread is a daemon and, on timeout, is
+        simply abandoned; it may keep running until its underlying
+        connection errors out on its own.
+        """
+        if deadline is None:
+            return call()
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise self._call_timeout_error(configured_timeout)
+
+        outcome: list[Any] = []
+        failure: list[BaseException] = []
+
+        def run() -> None:
+            try:
+                outcome.append(call())
+            except BaseException as exc:  # re-raised on the caller's thread below
+                failure.append(exc)
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        worker.join(remaining)
+        if worker.is_alive():
+            raise self._call_timeout_error(configured_timeout)
+        if failure:
+            raise failure[0]
+        return outcome[0]
+
     def _with_remote_call_transport(
         self,
         *,
@@ -2692,16 +3489,20 @@ class RemoteFunction:
         call: Callable[[], _RemoteCallResult],
         retry_stale: bool | Callable[[BaseException], bool] = False,
         stale_result: Callable[[_RemoteCallResult], bool] | None = None,
+        timeout: float | None = None,
     ) -> _RemoteCallResult:
+        deadline = None if timeout is None else time.monotonic() + timeout
         for attempt in range(2):
             try:
-                result = call()
+                result = self._call_with_deadline(
+                    call, deadline, configured_timeout=timeout
+                )
             except Exception as exc:
                 if not _is_stale_remote_call_error(exc):
                     raise
                 self._drop_remote_call_client(queue=queue)
                 if attempt == 0 and _should_retry_stale_remote_call(retry_stale, exc):
-                    logger.info(
+                    logger.debug(
                         "Detected stale remote-call client during %s for %r; "
                         "refreshing and retrying",
                         operation,
@@ -2713,7 +3514,7 @@ class RemoteFunction:
             if stale_result is not None and stale_result(result):
                 self._drop_remote_call_client(queue=queue)
                 if attempt == 0:
-                    logger.info(
+                    logger.debug(
                         "Detected stale remote-call result during %s for %r; "
                         "refreshing and retrying",
                         operation,
@@ -2730,7 +3531,7 @@ class RemoteFunction:
         )
 
     def _ensure_call_stub(self) -> None:
-        """Lazily create the gRPC channel and stub for calling the remote function.
+        """Lazily create the ConnectRPC client for calling the remote function.
 
         Raises
         ------
@@ -2740,9 +3541,8 @@ class RemoteFunction:
         if self._call_stub is not None:
             return
 
-        import grpc
-        from chalk_remote_call._gen.chalk.runtime.v1 import (
-            remote_python_call_pb2_grpc as call_grpc,
+        from chalkcompute._gen.chalk.runtime.v1 import (
+            remote_python_call_connect as call_connect,
         )
 
         if self._web_url is None:
@@ -2753,13 +3553,13 @@ class RemoteFunction:
             insecure_port=self._port,
         )
 
-        if use_tls:
-            self._call_channel = grpc.secure_channel(
-                target, grpc.ssl_channel_credentials()
-            )
-        else:
-            self._call_channel = grpc.insecure_channel(target)
-        self._call_stub = call_grpc.RemoteCallServiceStub(self._call_channel)
+        self._call_stub = call_connect.RemoteCallServiceClientSync(
+            rpc_address_from_target(target, use_tls=use_tls),
+            protocol=ProtocolType.GRPC,
+            interceptors=rpc_interceptors(),
+            http_client=SYNC_HTTP_CLIENT,
+            read_max_bytes=RPC_READ_MAX_BYTES,
+        )
 
     def _remote_call_metadata(self, *, queue: bool) -> list[tuple[str, str]]:
         uses_web_identity = (
@@ -2851,20 +3651,38 @@ class RemoteFunction:
         feather_bytes: bytes,
         function_name: str,
         metadata: list[tuple[str, str]],
+        timeout_ms: int | None,
     ) -> list[bytes]:
-        from chalk_remote_call._gen.chalk.runtime.v1 import (
-            remote_python_call_pb2 as call_pb,
+        from chalkcompute._gen.chalk.runtime.v1 import (
+            remote_python_call_pb as call_pb,
         )
 
         self._ensure_call_stub()
 
         def requests() -> Any:
-            yield call_pb.CallFunctionRequest(  # ty: ignore[unresolved-attribute]
+            yield call_pb.CallFunctionRequest(
                 name=function_name,
                 feather_stream=feather_bytes,
             )
 
-        responses = list(self._call_stub.CallFunction(requests(), metadata=metadata))
+        from chalkcompute._remote_call_client import (
+            _is_retryable_unavailable_in_place,
+            _retry_direct_call,
+        )
+
+        responses = _retry_direct_call(
+            function_name,
+            lambda: list(
+                self._call_stub.call_function(
+                    requests(), headers=dict(metadata), timeout_ms=timeout_ms
+                )
+            ),
+            lambda error: (
+                isinstance(error, ConnectRpcError)
+                and error.code == Code.UNAVAILABLE
+                and _is_retryable_unavailable_in_place(error)
+            ),
+        )
         return [resp.feather_stream for resp in responses]
 
     def _call_direct_chunks_once(
@@ -2882,25 +3700,39 @@ class RemoteFunction:
                 *self._remote_call_metadata(queue=False),
                 *metadata,
             ]
+            timeout_ms = (
+                None if self._call_timeout is None else int(self._call_timeout * 1000)
+            )
             return self._call_direct_chunks_python_grpc(
                 feather_bytes,
                 function_name,
                 fallback_metadata,
+                timeout_ms,
             )
         return client.call_ipc(function_name, feather_bytes, metadata=metadata)
 
     def _call_direct_chunks(self, feather_bytes: bytes) -> list[bytes]:
+        from chalkcompute._remote_call_client import (
+            RemoteCallTransportError,
+            _retry_direct_call,
+        )
+
         function_name = self._queue_function_name()
         metadata = self._per_call_metadata()
-        return self._with_remote_call_transport(
-            queue=False,
-            operation="direct call",
-            retry_stale=_is_retryable_stale_remote_call_error,
-            call=lambda: self._call_direct_chunks_once(
-                feather_bytes,
-                function_name,
-                metadata,
+        return _retry_direct_call(
+            function_name,
+            lambda: self._with_remote_call_transport(
+                queue=False,
+                operation="direct call",
+                retry_stale=_is_retryable_stale_remote_call_error,
+                timeout=self._call_timeout,
+                call=lambda: self._call_direct_chunks_once(
+                    feather_bytes,
+                    function_name,
+                    metadata,
+                ),
             ),
+            lambda error: isinstance(error, RemoteCallTransportError),
         )
 
     def _queue_function_name(self) -> str:
@@ -2973,50 +3805,38 @@ class RemoteFunction:
         bytes
             Response Arrow IPC bytes.
         """
-        import base64
-
         if self._version_info is None:
             raise FunctionError("No function version — call .deploy() first.")
 
-        function_key: dict[str, Any] = {
-            "functionName": self._version_info.function_name,
-        }
-        if self._version_info.version:
-            function_key["version"] = self._version_info.version
-
-        request_body: dict[str, Any] = {
-            "function": function_key,
-            "remoteCallRequest": {
-                "name": self._queue_function_name(),
-                "featherStream": base64.b64encode(feather_bytes).decode("ascii"),
-            },
-        }
-
         trace_metadata = self._per_call_metadata()
-        rpc_kwargs: dict[str, Any] = {"timeout": 300}
-        if trace_metadata:
-            rpc_kwargs["extra_headers"] = dict(trace_metadata)
-        resp = self._client.rpc(
-            _CATALOG_SVC,
-            "CallExternalFunction",
-            request_body,
-            **rpc_kwargs,
+        stub = self._client.stub(
+            catalog_connect.ExternalFunctionCatalogServiceClientSync
         )
-        if resp.status_code != 200:
-            raise FunctionError(f"CallExternalFunction failed: {resp.text}")
-
-        data = resp.json()
-        remote_resp = data.get("remoteCallResponse")
-        if not remote_resp:
+        response = self._client.call(
+            stub.call_external_function,
+            catalog_pb.CallExternalFunctionRequest(
+                function=catalog_pb.ExternalFunctionVersionKey(
+                    function_name=self._version_info.function_name,
+                    version=self._version_info.version or None,
+                ),
+                body=Oneof(
+                    "remote_call_request",
+                    remote_call_pb.CallFunctionRequest(
+                        name=self._queue_function_name(),
+                        feather_stream=feather_bytes,
+                    ),
+                ),
+            ),
+            timeout=300,
+            extra_headers=dict(trace_metadata) if trace_metadata else None,
+        )
+        if response.body is None or response.body.field != "remote_call_response":
             raise FunctionError(
                 "No remoteCallResponse in CallExternalFunction response"
             )
-
-        feather_b64 = remote_resp.get("featherStream")
-        if not feather_b64:
+        if not response.body.value.feather_stream:
             raise FunctionError("No featherStream in CallExternalFunction response")
-
-        return base64.b64decode(feather_b64)
+        return response.body.value.feather_stream
 
     def with_knowledge_cutoff(
         self, knowledge_cutoff: KnowledgeCutoff
@@ -3026,6 +3846,9 @@ class RemoteFunction:
         The returned handle shares this function's deployment and clients but sends
         ``x-chalk-request-timestamp`` on subsequent calls and deferred enqueues.
         """
+        # The clone copies deployment fields by value. Wait first so it cannot
+        # retain the pre-deploy ``None`` values while sharing a completed Future.
+        self._wait_for_background_deploy()
         clone = self.__class__.__new__(self.__class__)
         clone.__dict__ = self.__dict__.copy()
         clone._knowledge_cutoff = _format_knowledge_cutoff(knowledge_cutoff)
@@ -3050,6 +3873,13 @@ class RemoteFunction:
     def remote(self, *args: Any, **kwargs: Any) -> Any:
         """Invoke the deployed remote function over the wire.
 
+        Bounded by ``call_timeout`` (set on the constructor / ``@function``
+        decorator / ``from_name`` — 60s by default): if the scaling group is
+        ``Unhealthy`` (e.g. replicas stuck in ``CrashLoopBackOff``) or
+        otherwise never responds, this raises ``TimeoutError`` instead of
+        blocking forever, including the scaling group's status message when
+        available.
+
         Parameters
         ----------
         *args
@@ -3073,9 +3903,19 @@ class RemoteFunction:
         return await _run_in_worker_thread(self._call_sync, *args, **kwargs)
 
     def _call_sync(self, *args: Any, **kwargs: Any) -> Any:
+        self._wait_for_background_deploy()
         feather_bytes = self._serialize_call_args(*args, **kwargs)
         call_type = "api" if _should_call_via_api() else "direct"
 
+        try:
+            return self._invoke_remote(feather_bytes, call_type)
+        except Exception as exc:
+            remote_error = remote_error_from_exception(exc, self._queue_function_name())
+            if remote_error is None:
+                raise
+            raise remote_error from None
+
+    def _invoke_remote(self, feather_bytes: bytes, call_type: str) -> Any:
         with remote_function_call_span(self._queue_function_name(), call_type):
             if _should_call_via_api():
                 response_bytes = self._call_via_api_rpc(feather_bytes)
@@ -3097,11 +3937,13 @@ class RemoteFunction:
         retried call goes through the exact same queue path (fresh per-call
         metadata included).
         """
+        self._wait_for_background_deploy()
         function_name = self._queue_function_name()
         with remote_function_call_span(function_name, "queue"):
             return self._with_remote_call_transport(
                 queue=True,
                 operation="enqueue",
+                timeout=self._call_timeout,
                 call=lambda: self._ensure_remote_call_client(queue=True).enqueue(
                     function_name,
                     feather_bytes,
@@ -3110,7 +3952,14 @@ class RemoteFunction:
             )
 
     def defer(self, *args: Any, **kwargs: Any) -> FunctionCallHandle:
-        """Enqueue this function call and return a handle immediately."""
+        """Enqueue this function call and return a handle immediately.
+
+        Enqueueing itself is bounded by ``call_timeout`` (see :meth:`remote`);
+        the returned handle's own ``.get()``/``.stream()`` take their own
+        ``timeout`` for how long to wait on the *result*.
+
+        """
+        self._wait_for_background_deploy()
         feather_bytes = self._serialize_call_args(*args, **kwargs)
         call_id = self._enqueue(feather_bytes)
         return FunctionCallHandle(self, call_id, request_bytes=feather_bytes)
@@ -3123,6 +3972,7 @@ class RemoteFunction:
         poll_count: int = 0,
     ) -> Any:
         """Poll a deferred call once."""
+        self._wait_for_background_deploy()
         return self._with_remote_call_transport(
             queue=True,
             operation="poll",
@@ -3130,6 +3980,7 @@ class RemoteFunction:
             stale_result=lambda result: _is_stale_remote_call_error_message(
                 result.error_message
             ),
+            timeout=self._call_timeout,
             call=lambda: self._ensure_remote_call_client(queue=True).poll_next(
                 call_id,
                 cursor,
@@ -3139,6 +3990,7 @@ class RemoteFunction:
 
     def purge(self) -> int:
         """Drop pending queued calls for this function."""
+        self._wait_for_background_deploy()
         return int(
             self._with_remote_call_transport(
                 queue=True,
@@ -3151,15 +4003,108 @@ class RemoteFunction:
 
     # -- Management ------------------------------------------------------------
 
+    def versions(
+        self,
+        *,
+        limit: int | None = None,
+        include_deleted: bool = False,
+    ) -> list[FunctionVersionInfo]:
+        """List immutable versions belonging to this external function."""
+        self._wait_for_background_deploy()
+        if self._function_id is None:
+            raise FunctionError("No function ID — call .deploy() first.")
+        if limit is not None and limit < 1:
+            raise ValueError(f"limit must be positive, got {limit}")
+
+        stub = self._client.stub(
+            catalog_connect.ExternalFunctionCatalogServiceClientSync
+        )
+        versions: list[FunctionVersionInfo] = []
+        cursor: str | None = None
+        current_id = None if self._version_info is None else self._version_info.id
+        while limit is None or len(versions) < limit:
+            page_limit = 100 if limit is None else min(100, limit - len(versions))
+            response = self._client.call(
+                stub.list_external_function_versions,
+                catalog_pb.ListExternalFunctionVersionsRequest(
+                    function_id=self._function_id,
+                    cursor=cursor,
+                    limit=page_limit,
+                    include_deleted=include_deleted,
+                ),
+            )
+            for entry in response.entries:
+                efv = entry.external_function_version
+                if efv is not None:
+                    versions.append(
+                        _parse_function_version(
+                            efv,
+                            is_current=efv.id == current_id,
+                        )
+                    )
+            cursor = response.next_cursor or None
+            if cursor is None:
+                break
+        return versions[:limit] if limit is not None else versions
+
+    @_instrumented("chalkcompute.function.rollback")
+    def rollback(
+        self,
+        version_id: str,
+        *,
+        wait_ready: bool = True,
+        timeout: float = 300.0,
+        poll_interval: float = 0.5,
+    ) -> RemoteFunction:
+        """Select an existing immutable version without creating a new one."""
+        self._wait_for_background_deploy()
+        if self._function_id is None:
+            raise FunctionError("No function ID — call .deploy() first.")
+        if not version_id:
+            raise ValueError("version_id must not be empty")
+
+        stub = self._client.stub(
+            catalog_connect.ExternalFunctionCatalogServiceClientSync
+        )
+        response = self._client.call(
+            stub.update_external_function,
+            catalog_pb.UpdateExternalFunctionRequest(
+                external_function_id=self._function_id,
+                traffic=catalog_pb.ExternalFunctionTraffic(
+                    targets=[
+                        catalog_pb.ExternalFunctionTrafficTarget(
+                            version_target=Oneof(
+                                "external_function_version_id", version_id
+                            ),
+                            percent=100,
+                        )
+                    ]
+                ),
+                update_mask=FieldMask(paths=["traffic"]),
+            ),
+            timeout=60,
+        )
+        _apply_external_function(self, response.external_function)
+        self._drop_remote_call_clients()
+        if wait_ready:
+            self.wait_ready(timeout=timeout, poll_interval=poll_interval)
+        return self
+
     @_instrumented("chalkcompute.function.delete")
     def delete(self) -> None:
-        """Delete this function version."""
-        if self._version_info is not None:
-            self._client.rpc(
-                _CATALOG_SVC,
-                "DeleteExternalFunctionVersion",
-                {"id": self._version_info.id},
+        """Delete this external function and all of its versions."""
+        self._wait_for_background_deploy()
+        if self._function_id is not None:
+            stub = self._client.stub(
+                catalog_connect.ExternalFunctionCatalogServiceClientSync
             )
+            self._client.call(
+                stub.delete_external_function,
+                catalog_pb.DeleteExternalFunctionRequest(
+                    function_id=self._function_id,
+                ),
+            )
+            self._function_id = None
             self._version_info = None
             self._web_url = None
             self._drop_remote_call_clients()
@@ -3177,39 +4122,39 @@ class RemoteFunction:
         FunctionError
             If the function has not been deployed or the RPC fails.
         """
-        if self._version_info is None:
-            raise FunctionError("No function version — call .deploy() first.")
+        self._wait_for_background_deploy()
+        if self._function_id is None:
+            raise FunctionError("No function ID — call .deploy() first.")
         old_web_url = self._web_url
         old_port = self._port
-        resp = self._client.rpc(
-            _CATALOG_SVC,
-            "GetExternalFunctionVersion",
-            {"id": self._version_info.id, "includeScalingGroup": True},
+        response = _get_external_function(
+            self._client,
+            function_id=self._function_id,
+            include_scaling_group=True,
         )
-        if resp.status_code != 200:
-            raise FunctionError(f"GetExternalFunctionVersion failed: {resp.text}")
-        data = resp.json()
-        efv = data["externalFunctionVersion"]
-        self._version_info = FunctionVersionInfo(
-            id=efv["id"],
-            function_name=efv["functionName"],
-            version=efv.get("version", 0),
-            scaling_group_name=efv.get("scalingGroupName", ""),
+        _apply_external_function(
+            self,
+            response.external_function,
+            scaling_group=response.scaling_group,
         )
-        sg = data.get("scalingGroup")
-        if sg:
-            self._web_url = sg.get("webUrl")
-            self._port = sg.get("port", self._port)
         if self._web_url != old_web_url or self._port != old_port:
             self._drop_remote_call_clients(direct=True, queue=False)
+        assert self._version_info is not None
         return self._version_info
 
     @property
     def version_info(self) -> FunctionVersionInfo | None:
+        self._wait_for_background_deploy()
         return self._version_info
 
     @property
+    def function_id(self) -> str | None:
+        self._wait_for_background_deploy()
+        return self._function_id
+
+    @property
     def web_url(self) -> str | None:
+        self._wait_for_background_deploy()
         return self._web_url
 
     def __repr__(self) -> str:
@@ -3232,9 +4177,16 @@ class _NoOpFunction:
     without an explicit ``RemoteFunction.from_name(...)``.
     """
 
-    def __init__(self, func: Callable, *, name: str | None = None) -> None:
+    def __init__(
+        self,
+        func: Callable,
+        *,
+        name: str | None = None,
+        call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
+    ) -> None:
         self._func = func
         self._registered_name = name or getattr(func, "__name__", "anonymous")
+        self._call_timeout = call_timeout
         self._remote: RemoteFunction | None = None
         functools.update_wrapper(self, func)
         _preserve_functionlike_metadata(self, func)
@@ -3245,7 +4197,9 @@ class _NoOpFunction:
     def _bound(self) -> RemoteFunction:
         """Lazily attach to the deployed function by its registered name."""
         if self._remote is None:
-            self._remote = RemoteFunction.from_name(self._registered_name)
+            self._remote = RemoteFunction.from_name(
+                self._registered_name, call_timeout=self._call_timeout
+            )
         return self._remote
 
     def remote(self, *args: Any, **kwargs: Any) -> Any:
@@ -3264,6 +4218,20 @@ class _NoOpFunction:
 
     def wait_ready(self, **_: Any) -> DeployedFunction:
         return self
+
+    def versions(
+        self,
+        *,
+        limit: int | None = None,
+        include_deleted: bool = False,
+    ) -> list[FunctionVersionInfo]:
+        return self._bound().versions(
+            limit=limit,
+            include_deleted=include_deleted,
+        )
+
+    def rollback(self, version_id: str, **kwargs: Any) -> RemoteFunction:
+        return self._bound().rollback(version_id, **kwargs)
 
     def delete(self) -> None:
         pass
@@ -3284,12 +4252,17 @@ def function(
     *,
     image: _Image | None = None,
     cpu: str | None = None,
+    compute_class: ComputeClass | None = None,
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
-    volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+    volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
+    tags: dict[str, str] | None = None,
+    chalk_identity: bool = False,
+    authenticated: bool = False,
+    readiness_probe: _ReadinessProbe | None = None,
     min_replicas: int = 1,
     max_replicas: int = 1,
     shutdown_delay_seconds: int | None = None,
@@ -3298,6 +4271,7 @@ def function(
     target_gpu_utilization_percentage: int | None = None,
     target_queue_depth: int | None = None,
     cron_scaling_trigger: _CronScalingTrigger | None = None,
+    scale_from_zero_request_policy: _ScaleFromZeroRequestPolicy | None = None,
     serialization_format: SerializationFormat = "pyarrow",
     options: dict[str, str] | None = None,
     max_buffer_duration: int | None = None,
@@ -3305,10 +4279,11 @@ def function(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
-    quota: int | QueuePolicy | None = None,
+    queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
     tracing: TracingPolicyConfig | None = None,
+    call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
 ) -> RemoteFunction | _NoOpFunction: ...
 
 
@@ -3317,12 +4292,17 @@ def function(
     *,
     image: _Image | None = None,
     cpu: str | None = None,
+    compute_class: ComputeClass | None = None,
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
-    volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+    volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
+    tags: dict[str, str] | None = None,
+    chalk_identity: bool = False,
+    authenticated: bool = False,
+    readiness_probe: _ReadinessProbe | None = None,
     min_replicas: int = 1,
     max_replicas: int = 1,
     shutdown_delay_seconds: int | None = None,
@@ -3331,6 +4311,7 @@ def function(
     target_gpu_utilization_percentage: int | None = None,
     target_queue_depth: int | None = None,
     cron_scaling_trigger: _CronScalingTrigger | None = None,
+    scale_from_zero_request_policy: _ScaleFromZeroRequestPolicy | None = None,
     serialization_format: SerializationFormat = "pyarrow",
     options: dict[str, str] | None = None,
     max_buffer_duration: int | None = None,
@@ -3338,10 +4319,11 @@ def function(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
-    quota: int | QueuePolicy | None = None,
+    queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
     tracing: TracingPolicyConfig | None = None,
+    call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
 ) -> Callable[..., RemoteFunction | _NoOpFunction]: ...
 
 
@@ -3351,12 +4333,17 @@ def function(
     *,
     image: _Image | None = None,
     cpu: str | None = None,
+    compute_class: ComputeClass | None = None,
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
-    volumes: list[tuple[str, str] | Volume | VolumeMount] | None = None,
+    volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
+    tags: dict[str, str] | None = None,
+    chalk_identity: bool = False,
+    authenticated: bool = False,
+    readiness_probe: _ReadinessProbe | None = None,
     min_replicas: int = 1,
     max_replicas: int = 1,
     shutdown_delay_seconds: int | None = None,
@@ -3365,6 +4352,7 @@ def function(
     target_gpu_utilization_percentage: int | None = None,
     target_queue_depth: int | None = None,
     cron_scaling_trigger: _CronScalingTrigger | None = None,
+    scale_from_zero_request_policy: _ScaleFromZeroRequestPolicy | None = None,
     serialization_format: SerializationFormat = "pyarrow",
     options: dict[str, str] | None = None,
     max_buffer_duration: int | None = None,
@@ -3372,20 +4360,31 @@ def function(
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
-    quota: int | QueuePolicy | None = None,
+    queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
     tracing: TracingPolicyConfig | None = None,
+    call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
 ) -> Callable[..., RemoteFunction | _NoOpFunction] | RemoteFunction | _NoOpFunction:
     """Decorator that deploys a function as a versioned remote function.
 
-    **Locally** (at decoration time):
+    Prefer ``@cc.function`` or ``@cc.function(image=...)`` without ``name=``.
+    The registered name defaults to the Python function's name, including
+    underscores, and can be used with ``RemoteFunction.from_name(...)``.
+
+    **Locally**, decoration validates the function, starts deployment in a
+    background worker, and returns. The worker:
 
     1. Derives Arrow schemas from the function's type hints
     2. Builds a deploy image with a handler shim
     3. Registers the function version via ``ExternalFunctionCatalogService``
     4. If ``CHALK_FUNCTION_LOCAL_SDK_COPY=1``, includes local SDK source in
        the deploy image for unreleased feature iteration.
+
+    Deployments of consecutive, distinctly named functions overlap. Remote
+    calls and lifecycle operations wait for their function's deployment before
+    proceeding. A script containing only decorated definitions also waits for
+    all queued deployments before interpreter shutdown.
 
     **Remotely** (inside the container):
     Lifecycle methods become no-ops. Calling the symbol runs the local Python
@@ -3399,19 +4398,29 @@ def function(
         Container image to deploy in. Defaults to ``Image.debian_slim()``.
     cpu
         CPU resource request (e.g. ``"1"``, ``"500m"``).
+    compute_class
+        Where to run replicas. Omit to use the server default; HOST requires fixed,
+        positive replica counts.
     memory
         Memory resource request (e.g. ``"1Gi"``, ``"512Mi"``).
     gpu
         GPU resource request (e.g. ``"nvidia-l4"``, ``"2:nvidia-a100"``).
         Format is ``"<count>:<type>"`` or just ``"<type>"`` for a single GPU.
     name
-        Custom function name. Defaults to the function's ``__name__``.
+        Optional registered-name override. Omit this in normal usage to use
+        the function's ``__name__``. Set it only when a different registered
+        name is intentional, such as preserving an existing deployment's name
+        after renaming the Python function. Changing or removing an override
+        changes the target function; it does not rename an existing deployment.
     env
-        Environment variables to pass to the function.
+        Environment variables as strings or single-value Secret references.
+        The mapping key sets the injected name, overriding aliases and prefixes.
     secrets
         List of :class:`~chalkcompute.Secret` references to inject.
     volumes
-        List of ``(name, mount_path)`` tuples for persistent storage.
+        List of ``Volume`` handles, ``VolumeMount`` specifications, or
+        ``(name_or_volume, mount_path)`` tuples for persistent storage.
+        Volume handles preserve their selected ref or pinned version.
     min_replicas
         Minimum number of replicas.
     max_replicas
@@ -3448,10 +4457,11 @@ def function(
         Maximum number of items to accumulate before invoking the handler.
         Defaults to 10 when batching is enabled.
     retries
-        Retry policy for handler invocations. Pass an ``int`` for simple
-        max-attempts with default exponential backoff, or a
-        :class:`~chalkcompute.RetryPolicy` for full control. Enforced
-        before each outbound RPC, not in the handler.
+        Retry policy for handler invocations. An ``int`` is the number of
+        retries after the initial execution. Redis Stream function queues
+        currently honor ``max_retries`` with a fixed reclaim delay; the
+        backoff, jitter, key, and exception-filter fields are reserved for
+        other invocation paths.
     rate_limit
         Rate limit policy for outbound calls. Pass an ``int`` for a simple
         "N per second" cap with a per-function key, or a
@@ -3466,14 +4476,14 @@ def function(
         (``max_concurrent``, ``key``). Multiple functions sharing the same
         ``key`` share one gate — independent of ``rate_limit`` (which caps
         rate, not in-flight count).
-    quota
-        Queue quota: cap on the number of pending items that may be enqueued
-        for this function at once. Pass an ``int`` for the cap, or a
-        :class:`~chalkcompute.QueuePolicy` (currently equivalent —
-        ``QueuePolicy(max_items=N)``). Defaults to 500,000 items when unset.
-        Submitting past the cap raises a gRPC ``RESOURCE_EXHAUSTED`` error —
-        clients should back off or call ``purge()`` on the function to drain
-        the queue if items were erroneously added.
+    queue_policy
+        Queue configuration, including the pending-item cap and asynchronous
+        result retention. Pass a :class:`~chalkcompute.QueuePolicy` and set
+        ``result_ttl_seconds`` to retain terminal results for a custom period;
+        the default is one day. Submitting past ``max_items``
+        raises a gRPC ``RESOURCE_EXHAUSTED`` error — clients should back off or
+        call ``purge()`` on the function to drain the queue if items were
+        erroneously added.
     schedule
         Optional crontab or Chalk duration string for invoking a no-input
         function on a schedule (e.g. ``"0 * * * *"`` or ``"1h"``).
@@ -3490,6 +4500,13 @@ def function(
         Server-side remote-function tracing is enabled by default. Use
         :class:`~chalkcompute.TracingPolicy` for sampling. Set ``False`` to
         explicitly turn tracing off.
+    call_timeout
+        Maximum seconds to wait on a single ``.remote()``/``.defer()``/
+        ``.poll()`` call before raising :class:`FunctionError` — including
+        while the scaling group is ``Unhealthy`` (e.g. replicas stuck in
+        ``CrashLoopBackOff``), where the error includes the scaling group's
+        status message. Defaults to 60s. Pass ``None`` to disable the
+        deadline and wait indefinitely (previous behavior).
 
     Examples
     --------
@@ -3503,18 +4520,23 @@ def function(
 
     def decorator(func: Callable) -> RemoteFunction | _NoOpFunction:
         if os.environ.get(_REMOTE_ENV_VAR):
-            return _NoOpFunction(func, name=name)
+            return _NoOpFunction(func, name=name, call_timeout=call_timeout)
 
         f = RemoteFunction(
             func,
             image=image,
             name=name,
             cpu=cpu,
+            compute_class=compute_class,
             memory=memory,
             gpu=gpu,
             env=env,
             secrets=secrets,
             volumes=volumes,
+            tags=tags,
+            chalk_identity=chalk_identity,
+            authenticated=authenticated,
+            readiness_probe=readiness_probe,
             min_replicas=min_replicas,
             max_replicas=max_replicas,
             shutdown_delay_seconds=shutdown_delay_seconds,
@@ -3523,6 +4545,7 @@ def function(
             target_gpu_utilization_percentage=target_gpu_utilization_percentage,
             target_queue_depth=target_queue_depth,
             cron_scaling_trigger=cron_scaling_trigger,
+            scale_from_zero_request_policy=scale_from_zero_request_policy,
             serialization_format=serialization_format,
             options=options,
             max_buffer_duration=max_buffer_duration,
@@ -3530,12 +4553,13 @@ def function(
             retries=retries,
             rate_limit=rate_limit,
             concurrency=concurrency,
-            quota=quota,
+            queue_policy=queue_policy,
             schedule=schedule,
             tracing=tracing,
             models=models,
+            call_timeout=call_timeout,
         )
-        f.deploy()
+        f._start_background_deploy()
         return f
 
     if func is not None:

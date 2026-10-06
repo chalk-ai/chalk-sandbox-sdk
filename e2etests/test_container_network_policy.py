@@ -114,6 +114,7 @@ NON_FORWARDING_POLICY_CASE_NAMES = [
     for case_name in POLICY_CASE_NAMES
     if case_name not in FORWARDING_POLICY_CASE_NAMES
 ]
+MAX_PARALLEL_POLICY_CASES = 5
 
 
 @dataclass(frozen=True)
@@ -239,7 +240,9 @@ def _assert_policy_cases(
 ) -> None:
     failures_by_case: dict[str, list[str]] = {}
 
-    with ThreadPoolExecutor(max_workers=len(case_names)) as executor:
+    with ThreadPoolExecutor(
+        max_workers=min(MAX_PARALLEL_POLICY_CASES, len(case_names))
+    ) as executor:
         futures = {}
         for case_name in case_names:
             futures[
@@ -502,7 +505,16 @@ def _run_http_probe(container: Container, probe: HttpProbe) -> ProbeRecord:
         command += ["--header", probe.header]
     command.append(probe.url)
 
-    result = container.exec(*command, timeout_secs=max_time + 5)
+    retry_deadline = time.monotonic() + connect_timeout
+    while True:
+        result = container.exec(*command, timeout_secs=max_time + 5)
+        if not probe.expected_ok or result.exit_code not in {7, 28}:
+            break
+        retry_delay = min(0.5, retry_deadline - time.monotonic())
+        if retry_delay <= 0:
+            break
+        time.sleep(retry_delay)
+
     body, separator, status = result.stdout_text.rpartition("\n")
     if not separator:
         body = ""

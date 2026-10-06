@@ -20,6 +20,10 @@ siblings, not descendants, and only a session id groups them.  See
 The id travels as a ``large_utf8`` scalar, exactly as ``str`` would, so a
 function may equally declare ``trace: str`` and call :meth:`Trace.from_id`.
 
+:meth:`Trace.transcript` renders the session's LLM turns as text. It is what
+:func:`chalkcompute.scorers.llm_judge` shows the model when a judge names
+``trace`` among its inputs, and what a notebook reads to follow an agent run.
+
 An image built in strip mode does not install ``chalkcompute``, so the handler
 shim publishes no call context there (it degrades rather than failing the call).
 A function deployed that way is never placed in its caller's session, and
@@ -36,8 +40,13 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, TypeVar
 
+from connectrpc.code import Code
+from connectrpc.errors import ConnectError as ConnectRpcError
+from protobuf import Oneof
+
 from chalkcompute._connect import ConnectClient
-from chalkcompute._gen.chalk.arrow.v1 import arrow_pb2
+from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
+from chalkcompute._gen.chalk.server.v1 import trace_connect, trace_pb
 from chalkcompute._tracing import (
     SESSION_ID_ATTRIBUTE as SESSION_ID_ATTRIBUTE,
     SESSION_ID_HEADER as SESSION_ID_HEADER,
@@ -46,9 +55,15 @@ from chalkcompute._tracing import (
 
 _T = TypeVar("_T")
 
-_TRACE_SERVICE = "chalk.server.v1.TraceService"
-
 _MAX_PAGE_SIZE = 1000
+
+# OpenInference names for what an LLM span carries; chalk-router and the
+# OpenInference instrumentations both write them.
+_INPUT_VALUE_ATTRIBUTE = "input.value"
+_OUTPUT_VALUE_ATTRIBUTE = "output.value"
+_MODEL_NAME_ATTRIBUTE = "llm.model_name"
+_TOKEN_TOTAL_ATTRIBUTE = "llm.token_count.total"
+_NO_TURNS_NOTE = "(no LLM turns were recorded in this session)"
 
 
 class TraceError(Exception):
@@ -196,7 +211,9 @@ class Trace:
 
     _client: TraceClient | None = field(default=None, repr=False, compare=False)
 
-    __chalk_arrow_type__ = arrow_pb2.ArrowType(large_utf8=arrow_pb2.EmptyMessage())
+    __chalk_arrow_type__ = arrow_pb.ArrowType(
+        arrow_type_enum=Oneof("large_utf8", arrow_pb.EmptyMessage())
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.id, str):
@@ -403,12 +420,124 @@ class Trace:
             expect_min=expect_min,
         )
 
+    def transcript(
+        self,
+        *,
+        max_chars_per_turn: int = 4000,
+        wait: bool = True,
+        timeout: float = 60.0,
+        poll_interval: float = 2.0,
+        expect_min: int | None = None,
+    ) -> str:
+        """Render this session's LLM turns as text, oldest first.
+
+        A turn is a span carrying the OpenInference ``input.value`` attribute
+        (the prompt); ``output.value`` is its completion, when the span has
+        one. Each turn is headed by the model and its token total. Prompts keep
+        their *last* ``max_chars_per_turn`` characters and completions their
+        *first*, so truncation preserves the newest context the model saw and
+        the start of what it said. A session with no turns renders as a
+        one-line note rather than an empty string.
+
+        This is what :func:`chalkcompute.scorers.llm_judge` shows the model when
+        a judge names ``trace`` among its inputs.
+
+        Parameters
+        ----------
+        max_chars_per_turn
+            Characters kept of each prompt and of each completion.
+        wait, timeout, poll_interval, expect_min
+            See :ref:`the settling rules <trace-waiting>` on :class:`Trace`.
+            The wait is scoped to LLM turns: it holds until at least one is
+            there and their number stays steady across a poll, so a turn that
+            is still being ingested is never mistaken for none, and the
+            session's other spans -- its root span lands before any turn --
+            cannot end the wait early. A session that shows no turn within
+            ``timeout`` renders as the no-turns note rather than raising, once
+            an unwaited read confirms it, so a judge still grades the row; pass
+            ``expect_min=0`` to accept an empty transcript without waiting.
+        """
+        client = self._require_client()
+
+        def fetch() -> list[Span]:
+            return client.list_spans(
+                self.id, attribute_filters={_INPUT_VALUE_ATTRIBUTE: None}
+            )
+
+        try:
+            spans = _settle(
+                fetch,
+                spans_seen=_count_turns,
+                subject=f"session {self.id!r}",
+                wait=wait,
+                timeout=timeout,
+                poll_interval=poll_interval,
+                expect_min=expect_min,
+            )
+        except TimeoutError:
+            # A session that has shown no turn after the wait has none to
+            # render. One whose turns are still arriving must not be read
+            # short: the note would pass for a real result.
+            if _count_turns(fetch()):
+                raise
+            spans = []
+        return _format_transcript(spans, max_chars_per_turn=max_chars_per_turn)
+
     def _require_client(self) -> TraceClient:
         if self._client is None:
             object.__setattr__(self, "_client", TraceClient())
         client = self._client
         assert client is not None
         return client
+
+
+def _format_transcript(spans: Sequence[Span], *, max_chars_per_turn: int) -> str:
+    """Render the LLM turns among ``spans``; see :meth:`Trace.transcript`."""
+    if max_chars_per_turn <= 0:
+        raise ValueError("max_chars_per_turn must be positive")
+    turns = sorted(
+        (span for span in spans if _INPUT_VALUE_ATTRIBUTE in span.attributes),
+        # Spans without a start time sort last, in the order they arrived.
+        key=lambda span: (
+            span.start_time is None,
+            span.start_time.timestamp() if span.start_time is not None else 0.0,
+        ),
+    )
+    if not turns:
+        return _NO_TURNS_NOTE
+    parts: list[str] = []
+    for index, span in enumerate(turns, start=1):
+        model = span.attributes.get(_MODEL_NAME_ATTRIBUTE) or "unknown model"
+        tokens = span.attribute_int(_TOKEN_TOTAL_ATTRIBUTE)
+        heading = f"### turn {index} ({model}"
+        heading += f", {tokens:,} tokens)" if tokens is not None else ")"
+        lines = [
+            heading,
+            "[prompt]",
+            _keep_tail(span.attributes[_INPUT_VALUE_ATTRIBUTE], max_chars_per_turn),
+        ]
+        completion = span.attributes.get(_OUTPUT_VALUE_ATTRIBUTE)
+        if completion is not None:
+            lines += ["[completion]", _keep_head(completion, max_chars_per_turn)]
+        parts.append("\n".join(lines))
+    return "\n\n".join(parts)
+
+
+def _count_turns(spans: Sequence[Span]) -> int:
+    """How many of ``spans`` a transcript renders: those carrying a prompt."""
+    return sum(1 for span in spans if _INPUT_VALUE_ATTRIBUTE in span.attributes)
+
+
+def _keep_head(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}\n… [{len(text) - limit:,} more characters]"
+
+
+def _keep_tail(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return f"… [{len(text) - limit:,} earlier characters]\n{text[-limit:]}"
 
 
 class TraceClient:
@@ -444,38 +573,35 @@ class TraceClient:
             raise ValueError("limit must be >= 0 or None")
 
         filters = [
-            {"key": key} if value is None else {"key": key, "value": value}
+            trace_pb.AttributeFilter(key=key, value=value)
             for key, value in (attribute_filters or {}).items()
         ]
         spans: list[Span] = []
         remaining = limit
         page_token: str | None = None
+        stub = self._connect.stub(trace_connect.TraceServiceClientSync)
         while remaining is None or remaining > 0:
-            request: dict[str, Any] = {
-                "query": _session_query(session_id),
-                "limit": (
-                    _MAX_PAGE_SIZE
-                    if remaining is None
-                    else min(remaining, _MAX_PAGE_SIZE)
+            response = self._call(
+                stub.list_span,
+                trace_pb.ListSpanRequest(
+                    query=_session_query(session_id),
+                    limit=(
+                        _MAX_PAGE_SIZE
+                        if remaining is None
+                        else min(remaining, _MAX_PAGE_SIZE)
+                    ),
+                    operation_name=operation_name,
+                    attribute_filters=filters,
+                    page_token=page_token,
                 ),
-            }
-            if operation_name is not None:
-                request["operationName"] = operation_name
-            if filters:
-                request["attributeFilters"] = filters
-            if page_token is not None:
-                request["pageToken"] = page_token
-            response = self._rpc("ListSpan", request)
-            raw_spans = response.get("spans", [])
-            if not isinstance(raw_spans, list):
-                raise TraceError("ListSpan returned invalid spans")
-            for raw in raw_spans:
-                spans.append(_span_from_dict(raw))
+            )
+            for raw in response.spans:
+                spans.append(_span_from_proto(raw))
                 if remaining is not None:
                     remaining -= 1
                     if remaining <= 0:
                         return spans
-            page_token = _optional_string(response.get("nextPageToken"))
+            page_token = response.next_page_token or None
             if page_token is None:
                 return spans
         return spans
@@ -484,13 +610,13 @@ class TraceClient:
     def get_session(self, session_id: str) -> SessionSummary:
         """Fetch one session's aggregate summary."""
         session_id = _require_id(session_id, "session_id")
-        response = self._rpc("SearchSessions", {"sessionIds": [session_id], "limit": 1})
-        raw_sessions = response.get("sessions", [])
-        if not isinstance(raw_sessions, list):
-            raise TraceError("SearchSessions returned invalid sessions")
-        for raw in raw_sessions:
-            if isinstance(raw, Mapping):
-                return _session_from_dict(raw)
+        stub = self._connect.stub(trace_connect.TraceServiceClientSync)
+        response = self._call(
+            stub.search_sessions,
+            trace_pb.SearchSessionsRequest(session_ids=[session_id], limit=1),
+        )
+        for raw in response.sessions:
+            return _session_from_proto(raw)
         raise TraceNotFoundError(f"Session not found: {session_id}")
 
     @_instrumented("chalkcompute.trace.list_traces")
@@ -503,55 +629,51 @@ class TraceClient:
             raise ValueError("limit must be >= 0 or None")
         remaining = limit
         page_token: str | None = None
+        stub = self._connect.stub(trace_connect.TraceServiceClientSync)
         while remaining is None or remaining > 0:
-            request: dict[str, Any] = {
-                "sessionIds": [session_id],
-                "limit": (
-                    _MAX_PAGE_SIZE
-                    if remaining is None
-                    else min(remaining, _MAX_PAGE_SIZE)
+            response = self._call(
+                stub.search_trace_summaries,
+                trace_pb.SearchTraceSummariesRequest(
+                    session_ids=[session_id],
+                    limit=(
+                        _MAX_PAGE_SIZE
+                        if remaining is None
+                        else min(remaining, _MAX_PAGE_SIZE)
+                    ),
+                    page_token=page_token,
                 ),
-            }
-            if page_token is not None:
-                request["pageToken"] = page_token
-            response = self._rpc("SearchTraceSummaries", request)
-            raw_summaries = response.get("traceSummaries", [])
-            if not isinstance(raw_summaries, list):
-                raise TraceError("SearchTraceSummaries returned invalid summaries")
-            for raw in raw_summaries:
-                yield _trace_summary_from_dict(raw)
+            )
+            for raw in response.trace_summaries:
+                yield _trace_summary_from_proto(raw)
                 if remaining is not None:
                     remaining -= 1
                     if remaining <= 0:
                         return
-            page_token = _optional_string(response.get("nextPageToken"))
+            page_token = response.next_page_token or None
             if page_token is None:
                 return
 
-    def _rpc(self, method: str, request: dict[str, Any]) -> dict[str, Any]:
-        response = self._connect.rpc(_TRACE_SERVICE, method, request)
-        if response.status_code != 200:
-            message = _response_error_message(response)
-            detail = f": {message}" if message else ""
-            if response.status_code in (401, 403):
+    def _call(self, method: Any, request: Any) -> Any:
+        method_name = getattr(method, "__name__", "trace RPC")
+        try:
+            return self._connect.call(method, request)
+        except ConnectRpcError as exc:
+            status_code = _http_status_for_code(exc.code)
+            if exc.code in (Code.UNAUTHENTICATED, Code.PERMISSION_DENIED):
                 raise TraceError(
-                    f"{method} was denied (HTTP {response.status_code}){detail}. "
+                    f"{method_name} was denied: {exc}. "
                     f"Reading spans requires the monitoring-read permission; a "
                     f"deployed function's token must be granted it.",
-                    status_code=response.status_code,
-                )
-            if response.status_code == 404:
+                    status_code=status_code,
+                ) from exc
+            if exc.code == Code.NOT_FOUND:
                 raise TraceNotFoundError(
-                    f"{method} found nothing{detail}", status_code=response.status_code
-                )
+                    f"{method_name} found nothing: {exc}", status_code=status_code
+                ) from exc
             raise TraceError(
-                f"{method} failed with HTTP {response.status_code}{detail}",
-                status_code=response.status_code,
-            )
-        payload = response.json()
-        if not isinstance(payload, dict):
-            raise TraceError(f"{method} returned an invalid response")
-        return payload
+                f"{method_name} failed: {exc}",
+                status_code=status_code,
+            ) from exc
 
 
 def _settle(
@@ -620,130 +742,64 @@ def _session_query(session_id: str) -> str:
     return f"session:{session_id}"
 
 
-def _span_from_dict(raw: object) -> Span:
-    if not isinstance(raw, Mapping):
-        raise TraceError("ListSpan returned an invalid span")
-    status = raw.get("status")
-    status = status if isinstance(status, Mapping) else {}
+def _span_from_proto(raw: trace_pb.ChalkSpan) -> Span:
+    status = raw.status
     return Span(
-        span_id=_required_string(raw, "spanId"),
-        trace_id=_required_string(raw, "traceId"),
-        operation_name=_optional_string(raw.get("operationName")) or "",
-        parent_span_id=_optional_string(raw.get("parentSpanId")),
-        start_time=_parse_timestamp(raw.get("startTime")),
-        end_time=_parse_timestamp(raw.get("endTime")),
-        duration=_parse_duration(raw.get("duration")),
-        status_code=_parse_status_code(status.get("code")),
-        status_description=_optional_string(status.get("description")),
-        kind=_parse_span_kind(raw.get("kind")),
-        attributes=_string_mapping(raw.get("attributes")),
-        resource_attributes=_string_mapping(raw.get("resourceAttributes")),
-    )
-
-
-def _session_from_dict(raw: Mapping[str, Any]) -> SessionSummary:
-    return SessionSummary(
-        session_id=_required_string(raw, "sessionId"),
-        start_time=_parse_timestamp(raw.get("startTime")),
-        end_time=_parse_timestamp(raw.get("endTime")),
-        duration=_parse_duration(raw.get("duration")),
-        trace_count=_parse_int(raw.get("traceCount")),
-        span_count=_parse_int(raw.get("spanCount")),
-        first_root_span_name=_optional_string(raw.get("firstRootSpanName")),
-    )
-
-
-def _trace_summary_from_dict(raw: object) -> TraceSummary:
-    if not isinstance(raw, Mapping):
-        raise TraceError("SearchTraceSummaries returned an invalid summary")
-    names = raw.get("rootSpanNames")
-    return TraceSummary(
-        trace_id=_required_string(raw, "traceId"),
-        start_time=_parse_timestamp(raw.get("startTime")),
-        end_time=_parse_timestamp(raw.get("endTime")),
-        duration=_parse_duration(raw.get("duration")),
-        span_count=_parse_int(raw.get("spanCount")),
-        root_span_names=tuple(
-            value
-            for value in (names if isinstance(names, Sequence) else ())
-            if isinstance(value, str)
+        span_id=raw.span_id,
+        trace_id=raw.trace_id,
+        operation_name=raw.operation_name,
+        parent_span_id=raw.parent_span_id or None,
+        start_time=None if raw.start_time is None else raw.start_time.to_datetime(),
+        end_time=None if raw.end_time is None else raw.end_time.to_datetime(),
+        duration=None if raw.duration is None else raw.duration.to_timedelta(),
+        status_code=(
+            SpanStatusCode.UNSPECIFIED
+            if status is None
+            else _parse_status_code(status.code)
         ),
-        session_id=_optional_string(raw.get("sessionId")),
+        status_description=None if status is None else status.description or None,
+        kind=_parse_span_kind(raw.kind),
+        attributes=dict(raw.attributes),
+        resource_attributes=dict(raw.resource_attributes),
     )
 
 
-def _parse_span_kind(value: object) -> SpanKind:
-    if isinstance(value, int):
-        return {
-            1: SpanKind.SERVER,
-            2: SpanKind.CLIENT,
-            3: SpanKind.PRODUCER,
-            4: SpanKind.CONSUMER,
-            5: SpanKind.INTERNAL,
-        }.get(value, SpanKind.UNSPECIFIED)
-    if isinstance(value, str):
-        try:
-            return SpanKind(value.removeprefix("CHALK_SPAN_KIND_").lower())
-        except ValueError:
-            pass
-    return SpanKind.UNSPECIFIED
+def _session_from_proto(raw: trace_pb.ChalkSessionSummary) -> SessionSummary:
+    return SessionSummary(
+        session_id=raw.session_id,
+        start_time=None if raw.start_time is None else raw.start_time.to_datetime(),
+        end_time=None if raw.end_time is None else raw.end_time.to_datetime(),
+        duration=None if raw.duration is None else raw.duration.to_timedelta(),
+        trace_count=raw.trace_count,
+        span_count=raw.span_count,
+        first_root_span_name=raw.first_root_span_name or None,
+    )
 
 
-def _parse_status_code(value: object) -> SpanStatusCode:
-    if isinstance(value, int):
-        return {1: SpanStatusCode.OK, 2: SpanStatusCode.ERROR}.get(
-            value, SpanStatusCode.UNSPECIFIED
-        )
-    if isinstance(value, str):
-        try:
-            return SpanStatusCode(value.removeprefix("CHALK_STATUS_CODE_").lower())
-        except ValueError:
-            pass
-    return SpanStatusCode.UNSPECIFIED
+def _trace_summary_from_proto(raw: trace_pb.ChalkTraceSummary) -> TraceSummary:
+    return TraceSummary(
+        trace_id=raw.trace_id,
+        start_time=None if raw.start_time is None else raw.start_time.to_datetime(),
+        end_time=None if raw.end_time is None else raw.end_time.to_datetime(),
+        duration=None if raw.duration is None else raw.duration.to_timedelta(),
+        span_count=raw.span_count,
+        root_span_names=tuple(raw.root_span_names),
+        session_id=raw.session_id or None,
+    )
 
 
-def _parse_timestamp(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value:
-        return None
+def _parse_span_kind(value: trace_pb.ChalkSpanKind) -> SpanKind:
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise TraceError(f"invalid timestamp in trace response: {value!r}") from exc
+        return SpanKind(value.name.lower())
+    except ValueError:
+        return SpanKind.UNSPECIFIED
 
 
-def _parse_duration(value: object) -> timedelta | None:
-    """Parse a protobuf JSON duration — a decimal number of seconds with an ``s``."""
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return timedelta(seconds=float(value))
-    if not isinstance(value, str) or not value:
-        return None
+def _parse_status_code(value: trace_pb.ChalkStatusCode) -> SpanStatusCode:
     try:
-        return timedelta(seconds=float(value.removesuffix("s")))
-    except ValueError as exc:
-        raise TraceError(f"invalid duration in trace response: {value!r}") from exc
-
-
-def _parse_int(value: object) -> int:
-    if isinstance(value, bool) or value is None:
-        return 0
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError as exc:
-            raise TraceError(f"invalid count in trace response: {value!r}") from exc
-    if isinstance(value, float):
-        return int(value)
-    raise TraceError(f"invalid count in trace response: {value!r}")
-
-
-def _string_mapping(value: object) -> Mapping[str, str]:
-    if value is None:
-        return {}
-    if not isinstance(value, Mapping):
-        raise TraceError("trace response contained invalid attributes")
-    return {str(key): str(item) for key, item in value.items()}
+        return SpanStatusCode(value.name.lower())
+    except ValueError:
+        return SpanStatusCode.UNSPECIFIED
 
 
 def _require_id(value: str, name: str) -> str:
@@ -755,26 +811,13 @@ def _require_id(value: str, name: str) -> str:
     return stripped
 
 
-def _required_string(value: Mapping[str, Any], key: str) -> str:
-    result = _optional_string(value.get(key))
-    if result is None:
-        raise TraceError(f"trace response is missing {key}")
-    return result
-
-
-def _optional_string(value: object) -> str | None:
-    if not isinstance(value, str) or not value:
-        return None
-    return value
-
-
-def _response_error_message(response: Any) -> str:
-    try:
-        payload = response.json()
-    except Exception:
-        return str(getattr(response, "text", "")).strip()
-    if isinstance(payload, Mapping):
-        message = payload.get("message")
-        if isinstance(message, str) and message:
-            return message
-    return str(getattr(response, "text", "")).strip()
+def _http_status_for_code(code: Code) -> int | None:
+    return {
+        Code.INVALID_ARGUMENT: 400,
+        Code.UNAUTHENTICATED: 401,
+        Code.PERMISSION_DENIED: 403,
+        Code.NOT_FOUND: 404,
+        Code.RESOURCE_EXHAUSTED: 429,
+        Code.INTERNAL: 500,
+        Code.UNAVAILABLE: 503,
+    }.get(code)

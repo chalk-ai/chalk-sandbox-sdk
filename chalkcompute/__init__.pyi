@@ -1,3 +1,10 @@
+from chalkcompute._logging import configure_logging as configure_logging
+from chalkcompute._sql import SQLClient as SQLClient
+from chalkcompute._sql import SQLResult as SQLResult
+from chalkcompute._sql import SQLJob as SQLJob
+from chalkcompute._sql import SQLJobStatus as SQLJobStatus
+from chalkcompute._sql import SQLError as SQLError
+from chalkcompute import scorers as scorers
 from chalkcompute._artifact import Artifact as Artifact
 from chalkcompute._artifact import ArtifactClient as ArtifactClient
 from chalkcompute._artifact import ArtifactError as ArtifactError
@@ -21,6 +28,8 @@ from chalkcompute._container import ContainerInfo as ContainerInfo
 from chalkcompute._container import ContainerSession as ContainerSession
 from chalkcompute._container import ExecResult as ContainerExecResult
 from chalkcompute._container import ImageBuildError as ImageBuildError
+from chalkcompute._dataset import DatasetClient as DatasetClient
+from chalkcompute._dataset import DatasetError as DatasetError
 from chalkcompute._containerspec import ComputeClass as ComputeClass
 from chalkcompute._containerspec import (
     ContainerSecurityPolicy as ContainerSecurityPolicy,
@@ -28,6 +37,8 @@ from chalkcompute._containerspec import (
 from chalkcompute._containerspec import KernelPolicy as KernelPolicy
 from chalkcompute._containerspec import NetworkPolicy as NetworkPolicy
 from chalkcompute._containerspec import RestartPolicy as RestartPolicy
+from chalkcompute._containerspec import SSHDest as SSHDest
+from chalkcompute._containerspec import SshDest as SshDest
 from chalkcompute._evaluation import DatasetNameLike as DatasetNameLike
 from chalkcompute._evaluation import DatasetRevisionLike as DatasetRevisionLike
 from chalkcompute._evaluation import DatasetRevisionRef as DatasetRevisionRef
@@ -39,17 +50,26 @@ from chalkcompute._evaluation import EvaluationRun as EvaluationRun
 from chalkcompute._evaluation import (
     EvaluationRunFailedError as EvaluationRunFailedError,
 )
+from chalkcompute._evaluation import (
+    EvaluationRunExecutionMode as EvaluationRunExecutionMode,
+)
 from chalkcompute._evaluation import EvaluationRunStatus as EvaluationRunStatus
 from chalkcompute._evaluation import EvaluationScorer as EvaluationScorer
 from chalkcompute._evaluation import EvaluationScorerResult as EvaluationScorerResult
+from chalkcompute._evaluation import EvaluationSuite as EvaluationSuite
+from chalkcompute._evaluation import SqlExpression as SqlExpression
 from chalkcompute._function import DeployedFunction as DeployedFunction
 from chalkcompute._function import FunctionBuildError as FunctionBuildError
 from chalkcompute._function import FunctionCallHandle as FunctionCallHandle
 from chalkcompute._function import FunctionError as FunctionError
+from chalkcompute._function import FunctionSignatureError as FunctionSignatureError
 from chalkcompute._function import FunctionVersionInfo as FunctionVersionInfo
 from chalkcompute._function import RemoteFunction as RemoteFunction
 from chalkcompute._function import function as function
 from chalkcompute._function import gather as gather
+from chalkcompute._function_error import RemoteExecutionError as RemoteExecutionError
+from chalkcompute._http import HTTPHeaders as HTTPHeaders
+from chalkcompute._http import HTTPResponse as HTTPResponse
 from chalkcompute._image import Image as Image
 from chalkcompute._image import LazyLocalFile as LazyLocalFile
 from chalkcompute._model import ModelError as ModelError
@@ -80,6 +100,8 @@ from chalkcompute._sandbox import SandboxError as SandboxError
 from chalkcompute._sandbox import SandboxInfo as SandboxInfo
 from chalkcompute._sandbox import SandboxNotFoundError as SandboxNotFoundError
 from chalkcompute._sandbox import SandboxTerminatedError as SandboxTerminatedError
+from chalkcompute._sandbox_fs import FilesystemError as FilesystemError
+from chalkcompute._sandbox_fs import SandboxFileSystemError as SandboxFileSystemError
 from chalkcompute._scaling_group import CronScalingTrigger as CronScalingTrigger
 from chalkcompute._scaling_group import CronScalingWindow as CronScalingWindow
 from chalkcompute._scaling_group import ReadinessProbe as ReadinessProbe
@@ -87,6 +109,13 @@ from chalkcompute._scaling_group import ScalingGroup as ScalingGroup
 from chalkcompute._scaling_group import ScalingGroupBuildError as ScalingGroupBuildError
 from chalkcompute._scaling_group import ScalingGroupError as ScalingGroupError
 from chalkcompute._scaling_group import ScalingGroupInfo as ScalingGroupInfo
+from chalkcompute._scaling_group import StartupProbe as StartupProbe
+from chalkcompute._scaling_group import (
+    ScalingGroupRevisionInfo as ScalingGroupRevisionInfo,
+)
+from chalkcompute._scaling_group import (
+    ScaleFromZeroRequestPolicy as ScaleFromZeroRequestPolicy,
+)
 from chalkcompute._secret import Secret as Secret
 from chalkcompute._secret import SecretScope as SecretScope
 from chalkcompute._secret import resolve_lazy_secrets as resolve_lazy_secrets
@@ -117,12 +146,35 @@ from chalkcompute._volume import (
     resolve_referenced_volume_type as resolve_referenced_volume_type,
 )
 
+from chalkcompute._training import TrainingError as TrainingError
+from chalkcompute._training import TrainingFunction as TrainingFunction
+from chalkcompute._training import TrainingRunHandle as TrainingRunHandle
+from chalkcompute._training import training as training
+
 # Back-compat aliases: all volumes are versioned, so the qualifier is gone from
 # the canonical names. Keep the old spellings importable.
 from chalkcompute._volume import Volume as VersionedVolume
 from chalkcompute._volume import VolumeClient as VersionedVolumeClient
 
+from chalkcompute._sandbox_git import SandboxGit as SandboxGit
+from chalkcompute._sandbox_git import GitFileStatus as GitFileStatus
+from chalkcompute._sandbox_git import GitStatus as GitStatus
+from chalkcompute._sandbox_git import GitRemote as GitRemote
+from chalkcompute._git import GitError as GitError
+
 __all__ = [
+    "configure_logging",
+    "SandboxGit",
+    "GitFileStatus",
+    "GitStatus",
+    "GitRemote",
+    "GitError",
+    "SQLClient",
+    "SQLResult",
+    "SQLJob",
+    "SQLJobStatus",
+    "SQLError",
+    "scorers",
     "Artifact",
     "ArtifactClient",
     "ArtifactError",
@@ -137,6 +189,8 @@ __all__ = [
     "ComputeClass",
     "KernelPolicy",
     "NetworkPolicy",
+    "SSHDest",
+    "SshDest",
     "RemoteClass",
     "ClassError",
     "ClassBuildError",
@@ -147,7 +201,9 @@ __all__ = [
     "RemoteFunction",
     "DeployedFunction",
     "FunctionError",
+    "RemoteExecutionError",
     "FunctionBuildError",
+    "FunctionSignatureError",
     "FunctionCallHandle",
     "FunctionVersionInfo",
     "gather",
@@ -159,6 +215,8 @@ __all__ = [
     "QueuePolicy",
     "TracingPolicy",
     "function",
+    "DatasetClient",
+    "DatasetError",
     "DatasetNameLike",
     "DatasetRevisionLike",
     "DatasetRevisionRef",
@@ -168,9 +226,12 @@ __all__ = [
     "EvaluationNotFoundError",
     "EvaluationRun",
     "EvaluationRunFailedError",
+    "EvaluationRunExecutionMode",
     "EvaluationRunStatus",
     "EvaluationScorer",
     "EvaluationScorerResult",
+    "EvaluationSuite",
+    "SqlExpression",
     "RemoteCallClient",
     "RemoteCallClientUnavailable",
     "bind_model",
@@ -180,6 +241,8 @@ __all__ = [
     "ConnectClient",
     "build_image",
     "build_image_with_volumes",
+    "HTTPHeaders",
+    "HTTPResponse",
     "span",
     "trace_headers",
     "traced",
@@ -203,11 +266,16 @@ __all__ = [
     "SandboxInfo",
     "SandboxNotFoundError",
     "SandboxTerminatedError",
+    "FilesystemError",
+    "SandboxFileSystemError",
     "ScalingGroup",
     "ScalingGroupBuildError",
     "ScalingGroupError",
     "ScalingGroupInfo",
+    "ScalingGroupRevisionInfo",
+    "ScaleFromZeroRequestPolicy",
     "ReadinessProbe",
+    "StartupProbe",
     "CronScalingTrigger",
     "CronScalingWindow",
     "FileInfo",
@@ -223,6 +291,11 @@ __all__ = [
     "VersionInfo",
     "resolve_referenced_volume_type",
     "VersionedVolume",
+    "VersionedVolumeClient",
+    "TrainingFunction",
+    "TrainingRunHandle",
+    "TrainingError",
+    "training",
     "SessionSummary",
     "Span",
     "SpanKind",
@@ -232,5 +305,4 @@ __all__ = [
     "TraceError",
     "TraceNotFoundError",
     "TraceSummary",
-    "VersionedVolumeClient",
 ]

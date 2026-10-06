@@ -6,14 +6,14 @@ import pytest
 
 from chalkcompute import Container, ComputeClass, NetworkPolicy
 from chalkcompute._container import ContainerSecurityPolicy, KernelPolicy
-from chalkcompute._gen.chalk.container.v1 import service_pb2 as pb
+from chalkcompute._gen.chalk.container.v1 import service_pb as pb
 from chalkcompute._volume import VolumeMount
 
 from ._fakes import FakeConnectClient
 
 
 def _run_container_calls(client: FakeConnectClient) -> list[Any]:
-    return [c for c in client.calls if c.method == "RunContainer"]
+    return [c for c in client.calls if c.method == "run_container"]
 
 
 def test_network_policy_serializes_allowed_routes() -> None:
@@ -106,7 +106,7 @@ def test_host_container_run_sends_network_policy() -> None:
 
     assert len(client.calls) == 1
     call = client.calls[0]
-    assert call.method == "RunContainer"
+    assert call.method == "run_container"
     assert call.timeout == 60
     assert isinstance(call.request, pb.RunContainerRequest)
     spec = call.request.container.spec
@@ -122,15 +122,15 @@ def test_host_container_run_sends_network_policy() -> None:
     assert set(policy.allowed_hosts) == {"api.example.com"}
     (rule,) = policy.allowed_hosts["api.example.com"].rules
     assert rule.forward_url == "https://proxy.example.com/api"
-    assert rule.match.path.starts_with == "/v1/"
+    assert rule.match.path.matcher.value == "/v1/"
     assert list(rule.match.method) == ["GET"]
-    assert rule.match.headers[0].key.exact == "x-api-key"
+    assert rule.match.headers[0].key.matcher.value == "x-api-key"
     (transform,) = rule.transform
     assert dict(transform.headers) == {"x-added": "yes"}
     assert dict(transform.headers_secrets) == {"authorization": "API_TOKEN"}
 
-    assert spec.security_policy.kernel_policy == pb.KERNEL_POLICY_RESTRICTED
-    assert spec.compute_class == pb.COMPUTE_CLASS_HOST
+    assert spec.security_policy.kernel_policy == pb.KernelPolicy.RESTRICTED
+    assert spec.compute_class == pb.ComputeClass.HOST
 
 
 def test_host_container_network_policy_accepts_allowed_hosts_list() -> None:
@@ -156,7 +156,7 @@ def test_host_container_network_policy_accepts_allowed_hosts_list() -> None:
     assert set(policy.allowed_hosts) == {"api.openai.com", "*.anthropic.com"}
     assert len(policy.allowed_hosts["api.openai.com"].rules) == 0
     assert len(policy.allowed_hosts["*.anthropic.com"].rules) == 0
-    assert spec.compute_class == pb.COMPUTE_CLASS_HOST
+    assert spec.compute_class == pb.ComputeClass.HOST
 
 
 def test_container_run_sends_tags() -> None:
@@ -212,8 +212,8 @@ def test_stop_then_run_again_is_allowed() -> None:
     container.run()  # must not raise
 
     assert len(_run_container_calls(client)) == 2
-    assert [c.method for c in client.calls if c.method == "StopContainer"] == [
-        "StopContainer"
+    assert [c.method for c in client.calls if c.method == "stop_container"] == [
+        "stop_container"
     ]
 
 
@@ -272,6 +272,61 @@ def test_mount_volume_sent_in_run_container_rpc() -> None:
     )
 
 
+@pytest.mark.parametrize("initial_status", ["Running", "Pending"])
+def test_container_uploads_lazy_local_files_without_exec_probe(
+    tmp_path, initial_status
+) -> None:
+    from unittest.mock import MagicMock, patch
+
+    from chalkcompute import Image
+    from chalkcompute._volume import VolumeClient
+
+    from ._fakes import default_container_handler
+
+    source = tmp_path / "data.txt"
+    source.write_text("uploaded content")
+    image = Image.debian_slim().add_local_file(str(source), "/assets/data.txt")
+
+    def handle(method, request):
+        response = default_container_handler(method, request)
+        if method == "run_container":
+            response.container.status = initial_status
+        return response
+
+    client = FakeConnectClient(handler=handle)
+    container = Container(image=image)
+    container._client = client
+    volume_client = MagicMock(spec=VolumeClient)
+    volume_client.upload_lazy_files.return_value = [
+        VolumeMount(name="container-files-abc", mount_path="/assets")
+    ]
+
+    with (
+        patch("chalkcompute._connect.build_image", return_value="img:built"),
+        patch.object(VolumeClient, "from_connect", return_value=volume_client),
+        patch.object(
+            Container,
+            "exec",
+            side_effect=AssertionError("Startup must not execute commands"),
+        ) as execute,
+    ):
+        assert container.run() is container
+
+    execute.assert_not_called()
+    volume_client.upload_lazy_files.assert_called_once_with(
+        image, volume_prefix="container-files"
+    )
+    expected_calls = ["run_container"]
+    if initial_status == "Pending":
+        expected_calls.append("get_container")
+    assert [call.method for call in client.calls] == expected_calls
+    spec = client.calls[0].request.container.spec
+    assert spec.image == "img:built"
+    assert [(mount.name, mount.mount_path) for mount in spec.volumes] == [
+        ("container-files-abc", "/assets")
+    ]
+
+
 def test_container_run_sends_compute_class() -> None:
     client = FakeConnectClient()
     container = Container(
@@ -284,7 +339,7 @@ def test_container_run_sends_compute_class() -> None:
     container.run()
 
     spec = client.calls[0].request.container.spec
-    assert spec.compute_class == pb.COMPUTE_CLASS_HOST
+    assert spec.compute_class == pb.ComputeClass.HOST
 
 
 def test_container_run_omits_compute_class_when_unset() -> None:
@@ -295,4 +350,26 @@ def test_container_run_omits_compute_class_when_unset() -> None:
     container.run()
 
     spec = client.calls[0].request.container.spec
-    assert spec.compute_class == pb.COMPUTE_CLASS_UNSPECIFIED
+    assert spec.compute_class == pb.ComputeClass.UNSPECIFIED
+
+
+def test_container_tracing_sets_otel_sampler_env() -> None:
+    from chalkcompute import TracingPolicy
+
+    with pytest.warns(DeprecationWarning):
+        container = Container(
+            image="ubuntu:latest",
+            env={"APP": "1"},
+            tracing=TracingPolicy(sample_rate=0.5),
+        )
+    assert container._env == {
+        "APP": "1",
+        "OTEL_TRACES_SAMPLER": "parentbased_traceidratio",
+        "OTEL_TRACES_SAMPLER_ARG": "0.5",
+    }
+
+
+def test_container_tracing_default_keeps_platform_sampler() -> None:
+    with pytest.warns(DeprecationWarning):
+        container = Container(image="ubuntu:latest", env={"APP": "1"})
+    assert container._env == {"APP": "1"}

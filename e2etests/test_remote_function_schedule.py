@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import chalkcompute
-from chalkcompute._function import _CATALOG_SVC
+from protobuf import Oneof
+
+from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import (
+    service_connect as catalog_connect,
+)
+from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as catalog_pb
 from e2etests.conftest import _deploy_script, needs_staging
 
 
@@ -16,14 +21,16 @@ def test_remote_function_registers_with_schedule() -> None:
     fn = chalkcompute.RemoteFunction.from_name("ex-heartbeat")
     assert fn.version_info is not None
 
-    resp = fn._client.rpc(
-        _CATALOG_SVC,
-        "GetExternalFunctionVersion",
-        {"id": fn.version_info.id},
+    stub = fn._client.stub(catalog_connect.ExternalFunctionCatalogServiceClientSync)
+    response = fn._client.call(
+        stub.get_external_function_version,
+        catalog_pb.GetExternalFunctionVersionRequest(
+            identifier=Oneof("id", fn.version_info.id)
+        ),
     )
-    assert resp.status_code == 200, f"GetExternalFunctionVersion failed: {resp.text}"
-
-    config = resp.json()["externalFunctionVersion"].get("config") or {}
-    assert config.get("schedule") == "10m"
+    version = response.external_function_version
+    assert version is not None
+    assert version.config is not None
+    assert version.config.schedule == "10m"
 
     assert fn.remote() is None

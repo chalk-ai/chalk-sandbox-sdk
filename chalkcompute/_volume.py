@@ -16,19 +16,27 @@ import builtins
 import datetime
 import importlib
 import logging
+import math
 import os
+import tempfile
+import time
 import uuid
-from collections.abc import Generator, Iterable, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn
 
-import httpx
-from google.protobuf.json_format import MessageToDict
+from connectrpc.code import Code
+from connectrpc.errors import ConnectError as ConnectRpcError
+from protobuf import Oneof
 
 from chalkcompute._connect import ConnectClient
-from chalkcompute._gen.chalk.volume.v2 import volume_pb2 as pb_v2
+from chalkcompute._gen.chalk.manager.v1 import dataset_download_connect
+from chalkcompute._gen.chalk.manager.v1 import dataset_download_pb
+from chalkcompute._gen.chalk.volume.v2 import volume_connect
+from chalkcompute._gen.chalk.volume.v2 import volume_pb as pb_v2
+from chalkcompute._http import HTTP_TRANSPORT_ERRORS, SYNC_HTTP_CLIENT
 from chalkcompute._image import Image
 from chalkcompute._tracing import traced
 
@@ -113,11 +121,20 @@ class VolumeMount:
         Absolute path inside the container where the volume is mounted.
     version_id
         Optional immutable version to mount.
+    ref_name
+        Optional mutable fork to mount.
     """
 
     name: str
     mount_path: str
     version_id: int | None = None
+    ref_name: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.ref_name == "":
+            raise ValueError("ref_name must not be empty")
+        if self.version_id is not None and self.ref_name is not None:
+            raise ValueError("version_id and ref_name cannot both be set")
 
     def to_spec_dict(self) -> dict[str, str | int]:
         """Render this mount as a container-spec ``volumes`` entry."""
@@ -128,6 +145,8 @@ class VolumeMount:
         }
         if self.version_id is not None:
             spec["versionId"] = self.version_id
+        if self.ref_name is not None:
+            spec["refName"] = self.ref_name
         return spec
 
 
@@ -175,20 +194,16 @@ def _read_file_from_signed_uri(signed_download_uri: str) -> bytes:
         If the download times out or the HTTP request fails.
     """
     try:
-        resp = httpx.get(signed_download_uri, timeout=300)
-        resp.raise_for_status()
-        return resp.content
-    except httpx.TimeoutException as e:
+        response = SYNC_HTTP_CLIENT.get(signed_download_uri, timeout=300)
+    except TimeoutError as e:
         raise VolumeError(f"Timed out downloading signed file URL: {e}") from e
-    except httpx.HTTPStatusError as e:
-        raise VolumeError(
-            f"Signed file download failed with status {e.response.status_code}"
-        ) from e
-    except httpx.HTTPError as e:
+    except HTTP_TRANSPORT_ERRORS as e:
         raise VolumeError(f"Signed file download failed: {e}") from e
+    if not 200 <= response.status < 300:
+        raise VolumeError(f"Signed file download failed with status {response.status}")
+    return response.content
 
 
-_INLINE_THRESHOLD_BYTES: int = 4 * 1024
 _CHUNK_SIZE_BYTES: int = 8 * 1024 * 1024
 _MAX_PACK_BYTES: int = 64 * 1024 * 1024
 _COMMIT_MAX_REBASE_RETRIES: int = 3
@@ -198,6 +213,35 @@ _CHUNK_CONCURRENCY: int = _TRANSFER_MAX_WORKERS
 _CHUNK_MAX_RETRIES: int = 3
 _RATE_LIMIT_MAX_RETRIES: int = 8
 _BATCH_MAX_FILES: int = 200
+_DATASET_INGEST_MAX_FILES: int = 500
+_DATASET_INGEST_MAX_BYTES: int = 4 * 1024 * 1024 * 1024
+
+
+def _dataset_output_path(object_path: str, dest_prefix: str = "") -> str:
+    """Map a dataset output object path to a volume path."""
+    _, separator, relative = object_path.partition("/outputs/")
+    if not separator or not relative:
+        raise ValueError(f"invalid dataset output path {object_path!r}")
+    relative_parts = relative.split("/")
+    prefix = dest_prefix.strip("/")
+    prefix_parts = prefix.split("/") if prefix else []
+    if any(part in ("", ".", "..") for part in [*prefix_parts, *relative_parts]):
+        raise ValueError(f"invalid dataset output path {object_path!r}")
+    return "/".join([*prefix_parts, *relative_parts])
+
+
+def _default_upload_config() -> dict[str, int]:
+    return {
+        "chunk_size": _CHUNK_SIZE_BYTES,
+        "max_pack_bytes": _MAX_PACK_BYTES,
+        "file_concurrency": _FILE_CONCURRENCY,
+        "chunk_concurrency": _CHUNK_CONCURRENCY,
+        "batch_size": _BATCH_MAX_FILES,
+        "max_chunk_retries": _CHUNK_MAX_RETRIES,
+        "max_rate_limit_retries": _RATE_LIMIT_MAX_RETRIES,
+        "max_commit_retries": _COMMIT_MAX_REBASE_RETRIES,
+    }
+
 
 _native: Any | None
 _NativeVolumeClient: Any | None
@@ -211,9 +255,7 @@ except ImportError as exc:
     _NativeVolumeRpcError = None
     _NATIVE_IMPORT_ERROR = exc
 else:
-    # Symbol name is fixed by the Rust `chalk_volume_client` crate; it keeps the
-    # "Versioned" prefix even though the Python-side name has dropped it.
-    _NativeVolumeClient = getattr(_native, "VersionedVolumeNativeClient", None)
+    _NativeVolumeClient = getattr(_native, "VolumeNativeClient", None)
     _NativeVolumeRpcError = getattr(_native, "VolumeRpcError", None)
     _NATIVE_IMPORT_ERROR = None
 
@@ -402,7 +444,7 @@ class Volume:
     def _fetch_info(self) -> tuple[VolumeInfo, VersionInfo | None]:
         self._raise_if_closed()
         try:
-            raw = self._client._get_volume(
+            response = self._client._get_volume(
                 self._name,
                 version_id=self._version_id,
                 ref_name=self._selector_ref(),
@@ -410,12 +452,32 @@ class Volume:
         except VolumeNotFoundError:
             if not self._create_if_missing:
                 raise
-            raw = self._client._create_volume(self._name)
-            return _dict_to_volume_info(raw["volume"]), None
+            try:
+                created = self._client._create_volume(self._name)
+            except VolumeError as exc:
+                if exc.code != "already_exists":
+                    raise
+                # Another caller can create the volume after our lookup. Read
+                # its metadata with the original selector; do not retry creation.
+                response = self._client._get_volume(
+                    self._name,
+                    version_id=self._version_id,
+                    ref_name=self._selector_ref(),
+                )
+            else:
+                if created.volume is None:
+                    raise VolumeError("CreateVolume returned no volume metadata")
+                return _proto_to_volume_info(created.volume), None
 
+        if response.volume is None:
+            raise VolumeError("GetVolume returned no volume metadata")
         return (
-            _dict_to_volume_info(raw["volume"]),
-            _dict_to_version_info(raw["version"]) if raw.get("version") else None,
+            _proto_to_volume_info(response.volume),
+            (
+                _proto_to_version_info(response.version)
+                if response.version is not None
+                else None
+            ),
         )
 
     def _raise_if_closed(self) -> None:
@@ -492,10 +554,142 @@ class Volume:
         statuses = self._client._upload(
             self._name,
             [(path, Path(local_path))],
-            batch_size=1,
             ref_name=self._selector_ref(),
         )
         self._update_version_from_statuses(statuses)
+        return self
+
+    @traced("chalkcompute.volume.put_dir")
+    def put_dir(self, local_path: str | Path, remote_path: str = "") -> Volume:
+        """Upload a directory, overwriting files without deleting other content.
+
+        Parameters
+        ----------
+        local_path : str or pathlib.Path
+            Local directory to upload recursively.
+        remote_path : str, optional
+            Relative destination within the volume. Defaults to its root.
+
+        Returns
+        -------
+        Volume
+            ``self``, with its cached version updated after commits complete.
+
+        Raises
+        ------
+        ValueError
+            If paths are invalid or the directory contains symlinks or special
+            files.
+        VolumeError
+            If the volume is closed, pinned, or an upload fails.
+
+        Notes
+        -----
+        Empty directories are omitted. Uploads may make multiple commits.
+        A failed upload can leave earlier commits visible.
+        """
+        self._raise_if_closed()
+        self._ensure_mutable()
+        root = Path(local_path)
+        if root.is_symlink() or not root.is_dir():
+            raise ValueError("local_path must be a directory, not a symlink")
+        destination = PurePosixPath(remote_path)
+        if (
+            destination.is_absolute()
+            or ".." in destination.parts
+            or "\\" in remote_path
+        ):
+            raise ValueError(
+                "remote_path must be relative and cannot contain traversal"
+            )
+        files: list[tuple[str, bytes | Path]] = []
+
+        def scan(directory: Path) -> None:
+            for path in sorted(directory.iterdir()):
+                if path.is_symlink():
+                    raise ValueError(f"Symlinks are not supported: {path}")
+                if path.is_dir():
+                    scan(path)
+                elif path.is_file():
+                    files.append(
+                        (str(destination / path.relative_to(root).as_posix()), path)
+                    )
+                else:
+                    raise ValueError(f"Special files are not supported: {path}")
+
+        scan(root)
+        if files:
+            self._ensure_ready()
+            statuses = self._client._upload(
+                self.name, files, ref_name=self._selector_ref()
+            )
+            self._update_version_from_statuses(statuses)
+        return self
+
+    @traced("chalkcompute.volume.load_git_repo")
+    def load_git_repo(
+        self,
+        url: str,
+        *,
+        dest_prefix: str = "",
+        revision: str = "main",
+    ) -> Volume:
+        """Clone a Git repository and upload its checkout to this volume.
+
+        Requires the ``git`` executable on the local machine. The checkout
+        includes Git metadata so it can be used as a working repository after
+        mounting the volume.
+
+        Parameters
+        ----------
+        url
+            Repository URL accepted by ``git clone``.
+        dest_prefix
+            Destination directory within the volume.
+        revision
+            Branch, tag, or commit SHA to check out.
+        """
+        self._ensure_mutable()
+        if not isinstance(url, str) or not url.strip():
+            raise ValueError("url must be a non-empty string")
+        if not isinstance(dest_prefix, str):
+            raise TypeError("dest_prefix must be a string")
+        prefix_parts = [part for part in dest_prefix.strip("/").split("/") if part]
+        if any(part in (".", "..") for part in prefix_parts):
+            raise ValueError("dest_prefix must not contain '.' or '..'")
+        if not isinstance(revision, str) or not revision.strip():
+            raise ValueError("revision must be a non-empty string")
+
+        with tempfile.TemporaryDirectory(prefix="chalkcompute-git-") as temp_dir:
+            checkout = Path(temp_dir) / "checkout"
+            from chalkcompute._git import GitError, unpack_remote_to_mount
+
+            try:
+                unpack_remote_to_mount(url, checkout, revision)
+            except GitError as exc:
+                raise VolumeError(str(exc)) from exc
+
+            files: list[tuple[str, Path]] = []
+            for local_path in checkout.rglob("*"):
+                relative_path = local_path.relative_to(checkout)
+                if local_path.is_symlink():
+                    raise VolumeError(
+                        f"git clone contains unsupported symbolic link {relative_path!s}"
+                    )
+                if local_path.is_file():
+                    files.append(
+                        ("/".join([*prefix_parts, *relative_path.parts]), local_path)
+                    )
+
+            if not files:
+                raise VolumeError("git clone produced no files to upload")
+            self._ensure_ready()
+            statuses = self._client._upload(
+                self._name,
+                files,
+                ref_name=self._selector_ref(),
+            )
+            self._update_version_from_statuses(statuses)
         return self
 
     def remove_file(self, path: str) -> Volume:
@@ -615,6 +809,159 @@ class Volume:
         yield batch
         batch._flush()
 
+    @traced("chalkcompute.volume.load_dataset")
+    def load_dataset(
+        self,
+        source: str | object,
+        *,
+        dest_prefix: str = "",
+        timeout: float = 600.0,
+        max_attempts: int = 3,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> VersionInfo:
+        """Copy a Chalk Dataset revision into a volume.
+
+        Only the revision's output parquet files are ingested with
+        matching partitioning.
+
+        Parameters
+        ----------
+        source
+            Revision id or an object with a ``revision_id`` attribute.
+        dest_prefix
+            Optional destination directory within the volume.
+        timeout
+            Deadline in seconds for each dataset download-URI stream.
+        max_attempts
+            Number of full stream passes after staging failures. Each new pass
+            obtains fresh signed URLs and skips files already staged.
+        on_progress
+            Optional callback receiving cumulative staged file and byte counts.
+
+        Returns
+        -------
+        VersionInfo
+            The newly committed volume version.
+        """
+        self._ensure_mutable()
+        revision_id = (
+            source if isinstance(source, str) else getattr(source, "revision_id", None)
+        )
+        if not isinstance(revision_id, str) or not revision_id.strip():
+            raise ValueError("source must be a revision id or have a revision_id")
+        if not isinstance(dest_prefix, str):
+            raise TypeError("dest_prefix must be a string")
+        if (
+            not isinstance(timeout, (int, float))
+            or isinstance(timeout, bool)
+            or not math.isfinite(timeout)
+            or timeout <= 0
+        ):
+            raise ValueError("timeout must be a positive finite number")
+        if (
+            not isinstance(max_attempts, int)
+            or isinstance(max_attempts, bool)
+            or max_attempts <= 0
+        ):
+            raise ValueError("max_attempts must be a positive integer")
+        if on_progress is not None and not callable(on_progress):
+            raise TypeError("on_progress must be callable")
+
+        self._ensure_ready()
+        revision_id = revision_id.strip()
+        staged: Any | None = None
+        staged_paths: set[str] = set()
+        staged_files = 0
+        staged_bytes = 0
+        stub = self._client._connect.stub(
+            dataset_download_connect.DatasetDownloadServiceClientSync
+        )
+
+        for attempt in range(1, max_attempts + 1):
+            batch: list[tuple[str, str, int]] = []
+            batch_bytes = 0
+
+            def stage_batch() -> None:
+                nonlocal batch, batch_bytes, staged, staged_files, staged_bytes
+                if not batch:
+                    return
+                next_staged = self._client._inner.stage_remote(
+                    self._name,
+                    batch,
+                    None,
+                )
+                if staged is None:
+                    staged = next_staged
+                else:
+                    staged.extend(next_staged)
+                staged_paths.update(path for path, _, _ in batch)
+                staged_files += len(batch)
+                staged_bytes += batch_bytes
+                batch = []
+                batch_bytes = 0
+                if on_progress is not None:
+                    on_progress(staged_files, staged_bytes)
+
+            try:
+                stream = self._client._connect.call(
+                    stub.stream_dataset_download_ur_is,
+                    dataset_download_pb.StreamDatasetDownloadURIsRequest(
+                        revision_id=revision_id
+                    ),
+                    timeout=float(timeout),
+                )
+                for entry in stream:
+                    path = _dataset_output_path(entry.object_path, dest_prefix)
+                    if path in staged_paths:
+                        continue
+                    if entry.size_bytes < 0:
+                        raise VolumeError(
+                            f"Dataset download returned a negative size for {path!r}"
+                        )
+                    batch.append((path, entry.signed_url, entry.size_bytes))
+                    batch_bytes += entry.size_bytes
+                    if (
+                        len(batch) >= _DATASET_INGEST_MAX_FILES
+                        or batch_bytes >= _DATASET_INGEST_MAX_BYTES
+                    ):
+                        stage_batch()
+                stage_batch()
+                break
+            except _native_error_types() as exc:
+                if attempt == max_attempts:
+                    _raise_volume_error(exc, self._name)
+                logger.warning(
+                    "Dataset load staging failed on attempt %d/%d: %s",
+                    attempt,
+                    max_attempts,
+                    _native_error_message(exc),
+                )
+            except ConnectRpcError as exc:
+                if attempt == max_attempts:
+                    _raise_connect_volume_error(exc, self._name)
+                logger.warning(
+                    "Dataset load stream failed on attempt %d/%d: %s",
+                    attempt,
+                    max_attempts,
+                    exc,
+                )
+
+        if staged is None:
+            raise VolumeError(
+                f"Dataset revision {revision_id!r} yielded no output files"
+            )
+        try:
+            status = self._client._inner.commit_staged(
+                self._name,
+                staged,
+                None,
+                _COMMIT_MAX_REBASE_RETRIES,
+                self._selector_ref(),
+            )
+        except _native_error_types() as exc:
+            _raise_volume_error(exc, self._name)
+        return self._update_version_from_statuses([_dict_to_commit_status(status)])
+
     def versions(self, *, limit: int = 100) -> list[VersionInfo]:
         """List all versions of this volume.
 
@@ -632,14 +979,14 @@ class Volume:
         versions: list[VersionInfo] = []
         cursor = ""
         while True:
-            raw = self._client._list_volume_versions(
+            response = self._client._list_volume_versions(
                 self._name,
                 limit=limit,
                 cursor=cursor,
                 ref_name=self._selector_ref(),
             )
-            versions.extend(_dict_to_version_info(v) for v in raw["versions"])
-            cursor = str(raw.get("next_cursor") or "")
+            versions.extend(_proto_to_version_info(v) for v in response.versions)
+            cursor = response.next_cursor
             if not cursor:
                 return versions
 
@@ -657,11 +1004,13 @@ class Volume:
             If the volume has no committed versions yet.
         """
         self._ensure_ready()
-        raw = self._client._get_volume(self._name, ref_name=self._selector_ref())
-        self._info = _dict_to_volume_info(raw["volume"])
-        if not raw.get("version"):
+        response = self._client._get_volume(self._name, ref_name=self._selector_ref())
+        if response.volume is None:
+            raise VolumeError("GetVolume returned no volume metadata")
+        self._info = _proto_to_volume_info(response.volume)
+        if response.version is None:
             raise VolumeError(f"Volume {self._name!r} has no latest version")
-        self._version = _dict_to_version_info(raw["version"])
+        self._version = _proto_to_version_info(response.version)
         return self._version
 
     def at_version(self, version_id: int) -> Volume:
@@ -686,6 +1035,31 @@ class Volume:
             client=self._client,
             version_id=version_id,
             ref=self._ref,
+            create_if_missing=False,
+        )
+        volume._info = self._info
+        return volume
+
+    def at_ref(self, name: str) -> Volume:
+        """Return a mutable handle tracking an existing ref.
+
+        Parameters
+        ----------
+        name
+            Name of the ref to open.
+
+        Returns
+        -------
+        Volume
+            A mutable handle tracking ``name``.
+        """
+        self._raise_if_closed()
+        if not name:
+            raise ValueError("ref name must not be empty")
+        volume = Volume(
+            self._name,
+            client=self._client,
+            ref=name,
             create_if_missing=False,
         )
         volume._info = self._info
@@ -749,18 +1123,17 @@ class Volume:
     def mount(self, mount_path: str | None = None) -> VolumeMount:
         """Create a mount specification for this handle.
 
-        Fork and version-pinned handles mount their current immutable snapshot.
+        Fork handles mount their mutable ref. Version-pinned handles mount an
+        immutable snapshot.
         The default path is ``/volumes/<volume-name>``.
         """
         self._raise_if_closed()
         path = mount_path or f"/volumes/{self._name}"
-        version_id = self._version_id
-        if version_id is None and self._ref and self._ref != "main":
-            version_id = self.version.id
         return VolumeMount(
             name=self._name,
             mount_path=path,
-            version_id=version_id,
+            version_id=self._version_id,
+            ref_name=self._selector_ref(),
         )
 
     @traced("chalkcompute.volume.delete")
@@ -815,7 +1188,6 @@ class Volume:
         statuses = self._client._upload(
             self._name,
             files,
-            batch_size=max(1, len(files)),
             ref_name=self._selector_ref(),
         )
         return self._update_version_from_statuses(statuses)
@@ -839,7 +1211,7 @@ class Volume:
         files: list[FileInfo] = []
         cursor = ""
         while True:
-            raw = self._client._list_files(
+            response = self._client._list_files(
                 self._name,
                 path=path,
                 version_id=self._version_id,
@@ -847,10 +1219,10 @@ class Volume:
                 limit=1000,
                 cursor=cursor,
             )
-            files.extend(_dict_to_file_info(f) for f in raw["files"])
-            if raw.get("version"):
-                self._version = _dict_to_version_info(raw["version"])
-            cursor = str(raw.get("next_cursor") or "")
+            files.extend(_proto_to_file_info(f) for f in response.files)
+            if response.version is not None:
+                self._version = _proto_to_version_info(response.version)
+            cursor = response.next_cursor
             if not cursor:
                 return files
 
@@ -913,7 +1285,7 @@ class VolumeClient:
         metadata: object | None = None,
         options: object | None = None,
     ) -> None:
-        """Initialize the native volume client.
+        """Initialize the typed volume control plane and native data plane.
 
         Parameters
         ----------
@@ -953,13 +1325,14 @@ class VolumeClient:
             env_id = env_id or _metadata_value(metadata, "x-chalk-env-id") or None
             chalk_server = _metadata_value(metadata, "x-chalk-server") or chalk_server
         endpoint = _native_endpoint(endpoint, use_tls=credentials is not None)
-        self._endpoint = endpoint
-        self._token = token
-        self._env_id = env_id
-        self._commit_author = commit_author
         self._extra_headers = builtins.list(extra_headers or [])
         self._chalk_server = chalk_server
-        self._connect: ConnectClient | None = None
+        self._connect = _connect_client_for_endpoint(
+            endpoint,
+            token=token,
+            env_id=env_id,
+        )
+        self._owns_connect = True
         self._closed = False
         self._inner = _NativeVolumeClient(
             endpoint,
@@ -968,7 +1341,27 @@ class VolumeClient:
             commit_author,
             self._extra_headers,
             chalk_server,
+            self._refresh_token,
         )
+
+    @classmethod
+    def from_env(cls, *, chalk_client: Any | None = None) -> VolumeClient:
+        """Create a volume client using environment authentication.
+
+        Parameters
+        ----------
+        chalk_client : Any, optional
+            Chalk client supplying authentication. Defaults to environment auth.
+
+        Returns
+        -------
+        VolumeClient
+            Client that owns its connection and closes it on context exit or
+            an explicit :meth:`close` call.
+        """
+        client = cls.from_connect(ConnectClient(chalk_client=chalk_client))
+        client._owns_connect = True
+        return client
 
     @classmethod
     def from_connect(cls, connect: ConnectClient) -> VolumeClient:
@@ -997,43 +1390,14 @@ class VolumeClient:
             env_id=connect._env_id or None,
             chalk_server="go-api",
         )
-        if getattr(connect, "_uses_web_identity_token", lambda: False)() is True:
-            client._connect = connect
+        client._connect = connect
+        client._owns_connect = False
         return client
 
-    @property
-    def _inner(self) -> Any:
-        self._sync_web_identity_auth()
-        return self._native_inner
-
-    @_inner.setter
-    def _inner(self, value: Any) -> None:
-        self._native_inner = value
-
-    def _sync_web_identity_auth(self) -> None:
-        """Recreate the native client after an identity-token rotation."""
-        connect = getattr(self, "_connect", None)
-        if connect is None:
-            return
-        connect._ensure_auth()
-        token = connect._access_token or ""
-        env_id = connect._env_id or None
-        if token == self._token and env_id == self._env_id:
-            return
-        if _NativeVolumeClient is None:
-            raise VolumeError(
-                "volumes require the native chalkcompute._native extension"
-            ) from _NATIVE_IMPORT_ERROR
-        self._token = token
-        self._env_id = env_id
-        self._native_inner = _NativeVolumeClient(
-            self._endpoint,
-            token,
-            env_id,
-            self._commit_author,
-            self._extra_headers,
-            self._chalk_server,
-        )
+    def _refresh_token(self) -> str:
+        """Refresh the bearer token used by the native client."""
+        self._connect._ensure_auth()
+        return self._connect._access_token or ""
 
     def __enter__(self) -> VolumeClient:
         """Enter a context that closes the client on exit."""
@@ -1044,7 +1408,9 @@ class VolumeClient:
         self.close()
 
     def close(self) -> None:
-        """Close the underlying native client handle."""
+        """Close owned RPC resources and reject subsequent operations."""
+        if not self._closed and self._owns_connect:
+            self._connect.close()
         self._closed = True
 
     @traced("chalkcompute.volume.create")
@@ -1064,9 +1430,11 @@ class VolumeClient:
         Volume
             A handle to the newly created volume.
         """
-        raw = self._create_volume(name, volume_type=volume_type)
+        response = self._create_volume(name, volume_type=volume_type)
+        if response.volume is None:
+            raise VolumeError("CreateVolume returned no volume metadata")
         vol = Volume(name, client=self, create_if_missing=False)
-        vol._info = _dict_to_volume_info(raw["volume"])
+        vol._info = _proto_to_volume_info(response.volume)
         return vol
 
     def from_name(self, name: str) -> Volume:
@@ -1125,8 +1493,8 @@ class VolumeClient:
     ) -> builtins.list[VolumeMount]:
         """Upload an image's lazy local files into volumes.
 
-        Creates one volume per destination directory and commits
-        all files for that directory as a single version.
+        Creates one volume per destination directory and commits files in
+        batches. Returned mounts follow the default mutable ref.
 
         Parameters
         ----------
@@ -1146,25 +1514,39 @@ class VolumeClient:
             raise VolumeError(str(e)) from e
 
         volumes: builtins.list[VolumeMount] = []
-        for dest_dir, files in dir_to_files.items():
-            vol = self.create(f"{volume_prefix}-{uuid.uuid4().hex[:12]}")
-            with vol.batch_upload() as batch:
-                for lf in files:
-                    batch.put_file(os.path.relpath(lf.dest, dest_dir), lf.src)
-            volumes.append(VolumeMount(name=vol.name, mount_path=dest_dir))
+        created: builtins.list[Volume] = []
+        try:
+            for dest_dir, files in dir_to_files.items():
+                vol = self.create(f"{volume_prefix}-{uuid.uuid4().hex[:12]}")
+                created.append(vol)
+                with vol.batch_upload() as batch:
+                    for lf in files:
+                        batch.put_file(os.path.relpath(lf.dest, dest_dir), lf.src)
+                volumes.append(VolumeMount(name=vol.name, mount_path=dest_dir))
+        except BaseException:
+            for vol in reversed(created):
+                try:
+                    vol.delete()
+                except Exception:
+                    logger.warning(
+                        "Could not delete failed upload volume %s",
+                        vol.name,
+                        exc_info=True,
+                    )
+            raise
         return volumes
 
     @traced("chalkcompute.volume.stage_lazy_files")
     def stage_lazy_files(
         self, image: Image, *, volume_name: str
-    ) -> tuple[builtins.list[VolumeMount], builtins.list[dict[str, Any]]]:
+    ) -> tuple[builtins.list[VolumeMount], builtins.list[pb_v2.CommitIntent]]:
         """Stage an image's lazy local files into source-code volumes.
 
         Reuses (or creates, ``source_code``-kind) one stable volume
         per destination directory — named from ``volume_name`` — and uploads
         the file bytes, but does **not** commit. Each staged upload is
-        returned as a ``chalk.volume.v2.CommitIntent`` JSON dict for
-        ``CreateExternalFunctionVersionRequest.volume_commits``: the server
+        returned as a typed ``chalk.volume.v2.CommitIntent`` for
+        ``ExternalFunctionVersionSpec.volume_commits``: the server
         commits the intent and stamps the resulting version_id onto the spec
         volume with the matching name, so every replica is pinned to that
         immutable snapshot.
@@ -1186,7 +1568,7 @@ class VolumeClient:
 
         Returns
         -------
-        tuple of (list of VolumeMount, list of dict)
+        tuple of (list of VolumeMount, list of CommitIntent)
             One mount and one commit-intent dict per volume.
         """
         from chalkcompute._naming import sanitize_dns_label
@@ -1197,7 +1579,7 @@ class VolumeClient:
             raise VolumeError(str(e)) from e
 
         volumes: builtins.list[VolumeMount] = []
-        intents: builtins.list[dict[str, Any]] = []
+        intents: builtins.list[pb_v2.CommitIntent] = []
         for dest_dir, files in dir_to_files.items():
             name = sanitize_dns_label(f"{volume_name}-{dest_dir}")
             existed = self.exists(name)
@@ -1210,17 +1592,88 @@ class VolumeClient:
                 (os.path.relpath(lf.dest, dest_dir), Path(lf.src)) for lf in files
             ]
             self._raise_if_closed()
+            removes = [("/", True)] if existed else []
             try:
-                staged = self._inner.stage(vol.name, source)
-                intent_bytes = self._inner.staged_intent(vol.name, staged)
+                staged = self._inner.stage(
+                    vol.name,
+                    source,
+                    _default_upload_config(),
+                )
+                intent_bytes = self._inner.staged_intent(
+                    vol.name,
+                    staged,
+                    None,
+                    removes,
+                )
             except _native_error_types() as exc:
                 _raise_volume_error(exc, vol.name)
-            intent = pb_v2.CommitIntent.FromString(bytes(intent_bytes))
-            if existed:
-                intent.path_deltas.removes.add(path="/", recursive=True)
-            intents.append(MessageToDict(intent))
+            intent = pb_v2.CommitIntent.from_binary(bytes(intent_bytes))
+            intents.append(intent)
             volumes.append(VolumeMount(name=vol.name, mount_path=dest_dir))
         return volumes, intents
+
+    @traced("chalkcompute.volume.resolve_lazy_files")
+    def _resolve_lazy_files(
+        self,
+        image: Image,
+        *,
+        volume_name: str,
+        timeout: float = 600.0,
+        poll_interval: float = 1.0,
+    ) -> builtins.list[VolumeMount]:
+        """Resolve lazy local files to immutable source volume mounts."""
+        from chalkcompute._naming import sanitize_dns_label
+
+        try:
+            groups = image.lazy_local_files_grouped_for_volume_mounts()
+        except ValueError as exc:
+            raise VolumeError(str(exc)) from exc
+
+        deadline = time.monotonic() + timeout
+        mounts: builtins.list[VolumeMount] = []
+        for mount_path, files in groups.items():
+            name = (
+                volume_name
+                if mount_path == "/app"
+                else sanitize_dns_label(f"{volume_name}-{mount_path}")
+            )
+            source: builtins.list[tuple[Any, ...]] = []
+            for file in files:
+                path = os.path.relpath(file.dest, mount_path).replace(os.sep, "/")
+                entry: tuple[Any, ...] = (path, Path(file.src))
+                if file.mode is not None:
+                    entry = (*entry, {"mode": file.mode})
+                source.append(entry)
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise VolumeError("Source file resolution timed out")
+            self._raise_if_closed()
+            try:
+                prepared = self._inner.prepare_files(source, "main")
+                version = self._inner.resolve_prepared_files(
+                    name,
+                    "source_code",
+                    prepared,
+                    {
+                        "upload": _default_upload_config(),
+                        "timeout_ms": max(1, int(remaining * 1_000)),
+                        "poll_interval_ms": max(1, int(poll_interval * 1_000)),
+                    },
+                )
+            except _native_error_types() as exc:
+                _raise_volume_error(exc, name)
+            version_id = version.get("version_id")
+            if not isinstance(version_id, int):
+                raise VolumeError("Source file resolution returned no version")
+            mounts.append(
+                VolumeMount(
+                    name=name,
+                    mount_path=mount_path,
+                    version_id=version_id,
+                )
+            )
+        return mounts
 
     def delete_volume(self, name: str) -> None:
         """Delete a volume by name.
@@ -1230,11 +1683,11 @@ class VolumeClient:
         name
             Volume to delete.
         """
-        self._raise_if_closed()
-        try:
-            self._inner.delete_volume(name)
-        except _native_error_types() as exc:
-            _raise_volume_error(exc, name)
+        self._call(
+            self._stub().delete_volume,
+            pb_v2.DeleteVolumeRequest(volume=pb_v2.VolumeRef(name=name)),
+            volume_name=name,
+        )
 
     def list(self, *, limit: int = 100) -> builtins.list[VolumeInfo]:
         """List all volumes the caller has access to.
@@ -1252,9 +1705,9 @@ class VolumeClient:
         volumes: list[VolumeInfo] = []
         cursor = ""
         while True:
-            raw = self._list_volumes(limit=limit, cursor=cursor)
-            volumes.extend(_dict_to_volume_info(v) for v in raw["volumes"])
-            cursor = str(raw.get("next_cursor") or "")
+            response = self._list_volumes(limit=limit, cursor=cursor)
+            volumes.extend(_proto_to_volume_info(v) for v in response.volumes)
+            cursor = response.next_cursor
             if not cursor:
                 return volumes
 
@@ -1262,14 +1715,40 @@ class VolumeClient:
         if self._closed:
             raise VolumeClosedError("VolumeClient is closed")
 
+    def _call(
+        self,
+        method: Any,
+        request: Any,
+        *,
+        volume_name: str,
+    ) -> Any:
+        self._raise_if_closed()
+        headers = dict(self._extra_headers)
+        headers["x-chalk-server"] = self._chalk_server
+        try:
+            return self._connect.call(
+                method,
+                request,
+                extra_headers=headers,
+            )
+        except ConnectRpcError as exc:
+            _raise_connect_volume_error(exc, volume_name)
+
+    def _stub(self) -> volume_connect.VolumeServiceClientSync:
+        self._raise_if_closed()
+        return self._connect.stub(volume_connect.VolumeServiceClientSync)
+
     def _create_volume(
         self, name: str, *, volume_type: str | None = None
-    ) -> dict[str, Any]:
-        self._raise_if_closed()
-        try:
-            return dict(self._inner.create_volume(name, volume_type))
-        except _native_error_types() as exc:
-            _raise_volume_error(exc, name)
+    ) -> pb_v2.CreateVolumeResponse:
+        return self._call(
+            self._stub().create_volume,
+            pb_v2.CreateVolumeRequest(
+                name=name,
+                volume_type=_volume_kind(volume_type),
+            ),
+            volume_name=name,
+        )
 
     def _get_volume(
         self,
@@ -1277,19 +1756,22 @@ class VolumeClient:
         *,
         version_id: int | None = None,
         ref_name: str | None = None,
-    ) -> dict[str, Any]:
-        self._raise_if_closed()
-        try:
-            return dict(self._inner.get_volume(name, version_id, ref_name))
-        except _native_error_types() as exc:
-            _raise_volume_error(exc, name)
+    ) -> pb_v2.GetVolumeResponse:
+        return self._call(
+            self._stub().get_volume,
+            pb_v2.GetVolumeRequest(
+                volume=pb_v2.VolumeRef(name=name),
+                selector=_version_selector(version_id, ref_name),
+            ),
+            volume_name=name,
+        )
 
-    def _list_volumes(self, *, limit: int, cursor: str) -> dict[str, Any]:
-        self._raise_if_closed()
-        try:
-            return dict(self._inner.list_volumes(limit, cursor))
-        except _native_error_types() as exc:
-            _raise_volume_error(exc, "")
+    def _list_volumes(self, *, limit: int, cursor: str) -> pb_v2.ListVolumesResponse:
+        return self._call(
+            self._stub().list_volumes,
+            pb_v2.ListVolumesRequest(limit=limit, cursor=cursor),
+            volume_name="",
+        )
 
     def _list_volume_versions(
         self,
@@ -1298,39 +1780,49 @@ class VolumeClient:
         limit: int,
         cursor: str,
         ref_name: str | None,
-    ) -> dict[str, Any]:
-        self._raise_if_closed()
-        try:
-            if ref_name is None:
-                return dict(self._inner.list_volume_versions(name, limit, cursor))
-            return dict(self._inner.list_volume_versions(name, limit, cursor, ref_name))
-        except _native_error_types() as exc:
-            _raise_volume_error(exc, name)
+    ) -> pb_v2.ListVolumeVersionsResponse:
+        return self._call(
+            self._stub().list_volume_versions,
+            pb_v2.ListVolumeVersionsRequest(
+                volume=pb_v2.VolumeRef(name=name),
+                limit=limit,
+                cursor=cursor,
+                ref=ref_name,
+            ),
+            volume_name=name,
+        )
 
     def _create_ref(self, volume: str, name: str, from_version_id: int) -> ForkInfo:
-        self._raise_if_closed()
-        try:
-            raw = dict(self._inner.create_ref(volume, name, from_version_id))
-        except _native_error_types() as exc:
-            _raise_volume_error(exc, volume)
-        if not raw.get("ref"):
+        response = self._call(
+            self._stub().create_ref,
+            pb_v2.CreateRefRequest(
+                volume=pb_v2.VolumeRef(name=volume),
+                name=name,
+                from_version_id=from_version_id,
+            ),
+            volume_name=volume,
+        )
+        if response.ref is None:
             raise VolumeError("CreateRef returned no ref metadata")
-        return _dict_to_ref_info(dict(raw["ref"]))
+        return _proto_to_ref_info(response.ref)
 
     def _list_refs(self, volume: str) -> builtins.list[ForkInfo]:
-        self._raise_if_closed()
-        try:
-            refs = self._inner.list_refs(volume)
-        except _native_error_types() as exc:
-            _raise_volume_error(exc, volume)
-        return [_dict_to_ref_info(dict(ref)) for ref in refs]
+        response = self._call(
+            self._stub().list_refs,
+            pb_v2.ListRefsRequest(volume=pb_v2.VolumeRef(name=volume)),
+            volume_name=volume,
+        )
+        return [_proto_to_ref_info(ref) for ref in response.refs]
 
     def _delete_ref(self, volume: str, name: str) -> None:
-        self._raise_if_closed()
-        try:
-            self._inner.delete_ref(volume, name)
-        except _native_error_types() as exc:
-            _raise_volume_error(exc, volume)
+        self._call(
+            self._stub().delete_ref,
+            pb_v2.DeleteRefRequest(
+                volume=pb_v2.VolumeRef(name=volume),
+                name=name,
+            ),
+            volume_name=volume,
+        )
 
     def _list_files(
         self,
@@ -1341,50 +1833,40 @@ class VolumeClient:
         ref_name: str | None,
         limit: int,
         cursor: str,
-    ) -> dict[str, Any]:
-        self._raise_if_closed()
-        try:
-            return dict(
-                self._inner.list_files(
-                    volume,
-                    path,
-                    version_id,
-                    ref_name,
-                    limit,
-                    cursor,
-                )
-            )
-        except _native_error_types() as exc:
-            _raise_volume_error(exc, volume)
+    ) -> pb_v2.ListFilesResponse:
+        return self._call(
+            self._stub().list_files,
+            pb_v2.ListFilesRequest(
+                volume=pb_v2.VolumeRef(name=volume),
+                path=path,
+                recursive=False,
+                limit=limit,
+                cursor=cursor,
+                selector=_version_selector(version_id, ref_name),
+            ),
+            volume_name=volume,
+        )
 
     def _upload(
         self,
         volume: str,
         files: Sequence[tuple[str, bytes | Path]],
         *,
-        batch_size: int,
         ref_name: str | None = None,
     ) -> builtins.list[CommitStatus]:
         self._raise_if_closed()
-        config = {
-            "chunk_size": _CHUNK_SIZE_BYTES,
-            "inline_threshold": _INLINE_THRESHOLD_BYTES,
-            "max_pack_bytes": _MAX_PACK_BYTES,
-            "file_concurrency": _FILE_CONCURRENCY,
-            "chunk_concurrency": _CHUNK_CONCURRENCY,
-            "batch_size": batch_size,
-            "max_chunk_retries": _CHUNK_MAX_RETRIES,
-            "max_rate_limit_retries": _RATE_LIMIT_MAX_RETRIES,
-            "max_commit_retries": _COMMIT_MAX_REBASE_RETRIES,
-        }
+        if not files:
+            return []
         try:
-            args: tuple[Any, ...] = (volume, builtins.list(files), config)
-            if ref_name is not None:
-                args = (*args, ref_name)
-            raw_statuses = self._inner.upload(*args)
+            statuses = self._inner.upload(
+                volume,
+                builtins.list(files),
+                _default_upload_config(),
+                ref_name,
+            )
         except _native_error_types() as exc:
             _raise_volume_error(exc, volume)
-        return [_dict_to_commit_status(dict(status)) for status in raw_statuses]
+        return [_dict_to_commit_status(status) for status in statuses]
 
     def _remove_files(
         self,
@@ -1396,13 +1878,15 @@ class VolumeClient:
     ) -> CommitStatus:
         self._raise_if_closed()
         try:
-            args: tuple[Any, ...] = (volume, paths, max_commit_retries)
-            if ref_name is not None:
-                args = (*args, ref_name)
-            raw = self._inner.remove_files(*args)
+            status = self._inner.remove_files(
+                volume,
+                paths,
+                max_commit_retries,
+                ref_name,
+            )
         except _native_error_types() as exc:
             _raise_volume_error(exc, volume)
-        return _dict_to_commit_status(dict(raw))
+        return _dict_to_commit_status(status)
 
     def _download_bytes(
         self,
@@ -1415,7 +1899,7 @@ class VolumeClient:
         try:
             return bytes(self._inner.download_bytes(volume, path, version_id, None))
         except _native_error_types() as exc:
-            _raise_volume_error(exc, volume)
+            _raise_volume_error(exc, volume, file_not_found=True)
 
     def _download_to_file(
         self,
@@ -1431,7 +1915,7 @@ class VolumeClient:
                 volume, remote_path, local_path, version_id, None
             )
         except _native_error_types() as exc:
-            _raise_volume_error(exc, volume)
+            _raise_volume_error(exc, volume, file_not_found=True)
 
     def _download_to_directory(
         self,
@@ -1447,38 +1931,44 @@ class VolumeClient:
             _raise_volume_error(exc, volume)
 
 
-def _dict_to_volume_info(info: dict[str, Any]) -> VolumeInfo:
+def _proto_to_volume_info(
+    info: pb_v2.VolumeInfo | pb_v2.ListedVolume,
+) -> VolumeInfo:
     return VolumeInfo(
-        name=str(info.get("name") or ""),
-        created_at=_datetime_from_ms(info.get("created_at_ms")),
-        volume_id=_optional_str(info.get("volume_id")),
-        access_mode=_volume_access_mode_name(int(info.get("access_mode") or 0)),
-        ref=_optional_str(info.get("ref")),
-    )
-
-
-def _dict_to_version_info(info: dict[str, Any]) -> VersionInfo:
-    return VersionInfo(
-        id=int(info.get("version_id") or 0),
-        parent_id=(
-            int(info["parent_id"]) if info.get("parent_id") is not None else None
-        ),
-        created_at=_datetime_from_ms(info.get("created_at_ms")),
-        ref=_optional_str(info.get("ref")),
-        commit_id=_optional_str(info.get("commit_id")),
-    )
-
-
-def _dict_to_ref_info(info: dict[str, Any]) -> ForkInfo:
-    return ForkInfo(
-        name=str(info.get("name") or ""),
-        version_id=int(info.get("version_id") or 0),
-        commit_id=_optional_str(info.get("commit_id")),
-        updated_at=_datetime_from_ms(info.get("updated_at_ms")),
-        parent_version_id=(
-            int(info["parent_version_id"])
-            if info.get("parent_version_id") is not None
+        name=info.name,
+        created_at=_timestamp_to_datetime(info.created_at),
+        volume_id=(
+            _optional_str(info.volume_id)
+            if isinstance(info, pb_v2.VolumeInfo)
             else None
+        ),
+        access_mode=(
+            _volume_access_mode_name(info.access_mode)
+            if isinstance(info, pb_v2.VolumeInfo)
+            else None
+        ),
+        ref=(_optional_str(info.ref) if isinstance(info, pb_v2.VolumeInfo) else None),
+    )
+
+
+def _proto_to_version_info(info: pb_v2.VersionInfo) -> VersionInfo:
+    return VersionInfo(
+        id=info.version_id,
+        parent_id=info.parent_id if info.has_field("parent_id") else None,
+        created_at=_timestamp_to_datetime(info.created_at),
+        ref=_optional_str(info.ref),
+        commit_id=_optional_str(info.commit_id),
+    )
+
+
+def _proto_to_ref_info(info: pb_v2.RefInfo) -> ForkInfo:
+    return ForkInfo(
+        name=info.name,
+        version_id=info.version_id,
+        commit_id=_optional_str(info.commit_id),
+        updated_at=_timestamp_to_datetime(info.updated_at),
+        parent_version_id=(
+            info.parent_version_id if info.has_field("parent_version_id") else None
         ),
     )
 
@@ -1492,45 +1982,56 @@ def _ref_to_version_info(ref: ForkInfo) -> VersionInfo:
     )
 
 
-def _dict_to_file_info(info: dict[str, Any]) -> FileInfo:
+def _proto_to_file_info(info: pb_v2.FileInfo) -> FileInfo:
     return FileInfo(
-        path=str(info.get("path") or ""),
-        size=int(info.get("size") or 0),
-        updated_at=_datetime_from_ms(info.get("updated_at_ms")),
-        kind=_file_kind_name(int(info.get("kind") or 0)),
-        hash=_optional_str(info.get("hash")),
-        mode=int(info["mode"]) if info.get("mode") is not None else None,
-        uid=int(info.get("uid") or 0),
-        gid=int(info.get("gid") or 0),
-        nlink=int(info.get("nlink") or 0),
+        path=info.path,
+        size=info.size,
+        updated_at=_timestamp_to_datetime(info.updated_at),
+        kind=_file_kind_name(info.kind),
+        hash=_optional_str(info.hash),
+        mode=info.mode if info.has_field("mode") else None,
+        uid=info.uid,
+        gid=info.gid,
+        nlink=info.nlink,
+    )
+
+
+def _ms_to_datetime(value: int | None) -> datetime.datetime | None:
+    if value is None:
+        return None
+    return datetime.datetime.fromtimestamp(value / 1000, tz=datetime.timezone.utc)
+
+
+def _dict_to_version_info(info: dict[str, Any]) -> VersionInfo:
+    return VersionInfo(
+        id=info["version_id"],
+        parent_id=info.get("parent_id"),
+        created_at=_ms_to_datetime(info.get("created_at_ms")),
+        ref=_optional_str(info.get("ref")),
+        commit_id=_optional_str(info.get("commit_id")),
     )
 
 
 def _dict_to_commit_status(status: dict[str, Any]) -> CommitStatus:
     return CommitStatus(
-        commit_id=str(status.get("commit_id") or ""),
-        result=str(status.get("result") or "unspecified"),
+        commit_id=status["commit_id"],
+        result=status["result"],
         version=(
-            _dict_to_version_info(dict(status["version"]))
+            _dict_to_version_info(status["version"])
             if status.get("version") is not None
             else None
         ),
         latest_version=(
-            _dict_to_version_info(dict(status["latest_version"]))
+            _dict_to_version_info(status["latest_version"])
             if status.get("latest_version") is not None
             else None
         ),
-        created_at=_datetime_from_ms(status.get("created_at_ms")),
+        created_at=_ms_to_datetime(status.get("created_at_ms")),
     )
 
 
-def _datetime_from_ms(value: Any) -> datetime.datetime | None:
-    if value is None:
-        return None
-    return datetime.datetime.fromtimestamp(
-        int(value) / 1000,
-        tz=datetime.timezone.utc,
-    )
+def _timestamp_to_datetime(value: Any) -> datetime.datetime | None:
+    return None if value is None else value.to_datetime()
 
 
 def _optional_str(value: Any) -> str | None:
@@ -1557,6 +2058,40 @@ def _native_endpoint(endpoint: str, *, use_tls: bool) -> str:
     return f"{scheme}://{endpoint.rstrip('/')}"
 
 
+def _connect_client_for_endpoint(
+    endpoint: str,
+    *,
+    token: str,
+    env_id: str | None,
+) -> ConnectClient:
+    connect = ConnectClient()
+    connect._api_server = endpoint
+    connect._access_token = token
+    connect._env_id = env_id
+    return connect
+
+
+def _version_selector(
+    version_id: int | None,
+    ref_name: str | None,
+) -> pb_v2.VersionSelector | None:
+    if version_id is not None and ref_name is not None:
+        raise ValueError("version_id and ref_name are mutually exclusive")
+    if version_id is not None:
+        return pb_v2.VersionSelector(selector=Oneof("version_id", version_id))
+    if ref_name is not None:
+        return pb_v2.VersionSelector(selector=Oneof("ref", ref_name))
+    return None
+
+
+def _volume_kind(value: str | None) -> pb_v2.VolumeKind:
+    if value is None:
+        return pb_v2.VolumeKind.UNSPECIFIED
+    if value == "source_code":
+        return pb_v2.VolumeKind.SOURCE_CODE
+    raise ValueError(f"unknown volume_type {value!r}")
+
+
 def _native_error_types() -> tuple[type[BaseException], ...]:
     if _NativeVolumeRpcError is None:
         return (RuntimeError,)
@@ -1575,45 +2110,62 @@ def _native_error_message(exc: BaseException) -> str:
     return str(exc)
 
 
-def _raise_volume_error(exc: BaseException, volume_name: str) -> NoReturn:
+def _raise_volume_error(
+    exc: BaseException,
+    volume_name: str,
+    *,
+    file_not_found: bool = False,
+) -> NoReturn:
     code = _native_error_code(exc)
     message = _native_error_message(exc)
     if code == "not_found":
+        if file_not_found:
+            raise VolumeFileNotFoundError(message, code=code) from exc
         raise VolumeNotFoundError(message, code=code) from exc
     raise VolumeError(message, code=code) from exc
 
 
-def _volume_access_mode_name(value: int) -> str | None:
+def _raise_connect_volume_error(
+    exc: ConnectRpcError,
+    volume_name: str,
+) -> NoReturn:
+    del volume_name
+    code = exc.code.name.lower()
+    if exc.code == Code.NOT_FOUND:
+        raise VolumeNotFoundError(str(exc), code=code) from exc
+    raise VolumeError(str(exc), code=code) from exc
+
+
+def _volume_access_mode_name(value: pb_v2.VolumeAccessMode) -> str | None:
     return {
-        1: "read_only",
-        2: "read_write",
+        pb_v2.VolumeAccessMode.READ_ONLY: "read_only",
+        pb_v2.VolumeAccessMode.READ_WRITE: "read_write",
     }.get(value)
 
 
-def _file_kind_name(value: int) -> str:
+def _file_kind_name(value: pb_v2.FileKind) -> str:
     return {
-        1: "file",
-        2: "directory",
-        3: "symlink",
+        pb_v2.FileKind.FILE: "file",
+        pb_v2.FileKind.DIRECTORY: "directory",
+        pb_v2.FileKind.SYMLINK: "symlink",
     }.get(value, "unspecified")
 
 
 def _read_file_response(resp: pb_v2.GetFileResponse) -> bytes:
-    content_type = resp.WhichOneof("content")
-    if content_type == "data":
-        return resp.data
-    if content_type == "chunked":
-        chunks = sorted(resp.chunked.chunks, key=lambda c: c.offset)
-        if not chunks:
-            return b""
-        return b"".join(
-            _read_file_from_signed_uri(c.signed_download_uri) for c in chunks
-        )
-    if content_type == "packed":
-        pack = resp.packed.pack
-        data = _read_file_from_signed_uri(pack.signed_download_uri)
-        return data[pack.offset : pack.offset + pack.size]
-    raise VolumeError(f"Unsupported file response type: {content_type!r}")
+    match resp.content:
+        case Oneof(field="data", value=data):
+            return data
+        case Oneof(field="chunked", value=chunked):
+            chunks = sorted(chunked.chunks, key=lambda c: c.offset)
+            return b"".join(
+                _read_file_from_signed_uri(c.signed_download_uri) for c in chunks
+            )
+        case Oneof(field="packed", value=packed) if packed.pack is not None:
+            pack = packed.pack
+            data = _read_file_from_signed_uri(pack.signed_download_uri)
+            return data[pack.offset : pack.offset + pack.size]
+        case _:
+            raise VolumeError(f"Unsupported file response type: {resp.content!r}")
 
 
 class _BatchUpload:
@@ -1667,7 +2219,6 @@ class _BatchUpload:
         statuses = self._volume._client._upload(
             self._volume.name,
             files,
-            batch_size=len(files),
             ref_name=self._volume._selector_ref(),
         )
         self._volume._update_version_from_statuses(statuses)
@@ -1679,7 +2230,7 @@ class _BatchUpload:
 
 
 def normalize_volume_refs(
-    volumes: Iterable[tuple[str, str] | Volume | VolumeMount] | None,
+    volumes: Iterable[tuple[str | Volume, str] | Volume | VolumeMount] | None,
 ) -> builtins.list[VolumeMount]:
     """Validate and normalize caller-supplied volume references.
 
@@ -1699,14 +2250,19 @@ def normalize_volume_refs(
         if not (
             isinstance(item, (tuple, list))
             and len(item) == 2
-            and all(isinstance(s, str) for s in item)
+            and isinstance(item[0], (str, Volume))
+            and isinstance(item[1], str)
         ):
             raise ValueError(
                 "Each volumes entry must be a Volume, VolumeMount, or "
-                f"(name, mount_path) string tuple, got {item!r}. "
-                "Example: volumes=[('my-volume', '/data')]"
+                f"(name_or_volume, mount_path) tuple with a string mount path, got {item!r}. "
+                "Example: volumes=[('my-volume', '/data')] or [(volume, '/data')]"
             )
-        refs.append(VolumeMount(name=item[0], mount_path=item[1]))
+        volume, mount_path = item
+        if isinstance(volume, Volume):
+            refs.append(volume.mount(mount_path))
+        else:
+            refs.append(VolumeMount(name=volume, mount_path=mount_path))
     return refs
 
 
@@ -1726,8 +2282,31 @@ def referenced_volume_mount(connect: ConnectClient, mount: VolumeMount) -> Volum
     and must already exist. Checking here turns a typo'd name into a deploy-time
     error instead of a container that mounts nothing.
     """
-    _require_volume_exists(connect, mount.name)
+    if mount.version_id is None and mount.ref_name is None:
+        _require_volume_exists(connect, mount.name)
+    else:
+        VolumeClient.from_connect(connect)._get_volume(
+            mount.name,
+            version_id=mount.version_id,
+            ref_name=mount.ref_name,
+        )
     return mount
+
+
+def pinned_volume_mount(client: VolumeClient, mount: VolumeMount) -> VolumeMount:
+    """Resolve a volume selector to an immutable version mount."""
+    response = client._get_volume(
+        mount.name,
+        version_id=mount.version_id,
+        ref_name=mount.ref_name,
+    )
+    if response.version is None:
+        raise VolumeError(f"Volume {mount.name!r} has no committed version")
+    return VolumeMount(
+        mount.name,
+        mount.mount_path,
+        version_id=response.version.version_id,
+    )
 
 
 def resolve_referenced_volume_type(connect: ConnectClient, name: str) -> str:

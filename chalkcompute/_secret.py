@@ -7,7 +7,10 @@ import warnings
 from dataclasses import dataclass, field
 from typing import Any
 
-_SECRETS_SVC = "chalk.server.v1.EnvironmentSecretsService"
+from protobuf import Oneof
+
+from chalkcompute._gen.chalk.server.v1 import environment_secrets_connect
+from chalkcompute._gen.chalk.server.v1 import environment_secrets_pb as secrets_pb
 
 
 @dataclass(frozen=True)
@@ -52,6 +55,14 @@ class SecretScope:
     def _to_proto_dict(self) -> dict[str, str]:
         """Serialize to the dict shape expected by the ``SecretScope`` protobuf."""
         return {"type": self._type, "ref": self._ref}
+
+    def _to_proto(self) -> secrets_pb.SecretScope:
+        return secrets_pb.SecretScope(
+            type=secrets_pb.SecretScopeType[
+                self._type.removeprefix("SECRET_SCOPE_TYPE_")
+            ],
+            ref=self._ref,
+        )
 
     def __repr__(self) -> str:
         return f"SecretScope(type={self._type!r}, ref={self._ref!r})"
@@ -333,6 +344,28 @@ def _parse_env_file(path: str) -> dict[str, str]:
     return result
 
 
+def prepare_lazy_secrets(secrets: list[Secret]) -> tuple[list[Secret], dict[str, str]]:
+    """Read local declarations without performing remote secret mutations."""
+    resolved: list[Secret] = []
+    values: dict[str, str] = {}
+    for secret in secrets:
+        if secret._local_env_var is not None:
+            local_var = secret._local_env_var
+            value = os.environ.get(local_var)
+            if value is None:
+                raise ValueError(f"Local environment variable {local_var!r} is not set")
+            remote_name = secret._env_var_name or local_var
+            values[remote_name] = value
+            resolved.append(Secret.from_chalk_env(remote_name))
+        elif secret._local_env_file is not None:
+            for name, value in _parse_env_file(secret._local_env_file).items():
+                values[name] = value
+                resolved.append(Secret.from_chalk_env(name))
+        else:
+            resolved.append(secret)
+    return resolved, values
+
+
 def resolve_lazy_secrets(
     secrets: list[Secret],
     client: Any,
@@ -366,30 +399,14 @@ def resolve_lazy_secrets(
         already upserted before the failure are not rolled back.
     """
     resolved: list[Secret] = []
-    upserted_names: list[str] = []
-
+    upserted: list[str] = []
     for secret in secrets:
-        if secret._local_env_var is not None:
-            local_var = secret._local_env_var
-            value = os.environ.get(local_var)
-            if value is None:
-                raise ValueError(f"Local environment variable {local_var!r} is not set")
-            remote_name = secret._env_var_name or local_var
-            _upsert_secret(client, remote_name, value, scope)
-            upserted_names.append(remote_name)
-            resolved.append(Secret.from_chalk_env(remote_name))
-
-        elif secret._local_env_file is not None:
-            env_vars = _parse_env_file(secret._local_env_file)
-            for name, value in env_vars.items():
-                _upsert_secret(client, name, value, scope)
-                upserted_names.append(name)
-                resolved.append(Secret.from_chalk_env(name))
-
-        else:
-            resolved.append(secret)
-
-    return resolved, upserted_names
+        references, values = prepare_lazy_secrets([secret])
+        for name, value in values.items():
+            _upsert_secret(client, name, value, scope)
+            upserted.append(name)
+        resolved.extend(references)
+    return resolved, upserted
 
 
 def _upsert_secret(
@@ -413,9 +430,12 @@ def _upsert_secret(
     RuntimeError
         If the upsert RPC fails.
     """
-    body: dict[str, Any] = {"name": name, "config": {"literal": value}}
-    if scope is not None:
-        body["scope"] = scope._to_proto_dict()
-    resp = client.rpc(_SECRETS_SVC, "UpsertSecret", body)
-    if resp.status_code != 200:
-        raise RuntimeError(f"Failed to upsert secret {name!r}: {resp.text}")
+    stub = client.stub(environment_secrets_connect.EnvironmentSecretsServiceClientSync)
+    client.call(
+        stub.upsert_secret,
+        secrets_pb.UpsertSecretRequest(
+            name=name,
+            config=secrets_pb.SecretConfigValue(value=Oneof("literal", value)),
+            scope=None if scope is None else scope._to_proto(),
+        ),
+    )

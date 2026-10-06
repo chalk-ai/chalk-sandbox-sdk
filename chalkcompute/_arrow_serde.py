@@ -4,8 +4,8 @@ Classes opt in by declaring a concrete ``chalk.arrow.v1.ArrowType`` and are
 expected to provide a pair of PyArrow scalar serialization dunders::
 
     class Counter:
-        __chalk_arrow_type__ = arrow_pb2.ArrowType(
-            int64=arrow_pb2.EmptyMessage()
+        __chalk_arrow_type__ = arrow_pb.ArrowType(
+            int64=arrow_pb.EmptyMessage()
         )
 
         def __chalk_serialize__(self) -> pa.Scalar:
@@ -34,8 +34,14 @@ _ARROW_TYPE_ATTRIBUTE = "__chalk_arrow_type__"
 
 
 def has_chalk_arrow_contract(annotation: Any) -> bool:
-    """Return whether a class carries Chalk's internal Arrow marker."""
-    return isinstance(annotation, type) and hasattr(annotation, _ARROW_TYPE_ATTRIBUTE)
+    """Return whether a class carries a typed Chalk Arrow declaration."""
+    if not isinstance(annotation, type):
+        return False
+    from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
+
+    return isinstance(
+        getattr(annotation, _ARROW_TYPE_ATTRIBUTE, None), arrow_pb.ArrowType
+    )
 
 
 def chalk_arrow_type(annotation: Any) -> Any:

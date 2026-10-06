@@ -1,0 +1,1 @@
+- Add `cc.scorers.numeric_close`, a scorer that compares two columns as numbers

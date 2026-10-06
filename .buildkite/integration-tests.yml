@@ -17,9 +17,7 @@ steps:
       unset VIRTUAL_ENV
 
       echo "--- :gear: Install sops"
-      SOPS_VERSION=3.9.4
-      curl -fsSL "https://github.com/getsops/sops/releases/download/v$${SOPS_VERSION}/sops-v$${SOPS_VERSION}.linux.amd64" -o /tmp/sops
-      chmod +x /tmp/sops
+      .buildkite/sops.sh install
 
       echo "--- :chalk: Install Chalk CLI"
       export CHALK_INSTALL=/tmp/chalk-cli
@@ -44,7 +42,7 @@ steps:
       uv sync --locked --all-extras --reinstall-package chalkcompute
 
       echo "--- :pytest: Run core integration tests ($$CHALK_API_SERVER)"
-      uv run python -m pytest e2etests/test_image.py e2etests/test_sandbox_exec.py e2etests/test_container.py e2etests/test_mcp_eval_python.py -v -s --tb=short
+      uv run python -m pytest e2etests/test_image.py e2etests/test_sandbox_exec.py e2etests/test_sandbox_fs.py e2etests/test_container.py e2etests/test_mcp_eval_python.py -v -s --tb=short
     agents:
       queue: default
     timeout_in_minutes: 15
@@ -62,9 +60,7 @@ steps:
       unset VIRTUAL_ENV
 
       echo "--- :gear: Install sops"
-      SOPS_VERSION=3.9.4
-      curl -fsSL "https://github.com/getsops/sops/releases/download/v$${SOPS_VERSION}/sops-v$${SOPS_VERSION}.linux.amd64" -o /tmp/sops
-      chmod +x /tmp/sops
+      .buildkite/sops.sh install
 
       echo "--- :chalk: Install Chalk CLI"
       export CHALK_INSTALL=/tmp/chalk-cli
@@ -105,9 +101,7 @@ steps:
       unset VIRTUAL_ENV
 
       echo "--- :gear: Install sops"
-      SOPS_VERSION=3.9.4
-      curl -fsSL "https://github.com/getsops/sops/releases/download/v$${SOPS_VERSION}/sops-v$${SOPS_VERSION}.linux.amd64" -o /tmp/sops
-      chmod +x /tmp/sops
+      .buildkite/sops.sh install
 
       echo "--- :chalk: Install Chalk CLI"
       export CHALK_INSTALL=/tmp/chalk-cli
@@ -148,9 +142,7 @@ steps:
       unset VIRTUAL_ENV
 
       echo "--- :gear: Install sops"
-      SOPS_VERSION=3.9.4
-      curl -fsSL "https://github.com/getsops/sops/releases/download/v$${SOPS_VERSION}/sops-v$${SOPS_VERSION}.linux.amd64" -o /tmp/sops
-      chmod +x /tmp/sops
+      .buildkite/sops.sh install
 
       echo "--- :key: Decrypt secrets"
       source .buildkite/select-env-file.sh "{{matrix}}"
@@ -167,7 +159,7 @@ steps:
       uv sync --locked --all-extras --reinstall-package chalkcompute
 
       echo "--- :floppy_disk: Run volume service integration tests ($$CHALK_API_SERVER)"
-      uv run python -m pytest e2etests/test_volume.py -v -s --tb=short
+      uv run python -m pytest e2etests/volume/test_volume.py -v -s --tb=short
     agents:
       queue: default
     timeout_in_minutes: 15
@@ -185,9 +177,7 @@ steps:
       unset VIRTUAL_ENV
 
       echo "--- :gear: Install sops"
-      SOPS_VERSION=3.9.4
-      curl -fsSL "https://github.com/getsops/sops/releases/download/v$${SOPS_VERSION}/sops-v$${SOPS_VERSION}.linux.amd64" -o /tmp/sops
-      chmod +x /tmp/sops
+      .buildkite/sops.sh install
 
       echo "--- :key: Decrypt secrets"
       source .buildkite/select-env-file.sh "{{matrix}}"
@@ -221,9 +211,7 @@ steps:
       unset VIRTUAL_ENV
 
       echo "--- :gear: Install sops"
-      SOPS_VERSION=3.9.4
-      curl -fsSL "https://github.com/getsops/sops/releases/download/v$${SOPS_VERSION}/sops-v$${SOPS_VERSION}.linux.amd64" -o /tmp/sops
-      chmod +x /tmp/sops
+      .buildkite/sops.sh install
 
       echo "--- :key: Decrypt secrets"
       source .buildkite/select-env-file.sh "{{matrix}}"
@@ -238,11 +226,27 @@ steps:
       echo "--- :package: Sync locked dependencies"
       uv sync --locked --all-extras --reinstall-package chalkcompute
 
+      echo "--- :package: Build deployable SDK wheel"
+      uv python install 3.14
+      sdk_python="$$(uv python find 3.14)"
+      wheel_dir="$$(mktemp -d)"
+      uvx --python "$$sdk_python" --from 'maturin>=1.7,<2' maturin build \
+        --release \
+        --out "$$wheel_dir" \
+        --interpreter "$$sdk_python"
+      sdk_wheels=("$$wheel_dir"/*.whl)
+      if [[ $${#sdk_wheels[@]} -ne 1 || ! -f "$${sdk_wheels[0]}" ]]; then
+        echo "Expected exactly one SDK wheel in $$wheel_dir" >&2
+        exit 1
+      fi
+      export CHALK_FUNCTION_LOCAL_SDK_WHEEL="$${sdk_wheels[0]}"
+      export CHALK_FUNCTION_STRIP_SOURCE=0
+
       echo "--- :brain: Deploy and test embedding functions"
       export OTEL_EXPORTER_OTLP_ENDPOINT=https://telemetry.chalk.ai:443
       export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
       export OTEL_SERVICE_NAME=chalkcompute-ci-embedding
-      CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest e2etests/test_embedding_function.py -v -s --tb=short
+      uv run python -m pytest e2etests/test_embedding_function.py -v -s --tb=short
     agents:
       queue: default
     timeout_in_minutes: 20
@@ -260,9 +264,7 @@ steps:
       unset VIRTUAL_ENV
 
       echo "--- :gear: Install sops"
-      SOPS_VERSION=3.9.4
-      curl -fsSL "https://github.com/getsops/sops/releases/download/v$${SOPS_VERSION}/sops-v$${SOPS_VERSION}.linux.amd64" -o /tmp/sops
-      chmod +x /tmp/sops
+      .buildkite/sops.sh install
 
       echo "--- :key: Decrypt secrets"
       source .buildkite/select-env-file.sh "{{matrix}}"
@@ -296,9 +298,7 @@ steps:
       unset VIRTUAL_ENV
 
       echo "--- :gear: Install sops"
-      SOPS_VERSION=3.9.4
-      curl -fsSL "https://github.com/getsops/sops/releases/download/v$${SOPS_VERSION}/sops-v$${SOPS_VERSION}.linux.amd64" -o /tmp/sops
-      chmod +x /tmp/sops
+      .buildkite/sops.sh install
 
       echo "--- :key: Decrypt secrets"
       source .buildkite/select-env-file.sh "{{matrix}}"
@@ -314,7 +314,7 @@ steps:
       uv sync --locked --all-extras --reinstall-package chalkcompute
 
       echo "--- :zap: Deploy and test scalar functions"
-      CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest e2etests/test_scalar.py -v -s --tb=short
+      CHALK_FUNCTION_STRIP_SOURCE=1 uv run python -m pytest e2etests/test_scalar.py e2etests/test_function_sandbox.py -v -s --tb=short
 
     agents:
       queue: default
@@ -333,9 +333,7 @@ steps:
       unset VIRTUAL_ENV
 
       echo "--- :gear: Install sops"
-      SOPS_VERSION=3.9.4
-      curl -fsSL "https://github.com/getsops/sops/releases/download/v$${SOPS_VERSION}/sops-v$${SOPS_VERSION}.linux.amd64" -o /tmp/sops
-      chmod +x /tmp/sops
+      .buildkite/sops.sh install
 
       echo "--- :key: Decrypt secrets"
       source .buildkite/select-env-file.sh "{{matrix}}"
@@ -361,14 +359,37 @@ steps:
         - exit_status: -1
           limit: 2
 
-  - wait: ~
-    continue_on_failure: true
+  - label: ":satellite: Scaling group startup probes ({{matrix}})"
+    matrix:
+      - "staging/ftqa"
+      - "meta-ci"
+    command: |
+      set -euo pipefail
+      unset VIRTUAL_ENV
 
-  - label: ":bar_chart: Trigger sandbox benchmarks"
-    trigger: "chalk-sandbox-sdk-sandbox-benchmark"
-    async: true
-    build:
-      branch: "${BUILDKITE_BRANCH}"
-      commit: "${BUILDKITE_COMMIT}"
-      env:
-        CHALK_TARGET_ENV: "${CHALK_TARGET_ENV:-}"
+      echo "--- :gear: Install sops"
+      .buildkite/sops.sh install
+
+      echo "--- :key: Decrypt secrets"
+      source .buildkite/select-env-file.sh "{{matrix}}"
+      /tmp/sops --input-type dotenv --output-type dotenv -d "$$ENV_FILE" > /tmp/test.env
+      set -a
+      source /tmp/test.env
+      set +a
+      rm /tmp/test.env
+      export CHALK_ACTIVE_ENVIRONMENT="$$CHALK_ENVIRONMENT_ID"
+
+      echo "--- :python: Bootstrap toolchain"
+      source .buildkite/install-uv.sh
+      echo "--- :package: Sync locked dependencies"
+      uv sync --locked --all-extras --reinstall-package chalkcompute
+
+      echo "--- :satellite: Deploy and test startup probes"
+      uv run python -m pytest e2etests/test_scaling_group_startup_probe.py -v -s --tb=short
+    agents:
+      queue: default
+    timeout_in_minutes: 20
+    retry:
+      automatic:
+        - exit_status: -1
+          limit: 2

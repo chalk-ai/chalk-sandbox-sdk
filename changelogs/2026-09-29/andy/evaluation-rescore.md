@@ -1,0 +1,2 @@
+- add `EvaluationRun.rescore()`, `Evaluation.rescore(run)`, and `EvaluationClient.rescore()`, which score a finished run's outputs again without re-running the task; `run.rescore(scorers=[...])` creates an evaluation with the same dataset revision, task and suite and the new scorers, and records the rescored run under it
+- regenerate the evaluation protobuf bindings for `RescoreEvaluationRun`

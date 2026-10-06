@@ -1,27 +1,28 @@
-"""
-Rich TUI progress display for chalkcompute deployments.
+"""Dependency-free deployment status output, separate from application logging.
 
-Activated when ``CHALK_SANDBOX_TUI=true`` is set in the environment.
-Shows a hierarchical spinner tree of all resources being deployed:
-images, volumes, secrets, containers, functions, and classes.
-
-Falls back to normal logger output when disabled or when Rich is not installed.
+Print only changed steps, with optional terminal color. Never rewrite previous
+lines, replace standard streams, or change application logging configuration.
 """
 
 from __future__ import annotations
 
-import logging
 import os
+import sys
 import threading
 from typing import Literal
 
-logger = logging.getLogger(__name__)
+from chalkcompute._terminal import (
+    encodable,
+    styled,
+    supports_color,
+)
 
 ResourceKind = Literal[
     "image",
     "volume",
     "secret",
     "container",
+    "scaling_group",
     "function",
     "class",
     "method",
@@ -29,36 +30,23 @@ ResourceKind = Literal[
 
 StepStatus = Literal["pending", "active", "done", "failed", "skipped"]
 
-_KIND_ICONS: dict[ResourceKind, str] = {
-    "image": "📦",
-    "volume": "💾",
-    "secret": "🔑",
-    "container": "🐳",
-    "function": "⚡",
-    "class": "🏗️",
-    "method": "  ↳",
-}
-
-_KIND_VERBS: dict[ResourceKind, str] = {
-    "image": "Building image",
-    "volume": "Creating volume",
-    "secret": "Resolving secret",
-    "container": "Starting container",
-    "function": "Deploying function",
-    "class": "Deploying class",
-    "method": "Registering method",
+_STATUS_MARKS: dict[StepStatus, tuple[str, str, str]] = {
+    "pending": ("·", ".", "2"),
+    "active": ("›", ">", "36"),
+    "done": ("✓", "+", "32"),
+    "failed": ("✗", "!", "31"),
+    "skipped": ("–", "-", "2"),
 }
 
 
 def tui_enabled() -> bool:
-    """Check whether the Rich TUI progress display is enabled.
+    """Show status in every environment unless explicitly disabled.
 
-    Returns
-    -------
-    bool
-        ``True`` when ``CHALK_SANDBOX_TUI`` is set to ``"true"`` or ``"1"``.
+    Terminal detection controls presentation only. Logging handlers and levels
+    never determine whether deployment status is visible.
     """
-    return os.environ.get("CHALK_SANDBOX_TUI", "").lower() in ("true", "1")
+    mode = os.environ.get("CHALK_SANDBOX_TUI", "auto").strip().lower()
+    return mode in ("auto", "true", "1")
 
 
 # ---------------------------------------------------------------------------
@@ -66,8 +54,26 @@ def tui_enabled() -> bool:
 # ---------------------------------------------------------------------------
 
 
+_TERMINAL_STATUSES: tuple[StepStatus, ...] = ("done", "failed", "skipped")
+
+
+def _skip_unfinished_descendants(state: "_ResourceState") -> None:
+    """Mark a terminal row's unfinished children as skipped.
+
+    An operation that has finished — successfully or not — has no steps still
+    running, so leaving descendants "active" would make the two terminality checks
+    disagree about whether the tree is idle.
+    """
+    pending = list(state.children)
+    while pending:
+        child = pending.pop()
+        if child.status not in _TERMINAL_STATUSES:
+            child.status = "skipped"
+        pending.extend(child.children)
+
+
 class _ResourceState:
-    __slots__ = ("kind", "label", "status", "detail", "children")
+    __slots__ = ("kind", "label", "status", "detail", "children", "last_rendered")
 
     def __init__(self, kind: ResourceKind, label: str) -> None:
         self.kind = kind
@@ -75,6 +81,7 @@ class _ResourceState:
         self.status: StepStatus = "active"
         self.detail: str = ""
         self.children: list[_ResourceState] = []
+        self.last_rendered: tuple[StepStatus, str, str, int] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -83,21 +90,19 @@ class _ResourceState:
 
 
 class DeployProgress:
-    """Thread-safe global progress tracker rendered via Rich ``Live``.
+    """Thread-safe deployment tracker that prints a line for each changed step.
 
-    Call ``add`` to register a resource, ``update`` to change its
-    status, and the display auto-refreshes. The Rich ``Live`` context is
-    started lazily on the first ``add`` and stopped when ``finish``
-    is called (or all resources reach a terminal state).
+    Completed lines remain in scrollback. There are no refresh threads, cursor
+    controls, or stream proxies, so warnings and application output stay intact.
     """
 
     def __init__(self) -> None:
         self._resources: dict[str, _ResourceState] = {}
         self._order: list[str] = []
         self._lock = threading.Lock()
-        self._live: Any = None  # rich.live.Live | None
         self._started = False
-        self._logger_suppressed = False
+        self._current_group: _ResourceState | None = None
+        self._current_label = ""
 
     # -- Public API --------------------------------------------------------
 
@@ -118,9 +123,9 @@ class DeployProgress:
         key
             Unique identifier for the resource.
         kind
-            Resource kind for icon selection.
+            Resource kind.
         label
-            Human-readable label shown next to the spinner.
+            Human-readable label shown next to the status marker.
         parent
             Optional key of an existing resource to nest under.
         status
@@ -129,6 +134,14 @@ class DeployProgress:
             Optional detail string rendered after the label.
         """
         with self._lock:
+            # A completed display remains reusable so a concurrent caller that
+            # obtained this singleton just before the previous operation finished
+            # cannot add rows to an orphaned tracker. Only finished operations
+            # are dropped: clearing wholesale would also discard the children of
+            # a root that is still running, and later updates to those keys
+            # would silently no-op instead of rendering.
+            if not self._started:
+                self._discard_finished_roots()
             state = _ResourceState(kind, label)
             state.status = status
             state.detail = detail
@@ -139,7 +152,7 @@ class DeployProgress:
             else:
                 self._order.append(key)
 
-            self._ensure_live()
+            self._start()
             self._refresh()
 
     def update(
@@ -169,6 +182,8 @@ class DeployProgress:
                 return
             if status is not None:
                 state.status = status
+                if status in _TERMINAL_STATUSES:
+                    _skip_unfinished_descendants(state)
             if detail is not None:
                 state.detail = detail
             if label is not None:
@@ -176,128 +191,142 @@ class DeployProgress:
             self._refresh()
 
     def finish(self) -> None:
-        """Stop the Live display and restore logger output."""
+        """Finish the current group of operations."""
         with self._lock:
-            self._stop_live()
+            self._stop()
+
+    def finish_if_idle(self) -> None:
+        """Stop the display only when every top-level operation is terminal.
+
+        A terminal row's unfinished children are marked skipped as they are set
+        (see :func:`_skip_unfinished_descendants`), so a terminal root always
+        has a fully terminal subtree and this agrees with the check that
+        :meth:`_discard_finished_roots` makes.
+        """
+        with self._lock:
+            if self._all_roots_terminal():
+                self._stop()
+
+    def _all_roots_terminal(self) -> bool:
+        return all(
+            self._resources[key].status in _TERMINAL_STATUSES for key in self._order
+        )
+
+    def _discard_finished_roots(self) -> None:
+        """Drop rows belonging to top-level operations that already finished.
+
+        A root counts as finished only when every row in its subtree is
+        terminal. A root can reach ``failed`` while a child is still active
+        (see ``finish_if_idle``), and that child's later update must still
+        find its state rather than silently no-op.
+        """
+        stale: set[int] = set()
+        finished: set[str] = set()
+        for key in self._order:
+            subtree: list[_ResourceState] = []
+            pending = [self._resources[key]]
+            while pending:
+                state = pending.pop()
+                if any(state is seen for seen in subtree):
+                    continue
+                subtree.append(state)
+                pending.extend(state.children)
+            if any(state.status not in _TERMINAL_STATUSES for state in subtree):
+                continue
+            finished.add(key)
+            stale.update(id(state) for state in subtree)
+
+        if not finished:
+            return
+
+        self._order = [key for key in self._order if key not in finished]
+        self._resources = {
+            key: state
+            for key, state in self._resources.items()
+            if id(state) not in stale
+        }
 
     # -- Rendering ---------------------------------------------------------
 
-    def _render(self) -> Any:
-        from rich.table import Table
-
-        grid = Table.grid(padding=(0, 0))
-        grid.add_column(width=3)  # icon
-        grid.add_column(width=3)  # status
-        grid.add_column()  # label + detail
-
-        for key in self._order:
-            state = self._resources[key]
-            self._render_row(grid, state, indent=0)
-
-        return grid
-
-    def _render_row(self, grid: Any, state: _ResourceState, indent: int) -> None:
-        from rich.spinner import Spinner
-        from rich.table import Table
-        from rich.text import Text
-
-        icon_str = _KIND_ICONS.get(state.kind, " ")
-        prefix = "  " * indent
-
-        if state.status == "active":
-            status_widget = Spinner("dots", style="cyan")
-        elif state.status == "done":
-            status_widget = Text("✓", style="bold green")
-        elif state.status == "failed":
-            status_widget = Text("✗", style="bold red")
-        elif state.status == "skipped":
-            status_widget = Text("–", style="dim")
-        else:  # pending
-            status_widget = Text("◌", style="dim")
-
-        label = state.label
-        if state.detail:
-            label = f"{label} — {state.detail}"
-
-        style = "dim" if state.status == "pending" else ""
-        if state.status == "failed":
-            style = "red"
-
-        icon_col = Text(f"{prefix}{icon_str}")
-        label_col = Text(f" {label}", style=style)
-
-        # Build a tight status + label row
-        row = Table.grid(padding=(0, 1))
-        row.add_column(width=2)
-        row.add_column()
-        row.add_row(status_widget, label_col)
-
-        grid.add_row(icon_col, Text(""), row)
-
-        for child in state.children:
-            self._render_row(grid, child, indent=indent + 1)
-
-    # -- Live management ---------------------------------------------------
-
-    def _ensure_live(self) -> None:
-        """Start the Rich ``Live`` display if not already started."""
-        if self._started:
-            return
-        try:
-            from rich.live import Live
-
-            self._live = Live(
-                self._render(),
-                refresh_per_second=12,
-                transient=False,
-            )
-            self._live.start()
-            self._started = True
-            self._suppress_logger()
-        except ImportError:
-            pass
-
     def _refresh(self) -> None:
-        if self._live is not None:
+        stream = sys.stdout
+        color = supports_color(stream)
+        lines: list[str] = []
+        for key in self._order:
+            root = self._resources[key]
+            continued = root.last_rendered is not None
+            changes: list[tuple[_ResourceState, int]] = []
+            pending = [(root, 0)]
+            while pending:
+                state, depth = pending.pop()
+                pending.extend((child, depth + 1) for child in reversed(state.children))
+                snapshot = (state.status, state.label, state.detail, depth)
+                if snapshot != state.last_rendered:
+                    state.last_rendered = snapshot
+                    changes.append((state, depth))
+            if not changes:
+                continue
+
+            label = " ".join(root.label.split())
+            if self._current_group is not root or self._current_label != label:
+                heading = styled(label, "1", color=color)
+                if continued:
+                    heading += styled(" (continued)", "2", color=color)
+                lines.append(encodable(heading, stream))
+                self._current_group = root
+                self._current_label = label
+
+            # Close the group after its last child, including children skipped
+            # when the parent fails. No step should appear below the end marker.
+            if root.status in _TERMINAL_STATUSES:
+                changes.sort(key=lambda item: item[0] is root)
+            for state, depth in changes:
+                detail = " ".join(state.detail.split())
+                is_root = state is root
+                terminal = is_root and state.status in _TERMINAL_STATUSES
+                if is_root:
+                    if terminal:
+                        label = {
+                            "done": "Done",
+                            "failed": "Failed",
+                            "skipped": "Skipped",
+                        }[state.status]
+                        if state.status == "done" and detail in ("ready", "running"):
+                            label, detail = detail.capitalize(), ""
+                    else:
+                        if not detail:
+                            continue  # The heading already introduces the operation.
+                        label, detail = detail, ""
+                else:
+                    label = " ".join(state.label.split())
+                mark, fallback, code = _STATUS_MARKS[state.status]
+                if encodable(mark, stream) != mark:
+                    mark = fallback
+                branch = "└" if terminal else "│"
+                if encodable(branch, stream) != branch:
+                    branch = "`" if terminal else "|"
+                prefix = "  " + styled(branch, "2", color=color) + " "
+                prefix += "  " * max(0, depth - 1)
+                line = prefix + styled(mark, code, color=color) + " " + label
+                if detail:
+                    separator = "—" if encodable("—", stream) == "—" else "-"
+                    line += styled(f" {separator} {detail}", "2", color=color)
+                lines.append(encodable(line, stream))
+        if lines:
             try:
-                self._live.update(self._render())
-            except Exception:
+                stream.write("\n".join(lines) + "\n")
+                stream.flush()
+            except (OSError, ValueError):
+                # A closed/redirected console must not fail a deployment.
                 pass
 
-    def _stop_live(self) -> None:
-        if self._live is not None:
-            try:
-                self._live.update(self._render())
-                self._live.stop()
-            except Exception:
-                pass
-            self._live = None
+    def _start(self) -> None:
+        self._started = True
+
+    def _stop(self) -> None:
         self._started = False
-        self._restore_logger()
-
-    # Loggers to suppress while the TUI is rendering.  httpx/httpcore are
-    # particularly noisy ("HTTP Request: POST ...") and corrupt the display.
-    _SUPPRESSED_LOGGERS = ("chalkcompute", "httpx", "httpcore")
-
-    def _suppress_logger(self) -> None:
-        """Suppress noisy loggers while the TUI is active."""
-        if self._logger_suppressed:
-            return
-        self._saved_levels: dict[str, int] = {}
-        for name in self._SUPPRESSED_LOGGERS:
-            lg = logging.getLogger(name)
-            self._saved_levels[name] = lg.level
-            lg.setLevel(logging.CRITICAL + 1)
-        self._logger_suppressed = True
-
-    def _restore_logger(self) -> None:
-        """Restore logger levels saved before suppression."""
-        if not self._logger_suppressed:
-            return
-        for name, level in self._saved_levels.items():
-            logging.getLogger(name).setLevel(level)
-        self._saved_levels = {}
-        self._logger_suppressed = False
+        self._current_group = None
+        self._current_label = ""
 
 
 # ---------------------------------------------------------------------------
@@ -317,9 +346,14 @@ def get_progress() -> DeployProgress | None:
         The singleton tracker, or ``None`` if the TUI is disabled.
     """
     global _global_progress
-    if not tui_enabled():
-        return None
     with _global_lock:
+        if not tui_enabled():
+            # Progress may be disabled while a deployment is running.
+            # Discard its display state in that case.
+            if _global_progress is not None:
+                _global_progress.finish()
+                _global_progress = None
+            return None
         if _global_progress is None:
             _global_progress = DeployProgress()
         return _global_progress
@@ -355,7 +389,7 @@ def progress_add(
     key
         Unique identifier for the resource.
     kind
-        Resource kind for icon selection.
+        Resource kind.
     label
         Human-readable label.
     parent
@@ -422,9 +456,7 @@ def progress_fail(key: str, *, detail: str = "") -> None:
 
 
 def progress_finish() -> None:
-    """Stop the global progress display."""
-    reset_progress()
-
-
-# Keep the old import name alive but unused (backwards compat)
-from typing import Any  # noqa: E402
+    """Stop the global display after all concurrent operations finish."""
+    p = get_progress()
+    if p is not None:
+        p.finish_if_idle()

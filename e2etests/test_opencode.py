@@ -1,15 +1,15 @@
 """End-to-end tests for the opencode example.
 
 Proves that:
-  1. A container can be stood up and the opencode server started successfully.
-  2. The server's public web URL is reachable from outside the container.
+  1. A sandbox can be stood up and the opencode server started successfully.
+  2. The server's public web URL is reachable from outside the sandbox.
 """
 
 import sys
 import uuid
 from collections.abc import Generator
 
-import httpx
+from pyqwest import SyncClient
 import pytest
 from chalkcompute import Container
 
@@ -44,20 +44,21 @@ def opencode_container() -> Generator[Container, None, None]:
             f"python3 -m http.server {OPENCODE_PORT} --bind 0.0.0.0 &>/dev/null"
             f" & echo $! > /tmp/http_server.pid; tail -f /dev/null",
         ],
-    ).run()
+        lifetime="600s",
+    )
     try:
+        container.run()
         clone_repo(container, TEST_REPO, TEST_REF, token=None)
         start_server(container)
-    except Exception:
-        container.stop()
-        raise
-    yield container
-    container.stop()
+        yield container
+    finally:
+        if container.id is not None:
+            container.stop()
 
 
 @needs_staging
 def test_server_responds_on_localhost(opencode_container: Container) -> None:
-    """opencode serve is reachable on localhost inside the container."""
+    """opencode serve is reachable on localhost inside the sandbox."""
     result = opencode_container.exec(
         "bash",
         "-c",
@@ -73,10 +74,8 @@ def test_server_responds_on_localhost(opencode_container: Container) -> None:
 
 @needs_staging
 def test_public_web_url_is_accessible(opencode_container: Container) -> None:
-    """The container's public web URL responds to requests from outside the container."""
+    """The sandbox's public web URL responds to requests from outside the sandbox."""
     web_url = opencode_container.info.web_url if opencode_container.info else None
-    assert web_url, (
-        "No web_url returned — the container port may not be publicly exposed"
-    )
-    resp = httpx.get(web_url, timeout=15, follow_redirects=True)
-    assert resp.status_code < 500, f"Server at {web_url} returned {resp.status_code}"
+    assert web_url, "No web_url returned — the sandbox port may not be publicly exposed"
+    resp = SyncClient().get(web_url, timeout=15)
+    assert resp.status < 500, f"Server at {web_url} returned {resp.status}"
