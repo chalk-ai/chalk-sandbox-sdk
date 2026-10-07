@@ -68,7 +68,7 @@ from protobuf import Oneof
 from protobuf.wkt import FieldMask
 
 from chalkcompute import _local_dev
-from chalkcompute._async import _has_running_event_loop, _run_in_worker_thread
+from chalkcompute._async_utils import _has_running_event_loop, _run_in_worker_thread
 from chalkcompute._client_cache import ClientCache
 from chalkcompute._gather import gather_handles
 from chalkcompute._logging import _StatusLogger

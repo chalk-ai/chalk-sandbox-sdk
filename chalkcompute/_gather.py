@@ -5,7 +5,7 @@ import inspect
 from collections.abc import Iterable
 from typing import Any, Protocol
 
-from chalkcompute._async import _has_running_event_loop, _run_in_worker_thread
+from chalkcompute._async_utils import _has_running_event_loop, _run_in_worker_thread
 
 
 class _DeferredCallHandle(Protocol):

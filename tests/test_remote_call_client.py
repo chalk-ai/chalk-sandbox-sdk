@@ -12,7 +12,7 @@ from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
 
 import chalkcompute._function as function_mod
-from chalkcompute._async import _run_in_worker_thread
+from chalkcompute._async_utils import _run_in_worker_thread
 from chalkcompute._function import (
     FunctionError,
     FunctionVersionInfo,
