@@ -1250,9 +1250,20 @@ class TestImageAgentHelpers:
         assert json.loads((tmp_path / ".claude.json").read_text()) == {
             "hasCompletedOnboarding": True,
             "hasSeenAutoDefaultNudge": True,
+            "theme": "dark",
             "projects": {path: {"hasTrustDialogAccepted": True} for path in trusted},
         }
         assert not (tmp_path / "injected").exists()
+
+    def test_with_claude_code_sets_theme(self) -> None:
+        command = _last_command(Image.sandbox().with_claude_code(theme="light-ansi"))
+        assert '"theme": "light-ansi"' in command
+
+    def test_with_claude_code_disables_nonessential_traffic_by_default(self) -> None:
+        env = Image.sandbox().env({"A": "1"}).with_claude_code()._env
+        assert env == {"A": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
+        image = Image.sandbox().with_claude_code(disable_nonessential_traffic=False)
+        assert "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC" not in image._env
 
     def test_with_claude_code_writes_settings(self, tmp_path) -> None:
         import subprocess
@@ -1321,6 +1332,7 @@ class TestImageAgentHelpers:
             {"permission_mode": "yolo"},
             {"api_key_env": "KEY; rm -rf /"},
             {"api_key_env": ""},
+            {"theme": "solarized"},
         ],
     )
     def test_with_claude_code_rejects_invalid_options(self, kwargs) -> None:

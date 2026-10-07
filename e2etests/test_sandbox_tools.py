@@ -114,8 +114,13 @@ def test_sandbox_agent_tools_image():
             assert json.loads(config.stdout_text) == {
                 "hasCompletedOnboarding": True,
                 "hasSeenAutoDefaultNudge": True,
+                "theme": "dark",
                 "projects": {"/workspace/app": {"hasTrustDialogAccepted": True}},
             }
+            traffic = sandbox.exec(
+                "printenv", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
+            )
+            assert traffic.stdout_text.strip() == "1"
             settings = sandbox.exec("cat", "/root/.claude/settings.json")
             assert json.loads(settings.stdout_text) == {
                 "permissions": {"defaultMode": "bypassPermissions"},

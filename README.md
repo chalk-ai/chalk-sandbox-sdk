@@ -287,8 +287,16 @@ The bypass-permissions warning is skipped by default
 sets `IS_SANDBOX=1` in every sandbox. If you supply `ANTHROPIC_API_KEY` instead
 of `CLAUDE_CODE_OAUTH_TOKEN`, pass `api_key_env="ANTHROPIC_API_KEY"` to skip the
 key-approval prompt. Anything else goes in `settings`, which is merged into
-`~/.claude/settings.json`. See the `with_claude_code` docstring for how
-directory trust works.
+`~/.claude/settings.json`. The theme defaults to `"dark"` (`theme=`), and
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` is set in the image so telemetry
+and update checks don't hit hosts a network policy blocks
+(`disable_nonessential_traffic=False` to keep them). See the `with_claude_code`
+docstring for how directory trust works.
+
+To keep the token itself out of the sandbox, use `add_credentials` (see
+[Environment and secrets](#environment-variables-and-secrets)):
+`sandbox.add_credentials("api.anthropic.com",
+Secret.from_chalk_env("CLAUDE_TOKEN", alias="CLAUDE_CODE_OAUTH_TOKEN"))`.
 
 Set Git identity per sandbox, not per image, with `GitConfig`. It is a mapping
 of `GIT_*` environment variables, so it can be unpacked into `env`:

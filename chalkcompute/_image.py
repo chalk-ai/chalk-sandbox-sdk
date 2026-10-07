@@ -539,6 +539,16 @@ class Image:
         skip_dangerous_mode_prompt: bool = True,
         api_key_env: str | None = None,
         settings: Mapping[str, Any] | None = None,
+        theme: Literal[
+            "auto",
+            "dark",
+            "light",
+            "dark-daltonized",
+            "light-daltonized",
+            "dark-ansi",
+            "light-ansi",
+        ] = "dark",
+        disable_nonessential_traffic: bool = True,
     ) -> Image:
         """Install Claude Code and skip its first-run prompts.
 
@@ -553,8 +563,9 @@ class Image:
 
         * ``~/.claude.json`` marks onboarding as done (the onboarding flow
           otherwise ignores a token supplied at runtime), accepts the trust
-          prompt for ``trusted_dirs``, and dismisses the one-time "make auto
-          mode your default?" offer shown in bypass-permissions mode.
+          prompt for ``trusted_dirs``, dismisses the one-time "make auto
+          mode your default?" offer shown in bypass-permissions mode, and
+          sets ``theme``.
         * ``~/.claude/settings.json`` holds ``permission_mode``,
           ``skip_dangerous_mode_prompt``, ``api_key_env`` and ``settings``.
 
@@ -610,6 +621,16 @@ class Image:
             as ``{"model": "opus"}``. They override the settings derived from
             the other arguments. See Claude Code's settings documentation for
             the available keys.
+        theme
+            Color theme. Defaults to ``"dark"``; ``"auto"`` follows the
+            terminal.
+        disable_nonessential_traffic
+            Set ``CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`` in the image,
+            which turns off telemetry, error reporting, auto-update checks and
+            other calls that aren't needed to talk to the model. Defaults to
+            ``True``, so a sandbox whose network policy allows only the model
+            API doesn't spend time on blocked requests. Override it per
+            sandbox through ``env``.
 
         Examples
         --------
@@ -644,6 +665,10 @@ class Image:
             raise ValueError("api_key_env must be an environment variable name")
         if settings is not None and not isinstance(settings, Mapping):
             raise TypeError("settings must be a mapping, such as {'model': 'opus'}")
+        if theme not in _CLAUDE_THEMES:
+            raise ValueError(
+                f"theme must be one of {', '.join(sorted(_CLAUDE_THEMES))}"
+            )
         package = "claude-code"
         if version is not None:
             version = _validate_version(version)
@@ -652,6 +677,7 @@ class Image:
             {
                 "hasCompletedOnboarding": True,
                 "hasSeenAutoDefaultNudge": True,
+                "theme": theme,
                 "projects": {
                     path: {"hasTrustDialogAccepted": True} for path in trusted_dirs
                 },
@@ -672,13 +698,16 @@ class Image:
                 + shlex.quote(json.dumps(user_settings))
                 + ' > "$HOME/.claude/settings.json"'
             )
-        return self._apt_repo_install(
+        image = self._apt_repo_install(
             key_url="https://downloads.claude.ai/keys/claude-code.asc",
             keyring="/etc/apt/keyrings/claude-code.asc",
             repo="https://downloads.claude.ai/claude-code/apt/latest latest main",
             list_name="claude-code",
             package=package,
         ).run_commands(command)
+        if disable_nonessential_traffic:
+            image = image.env({"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"})
+        return image
 
     def _apt_repo_install(
         self, *, key_url: str, keyring: str, repo: str, list_name: str, package: str
@@ -1448,6 +1477,17 @@ class Image:
 
 _CLAUDE_MODES = frozenset(
     {"default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"}
+)
+_CLAUDE_THEMES = frozenset(
+    {
+        "auto",
+        "dark",
+        "light",
+        "dark-daltonized",
+        "light-daltonized",
+        "dark-ansi",
+        "light-ansi",
+    }
 )
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
