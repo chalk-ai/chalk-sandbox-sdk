@@ -15,7 +15,7 @@ import importlib
 import inspect
 import os
 import weakref
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from typing import Any, NamedTuple, TypeVar, cast, overload
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -544,7 +544,7 @@ def has_trace_metadata(metadata: list[tuple[str, str]]) -> bool:
 
 
 @contextlib.contextmanager
-def _span(name: str) -> Iterator[Any]:
+def _span(name: str) -> Generator[Any, None, None]:
     if _is_remote_tracing_off():
         yield None
         return
@@ -686,7 +686,9 @@ def traced(arg: str | F | None = None) -> Callable[[F], F] | F:
 
 
 @contextlib.contextmanager
-def remote_function_call_span(function_name: str, call_type: str) -> Iterator[Any]:
+def remote_function_call_span(
+    function_name: str, call_type: str
+) -> Generator[Any, None, None]:
     """Trace one outbound call from this process to another compute function."""
     if _is_remote_tracing_off() or not has_current_trace_context():
         yield None
