@@ -5,7 +5,7 @@
 | Git | `sandbox.git`: clone/init, staging/commit, status, branches, fetch/pull/push, reset/restore, remotes, local config and identity. |
 | Processes | `exec`, `exec_stream`, `exec_start`, stdin, signals, reconnectable buffered output. Container sessions separately expose PTYs and session discovery. |
 | Code execution | Stateful `execute_python` with sessions and artifacts. Other installed runtimes can be invoked with `exec`. |
-| System tools | `Image.sandbox().apt_install(["tmux"])` installs tools at build time. Detached tmux sessions are managed with ordinary exec calls. |
+| System tools | `Image.sandbox().apt_install(["tmux"])` installs tools at build time; `with_tmux()`, `with_gh()` and `with_claude_code()` install common agent tooling. `GitConfig(name=..., email=...)` is a mapping of Git env vars to unpack into `env`. Detached tmux sessions are managed with ordinary exec calls. |
 | Resources | Creation-time CPU/memory/GPU, env/Secret references, volume mounts, lifetime, tags, network policy, published port and managed outbound SSH. |
 | Tracing | `tracing=True` / `TracingPolicy(sample_rate=...)` / `False` at creation; the caller's trace context rides every RPC and reaches each `exec` as `TRACEPARENT`. |
 

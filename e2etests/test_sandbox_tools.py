@@ -76,3 +76,43 @@ def test_sandbox_tmux_image():
         finally:
             if sandbox.id is not None:
                 sandbox.terminate()
+
+
+@needs_staging
+def test_sandbox_agent_tools_image():
+    import json
+
+    from chalkcompute import GitConfig, Image
+
+    with SandboxClient.from_env() as client:
+        sandbox = Sandbox(
+            image=Image.sandbox()
+            .with_claude_code("2.1.270", trusted_dirs=["/workspace/app"])
+            .with_gh()
+            .with_tmux(),
+            name=build_scoped_name("sandbox-agent-tools"),
+            env={**GitConfig("Sandbox Bot", "bot@example.com")},
+            lifetime="600s",
+            sandbox_client=client,
+        )
+        try:
+            sandbox.run(timeout=600)
+            claude = sandbox.exec("claude", "--version")
+            assert claude.exit_code == 0, claude.stderr_text
+            assert claude.stdout_text.startswith("2.1.270")
+            assert sandbox.exec("which", "node").exit_code != 0
+            gh = sandbox.exec("gh", "--version")
+            assert gh.exit_code == 0, gh.stderr_text
+            assert gh.stdout_text.startswith("gh version ")
+            tmux = sandbox.exec("tmux", "-V")
+            assert tmux.exit_code == 0, tmux.stderr_text
+            config = sandbox.exec("cat", "/root/.claude.json")
+            assert json.loads(config.stdout_text) == {
+                "hasCompletedOnboarding": True,
+                "projects": {"/workspace/app": {"hasTrustDialogAccepted": True}},
+            }
+            ident = sandbox.exec("git", "var", "GIT_AUTHOR_IDENT")
+            assert ident.stdout_text.startswith("Sandbox Bot <bot@example.com> ")
+        finally:
+            if sandbox.id is not None:
+                sandbox.terminate()

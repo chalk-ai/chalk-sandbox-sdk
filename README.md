@@ -254,6 +254,41 @@ img = (
 )
 ```
 
+### Coding agent tools
+
+`with_claude_code`, `with_gh` and `with_tmux` install common agent tooling on
+Debian or Ubuntu images. `with_claude_code` installs the native binary from
+Anthropic's apt repository, pins the version (apt installs don't auto-update),
+and pre-accepts Claude Code's onboarding and trust prompts for the directories
+you list, so interactive `claude` starts without a login screen:
+
+```python
+image = (
+    Image.sandbox()
+    .with_claude_code(version="2.1.270", trusted_dirs=["/workspace/app"])
+    .with_gh()  # from GitHub's apt repo; authenticates from GH_TOKEN
+    .with_tmux()
+    .workdir("/workspace/app")
+)
+```
+
+Set Git identity per sandbox, not per image, with `GitConfig`. It is a mapping
+of `GIT_*` environment variables, so it can be unpacked into `env`:
+
+```python
+sandbox = Sandbox(
+    image=image,
+    env={
+        **GitConfig(
+            name="Ada Lovelace",
+            email="ada@example.com",
+            config={"pull.rebase": "true"},
+        ),
+        "LOG_LEVEL": "debug",
+    },
+).run()
+```
+
 ### Immutable composition
 
 Each builder method returns a new `Image`, so intermediate images can be shared:

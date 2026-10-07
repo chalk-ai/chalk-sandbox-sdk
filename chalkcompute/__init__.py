@@ -141,6 +141,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "GitFileStatus": ("chalkcompute._sandbox_git", "GitFileStatus"),
     "GitStatus": ("chalkcompute._sandbox_git", "GitStatus"),
     "GitRemote": ("chalkcompute._sandbox_git", "GitRemote"),
+    "GitConfig": ("chalkcompute._git", "GitConfig"),
     "GitError": ("chalkcompute._git", "GitError"),
     # _sandbox.py
     "ExecError": ("chalkcompute._sandbox", "ExecError"),

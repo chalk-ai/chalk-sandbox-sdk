@@ -484,6 +484,137 @@ class Image:
             + " && rm -rf /var/lib/apt/lists/*"
         )
 
+    def with_tmux(self) -> Image:
+        """Install tmux with :meth:`apt_install`.
+
+        Examples
+        --------
+        >>> image = Image.sandbox().with_tmux()
+        >>> sandbox = Sandbox(image=image).run()
+        >>> sandbox.exec("tmux", "new-session", "-d", "-s", "work")
+        """
+        return self.apt_install(["tmux"])
+
+    def with_gh(self, version: str | None = None) -> Image:
+        """Install the GitHub CLI from GitHub's apt repository.
+
+        Debian's ``gh`` package lags upstream, so this adds
+        ``cli.github.com/packages`` and installs from it. Requires ``apt-get``
+        and a root build user. Set ``GH_TOKEN`` at runtime to authenticate.
+
+        Parameters
+        ----------
+        version
+            Optional ``gh`` version, such as ``"2.62.0"``. Defaults to the
+            latest release when the image is first built.
+
+        Examples
+        --------
+        >>> image = Image.sandbox().with_gh()
+        >>> sandbox = Sandbox(
+        ...     image=image,
+        ...     secrets=[Secret.from_chalk_env("GITHUB_PAT", alias="GH_TOKEN")],
+        ... ).run()
+        >>> sandbox.exec("gh", "pr", "list")
+        """
+        package = "gh" if version is None else f"gh={_validate_version(version)}"
+        return self._apt_repo_install(
+            key_url="https://cli.github.com/packages/githubcli-archive-keyring.gpg",
+            keyring="/etc/apt/keyrings/githubcli-archive-keyring.gpg",
+            repo="https://cli.github.com/packages stable main",
+            list_name="github-cli",
+            package=package,
+        )
+
+    def with_claude_code(
+        self,
+        version: str | None = None,
+        *,
+        trusted_dirs: Sequence[str] = (),
+    ) -> Image:
+        """Install Claude Code and skip its first-run prompts.
+
+        Installs the native ``claude`` binary from Anthropic's signed apt
+        repository, so any Debian or Ubuntu base works without Node.js.
+        Requires ``apt-get`` and a root build user. Apt installs do not
+        auto-update, so a pinned version stays pinned in running sandboxes.
+        Also writes ``~/.claude.json`` for the build user so that interactive
+        ``claude`` starts without the onboarding flow, which otherwise ignores
+        a ``CLAUDE_CODE_OAUTH_TOKEN`` or ``ANTHROPIC_API_KEY`` supplied at
+        runtime.
+
+        Parameters
+        ----------
+        version
+            Optional Claude Code version, such as ``"2.1.270"``. Defaults to
+            the latest release when the image is first built. Pin a version
+            for reproducible images. The Debian revision ``-1`` is assumed
+            unless the version includes one.
+        trusted_dirs
+            Absolute directories to pre-accept in Claude Code's "trust the
+            files in this folder" prompt. Use the directory ``claude`` is
+            started from. Only trust repositories whose Claude settings and
+            hooks you are willing to run.
+
+        Examples
+        --------
+        >>> image = (
+        ...     Image.sandbox()
+        ...     .with_claude_code(version="2.1.270", trusted_dirs=["/workspace/app"])
+        ...     .with_gh()
+        ...     .with_tmux()
+        ...     .workdir("/workspace/app")
+        ... )
+        """
+        if isinstance(trusted_dirs, (str, bytes)) or not isinstance(
+            trusted_dirs, Sequence
+        ):
+            raise TypeError(
+                "trusted_dirs must be a sequence of paths, such as ['/workspace/app']"
+            )
+        for path in trusted_dirs:
+            if not isinstance(path, str) or not path.startswith("/") or "\0" in path:
+                raise ValueError("each trusted dir must be an absolute path")
+        package = "claude-code"
+        if version is not None:
+            version = _validate_version(version)
+            package += "=" + (version if "-" in version else version + "-1")
+        config = json.dumps(
+            {
+                "hasCompletedOnboarding": True,
+                "projects": {
+                    path: {"hasTrustDialogAccepted": True} for path in trusted_dirs
+                },
+            }
+        )
+        return self._apt_repo_install(
+            key_url="https://downloads.claude.ai/keys/claude-code.asc",
+            keyring="/etc/apt/keyrings/claude-code.asc",
+            repo="https://downloads.claude.ai/claude-code/apt/latest latest main",
+            list_name="claude-code",
+            package=package,
+        ).run_commands(
+            "printf '%s\\n' " + shlex.quote(config) + ' > "$HOME/.claude.json"'
+        )
+
+    def _apt_repo_install(
+        self, *, key_url: str, keyring: str, repo: str, list_name: str, package: str
+    ) -> Image:
+        """Add a signed third-party apt repository and install one package."""
+        return self.run_commands(
+            "apt-get update && DEBIAN_FRONTEND=noninteractive "
+            "apt-get install -y --no-install-recommends ca-certificates curl"
+            " && install -d -m 755 /etc/apt/keyrings"
+            f" && curl -fsSL {key_url} -o {keyring}"
+            f" && chmod go+r {keyring}"
+            f' && echo "deb [signed-by={keyring}] {repo}"'
+            f" > /etc/apt/sources.list.d/{list_name}.list"
+            " && apt-get update && DEBIAN_FRONTEND=noninteractive "
+            "apt-get install -y --no-install-recommends -- "
+            + shlex.quote(package)
+            + " && rm -rf /var/lib/apt/lists/*"
+        )
+
     def uv_pip_install(self, packages: Sequence[str]) -> Image:
         """Install Python packages via ``uv pip install``.
 
@@ -1230,6 +1361,17 @@ class Image:
             parts.append(f", env={self._env!r}")
         parts.append(")")
         return "".join(parts)
+
+
+def _validate_version(version: str) -> str:
+    if (
+        not isinstance(version, str)
+        or not version
+        or version.startswith("-")
+        or any(c.isspace() or c == "\0" for c in version)
+    ):
+        raise ValueError(f"invalid version {version!r}")
+    return version
 
 
 def _validate_lazy_local_file_destination(
