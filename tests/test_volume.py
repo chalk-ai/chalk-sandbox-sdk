@@ -415,6 +415,42 @@ def test_cleanup_retains_shared_sources_and_deletes_legacy_uploads():
     client.delete_volume.assert_called_once_with(legacy.name)
 
 
+@pytest.mark.parametrize(
+    "name", ["retained-assets", "custom-cache", "sandbox-files-shared"]
+)
+def test_cleanup_never_deletes_custom_named_image_snapshots(name):
+    client = MagicMock()
+    snapshot = VolumeMount(name, "/app", version_id=12)
+    other_image = VolumeMount(name, "/other", version_id=11)
+    mutable = VolumeMount("custom-source", "/opt", ref_name="main")
+
+    vv.cleanup_owned_volumes(client, [snapshot, other_image, mutable], [])
+
+    client.delete_volume.assert_not_called()
+    client._delete_ref.assert_not_called()
+
+
+def test_cleanup_releases_only_one_workloads_fork_of_shared_image():
+    client = MagicMock()
+    first = VolumeMount("retained-assets", "/app", ref_name="cc-workload-first")
+    second = VolumeMount("retained-assets", "/app", ref_name="cc-workload-second")
+    pinned = VolumeMount("retained-assets", "/app", version_id=12)
+
+    vv.cleanup_owned_volumes(client, [first, first, second, pinned], [second])
+
+    client._delete_ref.assert_called_once_with(first.name, first.ref_name)
+    client.delete_volume.assert_not_called()
+
+
+def test_cleanup_deletes_a_legacy_volume_only_once():
+    client = MagicMock()
+    legacy = VolumeMount("container-files-old", "/app")
+
+    vv.cleanup_owned_volumes(client, [legacy, legacy], [])
+
+    client.delete_volume.assert_called_once_with(legacy.name)
+
+
 def test_scaling_group_deploy_forks_and_retains_lazy_sources(tmp_path, monkeypatch):
     from chalkcompute import Image, ScalingGroup
     from chalkcompute import _scaling_group as sg_mod

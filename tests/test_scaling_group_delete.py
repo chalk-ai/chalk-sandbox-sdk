@@ -60,7 +60,10 @@ def test_delete_cleans_up_revision_volumes(
     ] == VolumeMount(volume.name, "/app", version_id=version_id, ref_name=ref_name)
     group.delete()
 
-    driver.delete_volume.assert_called_once_with(volume.name)
+    if version_id is None:
+        driver.delete_volume.assert_called_once_with(volume.name)
+    else:
+        driver.delete_volume.assert_not_called()
     assert client.calls[-1].method == "delete_scaling_group"
     assert group.id is None
     assert group.info is None

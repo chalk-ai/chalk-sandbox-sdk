@@ -48,6 +48,12 @@ MOUNT_TYPE = "versioned_chalkfs"
 
 _SHARED_SOURCE_VOLUME_PREFIX = "cc-image-"
 _WORKLOAD_FORK_PREFIX = "cc-w-"
+_LEGACY_UPLOAD_PREFIXES = (
+    "files-",
+    "sandbox-files-",
+    "container-files-",
+    "chalkcompute-sg-files-",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1501,8 +1507,10 @@ class VolumeClient:
         shares volumes with Image.build().
         Each destination directory mounts its own resolved version of that volume.
 
-        Existing content is reused without re-uploading. New versions replace
-        the entire tree. Shared source volumes survive workload cleanup.
+        Existing content is reused without re-uploading. Each new snapshot
+        contains exactly the supplied files. Removing a file creates a new
+        snapshot without changing snapshots retained by other images.
+        Shared source volumes survive workload cleanup.
 
         Parameters
         ----------
@@ -2354,17 +2362,21 @@ def cleanup_owned_volumes(
     all_volumes: Iterable[VolumeMount],
     referenced_volumes: Iterable[VolumeMount],
 ) -> None:
-    """Delete owned forks and disposable volumes, retaining shared sources.
+    """Delete owned forks and legacy uploads, retaining shared snapshots.
 
     ``all_volumes`` contains both volumes the SDK uploaded (e.g. for an
     image's lazy local files) and volumes the caller referenced via
     ``volumes=[(name, path)]``. Caller-referenced volumes are owned by
     the caller and must outlive this lifecycle.
+
+    Pinned snapshots and unrecognized volumes are retained regardless of name.
+    Shared snapshot reclamation requires service-side reference tracking.
     """
     referenced_volumes = list(referenced_volumes)
     referenced_names = {volume.name for volume in referenced_volumes}
     referenced_forks = {(volume.name, volume.ref_name) for volume in referenced_volumes}
     deleted_forks: set[tuple[str, str]] = set()
+    deleted_volumes: set[str] = set()
     for v in all_volumes:
         if is_workload_fork(v):
             assert v.ref_name is not None
@@ -2376,8 +2388,9 @@ def cleanup_owned_volumes(
                     pass
                 deleted_forks.add(key)
             continue
-        if v.name in referenced_names or v.name.startswith(
-            (_SHARED_SOURCE_VOLUME_PREFIX, "cc-local-", "cc-source-")
-        ):
+        if v.name in referenced_names or v.version_id is not None:
+            continue
+        if not v.name.startswith(_LEGACY_UPLOAD_PREFIXES) or v.name in deleted_volumes:
             continue
         client.delete_volume(v.name)
+        deleted_volumes.add(v.name)
