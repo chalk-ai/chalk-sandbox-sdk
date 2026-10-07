@@ -50,8 +50,10 @@ from chalkcompute._connect import (
 )
 from chalkcompute._containerspec import (
     ContainerSpec,
+    ManagedSSHConfig,
     NetworkPolicy,
     ResourceDetector,
+    normalize_managed_ssh,
 )
 from chalkcompute._env import normalize_env
 from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
@@ -641,7 +643,7 @@ class Sandbox:
         tags: dict[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool = False,
-        managed_ssh: Mapping[str, SSHDest] | None = None,
+        managed_ssh: ManagedSSHConfig | None = None,
         tracing: TracingPolicyConfig | None = None,
         chalk_client: Any | None = None,
         sandbox_client: SandboxClient | None = None,
@@ -707,8 +709,10 @@ class Sandbox:
             The identity is exposed inside the sandbox through the standard
             ``CHALK_WEB_IDENTITY_TOKEN_FILE`` environment variable.
         managed_ssh
-            Optional SSH aliases mapped to :class:`SSHDest` instances. Managed
-            SSH sandboxes run on host compute.
+            Optional SSH destinations: a list of :class:`SSHDest`, each
+            reachable by its ``alias`` (default: its ``host``), or a mapping
+            of aliases to :class:`SSHDest`. ``SSHDest.github(...)`` sets up
+            GitHub. Managed SSH sandboxes run on host compute.
         tracing
             Trace sampling for processes inside the sandbox. ``True`` traces
             every request; a :class:`~chalkcompute.TracingPolicy` sets the
@@ -850,7 +854,7 @@ class Sandbox:
         self._tags = dict(tags or {})
         self._restart_policy = restart_policy
         self._chalk_identity = chalk_identity
-        self._managed_ssh = dict(managed_ssh or {})
+        self._managed_ssh = normalize_managed_ssh(managed_ssh)
         self._tracing = tracing_policy
         self._chalk_client = chalk_client
         if isinstance(tracing_policy, TracingPolicy):
@@ -1787,7 +1791,7 @@ class SandboxClient:
         tags: dict[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool = False,
-        managed_ssh: Mapping[str, SSHDest] | None = None,
+        managed_ssh: ManagedSSHConfig | None = None,
         tracing: TracingPolicyConfig | None = None,
         wait: bool = True,
         poll_interval: float = 0.5,
@@ -1841,7 +1845,8 @@ class SandboxClient:
             The identity is exposed inside the sandbox through the standard
             ``CHALK_WEB_IDENTITY_TOKEN_FILE`` environment variable.
         managed_ssh
-            Optional SSH aliases mapped to :class:`SSHDest` instances.
+            Optional SSH destinations, as a list of :class:`SSHDest` or a
+            mapping of aliases to them. See :class:`Sandbox`.
         tracing
             ``True`` traces every request inside the sandbox, a
             :class:`~chalkcompute.TracingPolicy` sets the root sample rate,

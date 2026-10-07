@@ -307,6 +307,23 @@ sandbox = Sandbox(
 ).run()
 ```
 
+To push and pull over SSH, add `SshDest.github` to `managed_ssh`. It is pinned
+to GitHub's published host keys and reads the private key from a Chalk secret,
+so `git@github.com:org/repo.git` URLs work unchanged:
+
+```python
+sandbox = Sandbox(
+    image=image,
+    compute_class=ComputeClass.HOST,
+    managed_ssh=[SshDest.github("GITHUB_DEPLOY_KEY")],
+).run()
+sandbox.git.clone("git@github.com:org/repo.git", "/workspace/repo")
+```
+
+Pass `port_443=True` for networks that block port 22. To use more than one key,
+give each a distinct `alias` and use it in remote URLs, as in
+`git@github-work:org/repo.git`.
+
 ### Immutable composition
 
 Each builder method returns a new `Image`, so intermediate images can be shared:
