@@ -1,0 +1,3 @@
+- Fix `Image.from_dockerfile` so local `COPY`/`ADD` sources are resolved against the build context (default: the Dockerfile's directory, override with `context=`) and shipped with the image, instead of failing at build time for lack of a context
+- Make `Image.from_dockerfile` raise a `ValueError` naming the line for `COPY`/`ADD` forms it cannot reproduce (`--chown`, variables, local archives, relative destinations without a known `WORKDIR`, oversized sources a later `RUN` needs)
+- Fix `Image.from_dockerfile` treating a continuation line that starts with `from` as a `FROM` instruction

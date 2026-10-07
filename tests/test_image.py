@@ -92,6 +92,155 @@ class TestImageFromDockerfile:
         assert spec.steps[1].step.value.packages == ["numpy"]
 
 
+class TestImageFromDockerfileCopy:
+    """from_dockerfile resolves COPY/ADD against the build context."""
+
+    @staticmethod
+    def _write(tmp_path: Path, dockerfile: str) -> str:
+        path = tmp_path / "Dockerfile"
+        path.write_text(dockerfile)
+        return str(path)
+
+    def test_continuation_lines_form_one_instruction(self, tmp_path: Path) -> None:
+        path = self._write(
+            tmp_path,
+            "FROM python:3.14\n"
+            "RUN python -c \\\n"
+            "    from_line=1 && \\\n"
+            "    echo done\n",
+        )
+        spec = Image.from_dockerfile(path).to_proto()
+        assert spec.base_image == "python:3.14"
+        assert spec.steps[0].step.value.commands == [
+            "RUN python -c \\\nfrom_line=1 && \\\necho done"
+        ]
+
+    def test_copy_file_becomes_add_file_step_in_order(self, tmp_path: Path) -> None:
+        script = tmp_path / "entrypoint.sh"
+        script.write_text("#!/bin/sh\necho hi\n")
+        script.chmod(0o755)
+        path = self._write(
+            tmp_path,
+            "FROM python:3.14\n"
+            "RUN mkdir -p /app\n"
+            "COPY entrypoint.sh /app/\n"
+            "RUN /app/entrypoint.sh\n",
+        )
+        img = Image.from_dockerfile(path)
+        steps = img.to_proto().steps
+        assert [step.step.field for step in steps] == [
+            "dockerfile_commands",
+            "add_file",
+            "dockerfile_commands",
+        ]
+        add = steps[1].step.value
+        assert add.destination == "/app/entrypoint.sh"
+        assert add.content == script.read_bytes()
+        assert add.mode == 0o755
+        assert steps[2].step.value.commands == ["RUN /app/entrypoint.sh"]
+        assert img.lazy_local_files == set()
+
+    def test_copy_dir_relative_to_workdir_honors_dockerignore(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "pkg").mkdir()
+        (tmp_path / "pkg" / "mod.py").write_text("x = 1\n")
+        (tmp_path / "node_modules").mkdir()
+        (tmp_path / "node_modules" / "dep.js").write_text("//\n")
+        (tmp_path / ".dockerignore").write_text("node_modules\nDockerfile\n")
+        path = self._write(
+            tmp_path, "FROM python:3.14\nWORKDIR /srv\nWORKDIR app\nCOPY . .\n"
+        )
+        steps = Image.from_dockerfile(path).to_proto().steps
+        dests = sorted(
+            step.step.value.destination
+            for step in steps
+            if step.step.field == "add_file"
+        )
+        assert dests == ["/srv/app/.dockerignore", "/srv/app/pkg/mod.py"]
+
+    def test_explicit_context(self, tmp_path: Path) -> None:
+        ctx = tmp_path / "ctx"
+        ctx.mkdir()
+        (ctx / "config.yaml").write_text("a: 1\n")
+        docker_dir = tmp_path / "docker"
+        docker_dir.mkdir()
+        path = self._write(docker_dir, "FROM alpine\nCOPY config.yaml /etc/app/\n")
+        steps = Image.from_dockerfile(path, context=str(ctx)).to_proto().steps
+        assert steps[0].step.value.destination == "/etc/app/config.yaml"
+
+    def test_chmod_flag_and_json_form(self, tmp_path: Path) -> None:
+        (tmp_path / "run.sh").write_text("echo\n")
+        path = self._write(
+            tmp_path, 'FROM alpine\nCOPY --chmod=700 ["run.sh", "/opt/run.sh"]\n'
+        )
+        add = Image.from_dockerfile(path).to_proto().steps[0].step.value
+        assert add.destination == "/opt/run.sh"
+        assert add.mode == 0o700
+
+    def test_copy_from_and_add_url_pass_through(self, tmp_path: Path) -> None:
+        path = self._write(
+            tmp_path,
+            "FROM alpine\n"
+            "COPY --from=busybox:1.36 /bin/busybox /usr/local/bin/\n"
+            "ADD https://example.com/a.tar.gz /opt/\n",
+        )
+        steps = Image.from_dockerfile(path).to_proto().steps
+        assert len(steps) == 1
+        assert steps[0].step.value.commands == [
+            "COPY --from=busybox:1.36 /bin/busybox /usr/local/bin/",
+            "ADD https://example.com/a.tar.gz /opt/",
+        ]
+
+    def test_large_copy_after_last_run_uses_volume(self, tmp_path: Path) -> None:
+        big = tmp_path / "model.bin"
+        big.write_bytes(b"x" * (_COPY_TOTAL_SIZE_LIMIT_BYTES + 1))
+        path = self._write(
+            tmp_path, "FROM alpine\nRUN echo build\nCOPY model.bin /models/\n"
+        )
+        img = Image.from_dockerfile(path)
+        assert [step.step.field for step in img.to_proto().steps] == [
+            "dockerfile_commands"
+        ]
+        (lazy,) = img.lazy_local_files
+        assert lazy.src == str(big.resolve())
+        assert lazy.dest == "/models/model.bin"
+
+    def test_large_copy_before_run_raises(self, tmp_path: Path) -> None:
+        (tmp_path / "model.bin").write_bytes(b"x" * (_COPY_FILE_SIZE_LIMIT_BYTES + 1))
+        path = self._write(
+            tmp_path, "FROM alpine\nCOPY model.bin /models/\nRUN ls /models\n"
+        )
+        with pytest.raises(ValueError, match="line 2.*RUN on line 3"):
+            Image.from_dockerfile(path)
+
+    @pytest.mark.parametrize(
+        ("instruction", "match"),
+        [
+            ("COPY --chown=app a.txt /app/", "--chown flag is not supported"),
+            ("COPY a.txt app/", "needs a known WORKDIR"),
+            ("COPY $SRC /app/", "variable substitution"),
+            ("COPY missing.txt /app/", "no files .* match 'missing.txt'"),
+            ("COPY ../outside.txt /app/", "outside the build context"),
+            ("COPY a.txt b.txt /app", "must end with '/'"),
+            ("ADD bundle.tar.gz /app/", "local archive"),
+            ("COPY a.txt /a.txt", "directly under '/'"),
+        ],
+    )
+    def test_unreproducible_copy_raises_with_line(
+        self, tmp_path: Path, instruction: str, match: str
+    ) -> None:
+        ctx = tmp_path / "ctx"
+        ctx.mkdir()
+        (ctx / "a.txt").write_text("a\n")
+        (ctx / "b.txt").write_text("b\n")
+        (ctx / "bundle.tar.gz").write_bytes(b"")
+        (tmp_path / "outside.txt").write_text("o\n")
+        path = self._write(ctx, f"FROM alpine\n\n{instruction}\n")
+        with pytest.raises(ValueError, match=f"line 3 .*{match}"):
+            Image.from_dockerfile(path)
+
+
 # ---------------------------------------------------------------------------
 # Immutability
 # ---------------------------------------------------------------------------

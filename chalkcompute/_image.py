@@ -26,6 +26,7 @@ import io
 import json
 import logging
 import os
+import posixpath
 import shlex
 import tarfile
 import tempfile
@@ -353,50 +354,161 @@ class Image:
         )
 
     @classmethod
-    def from_dockerfile(cls, path: str) -> Image:
+    def from_dockerfile(cls, path: str, *, context: str | None = None) -> Image:
         """Create an image from an existing Dockerfile.
 
-        The Dockerfile contents are transmitted as a ``dockerfile_commands``
-        step so that additional builder methods can be chained on top.
+        The Dockerfile's instructions are transmitted as ``dockerfile_commands``
+        steps so that additional builder methods can be chained on top.
+
+        Image builds have no build context, so each ``COPY``/``ADD`` of a
+        local path is resolved here against ``context`` and shipped with the
+        image instead. Sources that fit the 32 KiB inline budget become
+        ``add_file`` steps at the same position in the build, so later
+        ``RUN`` instructions can read them. Larger sources are mounted as
+        volume files when the sandbox starts, which is only equivalent when
+        no ``RUN`` instruction follows them; otherwise this raises. As with
+        ``docker build``, a ``.dockerignore`` at the context root is honored.
+
+        ``COPY --from=...`` and ``ADD`` of URLs read nothing from the context
+        and are passed through unchanged.
 
         Parameters
         ----------
         path
             Path to the Dockerfile.
+        context
+            Build context directory that ``COPY``/``ADD`` sources are
+            relative to. Defaults to the Dockerfile's directory.
 
         Returns
         -------
         Image
             A new ``Image`` whose build steps mirror the Dockerfile.
 
+        Raises
+        ------
+        ValueError
+            If a ``COPY``/``ADD`` cannot be reproduced without a build
+            context: an unsupported flag (such as ``--chown``), variable
+            substitution, a relative destination without a known absolute
+            ``WORKDIR``, an ``ADD`` of a local archive, a source outside the
+            context, or sources too large to inline that a later ``RUN``
+            needs at build time.
+
         Examples
         --------
         >>> from chalkcompute import Image
         >>> img = Image.from_dockerfile("./Dockerfile")
         >>> img = (
-        ...     Image.from_dockerfile("./Dockerfile")
+        ...     Image.from_dockerfile("./Dockerfile", context=".")
         ...     .pip_install(["rich"])
         ... )
         """
-        content = Path(path).read_text()
-        # Extract FROM line as base image, rest as commands
-        lines = content.strip().splitlines()
-        base = "scratch"
+        from chalkcompute._dockerfile import (
+            load_dockerignore,
+            parse_dockerfile,
+            resolve_copy,
+            resolve_workdir,
+        )
+
+        dockerfile = Path(path)
+        context_dir = Path(context) if context is not None else dockerfile.parent
+        instructions = parse_dockerfile(dockerfile.read_text())
+        dockerignore = load_dockerignore(context_dir)
+        last_run_line = max(
+            (ins.line for ins in instructions if ins.keyword == "RUN"), default=0
+        )
+
+        img = cls("scratch")
         commands: list[str] = []
-        for line in lines:
-            stripped = line.strip()
-            if stripped.upper().startswith("FROM "):
-                base = stripped[5:].strip()
-            elif stripped and not stripped.startswith("#"):
-                commands.append(stripped)
-        img = cls(base)
-        if commands:
-            img._steps.append(
-                _build_step(
-                    "dockerfile_commands",
-                    pb.DockerfileCommandsStep(commands=commands),
+        workdir: str | None = None
+        copy_size = 0
+
+        def flush_commands() -> None:
+            if commands:
+                img._steps.append(
+                    _build_step(
+                        "dockerfile_commands",
+                        pb.DockerfileCommandsStep(commands=list(commands)),
+                    )
                 )
+                commands.clear()
+
+        for ins in instructions:
+            if ins.keyword == "FROM":
+                img._base_image = ins.args
+                workdir = None
+                continue
+            if ins.keyword == "WORKDIR":
+                workdir = resolve_workdir(workdir, ins.args)
+            files = (
+                resolve_copy(
+                    ins,
+                    context=context_dir,
+                    workdir=workdir,
+                    dockerignore=dockerignore,
+                )
+                if ins.keyword in ("COPY", "ADD")
+                else None
             )
+            if files is None:
+                commands.append(ins.text)
+                continue
+            root_level = [f.dest for f in files if posixpath.dirname(f.dest) == "/"]
+            if root_level:
+                raise ValueError(
+                    f"from_dockerfile: {ins.keyword} on line {ins.line} "
+                    f"({ins.text!r}) writes {root_level[0]!r} directly under '/', "
+                    "which is not supported; copy into a subdirectory such as "
+                    "'/app/'."
+                )
+            flush_commands()
+            added_size = sum(f.src.stat().st_size for f in files)
+            fits_inline = (
+                all(f.src.stat().st_size <= _COPY_FILE_SIZE_LIMIT_BYTES for f in files)
+                and copy_size + added_size <= _COPY_TOTAL_SIZE_LIMIT_BYTES
+            )
+            if fits_inline:
+                for f in files:
+                    content = _read_copy_file(f.src)
+                    copy_size = _validate_copy_total_size(
+                        current_size=copy_size, added_size=len(content), path=f.src
+                    )
+                    img._steps.append(
+                        _build_step(
+                            "add_file",
+                            pb.AddFileStep(
+                                destination=f.dest, content=content, mode=f.mode
+                            ),
+                        )
+                    )
+            elif ins.line > last_run_line:
+                # No later RUN reads these files during the build, so mounting
+                # them at sandbox start leaves the running container equivalent.
+                for f in files:
+                    _validate_lazy_local_file_destination(
+                        f.dest, mount_root=f.mount_root
+                    )
+                    img._lazy_local_files.add(
+                        LazyLocalFile(
+                            src=str(f.src),
+                            dest=f.dest,
+                            mode=f.mode,
+                            mount_root=f.mount_root,
+                        )
+                    )
+            else:
+                raise ValueError(
+                    f"from_dockerfile: {ins.keyword} on line {ins.line} "
+                    f"({ins.text!r}) copies {added_size} bytes, more than the "
+                    f"{_format_size_limit(_COPY_TOTAL_SIZE_LIMIT_BYTES)} that can be "
+                    "inlined into the build, and the RUN on line "
+                    f"{last_run_line} runs after it. Larger files are mounted only "
+                    "when the sandbox starts, so build steps cannot read them. Move "
+                    "the COPY after the last RUN, or bake these files into a "
+                    "pre-built base image."
+                )
+        flush_commands()
         return img
 
     # -- Builder methods -------------------------------------------------------
