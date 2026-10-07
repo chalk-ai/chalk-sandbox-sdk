@@ -1178,7 +1178,7 @@ class Sandbox:
             self._volume_client = VolumeClient.from_connect(connect)
             self._volumes += self._volume_client.upload_lazy_files(
                 self._image,
-                volume_prefix="sandbox-files",
+                fork=True,
             )
 
         network_policy = copy.deepcopy(self._network_policy)

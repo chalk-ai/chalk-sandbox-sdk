@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import posixpath
 from typing import Any, Iterable
@@ -48,28 +49,31 @@ def merge_mounts(mounts: Iterable[VolumeMount]) -> list[VolumeMount]:
     return list(result.values())
 
 
-def default_source_volume_name(image: Image) -> str:
+def default_source_volume_name(image: Image, *, prefix: str = "cc-image") -> str:
     """Derive a stable source volume name from an image recipe.
 
     Parameters
     ----------
     image
-        Image whose recipe and volume file layout determine the name.
+        Image whose build specification determines the name.
+    prefix
+        DNS label prefix, at most 36 characters.
 
     Returns
     -------
     str
         A stable source volume name.
     """
+    from chalkcompute._naming import validate_dns_label
+
+    validate_dns_label(prefix)
+    if len(prefix) > 36:
+        raise ValueError("volume_prefix must be at most 36 characters")
     recipe = image._to_build_proto()
     recipe.env = dict(sorted(recipe.env.items()))
-    digest = hashlib.sha256(recipe.to_binary())
-    for lf in sorted(
-        image.lazy_local_files, key=lambda f: (f.dest, f.mount_root or "")
-    ):
-        mode = "" if lf.mode is None else str(lf.mode)
-        digest.update(f"{lf.dest}\0{lf.mount_root or ''}\0{mode}\n".encode())
-    return f"chalkcompute-image-{digest.hexdigest()[:12]}"
+    digest = hashlib.sha256(recipe.to_binary()).digest()
+    fingerprint = base64.b32encode(digest).decode().rstrip("=").lower()
+    return f"{prefix}-{fingerprint[: 62 - len(prefix)]}"
 
 
 def build_image_snapshot(
@@ -121,6 +125,7 @@ def build_image_snapshot(
                 driver._resolve_lazy_files(
                     image,
                     volume_name=name,
+                    shared=True,
                     poll_interval=poll_interval,
                     timeout=timeout,
                 )

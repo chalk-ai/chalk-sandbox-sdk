@@ -141,8 +141,9 @@ class Image:
             Additional volume references, accepting the same forms as Sandbox.
         name
             Optional retained source volume name for local volume files.
-            Defaults to a stable name derived from the build recipe and file
-            layout, excluding local source paths and volume file contents.
+            Defaults to cc-image- plus a hash of the build specification,
+            shared with automatic local-file uploads. File paths, contents,
+            modes, and mount destinations do not affect the default name.
             Pass a name to share source volumes across recipes or make cleanup
             discoverable. Requires local volume files to upload.
         chalk_client

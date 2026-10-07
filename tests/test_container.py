@@ -313,9 +313,7 @@ def test_container_uploads_lazy_local_files_without_exec_probe(
         assert container.run() is container
 
     execute.assert_not_called()
-    volume_client.upload_lazy_files.assert_called_once_with(
-        image, volume_prefix="container-files"
-    )
+    volume_client.upload_lazy_files.assert_called_once_with(image, fork=True)
     expected_calls = ["run_container"]
     if initial_status == "Pending":
         expected_calls.append("get_container")

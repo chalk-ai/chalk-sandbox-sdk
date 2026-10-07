@@ -254,6 +254,28 @@ img = (
 )
 ```
 
+### Local file bundles and cleanup
+
+Local files added with `add_local_file()` or `add_local_dir()` are stored in
+shared `source_code` volumes. Automatic uploads use a stable
+`cc-image-<recipe-hash>` name. Each mount resolves its own immutable snapshot,
+so images with the same recipe can reuse the volume without sharing file changes.
+For a discoverable retained bundle name, use `image.build(name="halo-client")`.
+
+Automatic sandbox, container, and scaling-group uploads create a private mutable
+`cc-w-<id>` fork per mount. Workload cleanup deletes those forks while retaining
+the shared image snapshots. Scaling-group revisions retain their forks for
+rollback until the group is deleted. Pinned snapshots and custom-named bundles
+are retained regardless of their name. Caller-referenced volumes are preserved.
+
+Removing a local file from the next build creates a new snapshot without that
+file. Existing images remain pinned to their original snapshots. Deleting a
+shared volume would remove the backing store for every image that uses it, so
+the SDK does not do that during workload cleanup. Reclaiming shared content
+requires service-side garbage collection that accounts for image snapshots,
+active workloads, and retained deployment revisions. The SDK does not implement
+such a collector.
+
 ### Immutable composition
 
 Each builder method returns a new `Image`, so intermediate images can be shared:

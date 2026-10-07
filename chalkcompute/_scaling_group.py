@@ -68,6 +68,7 @@ from chalkcompute._volume import (
     VolumeClient,
     VolumeMount,
     cleanup_owned_volumes,
+    is_workload_fork,
     referenced_volume_mount,
 )
 
@@ -618,19 +619,21 @@ class ScalingGroup:
             self._image.lazy_local_files if isinstance(self._image, Image) else set()
         )
         if lazy_files:
-            progress_update(key, detail=f"Uploading {len(lazy_files)} local file(s)")
-            logger.info("Uploading %d local file(s) to volume(s)...", len(lazy_files))
+            progress_update(key, detail=f"Resolving {len(lazy_files)} local file(s)")
+            logger.info(
+                "Resolving %d local file(s) to source volume(s)...", len(lazy_files)
+            )
             assert isinstance(self._image, Image)
             driver = VolumeClient.from_connect(self._client)
             self._volume_driver = driver
             uploaded_volumes = driver.upload_lazy_files(
                 self._image,
-                volume_prefix=_OWNED_VOLUME_PREFIX,
+                fork=True,
             )
             self._volumes += uploaded_volumes
             self._owned_volumes += uploaded_volumes
             for v in self._volumes:
-                logger.info("  Volume created: %s (mount: %s)", v.name, v.mount_path)
+                logger.info("  Volume resolved: %s (mount: %s)", v.name, v.mount_path)
 
         # 3. Build the ScalingGroupSpec
         resolved_secrets = self._secrets
@@ -998,11 +1001,13 @@ class ScalingGroup:
     @_instrumented("chalkcompute.scaling_group.delete")
     def delete(self) -> None:
         """Delete the scaling group and clean up associated volumes."""
-        owned_volumes = {volume.name: volume for volume in self._owned_volumes}
+        owned_volumes = {
+            (volume.name, volume.ref_name): volume for volume in self._owned_volumes
+        }
         if self._scaling_group_id is not None:
             try:
                 owned_volumes.update(self._owned_volumes_from_revisions())
-            except ScalingGroupError as exc:
+            except (ScalingGroupError, ValueError) as exc:
                 logger.warning(
                     "Could not inspect revision volumes before delete: %s", exc
                 )
@@ -1026,11 +1031,13 @@ class ScalingGroup:
         self._owned_volumes = []
         self._volume_driver = None
 
-    def _owned_volumes_from_revisions(self) -> dict[str, VolumeMount]:
-        """Find SDK-created lazy-file volumes retained by historical revisions."""
+    def _owned_volumes_from_revisions(
+        self,
+    ) -> dict[tuple[str, str | None], VolumeMount]:
+        """Find owned forks and legacy volumes retained by historical revisions."""
         assert self._scaling_group_id is not None
         stub = self._client.stub(sg_connect.ScalingGroupManagerServiceClientSync)
-        result: dict[str, VolumeMount] = {}
+        result: dict[tuple[str, str | None], VolumeMount] = {}
         cursor: str | None = None
         while True:
             try:
@@ -1055,12 +1062,23 @@ class ScalingGroup:
                 if container_spec is None:
                     continue
                 for volume in container_spec.volumes:
-                    if volume.name.startswith(f"{_OWNED_VOLUME_PREFIX}-"):
-                        result[volume.name] = VolumeMount(
+                    candidate = VolumeMount(
+                        volume.name,
+                        volume.mount_path,
+                        ref_name=volume.ref_name or None,
+                    )
+                    if volume.name.startswith(
+                        f"{_OWNED_VOLUME_PREFIX}-"
+                    ) or is_workload_fork(candidate):
+                        result[(volume.name, volume.ref_name or None)] = VolumeMount(
                             name=volume.name,
                             mount_path=volume.mount_path,
-                            version_id=volume.version_id,
-                            ref_name=volume.ref_name,
+                            version_id=(
+                                volume.version_id
+                                if volume.has_field("version_id")
+                                else None
+                            ),
+                            ref_name=volume.ref_name or None,
                         )
             cursor = response.next_cursor or None
             if cursor is None:

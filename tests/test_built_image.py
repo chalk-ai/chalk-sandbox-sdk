@@ -153,6 +153,7 @@ def test_resolve_pins_ref_and_uploads(tmp_path, monkeypatch):
     driver._resolve_lazy_files.assert_called_once_with(
         image,
         volume_name="bridge",
+        shared=True,
         poll_interval=0.5,
         timeout=600.0,
     )
@@ -175,7 +176,7 @@ def test_resolve_lazy_files_defaults_name(tmp_path, monkeypatch):
 
     assert spec.volumes == (VolumeMount(name, "/assets", 11),)
     driver._resolve_lazy_files.assert_called_once_with(
-        image, volume_name=name, poll_interval=0.5, timeout=600.0
+        image, volume_name=name, shared=True, poll_interval=0.5, timeout=600.0
     )
 
 
@@ -189,7 +190,7 @@ def test_default_source_volume_name_is_stable(tmp_path):
     default_name = _image_build.default_source_volume_name
     name = default_name(image)
 
-    assert re.fullmatch(r"chalkcompute-image-[0-9a-f]{12}", name)
+    assert re.fullmatch(r"cc-image-[a-z2-7]{52}", name)
     source.write_text("new bridge")
     assert default_name(image) == name
     assert default_name(recipe.add_local_file(str(other), "/app/bridge.py")) == name
@@ -201,13 +202,13 @@ def test_default_source_volume_name_is_stable(tmp_path):
         )
         == name
     )
-    assert default_name(recipe.add_local_file(str(source), "/app/other.py")) != name
+    assert default_name(recipe.add_local_file(str(source), "/assets/other.py")) == name
     for mode in (0, 0o644, 0o755):
         assert (
             default_name(
                 recipe.add_local_file(str(source), "/app/bridge.py", mode=mode)
             )
-            != name
+            == name
         )
     assert default_name(image.run_commands("true")) != name
 
@@ -216,7 +217,7 @@ def test_default_source_volume_name_is_stable(tmp_path):
         str(source), "/app/bridge.py"
     )
     assert default_name(first) == default_name(second)
-    assert default_name(first) != name
+    assert default_name(first) == name
 
 
 def test_resolve_invalid_mount_before_side_effects(tmp_path, monkeypatch):
