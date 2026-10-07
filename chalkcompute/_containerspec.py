@@ -32,10 +32,21 @@ class ResourceDetector(Enum):
     """Egress detectors that record resources a sandbox creates.
 
     Each detector inspects the sandbox's egress traffic to the hosts it
-    recognizes, so those hosts must also be allowed by the ``NetworkPolicy``.
+    recognizes. A sandbox that enables a detector implicitly allows those
+    hosts in its ``NetworkPolicy``.
     """
 
     GITHUB_PULL_REQUESTS = "RESOURCE_DETECTOR_GITHUB_PULL_REQUESTS"
+
+    @property
+    def hosts(self) -> tuple[str, ...]:
+        """Hosts whose egress traffic this detector inspects."""
+        return _RESOURCE_DETECTOR_HOSTS[self]
+
+
+_RESOURCE_DETECTOR_HOSTS = {
+    ResourceDetector.GITHUB_PULL_REQUESTS: ("api.github.com",),
+}
 
 
 class RestartPolicy(Enum):

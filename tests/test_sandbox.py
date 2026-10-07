@@ -438,7 +438,6 @@ def test_sandbox_client_create_sends_resource_detectors() -> None:
     try:
         client.create(
             "python:3.14-slim",
-            network_policy=NetworkPolicy(allowed_hosts={"api.github.com": []}),
             resource_detectors=[ResourceDetector.GITHUB_PULL_REQUESTS],
             wait=False,
         )
@@ -451,6 +450,32 @@ def test_sandbox_client_create_sends_resource_detectors() -> None:
     assert list(detection.detectors) == [
         container_pb.ResourceDetector.GITHUB_PULL_REQUESTS
     ]
+
+
+def test_resource_detector_implicitly_allows_its_hosts() -> None:
+    client = SandboxClient()
+    stub = _Stub()
+    client._stub = stub  # type: ignore[assignment]
+    policy = NetworkPolicy(allowed_hosts={"example.com": []})
+    try:
+        client.create(
+            "python:3.14-slim",
+            network_policy=policy,
+            resource_detectors=[ResourceDetector.GITHUB_PULL_REQUESTS],
+            wait=False,
+        )
+        client.create(
+            "python:3.14-slim",
+            resource_detectors=[ResourceDetector.GITHUB_PULL_REQUESTS],
+            wait=False,
+        )
+    finally:
+        client.close()
+
+    # The caller's policy is not mutated.
+    assert list(policy.allowed_hosts) == ["example.com"]
+    assert stub.request is not None
+    assert "api.github.com" in stub.request.source.value.network_policy.allowed_hosts
 
 
 def test_sandbox_client_create_omits_resource_detection_by_default() -> None:

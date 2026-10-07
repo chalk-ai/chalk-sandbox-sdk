@@ -692,7 +692,8 @@ class Sandbox:
             Optional :class:`ResourceDetector` values. Each detector inspects
             egress traffic to the hosts it recognizes and records resources the
             sandbox creates, such as GitHub pull requests, against the sandbox.
-            The recognized hosts must be allowed by ``network_policy``.
+            The hosts a detector recognizes (for example ``api.github.com``)
+            are implicitly added to the sandbox's network policy.
         host_pool_id
             Optional host pool ID to restrict placement of host compute class sandboxes.
             Unstable; subject to change.
@@ -1181,6 +1182,11 @@ class Sandbox:
             )
 
         network_policy = copy.deepcopy(self._network_policy)
+        for detector in self._resource_detectors:
+            for host in detector.hosts:
+                if network_policy is None:
+                    network_policy = NetworkPolicy()
+                network_policy.allowed_hosts.setdefault(host, [])
         policy_secrets: list[Secret] = []
         if network_policy is not None:
             for rules in network_policy.allowed_hosts.values():
@@ -1822,7 +1828,8 @@ class SandboxClient:
             Optional :class:`ResourceDetector` values. Each detector inspects
             egress traffic to the hosts it recognizes and records resources the
             sandbox creates, such as GitHub pull requests, against the sandbox.
-            The recognized hosts must be allowed by ``network_policy``.
+            The hosts a detector recognizes (for example ``api.github.com``)
+            are implicitly added to the sandbox's network policy.
         host_pool_id
             Optional host pool ID to restrict placement of host compute class sandboxes.
             Unstable; subject to change.
