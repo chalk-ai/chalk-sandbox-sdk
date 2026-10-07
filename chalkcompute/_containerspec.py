@@ -28,6 +28,27 @@ class ComputeClass(Enum):
     HOST = "COMPUTE_CLASS_HOST"
 
 
+class ResourceDetector(Enum):
+    """Egress detectors that record resources a sandbox creates.
+
+    Each detector inspects the sandbox's egress traffic to the hosts it
+    recognizes. A sandbox that enables a detector implicitly allows those
+    hosts in its ``NetworkPolicy``.
+    """
+
+    GITHUB_PULL_REQUESTS = "RESOURCE_DETECTOR_GITHUB_PULL_REQUESTS"
+
+    @property
+    def hosts(self) -> tuple[str, ...]:
+        """Hosts whose egress traffic this detector inspects."""
+        return _RESOURCE_DETECTOR_HOSTS[self]
+
+
+_RESOURCE_DETECTOR_HOSTS = {
+    ResourceDetector.GITHUB_PULL_REQUESTS: ("api.github.com",),
+}
+
+
 class RestartPolicy(Enum):
     """Policy controlling whether a sandbox restarts after exiting."""
 
@@ -392,6 +413,7 @@ class ContainerSpec:
     security_policy: ContainerSecurityPolicy | None = None
     network_policy: NetworkPolicy | None = None
     compute_class: ComputeClass | None = None
+    resource_detectors: Sequence[ResourceDetector] = ()
     host_pool_id: str | None = None
     startup_probe: Mapping[str, Any] | None = None
     readiness_probe: Mapping[str, Any] | None = None
@@ -413,6 +435,7 @@ class ContainerSpec:
             security_policy=self.security_policy,
             network_policy=self.network_policy,
             compute_class=self.compute_class,
+            resource_detectors=self.resource_detectors,
             tags=self.tags,
             restart_policy=self.restart_policy,
             chalk_identity=self.chalk_identity,
@@ -433,6 +456,7 @@ class ContainerSpec:
                 for ref in self.secret_refs
             ),
         )
+        object.__setattr__(self, "resource_detectors", tuple(self.resource_detectors))
         object.__setattr__(self, "tags", dict(self.tags))
         object.__setattr__(
             self,
@@ -466,6 +490,7 @@ class ContainerSpec:
         security_policy: ContainerSecurityPolicy | None = None,
         network_policy: NetworkPolicy | None = None,
         compute_class: ComputeClass | None = None,
+        resource_detectors: Sequence[ResourceDetector] | None = None,
         tags: Mapping[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool = False,
@@ -524,6 +549,16 @@ class ContainerSpec:
             raise TypeError("network_policy must be a NetworkPolicy")
         if compute_class is not None and not isinstance(compute_class, ComputeClass):
             raise TypeError("compute_class must be a ComputeClass")
+        if resource_detectors is not None:
+            if isinstance(resource_detectors, (str, bytes)) or not isinstance(
+                resource_detectors, Sequence
+            ):
+                raise TypeError("resource_detectors must be a list of ResourceDetector")
+            for detector in resource_detectors:
+                if not isinstance(detector, ResourceDetector):
+                    raise TypeError(
+                        "resource_detectors must be a list of ResourceDetector"
+                    )
         if tags is not None:
             if not isinstance(tags, Mapping):
                 raise TypeError("tags must be a dict[str, str]")
@@ -685,6 +720,16 @@ class ContainerSpec:
                 None
                 if self.compute_class is None
                 else container_pb.ComputeClass[self.compute_class.name]
+            ),
+            resource_detection=(
+                container_pb.ResourceDetectionConfig(
+                    detectors=[
+                        container_pb.ResourceDetector[detector.name]
+                        for detector in self.resource_detectors
+                    ]
+                )
+                if self.resource_detectors
+                else None
             ),
             placement=(
                 None

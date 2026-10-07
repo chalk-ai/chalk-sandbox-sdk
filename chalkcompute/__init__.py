@@ -148,6 +148,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "ExecResult": ("chalkcompute._sandbox", "ExecResult"),
     "PythonExecution": ("chalkcompute._sandbox", "PythonExecution"),
     "PythonSkippedArtifact": ("chalkcompute._sandbox", "PythonSkippedArtifact"),
+    "ResourceDetector": ("chalkcompute._containerspec", "ResourceDetector"),
     "RestartPolicy": ("chalkcompute._containerspec", "RestartPolicy"),
     "Sandbox": ("chalkcompute._sandbox", "Sandbox"),
     "SandboxBuildError": ("chalkcompute._sandbox", "SandboxBuildError"),
