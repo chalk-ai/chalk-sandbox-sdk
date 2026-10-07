@@ -181,9 +181,6 @@ GITHUB_SSH_HOST_KEYS = (
     "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=",
 )
 
-ManagedSSHConfig = Mapping[str, SSHDest] | Sequence[SSHDest]
-"""SSH destinations: a list of :class:`SSHDest`, or a mapping of aliases to them."""
-
 
 def _validate_ssh_alias(alias: object) -> None:
     if not isinstance(alias, str):
@@ -193,7 +190,7 @@ def _validate_ssh_alias(alias: object) -> None:
 
 
 def normalize_managed_ssh(
-    managed_ssh: ManagedSSHConfig | None,
+    managed_ssh: Mapping[str, SSHDest] | Sequence[SSHDest] | None,
 ) -> dict[str, SSHDest]:
     """Validate ``managed_ssh`` and return it keyed by alias.
 
@@ -513,7 +510,7 @@ class ContainerSpec:
     secret_refs: Sequence[Secret | Mapping[str, Any]] = ()
     port: int | None = None
     lifetime: str | None = None
-    managed_ssh: ManagedSSHConfig = field(default_factory=dict)
+    managed_ssh: Mapping[str, SSHDest] | Sequence[SSHDest] = field(default_factory=dict)
     tags: Mapping[str, str] = field(default_factory=dict)
     protocol: str | None = None
     authentication: str | None = None
@@ -601,7 +598,7 @@ class ContainerSpec:
         tags: Mapping[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool = False,
-        managed_ssh: ManagedSSHConfig | None = None,
+        managed_ssh: Mapping[str, SSHDest] | Sequence[SSHDest] | None = None,
     ) -> None:
         if image is not None and not isinstance(image, str):
             if not isinstance(image, Image):

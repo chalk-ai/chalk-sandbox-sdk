@@ -50,7 +50,6 @@ from chalkcompute._connect import (
 )
 from chalkcompute._containerspec import (
     ContainerSpec,
-    ManagedSSHConfig,
     NetworkPolicy,
     ResourceDetector,
     normalize_managed_ssh,
@@ -643,7 +642,7 @@ class Sandbox:
         tags: dict[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool = False,
-        managed_ssh: ManagedSSHConfig | None = None,
+        managed_ssh: Mapping[str, SSHDest] | Sequence[SSHDest] | None = None,
         tracing: TracingPolicyConfig | None = None,
         chalk_client: Any | None = None,
         sandbox_client: SandboxClient | None = None,
@@ -1791,7 +1790,7 @@ class SandboxClient:
         tags: dict[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool = False,
-        managed_ssh: ManagedSSHConfig | None = None,
+        managed_ssh: Mapping[str, SSHDest] | Sequence[SSHDest] | None = None,
         tracing: TracingPolicyConfig | None = None,
         wait: bool = True,
         poll_interval: float = 0.5,
