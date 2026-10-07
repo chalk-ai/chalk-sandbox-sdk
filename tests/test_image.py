@@ -1253,6 +1253,33 @@ class TestImageAgentHelpers:
         }
         assert not (tmp_path / "injected").exists()
 
+    def test_with_claude_code_writes_settings(self, tmp_path) -> None:
+        import subprocess
+
+        settings = {
+            "skipDangerousModePermissionPrompt": True,
+            "apiKeyHelper": "printenv 'MY_KEY' $(touch injected)",
+        }
+        image = Image.sandbox().with_claude_code(settings=settings)
+        result = subprocess.run(
+            ["/bin/sh", "-c", _last_command(image)],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            env={"HOME": str(tmp_path)},
+        )
+        assert result.returncode == 0, result.stderr
+        written = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+        assert written == settings
+        assert not (tmp_path / "injected").exists()
+
+    def test_with_claude_code_omits_settings_by_default(self) -> None:
+        assert "settings.json" not in _last_command(Image.sandbox().with_claude_code())
+
+    def test_settings_must_be_a_mapping(self) -> None:
+        with pytest.raises(TypeError):
+            Image.sandbox().with_claude_code(settings=[("model", "opus")])
+
     def test_helpers_chain(self) -> None:
         base = Image.sandbox()
         image = (

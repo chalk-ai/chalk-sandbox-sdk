@@ -9,26 +9,32 @@ or local `chalk-remote-call-python` changes, see
 ## Install
 
 ```
-pip install grpcio protobuf
+pip install chalkcompute
 ```
 
 ## Quick start
 
 ```python
-from chalkcompute import SandboxClient
+import chalkcompute as cc
 
-with SandboxClient.from_env() as client:
-    # Create a sandbox from a pre-built image
-    sandbox = client.create(image="ubuntu:latest")
-
-    # Run a command
+# Omitting image= uses Image.sandbox(): Python, Git and SSH in /workspace.
+# Credentials come from the environment, as with SandboxClient.from_env().
+sandbox = cc.Sandbox(
+    image=cc.Image.sandbox().with_tmux(),
+    cpu="1",
+    memory="2Gi",
+).run()
+try:
     result = sandbox.exec("echo", "hello world")
-    print(result.stdout_text)  # "hello world"
+    print(result.stdout_text)  # "hello world\n"
     print(result.exit_code)    # 0
-
-    # Clean up
+finally:
     sandbox.terminate()
 ```
+
+`Sandbox(...)` only describes the sandbox; `.run()` builds the image, starts it
+and waits until it is ready. See [Coding agent tools](#coding-agent-tools) for a
+sandbox with Claude Code, `gh` and Git identity configured.
 
 ## Logging and progress
 
@@ -265,12 +271,21 @@ you list, so interactive `claude` starts without a login screen:
 ```python
 image = (
     Image.sandbox()
-    .with_claude_code(version="2.1.270", trusted_dirs=["/workspace/app"])
+    .with_claude_code(
+        version="2.1.270",
+        trusted_dirs=["/workspace/app"],  # the repo root, not a parent of it
+        settings={"skipDangerousModePermissionPrompt": True},
+    )
     .with_gh()  # from GitHub's apt repo; authenticates from GH_TOKEN
     .with_tmux()
     .workdir("/workspace/app")
 )
 ```
+
+`settings` is written to `~/.claude/settings.json`. If you supply
+`ANTHROPIC_API_KEY` instead of `CLAUDE_CODE_OAUTH_TOKEN`, add
+`{"apiKeyHelper": "printenv ANTHROPIC_API_KEY"}` to skip the key-approval
+prompt. See the `with_claude_code` docstring for how directory trust works.
 
 Set Git identity per sandbox, not per image, with `GitConfig`. It is a mapping
 of `GIT_*` environment variables, so it can be unpacked into `env`:

@@ -29,7 +29,7 @@ import os
 import shlex
 import tarfile
 import tempfile
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -531,6 +531,7 @@ class Image:
         version: str | None = None,
         *,
         trusted_dirs: Sequence[str] = (),
+        settings: Mapping[str, Any] | None = None,
     ) -> Image:
         """Install Claude Code and skip its first-run prompts.
 
@@ -543,6 +544,32 @@ class Image:
         a ``CLAUDE_CODE_OAUTH_TOKEN`` or ``ANTHROPIC_API_KEY`` supplied at
         runtime.
 
+        With ``CLAUDE_CODE_OAUTH_TOKEN`` set at runtime and the working
+        directory in ``trusted_dirs``, ``claude`` starts straight into a
+        session. Other prompts can be skipped through ``settings``:
+
+        * ``{"apiKeyHelper": "printenv ANTHROPIC_API_KEY"}`` when you supply
+          an API key. Claude asks before using a raw ``ANTHROPIC_API_KEY``
+          and records the answer per key, so it can't be pre-approved in the
+          image. A key from ``apiKeyHelper`` is used without asking.
+        * ``{"skipDangerousModePermissionPrompt": True}`` skips the warning
+          shown by ``claude --dangerously-skip-permissions``.
+
+        Trusting directories
+        ~~~~~~~~~~~~~~~~~~~~
+        A trusted directory covers its subdirectories, but inside a Git
+        repository Claude only looks from the working directory up to the
+        repository root. Trusting ``/workspace`` or ``/`` therefore does not
+        cover a clone at ``/workspace/app``; list the repository root
+        itself. Trusting ``"/"`` does cover every directory that is not in a
+        Git repository. Paths must not contain symlinks, because Claude
+        compares resolved paths.
+
+        To skip the prompt everywhere, set ``CLAUDE_CODE_SANDBOXED=1`` in the
+        sandbox ``env``. Claude Code treats every directory as trusted when
+        it is set. The variable is undocumented and may change between
+        releases; it was checked against Claude Code 2.1.293.
+
         Parameters
         ----------
         version
@@ -552,15 +579,24 @@ class Image:
             unless the version includes one.
         trusted_dirs
             Absolute directories to pre-accept in Claude Code's "trust the
-            files in this folder" prompt. Use the directory ``claude`` is
-            started from. Only trust repositories whose Claude settings and
-            hooks you are willing to run.
+            files in this folder" prompt. Use the root of each repository
+            ``claude`` runs in. Only trust repositories whose Claude settings
+            and hooks you are willing to run.
+        settings
+            Optional user settings written as JSON to
+            ``~/.claude/settings.json``, such as ``{"model": "opus"}`` or the
+            prompt-skipping keys above. See Claude Code's settings
+            documentation for the available keys.
 
         Examples
         --------
         >>> image = (
         ...     Image.sandbox()
-        ...     .with_claude_code(version="2.1.270", trusted_dirs=["/workspace/app"])
+        ...     .with_claude_code(
+        ...         version="2.1.270",
+        ...         trusted_dirs=["/workspace/app"],
+        ...         settings={"skipDangerousModePermissionPrompt": True},
+        ...     )
         ...     .with_gh()
         ...     .with_tmux()
         ...     .workdir("/workspace/app")
@@ -575,6 +611,8 @@ class Image:
         for path in trusted_dirs:
             if not isinstance(path, str) or not path.startswith("/") or "\0" in path:
                 raise ValueError("each trusted dir must be an absolute path")
+        if settings is not None and not isinstance(settings, Mapping):
+            raise TypeError("settings must be a mapping, such as {'model': 'opus'}")
         package = "claude-code"
         if version is not None:
             version = _validate_version(version)
@@ -587,15 +625,20 @@ class Image:
                 },
             }
         )
+        command = "printf '%s\\n' " + shlex.quote(config) + ' > "$HOME/.claude.json"'
+        if settings is not None:
+            command += (
+                " && mkdir -p \"$HOME/.claude\" && printf '%s\\n' "
+                + shlex.quote(json.dumps(dict(settings)))
+                + ' > "$HOME/.claude/settings.json"'
+            )
         return self._apt_repo_install(
             key_url="https://downloads.claude.ai/keys/claude-code.asc",
             keyring="/etc/apt/keyrings/claude-code.asc",
             repo="https://downloads.claude.ai/claude-code/apt/latest latest main",
             list_name="claude-code",
             package=package,
-        ).run_commands(
-            "printf '%s\\n' " + shlex.quote(config) + ' > "$HOME/.claude.json"'
-        )
+        ).run_commands(command)
 
     def _apt_repo_install(
         self, *, key_url: str, keyring: str, repo: str, list_name: str, package: str
