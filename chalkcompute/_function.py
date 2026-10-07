@@ -234,7 +234,7 @@ def _await_deploy_predecessor(predecessor: Future[None] | None) -> None:
 
 
 @contextlib.contextmanager
-def _manual_deploy_slot(registered_name: str) -> typing.Iterator[None]:
+def _manual_deploy_slot(registered_name: str) -> typing.Generator[None, None, None]:
     """Hold a caller-initiated deploy's place in its registered name's chain.
 
     Without a slot a manual ``deploy()`` is invisible to the chain, so a

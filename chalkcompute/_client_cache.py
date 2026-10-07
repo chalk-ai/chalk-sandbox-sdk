@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Generic, TypeVar
@@ -59,7 +59,7 @@ class ClientCache(Generic[ClientT]):
         return self._acquire(key, borrow=False).client
 
     @contextmanager
-    def borrow(self, *, key: object = None) -> Iterator[ClientT]:
+    def borrow(self, *, key: object = None) -> Generator[ClientT, None, None]:
         entry = self._acquire(key, borrow=True)
         try:
             yield entry.client
