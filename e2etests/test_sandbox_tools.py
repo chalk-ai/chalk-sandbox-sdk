@@ -87,7 +87,11 @@ def test_sandbox_agent_tools_image():
     with SandboxClient.from_env() as client:
         sandbox = Sandbox(
             image=Image.sandbox()
-            .with_claude_code("2.1.270", trusted_dirs=["/workspace/app"])
+            .with_claude_code(
+                "2.1.270",
+                trusted_dirs=["/workspace/app"],
+                permission_mode="bypassPermissions",
+            )
             .with_gh()
             .with_tmux(),
             name=build_scoped_name("sandbox-agent-tools"),
@@ -109,7 +113,13 @@ def test_sandbox_agent_tools_image():
             config = sandbox.exec("cat", "/root/.claude.json")
             assert json.loads(config.stdout_text) == {
                 "hasCompletedOnboarding": True,
+                "hasSeenAutoDefaultNudge": True,
                 "projects": {"/workspace/app": {"hasTrustDialogAccepted": True}},
+            }
+            settings = sandbox.exec("cat", "/root/.claude/settings.json")
+            assert json.loads(settings.stdout_text) == {
+                "permissions": {"defaultMode": "bypassPermissions"},
+                "skipDangerousModePermissionPrompt": True,
             }
             ident = sandbox.exec("git", "var", "GIT_AUTHOR_IDENT")
             assert ident.stdout_text.startswith("Sandbox Bot <bot@example.com> ")

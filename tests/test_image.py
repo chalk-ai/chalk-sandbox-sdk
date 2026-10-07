@@ -1249,6 +1249,7 @@ class TestImageAgentHelpers:
         assert result.returncode == 0, result.stderr
         assert json.loads((tmp_path / ".claude.json").read_text()) == {
             "hasCompletedOnboarding": True,
+            "hasSeenAutoDefaultNudge": True,
             "projects": {path: {"hasTrustDialogAccepted": True} for path in trusted},
         }
         assert not (tmp_path / "injected").exists()
@@ -1273,8 +1274,58 @@ class TestImageAgentHelpers:
         assert written == settings
         assert not (tmp_path / "injected").exists()
 
-    def test_with_claude_code_omits_settings_by_default(self) -> None:
-        assert "settings.json" not in _last_command(Image.sandbox().with_claude_code())
+    def _claude_settings(self, image: Image, tmp_path) -> dict | None:
+        import subprocess
+
+        result = subprocess.run(
+            ["/bin/sh", "-c", _last_command(image)],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            env={"HOME": str(tmp_path)},
+        )
+        assert result.returncode == 0, result.stderr
+        path = tmp_path / ".claude" / "settings.json"
+        return json.loads(path.read_text()) if path.exists() else None
+
+    def test_with_claude_code_skips_dangerous_mode_prompt_by_default(
+        self, tmp_path
+    ) -> None:
+        image = Image.sandbox().with_claude_code()
+        assert self._claude_settings(image, tmp_path) == {
+            "skipDangerousModePermissionPrompt": True
+        }
+
+    def test_with_claude_code_writes_no_settings_when_nothing_is_set(
+        self, tmp_path
+    ) -> None:
+        image = Image.sandbox().with_claude_code(skip_dangerous_mode_prompt=False)
+        assert self._claude_settings(image, tmp_path) is None
+
+    def test_with_claude_code_settings_from_kwargs(self, tmp_path) -> None:
+        image = Image.sandbox().with_claude_code(
+            permission_mode="bypassPermissions",
+            api_key_env="ANTHROPIC_API_KEY",
+            settings={"model": "opus", "apiKeyHelper": "my-helper"},
+        )
+        assert self._claude_settings(image, tmp_path) == {
+            "permissions": {"defaultMode": "bypassPermissions"},
+            "skipDangerousModePermissionPrompt": True,
+            "apiKeyHelper": "my-helper",
+            "model": "opus",
+        }
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"permission_mode": "yolo"},
+            {"api_key_env": "KEY; rm -rf /"},
+            {"api_key_env": ""},
+        ],
+    )
+    def test_with_claude_code_rejects_invalid_options(self, kwargs) -> None:
+        with pytest.raises(ValueError):
+            Image.sandbox().with_claude_code(**kwargs)
 
     def test_settings_must_be_a_mapping(self) -> None:
         with pytest.raises(TypeError):

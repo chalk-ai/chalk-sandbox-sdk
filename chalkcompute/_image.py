@@ -26,6 +26,7 @@ import io
 import json
 import logging
 import os
+import re
 import shlex
 import tarfile
 import tempfile
@@ -531,6 +532,12 @@ class Image:
         version: str | None = None,
         *,
         trusted_dirs: Sequence[str] = (),
+        permission_mode: Literal[
+            "default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"
+        ]
+        | None = None,
+        skip_dangerous_mode_prompt: bool = True,
+        api_key_env: str | None = None,
         settings: Mapping[str, Any] | None = None,
     ) -> Image:
         """Install Claude Code and skip its first-run prompts.
@@ -539,21 +546,21 @@ class Image:
         repository, so any Debian or Ubuntu base works without Node.js.
         Requires ``apt-get`` and a root build user. Apt installs do not
         auto-update, so a pinned version stays pinned in running sandboxes.
-        Also writes ``~/.claude.json`` for the build user so that interactive
-        ``claude`` starts without the onboarding flow, which otherwise ignores
-        a ``CLAUDE_CODE_OAUTH_TOKEN`` or ``ANTHROPIC_API_KEY`` supplied at
-        runtime.
 
-        With ``CLAUDE_CODE_OAUTH_TOKEN`` set at runtime and the working
-        directory in ``trusted_dirs``, ``claude`` starts straight into a
-        session. Other prompts can be skipped through ``settings``:
+        Also configures Claude Code for the build user so that interactive
+        ``claude`` starts straight into a session when
+        ``CLAUDE_CODE_OAUTH_TOKEN`` is set at runtime:
 
-        * ``{"apiKeyHelper": "printenv ANTHROPIC_API_KEY"}`` when you supply
-          an API key. Claude asks before using a raw ``ANTHROPIC_API_KEY``
-          and records the answer per key, so it can't be pre-approved in the
-          image. A key from ``apiKeyHelper`` is used without asking.
-        * ``{"skipDangerousModePermissionPrompt": True}`` skips the warning
-          shown by ``claude --dangerously-skip-permissions``.
+        * ``~/.claude.json`` marks onboarding as done (the onboarding flow
+          otherwise ignores a token supplied at runtime), accepts the trust
+          prompt for ``trusted_dirs``, and dismisses the one-time "make auto
+          mode your default?" offer shown in bypass-permissions mode.
+        * ``~/.claude/settings.json`` holds ``permission_mode``,
+          ``skip_dangerous_mode_prompt``, ``api_key_env`` and ``settings``.
+
+        Claude Code refuses bypass-permissions mode as root unless
+        ``IS_SANDBOX=1`` is set. Chalk sets it in every sandbox, so this image
+        needs nothing extra; set it yourself to run the image elsewhere.
 
         Trusting directories
         ~~~~~~~~~~~~~~~~~~~~
@@ -582,11 +589,27 @@ class Image:
             files in this folder" prompt. Use the root of each repository
             ``claude`` runs in. Only trust repositories whose Claude settings
             and hooks you are willing to run.
+        permission_mode
+            Optional permission mode ``claude`` starts in, such as
+            ``"acceptEdits"`` or ``"bypassPermissions"``. Defaults to Claude
+            Code's own default, which asks before edits and commands.
+        skip_dangerous_mode_prompt
+            Skip the warning that ``claude --dangerously-skip-permissions``
+            (or ``permission_mode="bypassPermissions"``) shows on every start.
+            Defaults to ``True``; the warning would otherwise block an
+            unattended session.
+        api_key_env
+            Optional name of a runtime environment variable holding an
+            Anthropic API key, such as ``"ANTHROPIC_API_KEY"``. Claude asks
+            before using a raw ``ANTHROPIC_API_KEY`` and records the answer
+            per key, so it can't be pre-approved in the image. This reads the
+            key through ``apiKeyHelper`` instead, which doesn't ask. Not needed
+            with ``CLAUDE_CODE_OAUTH_TOKEN``.
         settings
-            Optional user settings written as JSON to
-            ``~/.claude/settings.json``, such as ``{"model": "opus"}`` or the
-            prompt-skipping keys above. See Claude Code's settings
-            documentation for the available keys.
+            Optional extra user settings for ``~/.claude/settings.json``, such
+            as ``{"model": "opus"}``. They override the settings derived from
+            the other arguments. See Claude Code's settings documentation for
+            the available keys.
 
         Examples
         --------
@@ -595,7 +618,7 @@ class Image:
         ...     .with_claude_code(
         ...         version="2.1.270",
         ...         trusted_dirs=["/workspace/app"],
-        ...         settings={"skipDangerousModePermissionPrompt": True},
+        ...         permission_mode="bypassPermissions",
         ...     )
         ...     .with_gh()
         ...     .with_tmux()
@@ -611,6 +634,14 @@ class Image:
         for path in trusted_dirs:
             if not isinstance(path, str) or not path.startswith("/") or "\0" in path:
                 raise ValueError("each trusted dir must be an absolute path")
+        if permission_mode is not None and permission_mode not in _CLAUDE_MODES:
+            raise ValueError(
+                f"permission_mode must be one of {', '.join(sorted(_CLAUDE_MODES))}"
+            )
+        if api_key_env is not None and (
+            not isinstance(api_key_env, str) or not _ENV_NAME_RE.match(api_key_env)
+        ):
+            raise ValueError("api_key_env must be an environment variable name")
         if settings is not None and not isinstance(settings, Mapping):
             raise TypeError("settings must be a mapping, such as {'model': 'opus'}")
         package = "claude-code"
@@ -620,16 +651,25 @@ class Image:
         config = json.dumps(
             {
                 "hasCompletedOnboarding": True,
+                "hasSeenAutoDefaultNudge": True,
                 "projects": {
                     path: {"hasTrustDialogAccepted": True} for path in trusted_dirs
                 },
             }
         )
+        user_settings: dict[str, Any] = {}
+        if permission_mode is not None:
+            user_settings["permissions"] = {"defaultMode": permission_mode}
+        if skip_dangerous_mode_prompt:
+            user_settings["skipDangerousModePermissionPrompt"] = True
+        if api_key_env is not None:
+            user_settings["apiKeyHelper"] = "printenv " + api_key_env
+        user_settings.update(settings or {})
         command = "printf '%s\\n' " + shlex.quote(config) + ' > "$HOME/.claude.json"'
-        if settings is not None:
+        if user_settings:
             command += (
                 " && mkdir -p \"$HOME/.claude\" && printf '%s\\n' "
-                + shlex.quote(json.dumps(dict(settings)))
+                + shlex.quote(json.dumps(user_settings))
                 + ' > "$HOME/.claude/settings.json"'
             )
         return self._apt_repo_install(
@@ -1404,6 +1444,12 @@ class Image:
             parts.append(f", env={self._env!r}")
         parts.append(")")
         return "".join(parts)
+
+
+_CLAUDE_MODES = frozenset(
+    {"default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"}
+)
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _validate_version(version: str) -> str:

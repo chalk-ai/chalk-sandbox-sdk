@@ -274,7 +274,7 @@ image = (
     .with_claude_code(
         version="2.1.270",
         trusted_dirs=["/workspace/app"],  # the repo root, not a parent of it
-        settings={"skipDangerousModePermissionPrompt": True},
+        permission_mode="bypassPermissions",  # optional
     )
     .with_gh()  # from GitHub's apt repo; authenticates from GH_TOKEN
     .with_tmux()
@@ -282,10 +282,13 @@ image = (
 )
 ```
 
-`settings` is written to `~/.claude/settings.json`. If you supply
-`ANTHROPIC_API_KEY` instead of `CLAUDE_CODE_OAUTH_TOKEN`, add
-`{"apiKeyHelper": "printenv ANTHROPIC_API_KEY"}` to skip the key-approval
-prompt. See the `with_claude_code` docstring for how directory trust works.
+The bypass-permissions warning is skipped by default
+(`skip_dangerous_mode_prompt=True`). Bypass mode works as root because Chalk
+sets `IS_SANDBOX=1` in every sandbox. If you supply `ANTHROPIC_API_KEY` instead
+of `CLAUDE_CODE_OAUTH_TOKEN`, pass `api_key_env="ANTHROPIC_API_KEY"` to skip the
+key-approval prompt. Anything else goes in `settings`, which is merged into
+`~/.claude/settings.json`. See the `with_claude_code` docstring for how
+directory trust works.
 
 Set Git identity per sandbox, not per image, with `GitConfig`. It is a mapping
 of `GIT_*` environment variables, so it can be unpacked into `env`:
