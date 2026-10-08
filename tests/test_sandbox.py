@@ -121,6 +121,82 @@ class _SucceededDuringCreationStub:
         )
 
 
+class _ReadinessSequenceStub:
+    def __init__(self, statuses: list[pb.SandboxStatus]) -> None:
+        self.statuses = iter(statuses)
+
+    def create_sandbox(self, request: pb.CreateSandboxRequest, **_kwargs: object):
+        return pb.CreateSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id="sandbox-123",
+                status=pb.SandboxStatus.PENDING,
+                created_at=Timestamp(seconds=1),
+            )
+        )
+
+    def get_sandbox(self, request: pb.GetSandboxRequest, **_kwargs: object):
+        assert request.id == "sandbox-123"
+        return pb.GetSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id="sandbox-123",
+                status=next(self.statuses),
+                created_at=Timestamp(seconds=1),
+            )
+        )
+
+
+def test_sandbox_client_default_readiness_poll_matches_cli_backoff() -> None:
+    statuses = [pb.SandboxStatus.PENDING] * 8 + [pb.SandboxStatus.RUNNING]
+    client = SandboxClient()
+    client._stub = _ReadinessSequenceStub(statuses)  # type: ignore[assignment]
+    try:
+        with patch("chalkcompute._sandbox.time.sleep") as sleep:
+            sandbox = client.create("python:3.14-slim", timeout=30)
+    finally:
+        client.close()
+
+    assert sandbox.info is not None
+    assert sandbox.info.status == "running"
+    delays = [call.args[0] for call in sleep.call_args_list]
+    assert delays == pytest.approx(
+        [0.025, 0.0375, 0.05625, 0.084375, 0.1265625, 0.18984375, 0.25, 0.25]
+    )
+
+
+def test_sandbox_client_explicit_readiness_poll_interval_is_unchanged() -> None:
+    statuses = [pb.SandboxStatus.PENDING] * 3 + [pb.SandboxStatus.RUNNING]
+    client = SandboxClient()
+    client._stub = _ReadinessSequenceStub(statuses)  # type: ignore[assignment]
+    try:
+        with patch("chalkcompute._sandbox.time.sleep") as sleep:
+            sandbox = client.create("python:3.14-slim", poll_interval=0.1, timeout=30)
+    finally:
+        client.close()
+
+    assert sandbox.info is not None
+    assert [call.args[0] for call in sleep.call_args_list] == [0.1, 0.1, 0.1]
+
+
+def test_sandbox_run_keeps_default_image_build_poll_interval() -> None:
+    client = _RecordingSandboxClient()
+    image = Image.debian_slim().run_commands("pip install claude")
+    sandbox = Sandbox(image=image, sandbox_client=client)  # type: ignore[arg-type]
+
+    with patch(
+        "chalkcompute._sandbox.build_image", return_value="registry/image:built"
+    ) as build:
+        sandbox.run()
+
+    build.assert_called_once_with(
+        client._connect,
+        image,
+        poll_interval=0.5,
+        timeout=600.0,
+    )
+    assert client.create_kwargs is not None
+    assert client.create_kwargs["poll_interval"] is None
+
+
 def test_sandbox_client_create_sends_image_uri_not_image_spec() -> None:
     client = SandboxClient()
     stub = _Stub()
