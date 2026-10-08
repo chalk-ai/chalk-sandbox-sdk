@@ -1,0 +1,1 @@
+- Fix volume and dataset calls (`Volume.load_dataset`, `DatasetClient().read`) failing with a TLS transport error in host-class containers by trusting the system trust store and `SSL_CERT_FILE` in the native volume client, alongside the bundled webpki roots
