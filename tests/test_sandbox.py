@@ -299,7 +299,11 @@ def test_sandbox_add_credentials_configures_env_and_network_policy(monkeypatch) 
     assert sandbox._secrets == [existing_secret]
     assert sandbox._network_policy is network_policy
     assert sandbox._network_policy.denied_routes == ["169.254.0.0/16"]
-    assert sandbox._network_policy.allowed_hosts["api.example.com"][0] is existing_rule
+    assert existing_rule.transforms == [
+        NetworkPolicy.Transformer(headers={"x-existing": "yes"})
+    ]
+    [rule] = sandbox._network_policy.allowed_hosts["api.example.com"]
+    assert rule.transforms[0].headers == {"x-existing": "yes"}
     assert host_bindings(sandbox, "api.example.com") == {
         sandbox._env["API_KEY"]: Secret.from_chalk_env("API_KEY")
     }
@@ -403,6 +407,60 @@ def test_sandbox_add_credentials_configures_env_and_network_policy(monkeypatch) 
     assert host_bindings(sandbox, "api.example.com") == {
         sandbox._env["LOCAL_TOKEN"]: Secret.from_local_env("LOCAL_TOKEN")
     }
+
+
+def test_sandbox_add_credentials_binds_every_existing_rule() -> None:
+    # The proxy applies only the first rule matching a request, so a binding
+    # that lives on a later rule is never substituted.
+    def rule_bindings(sandbox: Sandbox, host: str) -> list[set[str]]:
+        assert sandbox._network_policy is not None
+        return [
+            {
+                placeholder
+                for transform in rule.transforms
+                for placeholder in transform.headers_secrets
+            }
+            for rule in sandbox._network_policy.allowed_hosts[host]
+        ]
+
+    # Chaining credentials onto one host keeps a single rule carrying both.
+    sandbox = (
+        Sandbox(image="ubuntu:latest")
+        .add_credentials("api.example.com", "FIRST_KEY")
+        .add_credentials("api.example.com", "SECOND_KEY")
+    )
+    assert rule_bindings(sandbox, "api.example.com") == [
+        {sandbox._env["FIRST_KEY"], sandbox._env["SECOND_KEY"]}
+    ]
+
+    # Rules with matches each get the binding, and no catch-all rule is added
+    # that would open paths they deny.
+    shared = NetworkPolicy.Rule(
+        match=NetworkPolicy.Match(path=NetworkPolicy.Matcher(starts_with="/v1/"))
+    )
+    other = NetworkPolicy.Rule(
+        match=NetworkPolicy.Match(path=NetworkPolicy.Matcher(exact="/health")),
+        transforms=[NetworkPolicy.Transformer(headers={"x-existing": "yes"})],
+    )
+    sandbox = Sandbox(
+        image="ubuntu:latest",
+        network_policy=NetworkPolicy(
+            allowed_hosts={
+                "api.example.com": [shared, other],
+                "other.example.com": [shared],
+            }
+        ),
+    ).add_credentials("api.example.com", "API_KEY")
+    placeholder = sandbox._env["API_KEY"]
+    assert rule_bindings(sandbox, "api.example.com") == [{placeholder}, {placeholder}]
+    rules = sandbox._network_policy.allowed_hosts["api.example.com"]
+    assert [rule.match for rule in rules] == [shared.match, other.match]
+    assert rules[1].transforms[0].headers == {"x-existing": "yes"}
+
+    # A rule shared with another host is replaced, not mutated, so the
+    # credential is not exposed to that host.
+    assert shared.transforms == []
+    assert rule_bindings(sandbox, "other.example.com") == [set()]
 
 
 def test_sandbox_client_create_can_request_chalk_identity() -> None:
