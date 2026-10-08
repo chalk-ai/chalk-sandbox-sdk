@@ -162,6 +162,7 @@ from chalkcompute._sandbox_git import SandboxGit as SandboxGit
 from chalkcompute._sandbox_git import GitFileStatus as GitFileStatus
 from chalkcompute._sandbox_git import GitStatus as GitStatus
 from chalkcompute._sandbox_git import GitRemote as GitRemote
+from chalkcompute._git import GitConfig as GitConfig
 from chalkcompute._git import GitError as GitError
 
 __all__ = [
@@ -170,6 +171,7 @@ __all__ = [
     "GitFileStatus",
     "GitStatus",
     "GitRemote",
+    "GitConfig",
     "GitError",
     "SQLClient",
     "SQLResult",

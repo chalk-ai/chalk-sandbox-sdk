@@ -9,26 +9,32 @@ or local `chalk-remote-call-python` changes, see
 ## Install
 
 ```
-pip install grpcio protobuf
+pip install chalkcompute
 ```
 
 ## Quick start
 
 ```python
-from chalkcompute import SandboxClient
+import chalkcompute as cc
 
-with SandboxClient.from_env() as client:
-    # Create a sandbox from a pre-built image
-    sandbox = client.create(image="ubuntu:latest")
-
-    # Run a command
+# Omitting image= uses Image.sandbox(): Python, Git and SSH in /workspace.
+# Credentials come from the environment, as with SandboxClient.from_env().
+sandbox = cc.Sandbox(
+    image=cc.Image.sandbox().with_tmux(),
+    cpu="1",
+    memory="2Gi",
+).run()
+try:
     result = sandbox.exec("echo", "hello world")
-    print(result.stdout_text)  # "hello world"
+    print(result.stdout_text)  # "hello world\n"
     print(result.exit_code)    # 0
-
-    # Clean up
+finally:
     sandbox.terminate()
 ```
+
+`Sandbox(...)` only describes the sandbox; `.run()` builds the image, starts it
+and waits until it is ready. See [Coding agent tools](#coding-agent-tools) for a
+sandbox with Claude Code, `gh` and Git identity configured.
 
 ## Logging and progress
 
@@ -253,6 +259,78 @@ img = (
     .cmd(["serve"])
 )
 ```
+
+### Coding agent tools
+
+`with_claude_code`, `with_gh` and `with_tmux` install common agent tooling on
+Debian or Ubuntu images. `with_claude_code` installs the native binary from
+Anthropic's apt repository, pins the version (apt installs don't auto-update),
+and pre-accepts Claude Code's onboarding and trust prompts for the directories
+you list, so interactive `claude` starts without a login screen:
+
+```python
+image = (
+    Image.sandbox()
+    .with_claude_code(
+        version="2.1.270",
+        trusted_dirs=["/workspace/app"],  # the repo root, not a parent of it
+        permission_mode="bypassPermissions",  # optional
+    )
+    .with_gh()  # from GitHub's apt repo; authenticates from GH_TOKEN
+    .with_tmux()
+    .workdir("/workspace/app")
+)
+```
+
+The bypass-permissions warning is skipped by default
+(`skip_dangerous_mode_prompt=True`). Bypass mode works as root because Chalk
+sets `IS_SANDBOX=1` in every sandbox. If you supply `ANTHROPIC_API_KEY` instead
+of `CLAUDE_CODE_OAUTH_TOKEN`, pass `api_key_env="ANTHROPIC_API_KEY"` to skip the
+key-approval prompt. Anything else goes in `settings`, which is merged into
+`~/.claude/settings.json`. The theme defaults to `"dark"` (`theme=`), and
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` is set in the image so telemetry
+and update checks don't hit hosts a network policy blocks
+(`disable_nonessential_traffic=False` to keep them). See the `with_claude_code`
+docstring for how directory trust works.
+
+To keep the token itself out of the sandbox, use `add_credentials` (see
+[Environment and secrets](#environment-variables-and-secrets)):
+`sandbox.add_credentials("api.anthropic.com",
+Secret.from_chalk_env("CLAUDE_TOKEN", alias="CLAUDE_CODE_OAUTH_TOKEN"))`.
+
+Set Git identity per sandbox, not per image, with `GitConfig`. It is a mapping
+of `GIT_*` environment variables, so it can be unpacked into `env`:
+
+```python
+sandbox = Sandbox(
+    image=image,
+    env={
+        **GitConfig(
+            name="Ada Lovelace",
+            email="ada@example.com",
+            config={"pull.rebase": "true"},
+        ),
+        "LOG_LEVEL": "debug",
+    },
+).run()
+```
+
+To push and pull over SSH, add `SshDest.github` to `managed_ssh`. It is pinned
+to GitHub's published host keys and reads the private key from a Chalk secret,
+so `git@github.com:org/repo.git` URLs work unchanged:
+
+```python
+sandbox = Sandbox(
+    image=image,
+    compute_class=ComputeClass.HOST,
+    managed_ssh=[SshDest.github("GITHUB_DEPLOY_KEY")],
+).run()
+sandbox.git.clone("git@github.com:org/repo.git", "/workspace/repo")
+```
+
+Pass `port_443=True` for networks that block port 22. To use more than one key,
+give each a distinct `alias` and use it in remote URLs, as in
+`git@github-work:org/repo.git`.
 
 ### Immutable composition
 

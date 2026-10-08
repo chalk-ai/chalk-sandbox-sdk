@@ -1177,3 +1177,180 @@ class TestImageAptInstall:
         ]
         assert calls[2][0] == "rm"
         assert not (tmp_path / "injected").exists()
+
+
+def _last_command(image: Image) -> str:
+    (command,) = image.to_proto().steps[-1].step.value.commands
+    return command
+
+
+class TestImageAgentHelpers:
+    def test_with_tmux_installs_tmux_with_apt(self) -> None:
+        assert _last_command(Image.sandbox().with_tmux()) == _last_command(
+            Image.sandbox().apt_install(["tmux"])
+        )
+
+    def test_with_gh_uses_github_apt_repo(self) -> None:
+        command = _last_command(Image.sandbox().with_gh())
+        assert "https://cli.github.com/packages stable main" in command
+        assert command.endswith("-- gh && rm -rf /var/lib/apt/lists/*")
+
+    def test_with_gh_pins_version(self) -> None:
+        assert "-- gh=2.62.0 &&" in _last_command(Image.sandbox().with_gh("2.62.0"))
+
+    @pytest.mark.parametrize("version", ["", "-f", "1.0 x", "1.0\0"])
+    def test_invalid_versions(self, version) -> None:
+        with pytest.raises(ValueError):
+            Image.sandbox().with_gh(version)
+        with pytest.raises(ValueError):
+            Image.sandbox().with_claude_code(version)
+
+    @pytest.mark.parametrize("dirs", [["relative"], [""], ["/a\0"], [1]])
+    def test_invalid_trusted_dirs(self, dirs) -> None:
+        with pytest.raises(ValueError):
+            Image.sandbox().with_claude_code(trusted_dirs=dirs)
+
+    @pytest.mark.parametrize("dirs", ["/workspace", None])
+    def test_trusted_dirs_must_be_a_sequence(self, dirs) -> None:
+        with pytest.raises(TypeError):
+            Image.sandbox().with_claude_code(trusted_dirs=dirs)
+
+    def _claude_install_command(self, image: Image) -> str:
+        (command,) = image.to_proto().steps[-2].step.value.commands
+        return command
+
+    def test_with_claude_code_uses_claude_apt_repo(self) -> None:
+        command = self._claude_install_command(Image.sandbox().with_claude_code())
+        assert (
+            "https://downloads.claude.ai/claude-code/apt/latest latest main" in command
+        )
+        assert command.endswith("-- claude-code && rm -rf /var/lib/apt/lists/*")
+
+    @pytest.mark.parametrize(
+        ("version", "package"),
+        [("2.1.270", "claude-code=2.1.270-1"), ("2.1.270-2", "claude-code=2.1.270-2")],
+    )
+    def test_with_claude_code_pins_version(self, version, package) -> None:
+        image = Image.sandbox().with_claude_code(version)
+        assert f"-- {package} &&" in self._claude_install_command(image)
+
+    def test_with_claude_code_seeds_config(self, tmp_path) -> None:
+        import subprocess
+
+        trusted = ["/workspace/app", "/workspace/it's $(touch injected)"]
+        image = Image.sandbox().with_claude_code(trusted_dirs=trusted)
+        result = subprocess.run(
+            ["/bin/sh", "-c", _last_command(image)],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            env={"HOME": str(tmp_path)},
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads((tmp_path / ".claude.json").read_text()) == {
+            "hasCompletedOnboarding": True,
+            "hasSeenAutoDefaultNudge": True,
+            "theme": "dark",
+            "projects": {path: {"hasTrustDialogAccepted": True} for path in trusted},
+        }
+        assert not (tmp_path / "injected").exists()
+
+    def test_with_claude_code_sets_theme(self) -> None:
+        command = _last_command(Image.sandbox().with_claude_code(theme="light-ansi"))
+        assert '"theme": "light-ansi"' in command
+
+    def test_with_claude_code_disables_nonessential_traffic_by_default(self) -> None:
+        env = Image.sandbox().env({"A": "1"}).with_claude_code()._env
+        assert env == {"A": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
+        image = Image.sandbox().with_claude_code(disable_nonessential_traffic=False)
+        assert "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC" not in image._env
+
+    def test_with_claude_code_writes_settings(self, tmp_path) -> None:
+        import subprocess
+
+        settings = {
+            "skipDangerousModePermissionPrompt": True,
+            "apiKeyHelper": "printenv 'MY_KEY' $(touch injected)",
+        }
+        image = Image.sandbox().with_claude_code(settings=settings)
+        result = subprocess.run(
+            ["/bin/sh", "-c", _last_command(image)],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            env={"HOME": str(tmp_path)},
+        )
+        assert result.returncode == 0, result.stderr
+        written = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+        assert written == settings
+        assert not (tmp_path / "injected").exists()
+
+    def _claude_settings(self, image: Image, tmp_path) -> dict | None:
+        import subprocess
+
+        result = subprocess.run(
+            ["/bin/sh", "-c", _last_command(image)],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            env={"HOME": str(tmp_path)},
+        )
+        assert result.returncode == 0, result.stderr
+        path = tmp_path / ".claude" / "settings.json"
+        return json.loads(path.read_text()) if path.exists() else None
+
+    def test_with_claude_code_skips_dangerous_mode_prompt_by_default(
+        self, tmp_path
+    ) -> None:
+        image = Image.sandbox().with_claude_code()
+        assert self._claude_settings(image, tmp_path) == {
+            "skipDangerousModePermissionPrompt": True
+        }
+
+    def test_with_claude_code_writes_no_settings_when_nothing_is_set(
+        self, tmp_path
+    ) -> None:
+        image = Image.sandbox().with_claude_code(skip_dangerous_mode_prompt=False)
+        assert self._claude_settings(image, tmp_path) is None
+
+    def test_with_claude_code_settings_from_kwargs(self, tmp_path) -> None:
+        image = Image.sandbox().with_claude_code(
+            permission_mode="bypassPermissions",
+            api_key_env="ANTHROPIC_API_KEY",
+            settings={"model": "opus", "apiKeyHelper": "my-helper"},
+        )
+        assert self._claude_settings(image, tmp_path) == {
+            "permissions": {"defaultMode": "bypassPermissions"},
+            "skipDangerousModePermissionPrompt": True,
+            "apiKeyHelper": "my-helper",
+            "model": "opus",
+        }
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"permission_mode": "yolo"},
+            {"api_key_env": "KEY; rm -rf /"},
+            {"api_key_env": ""},
+            {"theme": "solarized"},
+        ],
+    )
+    def test_with_claude_code_rejects_invalid_options(self, kwargs) -> None:
+        with pytest.raises(ValueError):
+            Image.sandbox().with_claude_code(**kwargs)
+
+    def test_settings_must_be_a_mapping(self) -> None:
+        with pytest.raises(TypeError):
+            Image.sandbox().with_claude_code(settings=[("model", "opus")])
+
+    def test_helpers_chain(self) -> None:
+        base = Image.sandbox()
+        image = (
+            base.with_claude_code("2.1.270", trusted_dirs=["/workspace/cli"])
+            .with_gh()
+            .with_tmux()
+            .workdir("/workspace/cli")
+        )
+        spec = image.to_proto()
+        assert len(spec.steps) == len(base.to_proto().steps) + 4
+        assert spec.workdir == "/workspace/cli"

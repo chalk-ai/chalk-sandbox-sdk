@@ -5,11 +5,89 @@ from __future__ import annotations
 import subprocess
 import shutil
 import tempfile
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 
 
 class GitError(RuntimeError):
     """Raised when a Git operation fails."""
+
+
+class GitConfig(Mapping[str, str]):
+    """Git identity and settings expressed as environment variables.
+
+    A ``GitConfig`` is a mapping, so it can be passed as ``env`` directly or
+    unpacked alongside other variables. Environment variables apply to every
+    repository in the sandbox, override any ``.gitconfig``, and leave images
+    shareable between users.
+
+    Parameters
+    ----------
+    name
+        Author and committer name (``GIT_AUTHOR_NAME``/``GIT_COMMITTER_NAME``).
+    email
+        Author and committer email (``GIT_AUTHOR_EMAIL``/``GIT_COMMITTER_EMAIL``).
+    config
+        Additional Git settings, such as ``{"pull.rebase": "true"}``, passed
+        with ``GIT_CONFIG_COUNT`` (Git 2.31+). Only one ``GitConfig`` with
+        ``config`` can be unpacked into the same env.
+
+    Examples
+    --------
+    >>> from chalkcompute import GitConfig, Sandbox
+    >>> sandbox = Sandbox(
+    ...     env={
+    ...         **GitConfig(name="Ada Lovelace", email="ada@example.com"),
+    ...         "LOG_LEVEL": "debug",
+    ...     },
+    ... ).run()
+    """
+
+    def __init__(
+        self,
+        name: str | None = None,
+        email: str | None = None,
+        *,
+        config: Mapping[str, str] | None = None,
+    ) -> None:
+        env: dict[str, str] = {}
+        for label, value, keys in (
+            ("name", name, ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME")),
+            ("email", email, ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL")),
+        ):
+            if value is None:
+                continue
+            if not isinstance(value, str) or not value.strip() or "\0" in value:
+                raise ValueError(f"{label} must be a nonempty string")
+            env.update(dict.fromkeys(keys, value))
+        if config:
+            if not isinstance(config, Mapping):
+                raise TypeError("config must be a mapping of Git keys to values")
+            for i, (key, value) in enumerate(config.items()):
+                if not isinstance(key, str) or "." not in key or "\0" in key:
+                    raise ValueError(
+                        f"invalid Git config key {key!r}; use section.name"
+                    )
+                if not isinstance(value, str) or "\0" in value:
+                    raise TypeError(f"Git config value for {key!r} must be a string")
+                env[f"GIT_CONFIG_KEY_{i}"] = key
+                env[f"GIT_CONFIG_VALUE_{i}"] = value
+            env["GIT_CONFIG_COUNT"] = str(len(config))
+        if not env:
+            raise ValueError("GitConfig needs a name, an email, or config")
+        self._env = env
+
+    def __getitem__(self, key: str) -> str:
+        return self._env[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._env)
+
+    def __len__(self) -> int:
+        return len(self._env)
+
+    def __repr__(self) -> str:
+        return f"GitConfig({self._env!r})"
 
 
 def unpack_remote_to_mount(
