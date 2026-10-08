@@ -1,0 +1,3 @@
+- fix function and class redeploys returning while the previous version still answers: deploy now waits until the function's route consistently reports the new scaling-group revision (`x-chalk-scaling-group-revision`), and fails instead of returning if the new version never starts serving
+- give function and class replicas a default gRPC health readiness probe, so a new version that never becomes healthy no longer replaces the previous one
+- add e2e tests for redeploy cutover and for an unhealthy new version
