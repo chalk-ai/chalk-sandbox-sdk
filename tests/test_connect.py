@@ -1039,6 +1039,52 @@ class TestConnectClientServiceAuth:
         assert use_tls is True
 
 
+class TestDataplaneApiServerTarget:
+    def test_rewrites_engine_host_and_preserves_port_and_tls(self, monkeypatch):
+        client = ConnectClient()
+        monkeypatch.setattr(
+            client,
+            "grpc_engine_target",
+            lambda: ("engine.region.chalk.test:8443", True),
+        )
+
+        assert client.dataplane_api_server_target() == (
+            "dataplane-api-server.region.chalk.test:8443",
+            True,
+        )
+
+    @pytest.mark.parametrize(
+        "target",
+        [("localhost:50051", False), ("10.0.0.5:443", False), ("192.0.2.1:443", True)],
+    )
+    def test_preserves_local_and_ip_targets(self, monkeypatch, target):
+        client = ConnectClient()
+        monkeypatch.setattr(client, "grpc_engine_target", lambda: target)
+
+        assert client.dataplane_api_server_target() == target
+
+    @pytest.mark.parametrize(
+        ("override", "expected"),
+        [
+            (
+                "dataplane-api-server.chalk.test:443",
+                ("dataplane-api-server.chalk.test:443", True),
+            ),
+            ("http://localhost:8080", ("localhost:8080", False)),
+        ],
+    )
+    def test_honors_explicit_dataplane_server(self, monkeypatch, override, expected):
+        client = ConnectClient()
+        monkeypatch.setenv("CHALK_DATAPLANE_API_SERVER", override)
+        monkeypatch.setattr(
+            client,
+            "grpc_engine_target",
+            lambda: pytest.fail("engine target should not be resolved"),
+        )
+
+        assert client.dataplane_api_server_target() == expected
+
+
 class _FakeChalkClient:
     calls: list[dict[str, Any]] = []
 

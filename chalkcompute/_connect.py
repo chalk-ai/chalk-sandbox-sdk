@@ -379,6 +379,31 @@ class ConnectClient:
 
         return grpc_engine_target_from_url(query_server)
 
+    def dataplane_api_server_target(
+        self,
+        engine_target: tuple[str, bool] | None = None,
+    ) -> tuple[str, bool]:
+        """Resolve the dataplane API server target for function-queue RPCs."""
+        override = os.environ.get("CHALK_DATAPLANE_API_SERVER", "").strip()
+        if override:
+            if not override.startswith(("http://", "https://")):
+                is_local = override.startswith(("localhost", "127.0.0.1", "10."))
+                override = f"{'http' if is_local else 'https'}://{override}"
+            return grpc_target_from_url(override)
+
+        if engine_target is None:
+            engine_target = self.grpc_engine_target()
+        target, use_tls = engine_target
+        host, separator, port = target.partition(":")
+        if "." not in host or host == "localhost" or host.replace(".", "").isdigit():
+            return engine_target
+
+        _, gateway_domain = host.split(".", 1)
+        dataplane_host = f"dataplane-api-server.{gateway_domain}"
+        if separator:
+            dataplane_host = f"{dataplane_host}:{port}"
+        return dataplane_host, use_tls
+
     def _rpc_metadata(self) -> list[tuple[str, str]]:
         """Return current RPC metadata, re-reading rotating identity files."""
         self._ensure_auth()

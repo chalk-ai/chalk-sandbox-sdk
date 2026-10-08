@@ -3483,25 +3483,19 @@ class RemoteFunction:
             read_max_bytes=RPC_READ_MAX_BYTES,
         )
 
-    def _remote_call_metadata(self, *, queue: bool) -> list[tuple[str, str]]:
+    def _remote_call_metadata(self) -> list[tuple[str, str]]:
         uses_web_identity = (
             getattr(self._client, "_uses_web_identity_token", lambda: False)() is True
         )
         service_auth = None if uses_web_identity else service_auth_context_from_env()
         if service_auth is not None:
-            metadata = [("x-chalk-env-id", service_auth.environment_id)]
-            if queue:
-                metadata.append(("x-chalk-deployment-type", "function-queue"))
-            return metadata
+            return [("x-chalk-env-id", service_auth.environment_id)]
 
         self._client._ensure_auth()
-        metadata = [
+        return [
             ("authorization", f"Bearer {self._client._access_token}"),
             ("x-chalk-env-id", self._client._env_id or ""),
         ]
-        if queue:
-            metadata.append(("x-chalk-deployment-type", "function-queue"))
-        return metadata
 
     def _per_call_metadata(self) -> list[tuple[str, str]]:
         metadata = current_trace_metadata()
@@ -3545,13 +3539,9 @@ class RemoteFunction:
 
         service_auth = None if uses_web_identity else service_auth_context_from_env()
         if queue:
-            if service_auth is None:
-                target, use_tls = self._client.grpc_engine_target()
-            else:
-                if service_auth.grpc_engine is None:
-                    target, use_tls = self._client.grpc_engine_target()
-                else:
-                    target, use_tls = service_auth.grpc_engine
+            target, use_tls = self._client.dataplane_api_server_target(
+                service_auth.grpc_engine if service_auth is not None else None
+            )
         else:
             target, use_tls = grpc_target_from_url(
                 self._web_url,
@@ -3559,7 +3549,7 @@ class RemoteFunction:
             )
         client = RemoteCallClient(
             target,
-            metadata=self._remote_call_metadata(queue=queue),
+            metadata=self._remote_call_metadata(),
             use_tls=use_tls,
             auth_endpoint=service_auth.auth_endpoint if service_auth else None,
             exchange_token=service_auth.exchange_token if service_auth else None,
@@ -3619,7 +3609,7 @@ class RemoteFunction:
             if callable(getattr(client, "call_ipc", None)):
                 return client.call_ipc(function_name, feather_bytes, metadata=metadata)
             fallback_metadata = [
-                *self._remote_call_metadata(queue=False),
+                *self._remote_call_metadata(),
                 *metadata,
             ]
             timeout_ms = (
