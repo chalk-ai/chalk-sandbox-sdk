@@ -90,6 +90,10 @@ from chalkcompute._volume import (
     referenced_volume_mount,
 )
 
+_DEFAULT_READINESS_POLL_INTERVAL = 0.025
+_MAX_READINESS_POLL_INTERVAL = 0.250
+_DEFAULT_IMAGE_BUILD_POLL_INTERVAL = 0.5
+
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
     from typing import Any
@@ -1126,7 +1130,7 @@ class Sandbox:
         self,
         *,
         wait: bool = True,
-        poll_interval: float = 0.5,
+        poll_interval: float | None = None,
         timeout: float = 600.0,
     ) -> Sandbox:
         """Create the sandbox and optionally wait until it is ready.
@@ -1136,7 +1140,9 @@ class Sandbox:
         wait
             If ``True``, poll until the sandbox is ready (default ``True``).
         poll_interval
-            Seconds between readiness polls.
+            Initial delay between readiness polls. When omitted, polling starts
+            at 25ms and backs off by 50% to 250ms. Image builds retain their
+            500ms default polling interval.
         timeout
             Maximum seconds to wait for the sandbox to become ready.
 
@@ -1160,7 +1166,11 @@ class Sandbox:
         if isinstance(image, Image):
             image = self._build_image(
                 client,
-                poll_interval=poll_interval,
+                poll_interval=(
+                    _DEFAULT_IMAGE_BUILD_POLL_INTERVAL
+                    if poll_interval is None
+                    else poll_interval
+                ),
                 timeout=timeout,
             )
         self._built_image_uri = image
@@ -1793,7 +1803,7 @@ class SandboxClient:
         managed_ssh: Mapping[str, SSHDest] | Sequence[SSHDest] | None = None,
         tracing: TracingPolicyConfig | None = None,
         wait: bool = True,
-        poll_interval: float = 0.5,
+        poll_interval: float | None = None,
         timeout: float = 600.0,
     ) -> Sandbox:
         """Construct and run a sandbox in one call.
@@ -1853,7 +1863,8 @@ class SandboxClient:
         wait
             If ``True``, poll until the sandbox is ready (default ``True``).
         poll_interval
-            Seconds between ``GetSandbox`` polls (default 0.5).
+            Initial delay between readiness polls. When omitted, polling starts
+            at 25ms and backs off by 50% to 250ms.
         timeout
             Maximum seconds to wait for the sandbox to become ready
             (default 600).
@@ -1897,7 +1908,7 @@ class SandboxClient:
         sandbox: Sandbox,
         *,
         wait: bool = True,
-        poll_interval: float = 0.5,
+        poll_interval: float | None = None,
         timeout: float = 600.0,
     ) -> Sandbox:
         """Create a configured sandbox using this client.
@@ -1909,7 +1920,8 @@ class SandboxClient:
         wait
             If ``True``, poll until the sandbox is ready (default ``True``).
         poll_interval
-            Seconds between readiness polls.
+            Initial delay between readiness polls. When omitted, polling starts
+            at 25ms and backs off by 50% to 250ms.
         timeout
             Maximum seconds to wait for the sandbox to become ready.
 
@@ -1934,7 +1946,7 @@ class SandboxClient:
         secret_refs: Sequence[Secret],
         network_policy: NetworkPolicy | None,
         wait: bool,
-        poll_interval: float,
+        poll_interval: float | None,
         timeout: float,
     ) -> None:
         spec = ContainerSpec(
@@ -1988,11 +2000,14 @@ class SandboxClient:
         self,
         sandbox_id: str,
         *,
-        poll_interval: float,
+        poll_interval: float | None,
         timeout: float,
     ) -> SandboxInfo:
         """Poll GetSandbox until the sandbox reaches a terminal state."""
         deadline = time.monotonic() + timeout
+        use_default_backoff = poll_interval is None
+        if poll_interval is None:
+            poll_interval = _DEFAULT_READINESS_POLL_INTERVAL
         while time.monotonic() < deadline:
             try:
                 resp = self._stub.get_sandbox(
@@ -2010,6 +2025,11 @@ class SandboxClient:
             if info.status in ("failed", "error", "unknown", "terminated"):
                 raise _sandbox_creation_error(info)
             time.sleep(poll_interval)
+            if use_default_backoff:
+                poll_interval = min(
+                    poll_interval + poll_interval / 2,
+                    _MAX_READINESS_POLL_INTERVAL,
+                )
         raise SandboxError(
             f"Timed out after {timeout}s waiting for sandbox {sandbox_id} to become ready"
         )
