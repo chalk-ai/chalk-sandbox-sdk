@@ -203,3 +203,44 @@ def test_assert_container_metrics_failure_mentions_identity(
     assert "test-container" in str(exc.value)
     assert "container-id" in str(exc.value)
     assert FakeInfo().pod_name in str(exc.value)
+
+
+@pytest.mark.parametrize("poll_interval", [1.0, 10.0])
+def test_deadline_preserves_last_completed_metrics_diagnosis(
+    monkeypatch: pytest.MonkeyPatch, poll_interval: float
+) -> None:
+    clock = [0.0]
+    calls = []
+    incomplete = snapshot()
+    incomplete["charts"][0]["series"] = incomplete["charts"][0]["series"][:1]
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(kwargs["timeout"])
+        if len(calls) > 1:
+            clock[0] += kwargs["timeout"]
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(incomplete))
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+
+    monkeypatch.setattr("time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("time.sleep", sleep)
+    monkeypatch.setattr("subprocess.run", fake_run)
+    with pytest.raises(
+        AssertionError, match="missing fresh pod-scoped metrics.*Container Memory"
+    ):
+        assert_container_metrics_target(
+            target(), timeout_secs=2, poll_interval_secs=poll_interval
+        )
+    assert calls == ([2.0, 1.0] if poll_interval == 1 else [2.0])
+
+
+def test_zero_budget_does_not_start_metrics_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "subprocess.run", lambda *args, **kwargs: pytest.fail("deadline has expired")
+    )
+    with pytest.raises(AssertionError, match="no metrics snapshot completed"):
+        assert_container_metrics_target(target(), timeout_secs=0, poll_interval_secs=1)

@@ -80,10 +80,16 @@ def assert_container_metrics_target(
 ) -> None:
     """Assert pod-scoped metrics for a previously captured container target."""
     deadline = time.monotonic() + timeout_secs
-    last_error = ""
+    last_error = "no metrics snapshot completed before the deadline"
     while True:
-        remaining = max(0.001, deadline - time.monotonic())
-        last_error = _check_container_metrics_target(target, remaining)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            last_error = _check_container_metrics_target(target, remaining)
+        except subprocess.TimeoutExpired:
+            # Keep the last completed poll's diagnosis when the final request expires.
+            break
         if last_error is None:
             print(f"Found container metrics for podName={target.pod_name}")
             return
@@ -106,6 +112,8 @@ def _check_container_metrics_target(
             target.pod_name, start=target.observed_at, timeout_secs=timeout_secs
         )
         return _container_metrics_error(json.loads(output), target)
+    except subprocess.TimeoutExpired:
+        raise
     except (json.JSONDecodeError, subprocess.SubprocessError, OSError) as error:
         return str(error)
 
