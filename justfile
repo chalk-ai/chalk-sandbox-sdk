@@ -64,6 +64,10 @@ test-sessions-e2e:
 test-network-policy-e2e:
     uv run python -m pytest e2etests/test_container_network_policy.py -v -s --tb=short
 
+# Run sandbox snapshot and suspend/resume e2e tests (FTQA only)
+test-sandbox-snapshots-e2e:
+    uv run python -m pytest e2etests/test_sandbox_snapshots.py -v -s --tb=short
+
 # Run eval_python MCP tool e2e tests
 test-mcp-eval-python-e2e:
     uv run python -m pytest e2etests/test_mcp_eval_python.py -v -s --tb=short

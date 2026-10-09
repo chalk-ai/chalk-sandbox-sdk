@@ -7,6 +7,7 @@
 | Code execution | Stateful `execute_python` with sessions and artifacts. Other installed runtimes can be invoked with `exec`. |
 | System tools | `Image.sandbox().apt_install(["tmux"])` installs tools at build time; `with_tmux()`, `with_gh()` and `with_claude_code()` install common agent tooling. `GitConfig(name=..., email=...)` is a mapping of Git env vars to unpack into `env`. Detached tmux sessions are managed with ordinary exec calls. |
 | Resources | Creation-time CPU/memory/GPU, env/Secret references, volume mounts, lifetime, tags, network policy, published port and managed outbound SSH. |
+| Lifecycle | `snapshot()` captures a HOST-compute sandbox snapshot; `SandboxSnapshot.restore()` creates a new sandbox from it. Restore repeatedly to fork from the same state. `suspend()` / `resume()` preserve and restart the same sandbox. |
 | Tracing | `tracing=True` / `TracingPolicy(sample_rate=...)` / `False` at creation; the caller's trace context rides every RPC and reaches each `exec` as `TRACEPARENT`. |
 
 ## Git defaults
@@ -33,6 +34,9 @@ Creation waits for readiness by default with a 600-second timeout and 0.5-second
 polling. Helper `timeout_secs=None` leaves the exec timeout unset; a multi-command
 Git operation applies it to each subprocess. tmux sessions end when the sandbox terminates;
 interactive attachment requires a PTY.
+
+See the [sandbox snapshot guide](sandbox-snapshots.md) for snapshot, restore,
+fork, suspend, and resume workflows.
 
 ## Tracing defaults
 

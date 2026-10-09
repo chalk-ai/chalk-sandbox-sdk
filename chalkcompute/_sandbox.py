@@ -67,6 +67,10 @@ from chalkcompute._gen.chalk.sandbox.v2 import (
 from chalkcompute._image_build import normalize_image_volumes
 from chalkcompute._gen.chalk.sandbox.v2 import service_pb as pb
 from chalkcompute._gen.chalk.sandbox.v2 import service_connect as pb_connect
+from chalkcompute._gen.chalk.sandbox.v2 import snapshot_service_pb as snapshot_pb
+from chalkcompute._gen.chalk.sandbox.v2 import (
+    snapshot_service_connect as snapshot_connect,
+)
 from chalkcompute._gen.chalk.sandbox.v2 import (
     filesystem_service_connect as filesystem_connect,
 )
@@ -166,6 +170,23 @@ class SandboxCreationError(SandboxStatusError):
     """Raised when sandbox creation or startup fails."""
 
 
+class SandboxSnapshotError(SandboxError):
+    """Raised when creating or restoring a sandbox snapshot fails."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        snapshot_id: str | None = None,
+        status: str | None = None,
+        status_message: str | None = None,
+    ) -> None:
+        self.snapshot_id = snapshot_id
+        self.status = status
+        self.status_message = status_message
+        super().__init__(message)
+
+
 class ExecError(SandboxError):
     """Raised when command execution fails."""
 
@@ -203,6 +224,120 @@ class SandboxInfo:
 
     status_details: str | None = None
     """Additional diagnostic output for the current lifecycle status."""
+
+
+@dataclass
+class SandboxSnapshot:
+    """A point-in-time snapshot of a sandbox's container state.
+
+    Restoring the same snapshot more than once creates independent sandboxes
+    from the same saved state.
+    """
+
+    id: str
+    """Opaque snapshot identifier."""
+
+    source_sandbox_id: str
+    """ID of the sandbox from which this snapshot was captured."""
+
+    status: str
+    """Snapshot status: ``pending``, ``in_progress``, ``completed``, or ``failed``."""
+
+    created_at: str
+    """Timestamp when the snapshot was created."""
+
+    _client: SandboxClient = field(repr=False, compare=False, kw_only=True)
+    status_message: str | None = None
+    """Backend-provided snapshot status details."""
+
+    completed_at: str | None = None
+    """Timestamp when snapshot creation completed, if available."""
+
+    created_by: str | None = None
+    """ID of the user or service that created the snapshot, if available."""
+
+    @classmethod
+    def from_id(
+        cls,
+        snapshot_id: str,
+        *,
+        client: SandboxClient | None = None,
+    ) -> SandboxSnapshot:
+        """Load an existing snapshot by ID."""
+        if client is None:
+            client = SandboxClient.from_env()
+        return client.get_snapshot(snapshot_id)
+
+    def refresh(self) -> SandboxSnapshot:
+        """Refresh snapshot status and metadata from the service."""
+        updated = self._client.get_snapshot(self.id)
+        self.status = updated.status
+        self.status_message = updated.status_message
+        self.created_at = updated.created_at
+        self.completed_at = updated.completed_at
+        self.created_by = updated.created_by
+        return self
+
+    def wait(
+        self,
+        *,
+        timeout: float | None = 300.0,
+        poll_interval: float = 0.5,
+    ) -> SandboxSnapshot:
+        """Wait for snapshot creation to complete or fail."""
+        if poll_interval <= 0:
+            raise ValueError("poll_interval must be greater than zero")
+        if timeout is not None and timeout < 0:
+            raise ValueError("timeout must be non-negative or None")
+
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            self.refresh()
+            if self.status == "completed":
+                return self
+            if self.status == "failed":
+                detail = f": {self.status_message}" if self.status_message else ""
+                raise SandboxSnapshotError(
+                    f"Snapshot {self.id} failed{detail}",
+                    snapshot_id=self.id,
+                    status=self.status,
+                    status_message=self.status_message,
+                )
+
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"Timed out after {timeout}s waiting for snapshot {self.id}"
+                    )
+                time.sleep(min(poll_interval, remaining))
+            else:
+                time.sleep(poll_interval)
+
+    def restore(
+        self,
+        *,
+        wait: bool = True,
+        poll_interval: float = 0.5,
+        timeout: float = 600.0,
+    ) -> Sandbox:
+        """Create a new sandbox from this snapshot.
+
+        Calling ``restore`` repeatedly creates independent sandboxes from the
+        same point-in-time state.
+        """
+        if wait and self.status != "completed":
+            self.wait(timeout=timeout, poll_interval=poll_interval)
+        return self._client._restore_snapshot(
+            self.id,
+            wait=wait,
+            poll_interval=poll_interval,
+            timeout=timeout,
+        )
+
+    def delete(self) -> None:
+        """Delete this saved snapshot."""
+        self._client.delete_snapshot(self.id)
 
 
 @dataclass
@@ -1582,6 +1717,54 @@ class Sandbox:
             skipped_artifacts=skipped,
         )
 
+    @_instrumented("chalkcompute.sandbox.snapshot")
+    def snapshot(
+        self,
+        *,
+        wait: bool = True,
+        poll_interval: float = 0.5,
+        timeout: float = 300.0,
+    ) -> SandboxSnapshot:
+        """Capture a snapshot of this sandbox's current container state.
+
+        By default, wait until the snapshot is ready to restore. Pass
+        ``wait=False`` to return its handle while capture is still in progress.
+        """
+        snapshot = self._require_client()._snapshot(self._require_started())
+        if wait and snapshot.status != "completed":
+            snapshot.wait(timeout=timeout, poll_interval=poll_interval)
+        return snapshot
+
+    @_instrumented("chalkcompute.sandbox.suspend")
+    def suspend(self) -> None:
+        """Suspend this sandbox while preserving its identity for later resume."""
+        client = self._require_client()
+        sandbox_id = self._require_started()
+        try:
+            client._stub.suspend_sandbox(
+                pb.SuspendSandboxRequest(id=sandbox_id),
+                headers=client._headers,
+            )
+        except ConnectRpcError as e:
+            _handle_rpc_error(e, sandbox_id)
+            raise
+        self.refresh()
+
+    @_instrumented("chalkcompute.sandbox.resume")
+    def resume(self) -> None:
+        """Resume this sandbox after it has been suspended."""
+        client = self._require_client()
+        sandbox_id = self._require_started()
+        try:
+            client._stub.resume_sandbox(
+                pb.ResumeSandboxRequest(id=sandbox_id),
+                headers=client._headers,
+            )
+        except ConnectRpcError as e:
+            _handle_rpc_error(e, sandbox_id)
+            raise
+        self.refresh()
+
     @_instrumented("chalkcompute.sandbox.terminate")
     def terminate(self, grace_period_seconds: int | None = None) -> None:
         """Terminate this sandbox.
@@ -1653,6 +1836,7 @@ class Sandbox:
 
 
 _SandboxInfoList = list[SandboxInfo]
+_SandboxSnapshotList = list[SandboxSnapshot]
 # Defined before SandboxClient, which has a ``.list()`` method that would
 # otherwise shadow the builtin ``list`` in class-scope name resolution.
 _StrList = list[str]
@@ -1694,6 +1878,13 @@ class SandboxClient:
         self._address = rpc_address_from_target(target, use_tls=self._use_tls)
         interceptors = rpc_interceptors()
         self._stub = pb_connect.SandboxServiceClientSync(
+            self._address,
+            protocol=ProtocolType.GRPC,
+            interceptors=interceptors,
+            http_client=SYNC_HTTP_CLIENT,
+            read_max_bytes=RPC_READ_MAX_BYTES,
+        )
+        self._snapshot_stub = snapshot_connect.SandboxSnapshotServiceClientSync(
             self._address,
             protocol=ProtocolType.GRPC,
             interceptors=interceptors,
@@ -1770,6 +1961,7 @@ class SandboxClient:
         """Close the underlying HTTP clients."""
         for stub in (
             self._stub,
+            self._snapshot_stub,
             self._process_stub,
             self._runtime_stub,
             self._filesystem_stub,
@@ -2064,6 +2256,127 @@ class SandboxClient:
         )
         return [_pb_to_sandbox_info(s) for s in resp.sandboxes]
 
+    def _snapshot(self, sandbox_id: str) -> SandboxSnapshot:
+        try:
+            response = self._snapshot_stub.create_sandbox_snapshot(
+                snapshot_pb.CreateSandboxSnapshotRequest(sandbox_id=sandbox_id),
+                headers=self._headers,
+            )
+        except ConnectRpcError as e:
+            _handle_rpc_error(e, sandbox_id)
+            raise
+        if response.snapshot is None:
+            raise SandboxSnapshotError(
+                f"CreateSandboxSnapshot returned no snapshot for sandbox {sandbox_id}"
+            )
+        return _pb_to_sandbox_snapshot(response.snapshot, client=self)
+
+    @_instrumented("chalkcompute.sandbox.get_snapshot")
+    def get_snapshot(self, snapshot_id: str) -> SandboxSnapshot:
+        """Get a snapshot handle by ID."""
+        try:
+            response = self._snapshot_stub.get_sandbox_snapshot(
+                snapshot_pb.GetSandboxSnapshotRequest(snapshot_id=snapshot_id),
+                headers=self._headers,
+            )
+        except ConnectRpcError as e:
+            _handle_rpc_error(e, snapshot_id)
+            raise
+        if response.snapshot is None:
+            raise SandboxSnapshotError(
+                f"GetSandboxSnapshot returned no snapshot for ID {snapshot_id}"
+            )
+        return _pb_to_sandbox_snapshot(response.snapshot, client=self)
+
+    @_instrumented("chalkcompute.sandbox.list_snapshots")
+    def list_snapshots(self, sandbox_id: str) -> _SandboxSnapshotList:
+        """List every snapshot captured from ``sandbox_id``."""
+        if not sandbox_id:
+            raise ValueError("sandbox_id must be a non-empty string")
+
+        snapshots: list[SandboxSnapshot] = []
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+        while True:
+            try:
+                response = self._snapshot_stub.list_sandbox_snapshots(
+                    snapshot_pb.ListSandboxSnapshotsRequest(
+                        filters=snapshot_pb.ListSandboxSnapshotsFilters(
+                            sandbox_ids=[sandbox_id]
+                        ),
+                        cursor=cursor,
+                        limit=100,
+                    ),
+                    headers=self._headers,
+                )
+            except ConnectRpcError as e:
+                _handle_rpc_error(e, sandbox_id)
+                raise
+
+            snapshots.extend(
+                _pb_to_sandbox_snapshot(snapshot, client=self)
+                for snapshot in response.snapshots
+            )
+            next_cursor = response.next_cursor
+            if not next_cursor:
+                return snapshots
+            if next_cursor in seen_cursors:
+                raise SandboxError(
+                    f"ListSandboxSnapshots repeated cursor {next_cursor!r}"
+                )
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+
+    @_instrumented("chalkcompute.sandbox.delete_snapshot")
+    def delete_snapshot(self, snapshot_id: str) -> None:
+        """Delete a saved snapshot by ID."""
+        if not snapshot_id:
+            raise ValueError("snapshot_id must be a non-empty string")
+        try:
+            self._snapshot_stub.delete_sandbox_snapshot(
+                snapshot_pb.DeleteSandboxSnapshotRequest(snapshot_id=snapshot_id),
+                headers=self._headers,
+            )
+        except ConnectRpcError as e:
+            _handle_rpc_error(e, snapshot_id)
+            raise
+
+    def _restore_snapshot(
+        self,
+        snapshot_id: str,
+        *,
+        wait: bool,
+        poll_interval: float,
+        timeout: float,
+    ) -> Sandbox:
+        sandbox = Sandbox(sandbox_client=self)
+        try:
+            response = self._stub.create_sandbox(
+                pb.CreateSandboxRequest(source=Oneof("snapshot_id", snapshot_id)),
+                headers=self._headers,
+            )
+        except ConnectRpcError as e:
+            _handle_rpc_error(e, snapshot_id)
+            raise
+        if response.sandbox is None:
+            raise SandboxCreationError(
+                f"CreateSandbox returned no sandbox for snapshot {snapshot_id}"
+            )
+
+        info = _pb_to_sandbox_info(response.sandbox)
+        if wait and info.status == "pending":
+            info = self._poll_until_ready(
+                info.id,
+                poll_interval=poll_interval,
+                timeout=timeout,
+            )
+        elif wait and info.status in ("failed", "error", "unknown", "terminated"):
+            raise _sandbox_creation_error(info)
+
+        sandbox._id = info.id
+        sandbox._info = info
+        return sandbox
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -2085,6 +2398,34 @@ def _pb_to_sandbox_info(info: pb.SandboxInfo) -> SandboxInfo:
         status_details=(
             info.status_details if info.has_field("status_details") else None
         ),
+    )
+
+
+def _pb_to_sandbox_snapshot(
+    snapshot: snapshot_pb.SandboxSnapshot,
+    *,
+    client: SandboxClient,
+) -> SandboxSnapshot:
+    status = snapshot.status.name.lower().removeprefix("sandbox_snapshot_status_")
+    return SandboxSnapshot(
+        id=snapshot.id,
+        source_sandbox_id=snapshot.sandbox_id,
+        status=status,
+        created_at=(
+            snapshot.created_at.to_datetime().isoformat()
+            if snapshot.created_at is not None
+            else ""
+        ),
+        status_message=(
+            snapshot.status_message if snapshot.has_field("status_message") else None
+        ),
+        completed_at=(
+            snapshot.completed_at.to_datetime().isoformat()
+            if snapshot.completed_at is not None
+            else None
+        ),
+        created_by=(snapshot.created_by if snapshot.has_field("created_by") else None),
+        _client=client,
     )
 
 
