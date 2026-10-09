@@ -55,7 +55,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, TypeVar, overload
 
-from chalkcompute._function_source_location import function_source_location
+from chalkcompute._function_source_location import FunctionSourceLocations
 from chalkcompute._logging import _StatusLogger
 from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import ConnectClient
@@ -1113,21 +1113,22 @@ class RemoteClass:
 
         temp_files: list[str] = []
         source_path = Path(source_file)
+        source = _source_text_for_deploy(source_file)
 
         if _should_strip_source():
             entrypoint_sources: list[str] = []
             for method_info in self._methods.values():
                 entrypoint_sources.extend(_entrypoint_source(method_info.func))
-            stripped = _strip_source_for_deploy(
-                _source_text_for_deploy(source_file),
+            source = _strip_source_for_deploy(
+                source,
                 strip=_strip_chalkcompute_from_class_source,
                 label=f"Class {self._class_name!r}",
                 entrypoint_sources=entrypoint_sources,
             )
-            source_file = _write_temp(stripped)
+            source_file = _write_temp(source)
             temp_files.append(source_file)
         elif not source_path.is_file():
-            source_file = _write_temp(_source_text_for_deploy(source_file))
+            source_file = _write_temp(source)
             temp_files.append(source_file)
 
         deploy_image = _make_base_image(
@@ -1135,11 +1136,11 @@ class RemoteClass:
             remote_call_runtime_package=self._remote_call_runtime_package(),
         ).add_local_file(source_file, f"{source_root}/user_module.py")
 
-        source = Path(source_file).read_text()
+        source_locations = FunctionSourceLocations(
+            source, f"{source_root}/user_module.py"
+        )
         self._source_locations = {
-            method.name: function_source_location(
-                source,
-                f"{source_root}/user_module.py",
+            method.name: source_locations.get(
                 getattr(inspect.unwrap(method.func), "__qualname__", None),
             )
             for method in self._methods.values()

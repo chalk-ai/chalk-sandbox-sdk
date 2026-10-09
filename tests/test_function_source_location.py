@@ -9,6 +9,7 @@ import pytest
 
 from chalkcompute._function import RemoteFunction
 from chalkcompute._function_source_location import function_source_location
+from chalkcompute._function_source_location import FunctionSourceLocations
 from chalkcompute._image import Image
 
 
@@ -24,6 +25,25 @@ def test_qualified_async_method_location():
         4,
         5,
     )
+
+
+def test_class_locations_share_one_parse(monkeypatch):
+    import ast
+    from unittest.mock import Mock
+
+    parse = Mock(wraps=ast.parse)
+    monkeypatch.setattr(ast, "parse", parse)
+    locations = FunctionSourceLocations(
+        "class Scorer:\n    def first(self): pass\n    async def second(self): pass\n",
+        "/app/scorers.py",
+    )
+    first = locations.get("Scorer.first")
+    second = locations.get("Scorer.second")
+    assert first is not None and second is not None
+    assert (first.line_number, second.line_number) == (2, 3)
+    assert (first.column_number, second.column_number) == (5, 5)
+    assert locations.get("Scorer.missing") is None
+    parse.assert_called_once()
 
 
 @pytest.mark.parametrize(
@@ -126,6 +146,7 @@ def test_class_method_uses_captured_lines(tmp_path, monkeypatch, strip):
     source.write_text(
         "from chalkcompute import method\n\n"
         "class Scorer:\n    @method\n    def score(self, x: int) -> int:\n        return x\n"
+        "    @method\n    async def other(self, x: int) -> int:\n        return x + 1\n"
     )
     spec = importlib.util.spec_from_file_location("location_class", source)
     module = importlib.util.module_from_spec(spec)
@@ -146,6 +167,15 @@ def test_class_method_uses_captured_lines(tmp_path, monkeypatch, strip):
             .startswith("def score(")
         )
         assert location.column_number == 5
+        other_location = remote_class._source_locations["other"]
+        assert other_location is not None
+        assert other_location.line_number > location.line_number
+        assert (
+            files[other_location.path]
+            .splitlines()[other_location.line_number - 1]
+            .lstrip()
+            .startswith("async def other(")
+        )
     finally:
         for path in temporary:
             Path(path).unlink(missing_ok=True)
