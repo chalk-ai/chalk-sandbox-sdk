@@ -1002,7 +1002,7 @@ class ScalingGroup:
         if self._scaling_group_id is not None:
             try:
                 owned_volumes.update(self._owned_volumes_from_revisions())
-            except ScalingGroupError as exc:
+            except Exception as exc:
                 logger.warning(
                     "Could not inspect revision volumes before delete: %s", exc
                 )
@@ -1059,8 +1059,12 @@ class ScalingGroup:
                         result[volume.name] = VolumeMount(
                             name=volume.name,
                             mount_path=volume.mount_path,
-                            version_id=volume.version_id,
-                            ref_name=volume.ref_name,
+                            version_id=(
+                                volume.version_id
+                                if volume.has_field("version_id")
+                                else None
+                            ),
+                            ref_name=volume.ref_name or None,
                         )
             cursor = response.next_cursor or None
             if cursor is None:
