@@ -177,6 +177,47 @@ def test_a_no_op_provider_is_declined() -> None:
     assert _tracing._install_session_processor(object()) is False
 
 
+def test_the_session_processor_reports_a_successful_flush() -> None:
+    """It buffers nothing and must not veto exporter-backed processors."""
+    processor = _tracing._session_processor_class()()
+    assert processor.force_flush(timeout_millis=0) is True
+
+
+def test_force_flush_uses_the_installed_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timeouts: list[int] = []
+
+    class _Provider:
+        def add_span_processor(self, _processor: object) -> None:
+            pass
+
+        def force_flush(self, timeout_millis: int) -> bool:
+            timeouts.append(timeout_millis)
+            return True
+
+    provider = _Provider()
+    monkeypatch.setattr(trace_api, "get_tracer_provider", lambda: provider)
+
+    assert _tracing.force_flush_tracing(1234) is True
+    assert timeouts == [1234]
+
+
+def test_force_flush_propagates_the_providers_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Provider:
+        def add_span_processor(self, _processor: object) -> None:
+            pass
+
+        def force_flush(self, _timeout_millis: int) -> bool:
+            return False
+
+    monkeypatch.setattr(trace_api, "get_tracer_provider", lambda: _Provider())
+
+    assert _tracing.force_flush_tracing() is False
+
+
 def test_each_provider_is_stamped_even_after_another_one_was(
     exporter: InMemorySpanExporter,
 ) -> None:
@@ -395,6 +436,38 @@ def test_the_call_scope_publishes_the_session_from_the_header(
 
     assert _span_session_ids(exporter) == ["session-1"]
     assert _tracing.current_session_id() is None
+
+
+def test_resetting_a_session_scope_flushes_after_ending_its_root(
+    exporter: InMemorySpanExporter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flushed_after_roots: list[int] = []
+
+    def flush(_timeout_millis: int = 30000) -> bool:
+        flushed_after_roots.append(len(_session_roots(exporter)))
+        return True
+
+    monkeypatch.setattr(_tracing, "force_flush_tracing", flush)
+    token = set_call_scope({SESSION_ID_HEADER: "session-1"}, None)
+
+    reset_call_scope(token)
+
+    assert flushed_after_roots == [1]
+
+
+def test_resetting_a_session_scope_surfaces_a_flush_failure(
+    exporter: InMemorySpanExporter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_tracing, "force_flush_tracing", lambda: False)
+    token = set_call_scope({SESSION_ID_HEADER: "session-1"}, None)
+
+    with pytest.raises(RuntimeError, match="did not flush"):
+        reset_call_scope(token)
+
+    assert _tracing.current_session_id() is None
+    assert len(_session_roots(exporter)) == 1
 
 
 def test_the_header_is_matched_case_insensitively(

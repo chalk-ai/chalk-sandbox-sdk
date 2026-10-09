@@ -164,6 +164,12 @@ def _session_processor_class() -> Any:
             if session_id:
                 span.set_attribute(SESSION_ID_ATTRIBUTE, str(session_id))
 
+        def force_flush(self, timeout_millis: int = 30000) -> bool:
+            # This processor buffers nothing. SpanProcessor's default returns
+            # False, which would make the provider report a failed flush even
+            # when every exporter-backed processor succeeded.
+            return True
+
     return _SessionIdSpanProcessor
 
 
@@ -295,6 +301,29 @@ def current_session_id() -> str | None:
         return None
     value = baggage_api.get_baggage(SESSION_ID_ATTRIBUTE)
     return None if value is None else str(value)
+
+
+def force_flush_tracing(timeout_millis: int = 30000) -> bool:
+    """Synchronously hand all ended spans to the installed provider's exporters.
+
+    A provider is process-wide and may be owned by the remote-call runtime, so
+    this resolves the installed provider instead of assuming chalkcompute built
+    it. No real provider means there is no buffered telemetry to acknowledge.
+    """
+    if isinstance(timeout_millis, bool) or not isinstance(timeout_millis, int):
+        raise TypeError("timeout_millis must be an integer")
+    if timeout_millis < 0:
+        raise ValueError("timeout_millis must be >= 0")
+    trace_api = _get_trace_api()
+    if trace_api is None:
+        return True
+    provider = _installed_provider(trace_api)
+    if provider is None:
+        return True
+    force_flush = getattr(provider, "force_flush", None)
+    if force_flush is None:
+        return False
+    return force_flush(timeout_millis) is True
 
 
 def _installed_provider(trace_api: Any) -> Any | None:

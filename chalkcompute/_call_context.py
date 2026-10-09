@@ -122,9 +122,13 @@ def reset_call_scope(token: CallScopeToken) -> None:
     _CALL_CONTEXT.reset(token.context)
     _ROW_METADATA.reset(token.row_metadata)
     if token.session is not None:
-        from chalkcompute._tracing import exit_session
+        from chalkcompute._tracing import exit_session, force_flush_tracing
 
         exit_session(token.session)
+        if not force_flush_tracing():
+            raise RuntimeError(
+                "the OpenTelemetry provider did not flush this session's spans"
+            )
 
 
 def _headers_from_context(context: Mapping[str, Any] | None) -> Mapping[str, str]:
