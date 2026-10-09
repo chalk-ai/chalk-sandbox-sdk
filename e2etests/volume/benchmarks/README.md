@@ -119,6 +119,15 @@ show the complete scheduled matrix before jobs run.
 | `volume-git-repo` | `git-status-on-sdk-clone` | Git work-tree traversal | n/a | n/a | n/a | unspecified |
 | `volume-git-repo` | `git-commit-on-fuse-clone` | Git commit creation | n/a | n/a | n/a | n/a |
 | `volume-git-repo` | `git-commit-on-sdk-clone` | Git commit creation | n/a | n/a | n/a | n/a |
+| `volume-sqlite` | `sqlite-insert` | SQLite WAL bulk insert, `synchronous=FULL` | 50k-row transactions | 1 | false | n/a |
+| `volume-sqlite` | `sqlite-read` | SQLite full scan and 10k point reads | n/a | 1 | false | warm |
+| `volume-sqlite` | `sqlite-journal-delete` | 200 rollback journal transactions | n/a | 1 | false | n/a |
+| `volume-sqlite` | `sqlite-vacuum-rename` | `VACUUM INTO` then rename over live DB | n/a | 1 | false | n/a |
+| `volume-sqlite` | `sqlite-rename-cycles` | 50 small DB write then rename cycles | n/a | 1 | false | n/a |
+| `volume-sqlite` | `sqlite-nested-dir-rename` | 50 nested folder renames above live DBs | n/a | 1 | false | n/a |
+| `volume-sqlite` | `sqlite-integrity-check` | `PRAGMA integrity_check` | n/a | 1 | false | warm |
+| `volume-sqlite` | `sqlite-verify-*` | integrity, nested DBs, WAL reopen after commit | n/a | 1 | false | fresh sandbox |
+| `volume-sqlite` | `sqlite-{write,verify}-volume-commit` | commit latency | n/a | n/a | n/a | n/a |
 
 The model-download workload preserves the approximate 29:1 shard-size ratio of
 Gemma 4 26B A4B at a smaller 1024 MiB plus 35 MiB scale. Direct mode writes
@@ -185,6 +194,19 @@ the timings and exit codes are written. Author and committer identity are
 provided through standard Git environment variables; signing behavior is not
 overridden.
 
+### SQLite
+
+A customer reported SQLite corruption and failures around file renames on
+volumes. One sandbox grows a SQLite database to 5 GiB in WAL mode with
+`synchronous=FULL`, then runs reads, rollback journal transactions (journal
+create and unlink per commit), an atomic `VACUUM INTO` plus rename over the
+live database, repeated small database rename cycles, and repeated renames of
+top level and intermediate folders above live databases. Every rename is
+followed by reopening and checking the database. The volume is committed and a
+fresh sandbox reruns `integrity_check`, checks the nested databases, and reopens
+the main database in WAL mode. Any SQLite error fails the benchmark after the
+completed phase timings are published.
+
 ## Canonical naming
 
 Buildkite uploads each module with these identifiers:
@@ -195,6 +217,7 @@ Buildkite uploads each module with these identifiers:
 | `Sandbox Volume Model Load Benchmarks ({env})` | `volume-model-load` |
 | `Sandbox Volume Model Download Benchmarks ({env})` | `volume-model-download` |
 | `Sandbox Volume Git Repo Benchmarks ({env})` | `volume-git-repo` |
+| `Sandbox Volume SQLite Benchmarks ({env})` | `volume-sqlite` |
 
 `{env}` is the Buildkite matrix value, currently `staging/ftqa` or `meta-ci`.
 The run name is the pyperf benchmark `metadata.name` value listed above.
@@ -209,13 +232,14 @@ Common keys:
 
 | Key | Type | Meaning |
 | --- | --- | --- |
-| `workload` | string | `fio-microbench`, `synthetic-model-load`, `synthetic-model-download`, or `git-repo` |
+| `workload` | string | `fio-microbench`, `synthetic-model-load`, `synthetic-model-download`, `git-repo`, or `sqlite` |
 | `sandbox_cpu` | string | Requested sandbox CPU |
 | `sandbox_memory` | string | Requested sandbox memory |
 | `volume_version_id` | integer | Relevant committed volume version when present |
 | `benchmark_error_count` | integer | `0` for success or `1` for a recorded non-fatal benchmark error |
 | `request_type` | string | Benchmark case that made the failed request |
 | `error_type` | string | Stable error classification |
+| `exception_class` | string | Python exception class for the recorded error |
 
 Fio and model-load keys:
 
@@ -283,7 +307,11 @@ The database row identifies the suite, case, run, branch, source, and timing
 statistics. Additional pyperf metadata is available in `metrics`. When sandbox
 creation fails because all registered host-pool capacity is allocated, the
 benchmark wrapper writes a `benchmark-status` run with `benchmark_error_count=1`
-and exits successfully. Sandboxes preempted after starting are reported the
+and exits successfully. The same classification covers failed creation when no
+registered host has capacity for the requested resources. Other benchmark
+exceptions are recorded with `error_type=unclassified` and their exception class,
+then remain hard failures. Benchmark failures with partial timings are recorded
+as `error_type=benchmark-failure`. Sandboxes preempted after starting are reported the
 same way with `error_type=sandbox-preempted`. Sandboxes terminated because their
 host became unavailable, including during maintenance windows, are reported with
 `error_type=sandbox-host-unavailable` and exit successfully. Successful attempts

@@ -62,6 +62,7 @@ steps:
           - "model-load"
           - "model-download"
           - "git-repo"
+          - "sqlite"
     agents:
       queue: default
     timeout_in_minutes: 90

@@ -70,6 +70,22 @@ model-download environment:
         --cpu 2 \
         --memory 4Gi
 
+sqlite environment:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    environment={{ quote(environment) }}
+    source .buildkite/select-env-file.sh "$environment"
+    source .buildkite/setup-benchmark-env.sh
+    .buildkite/run-benchmark.sh \
+      --suite "Sandbox Volume SQLite Benchmarks ($environment)" \
+      --case volume-sqlite \
+      --tags "sandbox,volume,sqlite,$environment" \
+      -- uv run python -m e2etests.volume.benchmarks.cases.sqlite \
+        --size-mib 5120 \
+        --cpu 2 \
+        --memory 4Gi \
+        --timeout-secs 3600
+
 git-repo environment:
     #!/usr/bin/env bash
     set -euo pipefail
