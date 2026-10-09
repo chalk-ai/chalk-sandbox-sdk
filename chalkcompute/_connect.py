@@ -132,6 +132,9 @@ class ConnectClient:
         self._headers: dict[str, str] | None = None
         self._grpc_engines: dict[str, str] = {}
         self._environment_id_to_name: dict[str, str] = {}
+        self._environment_id_to_authority: dict[str, str] = {}
+        self._environment_id_to_dataplane_api_server_url: dict[str, str] = {}
+        self._service_prefixes: dict[int, str] = {}
         self._primary_environment: str | None = None
         self._chalk_client = chalk_client
         self._typed_clients: dict[Callable[..., Any], Any] = {}
@@ -168,6 +171,9 @@ class ConnectClient:
             }
             self._grpc_engines = {}
             self._environment_id_to_name = {}
+            self._environment_id_to_authority = {}
+            self._environment_id_to_dataplane_api_server_url = {}
+            self._service_prefixes = {}
             self._primary_environment = None
             self._web_identity_token_file = identity_token_file
             self._web_identity_cached_at = time.monotonic()
@@ -213,6 +219,15 @@ class ConnectClient:
             self._access_token = data.access_token
             self._grpc_engines = _string_map(data.grpc_engines or data.engines)
             self._environment_id_to_name = _string_map(data.environment_id_to_name)
+            self._environment_id_to_authority = _string_map(
+                getattr(data, "environment_id_to_authority", {})
+            )
+            self._environment_id_to_dataplane_api_server_url = _string_map(
+                getattr(data, "environment_id_to_dataplane_api_server_url", {})
+            )
+            self._service_prefixes = _int_string_map(
+                getattr(data, "service_prefixes", {})
+            )
             self._env_id = self._resolve_environment_id(service_auth.environment_id)
             self._headers = {
                 "Content-Type": "application/json",
@@ -295,6 +310,13 @@ class ConnectClient:
         self._primary_environment = data.primary_environment or None
         self._grpc_engines = _string_map(data.grpc_engines or data.engines)
         self._environment_id_to_name = _string_map(data.environment_id_to_name)
+        self._environment_id_to_authority = _string_map(
+            data.environment_id_to_authority
+        )
+        self._environment_id_to_dataplane_api_server_url = _string_map(
+            getattr(data, "environment_id_to_dataplane_api_server_url", {})
+        )
+        self._service_prefixes = _int_string_map(data.service_prefixes)
         self._env_id = self._resolve_environment_id(
             requested_env or self._primary_environment or ""
         )
@@ -312,6 +334,8 @@ class ConnectClient:
         if (
             environment in self._grpc_engines
             or environment in self._environment_id_to_name
+            or environment in self._environment_id_to_authority
+            or environment in self._environment_id_to_dataplane_api_server_url
         ):
             return environment
 
@@ -379,23 +403,50 @@ class ConnectClient:
 
         return grpc_engine_target_from_url(query_server)
 
-    def dataplane_api_server_target(
-        self,
-        engine_target: tuple[str, bool] | None = None,
-    ) -> tuple[str, bool]:
-        """Resolve the dataplane API server target for function-queue RPCs."""
-        if engine_target is None:
-            engine_target = self.grpc_engine_target()
-        target, use_tls = engine_target
-        host, separator, port = target.partition(":")
-        if "." not in host or host == "localhost" or host.replace(".", "").isdigit():
-            return engine_target
-
-        _, gateway_domain = host.split(".", 1)
-        dataplane_host = f"dataplane-api-server.{gateway_domain}"
-        if separator:
-            dataplane_host = f"{dataplane_host}:{port}"
-        return dataplane_host, use_tls
+    def dataplane_api_server_target(self) -> tuple[str, bool]:
+        """Resolve the DPA target from auth's generic service URI metadata."""
+        self._ensure_auth()
+        if not self._env_id:
+            raise ConnectError("No Chalk environment selected")
+        dataplane_url = self._environment_id_to_dataplane_api_server_url.get(
+            self._env_id, ""
+        )
+        if not dataplane_url and web_identity_token_file_from_env() is not None:
+            stub = self.stub(team_connect.TeamServiceClientSync)
+            try:
+                response = self.call(stub.get_env, team_pb.GetEnvRequest())
+            except (ConnectRpcError, *HTTP_TRANSPORT_ERRORS) as exc:
+                raise ConnectError(
+                    "Unable to discover the dataplane API server endpoint for Chalk "
+                    f"environment {self._env_id!r}: {exc}. Discovery requires "
+                    "DEPLOY_READ permission."
+                ) from exc
+            environment = response.environment
+            if environment is None or environment.id != self._env_id:
+                raise ConnectError(
+                    "Endpoint discovery returned no matching Chalk environment "
+                    f"for {self._env_id!r}"
+                )
+            dataplane_url = (
+                getattr(environment, "dataplane_api_server_url", "") or ""
+            ).strip()
+            if dataplane_url:
+                self._environment_id_to_dataplane_api_server_url[self._env_id] = (
+                    dataplane_url
+                )
+        if not dataplane_url:
+            authority = self._environment_id_to_authority.get(self._env_id, "")
+            service_prefix = self._service_prefixes.get(
+                auth_pb.ServiceKind.DATAPLANE_API_SERVER.value, ""
+            )
+            if authority and service_prefix:
+                dataplane_url = f"https://{service_prefix}.{authority}"
+        if not dataplane_url:
+            raise ConnectError(
+                "No dataplane API server endpoint found for Chalk environment "
+                f"{self._env_id!r}; auth did not provide service URI metadata"
+            )
+        return grpc_engine_target_from_url(dataplane_url)
 
     def _rpc_metadata(self) -> list[tuple[str, str]]:
         """Return current RPC metadata, re-reading rotating identity files."""
@@ -814,3 +865,9 @@ def _string_map(value: Any) -> dict[str, str]:
     if not isinstance(value, dict):
         return {}
     return {str(k): str(v) for k, v in value.items()}
+
+
+def _int_string_map(value: Any) -> dict[int, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {int(k): str(v) for k, v in value.items()}

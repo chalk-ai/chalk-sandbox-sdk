@@ -1040,43 +1040,70 @@ class TestConnectClientServiceAuth:
 
 
 class TestDataplaneApiServerTarget:
-    def test_rewrites_engine_host_and_preserves_port_and_tls(self, monkeypatch):
+    def test_uses_token_service_uri_metadata(self):
         client = ConnectClient()
-        monkeypatch.setattr(
-            client,
-            "grpc_engine_target",
-            lambda: ("engine.region.chalk.test:8443", True),
-        )
+        client._access_token = "token"
+        client._env_id = "env-1"
+        client._environment_id_to_authority = {"env-1": "region.chalk.test:8443"}
+        client._service_prefixes = {
+            auth_pb.ServiceKind.DATAPLANE_API_SERVER.value: "dataplane-api-server"
+        }
 
         assert client.dataplane_api_server_target() == (
             "dataplane-api-server.region.chalk.test:8443",
             True,
         )
 
-    def test_rewrites_supplied_engine_target(self, monkeypatch):
+    def test_prefers_resolved_dataplane_url_from_auth_response(self):
         client = ConnectClient()
-        monkeypatch.setattr(
-            client,
-            "grpc_engine_target",
-            lambda: pytest.fail("supplied engine target should be used"),
-        )
+        client._access_token = "token"
+        client._env_id = "env-1"
+        client._environment_id_to_dataplane_api_server_url = {
+            "env-1": "https://legacy-dataplane.chalk.test:9443"
+        }
 
-        assert client.dataplane_api_server_target(
-            ("engine.region.chalk.test:8443", True)
-        ) == (
-            "dataplane-api-server.region.chalk.test:8443",
+        assert client.dataplane_api_server_target() == (
+            "legacy-dataplane.chalk.test:9443",
             True,
         )
 
-    @pytest.mark.parametrize(
-        "target",
-        [("localhost:50051", False), ("10.0.0.5:443", False), ("192.0.2.1:443", True)],
-    )
-    def test_preserves_local_and_ip_targets(self, monkeypatch, target):
+    def test_discovers_web_identity_dataplane_url_from_get_env(self, monkeypatch):
         client = ConnectClient()
-        monkeypatch.setattr(client, "grpc_engine_target", lambda: target)
+        client._access_token = "identity-token"
+        client._env_id = "env-1"
+        monkeypatch.setattr(
+            "chalkcompute._connect.web_identity_token_file_from_env",
+            lambda: "/tmp/web-identity-token",
+        )
+        monkeypatch.setattr(client, "_ensure_auth", lambda: None)
+        stub = types.SimpleNamespace(get_env=object())
+        monkeypatch.setattr(client, "stub", lambda _client_type: stub)
+        monkeypatch.setattr(
+            client,
+            "call",
+            lambda *_args, **_kwargs: types.SimpleNamespace(
+                environment=types.SimpleNamespace(
+                    id="env-1",
+                    dataplane_api_server_url="https://dpa.web-identity.test:8443",
+                )
+            ),
+        )
 
-        assert client.dataplane_api_server_target() == target
+        assert client.dataplane_api_server_target() == (
+            "dpa.web-identity.test:8443",
+            True,
+        )
+
+    def test_does_not_fall_back_to_engine_target(self):
+        client = ConnectClient()
+        client._access_token = "token"
+        client._env_id = "env-1"
+        client._grpc_engines = {"env-1": "engine.region.chalk.test:8443"}
+
+        with pytest.raises(
+            ConnectError, match="auth did not provide service URI metadata"
+        ):
+            client.dataplane_api_server_target()
 
 
 class _FakeChalkClient:

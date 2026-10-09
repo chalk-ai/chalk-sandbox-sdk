@@ -3539,9 +3539,7 @@ class RemoteFunction:
 
         service_auth = None if uses_web_identity else service_auth_context_from_env()
         if queue:
-            target, use_tls = self._client.dataplane_api_server_target(
-                service_auth.grpc_engine if service_auth is not None else None
-            )
+            target, use_tls = self._client.dataplane_api_server_target()
         else:
             target, use_tls = grpc_target_from_url(
                 self._web_url,

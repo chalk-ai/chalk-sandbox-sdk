@@ -283,15 +283,8 @@ class FakeConnectClient(StubbedConnectClient):
     def grpc_engine_target(self) -> tuple[str, bool]:
         return "engine.chalk.test:443", True
 
-    def dataplane_api_server_target(
-        self, engine_target: tuple[str, bool] | None = None
-    ) -> tuple[str, bool]:
-        target, use_tls = engine_target or self.grpc_engine_target()
-        host, separator, port = target.partition(":")
-        if "." not in host or host == "localhost" or host.replace(".", "").isdigit():
-            return target, use_tls
-        dataplane_host = f"dataplane-api-server.{host.split('.', 1)[1]}"
-        return f"{dataplane_host}:{port}" if separator else dataplane_host, use_tls
+    def dataplane_api_server_target(self) -> tuple[str, bool]:
+        return "dataplane-api-server.chalk.test:443", True
 
 
 class ServiceAuthOnlyConnectClient:
@@ -301,26 +294,16 @@ class ServiceAuthOnlyConnectClient:
     def grpc_engine_target(self) -> tuple[str, bool]:
         raise AssertionError("OAuth grpc engine discovery should not be used")
 
-    def dataplane_api_server_target(
-        self, engine_target: tuple[str, bool] | None = None
-    ) -> tuple[str, bool]:
-        target, use_tls = engine_target or self.grpc_engine_target()
-        host, separator, port = target.partition(":")
-        dataplane_host = f"dataplane-api-server.{host.split('.', 1)[1]}"
-        return f"{dataplane_host}:{port}" if separator else dataplane_host, use_tls
+    def dataplane_api_server_target(self) -> tuple[str, bool]:
+        return "dataplane-api-server.chalk.test:443", True
 
 
 class ServiceAuthDiscoveredEngineConnectClient:
     def grpc_engine_target(self) -> tuple[str, bool]:
         return "discovered-engine.chalk.test:443", True
 
-    def dataplane_api_server_target(
-        self, engine_target: tuple[str, bool] | None = None
-    ) -> tuple[str, bool]:
-        target, use_tls = engine_target or self.grpc_engine_target()
-        host, separator, port = target.partition(":")
-        dataplane_host = f"dataplane-api-server.{host.split('.', 1)[1]}"
-        return f"{dataplane_host}:{port}" if separator else dataplane_host, use_tls
+    def dataplane_api_server_target(self) -> tuple[str, bool]:
+        return "dataplane-api-server.chalk.test:443", True
 
 
 class RotatingIdentityConnectClient(FakeConnectClient):
@@ -1191,7 +1174,7 @@ def test_queue_call_uses_service_auth_engine_from_environment(monkeypatch) -> No
     assert client.kwargs["exchange_token"] == "exchange-token"
 
 
-def test_queue_call_uses_service_auth_engine_from_token_response(monkeypatch) -> None:
+def test_queue_call_uses_service_auth_without_engine_endpoint(monkeypatch) -> None:
     monkeypatch.setattr(
         "chalkcompute._function.service_auth_context_from_env",
         lambda: ServiceAuthContext(
