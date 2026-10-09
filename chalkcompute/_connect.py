@@ -384,13 +384,6 @@ class ConnectClient:
         engine_target: tuple[str, bool] | None = None,
     ) -> tuple[str, bool]:
         """Resolve the dataplane API server target for function-queue RPCs."""
-        override = os.environ.get("CHALK_DATAPLANE_API_SERVER", "").strip()
-        if override:
-            if not override.startswith(("http://", "https://")):
-                is_local = override.startswith(("localhost", "127.0.0.1", "10."))
-                override = f"{'http' if is_local else 'https'}://{override}"
-            return grpc_target_from_url(override)
-
         if engine_target is None:
             engine_target = self.grpc_engine_target()
         target, use_tls = engine_target
