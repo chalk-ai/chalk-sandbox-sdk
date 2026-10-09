@@ -1,0 +1,2 @@
+- Add opt-in static acceleration for eligible scalar function batches via `CHALK_FUNCTION_STATIC_ACCELERATION=1`, preserving Python execution for small or unsupported batches.
+- Add reproducible handler, IPC, and SQL-to-gRPC benchmarks with output equivalence checks and recorded local results.

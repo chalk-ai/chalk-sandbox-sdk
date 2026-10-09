@@ -447,6 +447,69 @@ Downloading needs no dataframe library. Install `chalkcompute[sql]` for
 conversions load the full result into memory. These extras do not require
 ChalkPy.
 
+## Static acceleration of scalar functions
+
+Set `env={"CHALK_FUNCTION_STATIC_ACCELERATION": "1"}` on a function to opt into
+native batch execution. The **deployed image** must contain the matching
+`static_accelerator` package from chalk-private and a compatible `chalkdf` wheel;
+installing them only on the calling machine is insufficient. Build the compiler
+wheel with `uv build --wheel static_accelerator --out-dir /tmp/wheels` in
+chalk-private, then install that wheel and `chalkdf==3.43.14` while building the
+function's image. This compiler is currently an internal package, not a public
+PyPI extra. Redeploy with the updated SDK so the image receives the new handler.
+
+The handler compiles the Python body once at startup and returns an Arrow array
+directly for eligible batches of at least 512 rows. This serves both direct
+function RPCs and SQL `catalog_call`; SQL still resolves the deployed function
+and makes its normal RPC. Catalog policies and transport metadata remain in
+place. Ordinary single-row calls continue to execute in Python.
+
+The first release covers synchronous scalar functions using arithmetic,
+branches, local assignments, and supported pure builtins/string methods, with
+`bool`, `int`, `float`, `str`, `bytes`, or Optional annotations. Captured globals,
+closures, arbitrary decorators, context access, defaults, structured types,
+generators, async functions, and coalesced handlers keep their existing execution
+path. Non-ASCII string batches also use Python until native Unicode behavior is
+fully compatible. Missing packages or compilation failures fall back at startup
+and report the reason at INFO level. Native evaluation failures retry the pure
+function in Python to preserve its exception behavior.
+
+`benches/bench_static_acceleration.py` checks result equality before measuring
+the generated handler, the real IPC bridge, or SQL through a separate local
+Rust gRPC function server. On Apple Silicon, Python 3.11.15, chalkdf 3.43.14 and
+remote-call runtime 1.10.4, local measurements were:
+
+| Case | Rows | Python | Acceleration enabled | Speedup |
+| --- | ---: | ---: | ---: | ---: |
+| Arithmetic handler (Python fallback) | 1 | 2.14 µs | 2.17 µs | ≈1× |
+| Arithmetic handler | 512 | 310 µs | 163 µs | 1.9× |
+| Arithmetic IPC | 10,000 | 6.05 ms | 0.220 ms | 27.5× |
+| Arithmetic SQL → gRPC | 10,000 | 24.3 ms | 1.41 ms | 17.3× |
+| String normalization SQL → gRPC | 10,000 | 25.2 ms | 2.73 ms | 9.2× |
+
+These are local throughput measurements, not production latency guarantees.
+Compilation and server startup are excluded. Handler setup with the native
+runtime already loaded took about 29–35 ms versus about 1 ms without compilation.
+The arithmetic handler's native dispatch costs roughly 160 µs even for one row,
+which motivates the 512-row threshold. Network and queue costs can dominate
+small remote calls. `pyperf` reported insufficient samples for a sub-1% stability
+claim; the large relative improvements are the useful result here.
+
+Raw measurements are in `benches/results/acceleration-*.json`. Reproduce from
+this SDK checkout using a Python environment containing the compiler checkout,
+the versions above, and `pyperf`:
+
+```bash
+PYTHONPATH=. LIBCHALK_LOG_LEVEL=error python benches/bench_static_acceleration.py \
+  --transport sql --rows 10000 -p 2 -n 5 -w 2 --min-time 0.1 \
+  --inherit-environ LIBCHALK_LOG_LEVEL,PYTHONPATH -o /tmp/acceleration-sql.json
+```
+
+Use `--transport handler --rows 512`, `--transport ipc`, or
+`--transport sql --function normalize` for the other cases. The benchmark's
+`native` label means acceleration is enabled; batches below 512 rows still take
+the Python path.
+
 ## Function names
 
 Omit `name=` when defining functions. The registered name defaults to the Python

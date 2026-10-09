@@ -793,6 +793,37 @@ def _generate_handler_shim(
         _output_encoder = _chalk_encoder(_output_type)
 
 
+        def _compile_accelerated():
+            import logging
+            import os
+
+            if os.environ.get("CHALK_FUNCTION_STATIC_ACCELERATION") != "1":
+                return None
+            try:
+                # Only the SDK's transparent local-call wrapper may be removed.
+                # Unwrapping arbitrary decorators could discard observable work.
+                candidate = {func_name}
+                if not inspect.isfunction(candidate):
+                    from chalkcompute._function import _NoOpFunction, RemoteFunction
+                    if type(candidate) not in (_NoOpFunction, RemoteFunction):
+                        return None
+                    candidate = candidate._func
+                import chalkdf  # loads the native libchalk module
+                from static_accelerator.scalar_function import compile_scalar_function
+
+                compiled = compile_scalar_function(candidate)
+                logging.getLogger(__name__).info("Static acceleration enabled for {func_name}")
+                return compiled
+            except Exception as error:
+                logging.getLogger(__name__).info(
+                    "Static acceleration unavailable for {func_name}: %s", error
+                )
+                return None
+
+
+        _accelerated = _compile_accelerated()
+
+
         def _kwargs_for_row(columns, row):
             return {{key: values[row] for key, values in columns.items()}}
 
@@ -828,6 +859,17 @@ def _generate_handler_shim(
 
         def handler(event, context):
             row_metadata = event.get(_ROW_METADATA_COLUMN)
+            # Native plan dispatch has fixed overhead; scalar RPCs and tiny
+            # batches are faster through the existing Python loop.
+            if _accelerated is not None and event and len(next(iter(event.values()))) >= 512:
+                inputs = {{k: v for k, v in event.items() if k not in _RESERVED_COLUMNS}}
+                if _accelerated.accepts(inputs):
+                    try:
+                        return _accelerated(inputs)
+                    except Exception:
+                        # Pure functions can be retried in Python to preserve their
+                        # exception behavior when native evaluation cannot finish.
+                        pass
             columns = {{
                 k: _input_decoders[k](v)
                 for k, v in event.items()
