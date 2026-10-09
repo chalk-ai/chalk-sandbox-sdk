@@ -55,6 +55,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, TypeVar, overload
 
+from chalkcompute._function_source_location import function_source_location
 from chalkcompute._logging import _StatusLogger
 from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import ConnectClient
@@ -889,6 +890,7 @@ class RemoteClass:
         self._local_instance_cache: Any = None
 
         # Scan the class for markers
+        self._source_locations: dict[str, catalog_pb.FunctionSourceLocation | None] = {}
         self._methods: dict[str, _MethodInfo] = {}
         self._before_name: str | None = None
         self._after_name: str | None = None
@@ -1133,6 +1135,16 @@ class RemoteClass:
             remote_call_runtime_package=self._remote_call_runtime_package(),
         ).add_local_file(source_file, f"{source_root}/user_module.py")
 
+        source = Path(source_file).read_text()
+        self._source_locations = {
+            method.name: function_source_location(
+                source,
+                f"{source_root}/user_module.py",
+                getattr(inspect.unwrap(method.func), "__qualname__", None),
+            )
+            for method in self._methods.values()
+        }
+
         # Precompute has-self flags for lifecycle hooks
         before_func = (
             user_cls.__dict__.get(self._before_name) if self._before_name else None
@@ -1311,6 +1323,8 @@ class RemoteClass:
                     schedule=self._schedule,
                     tracing=self._tracing,
                 )
+
+                config.source_location = self._source_locations.get(method_info.name)
 
                 logger.info("Registering method '%s'...", func_name)
                 ensured = ensure_external_function(

@@ -99,6 +99,7 @@ from chalkcompute._function_deployment import (
     resolve_function_volumes,
     function_source_root,
 )
+from chalkcompute._function_source_location import function_source_location
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import (
     service_connect as catalog_connect,
 )
@@ -2507,6 +2508,7 @@ class RemoteFunction:
         self._port: int = 8080
         self._temp_files: list[str] = []
         self._handler_module: str = "handler"
+        self._source_location: catalog_pb.FunctionSourceLocation | None = None
 
         # Input field names (populated from API response for from_id/from_name)
         self._input_field_names: list[str] = []
@@ -2728,6 +2730,14 @@ class RemoteFunction:
         )
         if dir_is_temp:
             temp_files.append(prepared_dir)
+        relative_path = Path(_source_file_for_deploy(self._func)).relative_to(
+            package_dir
+        )
+        self._source_location = function_source_location(
+            (Path(prepared_dir) / relative_path).read_text(),
+            f"{source_root}/{module_name.split('.')[0]}/{relative_path.as_posix()}",
+            getattr(inspect.unwrap(self._func), "__qualname__", None),
+        )
         return base_image.add_local_dir(
             prepared_dir,
             f"{source_root}/{module_name.split('.')[0]}",
@@ -2760,6 +2770,13 @@ class RemoteFunction:
             )
         if source_is_temp:
             temp_files.append(source_file)
+        self._source_location = function_source_location(
+            Path(source_file).read_text(),
+            f"{source_root}/{module_name}.py",
+            self._func_name
+            if self._notebook_source is not None
+            else getattr(inspect.unwrap(self._func), "__qualname__", None),
+        )
         return base_image.add_local_file(source_file, f"{source_root}/{module_name}.py")
 
     def _add_handler_shim(
@@ -3098,6 +3115,8 @@ class RemoteFunction:
                 schedule=self._schedule,
                 tracing=self._tracing,
             )
+
+            config.source_location = self._source_location
 
             # 6. Create the stable function or append and select a new version.
             rkey = f"register:{registered_name}"

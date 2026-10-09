@@ -239,7 +239,9 @@ def test_redeploy_preserves_callable_and_desired_spec(
     monkeypatch.setenv("CHALK_FUNCTION_STRIP_SOURCE", strip_source)
     monkeypatch.delenv("CHALK_FUNCTION_LOCAL_SDK_COPY", raising=False)
     source = tmp_path / "reuse_example.py"
-    source.write_text("def add_values(x: int = 41) -> int:\n    return x + 1\n")
+    source.write_text(
+        "# Deployment source\n\ndef add_values(x: int = 41) -> int:\n    return x + 1\n"
+    )
     spec = importlib.util.spec_from_file_location("reuse_example", source)
     module = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, spec.name, module)
@@ -285,6 +287,11 @@ def test_redeploy_preserves_callable_and_desired_spec(
     assert [r.function_name for r in client.requests] == [registered_name] * 2
     assert client.requests[0].spec == client.requests[1].spec
     assert prepared_sources[0] == prepared_sources[1]
+    location = client.requests[0].spec.version_spec.config.source_location
+    assert location is not None
+    captured = prepared_sources[0][location.path]
+    assert captured.splitlines()[location.line_number - 1].startswith("def add_values(")
+    assert location.column_number == 1
     for path, text in prepared_sources[1].items():
         compile(text, path, "exec")
     assert fn._func_name == "add_values"
