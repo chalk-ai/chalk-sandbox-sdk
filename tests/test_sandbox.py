@@ -367,6 +367,35 @@ def test_sandbox_suspend_and_resume_refresh_info() -> None:
     )
 
 
+def test_sandbox_resume_retries_conflict_while_suspended_resource_deletes() -> None:
+    client = SandboxClient()
+    stub = MagicMock()
+    stub.resume_sandbox.side_effect = [
+        ConnectRpcError(
+            Code.UNKNOWN,
+            "creating ChalkContainer CR: the server reported a conflict "
+            "(post chalkcontainers.meta.k8s.io)",
+        ),
+        pb.ResumeSandboxResponse(),
+    ]
+    stub.get_sandbox.return_value = pb.GetSandboxResponse(
+        sandbox=pb.SandboxInfo(
+            id="sandbox-123",
+            status=pb.SandboxStatus.RUNNING,
+            created_at=Timestamp(seconds=1),
+        )
+    )
+    client._stub = stub  # type: ignore[assignment]
+    sandbox = client.get("sandbox-123")
+
+    with patch("chalkcompute._sandbox.time.sleep") as sleep:
+        sandbox.resume()
+
+    assert stub.resume_sandbox.call_count == 2
+    sleep.assert_called_once_with(0.25)
+    assert sandbox.info is not None and sandbox.info.status == "running"
+
+
 @pytest.mark.parametrize("use_client_create", [False, True])
 def test_sandbox_mixed_env_serializes_secret_references(use_client_create) -> None:
     client = SandboxClient()

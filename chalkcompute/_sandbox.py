@@ -97,6 +97,9 @@ from chalkcompute._volume import (
 _DEFAULT_READINESS_POLL_INTERVAL = 0.025
 _MAX_READINESS_POLL_INTERVAL = 0.250
 _DEFAULT_IMAGE_BUILD_POLL_INTERVAL = 0.5
+_RESUME_CONFLICT_RETRY_TIMEOUT_SECONDS = 30.0
+_RESUME_CONFLICT_RETRY_INITIAL_DELAY_SECONDS = 0.25
+_RESUME_CONFLICT_RETRY_MAX_DELAY_SECONDS = 2.0
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -1755,14 +1758,29 @@ class Sandbox:
         """Resume this sandbox after it has been suspended."""
         client = self._require_client()
         sandbox_id = self._require_started()
-        try:
-            client._stub.resume_sandbox(
-                pb.ResumeSandboxRequest(id=sandbox_id),
-                headers=client._headers,
-            )
-        except ConnectRpcError as e:
-            _handle_rpc_error(e, sandbox_id)
-            raise
+        deadline = time.monotonic() + _RESUME_CONFLICT_RETRY_TIMEOUT_SECONDS
+        retry_delay = _RESUME_CONFLICT_RETRY_INITIAL_DELAY_SECONDS
+        while True:
+            try:
+                client._stub.resume_sandbox(
+                    pb.ResumeSandboxRequest(id=sandbox_id),
+                    headers=client._headers,
+                )
+                break
+            except ConnectRpcError as e:
+                if not _is_retryable_resume_conflict(e):
+                    _handle_rpc_error(e, sandbox_id)
+                    raise
+
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    _handle_rpc_error(e, sandbox_id)
+                    raise
+                time.sleep(min(retry_delay, remaining))
+                retry_delay = min(
+                    retry_delay * 2,
+                    _RESUME_CONFLICT_RETRY_MAX_DELAY_SECONDS,
+                )
         self.refresh()
 
     @_instrumented("chalkcompute.sandbox.terminate")
@@ -2513,6 +2531,16 @@ def _with_trace_env(env: dict[str, str] | None) -> dict[str, str]:
     for key, value in trace_env().items():
         merged.setdefault(key, value)
     return merged
+
+
+def _is_retryable_resume_conflict(error: ConnectRpcError) -> bool:
+    """Recognize the transient Kubernetes conflict while a suspended CR is deleting."""
+    message = error.message.lower()
+    return error.code == Code.ALREADY_EXISTS or (
+        "creating chalkcontainer cr" in message
+        and "conflict" in message
+        and "chalkcontainers.meta.k8s.io" in message
+    )
 
 
 def _handle_rpc_error(e: ConnectRpcError, sandbox_id: str) -> None:
