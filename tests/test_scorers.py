@@ -180,7 +180,7 @@ def test_prompt_fn_replaces_the_default_prompt(completion) -> None:
 
 
 def test_trace_input_is_declared_as_an_optional_trace() -> None:
-    """The runner binds `trace` to the row's session id; it is null when no telemetry was recorded."""
+    """The runner binds `trace` to a snapshot; it is null without telemetry."""
     fn = _judge(inputs=("output", "trace"))._func
 
     hints = typing.get_type_hints(fn)
@@ -190,7 +190,14 @@ def test_trace_input_is_declared_as_an_optional_trace() -> None:
         column for column in input_schema.columns if column.name == "trace"
     )
     assert trace_column.nullable is True
-    assert trace_column.arrow_type.arrow_type_enum.field == "large_utf8"
+    assert trace_column.arrow_type.arrow_type_enum.field == "struct"
+    children = trace_column.arrow_type.arrow_type_enum.value.sub_field_types
+    assert [child.name for child in children] == [
+        "version",
+        "session_id",
+        "ingested_through",
+        "captured_at",
+    ]
 
 
 def test_default_prompt_renders_the_trace_as_its_transcript(

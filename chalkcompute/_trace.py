@@ -17,8 +17,9 @@ multi-turn agent emits one OpenTelemetry trace per turn: those traces are
 siblings, not descendants, and only a session id groups them.  See
 ``docs/design/trace-propagation-in-scorers.md``.
 
-The id travels as a ``large_utf8`` scalar, exactly as ``str`` would, so a
-function may equally declare ``trace: str`` and call :meth:`Trace.from_id`.
+Evaluation scorers receive a versioned Arrow struct containing the session id
+and its immutable ingestion cutoff. :meth:`Trace.from_id` remains available for
+live, session-scoped inspection outside an evaluation.
 
 :meth:`Trace.transcript` renders the session's LLM turns as text. It is what
 :func:`chalkcompute.scorers.llm_judge` shows the model when a judge names
@@ -37,13 +38,14 @@ import os
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, TypeVar
 
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
+from protobuf.wkt import timestamp_pb
 
 from chalkcompute._connect import ConnectClient
 from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
@@ -57,6 +59,7 @@ from chalkcompute._tracing import (
 _T = TypeVar("_T")
 
 _MAX_PAGE_SIZE = 1000
+_TRACE_SNAPSHOT_VERSION = 1
 
 # OpenInference names for what an LLM span carries; chalk-router and the
 # OpenInference instrumentations both write them.
@@ -176,18 +179,16 @@ class Trace:
     """A session's worth of telemetry: every trace and span under one call.
 
     Declaring a ``@chalkcompute.function`` parameter as ``Trace`` installs its
-    Arrow contract, so the value arrives as the ``large_utf8`` session id Chalk
-    bound to that argument.
+    Arrow contract. New evaluation runs bind a structured, immutable snapshot;
+    :meth:`from_id` creates a live handle for use outside a scorer.
 
     .. _trace-waiting:
 
-    **Every read waits for ingest to settle.** Spans reach Chalk asynchronously
-    — through a batching span processor, an OTLP collector, and finally
-    ClickHouse — so a scorer running immediately after the task it scores can
-    observe an incomplete session. That is worse than an error: a partial read
-    produces a plausible wrong number. So :meth:`get_spans`, :meth:`summary`,
-    and :meth:`traces` all poll until the number of spans they can see stops
-    growing, and all take the same five arguments:
+    A scorer receives a frozen handle and reads exactly the spans visible when
+    its evaluation captured the snapshot. A handle created with :meth:`from_id`
+    is live instead: because spans reach Chalk asynchronously, its reads poll
+    until the number of spans they can see stops growing. Live reads take five
+    settling arguments:
 
     ``wait``
         Poll until the span count holds steady across two consecutive reads.
@@ -219,10 +220,60 @@ class Trace:
     id: str
     """The session id this handle queries."""
 
+    ingested_through: datetime | None = None
+    """Inclusive ingestion-time cutoff, or ``None`` for a live handle."""
+
+    captured_at: datetime | None = None
+    """Server time when the immutable snapshot was captured."""
+
     _client: TraceClient | None = field(default=None, repr=False, compare=False)
 
     __chalk_arrow_type__ = arrow_pb.ArrowType(
-        arrow_type_enum=Oneof("large_utf8", arrow_pb.EmptyMessage())
+        arrow_type_enum=Oneof(
+            "struct",
+            arrow_pb.Struct(
+                sub_field_types=[
+                    arrow_pb.Field(
+                        name="version",
+                        arrow_type=arrow_pb.ArrowType(
+                            arrow_type_enum=Oneof("int64", arrow_pb.EmptyMessage())
+                        ),
+                    ),
+                    arrow_pb.Field(
+                        name="session_id",
+                        arrow_type=arrow_pb.ArrowType(
+                            arrow_type_enum=Oneof("large_utf8", arrow_pb.EmptyMessage())
+                        ),
+                    ),
+                    arrow_pb.Field(
+                        name="ingested_through",
+                        arrow_type=arrow_pb.ArrowType(
+                            arrow_type_enum=Oneof(
+                                "timestamp",
+                                arrow_pb.Timestamp(
+                                    time_unit=arrow_pb.TimeUnit.MICROSECOND,
+                                    timezone="UTC",
+                                ),
+                            )
+                        ),
+                        nullable=True,
+                    ),
+                    arrow_pb.Field(
+                        name="captured_at",
+                        arrow_type=arrow_pb.ArrowType(
+                            arrow_type_enum=Oneof(
+                                "timestamp",
+                                arrow_pb.Timestamp(
+                                    time_unit=arrow_pb.TimeUnit.MICROSECOND,
+                                    timezone="UTC",
+                                ),
+                            )
+                        ),
+                        nullable=True,
+                    ),
+                ]
+            ),
+        )
     )
 
     def __post_init__(self) -> None:
@@ -232,6 +283,18 @@ class Trace:
         if not trace_id:
             raise ValueError("id is required")
         object.__setattr__(self, "id", trace_id)
+        if (self.ingested_through is None) != (self.captured_at is None):
+            raise ValueError(
+                "ingested_through and captured_at must either both be set or both be None"
+            )
+        for name, value in (
+            ("ingested_through", self.ingested_through),
+            ("captured_at", self.captured_at),
+        ):
+            if value is not None and value.tzinfo is None:
+                raise ValueError(f"{name} must include a timezone")
+            if value is not None:
+                object.__setattr__(self, name, value.astimezone(timezone.utc))
 
     # -- Arrow contract ----------------------------------------------------
 
@@ -239,18 +302,54 @@ class Trace:
     def __chalk_pyarrow_type__() -> Any:
         import pyarrow as pa
 
-        return pa.large_utf8()
+        return pa.struct(
+            [
+                pa.field("version", pa.int64(), nullable=False),
+                pa.field("session_id", pa.large_utf8(), nullable=False),
+                pa.field(
+                    "ingested_through",
+                    pa.timestamp("us", tz="UTC"),
+                    nullable=True,
+                ),
+                pa.field("captured_at", pa.timestamp("us", tz="UTC"), nullable=True),
+            ]
+        )
 
     def __chalk_serialize__(self) -> Any:
-        """Encode this handle as the session id string Chalk transports."""
+        """Encode this handle as the versioned trace-snapshot struct."""
         import pyarrow as pa
 
-        return pa.scalar(self.id, type=pa.large_utf8())
+        return pa.scalar(
+            {
+                "version": _TRACE_SNAPSHOT_VERSION,
+                "session_id": self.id,
+                "ingested_through": self.ingested_through,
+                "captured_at": self.captured_at,
+            },
+            type=self.__chalk_pyarrow_type__(),
+        )
 
     @classmethod
     def __chalk_deserialize__(cls, value: Any) -> Trace:
-        """Decode a session id scalar into a handle."""
-        return cls(value.as_py())
+        """Decode a versioned snapshot struct into a handle.
+
+        A large-string scalar is accepted for compatibility with an old runner
+        during a rolling deployment, but newly registered functions advertise
+        only the structured Arrow contract above.
+        """
+        decoded = value.as_py()
+        if isinstance(decoded, str):
+            return cls(decoded)
+        if not isinstance(decoded, Mapping):
+            raise TypeError("Trace must decode from a string or snapshot struct")
+        version = decoded.get("version")
+        if version != _TRACE_SNAPSHOT_VERSION:
+            raise ValueError(f"unsupported Trace snapshot version: {version!r}")
+        return cls(
+            decoded.get("session_id"),
+            ingested_through=decoded.get("ingested_through"),
+            captured_at=decoded.get("captured_at"),
+        )
 
     # -- Construction ------------------------------------------------------
 
@@ -305,7 +404,19 @@ class Trace:
                 operation_name=operation_name,
                 attribute_filters=attribute_filters,
                 limit=limit,
+                snapshot=self._snapshot_proto(),
             )
+
+        if self.ingested_through is not None:
+            _validate_settle_bounds(timeout, poll_interval, expect_min, quiet_for)
+            spans = fetch()
+            if expect_min is not None and len(spans) < expect_min:
+                raise TraceError(
+                    f"snapshot for session {self.id!r} contains {len(spans)} "
+                    f"span(s), expected at least {expect_min}; a frozen snapshot "
+                    "cannot receive more spans"
+                )
+            return spans
 
         return _settle(
             fetch,
@@ -351,6 +462,7 @@ class Trace:
             If it appears but its span count never holds steady.
         """
 
+        self._require_live_aggregate("summary")
         ever_found = False
 
         def fetch() -> SessionSummary | None:
@@ -422,6 +534,8 @@ class Trace:
             steady within ``timeout``.
         """
 
+        self._require_live_aggregate("traces")
+
         def fetch() -> list[TraceSummary]:
             return list(self._require_client().list_traces(self.id, limit=limit))
 
@@ -479,7 +593,22 @@ class Trace:
         client = self._require_client()
 
         def fetch() -> list[Span]:
-            return client.list_spans(self.id)
+            return client.list_spans(
+                self.id,
+                snapshot=self._snapshot_proto(),
+            )
+
+        if self.ingested_through is not None:
+            _validate_settle_bounds(timeout, poll_interval, expect_min, quiet_for)
+            spans = fetch()
+            turn_count = _count_turns(spans)
+            if expect_min is not None and turn_count < expect_min:
+                raise TraceError(
+                    f"snapshot for session {self.id!r} contains {turn_count} "
+                    f"LLM turn(s), expected at least {expect_min}; a frozen "
+                    "snapshot cannot receive more spans"
+                )
+            return _format_transcript(spans, max_chars_per_turn=max_chars_per_turn)
 
         try:
             spans = _settle(
@@ -508,6 +637,25 @@ class Trace:
         client = self._client
         assert client is not None
         return client
+
+    def _snapshot_proto(self) -> trace_pb.TraceSnapshot | None:
+        if self.ingested_through is None or self.captured_at is None:
+            return None
+        return trace_pb.TraceSnapshot(
+            version=_TRACE_SNAPSHOT_VERSION,
+            scope=Oneof("session_id", self.id),
+            ingested_through=timestamp_pb.Timestamp.from_datetime(
+                self.ingested_through
+            ),
+            captured_at=timestamp_pb.Timestamp.from_datetime(self.captured_at),
+        )
+
+    def _require_live_aggregate(self, method: str) -> None:
+        if self.ingested_through is not None:
+            raise TraceError(
+                f"Trace.{method}() is not snapshot-aware; use get_spans() on this "
+                "frozen Trace handle"
+            )
 
 
 def _format_transcript(spans: Sequence[Span], *, max_chars_per_turn: int) -> str:
@@ -580,6 +728,7 @@ class TraceClient:
         operation_name: str | None = None,
         attribute_filters: Mapping[str, str | None] | None = None,
         limit: int | None = None,
+        snapshot: trace_pb.TraceSnapshot | None = None,
     ) -> list[Span]:
         """List a session's spans, paging transparently.
 
@@ -612,6 +761,7 @@ class TraceClient:
                     operation_name=operation_name,
                     attribute_filters=filters,
                     page_token=page_token,
+                    snapshot=snapshot,
                 ),
             )
             for raw in response.spans:
@@ -751,14 +901,7 @@ def _settle(
     Returns the settled payload. Raises :class:`TimeoutError` rather than
     returning a knowingly incomplete one — an undercount reads as a real result.
     """
-    if timeout < 0:
-        raise ValueError("timeout must be >= 0")
-    if poll_interval < 0:
-        raise ValueError("poll_interval must be >= 0")
-    if expect_min is not None and expect_min < 0:
-        raise ValueError("expect_min must be >= 0 or None")
-    if quiet_for is not None and quiet_for < 0:
-        raise ValueError("quiet_for must be >= 0 or None")
+    _validate_settle_bounds(timeout, poll_interval, expect_min, quiet_for)
 
     if not wait:
         return fetch()
@@ -820,6 +963,22 @@ def _settle(
         count = spans_seen(result)
         if count != previous:
             steady_since = time.monotonic()
+
+
+def _validate_settle_bounds(
+    timeout: float,
+    poll_interval: float,
+    expect_min: int | None,
+    quiet_for: float | None = None,
+) -> None:
+    if timeout < 0:
+        raise ValueError("timeout must be >= 0")
+    if poll_interval < 0:
+        raise ValueError("poll_interval must be >= 0")
+    if expect_min is not None and expect_min < 0:
+        raise ValueError("expect_min must be >= 0 or None")
+    if quiet_for is not None and quiet_for < 0:
+        raise ValueError("quiet_for must be >= 0 or None")
 
 
 def _session_query(session_id: str) -> str:

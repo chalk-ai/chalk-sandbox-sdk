@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import json
 from typing import Any
 
@@ -78,33 +78,50 @@ def _client(responses: Mapping[str, list[Any]]) -> tuple[TraceClient, Any]:
 # --- Arrow contract -------------------------------------------------------
 
 
-def test_trace_declares_the_same_arrow_type_as_str() -> None:
-    """A scorer may annotate `trace: Trace` or `trace: str` interchangeably."""
-    typed = rich_to_arrow_schema({"trace": Trace})
-    untyped = rich_to_arrow_schema({"trace": str})
-    assert typed.columns[0].arrow_type == untyped.columns[0].arrow_type
-    assert typed.columns[0].arrow_type.arrow_type_enum.field == "large_utf8"
+def test_trace_declares_a_versioned_snapshot_struct() -> None:
+    field = rich_to_arrow_schema({"trace": Trace}).columns[0]
+    assert field.arrow_type.arrow_type_enum.field == "struct"
+    children = field.arrow_type.arrow_type_enum.value.sub_field_types
+    assert [child.name for child in children] == [
+        "version",
+        "session_id",
+        "ingested_through",
+        "captured_at",
+    ]
+    assert children[0].arrow_type.arrow_type_enum.field == "int64"
+    assert children[1].arrow_type.arrow_type_enum.field == "large_utf8"
+    assert children[2].arrow_type.arrow_type_enum.field == "timestamp"
+    assert children[3].arrow_type.arrow_type_enum.field == "timestamp"
 
 
-def test_trace_roundtrips_through_the_arrow_scalar_contract() -> None:
+def test_frozen_trace_roundtrips_through_the_arrow_scalar_contract() -> None:
     encode = arrow_encoder_for_annotation(Trace)
     decode = arrow_decoder_for_annotation(Trace)
     assert encode is not None and decode is not None
-    scalar = encode(Trace("session-1"))
-    assert scalar.type == pa.large_utf8()
-    assert decode(scalar) == Trace("session-1")
+    cutoff = datetime(2026, 10, 9, 1, 2, 3, 456789, tzinfo=timezone.utc)
+    trace = Trace("session-1", ingested_through=cutoff, captured_at=cutoff)
+    scalar = encode(trace)
+    assert scalar.type == Trace.__chalk_pyarrow_type__()
+    assert scalar.as_py() == {
+        "version": 1,
+        "session_id": "session-1",
+        "ingested_through": cutoff,
+        "captured_at": cutoff,
+    }
+    assert decode(scalar) == trace
 
 
-def test_optional_trace_is_nullable_and_still_decodes_to_a_handle() -> None:
-    """Chalk binds `trace` to null for a task that emitted no telemetry."""
+def test_trace_deserializes_a_legacy_session_id_during_rollout() -> None:
+    decode = arrow_decoder_for_annotation(Trace)
+    assert decode is not None
+    assert decode(pa.scalar("session-1", type=pa.large_utf8())) == Trace("session-1")
+
+
+def test_optional_trace_is_nullable_and_keeps_the_snapshot_contract() -> None:
     schema = rich_to_arrow_schema({"trace": Trace | None})
     field = schema.columns[0]
     assert field.nullable is True
-    assert field.arrow_type.arrow_type_enum.field == "large_utf8"
-
-    decode = arrow_decoder_for_annotation(Trace | None)
-    assert decode is not None
-    assert decode(pa.scalar("session-1", type=pa.large_utf8())) == Trace("session-1")
+    assert field.arrow_type.arrow_type_enum.field == "struct"
 
 
 def test_required_trace_is_not_nullable() -> None:
@@ -119,6 +136,18 @@ def test_trace_rejects_a_blank_id(value: str) -> None:
 
 def test_trace_strips_surrounding_whitespace() -> None:
     assert Trace(" session-1 ").id == "session-1"
+
+
+def test_trace_requires_a_complete_timezone_aware_snapshot() -> None:
+    aware = datetime(2026, 10, 9, tzinfo=timezone.utc)
+    with pytest.raises(ValueError, match="must either both be set"):
+        Trace("session-1", ingested_through=aware)
+    with pytest.raises(ValueError, match="must include a timezone"):
+        Trace(
+            "session-1",
+            ingested_through=datetime(2026, 10, 9),
+            captured_at=datetime(2026, 10, 9),
+        )
 
 
 # --- Transcript -----------------------------------------------------------
@@ -392,6 +421,36 @@ def test_list_spans_pages_transparently() -> None:
     request = connect.calls[1][1]
     assert isinstance(request, trace_pb.ListSpanRequest)
     assert request.page_token == "cursor"
+
+
+def test_frozen_trace_sends_the_same_snapshot_on_every_page() -> None:
+    client, connect = _client(
+        {
+            "list_span": [
+                _response({"spans": [_span_dict("span-1")], "nextPageToken": "cursor"}),
+                _response({"spans": [_span_dict("span-2")]}),
+            ]
+        }
+    )
+    cutoff = datetime(2026, 10, 9, 1, 2, 3, 456789, tzinfo=timezone.utc)
+    spans = Trace(
+        "session-1",
+        ingested_through=cutoff,
+        captured_at=cutoff,
+        _client=client,
+    ).get_spans(wait=False)
+
+    assert [span.span_id for span in spans] == ["span-1", "span-2"]
+    for _, request in connect.calls:
+        assert request.snapshot is not None
+        assert request.snapshot.version == 1
+        assert request.snapshot.scope is not None
+        assert request.snapshot.scope.field == "session_id"
+        assert request.snapshot.scope.value == "session-1"
+        assert request.snapshot.ingested_through is not None
+        assert request.snapshot.ingested_through.to_datetime() == cutoff
+        assert request.snapshot.captured_at is not None
+        assert request.snapshot.captured_at.to_datetime() == cutoff
 
 
 def test_list_spans_honors_limit_without_extra_pages() -> None:
@@ -717,6 +776,16 @@ def test_summary_raises_not_found_for_an_unknown_session() -> None:
     client, _ = _client({"search_sessions": [_response({"sessions": []})]})
     with pytest.raises(TraceNotFoundError, match="Session not found"):
         Trace("session-1", _client=client).summary(wait=False)
+
+
+@pytest.mark.parametrize("method", ["summary", "traces"])
+def test_frozen_trace_rejects_live_aggregate_reads(method: str) -> None:
+    cutoff = datetime(2026, 10, 9, tzinfo=timezone.utc)
+    trace = Trace(
+        "session-1", ingested_through=cutoff, captured_at=cutoff, _client=_client({})[0]
+    )
+    with pytest.raises(TraceError, match="not snapshot-aware"):
+        getattr(trace, method)(wait=False)
 
 
 def test_traces_lists_one_summary_per_turn() -> None:
