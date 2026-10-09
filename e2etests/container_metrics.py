@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import time
@@ -81,14 +82,15 @@ def assert_container_metrics_target(
     deadline = time.monotonic() + timeout_secs
     last_error = ""
     while True:
-        last_error = _check_container_metrics_target(target)
+        remaining = max(0.001, deadline - time.monotonic())
+        last_error = _check_container_metrics_target(target, remaining)
         if last_error is None:
             print(f"Found container metrics for podName={target.pod_name}")
             return
 
         if time.monotonic() >= deadline:
             break
-        time.sleep(poll_interval_secs)
+        time.sleep(min(poll_interval_secs, max(0, deadline - time.monotonic())))
 
     raise AssertionError(
         "Timed out waiting for container metrics "
@@ -96,17 +98,21 @@ def assert_container_metrics_target(
     )
 
 
-def _check_container_metrics_target(target: ContainerMetricsTarget) -> str | None:
+def _check_container_metrics_target(
+    target: ContainerMetricsTarget, timeout_secs: float
+) -> str | None:
     try:
-        output = _run_metrics_snapshot(target.pod_name, start=target.observed_at)
-        if _has_metric_datapoint(json.loads(output)):
-            return None
-        return "metrics snapshot returned no datapoints"
-    except (json.JSONDecodeError, subprocess.SubprocessError) as e:
-        return str(e)
+        output = _run_metrics_snapshot(
+            target.pod_name, start=target.observed_at, timeout_secs=timeout_secs
+        )
+        return _container_metrics_error(json.loads(output), target)
+    except (json.JSONDecodeError, subprocess.SubprocessError, OSError) as error:
+        return str(error)
 
 
-def _run_metrics_snapshot(pod_name: str, *, start: datetime | None = None) -> str:
+def _run_metrics_snapshot(
+    pod_name: str, *, start: datetime, timeout_secs: float
+) -> str:
     payload = _metrics_snapshot_payload(pod_name, start=start)
     env = os.environ.copy()
     if not env.get("CHALK_ACTIVE_ENVIRONMENT") and env.get("CHALK_ENVIRONMENT_ID"):
@@ -126,6 +132,7 @@ def _run_metrics_snapshot(pod_name: str, *, start: datetime | None = None) -> st
         capture_output=True,
         text=True,
         env=env,
+        timeout=timeout_secs,
     )
     return result.stdout
 
@@ -149,18 +156,18 @@ def _metrics_snapshot_payload(
             "windowPeriod": "1m",
             "series": [
                 {
-                    "metric": "METRIC_KIND_CONTAINER_COUNT",
+                    "metric": "METRIC_KIND_POD_CONTAINER_CPU_UTILIZATION",
                     "filters": [pod_name_filter],
-                    "name": "Container Count",
+                    "name": "Container CPU",
                     "windowFunction": "WINDOW_FUNCTION_KIND_MAX",
-                    "groupBy": [],
+                    "groupBy": ["GROUP_BY_KIND_POD_NAME"],
                 },
                 {
-                    "metric": "METRIC_KIND_CONTAINER_MEMORY_BYTES",
+                    "metric": "METRIC_KIND_POD_CONTAINER_MEMORY_BYTES",
                     "filters": [pod_name_filter],
                     "name": "Container Memory",
                     "windowFunction": "WINDOW_FUNCTION_KIND_MAX",
-                    "groupBy": [],
+                    "groupBy": ["GROUP_BY_KIND_POD_NAME"],
                 },
             ],
         },
@@ -171,16 +178,63 @@ def _metrics_snapshot_payload(
     }
 
 
-def _has_metric_datapoint(value: Any) -> bool:
-    """Return true if a metrics response contains any non-null point value."""
-    if isinstance(value, dict):
-        if "points" in value and isinstance(value["points"], list):
-            for point in value["points"]:
-                if isinstance(point, dict) and point.get("value") is not None:
-                    return True
-                if isinstance(point, (int, float)):
-                    return True
-        return any(_has_metric_datapoint(v) for v in value.values())
-    if isinstance(value, list):
-        return any(_has_metric_datapoint(v) for v in value)
-    return False
+def _container_metrics_error(
+    response: Any, target: ContainerMetricsTarget
+) -> str | None:
+    """Check the public dense-chart contract for both resources of the owned pod."""
+    if not isinstance(response, dict):
+        return "metrics snapshot is not a chart response"
+    expected = {"Container CPU": "% cpu", "Container Memory": "bytes"}
+    found: set[str] = set()
+    for chart in response.get("charts", []):
+        if not isinstance(chart, dict):
+            continue
+        timestamps = chart.get("xSeries", [])
+        for series in chart.get("series", []):
+            if not isinstance(series, dict):
+                continue
+            label = series.get("label")
+            if label not in expected or series.get("unit") != expected[label]:
+                continue
+            tags = series.get("groupTags", [])
+            if not any(
+                isinstance(tag, dict)
+                and tag.get("groupKey") == "pod"
+                and tag.get("value", {}).get("utf8Value") == target.pod_name
+                for tag in tags
+            ):
+                continue
+            points = series.get("points", [])
+            if len(points) != len(timestamps):
+                continue
+            for timestamp, point in zip(timestamps, points):
+                try:
+                    observed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                except (AttributeError, TypeError, ValueError):
+                    continue
+                value = point.get("value") if isinstance(point, dict) else None
+                if (
+                    observed.tzinfo is None
+                    or observed < target.observed_at
+                    or observed > datetime.now(timezone.utc)
+                ):
+                    continue
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(value)
+                ):
+                    continue
+                # CPU is a percentage of allocation (or one core when unlimited).
+                # An unlimited multi-core workload can legitimately exceed 100%.
+                if value < 0 or (label == "Container Memory" and value == 0):
+                    continue
+                found.add(label)
+                break
+    missing = expected.keys() - found
+    return (
+        "missing fresh pod-scoped metrics with expected units: "
+        + ", ".join(sorted(missing))
+        if missing
+        else None
+    )
