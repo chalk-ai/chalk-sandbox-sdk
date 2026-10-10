@@ -9,7 +9,7 @@
 #
 # Deploy a Chalk function, `review_repository(repo, prompt)`, that clones a GitHub
 # repository and runs the [pi](https://pi.dev) coding agent in it. The agent explores
-# the checkout with read-only tools for at most 30 seconds, and the function returns
+# the checkout with read-only tools for at most two minutes, and the function returns
 # its answer. Because the function is registered in the environment's catalog, any
 # Chalk SQL query can call it, one call per row:
 #
@@ -25,7 +25,7 @@
 # 1. Build an image with Node.js, `pi`, `git`, `ripgrep`, and `fd` installed.
 # 2. Deploy `review_repository`. Each call shallow-clones the repository into a
 #    temporary directory and runs one non-interactive `pi` session in it.
-# 3. Stream pi's JSON events, and stop the session once its 30-second budget runs out.
+# 3. Stream pi's JSON events, and stop the session once its two-minute budget runs out.
 #    The answer is the agent's last assistant message, or whatever it had written so
 #    far if the budget ran out first.
 # 4. Run the `catalog_call` query through Chalk SQL and print each repository's answer.
@@ -88,7 +88,8 @@ from pathlib import Path
 import chalkcompute
 from chalkcompute import Image, Secret
 
-SESSION_SECONDS = 30
+SESSION_SECONDS = 120
+MAX_TOOL_CALLS = 20
 CLONE_TIMEOUT_SECONDS = 120
 MODEL = "anthropic/claude-haiku-5-5"
 NODE_VERSION = "24.21.0"
@@ -99,7 +100,7 @@ PI_TOOLS = "read,grep,find,ls"
 TIME_BUDGET_PROMPT = (
     f"You have a hard limit of {SESSION_SECONDS} seconds for this whole session, after"
     " which it is stopped and only text you have already written is kept. Use at most"
-    " five tool calls, then write your final answer."
+    f" {MAX_TOOL_CALLS} tool calls, then write your final answer."
 )
 DEFAULT_REPO = "chalk-ai/chalk-harbor"
 DEFAULT_PROMPT = "what is the content of this repository?"
