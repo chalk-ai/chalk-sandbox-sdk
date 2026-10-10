@@ -2,7 +2,7 @@
 #
 # /// script
 # requires-python = ">=3.12,<3.14"
-# dependencies = ["chalkcompute>=2.13.4", "pyarrow"]
+# dependencies = ["chalkcompute>=2.13.4", "opentelemetry-api", "pyarrow"]
 # ///
 
 # # Review GitHub repositories with a coding agent, from SQL
@@ -87,6 +87,7 @@ from pathlib import Path
 
 import chalkcompute
 from chalkcompute import Image, Secret
+from opentelemetry import trace as otel_trace
 
 SESSION_SECONDS = 120
 MAX_TOOL_CALLS = 20
@@ -150,6 +151,12 @@ _ROUTER_ENV = {
 # A batch succeeds or fails as a whole. One unreachable repository must not discard
 # the other reviews in its batch, so a failed review returns its reason as the
 # answer, prefixed with `review failed:`, instead of raising.
+#
+# Each review is an agent span under the call's `chalkcompute.remote_function.invoke`
+# span. pi has no OpenTelemetry of its own, so the function joins it to the trace
+# twice over: pi's requests to the router carry this span's `traceparent`, which
+# makes the router's LLM spans its children, and each tool call pi reports becomes a
+# tool span with the call's real start and end times.
 
 
 @chalkcompute.function(
@@ -163,19 +170,42 @@ _ROUTER_ENV = {
 )
 def review_repository(repo: str, prompt: str) -> str:
     """Clone ``repo`` (``owner/name``) and return pi's answer to ``prompt``."""
-    try:
-        if not _REPO_PATTERN.fullmatch(repo):
-            raise ValueError(f"repo must look like 'owner/name', got {repo!r}")
-        if not prompt.strip():
-            raise ValueError("prompt cannot be empty")
-        with tempfile.TemporaryDirectory(prefix="review-") as workdir:
-            checkout = Path(workdir) / "repo"
-            _clone(repo, checkout)
-            agent_dir = Path(workdir) / "pi-agent"
-            _write_pi_config(agent_dir)
-            return _run_pi_session(checkout, agent_dir, prompt)
-    except Exception as exc:
-        return f"review failed: {exc}"
+    with chalkcompute.span("review_repository") as span:
+        _set_attributes(
+            span,
+            {
+                "openinference.span.kind": "AGENT",
+                "input.value": prompt,
+                "review.repo": repo,
+            },
+        )
+        try:
+            answer = _review(repo, prompt, span)
+        except Exception as exc:
+            answer = f"review failed: {exc}"
+            if span is not None:
+                span.record_exception(exc)
+        _set_attributes(span, {"output.value": answer})
+        return answer
+
+
+def _review(repo: str, prompt: str, span: otel_trace.Span | None) -> str:
+    if not _REPO_PATTERN.fullmatch(repo):
+        raise ValueError(f"repo must look like 'owner/name', got {repo!r}")
+    if not prompt.strip():
+        raise ValueError("prompt cannot be empty")
+    with tempfile.TemporaryDirectory(prefix="review-") as workdir:
+        checkout = Path(workdir) / "repo"
+        _clone(repo, checkout)
+        agent_dir = Path(workdir) / "pi-agent"
+        _write_pi_config(agent_dir, chalkcompute.trace_headers())
+        return _run_pi_session(checkout, agent_dir, prompt, span)
+
+
+def _set_attributes(span: otel_trace.Span | None, attributes: dict[str, str]) -> None:
+    # chalkcompute.span yields None when the function's tracing policy is off.
+    if span is not None:
+        span.set_attributes(attributes)
 
 
 # ## Step 1: Clone
@@ -218,12 +248,13 @@ def _clone(repo: str, checkout: Path) -> None:
 
 # ## Step 2: Point pi at the AI router
 #
-# pi reads custom providers from `models.json` in its agent directory. The key and
-# header values are `$NAME` references, which pi resolves from its environment at
-# request time, so the secret is never written to disk.
+# pi reads custom providers from `models.json` in its agent directory. The key is a
+# `$NAME` reference, which pi resolves from its environment at request time, so the
+# secret is never written to disk. The W3C trace headers are written as literal
+# values: they are the same for every request of the session.
 
 
-def _write_pi_config(agent_dir: Path) -> None:
+def _write_pi_config(agent_dir: Path, trace_headers: dict[str, str]) -> None:
     agent_dir.mkdir()
     models = {
         "providers": {
@@ -231,7 +262,10 @@ def _write_pi_config(agent_dir: Path) -> None:
                 "baseUrl": os.environ["CHALK_ROUTER_BASE_URL"],
                 "api": "openai-completions",
                 "apiKey": "$CHALK_ROUTER_API_KEY",
-                "headers": {"X-Chalk-Env-Id": "$CHALK_ENVIRONMENT_ID"},
+                "headers": {
+                    "X-Chalk-Env-Id": "$CHALK_ENVIRONMENT_ID",
+                    **trace_headers,
+                },
                 "models": [{"id": MODEL}],
             }
         }
@@ -254,7 +288,9 @@ def _write_pi_config(agent_dir: Path) -> None:
 # tells the agent about the time budget.
 
 
-def _run_pi_session(checkout: Path, agent_dir: Path, prompt: str) -> str:
+def _run_pi_session(
+    checkout: Path, agent_dir: Path, prompt: str, span: otel_trace.Span | None
+) -> str:
     pi = shutil.which("pi")
     if pi is None:
         raise RuntimeError("pi is not installed in this image")
@@ -283,7 +319,7 @@ def _run_pi_session(checkout: Path, agent_dir: Path, prompt: str) -> str:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    transcript = _Transcript()
+    transcript = _Transcript(span)
     stderr_tail: list[bytes] = []
     readers = [
         threading.Thread(
@@ -323,14 +359,21 @@ def _run_pi_session(checkout: Path, agent_dir: Path, prompt: str) -> str:
 
 
 class _Transcript:
-    """The latest assistant text from pi's JSON event stream."""
+    """The latest assistant text from pi's JSON event stream, plus its tool spans."""
 
-    def __init__(self) -> None:
+    def __init__(self, parent: otel_trace.Span | None) -> None:
         super().__init__()
         self._lock = threading.Lock()
         self._completed = ""
         self._partial = ""
         self.error = ""
+        # Tool spans are parented explicitly: they are created on the reader thread,
+        # which does not inherit the review span as its current context.
+        self._parent = (
+            None if parent is None else otel_trace.set_span_in_context(parent)
+        )
+        self._tracer = otel_trace.get_tracer("review_repository")
+        self._tools_started: dict[str, tuple[int, dict]] = {}
 
     def consume(self, stream) -> None:  # noqa: ANN001 - a binary pipe
         # pi frames records on LF only; Unicode line separators may occur inside strings.
@@ -344,7 +387,11 @@ class _Transcript:
 
     def _apply(self, event: dict) -> None:
         kind = event.get("type")
-        if kind == "message_update":
+        if kind == "tool_execution_start":
+            self._tools_started[event.get("toolCallId", "")] = (time.time_ns(), event)
+        elif kind == "tool_execution_end":
+            self._record_tool(event)
+        elif kind == "message_update":
             update = event.get("assistantMessageEvent") or {}
             if update.get("type") == "text_delta":
                 self._partial += update.get("delta", "")
@@ -362,6 +409,31 @@ class _Transcript:
                 self._completed = text
             if message.get("stopReason") == "error":
                 self.error = message.get("errorMessage") or "model request failed"
+
+    def _record_tool(self, end: dict) -> None:
+        started = self._tools_started.pop(end.get("toolCallId", ""), None)
+        if started is None or self._parent is None:
+            return
+        start_ns, start = started
+        output = "".join(
+            block.get("text", "")
+            for block in (end.get("result") or {}).get("content") or []
+            if block.get("type") == "text"
+        )
+        tool = self._tracer.start_span(
+            f"pi.{end.get('toolName', 'tool')}",
+            context=self._parent,
+            start_time=start_ns,
+            attributes={
+                "openinference.span.kind": "TOOL",
+                "tool.name": end.get("toolName", ""),
+                "input.value": json.dumps(start.get("args") or {}),
+                "output.value": output[:20_000],
+            },
+        )
+        if end.get("isError"):
+            tool.set_status(otel_trace.StatusCode.ERROR)
+        tool.end()
 
     def answer(self) -> str:
         with self._lock:
