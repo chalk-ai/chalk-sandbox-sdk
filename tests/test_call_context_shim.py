@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import contextvars
 import sys
 import types
 
@@ -351,6 +352,24 @@ class TestWithoutChalkcomputeInstalled:
 
 
 class TestBatchedShim:
+    def test_rows_inherit_the_callers_context(self):
+        # The runtime makes its invocation span current before calling the handler; rows on
+        # the pool must see it, or spans opened in the function body become orphan roots.
+        caller_context: contextvars.ContextVar[str] = contextvars.ContextVar("caller")
+
+        def echo(x: int) -> str:
+            return f"{x}:{caller_context.get('missing')}"
+
+        _install_user_module(echo=echo)
+        ns = _load_shim(_generate_handler_shim("echo", batched=True))
+        token = caller_context.set("invoke-span")
+        try:
+            assert ns["handler"]([{"x": pa.array([1, 2])}], [{}]) == [
+                ["1:invoke-span", "2:invoke-span"]
+            ]
+        finally:
+            caller_context.reset(token)
+
     def test_each_row_sees_its_own_metadata_across_threads(self):
         # The batched shim runs rows on a thread pool, where a context variable set by the
         # caller would not be visible; each work item carries its own values instead.
