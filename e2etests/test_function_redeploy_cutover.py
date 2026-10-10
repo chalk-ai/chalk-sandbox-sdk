@@ -55,7 +55,7 @@ if os.environ.get("CHALK_REMOTE_FUNCTION"):
 
 _FUNCTION = """\
 
-@chalkcompute.function(name=NAME)
+@chalkcompute.function(name=NAME, compute_class=chalkcompute.ComputeClass.{compute_class})
 def redeploy_cutover_probe(arg: str) -> str:
     return f"{VERSION}:{arg}"
 
@@ -107,6 +107,7 @@ def _write_script(
     *,
     name: str,
     version: str,
+    compute_class: str,
     hang_in_pod: bool,
     main: str,
     observe_seconds: float,
@@ -114,7 +115,9 @@ def _write_script(
     source = _PRELUDE.format(version=version, name=name)
     if hang_in_pod:
         source += _HANG_IN_POD
-    source += _FUNCTION + main.format(observe_seconds=observe_seconds)
+    source += _FUNCTION.replace("{compute_class}", compute_class) + main.format(
+        observe_seconds=observe_seconds
+    )
     path = directory / f"redeploy_cutover_{version}.py"
     path.write_text(textwrap.dedent(source))
     return path
@@ -149,15 +152,23 @@ def _summary(calls: list[dict[str, Any]]) -> str:
     return f"{len(calls)} calls, versions={counts}, slowest={slowest:.2f}s"
 
 
+# Kubernetes-backed and hypervisor-host-backed replicas roll out and route differently.
+_COMPUTE_CLASSES = pytest.mark.parametrize("compute_class", ["K8S", "HOST"])
+
+
 @needs_staging
-def test_redeploy_serves_new_version_as_soon_as_deploy_returns(tmp_path: Path) -> None:
-    name = build_scoped_name("ex-redeploy-cutover")
+@_COMPUTE_CLASSES
+def test_redeploy_serves_new_version_as_soon_as_deploy_returns(
+    tmp_path: Path, compute_class: str
+) -> None:
+    name = build_scoped_name(f"ex-redeploy-cutover-{compute_class.lower()}")
     try:
         for version in ("v1", "v2"):
             script = _write_script(
                 tmp_path,
                 name=name,
                 version=version,
+                compute_class=compute_class,
                 hang_in_pod=False,
                 main=_MAIN_HEALTHY,
                 observe_seconds=_OBSERVE_SECONDS,
@@ -179,13 +190,17 @@ def test_redeploy_serves_new_version_as_soon_as_deploy_returns(tmp_path: Path) -
 
 
 @needs_staging
-def test_unhealthy_new_version_keeps_old_version_serving(tmp_path: Path) -> None:
-    name = build_scoped_name("ex-redeploy-unhealthy")
+@_COMPUTE_CLASSES
+def test_unhealthy_new_version_keeps_old_version_serving(
+    tmp_path: Path, compute_class: str
+) -> None:
+    name = build_scoped_name(f"ex-redeploy-unhealthy-{compute_class.lower()}")
     try:
         healthy = _write_script(
             tmp_path,
             name=name,
             version="v1",
+            compute_class=compute_class,
             hang_in_pod=False,
             main=_MAIN_HEALTHY,
             observe_seconds=1.0,
@@ -196,6 +211,7 @@ def test_unhealthy_new_version_keeps_old_version_serving(tmp_path: Path) -> None
             tmp_path,
             name=name,
             version="v2",
+            compute_class=compute_class,
             hang_in_pod=True,
             main=_MAIN_UNHEALTHY,
             observe_seconds=_UNHEALTHY_OBSERVE_SECONDS,
