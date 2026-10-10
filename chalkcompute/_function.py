@@ -637,6 +637,7 @@ def _generate_handler_shim(
             bootstrap
             + serde_runtime
             + textwrap.dedent(f"""\
+            import contextvars
             import inspect
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -752,8 +753,11 @@ def _generate_handler_shim(
                     return asyncio.run(_run_all())
                 bucket = {{}}
                 with ThreadPoolExecutor(max_workers=max(1, len(work))) as ex:
+                    # Pool threads start with an empty context, so each row runs in a copy of
+                    # the caller's: it carries the invocation span the runtime made current,
+                    # which spans opened in the function body must parent to.
                     futures = {{
-                        ex.submit(_call_one, kw, cx, rm): (ci, ri)
+                        ex.submit(contextvars.copy_context().run, _call_one, kw, cx, rm): (ci, ri)
                         for ci, ri, kw, cx, rm in work
                     }}
                     for fut in as_completed(futures):
