@@ -847,3 +847,89 @@ def test_remote_class_forwards_shared_scaling_fields(
         spec.scaling_spec.scale_from_zero_request_policy
         == sg_pb.ScaleFromZeroRequestPolicy.HOLD
     )
+
+
+@pytest.mark.parametrize("use_policy", [False, True])
+@pytest.mark.parametrize("use_class", [False, True])
+def test_admission_is_persisted_for_functions_and_class_methods(
+    monkeypatch, use_policy, use_class
+):
+    import chalkcompute as cc
+
+    policy = cc.ContainerAdmissionPolicy(
+        max_inflight_requests_per_replica=64,
+        max_inflight_input_bytes_per_replica=16 * 1024 * 1024,
+    )
+    kwargs = (
+        {"admission": policy}
+        if use_policy
+        else {
+            "max_inflight_requests_per_replica": 64,
+            "max_inflight_input_bytes_per_replica": 16 * 1024 * 1024,
+        }
+    )
+    client = _CapturingClient()
+    if use_class:
+
+        class Worker:
+            @method
+            def run(self) -> None:
+                pass
+
+        deployed = RemoteClass(Worker, **kwargs)
+        monkeypatch.setattr(
+            RemoteClass, "_build_deploy_image", lambda _: (Image("image:test"), [])
+        )
+    else:
+
+        def add(x: int, y: int) -> int:
+            return x + y
+
+        deployed = RemoteFunction(add, **kwargs)
+        monkeypatch.setattr(
+            RemoteFunction, "_build_deploy_image", lambda _: Image("image:test")
+        )
+    deployed._client = client
+    deployed.deploy()
+    for request in client.requests:
+        assert request.config.admission.max_inflight_requests_per_replica == 64
+        assert (
+            request.config.admission.max_inflight_input_bytes_per_replica
+            == 16 * 1024 * 1024
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["max_inflight_requests_per_replica", "max_inflight_input_bytes_per_replica"],
+)
+@pytest.mark.parametrize(
+    "value,error",
+    [
+        (0, ValueError),
+        (-1, ValueError),
+        (2**63, ValueError),
+        (True, TypeError),
+        (1.5, TypeError),
+    ],
+)
+def test_admission_rejects_invalid_budgets(field, value, error):
+    import chalkcompute as cc
+
+    with pytest.raises(error, match=field):
+        cc.ContainerAdmissionPolicy(**{field: value})
+
+
+def test_admission_rejects_mixed_forms_and_defaults_to_disabled():
+    import chalkcompute as cc
+
+    def add(x: int) -> int:
+        return x
+
+    assert RemoteFunction(add)._admission is None
+    with pytest.raises(ValueError, match="not both"):
+        RemoteFunction(
+            add,
+            admission=cc.ContainerAdmissionPolicy(),
+            max_inflight_requests_per_replica=64,
+        )

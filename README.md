@@ -1088,3 +1088,35 @@ are omitted. These values are catalog-visible; keep secrets in Chalk-managed
 secret references rather than function defaults. Clients can show descriptions,
 collect required arguments, and reconstruct declared defaults without invoking
 the function. Record and invoke the same immutable version selected by the user.
+
+
+### Per-replica serving admission
+
+Functions and classes can bound the unfinished work held by each serving replica:
+
+```python
+@cc.function(
+    max_inflight_requests_per_replica=64,
+    max_inflight_input_bytes_per_replica=16 * 1024 * 1024,
+)
+async def inference(text: str):
+    ...
+```
+
+The equivalent reusable form is
+`admission=cc.ContainerAdmissionPolicy(max_inflight_requests_per_replica=64,
+max_inflight_input_bytes_per_replica=16 * 1024 * 1024)`.
+Do not combine a policy with the shorthand parameters. Limits must be positive;
+unset limits are disabled. Methods of a class share their replica's budgets.
+
+Admission is independent of QPS limits, execution concurrency, and batching.
+Accepted work occupies capacity while waiting, executing, and retaining its
+response. Disconnecting a caller does not release capacity for running work.
+Excess direct calls fail with `RESOURCE_EXHAUSTED`; queue consumers reserve
+request capacity before acquiring more work.
+
+The byte budget measures retained logical gRPC input payloads. It does not cover
+queue inputs, decoded Python objects, output bytes, or transport buffers, so it
+is not a total memory limit. The registry persists the policy and supplies it to
+each replica; users do not need environment variables. Enforcement requires a
+server and Chalk handler shim supporting these admission settings.

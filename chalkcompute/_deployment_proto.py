@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from chalkcompute._admission import ContainerAdmissionPolicy
+from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as catalog_pb
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
@@ -83,6 +85,7 @@ def function_config(
     queue_policy: QueuePolicy | None,
     schedule: str | None,
     tracing: Any | None = None,
+    admission: ContainerAdmissionPolicy | None = None,
 ) -> catalog_pb.FunctionConfig:
     """Build the function configuration protobuf directly from SDK policies."""
     serialization = (
@@ -152,4 +155,12 @@ def function_config(
         ),
         schedule=schedule,
         tracing=tracing_proto,
+        admission=(
+            None
+            if admission is None
+            else container_pb.ContainerAdmissionPolicy(
+                max_inflight_requests_per_replica=admission.max_inflight_requests_per_replica,
+                max_inflight_input_bytes_per_replica=admission.max_inflight_input_bytes_per_replica,
+            )
+        ),
     )

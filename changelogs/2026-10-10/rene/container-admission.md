@@ -1,0 +1,1 @@
+- Expose ContainerAdmissionPolicy and max_inflight_requests_per_replica / max_inflight_input_bytes_per_replica on functions and classes, and persist the policy in each deployed function configuration.

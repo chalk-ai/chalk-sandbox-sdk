@@ -56,6 +56,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, TypeVar, overload
 
 from chalkcompute._logging import _StatusLogger
+from chalkcompute._admission import ContainerAdmissionPolicy, resolve_admission_policy
 from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import ConnectClient
 from chalkcompute._containerspec import (
@@ -778,6 +779,9 @@ class RemoteClass:
         max_batching_size: int | None = None,
         retries: int | RetryPolicy | None = None,
         rate_limit: int | RateLimitPolicy | None = None,
+        admission: ContainerAdmissionPolicy | None = None,
+        max_inflight_requests_per_replica: int | None = None,
+        max_inflight_input_bytes_per_replica: int | None = None,
         concurrency: int | ConcurrencyPolicy | None = None,
         queue_policy: QueuePolicy | None = None,
         schedule: str | None = None,
@@ -865,6 +869,11 @@ class RemoteClass:
         )
         self._retries = (
             RetryPolicy.from_int_or_policy(retries) if retries is not None else None
+        )
+        self._admission = resolve_admission_policy(
+            admission,
+            max_inflight_requests_per_replica,
+            max_inflight_input_bytes_per_replica,
         )
         self._rate_limit = (
             RateLimitPolicy.from_int_or_policy(rate_limit)
@@ -1056,6 +1065,7 @@ class RemoteClass:
         rc._max_batching_size = None
         rc._schedule = None
         rc._retries = None
+        rc._admission = None
         rc._rate_limit = None
         rc._concurrency = None
         rc._queue_policy = None
@@ -1306,6 +1316,7 @@ class RemoteClass:
                     max_batching_size=self._max_batching_size,
                     retries=self._retries,
                     rate_limit=self._rate_limit,
+                    admission=self._admission,
                     concurrency=self._concurrency,
                     queue_policy=self._queue_policy,
                     schedule=self._schedule,
@@ -1651,6 +1662,9 @@ def cls(
     max_batching_size: int | None = None,
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
+    admission: ContainerAdmissionPolicy | None = None,
+    max_inflight_requests_per_replica: int | None = None,
+    max_inflight_input_bytes_per_replica: int | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
     queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
@@ -1690,6 +1704,9 @@ def cls(
     max_batching_size: int | None = None,
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
+    admission: ContainerAdmissionPolicy | None = None,
+    max_inflight_requests_per_replica: int | None = None,
+    max_inflight_input_bytes_per_replica: int | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
     queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
@@ -1730,6 +1747,9 @@ def cls(
     max_batching_size: int | None = None,
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
+    admission: ContainerAdmissionPolicy | None = None,
+    max_inflight_requests_per_replica: int | None = None,
+    max_inflight_input_bytes_per_replica: int | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
     queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
@@ -1835,6 +1855,15 @@ def cls(
         (``max_concurrent``, ``key``). Multiple methods sharing the same
         ``key`` share one gate — independent of ``rate_limit`` (which caps
         rate, not in-flight count).
+    admission
+        Per-replica budgets as a ``ContainerAdmissionPolicy``. Class methods
+        sharing a replica share its budgets. Cannot be combined with shorthand.
+    max_inflight_requests_per_replica
+        Maximum accepted unfinished requests per replica, including waiting
+        work. ``None`` disables the budget; positive integers enable it.
+    max_inflight_input_bytes_per_replica
+        Maximum retained logical gRPC input bytes per replica. Excludes queue
+        inputs, Python expansion, outputs, and transport buffers. ``None`` disables.
     queue_policy
         Queue configuration shared by the class's methods, including the
         pending-item cap and asynchronous result retention. Pass a
@@ -1879,6 +1908,9 @@ def cls(
             max_batching_size=max_batching_size,
             retries=retries,
             rate_limit=rate_limit,
+            admission=admission,
+            max_inflight_requests_per_replica=max_inflight_requests_per_replica,
+            max_inflight_input_bytes_per_replica=max_inflight_input_bytes_per_replica,
             concurrency=concurrency,
             queue_policy=queue_policy,
             schedule=schedule,
