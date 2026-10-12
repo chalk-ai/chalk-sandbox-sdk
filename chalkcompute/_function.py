@@ -79,8 +79,7 @@ from chalkcompute._function_error import (
     decode_remote_error,
     remote_error_from_exception,
 )
-from chalkcompute._admission import ContainerAdmissionPolicy, resolve_admission_policy
-from chalkcompute._concurrency import ConcurrencyPolicy
+from chalkcompute._concurrency import ConcurrencyPolicy, resolve_concurrency_policy
 from chalkcompute._connect import (
     ConnectClient,
     ConnectError,
@@ -2341,7 +2340,6 @@ class RemoteFunction:
         max_batching_size: int | None = None,
         retries: int | RetryPolicy | None = None,
         rate_limit: int | RateLimitPolicy | None = None,
-        admission: ContainerAdmissionPolicy | None = None,
         max_inflight_requests_per_replica: int | None = None,
         max_inflight_input_bytes_per_replica: int | None = None,
         concurrency: int | ConcurrencyPolicy | None = None,
@@ -2486,19 +2484,14 @@ class RemoteFunction:
         self._retries = (
             RetryPolicy.from_int_or_policy(retries) if retries is not None else None
         )
-        self._admission = resolve_admission_policy(
-            admission,
+        self._concurrency = resolve_concurrency_policy(
+            concurrency,
             max_inflight_requests_per_replica,
             max_inflight_input_bytes_per_replica,
         )
         self._rate_limit = (
             RateLimitPolicy.from_int_or_policy(rate_limit)
             if rate_limit is not None
-            else None
-        )
-        self._concurrency = (
-            ConcurrencyPolicy.from_int_or_policy(concurrency)
-            if concurrency is not None
             else None
         )
         if queue_policy is not None and not isinstance(queue_policy, QueuePolicy):
@@ -2698,7 +2691,6 @@ class RemoteFunction:
         f._max_batching_size = None
         f._schedule = None
         f._retries = None
-        f._admission = None
         f._rate_limit = None
         f._concurrency = None
         f._queue_policy = None
@@ -3103,7 +3095,6 @@ class RemoteFunction:
                 max_batching_size=self._max_batching_size,
                 retries=self._retries,
                 rate_limit=self._rate_limit,
-                admission=self._admission,
                 concurrency=self._concurrency,
                 queue_policy=self._queue_policy,
                 schedule=self._schedule,
@@ -4221,7 +4212,6 @@ def function(
     max_batching_size: int | None = None,
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
-    admission: ContainerAdmissionPolicy | None = None,
     max_inflight_requests_per_replica: int | None = None,
     max_inflight_input_bytes_per_replica: int | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
@@ -4264,7 +4254,6 @@ def function(
     max_batching_size: int | None = None,
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
-    admission: ContainerAdmissionPolicy | None = None,
     max_inflight_requests_per_replica: int | None = None,
     max_inflight_input_bytes_per_replica: int | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
@@ -4308,7 +4297,6 @@ def function(
     max_batching_size: int | None = None,
     retries: int | RetryPolicy | None = None,
     rate_limit: int | RateLimitPolicy | None = None,
-    admission: ContainerAdmissionPolicy | None = None,
     max_inflight_requests_per_replica: int | None = None,
     max_inflight_input_bytes_per_replica: int | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
@@ -4422,15 +4410,14 @@ def function(
         one bucket — used when a downstream service imposes a throughput
         limit across callers.
     concurrency
-        Concurrency policy: cap on in-flight handler invocations. Pass an
-        ``int`` for a simple ``max_concurrent`` cap with a per-function key,
-        or a :class:`~chalkcompute.ConcurrencyPolicy` for full control
-        (``max_concurrent``, ``key``). Multiple functions sharing the same
-        ``key`` share one gate — independent of ``rate_limit`` (which caps
-        rate, not in-flight count).
-    admission
-        Per-replica budgets as a ``ContainerAdmissionPolicy``. Class methods
-        sharing a replica share its budgets. Cannot be combined with shorthand.
+        Concurrency policy. Pass an ``int`` for the existing ``max_concurrent``
+        async queue execution cap through the serving-side Redis semaphore, or a
+        :class:`~chalkcompute.ConcurrencyPolicy` to set the queue gate and
+        per-replica budgets together. The queue gate does not limit direct
+        ``.remote()`` calls. A policy with only per-replica fields omits the
+        queue-gate config and preserves the service default. The policy's ``key``
+        applies only to the queue gate; per-replica limits are local to each
+        replica. The per-replica fields may also be passed as shorthand kwargs.
     max_inflight_requests_per_replica
         Maximum accepted unfinished requests per replica, including waiting
         work. ``None`` disables the budget; positive integers enable it.
@@ -4513,7 +4500,6 @@ def function(
             max_batching_size=max_batching_size,
             retries=retries,
             rate_limit=rate_limit,
-            admission=admission,
             max_inflight_requests_per_replica=max_inflight_requests_per_replica,
             max_inflight_input_bytes_per_replica=max_inflight_input_bytes_per_replica,
             concurrency=concurrency,

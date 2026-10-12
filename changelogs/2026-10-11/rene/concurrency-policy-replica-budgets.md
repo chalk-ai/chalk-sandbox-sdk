@@ -1,0 +1,1 @@
+- Add per-replica request and input-byte budgets to ConcurrencyPolicy for functions and classes, while preserving integer concurrency behavior and the service queue default when max_concurrent is omitted.

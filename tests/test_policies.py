@@ -151,6 +151,9 @@ class TestRateLimitPolicyFromIntOrPolicy:
 
 
 class TestConcurrencyPolicyValidation:
+    def test_empty_policy_is_allowed(self):
+        assert ConcurrencyPolicy() == ConcurrencyPolicy(max_concurrent=None)
+
     def test_max_concurrent_zero_rejected(self):
         with pytest.raises(ValueError, match="concurrency must be > 0"):
             ConcurrencyPolicy(max_concurrent=0)
@@ -177,6 +180,21 @@ class TestConcurrencyPolicyFromIntOrPolicy:
     def test_bool_rejected(self):
         with pytest.raises(TypeError, match="bool"):
             ConcurrencyPolicy.from_int_or_policy(True)  # type: ignore[arg-type]
+
+    def test_integer_concurrency_keeps_queue_gate_wire_behavior(self):
+        config = function_config(
+            serialization_format="pyarrow",
+            options={},
+            max_buffer_duration=None,
+            max_batching_size=None,
+            retries=None,
+            rate_limit=None,
+            concurrency=ConcurrencyPolicy.from_int_or_policy(8),
+            queue_policy=None,
+            schedule=None,
+        )
+        assert config.concurrency.max_concurrent == 8
+        assert config.admission is None
 
 
 class TestQueuePolicy:
@@ -851,17 +869,17 @@ def test_remote_class_forwards_shared_scaling_fields(
 
 @pytest.mark.parametrize("use_policy", [False, True])
 @pytest.mark.parametrize("use_class", [False, True])
-def test_admission_is_persisted_for_functions_and_class_methods(
+def test_replica_budgets_are_persisted_for_functions_and_class_methods(
     monkeypatch, use_policy, use_class
 ):
     import chalkcompute as cc
 
-    policy = cc.ContainerAdmissionPolicy(
+    policy = cc.ConcurrencyPolicy(
         max_inflight_requests_per_replica=64,
         max_inflight_input_bytes_per_replica=16 * 1024 * 1024,
     )
     kwargs = (
-        {"admission": policy}
+        {"concurrency": policy}
         if use_policy
         else {
             "max_inflight_requests_per_replica": 64,
@@ -897,6 +915,7 @@ def test_admission_is_persisted_for_functions_and_class_methods(
             request.config.admission.max_inflight_input_bytes_per_replica
             == 16 * 1024 * 1024
         )
+        assert request.config.concurrency is None
 
 
 @pytest.mark.parametrize(
@@ -913,23 +932,48 @@ def test_admission_is_persisted_for_functions_and_class_methods(
         (1.5, TypeError),
     ],
 )
-def test_admission_rejects_invalid_budgets(field, value, error):
+def test_concurrency_policy_rejects_invalid_replica_budgets(field, value, error):
     import chalkcompute as cc
 
     with pytest.raises(error, match=field):
-        cc.ContainerAdmissionPolicy(**{field: value})
+        cc.ConcurrencyPolicy(**{field: value})
 
 
-def test_admission_rejects_mixed_forms_and_defaults_to_disabled():
+def test_concurrency_policy_merges_queue_gate_and_replica_budgets(monkeypatch):
     import chalkcompute as cc
 
     def add(x: int) -> int:
         return x
 
-    assert RemoteFunction(add)._admission is None
+    client = _CapturingClient()
+    deployed = RemoteFunction(
+        add,
+        concurrency=cc.ConcurrencyPolicy(
+            max_concurrent=8,
+            key="shared-gate",
+            max_inflight_requests_per_replica=64,
+        ),
+    )
+    monkeypatch.setattr(
+        RemoteFunction, "_build_deploy_image", lambda _: Image("image:test")
+    )
+    deployed._client = client
+    deployed.deploy()
+    config = client.requests[0].config
+    assert config.concurrency.max_concurrent == 8
+    assert config.concurrency.key == "shared-gate"
+    assert config.admission.max_inflight_requests_per_replica == 64
+
+
+def test_concurrency_policy_rejects_duplicate_replica_budget_source():
+    import chalkcompute as cc
+
+    def add(x: int) -> int:
+        return x
+
     with pytest.raises(ValueError, match="not both"):
         RemoteFunction(
             add,
-            admission=cc.ContainerAdmissionPolicy(),
+            concurrency=cc.ConcurrencyPolicy(max_inflight_requests_per_replica=32),
             max_inflight_requests_per_replica=64,
         )
