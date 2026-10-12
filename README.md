@@ -1090,26 +1090,34 @@ collect required arguments, and reconstruct declared defaults without invoking
 the function. Record and invoke the same immutable version selected by the user.
 
 
-### Per-replica serving admission
+### Per-replica serving limits
 
-Functions and classes can bound the unfinished work held by each serving replica:
+Functions and classes can bound the unfinished work held by each serving replica
+through `ConcurrencyPolicy`:
 
 ```python
 @cc.function(
-    max_inflight_requests_per_replica=64,
-    max_inflight_input_bytes_per_replica=16 * 1024 * 1024,
+    concurrency=cc.ConcurrencyPolicy(
+        max_inflight_requests_per_replica=64,
+        max_inflight_input_bytes_per_replica=16 * 1024 * 1024,
+    ),
 )
 async def inference(text: str):
     ...
 ```
 
-The equivalent reusable form is
-`admission=cc.ContainerAdmissionPolicy(max_inflight_requests_per_replica=64,
-max_inflight_input_bytes_per_replica=16 * 1024 * 1024)`.
-Do not combine a policy with the shorthand parameters. Limits must be positive;
-unset limits are disabled. Methods of a class share their replica's budgets.
+The two `max_inflight_*_per_replica` decorator arguments remain available as
+shorthand. You may combine them with the queue gate by setting
+`max_concurrent` and, optionally, `key` on `ConcurrencyPolicy`. The existing
+`concurrency=8` integer form still sets that gate. It limits async queue
+execution through the serving-side Redis semaphore, not direct `.remote()`
+calls. A policy with only per-replica fields omits queue-gate configuration and
+keeps the service default. The `key` groups only the queue gate; per-replica
+limits remain local to each replica. Duplicate policy and shorthand values are
+rejected. Limits must be positive, and unset limits are disabled. Methods of a
+class share their replica's budgets.
 
-Admission is independent of QPS limits, execution concurrency, and batching.
+Per-replica limits are independent of QPS limits and batching.
 Accepted work occupies capacity while waiting, executing, and retaining its
 response. Disconnecting a caller does not release capacity for running work.
 Excess direct calls fail with `RESOURCE_EXHAUSTED`; queue consumers reserve
@@ -1120,3 +1128,5 @@ queue inputs, decoded Python objects, output bytes, or transport buffers, so it
 is not a total memory limit. The registry persists the policy and supplies it to
 each replica; users do not need environment variables. Enforcement requires a
 server and Chalk handler shim supporting these admission settings.
+`ContainerAdmissionPolicy` remains an internal protobuf message; the public
+Python policy is `ConcurrencyPolicy`.
