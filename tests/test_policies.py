@@ -194,7 +194,8 @@ class TestConcurrencyPolicyFromIntOrPolicy:
             schedule=None,
         )
         assert config.concurrency.max_concurrent == 8
-        assert config.admission is None
+        assert not config.concurrency.has_field("max_inflight_requests_per_replica")
+        assert not config.concurrency.has_field("max_inflight_input_bytes_per_replica")
 
 
 class TestQueuePolicy:
@@ -910,12 +911,17 @@ def test_replica_budgets_are_persisted_for_functions_and_class_methods(
     deployed._client = client
     deployed.deploy()
     for request in client.requests:
-        assert request.config.admission.max_inflight_requests_per_replica == 64
+        assert request.config.concurrency.max_concurrent == 0
+        assert not request.config.concurrency.has_field("key")
+        assert request.config.concurrency.has_field("max_inflight_requests_per_replica")
+        assert request.config.concurrency.max_inflight_requests_per_replica == 64
+        assert request.config.concurrency.has_field(
+            "max_inflight_input_bytes_per_replica"
+        )
         assert (
-            request.config.admission.max_inflight_input_bytes_per_replica
+            request.config.concurrency.max_inflight_input_bytes_per_replica
             == 16 * 1024 * 1024
         )
-        assert request.config.concurrency is None
 
 
 @pytest.mark.parametrize(
@@ -962,7 +968,7 @@ def test_concurrency_policy_merges_queue_gate_and_replica_budgets(monkeypatch):
     config = client.requests[0].config
     assert config.concurrency.max_concurrent == 8
     assert config.concurrency.key == "shared-gate"
-    assert config.admission.max_inflight_requests_per_replica == 64
+    assert config.concurrency.max_inflight_requests_per_replica == 64
 
 
 def test_concurrency_policy_rejects_duplicate_replica_budget_source():

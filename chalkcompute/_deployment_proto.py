@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as catalog_pb
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
@@ -128,6 +127,22 @@ def function_config(
             mode=mode,
             sample_rate=tracing.sample_rate,
         )
+    concurrency_proto = None
+    if concurrency is not None and any(
+        value is not None
+        for value in (
+            concurrency.max_concurrent,
+            concurrency.key,
+            concurrency.max_inflight_requests_per_replica,
+            concurrency.max_inflight_input_bytes_per_replica,
+        )
+    ):
+        concurrency_proto = catalog_pb.ConcurrencyPolicy(
+            max_concurrent=concurrency.max_concurrent or 0,
+            key=concurrency.key,
+            max_inflight_requests_per_replica=concurrency.max_inflight_requests_per_replica,
+            max_inflight_input_bytes_per_replica=concurrency.max_inflight_input_bytes_per_replica,
+        )
     return catalog_pb.FunctionConfig(
         serialization_format=serialization,
         options=dict(options),
@@ -135,14 +150,7 @@ def function_config(
         max_batching_size=max_batching_size,
         retry_policy=retry_proto,
         rate_limit=rate_limit_proto,
-        concurrency=(
-            None
-            if concurrency is None or concurrency.max_concurrent is None
-            else catalog_pb.ConcurrencyPolicy(
-                max_concurrent=concurrency.max_concurrent,
-                key=concurrency.key,
-            )
-        ),
+        concurrency=concurrency_proto,
         queue=(
             None
             if queue_policy is None
@@ -153,16 +161,4 @@ def function_config(
         ),
         schedule=schedule,
         tracing=tracing_proto,
-        admission=(
-            None
-            if concurrency is None
-            or (
-                concurrency.max_inflight_requests_per_replica is None
-                and concurrency.max_inflight_input_bytes_per_replica is None
-            )
-            else container_pb.ContainerAdmissionPolicy(
-                max_inflight_requests_per_replica=concurrency.max_inflight_requests_per_replica,
-                max_inflight_input_bytes_per_replica=concurrency.max_inflight_input_bytes_per_replica,
-            )
-        ),
     )

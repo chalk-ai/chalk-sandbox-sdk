@@ -1,1 +1,1 @@
-- Expose max_inflight_requests_per_replica and max_inflight_input_bytes_per_replica through ConcurrencyPolicy and function/class shorthand fields; persist the budgets in deployed function configurations. ContainerAdmissionPolicy remains only as an internal protobuf wire message.
+- Expose max_inflight_requests_per_replica and max_inflight_input_bytes_per_replica through ConcurrencyPolicy and function/class shorthand fields; persist queue-gate and per-replica budgets together in deployed function configurations.

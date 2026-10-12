@@ -1128,5 +1128,5 @@ queue inputs, decoded Python objects, output bytes, or transport buffers, so it
 is not a total memory limit. The registry persists the policy and supplies it to
 each replica; users do not need environment variables. Enforcement requires a
 server and Chalk handler shim supporting these admission settings.
-`ContainerAdmissionPolicy` remains an internal protobuf message; the public
-Python policy is `ConcurrencyPolicy`.
+The same `ConcurrencyPolicy` is persisted for queue-gate and per-replica
+settings; deployments without replica budgets leave those optional fields unset.
