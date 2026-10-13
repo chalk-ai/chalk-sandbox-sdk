@@ -41,11 +41,16 @@ def write_shard(path: Path, size: int, extent_size: int, mode: str, seed: int) -
         for offset in offsets:
             length = min(extent_size, size - offset)
             struct.pack_into("<QQ", payload, 0, seed, offset)
-            written = os.pwrite(fd, memoryview(payload)[:length], offset)
-            if written != length:
-                raise RuntimeError(
-                    f"Short write for {path}: {written} bytes, expected {length}"
-                )
+            remaining = memoryview(payload)[:length]
+            position = offset
+            while remaining:
+                written = os.pwrite(fd, remaining, position)
+                if written == 0:
+                    raise RuntimeError(
+                        f"Write made no progress for {path} at {position}"
+                    )
+                position += written
+                remaining = remaining[written:]
         os.fsync(fd)
     finally:
         os.close(fd)
