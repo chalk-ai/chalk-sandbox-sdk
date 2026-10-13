@@ -90,6 +90,7 @@ from chalkcompute._connect import (
 from chalkcompute._containerspec import (
     ComputeClass,
     ContainerSpec,
+    ExecutionBackend,
     validate_replica_and_utilization,
 )
 from chalkcompute._env import normalize_env
@@ -2321,6 +2322,7 @@ class RemoteFunction:
         name: str | None = None,
         cpu: str | None = None,
         compute_class: ComputeClass | None = None,
+        execution_target: ExecutionBackend | None = None,
         memory: str | None = None,
         gpu: str | None = None,
         env: Mapping[str, str | _Secret] | None = None,
@@ -2397,6 +2399,7 @@ class RemoteFunction:
             name=name,
             cpu=cpu,
             compute_class=compute_class,
+            execution_target=execution_target,
             memory=memory,
             gpu=gpu,
             env=env,
@@ -2415,6 +2418,7 @@ class RemoteFunction:
         self._image = normalized_image
         self._cpu = cpu
         self._compute_class = compute_class
+        self._execution_target = execution_target
         self._memory = memory
         self._gpu = gpu
         self._env = dict(env) if env else {}
@@ -2669,6 +2673,7 @@ class RemoteFunction:
         f._image = None
         f._cpu = None
         f._compute_class = None
+        f._execution_target = None
         f._memory = None
         f._gpu = None
         f._env = {}
@@ -3070,6 +3075,7 @@ class RemoteFunction:
                 ),
                 cpu=self._cpu,
                 compute_class=self._compute_class,
+                execution_target=self._execution_target,
                 memory=self._memory,
                 gpu=self._gpu,
                 volumes=deploy_volumes,
@@ -4208,6 +4214,7 @@ def function(
     image: _Image | None = None,
     cpu: str | None = None,
     compute_class: ComputeClass | None = None,
+    execution_target: ExecutionBackend | None = None,
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
@@ -4248,6 +4255,7 @@ def function(
     image: _Image | None = None,
     cpu: str | None = None,
     compute_class: ComputeClass | None = None,
+    execution_target: ExecutionBackend | None = None,
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
@@ -4289,6 +4297,7 @@ def function(
     image: _Image | None = None,
     cpu: str | None = None,
     compute_class: ComputeClass | None = None,
+    execution_target: ExecutionBackend | None = None,
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
@@ -4356,6 +4365,8 @@ def function(
     compute_class
         Where to run replicas. Omit to use the server default; HOST requires fixed,
         positive replica counts.
+    execution_target
+        Optional :class:`ExecutionBackend`; defaults to the environment cluster.
     memory
         Memory resource request (e.g. ``"1Gi"``, ``"512Mi"``).
     gpu
@@ -4483,6 +4494,7 @@ def function(
             name=name,
             cpu=cpu,
             compute_class=compute_class,
+            execution_target=execution_target,
             memory=memory,
             gpu=gpu,
             env=env,

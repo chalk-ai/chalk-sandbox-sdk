@@ -598,7 +598,12 @@ def test_sandbox_client_create_defaults_entrypoint_to_sleep_infinity() -> None:
 
 
 def test_sandbox_client_create_forwards_container_fields() -> None:
-    from chalkcompute import ComputeClass, ContainerSecurityPolicy, KernelPolicy
+    from chalkcompute import (
+        ComputeClass,
+        ContainerSecurityPolicy,
+        ExecutionBackend,
+        KernelPolicy,
+    )
     from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 
     client = SandboxClient()
@@ -612,6 +617,7 @@ def test_sandbox_client_create_forwards_container_fields() -> None:
             lifetime="30s",
             tags={"team": "compute"},
             compute_class=ComputeClass.HOST,
+            execution_target=ExecutionBackend.SERVERLESS,
             security_policy=ContainerSecurityPolicy(
                 kernel_policy=KernelPolicy.RESTRICTED
             ),
@@ -627,6 +633,7 @@ def test_sandbox_client_create_forwards_container_fields() -> None:
     assert spec.port == 8080
     assert dict(spec.tags) == {"team": "compute"}
     assert spec.compute_class == container_pb.ComputeClass.HOST
+    assert spec.execution_target.backend == container_pb.ExecutionBackend.SERVERLESS
     assert spec.security_policy is not None
     assert spec.has_field("lifetime")
 

@@ -62,6 +62,7 @@ from chalkcompute._connect import ConnectClient
 from chalkcompute._containerspec import (
     ComputeClass,
     ContainerSpec,
+    ExecutionBackend,
     validate_replica_and_utilization,
 )
 from chalkcompute._env import normalize_env
@@ -755,6 +756,7 @@ class RemoteClass:
         name: str | None = None,
         cpu: str | None = None,
         compute_class: ComputeClass | None = None,
+        execution_target: ExecutionBackend | None = None,
         memory: str | None = None,
         gpu: str | None = None,
         env: Mapping[str, str | _Secret] | None = None,
@@ -797,6 +799,7 @@ class RemoteClass:
             name=name,
             cpu=cpu,
             compute_class=compute_class,
+            execution_target=execution_target,
             memory=memory,
             gpu=gpu,
             env=env,
@@ -815,6 +818,7 @@ class RemoteClass:
         self._image = normalized_image
         self._cpu = cpu
         self._compute_class = compute_class
+        self._execution_target = execution_target
         self._memory = memory
         self._gpu = gpu
         self._env = dict(env) if env else {}
@@ -1032,6 +1036,7 @@ class RemoteClass:
         rc._image = None
         rc._cpu = None
         rc._compute_class = None
+        rc._execution_target = None
         rc._memory = None
         rc._gpu = None
         rc._env = {}
@@ -1272,6 +1277,7 @@ class RemoteClass:
                     ),
                     cpu=self._cpu,
                     compute_class=self._compute_class,
+                    execution_target=self._execution_target,
                     memory=self._memory,
                     gpu=self._gpu,
                     volumes=deploy_volumes,
@@ -1641,6 +1647,7 @@ def cls(
     image: _Image | None = None,
     cpu: str | None = None,
     compute_class: ComputeClass | None = None,
+    execution_target: ExecutionBackend | None = None,
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
@@ -1680,6 +1687,7 @@ def cls(
     image: _Image | None = None,
     cpu: str | None = None,
     compute_class: ComputeClass | None = None,
+    execution_target: ExecutionBackend | None = None,
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
@@ -1720,6 +1728,7 @@ def cls(
     image: _Image | None = None,
     cpu: str | None = None,
     compute_class: ComputeClass | None = None,
+    execution_target: ExecutionBackend | None = None,
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
@@ -1776,6 +1785,8 @@ def cls(
     compute_class
         Where to run replicas. Omit to use the server default; HOST requires fixed,
         positive replica counts.
+    execution_target
+        Optional :class:`ExecutionBackend`; defaults to the environment cluster.
     memory
         Memory resource request (e.g. ``"1Gi"``, ``"512Mi"``).
     gpu
@@ -1870,6 +1881,7 @@ def cls(
             name=name,
             cpu=cpu,
             compute_class=compute_class,
+            execution_target=execution_target,
             memory=memory,
             gpu=gpu,
             env=env,

@@ -10,6 +10,8 @@ from connectrpc.code import Code
 from connectrpc.errors import ConnectError as RpcError
 from protobuf import Oneof
 
+from chalkcompute import ExecutionBackend
+from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 import chalkcompute._function_deployment as deployment
 import chalkcompute._function as function_module
 from chalkcompute._function import RemoteFunction
@@ -275,16 +277,26 @@ def test_redeploy_preserves_callable_and_desired_spec(
         lambda *a, **kw: pytest.fail("polled a ready version"),
     )
     if background:
-        fn = function_module.function(module.add_values, name=name)
+        fn = function_module.function(
+            module.add_values, name=name, execution_target=ExecutionBackend.SERVERLESS
+        )
         fn.version_info
     else:
-        fn = RemoteFunction(module.add_values, name=name)
+        fn = RemoteFunction(
+            module.add_values, name=name, execution_target=ExecutionBackend.SERVERLESS
+        )
         fn.deploy()
     fn.deploy()
 
     assert len(client.requests) == 2
     assert client.requests[0].request_id != client.requests[1].request_id
     assert [r.function_name for r in client.requests] == [registered_name] * 2
+    assert (
+        client.requests[
+            0
+        ].spec.version_spec.spec.container_spec.execution_target.backend
+        == container_pb.ExecutionBackend.SERVERLESS
+    )
     assert client.requests[0].spec == client.requests[1].spec
     assert prepared_sources[0] == prepared_sources[1]
     location = client.requests[0].spec.version_spec.config.source_location

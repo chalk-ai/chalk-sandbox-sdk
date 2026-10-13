@@ -28,6 +28,13 @@ class ComputeClass(Enum):
     HOST = "COMPUTE_CLASS_HOST"
 
 
+class ExecutionBackend(Enum):
+    """Cluster placement for a new workload, independent of its compute class."""
+
+    ENVIRONMENT = "EXECUTION_BACKEND_ENVIRONMENT"
+    SERVERLESS = "EXECUTION_BACKEND_SERVERLESS"
+
+
 class ResourceDetector(Enum):
     """Egress detectors that record resources a sandbox creates.
 
@@ -517,6 +524,7 @@ class ContainerSpec:
     security_policy: ContainerSecurityPolicy | None = None
     network_policy: NetworkPolicy | None = None
     compute_class: ComputeClass | None = None
+    execution_target: ExecutionBackend | None = None
     resource_detectors: Sequence[ResourceDetector] = ()
     host_pool_id: str | None = None
     startup_probe: Mapping[str, Any] | None = None
@@ -539,6 +547,7 @@ class ContainerSpec:
             security_policy=self.security_policy,
             network_policy=self.network_policy,
             compute_class=self.compute_class,
+            execution_target=self.execution_target,
             resource_detectors=self.resource_detectors,
             tags=self.tags,
             restart_policy=self.restart_policy,
@@ -594,6 +603,7 @@ class ContainerSpec:
         security_policy: ContainerSecurityPolicy | None = None,
         network_policy: NetworkPolicy | None = None,
         compute_class: ComputeClass | None = None,
+        execution_target: ExecutionBackend | None = None,
         resource_detectors: Sequence[ResourceDetector] | None = None,
         tags: Mapping[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
@@ -653,6 +663,10 @@ class ContainerSpec:
             raise TypeError("network_policy must be a NetworkPolicy")
         if compute_class is not None and not isinstance(compute_class, ComputeClass):
             raise TypeError("compute_class must be a ComputeClass")
+        if execution_target is not None and not isinstance(
+            execution_target, ExecutionBackend
+        ):
+            raise TypeError("execution_target must be an ExecutionBackend")
         if resource_detectors is not None:
             if isinstance(resource_detectors, (str, bytes)) or not isinstance(
                 resource_detectors, Sequence
@@ -724,6 +738,8 @@ class ContainerSpec:
             spec["networkPolicy"] = self.network_policy.to_dict()
         if self.compute_class is not None:
             spec["computeClass"] = self.compute_class.value
+        if self.execution_target is not None:
+            spec["executionTarget"] = {"backend": self.execution_target.value}
         if self.host_pool_id is not None:
             spec["hostPlacement"] = {"hostPoolId": self.host_pool_id}
         if self.startup_probe is not None:
@@ -817,6 +833,13 @@ class ContainerSpec:
                 None
                 if self.compute_class is None
                 else container_pb.ComputeClass[self.compute_class.name]
+            ),
+            execution_target=(
+                None
+                if self.execution_target is None
+                else container_pb.ExecutionTarget(
+                    backend=container_pb.ExecutionBackend[self.execution_target.name]
+                )
             ),
             resource_detection=(
                 container_pb.ResourceDetectionConfig(

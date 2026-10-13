@@ -172,3 +172,19 @@ def test_readiness_probe_does_not_enable_startup_probe() -> None:
 def test_scaling_group_empty_initializes_startup_probe() -> None:
     sg = ScalingGroup._make_empty()
     assert sg._startup_probe is None
+
+
+@pytest.mark.parametrize("target", [None, "ENVIRONMENT", "SERVERLESS"])
+def test_scaling_group_execution_target(target) -> None:
+    from chalkcompute import ExecutionBackend
+
+    spec = _deployed_container_spec(
+        ScalingGroup(
+            image="ubuntu:latest",
+            name="sg-placement",
+            execution_target=ExecutionBackend[target] if target else None,
+        )
+    )
+    assert spec.has_field("execution_target") == (target is not None)
+    if target:
+        assert spec.execution_target.backend == container_pb.ExecutionBackend[target]
