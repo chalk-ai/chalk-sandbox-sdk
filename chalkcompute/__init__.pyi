@@ -192,6 +192,7 @@ __all__ = [
     "ContainerExecResult",
     "ImageBuildError",
     "ComputeClass",
+    "ExecutionBackend",
     "KernelPolicy",
     "NetworkPolicy",
     "SSHDest",
