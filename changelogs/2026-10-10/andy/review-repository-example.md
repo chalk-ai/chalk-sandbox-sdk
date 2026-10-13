@@ -1,0 +1,1 @@
+- Add a `review-repository` example: a chalkcompute function that clones a GitHub repo, runs a time-boxed, read-only pi agent session through the Chalk AI router, and is called in bulk from Chalk SQL with `catalog_call`.
