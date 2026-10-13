@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
+from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 
 
 @dataclass
@@ -99,3 +100,50 @@ class FakeConnectClient(StubbedConnectClient):
             FakeCall(method=method.name, request=request, timeout=timeout)
         )
         return self.handler(method.name, request)
+
+
+class ScalingGroupClient(StubbedConnectClient):
+    def __init__(self, *, authentication: str | None = None) -> None:
+        self.requests: list[Any] = []
+        self._access_token = "test-token"
+        self.ensure_auth_calls = 0
+        self.authentication = authentication
+
+    def _ensure_auth(self) -> None:
+        self.ensure_auth_calls += 1
+
+    def call(
+        self,
+        method: FakeMethod,
+        request: Any,
+        **_: Any,
+    ) -> Any:
+        self.requests.append(request)
+        if method.name == "create_scaling_group":
+            assert isinstance(request, sg_pb.CreateScalingGroupRequest)
+            assert request.spec is not None and request.spec.container_spec is not None
+            spec = request.spec
+            name = spec.container_spec.name
+            response_type = sg_pb.CreateScalingGroupResponse
+        elif method.name == "get_scaling_group":
+            assert isinstance(request, sg_pb.GetScalingGroupRequest)
+            name = request.name or "existing-group"
+            spec = sg_pb.ScalingGroupSpec(
+                container_spec=container_pb.ChalkContainerSpec(
+                    authentication=self.authentication
+                )
+            )
+            response_type = sg_pb.GetScalingGroupResponse
+        else:
+            raise AssertionError(f"unexpected method: {method.name}")
+        return response_type(
+            scaling_group=sg_pb.ScalingGroupResponse(
+                id="sg-1",
+                name=name,
+                status="Available",
+                web_url="https://example.com",
+                ready_replicas=1,
+                available_replicas=1,
+                spec=spec,
+            )
+        )
