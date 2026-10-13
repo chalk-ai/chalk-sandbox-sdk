@@ -46,6 +46,7 @@ from chalkcompute._containerspec import (
     ComputeClass,
     ContainerSecurityPolicy,
     ContainerSpec,
+    ExecutionBackend,
     KernelPolicy as KernelPolicy,
     NetworkPolicy,
 )
@@ -714,6 +715,7 @@ class Container:
         security_policy: ContainerSecurityPolicy | None = None,
         network_policy: NetworkPolicy | None = None,
         compute_class: ComputeClass | None = None,
+        execution_target: ExecutionBackend | None = None,
         tags: dict[str, str] | None = None,
         tracing: TracingPolicyConfig | None = None,
         chalk_client: Any | None = None,
@@ -747,6 +749,7 @@ class Container:
             security_policy=security_policy,
             network_policy=network_policy,
             compute_class=compute_class,
+            execution_target=execution_target,
             tags=tags,
         )
         self._image: _Image | str | None = normalized_image
@@ -768,6 +771,7 @@ class Container:
         self._security_policy = security_policy
         self._network_policy = network_policy
         self._compute_class = compute_class
+        self._execution_target = execution_target
         self._tags: dict[str, str] = dict(tags or {})
 
         # Set after .run()
@@ -1142,6 +1146,7 @@ class Container:
                 security_policy=self._security_policy,
                 network_policy=self._network_policy,
                 compute_class=self._compute_class,
+                execution_target=self._execution_target,
                 tags=self._tags,
             ).to_proto()
 

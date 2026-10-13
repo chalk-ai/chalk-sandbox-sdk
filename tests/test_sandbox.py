@@ -1182,3 +1182,27 @@ def test_sandbox_uploads_lazy_local_files_without_exec_probe(tmp_path, wait) -> 
     else:
         stub.get_sandbox.assert_not_called()
         assert sandbox.info.status == "pending"
+
+
+@pytest.mark.parametrize("target", [None, "ENVIRONMENT", "SERVERLESS"])
+def test_sandbox_client_create_forwards_execution_target(target) -> None:
+    from chalkcompute import ExecutionBackend
+    from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
+
+    client = SandboxClient()
+    stub = _Stub()
+    client._stub = stub  # type: ignore[assignment]
+    try:
+        client.create(
+            "python:3.14-slim",
+            execution_target=ExecutionBackend[target] if target else None,
+            wait=False,
+        )
+    finally:
+        client.close()
+
+    assert stub.request is not None
+    spec = stub.request.source.value
+    assert spec.has_field("execution_target") == (target is not None)
+    if target is not None:
+        assert spec.execution_target.backend == container_pb.ExecutionBackend[target]
