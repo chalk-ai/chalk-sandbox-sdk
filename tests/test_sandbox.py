@@ -598,12 +598,7 @@ def test_sandbox_client_create_defaults_entrypoint_to_sleep_infinity() -> None:
 
 
 def test_sandbox_client_create_forwards_container_fields() -> None:
-    from chalkcompute import (
-        ComputeClass,
-        ContainerSecurityPolicy,
-        ExecutionBackend,
-        KernelPolicy,
-    )
+    from chalkcompute import ComputeClass, ContainerSecurityPolicy, KernelPolicy
     from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 
     client = SandboxClient()
@@ -617,7 +612,6 @@ def test_sandbox_client_create_forwards_container_fields() -> None:
             lifetime="30s",
             tags={"team": "compute"},
             compute_class=ComputeClass.HOST,
-            execution_target=ExecutionBackend.SERVERLESS,
             security_policy=ContainerSecurityPolicy(
                 kernel_policy=KernelPolicy.RESTRICTED
             ),
@@ -633,7 +627,6 @@ def test_sandbox_client_create_forwards_container_fields() -> None:
     assert spec.port == 8080
     assert dict(spec.tags) == {"team": "compute"}
     assert spec.compute_class == container_pb.ComputeClass.HOST
-    assert spec.execution_target.backend == container_pb.ExecutionBackend.SERVERLESS
     assert spec.security_policy is not None
     assert spec.has_field("lifetime")
 
@@ -1189,3 +1182,27 @@ def test_sandbox_uploads_lazy_local_files_without_exec_probe(tmp_path, wait) -> 
     else:
         stub.get_sandbox.assert_not_called()
         assert sandbox.info.status == "pending"
+
+
+@pytest.mark.parametrize("target", [None, "ENVIRONMENT", "SERVERLESS"])
+def test_sandbox_client_create_forwards_execution_target(target) -> None:
+    from chalkcompute import ExecutionBackend
+    from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
+
+    client = SandboxClient()
+    stub = _Stub()
+    client._stub = stub  # type: ignore[assignment]
+    try:
+        client.create(
+            "python:3.14-slim",
+            execution_target=ExecutionBackend[target] if target else None,
+            wait=False,
+        )
+    finally:
+        client.close()
+
+    assert stub.request is not None
+    spec = stub.request.source.value
+    assert spec.has_field("execution_target") == (target is not None)
+    if target is not None:
+        assert spec.execution_target.backend == container_pb.ExecutionBackend[target]

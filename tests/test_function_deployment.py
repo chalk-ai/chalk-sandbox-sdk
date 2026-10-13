@@ -10,10 +10,10 @@ from connectrpc.code import Code
 from connectrpc.errors import ConnectError as RpcError
 from protobuf import Oneof
 
-from chalkcompute import ExecutionBackend
-from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 import chalkcompute._function_deployment as deployment
 import chalkcompute._function as function_module
+from chalkcompute import ExecutionBackend
+from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._function import RemoteFunction
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as pb
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg
@@ -277,26 +277,16 @@ def test_redeploy_preserves_callable_and_desired_spec(
         lambda *a, **kw: pytest.fail("polled a ready version"),
     )
     if background:
-        fn = function_module.function(
-            module.add_values, name=name, execution_target=ExecutionBackend.SERVERLESS
-        )
+        fn = function_module.function(module.add_values, name=name)
         fn.version_info
     else:
-        fn = RemoteFunction(
-            module.add_values, name=name, execution_target=ExecutionBackend.SERVERLESS
-        )
+        fn = RemoteFunction(module.add_values, name=name)
         fn.deploy()
     fn.deploy()
 
     assert len(client.requests) == 2
     assert client.requests[0].request_id != client.requests[1].request_id
     assert [r.function_name for r in client.requests] == [registered_name] * 2
-    assert (
-        client.requests[
-            0
-        ].spec.version_spec.spec.container_spec.execution_target.backend
-        == container_pb.ExecutionBackend.SERVERLESS
-    )
     assert client.requests[0].spec == client.requests[1].spec
     assert prepared_sources[0] == prepared_sources[1]
     location = client.requests[0].spec.version_spec.config.source_location
@@ -309,3 +299,31 @@ def test_redeploy_preserves_callable_and_desired_spec(
     assert fn._func_name == "add_values"
     assert fn._queue_function_name() == registered_name
     assert fn._bind_call_arguments((), {}) == (41,)
+
+
+@pytest.mark.parametrize(
+    "target", [None, ExecutionBackend.ENVIRONMENT, ExecutionBackend.SERVERLESS]
+)
+def test_function_deploy_forwards_execution_target(monkeypatch, target):
+    def add(x: int) -> int:
+        return x
+
+    fn = RemoteFunction(add, name="test", execution_target=target)
+    client = Client([complete(), complete()])
+    client._env_id = None
+    fn._client = client
+    monkeypatch.setattr(
+        RemoteFunction, "_build_deploy_image", lambda _: Image("python:3.11")
+    )
+    fn.deploy()
+    fn.deploy()
+
+    assert len(client.requests) == 2
+    for request in client.requests:
+        spec = request.spec.version_spec.spec.container_spec
+        assert spec.has_field("execution_target") == (target is not None)
+        if target is not None:
+            assert (
+                spec.execution_target.backend
+                == container_pb.ExecutionBackend[target.name]
+            )
