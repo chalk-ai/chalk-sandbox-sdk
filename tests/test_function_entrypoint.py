@@ -26,7 +26,7 @@ def test_local_sdk_copy_extracts_archive_to_local_tmp() -> None:
         os.environ.pop(_LOCAL_WHEEL_ENV_VAR, None)
         os.environ["CHALK_FUNCTION_STRIP_SOURCE"] = "0"
         entrypoint = _local_install_entrypoint(
-            ["chalk-remote-call", "--handler", "handler.handler"]
+            ["chalk-remote-call", "--handler", "handler.handler"], None
         )
 
     assert entrypoint[:2] == ["sh", "-c"]
@@ -80,7 +80,8 @@ def test_sdk_overlay_preserves_installed_runtime(tmp_path, monkeypatch, layout):
             "import chalkcompute, chalk_remote_call; "
             "assert chalkcompute.origin == 'local-sdk'; "
             "assert chalk_remote_call.origin == 'installed-runtime'",
-        ]
+        ],
+        None,
     )
     command[2] = (
         command[2]
@@ -111,7 +112,7 @@ def test_local_remote_call_wheel_force_reinstalls_before_handler(
         os.environ.pop(_LOCAL_WHEEL_ENV_VAR, None)
         os.environ["CHALK_FUNCTION_STRIP_SOURCE"] = "0"
         entrypoint = _local_install_entrypoint(
-            ["chalk-remote-call", "--handler", "handler.handler"]
+            ["chalk-remote-call", "--handler", "handler.handler"], None
         )
 
     assert entrypoint[:2] == ["sh", "-c"]
@@ -131,7 +132,7 @@ def test_local_sdk_wheel_installs_runtime_dependencies_before_overlay(tmp_path) 
         os.environ["CHALK_FUNCTION_STRIP_SOURCE"] = "0"
         image = _make_base_image(None)
         entrypoint = _local_install_entrypoint(
-            ["chalk-remote-call", "--handler", "handler.handler"]
+            ["chalk-remote-call", "--handler", "handler.handler"], image
         )
 
     packages = image.to_proto().steps[0].step.value.packages

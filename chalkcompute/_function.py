@@ -1812,20 +1812,24 @@ def _assert_strip_mode_self_contained(func: Callable[..., Any], *, label: str) -
 # ---------------------------------------------------------------------------
 
 
-def _local_install_entrypoint(handler_cmd: list[str]) -> list[str]:
+def _local_install_entrypoint(
+    handler_cmd: list[str], deploy_image: _Image | None
+) -> list[str]:
     """Wrap ``handler_cmd`` with a local SDK install when requested.
 
     Parameters
     ----------
     handler_cmd
         Original handler command to wrap.
+    deploy_image
+        Resolved recipe used to select verified baked-wheel startup.
 
     Returns
     -------
     list of str
         Possibly-wrapped entrypoint command.
     """
-    return _local_dev.wrap_entrypoint_for_local_dev(handler_cmd)
+    return _local_dev.wrap_entrypoint_for_local_dev(handler_cmd, deploy_image)
 
 
 _REMOTE_CALL_RUNTIME_PACKAGE = "chalk-remote-call-python"
@@ -3064,7 +3068,7 @@ class RemoteFunction:
             container_spec = ContainerSpec(
                 name=sg_name,
                 image="",
-                entrypoint=_local_install_entrypoint(handler_cmd),
+                entrypoint=_local_install_entrypoint(handler_cmd, deploy_image),
                 env=_remote_call_container_env(
                     self._env, deploy_image._env.get("PYTHONPATH", "/app")
                 ),

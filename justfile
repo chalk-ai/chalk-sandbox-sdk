@@ -45,8 +45,8 @@ local-fn-env sdk_wheel="":
 # Example:
 
 # just local-fn-deploy examples/scalar/deploy_sync.py dist/linux-local/chalkcompute-0.0.0-cp311-cp311-linux_x86_64.whl
-local-fn-deploy script sdk_wheel="" use_uv="1":
-    ./scripts/run_local_fn_deploy.sh --script {{ script }} {{ if sdk_wheel != "" { "--sdk-wheel " + sdk_wheel } else { "" } }} {{ if use_uv == "1" { "--uv-run" } else { "" } }}
+local-fn-deploy script sdk_wheel="" use_uv="1" bake_sdk_wheel="0":
+    ./scripts/run_local_fn_deploy.sh --script {{ script }} {{ if sdk_wheel != "" { "--sdk-wheel " + sdk_wheel } else { "" } }} {{ if use_uv == "1" { "--uv-run" } else { "" } }} {{ if bake_sdk_wheel == "1" { "--bake-sdk-wheel" } else { "" } }}
 
 # Run ty type checker
 ty:
