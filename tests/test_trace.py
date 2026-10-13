@@ -503,12 +503,178 @@ def test_get_spans_without_waiting_makes_exactly_one_pass() -> None:
         ({"timeout": -1}, "timeout must be >= 0"),
         ({"poll_interval": -1}, "poll_interval must be >= 0"),
         ({"expect_min": -1}, "expect_min must be >= 0"),
+        ({"quiet_for": -1}, "quiet_for must be >= 0"),
+        ({"quiet_for": 30, "timeout": 10}, "exceeds timeout"),
     ],
 )
 def test_get_spans_validates_its_bounds(kwargs: dict[str, Any], match: str) -> None:
     client, _ = _client({})
     with pytest.raises(ValueError, match=match):
         Trace("session-1", _client=client).get_spans(**kwargs)
+
+
+# --- The quiet window ("trace is complete") ------------------------------
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """A clock that advances only when the code under test sleeps."""
+    now = [0.0]
+    monkeypatch.setattr("chalkcompute._trace.time.monotonic", lambda: now[0])
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    monkeypatch.setattr("chalkcompute._trace.time.sleep", sleep)
+    return now
+
+
+def _one_span_forever() -> list[Any]:
+    return [_response({"spans": [_span_dict("span-1")]}) for _ in range(40)]
+
+
+def test_get_spans_waits_out_the_quiet_window(clock: list[float]) -> None:
+    """A steady count returns only once it has held for quiet_for seconds."""
+    client, connect = _client({"list_span": _one_span_forever()})
+
+    spans = Trace("session-1", _client=client).get_spans(quiet_for=30, poll_interval=2)
+
+    assert [s.span_id for s in spans] == ["span-1"]
+    # Read at 0, 2, ..., 30: the window closes on the sixteenth read.
+    assert len(connect.calls) == 16
+    assert clock[0] == 30
+
+
+def test_the_quiet_window_restarts_when_a_span_lands(clock: list[float]) -> None:
+    one = _response({"spans": [_span_dict("span-1")]})
+    two = _response({"spans": [_span_dict("span-1"), _span_dict("span-2")]})
+    client, connect = _client({"list_span": [one, one, two, two, two, two]})
+
+    spans = Trace("session-1", _client=client).get_spans(quiet_for=4, poll_interval=2)
+
+    # 1 at 0s and 2s, then 2 at 4s restarts the window, which closes at 8s.
+    assert [s.span_id for s in spans] == ["span-1", "span-2"]
+    assert len(connect.calls) == 5
+    assert clock[0] == 8
+
+
+def test_the_quiet_window_does_not_wait_past_the_timeout(clock: list[float]) -> None:
+    """A span landing late restarts a window the timeout then cuts short."""
+    one = _response({"spans": [_span_dict("span-1")]})
+    two = _response({"spans": [_span_dict("span-1"), _span_dict("span-2")]})
+    client, _ = _client({"list_span": [one, one, two, two, two, two]})
+
+    # 1 at 0s and 3s; 2 at 6s restarts the window, which cannot close by 10s.
+    with pytest.raises(TimeoutError, match="held at 2 span"):
+        Trace("session-1", _client=client).get_spans(
+            quiet_for=6, timeout=10, poll_interval=3
+        )
+
+
+def test_the_environment_sets_the_quiet_window(
+    clock: list[float], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pod carries the environment's setting; a scorer passes nothing."""
+    monkeypatch.setenv("CHALK_TRACE_COMPLETE_AFTER_SECONDS", "30")
+    client, connect = _client({"list_span": _one_span_forever()})
+
+    Trace("session-1", _client=client).get_spans(poll_interval=2)
+
+    assert len(connect.calls) == 16
+
+
+def test_an_explicit_quiet_window_overrides_the_environment(
+    clock: list[float], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CHALK_TRACE_COMPLETE_AFTER_SECONDS", "30")
+    client, connect = _client({"list_span": _one_span_forever()})
+
+    Trace("session-1", _client=client).get_spans(quiet_for=0, poll_interval=2)
+
+    assert len(connect.calls) == 2
+
+
+def test_a_blank_environment_setting_means_no_quiet_window(
+    clock: list[float], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CHALK_TRACE_COMPLETE_AFTER_SECONDS", " ")
+    client, connect = _client({"list_span": _one_span_forever()})
+
+    Trace("session-1", _client=client).get_spans(poll_interval=2)
+
+    assert len(connect.calls) == 2
+
+
+@pytest.mark.parametrize("raw", ["soon", "-5"])
+def test_a_malformed_environment_setting_is_an_error(
+    raw: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CHALK_TRACE_COMPLETE_AFTER_SECONDS", raw)
+    client, _ = _client({})
+
+    with pytest.raises(ValueError, match="CHALK_TRACE_COMPLETE_AFTER_SECONDS"):
+        Trace("session-1", _client=client).get_spans()
+
+
+def test_the_quiet_window_counts_every_span_in_the_session(
+    clock: list[float],
+) -> None:
+    """Tool spans between LLM turns keep the window open: the session is not quiet."""
+    turn_1 = _turn(
+        "span-1", "2026-08-17T00:00:00Z", **{"input.value": "hi", "output.value": "yo"}
+    )
+    tools = [
+        _turn(f"tool-{n}", f"2026-08-17T00:00:{10 * n:02d}Z", **{"tool.name": "bash"})
+        for n in (1, 2, 3)
+    ]
+    turn_2 = _turn(
+        "span-2", "2026-08-17T00:00:40Z", **{"input.value": "go", "output.value": "ok"}
+    )
+    # A tool span lands at 10s, 20s and 30s, then the next turn at 40s.
+    seen = [
+        [turn_1],
+        [turn_1, tools[0]],
+        [turn_1, *tools[:2]],
+        [turn_1, *tools],
+        [turn_1, *tools, turn_2],
+    ]
+    responses = [_response({"spans": spans}) for spans in seen]
+    responses += [_response({"spans": seen[-1]}) for _ in range(4)]
+    client, _ = _client({"list_span": responses})
+
+    text = Trace("session-1", _client=client).transcript(
+        quiet_for=30, timeout=120, poll_interval=10
+    )
+
+    # Quiet only from 40s, so the window closes at 70s, with both turns.
+    assert "### turn 2" in text
+    assert clock[0] == 70
+
+
+def test_an_unwaited_read_ignores_the_environments_quiet_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """wait=False never uses the window, so the setting cannot invalidate it."""
+    monkeypatch.setenv("CHALK_TRACE_COMPLETE_AFTER_SECONDS", "30")
+    client, connect = _client({"list_span": [_one_turn(), _one_turn()]})
+    trace = Trace("session-1", _client=client)
+
+    assert len(trace.get_spans(wait=False, timeout=0)) == 1
+    assert trace.transcript(wait=False, timeout=0).startswith("### turn 1")
+    assert len(connect.calls) == 2
+
+
+def test_transcript_honors_the_environments_quiet_window(
+    clock: list[float], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The judge path: llm_judge calls transcript() with no arguments."""
+    monkeypatch.setenv("CHALK_TRACE_COMPLETE_AFTER_SECONDS", "30")
+    client, connect = _client({"list_span": [_one_turn() for _ in range(40)]})
+
+    text = Trace("session-1", _client=client).transcript(poll_interval=2)
+
+    assert text.startswith("### turn 1")
+    assert len(connect.calls) == 16
 
 
 # --- Session and trace summaries -----------------------------------------
