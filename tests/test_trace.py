@@ -616,6 +616,54 @@ def test_a_malformed_environment_setting_is_an_error(
         Trace("session-1", _client=client).get_spans()
 
 
+def test_the_quiet_window_counts_every_span_in_the_session(
+    clock: list[float],
+) -> None:
+    """Tool spans between LLM turns keep the window open: the session is not quiet."""
+    turn_1 = _turn(
+        "span-1", "2026-08-17T00:00:00Z", **{"input.value": "hi", "output.value": "yo"}
+    )
+    tools = [
+        _turn(f"tool-{n}", f"2026-08-17T00:00:{10 * n:02d}Z", **{"tool.name": "bash"})
+        for n in (1, 2, 3)
+    ]
+    turn_2 = _turn(
+        "span-2", "2026-08-17T00:00:40Z", **{"input.value": "go", "output.value": "ok"}
+    )
+    # A tool span lands at 10s, 20s and 30s, then the next turn at 40s.
+    seen = [
+        [turn_1],
+        [turn_1, tools[0]],
+        [turn_1, *tools[:2]],
+        [turn_1, *tools],
+        [turn_1, *tools, turn_2],
+    ]
+    responses = [_response({"spans": spans}) for spans in seen]
+    responses += [_response({"spans": seen[-1]}) for _ in range(4)]
+    client, _ = _client({"list_span": responses})
+
+    text = Trace("session-1", _client=client).transcript(
+        quiet_for=30, timeout=120, poll_interval=10
+    )
+
+    # Quiet only from 40s, so the window closes at 70s, with both turns.
+    assert "### turn 2" in text
+    assert clock[0] == 70
+
+
+def test_an_unwaited_read_ignores_the_environments_quiet_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """wait=False never uses the window, so the setting cannot invalidate it."""
+    monkeypatch.setenv("CHALK_TRACE_COMPLETE_AFTER_SECONDS", "30")
+    client, connect = _client({"list_span": [_one_turn(), _one_turn()]})
+    trace = Trace("session-1", _client=client)
+
+    assert len(trace.get_spans(wait=False, timeout=0)) == 1
+    assert trace.transcript(wait=False, timeout=0).startswith("### turn 1")
+    assert len(connect.calls) == 2
+
+
 def test_transcript_honors_the_environments_quiet_window(
     clock: list[float], monkeypatch: pytest.MonkeyPatch
 ) -> None:

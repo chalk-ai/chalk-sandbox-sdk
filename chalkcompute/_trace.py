@@ -465,26 +465,27 @@ class Trace:
             Characters kept of each prompt and of each completion.
         wait, timeout, poll_interval, expect_min, quiet_for
             See :ref:`the settling rules <trace-waiting>` on :class:`Trace`.
-            The wait is scoped to LLM turns: it holds until at least one is
-            there and their number stays steady across a poll, so a turn that
-            is still being ingested is never mistaken for none, and the
-            session's other spans -- its root span lands before any turn --
-            cannot end the wait early. A session that shows no turn within
-            ``timeout`` renders as the no-turns note rather than raising, once
-            an unwaited read confirms it, so a judge still grades the row; pass
-            ``expect_min=0`` to accept an empty transcript without waiting.
+            The wait settles on the whole session but needs a turn: it holds
+            until at least one LLM turn is there and the session's span count
+            -- every span, not only the turns -- stays steady, so a turn that
+            is still being ingested is never mistaken for none, the root span
+            that lands before any turn cannot end the wait early, and a tool
+            call between turns keeps it open. A session that shows no turn
+            within ``timeout`` renders as the no-turns note rather than
+            raising, once an unwaited read confirms it, so a judge still grades
+            the row; pass ``expect_min=0`` to accept an empty transcript
+            without waiting.
         """
         client = self._require_client()
 
         def fetch() -> list[Span]:
-            return client.list_spans(
-                self.id, attribute_filters={_INPUT_VALUE_ATTRIBUTE: None}
-            )
+            return client.list_spans(self.id)
 
         try:
             spans = _settle(
                 fetch,
-                spans_seen=_count_turns,
+                spans_seen=len,
+                target_seen=_count_turns,
                 subject=f"session {self.id!r}",
                 wait=wait,
                 timeout=timeout,
@@ -731,13 +732,16 @@ def _settle(
     poll_interval: float,
     expect_min: int | None,
     quiet_for: float | None = None,
+    target_seen: Callable[[_T], int] | None = None,
 ) -> _T:
     """Poll ``fetch`` until the number of spans it can see stops growing.
 
     Every read of a session settles on the same signal, because every read is
     downstream of the same asynchronous ingest: spans, a session aggregate, and
     per-trace aggregates all grow as spans land. ``spans_seen`` extracts that
-    one number from whatever ``fetch`` returns.
+    one number from whatever ``fetch`` returns. ``target_seen`` is the count
+    ``expect_min`` applies to when that is a narrower one -- a transcript waits
+    on the whole session but needs a turn -- and defaults to ``spans_seen``.
 
     With ``quiet_for``, the count must also have held for that many seconds,
     measured from the read that last saw it change. A session is only ever
@@ -753,16 +757,21 @@ def _settle(
         raise ValueError("poll_interval must be >= 0")
     if expect_min is not None and expect_min < 0:
         raise ValueError("expect_min must be >= 0 or None")
+    if quiet_for is not None and quiet_for < 0:
+        raise ValueError("quiet_for must be >= 0 or None")
+
+    if not wait:
+        return fetch()
+
+    # Resolved only for a read that waits: an unwaited read never uses the
+    # window, so the environment's setting cannot make it invalid.
     quiet_for = _trace_complete_after(quiet_for)
     if quiet_for is not None and quiet_for > timeout:
         raise ValueError(
             f"quiet_for ({quiet_for}s) exceeds timeout ({timeout}s), so the read "
             f"could never settle"
         )
-
-    if not wait:
-        return fetch()
-
+    reached = target_seen or spans_seen
     target = 1 if expect_min is None else expect_min
     deadline = time.monotonic() + timeout
     result = fetch()
@@ -772,17 +781,17 @@ def _settle(
     steady_since = time.monotonic()
     while True:
         now = time.monotonic()
-        steady = count >= target and count == previous
+        steady = reached(result) >= target and count == previous
         quiet = now - steady_since
         if steady and (quiet_for is None or quiet >= quiet_for):
             return result
         remaining = deadline - now
         if remaining <= 0:
-            if count < target:
+            if reached(result) < target:
                 raise TimeoutError(
-                    f"{subject} had {count} span(s) after {timeout}s, expected at "
-                    f"least {target}; spans may still be in flight. Pass "
-                    f"wait=False to accept a partial read."
+                    f"{subject} had {reached(result)} span(s) after {timeout}s, "
+                    f"expected at least {target}; spans may still be in flight. "
+                    f"Pass wait=False to accept a partial read."
                 )
             if steady:
                 raise TimeoutError(
