@@ -602,10 +602,6 @@ def training(
         def train(df, config):
             ...
 
-    ``compute_class`` selects K8S (the default) or HOST. ``execution_target``
-    selects the environment cluster (the default) or Chalk serverless compute.
-    HOST training requires ``network_policy`` to allow any needed network egress.
-
     Inside a training container (detected via ``CHALK_TRAINING_RUN_ID``
     env var), the decorator is a no-op that returns the function body
     unchanged — the entrypoint handles dataset loading and config
