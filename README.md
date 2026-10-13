@@ -134,33 +134,6 @@ location and actionable exception details. Definition-only deploy scripts still
 exit unsuccessfully when a background deployment fails. Remote command stdout and
 stderr remain available in result objects and stream events for callers to handle.
 
-## Compute placement
-
-Use `execution_target=cc.ExecutionBackend.SERVERLESS` to create a workload on
-Chalk-managed serverless compute while keeping its environment on its existing
-cluster. Omit it, or use `ExecutionBackend.ENVIRONMENT`, to use the environment's
-cluster. This option is available on training, functions, classes, scaling groups,
-containers, and sandboxes.
-
-`compute_class` independently selects the K8s or HOST runtime. Training defaults
-to K8s; HOST training needs a `network_policy` permitting any required network egress.
-
-```python
-import chalkcompute as cc
-
-@cc.training(
-    data="training-data",
-    gpu="nvidia-tesla-a100:1",
-    compute_class=cc.ComputeClass.K8S,
-    execution_target=cc.ExecutionBackend.SERVERLESS,
-)
-def train(df, config):
-    ...
-```
-
-Serverless placement requires an eligible cluster with capacity for the requested
-resources; it does not select Spot capacity or enable DWS.
-
 ## Environment variables and secrets
 
 Deployment `env` mappings accept strings and `Secret` references together:
