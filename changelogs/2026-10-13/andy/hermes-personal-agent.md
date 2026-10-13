@@ -1,0 +1,1 @@
+- Add `examples/hermes/personal_agent.py`: Hermes plans a household's week from an exported calendar and a notes file, searches the web for childcare through Hermes' keyless search services, and returns a plan, childcare options, and a revised `.ics`. Uses `sandbox.fs` to move files in and out, so it needs `chalkcompute>=2.13.0`.
