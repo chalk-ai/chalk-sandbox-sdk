@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import chalkcompute._scaling_group as scaling_group_mod
-from chalkcompute import ScalingGroup
+from chalkcompute import ExecutionBackend, ScalingGroup
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from tests._fakes import FakeMethod, StubbedConnectClient
@@ -82,13 +82,19 @@ def test_scaling_group_deploy_serializes_authentication(
     assert (request.spec.container_spec.authentication or None) == expected
 
 
-def test_scaling_group_deploy_forwards_tags_and_chalk_identity() -> None:
+@pytest.mark.parametrize(
+    "target", [None, ExecutionBackend.ENVIRONMENT, ExecutionBackend.SERVERLESS]
+)
+def test_scaling_group_deploy_forwards_container_fields(
+    target: ExecutionBackend | None,
+) -> None:
     client = _CapturingClient()
     sg = ScalingGroup(
         image="nginx:alpine",
         name="tagged-group",
         tags={"team": "compute"},
         chalk_identity=True,
+        execution_target=target,
     )
     sg._client = cast(Any, client)
 
@@ -99,6 +105,14 @@ def test_scaling_group_deploy_forwards_tags_and_chalk_identity() -> None:
     assert request.spec is not None and request.spec.container_spec is not None
     assert dict(request.spec.container_spec.tags) == {"team": "compute"}
     assert request.spec.container_spec.has_field("chalk_workload_identity")
+    assert request.spec.container_spec.has_field("execution_target") == (
+        target is not None
+    )
+    if target is not None:
+        assert (
+            request.spec.container_spec.execution_target.backend
+            == container_pb.ExecutionBackend[target.name]
+        )
 
 
 def test_authenticated_scaling_group_call_adds_chalk_token(
