@@ -10,6 +10,11 @@ sleeps, retries, or outlives the script still finishes.
 A task declared with ``@task(image=...)`` runs on a worker of its own, one per distinct
 image, which polls its own queue and scales the same way: the workflow calls the task as
 a child workflow on that queue, so the image's group is up only while such a call is open.
+
+The child workflow is a stopgap: the task-queue trigger scales a group on the workflows
+open on its queue, not on its pending activity tasks. Once it watches the queue's
+activity backlog, a routed task can be an activity on the image's queue, and the
+``chalk.task:<name>`` child workflows and ``CHALK_WORKFLOW_TASK_QUEUES`` go away.
 """
 
 from __future__ import annotations
@@ -48,6 +53,10 @@ _TASK_QUEUES_ENV_VAR = "CHALK_WORKFLOW_TASK_QUEUES"
 
 # Hex digits of the image hash in a task worker's name.
 _IMAGE_KEY_LENGTH = 8
+
+# Tag on a task worker naming the workflow worker it belongs to. Cleanup of task workers
+# goes by this tag, never by name alone: another worker's name may look like one.
+_TASK_WORKER_TAG = "chalk.workflow-worker"
 
 # PEP 723 inline script metadata, e.g. the `# /// script` block `uv run` reads.
 _SCRIPT_METADATA_RE = re.compile(
@@ -145,6 +154,23 @@ def _with_extra(requirement: str, extra: str) -> str:
     return f"{match.group('name')}[{','.join(extras)}]{match.group('rest')}"
 
 
+_RUNTIME_DISTRIBUTIONS = ("chalkpy", "chalkcompute")
+
+
+def task_worker_requirements(source: str) -> list[str]:
+    """Packages a task's own image installs on top of what the task declared.
+
+    Only the runtime, ``chalkpy[workflows]`` and (when the file imports it)
+    ``chalkcompute``, at the script's constraints: the point of a task image is to take
+    different dependencies from the script, so the script's other packages stay out.
+    """
+    return [
+        r
+        for r in worker_requirements(source)
+        if _requirement_name(r) in _RUNTIME_DISTRIBUTIONS
+    ]
+
+
 def _installed_requirement(distribution: str) -> str:
     """``distribution`` pinned to the version installed here, so the worker runs what the
     script ran against. A checkout installed with ``uv pip install -e`` reports the
@@ -183,13 +209,14 @@ def _source_path_for(workflow: Any) -> str:
 
 
 def _task_images(source: str) -> dict[str, Image]:
-    """The registered tasks that declare an image, by task name.
+    """The tasks ``source`` reaches that declare an image, by task name: those it
+    defines and those it imports from other modules, since the worker running its
+    workflows routes them by name and the task's worker imports ``source`` too.
 
-    The running script's tasks are already registered; any other file is imported,
-    as its worker will import it, so that its decorators run. Tasks that ``source``
-    imports from other modules count too: the worker running the workflows routes
-    by task name, so they must be served somewhere, and the task's worker imports
-    ``source`` just as the main worker does.
+    The running script's tasks are already registered. Any other file is imported, as
+    its worker will import it, and the tasks that registers are its. Image tasks that
+    neither the file nor its imports define, registered by something else in this
+    process, are skipped with a warning.
     """
     from chalk.workflows import TASK_REGISTRY, WORKFLOW_REGISTRY
     from chalk.workflows.worker import load_workflow_source
@@ -200,11 +227,30 @@ def _task_images(source: str) -> dict[str, Image]:
     if not any(
         defined_here(d) for d in (*WORKFLOW_REGISTRY.values(), *TASK_REGISTRY.values())
     ):
+        before = set(TASK_REGISTRY)
         load_workflow_source(source)
+        reachable = {name for name in TASK_REGISTRY if name not in before}
+    else:
+        with open(source, encoding="utf-8") as f:
+            text = f.read()
+        reachable = {
+            name
+            for name, definition in TASK_REGISTRY.items()
+            if defined_here(definition)
+            or _imports_module(text, definition.fn.__module__)
+        }
     images: dict[str, Image] = {}
-    for definition in TASK_REGISTRY.values():
+    for name, definition in TASK_REGISTRY.items():
         image = getattr(definition, "image", None)
         if image is None:
+            continue
+        if name not in reachable:
+            logger.warning(
+                "@task %r has an image but is not defined or imported by %s; "
+                "it gets no worker from this deploy",
+                name,
+                source,
+            )
             continue
         if isinstance(image, str):
             image = Image.base(image)
@@ -213,8 +259,21 @@ def _task_images(source: str) -> dict[str, Image]:
                 f"@task {definition.name!r}: image must be a chalkcompute.Image or an image reference, "
                 f"got {type(image).__name__}"
             )
-        images[definition.name] = image
+        images[name] = image
     return images
+
+
+def _imports_module(text: str, module: str) -> bool:
+    """Whether ``text`` has a top-level ``import``/``from`` of ``module`` or a parent
+    package of it; the source's module for its own definitions is ``__main__``."""
+    if module == "__main__":
+        return True
+    parts = module.split(".")
+    for i in range(1, len(parts) + 1):
+        name = re.escape(".".join(parts[:i]))
+        if re.search(rf"(?m)^\s*(?:from\s+{name}\s+import\b|import\s+{name}\b)", text):
+            return True
+    return False
 
 
 def image_key(image: Image) -> str:
@@ -288,6 +347,11 @@ def deploy_workflow_worker(
         Base image for the worker. The source file is added to it, along with the
         packages from ``worker_requirements`` when no image is given.
 
+    Redeploying a file whose task images changed is not safe for its running workflows:
+    the worker decides at each call whether a task runs here or on an image worker, so
+    a run that replays after the routes changed fails as non-deterministic. Let runs
+    finish, or start them again, after such a redeploy.
+
     Each distinct ``@task(image=...)`` image gets a group of its own,
     ``<name>-<image hash>``, deployed with the same resources, env, and secrets. Its
     image is the task's, plus the packages from ``worker_requirements`` and the
@@ -309,6 +373,7 @@ def deploy_workflow_worker(
     remote_path = f"{_SOURCE_DIR}/{os.path.basename(source)}"
 
     requirements = worker_requirements(text)
+    task_requirements = task_worker_requirements(text)
     if image is None:
         python = f"{sys.version_info.major}.{sys.version_info.minor}"
         image = Image.debian_slim(python).pip_install(requirements)
@@ -320,6 +385,7 @@ def deploy_workflow_worker(
         group_queue: str,
         group_env: Mapping[str, str | Secret] | None,
         worker_args: list[str],
+        tags: dict[str, str] | None = None,
     ) -> ScalingGroup:
         return ScalingGroup(
             image=group_image,
@@ -328,6 +394,7 @@ def deploy_workflow_worker(
             memory=memory,
             env=group_env,
             secrets=secrets,
+            tags=tags,
             # The worker polls its task queue rather than serving requests; the orchestrator address and the
             # task queue arrive as CHALK_WORKFLOW_ORCHESTRATOR_* env vars set by the platform.
             entrypoint=[
@@ -363,11 +430,12 @@ def deploy_workflow_worker(
         group = deploy_group(
             group_name,
             images_by_key[key]
-            .pip_install(requirements)
+            .pip_install(task_requirements)
             .add_local_file(source, remote_path),
             group_queue,
             env,
             ["--tasks", ",".join(task_names)],
+            tags={_TASK_WORKER_TAG: worker_name},
         )
         for task_name in task_names:
             task_workers[task_name] = group
@@ -390,8 +458,14 @@ def deploy_workflow_worker(
     )
 
 
-def _task_worker_name_pattern(worker_name: str) -> re.Pattern[str]:
-    return re.compile(rf"^{re.escape(worker_name)}-[0-9a-f]{{{_IMAGE_KEY_LENGTH}}}$")
+def _scaling_group_tags(name: str, chalk_client: Any | None) -> dict[str, str]:
+    from chalkcompute._scaling_group import _get_scaling_group
+
+    client = ScalingGroup._make_empty(chalk_client=chalk_client)._client
+    data = _get_scaling_group(client, name=name).scaling_group
+    spec = getattr(data, "spec", None)
+    container = getattr(spec, "container_spec", None)
+    return dict(getattr(container, "tags", None) or {})
 
 
 def _list_scaling_group_names(search: str, chalk_client: Any | None) -> list[str]:
@@ -416,17 +490,26 @@ def _list_scaling_group_names(search: str, chalk_client: Any | None) -> list[str
 def _delete_stale_task_workers(
     worker_name: str, *, keep: set[str], chalk_client: Any | None
 ) -> list[str]:
-    """Delete ``<worker_name>-<image hash>`` groups other than ``keep``: task workers
+    """Delete the task workers tagged as ``worker_name``'s other than ``keep``: those
     an earlier deploy of this file created for images it no longer uses."""
-    pattern = _task_worker_name_pattern(worker_name)
+    # The name prefix narrows the listing; the tag decides.
+    prefix = task_worker_name(worker_name, "0" * _IMAGE_KEY_LENGTH)[:-_IMAGE_KEY_LENGTH]
     try:
-        names = _list_scaling_group_names(worker_name, chalk_client)
+        names = _list_scaling_group_names(prefix, chalk_client)
+        stale = sorted(
+            n
+            for n in set(names)
+            if n.startswith(prefix)
+            and n not in keep
+            and n != worker_name
+            and _scaling_group_tags(n, chalk_client).get(_TASK_WORKER_TAG)
+            == worker_name
+        )
     except Exception as exc:  # a failed cleanup must not fail the deploy
         logger.warning(
-            "Could not list scaling groups to clean up task workers: %s", exc
+            "Could not look up task workers of %r to clean up: %s", worker_name, exc
         )
         return []
-    stale = sorted(n for n in set(names) if pattern.match(n) and n not in keep)
     deleted: list[str] = []
     for name in stale:
         try:

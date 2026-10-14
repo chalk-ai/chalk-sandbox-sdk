@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 import chalkcompute._workflow_worker as workflow_worker_mod
+from chalk.workflows.worker import load_workflow_source as _load_workflow_source
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from chalkcompute._scaling_group import (
     CronScalingTrigger,
@@ -22,6 +23,7 @@ from chalkcompute._workflow_worker import (
     image_key,
     script_dependencies,
     task_worker_name,
+    task_worker_requirements,
     worker_requirements,
 )
 from tests.test_deployment_lifecycle import _ScalingLifecycleClient
@@ -126,6 +128,16 @@ def test_worker_requirements_adds_the_workflows_extra_and_keeps_pins() -> None:
     assert worker_requirements(both) == ["chalkpy[workflows,runtime]"]
 
 
+def test_task_worker_requirements_is_only_the_runtime() -> None:
+    assert task_worker_requirements(_SCRIPT) == [
+        "chalkpy[workflows]>=2.160",
+        "chalkcompute",
+    ]
+    assert task_worker_requirements(
+        '# /// script\n# dependencies = ["requests"]\n# ///\n'
+    ) == ["chalkpy[workflows]"]
+
+
 def test_worker_requirements_without_metadata_pins_the_local_versions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -164,7 +176,7 @@ def test_default_worker_name_is_a_dns_label() -> None:
 
 class _RecordingScalingGroup:
     instances: list[_RecordingScalingGroup] = []
-    existing: list[str] = []
+    existing: dict[str, dict[str, str]] = {}  # name -> tags
     deleted: list[str] = []
 
     def __init__(self, **kwargs: Any) -> None:
@@ -200,6 +212,11 @@ def recording_groups(monkeypatch: pytest.MonkeyPatch) -> type[_RecordingScalingG
         lambda search, chalk_client: [
             n for n in _RecordingScalingGroup.existing if search in n
         ],
+    )
+    monkeypatch.setattr(
+        workflow_worker_mod,
+        "_scaling_group_tags",
+        lambda name, chalk_client: _RecordingScalingGroup.existing[name],
     )
     # Each test's file registers its own tasks; none from another test's file.
     TASK_REGISTRY.clear()
@@ -387,23 +404,73 @@ def test_deploy_workflow_worker_deletes_task_workers_of_dropped_images(
     source = tmp_path / "image_tasks.py"
     source.write_text(_IMAGE_TASKS_SCRIPT)
     heavy_key = image_key(Image.debian_slim("3.12").pip_install(["torch"]))
-    recording_groups.existing[:] = [
-        "wf-image-tasks",
-        f"wf-image-tasks-{heavy_key}",  # still used: kept
-        "wf-image-tasks-0123abcd",  # an image this file no longer uses
-        "wf-image-tasks-other",  # not an image hash: left alone
-        "wf-image-tasks-0123abcd-extra",
-        "wf-other-0123abcd",
-    ]
+    mine = {"chalk.workflow-worker": "wf-image-tasks"}
+    recording_groups.existing.update(
+        {
+            "wf-image-tasks": {},
+            f"wf-image-tasks-{heavy_key}": mine,  # still used: kept
+            "wf-image-tasks-0123abcd": mine,  # an image this file no longer uses
+            "wf-image-tasks-4567cdef": {},  # looks like ours but is not tagged ours
+            "wf-image-tasks-89abcdef": {"chalk.workflow-worker": "wf-image-tasks-x"},
+            "wf-other-0123abcd": mine,  # wrong prefix: not even looked up
+        }
+    )
 
     deploy_workflow_worker(str(source))
 
     assert recording_groups.deleted == ["wf-image-tasks-0123abcd"]
     # Deleted only after the main group was redeployed without routes to it.
-    assert [g.kwargs["name"] for g in recording_groups.instances[:3]] != [
-        "wf-image-tasks-0123abcd"
-    ]
     assert recording_groups.instances[2].kwargs["name"] == "wf-image-tasks"
+    heavy_group, tool_group, main_group = recording_groups.instances[:3]
+    assert heavy_group.kwargs["tags"] == tool_group.kwargs["tags"] == mine
+    assert main_group.kwargs["tags"] is None
+
+
+def test_deploy_workflow_worker_cleans_up_under_a_long_worker_name(
+    tmp_path: Path, recording_groups: type[_RecordingScalingGroup]
+) -> None:
+    source = tmp_path / "image_tasks.py"
+    source.write_text(_IMAGE_TASKS_SCRIPT)
+    name = "wf-" + "n" * 37  # at the 40-character limit: task workers truncate it
+    prefix = task_worker_name(name, "0" * 8)[:-8]
+    recording_groups.existing.update(
+        {f"{prefix}0123abcd": {"chalk.workflow-worker": name}}
+    )
+
+    deploy_workflow_worker(str(source), name=name)
+
+    assert recording_groups.deleted == [f"{prefix}0123abcd"]
+
+
+def test_deploy_workflow_worker_skips_image_tasks_from_other_files(
+    tmp_path: Path,
+    recording_groups: type[_RecordingScalingGroup],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Another file's image task is registered in this process, as it would be after
+    # importing a second workflow module. It is not this file's to deploy.
+    other = tmp_path / "other_wf.py"
+    other.write_text(
+        _SCRIPT
+        + textwrap.dedent(
+            """\
+            from chalk.workflows import task
+
+            @task(image=cc.Image.debian_slim("3.12"))
+            def other_image_task(x: int) -> int:
+                return x
+            """
+        )
+    )
+    _load_workflow_source(str(other))
+    source = tmp_path / "image_tasks.py"
+    source.write_text(_IMAGE_TASKS_SCRIPT)
+
+    with caplog.at_level("WARNING"):
+        worker = deploy_workflow_worker(str(source))
+
+    assert set(worker.task_workers) == {"embed", "rerank", "tool"}
+    assert "other_image_task" in caplog.text
 
 
 def test_deploy_workflow_worker_survives_a_failed_cleanup(
