@@ -47,6 +47,7 @@ from chalkcompute._connect import ConnectClient, build_image
 from chalkcompute._containerspec import (
     ComputeClass,
     ContainerSpec,
+    NetworkPolicy,
     ExecutionBackend,
     validate_replica_and_utilization,
 )
@@ -293,6 +294,9 @@ class ScalingGroup:
     ``StartupProbe.grpc(...)``. External startup probes are not supported with
     ``authenticated=True``.
 
+    ``network_policy`` configures host egress. Omit it for the server default;
+    ``NetworkPolicy()`` denies all egress. Kubernetes groups do not support it.
+
     Examples
     --------
     >>> from chalkcompute import ScalingGroup, Image
@@ -318,6 +322,7 @@ class ScalingGroup:
         name: str | None = None,
         cpu: str | None = None,
         compute_class: ComputeClass | None = None,
+        network_policy: NetworkPolicy | None = None,
         execution_target: ExecutionBackend | None = None,
         memory: str | None = None,
         gpu: str | None = None,
@@ -360,6 +365,7 @@ class ScalingGroup:
             name=name,
             cpu=cpu,
             compute_class=compute_class,
+            network_policy=network_policy,
             execution_target=execution_target,
             memory=memory,
             gpu=gpu,
@@ -388,6 +394,7 @@ class ScalingGroup:
         self._name = name
         self._cpu = cpu
         self._compute_class = compute_class
+        self._network_policy = network_policy
         self._execution_target = execution_target
         self._memory = memory
         self._gpu = gpu
@@ -500,6 +507,7 @@ class ScalingGroup:
         sg._name = None
         sg._cpu = None
         sg._compute_class = None
+        sg._network_policy = None
         sg._execution_target = None
         sg._memory = None
         sg._gpu = None
@@ -653,6 +661,7 @@ class ScalingGroup:
             entrypoint=self._entrypoint,
             cpu=self._cpu,
             compute_class=self._compute_class,
+            network_policy=self._network_policy,
             execution_target=self._execution_target,
             memory=self._memory,
             gpu=self._gpu,

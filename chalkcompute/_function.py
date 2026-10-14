@@ -90,6 +90,7 @@ from chalkcompute._connect import (
 from chalkcompute._containerspec import (
     ComputeClass,
     ContainerSpec,
+    NetworkPolicy,
     ExecutionBackend,
     validate_replica_and_utilization,
 )
@@ -2322,6 +2323,7 @@ class RemoteFunction:
         name: str | None = None,
         cpu: str | None = None,
         compute_class: ComputeClass | None = None,
+        network_policy: NetworkPolicy | None = None,
         execution_target: ExecutionBackend | None = None,
         memory: str | None = None,
         gpu: str | None = None,
@@ -2399,6 +2401,7 @@ class RemoteFunction:
             name=name,
             cpu=cpu,
             compute_class=compute_class,
+            network_policy=network_policy,
             execution_target=execution_target,
             memory=memory,
             gpu=gpu,
@@ -2418,6 +2421,7 @@ class RemoteFunction:
         self._image = normalized_image
         self._cpu = cpu
         self._compute_class = compute_class
+        self._network_policy = network_policy
         self._execution_target = execution_target
         self._memory = memory
         self._gpu = gpu
@@ -2673,6 +2677,7 @@ class RemoteFunction:
         f._image = None
         f._cpu = None
         f._compute_class = None
+        f._network_policy = None
         f._execution_target = None
         f._memory = None
         f._gpu = None
@@ -3075,6 +3080,7 @@ class RemoteFunction:
                 ),
                 cpu=self._cpu,
                 compute_class=self._compute_class,
+                network_policy=self._network_policy,
                 execution_target=self._execution_target,
                 memory=self._memory,
                 gpu=self._gpu,
@@ -4214,6 +4220,7 @@ def function(
     image: _Image | None = None,
     cpu: str | None = None,
     compute_class: ComputeClass | None = None,
+    network_policy: NetworkPolicy | None = None,
     execution_target: ExecutionBackend | None = None,
     memory: str | None = None,
     gpu: str | None = None,
@@ -4255,6 +4262,7 @@ def function(
     image: _Image | None = None,
     cpu: str | None = None,
     compute_class: ComputeClass | None = None,
+    network_policy: NetworkPolicy | None = None,
     execution_target: ExecutionBackend | None = None,
     memory: str | None = None,
     gpu: str | None = None,
@@ -4297,6 +4305,7 @@ def function(
     image: _Image | None = None,
     cpu: str | None = None,
     compute_class: ComputeClass | None = None,
+    network_policy: NetworkPolicy | None = None,
     execution_target: ExecutionBackend | None = None,
     memory: str | None = None,
     gpu: str | None = None,
@@ -4365,6 +4374,9 @@ def function(
     compute_class
         Where to run replicas. Omit to use the server default; HOST requires fixed,
         positive replica counts.
+    network_policy
+        Optional host egress policy. Omit for the server default;
+        ``NetworkPolicy()`` denies all egress. Kubernetes does not support it.
     execution_target
         Optional :class:`ExecutionBackend`; defaults to the environment cluster.
     memory
@@ -4494,6 +4506,7 @@ def function(
             name=name,
             cpu=cpu,
             compute_class=compute_class,
+            network_policy=network_policy,
             execution_target=execution_target,
             memory=memory,
             gpu=gpu,

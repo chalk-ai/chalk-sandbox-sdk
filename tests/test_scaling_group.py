@@ -6,19 +6,49 @@ from unittest.mock import MagicMock
 import pytest
 
 import chalkcompute._scaling_group as scaling_group_mod
-from chalkcompute import ExecutionBackend, ScalingGroup
+from chalkcompute import ExecutionBackend, NetworkPolicy, ScalingGroup
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from tests._fakes import ScalingGroupClient
 
 
-def test_scaling_group_deploy_forwards_tags_and_chalk_identity() -> None:
+@pytest.mark.parametrize(
+    ("policy", "expected"),
+    [
+        (None, None),
+        (NetworkPolicy(), container_pb.NetworkPolicy()),
+        (
+            NetworkPolicy(
+                allowed_routes=[NetworkPolicy.Route("10.0.0.0/8", ports=[443])],
+                denied_routes=["10.1.0.0/16"],
+                allowed_hosts={"example.com": []},
+            ),
+            container_pb.NetworkPolicy(
+                allowed_routes=[
+                    container_pb.AllowedRoute(
+                        route="10.0.0.0/8",
+                        port_ranges=[
+                            container_pb.PortRange(start_port=443, end_port=443)
+                        ],
+                    )
+                ],
+                denied_routes=["10.1.0.0/16"],
+                allowed_hosts={"example.com": container_pb.NetworkPolicyRuleList()},
+            ),
+        ),
+    ],
+)
+def test_scaling_group_deploy_forwards_spec_fields(
+    policy: NetworkPolicy | None,
+    expected: container_pb.NetworkPolicy | None,
+) -> None:
     client = ScalingGroupClient()
     sg = ScalingGroup(
         image="nginx:alpine",
         name="tagged-group",
         tags={"team": "compute"},
         chalk_identity=True,
+        network_policy=policy,
     )
     sg._client = cast(Any, client)
 
@@ -29,6 +59,10 @@ def test_scaling_group_deploy_forwards_tags_and_chalk_identity() -> None:
     assert request.spec is not None and request.spec.container_spec is not None
     assert dict(request.spec.container_spec.tags) == {"team": "compute"}
     assert request.spec.container_spec.has_field("chalk_workload_identity")
+    assert request.spec.container_spec.has_field("network_policy") == (
+        expected is not None
+    )
+    assert request.spec.container_spec.network_policy == expected
 
 
 @pytest.mark.parametrize(
