@@ -359,14 +359,17 @@ class TestAddLocalFileEagerValidation:
         )
         assert any(lf.dest == "/app/foo.py" for lf in img.lazy_local_files)
 
-    def test_nonexistent_src_is_deferred_to_upload(self) -> None:
-        """A5: a missing volume-strategy source is reported at upload, not at
-        construction, since specs are built at import time, including by workers
-        re-importing the file on a machine without the sources."""
+    def test_nonexistent_src_is_reported_when_the_image_is_used(self) -> None:
+        """A5: a missing volume-strategy source is reported when the image is used,
+        like a root-level destination, not at construction: a process that only
+        registers specs, such as a workflow worker re-importing the file that built
+        its own image, has no local files."""
         img = Image.debian_slim().add_local_file(
             "/no/such/file.py", "/app/file.py", strategy="volume"
         )
         assert {lf.src for lf in img.lazy_local_files} == {"/no/such/file.py"}
+        with pytest.raises(FileNotFoundError, match="not found"):
+            img.validate_lazy_local_files_for_volume_mounts()
 
     def test_copy_strategy_unaffected(self) -> None:
         """strategy='copy' already raised FileNotFoundError; behaviour must not change."""
