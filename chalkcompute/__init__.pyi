@@ -154,6 +154,10 @@ from chalkcompute._training import TrainingFunction as TrainingFunction
 from chalkcompute._training import TrainingRunHandle as TrainingRunHandle
 from chalkcompute._training import training as training
 
+from chalkcompute._workflow import WorkflowError as WorkflowError
+from chalkcompute._workflow import run_workflow as run_workflow
+from chalkcompute._workflow import trigger_workflow as trigger_workflow
+
 # Back-compat aliases: all volumes are versioned, so the qualifier is gone from
 # the canonical names. Keep the old spellings importable.
 from chalkcompute._volume import Volume as VersionedVolume
@@ -304,6 +308,9 @@ __all__ = [
     "TrainingRunHandle",
     "TrainingError",
     "training",
+    "WorkflowError",
+    "run_workflow",
+    "trigger_workflow",
     "SessionSummary",
     "Span",
     "SpanKind",
