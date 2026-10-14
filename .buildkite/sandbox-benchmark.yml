@@ -13,6 +13,8 @@ env:
   UV_VERSION: "0.11.14"
   BENCHMARK_RESULTS_URL: "https://benchmark-results-server-290587571767.us-central1.run.app"
   ARTIFACT_GCS_BUCKET: "chalk-ci-artifact-cache"
+  # Set to "0" to resume volume benchmark alerts.
+  MUTE_VOLUME_BENCHMARK_ALERTS: "1"
 
 steps:
   # To add a new benchmark:
@@ -70,7 +72,10 @@ steps:
           channels:
             - "#proj-compute-volumes"
           message: ":floppy_disk: <@U0AT4JH64Q4> sandbox volume benchmark failed on main."
-        if: build.branch == "main" && step.outcome == "hard_failed"
+        if: >-
+          build.branch == "main" &&
+          step.outcome == "hard_failed" &&
+          build.env("MUTE_VOLUME_BENCHMARK_ALERTS") != "1"
     retry:
       automatic:
         - exit_status: -1
