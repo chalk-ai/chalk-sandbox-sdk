@@ -389,19 +389,55 @@ set `CHALK_GRPC_ENGINE` explicitly if the identity cannot read environment metad
 
 ### Workload identity federation
 
-Use the authenticated Connect client to mint a short-lived OIDC token for a
-third-party workload identity provider. For example, with Snowflake configured
-to trust Chalk's issuer and JWKS:
+Use `WorkloadIdentityTokenSource` to fetch short-lived OIDC tokens for an
+external service. The source uses ambient Chalk authentication, or accepts an
+initialized `ConnectClient` through `connect_client=`. It caches tokens with
+server-reported expiry and refreshes them when they cannot meet `min_ttl`.
 
 ```python
-from chalkcompute import ConnectClient
+from datetime import timedelta
+from chalkcompute import WorkloadIdentityTokenSource
 
-token = ConnectClient().get_workload_identity_token("snowflakecomputing.com")
+with WorkloadIdentityTokenSource("api.example.com") as source:
+    token = source.get_token(min_ttl=timedelta(seconds=60))
+    # Pass token.value to the external service or its authentication library.
 ```
 
-The token is scoped to the active Chalk environment. Its audience is the value
-passed to `get_workload_identity_token`, and its signing key is published by the
-Chalk API server at `/.well-known/jwks.json`.
+For a CLI that accepts a token file, use `source.token_file()` to create a
+temporary file with `0600` permissions. Run token retrieval and the consuming
+command inside the same workload so the token stays there. For example, inside
+a sandbox started with `chalk_identity=True` and with `chalkcompute` and
+`snowflake-cli` installed:
+
+```python
+import os
+import subprocess
+from datetime import timedelta
+from chalkcompute import WorkloadIdentityTokenSource
+
+with WorkloadIdentityTokenSource("snowflakecomputing.com") as source:
+    with source.token_file(min_ttl=timedelta(seconds=60)) as token_path:
+        subprocess.run(
+            ["snow", "sql", "--temporary-connection", "-q", "select current_user()"],
+            env=os.environ | {
+                "SNOWFLAKE_ACCOUNT": "<account>",
+                "SNOWFLAKE_USER": "<user>",
+                "SNOWFLAKE_AUTHENTICATOR": "WORKLOAD_IDENTITY",
+                "SNOWFLAKE_WORKLOAD_IDENTITY_PROVIDER": "OIDC",
+                "SNOWFLAKE_TOKEN_FILE_PATH": str(token_path),
+            },
+            check=True,
+        )
+```
+
+The file contains a snapshot of the token and is deleted on context exit,
+including when the command raises. `min_ttl` applies when the token is acquired;
+the file is not refreshed continuously.
+
+The token is scoped to the active Chalk environment and the requested audience.
+The external service must trust Chalk's issuer and validate the token using the
+Chalk API server's `/.well-known/jwks.json` endpoint. The existing
+`ConnectClient.get_workload_identity_token()` string API remains available.
 
 ## Chalk SQL
 

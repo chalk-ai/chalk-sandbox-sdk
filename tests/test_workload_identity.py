@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+import stat
+import subprocess
+import sys
 
 import pytest
 from google.protobuf.timestamp_pb2 import Timestamp
@@ -161,3 +165,55 @@ def test_close_closes_an_internally_created_client(
     source.close()
 
     assert connect.closed
+
+
+def test_token_file_is_private_readable_by_child_and_removed_on_exit() -> None:
+    connect = _FakeConnectClient(
+        [_response("jwt", expires_at=datetime.now(UTC) + timedelta(minutes=5))]
+    )
+    source = WorkloadIdentityTokenSource("api.example.com", connect_client=connect)  # type: ignore[arg-type]
+
+    with source.token_file(min_ttl=timedelta(seconds=60), timeout=12) as path:
+        assert isinstance(path, Path)
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+        subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from pathlib import Path; import sys; "
+                "assert Path(sys.argv[1]).read_text() == 'jwt'",
+                str(path),
+            ],
+            check=True,
+        )
+
+    assert not path.exists()
+    assert not path.parent.exists()
+    assert connect.requests == [("api.example.com", 12)]
+
+
+def test_token_file_is_removed_when_consumer_raises() -> None:
+    connect = _FakeConnectClient([_response("jwt")])
+    source = WorkloadIdentityTokenSource("api.example.com", connect_client=connect)  # type: ignore[arg-type]
+    path: Path | None = None
+
+    with pytest.raises(RuntimeError, match="consumer failed"):
+        with source.token_file() as path:
+            raise RuntimeError("consumer failed")
+
+    assert path is not None
+    assert not path.exists()
+    assert not path.parent.exists()
+
+
+@pytest.mark.parametrize("expires_at", [None, datetime.now(UTC) + timedelta(seconds=2)])
+def test_token_file_rejects_a_token_without_the_requested_lifetime(
+    expires_at: datetime | None,
+) -> None:
+    connect = _FakeConnectClient([_response("jwt", expires_at=expires_at)])
+    source = WorkloadIdentityTokenSource("api.example.com", connect_client=connect)  # type: ignore[arg-type]
+
+    with pytest.raises(WorkloadIdentityTokenError):
+        with source.token_file(min_ttl=timedelta(seconds=60)):
+            pytest.fail("token_file must not yield an unsuitable token")

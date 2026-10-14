@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import tempfile
 import threading
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from chalkcompute._connect import ConnectClient
 
@@ -129,6 +133,32 @@ class WorkloadIdentityTokenSource:
 
             self._cached_token = token if expires_at is not None else None
             return token
+
+    @contextmanager
+    def token_file(
+        self,
+        *,
+        min_ttl: timedelta = timedelta(0),
+        timeout: float = 30,
+    ) -> Generator[Path, None, None]:
+        """Yield a private temporary file containing an OIDC token.
+
+        Uses :meth:`get_token` to satisfy ``min_ttl`` at acquisition time. The
+        file is a snapshot and is not refreshed while the context is open. It
+        is closed before being yielded so another process can read it, and is
+        deleted when the context exits, including when the consumer raises.
+
+        The file is created with owner-only read/write permissions (``0600``)
+        inside a private temporary directory. Call this method inside the
+        workload that will consume the token so its value stays there.
+        """
+        token = self.get_token(min_ttl=min_ttl, timeout=timeout)
+        with tempfile.TemporaryDirectory(prefix="chalk-oidc-") as directory:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=directory, delete=False
+            ) as token_file:
+                token_file.write(token.value)
+            yield Path(token_file.name)
 
     def close(self) -> None:
         """Clear cached token data and close an internally owned client."""
