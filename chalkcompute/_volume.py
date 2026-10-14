@@ -1639,6 +1639,10 @@ class VolumeClient:
             )
             source: builtins.list[tuple[Any, ...]] = []
             for file in files:
+                if not os.path.isfile(file.src):
+                    raise FileNotFoundError(
+                        f"add_local_file: source file not found: {file.src!r}"
+                    )
                 path = os.path.relpath(file.dest, mount_path).replace(os.sep, "/")
                 entry: tuple[Any, ...] = (path, Path(file.src))
                 if file.mode is not None:

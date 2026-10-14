@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import logging
 import os
 import re
 import sys
@@ -38,6 +39,8 @@ _TASK_QUEUE_PREFIX = "chalkcompute-workflows."
 _MAX_WORKER_NAME_LENGTH = 40
 
 _SOURCE_DIR = "/app"
+
+logger = logging.getLogger(__name__)
 
 # Where the worker running the workflows sends each task that has an image of its own;
 # read by `chalk.workflows.worker`.
@@ -116,18 +119,44 @@ def worker_requirements(source: str) -> list[str]:
     """
     declared = script_dependencies(source)
     if declared is None:
-        declared = [f"chalkpy=={_installed_version('chalkpy')}"]
+        declared = [_installed_requirement("chalkpy")]
         if re.search(r"(?m)^\s*(import|from)\s+chalkcompute\b", source):
-            declared.append(f"chalkcompute=={_installed_version('chalkcompute')}")
+            declared.append(_installed_requirement("chalkcompute"))
     chalkpy = [r for r in declared if _requirement_name(r) == "chalkpy"]
     others = [r for r in declared if _requirement_name(r) != "chalkpy"]
     if not chalkpy:
         return ["chalkpy[workflows]", *others]
-    # Re-state each chalkpy requirement with the extra, keeping its version constraint.
-    return [
-        re.sub(r"^(chalkpy)(\[[^\]]*\])?", r"chalkpy[workflows]", r.strip(), flags=re.I)
-        for r in chalkpy
-    ] + others
+    # Re-state each chalkpy requirement with the extra, keeping its other extras and
+    # its version constraint.
+    return [_with_extra(r, "workflows") for r in chalkpy] + others
+
+
+_REQUIREMENT_EXTRAS_RE = re.compile(
+    r"^(?P<name>[A-Za-z0-9._-]+)(?:\[(?P<extras>[^\]]*)\])?(?P<rest>.*)$", re.S
+)
+
+
+def _with_extra(requirement: str, extra: str) -> str:
+    match = _REQUIREMENT_EXTRAS_RE.match(requirement.strip())
+    assert match is not None
+    extras = [e.strip() for e in (match.group("extras") or "").split(",") if e.strip()]
+    if extra not in extras:
+        extras.append(extra)
+    return f"{match.group('name')}[{','.join(extras)}]{match.group('rest')}"
+
+
+def _installed_requirement(distribution: str) -> str:
+    """``distribution`` pinned to the version installed here, so the worker runs what the
+    script ran against. A checkout installed with ``uv pip install -e`` reports the
+    placeholder ``0.0.0``, which no index serves, so it gets the latest release instead."""
+    version = _installed_version(distribution)
+    if _is_placeholder_version(version):
+        return distribution
+    return f"{distribution}=={version}"
+
+
+def _is_placeholder_version(version: str) -> bool:
+    return re.fullmatch(r"0(\.0)*([.+-].*)?", version.strip()) is not None
 
 
 def _installed_version(distribution: str) -> str:
@@ -154,10 +183,13 @@ def _source_path_for(workflow: Any) -> str:
 
 
 def _task_images(source: str) -> dict[str, Image]:
-    """The tasks defined in ``source`` that declare an image, by task name.
+    """The registered tasks that declare an image, by task name.
 
     The running script's tasks are already registered; any other file is imported,
-    as its worker will import it, so that its decorators run.
+    as its worker will import it, so that its decorators run. Tasks that ``source``
+    imports from other modules count too: the worker running the workflows routes
+    by task name, so they must be served somewhere, and the task's worker imports
+    ``source`` just as the main worker does.
     """
     from chalk.workflows import TASK_REGISTRY, WORKFLOW_REGISTRY
     from chalk.workflows.worker import load_workflow_source
@@ -172,7 +204,7 @@ def _task_images(source: str) -> dict[str, Image]:
     images: dict[str, Image] = {}
     for definition in TASK_REGISTRY.values():
         image = getattr(definition, "image", None)
-        if image is None or not defined_here(definition):
+        if image is None:
             continue
         if isinstance(image, str):
             image = Image.base(image)
@@ -191,8 +223,11 @@ def image_key(image: Image) -> str:
     identity = {
         # Canonical JSON rather than proto bytes, which leave map (env) order unspecified.
         "spec": json.loads(image._to_build_proto().to_json()),
+        # Contents, not local paths: the same image from another checkout or machine
+        # is the same image.
         "local_files": sorted(
-            [f.src, f.dest, f.mode, f.mount_root] for f in image.lazy_local_files
+            [_file_digest(f.src), f.dest, f.mode, f.mount_root]
+            for f in image.lazy_local_files
         ),
         "volumes": sorted(
             [m.name, m.mount_path, m.version_id] for m in image._volume_mounts
@@ -200,6 +235,15 @@ def image_key(image: Image) -> str:
     }
     digest = hashlib.sha256(json.dumps(identity, sort_keys=True, default=str).encode())
     return digest.hexdigest()[:_IMAGE_KEY_LENGTH]
+
+
+def _file_digest(path: str) -> str:
+    try:
+        with open(path, "rb") as f:
+            return hashlib.file_digest(f, "sha256").hexdigest()
+    except FileNotFoundError:
+        # Reported when the image is uploaded; the key only needs to be stable.
+        return f"missing:{path}"
 
 
 def task_worker_name(worker_name: str, key: str) -> str:
@@ -244,10 +288,13 @@ def deploy_workflow_worker(
         Base image for the worker. The source file is added to it, along with the
         packages from ``worker_requirements`` when no image is given.
 
-    Each distinct ``@task(image=...)`` image in ``source`` gets a group of its own,
+    Each distinct ``@task(image=...)`` image gets a group of its own,
     ``<name>-<image hash>``, deployed with the same resources, env, and secrets. Its
     image is the task's, plus the packages from ``worker_requirements`` and the
-    source file, since that worker imports the file too.
+    source file, since that worker imports the file too. Tasks ``source`` imports
+    from other modules are included; those modules must be present in the task's
+    image, as they must be in the main worker's. Task workers left over from an
+    earlier deploy of this file, for images it no longer uses, are deleted.
     """
     if source is None:
         source = getattr(sys.modules.get("__main__"), "__file__", None)
@@ -308,8 +355,10 @@ def deploy_workflow_worker(
     # Task workers first, so the workflows never route a task to a queue nothing will serve.
     task_workers: dict[str, ScalingGroup] = {}
     task_queues: dict[str, str] = {}
+    task_worker_names: list[str] = []
     for key, task_names in tasks_by_image.items():
         group_name = task_worker_name(worker_name, key)
+        task_worker_names.append(group_name)
         group_queue = f"{_TASK_QUEUE_PREFIX}{group_name}"
         group = deploy_group(
             group_name,
@@ -331,9 +380,63 @@ def deploy_workflow_worker(
             _TASK_QUEUES_ENV_VAR: json.dumps(task_queues, sort_keys=True),
         }
     scaling_group = deploy_group(worker_name, image, task_queue, main_env, [])
+    # Only now, with the main group routing nothing to them, are the task workers of
+    # images this file no longer uses safe to remove.
+    _delete_stale_task_workers(
+        worker_name, keep=set(task_worker_names), chalk_client=chalk_client
+    )
     return WorkflowWorker(
         scaling_group=scaling_group, task_queue=task_queue, task_workers=task_workers
     )
+
+
+def _task_worker_name_pattern(worker_name: str) -> re.Pattern[str]:
+    return re.compile(rf"^{re.escape(worker_name)}-[0-9a-f]{{{_IMAGE_KEY_LENGTH}}}$")
+
+
+def _list_scaling_group_names(search: str, chalk_client: Any | None) -> list[str]:
+    from chalkcompute._gen.chalk.scalinggroup.v1 import service_connect as sg_connect
+    from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
+
+    client = ScalingGroup._make_empty(chalk_client=chalk_client)._client
+    stub = client.stub(sg_connect.ScalingGroupManagerServiceClientSync)
+    names: list[str] = []
+    cursor: str | None = None
+    while True:
+        response = client.call(
+            stub.list_scaling_groups,
+            sg_pb.ListScalingGroupsRequest(search=search, limit=100, cursor=cursor),
+        )
+        names.extend(g.name for g in response.scaling_groups)
+        cursor = response.next_cursor or None
+        if cursor is None or not response.scaling_groups:
+            return names
+
+
+def _delete_stale_task_workers(
+    worker_name: str, *, keep: set[str], chalk_client: Any | None
+) -> list[str]:
+    """Delete ``<worker_name>-<image hash>`` groups other than ``keep``: task workers
+    an earlier deploy of this file created for images it no longer uses."""
+    pattern = _task_worker_name_pattern(worker_name)
+    try:
+        names = _list_scaling_group_names(worker_name, chalk_client)
+    except Exception as exc:  # a failed cleanup must not fail the deploy
+        logger.warning(
+            "Could not list scaling groups to clean up task workers: %s", exc
+        )
+        return []
+    stale = sorted(n for n in set(names) if pattern.match(n) and n not in keep)
+    deleted: list[str] = []
+    for name in stale:
+        try:
+            ScalingGroup.from_name(name, chalk_client=chalk_client).delete()
+        except Exception as exc:
+            logger.warning("Could not delete stale task worker %r: %s", name, exc)
+            continue
+        logger.info("Deleted stale task worker %r", name)
+        deleted.append(name)
+    return deleted
 
 
 def run_workflow(

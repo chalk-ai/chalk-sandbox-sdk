@@ -662,6 +662,9 @@ class Image:
         ValueError
             If ``strategy="copy"`` exceeds the per-file or total copied-content
             limit.
+        FileNotFoundError
+            If ``strategy="copy"`` and ``src`` does not exist. A missing
+            ``strategy="volume"`` file is reported when the image is uploaded.
 
         Examples
         --------
@@ -687,11 +690,10 @@ class Image:
         new = self._copy()
         if strategy == "volume":
             _validate_lazy_local_file_destination(dest)
+            # Existence is checked when the files are uploaded, not here: image specs
+            # are often built at import time, including by workers that re-import the
+            # file on a machine without the local sources.
             src_path = Path(src).resolve()
-            if not src_path.exists():
-                raise FileNotFoundError(
-                    f"add_local_file: source file not found: {str(src_path)!r}"
-                )
             new._lazy_local_files.add(
                 LazyLocalFile(src=str(src_path), dest=dest, mode=mode)
             )
