@@ -99,7 +99,9 @@ def llm_judge(
     Naming ``trace`` among them hands the judge the row's
     :class:`~chalkcompute.Trace`, rendered into the prompt with
     :meth:`~chalkcompute.Trace.transcript`, or ``None`` for a row that recorded
-    no telemetry. ``prompt_fn(response_model, **inputs)`` replaces the prompt
+    no telemetry. The default prompt fails the row if raw trace content was
+    externalized but not loaded, or was omitted/truncated during recording.
+    ``prompt_fn(response_model, **inputs)`` replaces the prompt
     and receives that same handle; ``parse_fn``
     replaces structured outputs. With neither ``base_url`` nor ``api_key`` the
     judge calls Chalk's AI router as the environment itself, so no provider key
@@ -382,7 +384,7 @@ def _default_prompt(spec: _JudgeSpec, columns: Mapping[str, Any]) -> str:
 def _render_input(column: str, value: Any) -> str:
     """A prompt section's body: the trace as its transcript, anything else as text."""
     if isinstance(value, Trace):
-        return value.transcript()
+        return value.transcript(require_content=True)
     if column == _TRACE_INPUT and value is None:
         return _NO_TRACE_NOTE
     return str(value)
