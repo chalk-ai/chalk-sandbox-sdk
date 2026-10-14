@@ -1,0 +1,2 @@
+- Keep externalized or omitted LLM turns visible in `Trace.transcript()`, with explicit notes for missing prompt/completion content and recording-time truncation. Storage URIs are not fetched or included in the transcript.
+- Add `Trace.transcript(require_content=True)` and use it for the default `llm_judge` prompt, so known missing raw content fails the row instead of silently producing a partial score. Custom `prompt_fn` implementations retain control over transcript handling. Full external-content hydration still requires backend support.

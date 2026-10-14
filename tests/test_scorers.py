@@ -22,7 +22,7 @@ from chalkcompute._function import (
     _generate_handler_shim,
 )
 from chalkcompute._secret import Secret
-from chalkcompute._trace import Trace
+from chalkcompute._trace import Span, Trace, TraceClient, TraceError
 
 
 class Grade(BaseModel):
@@ -205,6 +205,46 @@ def test_default_prompt_renders_the_trace_as_its_transcript(
     assert user["content"].endswith(
         "## output\n\ndone\n\n## trace\n\nturns of session-1"
     )
+
+
+@pytest.mark.parametrize("direction", ["input", "output"])
+@pytest.mark.parametrize("include_inline_turn", [False, True])
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("content_uri", "s3://private-test-bucket/body"),
+        ("upload_omitted", "upload_failed"),
+        ("truncation", '{"raw_content":{"reason":"byte_budget_exhausted"}}'),
+    ],
+)
+def test_default_prompt_refuses_to_grade_unloaded_trace_content(
+    completion,
+    monkeypatch: pytest.MonkeyPatch,
+    direction: str,
+    include_inline_turn: bool,
+    key: str,
+    value: str,
+) -> None:
+    calls, _ = completion
+    attributes = {f"chalk.trace.{direction}.{key}": value}
+    if direction == "output":
+        attributes["input.value"] = "prompt"
+    spans = [Span("large", "trace-1", "llm.completion", attributes=attributes)]
+    if include_inline_turn:
+        spans.append(
+            Span("small", "trace-1", "llm.completion", attributes={"input.value": "hi"})
+        )
+    monkeypatch.setattr(TraceClient, "list_spans", lambda self, session_id: spans)
+    monkeypatch.setattr("chalkcompute._trace.time.sleep", lambda _: None)
+    monkeypatch.setenv("CHALK_TRACE_COMPLETE_AFTER_SECONDS", "0")
+    client = object.__new__(TraceClient)
+
+    with pytest.raises(TraceError, match=f"incomplete: {direction}"):
+        _judge(inputs=("output", "trace"))._func(
+            output="done", trace=Trace("session-1", _client=client)
+        )
+
+    assert calls == []
 
 
 def test_default_prompt_says_when_no_trace_was_recorded(completion) -> None:

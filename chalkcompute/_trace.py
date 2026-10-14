@@ -33,6 +33,7 @@ a published ``chalkcompute`` for session-aware scoring.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -58,10 +59,9 @@ _T = TypeVar("_T")
 
 _MAX_PAGE_SIZE = 1000
 
-# OpenInference names for what an LLM span carries; chalk-router and the
-# OpenInference instrumentations both write them.
-_INPUT_VALUE_ATTRIBUTE = "input.value"
-_OUTPUT_VALUE_ATTRIBUTE = "output.value"
+# Chalk router metadata for bodies that are externalized, omitted or truncated.
+_CONTENT_METADATA = ("content_uri", "content_bytes", "upload_omitted", "truncation")
+# OpenInference names shared by chalk-router and instrumentations.
 _MODEL_NAME_ATTRIBUTE = "llm.model_name"
 _TOKEN_TOTAL_ATTRIBUTE = "llm.token_count.total"
 _NO_TURNS_NOTE = "(no LLM turns were recorded in this session)"
@@ -440,6 +440,7 @@ class Trace:
         self,
         *,
         max_chars_per_turn: int = 4000,
+        require_content: bool = False,
         wait: bool = True,
         timeout: float = 60.0,
         poll_interval: float = 2.0,
@@ -449,9 +450,12 @@ class Trace:
         """Render this session's LLM turns as text, oldest first.
 
         A turn is a span carrying the OpenInference ``input.value`` attribute
-        (the prompt); ``output.value`` is its completion, when the span has
-        one. Each turn is headed by the model and its token total. Prompts keep
-        their *last* ``max_chars_per_turn`` characters and completions their
+        (the prompt) or Chalk's input-content metadata; ``output.value`` is its
+        completion, when the span has one. Externally stored or omitted content
+        renders as an explicit note: it is not an absent turn. Content URIs are
+        neither fetched nor included in the text. Each turn is headed by the
+        model and its token total. Prompts keep their *last*
+        ``max_chars_per_turn`` characters and completions their
         *first*, so truncation preserves the newest context the model saw and
         the start of what it said. A session with no turns renders as a
         one-line note rather than an empty string.
@@ -463,6 +467,12 @@ class Trace:
         ----------
         max_chars_per_turn
             Characters kept of each prompt and of each completion.
+        require_content
+            Raise :class:`TraceError` if a turn's raw prompt or completion is
+            known to be unavailable or truncated, instead of rendering its
+            omission note. The default ``llm_judge`` prompt enables this to
+            avoid grading incomplete content. This does not disable the
+            deliberate ``max_chars_per_turn`` display limit.
         wait, timeout, poll_interval, expect_min, quiet_for
             See :ref:`the settling rules <trace-waiting>` on :class:`Trace`.
             The wait settles on the whole session but needs a turn: it holds
@@ -500,7 +510,11 @@ class Trace:
             if _count_turns(fetch()):
                 raise
             spans = []
-        return _format_transcript(spans, max_chars_per_turn=max_chars_per_turn)
+        return _format_transcript(
+            spans,
+            max_chars_per_turn=max_chars_per_turn,
+            require_content=require_content,
+        )
 
     def _require_client(self) -> TraceClient:
         if self._client is None:
@@ -510,12 +524,14 @@ class Trace:
         return client
 
 
-def _format_transcript(spans: Sequence[Span], *, max_chars_per_turn: int) -> str:
+def _format_transcript(
+    spans: Sequence[Span], *, max_chars_per_turn: int, require_content: bool = False
+) -> str:
     """Render the LLM turns among ``spans``; see :meth:`Trace.transcript`."""
     if max_chars_per_turn <= 0:
         raise ValueError("max_chars_per_turn must be positive")
     turns = sorted(
-        (span for span in spans if _INPUT_VALUE_ATTRIBUTE in span.attributes),
+        (span for span in spans if _has_content(span, "input")),
         # Spans without a start time sort last, in the order they arrived.
         key=lambda span: (
             span.start_time is None,
@@ -530,21 +546,70 @@ def _format_transcript(spans: Sequence[Span], *, max_chars_per_turn: int) -> str
         tokens = span.attribute_int(_TOKEN_TOTAL_ATTRIBUTE)
         heading = f"### turn {index} ({model}"
         heading += f", {tokens:,} tokens)" if tokens is not None else ")"
-        lines = [
-            heading,
-            "[prompt]",
-            _keep_tail(span.attributes[_INPUT_VALUE_ATTRIBUTE], max_chars_per_turn),
-        ]
-        completion = span.attributes.get(_OUTPUT_VALUE_ATTRIBUTE)
-        if completion is not None:
-            lines += ["[completion]", _keep_head(completion, max_chars_per_turn)]
+        lines = [heading]
+        for direction, label in (("input", "prompt"), ("output", "completion")):
+            content = _transcript_content(
+                span,
+                direction,
+                max_chars=max_chars_per_turn,
+                require_content=require_content,
+            )
+            if content is not None:
+                lines += [f"[{label}]", content]
         parts.append("\n".join(lines))
     return "\n\n".join(parts)
 
 
 def _count_turns(spans: Sequence[Span]) -> int:
     """How many of ``spans`` a transcript renders: those carrying a prompt."""
-    return sum(1 for span in spans if _INPUT_VALUE_ATTRIBUTE in span.attributes)
+    return sum(1 for span in spans if _has_content(span, "input"))
+
+
+def _has_content(span: Span, direction: str) -> bool:
+    """Metadata is evidence of content even when its body is not inline."""
+    return f"{direction}.value" in span.attributes or any(
+        f"chalk.trace.{direction}.{key}" in span.attributes for key in _CONTENT_METADATA
+    )
+
+
+def _transcript_content(
+    span: Span, direction: str, *, max_chars: int, require_content: bool
+) -> str | None:
+    if not _has_content(span, direction):
+        return None
+    attributes = span.attributes
+    prefix = f"chalk.trace.{direction}."
+    value = attributes.get(f"{direction}.value")
+    truncation = attributes.get(f"{prefix}truncation")
+    raw_truncated = False
+    if truncation is not None:
+        # Router truncation can concern flattened metadata, while the full raw
+        # body remains intact. Only raw_content proves that body was lost.
+        try:
+            details = json.loads(truncation)
+        except (TypeError, ValueError):
+            details = None
+        raw_truncated = isinstance(details, dict) and "raw_content" in details
+
+    if require_content and (value is None or raw_truncated):
+        raise TraceError(
+            f"Trace content is incomplete: {direction} for span {span.span_id!r} "
+            "is not loaded or was omitted/truncated. Cannot score the full trace. "
+            "Use transcript(require_content=False) to inspect the omission."
+        )
+
+    if value is not None:
+        keep = _keep_tail if direction == "input" else _keep_head
+        content = keep(value, max_chars)
+    elif f"{prefix}content_uri" in attributes:
+        content = "(content stored externally; not loaded)"
+    elif f"{prefix}upload_omitted" in attributes:
+        content = "(content unavailable; upload omitted)"
+    else:
+        content = "(content unavailable; body not recorded inline)"
+    if truncation is not None:
+        content += "\n(content or trace attributes were truncated during recording)"
+    return content
 
 
 def _keep_head(text: str, limit: int) -> str:

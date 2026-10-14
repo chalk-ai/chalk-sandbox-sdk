@@ -218,6 +218,174 @@ def test_transcript_rejects_a_non_positive_turn_budget() -> None:
         Trace("session-1", _client=client).transcript(wait=False, max_chars_per_turn=0)
 
 
+@pytest.mark.parametrize("include_inline_turn", [False, True])
+def test_transcript_keeps_externalized_turns(
+    clock: list[float], include_inline_turn: bool
+) -> None:
+    """A body stored outside the span is present, even before it can be loaded."""
+    spans = [
+        _turn(
+            "large",
+            "2026-08-17T00:00:02Z",
+            **{
+                "chalk.trace.input.content_uri": "s3://private-test-bucket/prompt",
+                "chalk.trace.output.content_uri": "s3://private-test-bucket/completion",
+                "chalk.trace.input.content_bytes": "65537",
+                "chalk.trace.output.content_bytes": "65537",
+            },
+        )
+    ]
+    if include_inline_turn:
+        spans.append(
+            _turn("small", "2026-08-17T00:00:01Z", **{"input.value": "small prompt"})
+        )
+    response = _response({"spans": spans})
+    client, connect = _client({"list_span": [response] * 40})
+
+    text = Trace("session-1", _client=client).transcript(quiet_for=30)
+
+    assert text.count("### turn ") == len(spans)
+    assert "[prompt]\n(content stored externally; not loaded)" in text
+    assert "[completion]\n(content stored externally; not loaded)" in text
+    assert "s3://" not in text
+    assert "no LLM turns" not in text
+    assert clock[0] == 30
+    assert len(connect.calls) == 16
+
+
+def test_transcript_marks_externalized_output_for_inline_prompt() -> None:
+    client, _ = _client(
+        {
+            "list_span": [
+                _response(
+                    {
+                        "spans": [
+                            _span_dict(
+                                "large-output",
+                                **{
+                                    "input.value": "small prompt",
+                                    "chalk.trace.output.content_uri": "s3://private-test-bucket/completion",
+                                },
+                            )
+                        ]
+                    }
+                )
+            ]
+        }
+    )
+
+    text = Trace("session-1", _client=client).transcript(wait=False)
+
+    assert "small prompt" in text
+    assert "[completion]\n(content stored externally; not loaded)" in text
+    assert "s3://" not in text
+
+
+@pytest.mark.parametrize("direction", ["input", "output"])
+@pytest.mark.parametrize(
+    ("metadata", "note"),
+    [
+        ({"content_uri": ""}, "content stored externally; not loaded"),
+        ({"content_uri": "not a URI"}, "content stored externally; not loaded"),
+        ({"content_bytes": "65537"}, "body not recorded inline"),
+        ({"upload_omitted": "upload_failed"}, "upload omitted"),
+        ({"upload_omitted": "upload_timed_out"}, "upload omitted"),
+        (
+            {"truncation": '{"raw_content":{"reason":"serialization_failed"}}'},
+            "truncated during recording",
+        ),
+        ({"truncation": "malformed metadata"}, "truncated during recording"),
+    ],
+)
+def test_transcript_surfaces_missing_content_on_either_side(
+    direction: str, metadata: dict[str, str], note: str
+) -> None:
+    attributes = {
+        f"chalk.trace.{direction}.{key}": value for key, value in metadata.items()
+    }
+    if direction == "output":
+        attributes["input.value"] = "prompt"
+    response = _response({"spans": [_span_dict("span-1", **attributes)]})
+    client, connect = _client({"list_span": [response, response]})
+    trace = Trace("session-1", _client=client)
+
+    # A tiny text budget must not hide the diagnostic, and no content URI is
+    # dereferenced: the only RPCs are the two explicitly requested span reads.
+    text = trace.transcript(wait=False, max_chars_per_turn=1)
+    assert "### turn 1" in text
+    assert note in text
+    with pytest.raises(TraceError, match=f"incomplete: {direction}"):
+        trace.transcript(wait=False, require_content=True)
+    assert [method for method, _ in connect.calls] == ["list_span", "list_span"]
+
+
+@pytest.mark.parametrize("direction", ["input", "output"])
+@pytest.mark.parametrize(
+    "truncation", ['{"messages":{"omitted":1}}', "malformed metadata", "[]", "null"]
+)
+def test_transcript_surfaces_metadata_truncation_without_rejecting_intact_body(
+    direction: str,
+    truncation: str,
+) -> None:
+    attributes = {
+        "input.value": "complete prompt",
+        "output.value": "complete answer",
+        f"chalk.trace.{direction}.truncation": truncation,
+    }
+    client, _ = _client(
+        {"list_span": [_response({"spans": [_span_dict("span-1", **attributes)]})]}
+    )
+
+    text = Trace("session-1", _client=client).transcript(
+        wait=False, require_content=True
+    )
+
+    assert "complete prompt" in text
+    assert "complete answer" in text
+    assert "truncated during recording" in text
+
+
+@pytest.mark.parametrize("direction", ["input", "output"])
+def test_transcript_rejects_known_raw_truncation_even_with_inline_value(
+    direction: str,
+) -> None:
+    attributes = {
+        "input.value": "prompt",
+        "output.value": "answer",
+        f"chalk.trace.{direction}.truncation": '{"raw_content":{"reason":"byte_budget_exhausted"}}',
+    }
+    client, _ = _client(
+        {"list_span": [_response({"spans": [_span_dict("span-1", **attributes)]})]}
+    )
+
+    with pytest.raises(TraceError, match=f"incomplete: {direction}"):
+        Trace("session-1", _client=client).transcript(wait=False, require_content=True)
+
+
+@pytest.mark.parametrize("value", ["", "x" * 65536, "\u00e9" * 32768])
+def test_transcript_preserves_inline_content_at_the_router_byte_boundary(
+    value: str,
+) -> None:
+    """Inline content remains authoritative, including an empty hydrated body."""
+    attributes = {
+        "input.value": value,
+        "output.value": value,
+        "chalk.trace.input.content_uri": "s3://private-test-bucket/prompt",
+        "chalk.trace.output.content_uri": "s3://private-test-bucket/completion",
+    }
+    client, _ = _client(
+        {"list_span": [_response({"spans": [_span_dict("span-1", **attributes)]})]}
+    )
+
+    text = Trace("session-1", _client=client).transcript(
+        wait=False, require_content=True, max_chars_per_turn=65536
+    )
+
+    assert (
+        text == f"### turn 1 (unknown model)\n[prompt]\n{value}\n[completion]\n{value}"
+    )
+
+
 def _empty() -> Any:
     return _response({"spans": []})
 
