@@ -724,7 +724,22 @@ class Sandbox:
             Trace sampling for processes inside the sandbox. ``True`` traces
             every request; a :class:`~chalkcompute.TracingPolicy` sets the
             root sample rate; ``False`` turns tracing off.
-
+        chalk_client
+            Optional internal Chalk client forwarded to
+            :meth:`SandboxClient.from_env` to resolve credentials lazily, the
+            first time the sandbox needs one (for example in :meth:`run`).
+            Ignored if ``sandbox_client`` (or, for the attach form, ``client``)
+            is given explicitly.
+        sandbox_client
+            Optional explicit :class:`SandboxClient` to run with, bypassing
+            :meth:`SandboxClient.from_env`. Pass this (rather than calling
+            :meth:`SandboxClient.create`) when you need to configure the
+            sandbox before it starts but still want to control which client
+            runs it.
+        client
+            Existing client to use for operations on an attached sandbox.
+            Only meaningful together with ``sandbox_id``; use
+            ``sandbox_client`` instead when configuring a new sandbox.
         sandbox_id
             Existing sandbox ID. With no client, authentication is resolved lazily
             from the receiver's environment on the first operation. This form
