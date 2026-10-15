@@ -1667,7 +1667,29 @@ _StrList = list[str]
 
 
 class SandboxClient:
-    """Client for the Sandbox service."""
+    """Connection to the Chalk ``SandboxService``, used to create and look up sandboxes.
+
+    Prefer :meth:`from_env` to build a client from ambient Chalk credentials.
+    Use :meth:`create` to build and run a sandbox in one call, or construct a
+    :class:`Sandbox` yourself and pass it to :meth:`run` for more control over
+    configuration before it starts. :meth:`get` returns a handle to an existing
+    sandbox by ID without validating it exists, and :meth:`list` enumerates all
+    sandboxes in the current environment.
+
+    A ``SandboxClient`` owns HTTP connections to the underlying RPC services;
+    use it as a context manager, or call :meth:`close` explicitly, to release
+    them.
+
+    Examples
+    --------
+    >>> from chalkcompute import SandboxClient
+    >>> with SandboxClient.from_env() as client:
+    ...     sandbox = client.create("ubuntu:latest")
+    ...     result = sandbox.exec("echo", "hello")
+    ...     sandbox.terminate()
+    >>> result.stdout_text.strip()
+    'hello'
+    """
 
     def __init__(
         self,
