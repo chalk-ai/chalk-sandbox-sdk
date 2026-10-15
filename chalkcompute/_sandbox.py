@@ -566,19 +566,13 @@ class Sandbox:
 
     Examples
     --------
-    >>> from chalkcompute import Image, SandboxClient
+    >>> from chalkcompute import SandboxClient
     >>> with SandboxClient.from_env() as client:
-    ...     sandbox = client.create(
-    ...         Image.debian_slim().pip_install(["numpy"]),
-    ...     )
-    ...     result = sandbox.exec(
-    ...         "python",
-    ...         "-c",
-    ...         "import numpy; print(numpy.__version__)",
-    ...     )
+    ...     sandbox = client.create()  # uses Image.sandbox() by default
+    ...     result = sandbox.exec("echo", "hello")
     ...     sandbox.terminate()
     >>> result.stdout_text.strip()
-    '2.5.1'
+    'hello'
     """
 
     __chalk_type_id__ = "chalkcompute.Sandbox"
