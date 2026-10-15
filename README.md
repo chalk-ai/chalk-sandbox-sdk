@@ -439,6 +439,44 @@ The external service must trust Chalk's issuer and validate the token using the
 Chalk API server's `/.well-known/jwks.json` endpoint. The existing
 `ConnectClient.get_workload_identity_token()` string API remains available.
 
+#### Platform-managed token files for sandboxes
+
+For a CLI or entrypoint that you cannot wrap, declare the token file in the
+sandbox's `env` instead. The platform writes the first token before your code
+starts, sets the variable to the file's path, and replaces the file with a fresh
+token before the old one expires for the life of the sandbox:
+
+```python
+import chalkcompute as cc
+
+sandbox = cc.Sandbox(
+    image=cc.Image.sandbox().pip_install(["snowflake-cli"]),
+    chalk_identity=cc.ChalkIdentity(mode="sandbox"),
+    env={
+        "SNOWFLAKE_AUTHENTICATOR": "WORKLOAD_IDENTITY",
+        "SNOWFLAKE_WORKLOAD_IDENTITY_PROVIDER": "OIDC",
+        "SNOWFLAKE_TOKEN_FILE_PATH": cc.OIDCTokenFile(audience="snowflakecomputing.com"),
+    },
+).run()
+
+sandbox.exec("snow", "sql", "-x", "--account", "<account>", "--user", "<user>",
+             "-q", "select current_user()")
+```
+
+`OIDCTokenFile` is an immutable descriptor; it holds no token and starts no
+background work. A consumer must reopen the file to pick up a rotated token, so
+a credential that a process has already read and cached is not refreshed.
+
+`OIDCTokenFile` requires `ChalkIdentity(mode="sandbox")`, which issues
+credentials that identify the sandbox (`sub` is
+`v1:env:<environment>:sandbox:<sandbox_id>`) instead of the user who created it.
+With the default creator identity (`chalk_identity=True`), every workload a
+developer launches is indistinguishable from that developer to the external
+service. A sandbox can mint tokens only for the audiences it declares. This is
+supported for sandboxes only; functions, classes, containers and scaling groups
+reject `ChalkIdentity(mode="sandbox")`, and `OIDCTokenFile` is rejected in image
+and per-exec `env`.
+
 ## Chalk SQL
 
 Run SQL against your Chalk environment without installing ChalkPy or defining

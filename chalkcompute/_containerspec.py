@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import KW_ONLY, dataclass, field
 from enum import Enum
@@ -11,6 +12,12 @@ from typing import Any, cast
 from protobuf import Oneof
 from protobuf.wkt import Duration
 
+from chalkcompute._chalk_identity import (
+    ChalkIdentity,
+    OIDCTokenFile,
+    normalize_chalk_identity,
+    validate_chalk_identity,
+)
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._image import Image
 from chalkcompute._naming import validate_dns_label, validate_env
@@ -530,7 +537,12 @@ class ContainerSpec:
     startup_probe: Mapping[str, Any] | None = None
     readiness_probe: Mapping[str, Any] | None = None
     restart_policy: RestartPolicy | None = None
-    chalk_identity: bool = False
+    chalk_identity: bool | ChalkIdentity = False
+    # Environment variable name -> token file the platform provisions and rotates.
+    oidc_token_files: Mapping[str, OIDCTokenFile] = field(default_factory=dict)
+    # Only sandboxes can run as their own principal; every other surface leaves
+    # this False so ChalkIdentity(mode="sandbox") fails at construction.
+    allow_sandbox_identity: bool = False
 
     def __post_init__(self) -> None:
         self.validate_fields(
@@ -552,8 +564,11 @@ class ContainerSpec:
             tags=self.tags,
             restart_policy=self.restart_policy,
             chalk_identity=self.chalk_identity,
+            oidc_token_files=self.oidc_token_files,
+            allow_sandbox_identity=self.allow_sandbox_identity,
             managed_ssh=self.managed_ssh,
         )
+        object.__setattr__(self, "oidc_token_files", dict(self.oidc_token_files))
         object.__setattr__(
             self,
             "entrypoint",
@@ -607,7 +622,9 @@ class ContainerSpec:
         resource_detectors: Sequence[ResourceDetector] | None = None,
         tags: Mapping[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
-        chalk_identity: bool = False,
+        chalk_identity: bool | ChalkIdentity = False,
+        oidc_token_files: Mapping[str, OIDCTokenFile] | None = None,
+        allow_sandbox_identity: bool = False,
         managed_ssh: Mapping[str, SSHDest] | Sequence[SSHDest] | None = None,
     ) -> None:
         if image is not None and not isinstance(image, str):
@@ -685,8 +702,13 @@ class ContainerSpec:
                     raise TypeError("tags must be a dict[str, str]")
         if restart_policy is not None and not isinstance(restart_policy, RestartPolicy):
             raise TypeError("restart_policy must be a RestartPolicy")
-        if not isinstance(chalk_identity, bool):
-            raise TypeError("chalk_identity must be a bool")
+        validate_chalk_identity(chalk_identity, allow_sandbox=allow_sandbox_identity)
+        _validate_oidc_token_files(
+            oidc_token_files,
+            chalk_identity=chalk_identity,
+            allow_sandbox_identity=allow_sandbox_identity,
+            env=env,
+        )
         normalize_managed_ssh(managed_ssh)
 
     def to_dict(self) -> dict[str, Any]:
@@ -748,8 +770,25 @@ class ContainerSpec:
             spec["readinessProbe"] = dict(self.readiness_probe)
         if self.restart_policy is not None:
             spec["restartPolicy"] = self.restart_policy.value
-        if self.chalk_identity:
-            spec["chalkWorkloadIdentity"] = {}
+        identity = normalize_chalk_identity(self.chalk_identity)
+        if identity is not None:
+            spec["chalkWorkloadIdentity"] = (
+                {
+                    "mode": "IDENTITY_MODE_WORKLOAD_PRINCIPAL",
+                    **(
+                        {
+                            "oidcTokenFiles": [
+                                {"audience": file.audience, "envVar": env_var}
+                                for env_var, file in self.oidc_token_files.items()
+                            ]
+                        }
+                        if self.oidc_token_files
+                        else {}
+                    ),
+                }
+                if identity.mode == "sandbox"
+                else {}
+            )
         return spec
 
     def to_proto(self) -> container_pb.ChalkContainerSpec:
@@ -866,10 +905,69 @@ class ContainerSpec:
                 if self.restart_policy is None
                 else container_pb.RestartPolicy[self.restart_policy.name]
             ),
-            chalk_workload_identity=(
-                container_pb.ChalkWorkloadIdentity() if self.chalk_identity else None
-            ),
+            chalk_workload_identity=self._workload_identity_proto(),
         )
+
+    def _workload_identity_proto(self) -> container_pb.ChalkWorkloadIdentity | None:
+        identity = normalize_chalk_identity(self.chalk_identity)
+        if identity is None:
+            return None
+        if identity.mode == "creator":
+            return container_pb.ChalkWorkloadIdentity()
+        return container_pb.ChalkWorkloadIdentity(
+            mode=container_pb.IdentityMode.WORKLOAD_PRINCIPAL,
+            workload_principal=container_pb.WorkloadPrincipalIdentity(),
+            oidc_token_files=[
+                container_pb.OIDCTokenFile(audience=file.audience, env_var=env_var)
+                for env_var, file in self.oidc_token_files.items()
+            ],
+        )
+
+
+# Injected by the platform next to the Chalk identity token; an OIDCTokenFile
+# cannot reuse them.
+_RESERVED_IDENTITY_ENV_VARS = frozenset(
+    {"CHALK_WEB_IDENTITY_TOKEN_FILE", "CHALK_API_SERVER", "CHALK_ENVIRONMENT"}
+)
+_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_oidc_token_files(
+    oidc_token_files: Mapping[str, OIDCTokenFile] | None,
+    *,
+    chalk_identity: bool | ChalkIdentity,
+    allow_sandbox_identity: bool,
+    env: Mapping[str, str] | None,
+) -> None:
+    """Check OIDC token file declarations the same way the server will."""
+    if not oidc_token_files:
+        return
+    if not allow_sandbox_identity:
+        raise ValueError("OIDCTokenFile is only supported in the env of a Sandbox")
+    identity = normalize_chalk_identity(chalk_identity)
+    if identity is None or identity.mode != "sandbox":
+        raise ValueError(
+            'OIDCTokenFile requires chalk_identity=ChalkIdentity(mode="sandbox") '
+            "so the token identifies the sandbox rather than its creator"
+        )
+    for env_var, file in oidc_token_files.items():
+        if not isinstance(file, OIDCTokenFile):
+            raise TypeError(
+                f"oidc_token_files[{env_var!r}] must be an OIDCTokenFile, got "
+                f"{type(file).__name__}"
+            )
+        if not _ENV_VAR_NAME_RE.match(env_var):
+            raise ValueError(
+                f"OIDCTokenFile env var {env_var!r} is not a valid environment "
+                "variable name"
+            )
+        if env_var in _RESERVED_IDENTITY_ENV_VARS:
+            raise ValueError(
+                f"OIDCTokenFile env var {env_var!r} is reserved for Chalk workload "
+                "identity"
+            )
+        if env and env_var in env:
+            raise ValueError(f"environment variable {env_var!r} is already set")
 
 
 def validate_replica_and_utilization(

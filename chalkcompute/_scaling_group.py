@@ -42,6 +42,7 @@ from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
 from protobuf.wkt import FieldMask
 
+from chalkcompute._chalk_identity import ChalkIdentity
 from chalkcompute._logging import _StatusLogger
 from chalkcompute._connect import ConnectClient, build_image
 from chalkcompute._containerspec import (
@@ -344,7 +345,7 @@ class ScalingGroup:
         cron_scaling_trigger: CronScalingTrigger | None = None,
         scale_from_zero_request_policy: ScaleFromZeroRequestPolicy | None = None,
         tags: dict[str, str] | None = None,
-        chalk_identity: bool = False,
+        chalk_identity: bool | ChalkIdentity = False,
         tracing: TracingPolicyConfig | None = None,
         chalk_client: Any | None = None,
     ) -> None:

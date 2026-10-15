@@ -11,6 +11,8 @@ from chalkcompute._artifact import ArtifactError as ArtifactError
 from chalkcompute._artifact import ArtifactNotFoundError as ArtifactNotFoundError
 from chalkcompute._cls import ClassBuildError as ClassBuildError
 from chalkcompute._cls import ClassError as ClassError
+from chalkcompute._chalk_identity import ChalkIdentity as ChalkIdentity
+from chalkcompute._chalk_identity import OIDCTokenFile as OIDCTokenFile
 from chalkcompute._cls import RemoteClass as RemoteClass
 from chalkcompute._cls import after as after
 from chalkcompute._cls import before as before
@@ -258,6 +260,8 @@ __all__ = [
     "ModelNotDeployedError",
     "ConnectClient",
     "OIDCToken",
+    "OIDCTokenFile",
+    "ChalkIdentity",
     "WorkloadIdentityTokenError",
     "WorkloadIdentityTokenSource",
     "build_image",

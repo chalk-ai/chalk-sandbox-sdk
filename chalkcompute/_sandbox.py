@@ -31,7 +31,7 @@ import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
@@ -72,6 +72,11 @@ from chalkcompute._gen.chalk.sandbox.v2 import (
 )
 from chalkcompute._http import SYNC_HTTP_CLIENT
 from chalkcompute._image import Image
+from chalkcompute._chalk_identity import (
+    ChalkIdentity,
+    OIDCTokenFile,
+    split_oidc_token_files,
+)
 from chalkcompute._naming import validate_env
 from chalkcompute._remote_function_tracing import (
     TracingPolicy,
@@ -633,7 +638,7 @@ class Sandbox:
         cpu: str | None = None,
         memory: str | None = None,
         gpu: str | None = None,
-        env: Mapping[str, str | Secret] | None = None,
+        env: Mapping[str, str | Secret | OIDCTokenFile] | None = None,
         secrets: list[Secret] | None = None,
         volumes: _VolumeList | None = None,
         port: int | None = None,
@@ -647,7 +652,7 @@ class Sandbox:
         host_pool_id: str | None = None,
         tags: dict[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
-        chalk_identity: bool = False,
+        chalk_identity: bool | ChalkIdentity = False,
         managed_ssh: Mapping[str, SSHDest] | Sequence[SSHDest] | None = None,
         tracing: TracingPolicyConfig | None = None,
         chalk_client: Any | None = None,
@@ -674,6 +679,9 @@ class Sandbox:
         env
             Environment variables as strings or single-value Secret references.
             The mapping key sets the injected name, overriding aliases and prefixes.
+            A value may also be an :class:`OIDCTokenFile`, which sets the variable
+            to the path of a platform-managed OIDC token file. That requires
+            ``chalk_identity=ChalkIdentity(mode="sandbox")``.
         secrets
             Optional :class:`~chalkcompute.Secret` references to inject.
         volumes
@@ -715,6 +723,9 @@ class Sandbox:
             Whether to give the sandbox a platform-managed Chalk identity.
             The identity is exposed inside the sandbox through the standard
             ``CHALK_WEB_IDENTITY_TOKEN_FILE`` environment variable.
+            ``True`` identifies the user who created the sandbox. Pass
+            ``ChalkIdentity(mode="sandbox")`` for credentials that identify
+            the sandbox itself, which :class:`OIDCTokenFile` requires.
         managed_ssh
             Optional SSH destinations: a list of :class:`SSHDest`, each
             reachable by its ``alias`` (default: its ``host``), or a mapping
@@ -773,7 +784,8 @@ class Sandbox:
         self._host_pool_id: str | None = None
         self._tags: dict[str, str] = {}
         self._restart_policy: RestartPolicy | None = None
-        self._chalk_identity = False
+        self._chalk_identity: bool | ChalkIdentity = False
+        self._oidc_token_files: dict[str, OIDCTokenFile] = {}
         self._managed_ssh: dict[str, SSHDest] = {}
         self._tracing: TracingPolicy | _RemoteFunctionTracingPolicy | None = None
         self._chalk_client: Any | None = None
@@ -818,7 +830,10 @@ class Sandbox:
 
         if image is None:
             image = Image.sandbox()
-        env, secrets = normalize_env(env, secrets)
+        env_without_token_files, oidc_token_files = split_oidc_token_files(env)
+        env, secrets = normalize_env(
+            cast("Mapping[str, str | Secret]", env_without_token_files), secrets
+        )
         tracing_policy = normalize_workload_tracing(tracing)
         env = merge_workload_tracing_env(env, tracing_policy)
         image, resolved_volumes = normalize_image_volumes(image, volumes)
@@ -841,6 +856,8 @@ class Sandbox:
             tags=tags,
             restart_policy=restart_policy,
             chalk_identity=chalk_identity,
+            oidc_token_files=oidc_token_files,
+            allow_sandbox_identity=True,
             managed_ssh=managed_ssh,
         )
 
@@ -865,6 +882,7 @@ class Sandbox:
         self._tags = dict(tags or {})
         self._restart_policy = restart_policy
         self._chalk_identity = chalk_identity
+        self._oidc_token_files = oidc_token_files
         self._managed_ssh = normalize_managed_ssh(managed_ssh)
         self._tracing = tracing_policy
         self._chalk_client = chalk_client
@@ -1666,6 +1684,13 @@ _SandboxInfoList = list[SandboxInfo]
 _StrList = list[str]
 
 
+def _echoes_oidc_token_files(sandbox_info: Any, expected: int) -> bool:
+    """Whether the server's view of the sandbox includes the declared token files."""
+    spec = getattr(sandbox_info, "spec", None)
+    identity = None if spec is None else spec.chalk_workload_identity
+    return identity is not None and len(identity.oidc_token_files) >= expected
+
+
 class SandboxClient:
     """Client for the Sandbox service."""
 
@@ -1808,7 +1833,7 @@ class SandboxClient:
         host_pool_id: str | None = None,
         tags: dict[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
-        chalk_identity: bool = False,
+        chalk_identity: bool | ChalkIdentity = False,
         managed_ssh: Mapping[str, SSHDest] | Sequence[SSHDest] | None = None,
         tracing: TracingPolicyConfig | None = None,
         wait: bool = True,
@@ -1862,6 +1887,9 @@ class SandboxClient:
             Whether to give the sandbox a platform-managed Chalk identity.
             The identity is exposed inside the sandbox through the standard
             ``CHALK_WEB_IDENTITY_TOKEN_FILE`` environment variable.
+            ``True`` identifies the user who created the sandbox. Pass
+            ``ChalkIdentity(mode="sandbox")`` for credentials that identify
+            the sandbox itself, which :class:`OIDCTokenFile` requires.
         managed_ssh
             Optional SSH destinations, as a list of :class:`SSHDest` or a
             mapping of aliases to them. See :class:`Sandbox`.
@@ -1984,6 +2012,8 @@ class SandboxClient:
             tags=sandbox._tags,
             restart_policy=sandbox._restart_policy,
             chalk_identity=sandbox._chalk_identity,
+            oidc_token_files=sandbox._oidc_token_files,
+            allow_sandbox_identity=True,
             managed_ssh=sandbox._managed_ssh,
         ).to_proto()
 
@@ -1993,6 +2023,23 @@ class SandboxClient:
         )
         if resp.sandbox is None:
             raise SandboxCreationError("CreateSandbox returned no sandbox")
+        if sandbox._oidc_token_files and not _echoes_oidc_token_files(
+            resp.sandbox, len(sandbox._oidc_token_files)
+        ):
+            # A server that predates OIDC token files drops the field and starts a
+            # sandbox whose env var points nowhere. Fail loudly instead.
+            try:
+                self._stub.terminate_sandbox(
+                    pb.TerminateSandboxRequest(id=resp.sandbox.id),
+                    headers=self._headers,
+                )
+            except ConnectRpcError:
+                pass
+            raise SandboxCreationError(
+                "The Chalk server does not support OIDCTokenFile; the sandbox was "
+                "terminated. Upgrade the Chalk deployment or remove the OIDCTokenFile "
+                "values from env."
+            )
         info = _pb_to_sandbox_info(resp.sandbox)
 
         if wait and info.status == "pending":

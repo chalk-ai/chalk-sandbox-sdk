@@ -633,7 +633,102 @@ class ResourceShareAgent(Message[_ResourceShareAgentFields]):
         scope: ResourceShareScope | None
         requires_authentication: bool
 
-_AgentFields: TypeAlias = Literal["sandbox_id", "user_agent", "service_token_agent", "engine_agent", "tenant_agent", "metadata_service_agent", "self_hosted_license_agent", "resource_share_agent"]
+_SandboxPrincipalFields: TypeAlias = Literal["id"]
+
+class SandboxPrincipal(Message[_SandboxPrincipalFields]):
+    """
+    ```proto
+    message chalk.auth.v1.SandboxPrincipal
+    ```
+
+    Attributes:
+        id:
+            ```proto
+            string id = 1;
+            ```
+    """
+
+    __slots__ = ("id",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            id: str = "",
+        ) -> None:
+            pass
+
+        id: str
+
+_WorkloadAgentFields: TypeAlias = Literal["team_id", "environment_id", "permissions", "sandbox", "feature_permissions", "customer_claims"]
+
+class WorkloadAgent(Message[_WorkloadAgentFields]):
+    """
+    WorkloadAgent is an immutable workload principal reconstructed from a signed
+    working token. Ordinary authorization does not load the workload's record.
+
+    ```proto
+    message chalk.auth.v1.WorkloadAgent
+    ```
+
+    Attributes:
+        team_id:
+            ```proto
+            string team_id = 1;
+            ```
+        environment_id:
+            ```proto
+            string environment_id = 2;
+            ```
+        permissions:
+            The complete permission snapshot granted to this workload. Empty grants no
+            permissions.
+
+            ```proto
+            repeated chalk.auth.v1.Permission permissions = 3 [packed = true];
+            ```
+        principal:
+            ```proto
+            oneof principal
+            ```
+        feature_permissions:
+            Immutable environment-scoped data-access policy derived when the workload
+            principal is created.
+
+            ```proto
+            optional chalk.auth.v1.FeaturePermissions feature_permissions = 7;
+            ```
+        customer_claims:
+            ```proto
+            repeated chalk.auth.v1.CustomClaim customer_claims = 8;
+            ```
+    """
+
+    __slots__ = ("team_id", "environment_id", "permissions", "feature_permissions", "customer_claims", "principal")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            team_id: str = "",
+            environment_id: str = "",
+            permissions: list[Permission] | None = None,
+            principal: Oneof[Literal["sandbox"], SandboxPrincipal] | None = None,
+            feature_permissions: FeaturePermissions | None = None,
+            customer_claims: list[CustomClaim] | None = None,
+        ) -> None:
+            pass
+
+        team_id: str
+        environment_id: str
+        permissions: list[Permission]
+        principal: Oneof[Literal["sandbox"], SandboxPrincipal] | None
+        feature_permissions: FeaturePermissions | None
+        customer_claims: list[CustomClaim]
+
+_AgentFields: TypeAlias = Literal["sandbox_id", "user_agent", "service_token_agent", "engine_agent", "tenant_agent", "metadata_service_agent", "self_hosted_license_agent", "resource_share_agent", "workload_agent"]
 
 class Agent(Message[_AgentFields]):
     """
@@ -663,12 +758,12 @@ class Agent(Message[_AgentFields]):
             self,
             *,
             sandbox_id: str = "",
-            agent: Oneof[Literal["user_agent"], UserAgent] | Oneof[Literal["service_token_agent"], ServiceTokenAgent] | Oneof[Literal["engine_agent"], EngineAgent] | Oneof[Literal["tenant_agent"], TenantAgent] | Oneof[Literal["metadata_service_agent"], MetadataServiceAgent] | Oneof[Literal["self_hosted_license_agent"], SelfHostedLicenseAgent] | Oneof[Literal["resource_share_agent"], ResourceShareAgent] | None = None,
+            agent: Oneof[Literal["user_agent"], UserAgent] | Oneof[Literal["service_token_agent"], ServiceTokenAgent] | Oneof[Literal["engine_agent"], EngineAgent] | Oneof[Literal["tenant_agent"], TenantAgent] | Oneof[Literal["metadata_service_agent"], MetadataServiceAgent] | Oneof[Literal["self_hosted_license_agent"], SelfHostedLicenseAgent] | Oneof[Literal["resource_share_agent"], ResourceShareAgent] | Oneof[Literal["workload_agent"], WorkloadAgent] | None = None,
         ) -> None:
             pass
 
         sandbox_id: str
-        agent: Oneof[Literal["user_agent"], UserAgent] | Oneof[Literal["service_token_agent"], ServiceTokenAgent] | Oneof[Literal["engine_agent"], EngineAgent] | Oneof[Literal["tenant_agent"], TenantAgent] | Oneof[Literal["metadata_service_agent"], MetadataServiceAgent] | Oneof[Literal["self_hosted_license_agent"], SelfHostedLicenseAgent] | Oneof[Literal["resource_share_agent"], ResourceShareAgent] | None
+        agent: Oneof[Literal["user_agent"], UserAgent] | Oneof[Literal["service_token_agent"], ServiceTokenAgent] | Oneof[Literal["engine_agent"], EngineAgent] | Oneof[Literal["tenant_agent"], TenantAgent] | Oneof[Literal["metadata_service_agent"], MetadataServiceAgent] | Oneof[Literal["self_hosted_license_agent"], SelfHostedLicenseAgent] | Oneof[Literal["resource_share_agent"], ResourceShareAgent] | Oneof[Literal["workload_agent"], WorkloadAgent] | None
 
 class ExchangeTokenKind(Enum):
     """
@@ -693,12 +788,17 @@ class ExchangeTokenKind(Enum):
             ```proto
             EXCHANGE_TOKEN_KIND_SERVICE_TOKEN = 3
             ```
+        SANDBOX:
+            ```proto
+            EXCHANGE_TOKEN_KIND_SANDBOX = 4
+            ```
     """
 
     UNSPECIFIED = 0
     INTERNAL_SERVICE = 1
     USER = 2
     SERVICE_TOKEN = 3
+    SANDBOX = 4
 
 class AgentKind(Enum):
     """
@@ -739,6 +839,10 @@ class AgentKind(Enum):
             ```proto
             AGENT_KIND_RESOURCE_SHARE = 7
             ```
+        SANDBOX:
+            ```proto
+            AGENT_KIND_SANDBOX = 8
+            ```
     """
 
     UNSPECIFIED = 0
@@ -749,10 +853,11 @@ class AgentKind(Enum):
     METADATA_SERVICE = 5
     SELF_HOSTED_LICENSE = 6
     RESOURCE_SHARE = 7
+    SANDBOX = 8
 
 
 _DESC = file_desc(
-    b'\n\x19chalk/auth/v1/agent.proto\x12\rchalk.auth.v1\x1a%chalk/auth/v1/featurepermission.proto\x1a\x1fchalk/auth/v1/permissions.proto"\xee\x01\n\x16EnvironmentPermissions\x12;\n\x0bpermissions\x18\x02 \x03(\x0e2\x19.chalk.auth.v1.PermissionR\x0bpermissions\x12R\n\x13feature_permissions\x18\x03 \x01(\x0b2!.chalk.auth.v1.FeaturePermissionsR\x12featurePermissions\x12C\n\x0fcustomer_claims\x18\x04 \x03(\x0b2\x1a.chalk.auth.v1.CustomClaimR\x0ecustomerClaims"N\n\x0fTeamPermissions\x12;\n\x0bpermissions\x18\x01 \x03(\x0e2\x19.chalk.auth.v1.PermissionR\x0bpermissions"\xb7\x03\n\tUserAgent\x12\x1f\n\tclient_id\x18\x01 \x01(\tR\x08clientIdB\x02\x18\x01\x12\x17\n\x07user_id\x18\x02 \x01(\tR\x06userId\x12\x17\n\x07team_id\x18\x03 \x01(\tR\x06teamId\x12t\n\x1apermissions_by_environment\x18\x04 \x03(\x0b26.chalk.auth.v1.UserAgent.PermissionsByEnvironmentEntryR\x18permissionsByEnvironment\x12"\n\x0cimpersonated\x18\x05 \x01(\x08R\x0cimpersonated\x12I\n\x10team_permissions\x18\x06 \x01(\x0b2\x1e.chalk.auth.v1.TeamPermissionsR\x0fteamPermissions\x1ar\n\x1dPermissionsByEnvironmentEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12;\n\x05value\x18\x02 \x01(\x0b2%.chalk.auth.v1.EnvironmentPermissionsR\x05value:\x028\x01"7\n\x0bCustomClaim\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x16\n\x06values\x18\x02 \x03(\tR\x06values"\xc0\x03\n\x11ServiceTokenAgent\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n\tclient_id\x18\x02 \x01(\tR\x08clientId\x12\x17\n\x07team_id\x18\x03 \x01(\tR\x06teamId\x12 \n\x0benvironment\x18\x04 \x01(\tR\x0benvironment\x12;\n\x0bpermissions\x18\x05 \x03(\x0e2\x19.chalk.auth.v1.PermissionR\x0bpermissions\x12\'\n\rcustom_claims\x18\x06 \x03(\tR\x0ccustomClaimsB\x02\x18\x01\x12C\n\x0fcustomer_claims\x18\x07 \x03(\x0b2\x1a.chalk.auth.v1.CustomClaimR\x0ecustomerClaims\x12R\n\x13feature_permissions\x18\x08 \x01(\x0b2!.chalk.auth.v1.FeaturePermissionsR\x12featurePermissions\x12D\n\x10team_permissions\x18\t \x03(\x0e2\x19.chalk.auth.v1.PermissionR\x0fteamPermissions"\xa0\x01\n\x0bEngineAgent\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n\x07team_id\x18\x02 \x01(\tR\x06teamId\x12\x1d\n\nproject_id\x18\x03 \x01(\tR\tprojectId\x12%\n\x0eenvironment_id\x18\x04 \x01(\tR\renvironmentId\x12"\n\x0cimpersonated\x18\x05 \x01(\x08R\x0cimpersonated"\x16\n\x14MetadataServiceAgent"\x8e\x02\n\x14ExchangeTokenDetails\x12R\n\x17requestable_permissions\x18\x01 \x03(\x0e2\x19.chalk.auth.v1.PermissionR\x16requestablePermissions\x12+\n\x11generation_number\x18\x02 \x01(\x05R\x10generationNumber\x12\x18\n\x07subject\x18\x03 \x01(\tR\x07subject\x12%\n\x0eenvironment_id\x18\x04 \x01(\tR\renvironmentId\x124\n\x04kind\x18\x05 \x01(\x0e2 .chalk.auth.v1.ExchangeTokenKindR\x04kind"\xa4\x02\n\x0bTenantAgent\x12\x17\n\x07team_id\x18\x01 \x01(\tR\x06teamId\x12;\n\x0bpermissions\x18\x02 \x03(\x0e2\x19.chalk.auth.v1.PermissionR\x0bpermissions\x12%\n\x0eenvironment_id\x18\x03 \x01(\tR\renvironmentId\x12^\n\x16exchange_token_details\x18\x04 \x01(\x0b2#.chalk.auth.v1.ExchangeTokenDetailsH\x00R\x14exchangeTokenDetails\x88\x01\x01\x12\x1d\n\ncluster_id\x18\x05 \x01(\tR\tclusterIdB\x19\n\x17_exchange_token_details"U\n\x16SelfHostedLicenseAgent\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n\x07team_id\x18\x02 \x01(\tR\x06teamId\x12\x12\n\x04name\x18\x03 \x01(\tR\x04name"5\n\x12NotebookShareScope\x12\x1f\n\x0bnotebook_id\x18\x01 \x01(\tR\nnotebookId"^\n\x12ResourceShareScope\x12?\n\x08notebook\x18\x01 \x01(\x0b2!.chalk.auth.v1.NotebookShareScopeH\x00R\x08notebookB\x07\n\x05scope"\xd6\x01\n\x12ResourceShareAgent\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n\x07team_id\x18\x02 \x01(\tR\x06teamId\x12%\n\x0eenvironment_id\x18\x03 \x01(\tR\renvironmentId\x127\n\x05scope\x18\x04 \x01(\x0b2!.chalk.auth.v1.ResourceShareScopeR\x05scope\x127\n\x17requires_authentication\x18\x05 \x01(\x08R\x16requiresAuthentication"\xd8\x04\n\x05Agent\x12\x1d\n\nsandbox_id\x18\x08 \x01(\tR\tsandboxId\x129\n\nuser_agent\x18\x01 \x01(\x0b2\x18.chalk.auth.v1.UserAgentH\x00R\tuserAgent\x12R\n\x13service_token_agent\x18\x02 \x01(\x0b2 .chalk.auth.v1.ServiceTokenAgentH\x00R\x11serviceTokenAgent\x12?\n\x0cengine_agent\x18\x03 \x01(\x0b2\x1a.chalk.auth.v1.EngineAgentH\x00R\x0bengineAgent\x12?\n\x0ctenant_agent\x18\x04 \x01(\x0b2\x1a.chalk.auth.v1.TenantAgentH\x00R\x0btenantAgent\x12[\n\x16metadata_service_agent\x18\x05 \x01(\x0b2#.chalk.auth.v1.MetadataServiceAgentH\x00R\x14metadataServiceAgent\x12b\n\x19self_hosted_license_agent\x18\x06 \x01(\x0b2%.chalk.auth.v1.SelfHostedLicenseAgentH\x00R\x16selfHostedLicenseAgent\x12U\n\x14resource_share_agent\x18\x07 \x01(\x0b2!.chalk.auth.v1.ResourceShareAgentH\x00R\x12resourceShareAgentB\x07\n\x05agent*\xa7\x01\n\x11ExchangeTokenKind\x12#\n\x1fEXCHANGE_TOKEN_KIND_UNSPECIFIED\x10\x00\x12(\n$EXCHANGE_TOKEN_KIND_INTERNAL_SERVICE\x10\x01\x12\x1c\n\x18EXCHANGE_TOKEN_KIND_USER\x10\x02\x12%\n!EXCHANGE_TOKEN_KIND_SERVICE_TOKEN\x10\x03*\xec\x01\n\tAgentKind\x12\x1a\n\x16AGENT_KIND_UNSPECIFIED\x10\x00\x12\x13\n\x0fAGENT_KIND_USER\x10\x01\x12\x1c\n\x18AGENT_KIND_SERVICE_TOKEN\x10\x02\x12\x15\n\x11AGENT_KIND_ENGINE\x10\x03\x12\x15\n\x11AGENT_KIND_TENANT\x10\x04\x12\x1f\n\x1bAGENT_KIND_METADATA_SERVICE\x10\x05\x12"\n\x1eAGENT_KIND_SELF_HOSTED_LICENSE\x10\x06\x12\x1d\n\x19AGENT_KIND_RESOURCE_SHARE\x10\x07B\x85\x01\n\x11com.chalk.auth.v1B\nAgentProtoP\x01Z\x0eauth/v1;authv1\xa2\x02\x03CAX\xaa\x02\rChalk.Auth.V1\xca\x02\rChalk\\Auth\\V1\xe2\x02\x19Chalk\\Auth\\V1\\GPBMetadata\xea\x02\x0fChalk::Auth::V1b\x06proto3',
+    b'\n\x19chalk/auth/v1/agent.proto\x12\rchalk.auth.v1\x1a%chalk/auth/v1/featurepermission.proto\x1a\x1fchalk/auth/v1/permissions.proto"\xee\x01\n\x16EnvironmentPermissions\x12;\n\x0bpermissions\x18\x02 \x03(\x0e2\x19.chalk.auth.v1.PermissionR\x0bpermissions\x12R\n\x13feature_permissions\x18\x03 \x01(\x0b2!.chalk.auth.v1.FeaturePermissionsR\x12featurePermissions\x12C\n\x0fcustomer_claims\x18\x04 \x03(\x0b2\x1a.chalk.auth.v1.CustomClaimR\x0ecustomerClaims"N\n\x0fTeamPermissions\x12;\n\x0bpermissions\x18\x01 \x03(\x0e2\x19.chalk.auth.v1.PermissionR\x0bpermissions"\xb7\x03\n\tUserAgent\x12\x1f\n\tclient_id\x18\x01 \x01(\tR\x08clientIdB\x02\x18\x01\x12\x17\n\x07user_id\x18\x02 \x01(\tR\x06userId\x12\x17\n\x07team_id\x18\x03 \x01(\tR\x06teamId\x12t\n\x1apermissions_by_environment\x18\x04 \x03(\x0b26.chalk.auth.v1.UserAgent.PermissionsByEnvironmentEntryR\x18permissionsByEnvironment\x12"\n\x0cimpersonated\x18\x05 \x01(\x08R\x0cimpersonated\x12I\n\x10team_permissions\x18\x06 \x01(\x0b2\x1e.chalk.auth.v1.TeamPermissionsR\x0fteamPermissions\x1ar\n\x1dPermissionsByEnvironmentEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12;\n\x05value\x18\x02 \x01(\x0b2%.chalk.auth.v1.EnvironmentPermissionsR\x05value:\x028\x01"7\n\x0bCustomClaim\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x16\n\x06values\x18\x02 \x03(\tR\x06values"\xc0\x03\n\x11ServiceTokenAgent\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n\tclient_id\x18\x02 \x01(\tR\x08clientId\x12\x17\n\x07team_id\x18\x03 \x01(\tR\x06teamId\x12 \n\x0benvironment\x18\x04 \x01(\tR\x0benvironment\x12;\n\x0bpermissions\x18\x05 \x03(\x0e2\x19.chalk.auth.v1.PermissionR\x0bpermissions\x12\'\n\rcustom_claims\x18\x06 \x03(\tR\x0ccustomClaimsB\x02\x18\x01\x12C\n\x0fcustomer_claims\x18\x07 \x03(\x0b2\x1a.chalk.auth.v1.CustomClaimR\x0ecustomerClaims\x12R\n\x13feature_permissions\x18\x08 \x01(\x0b2!.chalk.auth.v1.FeaturePermissionsR\x12featurePermissions\x12D\n\x10team_permissions\x18\t \x03(\x0e2\x19.chalk.auth.v1.PermissionR\x0fteamPermissions"\xa0\x01\n\x0bEngineAgent\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n\x07team_id\x18\x02 \x01(\tR\x06teamId\x12\x1d\n\nproject_id\x18\x03 \x01(\tR\tprojectId\x12%\n\x0eenvironment_id\x18\x04 \x01(\tR\renvironmentId\x12"\n\x0cimpersonated\x18\x05 \x01(\x08R\x0cimpersonated"\x16\n\x14MetadataServiceAgent"\x8e\x02\n\x14ExchangeTokenDetails\x12R\n\x17requestable_permissions\x18\x01 \x03(\x0e2\x19.chalk.auth.v1.PermissionR\x16requestablePermissions\x12+\n\x11generation_number\x18\x02 \x01(\x05R\x10generationNumber\x12\x18\n\x07subject\x18\x03 \x01(\tR\x07subject\x12%\n\x0eenvironment_id\x18\x04 \x01(\tR\renvironmentId\x124\n\x04kind\x18\x05 \x01(\x0e2 .chalk.auth.v1.ExchangeTokenKindR\x04kind"\xa4\x02\n\x0bTenantAgent\x12\x17\n\x07team_id\x18\x01 \x01(\tR\x06teamId\x12;\n\x0bpermissions\x18\x02 \x03(\x0e2\x19.chalk.auth.v1.PermissionR\x0bpermissions\x12%\n\x0eenvironment_id\x18\x03 \x01(\tR\renvironmentId\x12^\n\x16exchange_token_details\x18\x04 \x01(\x0b2#.chalk.auth.v1.ExchangeTokenDetailsH\x00R\x14exchangeTokenDetails\x88\x01\x01\x12\x1d\n\ncluster_id\x18\x05 \x01(\tR\tclusterIdB\x19\n\x17_exchange_token_details"U\n\x16SelfHostedLicenseAgent\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n\x07team_id\x18\x02 \x01(\tR\x06teamId\x12\x12\n\x04name\x18\x03 \x01(\tR\x04name"5\n\x12NotebookShareScope\x12\x1f\n\x0bnotebook_id\x18\x01 \x01(\tR\nnotebookId"^\n\x12ResourceShareScope\x12?\n\x08notebook\x18\x01 \x01(\x0b2!.chalk.auth.v1.NotebookShareScopeH\x00R\x08notebookB\x07\n\x05scope"\xd6\x01\n\x12ResourceShareAgent\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n\x07team_id\x18\x02 \x01(\tR\x06teamId\x12%\n\x0eenvironment_id\x18\x03 \x01(\tR\renvironmentId\x127\n\x05scope\x18\x04 \x01(\x0b2!.chalk.auth.v1.ResourceShareScopeR\x05scope\x127\n\x17requires_authentication\x18\x05 \x01(\x08R\x16requiresAuthentication""\n\x10SandboxPrincipal\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id"\xef\x02\n\rWorkloadAgent\x12\x17\n\x07team_id\x18\x01 \x01(\tR\x06teamId\x12%\n\x0eenvironment_id\x18\x02 \x01(\tR\renvironmentId\x12;\n\x0bpermissions\x18\x03 \x03(\x0e2\x19.chalk.auth.v1.PermissionR\x0bpermissions\x12;\n\x07sandbox\x18\x04 \x01(\x0b2\x1f.chalk.auth.v1.SandboxPrincipalH\x00R\x07sandbox\x12R\n\x13feature_permissions\x18\x07 \x01(\x0b2!.chalk.auth.v1.FeaturePermissionsR\x12featurePermissions\x12C\n\x0fcustomer_claims\x18\x08 \x03(\x0b2\x1a.chalk.auth.v1.CustomClaimR\x0ecustomerClaimsB\x0b\n\tprincipal"\x9f\x05\n\x05Agent\x12\x1d\n\nsandbox_id\x18\x08 \x01(\tR\tsandboxId\x129\n\nuser_agent\x18\x01 \x01(\x0b2\x18.chalk.auth.v1.UserAgentH\x00R\tuserAgent\x12R\n\x13service_token_agent\x18\x02 \x01(\x0b2 .chalk.auth.v1.ServiceTokenAgentH\x00R\x11serviceTokenAgent\x12?\n\x0cengine_agent\x18\x03 \x01(\x0b2\x1a.chalk.auth.v1.EngineAgentH\x00R\x0bengineAgent\x12?\n\x0ctenant_agent\x18\x04 \x01(\x0b2\x1a.chalk.auth.v1.TenantAgentH\x00R\x0btenantAgent\x12[\n\x16metadata_service_agent\x18\x05 \x01(\x0b2#.chalk.auth.v1.MetadataServiceAgentH\x00R\x14metadataServiceAgent\x12b\n\x19self_hosted_license_agent\x18\x06 \x01(\x0b2%.chalk.auth.v1.SelfHostedLicenseAgentH\x00R\x16selfHostedLicenseAgent\x12U\n\x14resource_share_agent\x18\x07 \x01(\x0b2!.chalk.auth.v1.ResourceShareAgentH\x00R\x12resourceShareAgent\x12E\n\x0eworkload_agent\x18\t \x01(\x0b2\x1c.chalk.auth.v1.WorkloadAgentH\x00R\rworkloadAgentB\x07\n\x05agent*\xc8\x01\n\x11ExchangeTokenKind\x12#\n\x1fEXCHANGE_TOKEN_KIND_UNSPECIFIED\x10\x00\x12(\n$EXCHANGE_TOKEN_KIND_INTERNAL_SERVICE\x10\x01\x12\x1c\n\x18EXCHANGE_TOKEN_KIND_USER\x10\x02\x12%\n!EXCHANGE_TOKEN_KIND_SERVICE_TOKEN\x10\x03\x12\x1f\n\x1bEXCHANGE_TOKEN_KIND_SANDBOX\x10\x04*\x84\x02\n\tAgentKind\x12\x1a\n\x16AGENT_KIND_UNSPECIFIED\x10\x00\x12\x13\n\x0fAGENT_KIND_USER\x10\x01\x12\x1c\n\x18AGENT_KIND_SERVICE_TOKEN\x10\x02\x12\x15\n\x11AGENT_KIND_ENGINE\x10\x03\x12\x15\n\x11AGENT_KIND_TENANT\x10\x04\x12\x1f\n\x1bAGENT_KIND_METADATA_SERVICE\x10\x05\x12"\n\x1eAGENT_KIND_SELF_HOSTED_LICENSE\x10\x06\x12\x1d\n\x19AGENT_KIND_RESOURCE_SHARE\x10\x07\x12\x16\n\x12AGENT_KIND_SANDBOX\x10\x08B\x85\x01\n\x11com.chalk.auth.v1B\nAgentProtoP\x01Z\x0eauth/v1;authv1\xa2\x02\x03CAX\xaa\x02\rChalk.Auth.V1\xca\x02\rChalk\\Auth\\V1\xe2\x02\x19Chalk\\Auth\\V1\\GPBMetadata\xea\x02\x0fChalk::Auth::V1b\x06proto3',
     [
         featurepermission_pb.desc(),
         permissions_pb.desc(),
@@ -771,6 +876,8 @@ _DESC = file_desc(
         "NotebookShareScope": NotebookShareScope,
         "ResourceShareScope": ResourceShareScope,
         "ResourceShareAgent": ResourceShareAgent,
+        "SandboxPrincipal": SandboxPrincipal,
+        "WorkloadAgent": WorkloadAgent,
         "Agent": Agent,
         "ExchangeTokenKind": ExchangeTokenKind,
         "AgentKind": AgentKind,

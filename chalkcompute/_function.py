@@ -68,6 +68,7 @@ from protobuf import Oneof
 from protobuf.wkt import FieldMask
 
 from chalkcompute import _local_dev
+from chalkcompute._chalk_identity import ChalkIdentity
 from chalkcompute._async_utils import _has_running_event_loop, _run_in_worker_thread
 from chalkcompute._client_cache import ClientCache
 from chalkcompute._gather import gather_handles
@@ -2331,7 +2332,7 @@ class RemoteFunction:
         secrets: list[_Secret] | None = None,
         volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
         tags: dict[str, str] | None = None,
-        chalk_identity: bool = False,
+        chalk_identity: bool | ChalkIdentity = False,
         authenticated: bool = False,
         readiness_probe: _ReadinessProbe | None = None,
         min_replicas: int = 1,
@@ -4229,7 +4230,7 @@ def function(
     secrets: list[_Secret] | None = None,
     volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
-    chalk_identity: bool = False,
+    chalk_identity: bool | ChalkIdentity = False,
     authenticated: bool = False,
     readiness_probe: _ReadinessProbe | None = None,
     min_replicas: int = 1,
@@ -4271,7 +4272,7 @@ def function(
     secrets: list[_Secret] | None = None,
     volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
-    chalk_identity: bool = False,
+    chalk_identity: bool | ChalkIdentity = False,
     authenticated: bool = False,
     readiness_probe: _ReadinessProbe | None = None,
     min_replicas: int = 1,
@@ -4314,7 +4315,7 @@ def function(
     secrets: list[_Secret] | None = None,
     volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
-    chalk_identity: bool = False,
+    chalk_identity: bool | ChalkIdentity = False,
     authenticated: bool = False,
     readiness_probe: _ReadinessProbe | None = None,
     min_replicas: int = 1,

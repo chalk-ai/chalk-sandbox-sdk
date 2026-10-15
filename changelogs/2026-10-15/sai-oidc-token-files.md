@@ -1,0 +1,1 @@
+- Add `cc.OIDCTokenFile` for platform-managed, automatically rotated OIDC token files in `Sandbox(env=...)`, and `cc.ChalkIdentity(mode="sandbox")` so the token identifies the sandbox rather than its creator. Requires a Chalk deployment that supports sandbox OIDC token files; older servers fail sandbox creation with a clear error.

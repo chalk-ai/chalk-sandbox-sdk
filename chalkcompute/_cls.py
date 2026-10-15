@@ -55,6 +55,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, TypeVar, overload
 
+from chalkcompute._chalk_identity import ChalkIdentity
 from chalkcompute._function_source_location import FunctionSourceLocations
 from chalkcompute._logging import _StatusLogger
 from chalkcompute._concurrency import ConcurrencyPolicy
@@ -765,7 +766,7 @@ class RemoteClass:
         secrets: list[_Secret] | None = None,
         volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
         tags: dict[str, str] | None = None,
-        chalk_identity: bool = False,
+        chalk_identity: bool | ChalkIdentity = False,
         authenticated: bool = False,
         readiness_probe: _ReadinessProbe | None = None,
         min_replicas: int = 1,
@@ -1662,7 +1663,7 @@ def cls(
     secrets: list[_Secret] | None = None,
     volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
-    chalk_identity: bool = False,
+    chalk_identity: bool | ChalkIdentity = False,
     authenticated: bool = False,
     readiness_probe: _ReadinessProbe | None = None,
     min_replicas: int = 1,
@@ -1703,7 +1704,7 @@ def cls(
     secrets: list[_Secret] | None = None,
     volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
-    chalk_identity: bool = False,
+    chalk_identity: bool | ChalkIdentity = False,
     authenticated: bool = False,
     readiness_probe: _ReadinessProbe | None = None,
     min_replicas: int = 1,
@@ -1745,7 +1746,7 @@ def cls(
     secrets: list[_Secret] | None = None,
     volumes: list[tuple[str | Volume, str] | Volume | VolumeMount] | None = None,
     tags: dict[str, str] | None = None,
-    chalk_identity: bool = False,
+    chalk_identity: bool | ChalkIdentity = False,
     authenticated: bool = False,
     readiness_probe: _ReadinessProbe | None = None,
     min_replicas: int = 1,
