@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import uuid
 from datetime import datetime, timedelta
 
 # Only clean up names with a CI-generated suffix,
@@ -44,6 +45,12 @@ def build_scoped_name(base: str) -> str:
     # Hash the full run ID and take the first 12 characters.
     suffix = hashlib.sha256(run_id.encode()).hexdigest()[:12]
     return f"{base}-{suffix}"
+
+
+def build_test_function_name(base: str) -> str:
+    """Give locally run cleanup tests a unique Function name too."""
+    name = build_scoped_name(base)
+    return name if name != base else f"{base}-local-{uuid.uuid4().hex[:12]}"
 
 
 def parse_rfc3339(value: str | None) -> datetime | None:

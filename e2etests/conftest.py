@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 import warnings
 from collections.abc import Iterator
 from datetime import datetime, timezone
@@ -23,6 +24,11 @@ from typing import Any
 
 import chalkcompute
 import pytest
+from chalkcompute import VolumeClient, VolumeError
+from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import (
+    service_connect as catalog_connect,
+)
+from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as catalog_pb
 from pyqwest import FullResponse, SyncClient
 from dotenv import load_dotenv
 
@@ -104,9 +110,8 @@ def _deploy_script(
 def _delete_function(function_name: str) -> None:
     """Best-effort delete of a deployed function and its scaling group.
 
-    ``DeleteExternalFunctionVersion`` cascades to the backing scaling group, so
-    deleting the function version is all a test needs to undo a deploy.  Errors
-    are swallowed: a cleanup failure should never fail an otherwise green test.
+    Source volumes need separate cleanup. Errors are swallowed so a Function
+    deletion failure does not fail an otherwise green test.
     """
     try:
         chalkcompute.RemoteFunction.from_name(function_name).delete()
@@ -147,6 +152,76 @@ def _delete_model_registration(model_name: str) -> None:
         _delete_model_with_client(client, stub, model_name)
     finally:
         client.close()
+
+
+def _test_owned_source_volume_name(
+    function: chalkcompute.RemoteFunction, function_name: str
+) -> str | None:
+    """Return only a deployed source volume uniquely named for this test Function."""
+    version = function.version_info
+    assert version is not None
+    stub = function._client.stub(
+        catalog_connect.ExternalFunctionCatalogServiceClientSync
+    )
+    source = function._client.call(
+        stub.get_external_function_version_source,
+        catalog_pb.GetExternalFunctionVersionSourceRequest(
+            function_version_id=version.id
+        ),
+    )
+    owned_names = {function_name, f"fn-src-{function_name}-app"}
+    # Shared content-addressed volumes belong to the environment, not this test.
+    return source.volume_name if source.volume_name in owned_names else None
+
+
+def _deployed_test_function_source(
+    function_name: str,
+) -> tuple[chalkcompute.RemoteFunction, str | None]:
+    """Capture source ownership, deleting the new Function if inspection fails."""
+    try:
+        function = chalkcompute.RemoteFunction.from_name(function_name)
+        return function, _test_owned_source_volume_name(function, function_name)
+    except Exception:
+        _delete_function(function_name)
+        raise
+
+
+def _deploy_test_function_source(
+    example_subdir: str, script_name: str, function_name: str
+) -> tuple[chalkcompute.RemoteFunction, str | None]:
+    """Deploy and capture an owned source, including cleanup after partial deploy."""
+    try:
+        _deploy_script(example_subdir, script_name, function_name=function_name)
+    except BaseException:
+        try:
+            function, source_volume_name = _deployed_test_function_source(function_name)
+            _delete_function(function_name)
+            if source_volume_name is not None:
+                _delete_test_owned_source_volume(function, source_volume_name)
+        except Exception as error:
+            # Keep the deploy failure visible; unknown sources are never deleted.
+            print(
+                f"warning: partial Function cleanup for {function_name}: {error}",
+                file=sys.stderr,
+            )
+        raise
+    return _deployed_test_function_source(function_name)
+
+
+def _delete_test_owned_source_volume(
+    function: chalkcompute.RemoteFunction, volume_name: str
+) -> None:
+    """Wait for a deleted Function's pod to release its exact source mount."""
+    deadline = time.monotonic() + 120
+    with VolumeClient.from_connect(function._client) as volumes:
+        while volumes.exists(volume_name):
+            try:
+                volumes.delete_volume(volume_name)
+                return
+            except VolumeError as error:
+                if "still mounted" not in str(error) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(2)
 
 
 def _get_access_token() -> str:
