@@ -1,0 +1,1 @@
+- Fix a native thread leak in `VolumeClient`. Clients were never garbage collected, so each one kept its own Tokio runtime alive, and long-running processes that created many volume clients eventually ran out of threads and memory. Clients are now freed when dropped, and all clients in a process share one runtime sized to the available CPUs.

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import gc
+import weakref
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 from connectrpc.code import Code
@@ -267,7 +269,7 @@ def test_client_from_connect_uses_connect_http_endpoint(
     connect._access_token = "token"
     connect._env_id = "env-1"
 
-    client = VolumeClient.from_connect(connect)
+    VolumeClient.from_connect(connect)
 
     connect._ensure_auth.assert_called_once()
     # commit_author is None so the native client derives the agent URN
@@ -279,7 +281,7 @@ def test_client_from_connect_uses_connect_http_endpoint(
         None,
         [],
         "go-api",
-        client._refresh_token,
+        ANY,
     )
 
 
@@ -302,10 +304,27 @@ def test_client_from_connect_refreshes_rotated_identity_token(
     connect._access_token = "token-two"
     connect._env_id = "env-two"
 
-    token = client._refresh_token()
+    refresh = native.call_args.args[6]
 
-    assert token == "token-two"
+    assert refresh() == "token-two"
     assert native.call_count == 1
+    del client
+    assert refresh() == ""
+
+
+def test_native_refresher_does_not_keep_client_alive() -> None:
+    connect = MagicMock()
+    connect._api_server = "https://api.chalk.ai"
+    connect._access_token = "token"
+    connect._env_id = "env-1"
+    gc.disable()
+    try:
+        client = VolumeClient.from_connect(connect)
+        ref = weakref.ref(client)
+        del client
+        assert ref() is None
+    finally:
+        gc.enable()
 
 
 def test_accepts_explicit_client_and_gets_existing_volume_lazily(

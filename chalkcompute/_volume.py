@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import builtins
 import datetime
+import functools
 import importlib
 import logging
 import math
@@ -21,6 +22,7 @@ import os
 import tempfile
 import time
 import uuid
+import weakref
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -1341,7 +1343,8 @@ class VolumeClient:
             commit_author,
             self._extra_headers,
             chalk_server,
-            self._refresh_token,
+            # Weak so the native client does not keep this client alive.
+            functools.partial(_call_weak, weakref.WeakMethod(self._refresh_token)),
         )
 
     @classmethod
@@ -2049,6 +2052,11 @@ def _metadata_value(metadata: Any, key: str) -> str:
         if str(k).lower() == key:
             return str(v)
     return ""
+
+
+def _call_weak(method: Callable[[], Callable[[], str] | None]) -> str:
+    fn = method()
+    return fn() if fn is not None else ""
 
 
 def _native_endpoint(endpoint: str, *, use_tls: bool) -> str:
