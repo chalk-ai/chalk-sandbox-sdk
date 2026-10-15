@@ -411,6 +411,19 @@ class ConnectClient:
         timeout
             Request timeout in seconds.
         """
+        response = self._get_workload_identity_token_response(
+            audience,
+            timeout=timeout,
+        )
+        return response.token
+
+    def _get_workload_identity_token_response(
+        self,
+        audience: str,
+        *,
+        timeout: float = 30,
+    ) -> auth_pb.GetWorkloadIdentityTokenResponse:
+        """Return the complete workload identity token RPC response."""
         if not isinstance(audience, str) or not audience.strip():
             raise ValueError("audience cannot be empty")
 
@@ -424,7 +437,7 @@ class ConnectClient:
             raise ConnectError(
                 "GetWorkloadIdentityToken returned a response without a token"
             )
-        return response.token
+        return response
 
     def stub(self, stub_cls: Callable[..., _StubT]) -> _StubT:
         """Return a generated ConnectRPC client for the API server.

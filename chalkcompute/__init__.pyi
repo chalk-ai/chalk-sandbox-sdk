@@ -18,6 +18,13 @@ from chalkcompute._cls import cls as cls
 from chalkcompute._cls import method as method
 from chalkcompute._concurrency import ConcurrencyPolicy as ConcurrencyPolicy
 from chalkcompute._connect import ConnectClient as ConnectClient
+from chalkcompute._workload_identity import OIDCToken as OIDCToken
+from chalkcompute._workload_identity import (
+    WorkloadIdentityTokenError as WorkloadIdentityTokenError,
+)
+from chalkcompute._workload_identity import (
+    WorkloadIdentityTokenSource as WorkloadIdentityTokenSource,
+)
 from chalkcompute._connect import build_image_from_spec as build_image
 from chalkcompute._connect import (
     build_image_with_volumes_from_spec as build_image_with_volumes,
@@ -250,6 +257,9 @@ __all__ = [
     "ModelNotFoundError",
     "ModelNotDeployedError",
     "ConnectClient",
+    "OIDCToken",
+    "WorkloadIdentityTokenError",
+    "WorkloadIdentityTokenSource",
     "build_image",
     "build_image_with_volumes",
     "HTTPHeaders",

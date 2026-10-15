@@ -123,6 +123,16 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "chalkcompute._connect",
         "build_image_with_volumes_from_spec",
     ),
+    # _workload_identity.py
+    "OIDCToken": ("chalkcompute._workload_identity", "OIDCToken"),
+    "WorkloadIdentityTokenError": (
+        "chalkcompute._workload_identity",
+        "WorkloadIdentityTokenError",
+    ),
+    "WorkloadIdentityTokenSource": (
+        "chalkcompute._workload_identity",
+        "WorkloadIdentityTokenSource",
+    ),
     # _http.py
     "HTTPHeaders": ("chalkcompute._http", "HTTPHeaders"),
     "HTTPResponse": ("chalkcompute._http", "HTTPResponse"),
