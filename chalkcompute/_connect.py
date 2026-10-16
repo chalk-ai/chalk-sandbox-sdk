@@ -59,6 +59,19 @@ class ConnectError(Exception):
     """Raised by ConnectClient operations."""
 
 
+class ImageBuildTimeoutError(ConnectError):
+    """Raised when the client stops waiting before an image build completes."""
+
+    def __init__(self, build_id: str, timeout: float) -> None:
+        self.build_id = build_id
+        self.timeout = timeout
+        super().__init__(
+            f"Image build {build_id} did not complete within the client wait "
+            f"timeout of {timeout}s. The build may still be running and was not "
+            "cancelled; repeating the same image request can rejoin the build."
+        )
+
+
 def service_auth_context_from_env() -> ServiceAuthContext | None:
     try:
         return resolve_service_auth_context()
@@ -510,7 +523,7 @@ def build_image(
     image: Image,
     *,
     poll_interval: float = 0.5,
-    timeout: float = 600.0,
+    timeout: float | None = None,
 ) -> str:
     """Build an ``Image`` spec via ``CustomImageService`` and return its URI.
 
@@ -526,7 +539,8 @@ def build_image(
     poll_interval
         Seconds between build-status polls.
     timeout
-        Maximum seconds to wait for the build to complete.
+        Optional maximum seconds to wait for the build to complete. By default,
+        wait for the server to report a terminal build status.
 
     Returns
     -------
@@ -536,7 +550,7 @@ def build_image(
     Raises
     ------
     ConnectError
-        If the build fails or times out.
+        If the build fails or an explicitly configured timeout expires.
     """
     image_spec = image.to_proto()
     image_uri = image.as_image_uri_if_possible()
@@ -560,14 +574,18 @@ def build_image(
 
 
 def wait_for_image_build(
-    client: ConnectClient, build_id: str, *, poll_interval: float, timeout: float
+    client: ConnectClient,
+    build_id: str,
+    *,
+    poll_interval: float,
+    timeout: float | None,
 ) -> str:
     """Wait for an already-submitted build without another get-or-build call."""
     stub = client.stub(image_connect.CustomImageServiceClientSync)
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + timeout if timeout is not None else None
     transient_failures = 0
     max_transient_failures = 5
-    while time.monotonic() < deadline:
+    while deadline is None or time.monotonic() < deadline:
         try:
             get_response = client.call(
                 stub.get_custom_image,
@@ -602,7 +620,8 @@ def wait_for_image_build(
             )
         time.sleep(poll_interval)
 
-    raise ConnectError(f"Image build {build_id} timed out after {timeout}s")
+    assert timeout is not None
+    raise ImageBuildTimeoutError(build_id, timeout)
 
 
 def build_image_from_spec(image: Image, chalk_client: Any | None = None) -> str:

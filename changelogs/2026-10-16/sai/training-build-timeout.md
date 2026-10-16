@@ -1,0 +1,1 @@
+- Let training image builds wait for the server's result by default, with an optional client timeout that explains how to rejoin a build that is still running.
