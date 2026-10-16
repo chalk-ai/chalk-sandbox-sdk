@@ -168,7 +168,7 @@ def test_transcript_renders_llm_turns_oldest_first() -> None:
     text = Trace("session-1", _client=client).transcript(wait=False)
 
     _, request = connect.calls[0]
-    assert request.query == "session:session-1"
+    assert request.query == 'session:"session-1"'
     assert text == (
         "### turn 1 (unknown model)\n[prompt]\nfirst prompt\n[completion]\nfirst answer"
         "\n\n"
@@ -502,7 +502,7 @@ def test_get_spans_queries_by_session_and_decodes_spans() -> None:
     method, request = connect.calls[0]
     assert method == "list_span"
     assert isinstance(request, trace_pb.ListSpanRequest)
-    assert request.query == "session:session-1"
+    assert request.query == 'session:"session-1"'
 
     (span,) = spans
     assert span.span_id == "span-1"
@@ -510,6 +510,27 @@ def test_get_spans_queries_by_session_and_decodes_spans() -> None:
     assert span.status_code is SpanStatusCode.OK
     assert span.duration == timedelta(seconds=1.5)
     assert span.session_id == "session-1"
+
+
+@pytest.mark.parametrize(
+    ("session_id", "expected_query"),
+    [
+        ("run-id:row-id", 'session:"run-id:row-id"'),
+        ("rescore-id:run-id:row-id", 'session:"rescore-id:run-id:row-id"'),
+        ("agent session", 'session:"agent session"'),
+        ('agent "quoted"\\session', r'session:"agent \"quoted\"\\session"'),
+    ],
+)
+def test_get_spans_quotes_session_ids_in_search_filters(
+    session_id: str, expected_query: str
+) -> None:
+    client, connect = _client({"list_span": [_response({"spans": []})]})
+
+    Trace(session_id, _client=client).get_spans(wait=False)
+
+    method, request = connect.calls[0]
+    assert method == "list_span"
+    assert request.query == expected_query
 
 
 def test_attribute_float_parses_string_attributes() -> None:

@@ -1,0 +1,1 @@
+- Fix trace span reads and transcripts for evaluation session IDs containing colons by quoting and escaping session search filters.

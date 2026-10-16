@@ -888,7 +888,7 @@ def _settle(
 
 
 def _session_query(session_id: str) -> str:
-    return f"session:{session_id}"
+    return f"session:{json.dumps(session_id)}"
 
 
 def _span_from_proto(raw: trace_pb.ChalkSpan) -> Span:
