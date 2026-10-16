@@ -36,7 +36,7 @@ exclude = ["examples/", ".env*", ".sops.yaml", "e2etests/", "test_*", "*.enc"]
 
 [project.optional-dependencies]
 sql = ["pyarrow>=14.0.0"]
-workflows = ["chalkpy[workflows]>=2.154.27"]
+workflows = ["chalkpy[workflows]>=2.162.7"]
 dev = [
     "attrs>=23.0.0",
     "chalkdf>=3.31.87",

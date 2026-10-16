@@ -905,6 +905,10 @@ class Image:
         ValueError
             If ``strategy="copy"`` exceeds the per-file or total copied-content
             limit.
+        FileNotFoundError
+            If ``strategy="copy"`` and ``src`` does not exist. A missing
+            ``strategy="volume"`` file is reported when the image is used by a
+            sandbox, function, or scaling group, before anything is created.
 
         Examples
         --------
@@ -930,11 +934,11 @@ class Image:
         new = self._copy()
         if strategy == "volume":
             _validate_lazy_local_file_destination(dest)
+            # Checked, like the destination, when the image is used by a sandbox,
+            # function, or scaling group: a spec is inert until then, and a process
+            # that only registers specs, such as a deployed workflow worker
+            # re-importing the file that built its own image, has no local files.
             src_path = Path(src).resolve()
-            if not src_path.exists():
-                raise FileNotFoundError(
-                    f"add_local_file: source file not found: {str(src_path)!r}"
-                )
             new._lazy_local_files.add(
                 LazyLocalFile(src=str(src_path), dest=dest, mode=mode)
             )
@@ -1347,18 +1351,26 @@ class Image:
         return set(self._lazy_local_files)
 
     def validate_lazy_local_files_for_volume_mounts(self) -> None:
-        """Validate lazy local file destinations for volume mounting.
+        """Validate lazy local files before the image is used.
 
-        Volume-backed lazy files are grouped by parent directory and mounted at
-        that directory. Root-level destinations would require mounting at ``/``,
-        which is not supported by container runtimes.
+        Called when the image is handed to a sandbox, function, or scaling group,
+        before anything is created. A spec is inert until then, so a process that
+        only registers specs, such as a deployed workflow worker re-importing the
+        file that built its own image, never needs the local files.
 
         Raises
         ------
         ValueError
             If a lazy local file would require mounting at the root directory.
+        FileNotFoundError
+            If a lazy local file's source does not exist.
         """
         self.lazy_local_files_grouped_for_volume_mounts()
+        for lf in sorted(self._lazy_local_files, key=lambda x: x.src):
+            if not Path(lf.src).is_file():
+                raise FileNotFoundError(
+                    f"add_local_file: source file not found: {lf.src!r}"
+                )
 
     def lazy_local_files_grouped_for_volume_mounts(
         self,

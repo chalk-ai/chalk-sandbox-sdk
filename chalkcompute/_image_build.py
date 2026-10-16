@@ -106,6 +106,7 @@ def build_image_snapshot(
     recipe, mounts = normalize_image_volumes(image, volumes)
     assert isinstance(recipe, Image)
     mounts = merge_mounts(mounts)
+    image.validate_lazy_local_files_for_volume_mounts()
     lazy = image.lazy_local_files_grouped_for_volume_mounts()
     name = name or default_source_volume_name(image)
     with VolumeClient.from_env(chalk_client=chalk_client) as driver:

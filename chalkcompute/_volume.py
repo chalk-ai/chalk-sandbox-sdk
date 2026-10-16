@@ -1508,6 +1508,7 @@ class VolumeClient:
         list of VolumeMount
             One :class:`VolumeMount` per created volume.
         """
+        image.validate_lazy_local_files_for_volume_mounts()
         try:
             dir_to_files = image.lazy_local_files_grouped_for_volume_mounts()
         except ValueError as e:
@@ -1573,6 +1574,7 @@ class VolumeClient:
         """
         from chalkcompute._naming import sanitize_dns_label
 
+        image.validate_lazy_local_files_for_volume_mounts()
         try:
             dir_to_files = image.lazy_local_files_grouped_for_volume_mounts()
         except ValueError as e:
@@ -1624,6 +1626,7 @@ class VolumeClient:
         """Resolve lazy local files to immutable source volume mounts."""
         from chalkcompute._naming import sanitize_dns_label
 
+        image.validate_lazy_local_files_for_volume_mounts()
         try:
             groups = image.lazy_local_files_grouped_for_volume_mounts()
         except ValueError as exc:
