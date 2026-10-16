@@ -1054,46 +1054,6 @@ class TestDataplaneApiServerTarget:
             True,
         )
 
-    def test_prefers_resolved_dataplane_url_from_auth_response(self):
-        client = ConnectClient()
-        client._access_token = "token"
-        client._env_id = "env-1"
-        client._environment_id_to_dataplane_api_server_url = {
-            "env-1": "https://legacy-dataplane.chalk.test:9443"
-        }
-
-        assert client.dataplane_api_server_target() == (
-            "legacy-dataplane.chalk.test:9443",
-            True,
-        )
-
-    def test_discovers_web_identity_dataplane_url_from_get_env(self, monkeypatch):
-        client = ConnectClient()
-        client._access_token = "identity-token"
-        client._env_id = "env-1"
-        monkeypatch.setattr(
-            "chalkcompute._connect.web_identity_token_file_from_env",
-            lambda: "/tmp/web-identity-token",
-        )
-        monkeypatch.setattr(client, "_ensure_auth", lambda: None)
-        stub = types.SimpleNamespace(get_env=object())
-        monkeypatch.setattr(client, "stub", lambda _client_type: stub)
-        monkeypatch.setattr(
-            client,
-            "call",
-            lambda *_args, **_kwargs: types.SimpleNamespace(
-                environment=types.SimpleNamespace(
-                    id="env-1",
-                    dataplane_api_server_url="https://dpa.web-identity.test:8443",
-                )
-            ),
-        )
-
-        assert client.dataplane_api_server_target() == (
-            "dpa.web-identity.test:8443",
-            True,
-        )
-
     def test_does_not_fall_back_to_engine_target(self):
         client = ConnectClient()
         client._access_token = "token"

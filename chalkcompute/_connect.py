@@ -133,7 +133,6 @@ class ConnectClient:
         self._grpc_engines: dict[str, str] = {}
         self._environment_id_to_name: dict[str, str] = {}
         self._environment_id_to_authority: dict[str, str] = {}
-        self._environment_id_to_dataplane_api_server_url: dict[str, str] = {}
         self._service_prefixes: dict[int, str] = {}
         self._primary_environment: str | None = None
         self._chalk_client = chalk_client
@@ -172,7 +171,6 @@ class ConnectClient:
             self._grpc_engines = {}
             self._environment_id_to_name = {}
             self._environment_id_to_authority = {}
-            self._environment_id_to_dataplane_api_server_url = {}
             self._service_prefixes = {}
             self._primary_environment = None
             self._web_identity_token_file = identity_token_file
@@ -220,14 +218,9 @@ class ConnectClient:
             self._grpc_engines = _string_map(data.grpc_engines or data.engines)
             self._environment_id_to_name = _string_map(data.environment_id_to_name)
             self._environment_id_to_authority = _string_map(
-                getattr(data, "environment_id_to_authority", {})
+                data.environment_id_to_authority
             )
-            self._environment_id_to_dataplane_api_server_url = _string_map(
-                getattr(data, "environment_id_to_dataplane_api_server_url", {})
-            )
-            self._service_prefixes = _int_string_map(
-                getattr(data, "service_prefixes", {})
-            )
+            self._service_prefixes = _int_string_map(data.service_prefixes)
             self._env_id = self._resolve_environment_id(service_auth.environment_id)
             self._headers = {
                 "Content-Type": "application/json",
@@ -313,9 +306,6 @@ class ConnectClient:
         self._environment_id_to_authority = _string_map(
             data.environment_id_to_authority
         )
-        self._environment_id_to_dataplane_api_server_url = _string_map(
-            getattr(data, "environment_id_to_dataplane_api_server_url", {})
-        )
         self._service_prefixes = _int_string_map(data.service_prefixes)
         self._env_id = self._resolve_environment_id(
             requested_env or self._primary_environment or ""
@@ -335,7 +325,6 @@ class ConnectClient:
             environment in self._grpc_engines
             or environment in self._environment_id_to_name
             or environment in self._environment_id_to_authority
-            or environment in self._environment_id_to_dataplane_api_server_url
         ):
             return environment
 
@@ -408,45 +397,16 @@ class ConnectClient:
         self._ensure_auth()
         if not self._env_id:
             raise ConnectError("No Chalk environment selected")
-        dataplane_url = self._environment_id_to_dataplane_api_server_url.get(
-            self._env_id, ""
+        authority = self._environment_id_to_authority.get(self._env_id, "")
+        service_prefix = self._service_prefixes.get(
+            auth_pb.ServiceKind.DATAPLANE_API_SERVER.value, ""
         )
-        if not dataplane_url and web_identity_token_file_from_env() is not None:
-            stub = self.stub(team_connect.TeamServiceClientSync)
-            try:
-                response = self.call(stub.get_env, team_pb.GetEnvRequest())
-            except (ConnectRpcError, *HTTP_TRANSPORT_ERRORS) as exc:
-                raise ConnectError(
-                    "Unable to discover the dataplane API server endpoint for Chalk "
-                    f"environment {self._env_id!r}: {exc}. Discovery requires "
-                    "DEPLOY_READ permission."
-                ) from exc
-            environment = response.environment
-            if environment is None or environment.id != self._env_id:
-                raise ConnectError(
-                    "Endpoint discovery returned no matching Chalk environment "
-                    f"for {self._env_id!r}"
-                )
-            dataplane_url = (
-                getattr(environment, "dataplane_api_server_url", "") or ""
-            ).strip()
-            if dataplane_url:
-                self._environment_id_to_dataplane_api_server_url[self._env_id] = (
-                    dataplane_url
-                )
-        if not dataplane_url:
-            authority = self._environment_id_to_authority.get(self._env_id, "")
-            service_prefix = self._service_prefixes.get(
-                auth_pb.ServiceKind.DATAPLANE_API_SERVER.value, ""
-            )
-            if authority and service_prefix:
-                dataplane_url = f"https://{service_prefix}.{authority}"
-        if not dataplane_url:
+        if not authority or not service_prefix:
             raise ConnectError(
                 "No dataplane API server endpoint found for Chalk environment "
                 f"{self._env_id!r}; auth did not provide service URI metadata"
             )
-        return grpc_engine_target_from_url(dataplane_url)
+        return grpc_engine_target_from_url(f"https://{service_prefix}.{authority}")
 
     def _rpc_metadata(self) -> list[tuple[str, str]]:
         """Return current RPC metadata, re-reading rotating identity files."""
