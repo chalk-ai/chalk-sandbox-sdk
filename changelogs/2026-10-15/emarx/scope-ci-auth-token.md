@@ -1,1 +1,1 @@
-- Scope Buildkite integration-test tokens to their target environment to keep direct function-call headers below transport limits.
+- Scope Buildkite integration-test tokens to their target environment to keep direct function-call headers below transport limits, while preserving the login response's gRPC endpoint for queued calls and generator streams.

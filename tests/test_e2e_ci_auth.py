@@ -16,6 +16,18 @@ import pytest
 from e2etests import conftest
 
 
+def _mock_token_response(
+    monkeypatch: pytest.MonkeyPatch, response: dict[str, Any]
+) -> None:
+    monkeypatch.setattr(
+        conftest,
+        "_HTTP_CLIENT",
+        SimpleNamespace(
+            post=lambda *a, **kw: SimpleNamespace(status=200, json=lambda: response)
+        ),
+    )
+
+
 @pytest.fixture
 def ci_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BUILDKITE", "true")
@@ -27,6 +39,7 @@ def ci_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv("CHALK_WEB_IDENTITY_TOKEN_FILE", raising=False)
+    monkeypatch.delenv("CHALK_GRPC_ENGINE", raising=False)
     monkeypatch.setattr(conftest, "CHALK_CLIENT_ID", "client-id")
     monkeypatch.setattr(conftest, "CHALK_CLIENT_SECRET", "client-secret")
     monkeypatch.setattr(conftest, "CHALK_API_SERVER", "https://api.example.test")
@@ -82,7 +95,13 @@ def test_ci_identity_is_used_by_sdk_and_inherited_by_subprocesses(
         .rstrip("=")
     )
     token = f"header.{payload}.signature"
-    monkeypatch.setattr(conftest, "_get_access_token", lambda: token)
+    _mock_token_response(
+        monkeypatch,
+        {
+            "access_token": token,
+            "grpc_engines": {"env-ci": "https://queue.example.test:443"},
+        },
+    )
     monkeypatch.setattr(
         "chalkcompute._connect.load_token",
         lambda *a, **kw: pytest.fail("SDK must use the scoped token file"),
@@ -96,6 +115,12 @@ def test_ci_identity_is_used_by_sdk_and_inherited_by_subprocesses(
             client._ensure_auth()
             assert client._access_token == token
             assert client._env_id == "env-ci"
+            monkeypatch.setattr(
+                client,
+                "stub",
+                lambda *a: pytest.fail("must use login's queue endpoint"),
+            )
+            assert client.grpc_engine_target() == ("queue.example.test:443", True)
         finally:
             client.close()
         child_token = subprocess.check_output(
@@ -107,8 +132,19 @@ def test_ci_identity_is_used_by_sdk_and_inherited_by_subprocesses(
             text=True,
         ).strip()
         assert child_token == token
+        child_target = subprocess.check_output(
+            [
+                sys.executable,
+                "-c",
+                "from chalkcompute._connect import ConnectClient; "
+                "print(ConnectClient().grpc_engine_target())",
+            ],
+            text=True,
+        ).strip()
+        assert child_target == "('queue.example.test:443', True)"
 
     assert "CHALK_WEB_IDENTITY_TOKEN_FILE" not in os.environ
+    assert "CHALK_GRPC_ENGINE" not in os.environ
     assert not token_path.exists()
 
 
@@ -129,7 +165,9 @@ def test_ci_identity_setup_preserves_other_auth_modes(
         monkeypatch.setattr(conftest, "CHALK_CLIENT_ID", "")
     before = os.environ.get("CHALK_WEB_IDENTITY_TOKEN_FILE")
     monkeypatch.setattr(
-        conftest, "_get_access_token", lambda: pytest.fail("unexpected token exchange")
+        conftest,
+        "_HTTP_CLIENT",
+        SimpleNamespace(post=lambda *a, **kw: pytest.fail("unexpected token exchange")),
     )
 
     with contextmanager(conftest.ci_scoped_auth.__wrapped__)():
@@ -141,7 +179,10 @@ def test_ci_identity_setup_preserves_other_auth_modes(
 def test_ci_token_is_removed_when_a_test_fails(
     ci_credentials: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(conftest, "_get_access_token", lambda: "test-token")
+    _mock_token_response(
+        monkeypatch,
+        {"access_token": "test-token", "grpc_engines": {"env-ci": "localhost:50051"}},
+    )
 
     with pytest.raises(RuntimeError, match="test failed"):
         with contextmanager(conftest.ci_scoped_auth.__wrapped__)():
@@ -149,4 +190,37 @@ def test_ci_token_is_removed_when_a_test_fails(
             raise RuntimeError("test failed")
 
     assert "CHALK_WEB_IDENTITY_TOKEN_FILE" not in os.environ
+    assert "CHALK_GRPC_ENGINE" not in os.environ
     assert not token_path.exists()
+
+
+@pytest.mark.parametrize("engine_key", ["grpc_engines", "engines"])
+def test_ci_identity_preserves_login_queue_endpoint(
+    ci_credentials: None, monkeypatch: pytest.MonkeyPatch, engine_key: str
+) -> None:
+    _mock_token_response(
+        monkeypatch,
+        {
+            "access_token": "test-token",
+            engine_key: {"env-ci": "queue.example.test:443"},
+        },
+    )
+    with contextmanager(conftest.ci_scoped_auth.__wrapped__)():
+        assert os.environ["CHALK_GRPC_ENGINE"] == "queue.example.test:443"
+    assert "CHALK_GRPC_ENGINE" not in os.environ
+
+
+def test_ci_identity_preserves_explicit_queue_endpoint(
+    ci_credentials: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CHALK_GRPC_ENGINE", "localhost:50051")
+    _mock_token_response(
+        monkeypatch,
+        {
+            "access_token": "test-token",
+            "grpc_engines": {"env-ci": "queue.example.test:443"},
+        },
+    )
+    with contextmanager(conftest.ci_scoped_auth.__wrapped__)():
+        assert os.environ["CHALK_GRPC_ENGINE"] == "localhost:50051"
+    assert os.environ["CHALK_GRPC_ENGINE"] == "localhost:50051"

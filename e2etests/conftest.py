@@ -151,8 +151,8 @@ def _delete_model_registration(model_name: str) -> None:
         client.close()
 
 
-def _get_access_token() -> str:
-    """Exchange client credentials for a bearer token via the Chalk REST API."""
+def _get_token_response() -> dict[str, Any]:
+    """Exchange client credentials for a token and its routing metadata."""
     body = {
         "client_id": CHALK_CLIENT_ID,
         "client_secret": CHALK_CLIENT_SECRET,
@@ -175,7 +175,12 @@ def _get_access_token() -> str:
         raise RuntimeError(
             f"Token exchange failed with status {resp.status}: {resp.text()}"
         )
-    return resp.json()["access_token"]
+    return resp.json()
+
+
+def _get_access_token() -> str:
+    """Exchange client credentials for a bearer token via the Chalk REST API."""
+    return _get_token_response()["access_token"]
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -191,12 +196,19 @@ def ci_scoped_auth() -> Iterator[None]:
         yield
         return
 
+    token_response = _get_token_response()
+    # Token files carry no routing metadata. Preserve login's queue endpoint:
+    # TeamService.GetEnv does not populate grpc_engine_url in every CI environment.
+    engines = token_response.get("grpc_engines") or token_response.get("engines") or {}
+    grpc_engine = engines.get(CHALK_ENVIRONMENT_ID, "")
     with TemporaryDirectory(prefix="chalk-ci-auth-") as directory:
         token_path = Path(directory) / "token.jwt"
         token_path.touch(mode=0o600)
-        token_path.write_text(_get_access_token(), encoding="utf-8")
+        token_path.write_text(token_response["access_token"], encoding="utf-8")
         with pytest.MonkeyPatch.context() as patch:
             patch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(token_path))
+            if grpc_engine and not os.environ.get("CHALK_GRPC_ENGINE", "").strip():
+                patch.setenv("CHALK_GRPC_ENGINE", grpc_engine)
             yield
 
 
