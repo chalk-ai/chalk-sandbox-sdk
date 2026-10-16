@@ -4,6 +4,7 @@ import json
 import sys
 import types
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -12,11 +13,14 @@ from chalkcompute import SandboxClient, _tracing
 from chalkcompute._connect import (
     ConnectError,
     ConnectClient,
+    ImageBuildTimeoutError,
     chalk_client_from_env,
     grpc_engine_target_from_url,
     grpc_target_from_url,
+    wait_for_image_build,
 )
 from chalkcompute._gen.chalk.server.v1 import auth_pb, team_pb
+from chalkcompute._gen.chalk.sandbox.v1 import service_pb as image_pb
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
 from chalkcompute._http import SYNC_HTTP_CLIENT
@@ -1232,3 +1236,30 @@ class TestStubAndCall:
             "http_client": SYNC_HTTP_CLIENT,
             "read_max_bytes": RPC_READ_MAX_BYTES,
         }
+
+
+def test_wait_for_image_build_uses_server_status_without_client_timeout() -> None:
+    client = MagicMock()
+    client.call.return_value = image_pb.GetCustomImageResponse(
+        status="succeeded", image="registry/image:built"
+    )
+
+    image_uri = wait_for_image_build(
+        client, "build-123", poll_interval=0, timeout=None
+    )
+
+    assert image_uri == "registry/image:built"
+    client.call.assert_called_once()
+
+
+def test_wait_for_image_build_timeout_identifies_running_build() -> None:
+    client = MagicMock()
+
+    with pytest.raises(ImageBuildTimeoutError) as raised:
+        wait_for_image_build(client, "build-456", poll_interval=0, timeout=0)
+
+    assert raised.value.build_id == "build-456"
+    assert "client wait timeout" in str(raised.value)
+    assert "may still be running" in str(raised.value)
+    assert "was not cancelled" in str(raised.value)
+    client.call.assert_not_called()

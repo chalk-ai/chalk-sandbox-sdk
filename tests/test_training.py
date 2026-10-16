@@ -578,7 +578,53 @@ def test_run_training_builds_image_when_provided() -> None:
     ):
         handle = tf.run_training(config=None, client=mock_client)
         bi.assert_called_once()
+        assert bi.call_args.args[0] is mock_client
+        assert bi.call_args.kwargs == {"timeout": None}
     assert handle.run_id == "run-img"
+
+
+def test_run_training_forwards_build_timeout() -> None:
+    from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
+
+    tf = TrainingFunction(lambda df, config: "ok", data="ds")
+    mock_client = MagicMock()
+    mock_client.call.return_value = tr_pb.CreateTrainingRunResponse(
+        training_run=tr_pb.TrainingRun(id="run-timeout")
+    )
+    with (
+        patch.object(
+            TrainingFunction, "_build_deploy_image", return_value=_mock_deploy_image()
+        ),
+        patch("chalkcompute._training.build_image", return_value="img:latest") as bi,
+    ):
+        tf.run_training(client=mock_client, build_timeout=1200)
+
+    bi.assert_called_once()
+    assert bi.call_args.args[0] is mock_client
+    assert bi.call_args.kwargs == {"timeout": 1200}
+
+
+def test_run_training_timeout_explains_build_is_still_running() -> None:
+    from chalkcompute._connect import ImageBuildTimeoutError
+
+    tf = TrainingFunction(lambda df, config: "ok", data="ds")
+    mock_client = MagicMock()
+    with (
+        patch.object(
+            TrainingFunction, "_build_deploy_image", return_value=_mock_deploy_image()
+        ),
+        patch(
+            "chalkcompute._training.build_image",
+            side_effect=ImageBuildTimeoutError("build-123", 900),
+        ),
+        pytest.raises(
+            TrainingError,
+            match=r"not submitted.*build-123.*still running.*rerun.*same image spec",
+        ),
+    ):
+        tf.run_training(client=mock_client, build_timeout=900)
+
+    mock_client.call.assert_not_called()
 
 
 @pytest.mark.parametrize("compute_class", [None, ComputeClass.K8S, ComputeClass.HOST])

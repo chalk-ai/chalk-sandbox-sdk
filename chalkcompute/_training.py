@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Any, Callable, overload
 from protobuf import Oneof
 from protobuf.wkt import Struct, Value
 
-from chalkcompute._connect import ConnectClient, build_image
+from chalkcompute._connect import ConnectClient, ImageBuildTimeoutError, build_image
 from chalkcompute._containerspec import (
     ComputeClass,
     ContainerSpec,
@@ -400,6 +400,7 @@ class TrainingFunction:
         config: Any = None,
         client: ConnectClient | None = None,
         experiment_id: str | None = None,
+        build_timeout: float | None = None,
     ) -> TrainingRunHandle:
         """Submit a training run to chalkcompute.
 
@@ -414,12 +415,25 @@ class TrainingFunction:
         experiment_id
             Optional ID of the experiment this training run should be
             associated with.
+        build_timeout
+            Optional maximum time in seconds to wait for the image build.
+            By default, wait until the server reports success or failure.
+            If this client-side timeout expires, the build may still be
+            running and the training run has not been submitted.
         """
         if client is None:
             client = ConnectClient()
 
         deploy_image = self._build_deploy_image()
-        image_uri = build_image(client, deploy_image)
+        try:
+            image_uri = build_image(client, deploy_image, timeout=build_timeout)
+        except ImageBuildTimeoutError as exc:
+            raise TrainingError(
+                f"Training run was not submitted because image build {exc.build_id} "
+                f"is still running after the client wait timeout of {exc.timeout}s. "
+                "The build was not cancelled; rerun with the same image spec to "
+                "rejoin it."
+            ) from exc
 
         proto_mounts: list[container_pb.VolumeMount] = []
         if deploy_image.lazy_local_files:
