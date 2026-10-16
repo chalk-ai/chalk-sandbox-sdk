@@ -745,9 +745,76 @@ class Sandbox:
 
         Examples
         --------
-        >>> sandbox = Sandbox(image="ubuntu:latest")
-        >>> with SandboxClient.from_env() as client:
-        ...     client.run(sandbox)
+        Use the default image with Python, Git, SSH, and ``/workspace``:
+
+        >>> from chalkcompute import Sandbox
+        >>> Sandbox()
+
+        Add Python dependencies and upload a local project when the sandbox starts:
+
+        >>> from chalkcompute import Image
+        >>> Sandbox(
+        ...     image=Image.debian_slim("3.12")
+        ...         .pip_install(["pandas", "requests"])
+        ...         .add_local_dir("./src", "/workspace/src")
+        ...         .workdir("/workspace"),
+        ...     cpu="2",
+        ...     memory="8Gi",
+        ... )
+
+        Configure an API client with a secret and restricted outbound access:
+
+        >>> from chalkcompute import NetworkPolicy, Secret
+        >>> Sandbox(
+        ...     image=Image.debian_slim().pip_install(["openai"]),
+        ...     env={"LOG_LEVEL": "INFO"},
+        ...     network_policy=NetworkPolicy(allowed_hosts=["api.openai.com"]),
+        ... ).add_credentials("api.openai.com", Secret.from_chalk_env("OPENAI_API_KEY"))
+
+        Mount existing volumes for durable inputs and outputs:
+
+        >>> Sandbox(
+        ...     volumes=[("training-data", "/data"), ("results", "/results")],
+        ...     cpu="4",
+        ...     memory="16Gi",
+        ...     lifetime="3600s",
+        ... )
+
+        Prepare a coding agent with Claude Code, GitHub CLI, and tmux. Managed
+        SSH uses a stored deploy key; resource detection records pull requests:
+
+        >>> from chalkcompute import ComputeClass, ResourceDetector, SSHDest
+        >>> Sandbox(
+        ...     image=Image.sandbox().with_claude_code().with_gh().with_tmux(),
+        ...     compute_class=ComputeClass.HOST,
+        ...     managed_ssh=[SSHDest.github("GITHUB_DEPLOY_KEY")],
+        ...     resource_detectors=[ResourceDetector.GITHUB_PULL_REQUESTS],
+        ...     cpu="2",
+        ...     memory="16Gi",
+        ... ).add_credentials("api.github.com", "GITHUB_TOKEN").add_credentials(
+        ...     "api.anthropic.com", "CLAUDE_CODE_OAUTH_TOKEN",
+        ... )
+
+        Request a GPU on a host pool configured with NVIDIA L4 GPUs:
+
+        >>> Sandbox(
+        ...     image="nvcr.io/nvidia/pytorch:24.01-py3",
+        ...     gpu="nvidia-l4",
+        ...     cpu="8",
+        ...     memory="64Gi",
+        ...     compute_class=ComputeClass.HOST,
+        ... )
+
+        Give code inside the sandbox a Chalk identity and trace its requests:
+
+        >>> Sandbox(
+        ...     chalk_identity=True,
+        ...     tracing=True,
+        ...     tags={"project": "agent-evals", "stage": "development"},
+        ... )
+
+        These expressions configure sandboxes. Call :meth:`run` on a configured
+        sandbox, or pass it to :meth:`SandboxClient.run`, to start it.
         """
         self._client: Any | None = None
         self._id: str | None = None
