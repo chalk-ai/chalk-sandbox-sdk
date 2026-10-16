@@ -234,6 +234,7 @@ def test_buildkite_matrix_stays_chalk_only_and_fio_is_explicit():
         "model-load",
         "model-download",
         "git-repo",
+        "api-throughput",
     ]
     if shutil.which("just") is None:
         pytest.skip("just is not installed")

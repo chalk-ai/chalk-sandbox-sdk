@@ -4,8 +4,8 @@ on:
       cron: "0 6 * * * America/Los_Angeles"
       branch: main
       message: "Scheduled sandbox TTI benchmark"
-    - label: "Sandbox Volume Benchmarks - Every 30 Minutes"
-      cron: "*/30 * * * * America/Los_Angeles"
+    - label: "Sandbox Volume Benchmarks - Hourly"
+      cron: "0 * * * * America/Los_Angeles"
       branch: main
       message: "Scheduled sandbox volume benchmarks"
 
@@ -62,6 +62,7 @@ steps:
           - "model-load"
           - "model-download"
           - "git-repo"
+          - "api-throughput"
     agents:
       queue: default
     timeout_in_minutes: 90
