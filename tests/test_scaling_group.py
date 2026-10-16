@@ -128,3 +128,80 @@ def test_scaling_group_deploy_forwards_execution_target(
         assert (
             spec.execution_target.backend == container_pb.ExecutionBackend[target.name]
         )
+
+
+def _response(status: int, body: bytes) -> MagicMock:
+    response = MagicMock()
+    response.status = status
+    response.content = body
+    return response
+
+
+_SCALING_UP = (
+    b'{"error": "Service Unavailable", "message": "This scaling group is scaling up'
+    b' from zero. Please retry in a moment.", "status": 503}'
+)
+_CONNECT_ERROR = (
+    b"upstream connect error or disconnect/reset before headers."
+    b" reset reason: connection timeout"
+)
+
+
+def _deployed_group(monkeypatch: pytest.MonkeyPatch, *responses: MagicMock) -> Any:
+    client = ScalingGroupClient()
+    sg = ScalingGroup(image="nginx:alpine", name="cold-start")
+    sg._client = cast(Any, client)
+    sg.deploy()
+    http_client = MagicMock()
+    http_client.execute.side_effect = list(responses)
+    monkeypatch.setattr(scaling_group_mod, "SYNC_HTTP_CLIENT", http_client)
+    monkeypatch.setattr(scaling_group_mod.time, "sleep", lambda _: None)
+    return sg, http_client
+
+
+@pytest.mark.parametrize("body", [_SCALING_UP, _CONNECT_ERROR, b"no healthy upstream"])
+def test_scaling_group_call_retries_gateway_unavailable(
+    monkeypatch: pytest.MonkeyPatch, body: bytes
+) -> None:
+    ok = _response(200, b"ok")
+    sg, http_client = _deployed_group(
+        monkeypatch, _response(503, body), _response(503, body), ok
+    )
+
+    assert sg.call("/", json={"x": 1}) is ok
+    assert http_client.execute.call_count == 3
+
+
+def test_scaling_group_call_does_not_retry_app_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_unavailable = _response(503, b"maintenance")
+    sg, http_client = _deployed_group(monkeypatch, app_unavailable)
+
+    assert sg.call("/") is app_unavailable
+    assert http_client.execute.call_count == 1
+
+
+def test_scaling_group_call_cold_start_timeout_zero_disables_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    unavailable = _response(503, _SCALING_UP)
+    sg, http_client = _deployed_group(monkeypatch, unavailable)
+
+    assert sg.call("/", cold_start_timeout=0) is unavailable
+    assert http_client.execute.call_count == 1
+
+
+def test_scaling_group_call_stops_retrying_when_group_unhealthy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = iter(range(0, 1000, 20))
+    monkeypatch.setattr(scaling_group_mod.time, "monotonic", lambda: next(clock))
+    unavailable = _response(503, _SCALING_UP)
+    sg, http_client = _deployed_group(monkeypatch, unavailable, unavailable)
+    refresh = MagicMock(return_value=MagicMock(status="Unhealthy"))
+    monkeypatch.setattr(sg, "refresh", refresh)
+
+    assert sg.call("/") is unavailable
+    assert http_client.execute.call_count == 1
+    refresh.assert_called_once()
