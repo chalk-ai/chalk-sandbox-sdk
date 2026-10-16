@@ -206,6 +206,18 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 [[package]]
 name = "chalk-protos"
 version = "0.0.0"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=6f0f9f49cfa164cc2d0dbc32ac8ad62e07c7ef7a#6f0f9f49cfa164cc2d0dbc32ac8ad62e07c7ef7a"
+dependencies = [
+ "chalk_arrow_protos",
+ "chalk_metrics_protos",
+ "prost",
+ "prost-build",
+ "prost-types",
+]
+
+[[package]]
+name = "chalk-protos"
+version = "0.0.0"
 source = "git+https://github.com/chalk-ai/chalk-private.git?rev=aa2f3a09b36#aa2f3a09b3644e8cd1b3e1e972fbb7b04eba73c3"
 dependencies = [
  "prost",
@@ -216,21 +228,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "chalk-protos"
-version = "0.0.0"
-source = "git+https://github.com/chalk-ai/chalk-private.git?rev=dfa9e92012ae4f83591685696ac6de3ee6b1f6b0#dfa9e92012ae4f83591685696ac6de3ee6b1f6b0"
-dependencies = [
- "chalk_arrow_protos",
- "chalk_metrics_protos",
- "prost",
- "prost-build",
- "prost-types",
-]
-
-[[package]]
 name = "chalk_arrow_protos"
 version = "0.0.0"
-source = "git+https://github.com/chalk-ai/chalk-private.git?rev=dfa9e92012ae4f83591685696ac6de3ee6b1f6b0#dfa9e92012ae4f83591685696ac6de3ee6b1f6b0"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=6f0f9f49cfa164cc2d0dbc32ac8ad62e07c7ef7a#6f0f9f49cfa164cc2d0dbc32ac8ad62e07c7ef7a"
 dependencies = [
  "prost",
  "prost-build",
@@ -239,7 +239,7 @@ dependencies = [
 [[package]]
 name = "chalk_metrics_protos"
 version = "0.0.0"
-source = "git+https://github.com/chalk-ai/chalk-private.git?rev=dfa9e92012ae4f83591685696ac6de3ee6b1f6b0#dfa9e92012ae4f83591685696ac6de3ee6b1f6b0"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=6f0f9f49cfa164cc2d0dbc32ac8ad62e07c7ef7a#6f0f9f49cfa164cc2d0dbc32ac8ad62e07c7ef7a"
 dependencies = [
  "prost",
  "prost-build",
@@ -291,11 +291,11 @@ dependencies = [
 [[package]]
 name = "chalk_volume_client"
 version = "0.0.0"
-source = "git+https://github.com/chalk-ai/chalk-private.git?rev=dfa9e92012ae4f83591685696ac6de3ee6b1f6b0#dfa9e92012ae4f83591685696ac6de3ee6b1f6b0"
+source = "git+https://github.com/chalk-ai/chalk-private.git?rev=6f0f9f49cfa164cc2d0dbc32ac8ad62e07c7ef7a#6f0f9f49cfa164cc2d0dbc32ac8ad62e07c7ef7a"
 dependencies = [
  "blake3",
  "bytes",
- "chalk-protos 0.0.0 (git+https://github.com/chalk-ai/chalk-private.git?rev=dfa9e92012ae4f83591685696ac6de3ee6b1f6b0)",
+ "chalk-protos 0.0.0 (git+https://github.com/chalk-ai/chalk-private.git?rev=6f0f9f49cfa164cc2d0dbc32ac8ad62e07c7ef7a)",
  "futures-util",
  "log",
  "prost",
@@ -777,7 +777,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "tokio",
  "tower-service",
  "tracing",
@@ -1370,9 +1370,9 @@ dependencies = [
 
 [[package]]
 name = "pyo3"
-version = "0.25.1"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8970a78afe0628a3e3430376fc5fd76b6b45c4d43360ffd6cdd40bdde72b682a"
+checksum = "7ba0117f4212101ee6544044dae45abe1083d30ce7b29c4b5cbdfa2354e07383"
 dependencies = [
  "indoc",
  "libc",
@@ -1387,19 +1387,18 @@ dependencies = [
 
 [[package]]
 name = "pyo3-build-config"
-version = "0.25.1"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "458eb0c55e7ece017adeba38f2248ff3ac615e53660d7c71a238d7d2a01c7598"
+checksum = "4fc6ddaf24947d12a9aa31ac65431fb1b851b8f4365426e182901eabfb87df5f"
 dependencies = [
- "once_cell",
  "target-lexicon",
 ]
 
 [[package]]
 name = "pyo3-ffi"
-version = "0.25.1"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7114fe5457c61b276ab77c5055f206295b812608083644a5c5b2640c3102565c"
+checksum = "025474d3928738efb38ac36d4744a74a400c901c7596199e20e45d98eb194105"
 dependencies = [
  "libc",
  "pyo3-build-config",
@@ -1407,9 +1406,9 @@ dependencies = [
 
 [[package]]
 name = "pyo3-macros"
-version = "0.25.1"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8725c0a622b374d6cb051d11a0983786448f7785336139c3c94f5aa6bef7e50"
+checksum = "2e64eb489f22fe1c95911b77c44cc41e7c19f3082fc81cce90f657cdc42ffded"
 dependencies = [
  "proc-macro2",
  "pyo3-macros-backend",
@@ -1419,9 +1418,9 @@ dependencies = [
 
 [[package]]
 name = "pyo3-macros-backend"
-version = "0.25.1"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4109984c22491085343c05b0dbc54ddc405c3cf7b4374fc533f5c3313a572ccc"
+checksum = "100246c0ecf400b475341b8455a9213344569af29a3c841d29270e53102e0fcf"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -1443,7 +1442,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.2",
  "rustls 0.23.40",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -1480,7 +1479,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "tracing",
  "windows-sys 0.59.0",
 ]
