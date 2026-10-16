@@ -1244,9 +1244,7 @@ def test_wait_for_image_build_uses_server_status_without_client_timeout() -> Non
         status="succeeded", image="registry/image:built"
     )
 
-    image_uri = wait_for_image_build(
-        client, "build-123", poll_interval=0, timeout=None
-    )
+    image_uri = wait_for_image_build(client, "build-123", poll_interval=0, timeout=None)
 
     assert image_uri == "registry/image:built"
     client.call.assert_called_once()
