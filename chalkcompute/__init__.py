@@ -194,6 +194,13 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "StartupProbe": ("chalkcompute._scaling_group", "StartupProbe"),
     "CronScalingTrigger": ("chalkcompute._scaling_group", "CronScalingTrigger"),
     "CronScalingWindow": ("chalkcompute._scaling_group", "CronScalingWindow"),
+    # _workflow_worker.py
+    "WorkflowWorker": ("chalkcompute._workflow_worker", "WorkflowWorker"),
+    "deploy_workflow_worker": (
+        "chalkcompute._workflow_worker",
+        "deploy_workflow_worker",
+    ),
+    "run_workflow": ("chalkcompute._workflow_worker", "run_workflow"),
     # _volume.py
     "FileInfo": ("chalkcompute._volume", "FileInfo"),
     "ForkInfo": ("chalkcompute._volume", "ForkInfo"),
@@ -221,7 +228,6 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "training": ("chalkcompute._training", "training"),
     # _workflow.py
     "WorkflowError": ("chalkcompute._workflow", "WorkflowError"),
-    "run_workflow": ("chalkcompute._workflow", "run_workflow"),
     "trigger_workflow": ("chalkcompute._workflow", "trigger_workflow"),
 }
 

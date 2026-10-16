@@ -1,1 +1,1 @@
-- Add `cc.run_workflow` and `cc.trigger_workflow` to run `chalk.workflows` workflows with ambient credentials; install with `chalkcompute[workflows]`
+- Add `cc.trigger_workflow` to start a deployed `chalk.workflows` workflow with ambient credentials; install with `chalkcompute[workflows]`
