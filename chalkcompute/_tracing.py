@@ -656,6 +656,15 @@ def _instrumented(name: str) -> Callable[[F], F]:
     return decorator
 
 
+def _set_sandbox_span_id(sandbox_id: str | None) -> None:
+    """Record the target identity without enabling tracing or capturing payloads."""
+    if not sandbox_id or _is_remote_tracing_off() or not _has_tracing_intent():
+        return
+    trace_api = _get_trace_api()
+    if trace_api is not None:
+        trace_api.get_current_span().set_attribute("sandbox.id", sandbox_id)
+
+
 @overload
 def traced(arg: F, /) -> F: ...
 

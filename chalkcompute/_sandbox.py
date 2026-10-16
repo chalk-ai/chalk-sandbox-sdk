@@ -82,7 +82,12 @@ from chalkcompute._remote_function_tracing import (
 from chalkcompute._secret import Secret, SecretScope, resolve_lazy_secrets
 from chalkcompute._sandbox_git import SandboxGit
 from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
-from chalkcompute._tracing import _instrumented, _request_tracing_intent, trace_env
+from chalkcompute._tracing import (
+    _instrumented,
+    _request_tracing_intent,
+    _set_sandbox_span_id,
+    trace_env,
+)
 from chalkcompute._volume import (
     VolumeClient,
     cleanup_owned_volumes,
@@ -1271,6 +1276,7 @@ class Sandbox:
         )
         self._client = client
         self._terminated = False
+        _set_sandbox_span_id(self._id)
 
         return self
 
@@ -1345,6 +1351,7 @@ class Sandbox:
         ExecResult
             Result with stdout/stderr and exit code.
         """
+        _set_sandbox_span_id(self._id)
         self._require_started()
         process = self.exec_start(
             command,
@@ -1513,6 +1520,7 @@ class Sandbox:
         PythonExecution
             Buffered stdout/stderr, exit status, and persisted artifacts.
         """
+        _set_sandbox_span_id(self._id)
         client = self._require_client()
         sandbox_id = self._require_started()
         spec = runtime_pb.ExecutePythonSpec(
@@ -1599,6 +1607,7 @@ class Sandbox:
         grace_period_seconds
             Optional grace period to allow running processes to shut down.
         """
+        _set_sandbox_span_id(self._id)
         if self._terminated:
             return
         client = self._require_client()
@@ -1993,6 +2002,8 @@ class SandboxClient:
         )
         if resp.sandbox is None:
             raise SandboxCreationError("CreateSandbox returned no sandbox")
+        # Keep the created identity even when readiness polling fails before the handle is bound.
+        _set_sandbox_span_id(resp.sandbox.id)
         info = _pb_to_sandbox_info(resp.sandbox)
 
         if wait and info.status == "pending":
