@@ -12,6 +12,14 @@ from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 logger = logging.getLogger(__name__)
 
 
+def _grpc_endpoint() -> str:
+    return (
+        os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+        or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+        or "http://localhost:4317"
+    )
+
+
 def create_span_exporter() -> SpanExporter:
     protocol = (
         os.environ.get("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL")
@@ -22,6 +30,13 @@ def create_span_exporter() -> SpanExporter:
         from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
             OTLPSpanExporter,
         )
+
+        channel_options = (
+            (("grpc.default_authority", "localhost"),)
+            if _grpc_endpoint().startswith("unix:")
+            else None
+        )
+        return _DiagnosticExporter(OTLPSpanExporter(channel_options=channel_options))
     elif protocol == "http/protobuf":
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
             OTLPSpanExporter,

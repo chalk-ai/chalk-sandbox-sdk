@@ -1,0 +1,1 @@
+- Add an `execution_mode` option to `Evaluation.run` and `EvaluationClient.run` (`"on_read"` or `"workflow"`, exported as `EvaluationRunExecutionMode`) and expose it as `EvaluationRun.execution_mode`

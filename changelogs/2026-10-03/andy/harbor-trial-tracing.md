@@ -1,0 +1,2 @@
+- Add per-row traces to the Harbor example: each evaluation row now replays its trial as OpenInference spans (phases, agent turns with tokens and cost, tool calls) under the row's session
+- Wait for the Harbor example's function deployments before starting its evaluation, so a slow deploy no longer keeps the script running after it prints results

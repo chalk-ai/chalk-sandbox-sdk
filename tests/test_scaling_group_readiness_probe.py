@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 from typing import Any, cast
 
 import pytest
 
-from chalkcompute import ReadinessProbe, ScalingGroup
+from chalkcompute import ReadinessProbe, ScalingGroup, StartupProbe
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from tests._fakes import FakeMethod, StubbedConnectClient
@@ -115,3 +116,59 @@ def test_scaling_group_deploy_omits_port_when_none() -> None:
     )
 
     assert not _deployed_container_spec(sg).has_field("port")
+
+
+@pytest.mark.parametrize(
+    ("probe", "expected"),
+    [
+        (StartupProbe.http("/health"), {"http": {"path": "/health"}}),
+        (StartupProbe.http(), {"http": {}}),
+        (
+            StartupProbe.grpc("/grpc.health.v1.Health/Check"),
+            {"grpc": {"method": "/grpc.health.v1.Health/Check"}},
+        ),
+        (StartupProbe.grpc(), {"grpc": {}}),
+    ],
+)
+def test_scaling_group_deploy_includes_startup_probe(
+    probe: StartupProbe, expected: dict[str, Any]
+) -> None:
+    protocol = "grpc" if probe._kind == "grpc" else "http"
+    sg = ScalingGroup(image="ubuntu:latest", protocol=protocol, startup_probe=probe)
+    spec = _deployed_container_spec(sg)
+    assert spec.startup_probe == container_pb.StartupProbe.from_json(
+        json.dumps(expected)
+    )
+    assert spec.protocol == protocol
+    assert spec.readiness_probe is None
+
+
+def test_grpc_startup_probe_requires_grpc_protocol() -> None:
+    with pytest.raises(ValueError, match="requires protocol='grpc'"):
+        ScalingGroup(image="ubuntu:latest", startup_probe=StartupProbe.grpc())
+
+
+def test_http_startup_probe_rejects_grpc_protocol() -> None:
+    with pytest.raises(ValueError, match="requires an HTTP protocol"):
+        ScalingGroup(
+            image="ubuntu:latest", protocol="grpc", startup_probe=StartupProbe.http()
+        )
+
+
+def test_startup_probe_requires_port() -> None:
+    with pytest.raises(ValueError, match="requires port"):
+        ScalingGroup(
+            image="ubuntu:latest", port=None, startup_probe=StartupProbe.http()
+        )
+
+
+def test_readiness_probe_does_not_enable_startup_probe() -> None:
+    sg = ScalingGroup(
+        image="ubuntu:latest", readiness_probe=ReadinessProbe.http("/ready")
+    )
+    assert _deployed_container_spec(sg).startup_probe is None
+
+
+def test_scaling_group_empty_initializes_startup_probe() -> None:
+    sg = ScalingGroup._make_empty()
+    assert sg._startup_probe is None

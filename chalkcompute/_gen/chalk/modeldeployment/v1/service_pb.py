@@ -8,25 +8,29 @@ from __future__ import annotations
 
 from typing import Literal, TYPE_CHECKING, TypeAlias
 
-from protobuf import Message
+from protobuf import Enum, Message
 from protobuf._codegen import file_desc
+from protobuf.wkt import empty_pb, field_mask_pb, timestamp_pb
 
 from ...auth.v1 import permissions_pb
 from ...container.v1 import service_pb
+from ...externalfunctioncatalog.v1 import service_pb as service_pb_
 from ...models.v1 import model_version_pb
 from ...runtime.v1 import remote_python_call_pb
-from ...scalinggroup.v1 import service_pb as service_pb_
+from ...scalinggroup.v1 import service_pb as service_pb__
 
 if TYPE_CHECKING:
     from protobuf import DescFile, Oneof
+    from protobuf.wkt import Empty, FieldMask, Timestamp
 
-    from ...container.v1.service_pb import ReadinessProbe, ResourceLimits, SecretRef, StartupProbe, VolumeMount
+    from ...container.v1.service_pb import ChalkWorkloadIdentity, ReadinessProbe, ResourceLimits, SecretRef, StartupProbe, VolumeMount
+    from ...externalfunctioncatalog.v1.service_pb import QueuePolicy, RetryPolicy
     from ...models.v1.model_version_pb import ModelVersionIdentifier
-    from ...runtime.v1.remote_python_call_pb import CallFunctionRequest, CallFunctionResponse
-    from ...scalinggroup.v1.service_pb import ScalingGroupResponse, ScalingSpec
+    from ...runtime.v1.remote_python_call_pb import CallFunctionRequest, CallFunctionResponse, EnqueueRemoteCallRequest, EnqueueRemoteCallResponse
+    from ...scalinggroup.v1.service_pb import ScalingGroupResponse, ScalingGroupRevisionResponse, ScalingSpec
 
 
-_ModelContainerSpecFields: TypeAlias = Literal["tags", "resources", "env_vars", "volumes", "routing", "authentication", "secret_refs", "readiness_probe", "startup_probe"]
+_ModelContainerSpecFields: TypeAlias = Literal["tags", "resources", "env_vars", "volumes", "routing", "authentication", "secret_refs", "readiness_probe", "startup_probe", "chalk_workload_identity"]
 
 class ModelContainerSpec(Message[_ModelContainerSpecFields]):
     """
@@ -97,9 +101,15 @@ class ModelContainerSpec(Message[_ModelContainerSpecFields]):
             ```proto
             optional chalk.container.v1.StartupProbe startup_probe = 9;
             ```
+        chalk_workload_identity:
+            Identity used to access cloud resources from this deployment.
+
+            ```proto
+            optional chalk.container.v1.ChalkWorkloadIdentity chalk_workload_identity = 10;
+            ```
     """
 
-    __slots__ = ("tags", "resources", "env_vars", "volumes", "routing", "authentication", "secret_refs", "readiness_probe", "startup_probe")
+    __slots__ = ("tags", "resources", "env_vars", "volumes", "routing", "authentication", "secret_refs", "readiness_probe", "startup_probe", "chalk_workload_identity")
 
     if TYPE_CHECKING:
 
@@ -115,6 +125,7 @@ class ModelContainerSpec(Message[_ModelContainerSpecFields]):
             secret_refs: list[SecretRef] | None = None,
             readiness_probe: ReadinessProbe | None = None,
             startup_probe: StartupProbe | None = None,
+            chalk_workload_identity: ChalkWorkloadIdentity | None = None,
         ) -> None:
             pass
 
@@ -127,11 +138,15 @@ class ModelContainerSpec(Message[_ModelContainerSpecFields]):
         secret_refs: list[SecretRef]
         readiness_probe: ReadinessProbe | None
         startup_probe: StartupProbe | None
+        chalk_workload_identity: ChalkWorkloadIdentity | None
 
-_CreateModelScalingGroupRequestFields: TypeAlias = Literal["name", "model_name", "identifier", "container_spec", "scaling_spec", "handler", "image"]
+_CreateModelScalingGroupRequestFields: TypeAlias = Literal["name", "spec", "model_name", "identifier", "container_spec", "scaling_spec", "handler", "image"]
 
 class CreateModelScalingGroupRequest(Message[_CreateModelScalingGroupRequestFields]):
     """
+    Creating an existing deployment name redeploys the same model by appending
+    and selecting a new immutable revision. Its model name cannot change.
+
     ```proto
     message chalk.modeldeployment.v1.CreateModelScalingGroupRequest
     ```
@@ -141,27 +156,33 @@ class CreateModelScalingGroupRequest(Message[_CreateModelScalingGroupRequestFiel
             ```proto
             string name = 1;
             ```
+        spec:
+            Use spec for both initial deployments and later revision updates.
+
+            ```proto
+            optional chalk.modeldeployment.v1.ModelScalingGroupSpec spec = 8;
+            ```
         model_name:
             ```proto
-            string model_name = 2;
+            string model_name = 2 [deprecated = true];
             ```
         identifier:
             ```proto
-            optional chalk.models.v1.ModelVersionIdentifier identifier = 3;
+            optional chalk.models.v1.ModelVersionIdentifier identifier = 3 [deprecated = true];
             ```
         container_spec:
             ```proto
-            optional chalk.modeldeployment.v1.ModelContainerSpec container_spec = 4;
+            optional chalk.modeldeployment.v1.ModelContainerSpec container_spec = 4 [deprecated = true];
             ```
         scaling_spec:
             ```proto
-            optional chalk.scalinggroup.v1.ScalingSpec scaling_spec = 5;
+            optional chalk.scalinggroup.v1.ScalingSpec scaling_spec = 5 [deprecated = true];
             ```
         handler:
             Optional dotted path to handler function (default: "model.handler")
 
             ```proto
-            optional string handler = 6;
+            optional string handler = 6 [deprecated = true];
             ```
         image:
             Optional container image URI. When set, used instead of the model
@@ -169,11 +190,11 @@ class CreateModelScalingGroupRequest(Message[_CreateModelScalingGroupRequestFiel
             supply the image at deploy time without mutating the model version.
 
             ```proto
-            optional string image = 7;
+            optional string image = 7 [deprecated = true];
             ```
     """
 
-    __slots__ = ("name", "model_name", "identifier", "container_spec", "scaling_spec", "handler", "image")
+    __slots__ = ("name", "spec", "model_name", "identifier", "container_spec", "scaling_spec", "handler", "image")
 
     if TYPE_CHECKING:
 
@@ -181,6 +202,7 @@ class CreateModelScalingGroupRequest(Message[_CreateModelScalingGroupRequestFiel
             self,
             *,
             name: str = "",
+            spec: ModelScalingGroupSpec | None = None,
             model_name: str = "",
             identifier: ModelVersionIdentifier | None = None,
             container_spec: ModelContainerSpec | None = None,
@@ -191,6 +213,7 @@ class CreateModelScalingGroupRequest(Message[_CreateModelScalingGroupRequestFiel
             pass
 
         name: str
+        spec: ModelScalingGroupSpec | None
         model_name: str
         identifier: ModelVersionIdentifier | None
         container_spec: ModelContainerSpec | None
@@ -198,7 +221,7 @@ class CreateModelScalingGroupRequest(Message[_CreateModelScalingGroupRequestFiel
         handler: str
         image: str
 
-_CreateModelScalingGroupResponseFields: TypeAlias = Literal["scaling_group"]
+_CreateModelScalingGroupResponseFields: TypeAlias = Literal["scaling_group", "model_scaling_group", "current_revision"]
 
 class CreateModelScalingGroupResponse(Message[_CreateModelScalingGroupResponseFields]):
     """
@@ -209,11 +232,19 @@ class CreateModelScalingGroupResponse(Message[_CreateModelScalingGroupResponseFi
     Attributes:
         scaling_group:
             ```proto
-            optional chalk.scalinggroup.v1.ScalingGroupResponse scaling_group = 1;
+            optional chalk.scalinggroup.v1.ScalingGroupResponse scaling_group = 1 [deprecated = true];
+            ```
+        model_scaling_group:
+            ```proto
+            optional chalk.modeldeployment.v1.ModelScalingGroup model_scaling_group = 2;
+            ```
+        current_revision:
+            ```proto
+            optional chalk.modeldeployment.v1.ModelScalingGroupRevision current_revision = 3;
             ```
     """
 
-    __slots__ = ("scaling_group",)
+    __slots__ = ("scaling_group", "model_scaling_group", "current_revision")
 
     if TYPE_CHECKING:
 
@@ -221,10 +252,14 @@ class CreateModelScalingGroupResponse(Message[_CreateModelScalingGroupResponseFi
             self,
             *,
             scaling_group: ScalingGroupResponse | None = None,
+            model_scaling_group: ModelScalingGroup | None = None,
+            current_revision: ModelScalingGroupRevision | None = None,
         ) -> None:
             pass
 
         scaling_group: ScalingGroupResponse | None
+        model_scaling_group: ModelScalingGroup | None
+        current_revision: ModelScalingGroupRevision | None
 
 _ModelVersionSelectorFields: TypeAlias = Literal["model_name", "identifier"]
 
@@ -260,7 +295,482 @@ class ModelVersionSelector(Message[_ModelVersionSelectorFields]):
         model_name: str
         identifier: ModelVersionIdentifier | None
 
-_ListModelScalingGroupsRequestFields: TypeAlias = Literal["model_version"]
+_ModelScalingGroupSpecFields: TypeAlias = Literal["model_version", "container_spec", "scaling_spec", "handler", "image", "retry_policy", "queue_policy"]
+
+class ModelScalingGroupSpec(Message[_ModelScalingGroupSpecFields]):
+    """
+    The immutable model-serving payload captured by a model scaling group
+    revision. The API materializes this into a gRPC-only ScalingGroupSpec.
+
+    ```proto
+    message chalk.modeldeployment.v1.ModelScalingGroupSpec
+    ```
+
+    Attributes:
+        model_version:
+            ```proto
+            optional chalk.modeldeployment.v1.ModelVersionSelector model_version = 1;
+            ```
+        container_spec:
+            ```proto
+            optional chalk.modeldeployment.v1.ModelContainerSpec container_spec = 2;
+            ```
+        scaling_spec:
+            ```proto
+            optional chalk.scalinggroup.v1.ScalingSpec scaling_spec = 3;
+            ```
+        handler:
+            Optional dotted path to handler function (default: "model.handler")
+
+            ```proto
+            optional string handler = 4;
+            ```
+        image:
+            Optional container image URI. When omitted, the model artifact's
+            model_image is used.
+
+            ```proto
+            optional string image = 5;
+            ```
+        retry_policy:
+            Async retries after the initial execution. Streams currently honor only max_retries.
+
+            ```proto
+            optional chalk.externalfunctioncatalog.v1.RetryPolicy retry_policy = 6;
+            ```
+        queue_policy:
+            Pending-call capacity and terminal result retention for this deployment's queue.
+
+            ```proto
+            optional chalk.externalfunctioncatalog.v1.QueuePolicy queue_policy = 7;
+            ```
+    """
+
+    __slots__ = ("model_version", "container_spec", "scaling_spec", "handler", "image", "retry_policy", "queue_policy")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            model_version: ModelVersionSelector | None = None,
+            container_spec: ModelContainerSpec | None = None,
+            scaling_spec: ScalingSpec | None = None,
+            handler: str | None = None,
+            image: str | None = None,
+            retry_policy: RetryPolicy | None = None,
+            queue_policy: QueuePolicy | None = None,
+        ) -> None:
+            pass
+
+        model_version: ModelVersionSelector | None
+        container_spec: ModelContainerSpec | None
+        scaling_spec: ScalingSpec | None
+        handler: str
+        image: str
+        retry_policy: RetryPolicy | None
+        queue_policy: QueuePolicy | None
+
+_ModelScalingGroupFields: TypeAlias = Literal["id", "name", "queue_name", "model_id", "created_by", "created_at", "status", "status_message", "status_details", "ready_replicas", "available_replicas", "revision_id", "updated_at", "deleted_at", "web_url"]
+
+class ModelScalingGroup(Message[_ModelScalingGroupFields]):
+    """
+    ```proto
+    message chalk.modeldeployment.v1.ModelScalingGroup
+    ```
+
+    Attributes:
+        id:
+            ```proto
+            string id = 1;
+            ```
+        name:
+            ```proto
+            string name = 2;
+            ```
+        queue_name:
+            ```proto
+            string queue_name = 3;
+            ```
+        model_id:
+            ```proto
+            optional string model_id = 4;
+            ```
+        created_by:
+            ```proto
+            optional string created_by = 5;
+            ```
+        created_at:
+            ```proto
+            optional google.protobuf.Timestamp created_at = 6;
+            ```
+        status:
+            ```proto
+            string status = 7;
+            ```
+        status_message:
+            ```proto
+            optional string status_message = 8;
+            ```
+        status_details:
+            ```proto
+            optional string status_details = 9;
+            ```
+        ready_replicas:
+            ```proto
+            int32 ready_replicas = 10;
+            ```
+        available_replicas:
+            ```proto
+            int32 available_replicas = 11;
+            ```
+        revision_id:
+            ```proto
+            string revision_id = 12;
+            ```
+        updated_at:
+            ```proto
+            optional google.protobuf.Timestamp updated_at = 13;
+            ```
+        deleted_at:
+            ```proto
+            optional google.protobuf.Timestamp deleted_at = 14;
+            ```
+        web_url:
+            ```proto
+            optional string web_url = 15;
+            ```
+    """
+
+    __slots__ = ("id", "name", "queue_name", "model_id", "created_by", "created_at", "status", "status_message", "status_details", "ready_replicas", "available_replicas", "revision_id", "updated_at", "deleted_at", "web_url")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            id: str = "",
+            name: str = "",
+            queue_name: str = "",
+            model_id: str | None = None,
+            created_by: str | None = None,
+            created_at: Timestamp | None = None,
+            status: str = "",
+            status_message: str | None = None,
+            status_details: str | None = None,
+            ready_replicas: int = 0,
+            available_replicas: int = 0,
+            revision_id: str = "",
+            updated_at: Timestamp | None = None,
+            deleted_at: Timestamp | None = None,
+            web_url: str | None = None,
+        ) -> None:
+            pass
+
+        id: str
+        name: str
+        queue_name: str
+        model_id: str
+        created_by: str
+        created_at: Timestamp | None
+        status: str
+        status_message: str
+        status_details: str
+        ready_replicas: int
+        available_replicas: int
+        revision_id: str
+        updated_at: Timestamp | None
+        deleted_at: Timestamp | None
+        web_url: str
+
+_ModelScalingGroupRevisionFields: TypeAlias = Literal["id", "model_scaling_group_id", "model_version", "spec", "created_by", "created_at"]
+
+class ModelScalingGroupRevision(Message[_ModelScalingGroupRevisionFields]):
+    """
+    ```proto
+    message chalk.modeldeployment.v1.ModelScalingGroupRevision
+    ```
+
+    Attributes:
+        id:
+            ```proto
+            string id = 1;
+            ```
+        model_scaling_group_id:
+            ```proto
+            string model_scaling_group_id = 2;
+            ```
+        model_version:
+            ```proto
+            int64 model_version = 3;
+            ```
+        spec:
+            ```proto
+            optional chalk.modeldeployment.v1.ModelScalingGroupSpec spec = 4;
+            ```
+        created_by:
+            ```proto
+            optional string created_by = 5;
+            ```
+        created_at:
+            ```proto
+            optional google.protobuf.Timestamp created_at = 6;
+            ```
+    """
+
+    __slots__ = ("id", "model_scaling_group_id", "model_version", "spec", "created_by", "created_at")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            id: str = "",
+            model_scaling_group_id: str = "",
+            model_version: int = 0,
+            spec: ModelScalingGroupSpec | None = None,
+            created_by: str | None = None,
+            created_at: Timestamp | None = None,
+        ) -> None:
+            pass
+
+        id: str
+        model_scaling_group_id: str
+        model_version: int
+        spec: ModelScalingGroupSpec | None
+        created_by: str
+        created_at: Timestamp | None
+
+_ModelScalingGroupTrafficFields: TypeAlias = Literal["targets"]
+
+class ModelScalingGroupTraffic(Message[_ModelScalingGroupTrafficFields]):
+    """
+    A single-target serving policy. This release accepts one target at 100%; the
+    repeated shape permits future traffic splitting without replacing Update.
+
+    ```proto
+    message chalk.modeldeployment.v1.ModelScalingGroupTraffic
+    ```
+
+    Attributes:
+        targets:
+            ```proto
+            repeated chalk.modeldeployment.v1.ModelScalingGroupTrafficTarget targets = 1;
+            ```
+    """
+
+    __slots__ = ("targets",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            targets: list[ModelScalingGroupTrafficTarget] | None = None,
+        ) -> None:
+            pass
+
+        targets: list[ModelScalingGroupTrafficTarget]
+
+_ModelScalingGroupTrafficTargetFields: TypeAlias = Literal["model_scaling_group_revision_id", "latest_revision", "percent"]
+
+class ModelScalingGroupTrafficTarget(Message[_ModelScalingGroupTrafficTargetFields]):
+    """
+    ```proto
+    message chalk.modeldeployment.v1.ModelScalingGroupTrafficTarget
+    ```
+
+    Attributes:
+        revision_target:
+            ```proto
+            oneof revision_target
+            ```
+        percent:
+            ```proto
+            uint32 percent = 3;
+            ```
+    """
+
+    __slots__ = ("percent", "revision_target")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            revision_target: Oneof[Literal["model_scaling_group_revision_id"], str] | Oneof[Literal["latest_revision"], Empty] | None = None,
+            percent: int = 0,
+        ) -> None:
+            pass
+
+        revision_target: Oneof[Literal["model_scaling_group_revision_id"], str] | Oneof[Literal["latest_revision"], Empty] | None
+        percent: int
+
+_UpdateModelScalingGroupRequestFields: TypeAlias = Literal["model_scaling_group_id", "model_scaling_group_name", "spec", "traffic", "update_mask"]
+
+class UpdateModelScalingGroupRequest(Message[_UpdateModelScalingGroupRequestFields]):
+    """
+    Changes a model scaling group's whole immutable spec, selected traffic
+    target, or both. A spec change appends a revision; traffic-only updates do
+    not.
+
+    ```proto
+    message chalk.modeldeployment.v1.UpdateModelScalingGroupRequest
+    ```
+
+    Attributes:
+        model_scaling_group_key:
+            ```proto
+            oneof model_scaling_group_key
+            ```
+        spec:
+            ```proto
+            optional chalk.modeldeployment.v1.ModelScalingGroupSpec spec = 3;
+            ```
+        traffic:
+            ```proto
+            optional chalk.modeldeployment.v1.ModelScalingGroupTraffic traffic = 4;
+            ```
+        update_mask:
+            ```proto
+            optional google.protobuf.FieldMask update_mask = 5;
+            ```
+    """
+
+    __slots__ = ("spec", "traffic", "update_mask", "model_scaling_group_key")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            model_scaling_group_key: Oneof[Literal["model_scaling_group_id"], str] | Oneof[Literal["model_scaling_group_name"], str] | None = None,
+            spec: ModelScalingGroupSpec | None = None,
+            traffic: ModelScalingGroupTraffic | None = None,
+            update_mask: FieldMask | None = None,
+        ) -> None:
+            pass
+
+        model_scaling_group_key: Oneof[Literal["model_scaling_group_id"], str] | Oneof[Literal["model_scaling_group_name"], str] | None
+        spec: ModelScalingGroupSpec | None
+        traffic: ModelScalingGroupTraffic | None
+        update_mask: FieldMask | None
+
+_UpdateModelScalingGroupResponseFields: TypeAlias = Literal["scaling_group", "model_scaling_group", "current_revision"]
+
+class UpdateModelScalingGroupResponse(Message[_UpdateModelScalingGroupResponseFields]):
+    """
+    ```proto
+    message chalk.modeldeployment.v1.UpdateModelScalingGroupResponse
+    ```
+
+    Attributes:
+        scaling_group:
+            ```proto
+            optional chalk.scalinggroup.v1.ScalingGroupResponse scaling_group = 1 [deprecated = true];
+            ```
+        model_scaling_group:
+            ```proto
+            optional chalk.modeldeployment.v1.ModelScalingGroup model_scaling_group = 2;
+            ```
+        current_revision:
+            ```proto
+            optional chalk.modeldeployment.v1.ModelScalingGroupRevision current_revision = 3;
+            ```
+    """
+
+    __slots__ = ("scaling_group", "model_scaling_group", "current_revision")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            scaling_group: ScalingGroupResponse | None = None,
+            model_scaling_group: ModelScalingGroup | None = None,
+            current_revision: ModelScalingGroupRevision | None = None,
+        ) -> None:
+            pass
+
+        scaling_group: ScalingGroupResponse | None
+        model_scaling_group: ModelScalingGroup | None
+        current_revision: ModelScalingGroupRevision | None
+
+_GetModelScalingGroupRequestFields: TypeAlias = Literal["model_scaling_group_id", "model_scaling_group_name", "include_deleted"]
+
+class GetModelScalingGroupRequest(Message[_GetModelScalingGroupRequestFields]):
+    """
+    ```proto
+    message chalk.modeldeployment.v1.GetModelScalingGroupRequest
+    ```
+
+    Attributes:
+        model_scaling_group_key:
+            ```proto
+            oneof model_scaling_group_key
+            ```
+        include_deleted:
+            ```proto
+            optional bool include_deleted = 3;
+            ```
+    """
+
+    __slots__ = ("include_deleted", "model_scaling_group_key")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            model_scaling_group_key: Oneof[Literal["model_scaling_group_id"], str] | Oneof[Literal["model_scaling_group_name"], str] | None = None,
+            include_deleted: bool | None = None,
+        ) -> None:
+            pass
+
+        model_scaling_group_key: Oneof[Literal["model_scaling_group_id"], str] | Oneof[Literal["model_scaling_group_name"], str] | None
+        include_deleted: bool
+
+_GetModelScalingGroupResponseFields: TypeAlias = Literal["scaling_group", "model_scaling_group", "current_revision"]
+
+class GetModelScalingGroupResponse(Message[_GetModelScalingGroupResponseFields]):
+    """
+    ```proto
+    message chalk.modeldeployment.v1.GetModelScalingGroupResponse
+    ```
+
+    Attributes:
+        scaling_group:
+            ```proto
+            optional chalk.scalinggroup.v1.ScalingGroupResponse scaling_group = 1 [deprecated = true];
+            ```
+        model_scaling_group:
+            ```proto
+            optional chalk.modeldeployment.v1.ModelScalingGroup model_scaling_group = 2;
+            ```
+        current_revision:
+            ```proto
+            optional chalk.modeldeployment.v1.ModelScalingGroupRevision current_revision = 3;
+            ```
+    """
+
+    __slots__ = ("scaling_group", "model_scaling_group", "current_revision")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            scaling_group: ScalingGroupResponse | None = None,
+            model_scaling_group: ModelScalingGroup | None = None,
+            current_revision: ModelScalingGroupRevision | None = None,
+        ) -> None:
+            pass
+
+        scaling_group: ScalingGroupResponse | None
+        model_scaling_group: ModelScalingGroup | None
+        current_revision: ModelScalingGroupRevision | None
+
+_ListModelScalingGroupsRequestFields: TypeAlias = Literal["model_version", "cursor", "limit", "include_deleted", "filters", "search", "sort_column", "sort_order"]
 
 class ListModelScalingGroupsRequest(Message[_ListModelScalingGroupsRequestFields]):
     """
@@ -275,9 +785,37 @@ class ListModelScalingGroupsRequest(Message[_ListModelScalingGroupsRequestFields
             ```proto
             optional chalk.modeldeployment.v1.ModelVersionSelector model_version = 1;
             ```
+        cursor:
+            ```proto
+            optional string cursor = 2;
+            ```
+        limit:
+            ```proto
+            optional int32 limit = 3;
+            ```
+        include_deleted:
+            ```proto
+            optional bool include_deleted = 4;
+            ```
+        filters:
+            ```proto
+            optional chalk.modeldeployment.v1.ListModelScalingGroupsFilters filters = 5;
+            ```
+        search:
+            ```proto
+            string search = 6;
+            ```
+        sort_column:
+            ```proto
+            chalk.modeldeployment.v1.ModelScalingGroupSortColumn sort_column = 7;
+            ```
+        sort_order:
+            ```proto
+            chalk.modeldeployment.v1.ModelScalingGroupSortOrder sort_order = 8;
+            ```
     """
 
-    __slots__ = ("model_version",)
+    __slots__ = ("model_version", "cursor", "limit", "include_deleted", "filters", "search", "sort_column", "sort_order")
 
     if TYPE_CHECKING:
 
@@ -285,12 +823,73 @@ class ListModelScalingGroupsRequest(Message[_ListModelScalingGroupsRequestFields
             self,
             *,
             model_version: ModelVersionSelector | None = None,
+            cursor: str | None = None,
+            limit: int | None = None,
+            include_deleted: bool | None = None,
+            filters: ListModelScalingGroupsFilters | None = None,
+            search: str = "",
+            sort_column: ModelScalingGroupSortColumn | None = None,
+            sort_order: ModelScalingGroupSortOrder | None = None,
         ) -> None:
             pass
 
         model_version: ModelVersionSelector | None
+        cursor: str
+        limit: int
+        include_deleted: bool
+        filters: ListModelScalingGroupsFilters | None
+        search: str
+        sort_column: ModelScalingGroupSortColumn
+        sort_order: ModelScalingGroupSortOrder
 
-_ListModelScalingGroupsResponseFields: TypeAlias = Literal["scaling_groups"]
+_ListModelScalingGroupsFiltersFields: TypeAlias = Literal["statuses", "images", "model_name"]
+
+class ListModelScalingGroupsFilters(Message[_ListModelScalingGroupsFiltersFields]):
+    """
+    ```proto
+    message chalk.modeldeployment.v1.ListModelScalingGroupsFilters
+    ```
+
+    Attributes:
+        statuses:
+            A model scaling group matches when its status is any of these values.
+            Empty means all statuses.
+
+            ```proto
+            repeated string statuses = 1;
+            ```
+        images:
+            Case-sensitive exact match over any container image.
+
+            ```proto
+            repeated string images = 2;
+            ```
+        model_name:
+            Exact model name, across all versions. Must agree with model_version when set.
+
+            ```proto
+            optional string model_name = 3;
+            ```
+    """
+
+    __slots__ = ("statuses", "images", "model_name")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            statuses: list[str] | None = None,
+            images: list[str] | None = None,
+            model_name: str | None = None,
+        ) -> None:
+            pass
+
+        statuses: list[str]
+        images: list[str]
+        model_name: str
+
+_ListModelScalingGroupsResponseFields: TypeAlias = Literal["scaling_groups", "next_cursor", "model_scaling_groups", "current_revisions"]
 
 class ListModelScalingGroupsResponse(Message[_ListModelScalingGroupsResponseFields]):
     """
@@ -301,11 +900,27 @@ class ListModelScalingGroupsResponse(Message[_ListModelScalingGroupsResponseFiel
     Attributes:
         scaling_groups:
             ```proto
-            repeated chalk.scalinggroup.v1.ScalingGroupResponse scaling_groups = 1;
+            repeated chalk.scalinggroup.v1.ScalingGroupResponse scaling_groups = 1 [deprecated = true];
+            ```
+        next_cursor:
+            ```proto
+            optional string next_cursor = 2;
+            ```
+        model_scaling_groups:
+            Index-aligned with scaling_groups.
+
+            ```proto
+            repeated chalk.modeldeployment.v1.ModelScalingGroup model_scaling_groups = 3;
+            ```
+        current_revisions:
+            Index-aligned with model_scaling_groups.
+
+            ```proto
+            repeated chalk.modeldeployment.v1.ModelScalingGroupRevision current_revisions = 4;
             ```
     """
 
-    __slots__ = ("scaling_groups",)
+    __slots__ = ("scaling_groups", "next_cursor", "model_scaling_groups", "current_revisions")
 
     if TYPE_CHECKING:
 
@@ -313,12 +928,242 @@ class ListModelScalingGroupsResponse(Message[_ListModelScalingGroupsResponseFiel
             self,
             *,
             scaling_groups: list[ScalingGroupResponse] | None = None,
+            next_cursor: str | None = None,
+            model_scaling_groups: list[ModelScalingGroup] | None = None,
+            current_revisions: list[ModelScalingGroupRevision] | None = None,
         ) -> None:
             pass
 
         scaling_groups: list[ScalingGroupResponse]
+        next_cursor: str
+        model_scaling_groups: list[ModelScalingGroup]
+        current_revisions: list[ModelScalingGroupRevision]
 
-_CallModelRequestFields: TypeAlias = Literal["model_version", "remote_call_request"]
+_DeleteModelScalingGroupRequestFields: TypeAlias = Literal["model_scaling_group_id", "model_scaling_group_name"]
+
+class DeleteModelScalingGroupRequest(Message[_DeleteModelScalingGroupRequestFields]):
+    """
+    ```proto
+    message chalk.modeldeployment.v1.DeleteModelScalingGroupRequest
+    ```
+
+    Attributes:
+        model_scaling_group_key:
+            ```proto
+            oneof model_scaling_group_key
+            ```
+    """
+
+    __slots__ = ("model_scaling_group_key",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            model_scaling_group_key: Oneof[Literal["model_scaling_group_id"], str] | Oneof[Literal["model_scaling_group_name"], str] | None = None,
+        ) -> None:
+            pass
+
+        model_scaling_group_key: Oneof[Literal["model_scaling_group_id"], str] | Oneof[Literal["model_scaling_group_name"], str] | None
+
+_DeleteModelScalingGroupResponseFields: TypeAlias = Literal["scaling_group", "model_scaling_group"]
+
+class DeleteModelScalingGroupResponse(Message[_DeleteModelScalingGroupResponseFields]):
+    """
+    ```proto
+    message chalk.modeldeployment.v1.DeleteModelScalingGroupResponse
+    ```
+
+    Attributes:
+        scaling_group:
+            ```proto
+            optional chalk.scalinggroup.v1.ScalingGroupResponse scaling_group = 1 [deprecated = true];
+            ```
+        model_scaling_group:
+            ```proto
+            optional chalk.modeldeployment.v1.ModelScalingGroup model_scaling_group = 2;
+            ```
+    """
+
+    __slots__ = ("scaling_group", "model_scaling_group")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            scaling_group: ScalingGroupResponse | None = None,
+            model_scaling_group: ModelScalingGroup | None = None,
+        ) -> None:
+            pass
+
+        scaling_group: ScalingGroupResponse | None
+        model_scaling_group: ModelScalingGroup | None
+
+_GetModelScalingGroupRevisionRequestFields: TypeAlias = Literal["model_scaling_group_id", "model_scaling_group_name", "revision_id", "include_deleted"]
+
+class GetModelScalingGroupRevisionRequest(Message[_GetModelScalingGroupRevisionRequestFields]):
+    """
+    ```proto
+    message chalk.modeldeployment.v1.GetModelScalingGroupRevisionRequest
+    ```
+
+    Attributes:
+        model_scaling_group_key:
+            ```proto
+            oneof model_scaling_group_key
+            ```
+        revision_id:
+            ```proto
+            string revision_id = 3;
+            ```
+        include_deleted:
+            ```proto
+            optional bool include_deleted = 4;
+            ```
+    """
+
+    __slots__ = ("revision_id", "include_deleted", "model_scaling_group_key")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            model_scaling_group_key: Oneof[Literal["model_scaling_group_id"], str] | Oneof[Literal["model_scaling_group_name"], str] | None = None,
+            revision_id: str = "",
+            include_deleted: bool | None = None,
+        ) -> None:
+            pass
+
+        model_scaling_group_key: Oneof[Literal["model_scaling_group_id"], str] | Oneof[Literal["model_scaling_group_name"], str] | None
+        revision_id: str
+        include_deleted: bool
+
+_GetModelScalingGroupRevisionResponseFields: TypeAlias = Literal["revision", "model_revision"]
+
+class GetModelScalingGroupRevisionResponse(Message[_GetModelScalingGroupRevisionResponseFields]):
+    """
+    ```proto
+    message chalk.modeldeployment.v1.GetModelScalingGroupRevisionResponse
+    ```
+
+    Attributes:
+        revision:
+            ```proto
+            optional chalk.scalinggroup.v1.ScalingGroupRevisionResponse revision = 1;
+            ```
+        model_revision:
+            ```proto
+            optional chalk.modeldeployment.v1.ModelScalingGroupRevision model_revision = 2;
+            ```
+    """
+
+    __slots__ = ("revision", "model_revision")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            revision: ScalingGroupRevisionResponse | None = None,
+            model_revision: ModelScalingGroupRevision | None = None,
+        ) -> None:
+            pass
+
+        revision: ScalingGroupRevisionResponse | None
+        model_revision: ModelScalingGroupRevision | None
+
+_ListModelScalingGroupRevisionsRequestFields: TypeAlias = Literal["model_scaling_group_id", "model_scaling_group_name", "cursor", "limit", "include_deleted"]
+
+class ListModelScalingGroupRevisionsRequest(Message[_ListModelScalingGroupRevisionsRequestFields]):
+    """
+    ```proto
+    message chalk.modeldeployment.v1.ListModelScalingGroupRevisionsRequest
+    ```
+
+    Attributes:
+        model_scaling_group_key:
+            ```proto
+            oneof model_scaling_group_key
+            ```
+        cursor:
+            ```proto
+            optional string cursor = 3;
+            ```
+        limit:
+            ```proto
+            optional int32 limit = 4;
+            ```
+        include_deleted:
+            ```proto
+            optional bool include_deleted = 5;
+            ```
+    """
+
+    __slots__ = ("cursor", "limit", "include_deleted", "model_scaling_group_key")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            model_scaling_group_key: Oneof[Literal["model_scaling_group_id"], str] | Oneof[Literal["model_scaling_group_name"], str] | None = None,
+            cursor: str | None = None,
+            limit: int | None = None,
+            include_deleted: bool | None = None,
+        ) -> None:
+            pass
+
+        model_scaling_group_key: Oneof[Literal["model_scaling_group_id"], str] | Oneof[Literal["model_scaling_group_name"], str] | None
+        cursor: str
+        limit: int
+        include_deleted: bool
+
+_ListModelScalingGroupRevisionsResponseFields: TypeAlias = Literal["revisions", "next_cursor", "model_revisions"]
+
+class ListModelScalingGroupRevisionsResponse(Message[_ListModelScalingGroupRevisionsResponseFields]):
+    """
+    ```proto
+    message chalk.modeldeployment.v1.ListModelScalingGroupRevisionsResponse
+    ```
+
+    Attributes:
+        revisions:
+            ```proto
+            repeated chalk.scalinggroup.v1.ScalingGroupRevisionResponse revisions = 1;
+            ```
+        next_cursor:
+            ```proto
+            optional string next_cursor = 2;
+            ```
+        model_revisions:
+            Index-aligned with revisions.
+
+            ```proto
+            repeated chalk.modeldeployment.v1.ModelScalingGroupRevision model_revisions = 3;
+            ```
+    """
+
+    __slots__ = ("revisions", "next_cursor", "model_revisions")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            revisions: list[ScalingGroupRevisionResponse] | None = None,
+            next_cursor: str | None = None,
+            model_revisions: list[ModelScalingGroupRevision] | None = None,
+        ) -> None:
+            pass
+
+        revisions: list[ScalingGroupRevisionResponse]
+        next_cursor: str
+        model_revisions: list[ModelScalingGroupRevision]
+
+_CallModelRequestFields: TypeAlias = Literal["model_version", "model_scaling_group_id", "model_scaling_group_name", "remote_call_request", "enqueue_remote_call_request"]
 
 class CallModelRequest(Message[_CallModelRequestFields]):
     """
@@ -331,13 +1176,20 @@ class CallModelRequest(Message[_CallModelRequestFields]):
             ```proto
             optional chalk.modeldeployment.v1.ModelVersionSelector model_version = 1;
             ```
+        model_scaling_group_key:
+            Optional explicit deployment. Without it, model_version must resolve to
+            exactly one deployment. With it, model_version verifies the selected revision.
+
+            ```proto
+            oneof model_scaling_group_key
+            ```
         body:
             ```proto
             oneof body
             ```
     """
 
-    __slots__ = ("model_version", "body")
+    __slots__ = ("model_version", "model_scaling_group_key", "body")
 
     if TYPE_CHECKING:
 
@@ -345,14 +1197,16 @@ class CallModelRequest(Message[_CallModelRequestFields]):
             self,
             *,
             model_version: ModelVersionSelector | None = None,
-            body: Oneof[Literal["remote_call_request"], CallFunctionRequest] | None = None,
+            model_scaling_group_key: Oneof[Literal["model_scaling_group_id"], str] | Oneof[Literal["model_scaling_group_name"], str] | None = None,
+            body: Oneof[Literal["remote_call_request"], CallFunctionRequest] | Oneof[Literal["enqueue_remote_call_request"], EnqueueRemoteCallRequest] | None = None,
         ) -> None:
             pass
 
         model_version: ModelVersionSelector | None
-        body: Oneof[Literal["remote_call_request"], CallFunctionRequest] | None
+        model_scaling_group_key: Oneof[Literal["model_scaling_group_id"], str] | Oneof[Literal["model_scaling_group_name"], str] | None
+        body: Oneof[Literal["remote_call_request"], CallFunctionRequest] | Oneof[Literal["enqueue_remote_call_request"], EnqueueRemoteCallRequest] | None
 
-_CallModelResponseFields: TypeAlias = Literal["remote_call_response"]
+_CallModelResponseFields: TypeAlias = Literal["remote_call_response", "enqueue_remote_call_response"]
 
 class CallModelResponse(Message[_CallModelResponseFields]):
     """
@@ -374,31 +1228,103 @@ class CallModelResponse(Message[_CallModelResponseFields]):
         def __init__(
             self,
             *,
-            body: Oneof[Literal["remote_call_response"], CallFunctionResponse] | None = None,
+            body: Oneof[Literal["remote_call_response"], CallFunctionResponse] | Oneof[Literal["enqueue_remote_call_response"], EnqueueRemoteCallResponse] | None = None,
         ) -> None:
             pass
 
-        body: Oneof[Literal["remote_call_response"], CallFunctionResponse] | None
+        body: Oneof[Literal["remote_call_response"], CallFunctionResponse] | Oneof[Literal["enqueue_remote_call_response"], EnqueueRemoteCallResponse] | None
+
+class ModelScalingGroupSortColumn(Enum):
+    """
+    ```proto
+    enum chalk.modeldeployment.v1.ModelScalingGroupSortColumn
+    ```
+
+    Attributes:
+        UNSPECIFIED:
+            ```proto
+            MODEL_SCALING_GROUP_SORT_COLUMN_UNSPECIFIED = 0
+            ```
+        CREATED_AT:
+            ```proto
+            MODEL_SCALING_GROUP_SORT_COLUMN_CREATED_AT = 1
+            ```
+        UPDATED_AT:
+            ```proto
+            MODEL_SCALING_GROUP_SORT_COLUMN_UPDATED_AT = 2
+            ```
+    """
+
+    UNSPECIFIED = 0
+    CREATED_AT = 1
+    UPDATED_AT = 2
+
+class ModelScalingGroupSortOrder(Enum):
+    """
+    ```proto
+    enum chalk.modeldeployment.v1.ModelScalingGroupSortOrder
+    ```
+
+    Attributes:
+        UNSPECIFIED:
+            ```proto
+            MODEL_SCALING_GROUP_SORT_ORDER_UNSPECIFIED = 0
+            ```
+        DESC:
+            ```proto
+            MODEL_SCALING_GROUP_SORT_ORDER_DESC = 1
+            ```
+        ASC:
+            ```proto
+            MODEL_SCALING_GROUP_SORT_ORDER_ASC = 2
+            ```
+    """
+
+    UNSPECIFIED = 0
+    DESC = 1
+    ASC = 2
 
 
 _DESC = file_desc(
-    b'\n&chalk/modeldeployment/v1/service.proto\x12\x18chalk.modeldeployment.v1\x1a\x1fchalk/auth/v1/permissions.proto\x1a chalk/container/v1/service.proto\x1a#chalk/models/v1/model_version.proto\x1a)chalk/runtime/v1/remote_python_call.proto\x1a#chalk/scalinggroup/v1/service.proto"\xaa\x06\n\x12ModelContainerSpec\x12J\n\x04tags\x18\x01 \x03(\x0b26.chalk.modeldeployment.v1.ModelContainerSpec.TagsEntryR\x04tags\x12E\n\tresources\x18\x02 \x01(\x0b2".chalk.container.v1.ResourceLimitsH\x00R\tresources\x88\x01\x01\x12T\n\x08env_vars\x18\x03 \x03(\x0b29.chalk.modeldeployment.v1.ModelContainerSpec.EnvVarsEntryR\x07envVars\x129\n\x07volumes\x18\x04 \x03(\x0b2\x1f.chalk.container.v1.VolumeMountR\x07volumes\x12\x1d\n\x07routing\x18\x05 \x01(\tH\x01R\x07routing\x88\x01\x01\x12+\n\x0eauthentication\x18\x06 \x01(\tH\x02R\x0eauthentication\x88\x01\x01\x12>\n\x0bsecret_refs\x18\x07 \x03(\x0b2\x1d.chalk.container.v1.SecretRefR\nsecretRefs\x12P\n\x0freadiness_probe\x18\x08 \x01(\x0b2".chalk.container.v1.ReadinessProbeH\x03R\x0ereadinessProbe\x88\x01\x01\x12J\n\rstartup_probe\x18\t \x01(\x0b2 .chalk.container.v1.StartupProbeH\x04R\x0cstartupProbe\x88\x01\x01\x1a7\n\tTagsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a:\n\x0cEnvVarsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x0c\n\n_resourcesB\n\n\x08_routingB\x11\n\x0f_authenticationB\x12\n\x10_readiness_probeB\x10\n\x0e_startup_probe"\x88\x03\n\x1eCreateModelScalingGroupRequest\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n\nmodel_name\x18\x02 \x01(\tR\tmodelName\x12G\n\nidentifier\x18\x03 \x01(\x0b2\'.chalk.models.v1.ModelVersionIdentifierR\nidentifier\x12S\n\x0econtainer_spec\x18\x04 \x01(\x0b2,.chalk.modeldeployment.v1.ModelContainerSpecR\rcontainerSpec\x12E\n\x0cscaling_spec\x18\x05 \x01(\x0b2".chalk.scalinggroup.v1.ScalingSpecR\x0bscalingSpec\x12\x1d\n\x07handler\x18\x06 \x01(\tH\x00R\x07handler\x88\x01\x01\x12\x19\n\x05image\x18\x07 \x01(\tH\x01R\x05image\x88\x01\x01B\n\n\x08_handlerB\x08\n\x06_image"s\n\x1fCreateModelScalingGroupResponse\x12P\n\rscaling_group\x18\x01 \x01(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseR\x0cscalingGroup"~\n\x14ModelVersionSelector\x12\x1d\n\nmodel_name\x18\x01 \x01(\tR\tmodelName\x12G\n\nidentifier\x18\x02 \x01(\x0b2\'.chalk.models.v1.ModelVersionIdentifierR\nidentifier"\x8b\x01\n\x1dListModelScalingGroupsRequest\x12X\n\rmodel_version\x18\x01 \x01(\x0b2..chalk.modeldeployment.v1.ModelVersionSelectorH\x00R\x0cmodelVersion\x88\x01\x01B\x10\n\x0e_model_version"t\n\x1eListModelScalingGroupsResponse\x12R\n\x0escaling_groups\x18\x01 \x03(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseR\rscalingGroups"\xc8\x01\n\x10CallModelRequest\x12S\n\rmodel_version\x18\x01 \x01(\x0b2..chalk.modeldeployment.v1.ModelVersionSelectorR\x0cmodelVersion\x12W\n\x13remote_call_request\x18\x02 \x01(\x0b2%.chalk.runtime.v1.CallFunctionRequestH\x00R\x11remoteCallRequestB\x06\n\x04body"w\n\x11CallModelResponse\x12Z\n\x14remote_call_response\x18\x01 \x01(\x0b2&.chalk.runtime.v1.CallFunctionResponseH\x00R\x12remoteCallResponseB\x06\n\x04body2\xac\x03\n\x16ModelDeploymentService\x12\x93\x01\n\x17CreateModelScalingGroup\x128.chalk.modeldeployment.v1.CreateModelScalingGroupRequest\x1a9.chalk.modeldeployment.v1.CreateModelScalingGroupResponse"\x03\x80}\x0c\x12\x90\x01\n\x16ListModelScalingGroups\x127.chalk.modeldeployment.v1.ListModelScalingGroupsRequest\x1a8.chalk.modeldeployment.v1.ListModelScalingGroupsResponse"\x03\x80}\x0b\x12i\n\tCallModel\x12*.chalk.modeldeployment.v1.CallModelRequest\x1a+.chalk.modeldeployment.v1.CallModelResponse"\x03\x80}\x0eB\xd4\x01\n\x1ccom.chalk.modeldeployment.v1B\x0cServiceProtoP\x01Z$modeldeployment/v1;modeldeploymentv1\xa2\x02\x03CMX\xaa\x02\x18Chalk.Modeldeployment.V1\xca\x02\x18Chalk\\Modeldeployment\\V1\xe2\x02$Chalk\\Modeldeployment\\V1\\GPBMetadata\xea\x02\x1aChalk::Modeldeployment::V1b\x06proto3',
+    b'\n&chalk/modeldeployment/v1/service.proto\x12\x18chalk.modeldeployment.v1\x1a\x1fchalk/auth/v1/permissions.proto\x1a chalk/container/v1/service.proto\x1a.chalk/externalfunctioncatalog/v1/service.proto\x1a#chalk/models/v1/model_version.proto\x1a)chalk/runtime/v1/remote_python_call.proto\x1a#chalk/scalinggroup/v1/service.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a google/protobuf/field_mask.proto\x1a\x1fgoogle/protobuf/timestamp.proto"\xae\x07\n\x12ModelContainerSpec\x12J\n\x04tags\x18\x01 \x03(\x0b26.chalk.modeldeployment.v1.ModelContainerSpec.TagsEntryR\x04tags\x12E\n\tresources\x18\x02 \x01(\x0b2".chalk.container.v1.ResourceLimitsH\x00R\tresources\x88\x01\x01\x12T\n\x08env_vars\x18\x03 \x03(\x0b29.chalk.modeldeployment.v1.ModelContainerSpec.EnvVarsEntryR\x07envVars\x129\n\x07volumes\x18\x04 \x03(\x0b2\x1f.chalk.container.v1.VolumeMountR\x07volumes\x12\x1d\n\x07routing\x18\x05 \x01(\tH\x01R\x07routing\x88\x01\x01\x12+\n\x0eauthentication\x18\x06 \x01(\tH\x02R\x0eauthentication\x88\x01\x01\x12>\n\x0bsecret_refs\x18\x07 \x03(\x0b2\x1d.chalk.container.v1.SecretRefR\nsecretRefs\x12P\n\x0freadiness_probe\x18\x08 \x01(\x0b2".chalk.container.v1.ReadinessProbeH\x03R\x0ereadinessProbe\x88\x01\x01\x12J\n\rstartup_probe\x18\t \x01(\x0b2 .chalk.container.v1.StartupProbeH\x04R\x0cstartupProbe\x88\x01\x01\x12f\n\x17chalk_workload_identity\x18\n \x01(\x0b2).chalk.container.v1.ChalkWorkloadIdentityH\x05R\x15chalkWorkloadIdentity\x88\x01\x01\x1a7\n\tTagsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a:\n\x0cEnvVarsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x0c\n\n_resourcesB\n\n\x08_routingB\x11\n\x0f_authenticationB\x12\n\x10_readiness_probeB\x10\n\x0e_startup_probeB\x1a\n\x18_chalk_workload_identity"\xe5\x03\n\x1eCreateModelScalingGroupRequest\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12C\n\x04spec\x18\x08 \x01(\x0b2/.chalk.modeldeployment.v1.ModelScalingGroupSpecR\x04spec\x12!\n\nmodel_name\x18\x02 \x01(\tR\tmodelNameB\x02\x18\x01\x12K\n\nidentifier\x18\x03 \x01(\x0b2\'.chalk.models.v1.ModelVersionIdentifierR\nidentifierB\x02\x18\x01\x12W\n\x0econtainer_spec\x18\x04 \x01(\x0b2,.chalk.modeldeployment.v1.ModelContainerSpecR\rcontainerSpecB\x02\x18\x01\x12I\n\x0cscaling_spec\x18\x05 \x01(\x0b2".chalk.scalinggroup.v1.ScalingSpecR\x0bscalingSpecB\x02\x18\x01\x12!\n\x07handler\x18\x06 \x01(\tH\x00R\x07handlerB\x02\x18\x01\x88\x01\x01\x12\x1d\n\x05image\x18\x07 \x01(\tH\x01R\x05imageB\x02\x18\x01\x88\x01\x01B\n\n\x08_handlerB\x08\n\x06_image"\xb4\x02\n\x1fCreateModelScalingGroupResponse\x12T\n\rscaling_group\x18\x01 \x01(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseR\x0cscalingGroupB\x02\x18\x01\x12[\n\x13model_scaling_group\x18\x02 \x01(\x0b2+.chalk.modeldeployment.v1.ModelScalingGroupR\x11modelScalingGroup\x12^\n\x10current_revision\x18\x03 \x01(\x0b23.chalk.modeldeployment.v1.ModelScalingGroupRevisionR\x0fcurrentRevision"~\n\x14ModelVersionSelector\x12\x1d\n\nmodel_name\x18\x01 \x01(\tR\tmodelName\x12G\n\nidentifier\x18\x02 \x01(\x0b2\'.chalk.models.v1.ModelVersionIdentifierR\nidentifier"\xfc\x03\n\x15ModelScalingGroupSpec\x12S\n\rmodel_version\x18\x01 \x01(\x0b2..chalk.modeldeployment.v1.ModelVersionSelectorR\x0cmodelVersion\x12S\n\x0econtainer_spec\x18\x02 \x01(\x0b2,.chalk.modeldeployment.v1.ModelContainerSpecR\rcontainerSpec\x12E\n\x0cscaling_spec\x18\x03 \x01(\x0b2".chalk.scalinggroup.v1.ScalingSpecR\x0bscalingSpec\x12\x1d\n\x07handler\x18\x04 \x01(\tH\x00R\x07handler\x88\x01\x01\x12\x19\n\x05image\x18\x05 \x01(\tH\x01R\x05image\x88\x01\x01\x12P\n\x0cretry_policy\x18\x06 \x01(\x0b2-.chalk.externalfunctioncatalog.v1.RetryPolicyR\x0bretryPolicy\x12P\n\x0cqueue_policy\x18\x07 \x01(\x0b2-.chalk.externalfunctioncatalog.v1.QueuePolicyR\x0bqueuePolicyB\n\n\x08_handlerB\x08\n\x06_image"\xb2\x05\n\x11ModelScalingGroup\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x12\x1d\n\nqueue_name\x18\x03 \x01(\tR\tqueueName\x12\x1e\n\x08model_id\x18\x04 \x01(\tH\x00R\x07modelId\x88\x01\x01\x12"\n\ncreated_by\x18\x05 \x01(\tH\x01R\tcreatedBy\x88\x01\x01\x129\n\ncreated_at\x18\x06 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12\x16\n\x06status\x18\x07 \x01(\tR\x06status\x12*\n\x0estatus_message\x18\x08 \x01(\tH\x02R\rstatusMessage\x88\x01\x01\x12*\n\x0estatus_details\x18\t \x01(\tH\x03R\rstatusDetails\x88\x01\x01\x12%\n\x0eready_replicas\x18\n \x01(\x05R\rreadyReplicas\x12-\n\x12available_replicas\x18\x0b \x01(\x05R\x11availableReplicas\x12\x1f\n\x0brevision_id\x18\x0c \x01(\tR\nrevisionId\x129\n\nupdated_at\x18\r \x01(\x0b2\x1a.google.protobuf.TimestampR\tupdatedAt\x12>\n\ndeleted_at\x18\x0e \x01(\x0b2\x1a.google.protobuf.TimestampH\x04R\tdeletedAt\x88\x01\x01\x12\x1c\n\x07web_url\x18\x0f \x01(\tH\x05R\x06webUrl\x88\x01\x01B\x0b\n\t_model_idB\r\n\x0b_created_byB\x11\n\x0f_status_messageB\x11\n\x0f_status_detailsB\r\n\x0b_deleted_atB\n\n\x08_web_url"\xb8\x02\n\x19ModelScalingGroupRevision\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x123\n\x16model_scaling_group_id\x18\x02 \x01(\tR\x13modelScalingGroupId\x12#\n\rmodel_version\x18\x03 \x01(\x03R\x0cmodelVersion\x12C\n\x04spec\x18\x04 \x01(\x0b2/.chalk.modeldeployment.v1.ModelScalingGroupSpecR\x04spec\x12"\n\ncreated_by\x18\x05 \x01(\tH\x00R\tcreatedBy\x88\x01\x01\x129\n\ncreated_at\x18\x06 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAtB\r\n\x0b_created_by"n\n\x18ModelScalingGroupTraffic\x12R\n\x07targets\x18\x01 \x03(\x0b28.chalk.modeldeployment.v1.ModelScalingGroupTrafficTargetR\x07targets"\xd8\x01\n\x1eModelScalingGroupTrafficTarget\x12F\n\x1fmodel_scaling_group_revision_id\x18\x01 \x01(\tH\x00R\x1bmodelScalingGroupRevisionId\x12A\n\x0flatest_revision\x18\x02 \x01(\x0b2\x16.google.protobuf.EmptyH\x00R\x0elatestRevision\x12\x18\n\x07percent\x18\x03 \x01(\rR\x07percentB\x11\n\x0frevision_target"\xfd\x02\n\x1eUpdateModelScalingGroupRequest\x125\n\x16model_scaling_group_id\x18\x01 \x01(\tH\x00R\x13modelScalingGroupId\x129\n\x18model_scaling_group_name\x18\x02 \x01(\tH\x00R\x15modelScalingGroupName\x12C\n\x04spec\x18\x03 \x01(\x0b2/.chalk.modeldeployment.v1.ModelScalingGroupSpecR\x04spec\x12L\n\x07traffic\x18\x04 \x01(\x0b22.chalk.modeldeployment.v1.ModelScalingGroupTrafficR\x07traffic\x12;\n\x0bupdate_mask\x18\x05 \x01(\x0b2\x1a.google.protobuf.FieldMaskR\nupdateMaskB\x19\n\x17model_scaling_group_key"\xb4\x02\n\x1fUpdateModelScalingGroupResponse\x12T\n\rscaling_group\x18\x01 \x01(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseR\x0cscalingGroupB\x02\x18\x01\x12[\n\x13model_scaling_group\x18\x02 \x01(\x0b2+.chalk.modeldeployment.v1.ModelScalingGroupR\x11modelScalingGroup\x12^\n\x10current_revision\x18\x03 \x01(\x0b23.chalk.modeldeployment.v1.ModelScalingGroupRevisionR\x0fcurrentRevision"\xec\x01\n\x1bGetModelScalingGroupRequest\x125\n\x16model_scaling_group_id\x18\x01 \x01(\tH\x00R\x13modelScalingGroupId\x129\n\x18model_scaling_group_name\x18\x02 \x01(\tH\x00R\x15modelScalingGroupName\x12,\n\x0finclude_deleted\x18\x03 \x01(\x08H\x01R\x0eincludeDeleted\x88\x01\x01B\x19\n\x17model_scaling_group_keyB\x12\n\x10_include_deleted"\xb1\x02\n\x1cGetModelScalingGroupResponse\x12T\n\rscaling_group\x18\x01 \x01(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseR\x0cscalingGroupB\x02\x18\x01\x12[\n\x13model_scaling_group\x18\x02 \x01(\x0b2+.chalk.modeldeployment.v1.ModelScalingGroupR\x11modelScalingGroup\x12^\n\x10current_revision\x18\x03 \x01(\x0b23.chalk.modeldeployment.v1.ModelScalingGroupRevisionR\x0fcurrentRevision"\xb2\x04\n\x1dListModelScalingGroupsRequest\x12X\n\rmodel_version\x18\x01 \x01(\x0b2..chalk.modeldeployment.v1.ModelVersionSelectorH\x00R\x0cmodelVersion\x88\x01\x01\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x01R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x03 \x01(\x05H\x02R\x05limit\x88\x01\x01\x12,\n\x0finclude_deleted\x18\x04 \x01(\x08H\x03R\x0eincludeDeleted\x88\x01\x01\x12Q\n\x07filters\x18\x05 \x01(\x0b27.chalk.modeldeployment.v1.ListModelScalingGroupsFiltersR\x07filters\x12\x16\n\x06search\x18\x06 \x01(\tR\x06search\x12V\n\x0bsort_column\x18\x07 \x01(\x0e25.chalk.modeldeployment.v1.ModelScalingGroupSortColumnR\nsortColumn\x12S\n\nsort_order\x18\x08 \x01(\x0e24.chalk.modeldeployment.v1.ModelScalingGroupSortOrderR\tsortOrderB\x10\n\x0e_model_versionB\t\n\x07_cursorB\x08\n\x06_limitB\x12\n\x10_include_deleted"\x86\x01\n\x1dListModelScalingGroupsFilters\x12\x1a\n\x08statuses\x18\x01 \x03(\tR\x08statuses\x12\x16\n\x06images\x18\x02 \x03(\tR\x06images\x12"\n\nmodel_name\x18\x03 \x01(\tH\x00R\tmodelName\x88\x01\x01B\r\n\x0b_model_name"\xef\x02\n\x1eListModelScalingGroupsResponse\x12V\n\x0escaling_groups\x18\x01 \x03(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseR\rscalingGroupsB\x02\x18\x01\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01\x12]\n\x14model_scaling_groups\x18\x03 \x03(\x0b2+.chalk.modeldeployment.v1.ModelScalingGroupR\x12modelScalingGroups\x12`\n\x11current_revisions\x18\x04 \x03(\x0b23.chalk.modeldeployment.v1.ModelScalingGroupRevisionR\x10currentRevisionsB\x0e\n\x0c_next_cursor"\xad\x01\n\x1eDeleteModelScalingGroupRequest\x125\n\x16model_scaling_group_id\x18\x01 \x01(\tH\x00R\x13modelScalingGroupId\x129\n\x18model_scaling_group_name\x18\x02 \x01(\tH\x00R\x15modelScalingGroupNameB\x19\n\x17model_scaling_group_key"\xd4\x01\n\x1fDeleteModelScalingGroupResponse\x12T\n\rscaling_group\x18\x01 \x01(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseR\x0cscalingGroupB\x02\x18\x01\x12[\n\x13model_scaling_group\x18\x02 \x01(\x0b2+.chalk.modeldeployment.v1.ModelScalingGroupR\x11modelScalingGroup"\x95\x02\n#GetModelScalingGroupRevisionRequest\x125\n\x16model_scaling_group_id\x18\x01 \x01(\tH\x00R\x13modelScalingGroupId\x129\n\x18model_scaling_group_name\x18\x02 \x01(\tH\x00R\x15modelScalingGroupName\x12\x1f\n\x0brevision_id\x18\x03 \x01(\tR\nrevisionId\x12,\n\x0finclude_deleted\x18\x04 \x01(\x08H\x01R\x0eincludeDeleted\x88\x01\x01B\x19\n\x17model_scaling_group_keyB\x12\n\x10_include_deleted"\xd3\x01\n$GetModelScalingGroupRevisionResponse\x12O\n\x08revision\x18\x01 \x01(\x0b23.chalk.scalinggroup.v1.ScalingGroupRevisionResponseR\x08revision\x12Z\n\x0emodel_revision\x18\x02 \x01(\x0b23.chalk.modeldeployment.v1.ModelScalingGroupRevisionR\rmodelRevision"\xc3\x02\n%ListModelScalingGroupRevisionsRequest\x125\n\x16model_scaling_group_id\x18\x01 \x01(\tH\x00R\x13modelScalingGroupId\x129\n\x18model_scaling_group_name\x18\x02 \x01(\tH\x00R\x15modelScalingGroupName\x12\x1b\n\x06cursor\x18\x03 \x01(\tH\x01R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x04 \x01(\x05H\x02R\x05limit\x88\x01\x01\x12,\n\x0finclude_deleted\x18\x05 \x01(\x08H\x03R\x0eincludeDeleted\x88\x01\x01B\x19\n\x17model_scaling_group_keyB\t\n\x07_cursorB\x08\n\x06_limitB\x12\n\x10_include_deleted"\x8f\x02\n&ListModelScalingGroupRevisionsResponse\x12Q\n\trevisions\x18\x01 \x03(\x0b23.chalk.scalinggroup.v1.ScalingGroupRevisionResponseR\trevisions\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01\x12\\\n\x0fmodel_revisions\x18\x03 \x03(\x0b23.chalk.modeldeployment.v1.ModelScalingGroupRevisionR\x0emodelRevisionsB\x0e\n\x0c_next_cursor"\xc2\x03\n\x10CallModelRequest\x12S\n\rmodel_version\x18\x01 \x01(\x0b2..chalk.modeldeployment.v1.ModelVersionSelectorR\x0cmodelVersion\x125\n\x16model_scaling_group_id\x18\x04 \x01(\tH\x00R\x13modelScalingGroupId\x129\n\x18model_scaling_group_name\x18\x05 \x01(\tH\x00R\x15modelScalingGroupName\x12W\n\x13remote_call_request\x18\x02 \x01(\x0b2%.chalk.runtime.v1.CallFunctionRequestH\x01R\x11remoteCallRequest\x12k\n\x1benqueue_remote_call_request\x18\x03 \x01(\x0b2*.chalk.runtime.v1.EnqueueRemoteCallRequestH\x01R\x18enqueueRemoteCallRequestB\x19\n\x17model_scaling_group_keyB\x06\n\x04body"\xe7\x01\n\x11CallModelResponse\x12Z\n\x14remote_call_response\x18\x01 \x01(\x0b2&.chalk.runtime.v1.CallFunctionResponseH\x00R\x12remoteCallResponse\x12n\n\x1cenqueue_remote_call_response\x18\x02 \x01(\x0b2+.chalk.runtime.v1.EnqueueRemoteCallResponseH\x00R\x19enqueueRemoteCallResponseB\x06\n\x04body*\xae\x01\n\x1bModelScalingGroupSortColumn\x12/\n+MODEL_SCALING_GROUP_SORT_COLUMN_UNSPECIFIED\x10\x00\x12.\n*MODEL_SCALING_GROUP_SORT_COLUMN_CREATED_AT\x10\x01\x12.\n*MODEL_SCALING_GROUP_SORT_COLUMN_UPDATED_AT\x10\x02*\x9d\x01\n\x1aModelScalingGroupSortOrder\x12.\n*MODEL_SCALING_GROUP_SORT_ORDER_UNSPECIFIED\x10\x00\x12\'\n#MODEL_SCALING_GROUP_SORT_ORDER_DESC\x10\x01\x12&\n"MODEL_SCALING_GROUP_SORT_ORDER_ASC\x10\x022\xb5\t\n\x16ModelDeploymentService\x12\x93\x01\n\x17CreateModelScalingGroup\x128.chalk.modeldeployment.v1.CreateModelScalingGroupRequest\x1a9.chalk.modeldeployment.v1.CreateModelScalingGroupResponse"\x03\x80}\x0c\x12\x93\x01\n\x17UpdateModelScalingGroup\x128.chalk.modeldeployment.v1.UpdateModelScalingGroupRequest\x1a9.chalk.modeldeployment.v1.UpdateModelScalingGroupResponse"\x03\x80}\x0e\x12\x8a\x01\n\x14GetModelScalingGroup\x125.chalk.modeldeployment.v1.GetModelScalingGroupRequest\x1a6.chalk.modeldeployment.v1.GetModelScalingGroupResponse"\x03\x80}\x0b\x12\x90\x01\n\x16ListModelScalingGroups\x127.chalk.modeldeployment.v1.ListModelScalingGroupsRequest\x1a8.chalk.modeldeployment.v1.ListModelScalingGroupsResponse"\x03\x80}\x0b\x12\x93\x01\n\x17DeleteModelScalingGroup\x128.chalk.modeldeployment.v1.DeleteModelScalingGroupRequest\x1a9.chalk.modeldeployment.v1.DeleteModelScalingGroupResponse"\x03\x80}\x0e\x12\xa2\x01\n\x1cGetModelScalingGroupRevision\x12=.chalk.modeldeployment.v1.GetModelScalingGroupRevisionRequest\x1a>.chalk.modeldeployment.v1.GetModelScalingGroupRevisionResponse"\x03\x80}\x0b\x12\xa8\x01\n\x1eListModelScalingGroupRevisions\x12?.chalk.modeldeployment.v1.ListModelScalingGroupRevisionsRequest\x1a@.chalk.modeldeployment.v1.ListModelScalingGroupRevisionsResponse"\x03\x80}\x0b\x12i\n\tCallModel\x12*.chalk.modeldeployment.v1.CallModelRequest\x1a+.chalk.modeldeployment.v1.CallModelResponse"\x03\x80}\x0eB\xd4\x01\n\x1ccom.chalk.modeldeployment.v1B\x0cServiceProtoP\x01Z$modeldeployment/v1;modeldeploymentv1\xa2\x02\x03CMX\xaa\x02\x18Chalk.Modeldeployment.V1\xca\x02\x18Chalk\\Modeldeployment\\V1\xe2\x02$Chalk\\Modeldeployment\\V1\\GPBMetadata\xea\x02\x1aChalk::Modeldeployment::V1b\x06proto3',
     [
         permissions_pb.desc(),
         service_pb.desc(),
+        service_pb_.desc(),
         model_version_pb.desc(),
         remote_python_call_pb.desc(),
-        service_pb_.desc(),
+        service_pb__.desc(),
+        empty_pb.desc(),
+        field_mask_pb.desc(),
+        timestamp_pb.desc(),
     ],
     {
         "ModelContainerSpec": ModelContainerSpec,
         "CreateModelScalingGroupRequest": CreateModelScalingGroupRequest,
         "CreateModelScalingGroupResponse": CreateModelScalingGroupResponse,
         "ModelVersionSelector": ModelVersionSelector,
+        "ModelScalingGroupSpec": ModelScalingGroupSpec,
+        "ModelScalingGroup": ModelScalingGroup,
+        "ModelScalingGroupRevision": ModelScalingGroupRevision,
+        "ModelScalingGroupTraffic": ModelScalingGroupTraffic,
+        "ModelScalingGroupTrafficTarget": ModelScalingGroupTrafficTarget,
+        "UpdateModelScalingGroupRequest": UpdateModelScalingGroupRequest,
+        "UpdateModelScalingGroupResponse": UpdateModelScalingGroupResponse,
+        "GetModelScalingGroupRequest": GetModelScalingGroupRequest,
+        "GetModelScalingGroupResponse": GetModelScalingGroupResponse,
         "ListModelScalingGroupsRequest": ListModelScalingGroupsRequest,
+        "ListModelScalingGroupsFilters": ListModelScalingGroupsFilters,
         "ListModelScalingGroupsResponse": ListModelScalingGroupsResponse,
+        "DeleteModelScalingGroupRequest": DeleteModelScalingGroupRequest,
+        "DeleteModelScalingGroupResponse": DeleteModelScalingGroupResponse,
+        "GetModelScalingGroupRevisionRequest": GetModelScalingGroupRevisionRequest,
+        "GetModelScalingGroupRevisionResponse": GetModelScalingGroupRevisionResponse,
+        "ListModelScalingGroupRevisionsRequest": ListModelScalingGroupRevisionsRequest,
+        "ListModelScalingGroupRevisionsResponse": ListModelScalingGroupRevisionsResponse,
         "CallModelRequest": CallModelRequest,
         "CallModelResponse": CallModelResponse,
+        "ModelScalingGroupSortColumn": ModelScalingGroupSortColumn,
+        "ModelScalingGroupSortOrder": ModelScalingGroupSortOrder,
     },
 )
 

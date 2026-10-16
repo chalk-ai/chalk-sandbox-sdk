@@ -1,0 +1,1 @@
+- Add `examples/harbor`, a Harbor environment provider that runs each trial in a Chalk sandbox, with a no-LLM smoke task set, an Enterprise-Bench L1-L2 setup script, and a wrapper that runs a Harbor task set as a Chalk evaluation

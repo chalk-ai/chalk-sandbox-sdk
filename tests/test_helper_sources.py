@@ -114,6 +114,7 @@ def test_single_file_entrypoint_renamed_on_collision(tmp_path, monkeypatch) -> N
 
 
 def test_package_named_handler_renames_shim(tmp_path, monkeypatch) -> None:
+    import importlib.util
     import sys
     import types
 
@@ -128,19 +129,23 @@ def test_package_named_handler_renames_shim(tmp_path, monkeypatch) -> None:
     fake_pkg.__path__ = [str(pkg_dir)]
     monkeypatch.setitem(sys.modules, "handler", fake_pkg)
 
-    def add(x: int, y: int) -> int:
-        return x + y
-
-    add.__module__ = "handler.fns"
+    spec = importlib.util.spec_from_file_location("handler.fns", pkg_dir / "fns.py")
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "handler.fns", module)
+    spec.loader.exec_module(module)
 
     with patch.dict(os.environ, {"CHALK_FUNCTION_STRIP_SOURCE": "0"}, clear=False):
-        fn = RemoteFunction(add)
+        fn = RemoteFunction(module.add)
         image = fn._build_deploy_image()
 
     dests = {f.dest for f in image._lazy_local_files}
     assert "/app/handler/fns.py" in dests
     assert "/app/handler_2.py" in dests
     assert fn._handler_module == "handler_2"
+    assert fn._source_location is not None
+    assert fn._source_location.path == "/app/handler/fns.py"
+    assert fn._source_location.line_number == 1
+    assert fn._source_location.column_number == 1
     shim_src = next(
         f.src for f in image._lazy_local_files if f.dest == "/app/handler_2.py"
     )

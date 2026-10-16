@@ -28,6 +28,34 @@ class ComputeClass(Enum):
     HOST = "COMPUTE_CLASS_HOST"
 
 
+class ExecutionBackend(Enum):
+    """Cluster placement for a new workload, independent of its compute class."""
+
+    ENVIRONMENT = "EXECUTION_BACKEND_ENVIRONMENT"
+    SERVERLESS = "EXECUTION_BACKEND_SERVERLESS"
+
+
+class ResourceDetector(Enum):
+    """Egress detectors that record resources a sandbox creates.
+
+    Each detector inspects the sandbox's egress traffic to the hosts it
+    recognizes. A sandbox that enables a detector implicitly allows those
+    hosts in its ``NetworkPolicy``.
+    """
+
+    GITHUB_PULL_REQUESTS = "RESOURCE_DETECTOR_GITHUB_PULL_REQUESTS"
+
+    @property
+    def hosts(self) -> tuple[str, ...]:
+        """Hosts whose egress traffic this detector inspects."""
+        return _RESOURCE_DETECTOR_HOSTS[self]
+
+
+_RESOURCE_DETECTOR_HOSTS = {
+    ResourceDetector.GITHUB_PULL_REQUESTS: ("api.github.com",),
+}
+
+
 class RestartPolicy(Enum):
     """Policy controlling whether a sandbox restarts after exiting."""
 
@@ -52,6 +80,10 @@ class SSHDest:
         SSH destination port. Defaults to 22.
     username
         Optional SSH username written to the generated alias's ``User`` setting.
+    alias
+        Name the destination is reachable by inside the sandbox, as in
+        ``ssh <alias>``. Used when ``managed_ssh`` is a list; defaults to
+        ``host``. A ``managed_ssh`` mapping's keys take precedence.
     """
 
     host: str
@@ -60,6 +92,53 @@ class SSHDest:
     host_keys: Sequence[str] | None = None
     port: int | None = None
     username: str | None = None
+    alias: str | None = None
+
+    @classmethod
+    def github(
+        cls,
+        private_key_secret: str,
+        *,
+        alias: str = "github.com",
+        port_443: bool = False,
+    ) -> SSHDest:
+        """GitHub over SSH, pinned to GitHub's published host keys.
+
+        ``git@github.com:org/repo.git`` URLs work unchanged inside the sandbox.
+
+        Parameters
+        ----------
+        private_key_secret
+            Name of the Chalk secret containing a key registered with GitHub,
+            such as a deploy key or a user's SSH key.
+        alias
+            SSH alias for the destination. Use distinct aliases to reach
+            GitHub with more than one key, as in
+            ``git@github-work:org/repo.git``.
+        port_443
+            Connect to ``ssh.github.com:443`` instead of ``github.com:22``,
+            for networks that block port 22.
+
+        Example
+        -------
+        ```python
+        import chalkcompute as cc
+
+        sandbox = cc.Sandbox(
+            compute_class=cc.ComputeClass.HOST,
+            managed_ssh=[cc.SshDest.github("GITHUB_DEPLOY_KEY")],
+        ).run()
+        sandbox.git.clone(url="git@github.com:org/repo.git", path="/workspace/repo")
+        ```
+        """
+        return cls(
+            host="ssh.github.com" if port_443 else "github.com",
+            private_key_secret=private_key_secret,
+            host_keys=GITHUB_SSH_HOST_KEYS,
+            port=443 if port_443 else None,
+            username="git",
+            alias=alias,
+        )
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -80,6 +159,8 @@ class SSHDest:
             _validate_port(self.port, "port")
         if self.username is not None and not isinstance(self.username, str):
             raise TypeError("username must be a string")
+        if self.alias is not None:
+            _validate_ssh_alias(self.alias)
 
     def to_dict(self) -> dict[str, Any]:
         destination: dict[str, Any] = {
@@ -97,6 +178,57 @@ class SSHDest:
 
 # Preserve the original spelling for backwards compatibility.
 SshDest = SSHDest
+
+
+# GitHub's SSH host keys, from https://api.github.com/meta. ssh.github.com:443
+# serves the same keys.
+GITHUB_SSH_HOST_KEYS = (
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl",
+    "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=",
+    "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=",
+)
+
+
+def _validate_ssh_alias(alias: object) -> None:
+    if not isinstance(alias, str):
+        raise TypeError("managed_ssh aliases must be strings")
+    if not alias:
+        raise ValueError("managed_ssh aliases must not be empty")
+
+
+def normalize_managed_ssh(
+    managed_ssh: Mapping[str, SSHDest] | Sequence[SSHDest] | None,
+) -> dict[str, SSHDest]:
+    """Validate ``managed_ssh`` and return it keyed by alias.
+
+    A list keys each destination by its ``alias``, falling back to ``host``.
+    """
+    if managed_ssh is None:
+        return {}
+    if isinstance(managed_ssh, Mapping):
+        items = list(managed_ssh.items())
+    elif isinstance(managed_ssh, (str, bytes)) or not isinstance(managed_ssh, Sequence):
+        raise TypeError(
+            "managed_ssh must be a list of SSHDest or a mapping of aliases to SSHDest"
+        )
+    else:
+        items = []
+        for destination in managed_ssh:
+            if not isinstance(destination, SSHDest):
+                raise TypeError("managed_ssh destinations must be SSHDest instances")
+            items.append((destination.alias or destination.host, destination))
+    result: dict[str, SSHDest] = {}
+    for alias, destination in items:
+        _validate_ssh_alias(alias)
+        if not isinstance(destination, SSHDest):
+            raise TypeError("managed_ssh destinations must be SSHDest instances")
+        if alias in result:
+            raise ValueError(
+                f"managed_ssh has more than one destination for alias {alias!r}; "
+                "give each a distinct alias="
+            )
+        result[alias] = destination
+    return result
 
 
 @dataclass
@@ -385,13 +517,16 @@ class ContainerSpec:
     secret_refs: Sequence[Secret | Mapping[str, Any]] = ()
     port: int | None = None
     lifetime: str | None = None
-    managed_ssh: Mapping[str, SSHDest] = field(default_factory=dict)
+    managed_ssh: Mapping[str, SSHDest] | Sequence[SSHDest] = field(default_factory=dict)
     tags: Mapping[str, str] = field(default_factory=dict)
     protocol: str | None = None
     authentication: str | None = None
     security_policy: ContainerSecurityPolicy | None = None
     network_policy: NetworkPolicy | None = None
     compute_class: ComputeClass | None = None
+    execution_target: ExecutionBackend | None = None
+    resource_detectors: Sequence[ResourceDetector] = ()
+    host_pool_id: str | None = None
     startup_probe: Mapping[str, Any] | None = None
     readiness_probe: Mapping[str, Any] | None = None
     restart_policy: RestartPolicy | None = None
@@ -412,6 +547,8 @@ class ContainerSpec:
             security_policy=self.security_policy,
             network_policy=self.network_policy,
             compute_class=self.compute_class,
+            execution_target=self.execution_target,
+            resource_detectors=self.resource_detectors,
             tags=self.tags,
             restart_policy=self.restart_policy,
             chalk_identity=self.chalk_identity,
@@ -432,11 +569,12 @@ class ContainerSpec:
                 for ref in self.secret_refs
             ),
         )
+        object.__setattr__(self, "resource_detectors", tuple(self.resource_detectors))
         object.__setattr__(self, "tags", dict(self.tags))
         object.__setattr__(
             self,
             "managed_ssh",
-            dict(self.managed_ssh),
+            normalize_managed_ssh(self.managed_ssh),
         )
         object.__setattr__(
             self,
@@ -465,10 +603,12 @@ class ContainerSpec:
         security_policy: ContainerSecurityPolicy | None = None,
         network_policy: NetworkPolicy | None = None,
         compute_class: ComputeClass | None = None,
+        execution_target: ExecutionBackend | None = None,
+        resource_detectors: Sequence[ResourceDetector] | None = None,
         tags: Mapping[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool = False,
-        managed_ssh: Mapping[str, SSHDest] | None = None,
+        managed_ssh: Mapping[str, SSHDest] | Sequence[SSHDest] | None = None,
     ) -> None:
         if image is not None and not isinstance(image, str):
             if not isinstance(image, Image):
@@ -523,6 +663,20 @@ class ContainerSpec:
             raise TypeError("network_policy must be a NetworkPolicy")
         if compute_class is not None and not isinstance(compute_class, ComputeClass):
             raise TypeError("compute_class must be a ComputeClass")
+        if execution_target is not None and not isinstance(
+            execution_target, ExecutionBackend
+        ):
+            raise TypeError("execution_target must be an ExecutionBackend")
+        if resource_detectors is not None:
+            if isinstance(resource_detectors, (str, bytes)) or not isinstance(
+                resource_detectors, Sequence
+            ):
+                raise TypeError("resource_detectors must be a list of ResourceDetector")
+            for detector in resource_detectors:
+                if not isinstance(detector, ResourceDetector):
+                    raise TypeError(
+                        "resource_detectors must be a list of ResourceDetector"
+                    )
         if tags is not None:
             if not isinstance(tags, Mapping):
                 raise TypeError("tags must be a dict[str, str]")
@@ -533,18 +687,7 @@ class ContainerSpec:
             raise TypeError("restart_policy must be a RestartPolicy")
         if not isinstance(chalk_identity, bool):
             raise TypeError("chalk_identity must be a bool")
-        if managed_ssh is not None and not isinstance(managed_ssh, Mapping):
-            raise TypeError("managed_ssh must be a mapping of aliases to destinations")
-        if managed_ssh is not None:
-            for alias, destination in managed_ssh.items():
-                if not isinstance(alias, str):
-                    raise TypeError("managed_ssh aliases must be strings")
-                if not alias:
-                    raise ValueError("managed_ssh aliases must not be empty")
-                if not isinstance(destination, SSHDest):
-                    raise TypeError(
-                        "managed_ssh destinations must be SSHDest instances"
-                    )
+        normalize_managed_ssh(managed_ssh)
 
     def to_dict(self) -> dict[str, Any]:
         spec: dict[str, Any] = {"image": self.image}
@@ -579,7 +722,9 @@ class ContainerSpec:
         if self.managed_ssh:
             spec["managedSsh"] = {
                 alias: destination.to_dict()
-                for alias, destination in self.managed_ssh.items()
+                for alias, destination in normalize_managed_ssh(
+                    self.managed_ssh
+                ).items()
             }
         if self.tags:
             spec["tags"] = dict(self.tags)
@@ -593,6 +738,10 @@ class ContainerSpec:
             spec["networkPolicy"] = self.network_policy.to_dict()
         if self.compute_class is not None:
             spec["computeClass"] = self.compute_class.value
+        if self.execution_target is not None:
+            spec["executionTarget"] = {"backend": self.execution_target.value}
+        if self.host_pool_id is not None:
+            spec["hostPlacement"] = {"hostPoolId": self.host_pool_id}
         if self.startup_probe is not None:
             spec["startupProbe"] = dict(self.startup_probe)
         if self.readiness_probe is not None:
@@ -659,7 +808,9 @@ class ContainerSpec:
                     port=destination.port,
                     username=destination.username,
                 )
-                for alias, destination in self.managed_ssh.items()
+                for alias, destination in normalize_managed_ssh(
+                    self.managed_ssh
+                ).items()
             },
             tags=dict(self.tags),
             protocol=self.protocol,
@@ -682,6 +833,31 @@ class ContainerSpec:
                 None
                 if self.compute_class is None
                 else container_pb.ComputeClass[self.compute_class.name]
+            ),
+            execution_target=(
+                None
+                if self.execution_target is None
+                else container_pb.ExecutionTarget(
+                    backend=container_pb.ExecutionBackend[self.execution_target.name]
+                )
+            ),
+            resource_detection=(
+                container_pb.ResourceDetectionConfig(
+                    detectors=[
+                        container_pb.ResourceDetector[detector.name]
+                        for detector in self.resource_detectors
+                    ]
+                )
+                if self.resource_detectors
+                else None
+            ),
+            placement=(
+                None
+                if self.host_pool_id is None
+                else Oneof(
+                    "host_placement",
+                    container_pb.HostPlacementOptions(host_pool_id=self.host_pool_id),
+                )
             ),
             startup_probe=startup_probe,
             readiness_probe=readiness_probe,

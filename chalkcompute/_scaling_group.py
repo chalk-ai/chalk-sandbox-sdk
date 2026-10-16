@@ -44,7 +44,13 @@ from protobuf.wkt import FieldMask
 
 from chalkcompute._logging import _StatusLogger
 from chalkcompute._connect import ConnectClient, build_image
-from chalkcompute._containerspec import ContainerSpec, validate_replica_and_utilization
+from chalkcompute._containerspec import (
+    ComputeClass,
+    ContainerSpec,
+    NetworkPolicy,
+    ExecutionBackend,
+    validate_replica_and_utilization,
+)
 from chalkcompute._env import normalize_env
 from chalkcompute._deployment_proto import scaling_spec as build_scaling_spec
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_connect as sg_connect
@@ -162,6 +168,37 @@ class ReadinessProbe:
 
 
 @dataclass(frozen=True)
+class StartupProbe:
+    """One-time check of the externally routed endpoint before deploy is ready."""
+
+    _kind: Literal["http", "grpc"]
+    _value: str | None
+
+    @classmethod
+    def http(cls, path: str | None = None) -> StartupProbe:
+        """Create an HTTP GET startup probe. An unset path uses ``/``."""
+        return cls(_kind="http", _value=path)
+
+    @classmethod
+    def grpc(cls, method: str | None = None) -> StartupProbe:
+        """Create a gRPC startup probe.
+
+        An explicit ``method`` must be fully qualified and return OK. An unset
+        method calls ``/chalk.health.v1.Probe/Check`` and expects UNIMPLEMENTED
+        to confirm that the routed endpoint speaks gRPC.
+        """
+        return cls(_kind="grpc", _value=method)
+
+    def to_dict(self) -> dict[str, Any]:
+        check = (
+            {}
+            if self._value is None
+            else {"path" if self._kind == "http" else "method": self._value}
+        )
+        return {self._kind: check}
+
+
+@dataclass(frozen=True)
 class CronScalingWindow:
     """A single cron-based scaling window."""
 
@@ -267,6 +304,15 @@ class ScalingGroup:
     Orchestrates image building, local file upload via volumes, and
     scaling-group lifecycle in a single high-level API.
 
+    ``readiness_probe`` checks each replica directly. Optional ``startup_probe``
+    checks the externally routed endpoint before deployment becomes ready, e.g.
+    ``StartupProbe.http("/health")``. Use ``protocol="grpc"`` with
+    ``StartupProbe.grpc(...)``. External startup probes are not supported with
+    ``authenticated=True``.
+
+    ``network_policy`` configures host egress. Omit it for the server default;
+    ``NetworkPolicy()`` denies all egress. Kubernetes groups do not support it.
+
     Examples
     --------
     >>> from chalkcompute import ScalingGroup, Image
@@ -291,6 +337,9 @@ class ScalingGroup:
         image: _Image | str,
         name: str | None = None,
         cpu: str | None = None,
+        compute_class: ComputeClass | None = None,
+        network_policy: NetworkPolicy | None = None,
+        execution_target: ExecutionBackend | None = None,
         memory: str | None = None,
         gpu: str | None = None,
         env: Mapping[str, str | _Secret] | None = None,
@@ -303,6 +352,7 @@ class ScalingGroup:
         min_replicas: int = 1,
         max_replicas: int = 1,
         readiness_probe: ReadinessProbe | None = None,
+        startup_probe: StartupProbe | None = None,
         shutdown_delay_seconds: int | None = None,
         scaling_interval_seconds: int | None = None,
         target_cpu_utilization_percentage: int | None = None,
@@ -331,6 +381,9 @@ class ScalingGroup:
             image=normalized_image,
             name=name,
             cpu=cpu,
+            compute_class=compute_class,
+            network_policy=network_policy,
+            execution_target=execution_target,
             memory=memory,
             gpu=gpu,
             env=env,
@@ -347,9 +400,19 @@ class ScalingGroup:
             target_cpu_utilization_percentage=target_cpu_utilization_percentage,
             target_gpu_utilization_percentage=target_gpu_utilization_percentage,
         )
+        if startup_probe is not None:
+            if port is None:
+                raise ValueError("startup_probe requires port")
+            if startup_probe._kind == "grpc" and protocol != "grpc":
+                raise ValueError("StartupProbe.grpc requires protocol='grpc'")
+            if startup_probe._kind == "http" and protocol == "grpc":
+                raise ValueError("StartupProbe.http requires an HTTP protocol")
         self._image: _Image | str | None = normalized_image
         self._name = name
         self._cpu = cpu
+        self._compute_class = compute_class
+        self._network_policy = network_policy
+        self._execution_target = execution_target
         self._memory = memory
         self._gpu = gpu
         self._env = dict(env) if env else {}
@@ -368,6 +431,7 @@ class ScalingGroup:
         self._min_replicas = min_replicas
         self._max_replicas = max_replicas
         self._readiness_probe = readiness_probe
+        self._startup_probe = startup_probe
         self._shutdown_delay_seconds = shutdown_delay_seconds
         self._scaling_interval_seconds = scaling_interval_seconds
         self._target_cpu_utilization_percentage = target_cpu_utilization_percentage
@@ -469,6 +533,9 @@ class ScalingGroup:
         sg._image = None
         sg._name = None
         sg._cpu = None
+        sg._compute_class = None
+        sg._network_policy = None
+        sg._execution_target = None
         sg._memory = None
         sg._gpu = None
         sg._env = {}
@@ -484,6 +551,7 @@ class ScalingGroup:
         sg._min_replicas = 1
         sg._max_replicas = 1
         sg._readiness_probe = None
+        sg._startup_probe = None
         sg._shutdown_delay_seconds = None
         sg._scaling_interval_seconds = None
         sg._target_cpu_utilization_percentage = None
@@ -519,7 +587,7 @@ class ScalingGroup:
             Maximum seconds to wait for the image build to complete.
         ready_timeout
             Maximum seconds to wait for the scaling group to have at least one
-            ready and available replica.
+            ready and available replica and pass any configured startup probe.
 
         Returns
         -------
@@ -620,6 +688,9 @@ class ScalingGroup:
             image=self._built_image_uri,
             entrypoint=self._entrypoint,
             cpu=self._cpu,
+            compute_class=self._compute_class,
+            network_policy=self._network_policy,
+            execution_target=self._execution_target,
             memory=self._memory,
             gpu=self._gpu,
             env=self._env,
@@ -631,6 +702,11 @@ class ScalingGroup:
             readiness_probe=(
                 self._readiness_probe.to_dict()
                 if self._readiness_probe is not None
+                else None
+            ),
+            startup_probe=(
+                self._startup_probe.to_dict()
+                if self._startup_probe is not None
                 else None
             ),
             tags=self._tags,
@@ -970,7 +1046,7 @@ class ScalingGroup:
         if self._scaling_group_id is not None:
             try:
                 owned_volumes.update(self._owned_volumes_from_revisions())
-            except ScalingGroupError as exc:
+            except Exception as exc:
                 logger.warning(
                     "Could not inspect revision volumes before delete: %s", exc
                 )
@@ -1027,7 +1103,11 @@ class ScalingGroup:
                         result[volume.name] = VolumeMount(
                             name=volume.name,
                             mount_path=volume.mount_path,
-                            version_id=volume.version_id,
+                            version_id=(
+                                volume.version_id
+                                if volume.has_field("version_id")
+                                else None
+                            ),
                             # The API reports an unset fork as "", which VolumeMount rejects.
                             ref_name=volume.ref_name or None,
                         )

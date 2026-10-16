@@ -12,8 +12,58 @@ from chalkcompute import _image_build
 from chalkcompute._cls import RemoteClass, method
 from chalkcompute._container import Container
 from chalkcompute._function import RemoteFunction
+from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
+from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from chalkcompute._sandbox import Sandbox
 from chalkcompute._scaling_group import ScalingGroup
+
+
+@pytest.mark.parametrize("inspection_fails", [False, True])
+def test_scaling_group_delete_cleans_up_lazy_volumes(inspection_fails):
+    current = VolumeMount("chalkcompute-sg-files-current", "/app", 7)
+    historical = "chalkcompute-sg-files-old"
+    revisions = sg_pb.ListScalingGroupRevisionsResponse(
+        revisions=[
+            sg_pb.ScalingGroupRevisionResponse(
+                spec=sg_pb.ScalingGroupSpec(
+                    container_spec=container_pb.ChalkContainerSpec(
+                        volumes=[
+                            container_pb.VolumeMount(
+                                name=historical, mount_path="/app", version_id=7
+                            ),
+                            container_pb.VolumeMount(
+                                name="user-data", mount_path="/data"
+                            ),
+                        ]
+                    )
+                )
+            )
+        ]
+    )
+    sg = ScalingGroup(image="nginx:alpine")
+    sg._scaling_group_id = "sg-1"
+    sg._owned_volumes = [current]
+    driver = MagicMock()
+    sg._volume_driver = driver
+    sg._client = MagicMock()
+    sg._client.call.side_effect = [
+        ValueError("invalid revision") if inspection_fails else revisions,
+        sg_pb.DeleteScalingGroupResponse(),
+    ]
+
+    sg.delete()
+
+    assert (
+        sg._client.call.call_args.args[0]
+        == sg._client.stub.return_value.delete_scaling_group
+    )
+    assert sg._client.call.call_args.args[1].id == "sg-1"
+    deleted = [args.args[0] for args in driver.delete_volume.call_args_list]
+    assert deleted == (
+        [current.name] if inspection_fails else [current.name, historical]
+    )
+    assert sg._scaling_group_id is None
+    assert sg._owned_volumes == []
 
 
 def built_image(uri, volumes=()):

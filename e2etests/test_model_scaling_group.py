@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 import pyarrow as pa
+import pytest
 from pyarrow import ipc
 
 from chalk.client import ChalkClient
@@ -25,22 +26,42 @@ from chalkcompute import Image
 from chalkcompute._connect import grpc_target_from_url
 from chalkcompute._remote_call_client import RemoteCallClient
 
+from e2etests._ci_resources import build_scoped_name
 from e2etests.conftest import (
     CHALK_ENVIRONMENT_ID,
+    _delete_model_scaling_group,
+    _delete_model_registration,
     _get_access_token,
     needs_staging,
 )
 from e2etests.model_fixtures.handler_decorated import AffineHandler
 
-SG_NAME = "ex-trivial-double-sg"
-VOLUME_SG_NAME = "ex-volume-triple-sg"
-HANDLER_SG_NAME = "ex-handler-affine-sg"
-COMBINED_SG_NAME = "ex-combined-affine-sg"
+MODEL_NAME = build_scoped_name("ex-trivial-double")
+VOLUME_MODEL_NAME = build_scoped_name("ex-volume-triple")
+HANDLER_MODEL_NAME = build_scoped_name("ex-handler-affine")
+COMBINED_MODEL_NAME = build_scoped_name("ex-combined-affine")
+SG_NAME = build_scoped_name("ex-trivial-double-sg")
+VOLUME_SG_NAME = build_scoped_name("ex-volume-triple-sg")
+HANDLER_SG_NAME = build_scoped_name("ex-handler-affine-sg")
+COMBINED_SG_NAME = build_scoped_name("ex-combined-affine-sg")
 READINESS_TIMEOUT = 180
 READINESS_POLL_INTERVAL = 5
 SCALING_GROUP_CPU = "500m"
 SCALING_GROUP_MEMORY = "1Gi"
 FIXTURES_DIR = Path(__file__).parent / "model_fixtures"
+
+
+def _cleanup_model_test(sg_name: str, model_name: str) -> None:
+    _delete_model_scaling_group(sg_name)
+    _delete_model_registration(model_name)
+
+
+@pytest.fixture(scope="class", autouse=True)
+def cleanup_model_test(request: pytest.FixtureRequest) -> None:
+    """Register cleanup before setup_class makes its first remote change."""
+    cls = request.cls
+    if cls is not None:
+        request.addfinalizer(lambda: _cleanup_model_test(cls._sg_name, cls._model_name))
 
 
 def _wait_for_ready_replicas(client: ChalkClient, sg_name: str, timeout: float) -> str:
@@ -103,6 +124,8 @@ def _call_model(web_url: str, input_data: dict[str, list]) -> list[float]:
 @needs_staging
 class TestModelScalingGroup:
     _web_url: str
+    _model_name = MODEL_NAME
+    _sg_name = SG_NAME
 
     @classmethod
     def setup_class(cls):
@@ -128,14 +151,14 @@ class TestModelScalingGroup:
             )
         )
         version = client.register_model_version(
-            name="ex-trivial-double",
+            name=MODEL_NAME,
             input_schema={"x": pa.float64()},
             output_schema={"y": pa.float64()},
             model_image=image,
         )
         client.deploy_model_version_to_scaling_group(
             name=SG_NAME,
-            model_name="ex-trivial-double",
+            model_name=MODEL_NAME,
             model_version=version.model_version,
             handler="handler.handler",
             scaling=AutoScalingSpec(
@@ -148,14 +171,6 @@ class TestModelScalingGroup:
             ),
         )
         cls._web_url = _wait_for_ready_replicas(client, SG_NAME, READINESS_TIMEOUT)
-
-    @classmethod
-    def teardown_class(cls):
-        try:
-            client = ChalkClient(environment=CHALK_ENVIRONMENT_ID)
-            client.delete_scaling_group(name=SG_NAME)
-        except Exception:
-            pass
 
     def test_single_input(self):
         """handler(x=3.0) should return 6.0."""
@@ -186,6 +201,8 @@ class TestModelWithVolume:
     """
 
     _web_url: str
+    _model_name = VOLUME_MODEL_NAME
+    _sg_name = VOLUME_SG_NAME
 
     @classmethod
     def setup_class(cls):
@@ -216,7 +233,7 @@ class TestModelWithVolume:
             config_path = Path(config_dir) / "config.json"
             config_path.write_text(json.dumps({"factor": 3.0}))
             version = client.register_model_version(
-                name="ex-volume-triple",
+                name=VOLUME_MODEL_NAME,
                 input_schema={"x": pa.float64()},
                 output_schema={"y": pa.float64()},
                 model_image=image,
@@ -224,7 +241,7 @@ class TestModelWithVolume:
             )
         client.deploy_model_version_to_scaling_group(
             name=VOLUME_SG_NAME,
-            model_name="ex-volume-triple",
+            model_name=VOLUME_MODEL_NAME,
             model_version=version.model_version,
             handler="handler.handler",
             scaling=AutoScalingSpec(
@@ -239,14 +256,6 @@ class TestModelWithVolume:
         cls._web_url = _wait_for_ready_replicas(
             client, VOLUME_SG_NAME, READINESS_TIMEOUT
         )
-
-    @classmethod
-    def teardown_class(cls):
-        try:
-            client = ChalkClient(environment=CHALK_ENVIRONMENT_ID)
-            client.delete_scaling_group(name=VOLUME_SG_NAME)
-        except Exception:
-            pass
 
     def test_single_input(self):
         """handler(x=4.0) with factor=3.0 should return 12.0."""
@@ -271,6 +280,8 @@ class TestModelHandlerDecorator:
     """
 
     _web_url: str
+    _model_name = HANDLER_MODEL_NAME
+    _sg_name = HANDLER_SG_NAME
 
     @classmethod
     def setup_class(cls):
@@ -280,14 +291,14 @@ class TestModelHandlerDecorator:
             with open(weights_path, "w") as weights_file:
                 json.dump({"factor": 5.0, "bias": 2.0}, weights_file)
             version = client.register_model_version(
-                name="ex-handler-affine",
+                name=HANDLER_MODEL_NAME,
                 model=AffineHandler(files=[weights_path]),
                 input_schema={"x": pa.float64()},
                 output_schema={"y": pa.float64()},
             )
         client.deploy_model_version_to_scaling_group(
             name=HANDLER_SG_NAME,
-            model_name="ex-handler-affine",
+            model_name=HANDLER_MODEL_NAME,
             model_version=version.model_version,
             scaling=AutoScalingSpec(
                 min_replicas=1,
@@ -301,14 +312,6 @@ class TestModelHandlerDecorator:
         cls._web_url = _wait_for_ready_replicas(
             client, HANDLER_SG_NAME, READINESS_TIMEOUT
         )
-
-    @classmethod
-    def teardown_class(cls):
-        try:
-            client = ChalkClient(environment=CHALK_ENVIRONMENT_ID)
-            client.delete_scaling_group(name=HANDLER_SG_NAME)
-        except Exception:
-            pass
 
     def test_single_input(self):
         """predict(x=3.0) with factor=5.0, bias=2.0 should return 17.0."""
@@ -332,6 +335,8 @@ class TestModelImageAndModelCombined:
     """
 
     _web_url: str
+    _model_name = COMBINED_MODEL_NAME
+    _sg_name = COMBINED_SG_NAME
 
     @classmethod
     def setup_class(cls):
@@ -368,7 +373,7 @@ class TestModelImageAndModelCombined:
             with open(weights_path, "w") as weights_file:
                 json.dump({"factor": 2.0, "bias": 1.0}, weights_file)
             version = client.register_model_version(
-                name="ex-combined-affine",
+                name=COMBINED_MODEL_NAME,
                 input_schema={"x": pa.float64()},
                 output_schema={"y": pa.float64()},
                 model_image=image,
@@ -376,7 +381,7 @@ class TestModelImageAndModelCombined:
             )
         client.deploy_model_version_to_scaling_group(
             name=COMBINED_SG_NAME,
-            model_name="ex-combined-affine",
+            model_name=COMBINED_MODEL_NAME,
             model_version=version.model_version,
             handler="handler_combined.handler",
             scaling=AutoScalingSpec(
@@ -391,14 +396,6 @@ class TestModelImageAndModelCombined:
         cls._web_url = _wait_for_ready_replicas(
             client, COMBINED_SG_NAME, READINESS_TIMEOUT
         )
-
-    @classmethod
-    def teardown_class(cls):
-        try:
-            client = ChalkClient(environment=CHALK_ENVIRONMENT_ID)
-            client.delete_scaling_group(name=COMBINED_SG_NAME)
-        except Exception:
-            pass
 
     def test_single_input(self):
         """handler(x=3.0) with factor=2.0, bias=1.0 should return 7.0."""

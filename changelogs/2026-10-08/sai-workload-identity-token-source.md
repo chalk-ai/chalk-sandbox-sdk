@@ -1,0 +1,1 @@
+- Add a reusable provider-neutral source for Chalk workload identity tokens, including temporary token files for CLI consumers.

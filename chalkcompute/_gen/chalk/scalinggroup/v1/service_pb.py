@@ -858,7 +858,7 @@ class ListScalingGroupsFilters(Message[_ListScalingGroupsFiltersFields]):
             repeated chalk.scalinggroup.v1.ScalingGroupVisibility visibility = 2 [packed = true, deprecated = true];
             ```
         images:
-            Case-insensitive literal substring match over any container image.
+            Case-sensitive exact match over any container image.
 
             ```proto
             repeated string images = 3;

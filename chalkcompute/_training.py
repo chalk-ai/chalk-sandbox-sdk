@@ -36,7 +36,12 @@ from protobuf import Oneof
 from protobuf.wkt import Struct, Value
 
 from chalkcompute._connect import ConnectClient, build_image
-from chalkcompute._containerspec import ContainerSpec
+from chalkcompute._containerspec import (
+    ComputeClass,
+    ContainerSpec,
+    ExecutionBackend,
+    NetworkPolicy,
+)
 from chalkcompute._env import normalize_env
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._gen.chalk.server.v1 import (
@@ -229,6 +234,9 @@ class TrainingFunction:
         cpu: str | None = None,
         memory: str | None = None,
         gpu: str | None = None,
+        compute_class: ComputeClass | None = None,
+        execution_target: ExecutionBackend | None = None,
+        network_policy: NetworkPolicy | None = None,
         env: Mapping[str, str | _Secret] | None = None,
         secrets: list[_Secret] | None = None,
         metadata: dict[str, Any] | None = None,
@@ -250,6 +258,9 @@ class TrainingFunction:
             cpu=cpu,
             memory=memory,
             gpu=gpu,
+            compute_class=compute_class,
+            execution_target=execution_target,
+            network_policy=network_policy,
             env=env,
             secrets=secrets,
         )
@@ -263,6 +274,9 @@ class TrainingFunction:
         self._cpu = cpu
         self._memory = memory
         self._gpu = gpu
+        self._compute_class = compute_class
+        self._execution_target = execution_target
+        self._network_policy = network_policy
         self._env = dict(env) if env else {}
         self._secrets: list[_Secret] = list(secrets or [])
         self._metadata = dict(metadata) if metadata else {}
@@ -432,7 +446,7 @@ class TrainingFunction:
             ]
 
         data_source = self._build_data_source()
-        resources = self._build_resources()
+        container_spec = self._build_container_spec(image_uri)
         secret_refs = [_secret_to_proto(s) for s in self._secrets]
         meta = _metadata_to_proto(self._metadata) if self._metadata else None
 
@@ -453,7 +467,14 @@ class TrainingFunction:
             name=self._name,
             data=data_source,
             config=_config_to_struct(config),
-            resources=resources,
+            resources=container_spec.resources,
+            compute_class=(
+                container_spec.compute_class
+                if container_spec.has_field("compute_class")
+                else None
+            ),
+            execution_target=container_spec.execution_target,
+            network_policy=container_spec.network_policy,
             image=image_uri,
             env=env or None,
             secret_refs=secret_refs or None,
@@ -478,14 +499,16 @@ class TrainingFunction:
             source = Oneof("dataset_name", self._data or self._dataset or "")
         return tr_pb.TrainingRunDataSource(source=source)  # ty: ignore[invalid-argument-type]
 
-    def _build_resources(self) -> container_pb.ResourceLimits | None:
-        if self._cpu is None and self._memory is None and self._gpu is None:
-            return None
-        return container_pb.ResourceLimits(
+    def _build_container_spec(self, image: str) -> container_pb.ChalkContainerSpec:
+        return ContainerSpec(
+            image=image,
             cpu=self._cpu,
             memory=self._memory,
             gpu=self._gpu,
-        )
+            compute_class=self._compute_class,
+            execution_target=self._execution_target,
+            network_policy=self._network_policy,
+        ).to_proto()
 
 
 class _NoOpTrainingFunction:
@@ -512,6 +535,9 @@ def training(
     cpu: str | None = None,
     memory: str | None = None,
     gpu: str | None = None,
+    compute_class: ComputeClass | None = None,
+    execution_target: ExecutionBackend | None = None,
+    network_policy: NetworkPolicy | None = None,
     env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
     metadata: dict[str, Any] | None = None,
@@ -530,6 +556,9 @@ def training(
     cpu: str | None = None,
     memory: str | None = None,
     gpu: str | None = None,
+    compute_class: ComputeClass | None = None,
+    execution_target: ExecutionBackend | None = None,
+    network_policy: NetworkPolicy | None = None,
     env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
     metadata: dict[str, Any] | None = None,
@@ -549,6 +578,9 @@ def training(
     cpu: str | None = None,
     memory: str | None = None,
     gpu: str | None = None,
+    compute_class: ComputeClass | None = None,
+    execution_target: ExecutionBackend | None = None,
+    network_policy: NetworkPolicy | None = None,
     env: Mapping[str, str | _Secret] | None = None,
     secrets: list[_Secret] | None = None,
     metadata: dict[str, Any] | None = None,
@@ -597,6 +629,9 @@ def training(
             cpu=cpu,
             memory=memory,
             gpu=gpu,
+            compute_class=compute_class,
+            execution_target=execution_target,
+            network_policy=network_policy,
             env=env,
             secrets=secrets,
             metadata=metadata,

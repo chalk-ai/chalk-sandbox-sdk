@@ -9,26 +9,32 @@ or local `chalk-remote-call-python` changes, see
 ## Install
 
 ```
-pip install grpcio protobuf
+pip install chalkcompute
 ```
 
 ## Quick start
 
 ```python
-from chalkcompute import SandboxClient
+import chalkcompute as cc
 
-with SandboxClient.from_env() as client:
-    # Create a sandbox from a pre-built image
-    sandbox = client.create(image="ubuntu:latest")
-
-    # Run a command
+# Omitting image= uses Image.sandbox(): Python, Git and SSH in /workspace.
+# Credentials come from the environment, as with SandboxClient.from_env().
+sandbox = cc.Sandbox(
+    image=cc.Image.sandbox().with_tmux(),
+    cpu="1",
+    memory="2Gi",
+).run()
+try:
     result = sandbox.exec("echo", "hello world")
-    print(result.stdout_text)  # "hello world"
+    print(result.stdout_text)  # "hello world\n"
     print(result.exit_code)    # 0
-
-    # Clean up
+finally:
     sandbox.terminate()
 ```
+
+`Sandbox(...)` only describes the sandbox; `.run()` builds the image, starts it
+and waits until it is ready. See [Coding agent tools](#coding-agent-tools) for a
+sandbox with Claude Code, `gh` and Git identity configured.
 
 ## Logging and progress
 
@@ -254,6 +260,78 @@ img = (
 )
 ```
 
+### Coding agent tools
+
+`with_claude_code`, `with_gh` and `with_tmux` install common agent tooling on
+Debian or Ubuntu images. `with_claude_code` installs the native binary from
+Anthropic's apt repository, pins the version (apt installs don't auto-update),
+and pre-accepts Claude Code's onboarding and trust prompts for the directories
+you list, so interactive `claude` starts without a login screen:
+
+```python
+image = (
+    Image.sandbox()
+    .with_claude_code(
+        version="2.1.270",
+        trusted_dirs=["/workspace/app"],  # the repo root, not a parent of it
+        permission_mode="bypassPermissions",  # optional
+    )
+    .with_gh()  # from GitHub's apt repo; authenticates from GH_TOKEN
+    .with_tmux()
+    .workdir("/workspace/app")
+)
+```
+
+The bypass-permissions warning is skipped by default
+(`skip_dangerous_mode_prompt=True`). Bypass mode works as root because Chalk
+sets `IS_SANDBOX=1` in every sandbox. If you supply `ANTHROPIC_API_KEY` instead
+of `CLAUDE_CODE_OAUTH_TOKEN`, pass `api_key_env="ANTHROPIC_API_KEY"` to skip the
+key-approval prompt. Anything else goes in `settings`, which is merged into
+`~/.claude/settings.json`. The theme defaults to `"dark"` (`theme=`), and
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` is set in the image so telemetry
+and update checks don't hit hosts a network policy blocks
+(`disable_nonessential_traffic=False` to keep them). See the `with_claude_code`
+docstring for how directory trust works.
+
+To keep the token itself out of the sandbox, use `add_credentials` (see
+[Environment and secrets](#environment-variables-and-secrets)):
+`sandbox.add_credentials("api.anthropic.com",
+Secret.from_chalk_env("CLAUDE_TOKEN", alias="CLAUDE_CODE_OAUTH_TOKEN"))`.
+
+Set Git identity per sandbox, not per image, with `GitConfig`. It is a mapping
+of `GIT_*` environment variables, so it can be unpacked into `env`:
+
+```python
+sandbox = Sandbox(
+    image=image,
+    env={
+        **GitConfig(
+            name="Ada Lovelace",
+            email="ada@example.com",
+            config={"pull.rebase": "true"},
+        ),
+        "LOG_LEVEL": "debug",
+    },
+).run()
+```
+
+To push and pull over SSH, add `SshDest.github` to `managed_ssh`. It is pinned
+to GitHub's published host keys and reads the private key from a Chalk secret,
+so `git@github.com:org/repo.git` URLs work unchanged:
+
+```python
+sandbox = Sandbox(
+    image=image,
+    compute_class=ComputeClass.HOST,
+    managed_ssh=[SshDest.github("GITHUB_DEPLOY_KEY")],
+).run()
+sandbox.git.clone("git@github.com:org/repo.git", "/workspace/repo")
+```
+
+Pass `port_443=True` for networks that block port 22. To use more than one key,
+give each a distinct `alias` and use it in remote URLs, as in
+`git@github-work:org/repo.git`.
+
 ### Immutable composition
 
 Each builder method returns a new `Image`, so intermediate images can be shared:
@@ -303,25 +381,63 @@ token's remaining lifetime from its `exp` claim, then re-reads the file on its
 next authenticated operation. Tokens without `exp` use the one-hour limit.
 Changing the configured file path bypasses the cache. The JWT's
 `environment_id` claim selects the environment unless `CHALK_ENVIRONMENT` or
-`CHALK_ENVIRONMENT_ID` is set explicitly. Queued function calls additionally
-require `CHALK_GRPC_ENGINE`, because identity JWTs do not contain engine-routing
-data.
+`CHALK_ENVIRONMENT_ID` is set explicitly. For queued function calls, the SDK
+uses `CHALK_GRPC_ENGINE` when set; otherwise it discovers the environment's gRPC
+endpoint through the metadata API's `TeamService.GetEnv` RPC. Discovery requires
+`DEPLOY_READ` permission. The endpoint is cached until the identity is refreshed;
+set `CHALK_GRPC_ENGINE` explicitly if the identity cannot read environment metadata.
 
 ### Workload identity federation
 
-Use the authenticated Connect client to mint a short-lived OIDC token for a
-third-party workload identity provider. For example, with Snowflake configured
-to trust Chalk's issuer and JWKS:
+Use `WorkloadIdentityTokenSource` to fetch short-lived OIDC tokens for an
+external service. The source uses ambient Chalk authentication, or accepts an
+initialized `ConnectClient` through `connect_client=`. It caches tokens with
+server-reported expiry and refreshes them when they cannot meet `min_ttl`.
 
 ```python
-from chalkcompute import ConnectClient
+from datetime import timedelta
+from chalkcompute import WorkloadIdentityTokenSource
 
-token = ConnectClient().get_workload_identity_token("snowflakecomputing.com")
+with WorkloadIdentityTokenSource("api.example.com") as source:
+    token = source.get_token(min_ttl=timedelta(seconds=60))
+    # Pass token.value to the external service or its authentication library.
 ```
 
-The token is scoped to the active Chalk environment. Its audience is the value
-passed to `get_workload_identity_token`, and its signing key is published by the
-Chalk API server at `/.well-known/jwks.json`.
+For a CLI that accepts a token file, use `source.token_file()` to create a
+temporary file with `0600` permissions. Run token retrieval and the consuming
+command inside the same workload so the token stays there. For example, inside
+a sandbox started with `chalk_identity=True` and with `chalkcompute` and
+`snowflake-cli` installed:
+
+```python
+import os
+import subprocess
+from datetime import timedelta
+from chalkcompute import WorkloadIdentityTokenSource
+
+with WorkloadIdentityTokenSource("snowflakecomputing.com") as source:
+    with source.token_file(min_ttl=timedelta(seconds=60)) as token_path:
+        subprocess.run(
+            ["snow", "sql", "--temporary-connection", "-q", "select current_user()"],
+            env=os.environ | {
+                "SNOWFLAKE_ACCOUNT": "<account>",
+                "SNOWFLAKE_USER": "<user>",
+                "SNOWFLAKE_AUTHENTICATOR": "WORKLOAD_IDENTITY",
+                "SNOWFLAKE_WORKLOAD_IDENTITY_PROVIDER": "OIDC",
+                "SNOWFLAKE_TOKEN_FILE_PATH": str(token_path),
+            },
+            check=True,
+        )
+```
+
+The file contains a snapshot of the token and is deleted on context exit,
+including when the command raises. `min_ttl` applies when the token is acquired;
+the file is not refreshed continuously.
+
+The token is scoped to the active Chalk environment and the requested audience.
+The external service must trust Chalk's issuer and validate the token using the
+Chalk API server's `/.well-known/jwks.json` endpoint. The existing
+`ConnectClient.get_workload_identity_token()` string API remains available.
 
 ## Chalk SQL
 
@@ -432,6 +548,12 @@ run = evaluation.run(metadata={"git_sha": "abc123"}).wait()
 print(run.status, run.result_dataset)
 ```
 
+By default the server finishes a run's SQL job and computes its score summary
+when the run is read. Pass `execution_mode="workflow"` (or
+`cc.EvaluationRunExecutionMode.WORKFLOW`) to have a workflow on the
+environment's workflow orchestrator drive the run instead; the environment must
+have a workflow orchestrator. `run.execution_mode` reports the mode a run uses.
+
 `DatasetClient.upload` accepts CSV or Parquet paths, multiple same-schema
 files, PyArrow tables and record batches, column/row mappings, and dataframes
 convertible to Arrow. It uploads ordinary tabular data and does not require
@@ -530,6 +652,28 @@ and `base_url` for any other OpenAI-compatible endpoint. Every function deployed
 same module imports that module, so give sibling functions an image with
 `pydantic` as well. A judge is generated
 at import time, so it cannot be deployed in strip mode.
+
+`cc.scorers.jev` is a judge that escalates when unsure, the cascade from
+[JEV-as-a-Judge](https://arxiv.org/abs/2609.26550). The cheap model picks a
+label and gives a probability for every label; a row whose probability on its
+choice is below `threshold` is graded again by `fallback_model`, whose grade
+stands.
+
+```python
+judge = cc.scorers.jev(
+    labels={"Y": 1.0, "N": 0.0},
+    rubric="Y. The answer meets the criteria.\nN. It does not.",
+    model="gpt-4o-mini",
+    fallback_model="gpt-4o",
+    threshold=0.9,
+    inputs=("input", "output", "criteria"),
+)
+```
+
+Metadata records `confidence`, `escalated`, `judge_model`, and
+`primary_confidence`, so a run shows its own escalation rate. Self-reported
+confidence is not calibrated on every task, so choose `threshold` on a small
+labeled sample. `jev` reaches models the same way `llm_judge` does.
 
 ## Deployment revisions and rollback
 

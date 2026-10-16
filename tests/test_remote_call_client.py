@@ -1,5 +1,6 @@
 import asyncio
 import contextvars
+from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
 from datetime import datetime, timezone
@@ -11,16 +12,17 @@ from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
 
 import chalkcompute._function as function_mod
+from chalkcompute._async_utils import _run_in_worker_thread
 from chalkcompute._function import (
     FunctionError,
     FunctionVersionInfo,
     RemoteFunction,
-    _run_in_worker_thread,
 )
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as catalog_pb
 from chalkcompute._gen.chalk.runtime.v1 import remote_python_call_pb as remote_call_pb
 from chalkcompute._remote_call_client import (
     RemoteCallPollResult,
+    RemoteCallClientUnavailable,
     RemoteCallTransportError,
     ServiceAuthContext,
 )
@@ -28,6 +30,232 @@ from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from tests._fakes import FakeMethod, StubbedConnectClient
 
 REQUEST_TIMESTAMP_HEADER = "x-chalk-request-timestamp"
+
+
+@pytest.mark.parametrize("queue", [False, True])
+@pytest.mark.parametrize("late_error", [False, True])
+def test_retired_transport_keeps_borrowers_alive_and_preserves_replacement(
+    queue, late_error
+) -> None:
+    fn = _remote_function()
+    first = fn._ensure_remote_call_client(queue=queue)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def pending(client):
+        assert client is first
+        entered.set()
+        assert release.wait(3)
+        assert not client.closed
+        if late_error:
+            raise RuntimeError("gRPC status: Unavailable: GOAWAY")
+        return 42
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(fn._using_remote_call_client, queue=queue, call=pending)
+        try:
+            assert entered.wait(3)
+            fn._drop_remote_call_client(queue=queue, expected=first)
+            assert not first.closed
+            replacement = fn._ensure_remote_call_client(queue=queue)
+            assert replacement is not first
+        finally:
+            release.set()
+        if late_error:
+            with pytest.raises(RuntimeError, match="GOAWAY"):
+                future.result(timeout=3)
+        else:
+            assert future.result(timeout=3) == 42
+    assert first.closed
+    assert fn._ensure_remote_call_client(queue=queue) is replacement
+    assert not replacement.closed
+
+
+def test_python_deadline_does_not_release_native_transport_lease() -> None:
+    fn = _remote_function()
+    fn._version_info = None
+    first = fn._ensure_remote_call_client()
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def pending(client):
+        entered.set()
+        assert release.wait(3)
+        assert not client.closed
+        return 42
+
+    def invoke():
+        try:
+            return fn._using_remote_call_client(queue=False, call=pending)
+        finally:
+            finished.set()
+
+    try:
+        with pytest.raises(TimeoutError):
+            fn._call_with_deadline(
+                invoke, time.monotonic() + 0.1, configured_timeout=0.1
+            )
+        assert entered.is_set()
+        fn._drop_remote_call_clients()
+        assert not first.closed
+        assert fn._ensure_remote_call_client() is not first
+    finally:
+        release.set()
+        assert finished.wait(3)
+    # Worker signals finished after the lease's finally has run.
+    assert first.closed
+
+
+@pytest.mark.parametrize("queue", [False, True])
+def test_concurrent_transport_creation_is_single_flight(monkeypatch, queue) -> None:
+    fn = _remote_function()
+    original = fn._create_remote_call_client
+    entered = threading.Event()
+    release = threading.Event()
+    creations = []
+
+    def create(**kwargs):
+        client = original(**kwargs)
+        creations.append(client)
+        entered.set()
+        assert release.wait(3)
+        return client
+
+    monkeypatch.setattr(fn, "_create_remote_call_client", create)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [
+            pool.submit(fn._ensure_remote_call_client, queue=queue) for _ in range(8)
+        ]
+        try:
+            assert entered.wait(3)
+        finally:
+            release.set()
+        clients = [future.result(timeout=3) for future in futures]
+    assert len(creations) == 1
+    assert all(client is creations[0] for client in clients)
+
+
+def test_cache_reset_discards_connection_built_before_reset(monkeypatch) -> None:
+    fn = _remote_function()
+    original = fn._create_remote_call_client
+    entered = threading.Event()
+    release = threading.Event()
+    creations = []
+
+    def create(**kwargs):
+        client = original(**kwargs)
+        creations.append(client)
+        if len(creations) == 1:
+            entered.set()
+            assert release.wait(3)
+        return client
+
+    monkeypatch.setattr(fn, "_create_remote_call_client", create)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(fn._ensure_remote_call_client)
+        try:
+            assert entered.wait(3)
+            fn._drop_remote_call_clients()
+        finally:
+            release.set()
+        client = future.result(timeout=3)
+    assert len(creations) == 2
+    assert creations[0].closed
+    assert client is creations[1]
+    assert fn._direct_transport.client is client
+
+
+@pytest.mark.parametrize("queue", [False, True])
+def test_borrow_uses_replacement_before_dispatch(queue) -> None:
+    fn = _remote_function()
+    first = fn._ensure_remote_call_client(queue=queue)
+    fn._drop_remote_call_client(queue=queue, expected=first)
+    dispatched = []
+
+    def call(client):
+        assert client is not first
+        assert not client.closed
+        dispatched.append(client)
+        return 42
+
+    assert fn._using_remote_call_client(queue=queue, call=call) == 42
+    assert first.closed
+    assert dispatched == [fn._ensure_remote_call_client(queue=queue)]
+
+
+def test_failed_connection_creation_wakes_other_callers(monkeypatch) -> None:
+    fn = _remote_function()
+    original = fn._create_remote_call_client
+    entered = threading.Event()
+    release = threading.Event()
+    attempts = []
+
+    def create(**kwargs):
+        attempts.append(None)
+        if len(attempts) == 1:
+            entered.set()
+            assert release.wait(3)
+            raise RuntimeError("connect failed")
+        return original(**kwargs)
+
+    monkeypatch.setattr(fn, "_create_remote_call_client", create)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        first = pool.submit(fn._ensure_remote_call_client)
+        try:
+            assert entered.wait(3)
+            others = [pool.submit(fn._ensure_remote_call_client) for _ in range(7)]
+        finally:
+            release.set()
+        with pytest.raises(RuntimeError, match="connect failed"):
+            first.result(timeout=3)
+        clients = [future.result(timeout=3) for future in others]
+    assert len(attempts) == 2
+    assert all(client is clients[0] for client in clients)
+
+
+def test_python_grpc_fallback_keeps_its_transport_until_rpc_finishes(monkeypatch):
+    fn = _remote_function()
+    fn._call_timeout = None
+
+    def unavailable(**kwargs):
+        raise RemoteCallClientUnavailable("native client unavailable")
+
+    monkeypatch.setattr(fn, "_create_remote_call_client", unavailable)
+
+    class Stub:
+        def __init__(self, retire=False):
+            self.retire = retire
+            self.closed = False
+
+        def call_function(self, requests, **kwargs):
+            request = next(requests)
+            if self.retire:
+                fn._drop_remote_call_client(queue=False, expected=self)
+                fn._ensure_remote_call_client()
+                assert not self.closed
+            value = _read_input(request.feather_stream)["x"][0]
+            return [
+                remote_call_pb.CallFunctionResponse(
+                    feather_stream=_result_ipc([value + 1])
+                )
+            ]
+
+        def close(self):
+            self.closed = True
+
+    first = Stub(retire=True)
+    replacement = Stub()
+    stubs = iter([first, replacement])
+    monkeypatch.setattr(
+        "chalkcompute._gen.chalk.runtime.v1.remote_python_call_connect.RemoteCallServiceClientSync",
+        lambda *args, **kwargs: next(stubs),
+    )
+    assert fn.remote(41) == 42
+    assert first.closed
+    assert fn._direct_transport.client is replacement
+    assert not replacement.closed
+    assert fn.remote(42) == 43
 
 
 def _result_ipc(values: list[object]) -> bytes:
@@ -424,7 +652,7 @@ def test_direct_call_drops_non_retryable_stale_client_for_next_call() -> None:
 
     assert len(FakeRemoteCallClient.instances) == 1
     assert FakeRemoteCallClient.instances[0].closed is True
-    assert fn._remote_call_client is None
+    assert fn._direct_transport.client is None
 
     assert fn.remote(41) == 42
     assert len(FakeRemoteCallClient.instances) == 2
@@ -989,8 +1217,8 @@ def test_delete_drops_cached_call_clients() -> None:
 
     assert direct_client.closed is True
     assert queue_client.closed is True
-    assert fn._remote_call_client is None
-    assert fn._queue_call_client is None
+    assert fn._direct_transport.client is None
+    assert fn._queue_transport.client is None
     assert fn._version_info is None
 
 

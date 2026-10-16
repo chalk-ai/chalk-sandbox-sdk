@@ -1,0 +1,1 @@
+- Add `quiet_for` to `Trace.get_spans`, `summary`, `traces` and `transcript`: the span count must hold steady for that many seconds before the read returns. Unset, it honors `CHALK_TRACE_COMPLETE_AFTER_SECONDS` in the function environment, so a scorer respects an environment's "trace is complete" setting without passing anything.

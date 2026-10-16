@@ -604,3 +604,72 @@ def test_rows_of_one_call_land_in_the_sessions_their_metadata_names(
     ] == ["session-1", "session-2", None]
     # Each session owns a trace; the session-less row is not swept into either.
     assert len(set(_trace_ids(rows))) == 3
+
+
+# --- The environment id on the wire ---------------------------------------
+
+
+def _headers_from_a_span() -> dict[str, str]:
+    """Headers the SDK would send for an outbound call made inside a span."""
+    with trace_api.get_tracer("caller").start_as_current_span("outbound"):
+        return _tracing.trace_headers()
+
+
+def test_the_environment_id_rides_outbound_calls_as_baggage(
+    exporter: InMemorySpanExporter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A shared service serves many environments, so its resource cannot name one.
+
+    Baggage is the only per-request channel that can tell it which environment the call it
+    is serving belongs to.
+    """
+    monkeypatch.setenv(_tracing.ENVIRONMENT_ID_ENV_VAR, "tmnm-env-1")
+
+    headers = _headers_from_a_span()
+
+    assert f"{_tracing.ENVIRONMENT_ID_ATTRIBUTE}=tmnm-env-1" in headers["baggage"]
+
+
+def test_the_environment_id_travels_beside_the_session(
+    exporter: InMemorySpanExporter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Adding one must not displace the other: both are baggage on the same call."""
+    monkeypatch.setenv(_tracing.ENVIRONMENT_ID_ENV_VAR, "tmnm-env-1")
+
+    token = _tracing.enter_session("session-1")
+    try:
+        headers = _headers_from_a_span()
+    finally:
+        _tracing.exit_session(token)
+
+    baggage_header = headers["baggage"]
+    assert f"{_tracing.ENVIRONMENT_ID_ATTRIBUTE}=tmnm-env-1" in baggage_header
+    assert f"{SESSION_ID_ATTRIBUTE}=session-1" in baggage_header
+    assert "traceparent" in headers
+
+
+def test_no_environment_id_sends_no_environment_baggage(
+    exporter: InMemorySpanExporter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(_tracing.ENVIRONMENT_ID_ENV_VAR, raising=False)
+
+    headers = _headers_from_a_span()
+
+    assert _tracing.ENVIRONMENT_ID_ATTRIBUTE not in headers.get("baggage", "")
+
+
+def test_the_environment_id_is_not_stamped_on_local_spans(
+    exporter: InMemorySpanExporter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Locally it belongs on the resource, which the runtime sets; not on every span."""
+    monkeypatch.setenv(_tracing.ENVIRONMENT_ID_ENV_VAR, "tmnm-env-1")
+
+    token = _tracing.enter_session("session-1")
+    try:
+        _emit()
+    finally:
+        _tracing.exit_session(token)
+
+    for span in exporter.get_finished_spans():
+        attributes = span.attributes or {}
+        assert _tracing.ENVIRONMENT_ID_ATTRIBUTE not in attributes

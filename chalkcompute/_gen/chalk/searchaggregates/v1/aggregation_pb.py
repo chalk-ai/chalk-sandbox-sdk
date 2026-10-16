@@ -10,11 +10,13 @@ from typing import Literal, TYPE_CHECKING, TypeAlias
 
 from protobuf import Enum, Message
 from protobuf._codegen import file_desc
+from protobuf.wkt import duration_pb
 
 from ...numericutils.v1 import values_pb
 
 if TYPE_CHECKING:
     from protobuf import DescFile
+    from protobuf.wkt import Duration
 
     from ...numericutils.v1.values_pb import NumericValue
 
@@ -172,6 +174,47 @@ class AggregateOptions(Message[_AggregateOptionsFields]):
         other_row_mode: OtherRowMode
         none_row_mode: NoneRowMode
         order_by: int
+
+_RateOptionsFields: TypeAlias = Literal["interval", "reduction"]
+
+class RateOptions(Message[_RateOptionsFields]):
+    """
+    Rescales a window total to a per-interval rate. Present means "report a rate"; the knobs that
+    qualify one live here rather than beside it, so none can be set without an interval to apply to.
+
+    ```proto
+    message chalk.searchaggregates.v1.RateOptions
+    ```
+
+    Attributes:
+        interval:
+            The interval the rate is reported per (1h => a per-hour rate). Required; must be positive.
+
+            ```proto
+            optional google.protobuf.Duration interval = 1;
+            ```
+        reduction:
+            Which interval to report; MIN/MAX need the ClickHouse backend, MEAN works on any.
+
+            ```proto
+            chalk.searchaggregates.v1.RateReduction reduction = 2;
+            ```
+    """
+
+    __slots__ = ("interval", "reduction")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            interval: Duration | None = None,
+            reduction: RateReduction | None = None,
+        ) -> None:
+            pass
+
+        interval: Duration | None
+        reduction: RateReduction
 
 _AggregateRowFields: TypeAlias = Literal["group", "values"]
 
@@ -378,6 +421,44 @@ class AggregationFunction(Enum):
     MAX = 6
     PERCENTILE = 7
 
+class RateReduction(Enum):
+    """
+    How a per-interval rate reduces to one number: MEAN divides the window, MIN/MAX read whole buckets.
+
+    ```proto
+    enum chalk.searchaggregates.v1.RateReduction
+    ```
+
+    Attributes:
+        UNSPECIFIED:
+            MEAN, which is what a rate meant before this field existed
+
+            ```proto
+            RATE_REDUCTION_UNSPECIFIED = 0
+            ```
+        MEAN:
+            ```proto
+            RATE_REDUCTION_MEAN = 1
+            ```
+        MIN:
+            partial boundary buckets are excluded, so every bucket is equal-width
+
+            ```proto
+            RATE_REDUCTION_MIN = 2
+            ```
+        MAX:
+            partial boundary buckets are excluded, so every bucket is equal-width
+
+            ```proto
+            RATE_REDUCTION_MAX = 3
+            ```
+    """
+
+    UNSPECIFIED = 0
+    MEAN = 1
+    MIN = 2
+    MAX = 3
+
 class OtherRowMode(Enum):
     """
     "(other)" tail-row policy for a top-N result, independent of the (none) policy. Only a foldable
@@ -469,18 +550,21 @@ class SortOrder(Enum):
 
 
 _DESC = file_desc(
-    b'\n+chalk/searchaggregates/v1/aggregation.proto\x12\x19chalk.searchaggregates.v1\x1a"chalk/numericutils/v1/values.proto"G\n\x11AggregationParams\x12#\n\npercentile\x18\x01 \x01(\x01H\x00R\npercentile\x88\x01\x01B\r\n\x0b_percentile"\xc4\x01\n\x0bAggregation\x12J\n\x08function\x18\x01 \x01(\x0e2..chalk.searchaggregates.v1.AggregationFunctionR\x08function\x12\x19\n\x05field\x18\x02 \x01(\tH\x00R\x05field\x88\x01\x01\x12D\n\x06params\x18\x03 \x01(\x0b2,.chalk.searchaggregates.v1.AggregationParamsR\x06paramsB\x08\n\x06_field"\xa2\x03\n\x10AggregateOptions\x12\x19\n\x08group_by\x18\x01 \x03(\tR\x07groupBy\x12J\n\x0caggregations\x18\x02 \x03(\x0b2&.chalk.searchaggregates.v1.AggregationR\x0caggregations\x12\x19\n\x05limit\x18\x03 \x01(\x05H\x00R\x05limit\x88\x01\x01\x12:\n\x05order\x18\x04 \x01(\x0e2$.chalk.searchaggregates.v1.SortOrderR\x05order\x12M\n\x0eother_row_mode\x18\x05 \x01(\x0e2\'.chalk.searchaggregates.v1.OtherRowModeR\x0cotherRowMode\x12J\n\rnone_row_mode\x18\x06 \x01(\x0e2&.chalk.searchaggregates.v1.NoneRowModeR\x0bnoneRowMode\x12\x1e\n\x08order_by\x18\x07 \x01(\x05H\x01R\x07orderBy\x88\x01\x01B\x08\n\x06_limitB\x0b\n\t_order_by"a\n\x0cAggregateRow\x12\x14\n\x05group\x18\x01 \x03(\tR\x05group\x12;\n\x06values\x18\x02 \x03(\x0b2#.chalk.numericutils.v1.NumericValueR\x06values"\xf2\x01\n\x0fAggregateColumn\x12J\n\x08function\x18\x01 \x01(\x0e2..chalk.searchaggregates.v1.AggregationFunctionR\x08function\x12\x19\n\x05field\x18\x02 \x01(\tH\x00R\x05field\x88\x01\x01\x12\x12\n\x04unit\x18\x03 \x01(\tR\x04unit\x12D\n\x06params\x18\x04 \x01(\x0b2,.chalk.searchaggregates.v1.AggregationParamsR\x06params\x12\x14\n\x05label\x18\x05 \x01(\tR\x05labelB\x08\n\x06_field"\xdd\x01\n\x0eAggregateTable\x12;\n\x04rows\x18\x01 \x03(\x0b2\'.chalk.searchaggregates.v1.AggregateRowR\x04rows\x12D\n\x07columns\x18\x02 \x03(\x0b2*.chalk.searchaggregates.v1.AggregateColumnR\x07columns\x12\x1c\n\ttruncated\x18\x03 \x01(\x08R\ttruncated\x12*\n\x11total_group_count\x18\x04 \x01(\x03R\x0ftotalGroupCount*\xa1\x02\n\x13AggregationFunction\x12$\n AGGREGATION_FUNCTION_UNSPECIFIED\x10\x00\x12\x1e\n\x1aAGGREGATION_FUNCTION_COUNT\x10\x01\x12\'\n#AGGREGATION_FUNCTION_COUNT_DISTINCT\x10\x02\x12\x1c\n\x18AGGREGATION_FUNCTION_SUM\x10\x03\x12\x1c\n\x18AGGREGATION_FUNCTION_AVG\x10\x04\x12\x1c\n\x18AGGREGATION_FUNCTION_MIN\x10\x05\x12\x1c\n\x18AGGREGATION_FUNCTION_MAX\x10\x06\x12#\n\x1fAGGREGATION_FUNCTION_PERCENTILE\x10\x07*`\n\x0cOtherRowMode\x12\x1e\n\x1aOTHER_ROW_MODE_UNSPECIFIED\x10\x00\x12\x17\n\x13OTHER_ROW_MODE_OMIT\x10\x01\x12\x17\n\x13OTHER_ROW_MODE_FOLD\x10\x02*b\n\x0bNoneRowMode\x12\x1d\n\x19NONE_ROW_MODE_UNSPECIFIED\x10\x00\x12\x19\n\x15NONE_ROW_MODE_INCLUDE\x10\x01\x12\x19\n\x15NONE_ROW_MODE_EXCLUDE\x10\x02*P\n\tSortOrder\x12\x1a\n\x16SORT_ORDER_UNSPECIFIED\x10\x00\x12\x13\n\x0fSORT_ORDER_DESC\x10\x01\x12\x12\n\x0eSORT_ORDER_ASC\x10\x02B\xb7\x01\n\x1dcom.chalk.searchaggregates.v1B\x10AggregationProtoP\x01\xa2\x02\x03CSX\xaa\x02\x19Chalk.Searchaggregates.V1\xca\x02\x19Chalk\\Searchaggregates\\V1\xe2\x02%Chalk\\Searchaggregates\\V1\\GPBMetadata\xea\x02\x1bChalk::Searchaggregates::V1b\x06proto3',
+    b'\n+chalk/searchaggregates/v1/aggregation.proto\x12\x19chalk.searchaggregates.v1\x1a"chalk/numericutils/v1/values.proto\x1a\x1egoogle/protobuf/duration.proto"G\n\x11AggregationParams\x12#\n\npercentile\x18\x01 \x01(\x01H\x00R\npercentile\x88\x01\x01B\r\n\x0b_percentile"\xc4\x01\n\x0bAggregation\x12J\n\x08function\x18\x01 \x01(\x0e2..chalk.searchaggregates.v1.AggregationFunctionR\x08function\x12\x19\n\x05field\x18\x02 \x01(\tH\x00R\x05field\x88\x01\x01\x12D\n\x06params\x18\x03 \x01(\x0b2,.chalk.searchaggregates.v1.AggregationParamsR\x06paramsB\x08\n\x06_field"\xa2\x03\n\x10AggregateOptions\x12\x19\n\x08group_by\x18\x01 \x03(\tR\x07groupBy\x12J\n\x0caggregations\x18\x02 \x03(\x0b2&.chalk.searchaggregates.v1.AggregationR\x0caggregations\x12\x19\n\x05limit\x18\x03 \x01(\x05H\x00R\x05limit\x88\x01\x01\x12:\n\x05order\x18\x04 \x01(\x0e2$.chalk.searchaggregates.v1.SortOrderR\x05order\x12M\n\x0eother_row_mode\x18\x05 \x01(\x0e2\'.chalk.searchaggregates.v1.OtherRowModeR\x0cotherRowMode\x12J\n\rnone_row_mode\x18\x06 \x01(\x0e2&.chalk.searchaggregates.v1.NoneRowModeR\x0bnoneRowMode\x12\x1e\n\x08order_by\x18\x07 \x01(\x05H\x01R\x07orderBy\x88\x01\x01B\x08\n\x06_limitB\x0b\n\t_order_by"\x8c\x01\n\x0bRateOptions\x125\n\x08interval\x18\x01 \x01(\x0b2\x19.google.protobuf.DurationR\x08interval\x12F\n\treduction\x18\x02 \x01(\x0e2(.chalk.searchaggregates.v1.RateReductionR\treduction"a\n\x0cAggregateRow\x12\x14\n\x05group\x18\x01 \x03(\tR\x05group\x12;\n\x06values\x18\x02 \x03(\x0b2#.chalk.numericutils.v1.NumericValueR\x06values"\xf2\x01\n\x0fAggregateColumn\x12J\n\x08function\x18\x01 \x01(\x0e2..chalk.searchaggregates.v1.AggregationFunctionR\x08function\x12\x19\n\x05field\x18\x02 \x01(\tH\x00R\x05field\x88\x01\x01\x12\x12\n\x04unit\x18\x03 \x01(\tR\x04unit\x12D\n\x06params\x18\x04 \x01(\x0b2,.chalk.searchaggregates.v1.AggregationParamsR\x06params\x12\x14\n\x05label\x18\x05 \x01(\tR\x05labelB\x08\n\x06_field"\xdd\x01\n\x0eAggregateTable\x12;\n\x04rows\x18\x01 \x03(\x0b2\'.chalk.searchaggregates.v1.AggregateRowR\x04rows\x12D\n\x07columns\x18\x02 \x03(\x0b2*.chalk.searchaggregates.v1.AggregateColumnR\x07columns\x12\x1c\n\ttruncated\x18\x03 \x01(\x08R\ttruncated\x12*\n\x11total_group_count\x18\x04 \x01(\x03R\x0ftotalGroupCount*\xa1\x02\n\x13AggregationFunction\x12$\n AGGREGATION_FUNCTION_UNSPECIFIED\x10\x00\x12\x1e\n\x1aAGGREGATION_FUNCTION_COUNT\x10\x01\x12\'\n#AGGREGATION_FUNCTION_COUNT_DISTINCT\x10\x02\x12\x1c\n\x18AGGREGATION_FUNCTION_SUM\x10\x03\x12\x1c\n\x18AGGREGATION_FUNCTION_AVG\x10\x04\x12\x1c\n\x18AGGREGATION_FUNCTION_MIN\x10\x05\x12\x1c\n\x18AGGREGATION_FUNCTION_MAX\x10\x06\x12#\n\x1fAGGREGATION_FUNCTION_PERCENTILE\x10\x07*x\n\rRateReduction\x12\x1e\n\x1aRATE_REDUCTION_UNSPECIFIED\x10\x00\x12\x17\n\x13RATE_REDUCTION_MEAN\x10\x01\x12\x16\n\x12RATE_REDUCTION_MIN\x10\x02\x12\x16\n\x12RATE_REDUCTION_MAX\x10\x03*`\n\x0cOtherRowMode\x12\x1e\n\x1aOTHER_ROW_MODE_UNSPECIFIED\x10\x00\x12\x17\n\x13OTHER_ROW_MODE_OMIT\x10\x01\x12\x17\n\x13OTHER_ROW_MODE_FOLD\x10\x02*b\n\x0bNoneRowMode\x12\x1d\n\x19NONE_ROW_MODE_UNSPECIFIED\x10\x00\x12\x19\n\x15NONE_ROW_MODE_INCLUDE\x10\x01\x12\x19\n\x15NONE_ROW_MODE_EXCLUDE\x10\x02*P\n\tSortOrder\x12\x1a\n\x16SORT_ORDER_UNSPECIFIED\x10\x00\x12\x13\n\x0fSORT_ORDER_DESC\x10\x01\x12\x12\n\x0eSORT_ORDER_ASC\x10\x02B\xb7\x01\n\x1dcom.chalk.searchaggregates.v1B\x10AggregationProtoP\x01\xa2\x02\x03CSX\xaa\x02\x19Chalk.Searchaggregates.V1\xca\x02\x19Chalk\\Searchaggregates\\V1\xe2\x02%Chalk\\Searchaggregates\\V1\\GPBMetadata\xea\x02\x1bChalk::Searchaggregates::V1b\x06proto3',
     [
         values_pb.desc(),
+        duration_pb.desc(),
     ],
     {
         "AggregationParams": AggregationParams,
         "Aggregation": Aggregation,
         "AggregateOptions": AggregateOptions,
+        "RateOptions": RateOptions,
         "AggregateRow": AggregateRow,
         "AggregateColumn": AggregateColumn,
         "AggregateTable": AggregateTable,
         "AggregationFunction": AggregationFunction,
+        "RateReduction": RateReduction,
         "OtherRowMode": OtherRowMode,
         "NoneRowMode": NoneRowMode,
         "SortOrder": SortOrder,
