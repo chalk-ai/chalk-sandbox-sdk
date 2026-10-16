@@ -6,6 +6,7 @@ Connect-protocol RPC pattern.  This module centralizes:
 * ``load_dotenv()`` and the four ``CHALK_*`` env lookups
 * the ``needs_staging`` skip marker
 * ``_get_access_token`` + ``_connect_rpc`` helpers
+* environment-scoped identity files for Buildkite tests and their subprocesses
 * the ``access_token`` / ``auth_headers`` module-scoped fixtures
 * the sweep that reaps CI-scoped resources leaked by earlier builds
 """
@@ -19,6 +20,7 @@ import warnings
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import chalkcompute
@@ -151,13 +153,18 @@ def _delete_model_registration(model_name: str) -> None:
 
 def _get_access_token() -> str:
     """Exchange client credentials for a bearer token via the Chalk REST API."""
+    body = {
+        "client_id": CHALK_CLIENT_ID,
+        "client_secret": CHALK_CLIENT_SECRET,
+        "grant_type": "client_credentials",
+    }
+    if os.environ.get("BUILDKITE") == "true":
+        if not CHALK_ENVIRONMENT_ID:
+            raise RuntimeError("CI token scoping requires CHALK_ENVIRONMENT_ID")
+        body["scope"] = f"env:{CHALK_ENVIRONMENT_ID}"
     resp = _HTTP_CLIENT.post(
         f"{CHALK_API_SERVER}/v1/oauth/token",
-        content={
-            "client_id": CHALK_CLIENT_ID,
-            "client_secret": CHALK_CLIENT_SECRET,
-            "grant_type": "client_credentials",
-        },
+        content=body,
         headers={
             "Accept": "application/json",
             "Content-Type": "application/json",
@@ -169,6 +176,28 @@ def _get_access_token() -> str:
             f"Token exchange failed with status {resp.status}: {resp.text()}"
         )
     return resp.json()["access_token"]
+
+
+@pytest.fixture(scope="session", autouse=True)
+def ci_scoped_auth() -> Iterator[None]:
+    """Keep CI bearer headers small for SDK calls and example subprocesses."""
+    if (
+        os.environ.get("BUILDKITE") != "true"
+        or not CHALK_CLIENT_ID
+        or not CHALK_CLIENT_SECRET
+        or not CHALK_API_SERVER
+        or os.environ.get("CHALK_WEB_IDENTITY_TOKEN_FILE", "").strip()
+    ):
+        yield
+        return
+
+    with TemporaryDirectory(prefix="chalk-ci-auth-") as directory:
+        token_path = Path(directory) / "token.jwt"
+        token_path.touch(mode=0o600)
+        token_path.write_text(_get_access_token(), encoding="utf-8")
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(token_path))
+            yield
 
 
 def _connect_rpc(
@@ -390,7 +419,7 @@ def _sweep_stale_scoped_models() -> None:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def sweep_stale_ci_resources() -> None:
+def sweep_stale_ci_resources(ci_scoped_auth: None) -> None:
     """Reap scoped resources leaked by earlier builds before any test runs.
 
     Failures are warnings, shown in pytest's warnings summary, so one stuck
