@@ -18,6 +18,13 @@ from chalkcompute._cls import cls as cls
 from chalkcompute._cls import method as method
 from chalkcompute._concurrency import ConcurrencyPolicy as ConcurrencyPolicy
 from chalkcompute._connect import ConnectClient as ConnectClient
+from chalkcompute._workload_identity import OIDCToken as OIDCToken
+from chalkcompute._workload_identity import (
+    WorkloadIdentityTokenError as WorkloadIdentityTokenError,
+)
+from chalkcompute._workload_identity import (
+    WorkloadIdentityTokenSource as WorkloadIdentityTokenSource,
+)
 from chalkcompute._connect import build_image_from_spec as build_image
 from chalkcompute._connect import (
     build_image_with_volumes_from_spec as build_image_with_volumes,
@@ -31,11 +38,13 @@ from chalkcompute._container import ImageBuildError as ImageBuildError
 from chalkcompute._dataset import DatasetClient as DatasetClient
 from chalkcompute._dataset import DatasetError as DatasetError
 from chalkcompute._containerspec import ComputeClass as ComputeClass
+from chalkcompute._containerspec import ExecutionBackend as ExecutionBackend
 from chalkcompute._containerspec import (
     ContainerSecurityPolicy as ContainerSecurityPolicy,
 )
 from chalkcompute._containerspec import KernelPolicy as KernelPolicy
 from chalkcompute._containerspec import NetworkPolicy as NetworkPolicy
+from chalkcompute._containerspec import ResourceDetector as ResourceDetector
 from chalkcompute._containerspec import RestartPolicy as RestartPolicy
 from chalkcompute._containerspec import SSHDest as SSHDest
 from chalkcompute._containerspec import SshDest as SshDest
@@ -49,6 +58,9 @@ from chalkcompute._evaluation import EvaluationNotFoundError as EvaluationNotFou
 from chalkcompute._evaluation import EvaluationRun as EvaluationRun
 from chalkcompute._evaluation import (
     EvaluationRunFailedError as EvaluationRunFailedError,
+)
+from chalkcompute._evaluation import (
+    EvaluationRunExecutionMode as EvaluationRunExecutionMode,
 )
 from chalkcompute._evaluation import EvaluationRunStatus as EvaluationRunStatus
 from chalkcompute._evaluation import EvaluationScorer as EvaluationScorer
@@ -64,6 +76,7 @@ from chalkcompute._function import FunctionVersionInfo as FunctionVersionInfo
 from chalkcompute._function import RemoteFunction as RemoteFunction
 from chalkcompute._function import function as function
 from chalkcompute._function import gather as gather
+from chalkcompute._gather import gather_handles as gather_handles
 from chalkcompute._function_error import RemoteExecutionError as RemoteExecutionError
 from chalkcompute._http import HTTPHeaders as HTTPHeaders
 from chalkcompute._http import HTTPResponse as HTTPResponse
@@ -111,6 +124,7 @@ from chalkcompute._scaling_group import ScalingGroup as ScalingGroup
 from chalkcompute._scaling_group import ScalingGroupBuildError as ScalingGroupBuildError
 from chalkcompute._scaling_group import ScalingGroupError as ScalingGroupError
 from chalkcompute._scaling_group import ScalingGroupInfo as ScalingGroupInfo
+from chalkcompute._scaling_group import StartupProbe as StartupProbe
 from chalkcompute._scaling_group import (
     ScalingGroupRevisionInfo as ScalingGroupRevisionInfo,
 )
@@ -152,6 +166,9 @@ from chalkcompute._training import TrainingFunction as TrainingFunction
 from chalkcompute._training import TrainingRunHandle as TrainingRunHandle
 from chalkcompute._training import training as training
 
+from chalkcompute._workflow import WorkflowError as WorkflowError
+from chalkcompute._workflow import trigger_workflow as trigger_workflow
+
 # Back-compat aliases: all volumes are versioned, so the qualifier is gone from
 # the canonical names. Keep the old spellings importable.
 from chalkcompute._volume import Volume as VersionedVolume
@@ -161,6 +178,7 @@ from chalkcompute._sandbox_git import SandboxGit as SandboxGit
 from chalkcompute._sandbox_git import GitFileStatus as GitFileStatus
 from chalkcompute._sandbox_git import GitStatus as GitStatus
 from chalkcompute._sandbox_git import GitRemote as GitRemote
+from chalkcompute._git import GitConfig as GitConfig
 from chalkcompute._git import GitError as GitError
 
 __all__ = [
@@ -169,6 +187,7 @@ __all__ = [
     "GitFileStatus",
     "GitStatus",
     "GitRemote",
+    "GitConfig",
     "GitError",
     "SQLClient",
     "SQLResult",
@@ -188,6 +207,7 @@ __all__ = [
     "ContainerExecResult",
     "ImageBuildError",
     "ComputeClass",
+    "ExecutionBackend",
     "KernelPolicy",
     "NetworkPolicy",
     "SSHDest",
@@ -208,6 +228,7 @@ __all__ = [
     "FunctionCallHandle",
     "FunctionVersionInfo",
     "gather",
+    "gather_handles",
     "get_call_context",
     "get_row_metadata",
     "RetryPolicy",
@@ -227,6 +248,7 @@ __all__ = [
     "EvaluationNotFoundError",
     "EvaluationRun",
     "EvaluationRunFailedError",
+    "EvaluationRunExecutionMode",
     "EvaluationRunStatus",
     "EvaluationScorer",
     "EvaluationScorerResult",
@@ -239,6 +261,9 @@ __all__ = [
     "ModelNotFoundError",
     "ModelNotDeployedError",
     "ConnectClient",
+    "OIDCToken",
+    "WorkloadIdentityTokenError",
+    "WorkloadIdentityTokenSource",
     "build_image",
     "build_image_with_volumes",
     "HTTPHeaders",
@@ -257,6 +282,7 @@ __all__ = [
     "ExecResult",
     "PythonExecution",
     "PythonSkippedArtifact",
+    "ResourceDetector",
     "RestartPolicy",
     "Sandbox",
     "SandboxBuildError",
@@ -275,6 +301,7 @@ __all__ = [
     "ScalingGroupRevisionInfo",
     "ScaleFromZeroRequestPolicy",
     "ReadinessProbe",
+    "StartupProbe",
     "CronScalingTrigger",
     "CronScalingWindow",
     "WorkflowWorker",
@@ -298,6 +325,8 @@ __all__ = [
     "TrainingRunHandle",
     "TrainingError",
     "training",
+    "WorkflowError",
+    "trigger_workflow",
     "SessionSummary",
     "Span",
     "SpanKind",

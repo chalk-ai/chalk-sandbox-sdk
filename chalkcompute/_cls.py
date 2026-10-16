@@ -55,10 +55,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, TypeVar, overload
 
+from chalkcompute._function_source_location import FunctionSourceLocations
 from chalkcompute._logging import _StatusLogger
 from chalkcompute._concurrency import ConcurrencyPolicy
 from chalkcompute._connect import ConnectClient
-from chalkcompute._containerspec import ContainerSpec, validate_replica_and_utilization
+from chalkcompute._containerspec import (
+    ComputeClass,
+    ContainerSpec,
+    NetworkPolicy,
+    ExecutionBackend,
+    validate_replica_and_utilization,
+)
 from chalkcompute._env import normalize_env
 from chalkcompute._deployment_proto import function_config, scaling_spec
 from chalkcompute._function_deployment import (
@@ -749,6 +756,9 @@ class RemoteClass:
         image: _Image | None = None,
         name: str | None = None,
         cpu: str | None = None,
+        compute_class: ComputeClass | None = None,
+        network_policy: NetworkPolicy | None = None,
+        execution_target: ExecutionBackend | None = None,
         memory: str | None = None,
         gpu: str | None = None,
         env: Mapping[str, str | _Secret] | None = None,
@@ -790,6 +800,9 @@ class RemoteClass:
             image=normalized_image,
             name=name,
             cpu=cpu,
+            compute_class=compute_class,
+            network_policy=network_policy,
+            execution_target=execution_target,
             memory=memory,
             gpu=gpu,
             env=env,
@@ -807,6 +820,9 @@ class RemoteClass:
         self._explicit_name = name
         self._image = normalized_image
         self._cpu = cpu
+        self._compute_class = compute_class
+        self._network_policy = network_policy
+        self._execution_target = execution_target
         self._memory = memory
         self._gpu = gpu
         self._env = dict(env) if env else {}
@@ -882,6 +898,7 @@ class RemoteClass:
         self._local_instance_cache: Any = None
 
         # Scan the class for markers
+        self._source_locations: dict[str, catalog_pb.FunctionSourceLocation | None] = {}
         self._methods: dict[str, _MethodInfo] = {}
         self._before_name: str | None = None
         self._after_name: str | None = None
@@ -1022,6 +1039,9 @@ class RemoteClass:
         rc._explicit_name = name
         rc._image = None
         rc._cpu = None
+        rc._compute_class = None
+        rc._network_policy = None
+        rc._execution_target = None
         rc._memory = None
         rc._gpu = None
         rc._env = {}
@@ -1103,27 +1123,38 @@ class RemoteClass:
 
         temp_files: list[str] = []
         source_path = Path(source_file)
+        source = _source_text_for_deploy(source_file)
 
         if _should_strip_source():
             entrypoint_sources: list[str] = []
             for method_info in self._methods.values():
                 entrypoint_sources.extend(_entrypoint_source(method_info.func))
-            stripped = _strip_source_for_deploy(
-                _source_text_for_deploy(source_file),
+            source = _strip_source_for_deploy(
+                source,
                 strip=_strip_chalkcompute_from_class_source,
                 label=f"Class {self._class_name!r}",
                 entrypoint_sources=entrypoint_sources,
             )
-            source_file = _write_temp(stripped)
+            source_file = _write_temp(source)
             temp_files.append(source_file)
         elif not source_path.is_file():
-            source_file = _write_temp(_source_text_for_deploy(source_file))
+            source_file = _write_temp(source)
             temp_files.append(source_file)
 
         deploy_image = _make_base_image(
             self._image,
             remote_call_runtime_package=self._remote_call_runtime_package(),
         ).add_local_file(source_file, f"{source_root}/user_module.py")
+
+        source_locations = FunctionSourceLocations(
+            source, f"{source_root}/user_module.py"
+        )
+        self._source_locations = {
+            method.name: source_locations.get(
+                getattr(inspect.unwrap(method.func), "__qualname__", None),
+            )
+            for method in self._methods.values()
+        }
 
         # Precompute has-self flags for lifecycle hooks
         before_func = (
@@ -1250,6 +1281,9 @@ class RemoteClass:
                         self._env, deploy_image._env.get("PYTHONPATH", "/app")
                     ),
                     cpu=self._cpu,
+                    compute_class=self._compute_class,
+                    network_policy=self._network_policy,
+                    execution_target=self._execution_target,
                     memory=self._memory,
                     gpu=self._gpu,
                     volumes=deploy_volumes,
@@ -1302,6 +1336,8 @@ class RemoteClass:
                     schedule=self._schedule,
                     tracing=self._tracing,
                 )
+
+                config.source_location = self._source_locations.get(method_info.name)
 
                 logger.info("Registering method '%s'...", func_name)
                 ensured = ensure_external_function(
@@ -1616,6 +1652,9 @@ def cls(
     *,
     image: _Image | None = None,
     cpu: str | None = None,
+    compute_class: ComputeClass | None = None,
+    network_policy: NetworkPolicy | None = None,
+    execution_target: ExecutionBackend | None = None,
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
@@ -1654,6 +1693,9 @@ def cls(
     *,
     image: _Image | None = None,
     cpu: str | None = None,
+    compute_class: ComputeClass | None = None,
+    network_policy: NetworkPolicy | None = None,
+    execution_target: ExecutionBackend | None = None,
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
@@ -1693,6 +1735,9 @@ def cls(
     *,
     image: _Image | None = None,
     cpu: str | None = None,
+    compute_class: ComputeClass | None = None,
+    network_policy: NetworkPolicy | None = None,
+    execution_target: ExecutionBackend | None = None,
     memory: str | None = None,
     gpu: str | None = None,
     name: str | None = None,
@@ -1746,6 +1791,14 @@ def cls(
         Container image to deploy in. Defaults to ``Image.debian_slim()``.
     cpu
         CPU resource request (e.g. ``"1"``, ``"500m"``).
+    compute_class
+        Where to run replicas. Omit to use the server default; HOST requires fixed,
+        positive replica counts.
+    network_policy
+        Optional host egress policy. Omit for the server default;
+        ``NetworkPolicy()`` denies all egress. Kubernetes does not support it.
+    execution_target
+        Optional :class:`ExecutionBackend`; defaults to the environment cluster.
     memory
         Memory resource request (e.g. ``"1Gi"``, ``"512Mi"``).
     gpu
@@ -1839,6 +1892,9 @@ def cls(
             image=image,
             name=name,
             cpu=cpu,
+            compute_class=compute_class,
+            network_policy=network_policy,
+            execution_target=execution_target,
             memory=memory,
             gpu=gpu,
             env=env,

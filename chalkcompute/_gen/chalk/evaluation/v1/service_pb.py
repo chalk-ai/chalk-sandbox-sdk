@@ -484,7 +484,7 @@ class Evaluation(Message[_EvaluationFields]):
         created_at: Timestamp | None
         suite_id: str
 
-_EvaluationRunFields: TypeAlias = Literal["id", "team_id", "environment_id", "evaluation_id", "status", "metadata", "created_by", "created_at", "started_at", "completed_at", "result_dataset_id", "result_dataset_revision_id", "error_message", "is_baseline"]
+_EvaluationRunFields: TypeAlias = Literal["id", "team_id", "environment_id", "evaluation_id", "status", "metadata", "created_by", "created_at", "started_at", "completed_at", "result_dataset_id", "result_dataset_revision_id", "error_message", "is_baseline", "execution_mode"]
 
 class EvaluationRun(Message[_EvaluationRunFields]):
     """
@@ -551,9 +551,13 @@ class EvaluationRun(Message[_EvaluationRunFields]):
             ```proto
             bool is_baseline = 14;
             ```
+        execution_mode:
+            ```proto
+            chalk.evaluation.v1.EvaluationRunExecutionMode execution_mode = 15;
+            ```
     """
 
-    __slots__ = ("id", "team_id", "environment_id", "evaluation_id", "status", "metadata", "created_by", "created_at", "started_at", "completed_at", "result_dataset_id", "result_dataset_revision_id", "error_message", "is_baseline")
+    __slots__ = ("id", "team_id", "environment_id", "evaluation_id", "status", "metadata", "created_by", "created_at", "started_at", "completed_at", "result_dataset_id", "result_dataset_revision_id", "error_message", "is_baseline", "execution_mode")
 
     if TYPE_CHECKING:
 
@@ -574,6 +578,7 @@ class EvaluationRun(Message[_EvaluationRunFields]):
             result_dataset_revision_id: str | None = None,
             error_message: str | None = None,
             is_baseline: bool = False,
+            execution_mode: EvaluationRunExecutionMode | None = None,
         ) -> None:
             pass
 
@@ -591,6 +596,7 @@ class EvaluationRun(Message[_EvaluationRunFields]):
         result_dataset_revision_id: str
         error_message: str
         is_baseline: bool
+        execution_mode: EvaluationRunExecutionMode
 
 _CreateEvaluationRequestFields: TypeAlias = Literal["name", "dataset_id", "dataset_revision_id", "task_function_version_id", "scorers", "metadata", "dataset_name", "suite_id"]
 
@@ -831,7 +837,7 @@ class ListEvaluationsResponse(Message[_ListEvaluationsResponseFields]):
         next_cursor: str
         score_summaries: list[EvaluationScoreSummary]
 
-_CreateEvaluationRunRequestFields: TypeAlias = Literal["evaluation_id", "metadata"]
+_CreateEvaluationRunRequestFields: TypeAlias = Literal["evaluation_id", "metadata", "execution_mode"]
 
 class CreateEvaluationRunRequest(Message[_CreateEvaluationRunRequestFields]):
     """
@@ -848,9 +854,15 @@ class CreateEvaluationRunRequest(Message[_CreateEvaluationRunRequestFields]):
             ```proto
             optional google.protobuf.Struct metadata = 2;
             ```
+        execution_mode:
+            Defaults to EVALUATION_RUN_EXECUTION_MODE_ON_READ.
+
+            ```proto
+            optional chalk.evaluation.v1.EvaluationRunExecutionMode execution_mode = 3;
+            ```
     """
 
-    __slots__ = ("evaluation_id", "metadata")
+    __slots__ = ("evaluation_id", "metadata", "execution_mode")
 
     if TYPE_CHECKING:
 
@@ -859,11 +871,13 @@ class CreateEvaluationRunRequest(Message[_CreateEvaluationRunRequestFields]):
             *,
             evaluation_id: str = "",
             metadata: Struct | None = None,
+            execution_mode: EvaluationRunExecutionMode | None = None,
         ) -> None:
             pass
 
         evaluation_id: str
         metadata: Struct | None
+        execution_mode: EvaluationRunExecutionMode
 
 _CreateEvaluationRunResponseFields: TypeAlias = Literal["evaluation_run"]
 
@@ -875,6 +889,87 @@ class CreateEvaluationRunResponse(Message[_CreateEvaluationRunResponseFields]):
 
     Attributes:
         evaluation_run:
+            ```proto
+            optional chalk.evaluation.v1.EvaluationRun evaluation_run = 1;
+            ```
+    """
+
+    __slots__ = ("evaluation_run",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            evaluation_run: EvaluationRun | None = None,
+        ) -> None:
+            pass
+
+        evaluation_run: EvaluationRun | None
+
+_RescoreEvaluationRunRequestFields: TypeAlias = Literal["evaluation_run_id", "metadata", "evaluation_id"]
+
+class RescoreEvaluationRunRequest(Message[_RescoreEvaluationRunRequestFields]):
+    """
+    ```proto
+    message chalk.evaluation.v1.RescoreEvaluationRunRequest
+    ```
+
+    Attributes:
+        evaluation_run_id:
+            The finished run whose task outputs to score again. Its result dataset
+            supplies the `output` every scorer reads, so the task is not re-run.
+
+            ```proto
+            string evaluation_run_id = 1;
+            ```
+        metadata:
+            ```proto
+            optional google.protobuf.Struct metadata = 2;
+            ```
+        evaluation_id:
+            The evaluation to record the new run under, and whose scorers score it.
+            Defaults to the rescored run's own evaluation. Naming another one is how a
+            run is scored with scorers it was not created with: create an evaluation
+            with the new scorers and rescore the run into it. That evaluation must use
+            the rescored run's dataset revision and task function version, since the
+            outputs it is credited with are that task's on those rows.
+
+            ```proto
+            optional string evaluation_id = 3;
+            ```
+    """
+
+    __slots__ = ("evaluation_run_id", "metadata", "evaluation_id")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            evaluation_run_id: str = "",
+            metadata: Struct | None = None,
+            evaluation_id: str | None = None,
+        ) -> None:
+            pass
+
+        evaluation_run_id: str
+        metadata: Struct | None
+        evaluation_id: str
+
+_RescoreEvaluationRunResponseFields: TypeAlias = Literal["evaluation_run"]
+
+class RescoreEvaluationRunResponse(Message[_RescoreEvaluationRunResponseFields]):
+    """
+    ```proto
+    message chalk.evaluation.v1.RescoreEvaluationRunResponse
+    ```
+
+    Attributes:
+        evaluation_run:
+            A run of the same evaluation, recorded like any other, whose scores come
+            from the rescored run's outputs rather than from a fresh task.
+
             ```proto
             optional chalk.evaluation.v1.EvaluationRun evaluation_run = 1;
             ```
@@ -1360,9 +1455,42 @@ class EvaluationRunStatus(Enum):
     CANCELED = 5
     FINALIZING = 6
 
+class EvaluationRunExecutionMode(Enum):
+    """
+    How a run's SQL query and score summary are driven to completion.
+
+    ```proto
+    enum chalk.evaluation.v1.EvaluationRunExecutionMode
+    ```
+
+    Attributes:
+        UNSPECIFIED:
+            ```proto
+            EVALUATION_RUN_EXECUTION_MODE_UNSPECIFIED = 0
+            ```
+        ON_READ:
+            The server reconciles the run's SQL job and computes its summary when the run is read.
+
+            ```proto
+            EVALUATION_RUN_EXECUTION_MODE_ON_READ = 1
+            ```
+        WORKFLOW:
+            A workflow on the environment's workflow orchestrator watches the SQL job, waits for the
+            run's telemetry to land, and runs the summary as SQL jobs. Requires the environment to
+            have a workflow orchestrator.
+
+            ```proto
+            EVALUATION_RUN_EXECUTION_MODE_WORKFLOW = 2
+            ```
+    """
+
+    UNSPECIFIED = 0
+    ON_READ = 1
+    WORKFLOW = 2
+
 
 _DESC = file_desc(
-    b'\n!chalk/evaluation/v1/service.proto\x12\x13chalk.evaluation.v1\x1a\x1fchalk/auth/v1/permissions.proto\x1a\x1achalk/flags/v1/flags.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto"@\n\x0eFunctionScorer\x12.\n\x13function_version_id\x18\x01 \x01(\tR\x11functionVersionId"\x1f\n\rBuiltinScorer\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id"I\n\x13SqlExpressionScorer\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x1e\n\nexpression\x18\x02 \x01(\tR\nexpression"\xfe\x01\n\x14EvaluationScorerSpec\x12A\n\x08function\x18\x01 \x01(\x0b2#.chalk.evaluation.v1.FunctionScorerH\x00R\x08function\x12>\n\x07builtin\x18\x02 \x01(\x0b2".chalk.evaluation.v1.BuiltinScorerH\x00R\x07builtin\x12Q\n\x0esql_expression\x18\x03 \x01(\x0b2(.chalk.evaluation.v1.SqlExpressionScorerH\x00R\rsqlExpressionB\x10\n\x0eimplementation"a\n\x10EvaluationScorer\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12=\n\x04spec\x18\x02 \x01(\x0b2).chalk.evaluation.v1.EvaluationScorerSpecR\x04spec"T\n\x11EvaluationScorers\x12?\n\x07scorers\x18\x01 \x03(\x0b2%.chalk.evaluation.v1.EvaluationScorerR\x07scorers"\xef\x01\n\x1cEvaluationScorerScoreSummary\x12=\n\x06scorer\x18\x01 \x01(\x0b2%.chalk.evaluation.v1.EvaluationScorerR\x06scorer\x12(\n\raverage_score\x18\x02 \x01(\x01H\x00R\x0caverageScore\x88\x01\x01\x12T\n\x0cdistribution\x18\x03 \x01(\x0b20.chalk.evaluation.v1.EvaluationValueDistributionR\x0cdistributionB\x10\n\x0e_average_score"\xb5\x01\n\x1bEvaluationValueDistribution\x12\x13\n\x02p5\x18\x01 \x01(\x01H\x00R\x02p5\x88\x01\x01\x12\x15\n\x03p25\x18\x02 \x01(\x01H\x01R\x03p25\x88\x01\x01\x12\x15\n\x03p50\x18\x03 \x01(\x01H\x02R\x03p50\x88\x01\x01\x12\x15\n\x03p75\x18\x04 \x01(\x01H\x03R\x03p75\x88\x01\x01\x12\x15\n\x03p95\x18\x05 \x01(\x01H\x04R\x03p95\x88\x01\x01B\x05\n\x03_p5B\x06\n\x04_p25B\x06\n\x04_p50B\x06\n\x04_p75B\x06\n\x04_p95"\xd1\x06\n\x16EvaluationScoreSummary\x12#\n\revaluation_id\x18\x01 \x01(\tR\x0cevaluationId\x12*\n\x11evaluation_run_id\x18\x02 \x01(\tR\x0fevaluationRunId\x12(\n\raverage_score\x18\x03 \x01(\x01H\x00R\x0caverageScore\x88\x01\x01\x12V\n\rscorer_scores\x18\x04 \x03(\x0b21.chalk.evaluation.v1.EvaluationScorerScoreSummaryR\x0cscorerScores\x129\n\ncreated_at\x18\x05 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x123\n\x08metadata\x18\x06 \x01(\x0b2\x17.google.protobuf.StructR\x08metadata\x12R\n\x07metrics\x18\x07 \x03(\x0b28.chalk.evaluation.v1.EvaluationScoreSummary.MetricsEntryR\x07metrics\x12_\n\x12score_distribution\x18\x08 \x01(\x0b20.chalk.evaluation.v1.EvaluationValueDistributionR\x11scoreDistribution\x12w\n\x14metric_distributions\x18\t \x03(\x0b2D.chalk.evaluation.v1.EvaluationScoreSummary.MetricDistributionsEntryR\x13metricDistributions\x1a:\n\x0cMetricsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01\x1ax\n\x18MetricDistributionsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12F\n\x05value\x18\x02 \x01(\x0b20.chalk.evaluation.v1.EvaluationValueDistributionR\x05value:\x028\x01B\x10\n\x0e_average_score"\xf7\x03\n\nEvaluation\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n\x07team_id\x18\x02 \x01(\tR\x06teamId\x12%\n\x0eenvironment_id\x18\x03 \x01(\tR\renvironmentId\x12\x12\n\x04name\x18\x04 \x01(\tR\x04name\x12\x1d\n\ndataset_id\x18\x05 \x01(\tR\tdatasetId\x12.\n\x13dataset_revision_id\x18\x06 \x01(\tR\x11datasetRevisionId\x127\n\x18task_function_version_id\x18\x07 \x01(\tR\x15taskFunctionVersionId\x12?\n\x07scorers\x18\x08 \x03(\x0b2%.chalk.evaluation.v1.EvaluationScorerR\x07scorers\x123\n\x08metadata\x18\t \x01(\x0b2\x17.google.protobuf.StructR\x08metadata\x12"\n\ncreated_by\x18\n \x01(\tH\x00R\tcreatedBy\x88\x01\x01\x129\n\ncreated_at\x18\x0b \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12\x19\n\x08suite_id\x18\x0c \x01(\tR\x07suiteIdB\r\n\x0b_created_by"\x92\x06\n\rEvaluationRun\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n\x07team_id\x18\x02 \x01(\tR\x06teamId\x12%\n\x0eenvironment_id\x18\x03 \x01(\tR\renvironmentId\x12#\n\revaluation_id\x18\x04 \x01(\tR\x0cevaluationId\x12@\n\x06status\x18\x05 \x01(\x0e2(.chalk.evaluation.v1.EvaluationRunStatusR\x06status\x123\n\x08metadata\x18\x06 \x01(\x0b2\x17.google.protobuf.StructR\x08metadata\x12"\n\ncreated_by\x18\x07 \x01(\tH\x00R\tcreatedBy\x88\x01\x01\x129\n\ncreated_at\x18\x08 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12>\n\nstarted_at\x18\t \x01(\x0b2\x1a.google.protobuf.TimestampH\x01R\tstartedAt\x88\x01\x01\x12B\n\x0ccompleted_at\x18\n \x01(\x0b2\x1a.google.protobuf.TimestampH\x02R\x0bcompletedAt\x88\x01\x01\x12/\n\x11result_dataset_id\x18\x0b \x01(\tH\x03R\x0fresultDatasetId\x88\x01\x01\x12@\n\x1aresult_dataset_revision_id\x18\x0c \x01(\tH\x04R\x17resultDatasetRevisionId\x88\x01\x01\x12(\n\rerror_message\x18\r \x01(\tH\x05R\x0cerrorMessage\x88\x01\x01\x12\x1f\n\x0bis_baseline\x18\x0e \x01(\x08R\nisBaselineB\r\n\x0b_created_byB\r\n\x0b_started_atB\x0f\n\r_completed_atB\x14\n\x12_result_dataset_idB\x1d\n\x1b_result_dataset_revision_idB\x10\n\x0e_error_message"\xff\x02\n\x17CreateEvaluationRequest\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n\ndataset_id\x18\x02 \x01(\tR\tdatasetId\x12.\n\x13dataset_revision_id\x18\x03 \x01(\tR\x11datasetRevisionId\x127\n\x18task_function_version_id\x18\x04 \x01(\tR\x15taskFunctionVersionId\x12C\n\x07scorers\x18\x05 \x03(\x0b2).chalk.evaluation.v1.EvaluationScorerSpecR\x07scorers\x123\n\x08metadata\x18\x06 \x01(\x0b2\x17.google.protobuf.StructR\x08metadata\x12!\n\x0cdataset_name\x18\x07 \x01(\tR\x0bdatasetName\x12\x1e\n\x08suite_id\x18\x08 \x01(\tH\x00R\x07suiteId\x88\x01\x01B\x0b\n\t_suite_id"[\n\x18CreateEvaluationResponse\x12?\n\nevaluation\x18\x01 \x01(\x0b2\x1f.chalk.evaluation.v1.EvaluationR\nevaluation";\n\x14GetEvaluationRequest\x12#\n\revaluation_id\x18\x01 \x01(\tR\x0cevaluationId"X\n\x15GetEvaluationResponse\x12?\n\nevaluation\x18\x01 \x01(\x0b2\x1f.chalk.evaluation.v1.EvaluationR\nevaluation"\x92\x01\n\x16ListEvaluationsRequest\x12\x1b\n\x06cursor\x18\x01 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x02 \x01(\x05H\x01R\x05limit\x88\x01\x01\x12\x1e\n\x08suite_id\x18\x03 \x01(\tH\x02R\x07suiteId\x88\x01\x01B\t\n\x07_cursorB\x08\n\x06_limitB\x0b\n\t_suite_id"\xe8\x01\n\x17ListEvaluationsResponse\x12A\n\x0bevaluations\x18\x01 \x03(\x0b2\x1f.chalk.evaluation.v1.EvaluationR\x0bevaluations\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01\x12T\n\x0fscore_summaries\x18\x03 \x03(\x0b2+.chalk.evaluation.v1.EvaluationScoreSummaryR\x0escoreSummariesB\x0e\n\x0c_next_cursor"v\n\x1aCreateEvaluationRunRequest\x12#\n\revaluation_id\x18\x01 \x01(\tR\x0cevaluationId\x123\n\x08metadata\x18\x02 \x01(\x0b2\x17.google.protobuf.StructR\x08metadata"h\n\x1bCreateEvaluationRunResponse\x12I\n\x0eevaluation_run\x18\x01 \x01(\x0b2".chalk.evaluation.v1.EvaluationRunR\revaluationRun"E\n\x17GetEvaluationRunRequest\x12*\n\x11evaluation_run_id\x18\x01 \x01(\tR\x0fevaluationRunId"e\n\x18GetEvaluationRunResponse\x12I\n\x0eevaluation_run\x18\x01 \x01(\x0b2".chalk.evaluation.v1.EvaluationRunR\revaluationRun"\xd1\x01\n\x19ListEvaluationRunsRequest\x12(\n\revaluation_id\x18\x01 \x01(\tH\x00R\x0cevaluationId\x88\x01\x01\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x01R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x03 \x01(\x05H\x02R\x05limit\x88\x01\x01\x12\x1e\n\x08suite_id\x18\x04 \x01(\tH\x03R\x07suiteId\x88\x01\x01B\x10\n\x0e_evaluation_idB\t\n\x07_cursorB\x08\n\x06_limitB\x0b\n\t_suite_id"\xb8\x02\n\x1aListEvaluationRunsResponse\x12K\n\x0fevaluation_runs\x18\x01 \x03(\x0b2".chalk.evaluation.v1.EvaluationRunR\x0eevaluationRuns\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01\x12T\n\x0fscore_summaries\x18\x03 \x03(\x0b2+.chalk.evaluation.v1.EvaluationScoreSummaryR\x0escoreSummaries\x12A\n\x0bevaluations\x18\x04 \x03(\x0b2\x1f.chalk.evaluation.v1.EvaluationR\x0bevaluationsB\x0e\n\x0c_next_cursor"M\n\x1fSetEvaluationRunBaselineRequest\x12*\n\x11evaluation_run_id\x18\x01 \x01(\tR\x0fevaluationRunId"m\n SetEvaluationRunBaselineResponse\x12I\n\x0eevaluation_run\x18\x01 \x01(\x0b2".chalk.evaluation.v1.EvaluationRunR\revaluationRun"I\n\x1bArchiveEvaluationRunRequest\x12*\n\x11evaluation_run_id\x18\x01 \x01(\tR\x0fevaluationRunId"J\n\x1cArchiveEvaluationRunResponse\x12*\n\x11evaluation_run_id\x18\x01 \x01(\tR\x0fevaluationRunId"\xe3\x01\n\x0fEvaluationSuite\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n\x07team_id\x18\x02 \x01(\tR\x06teamId\x12%\n\x0eenvironment_id\x18\x03 \x01(\tR\renvironmentId\x12\x12\n\x04name\x18\x04 \x01(\tR\x04name\x12"\n\ncreated_by\x18\x05 \x01(\tH\x00R\tcreatedBy\x88\x01\x01\x129\n\ncreated_at\x18\x06 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAtB\r\n\x0b_created_by"2\n\x1cCreateEvaluationSuiteRequest\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name"[\n\x1dCreateEvaluationSuiteResponse\x12:\n\x05suite\x18\x01 \x01(\x0b2$.chalk.evaluation.v1.EvaluationSuiteR\x05suite"\x1d\n\x1bListEvaluationSuitesRequest"\\\n\x1cListEvaluationSuitesResponse\x12<\n\x06suites\x18\x01 \x03(\x0b2$.chalk.evaluation.v1.EvaluationSuiteR\x06suites*\x93\x02\n\x13EvaluationRunStatus\x12%\n!EVALUATION_RUN_STATUS_UNSPECIFIED\x10\x00\x12!\n\x1dEVALUATION_RUN_STATUS_PENDING\x10\x01\x12!\n\x1dEVALUATION_RUN_STATUS_RUNNING\x10\x02\x12#\n\x1fEVALUATION_RUN_STATUS_SUCCEEDED\x10\x03\x12 \n\x1cEVALUATION_RUN_STATUS_FAILED\x10\x04\x12"\n\x1eEVALUATION_RUN_STATUS_CANCELED\x10\x05\x12$\n EVALUATION_RUN_STATUS_FINALIZING\x10\x062\xd6\x0f\n\x11EvaluationService\x12\xc8\x01\n\x15CreateEvaluationSuite\x121.chalk.evaluation.v1.CreateEvaluationSuiteRequest\x1a2.chalk.evaluation.v1.CreateEvaluationSuiteResponse"H\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xcc\x01\n\x14ListEvaluationSuites\x120.chalk.evaluation.v1.ListEvaluationSuitesRequest\x1a1.chalk.evaluation.v1.ListEvaluationSuitesResponse"O\x90\x02\x02\x80}\x04\x92}\x01$\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xb9\x01\n\x10CreateEvaluation\x12,.chalk.evaluation.v1.CreateEvaluationRequest\x1a-.chalk.evaluation.v1.CreateEvaluationResponse"H\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xb7\x01\n\rGetEvaluation\x12).chalk.evaluation.v1.GetEvaluationRequest\x1a*.chalk.evaluation.v1.GetEvaluationResponse"O\x90\x02\x01\x80}\x04\x92}\x01$\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xbd\x01\n\x0fListEvaluations\x12+.chalk.evaluation.v1.ListEvaluationsRequest\x1a,.chalk.evaluation.v1.ListEvaluationsResponse"O\x90\x02\x01\x80}\x04\x92}\x01$\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xc2\x01\n\x13CreateEvaluationRun\x12/.chalk.evaluation.v1.CreateEvaluationRunRequest\x1a0.chalk.evaluation.v1.CreateEvaluationRunResponse"H\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xc0\x01\n\x10GetEvaluationRun\x12,.chalk.evaluation.v1.GetEvaluationRunRequest\x1a-.chalk.evaluation.v1.GetEvaluationRunResponse"O\x90\x02\x02\x80}\x04\x92}\x01$\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xc6\x01\n\x12ListEvaluationRuns\x12..chalk.evaluation.v1.ListEvaluationRunsRequest\x1a/.chalk.evaluation.v1.ListEvaluationRunsResponse"O\x90\x02\x02\x80}\x04\x92}\x01$\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xd4\x01\n\x18SetEvaluationRunBaseline\x124.chalk.evaluation.v1.SetEvaluationRunBaselineRequest\x1a5.chalk.evaluation.v1.SetEvaluationRunBaselineResponse"K\x90\x02\x02\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xc8\x01\n\x14ArchiveEvaluationRun\x120.chalk.evaluation.v1.ArchiveEvaluationRunRequest\x1a1.chalk.evaluation.v1.ArchiveEvaluationRunResponse"K\x90\x02\x02\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.B\xb1\x01\n\x17com.chalk.evaluation.v1B\x0cServiceProtoP\x01Z\x1aevaluation/v1;evaluationv1\xa2\x02\x03CEX\xaa\x02\x13Chalk.Evaluation.V1\xca\x02\x13Chalk\\Evaluation\\V1\xe2\x02\x1fChalk\\Evaluation\\V1\\GPBMetadata\xea\x02\x15Chalk::Evaluation::V1b\x06proto3',
+    b'\n!chalk/evaluation/v1/service.proto\x12\x13chalk.evaluation.v1\x1a\x1fchalk/auth/v1/permissions.proto\x1a\x1achalk/flags/v1/flags.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto"@\n\x0eFunctionScorer\x12.\n\x13function_version_id\x18\x01 \x01(\tR\x11functionVersionId"\x1f\n\rBuiltinScorer\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id"I\n\x13SqlExpressionScorer\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x1e\n\nexpression\x18\x02 \x01(\tR\nexpression"\xfe\x01\n\x14EvaluationScorerSpec\x12A\n\x08function\x18\x01 \x01(\x0b2#.chalk.evaluation.v1.FunctionScorerH\x00R\x08function\x12>\n\x07builtin\x18\x02 \x01(\x0b2".chalk.evaluation.v1.BuiltinScorerH\x00R\x07builtin\x12Q\n\x0esql_expression\x18\x03 \x01(\x0b2(.chalk.evaluation.v1.SqlExpressionScorerH\x00R\rsqlExpressionB\x10\n\x0eimplementation"a\n\x10EvaluationScorer\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12=\n\x04spec\x18\x02 \x01(\x0b2).chalk.evaluation.v1.EvaluationScorerSpecR\x04spec"T\n\x11EvaluationScorers\x12?\n\x07scorers\x18\x01 \x03(\x0b2%.chalk.evaluation.v1.EvaluationScorerR\x07scorers"\xef\x01\n\x1cEvaluationScorerScoreSummary\x12=\n\x06scorer\x18\x01 \x01(\x0b2%.chalk.evaluation.v1.EvaluationScorerR\x06scorer\x12(\n\raverage_score\x18\x02 \x01(\x01H\x00R\x0caverageScore\x88\x01\x01\x12T\n\x0cdistribution\x18\x03 \x01(\x0b20.chalk.evaluation.v1.EvaluationValueDistributionR\x0cdistributionB\x10\n\x0e_average_score"\xb5\x01\n\x1bEvaluationValueDistribution\x12\x13\n\x02p5\x18\x01 \x01(\x01H\x00R\x02p5\x88\x01\x01\x12\x15\n\x03p25\x18\x02 \x01(\x01H\x01R\x03p25\x88\x01\x01\x12\x15\n\x03p50\x18\x03 \x01(\x01H\x02R\x03p50\x88\x01\x01\x12\x15\n\x03p75\x18\x04 \x01(\x01H\x03R\x03p75\x88\x01\x01\x12\x15\n\x03p95\x18\x05 \x01(\x01H\x04R\x03p95\x88\x01\x01B\x05\n\x03_p5B\x06\n\x04_p25B\x06\n\x04_p50B\x06\n\x04_p75B\x06\n\x04_p95"\xd1\x06\n\x16EvaluationScoreSummary\x12#\n\revaluation_id\x18\x01 \x01(\tR\x0cevaluationId\x12*\n\x11evaluation_run_id\x18\x02 \x01(\tR\x0fevaluationRunId\x12(\n\raverage_score\x18\x03 \x01(\x01H\x00R\x0caverageScore\x88\x01\x01\x12V\n\rscorer_scores\x18\x04 \x03(\x0b21.chalk.evaluation.v1.EvaluationScorerScoreSummaryR\x0cscorerScores\x129\n\ncreated_at\x18\x05 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x123\n\x08metadata\x18\x06 \x01(\x0b2\x17.google.protobuf.StructR\x08metadata\x12R\n\x07metrics\x18\x07 \x03(\x0b28.chalk.evaluation.v1.EvaluationScoreSummary.MetricsEntryR\x07metrics\x12_\n\x12score_distribution\x18\x08 \x01(\x0b20.chalk.evaluation.v1.EvaluationValueDistributionR\x11scoreDistribution\x12w\n\x14metric_distributions\x18\t \x03(\x0b2D.chalk.evaluation.v1.EvaluationScoreSummary.MetricDistributionsEntryR\x13metricDistributions\x1a:\n\x0cMetricsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01\x1ax\n\x18MetricDistributionsEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12F\n\x05value\x18\x02 \x01(\x0b20.chalk.evaluation.v1.EvaluationValueDistributionR\x05value:\x028\x01B\x10\n\x0e_average_score"\xf7\x03\n\nEvaluation\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n\x07team_id\x18\x02 \x01(\tR\x06teamId\x12%\n\x0eenvironment_id\x18\x03 \x01(\tR\renvironmentId\x12\x12\n\x04name\x18\x04 \x01(\tR\x04name\x12\x1d\n\ndataset_id\x18\x05 \x01(\tR\tdatasetId\x12.\n\x13dataset_revision_id\x18\x06 \x01(\tR\x11datasetRevisionId\x127\n\x18task_function_version_id\x18\x07 \x01(\tR\x15taskFunctionVersionId\x12?\n\x07scorers\x18\x08 \x03(\x0b2%.chalk.evaluation.v1.EvaluationScorerR\x07scorers\x123\n\x08metadata\x18\t \x01(\x0b2\x17.google.protobuf.StructR\x08metadata\x12"\n\ncreated_by\x18\n \x01(\tH\x00R\tcreatedBy\x88\x01\x01\x129\n\ncreated_at\x18\x0b \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12\x19\n\x08suite_id\x18\x0c \x01(\tR\x07suiteIdB\r\n\x0b_created_by"\xea\x06\n\rEvaluationRun\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n\x07team_id\x18\x02 \x01(\tR\x06teamId\x12%\n\x0eenvironment_id\x18\x03 \x01(\tR\renvironmentId\x12#\n\revaluation_id\x18\x04 \x01(\tR\x0cevaluationId\x12@\n\x06status\x18\x05 \x01(\x0e2(.chalk.evaluation.v1.EvaluationRunStatusR\x06status\x123\n\x08metadata\x18\x06 \x01(\x0b2\x17.google.protobuf.StructR\x08metadata\x12"\n\ncreated_by\x18\x07 \x01(\tH\x00R\tcreatedBy\x88\x01\x01\x129\n\ncreated_at\x18\x08 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12>\n\nstarted_at\x18\t \x01(\x0b2\x1a.google.protobuf.TimestampH\x01R\tstartedAt\x88\x01\x01\x12B\n\x0ccompleted_at\x18\n \x01(\x0b2\x1a.google.protobuf.TimestampH\x02R\x0bcompletedAt\x88\x01\x01\x12/\n\x11result_dataset_id\x18\x0b \x01(\tH\x03R\x0fresultDatasetId\x88\x01\x01\x12@\n\x1aresult_dataset_revision_id\x18\x0c \x01(\tH\x04R\x17resultDatasetRevisionId\x88\x01\x01\x12(\n\rerror_message\x18\r \x01(\tH\x05R\x0cerrorMessage\x88\x01\x01\x12\x1f\n\x0bis_baseline\x18\x0e \x01(\x08R\nisBaseline\x12V\n\x0eexecution_mode\x18\x0f \x01(\x0e2/.chalk.evaluation.v1.EvaluationRunExecutionModeR\rexecutionModeB\r\n\x0b_created_byB\r\n\x0b_started_atB\x0f\n\r_completed_atB\x14\n\x12_result_dataset_idB\x1d\n\x1b_result_dataset_revision_idB\x10\n\x0e_error_message"\xff\x02\n\x17CreateEvaluationRequest\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n\ndataset_id\x18\x02 \x01(\tR\tdatasetId\x12.\n\x13dataset_revision_id\x18\x03 \x01(\tR\x11datasetRevisionId\x127\n\x18task_function_version_id\x18\x04 \x01(\tR\x15taskFunctionVersionId\x12C\n\x07scorers\x18\x05 \x03(\x0b2).chalk.evaluation.v1.EvaluationScorerSpecR\x07scorers\x123\n\x08metadata\x18\x06 \x01(\x0b2\x17.google.protobuf.StructR\x08metadata\x12!\n\x0cdataset_name\x18\x07 \x01(\tR\x0bdatasetName\x12\x1e\n\x08suite_id\x18\x08 \x01(\tH\x00R\x07suiteId\x88\x01\x01B\x0b\n\t_suite_id"[\n\x18CreateEvaluationResponse\x12?\n\nevaluation\x18\x01 \x01(\x0b2\x1f.chalk.evaluation.v1.EvaluationR\nevaluation";\n\x14GetEvaluationRequest\x12#\n\revaluation_id\x18\x01 \x01(\tR\x0cevaluationId"X\n\x15GetEvaluationResponse\x12?\n\nevaluation\x18\x01 \x01(\x0b2\x1f.chalk.evaluation.v1.EvaluationR\nevaluation"\x92\x01\n\x16ListEvaluationsRequest\x12\x1b\n\x06cursor\x18\x01 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x02 \x01(\x05H\x01R\x05limit\x88\x01\x01\x12\x1e\n\x08suite_id\x18\x03 \x01(\tH\x02R\x07suiteId\x88\x01\x01B\t\n\x07_cursorB\x08\n\x06_limitB\x0b\n\t_suite_id"\xe8\x01\n\x17ListEvaluationsResponse\x12A\n\x0bevaluations\x18\x01 \x03(\x0b2\x1f.chalk.evaluation.v1.EvaluationR\x0bevaluations\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01\x12T\n\x0fscore_summaries\x18\x03 \x03(\x0b2+.chalk.evaluation.v1.EvaluationScoreSummaryR\x0escoreSummariesB\x0e\n\x0c_next_cursor"\xe6\x01\n\x1aCreateEvaluationRunRequest\x12#\n\revaluation_id\x18\x01 \x01(\tR\x0cevaluationId\x123\n\x08metadata\x18\x02 \x01(\x0b2\x17.google.protobuf.StructR\x08metadata\x12[\n\x0eexecution_mode\x18\x03 \x01(\x0e2/.chalk.evaluation.v1.EvaluationRunExecutionModeH\x00R\rexecutionMode\x88\x01\x01B\x11\n\x0f_execution_mode"h\n\x1bCreateEvaluationRunResponse\x12I\n\x0eevaluation_run\x18\x01 \x01(\x0b2".chalk.evaluation.v1.EvaluationRunR\revaluationRun"\xba\x01\n\x1bRescoreEvaluationRunRequest\x12*\n\x11evaluation_run_id\x18\x01 \x01(\tR\x0fevaluationRunId\x123\n\x08metadata\x18\x02 \x01(\x0b2\x17.google.protobuf.StructR\x08metadata\x12(\n\revaluation_id\x18\x03 \x01(\tH\x00R\x0cevaluationId\x88\x01\x01B\x10\n\x0e_evaluation_id"i\n\x1cRescoreEvaluationRunResponse\x12I\n\x0eevaluation_run\x18\x01 \x01(\x0b2".chalk.evaluation.v1.EvaluationRunR\revaluationRun"E\n\x17GetEvaluationRunRequest\x12*\n\x11evaluation_run_id\x18\x01 \x01(\tR\x0fevaluationRunId"e\n\x18GetEvaluationRunResponse\x12I\n\x0eevaluation_run\x18\x01 \x01(\x0b2".chalk.evaluation.v1.EvaluationRunR\revaluationRun"\xd1\x01\n\x19ListEvaluationRunsRequest\x12(\n\revaluation_id\x18\x01 \x01(\tH\x00R\x0cevaluationId\x88\x01\x01\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x01R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x03 \x01(\x05H\x02R\x05limit\x88\x01\x01\x12\x1e\n\x08suite_id\x18\x04 \x01(\tH\x03R\x07suiteId\x88\x01\x01B\x10\n\x0e_evaluation_idB\t\n\x07_cursorB\x08\n\x06_limitB\x0b\n\t_suite_id"\xb8\x02\n\x1aListEvaluationRunsResponse\x12K\n\x0fevaluation_runs\x18\x01 \x03(\x0b2".chalk.evaluation.v1.EvaluationRunR\x0eevaluationRuns\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01\x12T\n\x0fscore_summaries\x18\x03 \x03(\x0b2+.chalk.evaluation.v1.EvaluationScoreSummaryR\x0escoreSummaries\x12A\n\x0bevaluations\x18\x04 \x03(\x0b2\x1f.chalk.evaluation.v1.EvaluationR\x0bevaluationsB\x0e\n\x0c_next_cursor"M\n\x1fSetEvaluationRunBaselineRequest\x12*\n\x11evaluation_run_id\x18\x01 \x01(\tR\x0fevaluationRunId"m\n SetEvaluationRunBaselineResponse\x12I\n\x0eevaluation_run\x18\x01 \x01(\x0b2".chalk.evaluation.v1.EvaluationRunR\revaluationRun"I\n\x1bArchiveEvaluationRunRequest\x12*\n\x11evaluation_run_id\x18\x01 \x01(\tR\x0fevaluationRunId"J\n\x1cArchiveEvaluationRunResponse\x12*\n\x11evaluation_run_id\x18\x01 \x01(\tR\x0fevaluationRunId"\xe3\x01\n\x0fEvaluationSuite\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n\x07team_id\x18\x02 \x01(\tR\x06teamId\x12%\n\x0eenvironment_id\x18\x03 \x01(\tR\renvironmentId\x12\x12\n\x04name\x18\x04 \x01(\tR\x04name\x12"\n\ncreated_by\x18\x05 \x01(\tH\x00R\tcreatedBy\x88\x01\x01\x129\n\ncreated_at\x18\x06 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAtB\r\n\x0b_created_by"2\n\x1cCreateEvaluationSuiteRequest\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name"[\n\x1dCreateEvaluationSuiteResponse\x12:\n\x05suite\x18\x01 \x01(\x0b2$.chalk.evaluation.v1.EvaluationSuiteR\x05suite"\x1d\n\x1bListEvaluationSuitesRequest"\\\n\x1cListEvaluationSuitesResponse\x12<\n\x06suites\x18\x01 \x03(\x0b2$.chalk.evaluation.v1.EvaluationSuiteR\x06suites*\x93\x02\n\x13EvaluationRunStatus\x12%\n!EVALUATION_RUN_STATUS_UNSPECIFIED\x10\x00\x12!\n\x1dEVALUATION_RUN_STATUS_PENDING\x10\x01\x12!\n\x1dEVALUATION_RUN_STATUS_RUNNING\x10\x02\x12#\n\x1fEVALUATION_RUN_STATUS_SUCCEEDED\x10\x03\x12 \n\x1cEVALUATION_RUN_STATUS_FAILED\x10\x04\x12"\n\x1eEVALUATION_RUN_STATUS_CANCELED\x10\x05\x12$\n EVALUATION_RUN_STATUS_FINALIZING\x10\x06*\xa2\x01\n\x1aEvaluationRunExecutionMode\x12-\n)EVALUATION_RUN_EXECUTION_MODE_UNSPECIFIED\x10\x00\x12)\n%EVALUATION_RUN_EXECUTION_MODE_ON_READ\x10\x01\x12*\n&EVALUATION_RUN_EXECUTION_MODE_WORKFLOW\x10\x022\x9e\x11\n\x11EvaluationService\x12\xc8\x01\n\x15CreateEvaluationSuite\x121.chalk.evaluation.v1.CreateEvaluationSuiteRequest\x1a2.chalk.evaluation.v1.CreateEvaluationSuiteResponse"H\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xcc\x01\n\x14ListEvaluationSuites\x120.chalk.evaluation.v1.ListEvaluationSuitesRequest\x1a1.chalk.evaluation.v1.ListEvaluationSuitesResponse"O\x90\x02\x02\x80}\x04\x92}\x01$\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xb9\x01\n\x10CreateEvaluation\x12,.chalk.evaluation.v1.CreateEvaluationRequest\x1a-.chalk.evaluation.v1.CreateEvaluationResponse"H\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xb7\x01\n\rGetEvaluation\x12).chalk.evaluation.v1.GetEvaluationRequest\x1a*.chalk.evaluation.v1.GetEvaluationResponse"O\x90\x02\x01\x80}\x04\x92}\x01$\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xbd\x01\n\x0fListEvaluations\x12+.chalk.evaluation.v1.ListEvaluationsRequest\x1a,.chalk.evaluation.v1.ListEvaluationsResponse"O\x90\x02\x01\x80}\x04\x92}\x01$\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xc2\x01\n\x13CreateEvaluationRun\x12/.chalk.evaluation.v1.CreateEvaluationRunRequest\x1a0.chalk.evaluation.v1.CreateEvaluationRunResponse"H\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xc5\x01\n\x14RescoreEvaluationRun\x120.chalk.evaluation.v1.RescoreEvaluationRunRequest\x1a1.chalk.evaluation.v1.RescoreEvaluationRunResponse"H\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xc0\x01\n\x10GetEvaluationRun\x12,.chalk.evaluation.v1.GetEvaluationRunRequest\x1a-.chalk.evaluation.v1.GetEvaluationRunResponse"O\x90\x02\x02\x80}\x04\x92}\x01$\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xc6\x01\n\x12ListEvaluationRuns\x12..chalk.evaluation.v1.ListEvaluationRunsRequest\x1a/.chalk.evaluation.v1.ListEvaluationRunsResponse"O\x90\x02\x02\x80}\x04\x92}\x01$\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xd4\x01\n\x18SetEvaluationRunBaseline\x124.chalk.evaluation.v1.SetEvaluationRunBaselineRequest\x1a5.chalk.evaluation.v1.SetEvaluationRunBaselineResponse"K\x90\x02\x02\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.\x12\xc8\x01\n\x14ArchiveEvaluationRun\x120.chalk.evaluation.v1.ArchiveEvaluationRunRequest\x1a1.chalk.evaluation.v1.ArchiveEvaluationRunResponse"K\x90\x02\x02\x80}\x04\x92\xd3\x0eA\n\x13evaluations_enabled\x12*Enables evaluation creation and execution.B\xb1\x01\n\x17com.chalk.evaluation.v1B\x0cServiceProtoP\x01Z\x1aevaluation/v1;evaluationv1\xa2\x02\x03CEX\xaa\x02\x13Chalk.Evaluation.V1\xca\x02\x13Chalk\\Evaluation\\V1\xe2\x02\x1fChalk\\Evaluation\\V1\\GPBMetadata\xea\x02\x15Chalk::Evaluation::V1b\x06proto3',
     [
         permissions_pb.desc(),
         flags_pb.desc(),
@@ -1389,6 +1517,8 @@ _DESC = file_desc(
         "ListEvaluationsResponse": ListEvaluationsResponse,
         "CreateEvaluationRunRequest": CreateEvaluationRunRequest,
         "CreateEvaluationRunResponse": CreateEvaluationRunResponse,
+        "RescoreEvaluationRunRequest": RescoreEvaluationRunRequest,
+        "RescoreEvaluationRunResponse": RescoreEvaluationRunResponse,
         "GetEvaluationRunRequest": GetEvaluationRunRequest,
         "GetEvaluationRunResponse": GetEvaluationRunResponse,
         "ListEvaluationRunsRequest": ListEvaluationRunsRequest,
@@ -1403,6 +1533,7 @@ _DESC = file_desc(
         "ListEvaluationSuitesRequest": ListEvaluationSuitesRequest,
         "ListEvaluationSuitesResponse": ListEvaluationSuitesResponse,
         "EvaluationRunStatus": EvaluationRunStatus,
+        "EvaluationRunExecutionMode": EvaluationRunExecutionMode,
     },
 )
 

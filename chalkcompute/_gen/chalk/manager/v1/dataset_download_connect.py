@@ -14,10 +14,12 @@ from connectrpc.method import IdempotencyLevel, MethodInfo
 from .dataset_download_pb import StreamDatasetDownloadURIsRequest, StreamDatasetDownloadURIsResponse
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Iterable, Iterator, Mapping
 
-    from connectrpc.request import Headers
-
+    from connectrpc.codec import Codec
+    from connectrpc.compression import Compression
+    from connectrpc.interceptor import InterceptorSync
+    from connectrpc.request import Headers, RequestContext
 
 class DatasetDownloadServiceClientSync(ConnectClientSync):
     def stream_dataset_download_ur_is(

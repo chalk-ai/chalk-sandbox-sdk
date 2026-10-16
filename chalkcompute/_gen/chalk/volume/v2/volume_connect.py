@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from connectrpc.client import ConnectClientSync
 from connectrpc.method import IdempotencyLevel, MethodInfo
 
-from .volume_pb import AllocateInodeRangeRequest, AllocateInodeRangeResponse, CommitVersionRequest, CommitVersionResponse, CreateRefRequest, CreateRefResponse, CreateVolumeRequest, CreateVolumeResponse, DeleteRefRequest, DeleteRefResponse, DeleteVolumeRequest, DeleteVolumeResponse, GetCommitStatusRequest, GetCommitStatusResponse, GetFileRequest, GetFileResponse, GetVolumeRequest, GetVolumeResponse, ListFilesRequest, ListFilesResponse, ListRefsRequest, ListRefsResponse, ListVolumeVersionsRequest, ListVolumeVersionsResponse, ListVolumesRequest, ListVolumesResponse, RequestUploadURLsRequest, RequestUploadURLsResponse
+from .volume_pb import AllocateInodeRangeRequest, AllocateInodeRangeResponse, CommitVersionRequest, CommitVersionResponse, CreateRefRequest, CreateRefResponse, CreateVolumeRequest, CreateVolumeResponse, DeleteRefRequest, DeleteRefResponse, DeleteVolumeRequest, DeleteVolumeResponse, GetCommitStatusRequest, GetCommitStatusResponse, GetFileRequest, GetFileResponse, GetVolumeCredentialsRequest, GetVolumeCredentialsResponse, GetVolumeRequest, GetVolumeResponse, GetVolumeStatsRequest, GetVolumeStatsResponse, ListFilesRequest, ListFilesResponse, ListMountFilesRequest, ListMountFilesResponse, ListRefsRequest, ListRefsResponse, ListVolumeVersionsRequest, ListVolumeVersionsResponse, ListVolumesRequest, ListVolumesResponse, RequestUploadURLsRequest, RequestUploadURLsResponse
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -59,6 +59,48 @@ class VolumeServiceClientSync(ConnectClientSync):
                 service_name="chalk.volume.v2.VolumeService",
                 input=GetVolumeRequest,
                 output=GetVolumeResponse,
+                idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+            use_get=use_get,
+        )
+    def get_volume_credentials(
+        self,
+        request: GetVolumeCredentialsRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+        use_get: bool = False,
+    ) -> GetVolumeCredentialsResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="GetVolumeCredentials",
+                service_name="chalk.volume.v2.VolumeService",
+                input=GetVolumeCredentialsRequest,
+                output=GetVolumeCredentialsResponse,
+                idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+            use_get=use_get,
+        )
+    def get_volume_stats(
+        self,
+        request: GetVolumeStatsRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+        use_get: bool = False,
+    ) -> GetVolumeStatsResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="GetVolumeStats",
+                service_name="chalk.volume.v2.VolumeService",
+                input=GetVolumeStatsRequest,
+                output=GetVolumeStatsResponse,
                 idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
             ),
             headers=headers,
@@ -280,6 +322,27 @@ class VolumeServiceClientSync(ConnectClientSync):
                 service_name="chalk.volume.v2.VolumeService",
                 input=ListFilesRequest,
                 output=ListFilesResponse,
+                idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+            use_get=use_get,
+        )
+    def list_mount_files(
+        self,
+        request: ListMountFilesRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+        use_get: bool = False,
+    ) -> ListMountFilesResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="ListMountFiles",
+                service_name="chalk.volume.v2.VolumeService",
+                input=ListMountFilesRequest,
+                output=ListMountFilesResponse,
                 idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
             ),
             headers=headers,

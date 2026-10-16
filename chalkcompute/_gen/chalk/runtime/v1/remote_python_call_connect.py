@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from connectrpc.client import ConnectClientSync
 from connectrpc.method import IdempotencyLevel, MethodInfo
 
-from .remote_python_call_pb import CallFunctionRequest, CallFunctionResponse, EnqueueRemoteCallRequest, EnqueueRemoteCallResponse, GetCallCountRequest, GetCallCountResponse, GetCallResultsRequest, GetCallResultsResponse, GetRecentCallsRequest, GetRecentCallsResponse, PollRemoteCallRequest, PollRemoteCallResponse, PurgeQueueRequest, PurgeQueueResponse
+from .remote_python_call_pb import CallFunctionRequest, CallFunctionResponse, EnqueueRemoteCallRequest, EnqueueRemoteCallResponse, GetCallCountRequest, GetCallCountResponse, GetCallResultsRequest, GetCallResultsResponse, GetRecentCallsRequest, GetRecentCallsResponse, PollRemoteCallRequest, PollRemoteCallResponse, PurgeQueueRequest, PurgeQueueResponse, StreamRemoteCallBatchRequest, StreamRemoteCallBatchResponse
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Mapping
@@ -84,6 +84,29 @@ class AsyncRemoteCallServiceClientSync(ConnectClientSync):
                 service_name="chalk.runtime.v1.AsyncRemoteCallService",
                 input=PollRemoteCallRequest,
                 output=PollRemoteCallResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def stream_remote_call_batch(
+        self,
+        request: Iterator[StreamRemoteCallBatchRequest],
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> Iterator[StreamRemoteCallBatchResponse]:
+        """
+        Submit Arrow chunks containing many logical calls and receive per-call
+        acknowledgements and results without polling each call ID independently.
+        """
+        return self.execute_bidi_stream(
+            request=request,
+            method=MethodInfo(
+                name="StreamRemoteCallBatch",
+                service_name="chalk.runtime.v1.AsyncRemoteCallService",
+                input=StreamRemoteCallBatchRequest,
+                output=StreamRemoteCallBatchResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,

@@ -1,0 +1,1 @@
+- Discover the gRPC engine endpoint automatically for queued function calls using rotating workload identity, including notebook kernels. Explicit `CHALK_GRPC_ENGINE` overrides remain supported. Discovery requires `DEPLOY_READ` permission.

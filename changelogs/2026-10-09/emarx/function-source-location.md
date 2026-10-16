@@ -1,0 +1,1 @@
+- Capture the deployed file, line, and column for function and class-method definitions so the dashboard can navigate directly to their source.

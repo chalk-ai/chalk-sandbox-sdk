@@ -1014,7 +1014,7 @@
         "type": "grafana-postgresql-datasource",
         "uid": "benchmark-pg"
       },
-      "description": "Hourly share of benchmark attempts blocked by host-pool capacity or exhausted volume write spools. Successful attempts publish zero and infrastructure failures publish one. Volume spool exhaustion remains a hard benchmark failure.",
+      "description": "Hourly benchmark error rate by classification and request type. Known infrastructure conditions and unclassified exceptions are recorded with their Python exception class.",
       "fieldConfig": {
         "defaults": {
           "color": {"mode": "palette-classic"},
@@ -1057,11 +1057,11 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT date_trunc('hour', created_at) AS \"time\", 100.0 * AVG((metrics->>'benchmark_error_count')::numeric) AS value, split_part(split_part(suite_name, '(', 2), ')', 1) || ' / ' || COALESCE(metrics->>'request_type', case_name) AS metric\nFROM benchmark_results\nWHERE $__timeFilter(created_at)\n  AND split_part(split_part(suite_name, '(', 2), ')', 1) IN (${environment:sqlstring})\n  AND source = 'ci'\n  AND run_name = 'benchmark-status'\nGROUP BY 1, 3\nORDER BY 1",
+          "rawSql": "SELECT date_trunc('hour', created_at) AS \"time\", 100.0 * AVG((metrics->>'benchmark_error_count')::numeric) AS value, split_part(split_part(suite_name, '(', 2), ')', 1) || ' / ' || COALESCE(metrics->>'error_type', 'unclassified') || ' / ' || COALESCE(metrics->>'exception_class', 'unknown') || ' / ' || COALESCE(metrics->>'request_type', case_name) AS metric\nFROM benchmark_results\nWHERE $__timeFilter(created_at)\n  AND split_part(split_part(suite_name, '(', 2), ')', 1) IN (${environment:sqlstring})\n  AND source = 'ci'\n  AND run_name = 'benchmark-status'\nGROUP BY 1, 3\nORDER BY 1",
           "refId": "A"
         }
       ],
-      "title": "Infrastructure error rate by request type",
+      "title": "Benchmark error rate by type and request",
       "type": "timeseries"
     }
   ],

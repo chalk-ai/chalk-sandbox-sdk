@@ -3,7 +3,7 @@ from __future__ import annotations
 from unittest.mock import ANY, MagicMock, patch
 
 import pytest
-from chalkcompute import Image, NetworkPolicy, Sandbox, Secret
+from chalkcompute import Image, NetworkPolicy, ResourceDetector, Sandbox, Secret
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
@@ -11,6 +11,7 @@ from protobuf.wkt import Timestamp
 from chalkcompute._containerspec import ContainerSpec
 from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb as process_pb
 from chalkcompute._gen.chalk.sandbox.v2 import service_pb as pb
+from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 from chalkcompute._sandbox import SandboxClient, SandboxCreationError
 from chalkcompute._volume import VolumeMount
 
@@ -120,6 +121,82 @@ class _SucceededDuringCreationStub:
         )
 
 
+class _ReadinessSequenceStub:
+    def __init__(self, statuses: list[pb.SandboxStatus]) -> None:
+        self.statuses = iter(statuses)
+
+    def create_sandbox(self, request: pb.CreateSandboxRequest, **_kwargs: object):
+        return pb.CreateSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id="sandbox-123",
+                status=pb.SandboxStatus.PENDING,
+                created_at=Timestamp(seconds=1),
+            )
+        )
+
+    def get_sandbox(self, request: pb.GetSandboxRequest, **_kwargs: object):
+        assert request.id == "sandbox-123"
+        return pb.GetSandboxResponse(
+            sandbox=pb.SandboxInfo(
+                id="sandbox-123",
+                status=next(self.statuses),
+                created_at=Timestamp(seconds=1),
+            )
+        )
+
+
+def test_sandbox_client_default_readiness_poll_matches_cli_backoff() -> None:
+    statuses = [pb.SandboxStatus.PENDING] * 8 + [pb.SandboxStatus.RUNNING]
+    client = SandboxClient()
+    client._stub = _ReadinessSequenceStub(statuses)  # type: ignore[assignment]
+    try:
+        with patch("chalkcompute._sandbox.time.sleep") as sleep:
+            sandbox = client.create("python:3.14-slim", timeout=30)
+    finally:
+        client.close()
+
+    assert sandbox.info is not None
+    assert sandbox.info.status == "running"
+    delays = [call.args[0] for call in sleep.call_args_list]
+    assert delays == pytest.approx(
+        [0.025, 0.0375, 0.05625, 0.084375, 0.1265625, 0.18984375, 0.25, 0.25]
+    )
+
+
+def test_sandbox_client_explicit_readiness_poll_interval_is_unchanged() -> None:
+    statuses = [pb.SandboxStatus.PENDING] * 3 + [pb.SandboxStatus.RUNNING]
+    client = SandboxClient()
+    client._stub = _ReadinessSequenceStub(statuses)  # type: ignore[assignment]
+    try:
+        with patch("chalkcompute._sandbox.time.sleep") as sleep:
+            sandbox = client.create("python:3.14-slim", poll_interval=0.1, timeout=30)
+    finally:
+        client.close()
+
+    assert sandbox.info is not None
+    assert [call.args[0] for call in sleep.call_args_list] == [0.1, 0.1, 0.1]
+
+
+def test_sandbox_run_keeps_default_image_build_poll_interval() -> None:
+    client = _RecordingSandboxClient()
+    image = Image.debian_slim().run_commands("pip install claude")
+    sandbox = Sandbox(image=image, sandbox_client=client)  # type: ignore[arg-type]
+
+    with patch(
+        "chalkcompute._sandbox.build_image", return_value="registry/image:built"
+    ) as build:
+        sandbox.run()
+
+    build.assert_called_once_with(
+        client._connect,
+        image,
+        poll_interval=0.5,
+        timeout=600.0,
+    )
+    assert client.create_kwargs is not None
+    assert client.create_kwargs["poll_interval"] is None
+
+
 def test_sandbox_client_create_sends_image_uri_not_image_spec() -> None:
     client = SandboxClient()
     stub = _Stub()
@@ -165,6 +242,34 @@ def test_sandbox_mixed_env_serializes_secret_references(use_client_create) -> No
     assert dict(spec.env_vars) == {"GIT_AUTHOR_NAME": "Elliot Marx"}
     assert [ref.source.value for ref in spec.secret_refs] == ["OTHER", "TOKEN"]
     assert dict(spec.secret_refs[1].aliases) == {"TOKEN": "SUPER_SECRET_VALUE"}
+
+
+@pytest.mark.parametrize("use_client_create", [False, True])
+@pytest.mark.parametrize("host_pool_id", [None, "cmg1a2b3c0000q8j9k0l1m2n3o"])
+def test_sandbox_host_pool_placement(
+    use_client_create: bool, host_pool_id: str | None
+) -> None:
+    client = SandboxClient()
+    stub = _Stub()
+    client._stub = stub  # type: ignore[assignment]
+    try:
+        if use_client_create:
+            client.create("ubuntu:latest", host_pool_id=host_pool_id, wait=False)
+        else:
+            Sandbox(
+                image="ubuntu:latest", host_pool_id=host_pool_id, sandbox_client=client
+            ).run(wait=False)
+    finally:
+        client.close()
+
+    assert stub.request is not None
+    placement = stub.request.source.value.placement
+    if host_pool_id is None:
+        assert placement is None
+    else:
+        assert placement is not None
+        assert placement.field == "host_placement"
+        assert placement.value.host_pool_id == host_pool_id
 
 
 def test_sandbox_add_credentials_configures_env_and_network_policy(monkeypatch) -> None:
@@ -400,6 +505,74 @@ def test_sandbox_client_create_omits_chalk_identity_by_default() -> None:
 
     assert stub.request is not None
     assert not stub.request.source.value.has_field("chalk_workload_identity")
+
+
+def test_sandbox_client_create_sends_resource_detectors() -> None:
+    client = SandboxClient()
+    stub = _Stub()
+    client._stub = stub  # type: ignore[assignment]
+    try:
+        client.create(
+            "python:3.14-slim",
+            resource_detectors=[ResourceDetector.GITHUB_PULL_REQUESTS],
+            wait=False,
+        )
+    finally:
+        client.close()
+
+    assert stub.request is not None
+    detection = stub.request.source.value.resource_detection
+    assert detection is not None
+    assert list(detection.detectors) == [
+        container_pb.ResourceDetector.GITHUB_PULL_REQUESTS
+    ]
+
+
+def test_resource_detector_implicitly_allows_its_hosts() -> None:
+    client = SandboxClient()
+    stub = _Stub()
+    client._stub = stub  # type: ignore[assignment]
+    policy = NetworkPolicy(allowed_hosts={"example.com": []})
+    try:
+        client.create(
+            "python:3.14-slim",
+            network_policy=policy,
+            resource_detectors=[ResourceDetector.GITHUB_PULL_REQUESTS],
+            wait=False,
+        )
+        client.create(
+            "python:3.14-slim",
+            resource_detectors=[ResourceDetector.GITHUB_PULL_REQUESTS],
+            wait=False,
+        )
+    finally:
+        client.close()
+
+    # The caller's policy is not mutated.
+    assert list(policy.allowed_hosts) == ["example.com"]
+    assert stub.request is not None
+    assert "api.github.com" in stub.request.source.value.network_policy.allowed_hosts
+
+
+def test_sandbox_client_create_omits_resource_detection_by_default() -> None:
+    client = SandboxClient()
+    stub = _Stub()
+    client._stub = stub  # type: ignore[assignment]
+    try:
+        client.create("python:3.14-slim", wait=False)
+    finally:
+        client.close()
+
+    assert stub.request is not None
+    assert not stub.request.source.value.has_field("resource_detection")
+
+
+def test_sandbox_rejects_invalid_resource_detectors() -> None:
+    with pytest.raises(TypeError, match="resource_detectors must be a list"):
+        Sandbox(
+            image="python:3.14-slim",
+            resource_detectors=["github_pull_requests"],  # type: ignore[list-item]
+        )
 
 
 def test_sandbox_rejects_non_bool_chalk_identity() -> None:
@@ -1009,3 +1182,27 @@ def test_sandbox_uploads_lazy_local_files_without_exec_probe(tmp_path, wait) -> 
     else:
         stub.get_sandbox.assert_not_called()
         assert sandbox.info.status == "pending"
+
+
+@pytest.mark.parametrize("target", [None, "ENVIRONMENT", "SERVERLESS"])
+def test_sandbox_client_create_forwards_execution_target(target) -> None:
+    from chalkcompute import ExecutionBackend
+    from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
+
+    client = SandboxClient()
+    stub = _Stub()
+    client._stub = stub  # type: ignore[assignment]
+    try:
+        client.create(
+            "python:3.14-slim",
+            execution_target=ExecutionBackend[target] if target else None,
+            wait=False,
+        )
+    finally:
+        client.close()
+
+    assert stub.request is not None
+    spec = stub.request.source.value
+    assert spec.has_field("execution_target") == (target is not None)
+    if target is not None:
+        assert spec.execution_target.backend == container_pb.ExecutionBackend[target]

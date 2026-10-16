@@ -299,12 +299,22 @@ def test_run_benchmark_preserves_results_from_failure(tmp_path, monkeypatch) -> 
     assert archived == [output]
 
 
-def test_run_benchmark_records_suppressed_known_error(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "message",
+    (
+        HOST_CAPACITY_ERROR,
+        "Unschedulable: no eligible registered host has available capacity "
+        "(requested cpu=2000m, memory=4294967296 bytes)",
+    ),
+)
+def test_run_benchmark_records_suppressed_known_error(
+    tmp_path, monkeypatch, message: str
+) -> None:
     output = tmp_path / "benchmark.json"
     monkeypatch.setenv("CHALK_BENCHMARK_PYPERF_OUTPUT", str(output))
 
     def benchmark() -> NoReturn:
-        raise SandboxCreationError(f"Unable to schedule: {HOST_CAPACITY_ERROR}")
+        raise SandboxCreationError(f"Unable to schedule: {message}")
 
     run_benchmark("volume-test", benchmark)
 
@@ -325,6 +335,62 @@ def test_run_benchmark_reports_sandbox_preemption(tmp_path, monkeypatch) -> None
     metadata = json.loads(output.read_text())["benchmarks"][0]["metadata"]
     assert metadata["benchmark_error_count"] == 1
     assert metadata["error_type"] == "sandbox-preempted"
+
+
+@pytest.mark.parametrize(
+    "status_message",
+    (
+        "Container marked terminated because its host became unavailable during a maintenance window.",
+        "Container marked terminated because its host became unavailable.",
+    ),
+)
+def test_run_benchmark_reports_host_unavailability(
+    tmp_path, monkeypatch, status_message: str
+) -> None:
+    output = tmp_path / "benchmark.json"
+    monkeypatch.setattr(
+        harness,
+        "wait_for_completion",
+        lambda *_args: ("terminated", status_message),
+    )
+
+    def benchmark() -> NoReturn:
+        harness._wait_for_sandbox(cast(Any, object()), 30, "fio")
+        pytest.fail("Expected host unavailability")
+
+    run_benchmark("volume-fio", benchmark, output=output)
+
+    metadata = json.loads(output.read_text())["benchmarks"][0]["metadata"]
+    assert metadata["benchmark_error_count"] == 1
+    assert metadata["error_type"] == "sandbox-host-unavailable"
+    assert metadata["request_type"] == "volume-fio"
+
+
+@pytest.mark.parametrize("status_message", (None, "Terminated by user"))
+def test_run_benchmark_reraises_other_terminations(
+    tmp_path, monkeypatch, status_message: str | None
+) -> None:
+    output = tmp_path / "benchmark.json"
+    monkeypatch.setattr(
+        harness,
+        "wait_for_completion",
+        lambda *_args: ("terminated", status_message),
+    )
+
+    def benchmark() -> NoReturn:
+        harness._wait_for_sandbox(cast(Any, object()), 30, "fio")
+        pytest.fail("Expected termination")
+
+    with pytest.raises(
+        RuntimeError, match="fio sandbox completed with status terminated"
+    ):
+        run_benchmark("volume-fio", benchmark, output=output)
+
+    metadata = json.loads(output.read_text())["benchmarks"][0]["metadata"]
+    assert metadata["benchmark_error_count"] == 1
+    assert metadata["error_type"] == "unclassified"
+    assert metadata["exception_class"] == "RuntimeError"
+    assert metadata["request_type"] == "volume-fio"
 
 
 def test_run_benchmark_records_and_reraises_known_error(tmp_path, monkeypatch) -> None:
@@ -352,4 +418,8 @@ def test_run_benchmark_reraises_unknown_error(tmp_path, monkeypatch) -> None:
     with pytest.raises(SandboxCreationError, match="Unexpected creation failure"):
         run_benchmark("volume-test", benchmark)
 
-    assert not output.exists()
+    metadata = json.loads(output.read_text())["benchmarks"][0]["metadata"]
+    assert metadata["benchmark_error_count"] == 1
+    assert metadata["error_type"] == "unclassified"
+    assert metadata["exception_class"] == "SandboxCreationError"
+    assert metadata["request_type"] == "volume-test"

@@ -16,7 +16,9 @@ from chalkcompute._connect import (
     grpc_engine_target_from_url,
     grpc_target_from_url,
 )
-from chalkcompute._gen.chalk.server.v1 import auth_pb
+from chalkcompute._gen.chalk.server.v1 import auth_pb, team_pb
+from connectrpc.code import Code
+from connectrpc.errors import ConnectError as ConnectRpcError
 from chalkcompute._http import SYNC_HTTP_CLIENT
 from chalkcompute._remote_call_client import ServiceAuthContext
 
@@ -521,16 +523,176 @@ class TestConnectClientWebIdentity:
 
         assert ConnectClient().grpc_engine_target() == ("localhost:50051", False)
 
-    def test_requires_grpc_engine_for_queued_calls(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path
-    ) -> None:
+    @pytest.fixture
+    def engine_discovery(self, monkeypatch: pytest.MonkeyPatch, tmp_path):
         token_file = tmp_path / "identity.jwt"
         token_file.write_text(_identity_jwt("env-identity"))
         monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(token_file))
+        monkeypatch.setenv("CHALK_API_SERVER", "https://api.identity.chalk.test")
         monkeypatch.delenv("CHALK_GRPC_ENGINE", raising=False)
+        captured: dict[str, Any] = {"calls": [], "responses": []}
 
-        with pytest.raises(ConnectError, match="CHALK_GRPC_ENGINE must be set"):
+        class _TeamClient:
+            def __init__(self, address: str, **kwargs: Any) -> None:
+                super().__init__()
+                captured["address"] = address
+                captured["init_kwargs"] = kwargs
+
+            def get_env(self, request: Any, **kwargs: Any):
+                captured["calls"].append((request, kwargs))
+                response = captured["responses"].pop(0)
+                if isinstance(response, Exception):
+                    raise response
+                return team_pb.GetEnvResponse.from_json(json.dumps(response))
+
+            def close(self) -> None:
+                captured["closed"] = True
+
+        monkeypatch.setattr(
+            "chalkcompute._connect.team_connect.TeamServiceClientSync", _TeamClient
+        )
+        return captured, token_file
+
+    def test_discovers_and_caches_grpc_engine(self, engine_discovery) -> None:
+        captured, token_file = engine_discovery
+        captured["responses"].append(
+            {
+                "environment": {
+                    "id": "env-identity",
+                    "grpcEngineUrl": "https://engine.chalk.test:443/",
+                }
+            }
+        )
+        client = ConnectClient()
+
+        assert client.grpc_engine_target() == ("engine.chalk.test:443", True)
+        assert client.grpc_engine_target() == ("engine.chalk.test:443", True)
+        assert len(captured["calls"]) == 1
+        assert captured["address"] == "https://api.identity.chalk.test"
+        assert captured["init_kwargs"]["http_client"] is SYNC_HTTP_CLIENT
+        request, kwargs = captured["calls"][0]
+        assert isinstance(request, team_pb.GetEnvRequest)
+        assert kwargs["headers"]["authorization"] == f"Bearer {token_file.read_text()}"
+        assert kwargs["headers"]["x-chalk-env-id"] == "env-identity"
+        assert kwargs["timeout_ms"] == 30_000
+        client.close()
+        assert captured["closed"]
+
+    def test_explicit_grpc_engine_bypasses_discovery(
+        self, monkeypatch: pytest.MonkeyPatch, engine_discovery
+    ) -> None:
+        captured, _ = engine_discovery
+        client = ConnectClient()
+        captured["responses"].append(
+            {
+                "environment": {
+                    "id": "env-identity",
+                    "grpcEngineUrl": "https://discovered.chalk.test:443",
+                }
+            }
+        )
+        assert client.grpc_engine_target() == ("discovered.chalk.test:443", True)
+        monkeypatch.setenv("CHALK_GRPC_ENGINE", "  localhost:50051  ")
+        assert client.grpc_engine_target() == ("localhost:50051", False)
+        assert len(captured["calls"]) == 1
+
+    def test_blank_override_discovers_grpc_engine(
+        self, monkeypatch: pytest.MonkeyPatch, engine_discovery
+    ) -> None:
+        captured, _ = engine_discovery
+        monkeypatch.setenv("CHALK_GRPC_ENGINE", "  ")
+        captured["responses"].append(
+            {
+                "environment": {
+                    "id": "env-identity",
+                    "grpcEngineUrl": "http://localhost:50051",
+                }
+            }
+        )
+        assert ConnectClient().grpc_engine_target() == ("localhost:50051", False)
+
+    @pytest.mark.parametrize(
+        "response,message",
+        [
+            ({}, "no matching Chalk environment"),
+            (
+                {"environment": {"id": "other", "grpcEngineUrl": "https://other:443"}},
+                "no matching Chalk environment",
+            ),
+            ({"environment": {"id": "env-identity"}}, "No gRPC engine endpoint"),
+            (
+                {"environment": {"id": "env-identity", "grpcEngineUrl": "  "}},
+                "No gRPC engine endpoint",
+            ),
+        ],
+    )
+    def test_invalid_discovery_is_not_cached(
+        self, engine_discovery, response, message
+    ) -> None:
+        captured, _ = engine_discovery
+        captured["responses"].extend(
+            [
+                response,
+                {
+                    "environment": {
+                        "id": "env-identity",
+                        "grpcEngineUrl": "https://engine.chalk.test:443",
+                    }
+                },
+            ]
+        )
+        client = ConnectClient()
+        with pytest.raises(ConnectError, match=message):
+            client.grpc_engine_target()
+        assert client.grpc_engine_target() == ("engine.chalk.test:443", True)
+        assert len(captured["calls"]) == 2
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            ConnectRpcError(Code.PERMISSION_DENIED, "permission denied"),
+            ConnectRpcError(Code.UNAVAILABLE, "metadata unavailable"),
+            ConnectionError("connection failed"),
+        ],
+    )
+    def test_discovery_failure_preserves_cause(self, engine_discovery, error) -> None:
+        captured, _ = engine_discovery
+        captured["responses"].append(error)
+        with pytest.raises(ConnectError, match="DEPLOY_READ.*CHALK_GRPC_ENGINE") as exc:
             ConnectClient().grpc_engine_target()
+        assert exc.value.__cause__ is error
+
+    @pytest.mark.parametrize("environment", ["env-identity", "env-other"])
+    def test_identity_refresh_rediscovers_routing(
+        self, monkeypatch: pytest.MonkeyPatch, engine_discovery, environment
+    ) -> None:
+        captured, token_file = engine_discovery
+        now = [100.0]
+        monkeypatch.setattr("chalkcompute._connect.time.monotonic", lambda: now[0])
+        captured["responses"].extend(
+            [
+                {
+                    "environment": {
+                        "id": "env-identity",
+                        "grpcEngineUrl": "https://first:443",
+                    }
+                },
+                {
+                    "environment": {
+                        "id": environment,
+                        "grpcEngineUrl": "https://second:443",
+                    }
+                },
+            ]
+        )
+        client = ConnectClient()
+        assert client.grpc_engine_target() == ("first:443", True)
+        token_file.write_text(_identity_jwt(environment, subject="rotated"))
+        now[0] += 3600
+        assert client.grpc_engine_target() == ("second:443", True)
+        headers = captured["calls"][1][1]["headers"]
+        assert headers["authorization"] == f"Bearer {token_file.read_text()}"
+        assert headers["x-chalk-env-id"] == environment
 
     def test_sandbox_metadata_observes_rotation(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path

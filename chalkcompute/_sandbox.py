@@ -48,7 +48,12 @@ from chalkcompute._connect import (
     raise_for_rpc_error,
     rpc_address_from_target,
 )
-from chalkcompute._containerspec import ContainerSpec, NetworkPolicy
+from chalkcompute._containerspec import (
+    ContainerSpec,
+    NetworkPolicy,
+    ResourceDetector,
+    normalize_managed_ssh,
+)
 from chalkcompute._env import normalize_env
 from chalkcompute._gen.chalk.arrow.v1 import arrow_pb
 from chalkcompute._gen.chalk.sandbox.v1 import runtime_service_pb as runtime_pb
@@ -85,6 +90,10 @@ from chalkcompute._volume import (
     referenced_volume_mount,
 )
 
+_DEFAULT_READINESS_POLL_INTERVAL = 0.025
+_MAX_READINESS_POLL_INTERVAL = 0.250
+_DEFAULT_IMAGE_BUILD_POLL_INTERVAL = 0.5
+
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
     from typing import Any
@@ -93,6 +102,7 @@ if TYPE_CHECKING:
     from chalkcompute._containerspec import (
         ComputeClass,
         ContainerSecurityPolicy,
+        ExecutionBackend,
         RestartPolicy,
         SSHDest,
     )
@@ -632,10 +642,13 @@ class Sandbox:
         security_policy: ContainerSecurityPolicy | None = None,
         network_policy: NetworkPolicy | None = None,
         compute_class: ComputeClass | None = None,
+        execution_target: ExecutionBackend | None = None,
+        resource_detectors: Sequence[ResourceDetector] | None = None,
+        host_pool_id: str | None = None,
         tags: dict[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool = False,
-        managed_ssh: Mapping[str, SSHDest] | None = None,
+        managed_ssh: Mapping[str, SSHDest] | Sequence[SSHDest] | None = None,
         tracing: TracingPolicyConfig | None = None,
         chalk_client: Any | None = None,
         sandbox_client: SandboxClient | None = None,
@@ -682,6 +695,17 @@ class Sandbox:
             :class:`NetworkPolicy` type accepted by :class:`Container`.
         compute_class
             Optional :class:`ComputeClass` (``K8S`` or ``HOST``).
+        execution_target
+            Optional :class:`ExecutionBackend`; defaults to the environment cluster.
+        resource_detectors
+            Optional :class:`ResourceDetector` values. Each detector inspects
+            egress traffic to the hosts it recognizes and records resources the
+            sandbox creates, such as GitHub pull requests, against the sandbox.
+            The hosts a detector recognizes (for example ``api.github.com``)
+            are implicitly added to the sandbox's network policy.
+        host_pool_id
+            Optional host pool ID to restrict placement of host compute class sandboxes.
+            Unstable; subject to change.
         tags
             Optional labels attached to the sandbox spec.
         restart_policy
@@ -692,8 +716,10 @@ class Sandbox:
             The identity is exposed inside the sandbox through the standard
             ``CHALK_WEB_IDENTITY_TOKEN_FILE`` environment variable.
         managed_ssh
-            Optional SSH aliases mapped to :class:`SSHDest` instances. Managed
-            SSH sandboxes run on host compute.
+            Optional SSH destinations: a list of :class:`SSHDest`, each
+            reachable by its ``alias`` (default: its ``host``), or a mapping
+            of aliases to :class:`SSHDest`. ``SSHDest.github(...)`` sets up
+            GitHub. Managed SSH sandboxes run on host compute.
         tracing
             Trace sampling for processes inside the sandbox. ``True`` traces
             every request; a :class:`~chalkcompute.TracingPolicy` sets the
@@ -742,6 +768,9 @@ class Sandbox:
         self._security_policy: ContainerSecurityPolicy | None = None
         self._network_policy: NetworkPolicy | None = None
         self._compute_class: ComputeClass | None = None
+        self._execution_target: ExecutionBackend | None = None
+        self._resource_detectors: tuple[ResourceDetector, ...] = ()
+        self._host_pool_id: str | None = None
         self._tags: dict[str, str] = {}
         self._restart_policy: RestartPolicy | None = None
         self._chalk_identity = False
@@ -766,6 +795,9 @@ class Sandbox:
                 or security_policy is not None
                 or network_policy is not None
                 or compute_class is not None
+                or execution_target is not None
+                or resource_detectors is not None
+                or host_pool_id is not None
                 or tags is not None
                 or restart_policy is not None
                 or chalk_identity
@@ -804,6 +836,8 @@ class Sandbox:
             security_policy=security_policy,
             network_policy=network_policy,
             compute_class=compute_class,
+            execution_target=execution_target,
+            resource_detectors=resource_detectors,
             tags=tags,
             restart_policy=restart_policy,
             chalk_identity=chalk_identity,
@@ -825,10 +859,13 @@ class Sandbox:
         self._security_policy = security_policy
         self._network_policy = network_policy
         self._compute_class = compute_class
+        self._execution_target = execution_target
+        self._resource_detectors = tuple(resource_detectors or ())
+        self._host_pool_id = host_pool_id
         self._tags = dict(tags or {})
         self._restart_policy = restart_policy
         self._chalk_identity = chalk_identity
-        self._managed_ssh = dict(managed_ssh or {})
+        self._managed_ssh = normalize_managed_ssh(managed_ssh)
         self._tracing = tracing_policy
         self._chalk_client = chalk_client
         if isinstance(tracing_policy, TracingPolicy):
@@ -1101,7 +1138,7 @@ class Sandbox:
         self,
         *,
         wait: bool = True,
-        poll_interval: float = 0.5,
+        poll_interval: float | None = None,
         timeout: float = 600.0,
     ) -> Sandbox:
         """Create the sandbox and optionally wait until it is ready.
@@ -1111,7 +1148,9 @@ class Sandbox:
         wait
             If ``True``, poll until the sandbox is ready (default ``True``).
         poll_interval
-            Seconds between readiness polls.
+            Initial delay between readiness polls. When omitted, polling starts
+            at 25ms and backs off by 50% to 250ms. Image builds retain their
+            500ms default polling interval.
         timeout
             Maximum seconds to wait for the sandbox to become ready.
 
@@ -1135,7 +1174,11 @@ class Sandbox:
         if isinstance(image, Image):
             image = self._build_image(
                 client,
-                poll_interval=poll_interval,
+                poll_interval=(
+                    _DEFAULT_IMAGE_BUILD_POLL_INTERVAL
+                    if poll_interval is None
+                    else poll_interval
+                ),
                 timeout=timeout,
             )
         self._built_image_uri = image
@@ -1160,6 +1203,11 @@ class Sandbox:
             )
 
         network_policy = copy.deepcopy(self._network_policy)
+        for detector in self._resource_detectors:
+            for host in detector.hosts:
+                if network_policy is None:
+                    network_policy = NetworkPolicy()
+                network_policy.allowed_hosts.setdefault(host, [])
         policy_secrets: list[Secret] = []
         if network_policy is not None:
             for rules in network_policy.allowed_hosts.values():
@@ -1755,13 +1803,16 @@ class SandboxClient:
         security_policy: ContainerSecurityPolicy | None = None,
         network_policy: NetworkPolicy | None = None,
         compute_class: ComputeClass | None = None,
+        execution_target: ExecutionBackend | None = None,
+        resource_detectors: Sequence[ResourceDetector] | None = None,
+        host_pool_id: str | None = None,
         tags: dict[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
         chalk_identity: bool = False,
-        managed_ssh: Mapping[str, SSHDest] | None = None,
+        managed_ssh: Mapping[str, SSHDest] | Sequence[SSHDest] | None = None,
         tracing: TracingPolicyConfig | None = None,
         wait: bool = True,
-        poll_interval: float = 0.5,
+        poll_interval: float | None = None,
         timeout: float = 600.0,
     ) -> Sandbox:
         """Construct and run a sandbox in one call.
@@ -1795,6 +1846,15 @@ class SandboxClient:
         network_policy
             Optional network egress policy. Reuses the same ``NetworkPolicy``
             type accepted by containers.
+        resource_detectors
+            Optional :class:`ResourceDetector` values. Each detector inspects
+            egress traffic to the hosts it recognizes and records resources the
+            sandbox creates, such as GitHub pull requests, against the sandbox.
+            The hosts a detector recognizes (for example ``api.github.com``)
+            are implicitly added to the sandbox's network policy.
+        host_pool_id
+            Optional host pool ID to restrict placement of host compute class sandboxes.
+            Unstable; subject to change.
         restart_policy
             Optional restart behavior. Use ``RestartPolicy.NEVER`` or
             ``RestartPolicy.ALWAYS``.
@@ -1803,7 +1863,8 @@ class SandboxClient:
             The identity is exposed inside the sandbox through the standard
             ``CHALK_WEB_IDENTITY_TOKEN_FILE`` environment variable.
         managed_ssh
-            Optional SSH aliases mapped to :class:`SSHDest` instances.
+            Optional SSH destinations, as a list of :class:`SSHDest` or a
+            mapping of aliases to them. See :class:`Sandbox`.
         tracing
             ``True`` traces every request inside the sandbox, a
             :class:`~chalkcompute.TracingPolicy` sets the root sample rate,
@@ -1811,7 +1872,8 @@ class SandboxClient:
         wait
             If ``True``, poll until the sandbox is ready (default ``True``).
         poll_interval
-            Seconds between ``GetSandbox`` polls (default 0.5).
+            Initial delay between readiness polls. When omitted, polling starts
+            at 25ms and backs off by 50% to 250ms.
         timeout
             Maximum seconds to wait for the sandbox to become ready
             (default 600).
@@ -1837,6 +1899,9 @@ class SandboxClient:
                 security_policy=security_policy,
                 network_policy=network_policy,
                 compute_class=compute_class,
+                execution_target=execution_target,
+                resource_detectors=resource_detectors,
+                host_pool_id=host_pool_id,
                 tags=tags,
                 restart_policy=restart_policy,
                 chalk_identity=chalk_identity,
@@ -1853,7 +1918,7 @@ class SandboxClient:
         sandbox: Sandbox,
         *,
         wait: bool = True,
-        poll_interval: float = 0.5,
+        poll_interval: float | None = None,
         timeout: float = 600.0,
     ) -> Sandbox:
         """Create a configured sandbox using this client.
@@ -1865,7 +1930,8 @@ class SandboxClient:
         wait
             If ``True``, poll until the sandbox is ready (default ``True``).
         poll_interval
-            Seconds between readiness polls.
+            Initial delay between readiness polls. When omitted, polling starts
+            at 25ms and backs off by 50% to 250ms.
         timeout
             Maximum seconds to wait for the sandbox to become ready.
 
@@ -1890,7 +1956,7 @@ class SandboxClient:
         secret_refs: Sequence[Secret],
         network_policy: NetworkPolicy | None,
         wait: bool,
-        poll_interval: float,
+        poll_interval: float | None,
         timeout: float,
     ) -> None:
         spec = ContainerSpec(
@@ -1912,6 +1978,9 @@ class SandboxClient:
             security_policy=sandbox._security_policy,
             network_policy=network_policy,
             compute_class=sandbox._compute_class,
+            execution_target=sandbox._execution_target,
+            resource_detectors=sandbox._resource_detectors,
+            host_pool_id=sandbox._host_pool_id,
             tags=sandbox._tags,
             restart_policy=sandbox._restart_policy,
             chalk_identity=sandbox._chalk_identity,
@@ -1942,11 +2011,14 @@ class SandboxClient:
         self,
         sandbox_id: str,
         *,
-        poll_interval: float,
+        poll_interval: float | None,
         timeout: float,
     ) -> SandboxInfo:
         """Poll GetSandbox until the sandbox reaches a terminal state."""
         deadline = time.monotonic() + timeout
+        use_default_backoff = poll_interval is None
+        if poll_interval is None:
+            poll_interval = _DEFAULT_READINESS_POLL_INTERVAL
         while time.monotonic() < deadline:
             try:
                 resp = self._stub.get_sandbox(
@@ -1964,6 +2036,11 @@ class SandboxClient:
             if info.status in ("failed", "error", "unknown", "terminated"):
                 raise _sandbox_creation_error(info)
             time.sleep(poll_interval)
+            if use_default_backoff:
+                poll_interval = min(
+                    poll_interval + poll_interval / 2,
+                    _MAX_READINESS_POLL_INTERVAL,
+                )
         raise SandboxError(
             f"Timed out after {timeout}s waiting for sandbox {sandbox_id} to become ready"
         )

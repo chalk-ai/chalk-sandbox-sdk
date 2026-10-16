@@ -284,8 +284,10 @@ statistics. Additional pyperf metadata is available in `metrics`. When sandbox
 creation fails because all registered host-pool capacity is allocated, the
 benchmark wrapper writes a `benchmark-status` run with `benchmark_error_count=1`
 and exits successfully. Sandboxes preempted after starting are reported the
-same way with `error_type=sandbox-preempted`. Successful attempts write the same
-run with `benchmark_error_count=0`. Exhausted volume write spools are reported
+same way with `error_type=sandbox-preempted`. Sandboxes terminated because their
+host became unavailable, including during maintenance windows, are reported with
+`error_type=sandbox-host-unavailable` and exit successfully. Successful attempts
+write the same run with `benchmark_error_count=0`. Exhausted volume write spools are reported
 with `error_type=volume-spool-exhausted`, but remain hard benchmark failures.
 Other errors also remain benchmark failures.
 

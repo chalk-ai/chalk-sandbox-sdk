@@ -33,6 +33,8 @@ a published ``chalkcompute`` for session-aware scoring.
 
 from __future__ import annotations
 
+import json
+import os
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -57,10 +59,9 @@ _T = TypeVar("_T")
 
 _MAX_PAGE_SIZE = 1000
 
-# OpenInference names for what an LLM span carries; chalk-router and the
-# OpenInference instrumentations both write them.
-_INPUT_VALUE_ATTRIBUTE = "input.value"
-_OUTPUT_VALUE_ATTRIBUTE = "output.value"
+# Chalk router metadata for bodies that are externalized, omitted or truncated.
+_CONTENT_METADATA = ("content_uri", "content_bytes", "upload_omitted", "truncation")
+# OpenInference names shared by chalk-router and instrumentations.
 _MODEL_NAME_ATTRIBUTE = "llm.model_name"
 _TOKEN_TOTAL_ATTRIBUTE = "llm.token_count.total"
 _NO_TURNS_NOTE = "(no LLM turns were recorded in this session)"
@@ -186,7 +187,7 @@ class Trace:
     observe an incomplete session. That is worse than an error: a partial read
     produces a plausible wrong number. So :meth:`get_spans`, :meth:`summary`,
     and :meth:`traces` all poll until the number of spans they can see stops
-    growing, and all take the same four arguments:
+    growing, and all take the same five arguments:
 
     ``wait``
         Poll until the span count holds steady across two consecutive reads.
@@ -200,10 +201,19 @@ class Trace:
         Minimum span count to wait for. Defaults to 1, so an empty result is
         treated as "not ingested yet" rather than "nothing to see". Pass 0 to
         accept an empty session.
+    ``quiet_for``
+        Seconds the count must hold steady before the read returns, for a
+        session that may still be running: an agent pauses between turns for
+        longer than one poll. ``None``, the default, honors
+        ``CHALK_TRACE_COMPLETE_AFTER_SECONDS`` when the function environment
+        sets it -- that is how an environment's "trace is complete" setting
+        reaches a scorer -- and otherwise returns as soon as the count holds
+        across two polls. It cannot exceed ``timeout``.
 
     A steady count is a pragmatic signal, not a proof: it cannot tell "complete"
     from "quiet", so a long pause between agent turns can settle early. Pass
-    ``expect_min`` when the caller knows better.
+    ``quiet_for`` to require a longer silence, or ``expect_min`` when the caller
+    knows better.
     """
 
     id: str
@@ -261,6 +271,7 @@ class Trace:
         timeout: float = 60.0,
         poll_interval: float = 2.0,
         expect_min: int | None = None,
+        quiet_for: float | None = None,
     ) -> list[Span]:
         """Return this session's spans, waiting for span ingest to settle.
 
@@ -273,7 +284,7 @@ class Trace:
             carrying the key.
         limit
             Stop after this many spans.  ``None`` returns all of them.
-        wait, timeout, poll_interval, expect_min
+        wait, timeout, poll_interval, expect_min, quiet_for
             See :ref:`the settling rules <trace-waiting>` on :class:`Trace`.
 
         Returns
@@ -304,6 +315,7 @@ class Trace:
             timeout=timeout,
             poll_interval=poll_interval,
             expect_min=expect_min,
+            quiet_for=quiet_for,
         )
 
     def summary(
@@ -313,6 +325,7 @@ class Trace:
         timeout: float = 60.0,
         poll_interval: float = 2.0,
         expect_min: int | None = None,
+        quiet_for: float | None = None,
     ) -> SessionSummary:
         """Return this session's aggregate: turn count, span count, wall clock.
 
@@ -322,7 +335,7 @@ class Trace:
 
         Parameters
         ----------
-        wait, timeout, poll_interval, expect_min
+        wait, timeout, poll_interval, expect_min, quiet_for
             See :ref:`the settling rules <trace-waiting>` on :class:`Trace`.
 
         Returns
@@ -360,6 +373,7 @@ class Trace:
                 timeout=timeout,
                 poll_interval=poll_interval,
                 expect_min=expect_min,
+                quiet_for=quiet_for,
             )
         except TimeoutError:
             # "It never showed up" is the more actionable diagnosis, and keeps the
@@ -381,6 +395,7 @@ class Trace:
         timeout: float = 60.0,
         poll_interval: float = 2.0,
         expect_min: int | None = None,
+        quiet_for: float | None = None,
     ) -> list[TraceSummary]:
         """Return a summary per trace in this session — typically one per turn.
 
@@ -392,7 +407,7 @@ class Trace:
         ----------
         limit
             Stop after this many traces.  ``None`` returns all of them.
-        wait, timeout, poll_interval, expect_min
+        wait, timeout, poll_interval, expect_min, quiet_for
             See :ref:`the settling rules <trace-waiting>` on :class:`Trace`.
 
         Returns
@@ -418,23 +433,29 @@ class Trace:
             timeout=timeout,
             poll_interval=poll_interval,
             expect_min=expect_min,
+            quiet_for=quiet_for,
         )
 
     def transcript(
         self,
         *,
         max_chars_per_turn: int = 4000,
+        require_content: bool = False,
         wait: bool = True,
         timeout: float = 60.0,
         poll_interval: float = 2.0,
         expect_min: int | None = None,
+        quiet_for: float | None = None,
     ) -> str:
         """Render this session's LLM turns as text, oldest first.
 
         A turn is a span carrying the OpenInference ``input.value`` attribute
-        (the prompt); ``output.value`` is its completion, when the span has
-        one. Each turn is headed by the model and its token total. Prompts keep
-        their *last* ``max_chars_per_turn`` characters and completions their
+        (the prompt) or Chalk's input-content metadata; ``output.value`` is its
+        completion, when the span has one. Externally stored or omitted content
+        renders as an explicit note: it is not an absent turn. Content URIs are
+        neither fetched nor included in the text. Each turn is headed by the
+        model and its token total. Prompts keep their *last*
+        ``max_chars_per_turn`` characters and completions their
         *first*, so truncation preserves the newest context the model saw and
         the start of what it said. A session with no turns renders as a
         one-line note rather than an empty string.
@@ -446,33 +467,41 @@ class Trace:
         ----------
         max_chars_per_turn
             Characters kept of each prompt and of each completion.
-        wait, timeout, poll_interval, expect_min
+        require_content
+            Raise :class:`TraceError` if a turn's raw prompt or completion is
+            known to be unavailable or truncated, instead of rendering its
+            omission note. The default ``llm_judge`` prompt enables this to
+            avoid grading incomplete content. This does not disable the
+            deliberate ``max_chars_per_turn`` display limit.
+        wait, timeout, poll_interval, expect_min, quiet_for
             See :ref:`the settling rules <trace-waiting>` on :class:`Trace`.
-            The wait is scoped to LLM turns: it holds until at least one is
-            there and their number stays steady across a poll, so a turn that
-            is still being ingested is never mistaken for none, and the
-            session's other spans -- its root span lands before any turn --
-            cannot end the wait early. A session that shows no turn within
-            ``timeout`` renders as the no-turns note rather than raising, once
-            an unwaited read confirms it, so a judge still grades the row; pass
-            ``expect_min=0`` to accept an empty transcript without waiting.
+            The wait settles on the whole session but needs a turn: it holds
+            until at least one LLM turn is there and the session's span count
+            -- every span, not only the turns -- stays steady, so a turn that
+            is still being ingested is never mistaken for none, the root span
+            that lands before any turn cannot end the wait early, and a tool
+            call between turns keeps it open. A session that shows no turn
+            within ``timeout`` renders as the no-turns note rather than
+            raising, once an unwaited read confirms it, so a judge still grades
+            the row; pass ``expect_min=0`` to accept an empty transcript
+            without waiting.
         """
         client = self._require_client()
 
         def fetch() -> list[Span]:
-            return client.list_spans(
-                self.id, attribute_filters={_INPUT_VALUE_ATTRIBUTE: None}
-            )
+            return client.list_spans(self.id)
 
         try:
             spans = _settle(
                 fetch,
-                spans_seen=_count_turns,
+                spans_seen=len,
+                target_seen=_count_turns,
                 subject=f"session {self.id!r}",
                 wait=wait,
                 timeout=timeout,
                 poll_interval=poll_interval,
                 expect_min=expect_min,
+                quiet_for=quiet_for,
             )
         except TimeoutError:
             # A session that has shown no turn after the wait has none to
@@ -481,7 +510,11 @@ class Trace:
             if _count_turns(fetch()):
                 raise
             spans = []
-        return _format_transcript(spans, max_chars_per_turn=max_chars_per_turn)
+        return _format_transcript(
+            spans,
+            max_chars_per_turn=max_chars_per_turn,
+            require_content=require_content,
+        )
 
     def _require_client(self) -> TraceClient:
         if self._client is None:
@@ -491,12 +524,14 @@ class Trace:
         return client
 
 
-def _format_transcript(spans: Sequence[Span], *, max_chars_per_turn: int) -> str:
+def _format_transcript(
+    spans: Sequence[Span], *, max_chars_per_turn: int, require_content: bool = False
+) -> str:
     """Render the LLM turns among ``spans``; see :meth:`Trace.transcript`."""
     if max_chars_per_turn <= 0:
         raise ValueError("max_chars_per_turn must be positive")
     turns = sorted(
-        (span for span in spans if _INPUT_VALUE_ATTRIBUTE in span.attributes),
+        (span for span in spans if _has_content(span, "input")),
         # Spans without a start time sort last, in the order they arrived.
         key=lambda span: (
             span.start_time is None,
@@ -511,21 +546,70 @@ def _format_transcript(spans: Sequence[Span], *, max_chars_per_turn: int) -> str
         tokens = span.attribute_int(_TOKEN_TOTAL_ATTRIBUTE)
         heading = f"### turn {index} ({model}"
         heading += f", {tokens:,} tokens)" if tokens is not None else ")"
-        lines = [
-            heading,
-            "[prompt]",
-            _keep_tail(span.attributes[_INPUT_VALUE_ATTRIBUTE], max_chars_per_turn),
-        ]
-        completion = span.attributes.get(_OUTPUT_VALUE_ATTRIBUTE)
-        if completion is not None:
-            lines += ["[completion]", _keep_head(completion, max_chars_per_turn)]
+        lines = [heading]
+        for direction, label in (("input", "prompt"), ("output", "completion")):
+            content = _transcript_content(
+                span,
+                direction,
+                max_chars=max_chars_per_turn,
+                require_content=require_content,
+            )
+            if content is not None:
+                lines += [f"[{label}]", content]
         parts.append("\n".join(lines))
     return "\n\n".join(parts)
 
 
 def _count_turns(spans: Sequence[Span]) -> int:
     """How many of ``spans`` a transcript renders: those carrying a prompt."""
-    return sum(1 for span in spans if _INPUT_VALUE_ATTRIBUTE in span.attributes)
+    return sum(1 for span in spans if _has_content(span, "input"))
+
+
+def _has_content(span: Span, direction: str) -> bool:
+    """Metadata is evidence of content even when its body is not inline."""
+    return f"{direction}.value" in span.attributes or any(
+        f"chalk.trace.{direction}.{key}" in span.attributes for key in _CONTENT_METADATA
+    )
+
+
+def _transcript_content(
+    span: Span, direction: str, *, max_chars: int, require_content: bool
+) -> str | None:
+    if not _has_content(span, direction):
+        return None
+    attributes = span.attributes
+    prefix = f"chalk.trace.{direction}."
+    value = attributes.get(f"{direction}.value")
+    truncation = attributes.get(f"{prefix}truncation")
+    raw_truncated = False
+    if truncation is not None:
+        # Router truncation can concern flattened metadata, while the full raw
+        # body remains intact. Only raw_content proves that body was lost.
+        try:
+            details = json.loads(truncation)
+        except (TypeError, ValueError):
+            details = None
+        raw_truncated = isinstance(details, dict) and "raw_content" in details
+
+    if require_content and (value is None or raw_truncated):
+        raise TraceError(
+            f"Trace content is incomplete: {direction} for span {span.span_id!r} "
+            "is not loaded or was omitted/truncated. Cannot score the full trace. "
+            "Use transcript(require_content=False) to inspect the omission."
+        )
+
+    if value is not None:
+        keep = _keep_tail if direction == "input" else _keep_head
+        content = keep(value, max_chars)
+    elif f"{prefix}content_uri" in attributes:
+        content = "(content stored externally; not loaded)"
+    elif f"{prefix}upload_omitted" in attributes:
+        content = "(content unavailable; upload omitted)"
+    else:
+        content = "(content unavailable; body not recorded inline)"
+    if truncation is not None:
+        content += "\n(content or trace attributes were truncated during recording)"
+    return content
 
 
 def _keep_head(text: str, limit: int) -> str:
@@ -676,6 +760,33 @@ class TraceClient:
             ) from exc
 
 
+# Seconds a session must go without new spans before a waited read treats it as
+# complete. The function environment sets it from the environment's "trace is
+# complete" setting; unset, a read settles as soon as its count holds across
+# two polls.
+TRACE_COMPLETE_AFTER_ENV_VAR = "CHALK_TRACE_COMPLETE_AFTER_SECONDS"
+
+
+def _trace_complete_after(quiet_for: float | None) -> float | None:
+    """``quiet_for`` as given, else the environment's setting, else ``None``."""
+    if quiet_for is not None:
+        if quiet_for < 0:
+            raise ValueError("quiet_for must be >= 0 or None")
+        return quiet_for
+    raw = os.environ.get(TRACE_COMPLETE_AFTER_ENV_VAR, "").strip()
+    if not raw:
+        return None
+    try:
+        seconds = float(raw)
+    except ValueError:
+        raise ValueError(
+            f"{TRACE_COMPLETE_AFTER_ENV_VAR} must be a number of seconds, not {raw!r}"
+        ) from None
+    if seconds < 0:
+        raise ValueError(f"{TRACE_COMPLETE_AFTER_ENV_VAR} must be >= 0, not {raw!r}")
+    return seconds
+
+
 def _settle(
     fetch: Callable[[], _T],
     *,
@@ -685,13 +796,22 @@ def _settle(
     timeout: float,
     poll_interval: float,
     expect_min: int | None,
+    quiet_for: float | None = None,
+    target_seen: Callable[[_T], int] | None = None,
 ) -> _T:
     """Poll ``fetch`` until the number of spans it can see stops growing.
 
     Every read of a session settles on the same signal, because every read is
     downstream of the same asynchronous ingest: spans, a session aggregate, and
     per-trace aggregates all grow as spans land. ``spans_seen`` extracts that
-    one number from whatever ``fetch`` returns.
+    one number from whatever ``fetch`` returns. ``target_seen`` is the count
+    ``expect_min`` applies to when that is a narrower one -- a transcript waits
+    on the whole session but needs a turn -- and defaults to ``spans_seen``.
+
+    With ``quiet_for``, the count must also have held for that many seconds,
+    measured from the read that last saw it change. A session is only ever
+    observed through its spans, so this is the nearest thing to "no span has
+    arrived for N seconds" a reader has.
 
     Returns the settled payload. Raises :class:`TimeoutError` rather than
     returning a knowingly incomplete one — an undercount reads as a real result.
@@ -702,25 +822,47 @@ def _settle(
         raise ValueError("poll_interval must be >= 0")
     if expect_min is not None and expect_min < 0:
         raise ValueError("expect_min must be >= 0 or None")
+    if quiet_for is not None and quiet_for < 0:
+        raise ValueError("quiet_for must be >= 0 or None")
 
     if not wait:
         return fetch()
 
+    # Resolved only for a read that waits: an unwaited read never uses the
+    # window, so the environment's setting cannot make it invalid.
+    quiet_for = _trace_complete_after(quiet_for)
+    if quiet_for is not None and quiet_for > timeout:
+        raise ValueError(
+            f"quiet_for ({quiet_for}s) exceeds timeout ({timeout}s), so the read "
+            f"could never settle"
+        )
+    reached = target_seen or spans_seen
     target = 1 if expect_min is None else expect_min
     deadline = time.monotonic() + timeout
     result = fetch()
     count = spans_seen(result)
     previous = -1
+    # When the count was last seen to change; the quiet window runs from here.
+    steady_since = time.monotonic()
     while True:
-        if count >= target and count == previous:
+        now = time.monotonic()
+        steady = reached(result) >= target and count == previous
+        quiet = now - steady_since
+        if steady and (quiet_for is None or quiet >= quiet_for):
             return result
-        remaining = deadline - time.monotonic()
+        remaining = deadline - now
         if remaining <= 0:
-            if count < target:
+            if reached(result) < target:
                 raise TimeoutError(
-                    f"{subject} had {count} span(s) after {timeout}s, expected at "
-                    f"least {target}; spans may still be in flight. Pass "
-                    f"wait=False to accept a partial read."
+                    f"{subject} had {reached(result)} span(s) after {timeout}s, "
+                    f"expected at least {target}; spans may still be in flight. "
+                    f"Pass wait=False to accept a partial read."
+                )
+            if steady:
+                raise TimeoutError(
+                    f"{subject} held at {count} span(s) for {quiet:.0f}s of the "
+                    f"{quiet_for}s quiet_for requires, within timeout={timeout}s. "
+                    f"Raise timeout or pass wait=False."
                 )
             growth = (
                 "the count was never confirmed steady"
@@ -732,10 +874,17 @@ def _settle(
                 f"({growth}); returning now would undercount. Raise timeout or "
                 f"pass wait=False."
             )
+        pause = min(poll_interval, remaining)
+        if steady and quiet_for is not None:
+            # Only the quiet window is outstanding: wake when it closes rather
+            # than up to a poll late.
+            pause = min(pause, quiet_for - quiet)
         previous = count
-        time.sleep(min(poll_interval, remaining))
+        time.sleep(pause)
         result = fetch()
         count = spans_seen(result)
+        if count != previous:
+            steady_since = time.monotonic()
 
 
 def _session_query(session_id: str) -> str:

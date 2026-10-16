@@ -6,16 +6,13 @@
 
 from __future__ import annotations
 
-from typing import Protocol, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from connectrpc.client import ConnectClientSync
-from connectrpc.code import Code
-from connectrpc.errors import ConnectError
 from connectrpc.method import IdempotencyLevel, MethodInfo
-from connectrpc.server import ConnectWSGIApplication, EndpointSync
 
-from .datasets_pb import ArchiveDatasetRevisionRequest, ArchiveDatasetRevisionResponse, ArchiveDatasetRevisionsRequest, ArchiveDatasetRevisionsResponse, DeleteDatasetRequest, DeleteDatasetResponse, DeleteMaterializedAggregateTileRequest, DeleteMaterializedAggregateTileResponse, FinalizeDatasetUploadRequest, FinalizeDatasetUploadResponse, GenerateDatasetEdfsRequest, GenerateDatasetEdfsResponse, GenerateDatasetStatsRequest, GenerateDatasetStatsResponse, GetDatasetEdfsRequest, GetDatasetEdfsResponse, GetDatasetRequest, GetDatasetResponse, GetDatasetRevisionDownloadLinksRequest, GetDatasetRevisionDownloadLinksResponse, GetDatasetRevisionPerformanceLinksRequest, GetDatasetRevisionPerformanceLinksResponse, GetDatasetRevisionPreviewRequest, GetDatasetRevisionPreviewResponse, GetDatasetRevisionRequest, GetDatasetRevisionResponse, GetDatasetUploadUrisRequest, GetDatasetUploadUrisResponse, GetMaterializedAggregateTileRowCountChartRequest, GetMaterializedAggregateTileRowCountChartResponse, ListDatasetRevisionsRequest, ListDatasetRevisionsResponse, ListDatasetsRequest, ListDatasetsResponse, ListMaterializedAggregateTileFilesRequest, ListMaterializedAggregateTileFilesResponse, ListMaterializedAggregateTilesForTimelineRequest, ListMaterializedAggregateTilesForTimelineResponse, ListMaterializedAggregateTilesRequest, ListMaterializedAggregateTilesResponse, RenameDatasetRequest, RenameDatasetResponse, StreamDatasetRevisionDownloadLinksRequest, StreamDatasetRevisionDownloadLinksResponse
-from .materialized_aggregate_tiles_pb import ListMaterializedAggregateTileTimelinesRequest, ListMaterializedAggregateTileTimelinesResponse
+from .datasets_pb import ArchiveDatasetRevisionRequest, ArchiveDatasetRevisionResponse, ArchiveDatasetRevisionsRequest, ArchiveDatasetRevisionsResponse, DeleteDatasetRequest, DeleteDatasetResponse, DeleteMaterializedAggregateTileRequest, DeleteMaterializedAggregateTileResponse, FinalizeDatasetUploadRequest, FinalizeDatasetUploadResponse, GenerateDatasetEdfsRequest, GenerateDatasetEdfsResponse, GenerateDatasetStatsRequest, GenerateDatasetStatsResponse, GetDatasetEdfsRequest, GetDatasetEdfsResponse, GetDatasetRequest, GetDatasetResponse, GetDatasetRevisionDownloadLinksRequest, GetDatasetRevisionDownloadLinksResponse, GetDatasetRevisionPerformanceLinksRequest, GetDatasetRevisionPerformanceLinksResponse, GetDatasetRevisionPreviewRequest, GetDatasetRevisionPreviewResponse, GetDatasetRevisionRequest, GetDatasetRevisionResponse, GetDatasetUploadUrisRequest, GetDatasetUploadUrisResponse, GetMaterializedAggregateTileDownloadLinksRequest, GetMaterializedAggregateTileDownloadLinksResponse, GetMaterializedAggregateTileRowCountChartRequest, GetMaterializedAggregateTileRowCountChartResponse, GetMaterializedAggregateTileValuesRequest, GetMaterializedAggregateTileValuesResponse, ListDatasetRevisionsRequest, ListDatasetRevisionsResponse, ListDatasetsRequest, ListDatasetsResponse, ListMaterializedAggregateTileFilesRequest, ListMaterializedAggregateTileFilesResponse, ListMaterializedAggregateTilesForTimelineRequest, ListMaterializedAggregateTilesForTimelineResponse, ListMaterializedAggregateTilesRequest, ListMaterializedAggregateTilesResponse, RenameDatasetRequest, RenameDatasetResponse, StreamDatasetRevisionDownloadLinksRequest, StreamDatasetRevisionDownloadLinksResponse
+from .materialized_aggregate_tiles_pb import GetMaterializedAggregateTileFacetValuesRequest, GetMaterializedAggregateTileFacetValuesResponse, GetMaterializedAggregateTileFacetsRequest, GetMaterializedAggregateTileFacetsResponse, ListMaterializedAggregateTileTimelinesRequest, ListMaterializedAggregateTileTimelinesResponse
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Mapping
@@ -25,338 +22,12 @@ if TYPE_CHECKING:
     from connectrpc.interceptor import InterceptorSync
     from connectrpc.request import Headers, RequestContext
 
-
-class DatasetMetadataServiceSync(Protocol):
-    def list_datasets(self, request: ListDatasetsRequest, ctx: RequestContext[ListDatasetsRequest, ListDatasetsResponse]) -> ListDatasetsResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-    def get_dataset(self, request: GetDatasetRequest, ctx: RequestContext[GetDatasetRequest, GetDatasetResponse]) -> GetDatasetResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-    def list_dataset_revisions(self, request: ListDatasetRevisionsRequest, ctx: RequestContext[ListDatasetRevisionsRequest, ListDatasetRevisionsResponse]) -> ListDatasetRevisionsResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-    def get_dataset_revision(self, request: GetDatasetRevisionRequest, ctx: RequestContext[GetDatasetRevisionRequest, GetDatasetRevisionResponse]) -> GetDatasetRevisionResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-    def get_dataset_revision_download_links(self, request: GetDatasetRevisionDownloadLinksRequest, ctx: RequestContext[GetDatasetRevisionDownloadLinksRequest, GetDatasetRevisionDownloadLinksResponse]) -> GetDatasetRevisionDownloadLinksResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-    def get_dataset_revision_performance_links(self, request: GetDatasetRevisionPerformanceLinksRequest, ctx: RequestContext[GetDatasetRevisionPerformanceLinksRequest, GetDatasetRevisionPerformanceLinksResponse]) -> GetDatasetRevisionPerformanceLinksResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-    def stream_dataset_revision_download_links(self, request: StreamDatasetRevisionDownloadLinksRequest, ctx: RequestContext[StreamDatasetRevisionDownloadLinksRequest, StreamDatasetRevisionDownloadLinksResponse]) -> Iterator[StreamDatasetRevisionDownloadLinksResponse]:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-    def rename_dataset(self, request: RenameDatasetRequest, ctx: RequestContext[RenameDatasetRequest, RenameDatasetResponse]) -> RenameDatasetResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-    def archive_dataset_revision(self, request: ArchiveDatasetRevisionRequest, ctx: RequestContext[ArchiveDatasetRevisionRequest, ArchiveDatasetRevisionResponse]) -> ArchiveDatasetRevisionResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-    def archive_dataset_revisions(self, request: ArchiveDatasetRevisionsRequest, ctx: RequestContext[ArchiveDatasetRevisionsRequest, ArchiveDatasetRevisionsResponse]) -> ArchiveDatasetRevisionsResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-    def delete_dataset(self, request: DeleteDatasetRequest, ctx: RequestContext[DeleteDatasetRequest, DeleteDatasetResponse]) -> DeleteDatasetResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-    def list_materialized_aggregate_tiles(self, request: ListMaterializedAggregateTilesRequest, ctx: RequestContext[ListMaterializedAggregateTilesRequest, ListMaterializedAggregateTilesResponse]) -> ListMaterializedAggregateTilesResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-    def list_materialized_aggregate_tile_timelines(self, request: ListMaterializedAggregateTileTimelinesRequest, ctx: RequestContext[ListMaterializedAggregateTileTimelinesRequest, ListMaterializedAggregateTileTimelinesResponse]) -> ListMaterializedAggregateTileTimelinesResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-    def list_materialized_aggregate_tiles_for_timeline(self, request: ListMaterializedAggregateTilesForTimelineRequest, ctx: RequestContext[ListMaterializedAggregateTilesForTimelineRequest, ListMaterializedAggregateTilesForTimelineResponse]) -> ListMaterializedAggregateTilesForTimelineResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-    def list_materialized_aggregate_tile_files(self, request: ListMaterializedAggregateTileFilesRequest, ctx: RequestContext[ListMaterializedAggregateTileFilesRequest, ListMaterializedAggregateTileFilesResponse]) -> ListMaterializedAggregateTileFilesResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-    def get_materialized_aggregate_tile_row_count_chart(self, request: GetMaterializedAggregateTileRowCountChartRequest, ctx: RequestContext[GetMaterializedAggregateTileRowCountChartRequest, GetMaterializedAggregateTileRowCountChartResponse]) -> GetMaterializedAggregateTileRowCountChartResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-    def delete_materialized_aggregate_tile(self, request: DeleteMaterializedAggregateTileRequest, ctx: RequestContext[DeleteMaterializedAggregateTileRequest, DeleteMaterializedAggregateTileResponse]) -> DeleteMaterializedAggregateTileResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-    def get_dataset_revision_preview(self, request: GetDatasetRevisionPreviewRequest, ctx: RequestContext[GetDatasetRevisionPreviewRequest, GetDatasetRevisionPreviewResponse]) -> GetDatasetRevisionPreviewResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-    def generate_dataset_stats(self, request: GenerateDatasetStatsRequest, ctx: RequestContext[GenerateDatasetStatsRequest, GenerateDatasetStatsResponse]) -> GenerateDatasetStatsResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-    def get_dataset_edfs(self, request: GetDatasetEdfsRequest, ctx: RequestContext[GetDatasetEdfsRequest, GetDatasetEdfsResponse]) -> GetDatasetEdfsResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-    def generate_dataset_edfs(self, request: GenerateDatasetEdfsRequest, ctx: RequestContext[GenerateDatasetEdfsRequest, GenerateDatasetEdfsResponse]) -> GenerateDatasetEdfsResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-    def get_dataset_upload_uris(self, request: GetDatasetUploadUrisRequest, ctx: RequestContext[GetDatasetUploadUrisRequest, GetDatasetUploadUrisResponse]) -> GetDatasetUploadUrisResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-    def finalize_dataset_upload(self, request: FinalizeDatasetUploadRequest, ctx: RequestContext[FinalizeDatasetUploadRequest, FinalizeDatasetUploadResponse]) -> FinalizeDatasetUploadResponse:
-        raise ConnectError(Code.UNIMPLEMENTED, 'Not implemented')
-
-
-class DatasetMetadataServiceWSGIApplication(ConnectWSGIApplication):
-    def __init__(
-        self,
-        service: DatasetMetadataServiceSync,
-        interceptors: Iterable[InterceptorSync] = (),
-        read_max_bytes: int | None = None,
-        compressions: Iterable[Compression] | None = None,
-        codecs: Iterable[Codec] | None = None,
-    ) -> None:
-        super().__init__(
-            endpoints={
-                "/chalk.server.v1.DatasetMetadataService/ListDatasets": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="ListDatasets",
-                        service_name="chalk.server.v1.DatasetMetadataService",
-                        input=ListDatasetsRequest,
-                        output=ListDatasetsResponse,
-                        idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
-                    ),
-                    function=service.list_datasets,
-                ),
-                "/chalk.server.v1.DatasetMetadataService/GetDataset": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="GetDataset",
-                        service_name="chalk.server.v1.DatasetMetadataService",
-                        input=GetDatasetRequest,
-                        output=GetDatasetResponse,
-                        idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
-                    ),
-                    function=service.get_dataset,
-                ),
-                "/chalk.server.v1.DatasetMetadataService/ListDatasetRevisions": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="ListDatasetRevisions",
-                        service_name="chalk.server.v1.DatasetMetadataService",
-                        input=ListDatasetRevisionsRequest,
-                        output=ListDatasetRevisionsResponse,
-                        idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
-                    ),
-                    function=service.list_dataset_revisions,
-                ),
-                "/chalk.server.v1.DatasetMetadataService/GetDatasetRevision": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="GetDatasetRevision",
-                        service_name="chalk.server.v1.DatasetMetadataService",
-                        input=GetDatasetRevisionRequest,
-                        output=GetDatasetRevisionResponse,
-                        idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
-                    ),
-                    function=service.get_dataset_revision,
-                ),
-                "/chalk.server.v1.DatasetMetadataService/GetDatasetRevisionDownloadLinks": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="GetDatasetRevisionDownloadLinks",
-                        service_name="chalk.server.v1.DatasetMetadataService",
-                        input=GetDatasetRevisionDownloadLinksRequest,
-                        output=GetDatasetRevisionDownloadLinksResponse,
-                        idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
-                    ),
-                    function=service.get_dataset_revision_download_links,
-                ),
-                "/chalk.server.v1.DatasetMetadataService/GetDatasetRevisionPerformanceLinks": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="GetDatasetRevisionPerformanceLinks",
-                        service_name="chalk.server.v1.DatasetMetadataService",
-                        input=GetDatasetRevisionPerformanceLinksRequest,
-                        output=GetDatasetRevisionPerformanceLinksResponse,
-                        idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
-                    ),
-                    function=service.get_dataset_revision_performance_links,
-                ),
-                "/chalk.server.v1.DatasetMetadataService/StreamDatasetRevisionDownloadLinks": EndpointSync.server_stream(
-                    method=MethodInfo(
-                        name="StreamDatasetRevisionDownloadLinks",
-                        service_name="chalk.server.v1.DatasetMetadataService",
-                        input=StreamDatasetRevisionDownloadLinksRequest,
-                        output=StreamDatasetRevisionDownloadLinksResponse,
-                        idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
-                    ),
-                    function=service.stream_dataset_revision_download_links,
-                ),
-                "/chalk.server.v1.DatasetMetadataService/RenameDataset": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="RenameDataset",
-                        service_name="chalk.server.v1.DatasetMetadataService",
-                        input=RenameDatasetRequest,
-                        output=RenameDatasetResponse,
-                        idempotency_level=IdempotencyLevel.IDEMPOTENT,
-                    ),
-                    function=service.rename_dataset,
-                ),
-                "/chalk.server.v1.DatasetMetadataService/ArchiveDatasetRevision": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="ArchiveDatasetRevision",
-                        service_name="chalk.server.v1.DatasetMetadataService",
-                        input=ArchiveDatasetRevisionRequest,
-                        output=ArchiveDatasetRevisionResponse,
-                        idempotency_level=IdempotencyLevel.IDEMPOTENT,
-                    ),
-                    function=service.archive_dataset_revision,
-                ),
-                "/chalk.server.v1.DatasetMetadataService/ArchiveDatasetRevisions": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="ArchiveDatasetRevisions",
-                        service_name="chalk.server.v1.DatasetMetadataService",
-                        input=ArchiveDatasetRevisionsRequest,
-                        output=ArchiveDatasetRevisionsResponse,
-                        idempotency_level=IdempotencyLevel.IDEMPOTENT,
-                    ),
-                    function=service.archive_dataset_revisions,
-                ),
-                "/chalk.server.v1.DatasetMetadataService/DeleteDataset": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="DeleteDataset",
-                        service_name="chalk.server.v1.DatasetMetadataService",
-                        input=DeleteDatasetRequest,
-                        output=DeleteDatasetResponse,
-                        idempotency_level=IdempotencyLevel.IDEMPOTENT,
-                    ),
-                    function=service.delete_dataset,
-                ),
-                "/chalk.server.v1.DatasetMetadataService/ListMaterializedAggregateTiles": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="ListMaterializedAggregateTiles",
-                        service_name="chalk.server.v1.DatasetMetadataService",
-                        input=ListMaterializedAggregateTilesRequest,
-                        output=ListMaterializedAggregateTilesResponse,
-                        idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
-                    ),
-                    function=service.list_materialized_aggregate_tiles,
-                ),
-                "/chalk.server.v1.DatasetMetadataService/ListMaterializedAggregateTileTimelines": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="ListMaterializedAggregateTileTimelines",
-                        service_name="chalk.server.v1.DatasetMetadataService",
-                        input=ListMaterializedAggregateTileTimelinesRequest,
-                        output=ListMaterializedAggregateTileTimelinesResponse,
-                        idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
-                    ),
-                    function=service.list_materialized_aggregate_tile_timelines,
-                ),
-                "/chalk.server.v1.DatasetMetadataService/ListMaterializedAggregateTilesForTimeline": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="ListMaterializedAggregateTilesForTimeline",
-                        service_name="chalk.server.v1.DatasetMetadataService",
-                        input=ListMaterializedAggregateTilesForTimelineRequest,
-                        output=ListMaterializedAggregateTilesForTimelineResponse,
-                        idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
-                    ),
-                    function=service.list_materialized_aggregate_tiles_for_timeline,
-                ),
-                "/chalk.server.v1.DatasetMetadataService/ListMaterializedAggregateTileFiles": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="ListMaterializedAggregateTileFiles",
-                        service_name="chalk.server.v1.DatasetMetadataService",
-                        input=ListMaterializedAggregateTileFilesRequest,
-                        output=ListMaterializedAggregateTileFilesResponse,
-                        idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
-                    ),
-                    function=service.list_materialized_aggregate_tile_files,
-                ),
-                "/chalk.server.v1.DatasetMetadataService/GetMaterializedAggregateTileRowCountChart": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="GetMaterializedAggregateTileRowCountChart",
-                        service_name="chalk.server.v1.DatasetMetadataService",
-                        input=GetMaterializedAggregateTileRowCountChartRequest,
-                        output=GetMaterializedAggregateTileRowCountChartResponse,
-                        idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
-                    ),
-                    function=service.get_materialized_aggregate_tile_row_count_chart,
-                ),
-                "/chalk.server.v1.DatasetMetadataService/DeleteMaterializedAggregateTile": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="DeleteMaterializedAggregateTile",
-                        service_name="chalk.server.v1.DatasetMetadataService",
-                        input=DeleteMaterializedAggregateTileRequest,
-                        output=DeleteMaterializedAggregateTileResponse,
-                        idempotency_level=IdempotencyLevel.IDEMPOTENT,
-                    ),
-                    function=service.delete_materialized_aggregate_tile,
-                ),
-                "/chalk.server.v1.DatasetMetadataService/GetDatasetRevisionPreview": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="GetDatasetRevisionPreview",
-                        service_name="chalk.server.v1.DatasetMetadataService",
-                        input=GetDatasetRevisionPreviewRequest,
-                        output=GetDatasetRevisionPreviewResponse,
-                        idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
-                    ),
-                    function=service.get_dataset_revision_preview,
-                ),
-                "/chalk.server.v1.DatasetMetadataService/GenerateDatasetStats": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="GenerateDatasetStats",
-                        service_name="chalk.server.v1.DatasetMetadataService",
-                        input=GenerateDatasetStatsRequest,
-                        output=GenerateDatasetStatsResponse,
-                        idempotency_level=IdempotencyLevel.UNKNOWN,
-                    ),
-                    function=service.generate_dataset_stats,
-                ),
-                "/chalk.server.v1.DatasetMetadataService/GetDatasetEdfs": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="GetDatasetEdfs",
-                        service_name="chalk.server.v1.DatasetMetadataService",
-                        input=GetDatasetEdfsRequest,
-                        output=GetDatasetEdfsResponse,
-                        idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
-                    ),
-                    function=service.get_dataset_edfs,
-                ),
-                "/chalk.server.v1.DatasetMetadataService/GenerateDatasetEdfs": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="GenerateDatasetEdfs",
-                        service_name="chalk.server.v1.DatasetMetadataService",
-                        input=GenerateDatasetEdfsRequest,
-                        output=GenerateDatasetEdfsResponse,
-                        idempotency_level=IdempotencyLevel.UNKNOWN,
-                    ),
-                    function=service.generate_dataset_edfs,
-                ),
-                "/chalk.server.v1.DatasetMetadataService/GetDatasetUploadUris": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="GetDatasetUploadUris",
-                        service_name="chalk.server.v1.DatasetMetadataService",
-                        input=GetDatasetUploadUrisRequest,
-                        output=GetDatasetUploadUrisResponse,
-                        idempotency_level=IdempotencyLevel.UNKNOWN,
-                    ),
-                    function=service.get_dataset_upload_uris,
-                ),
-                "/chalk.server.v1.DatasetMetadataService/FinalizeDatasetUpload": EndpointSync.unary(
-                    method=MethodInfo(
-                        name="FinalizeDatasetUpload",
-                        service_name="chalk.server.v1.DatasetMetadataService",
-                        input=FinalizeDatasetUploadRequest,
-                        output=FinalizeDatasetUploadResponse,
-                        idempotency_level=IdempotencyLevel.UNKNOWN,
-                    ),
-                    function=service.finalize_dataset_upload,
-                ),
-            },
-            interceptors=interceptors,
-            read_max_bytes=read_max_bytes,
-            compressions=compressions,
-            codecs=codecs,
-        )
-
-    @property
-    def path(self) -> str:
-        """Returns the URL path to mount the application to when serving multiple applications."""
-        return "/chalk.server.v1.DatasetMetadataService"
-
-
 class DatasetMetadataServiceClientSync(ConnectClientSync):
     def list_datasets(
         self,
         request: ListDatasetsRequest,
         *,
-        headers: Headers | Mapping[str, str] | None = None, 
+        headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> ListDatasetsResponse:
@@ -377,7 +48,7 @@ class DatasetMetadataServiceClientSync(ConnectClientSync):
         self,
         request: GetDatasetRequest,
         *,
-        headers: Headers | Mapping[str, str] | None = None, 
+        headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> GetDatasetResponse:
@@ -398,7 +69,7 @@ class DatasetMetadataServiceClientSync(ConnectClientSync):
         self,
         request: ListDatasetRevisionsRequest,
         *,
-        headers: Headers | Mapping[str, str] | None = None, 
+        headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> ListDatasetRevisionsResponse:
@@ -419,7 +90,7 @@ class DatasetMetadataServiceClientSync(ConnectClientSync):
         self,
         request: GetDatasetRevisionRequest,
         *,
-        headers: Headers | Mapping[str, str] | None = None, 
+        headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> GetDatasetRevisionResponse:
@@ -440,7 +111,7 @@ class DatasetMetadataServiceClientSync(ConnectClientSync):
         self,
         request: GetDatasetRevisionDownloadLinksRequest,
         *,
-        headers: Headers | Mapping[str, str] | None = None, 
+        headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> GetDatasetRevisionDownloadLinksResponse:
@@ -461,7 +132,7 @@ class DatasetMetadataServiceClientSync(ConnectClientSync):
         self,
         request: GetDatasetRevisionPerformanceLinksRequest,
         *,
-        headers: Headers | Mapping[str, str] | None = None, 
+        headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> GetDatasetRevisionPerformanceLinksResponse:
@@ -482,9 +153,18 @@ class DatasetMetadataServiceClientSync(ConnectClientSync):
         self,
         request: StreamDatasetRevisionDownloadLinksRequest,
         *,
-        headers: Headers | Mapping[str, str] | None = None, 
+        headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> Iterator[StreamDatasetRevisionDownloadLinksResponse]:
+        """
+        Server-streaming variant of GetDatasetRevisionDownloadLinks. Each emitted
+        message carries a chunk of download links for the given revision; clients
+        must concatenate the repeated fields across messages to obtain the full
+        set. Messages that contain signed URLs also carry the shared expiration
+        timestamp. Use this RPC when a single response would exceed gRPC
+        message-size limits or when callers want to begin downloading before all
+        URLs have been signed.
+        """
         return self.execute_server_stream(
             request=request,
             method=MethodInfo(
@@ -501,7 +181,7 @@ class DatasetMetadataServiceClientSync(ConnectClientSync):
         self,
         request: RenameDatasetRequest,
         *,
-        headers: Headers | Mapping[str, str] | None = None, 
+        headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> RenameDatasetResponse:
         return self.execute_unary(
@@ -520,7 +200,7 @@ class DatasetMetadataServiceClientSync(ConnectClientSync):
         self,
         request: ArchiveDatasetRevisionRequest,
         *,
-        headers: Headers | Mapping[str, str] | None = None, 
+        headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> ArchiveDatasetRevisionResponse:
         return self.execute_unary(
@@ -539,7 +219,7 @@ class DatasetMetadataServiceClientSync(ConnectClientSync):
         self,
         request: ArchiveDatasetRevisionsRequest,
         *,
-        headers: Headers | Mapping[str, str] | None = None, 
+        headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> ArchiveDatasetRevisionsResponse:
         return self.execute_unary(
@@ -558,7 +238,7 @@ class DatasetMetadataServiceClientSync(ConnectClientSync):
         self,
         request: DeleteDatasetRequest,
         *,
-        headers: Headers | Mapping[str, str] | None = None, 
+        headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> DeleteDatasetResponse:
         return self.execute_unary(
@@ -577,7 +257,7 @@ class DatasetMetadataServiceClientSync(ConnectClientSync):
         self,
         request: ListMaterializedAggregateTilesRequest,
         *,
-        headers: Headers | Mapping[str, str] | None = None, 
+        headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> ListMaterializedAggregateTilesResponse:
@@ -598,10 +278,14 @@ class DatasetMetadataServiceClientSync(ConnectClientSync):
         self,
         request: ListMaterializedAggregateTileTimelinesRequest,
         *,
-        headers: Headers | Mapping[str, str] | None = None, 
+        headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> ListMaterializedAggregateTileTimelinesResponse:
+        """
+        Timeline skeletons for the TilesTimeline view; manifests are fetched
+        separately via ListMaterializedAggregateTilesForTimeline.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -615,14 +299,65 @@ class DatasetMetadataServiceClientSync(ConnectClientSync):
             timeout_ms=timeout_ms,
             use_get=use_get,
         )
+    def get_materialized_aggregate_tile_facets(
+        self,
+        request: GetMaterializedAggregateTileFacetsRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+        use_get: bool = False,
+    ) -> GetMaterializedAggregateTileFacetsResponse:
+        """
+        The TilesTimeline filter vocabulary, so the client keeps no parallel copy of it.
+        """
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="GetMaterializedAggregateTileFacets",
+                service_name="chalk.server.v1.DatasetMetadataService",
+                input=GetMaterializedAggregateTileFacetsRequest,
+                output=GetMaterializedAggregateTileFacetsResponse,
+                idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+            use_get=use_get,
+        )
+    def get_materialized_aggregate_tile_facet_values(
+        self,
+        request: GetMaterializedAggregateTileFacetValuesRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+        use_get: bool = False,
+    ) -> GetMaterializedAggregateTileFacetValuesResponse:
+        """
+        Facet values and counts for the TilesTimeline filter menu.
+        """
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="GetMaterializedAggregateTileFacetValues",
+                service_name="chalk.server.v1.DatasetMetadataService",
+                input=GetMaterializedAggregateTileFacetValuesRequest,
+                output=GetMaterializedAggregateTileFacetValuesResponse,
+                idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+            use_get=use_get,
+        )
     def list_materialized_aggregate_tiles_for_timeline(
         self,
         request: ListMaterializedAggregateTilesForTimelineRequest,
         *,
-        headers: Headers | Mapping[str, str] | None = None, 
+        headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> ListMaterializedAggregateTilesForTimelineResponse:
+        """
+        Full tile manifests for one timeline (one materialization_key_hash).
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -640,7 +375,7 @@ class DatasetMetadataServiceClientSync(ConnectClientSync):
         self,
         request: ListMaterializedAggregateTileFilesRequest,
         *,
-        headers: Headers | Mapping[str, str] | None = None, 
+        headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> ListMaterializedAggregateTileFilesResponse:
@@ -661,10 +396,17 @@ class DatasetMetadataServiceClientSync(ConnectClientSync):
         self,
         request: GetMaterializedAggregateTileRowCountChartRequest,
         *,
-        headers: Headers | Mapping[str, str] | None = None, 
+        headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> GetMaterializedAggregateTileRowCountChartResponse:
+        """
+        Row-count-per-tile histogram for one timeline (one
+        materialization_key_hash). Each x point is a tile's coverage_lower_bound;
+        the value is the total stored row count of the newest manifest covering
+        that window, i.e. the number of distinct (primary key, group, bucket)
+        rows materialized for the window.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -678,11 +420,62 @@ class DatasetMetadataServiceClientSync(ConnectClientSync):
             timeout_ms=timeout_ms,
             use_get=use_get,
         )
+    def get_materialized_aggregate_tile_values(
+        self,
+        request: GetMaterializedAggregateTileValuesRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+        use_get: bool = False,
+    ) -> GetMaterializedAggregateTileValuesResponse:
+        """
+        Returns one extracted aggregate value per bucket for a primary key over a
+        bounded range. This endpoint intentionally does not accept arbitrary SQL.
+        """
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="GetMaterializedAggregateTileValues",
+                service_name="chalk.server.v1.DatasetMetadataService",
+                input=GetMaterializedAggregateTileValuesRequest,
+                output=GetMaterializedAggregateTileValuesResponse,
+                idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+            use_get=use_get,
+        )
+    def get_materialized_aggregate_tile_download_links(
+        self,
+        request: GetMaterializedAggregateTileDownloadLinksRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+        use_get: bool = False,
+    ) -> GetMaterializedAggregateTileDownloadLinksResponse:
+        """
+        Signed download URLs for the raw parquet files a tile manifest points at.
+        The URIs are read from the manifest's own file rows, scoped to the caller's
+        environment, so a caller cannot ask the server to sign an arbitrary object.
+        """
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="GetMaterializedAggregateTileDownloadLinks",
+                service_name="chalk.server.v1.DatasetMetadataService",
+                input=GetMaterializedAggregateTileDownloadLinksRequest,
+                output=GetMaterializedAggregateTileDownloadLinksResponse,
+                idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+            use_get=use_get,
+        )
     def delete_materialized_aggregate_tile(
         self,
         request: DeleteMaterializedAggregateTileRequest,
         *,
-        headers: Headers | Mapping[str, str] | None = None, 
+        headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> DeleteMaterializedAggregateTileResponse:
         return self.execute_unary(
@@ -701,7 +494,7 @@ class DatasetMetadataServiceClientSync(ConnectClientSync):
         self,
         request: GetDatasetRevisionPreviewRequest,
         *,
-        headers: Headers | Mapping[str, str] | None = None, 
+        headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> GetDatasetRevisionPreviewResponse:
@@ -722,7 +515,7 @@ class DatasetMetadataServiceClientSync(ConnectClientSync):
         self,
         request: GenerateDatasetStatsRequest,
         *,
-        headers: Headers | Mapping[str, str] | None = None, 
+        headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> GenerateDatasetStatsResponse:
         return self.execute_unary(
@@ -741,7 +534,7 @@ class DatasetMetadataServiceClientSync(ConnectClientSync):
         self,
         request: GetDatasetEdfsRequest,
         *,
-        headers: Headers | Mapping[str, str] | None = None, 
+        headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
         use_get: bool = False,
     ) -> GetDatasetEdfsResponse:
@@ -762,7 +555,7 @@ class DatasetMetadataServiceClientSync(ConnectClientSync):
         self,
         request: GenerateDatasetEdfsRequest,
         *,
-        headers: Headers | Mapping[str, str] | None = None, 
+        headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> GenerateDatasetEdfsResponse:
         return self.execute_unary(
@@ -781,9 +574,15 @@ class DatasetMetadataServiceClientSync(ConnectClientSync):
         self,
         request: GetDatasetUploadUrisRequest,
         *,
-        headers: Headers | Mapping[str, str] | None = None, 
+        headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> GetDatasetUploadUrisResponse:
+        """
+        Mint a signed upload URI for a client-side file. Call once per file; the
+        first call leaves upload_session_id unset and the server returns one.
+        Subsequent calls should pass the same upload_session_id so the server can
+        group all objects together under one finalize.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(
@@ -800,9 +599,17 @@ class DatasetMetadataServiceClientSync(ConnectClientSync):
         self,
         request: FinalizeDatasetUploadRequest,
         *,
-        headers: Headers | Mapping[str, str] | None = None, 
+        headers: Headers | Mapping[str, str] | None = None,
         timeout_ms: int | None = None,
     ) -> FinalizeDatasetUploadResponse:
+        """
+        Finalize an upload session. The server records a new dataset revision
+        pointing at all objects uploaded under upload_session_id and exposes the
+        dataset for queries. Each upload_session_id may be finalized at most once;
+        see FinalizeDatasetUploadRequest for the conflict contract. Not marked
+        IDEMPOTENT because automatic retries could race against finalize completion
+        and surface confusing ALREADY_EXISTS errors to callers.
+        """
         return self.execute_unary(
             request=request,
             method=MethodInfo(

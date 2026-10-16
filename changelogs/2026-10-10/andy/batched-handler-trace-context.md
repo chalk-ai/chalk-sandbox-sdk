@@ -1,0 +1,1 @@
+- Fix spans opened in a batched function body (`max_batching_size`) becoming orphan root traces: the generated handler now runs each row in a copy of the caller context, so they parent to `chalkcompute.remote_function.invoke`.

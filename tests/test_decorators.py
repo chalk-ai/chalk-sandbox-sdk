@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from chalkcompute import traced
+from chalkcompute import ComputeClass, NetworkPolicy, traced
 from chalkcompute._cls import RemoteClass, _NoOpClass, after, before, cls, method
 from chalkcompute._cls import _strip_chalkcompute_from_class_source
 from chalkcompute._function import (
@@ -50,7 +50,7 @@ def test_function_decorator_accepts_called_and_uncalled_forms(
     def bare(x: int) -> int:
         return x
 
-    @function()
+    @function(compute_class=ComputeClass.HOST, network_policy=NetworkPolicy())
     def called(x: int) -> int:
         return x
 
@@ -58,6 +58,10 @@ def test_function_decorator_accepts_called_and_uncalled_forms(
     called._wait_for_background_deploy()
     assert isinstance(bare, RemoteFunction)
     assert isinstance(called, RemoteFunction)
+    assert bare._compute_class is None
+    assert called._compute_class == ComputeClass.HOST
+    assert bare._network_policy is None
+    assert isinstance(called._network_policy, NetworkPolicy)
     # Distinct registered names deploy concurrently, so completion order is
     # not deterministic — assert on membership rather than sequence.
     assert {deployed_fn._func_name for deployed_fn in deployed} == {"bare", "called"}
@@ -296,7 +300,7 @@ def test_class_decorators_accept_called_and_uncalled_forms(
         def shutdown(self) -> None:
             pass
 
-    @cls()
+    @cls(compute_class=ComputeClass.HOST, network_policy=NetworkPolicy())
     class CalledAdder:
         @before()
         def startup(self) -> None:
@@ -312,6 +316,10 @@ def test_class_decorators_accept_called_and_uncalled_forms(
 
     assert isinstance(BareAdder, RemoteClass)
     assert isinstance(CalledAdder, RemoteClass)
+    assert BareAdder._compute_class is None
+    assert CalledAdder._compute_class == ComputeClass.HOST
+    assert BareAdder._network_policy is None
+    assert isinstance(CalledAdder._network_policy, NetworkPolicy)
     assert [deployed_class.class_name for deployed_class in deployed] == [
         "BareAdder",
         "CalledAdder",

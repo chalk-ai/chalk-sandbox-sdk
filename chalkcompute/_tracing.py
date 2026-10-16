@@ -15,7 +15,7 @@ import importlib
 import inspect
 import os
 import weakref
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from typing import Any, NamedTuple, TypeVar, cast, overload
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -46,6 +46,22 @@ This module owns these constants because it is a leaf — ``_trace`` re-exports
 them for the public API and ``_call_context`` reads the header and row-metadata
 keys, so the spellings cannot drift between the three.
 """
+
+ENVIRONMENT_ID_ATTRIBUTE = "chalk.environment_id"
+"""Attribute naming the Chalk environment a span belongs to.
+
+Chalk's ClickHouse `EnvironmentId` column reads this off the span's *resource*, which the
+remote-call runtime sets from :data:`ENVIRONMENT_ID_ENV_VAR` — correct for this process,
+which serves exactly one environment. It is additionally sent as baggage on outbound calls
+so a *shared* service, which serves many environments and therefore cannot put it on a
+process-wide resource, can attribute the call it is serving.
+
+Interim: baggage makes this caller-asserted, so it is an attribution hint, not a tenancy
+boundary. META-533 tracks moving the shared-service side to the request's JWT principal.
+"""
+
+ENVIRONMENT_ID_ENV_VAR = "CHALK_ENVIRONMENT_ID"
+"""Environment variable every Chalk workload pod carries its environment id in."""
 
 SESSION_ID_ROW_METADATA_KEY = "__chalk__session_id__"
 """Key under which a row's metadata blob may name the session that row belongs to.
@@ -469,6 +485,27 @@ def has_current_trace_context() -> bool:
     return bool(span_context.is_valid)
 
 
+def _outbound_context() -> Any | None:
+    """The current context, plus this process's environment id in baggage.
+
+    Added at injection rather than attached to the local context: the environment is a
+    property of this process, so locally-started spans already carry it on their resource,
+    and putting it in the ambient context would only duplicate it onto every one of them.
+    On the wire it is the only way a shared service — one deployment serving many
+    environments, so its resource cannot name any of them — can attribute the call.
+
+    Returns ``None`` when there is no environment id or no baggage API, which
+    ``inject`` reads as "use the current context".
+    """
+    environment_id = os.environ.get(ENVIRONMENT_ID_ENV_VAR)
+    if not environment_id:
+        return None
+    baggage_api = _get_otel_module("opentelemetry.baggage")
+    if baggage_api is None:
+        return None
+    return baggage_api.set_baggage(ENVIRONMENT_ID_ATTRIBUTE, environment_id)
+
+
 def current_trace_metadata() -> list[tuple[str, str]]:
     """Return W3C trace metadata for the current OpenTelemetry context."""
     if not has_current_trace_context():
@@ -480,7 +517,7 @@ def current_trace_metadata() -> list[tuple[str, str]]:
 
     _ensure_initialized()
     carrier: dict[str, str] = {}
-    propagate_api.inject(carrier)
+    propagate_api.inject(carrier, context=_outbound_context())
     return [
         (key, value)
         for key, value in carrier.items()
@@ -507,7 +544,7 @@ def has_trace_metadata(metadata: list[tuple[str, str]]) -> bool:
 
 
 @contextlib.contextmanager
-def _span(name: str) -> Iterator[Any]:
+def _span(name: str) -> Generator[Any, None, None]:
     if _is_remote_tracing_off():
         yield None
         return
@@ -649,7 +686,9 @@ def traced(arg: str | F | None = None) -> Callable[[F], F] | F:
 
 
 @contextlib.contextmanager
-def remote_function_call_span(function_name: str, call_type: str) -> Iterator[Any]:
+def remote_function_call_span(
+    function_name: str, call_type: str
+) -> Generator[Any, None, None]:
     """Trace one outbound call from this process to another compute function."""
     if _is_remote_tracing_off() or not has_current_trace_context():
         yield None

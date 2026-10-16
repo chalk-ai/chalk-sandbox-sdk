@@ -10,3 +10,4 @@ chalkcompute/_remote_call_native*.so
 .claude/worktrees
 /tmp/
 benchmark-results/
+.DS_Store

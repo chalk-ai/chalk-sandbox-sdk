@@ -24,6 +24,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "ImageBuildError": ("chalkcompute._container", "ImageBuildError"),
     "KernelPolicy": ("chalkcompute._containerspec", "KernelPolicy"),
     "ComputeClass": ("chalkcompute._containerspec", "ComputeClass"),
+    "ExecutionBackend": ("chalkcompute._containerspec", "ExecutionBackend"),
     "SSHDest": ("chalkcompute._containerspec", "SSHDest"),
     "SshDest": ("chalkcompute._containerspec", "SshDest"),
     "NetworkPolicy": ("chalkcompute._containerspec", "NetworkPolicy"),
@@ -45,6 +46,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "FunctionCallHandle": ("chalkcompute._function", "FunctionCallHandle"),
     "FunctionVersionInfo": ("chalkcompute._function", "FunctionVersionInfo"),
     "gather": ("chalkcompute._function", "gather"),
+    "gather_handles": ("chalkcompute._gather", "gather_handles"),
     # _sql.py
     "SQLClient": ("chalkcompute._sql", "SQLClient"),
     "SQLResult": ("chalkcompute._sql", "SQLResult"),
@@ -82,6 +84,10 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "chalkcompute._evaluation",
         "EvaluationRunFailedError",
     ),
+    "EvaluationRunExecutionMode": (
+        "chalkcompute._evaluation",
+        "EvaluationRunExecutionMode",
+    ),
     "EvaluationRunStatus": ("chalkcompute._evaluation", "EvaluationRunStatus"),
     "EvaluationScorer": ("chalkcompute._evaluation", "EvaluationScorer"),
     "EvaluationScorerResult": (
@@ -117,6 +123,16 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "chalkcompute._connect",
         "build_image_with_volumes_from_spec",
     ),
+    # _workload_identity.py
+    "OIDCToken": ("chalkcompute._workload_identity", "OIDCToken"),
+    "WorkloadIdentityTokenError": (
+        "chalkcompute._workload_identity",
+        "WorkloadIdentityTokenError",
+    ),
+    "WorkloadIdentityTokenSource": (
+        "chalkcompute._workload_identity",
+        "WorkloadIdentityTokenSource",
+    ),
     # _http.py
     "HTTPHeaders": ("chalkcompute._http", "HTTPHeaders"),
     "HTTPResponse": ("chalkcompute._http", "HTTPResponse"),
@@ -136,6 +152,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "GitFileStatus": ("chalkcompute._sandbox_git", "GitFileStatus"),
     "GitStatus": ("chalkcompute._sandbox_git", "GitStatus"),
     "GitRemote": ("chalkcompute._sandbox_git", "GitRemote"),
+    "GitConfig": ("chalkcompute._git", "GitConfig"),
     "GitError": ("chalkcompute._git", "GitError"),
     # _sandbox.py
     "ExecError": ("chalkcompute._sandbox", "ExecError"),
@@ -144,6 +161,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "ExecResult": ("chalkcompute._sandbox", "ExecResult"),
     "PythonExecution": ("chalkcompute._sandbox", "PythonExecution"),
     "PythonSkippedArtifact": ("chalkcompute._sandbox", "PythonSkippedArtifact"),
+    "ResourceDetector": ("chalkcompute._containerspec", "ResourceDetector"),
     "RestartPolicy": ("chalkcompute._containerspec", "RestartPolicy"),
     "Sandbox": ("chalkcompute._sandbox", "Sandbox"),
     "SandboxBuildError": ("chalkcompute._sandbox", "SandboxBuildError"),
@@ -173,6 +191,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "ScaleFromZeroRequestPolicy",
     ),
     "ReadinessProbe": ("chalkcompute._scaling_group", "ReadinessProbe"),
+    "StartupProbe": ("chalkcompute._scaling_group", "StartupProbe"),
     "CronScalingTrigger": ("chalkcompute._scaling_group", "CronScalingTrigger"),
     "CronScalingWindow": ("chalkcompute._scaling_group", "CronScalingWindow"),
     # _workflow_worker.py
@@ -207,6 +226,9 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "TrainingRunHandle": ("chalkcompute._training", "TrainingRunHandle"),
     "TrainingError": ("chalkcompute._training", "TrainingError"),
     "training": ("chalkcompute._training", "training"),
+    # _workflow.py
+    "WorkflowError": ("chalkcompute._workflow", "WorkflowError"),
+    "trigger_workflow": ("chalkcompute._workflow", "trigger_workflow"),
 }
 
 
