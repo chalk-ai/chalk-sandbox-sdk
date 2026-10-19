@@ -283,6 +283,9 @@ class FakeConnectClient(StubbedConnectClient):
     def grpc_engine_target(self) -> tuple[str, bool]:
         return "engine.chalk.test:443", True
 
+    def dataplane_api_server_target(self) -> tuple[str, bool]:
+        return "dataplane-api-server.chalk.test:443", True
+
 
 class ServiceAuthOnlyConnectClient:
     def _ensure_auth(self) -> None:
@@ -291,10 +294,16 @@ class ServiceAuthOnlyConnectClient:
     def grpc_engine_target(self) -> tuple[str, bool]:
         raise AssertionError("OAuth grpc engine discovery should not be used")
 
+    def dataplane_api_server_target(self) -> tuple[str, bool]:
+        return "dataplane-api-server.chalk.test:443", True
+
 
 class ServiceAuthDiscoveredEngineConnectClient:
     def grpc_engine_target(self) -> tuple[str, bool]:
         return "discovered-engine.chalk.test:443", True
+
+    def dataplane_api_server_target(self) -> tuple[str, bool]:
+        return "dataplane-api-server.chalk.test:443", True
 
 
 class RotatingIdentityConnectClient(FakeConnectClient):
@@ -911,9 +920,9 @@ def test_defer_get_and_purge_use_queue_client() -> None:
     assert fn.purge() == 7
 
     client = FakeRemoteCallClient.instances[0]
-    assert client.endpoint == "engine.chalk.test:443"
+    assert client.endpoint == "dataplane-api-server.chalk.test:443"
     assert client.use_tls is True
-    assert ("x-chalk-deployment-type", "function-queue") in client.metadata
+    assert ("x-chalk-deployment-type", "function-queue") not in client.metadata
     assert client.enqueues[0][0] == "catalog-add"
     assert _read_input(client.enqueues[0][1]) == {"x": [98]}
     assert client.enqueues[0][2] == []
@@ -947,7 +956,10 @@ def test_poll_refreshes_stale_queue_client_and_retries() -> None:
 
     assert len(FakeRemoteCallClient.instances) == 2
     assert FakeRemoteCallClient.instances[0].closed is True
-    assert FakeRemoteCallClient.instances[1].endpoint == "engine.chalk.test:443"
+    assert (
+        FakeRemoteCallClient.instances[1].endpoint
+        == "dataplane-api-server.chalk.test:443"
+    )
 
 
 def test_deferred_get_can_be_awaited_in_async_context() -> None:
@@ -1154,15 +1166,15 @@ def test_queue_call_uses_service_auth_engine_from_environment(monkeypatch) -> No
     assert handle.get() == 99
 
     client = FakeRemoteCallClient.instances[0]
-    assert client.endpoint == "engine.chalk.test:443"
+    assert client.endpoint == "dataplane-api-server.chalk.test:443"
     assert client.use_tls is True
     assert ("x-chalk-env-id", "env-service-auth") in client.metadata
-    assert ("x-chalk-deployment-type", "function-queue") in client.metadata
+    assert ("x-chalk-deployment-type", "function-queue") not in client.metadata
     assert client.kwargs["auth_endpoint"] == "https://api.chalk.test"
     assert client.kwargs["exchange_token"] == "exchange-token"
 
 
-def test_queue_call_uses_service_auth_engine_from_token_response(monkeypatch) -> None:
+def test_queue_call_uses_service_auth_without_engine_endpoint(monkeypatch) -> None:
     monkeypatch.setattr(
         "chalkcompute._function.service_auth_context_from_env",
         lambda: ServiceAuthContext(
@@ -1192,10 +1204,10 @@ def test_queue_call_uses_service_auth_engine_from_token_response(monkeypatch) ->
     assert handle.get() == 99
 
     client = FakeRemoteCallClient.instances[0]
-    assert client.endpoint == "discovered-engine.chalk.test:443"
+    assert client.endpoint == "dataplane-api-server.chalk.test:443"
     assert client.use_tls is True
     assert ("x-chalk-env-id", "env-service-auth") in client.metadata
-    assert ("x-chalk-deployment-type", "function-queue") in client.metadata
+    assert ("x-chalk-deployment-type", "function-queue") not in client.metadata
     assert client.kwargs["auth_endpoint"] == "https://api.chalk.test"
     assert client.kwargs["exchange_token"] == "exchange-token"
 

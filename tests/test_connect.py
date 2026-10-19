@@ -1043,6 +1043,33 @@ class TestConnectClientServiceAuth:
         assert use_tls is True
 
 
+class TestDataplaneApiServerTarget:
+    def test_uses_token_service_uri_metadata(self):
+        client = ConnectClient()
+        client._access_token = "token"
+        client._env_id = "env-1"
+        client._environment_id_to_authority = {"env-1": "region.chalk.test:8443"}
+        client._service_prefixes = {
+            auth_pb.ServiceKind.DATAPLANE_API_SERVER.value: "dataplane-api-server"
+        }
+
+        assert client.dataplane_api_server_target() == (
+            "dataplane-api-server.region.chalk.test:8443",
+            True,
+        )
+
+    def test_does_not_fall_back_to_engine_target(self):
+        client = ConnectClient()
+        client._access_token = "token"
+        client._env_id = "env-1"
+        client._grpc_engines = {"env-1": "engine.region.chalk.test:8443"}
+
+        with pytest.raises(
+            ConnectError, match="auth did not provide service URI metadata"
+        ):
+            client.dataplane_api_server_target()
+
+
 class _FakeChalkClient:
     calls: list[dict[str, Any]] = []
 
