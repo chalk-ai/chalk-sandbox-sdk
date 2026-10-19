@@ -29,6 +29,11 @@ Usage:
 
 from __future__ import annotations
 
+from chalkcompute._gateway_admission import (
+    GatewayAdmissionPolicy,
+    validate_gateway_admission,
+)
+
 import logging
 import time
 import uuid
@@ -328,6 +333,7 @@ class ScalingGroup:
         authenticated: bool = False,
         min_replicas: int = 1,
         max_replicas: int = 1,
+        gateway_admission: GatewayAdmissionPolicy | None = None,
         readiness_probe: ReadinessProbe | None = None,
         startup_probe: StartupProbe | None = None,
         shutdown_delay_seconds: int | None = None,
@@ -400,6 +406,13 @@ class ScalingGroup:
         self._port = port
         self._protocol = protocol
         self._authenticated = authenticated
+        self._gateway_admission = validate_gateway_admission(gateway_admission)
+        if (
+            self._gateway_admission is not None
+            and self._gateway_admission.lifetime == "execution"
+            and protocol != "grpc"
+        ):
+            raise ValueError("execution gateway admission requires protocol='grpc'")
         self._min_replicas = min_replicas
         self._max_replicas = max_replicas
         self._readiness_probe = readiness_probe
@@ -507,6 +520,7 @@ class ScalingGroup:
         sg._entrypoint = None
         sg._port = None
         sg._protocol = "http"
+        sg._gateway_admission = None
         sg._authenticated = False
         sg._min_replicas = 1
         sg._max_replicas = 1
@@ -671,6 +685,9 @@ class ScalingGroup:
         ).to_proto()
 
         spec = sg_pb.ScalingGroupSpec(
+            gateway_admission=self._gateway_admission.to_proto()
+            if self._gateway_admission is not None
+            else None,
             container_spec=container_spec,
             scaling_spec=build_scaling_spec(
                 min_replicas=self._min_replicas,
