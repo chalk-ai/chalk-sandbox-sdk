@@ -154,6 +154,38 @@ class ConnectClient:
         self._web_identity_cached_at: float | None = None
         self._web_identity_cache_ttl_seconds = _WEB_IDENTITY_MAX_CACHE_TTL_SECONDS
 
+    @property
+    def api_server(self) -> str:
+        """The API URL selected by ambient credentials or the supplied ChalkClient.
+
+        Authentication is resolved lazily. Reading this property does not modify
+        process environment variables.
+        """
+        self._ensure_auth()
+        assert self._api_server is not None
+        return self._api_server.rstrip("/")
+
+    @property
+    def environment_id(self) -> str:
+        """The resolved environment ID, or an empty string if none was selected."""
+        self._ensure_auth()
+        return self._env_id or ""
+
+    def request_headers(self) -> dict[str, str]:
+        """Return a fresh copy of authentication headers for a Chalk API request.
+
+        Call for each request so rotating workload identity is refreshed. These
+        headers contain a bearer credential; do not log them or send them to
+        another host.
+        """
+        return dict(self._rpc_metadata())
+
+    def __enter__(self) -> ConnectClient:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
     def _ensure_auth(self) -> None:
         identity_token_file = web_identity_token_file_from_env()
         if identity_token_file is not None:
