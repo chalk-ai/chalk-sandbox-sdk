@@ -313,7 +313,53 @@ class CronScalingWindow(Message[_CronScalingWindowFields]):
         end: str
         desired_replicas: int
 
-_ScalingGroupSpecFields: TypeAlias = Literal["container_spec", "scaling_spec"]
+_GatewayAdmissionPolicyFields: TypeAlias = Literal["max_inflight_requests_per_replica", "lifetime", "max_scale_from_zero_requests"]
+
+class GatewayAdmissionPolicy(Message[_GatewayAdmissionPolicyFields]):
+    """
+    Shared gateway ingress capacity across Envoy replicas. Queue inputs and local
+    retained input bytes remain subject to the native per-replica policy.
+
+    ```proto
+    message chalk.scalinggroup.v1.GatewayAdmissionPolicy
+    ```
+
+    Attributes:
+        max_inflight_requests_per_replica:
+            ```proto
+            uint32 max_inflight_requests_per_replica = 1;
+            ```
+        lifetime:
+            ```proto
+            chalk.scalinggroup.v1.GatewayAdmissionLifetime lifetime = 2;
+            ```
+        max_scale_from_zero_requests:
+            Bounded requests allowed to reach the existing HOLD wakeup path at zero.
+            Absence uses one. Ignored when scale-from-zero request policy is ERROR.
+
+            ```proto
+            optional uint32 max_scale_from_zero_requests = 3;
+            ```
+    """
+
+    __slots__ = ("max_inflight_requests_per_replica", "lifetime", "max_scale_from_zero_requests")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            max_inflight_requests_per_replica: int = 0,
+            lifetime: GatewayAdmissionLifetime | None = None,
+            max_scale_from_zero_requests: int | None = None,
+        ) -> None:
+            pass
+
+        max_inflight_requests_per_replica: int
+        lifetime: GatewayAdmissionLifetime
+        max_scale_from_zero_requests: int
+
+_ScalingGroupSpecFields: TypeAlias = Literal["container_spec", "scaling_spec", "gateway_admission"]
 
 class ScalingGroupSpec(Message[_ScalingGroupSpecFields]):
     """
@@ -335,9 +381,15 @@ class ScalingGroupSpec(Message[_ScalingGroupSpecFields]):
             ```proto
             optional chalk.scalinggroup.v1.ScalingSpec scaling_spec = 2;
             ```
+        gateway_admission:
+            Absent disables coordinated gateway admission.
+
+            ```proto
+            optional chalk.scalinggroup.v1.GatewayAdmissionPolicy gateway_admission = 3;
+            ```
     """
 
-    __slots__ = ("container_spec", "scaling_spec")
+    __slots__ = ("container_spec", "scaling_spec", "gateway_admission")
 
     if TYPE_CHECKING:
 
@@ -346,13 +398,15 @@ class ScalingGroupSpec(Message[_ScalingGroupSpecFields]):
             *,
             container_spec: ChalkContainerSpec | None = None,
             scaling_spec: ScalingSpec | None = None,
+            gateway_admission: GatewayAdmissionPolicy | None = None,
         ) -> None:
             pass
 
         container_spec: ChalkContainerSpec | None
         scaling_spec: ScalingSpec | None
+        gateway_admission: GatewayAdmissionPolicy | None
 
-_ScalingGroupResponseFields: TypeAlias = Literal["id", "name", "revision_id", "status", "status_message", "spec", "created_at", "updated_at", "deleted_at", "web_url", "ready_replicas", "available_replicas", "metadata", "status_details", "created_by"]
+_ScalingGroupResponseFields: TypeAlias = Literal["id", "name", "revision_id", "status", "status_message", "spec", "created_at", "updated_at", "deleted_at", "web_url", "ready_replicas", "available_replicas", "metadata", "status_details", "created_by", "cluster_id"]
 
 class ScalingGroupResponse(Message[_ScalingGroupResponseFields]):
     """
@@ -452,9 +506,15 @@ class ScalingGroupResponse(Message[_ScalingGroupResponseFields]):
             ```proto
             optional string created_by = 15;
             ```
+        cluster_id:
+            Cluster where this scaling group is placed.
+
+            ```proto
+            string cluster_id = 16;
+            ```
     """
 
-    __slots__ = ("id", "name", "revision_id", "status", "status_message", "spec", "created_at", "updated_at", "deleted_at", "web_url", "ready_replicas", "available_replicas", "metadata", "status_details", "created_by")
+    __slots__ = ("id", "name", "revision_id", "status", "status_message", "spec", "created_at", "updated_at", "deleted_at", "web_url", "ready_replicas", "available_replicas", "metadata", "status_details", "created_by", "cluster_id")
 
     if TYPE_CHECKING:
 
@@ -476,6 +536,7 @@ class ScalingGroupResponse(Message[_ScalingGroupResponseFields]):
             metadata: dict[str, Value] | None = None,
             status_details: str | None = None,
             created_by: str | None = None,
+            cluster_id: str = "",
         ) -> None:
             pass
 
@@ -494,6 +555,7 @@ class ScalingGroupResponse(Message[_ScalingGroupResponseFields]):
         metadata: dict[str, Value]
         status_details: str
         created_by: str
+        cluster_id: str
 
 _CreateScalingGroupRequestFields: TypeAlias = Literal["spec"]
 
@@ -835,7 +897,7 @@ class ListScalingGroupsRequest(Message[_ListScalingGroupsRequestFields]):
         sort_column: ScalingGroupSortColumn
         sort_order: ScalingGroupSortOrder
 
-_ListScalingGroupsFiltersFields: TypeAlias = Literal["statuses", "visibility", "images"]
+_ListScalingGroupsFiltersFields: TypeAlias = Literal["statuses", "visibility", "images", "created_by"]
 
 class ListScalingGroupsFilters(Message[_ListScalingGroupsFiltersFields]):
     """
@@ -863,9 +925,16 @@ class ListScalingGroupsFilters(Message[_ListScalingGroupsFiltersFields]):
             ```proto
             repeated string images = 3;
             ```
+        created_by:
+            A scaling group matches when its creator is any of these IDs.
+            Empty means all creators.
+
+            ```proto
+            repeated string created_by = 4;
+            ```
     """
 
-    __slots__ = ("statuses", "visibility", "images")
+    __slots__ = ("statuses", "visibility", "images", "created_by")
 
     if TYPE_CHECKING:
 
@@ -875,12 +944,14 @@ class ListScalingGroupsFilters(Message[_ListScalingGroupsFiltersFields]):
             statuses: list[str] | None = None,
             visibility: list[ScalingGroupVisibility] | None = None,
             images: list[str] | None = None,
+            created_by: list[str] | None = None,
         ) -> None:
             pass
 
         statuses: list[str]
         visibility: list[ScalingGroupVisibility]
         images: list[str]
+        created_by: list[str]
 
 _ListScalingGroupsResponseFields: TypeAlias = Literal["scaling_groups", "next_cursor"]
 
@@ -1474,6 +1545,31 @@ class FunctionQueueProtocol(Enum):
     LIST_V1 = 1
     STREAM_V1 = 2
 
+class GatewayAdmissionLifetime(Enum):
+    """
+    ```proto
+    enum chalk.scalinggroup.v1.GatewayAdmissionLifetime
+    ```
+
+    Attributes:
+        UNSPECIFIED:
+            ```proto
+            GATEWAY_ADMISSION_LIFETIME_UNSPECIFIED = 0
+            ```
+        NETWORK:
+            ```proto
+            GATEWAY_ADMISSION_LIFETIME_NETWORK = 1
+            ```
+        EXECUTION:
+            ```proto
+            GATEWAY_ADMISSION_LIFETIME_EXECUTION = 2
+            ```
+    """
+
+    UNSPECIFIED = 0
+    NETWORK = 1
+    EXECUTION = 2
+
 class ScalingGroupSortColumn(Enum):
     """
     ```proto
@@ -1554,7 +1650,7 @@ class ScalingGroupVisibility(Enum):
 
 
 _DESC = file_desc(
-    b'\n#chalk/scalinggroup/v1/service.proto\x12\x15chalk.scalinggroup.v1\x1a\x1fchalk/auth/v1/permissions.proto\x1a chalk/container/v1/service.proto\x1a\x1achalk/flags/v1/flags.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a google/protobuf/field_mask.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto"\xf8\x07\n\x0bScalingSpec\x12!\n\x0cmin_replicas\x18\x01 \x01(\x05R\x0bminReplicas\x12!\n\x0cmax_replicas\x18\x02 \x01(\x05R\x0bmaxReplicas\x12N\n!target_cpu_utilization_percentage\x18\x03 \x01(\x05H\x00R\x1etargetCpuUtilizationPercentage\x88\x01\x01\x129\n\x16shutdown_delay_seconds\x18\x04 \x01(\x05H\x01R\x14shutdownDelaySeconds\x88\x01\x01\x12*\n\x0ewindow_seconds\x18\x05 \x01(\x05H\x02R\rwindowSeconds\x88\x01\x01\x12}\n\x1cfunction_queue_depth_trigger\x18\x06 \x01(\x0b27.chalk.scalinggroup.v1.FunctionQueueDepthScalingTriggerH\x03R\x19functionQueueDepthTrigger\x88\x01\x01\x12p\n\x17gpu_utilization_trigger\x18\x07 \x01(\x0b23.chalk.scalinggroup.v1.GpuUtilizationScalingTriggerH\x04R\x15gpuUtilizationTrigger\x88\x01\x01\x12`\n\x14cron_scaling_trigger\x18\x08 \x01(\x0b2).chalk.scalinggroup.v1.CronScalingTriggerH\x05R\x12cronScalingTrigger\x88\x01\x01\x12u\n\x1escale_from_zero_request_policy\x18\t \x01(\x0e21.chalk.scalinggroup.v1.ScaleFromZeroRequestPolicyR\x1ascaleFromZeroRequestPolicy\x12a\n\x12task_queue_trigger\x18\n \x01(\x0b2..chalk.scalinggroup.v1.TaskQueueScalingTriggerH\x06R\x10taskQueueTrigger\x88\x01\x01B$\n"_target_cpu_utilization_percentageB\x19\n\x17_shutdown_delay_secondsB\x11\n\x0f_window_secondsB\x1f\n\x1d_function_queue_depth_triggerB\x1a\n\x18_gpu_utilization_triggerB\x17\n\x15_cron_scaling_triggerB\x15\n\x13_task_queue_trigger"\xca\x01\n FunctionQueueDepthScalingTrigger\x12#\n\rfunction_name\x18\x01 \x01(\tR\x0cfunctionName\x12,\n\x12target_queue_depth\x18\x02 \x01(\x05R\x10targetQueueDepth\x12S\n\x0equeue_protocol\x18\x03 \x01(\x0e2,.chalk.scalinggroup.v1.FunctionQueueProtocolR\rqueueProtocol"b\n\x1cGpuUtilizationScalingTrigger\x12B\n\x1dtarget_utilization_percentage\x18\x01 \x01(\x05R\x1btargetUtilizationPercentage"8\n\x17TaskQueueScalingTrigger\x12\x1d\n\ntask_queue\x18\x01 \x01(\tR\ttaskQueue"t\n\x12CronScalingTrigger\x12\x1a\n\x08timezone\x18\x01 \x01(\tR\x08timezone\x12B\n\x07windows\x18\x02 \x03(\x0b2(.chalk.scalinggroup.v1.CronScalingWindowR\x07windows"f\n\x11CronScalingWindow\x12\x14\n\x05start\x18\x01 \x01(\tR\x05start\x12\x10\n\x03end\x18\x02 \x01(\tR\x03end\x12)\n\x10desired_replicas\x18\x03 \x01(\x05R\x0fdesiredReplicas"\xa8\x01\n\x10ScalingGroupSpec\x12M\n\x0econtainer_spec\x18\x01 \x01(\x0b2&.chalk.container.v1.ChalkContainerSpecR\rcontainerSpec\x12E\n\x0cscaling_spec\x18\x02 \x01(\x0b2".chalk.scalinggroup.v1.ScalingSpecR\x0bscalingSpec"\xd7\x06\n\x14ScalingGroupResponse\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x12\x1f\n\x0brevision_id\x18\x0c \x01(\tR\nrevisionId\x12\x16\n\x06status\x18\x03 \x01(\tR\x06status\x12*\n\x0estatus_message\x18\x04 \x01(\tH\x00R\rstatusMessage\x88\x01\x01\x12;\n\x04spec\x18\x05 \x01(\x0b2\'.chalk.scalinggroup.v1.ScalingGroupSpecR\x04spec\x129\n\ncreated_at\x18\x06 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n\nupdated_at\x18\r \x01(\x0b2\x1a.google.protobuf.TimestampR\tupdatedAt\x12>\n\ndeleted_at\x18\x07 \x01(\x0b2\x1a.google.protobuf.TimestampH\x01R\tdeletedAt\x88\x01\x01\x12\x1c\n\x07web_url\x18\x08 \x01(\tH\x02R\x06webUrl\x88\x01\x01\x12%\n\x0eready_replicas\x18\t \x01(\x05R\rreadyReplicas\x12-\n\x12available_replicas\x18\n \x01(\x05R\x11availableReplicas\x12U\n\x08metadata\x18\x0b \x03(\x0b29.chalk.scalinggroup.v1.ScalingGroupResponse.MetadataEntryR\x08metadata\x12*\n\x0estatus_details\x18\x0e \x01(\tH\x03R\rstatusDetails\x88\x01\x01\x12\'\n\ncreated_by\x18\x0f \x01(\tH\x04R\tcreatedByB\x03\xe0A\x03\x88\x01\x01\x1aS\n\rMetadataEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12,\n\x05value\x18\x02 \x01(\x0b2\x16.google.protobuf.ValueR\x05value:\x028\x01B\x11\n\x0f_status_messageB\r\n\x0b_deleted_atB\n\n\x08_web_urlB\x11\n\x0f_status_detailsB\r\n\x0b_created_by"X\n\x19CreateScalingGroupRequest\x12;\n\x04spec\x18\x01 \x01(\x0b2\'.chalk.scalinggroup.v1.ScalingGroupSpecR\x04spec"n\n\x1aCreateScalingGroupResponse\x12P\n\rscaling_group\x18\x01 \x01(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseR\x0cscalingGroup"a\n\x13ScalingGroupTraffic\x12J\n\x07targets\x18\x01 \x03(\x0b20.chalk.scalinggroup.v1.ScalingGroupTrafficTargetR\x07targets"\xc8\x01\n\x19ScalingGroupTrafficTarget\x12;\n\x19scaling_group_revision_id\x18\x01 \x01(\tH\x00R\x16scalingGroupRevisionId\x12A\n\x0flatest_revision\x18\x02 \x01(\x0b2\x16.google.protobuf.EmptyH\x00R\x0elatestRevision\x12\x18\n\x07percent\x18\x03 \x01(\rR\x07percentB\x11\n\x0frevision_target"\x85\x02\n\x19UpdateScalingGroupRequest\x12(\n\x10scaling_group_id\x18\x01 \x01(\tR\x0escalingGroupId\x12;\n\x04spec\x18\x02 \x01(\x0b2\'.chalk.scalinggroup.v1.ScalingGroupSpecR\x04spec\x12D\n\x07traffic\x18\x03 \x01(\x0b2*.chalk.scalinggroup.v1.ScalingGroupTrafficR\x07traffic\x12;\n\x0bupdate_mask\x18\x04 \x01(\x0b2\x1a.google.protobuf.FieldMaskR\nupdateMask"n\n\x1aUpdateScalingGroupResponse\x12P\n\rscaling_group\x18\x01 \x01(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseR\x0cscalingGroup"\xeb\x01\n\x16GetScalingGroupRequest\x12\x13\n\x02id\x18\x01 \x01(\tH\x00R\x02id\x88\x01\x01\x12\x17\n\x04name\x18\x02 \x01(\tH\x01R\x04name\x88\x01\x01\x12Q\n\nvisibility\x18\x03 \x03(\x0e2-.chalk.scalinggroup.v1.ScalingGroupVisibilityR\nvisibilityB\x02\x18\x01\x12,\n\x0finclude_deleted\x18\x04 \x01(\x08H\x02R\x0eincludeDeleted\x88\x01\x01B\x05\n\x03_idB\x07\n\x05_nameB\x12\n\x10_include_deleted"k\n\x17GetScalingGroupResponse\x12P\n\rscaling_group\x18\x01 \x01(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseR\x0cscalingGroup"\xa9\x03\n\x18ListScalingGroupsRequest\x12\x1b\n\x06cursor\x18\x01 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x02 \x01(\x05H\x01R\x05limit\x88\x01\x01\x12,\n\x0finclude_deleted\x18\x07 \x01(\x08H\x02R\x0eincludeDeleted\x88\x01\x01\x12I\n\x07filters\x18\x03 \x01(\x0b2/.chalk.scalinggroup.v1.ListScalingGroupsFiltersR\x07filters\x12\x16\n\x06search\x18\x04 \x01(\tR\x06search\x12N\n\x0bsort_column\x18\x05 \x01(\x0e2-.chalk.scalinggroup.v1.ScalingGroupSortColumnR\nsortColumn\x12K\n\nsort_order\x18\x06 \x01(\x0e2,.chalk.scalinggroup.v1.ScalingGroupSortOrderR\tsortOrderB\t\n\x07_cursorB\x08\n\x06_limitB\x12\n\x10_include_deleted"\xa1\x01\n\x18ListScalingGroupsFilters\x12\x1a\n\x08statuses\x18\x01 \x03(\tR\x08statuses\x12Q\n\nvisibility\x18\x02 \x03(\x0e2-.chalk.scalinggroup.v1.ScalingGroupVisibilityR\nvisibilityB\x02\x18\x01\x12\x16\n\x06images\x18\x03 \x03(\tR\x06images"\xa5\x01\n\x19ListScalingGroupsResponse\x12R\n\x0escaling_groups\x18\x01 \x03(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseR\rscalingGroups\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"\xe7\x05\n\x1cScalingGroupRevisionResponse\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12(\n\x10scaling_group_id\x18\x02 \x01(\tR\x0escalingGroupId\x12,\n\x12scaling_group_name\x18\x03 \x01(\tR\x10scalingGroupName\x12\x16\n\x06status\x18\x04 \x01(\tR\x06status\x12*\n\x0estatus_message\x18\x05 \x01(\tH\x00R\rstatusMessage\x88\x01\x01\x12;\n\x04spec\x18\x06 \x01(\x0b2\'.chalk.scalinggroup.v1.ScalingGroupSpecR\x04spec\x129\n\ncreated_at\x18\x07 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12]\n\x08metadata\x18\x08 \x03(\x0b2A.chalk.scalinggroup.v1.ScalingGroupRevisionResponse.MetadataEntryR\x08metadata\x12\x16\n\x06latest\x18\t \x01(\x08R\x06latest\x12>\n\ndeleted_at\x18\n \x01(\x0b2\x1a.google.protobuf.TimestampH\x01R\tdeletedAt\x88\x01\x01\x12*\n\x0estatus_details\x18\x0b \x01(\tH\x02R\rstatusDetails\x88\x01\x01\x12\'\n\ncreated_by\x18\x0c \x01(\tH\x03R\tcreatedByB\x03\xe0A\x03\x88\x01\x01\x1aS\n\rMetadataEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12,\n\x05value\x18\x02 \x01(\x0b2\x16.google.protobuf.ValueR\x05value:\x028\x01B\x11\n\x0f_status_messageB\r\n\x0b_deleted_atB\x11\n\x0f_status_detailsB\r\n\x0b_created_by"\xf4\x01\n\x1eGetScalingGroupRevisionRequest\x12*\n\x10scaling_group_id\x18\x01 \x01(\tH\x00R\x0escalingGroupId\x12.\n\x12scaling_group_name\x18\x02 \x01(\tH\x00R\x10scalingGroupName\x12\x1f\n\x0brevision_id\x18\x03 \x01(\tR\nrevisionId\x12,\n\x0finclude_deleted\x18\x04 \x01(\x08H\x01R\x0eincludeDeleted\x88\x01\x01B\x13\n\x11scaling_group_keyB\x12\n\x10_include_deleted"r\n\x1fGetScalingGroupRevisionResponse\x12O\n\x08revision\x18\x01 \x01(\x0b23.chalk.scalinggroup.v1.ScalingGroupRevisionResponseR\x08revision"\xf5\x02\n ListScalingGroupRevisionsRequest\x12*\n\x10scaling_group_id\x18\x01 \x01(\tH\x00R\x0escalingGroupId\x12.\n\x12scaling_group_name\x18\x02 \x01(\tH\x00R\x10scalingGroupName\x12\x1b\n\x06cursor\x18\x03 \x01(\tH\x01R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x04 \x01(\x05H\x02R\x05limit\x88\x01\x01\x12Q\n\x07filters\x18\x05 \x01(\x0b27.chalk.scalinggroup.v1.ListScalingGroupRevisionsFiltersR\x07filters\x12,\n\x0finclude_deleted\x18\x06 \x01(\x08H\x03R\x0eincludeDeleted\x88\x01\x01B\x13\n\x11scaling_group_keyB\t\n\x07_cursorB\x08\n\x06_limitB\x12\n\x10_include_deleted"u\n ListScalingGroupRevisionsFilters\x12Q\n\nvisibility\x18\x01 \x03(\x0e2-.chalk.scalinggroup.v1.ScalingGroupVisibilityR\nvisibilityB\x02\x18\x01"\xac\x01\n!ListScalingGroupRevisionsResponse\x12Q\n\trevisions\x18\x01 \x03(\x0b23.chalk.scalinggroup.v1.ScalingGroupRevisionResponseR\trevisions\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"Y\n\x19DeleteScalingGroupRequest\x12\x13\n\x02id\x18\x01 \x01(\tH\x00R\x02id\x88\x01\x01\x12\x17\n\x04name\x18\x02 \x01(\tH\x01R\x04name\x88\x01\x01B\x05\n\x03_idB\x07\n\x05_name"n\n\x1aDeleteScalingGroupResponse\x12P\n\rscaling_group\x18\x01 \x01(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseR\x0cscalingGroup"\xb4\x04\n\x1fUpdateScalingGroupStatusRequest\x12(\n\x10scaling_group_id\x18\x01 \x01(\tR\x0escalingGroupId\x12\x16\n\x06status\x18\x02 \x01(\tR\x06status\x12*\n\x0estatus_message\x18\x03 \x01(\tH\x00R\rstatusMessage\x88\x01\x01\x120\n\x14observed_revision_id\x18\x04 \x01(\tR\x12observedRevisionId\x12.\n\x10desired_replicas\x18\x05 \x01(\x05H\x01R\x0fdesiredReplicas\x88\x01\x01\x12*\n\x0eready_replicas\x18\x06 \x01(\x05H\x02R\rreadyReplicas\x88\x01\x01\x122\n\x12available_replicas\x18\x07 \x01(\x05H\x03R\x11availableReplicas\x88\x01\x01\x12@\n\x0bobserved_at\x18\x08 \x01(\x0b2\x1a.google.protobuf.TimestampH\x04R\nobservedAt\x88\x01\x01\x12*\n\x0estatus_details\x18\t \x01(\tH\x05R\rstatusDetails\x88\x01\x01B\x11\n\x0f_status_messageB\x13\n\x11_desired_replicasB\x11\n\x0f_ready_replicasB\x15\n\x13_available_replicasB\x0e\n\x0c_observed_atB\x11\n\x0f_status_details"x\n$BatchUpdateScalingGroupStatusRequest\x12P\n\x07updates\x18\x01 \x03(\x0b26.chalk.scalinggroup.v1.UpdateScalingGroupStatusRequestR\x07updates"\'\n%BatchUpdateScalingGroupStatusResponse*\x9f\x01\n\x1aScaleFromZeroRequestPolicy\x12.\n*SCALE_FROM_ZERO_REQUEST_POLICY_UNSPECIFIED\x10\x00\x12(\n$SCALE_FROM_ZERO_REQUEST_POLICY_ERROR\x10\x01\x12\'\n#SCALE_FROM_ZERO_REQUEST_POLICY_HOLD\x10\x02*\x8c\x01\n\x15FunctionQueueProtocol\x12\'\n#FUNCTION_QUEUE_PROTOCOL_UNSPECIFIED\x10\x00\x12#\n\x1fFUNCTION_QUEUE_PROTOCOL_LIST_V1\x10\x01\x12%\n!FUNCTION_QUEUE_PROTOCOL_STREAM_V1\x10\x02*\x97\x01\n\x16ScalingGroupSortColumn\x12)\n%SCALING_GROUP_SORT_COLUMN_UNSPECIFIED\x10\x00\x12(\n$SCALING_GROUP_SORT_COLUMN_CREATED_AT\x10\x01\x12(\n$SCALING_GROUP_SORT_COLUMN_UPDATED_AT\x10\x02*\x86\x01\n\x15ScalingGroupSortOrder\x12(\n$SCALING_GROUP_SORT_ORDER_UNSPECIFIED\x10\x00\x12!\n\x1dSCALING_GROUP_SORT_ORDER_DESC\x10\x01\x12 \n\x1cSCALING_GROUP_SORT_ORDER_ASC\x10\x02*\x92\x01\n\x16ScalingGroupVisibility\x12(\n$SCALING_GROUP_VISIBILITY_UNSPECIFIED\x10\x00\x12#\n\x1fSCALING_GROUP_VISIBILITY_ACTIVE\x10\x01\x12%\n!SCALING_GROUP_VISIBILITY_ARCHIVED\x10\x02\x1a\x02\x18\x012\x88\n\n\x1aScalingGroupManagerService\x12\xd5\x01\n\x12CreateScalingGroup\x120.chalk.scalinggroup.v1.CreateScalingGroupRequest\x1a1.chalk.scalinggroup.v1.CreateScalingGroupResponse"Z\x80}\x0c\x92\xd3\x0eS\n\x16scaling_groups_enabled\x129This action is not enabled. Please contact Chalk Support.\x12\xd5\x01\n\x12UpdateScalingGroup\x120.chalk.scalinggroup.v1.UpdateScalingGroupRequest\x1a1.chalk.scalinggroup.v1.UpdateScalingGroupResponse"Z\x80}\x0e\x92\xd3\x0eS\n\x16scaling_groups_enabled\x129This action is not enabled. Please contact Chalk Support.\x12u\n\x0fGetScalingGroup\x12-.chalk.scalinggroup.v1.GetScalingGroupRequest\x1a..chalk.scalinggroup.v1.GetScalingGroupResponse"\x03\x80}\x0b\x12{\n\x11ListScalingGroups\x12/.chalk.scalinggroup.v1.ListScalingGroupsRequest\x1a0.chalk.scalinggroup.v1.ListScalingGroupsResponse"\x03\x80}\x0b\x12~\n\x12DeleteScalingGroup\x120.chalk.scalinggroup.v1.DeleteScalingGroupRequest\x1a1.chalk.scalinggroup.v1.DeleteScalingGroupResponse"\x03\x80}\x0e\x12\x8d\x01\n\x17GetScalingGroupRevision\x125.chalk.scalinggroup.v1.GetScalingGroupRevisionRequest\x1a6.chalk.scalinggroup.v1.GetScalingGroupRevisionResponse"\x03\x80}\x0b\x12\x93\x01\n\x19ListScalingGroupRevisions\x127.chalk.scalinggroup.v1.ListScalingGroupRevisionsRequest\x1a8.chalk.scalinggroup.v1.ListScalingGroupRevisionsResponse"\x03\x80}\x0b\x12\x9f\x01\n\x1dBatchUpdateScalingGroupStatus\x12;.chalk.scalinggroup.v1.BatchUpdateScalingGroupStatusRequest\x1a<.chalk.scalinggroup.v1.BatchUpdateScalingGroupStatusResponse"\x03\x80}!B\xbf\x01\n\x19com.chalk.scalinggroup.v1B\x0cServiceProtoP\x01Z\x1escalinggroup/v1;scalinggroupv1\xa2\x02\x03CSX\xaa\x02\x15Chalk.Scalinggroup.V1\xca\x02\x15Chalk\\Scalinggroup\\V1\xe2\x02!Chalk\\Scalinggroup\\V1\\GPBMetadata\xea\x02\x17Chalk::Scalinggroup::V1b\x06proto3',
+    b'\n#chalk/scalinggroup/v1/service.proto\x12\x15chalk.scalinggroup.v1\x1a\x1fchalk/auth/v1/permissions.proto\x1a chalk/container/v1/service.proto\x1a\x1achalk/flags/v1/flags.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a google/protobuf/field_mask.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto"\xf8\x07\n\x0bScalingSpec\x12!\n\x0cmin_replicas\x18\x01 \x01(\x05R\x0bminReplicas\x12!\n\x0cmax_replicas\x18\x02 \x01(\x05R\x0bmaxReplicas\x12N\n!target_cpu_utilization_percentage\x18\x03 \x01(\x05H\x00R\x1etargetCpuUtilizationPercentage\x88\x01\x01\x129\n\x16shutdown_delay_seconds\x18\x04 \x01(\x05H\x01R\x14shutdownDelaySeconds\x88\x01\x01\x12*\n\x0ewindow_seconds\x18\x05 \x01(\x05H\x02R\rwindowSeconds\x88\x01\x01\x12}\n\x1cfunction_queue_depth_trigger\x18\x06 \x01(\x0b27.chalk.scalinggroup.v1.FunctionQueueDepthScalingTriggerH\x03R\x19functionQueueDepthTrigger\x88\x01\x01\x12p\n\x17gpu_utilization_trigger\x18\x07 \x01(\x0b23.chalk.scalinggroup.v1.GpuUtilizationScalingTriggerH\x04R\x15gpuUtilizationTrigger\x88\x01\x01\x12`\n\x14cron_scaling_trigger\x18\x08 \x01(\x0b2).chalk.scalinggroup.v1.CronScalingTriggerH\x05R\x12cronScalingTrigger\x88\x01\x01\x12u\n\x1escale_from_zero_request_policy\x18\t \x01(\x0e21.chalk.scalinggroup.v1.ScaleFromZeroRequestPolicyR\x1ascaleFromZeroRequestPolicy\x12a\n\x12task_queue_trigger\x18\n \x01(\x0b2..chalk.scalinggroup.v1.TaskQueueScalingTriggerH\x06R\x10taskQueueTrigger\x88\x01\x01B$\n"_target_cpu_utilization_percentageB\x19\n\x17_shutdown_delay_secondsB\x11\n\x0f_window_secondsB\x1f\n\x1d_function_queue_depth_triggerB\x1a\n\x18_gpu_utilization_triggerB\x17\n\x15_cron_scaling_triggerB\x15\n\x13_task_queue_trigger"\xca\x01\n FunctionQueueDepthScalingTrigger\x12#\n\rfunction_name\x18\x01 \x01(\tR\x0cfunctionName\x12,\n\x12target_queue_depth\x18\x02 \x01(\x05R\x10targetQueueDepth\x12S\n\x0equeue_protocol\x18\x03 \x01(\x0e2,.chalk.scalinggroup.v1.FunctionQueueProtocolR\rqueueProtocol"b\n\x1cGpuUtilizationScalingTrigger\x12B\n\x1dtarget_utilization_percentage\x18\x01 \x01(\x05R\x1btargetUtilizationPercentage"8\n\x17TaskQueueScalingTrigger\x12\x1d\n\ntask_queue\x18\x01 \x01(\tR\ttaskQueue"t\n\x12CronScalingTrigger\x12\x1a\n\x08timezone\x18\x01 \x01(\tR\x08timezone\x12B\n\x07windows\x18\x02 \x03(\x0b2(.chalk.scalinggroup.v1.CronScalingWindowR\x07windows"f\n\x11CronScalingWindow\x12\x14\n\x05start\x18\x01 \x01(\tR\x05start\x12\x10\n\x03end\x18\x02 \x01(\tR\x03end\x12)\n\x10desired_replicas\x18\x03 \x01(\x05R\x0fdesiredReplicas"\x95\x02\n\x16GatewayAdmissionPolicy\x12H\n!max_inflight_requests_per_replica\x18\x01 \x01(\rR\x1dmaxInflightRequestsPerReplica\x12K\n\x08lifetime\x18\x02 \x01(\x0e2/.chalk.scalinggroup.v1.GatewayAdmissionLifetimeR\x08lifetime\x12C\n\x1cmax_scale_from_zero_requests\x18\x03 \x01(\rH\x00R\x18maxScaleFromZeroRequests\x88\x01\x01B\x1f\n\x1d_max_scale_from_zero_requests"\x9f\x02\n\x10ScalingGroupSpec\x12M\n\x0econtainer_spec\x18\x01 \x01(\x0b2&.chalk.container.v1.ChalkContainerSpecR\rcontainerSpec\x12E\n\x0cscaling_spec\x18\x02 \x01(\x0b2".chalk.scalinggroup.v1.ScalingSpecR\x0bscalingSpec\x12_\n\x11gateway_admission\x18\x03 \x01(\x0b2-.chalk.scalinggroup.v1.GatewayAdmissionPolicyH\x00R\x10gatewayAdmission\x88\x01\x01B\x14\n\x12_gateway_admission"\xf6\x06\n\x14ScalingGroupResponse\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x12\x1f\n\x0brevision_id\x18\x0c \x01(\tR\nrevisionId\x12\x16\n\x06status\x18\x03 \x01(\tR\x06status\x12*\n\x0estatus_message\x18\x04 \x01(\tH\x00R\rstatusMessage\x88\x01\x01\x12;\n\x04spec\x18\x05 \x01(\x0b2\'.chalk.scalinggroup.v1.ScalingGroupSpecR\x04spec\x129\n\ncreated_at\x18\x06 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n\nupdated_at\x18\r \x01(\x0b2\x1a.google.protobuf.TimestampR\tupdatedAt\x12>\n\ndeleted_at\x18\x07 \x01(\x0b2\x1a.google.protobuf.TimestampH\x01R\tdeletedAt\x88\x01\x01\x12\x1c\n\x07web_url\x18\x08 \x01(\tH\x02R\x06webUrl\x88\x01\x01\x12%\n\x0eready_replicas\x18\t \x01(\x05R\rreadyReplicas\x12-\n\x12available_replicas\x18\n \x01(\x05R\x11availableReplicas\x12U\n\x08metadata\x18\x0b \x03(\x0b29.chalk.scalinggroup.v1.ScalingGroupResponse.MetadataEntryR\x08metadata\x12*\n\x0estatus_details\x18\x0e \x01(\tH\x03R\rstatusDetails\x88\x01\x01\x12\'\n\ncreated_by\x18\x0f \x01(\tH\x04R\tcreatedByB\x03\xe0A\x03\x88\x01\x01\x12\x1d\n\ncluster_id\x18\x10 \x01(\tR\tclusterId\x1aS\n\rMetadataEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12,\n\x05value\x18\x02 \x01(\x0b2\x16.google.protobuf.ValueR\x05value:\x028\x01B\x11\n\x0f_status_messageB\r\n\x0b_deleted_atB\n\n\x08_web_urlB\x11\n\x0f_status_detailsB\r\n\x0b_created_by"X\n\x19CreateScalingGroupRequest\x12;\n\x04spec\x18\x01 \x01(\x0b2\'.chalk.scalinggroup.v1.ScalingGroupSpecR\x04spec"n\n\x1aCreateScalingGroupResponse\x12P\n\rscaling_group\x18\x01 \x01(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseR\x0cscalingGroup"a\n\x13ScalingGroupTraffic\x12J\n\x07targets\x18\x01 \x03(\x0b20.chalk.scalinggroup.v1.ScalingGroupTrafficTargetR\x07targets"\xc8\x01\n\x19ScalingGroupTrafficTarget\x12;\n\x19scaling_group_revision_id\x18\x01 \x01(\tH\x00R\x16scalingGroupRevisionId\x12A\n\x0flatest_revision\x18\x02 \x01(\x0b2\x16.google.protobuf.EmptyH\x00R\x0elatestRevision\x12\x18\n\x07percent\x18\x03 \x01(\rR\x07percentB\x11\n\x0frevision_target"\x85\x02\n\x19UpdateScalingGroupRequest\x12(\n\x10scaling_group_id\x18\x01 \x01(\tR\x0escalingGroupId\x12;\n\x04spec\x18\x02 \x01(\x0b2\'.chalk.scalinggroup.v1.ScalingGroupSpecR\x04spec\x12D\n\x07traffic\x18\x03 \x01(\x0b2*.chalk.scalinggroup.v1.ScalingGroupTrafficR\x07traffic\x12;\n\x0bupdate_mask\x18\x04 \x01(\x0b2\x1a.google.protobuf.FieldMaskR\nupdateMask"n\n\x1aUpdateScalingGroupResponse\x12P\n\rscaling_group\x18\x01 \x01(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseR\x0cscalingGroup"\xeb\x01\n\x16GetScalingGroupRequest\x12\x13\n\x02id\x18\x01 \x01(\tH\x00R\x02id\x88\x01\x01\x12\x17\n\x04name\x18\x02 \x01(\tH\x01R\x04name\x88\x01\x01\x12Q\n\nvisibility\x18\x03 \x03(\x0e2-.chalk.scalinggroup.v1.ScalingGroupVisibilityR\nvisibilityB\x02\x18\x01\x12,\n\x0finclude_deleted\x18\x04 \x01(\x08H\x02R\x0eincludeDeleted\x88\x01\x01B\x05\n\x03_idB\x07\n\x05_nameB\x12\n\x10_include_deleted"k\n\x17GetScalingGroupResponse\x12P\n\rscaling_group\x18\x01 \x01(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseR\x0cscalingGroup"\xa9\x03\n\x18ListScalingGroupsRequest\x12\x1b\n\x06cursor\x18\x01 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x02 \x01(\x05H\x01R\x05limit\x88\x01\x01\x12,\n\x0finclude_deleted\x18\x07 \x01(\x08H\x02R\x0eincludeDeleted\x88\x01\x01\x12I\n\x07filters\x18\x03 \x01(\x0b2/.chalk.scalinggroup.v1.ListScalingGroupsFiltersR\x07filters\x12\x16\n\x06search\x18\x04 \x01(\tR\x06search\x12N\n\x0bsort_column\x18\x05 \x01(\x0e2-.chalk.scalinggroup.v1.ScalingGroupSortColumnR\nsortColumn\x12K\n\nsort_order\x18\x06 \x01(\x0e2,.chalk.scalinggroup.v1.ScalingGroupSortOrderR\tsortOrderB\t\n\x07_cursorB\x08\n\x06_limitB\x12\n\x10_include_deleted"\xc0\x01\n\x18ListScalingGroupsFilters\x12\x1a\n\x08statuses\x18\x01 \x03(\tR\x08statuses\x12Q\n\nvisibility\x18\x02 \x03(\x0e2-.chalk.scalinggroup.v1.ScalingGroupVisibilityR\nvisibilityB\x02\x18\x01\x12\x16\n\x06images\x18\x03 \x03(\tR\x06images\x12\x1d\n\ncreated_by\x18\x04 \x03(\tR\tcreatedBy"\xa5\x01\n\x19ListScalingGroupsResponse\x12R\n\x0escaling_groups\x18\x01 \x03(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseR\rscalingGroups\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"\xe7\x05\n\x1cScalingGroupRevisionResponse\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12(\n\x10scaling_group_id\x18\x02 \x01(\tR\x0escalingGroupId\x12,\n\x12scaling_group_name\x18\x03 \x01(\tR\x10scalingGroupName\x12\x16\n\x06status\x18\x04 \x01(\tR\x06status\x12*\n\x0estatus_message\x18\x05 \x01(\tH\x00R\rstatusMessage\x88\x01\x01\x12;\n\x04spec\x18\x06 \x01(\x0b2\'.chalk.scalinggroup.v1.ScalingGroupSpecR\x04spec\x129\n\ncreated_at\x18\x07 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12]\n\x08metadata\x18\x08 \x03(\x0b2A.chalk.scalinggroup.v1.ScalingGroupRevisionResponse.MetadataEntryR\x08metadata\x12\x16\n\x06latest\x18\t \x01(\x08R\x06latest\x12>\n\ndeleted_at\x18\n \x01(\x0b2\x1a.google.protobuf.TimestampH\x01R\tdeletedAt\x88\x01\x01\x12*\n\x0estatus_details\x18\x0b \x01(\tH\x02R\rstatusDetails\x88\x01\x01\x12\'\n\ncreated_by\x18\x0c \x01(\tH\x03R\tcreatedByB\x03\xe0A\x03\x88\x01\x01\x1aS\n\rMetadataEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12,\n\x05value\x18\x02 \x01(\x0b2\x16.google.protobuf.ValueR\x05value:\x028\x01B\x11\n\x0f_status_messageB\r\n\x0b_deleted_atB\x11\n\x0f_status_detailsB\r\n\x0b_created_by"\xf4\x01\n\x1eGetScalingGroupRevisionRequest\x12*\n\x10scaling_group_id\x18\x01 \x01(\tH\x00R\x0escalingGroupId\x12.\n\x12scaling_group_name\x18\x02 \x01(\tH\x00R\x10scalingGroupName\x12\x1f\n\x0brevision_id\x18\x03 \x01(\tR\nrevisionId\x12,\n\x0finclude_deleted\x18\x04 \x01(\x08H\x01R\x0eincludeDeleted\x88\x01\x01B\x13\n\x11scaling_group_keyB\x12\n\x10_include_deleted"r\n\x1fGetScalingGroupRevisionResponse\x12O\n\x08revision\x18\x01 \x01(\x0b23.chalk.scalinggroup.v1.ScalingGroupRevisionResponseR\x08revision"\xf5\x02\n ListScalingGroupRevisionsRequest\x12*\n\x10scaling_group_id\x18\x01 \x01(\tH\x00R\x0escalingGroupId\x12.\n\x12scaling_group_name\x18\x02 \x01(\tH\x00R\x10scalingGroupName\x12\x1b\n\x06cursor\x18\x03 \x01(\tH\x01R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x04 \x01(\x05H\x02R\x05limit\x88\x01\x01\x12Q\n\x07filters\x18\x05 \x01(\x0b27.chalk.scalinggroup.v1.ListScalingGroupRevisionsFiltersR\x07filters\x12,\n\x0finclude_deleted\x18\x06 \x01(\x08H\x03R\x0eincludeDeleted\x88\x01\x01B\x13\n\x11scaling_group_keyB\t\n\x07_cursorB\x08\n\x06_limitB\x12\n\x10_include_deleted"u\n ListScalingGroupRevisionsFilters\x12Q\n\nvisibility\x18\x01 \x03(\x0e2-.chalk.scalinggroup.v1.ScalingGroupVisibilityR\nvisibilityB\x02\x18\x01"\xac\x01\n!ListScalingGroupRevisionsResponse\x12Q\n\trevisions\x18\x01 \x03(\x0b23.chalk.scalinggroup.v1.ScalingGroupRevisionResponseR\trevisions\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"Y\n\x19DeleteScalingGroupRequest\x12\x13\n\x02id\x18\x01 \x01(\tH\x00R\x02id\x88\x01\x01\x12\x17\n\x04name\x18\x02 \x01(\tH\x01R\x04name\x88\x01\x01B\x05\n\x03_idB\x07\n\x05_name"n\n\x1aDeleteScalingGroupResponse\x12P\n\rscaling_group\x18\x01 \x01(\x0b2+.chalk.scalinggroup.v1.ScalingGroupResponseR\x0cscalingGroup"\xb4\x04\n\x1fUpdateScalingGroupStatusRequest\x12(\n\x10scaling_group_id\x18\x01 \x01(\tR\x0escalingGroupId\x12\x16\n\x06status\x18\x02 \x01(\tR\x06status\x12*\n\x0estatus_message\x18\x03 \x01(\tH\x00R\rstatusMessage\x88\x01\x01\x120\n\x14observed_revision_id\x18\x04 \x01(\tR\x12observedRevisionId\x12.\n\x10desired_replicas\x18\x05 \x01(\x05H\x01R\x0fdesiredReplicas\x88\x01\x01\x12*\n\x0eready_replicas\x18\x06 \x01(\x05H\x02R\rreadyReplicas\x88\x01\x01\x122\n\x12available_replicas\x18\x07 \x01(\x05H\x03R\x11availableReplicas\x88\x01\x01\x12@\n\x0bobserved_at\x18\x08 \x01(\x0b2\x1a.google.protobuf.TimestampH\x04R\nobservedAt\x88\x01\x01\x12*\n\x0estatus_details\x18\t \x01(\tH\x05R\rstatusDetails\x88\x01\x01B\x11\n\x0f_status_messageB\x13\n\x11_desired_replicasB\x11\n\x0f_ready_replicasB\x15\n\x13_available_replicasB\x0e\n\x0c_observed_atB\x11\n\x0f_status_details"x\n$BatchUpdateScalingGroupStatusRequest\x12P\n\x07updates\x18\x01 \x03(\x0b26.chalk.scalinggroup.v1.UpdateScalingGroupStatusRequestR\x07updates"\'\n%BatchUpdateScalingGroupStatusResponse*\x9f\x01\n\x1aScaleFromZeroRequestPolicy\x12.\n*SCALE_FROM_ZERO_REQUEST_POLICY_UNSPECIFIED\x10\x00\x12(\n$SCALE_FROM_ZERO_REQUEST_POLICY_ERROR\x10\x01\x12\'\n#SCALE_FROM_ZERO_REQUEST_POLICY_HOLD\x10\x02*\x8c\x01\n\x15FunctionQueueProtocol\x12\'\n#FUNCTION_QUEUE_PROTOCOL_UNSPECIFIED\x10\x00\x12#\n\x1fFUNCTION_QUEUE_PROTOCOL_LIST_V1\x10\x01\x12%\n!FUNCTION_QUEUE_PROTOCOL_STREAM_V1\x10\x02*\x98\x01\n\x18GatewayAdmissionLifetime\x12*\n&GATEWAY_ADMISSION_LIFETIME_UNSPECIFIED\x10\x00\x12&\n"GATEWAY_ADMISSION_LIFETIME_NETWORK\x10\x01\x12(\n$GATEWAY_ADMISSION_LIFETIME_EXECUTION\x10\x02*\x97\x01\n\x16ScalingGroupSortColumn\x12)\n%SCALING_GROUP_SORT_COLUMN_UNSPECIFIED\x10\x00\x12(\n$SCALING_GROUP_SORT_COLUMN_CREATED_AT\x10\x01\x12(\n$SCALING_GROUP_SORT_COLUMN_UPDATED_AT\x10\x02*\x86\x01\n\x15ScalingGroupSortOrder\x12(\n$SCALING_GROUP_SORT_ORDER_UNSPECIFIED\x10\x00\x12!\n\x1dSCALING_GROUP_SORT_ORDER_DESC\x10\x01\x12 \n\x1cSCALING_GROUP_SORT_ORDER_ASC\x10\x02*\x92\x01\n\x16ScalingGroupVisibility\x12(\n$SCALING_GROUP_VISIBILITY_UNSPECIFIED\x10\x00\x12#\n\x1fSCALING_GROUP_VISIBILITY_ACTIVE\x10\x01\x12%\n!SCALING_GROUP_VISIBILITY_ARCHIVED\x10\x02\x1a\x02\x18\x012\x88\n\n\x1aScalingGroupManagerService\x12\xd5\x01\n\x12CreateScalingGroup\x120.chalk.scalinggroup.v1.CreateScalingGroupRequest\x1a1.chalk.scalinggroup.v1.CreateScalingGroupResponse"Z\x80}\x0c\x92\xd3\x0eS\n\x16scaling_groups_enabled\x129This action is not enabled. Please contact Chalk Support.\x12\xd5\x01\n\x12UpdateScalingGroup\x120.chalk.scalinggroup.v1.UpdateScalingGroupRequest\x1a1.chalk.scalinggroup.v1.UpdateScalingGroupResponse"Z\x80}\x0e\x92\xd3\x0eS\n\x16scaling_groups_enabled\x129This action is not enabled. Please contact Chalk Support.\x12u\n\x0fGetScalingGroup\x12-.chalk.scalinggroup.v1.GetScalingGroupRequest\x1a..chalk.scalinggroup.v1.GetScalingGroupResponse"\x03\x80}\x0b\x12{\n\x11ListScalingGroups\x12/.chalk.scalinggroup.v1.ListScalingGroupsRequest\x1a0.chalk.scalinggroup.v1.ListScalingGroupsResponse"\x03\x80}\x0b\x12~\n\x12DeleteScalingGroup\x120.chalk.scalinggroup.v1.DeleteScalingGroupRequest\x1a1.chalk.scalinggroup.v1.DeleteScalingGroupResponse"\x03\x80}\x0e\x12\x8d\x01\n\x17GetScalingGroupRevision\x125.chalk.scalinggroup.v1.GetScalingGroupRevisionRequest\x1a6.chalk.scalinggroup.v1.GetScalingGroupRevisionResponse"\x03\x80}\x0b\x12\x93\x01\n\x19ListScalingGroupRevisions\x127.chalk.scalinggroup.v1.ListScalingGroupRevisionsRequest\x1a8.chalk.scalinggroup.v1.ListScalingGroupRevisionsResponse"\x03\x80}\x0b\x12\x9f\x01\n\x1dBatchUpdateScalingGroupStatus\x12;.chalk.scalinggroup.v1.BatchUpdateScalingGroupStatusRequest\x1a<.chalk.scalinggroup.v1.BatchUpdateScalingGroupStatusResponse"\x03\x80}!B\xbf\x01\n\x19com.chalk.scalinggroup.v1B\x0cServiceProtoP\x01Z\x1escalinggroup/v1;scalinggroupv1\xa2\x02\x03CSX\xaa\x02\x15Chalk.Scalinggroup.V1\xca\x02\x15Chalk\\Scalinggroup\\V1\xe2\x02!Chalk\\Scalinggroup\\V1\\GPBMetadata\xea\x02\x17Chalk::Scalinggroup::V1b\x06proto3',
     [
         permissions_pb.desc(),
         service_pb.desc(),
@@ -1572,6 +1668,7 @@ _DESC = file_desc(
         "TaskQueueScalingTrigger": TaskQueueScalingTrigger,
         "CronScalingTrigger": CronScalingTrigger,
         "CronScalingWindow": CronScalingWindow,
+        "GatewayAdmissionPolicy": GatewayAdmissionPolicy,
         "ScalingGroupSpec": ScalingGroupSpec,
         "ScalingGroupResponse": ScalingGroupResponse,
         "CreateScalingGroupRequest": CreateScalingGroupRequest,
@@ -1598,6 +1695,7 @@ _DESC = file_desc(
         "BatchUpdateScalingGroupStatusResponse": BatchUpdateScalingGroupStatusResponse,
         "ScaleFromZeroRequestPolicy": ScaleFromZeroRequestPolicy,
         "FunctionQueueProtocol": FunctionQueueProtocol,
+        "GatewayAdmissionLifetime": GatewayAdmissionLifetime,
         "ScalingGroupSortColumn": ScalingGroupSortColumn,
         "ScalingGroupSortOrder": ScalingGroupSortOrder,
         "ScalingGroupVisibility": ScalingGroupVisibility,
