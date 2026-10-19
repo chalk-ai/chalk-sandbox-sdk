@@ -5,6 +5,10 @@ import importlib
 # Keep top-level imports lazy so `import chalkcompute` does not eagerly import
 # the grpc/protobuf/client modules. Update `__init__.pyi` when adding exports.
 _LAZY_MAP: dict[str, tuple[str, str]] = {
+    "GatewayAdmissionPolicy": (
+        "chalkcompute._gateway_admission",
+        "GatewayAdmissionPolicy",
+    ),
     "configure_logging": ("chalkcompute._logging", "configure_logging"),
     # _artifact.py
     "Artifact": ("chalkcompute._artifact", "Artifact"),

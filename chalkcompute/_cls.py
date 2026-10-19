@@ -43,6 +43,11 @@ Or imperatively:
 
 from __future__ import annotations
 
+from chalkcompute._gateway_admission import (
+    GatewayAdmissionPolicy,
+    validate_gateway_admission,
+)
+
 import ast
 import inspect
 import logging
@@ -781,6 +786,7 @@ class RemoteClass:
         max_inflight_requests_per_replica: int | None = None,
         max_inflight_input_bytes_per_replica: int | None = None,
         concurrency: int | ConcurrencyPolicy | None = None,
+        gateway_admission: GatewayAdmissionPolicy | None = None,
         queue_policy: QueuePolicy | None = None,
         schedule: str | None = None,
         tracing: TracingPolicyConfig | None = None,
@@ -868,6 +874,7 @@ class RemoteClass:
         self._retries = (
             RetryPolicy.from_int_or_policy(retries) if retries is not None else None
         )
+        self._gateway_admission = validate_gateway_admission(gateway_admission)
         self._concurrency = resolve_concurrency_policy(
             concurrency,
             max_inflight_requests_per_replica,
@@ -1279,6 +1286,9 @@ class RemoteClass:
                 ).to_proto()
 
                 spec = sg_pb.ScalingGroupSpec(
+                    gateway_admission=self._gateway_admission.to_proto()
+                    if self._gateway_admission is not None
+                    else None,
                     container_spec=container_spec,
                     scaling_spec=scaling_spec(
                         min_replicas=self._min_replicas,
@@ -1656,6 +1666,7 @@ def cls(
     max_inflight_requests_per_replica: int | None = None,
     max_inflight_input_bytes_per_replica: int | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
+    gateway_admission: GatewayAdmissionPolicy | None = None,
     queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
@@ -1697,6 +1708,7 @@ def cls(
     max_inflight_requests_per_replica: int | None = None,
     max_inflight_input_bytes_per_replica: int | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
+    gateway_admission: GatewayAdmissionPolicy | None = None,
     queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
@@ -1739,6 +1751,7 @@ def cls(
     max_inflight_requests_per_replica: int | None = None,
     max_inflight_input_bytes_per_replica: int | None = None,
     concurrency: int | ConcurrencyPolicy | None = None,
+    gateway_admission: GatewayAdmissionPolicy | None = None,
     queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
@@ -1898,6 +1911,7 @@ def cls(
             max_inflight_requests_per_replica=max_inflight_requests_per_replica,
             max_inflight_input_bytes_per_replica=max_inflight_input_bytes_per_replica,
             concurrency=concurrency,
+            gateway_admission=gateway_admission,
             queue_policy=queue_policy,
             schedule=schedule,
             tracing=tracing,

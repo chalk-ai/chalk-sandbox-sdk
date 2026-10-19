@@ -312,3 +312,7 @@ __all__ = [
     "TraceNotFoundError",
     "TraceSummary",
 ]
+
+from chalkcompute._gateway_admission import (
+    GatewayAdmissionPolicy as GatewayAdmissionPolicy,
+)
