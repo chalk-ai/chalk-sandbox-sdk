@@ -405,6 +405,11 @@ def test_run_training_calls_create_rpc() -> None:
     assert "API_KEY" not in request.env
     assert request.secret_refs[0].source.value == "TOKEN"
     assert dict(request.secret_refs[0].aliases) == {"TOKEN": "API_KEY"}
+    assert list(request.entrypoint) == [
+        "python",
+        "-m",
+        "chalkcompute._training_entrypoint",
+    ]
 
 
 def test_run_training_with_dataclass_config() -> None:
