@@ -30,7 +30,7 @@ import signal
 import time
 import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 from connectrpc.code import Code
@@ -1170,39 +1170,49 @@ class Sandbox:
             self._network_policy = NetworkPolicy()
         for host in normalized_hosts:
             rules = self._network_policy.allowed_hosts.setdefault(host, [])
-            new_bindings: dict[str, str | Secret] = {}
             for placeholder, credential in headers_secrets.items():
-                existing = [
-                    transform.headers_secrets[placeholder]
-                    for rule in rules
-                    for transform in rule.transforms
-                    if placeholder in transform.headers_secrets
-                ]
                 secret_name = (
                     credential._secret_name
                     or credential._env_var_name
                     or credential._local_env_var
                 )
                 if any(
-                    bound != credential and bound != secret_name for bound in existing
+                    transform.headers_secrets[placeholder]
+                    not in (credential, secret_name)
+                    for rule in rules
+                    for transform in rule.transforms
+                    if placeholder in transform.headers_secrets
                 ):
                     raise ValueError(
                         f"credential environment variable for placeholder "
                         f"{placeholder!r} is already bound to a different secret "
                         f"for host {host!r}"
                     )
-                if not existing:
-                    new_bindings[placeholder] = credential
-            if new_bindings:
-                rules.append(
-                    NetworkPolicy.Rule(
+            # The proxy applies only the first rule matching a request, so every
+            # rule needs the bindings. Appending a catch-all rule instead would
+            # also open paths the existing rules deny. Rules are replaced rather
+            # than mutated because one Rule may be shared with another host.
+            if not rules:
+                rules.append(NetworkPolicy.Rule())
+            for index, rule in enumerate(rules):
+                bound = {
+                    placeholder
+                    for transform in rule.transforms
+                    for placeholder in transform.headers_secrets
+                }
+                missing: dict[str, str | Secret] = {
+                    placeholder: credential
+                    for placeholder, credential in headers_secrets.items()
+                    if placeholder not in bound
+                }
+                if missing:
+                    rules[index] = replace(
+                        rule,
                         transforms=[
-                            NetworkPolicy.Transformer(
-                                headers_secrets=new_bindings,
-                            )
-                        ]
+                            *rule.transforms,
+                            NetworkPolicy.Transformer(headers_secrets=missing),
+                        ],
                     )
-                )
         return self
 
     @_instrumented("chalkcompute.sandbox.run")
