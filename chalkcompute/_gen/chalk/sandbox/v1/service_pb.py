@@ -17,6 +17,7 @@ from ...auth.v1 import permissions_pb
 from ...common.v1 import log_pb
 from ...container.v1 import service_pb
 from ...flags.v1 import flags_pb
+from ...utils.v1 import sensitive_pb
 
 if TYPE_CHECKING:
     from protobuf import DescFile, Oneof
@@ -1535,7 +1536,7 @@ class GetCustomImageResponse(Message[_GetCustomImageResponseFields]):
         image: str
         error: str
 
-_GetOrBuildCustomImageRequestFields: TypeAlias = Literal["image_spec", "target_registry"]
+_GetOrBuildCustomImageRequestFields: TypeAlias = Literal["image_spec", "target_registry", "base_image_source"]
 
 class GetOrBuildCustomImageRequest(Message[_GetOrBuildCustomImageRequestFields]):
     """
@@ -1560,9 +1561,15 @@ class GetOrBuildCustomImageRequest(Message[_GetOrBuildCustomImageRequestFields])
             ```proto
             optional string target_registry = 2;
             ```
+        base_image_source:
+            Selects a server-resolved base image. Omitted or unspecified preserves image_spec.base_image.
+
+            ```proto
+            optional chalk.sandbox.v1.CustomImageBaseImageSource base_image_source = 3;
+            ```
     """
 
-    __slots__ = ("image_spec", "target_registry")
+    __slots__ = ("image_spec", "target_registry", "base_image_source")
 
     if TYPE_CHECKING:
 
@@ -1571,13 +1578,15 @@ class GetOrBuildCustomImageRequest(Message[_GetOrBuildCustomImageRequestFields])
             *,
             image_spec: ImageSpec | None = None,
             target_registry: str | None = None,
+            base_image_source: CustomImageBaseImageSource | None = None,
         ) -> None:
             pass
 
         image_spec: ImageSpec | None
         target_registry: str
+        base_image_source: CustomImageBaseImageSource
 
-_GetOrBuildCustomImageResponseFields: TypeAlias = Literal["image", "build_id", "status", "error"]
+_GetOrBuildCustomImageResponseFields: TypeAlias = Literal["image", "build_id", "status", "error", "content_hash"]
 
 class GetOrBuildCustomImageResponse(Message[_GetOrBuildCustomImageResponseFields]):
     """
@@ -1614,9 +1623,15 @@ class GetOrBuildCustomImageResponse(Message[_GetOrBuildCustomImageResponseFields
             ```proto
             optional string error = 4;
             ```
+        content_hash:
+            Content-addressed key derived from the effective image specification.
+
+            ```proto
+            string content_hash = 5;
+            ```
     """
 
-    __slots__ = ("image", "build_id", "status", "error")
+    __slots__ = ("image", "build_id", "status", "error", "content_hash")
 
     if TYPE_CHECKING:
 
@@ -1627,6 +1642,7 @@ class GetOrBuildCustomImageResponse(Message[_GetOrBuildCustomImageResponseFields
             build_id: str = "",
             status: str = "",
             error: str | None = None,
+            content_hash: str = "",
         ) -> None:
             pass
 
@@ -1634,6 +1650,7 @@ class GetOrBuildCustomImageResponse(Message[_GetOrBuildCustomImageResponseFields
         build_id: str
         status: str
         error: str
+        content_hash: str
 
 _StreamCustomImageBuildUpdatesRequestFields: TypeAlias = Literal["build_id"]
 
@@ -1800,7 +1817,7 @@ class CustomImageBuildSummary(Message[_CustomImageBuildSummaryFields]):
         status: str
         base_image: str
 
-_ListCustomImageBuildsRequestFields: TypeAlias = Literal["limit", "cursor"]
+_ListCustomImageBuildsRequestFields: TypeAlias = Literal["limit", "cursor", "filters"]
 
 class ListCustomImageBuildsRequest(Message[_ListCustomImageBuildsRequestFields]):
     """
@@ -1817,9 +1834,13 @@ class ListCustomImageBuildsRequest(Message[_ListCustomImageBuildsRequestFields])
             ```proto
             optional string cursor = 2;
             ```
+        filters:
+            ```proto
+            optional chalk.sandbox.v1.ListCustomImageBuildsFilters filters = 3;
+            ```
     """
 
-    __slots__ = ("limit", "cursor")
+    __slots__ = ("limit", "cursor", "filters")
 
     if TYPE_CHECKING:
 
@@ -1828,11 +1849,43 @@ class ListCustomImageBuildsRequest(Message[_ListCustomImageBuildsRequestFields])
             *,
             limit: int | None = None,
             cursor: str | None = None,
+            filters: ListCustomImageBuildsFilters | None = None,
         ) -> None:
             pass
 
         limit: int
         cursor: str
+        filters: ListCustomImageBuildsFilters | None
+
+_ListCustomImageBuildsFiltersFields: TypeAlias = Literal["content_hash"]
+
+class ListCustomImageBuildsFilters(Message[_ListCustomImageBuildsFiltersFields]):
+    """
+    ```proto
+    message chalk.sandbox.v1.ListCustomImageBuildsFilters
+    ```
+
+    Attributes:
+        content_hash:
+            Case-sensitive exact match on the content-addressed image ID.
+
+            ```proto
+            optional string content_hash = 1;
+            ```
+    """
+
+    __slots__ = ("content_hash",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            content_hash: str | None = None,
+        ) -> None:
+            pass
+
+        content_hash: str
 
 _ListCustomImageBuildsResponseFields: TypeAlias = Literal["builds", "next_cursor"]
 
@@ -2313,15 +2366,112 @@ class GetCustomImageBuildUsageResponse(Message[_GetCustomImageBuildUsageResponse
         scaling_groups: list[CustomImageScalingGroupUsage]
         sandboxes: list[CustomImageSandboxUsage]
 
+_GetImagePullCredentialsRequestFields: TypeAlias = Literal["image"]
+
+class GetImagePullCredentialsRequest(Message[_GetImagePullCredentialsRequestFields]):
+    """
+    ```proto
+    message chalk.sandbox.v1.GetImagePullCredentialsRequest
+    ```
+
+    Attributes:
+        image:
+            Fully qualified image reference to pull.
+
+            ```proto
+            string image = 1;
+            ```
+    """
+
+    __slots__ = ("image",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            image: str = "",
+        ) -> None:
+            pass
+
+        image: str
+
+_GetImagePullCredentialsResponseFields: TypeAlias = Literal["server_address", "username", "password", "expires_at"]
+
+class GetImagePullCredentialsResponse(Message[_GetImagePullCredentialsResponseFields]):
+    """
+    ```proto
+    message chalk.sandbox.v1.GetImagePullCredentialsResponse
+    ```
+
+    Attributes:
+        server_address:
+            ```proto
+            string server_address = 1;
+            ```
+        username:
+            ```proto
+            string username = 2;
+            ```
+        password:
+            ```proto
+            string password = 3;
+            ```
+        expires_at:
+            ```proto
+            optional google.protobuf.Timestamp expires_at = 4;
+            ```
+    """
+
+    __slots__ = ("server_address", "username", "password", "expires_at")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            server_address: str = "",
+            username: str = "",
+            password: str = "",
+            expires_at: Timestamp | None = None,
+        ) -> None:
+            pass
+
+        server_address: str
+        username: str
+        password: str
+        expires_at: Timestamp | None
+
+class CustomImageBaseImageSource(Enum):
+    """
+    ```proto
+    enum chalk.sandbox.v1.CustomImageBaseImageSource
+    ```
+
+    Attributes:
+        UNSPECIFIED:
+            ```proto
+            CUSTOM_IMAGE_BASE_IMAGE_SOURCE_UNSPECIFIED = 0
+            ```
+        NOTEBOOK_RUNTIME:
+            ```proto
+            CUSTOM_IMAGE_BASE_IMAGE_SOURCE_NOTEBOOK_RUNTIME = 1
+            ```
+    """
+
+    UNSPECIFIED = 0
+    NOTEBOOK_RUNTIME = 1
+
 
 _DESC = file_desc(
-    b'\n\x1echalk/sandbox/v1/service.proto\x12\x10chalk.sandbox.v1\x1a\x1cchalk/argo/v1/workflow.proto\x1a\x1fchalk/auth/v1/permissions.proto\x1a\x19chalk/common/v1/log.proto\x1a chalk/container/v1/service.proto\x1a\x1achalk/flags/v1/flags.proto\x1a\x1fgoogle/protobuf/timestamp.proto"\xb3\x02\n\x0bExecRequest\x120\n\x04init\x18\x01 \x01(\x0b2\x1a.chalk.sandbox.v1.ExecInitH\x00R\x04init\x12<\n\nstdin_data\x18\x02 \x01(\x0b2\x1b.chalk.sandbox.v1.StdinDataH\x00R\tstdinData\x129\n\tstdin_eof\x18\x03 \x01(\x0b2\x1a.chalk.sandbox.v1.StdinEofH\x00R\x08stdinEof\x126\n\x06signal\x18\x04 \x01(\x0b2\x1c.chalk.sandbox.v1.ExecSignalH\x00R\x06signal\x126\n\x06resize\x18\x05 \x01(\x0b2\x1c.chalk.sandbox.v1.ExecResizeH\x00R\x06resizeB\t\n\x07message"\xf2\x02\n\x08ExecInit\x12\x1d\n\nsandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x18\n\x07command\x18\x02 \x01(\tR\x07command\x12\x12\n\x04args\x18\x03 \x03(\tR\x04args\x12\x1d\n\x07workdir\x18\x04 \x01(\tH\x00R\x07workdir\x88\x01\x01\x125\n\x03env\x18\x05 \x03(\x0b2#.chalk.sandbox.v1.ExecInit.EnvEntryR\x03env\x12&\n\x0ctimeout_secs\x18\x06 \x01(\x04H\x01R\x0btimeoutSecs\x88\x01\x01\x129\n\x08pty_info\x18\x07 \x01(\x0b2\x19.chalk.sandbox.v1.PtyInfoH\x02R\x07ptyInfo\x88\x01\x01\x1a6\n\x08EnvEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\n\n\x08_workdirB\x0f\n\r_timeout_secsB\x0b\n\t_pty_info"1\n\x07PtyInfo\x12\x12\n\x04cols\x18\x01 \x01(\rR\x04cols\x12\x12\n\x04rows\x18\x02 \x01(\rR\x04rows"\x1f\n\tStdinData\x12\x12\n\x04data\x18\x01 \x01(\x0cR\x04data"\n\n\x08StdinEof"$\n\nExecSignal\x12\x16\n\x06signal\x18\x01 \x01(\x05R\x06signal"4\n\nExecResize\x12\x12\n\x04cols\x18\x01 \x01(\rR\x04cols\x12\x12\n\x04rows\x18\x02 \x01(\rR\x04rows"\xa6\x02\n\x0cExecResponse\x12K\n\x0fprocess_started\x18\x01 \x01(\x0b2 .chalk.sandbox.v1.ProcessStartedH\x00R\x0eprocessStarted\x12?\n\x0boutput_data\x18\x02 \x01(\x0b2\x1c.chalk.sandbox.v1.OutputDataH\x00R\noutputData\x12H\n\x0eprocess_exited\x18\x03 \x01(\x0b2\x1f.chalk.sandbox.v1.ProcessExitedH\x00R\rprocessExited\x123\n\x05error\x18\x04 \x01(\x0b2\x1b.chalk.sandbox.v1.ExecErrorH\x00R\x05errorB\t\n\x07message""\n\x0eProcessStarted\x12\x10\n\x03pid\x18\x01 \x01(\rR\x03pid"\xbc\x01\n\nOutputData\x12;\n\x06stream\x18\x01 \x01(\x0e2#.chalk.sandbox.v1.OutputData.StreamR\x06stream\x12\x12\n\x04data\x18\x02 \x01(\x0cR\x04data"]\n\x06Stream\x12\x16\n\x12STREAM_UNSPECIFIED\x10\x00\x12\x11\n\rSTREAM_STDOUT\x10\x01\x12\x11\n\rSTREAM_STDERR\x10\x02\x12\x15\n\x11STREAM_PTY_OUTPUT\x10\x03"g\n\rProcessExited\x12 \n\texit_code\x18\x01 \x01(\x05H\x00R\x08exitCode\x88\x01\x01\x12\x1b\n\x06signal\x18\x02 \x01(\x05H\x01R\x06signal\x88\x01\x01B\x0c\n\n_exit_codeB\t\n\x07_signal"9\n\tExecError\x12\x12\n\x04code\x18\x01 \x01(\tR\x04code\x12\x18\n\x07message\x18\x02 \x01(\tR\x07message"\xaa\x02\n\tImageSpec\x12\x1d\n\nbase_image\x18\x01 \x01(\tR\tbaseImage\x121\n\x05steps\x18\x02 \x03(\x0b2\x1b.chalk.sandbox.v1.BuildStepR\x05steps\x12\x1e\n\nentrypoint\x18\x03 \x03(\tR\nentrypoint\x12\x10\n\x03cmd\x18\x04 \x03(\tR\x03cmd\x12\x1d\n\x07workdir\x18\x05 \x01(\tH\x00R\x07workdir\x88\x01\x01\x126\n\x03env\x18\x06 \x03(\x0b2$.chalk.sandbox.v1.ImageSpec.EnvEntryR\x03env\x1a6\n\x08EnvEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\n\n\x08_workdir"\xbe\x03\n\tBuildStep\x12F\n\x0crun_commands\x18\x01 \x01(\x0b2!.chalk.sandbox.v1.RunCommandsStepH\x00R\x0brunCommands\x12C\n\x0bpip_install\x18\x02 \x01(\x0b2 .chalk.sandbox.v1.PipInstallStepH\x00R\npipInstall\x12:\n\x08add_file\x18\x03 \x01(\x0b2\x1d.chalk.sandbox.v1.AddFileStepH\x00R\x07addFile\x12[\n\x13dockerfile_commands\x18\x04 \x01(\x0b2(.chalk.sandbox.v1.DockerfileCommandsStepH\x00R\x12dockerfileCommands\x12J\n\x0euv_pip_install\x18\x05 \x01(\x0b2".chalk.sandbox.v1.UvPipInstallStepH\x00R\x0cuvPipInstall\x127\n\x07uv_sync\x18\x06 \x01(\x0b2\x1c.chalk.sandbox.v1.UvSyncStepH\x00R\x06uvSyncB\x06\n\x04step"-\n\x0fRunCommandsStep\x12\x1a\n\x08commands\x18\x01 \x03(\tR\x08commands",\n\x0ePipInstallStep\x12\x1a\n\x08packages\x18\x01 \x03(\tR\x08packages".\n\x10UvPipInstallStep\x12\x1a\n\x08packages\x18\x01 \x03(\tR\x08packages"\xbe\x01\n\nUvSyncStep\x12.\n\x12pyproject_toml_lz4\x18\x01 \x01(\x0cH\x00R\x10pyprojectTomlLz4\x12 \n\x0buv_lock_lz4\x18\x02 \x01(\x0cH\x01R\tuvLockLz4\x12\x16\n\x06extras\x18\x03 \x03(\tR\x06extras\x12\x1d\n\x07workdir\x18\x04 \x01(\tH\x02R\x07workdir\x88\x01\x01B\x10\n\x0epyproject_tomlB\t\n\x07uv_lockB\n\n\x08_workdir"k\n\x0bAddFileStep\x12 \n\x0bdestination\x18\x01 \x01(\tR\x0bdestination\x12\x18\n\x07content\x18\x02 \x01(\x0cR\x07content\x12\x17\n\x04mode\x18\x03 \x01(\rH\x00R\x04mode\x88\x01\x01B\x07\n\x05_mode"4\n\x16DockerfileCommandsStep\x12\x1a\n\x08commands\x18\x01 \x03(\tR\x08commands"\xb6\x01\n\x17BuildCustomImageRequest\x12:\n\nimage_spec\x18\x01 \x01(\x0b2\x1b.chalk.sandbox.v1.ImageSpecR\timageSpec\x12,\n\x0ftarget_registry\x18\x02 \x01(\tH\x00R\x0etargetRegistry\x88\x01\x01\x12\x15\n\x03tag\x18\x03 \x01(\tH\x01R\x03tag\x88\x01\x01B\x12\n\x10_target_registryB\x06\n\x04_tag"K\n\x18BuildCustomImageResponse\x12\x14\n\x05image\x18\x01 \x01(\tR\x05image\x12\x19\n\x08build_id\x18\x02 \x01(\tR\x07buildId"\xe7\x01\n\x0bVolumeMount\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n\nmount_path\x18\x02 \x01(\tR\tmountPath\x12\x12\n\x04type\x18\x03 \x01(\tR\x04type\x12"\n\nsize_limit\x18\x04 \x01(\tH\x00R\tsizeLimit\x88\x01\x01\x12"\n\nversion_id\x18\x05 \x01(\x04H\x01R\tversionId\x88\x01\x01\x12\x1e\n\x08ref_name\x18\x06 \x01(\tH\x02R\x07refName\x88\x01\x01B\r\n\x0b_size_limitB\r\n\x0b_version_idB\x0b\n\t_ref_name"\xa6\x06\n\x14CreateSandboxRequest\x12\x16\n\x05image\x18\x01 \x01(\tH\x00R\x05image\x12<\n\nimage_spec\x18\x05 \x01(\x0b2\x1b.chalk.sandbox.v1.ImageSpecH\x00R\timageSpec\x12N\n\x0fresource_limits\x18\x02 \x01(\x0b2 .chalk.sandbox.v1.ResourceLimitsH\x01R\x0eresourceLimits\x88\x01\x01\x12A\n\x03env\x18\x03 \x03(\x0b2/.chalk.sandbox.v1.CreateSandboxRequest.EnvEntryR\x03env\x12\x17\n\x04name\x18\x04 \x01(\tH\x02R\x04name\x88\x01\x01\x127\n\x07volumes\x18\x06 \x03(\x0b2\x1d.chalk.sandbox.v1.VolumeMountR\x07volumes\x12\x1d\n\x07runtime\x18\x07 \x01(\tH\x03R\x07runtime\x88\x01\x01\x12\x1e\n\nentrypoint\x18\x08 \x03(\tR\nentrypoint\x12J\n\x10knowledge_cutoff\x18\t \x01(\x0b2\x1a.google.protobuf.TimestampH\x04R\x0fknowledgeCutoff\x88\x01\x01\x12M\n\x0enetwork_policy\x18\n \x01(\x0b2!.chalk.container.v1.NetworkPolicyH\x05R\rnetworkPolicy\x88\x01\x01\x12M\n\x0erestart_policy\x18\x0b \x01(\x0e2!.chalk.container.v1.RestartPolicyH\x06R\rrestartPolicy\x88\x01\x01\x1a6\n\x08EnvEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x0e\n\x0cimage_sourceB\x12\n\x10_resource_limitsB\x07\n\x05_nameB\n\n\x08_runtimeB\x13\n\x11_knowledge_cutoffB\x11\n\x0f_network_policyB\x11\n\x0f_restart_policy"W\n\x0eResourceLimits\x12\x15\n\x03cpu\x18\x01 \x01(\tH\x00R\x03cpu\x88\x01\x01\x12\x1b\n\x06memory\x18\x02 \x01(\tH\x01R\x06memory\x88\x01\x01B\x06\n\x04_cpuB\t\n\x07_memory"P\n\x15CreateSandboxResponse\x127\n\x07sandbox\x18\x01 \x01(\x0b2\x1d.chalk.sandbox.v1.SandboxInfoR\x07sandbox"\x88\x01\n\x17TerminateSandboxRequest\x12\x1d\n\nsandbox_id\x18\x01 \x01(\tR\tsandboxId\x125\n\x14grace_period_seconds\x18\x02 \x01(\x05H\x00R\x12gracePeriodSeconds\x88\x01\x01B\x17\n\x15_grace_period_seconds"\x1a\n\x18TerminateSandboxResponse"}\n\x11GetSandboxRequest\x12\x1d\n\nsandbox_id\x18\x01 \x01(\tR\tsandboxId\x122\n\x12include_terminated\x18\x02 \x01(\x08H\x00R\x11includeTerminated\x88\x01\x01B\x15\n\x13_include_terminated"M\n\x12GetSandboxResponse\x127\n\x07sandbox\x18\x01 \x01(\x0b2\x1d.chalk.sandbox.v1.SandboxInfoR\x07sandbox"\xe5\x01\n\x14ListSandboxesRequest\x12\x1b\n\x06cursor\x18\x01 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x02 \x01(\x05H\x01R\x05limit\x88\x01\x01\x122\n\x12include_terminated\x18\x03 \x01(\x08H\x02R\x11includeTerminated\x88\x01\x01\x12\x16\n\x06states\x18\x04 \x03(\tR\x06states\x12\x1d\n\nnot_states\x18\x05 \x03(\tR\tnotStatesB\t\n\x07_cursorB\x08\n\x06_limitB\x15\n\x13_include_terminated"\x8a\x01\n\x15ListSandboxesResponse\x12;\n\tsandboxes\x18\x01 \x03(\x0b2\x1d.chalk.sandbox.v1.SandboxInfoR\tsandboxes\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"\xc1\x02\n\x0bSandboxInfo\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n\x05state\x18\x02 \x01(\tR\x05state\x12\x1d\n\ncreated_at\x18\x03 \x01(\tR\tcreatedAt\x12\x17\n\x04name\x18\x04 \x01(\tH\x00R\x04name\x88\x01\x01\x12\x1e\n\x08build_id\x18\x05 \x01(\tH\x01R\x07buildId\x88\x01\x01\x12J\n\x10knowledge_cutoff\x18\x06 \x01(\x0b2\x1a.google.protobuf.TimestampH\x02R\x0fknowledgeCutoff\x88\x01\x01\x12*\n\x0estatus_message\x18\x07 \x01(\tH\x03R\rstatusMessage\x88\x01\x01B\x07\n\x05_nameB\x0b\n\t_build_idB\x13\n\x11_knowledge_cutoffB\x11\n\x0f_status_message"2\n\x15GetCustomImageRequest\x12\x19\n\x08build_id\x18\x01 \x01(\tR\x07buildId"\x86\x01\n\x16GetCustomImageResponse\x12\x19\n\x08build_id\x18\x01 \x01(\tR\x07buildId\x12\x16\n\x06status\x18\x02 \x01(\tR\x06status\x12\x14\n\x05image\x18\x03 \x01(\tR\x05image\x12\x19\n\x05error\x18\x04 \x01(\tH\x00R\x05error\x88\x01\x01B\x08\n\x06_error"\x9c\x01\n\x1cGetOrBuildCustomImageRequest\x12:\n\nimage_spec\x18\x01 \x01(\x0b2\x1b.chalk.sandbox.v1.ImageSpecR\timageSpec\x12,\n\x0ftarget_registry\x18\x02 \x01(\tH\x00R\x0etargetRegistry\x88\x01\x01B\x12\n\x10_target_registry"\x8d\x01\n\x1dGetOrBuildCustomImageResponse\x12\x14\n\x05image\x18\x01 \x01(\tR\x05image\x12\x19\n\x08build_id\x18\x02 \x01(\tR\x07buildId\x12\x16\n\x06status\x18\x03 \x01(\tR\x06status\x12\x19\n\x05error\x18\x04 \x01(\tH\x00R\x05error\x88\x01\x01B\x08\n\x06_error"A\n$StreamCustomImageBuildUpdatesRequest\x12\x19\n\x08build_id\x18\x01 \x01(\tR\x07buildId"\x94\x01\n%StreamCustomImageBuildUpdatesResponse\x12\x16\n\x06status\x18\x01 \x01(\tR\x06status\x12\x14\n\x05image\x18\x02 \x01(\tR\x05image\x12\x19\n\x05error\x18\x03 \x01(\tH\x00R\x05error\x88\x01\x01\x12\x18\n\x07message\x18\x04 \x01(\tR\x07messageB\x08\n\x06_error"\x9c\x02\n\x17CustomImageBuildSummary\x12!\n\x0ccontent_hash\x18\x01 \x01(\tR\x0bcontentHash\x12\x1b\n\timage_ref\x18\x02 \x01(\tR\x08imageRef\x129\n\ncreated_at\x18\x03 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12\x1e\n\x08build_id\x18\x04 \x01(\tH\x00R\x07buildId\x88\x01\x01\x12\x1b\n\x06status\x18\x05 \x01(\tH\x01R\x06status\x88\x01\x01\x12"\n\nbase_image\x18\x06 \x01(\tH\x02R\tbaseImage\x88\x01\x01B\x0b\n\t_build_idB\t\n\x07_statusB\r\n\x0b_base_image"k\n\x1cListCustomImageBuildsRequest\x12\x19\n\x05limit\x18\x01 \x01(\x05H\x00R\x05limit\x88\x01\x01\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x01R\x06cursor\x88\x01\x01B\x08\n\x06_limitB\t\n\x07_cursor"\x98\x01\n\x1dListCustomImageBuildsResponse\x12A\n\x06builds\x18\x01 \x03(\x0b2).chalk.sandbox.v1.CustomImageBuildSummaryR\x06builds\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"l\n\x1aGetCustomImageBuildRequest\x12#\n\x0ccontent_hash\x18\x01 \x01(\tH\x00R\x0bcontentHash\x12\x1b\n\x08build_id\x18\x02 \x01(\tH\x00R\x07buildIdB\x0c\n\nidentifier"\xae\x01\n\x1bGetCustomImageBuildResponse\x12?\n\x05build\x18\x01 \x01(\x0b2).chalk.sandbox.v1.CustomImageBuildSummaryR\x05build\x12?\n\nimage_spec\x18\x02 \x01(\x0b2\x1b.chalk.sandbox.v1.ImageSpecH\x00R\timageSpec\x88\x01\x01B\r\n\x0b_image_spec"\xd1\x02\n\x1eGetCustomImageBuildLogsRequest\x12#\n\x0ccontent_hash\x18\x01 \x01(\tH\x00R\x0bcontentHash\x12\x1b\n\x08build_id\x18\x02 \x01(\tH\x00R\x07buildId\x12>\n\nstart_time\x18\x03 \x01(\x0b2\x1a.google.protobuf.TimestampH\x01R\tstartTime\x88\x01\x01\x12:\n\x08end_time\x18\x04 \x01(\x0b2\x1a.google.protobuf.TimestampH\x02R\x07endTime\x88\x01\x01\x12\x14\n\x05limit\x18\x05 \x01(\x05R\x05limit\x12"\n\npage_token\x18\x06 \x01(\tH\x03R\tpageToken\x88\x01\x01B\x0c\n\nidentifierB\r\n\x0b_start_timeB\x0b\n\t_end_timeB\r\n\x0b_page_token"\x91\x01\n\x1fGetCustomImageBuildLogsResponse\x12-\n\x04logs\x18\x01 \x03(\x0b2\x19.chalk.common.v1.LogEntryR\x04logs\x12+\n\x0fnext_page_token\x18\x02 \x01(\tH\x00R\rnextPageToken\x88\x01\x01B\x12\n\x10_next_page_token"t\n"GetCustomImageBuildWorkflowRequest\x12#\n\x0ccontent_hash\x18\x01 \x01(\tH\x00R\x0bcontentHash\x12\x1b\n\x08build_id\x18\x02 \x01(\tH\x00R\x07buildIdB\x0c\n\nidentifier"p\n#GetCustomImageBuildWorkflowResponse\x12<\n\x08workflow\x18\x01 \x01(\x0b2\x1b.chalk.argo.v1.ArgoWorkflowH\x00R\x08workflow\x88\x01\x01B\x0b\n\t_workflow"q\n\x1fGetCustomImageBuildUsageRequest\x12#\n\x0ccontent_hash\x18\x01 \x01(\tH\x00R\x0bcontentHash\x12\x1b\n\x08build_id\x18\x02 \x01(\tH\x00R\x07buildIdB\x0c\n\nidentifier"[\n\x19CustomImageContainerUsage\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x12\x16\n\x06status\x18\x03 \x01(\tR\x06status:\x02\x18\x01"Z\n\x1cCustomImageScalingGroupUsage\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x12\x16\n\x06status\x18\x03 \x01(\tR\x06status"U\n\x17CustomImageSandboxUsage\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x12\x16\n\x06status\x18\x03 \x01(\tR\x06status"\x93\x02\n GetCustomImageBuildUsageResponse\x12O\n\ncontainers\x18\x01 \x03(\x0b2+.chalk.sandbox.v1.CustomImageContainerUsageR\ncontainersB\x02\x18\x01\x12U\n\x0escaling_groups\x18\x02 \x03(\x0b2..chalk.sandbox.v1.CustomImageScalingGroupUsageR\rscalingGroups\x12G\n\tsandboxes\x18\x03 \x03(\x0b2).chalk.sandbox.v1.CustomImageSandboxUsageR\tsandboxes2\xfc\x03\n\x0eSandboxService\x12N\n\x04Exec\x12\x1d.chalk.sandbox.v1.ExecRequest\x1a\x1e.chalk.sandbox.v1.ExecResponse"\x03\x80}\x0c(\x010\x01\x12e\n\rCreateSandbox\x12&.chalk.sandbox.v1.CreateSandboxRequest\x1a\'.chalk.sandbox.v1.CreateSandboxResponse"\x03\x80}\x0c\x12n\n\x10TerminateSandbox\x12).chalk.sandbox.v1.TerminateSandboxRequest\x1a*.chalk.sandbox.v1.TerminateSandboxResponse"\x03\x80}\x0c\x12\\\n\nGetSandbox\x12#.chalk.sandbox.v1.GetSandboxRequest\x1a$.chalk.sandbox.v1.GetSandboxResponse"\x03\x80}\x0b\x12e\n\rListSandboxes\x12&.chalk.sandbox.v1.ListSandboxesRequest\x1a\'.chalk.sandbox.v1.ListSandboxesResponse"\x03\x80}\x0b2\xd0\n\n\x12CustomImageService\x12\xc5\x01\n\x10BuildCustomImage\x12).chalk.sandbox.v1.BuildCustomImageRequest\x1a*.chalk.sandbox.v1.BuildCustomImageResponse"Z\x80}\x0c\x92\xd3\x0eS\n\x16scaling_groups_enabled\x129This action is not enabled. Please contact Chalk Support.\x12h\n\x0eGetCustomImage\x12\'.chalk.sandbox.v1.GetCustomImageRequest\x1a(.chalk.sandbox.v1.GetCustomImageResponse"\x03\x80}\x0b\x12\xd4\x01\n\x15GetOrBuildCustomImage\x12..chalk.sandbox.v1.GetOrBuildCustomImageRequest\x1a/.chalk.sandbox.v1.GetOrBuildCustomImageResponse"Z\x80}\x0c\x92\xd3\x0eS\n\x16scaling_groups_enabled\x129This action is not enabled. Please contact Chalk Support.\x12\x97\x01\n\x1dStreamCustomImageBuildUpdates\x126.chalk.sandbox.v1.StreamCustomImageBuildUpdatesRequest\x1a7.chalk.sandbox.v1.StreamCustomImageBuildUpdatesResponse"\x03\x80}\x0b0\x01\x12}\n\x15ListCustomImageBuilds\x12..chalk.sandbox.v1.ListCustomImageBuildsRequest\x1a/.chalk.sandbox.v1.ListCustomImageBuildsResponse"\x03\x80}\x0b\x12w\n\x13GetCustomImageBuild\x12,.chalk.sandbox.v1.GetCustomImageBuildRequest\x1a-.chalk.sandbox.v1.GetCustomImageBuildResponse"\x03\x80}\x0b\x12\x83\x01\n\x17GetCustomImageBuildLogs\x120.chalk.sandbox.v1.GetCustomImageBuildLogsRequest\x1a1.chalk.sandbox.v1.GetCustomImageBuildLogsResponse"\x03\x80}\x0b\x12\x8f\x01\n\x1bGetCustomImageBuildWorkflow\x124.chalk.sandbox.v1.GetCustomImageBuildWorkflowRequest\x1a5.chalk.sandbox.v1.GetCustomImageBuildWorkflowResponse"\x03\x80}\x0b\x12\x86\x01\n\x18GetCustomImageBuildUsage\x121.chalk.sandbox.v1.GetCustomImageBuildUsageRequest\x1a2.chalk.sandbox.v1.GetCustomImageBuildUsageResponse"\x03\x80}\x0bB\x9c\x01\n\x14com.chalk.sandbox.v1B\x0cServiceProtoP\x01Z\x14sandbox/v1;sandboxv1\xa2\x02\x03CSX\xaa\x02\x10Chalk.Sandbox.V1\xca\x02\x10Chalk\\Sandbox\\V1\xe2\x02\x1cChalk\\Sandbox\\V1\\GPBMetadata\xea\x02\x12Chalk::Sandbox::V1b\x06proto3',
+    b'\n\x1echalk/sandbox/v1/service.proto\x12\x10chalk.sandbox.v1\x1a\x1cchalk/argo/v1/workflow.proto\x1a\x1fchalk/auth/v1/permissions.proto\x1a\x19chalk/common/v1/log.proto\x1a chalk/container/v1/service.proto\x1a\x1achalk/flags/v1/flags.proto\x1a\x1echalk/utils/v1/sensitive.proto\x1a\x1fgoogle/protobuf/timestamp.proto"\xb3\x02\n\x0bExecRequest\x120\n\x04init\x18\x01 \x01(\x0b2\x1a.chalk.sandbox.v1.ExecInitH\x00R\x04init\x12<\n\nstdin_data\x18\x02 \x01(\x0b2\x1b.chalk.sandbox.v1.StdinDataH\x00R\tstdinData\x129\n\tstdin_eof\x18\x03 \x01(\x0b2\x1a.chalk.sandbox.v1.StdinEofH\x00R\x08stdinEof\x126\n\x06signal\x18\x04 \x01(\x0b2\x1c.chalk.sandbox.v1.ExecSignalH\x00R\x06signal\x126\n\x06resize\x18\x05 \x01(\x0b2\x1c.chalk.sandbox.v1.ExecResizeH\x00R\x06resizeB\t\n\x07message"\xf2\x02\n\x08ExecInit\x12\x1d\n\nsandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x18\n\x07command\x18\x02 \x01(\tR\x07command\x12\x12\n\x04args\x18\x03 \x03(\tR\x04args\x12\x1d\n\x07workdir\x18\x04 \x01(\tH\x00R\x07workdir\x88\x01\x01\x125\n\x03env\x18\x05 \x03(\x0b2#.chalk.sandbox.v1.ExecInit.EnvEntryR\x03env\x12&\n\x0ctimeout_secs\x18\x06 \x01(\x04H\x01R\x0btimeoutSecs\x88\x01\x01\x129\n\x08pty_info\x18\x07 \x01(\x0b2\x19.chalk.sandbox.v1.PtyInfoH\x02R\x07ptyInfo\x88\x01\x01\x1a6\n\x08EnvEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\n\n\x08_workdirB\x0f\n\r_timeout_secsB\x0b\n\t_pty_info"1\n\x07PtyInfo\x12\x12\n\x04cols\x18\x01 \x01(\rR\x04cols\x12\x12\n\x04rows\x18\x02 \x01(\rR\x04rows"\x1f\n\tStdinData\x12\x12\n\x04data\x18\x01 \x01(\x0cR\x04data"\n\n\x08StdinEof"$\n\nExecSignal\x12\x16\n\x06signal\x18\x01 \x01(\x05R\x06signal"4\n\nExecResize\x12\x12\n\x04cols\x18\x01 \x01(\rR\x04cols\x12\x12\n\x04rows\x18\x02 \x01(\rR\x04rows"\xa6\x02\n\x0cExecResponse\x12K\n\x0fprocess_started\x18\x01 \x01(\x0b2 .chalk.sandbox.v1.ProcessStartedH\x00R\x0eprocessStarted\x12?\n\x0boutput_data\x18\x02 \x01(\x0b2\x1c.chalk.sandbox.v1.OutputDataH\x00R\noutputData\x12H\n\x0eprocess_exited\x18\x03 \x01(\x0b2\x1f.chalk.sandbox.v1.ProcessExitedH\x00R\rprocessExited\x123\n\x05error\x18\x04 \x01(\x0b2\x1b.chalk.sandbox.v1.ExecErrorH\x00R\x05errorB\t\n\x07message""\n\x0eProcessStarted\x12\x10\n\x03pid\x18\x01 \x01(\rR\x03pid"\xbc\x01\n\nOutputData\x12;\n\x06stream\x18\x01 \x01(\x0e2#.chalk.sandbox.v1.OutputData.StreamR\x06stream\x12\x12\n\x04data\x18\x02 \x01(\x0cR\x04data"]\n\x06Stream\x12\x16\n\x12STREAM_UNSPECIFIED\x10\x00\x12\x11\n\rSTREAM_STDOUT\x10\x01\x12\x11\n\rSTREAM_STDERR\x10\x02\x12\x15\n\x11STREAM_PTY_OUTPUT\x10\x03"g\n\rProcessExited\x12 \n\texit_code\x18\x01 \x01(\x05H\x00R\x08exitCode\x88\x01\x01\x12\x1b\n\x06signal\x18\x02 \x01(\x05H\x01R\x06signal\x88\x01\x01B\x0c\n\n_exit_codeB\t\n\x07_signal"9\n\tExecError\x12\x12\n\x04code\x18\x01 \x01(\tR\x04code\x12\x18\n\x07message\x18\x02 \x01(\tR\x07message"\xaa\x02\n\tImageSpec\x12\x1d\n\nbase_image\x18\x01 \x01(\tR\tbaseImage\x121\n\x05steps\x18\x02 \x03(\x0b2\x1b.chalk.sandbox.v1.BuildStepR\x05steps\x12\x1e\n\nentrypoint\x18\x03 \x03(\tR\nentrypoint\x12\x10\n\x03cmd\x18\x04 \x03(\tR\x03cmd\x12\x1d\n\x07workdir\x18\x05 \x01(\tH\x00R\x07workdir\x88\x01\x01\x126\n\x03env\x18\x06 \x03(\x0b2$.chalk.sandbox.v1.ImageSpec.EnvEntryR\x03env\x1a6\n\x08EnvEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\n\n\x08_workdir"\xbe\x03\n\tBuildStep\x12F\n\x0crun_commands\x18\x01 \x01(\x0b2!.chalk.sandbox.v1.RunCommandsStepH\x00R\x0brunCommands\x12C\n\x0bpip_install\x18\x02 \x01(\x0b2 .chalk.sandbox.v1.PipInstallStepH\x00R\npipInstall\x12:\n\x08add_file\x18\x03 \x01(\x0b2\x1d.chalk.sandbox.v1.AddFileStepH\x00R\x07addFile\x12[\n\x13dockerfile_commands\x18\x04 \x01(\x0b2(.chalk.sandbox.v1.DockerfileCommandsStepH\x00R\x12dockerfileCommands\x12J\n\x0euv_pip_install\x18\x05 \x01(\x0b2".chalk.sandbox.v1.UvPipInstallStepH\x00R\x0cuvPipInstall\x127\n\x07uv_sync\x18\x06 \x01(\x0b2\x1c.chalk.sandbox.v1.UvSyncStepH\x00R\x06uvSyncB\x06\n\x04step"-\n\x0fRunCommandsStep\x12\x1a\n\x08commands\x18\x01 \x03(\tR\x08commands",\n\x0ePipInstallStep\x12\x1a\n\x08packages\x18\x01 \x03(\tR\x08packages".\n\x10UvPipInstallStep\x12\x1a\n\x08packages\x18\x01 \x03(\tR\x08packages"\xbe\x01\n\nUvSyncStep\x12.\n\x12pyproject_toml_lz4\x18\x01 \x01(\x0cH\x00R\x10pyprojectTomlLz4\x12 \n\x0buv_lock_lz4\x18\x02 \x01(\x0cH\x01R\tuvLockLz4\x12\x16\n\x06extras\x18\x03 \x03(\tR\x06extras\x12\x1d\n\x07workdir\x18\x04 \x01(\tH\x02R\x07workdir\x88\x01\x01B\x10\n\x0epyproject_tomlB\t\n\x07uv_lockB\n\n\x08_workdir"k\n\x0bAddFileStep\x12 \n\x0bdestination\x18\x01 \x01(\tR\x0bdestination\x12\x18\n\x07content\x18\x02 \x01(\x0cR\x07content\x12\x17\n\x04mode\x18\x03 \x01(\rH\x00R\x04mode\x88\x01\x01B\x07\n\x05_mode"4\n\x16DockerfileCommandsStep\x12\x1a\n\x08commands\x18\x01 \x03(\tR\x08commands"\xb6\x01\n\x17BuildCustomImageRequest\x12:\n\nimage_spec\x18\x01 \x01(\x0b2\x1b.chalk.sandbox.v1.ImageSpecR\timageSpec\x12,\n\x0ftarget_registry\x18\x02 \x01(\tH\x00R\x0etargetRegistry\x88\x01\x01\x12\x15\n\x03tag\x18\x03 \x01(\tH\x01R\x03tag\x88\x01\x01B\x12\n\x10_target_registryB\x06\n\x04_tag"K\n\x18BuildCustomImageResponse\x12\x14\n\x05image\x18\x01 \x01(\tR\x05image\x12\x19\n\x08build_id\x18\x02 \x01(\tR\x07buildId"\xe7\x01\n\x0bVolumeMount\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n\nmount_path\x18\x02 \x01(\tR\tmountPath\x12\x12\n\x04type\x18\x03 \x01(\tR\x04type\x12"\n\nsize_limit\x18\x04 \x01(\tH\x00R\tsizeLimit\x88\x01\x01\x12"\n\nversion_id\x18\x05 \x01(\x04H\x01R\tversionId\x88\x01\x01\x12\x1e\n\x08ref_name\x18\x06 \x01(\tH\x02R\x07refName\x88\x01\x01B\r\n\x0b_size_limitB\r\n\x0b_version_idB\x0b\n\t_ref_name"\xa6\x06\n\x14CreateSandboxRequest\x12\x16\n\x05image\x18\x01 \x01(\tH\x00R\x05image\x12<\n\nimage_spec\x18\x05 \x01(\x0b2\x1b.chalk.sandbox.v1.ImageSpecH\x00R\timageSpec\x12N\n\x0fresource_limits\x18\x02 \x01(\x0b2 .chalk.sandbox.v1.ResourceLimitsH\x01R\x0eresourceLimits\x88\x01\x01\x12A\n\x03env\x18\x03 \x03(\x0b2/.chalk.sandbox.v1.CreateSandboxRequest.EnvEntryR\x03env\x12\x17\n\x04name\x18\x04 \x01(\tH\x02R\x04name\x88\x01\x01\x127\n\x07volumes\x18\x06 \x03(\x0b2\x1d.chalk.sandbox.v1.VolumeMountR\x07volumes\x12\x1d\n\x07runtime\x18\x07 \x01(\tH\x03R\x07runtime\x88\x01\x01\x12\x1e\n\nentrypoint\x18\x08 \x03(\tR\nentrypoint\x12J\n\x10knowledge_cutoff\x18\t \x01(\x0b2\x1a.google.protobuf.TimestampH\x04R\x0fknowledgeCutoff\x88\x01\x01\x12M\n\x0enetwork_policy\x18\n \x01(\x0b2!.chalk.container.v1.NetworkPolicyH\x05R\rnetworkPolicy\x88\x01\x01\x12M\n\x0erestart_policy\x18\x0b \x01(\x0e2!.chalk.container.v1.RestartPolicyH\x06R\rrestartPolicy\x88\x01\x01\x1a6\n\x08EnvEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x0e\n\x0cimage_sourceB\x12\n\x10_resource_limitsB\x07\n\x05_nameB\n\n\x08_runtimeB\x13\n\x11_knowledge_cutoffB\x11\n\x0f_network_policyB\x11\n\x0f_restart_policy"W\n\x0eResourceLimits\x12\x15\n\x03cpu\x18\x01 \x01(\tH\x00R\x03cpu\x88\x01\x01\x12\x1b\n\x06memory\x18\x02 \x01(\tH\x01R\x06memory\x88\x01\x01B\x06\n\x04_cpuB\t\n\x07_memory"P\n\x15CreateSandboxResponse\x127\n\x07sandbox\x18\x01 \x01(\x0b2\x1d.chalk.sandbox.v1.SandboxInfoR\x07sandbox"\x88\x01\n\x17TerminateSandboxRequest\x12\x1d\n\nsandbox_id\x18\x01 \x01(\tR\tsandboxId\x125\n\x14grace_period_seconds\x18\x02 \x01(\x05H\x00R\x12gracePeriodSeconds\x88\x01\x01B\x17\n\x15_grace_period_seconds"\x1a\n\x18TerminateSandboxResponse"}\n\x11GetSandboxRequest\x12\x1d\n\nsandbox_id\x18\x01 \x01(\tR\tsandboxId\x122\n\x12include_terminated\x18\x02 \x01(\x08H\x00R\x11includeTerminated\x88\x01\x01B\x15\n\x13_include_terminated"M\n\x12GetSandboxResponse\x127\n\x07sandbox\x18\x01 \x01(\x0b2\x1d.chalk.sandbox.v1.SandboxInfoR\x07sandbox"\xe5\x01\n\x14ListSandboxesRequest\x12\x1b\n\x06cursor\x18\x01 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x02 \x01(\x05H\x01R\x05limit\x88\x01\x01\x122\n\x12include_terminated\x18\x03 \x01(\x08H\x02R\x11includeTerminated\x88\x01\x01\x12\x16\n\x06states\x18\x04 \x03(\tR\x06states\x12\x1d\n\nnot_states\x18\x05 \x03(\tR\tnotStatesB\t\n\x07_cursorB\x08\n\x06_limitB\x15\n\x13_include_terminated"\x8a\x01\n\x15ListSandboxesResponse\x12;\n\tsandboxes\x18\x01 \x03(\x0b2\x1d.chalk.sandbox.v1.SandboxInfoR\tsandboxes\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"\xc1\x02\n\x0bSandboxInfo\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n\x05state\x18\x02 \x01(\tR\x05state\x12\x1d\n\ncreated_at\x18\x03 \x01(\tR\tcreatedAt\x12\x17\n\x04name\x18\x04 \x01(\tH\x00R\x04name\x88\x01\x01\x12\x1e\n\x08build_id\x18\x05 \x01(\tH\x01R\x07buildId\x88\x01\x01\x12J\n\x10knowledge_cutoff\x18\x06 \x01(\x0b2\x1a.google.protobuf.TimestampH\x02R\x0fknowledgeCutoff\x88\x01\x01\x12*\n\x0estatus_message\x18\x07 \x01(\tH\x03R\rstatusMessage\x88\x01\x01B\x07\n\x05_nameB\x0b\n\t_build_idB\x13\n\x11_knowledge_cutoffB\x11\n\x0f_status_message"2\n\x15GetCustomImageRequest\x12\x19\n\x08build_id\x18\x01 \x01(\tR\x07buildId"\x86\x01\n\x16GetCustomImageResponse\x12\x19\n\x08build_id\x18\x01 \x01(\tR\x07buildId\x12\x16\n\x06status\x18\x02 \x01(\tR\x06status\x12\x14\n\x05image\x18\x03 \x01(\tR\x05image\x12\x19\n\x05error\x18\x04 \x01(\tH\x00R\x05error\x88\x01\x01B\x08\n\x06_error"\x91\x02\n\x1cGetOrBuildCustomImageRequest\x12:\n\nimage_spec\x18\x01 \x01(\x0b2\x1b.chalk.sandbox.v1.ImageSpecR\timageSpec\x12,\n\x0ftarget_registry\x18\x02 \x01(\tH\x00R\x0etargetRegistry\x88\x01\x01\x12]\n\x11base_image_source\x18\x03 \x01(\x0e2,.chalk.sandbox.v1.CustomImageBaseImageSourceH\x01R\x0fbaseImageSource\x88\x01\x01B\x12\n\x10_target_registryB\x14\n\x12_base_image_source"\xb0\x01\n\x1dGetOrBuildCustomImageResponse\x12\x14\n\x05image\x18\x01 \x01(\tR\x05image\x12\x19\n\x08build_id\x18\x02 \x01(\tR\x07buildId\x12\x16\n\x06status\x18\x03 \x01(\tR\x06status\x12\x19\n\x05error\x18\x04 \x01(\tH\x00R\x05error\x88\x01\x01\x12!\n\x0ccontent_hash\x18\x05 \x01(\tR\x0bcontentHashB\x08\n\x06_error"A\n$StreamCustomImageBuildUpdatesRequest\x12\x19\n\x08build_id\x18\x01 \x01(\tR\x07buildId"\x94\x01\n%StreamCustomImageBuildUpdatesResponse\x12\x16\n\x06status\x18\x01 \x01(\tR\x06status\x12\x14\n\x05image\x18\x02 \x01(\tR\x05image\x12\x19\n\x05error\x18\x03 \x01(\tH\x00R\x05error\x88\x01\x01\x12\x18\n\x07message\x18\x04 \x01(\tR\x07messageB\x08\n\x06_error"\x9c\x02\n\x17CustomImageBuildSummary\x12!\n\x0ccontent_hash\x18\x01 \x01(\tR\x0bcontentHash\x12\x1b\n\timage_ref\x18\x02 \x01(\tR\x08imageRef\x129\n\ncreated_at\x18\x03 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12\x1e\n\x08build_id\x18\x04 \x01(\tH\x00R\x07buildId\x88\x01\x01\x12\x1b\n\x06status\x18\x05 \x01(\tH\x01R\x06status\x88\x01\x01\x12"\n\nbase_image\x18\x06 \x01(\tH\x02R\tbaseImage\x88\x01\x01B\x0b\n\t_build_idB\t\n\x07_statusB\r\n\x0b_base_image"\xb5\x01\n\x1cListCustomImageBuildsRequest\x12\x19\n\x05limit\x18\x01 \x01(\x05H\x00R\x05limit\x88\x01\x01\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x01R\x06cursor\x88\x01\x01\x12H\n\x07filters\x18\x03 \x01(\x0b2..chalk.sandbox.v1.ListCustomImageBuildsFiltersR\x07filtersB\x08\n\x06_limitB\t\n\x07_cursor"W\n\x1cListCustomImageBuildsFilters\x12&\n\x0ccontent_hash\x18\x01 \x01(\tH\x00R\x0bcontentHash\x88\x01\x01B\x0f\n\r_content_hash"\x98\x01\n\x1dListCustomImageBuildsResponse\x12A\n\x06builds\x18\x01 \x03(\x0b2).chalk.sandbox.v1.CustomImageBuildSummaryR\x06builds\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"l\n\x1aGetCustomImageBuildRequest\x12#\n\x0ccontent_hash\x18\x01 \x01(\tH\x00R\x0bcontentHash\x12\x1b\n\x08build_id\x18\x02 \x01(\tH\x00R\x07buildIdB\x0c\n\nidentifier"\xae\x01\n\x1bGetCustomImageBuildResponse\x12?\n\x05build\x18\x01 \x01(\x0b2).chalk.sandbox.v1.CustomImageBuildSummaryR\x05build\x12?\n\nimage_spec\x18\x02 \x01(\x0b2\x1b.chalk.sandbox.v1.ImageSpecH\x00R\timageSpec\x88\x01\x01B\r\n\x0b_image_spec"\xd1\x02\n\x1eGetCustomImageBuildLogsRequest\x12#\n\x0ccontent_hash\x18\x01 \x01(\tH\x00R\x0bcontentHash\x12\x1b\n\x08build_id\x18\x02 \x01(\tH\x00R\x07buildId\x12>\n\nstart_time\x18\x03 \x01(\x0b2\x1a.google.protobuf.TimestampH\x01R\tstartTime\x88\x01\x01\x12:\n\x08end_time\x18\x04 \x01(\x0b2\x1a.google.protobuf.TimestampH\x02R\x07endTime\x88\x01\x01\x12\x14\n\x05limit\x18\x05 \x01(\x05R\x05limit\x12"\n\npage_token\x18\x06 \x01(\tH\x03R\tpageToken\x88\x01\x01B\x0c\n\nidentifierB\r\n\x0b_start_timeB\x0b\n\t_end_timeB\r\n\x0b_page_token"\x91\x01\n\x1fGetCustomImageBuildLogsResponse\x12-\n\x04logs\x18\x01 \x03(\x0b2\x19.chalk.common.v1.LogEntryR\x04logs\x12+\n\x0fnext_page_token\x18\x02 \x01(\tH\x00R\rnextPageToken\x88\x01\x01B\x12\n\x10_next_page_token"t\n"GetCustomImageBuildWorkflowRequest\x12#\n\x0ccontent_hash\x18\x01 \x01(\tH\x00R\x0bcontentHash\x12\x1b\n\x08build_id\x18\x02 \x01(\tH\x00R\x07buildIdB\x0c\n\nidentifier"p\n#GetCustomImageBuildWorkflowResponse\x12<\n\x08workflow\x18\x01 \x01(\x0b2\x1b.chalk.argo.v1.ArgoWorkflowH\x00R\x08workflow\x88\x01\x01B\x0b\n\t_workflow"q\n\x1fGetCustomImageBuildUsageRequest\x12#\n\x0ccontent_hash\x18\x01 \x01(\tH\x00R\x0bcontentHash\x12\x1b\n\x08build_id\x18\x02 \x01(\tH\x00R\x07buildIdB\x0c\n\nidentifier"[\n\x19CustomImageContainerUsage\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x12\x16\n\x06status\x18\x03 \x01(\tR\x06status:\x02\x18\x01"Z\n\x1cCustomImageScalingGroupUsage\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x12\x16\n\x06status\x18\x03 \x01(\tR\x06status"U\n\x17CustomImageSandboxUsage\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x12\x16\n\x06status\x18\x03 \x01(\tR\x06status"\x93\x02\n GetCustomImageBuildUsageResponse\x12O\n\ncontainers\x18\x01 \x03(\x0b2+.chalk.sandbox.v1.CustomImageContainerUsageR\ncontainersB\x02\x18\x01\x12U\n\x0escaling_groups\x18\x02 \x03(\x0b2..chalk.sandbox.v1.CustomImageScalingGroupUsageR\rscalingGroups\x12G\n\tsandboxes\x18\x03 \x03(\x0b2).chalk.sandbox.v1.CustomImageSandboxUsageR\tsandboxes"6\n\x1eGetImagePullCredentialsRequest\x12\x14\n\x05image\x18\x01 \x01(\tR\x05image"\xc1\x01\n\x1fGetImagePullCredentialsResponse\x12%\n\x0eserver_address\x18\x01 \x01(\tR\rserverAddress\x12\x1a\n\x08username\x18\x02 \x01(\tR\x08username\x12 \n\x08password\x18\x03 \x01(\tR\x08passwordB\x04\xd8\xa1\'\x01\x129\n\nexpires_at\x18\x04 \x01(\x0b2\x1a.google.protobuf.TimestampR\texpiresAt*\x81\x01\n\x1aCustomImageBaseImageSource\x12.\n*CUSTOM_IMAGE_BASE_IMAGE_SOURCE_UNSPECIFIED\x10\x00\x123\n/CUSTOM_IMAGE_BASE_IMAGE_SOURCE_NOTEBOOK_RUNTIME\x10\x012\xfc\x03\n\x0eSandboxService\x12N\n\x04Exec\x12\x1d.chalk.sandbox.v1.ExecRequest\x1a\x1e.chalk.sandbox.v1.ExecResponse"\x03\x80}\x0c(\x010\x01\x12e\n\rCreateSandbox\x12&.chalk.sandbox.v1.CreateSandboxRequest\x1a\'.chalk.sandbox.v1.CreateSandboxResponse"\x03\x80}\x0c\x12n\n\x10TerminateSandbox\x12).chalk.sandbox.v1.TerminateSandboxRequest\x1a*.chalk.sandbox.v1.TerminateSandboxResponse"\x03\x80}\x0c\x12\\\n\nGetSandbox\x12#.chalk.sandbox.v1.GetSandboxRequest\x1a$.chalk.sandbox.v1.GetSandboxResponse"\x03\x80}\x0b\x12e\n\rListSandboxes\x12&.chalk.sandbox.v1.ListSandboxesRequest\x1a\'.chalk.sandbox.v1.ListSandboxesResponse"\x03\x80}\x0b2\xd6\x0b\n\x12CustomImageService\x12\x83\x01\n\x17GetImagePullCredentials\x120.chalk.sandbox.v1.GetImagePullCredentialsRequest\x1a1.chalk.sandbox.v1.GetImagePullCredentialsResponse"\x03\x80}\x0c\x12\xc5\x01\n\x10BuildCustomImage\x12).chalk.sandbox.v1.BuildCustomImageRequest\x1a*.chalk.sandbox.v1.BuildCustomImageResponse"Z\x80}\x0c\x92\xd3\x0eS\n\x16scaling_groups_enabled\x129This action is not enabled. Please contact Chalk Support.\x12h\n\x0eGetCustomImage\x12\'.chalk.sandbox.v1.GetCustomImageRequest\x1a(.chalk.sandbox.v1.GetCustomImageResponse"\x03\x80}\x0b\x12\xd4\x01\n\x15GetOrBuildCustomImage\x12..chalk.sandbox.v1.GetOrBuildCustomImageRequest\x1a/.chalk.sandbox.v1.GetOrBuildCustomImageResponse"Z\x80}\x0c\x92\xd3\x0eS\n\x16scaling_groups_enabled\x129This action is not enabled. Please contact Chalk Support.\x12\x97\x01\n\x1dStreamCustomImageBuildUpdates\x126.chalk.sandbox.v1.StreamCustomImageBuildUpdatesRequest\x1a7.chalk.sandbox.v1.StreamCustomImageBuildUpdatesResponse"\x03\x80}\x0b0\x01\x12}\n\x15ListCustomImageBuilds\x12..chalk.sandbox.v1.ListCustomImageBuildsRequest\x1a/.chalk.sandbox.v1.ListCustomImageBuildsResponse"\x03\x80}\x0b\x12w\n\x13GetCustomImageBuild\x12,.chalk.sandbox.v1.GetCustomImageBuildRequest\x1a-.chalk.sandbox.v1.GetCustomImageBuildResponse"\x03\x80}\x0b\x12\x83\x01\n\x17GetCustomImageBuildLogs\x120.chalk.sandbox.v1.GetCustomImageBuildLogsRequest\x1a1.chalk.sandbox.v1.GetCustomImageBuildLogsResponse"\x03\x80}\x0b\x12\x8f\x01\n\x1bGetCustomImageBuildWorkflow\x124.chalk.sandbox.v1.GetCustomImageBuildWorkflowRequest\x1a5.chalk.sandbox.v1.GetCustomImageBuildWorkflowResponse"\x03\x80}\x0b\x12\x86\x01\n\x18GetCustomImageBuildUsage\x121.chalk.sandbox.v1.GetCustomImageBuildUsageRequest\x1a2.chalk.sandbox.v1.GetCustomImageBuildUsageResponse"\x03\x80}\x0bB\x9c\x01\n\x14com.chalk.sandbox.v1B\x0cServiceProtoP\x01Z\x14sandbox/v1;sandboxv1\xa2\x02\x03CSX\xaa\x02\x10Chalk.Sandbox.V1\xca\x02\x10Chalk\\Sandbox\\V1\xe2\x02\x1cChalk\\Sandbox\\V1\\GPBMetadata\xea\x02\x12Chalk::Sandbox::V1b\x06proto3',
     [
         workflow_pb.desc(),
         permissions_pb.desc(),
         log_pb.desc(),
         service_pb.desc(),
         flags_pb.desc(),
+        sensitive_pb.desc(),
         timestamp_pb.desc(),
     ],
     {
@@ -2367,6 +2517,7 @@ _DESC = file_desc(
         "StreamCustomImageBuildUpdatesResponse": StreamCustomImageBuildUpdatesResponse,
         "CustomImageBuildSummary": CustomImageBuildSummary,
         "ListCustomImageBuildsRequest": ListCustomImageBuildsRequest,
+        "ListCustomImageBuildsFilters": ListCustomImageBuildsFilters,
         "ListCustomImageBuildsResponse": ListCustomImageBuildsResponse,
         "GetCustomImageBuildRequest": GetCustomImageBuildRequest,
         "GetCustomImageBuildResponse": GetCustomImageBuildResponse,
@@ -2379,6 +2530,9 @@ _DESC = file_desc(
         "CustomImageScalingGroupUsage": CustomImageScalingGroupUsage,
         "CustomImageSandboxUsage": CustomImageSandboxUsage,
         "GetCustomImageBuildUsageResponse": GetCustomImageBuildUsageResponse,
+        "GetImagePullCredentialsRequest": GetImagePullCredentialsRequest,
+        "GetImagePullCredentialsResponse": GetImagePullCredentialsResponse,
+        "CustomImageBaseImageSource": CustomImageBaseImageSource,
     },
 )
 
