@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from connectrpc.client import ConnectClientSync
 from connectrpc.method import IdempotencyLevel, MethodInfo
 
-from .auth_pb import CheckTeamInvitesRequest, CheckTeamInvitesResponse, CreateSelfHostedLicenseKeyRequest, CreateSelfHostedLicenseKeyResponse, CreateSessionRequest, CreateSessionResponse, CreateUserRequest, CreateUserResponse, CreateVerificationTokenRequest, CreateVerificationTokenResponse, DeleteSessionRequest, DeleteSessionResponse, GetInternalWorkingTokenRequest, GetInternalWorkingTokenResponse, GetProjectInfoRequest, GetProjectInfoResponse, GetSessionAndUserRequest, GetSessionAndUserResponse, GetTeamOnboardingStatusRequest, GetTeamOnboardingStatusResponse, GetTokenRequest, GetTokenResponse, GetUserByAccountRequest, GetUserByAccountResponse, GetUserByEmailRequest, GetUserByEmailResponse, GetUserByIdRequest, GetUserByIdResponse, GetWorkloadIdentityTokenRequest, GetWorkloadIdentityTokenResponse, LinkAccountRequest, LinkAccountResponse, ListSelfHostedLicenseKeysRequest, ListSelfHostedLicenseKeysResponse, RenewInternalExchangeTokenRequest, RenewInternalExchangeTokenResponse, RevokeSelfHostedLicenseKeyRequest, RevokeSelfHostedLicenseKeyResponse, SelfServiceCreateTeamRequest, SelfServiceCreateTeamResponse, UpdateLinkSessionRequest, UpdateLinkSessionResponse, UpdateSessionRequest, UpdateSessionResponse, UpdateUserRequest, UpdateUserResponse, UpsertUserByEmailRequest, UpsertUserByEmailResponse, UseVerificationTokenRequest, UseVerificationTokenResponse
+from .auth_pb import CheckTeamInvitesRequest, CheckTeamInvitesResponse, CreateSelfHostedLicenseKeyRequest, CreateSelfHostedLicenseKeyResponse, CreateSessionRequest, CreateSessionResponse, CreateUserRequest, CreateUserResponse, CreateVerificationTokenRequest, CreateVerificationTokenResponse, DeleteSessionRequest, DeleteSessionResponse, GetInternalWorkingTokenRequest, GetInternalWorkingTokenResponse, GetProjectInfoRequest, GetProjectInfoResponse, GetSessionAndUserRequest, GetSessionAndUserResponse, GetTeamOnboardingStatusRequest, GetTeamOnboardingStatusResponse, GetTokenRequest, GetTokenResponse, GetUserByAccountRequest, GetUserByAccountResponse, GetUserByEmailRequest, GetUserByEmailResponse, GetUserByIdRequest, GetUserByIdResponse, GetWorkloadIdentityTokenRequest, GetWorkloadIdentityTokenResponse, LinkAccountRequest, LinkAccountResponse, ListSelfHostedLicenseKeysRequest, ListSelfHostedLicenseKeysResponse, RenewInternalExchangeTokenRequest, RenewInternalExchangeTokenResponse, RevokeSelfHostedLicenseKeyRequest, RevokeSelfHostedLicenseKeyResponse, SelfServiceCreateTeamRequest, SelfServiceCreateTeamResponse, UpdateLinkSessionRequest, UpdateLinkSessionResponse, UpdateSessionRequest, UpdateSessionResponse, UpdateUserProfileRequest, UpdateUserProfileResponse, UpdateUserRequest, UpdateUserResponse, UpsertUserByEmailRequest, UpsertUserByEmailResponse, UseVerificationTokenRequest, UseVerificationTokenResponse
 from .link_pb import CreateLinkSessionRequest, CreateLinkSessionResponse, GetLinkSessionRequest, GetLinkSessionResponse
 
 if TYPE_CHECKING:
@@ -208,6 +208,25 @@ class AuthServiceClientSync(ConnectClientSync):
                 service_name="chalk.server.v1.AuthService",
                 input=UpdateUserRequest,
                 output=UpdateUserResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def update_user_profile(
+        self,
+        request: UpdateUserProfileRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> UpdateUserProfileResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="UpdateUserProfile",
+                service_name="chalk.server.v1.AuthService",
+                input=UpdateUserProfileRequest,
+                output=UpdateUserProfileResponse,
                 idempotency_level=IdempotencyLevel.UNKNOWN,
             ),
             headers=headers,

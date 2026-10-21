@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from connectrpc.client import ConnectClientSync
 from connectrpc.method import IdempotencyLevel, MethodInfo
 
-from .service_pb import ArchiveEvaluationRunRequest, ArchiveEvaluationRunResponse, CreateEvaluationRequest, CreateEvaluationResponse, CreateEvaluationRunRequest, CreateEvaluationRunResponse, CreateEvaluationSuiteRequest, CreateEvaluationSuiteResponse, GetEvaluationRequest, GetEvaluationResponse, GetEvaluationRunRequest, GetEvaluationRunResponse, ListEvaluationRunsRequest, ListEvaluationRunsResponse, ListEvaluationSuitesRequest, ListEvaluationSuitesResponse, ListEvaluationsRequest, ListEvaluationsResponse, RescoreEvaluationRunRequest, RescoreEvaluationRunResponse, SetEvaluationRunBaselineRequest, SetEvaluationRunBaselineResponse
+from .service_pb import ArchiveEvaluationRequest, ArchiveEvaluationResponse, ArchiveEvaluationRunRequest, ArchiveEvaluationRunResponse, CreateEvaluationRequest, CreateEvaluationResponse, CreateEvaluationRunRequest, CreateEvaluationRunResponse, CreateEvaluationSuiteRequest, CreateEvaluationSuiteResponse, CreateOnlineEvaluatorRequest, CreateOnlineEvaluatorResponse, DeleteOnlineEvaluatorRequest, DeleteOnlineEvaluatorResponse, GetEvaluationRequest, GetEvaluationResponse, GetEvaluationRunRequest, GetEvaluationRunResponse, GetOnlineEvaluatorRequest, GetOnlineEvaluatorResponse, ListEvaluationRunsRequest, ListEvaluationRunsResponse, ListEvaluationSuitesRequest, ListEvaluationSuitesResponse, ListEvaluationsRequest, ListEvaluationsResponse, ListOnlineEvaluatorsRequest, ListOnlineEvaluatorsResponse, MoveEvaluationRunRequest, MoveEvaluationRunResponse, RescoreEvaluationRunRequest, RescoreEvaluationRunResponse, SetEvaluationRunBaselineRequest, SetEvaluationRunBaselineResponse, UnarchiveEvaluationRequest, UnarchiveEvaluationResponse, UpdateOnlineEvaluatorRequest, UpdateOnlineEvaluatorResponse
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -121,6 +121,44 @@ class EvaluationServiceClientSync(ConnectClientSync):
             timeout_ms=timeout_ms,
             use_get=use_get,
         )
+    def archive_evaluation(
+        self,
+        request: ArchiveEvaluationRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> ArchiveEvaluationResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="ArchiveEvaluation",
+                service_name="chalk.evaluation.v1.EvaluationService",
+                input=ArchiveEvaluationRequest,
+                output=ArchiveEvaluationResponse,
+                idempotency_level=IdempotencyLevel.IDEMPOTENT,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def unarchive_evaluation(
+        self,
+        request: UnarchiveEvaluationRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> UnarchiveEvaluationResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="UnarchiveEvaluation",
+                service_name="chalk.evaluation.v1.EvaluationService",
+                input=UnarchiveEvaluationRequest,
+                output=UnarchiveEvaluationResponse,
+                idempotency_level=IdempotencyLevel.IDEMPOTENT,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
     def create_evaluation_run(
         self,
         request: CreateEvaluationRunRequest,
@@ -148,10 +186,12 @@ class EvaluationServiceClientSync(ConnectClientSync):
         timeout_ms: int | None = None,
     ) -> RescoreEvaluationRunResponse:
         """
-        Score a finished run's outputs again, with its own evaluation's scorers or
-        with another evaluation's over the same dataset revision and task. The task is the expensive half of an evaluation and the half you are not
-        changing while iterating on scorers, so its outputs are read back out of
-        the rescored run instead of being recomputed.
+        Score a finished run's rows again, with its own evaluation's task and
+        scorers or with another evaluation's over the same dataset revision. Only
+        what changed since that run is called: the task's outputs are read back out
+        of the rescored run when the evaluation names the same task, and a scorer's
+        values are copied from it when the run had the same scorer over the same
+        inputs, except on the rows that scorer failed on.
         """
         return self.execute_unary(
             request=request,
@@ -222,6 +262,25 @@ class EvaluationServiceClientSync(ConnectClientSync):
             headers=headers,
             timeout_ms=timeout_ms,
         )
+    def move_evaluation_run(
+        self,
+        request: MoveEvaluationRunRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> MoveEvaluationRunResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="MoveEvaluationRun",
+                service_name="chalk.evaluation.v1.EvaluationService",
+                input=MoveEvaluationRunRequest,
+                output=MoveEvaluationRunResponse,
+                idempotency_level=IdempotencyLevel.IDEMPOTENT,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
     def archive_evaluation_run(
         self,
         request: ArchiveEvaluationRunRequest,
@@ -236,6 +295,105 @@ class EvaluationServiceClientSync(ConnectClientSync):
                 service_name="chalk.evaluation.v1.EvaluationService",
                 input=ArchiveEvaluationRunRequest,
                 output=ArchiveEvaluationRunResponse,
+                idempotency_level=IdempotencyLevel.IDEMPOTENT,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def create_online_evaluator(
+        self,
+        request: CreateOnlineEvaluatorRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> CreateOnlineEvaluatorResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="CreateOnlineEvaluator",
+                service_name="chalk.evaluation.v1.EvaluationService",
+                input=CreateOnlineEvaluatorRequest,
+                output=CreateOnlineEvaluatorResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def get_online_evaluator(
+        self,
+        request: GetOnlineEvaluatorRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+        use_get: bool = False,
+    ) -> GetOnlineEvaluatorResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="GetOnlineEvaluator",
+                service_name="chalk.evaluation.v1.EvaluationService",
+                input=GetOnlineEvaluatorRequest,
+                output=GetOnlineEvaluatorResponse,
+                idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+            use_get=use_get,
+        )
+    def list_online_evaluators(
+        self,
+        request: ListOnlineEvaluatorsRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+        use_get: bool = False,
+    ) -> ListOnlineEvaluatorsResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="ListOnlineEvaluators",
+                service_name="chalk.evaluation.v1.EvaluationService",
+                input=ListOnlineEvaluatorsRequest,
+                output=ListOnlineEvaluatorsResponse,
+                idempotency_level=IdempotencyLevel.NO_SIDE_EFFECTS,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+            use_get=use_get,
+        )
+    def update_online_evaluator(
+        self,
+        request: UpdateOnlineEvaluatorRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> UpdateOnlineEvaluatorResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="UpdateOnlineEvaluator",
+                service_name="chalk.evaluation.v1.EvaluationService",
+                input=UpdateOnlineEvaluatorRequest,
+                output=UpdateOnlineEvaluatorResponse,
+                idempotency_level=IdempotencyLevel.UNKNOWN,
+            ),
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+    def delete_online_evaluator(
+        self,
+        request: DeleteOnlineEvaluatorRequest,
+        *,
+        headers: Headers | Mapping[str, str] | None = None,
+        timeout_ms: int | None = None,
+    ) -> DeleteOnlineEvaluatorResponse:
+        return self.execute_unary(
+            request=request,
+            method=MethodInfo(
+                name="DeleteOnlineEvaluator",
+                service_name="chalk.evaluation.v1.EvaluationService",
+                input=DeleteOnlineEvaluatorRequest,
+                output=DeleteOnlineEvaluatorResponse,
                 idempotency_level=IdempotencyLevel.IDEMPOTENT,
             ),
             headers=headers,

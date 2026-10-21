@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from .materialized_aggregate_tiles_pb import MaterializedAggregateTileTimelineInterval
 
 
-_DatasetRevisionMetaFields: TypeAlias = Literal["numeric_id", "offline_query_id", "dataset_id", "givens_uri", "givens_version", "output_uri", "output_version", "branch_name", "num_rows", "physical_size_bytes", "output_columns", "output_fqns", "agent_id", "completed_at", "num_shards", "num_computers", "metadata", "status", "num_rows_calculated", "physical_size_bytes_calculated", "created_at", "archived_at", "output_arrow_schema_serialized"]
+_DatasetRevisionMetaFields: TypeAlias = Literal["numeric_id", "offline_query_id", "dataset_id", "givens_uri", "givens_version", "output_uri", "output_version", "branch_name", "num_rows", "physical_size_bytes", "output_columns", "output_fqns", "agent_id", "completed_at", "num_shards", "num_computers", "metadata", "status", "num_rows_calculated", "physical_size_bytes_calculated", "created_at", "archived_at", "output_arrow_schema_serialized", "feature_distribution_fqns"]
 
 class DatasetRevisionMeta(Message[_DatasetRevisionMetaFields]):
     """
@@ -138,9 +138,17 @@ class DatasetRevisionMeta(Message[_DatasetRevisionMetaFields]):
             ```proto
             optional bytes output_arrow_schema_serialized = 23;
             ```
+        feature_distribution_fqns:
+            Features this revision recorded a value distribution for, which a feature
+            drift monitor can use as its baseline. Populated only by ListDatasetRevisions
+            with filters.feature_drift_eligible set.
+
+            ```proto
+            repeated string feature_distribution_fqns = 24;
+            ```
     """
 
-    __slots__ = ("numeric_id", "offline_query_id", "dataset_id", "givens_uri", "givens_version", "output_uri", "output_version", "branch_name", "num_rows", "physical_size_bytes", "output_columns", "output_fqns", "agent_id", "completed_at", "num_shards", "num_computers", "metadata", "status", "num_rows_calculated", "physical_size_bytes_calculated", "created_at", "archived_at", "output_arrow_schema_serialized")
+    __slots__ = ("numeric_id", "offline_query_id", "dataset_id", "givens_uri", "givens_version", "output_uri", "output_version", "branch_name", "num_rows", "physical_size_bytes", "output_columns", "output_fqns", "agent_id", "completed_at", "num_shards", "num_computers", "metadata", "status", "num_rows_calculated", "physical_size_bytes_calculated", "created_at", "archived_at", "output_arrow_schema_serialized", "feature_distribution_fqns")
 
     if TYPE_CHECKING:
 
@@ -170,6 +178,7 @@ class DatasetRevisionMeta(Message[_DatasetRevisionMetaFields]):
             created_at: Timestamp | None = None,
             archived_at: Timestamp | None = None,
             output_arrow_schema_serialized: bytes | None = None,
+            feature_distribution_fqns: list[str] | None = None,
         ) -> None:
             pass
 
@@ -196,6 +205,7 @@ class DatasetRevisionMeta(Message[_DatasetRevisionMetaFields]):
         created_at: Timestamp | None
         archived_at: Timestamp | None
         output_arrow_schema_serialized: bytes
+        feature_distribution_fqns: list[str]
 
 _DatasetMetaFields: TypeAlias = Literal["id", "environment_id", "dataset_name", "created_at", "most_recent_revision", "num_revisions"]
 
@@ -257,7 +267,7 @@ class DatasetMeta(Message[_DatasetMetaFields]):
         most_recent_revision: DatasetRevisionMeta | None
         num_revisions: int
 
-_ListDatasetsRequestFields: TypeAlias = Literal["cursor", "limit", "search", "include_anonymous", "sort_column", "sort_order", "status", "kind", "ids", "read_mask"]
+_ListDatasetsRequestFields: TypeAlias = Literal["cursor", "limit", "search", "include_anonymous", "sort_column", "sort_order", "status", "kind", "ids", "read_mask", "filters"]
 
 class ListDatasetsRequest(Message[_ListDatasetsRequestFields]):
     """
@@ -275,16 +285,18 @@ class ListDatasetsRequest(Message[_ListDatasetsRequestFields]):
             optional int32 limit = 2;
             ```
         search:
+            Deprecated in favor of `filters.search`.
+
             ```proto
-            optional string search = 3;
+            optional string search = 3 [deprecated = true];
             ```
         include_anonymous:
-            Deprecated in favor of `kind` (kept for backwards compatibility): when true,
+            Deprecated in favor of `filters.kind` (kept for backwards compatibility): when true,
             anonymous datasets are included alongside named ones. Ignored when `kind` is
             set. Callers that send `kind` should leave this unset.
 
             ```proto
-            optional bool include_anonymous = 4;
+            optional bool include_anonymous = 4 [deprecated = true];
             ```
         sort_column:
             ```proto
@@ -295,24 +307,27 @@ class ListDatasetsRequest(Message[_ListDatasetsRequestFields]):
             optional chalk.server.v1.SortOrder sort_order = 6;
             ```
         status:
+            Deprecated in favor of `filters.status`.
             Filter to datasets whose most-recent revision has one of these statuses.
             Empty = no status filter.
 
             ```proto
-            repeated chalk.server.v1.DatasetRevisionStatus status = 7 [packed = true];
+            repeated chalk.server.v1.DatasetRevisionStatus status = 7 [packed = true, deprecated = true];
             ```
         kind:
+            Deprecated in favor of `filters.kind`.
             Which kinds of dataset to include. Supersedes `include_anonymous` when
             non-empty; empty falls back to `include_anonymous` (named always included).
 
             ```proto
-            repeated chalk.server.v1.DatasetKind kind = 8 [packed = true];
+            repeated chalk.server.v1.DatasetKind kind = 8 [packed = true, deprecated = true];
             ```
         ids:
+            Deprecated in favor of `filters.ids`.
             Restrict the result to these dataset ids. Empty lists the environment catalog.
 
             ```proto
-            repeated string ids = 9;
+            repeated string ids = 9 [deprecated = true];
             ```
         read_mask:
             Fields to return on each DatasetMeta. Empty returns the full resource.
@@ -320,9 +335,13 @@ class ListDatasetsRequest(Message[_ListDatasetsRequestFields]):
             ```proto
             optional google.protobuf.FieldMask read_mask = 10;
             ```
+        filters:
+            ```proto
+            optional chalk.server.v1.ListDatasetsFilters filters = 11;
+            ```
     """
 
-    __slots__ = ("cursor", "limit", "search", "include_anonymous", "sort_column", "sort_order", "status", "kind", "ids", "read_mask")
+    __slots__ = ("cursor", "limit", "search", "include_anonymous", "sort_column", "sort_order", "status", "kind", "ids", "read_mask", "filters")
 
     if TYPE_CHECKING:
 
@@ -339,6 +358,7 @@ class ListDatasetsRequest(Message[_ListDatasetsRequestFields]):
             kind: list[DatasetKind] | None = None,
             ids: list[str] | None = None,
             read_mask: FieldMask | None = None,
+            filters: ListDatasetsFilters | None = None,
         ) -> None:
             pass
 
@@ -352,6 +372,80 @@ class ListDatasetsRequest(Message[_ListDatasetsRequestFields]):
         kind: list[DatasetKind]
         ids: list[str]
         read_mask: FieldMask | None
+        filters: ListDatasetsFilters | None
+
+_ListDatasetsFiltersFields: TypeAlias = Literal["agent_ids", "search", "status", "kind", "ids", "feature_drift_eligible"]
+
+class ListDatasetsFilters(Message[_ListDatasetsFiltersFields]):
+    """
+    ```proto
+    message chalk.server.v1.ListDatasetsFilters
+    ```
+
+    Attributes:
+        agent_ids:
+            Filter by the agent that created the latest revision for each dataset.
+
+            ```proto
+            repeated string agent_ids = 1;
+            ```
+        search:
+            Filter dataset names by substring.
+
+            ```proto
+            optional string search = 2;
+            ```
+        status:
+            Filter to datasets whose most-recent revision has one of these statuses.
+            Empty = no status filter.
+
+            ```proto
+            repeated chalk.server.v1.DatasetRevisionStatus status = 3 [packed = true];
+            ```
+        kind:
+            Which kinds of dataset to include. Empty includes named and anonymous datasets.
+
+            ```proto
+            repeated chalk.server.v1.DatasetKind kind = 4 [packed = true];
+            ```
+        ids:
+            Restrict the result to these dataset ids. Empty lists the environment catalog.
+
+            ```proto
+            repeated string ids = 5;
+            ```
+        feature_drift_eligible:
+            Only datasets with a revision a feature drift monitor can compare against:
+            completed, unarchived, and with a recorded value distribution for at least
+            one feature. Only numeric features record a distribution.
+
+            ```proto
+            optional bool feature_drift_eligible = 6;
+            ```
+    """
+
+    __slots__ = ("agent_ids", "search", "status", "kind", "ids", "feature_drift_eligible")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            agent_ids: list[str] | None = None,
+            search: str | None = None,
+            status: list[DatasetRevisionStatus] | None = None,
+            kind: list[DatasetKind] | None = None,
+            ids: list[str] | None = None,
+            feature_drift_eligible: bool | None = None,
+        ) -> None:
+            pass
+
+        agent_ids: list[str]
+        search: str
+        status: list[DatasetRevisionStatus]
+        kind: list[DatasetKind]
+        ids: list[str]
+        feature_drift_eligible: bool
 
 _ListDatasetsResponseFields: TypeAlias = Literal["datasets", "cursor"]
 
@@ -443,7 +537,7 @@ class GetDatasetResponse(Message[_GetDatasetResponseFields]):
 
         dataset: DatasetMeta | None
 
-_ListDatasetRevisionsRequestFields: TypeAlias = Literal["dataset_id", "cursor", "limit", "include_archived", "start_time", "end_time"]
+_ListDatasetRevisionsRequestFields: TypeAlias = Literal["dataset_id", "cursor", "limit", "include_archived", "start_time", "end_time", "filters"]
 
 class ListDatasetRevisionsRequest(Message[_ListDatasetRevisionsRequestFields]):
     """
@@ -465,24 +559,32 @@ class ListDatasetRevisionsRequest(Message[_ListDatasetRevisionsRequestFields]):
             optional int32 limit = 3;
             ```
         include_archived:
+            Deprecated in favor of `filters.include_archived`.
+
             ```proto
-            optional bool include_archived = 4;
+            optional bool include_archived = 4 [deprecated = true];
             ```
         start_time:
+            Deprecated in favor of `filters.start_time`.
             Start time filter - only include revisions created after this time (inclusive)
 
             ```proto
-            optional google.protobuf.Timestamp start_time = 5;
+            optional google.protobuf.Timestamp start_time = 5 [deprecated = true];
             ```
         end_time:
+            Deprecated in favor of `filters.end_time`.
             End time filter - only include revisions created before this time (exclusive)
 
             ```proto
-            optional google.protobuf.Timestamp end_time = 6;
+            optional google.protobuf.Timestamp end_time = 6 [deprecated = true];
+            ```
+        filters:
+            ```proto
+            optional chalk.server.v1.ListDatasetRevisionsFilters filters = 7;
             ```
     """
 
-    __slots__ = ("dataset_id", "cursor", "limit", "include_archived", "start_time", "end_time")
+    __slots__ = ("dataset_id", "cursor", "limit", "include_archived", "start_time", "end_time", "filters")
 
     if TYPE_CHECKING:
 
@@ -495,6 +597,7 @@ class ListDatasetRevisionsRequest(Message[_ListDatasetRevisionsRequestFields]):
             include_archived: bool | None = None,
             start_time: Timestamp | None = None,
             end_time: Timestamp | None = None,
+            filters: ListDatasetRevisionsFilters | None = None,
         ) -> None:
             pass
 
@@ -504,6 +607,71 @@ class ListDatasetRevisionsRequest(Message[_ListDatasetRevisionsRequestFields]):
         include_archived: bool
         start_time: Timestamp | None
         end_time: Timestamp | None
+        filters: ListDatasetRevisionsFilters | None
+
+_ListDatasetRevisionsFiltersFields: TypeAlias = Literal["agent_ids", "include_archived", "start_time", "end_time", "feature_drift_eligible"]
+
+class ListDatasetRevisionsFilters(Message[_ListDatasetRevisionsFiltersFields]):
+    """
+    ```proto
+    message chalk.server.v1.ListDatasetRevisionsFilters
+    ```
+
+    Attributes:
+        agent_ids:
+            Filter by the agent that created the revision.
+
+            ```proto
+            repeated string agent_ids = 1;
+            ```
+        include_archived:
+            Whether archived revisions should be included.
+
+            ```proto
+            optional bool include_archived = 2;
+            ```
+        start_time:
+            Only include revisions created after this time (inclusive).
+
+            ```proto
+            optional google.protobuf.Timestamp start_time = 3;
+            ```
+        end_time:
+            Only include revisions created before this time (exclusive).
+
+            ```proto
+            optional google.protobuf.Timestamp end_time = 4;
+            ```
+        feature_drift_eligible:
+            Only revisions a feature drift monitor can compare against: completed,
+            unarchived, and with a recorded value distribution for at least one
+            feature. Also populates each revision's feature_distribution_fqns.
+
+            ```proto
+            optional bool feature_drift_eligible = 5;
+            ```
+    """
+
+    __slots__ = ("agent_ids", "include_archived", "start_time", "end_time", "feature_drift_eligible")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            agent_ids: list[str] | None = None,
+            include_archived: bool | None = None,
+            start_time: Timestamp | None = None,
+            end_time: Timestamp | None = None,
+            feature_drift_eligible: bool | None = None,
+        ) -> None:
+            pass
+
+        agent_ids: list[str]
+        include_archived: bool
+        start_time: Timestamp | None
+        end_time: Timestamp | None
+        feature_drift_eligible: bool
 
 _ListDatasetRevisionsResponseFields: TypeAlias = Literal["revisions", "cursor"]
 
@@ -1765,7 +1933,7 @@ class ListMaterializedAggregateTilesForTimelineRequest(Message[_ListMaterialized
         cursor: str
         limit: int
 
-_ListMaterializedAggregateTilesForTimelineResponseFields: TypeAlias = Literal["tiles", "next_cursor"]
+_ListMaterializedAggregateTilesForTimelineResponseFields: TypeAlias = Literal["tiles", "next_cursor", "total_rows"]
 
 class ListMaterializedAggregateTilesForTimelineResponse(Message[_ListMaterializedAggregateTilesForTimelineResponseFields]):
     """
@@ -1782,9 +1950,15 @@ class ListMaterializedAggregateTilesForTimelineResponse(Message[_ListMaterialize
             ```proto
             optional string next_cursor = 2;
             ```
+        total_rows:
+            Data rows across every tile in the time window, not just this page; set on the first page only.
+
+            ```proto
+            optional int64 total_rows = 3;
+            ```
     """
 
-    __slots__ = ("tiles", "next_cursor")
+    __slots__ = ("tiles", "next_cursor", "total_rows")
 
     if TYPE_CHECKING:
 
@@ -1793,11 +1967,13 @@ class ListMaterializedAggregateTilesForTimelineResponse(Message[_ListMaterialize
             *,
             tiles: list[MaterializedAggregateTileMeta] | None = None,
             next_cursor: str | None = None,
+            total_rows: int | None = None,
         ) -> None:
             pass
 
         tiles: list[MaterializedAggregateTileMeta]
         next_cursor: str
+        total_rows: int
 
 _ListMaterializedAggregateTileFilesRequestFields: TypeAlias = Literal["manifest_id", "cursor", "limit"]
 
@@ -2672,10 +2848,15 @@ class DatasetSortColumn(Enum):
             ```proto
             DATASET_SORT_COLUMN_CREATED_AT = 1
             ```
+        UPDATED_AT:
+            ```proto
+            DATASET_SORT_COLUMN_UPDATED_AT = 2
+            ```
     """
 
     UNSPECIFIED = 0
     CREATED_AT = 1
+    UPDATED_AT = 2
 
 class SortOrder(Enum):
     """
@@ -2801,7 +2982,7 @@ class DatasetProfileStatus(Enum):
 
 
 _DESC = file_desc(
-    b'\n\x1echalk/server/v1/datasets.proto\x12\x0fchalk.server.v1\x1a\x1fchalk/auth/v1/permissions.proto\x1a)chalk/chart/v1/densetimeserieschart.proto\x1a$chalk/common/v1/column_profile.proto\x1a#chalk/protosql/v1/sql_service.proto\x1a2chalk/server/v1/materialized_aggregate_tiles.proto\x1a\x1cchalk/volume/v1/volume.proto\x1a google/protobuf/field_mask.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto"\xfd\x0b\n\x13DatasetRevisionMeta\x12\x1d\n\nnumeric_id\x18\x01 \x01(\x03R\tnumericId\x12(\n\x10offline_query_id\x18\x02 \x01(\tR\x0eofflineQueryId\x12\x1d\n\ndataset_id\x18\x03 \x01(\tR\tdatasetId\x12"\n\ngivens_uri\x18\x04 \x01(\tH\x00R\tgivensUri\x88\x01\x01\x12V\n\x0egivens_version\x18\x05 \x01(\x0e2*.chalk.server.v1.OfflineQueryGivensVersionH\x01R\rgivensVersion\x88\x01\x01\x12"\n\noutput_uri\x18\x06 \x01(\tH\x02R\toutputUri\x88\x01\x01\x12K\n\x0eoutput_version\x18\x07 \x01(\x0e2\x1f.chalk.server.v1.DatasetVersionH\x03R\routputVersion\x88\x01\x01\x12$\n\x0bbranch_name\x18\x08 \x01(\tH\x04R\nbranchName\x88\x01\x01\x12"\n\x08num_rows\x18\t \x01(\x03H\x05R\x07numRowsB\x02\x18\x01\x88\x01\x01\x127\n\x13physical_size_bytes\x18\n \x01(\x03H\x06R\x11physicalSizeBytesB\x02\x18\x01\x88\x01\x01\x12%\n\x0eoutput_columns\x18\x0b \x03(\tR\routputColumns\x12\x1f\n\x0boutput_fqns\x18\x0c \x03(\tR\noutputFqns\x12\x1e\n\x08agent_id\x18\r \x01(\tH\x07R\x07agentId\x88\x01\x01\x12B\n\x0ccompleted_at\x18\x0e \x01(\x0b2\x1a.google.protobuf.TimestampH\x08R\x0bcompletedAt\x88\x01\x01\x12"\n\nnum_shards\x18\x0f \x01(\x03H\tR\tnumShards\x88\x01\x01\x12(\n\rnum_computers\x18\x10 \x01(\x03H\nR\x0cnumComputers\x88\x01\x01\x127\n\x08metadata\x18\x11 \x01(\x0b2\x16.google.protobuf.ValueH\x0bR\x08metadata\x88\x01\x01\x12C\n\x06status\x18\x12 \x01(\x0e2&.chalk.server.v1.DatasetRevisionStatusH\x0cR\x06status\x88\x01\x01\x123\n\x13num_rows_calculated\x18\x13 \x01(\x03H\rR\x11numRowsCalculated\x88\x01\x01\x12H\n\x1ephysical_size_bytes_calculated\x18\x14 \x01(\x03H\x0eR\x1bphysicalSizeBytesCalculated\x88\x01\x01\x12>\n\ncreated_at\x18\x15 \x01(\x0b2\x1a.google.protobuf.TimestampH\x0fR\tcreatedAt\x88\x01\x01\x12@\n\x0barchived_at\x18\x16 \x01(\x0b2\x1a.google.protobuf.TimestampH\x10R\narchivedAt\x88\x01\x01\x12H\n\x1eoutput_arrow_schema_serialized\x18\x17 \x01(\x0cH\x11R\x1boutputArrowSchemaSerialized\x88\x01\x01B\r\n\x0b_givens_uriB\x11\n\x0f_givens_versionB\r\n\x0b_output_uriB\x11\n\x0f_output_versionB\x0e\n\x0c_branch_nameB\x0b\n\t_num_rowsB\x16\n\x14_physical_size_bytesB\x0b\n\t_agent_idB\x0f\n\r_completed_atB\r\n\x0b_num_shardsB\x10\n\x0e_num_computersB\x0b\n\t_metadataB\t\n\x07_statusB\x16\n\x14_num_rows_calculatedB!\n\x1f_physical_size_bytes_calculatedB\r\n\x0b_created_atB\x0e\n\x0c_archived_atB!\n\x1f_output_arrow_schema_serialized"\xea\x02\n\x0bDatasetMeta\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12%\n\x0eenvironment_id\x18\x02 \x01(\tR\renvironmentId\x12&\n\x0cdataset_name\x18\x03 \x01(\tH\x00R\x0bdatasetName\x88\x01\x01\x129\n\ncreated_at\x18\x05 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12[\n\x14most_recent_revision\x18\x07 \x01(\x0b2$.chalk.server.v1.DatasetRevisionMetaH\x01R\x12mostRecentRevision\x88\x01\x01\x12(\n\rnum_revisions\x18\x08 \x01(\x03H\x02R\x0cnumRevisions\x88\x01\x01B\x0f\n\r_dataset_nameB\x17\n\x15_most_recent_revisionB\x10\n\x0e_num_revisions"\xcb\x04\n\x13ListDatasetsRequest\x12\x1b\n\x06cursor\x18\x01 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x02 \x01(\x05H\x01R\x05limit\x88\x01\x01\x12\x1b\n\x06search\x18\x03 \x01(\tH\x02R\x06search\x88\x01\x01\x120\n\x11include_anonymous\x18\x04 \x01(\x08H\x03R\x10includeAnonymous\x88\x01\x01\x12H\n\x0bsort_column\x18\x05 \x01(\x0e2".chalk.server.v1.DatasetSortColumnH\x04R\nsortColumn\x88\x01\x01\x12>\n\nsort_order\x18\x06 \x01(\x0e2\x1a.chalk.server.v1.SortOrderH\x05R\tsortOrder\x88\x01\x01\x12>\n\x06status\x18\x07 \x03(\x0e2&.chalk.server.v1.DatasetRevisionStatusR\x06status\x120\n\x04kind\x18\x08 \x03(\x0e2\x1c.chalk.server.v1.DatasetKindR\x04kind\x12\x10\n\x03ids\x18\t \x03(\tR\x03ids\x12<\n\tread_mask\x18\n \x01(\x0b2\x1a.google.protobuf.FieldMaskH\x06R\x08readMask\x88\x01\x01B\t\n\x07_cursorB\x08\n\x06_limitB\t\n\x07_searchB\x14\n\x12_include_anonymousB\x0e\n\x0c_sort_columnB\r\n\x0b_sort_orderB\x0c\n\n_read_mask"x\n\x14ListDatasetsResponse\x128\n\x08datasets\x18\x01 \x03(\x0b2\x1c.chalk.server.v1.DatasetMetaR\x08datasets\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x00R\x06cursor\x88\x01\x01B\t\n\x07_cursor"#\n\x11GetDatasetRequest\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id"L\n\x12GetDatasetResponse\x126\n\x07dataset\x18\x01 \x01(\x0b2\x1c.chalk.server.v1.DatasetMetaR\x07dataset"\xe6\x02\n\x1bListDatasetRevisionsRequest\x12\x1d\n\ndataset_id\x18\x01 \x01(\tR\tdatasetId\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x03 \x01(\x05H\x01R\x05limit\x88\x01\x01\x12.\n\x10include_archived\x18\x04 \x01(\x08H\x02R\x0fincludeArchived\x88\x01\x01\x12>\n\nstart_time\x18\x05 \x01(\x0b2\x1a.google.protobuf.TimestampH\x03R\tstartTime\x88\x01\x01\x12:\n\x08end_time\x18\x06 \x01(\x0b2\x1a.google.protobuf.TimestampH\x04R\x07endTime\x88\x01\x01B\t\n\x07_cursorB\x08\n\x06_limitB\x13\n\x11_include_archivedB\r\n\x0b_start_timeB\x0b\n\t_end_time"\x8a\x01\n\x1cListDatasetRevisionsResponse\x12B\n\trevisions\x18\x01 \x03(\x0b2$.chalk.server.v1.DatasetRevisionMetaR\trevisions\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x00R\x06cursor\x88\x01\x01B\t\n\x07_cursor"\x81\x01\n\x19GetDatasetRevisionRequest\x12\x1f\n\x0brevision_id\x18\x01 \x01(\tR\nrevisionId\x12.\n\x10include_archived\x18\x02 \x01(\x08H\x00R\x0fincludeArchived\x88\x01\x01B\x13\n\x11_include_archived"^\n\x1aGetDatasetRevisionResponse\x12@\n\x08revision\x18\x01 \x01(\x0b2$.chalk.server.v1.DatasetRevisionMetaR\x08revision"I\n&GetDatasetRevisionDownloadLinksRequest\x12\x1f\n\x0brevision_id\x18\x01 \x01(\tR\nrevisionId"\x9f\x01\n\x1bShardPerformanceSummaryLink\x12\x19\n\x08shard_id\x18\x01 \x01(\x05R\x07shardId\x12\x15\n\x03url\x18\x02 \x01(\tH\x00R\x03url\x88\x01\x01\x12F\n\x06status\x18\x03 \x01(\x0e2..chalk.server.v1.ShardPerformanceSummaryStatusR\x06statusB\x06\n\x04_url"h\n\x14ShardRequestBodyLink\x12\x19\n\x08shard_id\x18\x01 \x01(\x05R\x07shardId\x12\x15\n\x03url\x18\x02 \x01(\tH\x00R\x03url\x88\x01\x01\x12\x16\n\x06exists\x18\x03 \x01(\x08R\x06existsB\x06\n\x04_url"\xcf\x04\n\'GetDatasetRevisionDownloadLinksResponse\x12\x1f\n\x0boutput_urls\x18\x01 \x03(\tR\noutputUrls\x12\x1f\n\x0bgivens_urls\x18\x02 \x03(\tR\ngivensUrls\x12<\n\x18performance_summary_urls\x18\x03 \x03(\tR\x16performanceSummaryUrlsB\x02\x18\x01\x12-\n\x10request_body_url\x18\x04 \x01(\tH\x00R\x0erequestBodyUrl\x88\x01\x01\x12\x1d\n\ntrace_urls\x18\x05 \x03(\tR\ttraceUrls\x12\x19\n\x05error\x18\x06 \x01(\tH\x01R\x05error\x88\x01\x01\x12?\n\nexpiration\x18\x07 \x01(\x0b2\x1a.google.protobuf.TimestampH\x02R\nexpiration\x88\x01\x01\x12l\n\x19performance_summary_links\x18\x08 \x03(\x0b2,.chalk.server.v1.ShardPerformanceSummaryLinkR\x17performanceSummaryLinksB\x02\x18\x01\x12^\n\x18shard_request_body_links\x18\t \x03(\x0b2%.chalk.server.v1.ShardRequestBodyLinkR\x15shardRequestBodyLinksB\x13\n\x11_request_body_urlB\x08\n\x06_errorB\r\n\x0b_expiration"L\n)GetDatasetRevisionPerformanceLinksRequest\x12\x1f\n\x0brevision_id\x18\x01 \x01(\tR\nrevisionId"\x8b\x02\n*GetDatasetRevisionPerformanceLinksResponse\x12h\n\x19performance_summary_links\x18\x01 \x03(\x0b2,.chalk.server.v1.ShardPerformanceSummaryLinkR\x17performanceSummaryLinks\x12\x19\n\x05error\x18\x02 \x01(\tH\x00R\x05error\x88\x01\x01\x12?\n\nexpiration\x18\x03 \x01(\x0b2\x1a.google.protobuf.TimestampH\x01R\nexpiration\x88\x01\x01B\x08\n\x06_errorB\r\n\x0b_expiration"L\n)StreamDatasetRevisionDownloadLinksRequest\x12\x1f\n\x0brevision_id\x18\x01 \x01(\tR\nrevisionId"\xea\x03\n*StreamDatasetRevisionDownloadLinksResponse\x12\x1f\n\x0boutput_urls\x18\x01 \x03(\tR\noutputUrls\x12\x1f\n\x0bgivens_urls\x18\x02 \x03(\tR\ngivensUrls\x128\n\x18performance_summary_urls\x18\x03 \x03(\tR\x16performanceSummaryUrls\x12-\n\x10request_body_url\x18\x04 \x01(\tH\x00R\x0erequestBodyUrl\x88\x01\x01\x12\x1d\n\ntrace_urls\x18\x05 \x03(\tR\ttraceUrls\x12\x19\n\x05error\x18\x06 \x01(\tH\x01R\x05error\x88\x01\x01\x12?\n\nexpiration\x18\x07 \x01(\x0b2\x1a.google.protobuf.TimestampH\x02R\nexpiration\x88\x01\x01\x12h\n\x19performance_summary_links\x18\x08 \x03(\x0b2,.chalk.server.v1.ShardPerformanceSummaryLinkR\x17performanceSummaryLinksB\x13\n\x11_request_body_urlB\x08\n\x06_errorB\r\n\x0b_expiration"\xd9\x01\n\x1bGetDatasetUploadUrisRequest\x12!\n\x0ccontent_size\x18\x01 \x01(\x03R\x0bcontentSize\x12\x17\n\x04hash\x18\x02 \x01(\tH\x00R\x04hash\x88\x01\x01\x12 \n\tpart_size\x18\x03 \x01(\x03H\x01R\x08partSize\x88\x01\x01\x12/\n\x11upload_session_id\x18\x04 \x01(\tH\x02R\x0fuploadSessionId\x88\x01\x01B\x07\n\x05_hashB\x0c\n\n_part_sizeB\x14\n\x12_upload_session_id"\x83\x03\n\x1cGetDatasetUploadUrisResponse\x12*\n\x11upload_session_id\x18\x01 \x01(\tR\x0fuploadSessionId\x12*\n\x11storage_object_id\x18\x02 \x01(\tR\x0fstorageObjectId\x12@\n\tmultipart\x18\x03 \x01(\x0b2 .chalk.volume.v1.MultipartUploadH\x00R\tmultipart\x12@\n\tresumable\x18\x04 \x01(\x0b2 .chalk.volume.v1.ResumableUploadH\x00R\tresumable\x12D\n\x0bazure_block\x18\x05 \x01(\x0b2!.chalk.volume.v1.AzureBlockUploadH\x00R\nazureBlock\x127\n\x06direct\x18\x06 \x01(\x0b2\x1d.chalk.volume.v1.DirectUploadH\x00R\x06directB\x08\n\x06upload"\xa5\x01\n\x1cFinalizeDatasetUploadRequest\x12*\n\x11upload_session_id\x18\x01 \x01(\tR\x0fuploadSessionId\x12!\n\x0cdataset_name\x18\x02 \x01(\tR\x0bdatasetName\x126\n\x17arrow_schema_serialized\x18\x03 \x01(\x0cR\x15arrowSchemaSerialized"W\n\x1dFinalizeDatasetUploadResponse\x126\n\x07dataset\x18\x01 \x01(\x0b2\x1c.chalk.server.v1.DatasetMetaR\x07dataset"P\n\x14RenameDatasetRequest\x12\x1d\n\ndataset_id\x18\x01 \x01(\tR\tdatasetId\x12\x19\n\x08new_name\x18\x02 \x01(\tR\x07newName"O\n\x15RenameDatasetResponse\x126\n\x07dataset\x18\x01 \x01(\x0b2\x1c.chalk.server.v1.DatasetMetaR\x07dataset"@\n\x1dArchiveDatasetRevisionRequest\x12\x1f\n\x0brevision_id\x18\x01 \x01(\tR\nrevisionId"b\n\x1eArchiveDatasetRevisionResponse\x12@\n\x08revision\x18\x01 \x01(\x0b2$.chalk.server.v1.DatasetRevisionMetaR\x08revision"C\n\x1eArchiveDatasetRevisionsRequest\x12!\n\x0crevision_ids\x18\x01 \x03(\tR\x0brevisionIds"v\n\x1fArchiveDatasetRevisionsResponse\x12S\n\x12archived_revisions\x18\x01 \x03(\x0b2$.chalk.server.v1.DatasetRevisionMetaR\x11archivedRevisions"5\n\x14DeleteDatasetRequest\x12\x1d\n\ndataset_id\x18\x01 \x01(\tR\tdatasetId"6\n\x15DeleteDatasetResponse\x12\x1d\n\ndataset_id\x18\x01 \x01(\tR\tdatasetId"\xc6\x07\n\x1dMaterializedAggregateTileMeta\x12\x0e\n\x02id\x18\x01 \x01(\x03R\x02id\x12%\n\x0eenvironment_id\x18\x12 \x01(\tR\renvironmentId\x12#\n\rdeployment_id\x18\x02 \x01(\tR\x0cdeploymentId\x12!\n\x0coperation_id\x18\x03 \x01(\tR\x0boperationId\x122\n\x15aggregate_backfill_id\x18\x04 \x01(\tR\x13aggregateBackfillId\x128\n\x18materialization_key_hash\x18\x05 \x01(\tR\x16materializationKeyHash\x12 \n\x0baggregation\x18\x06 \x01(\tR\x0baggregation\x12!\n\x0caggregate_on\x18\x07 \x01(\tR\x0baggregateOn\x12\x16\n\x06groups\x18\x08 \x03(\tR\x06groups\x12\x1b\n\tbucket_on\x18\t \x01(\tR\x08bucketOn\x12,\n\x12bucket_duration_ms\x18\n \x01(\x03R\x10bucketDurationMs\x12L\n\x14coverage_lower_bound\x18\x0b \x01(\x0b2\x1a.google.protobuf.TimestampR\x12coverageLowerBound\x12L\n\x14coverage_upper_bound\x18\x0c \x01(\x0b2\x1a.google.protobuf.TimestampR\x12coverageUpperBound\x12\x1f\n\x0bsource_kind\x18\r \x01(\tR\nsourceKind\x12\x1d\n\nfile_count\x18\x0e \x01(\x03R\tfileCount\x12\x1d\n\ntotal_rows\x18\x0f \x01(\x03R\ttotalRows\x129\n\ncreated_at\x18\x10 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n\nupdated_at\x18\x11 \x01(\x0b2\x1a.google.protobuf.TimestampR\tupdatedAt\x128\n\x18materialization_key_json\x18\x13 \x01(\tR\x16materializationKeyJson\x12;\n\x1aoutput_schema_bytes_base64\x18\x14 \x01(\tR\x17outputSchemaBytesBase64\x12(\n\x10source_meta_json\x18\x15 \x01(\tR\x0esourceMetaJson"\x8c\x02\n!MaterializedAggregateTileFileMeta\x12\x0e\n\x02id\x18\x01 \x01(\x03R\x02id\x12%\n\x0eenvironment_id\x18\x07 \x01(\tR\renvironmentId\x12#\n\rdeployment_id\x18\x02 \x01(\tR\x0cdeploymentId\x12!\n\x0cfile_ordinal\x18\x03 \x01(\x03R\x0bfileOrdinal\x12\x1b\n\trow_count\x18\x04 \x01(\x03R\x08rowCount\x12\x10\n\x03uri\x18\x05 \x01(\tR\x03uri\x129\n\ncreated_at\x18\x06 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt"z\n%ListMaterializedAggregateTilesFilters\x127\n\x15aggregate_backfill_id\x18\x01 \x01(\tH\x00R\x13aggregateBackfillId\x88\x01\x01B\x18\n\x16_aggregate_backfill_id"\xd7\x01\n%ListMaterializedAggregateTilesRequest\x12\x1b\n\x06cursor\x18\x01 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x02 \x01(\x05H\x01R\x05limit\x88\x01\x01\x12U\n\x07filters\x18\x03 \x01(\x0b26.chalk.server.v1.ListMaterializedAggregateTilesFiltersH\x02R\x07filters\x88\x01\x01B\t\n\x07_cursorB\x08\n\x06_limitB\n\n\x08_filters"\xa4\x01\n&ListMaterializedAggregateTilesResponse\x12D\n\x05tiles\x18\x01 \x03(\x0b2..chalk.server.v1.MaterializedAggregateTileMetaR\x05tiles\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"\xab\x02\n0ListMaterializedAggregateTilesForTimelineRequest\x128\n\x18materialization_key_hash\x18\x01 \x01(\tR\x16materializationKeyHash\x12`\n\x0btime_window\x18\x02 \x01(\x0b2:.chalk.server.v1.MaterializedAggregateTileTimelineIntervalH\x00R\ntimeWindow\x88\x01\x01\x12\x1b\n\x06cursor\x18\x03 \x01(\tH\x01R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x04 \x01(\x05H\x02R\x05limit\x88\x01\x01B\x0e\n\x0c_time_windowB\t\n\x07_cursorB\x08\n\x06_limit"\xaf\x01\n1ListMaterializedAggregateTilesForTimelineResponse\x12D\n\x05tiles\x18\x01 \x03(\x0b2..chalk.server.v1.MaterializedAggregateTileMetaR\x05tiles\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"\x99\x01\n)ListMaterializedAggregateTileFilesRequest\x12\x1f\n\x0bmanifest_id\x18\x01 \x01(\x03R\nmanifestId\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x03 \x01(\x05H\x01R\x05limit\x88\x01\x01B\t\n\x07_cursorB\x08\n\x06_limit"\xac\x01\n*ListMaterializedAggregateTileFilesResponse\x12H\n\x05files\x18\x01 \x03(\x0b22.chalk.server.v1.MaterializedAggregateTileFileMetaR\x05files\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"\xcb\x01\n)MaterializedAggregateTileFileDownloadLink\x12\x17\n\x07file_id\x18\x01 \x01(\x03R\x06fileId\x12!\n\x0cfile_ordinal\x18\x02 \x01(\x03R\x0bfileOrdinal\x12\x10\n\x03uri\x18\x03 \x01(\tR\x03uri\x12\x1b\n\trow_count\x18\x04 \x01(\x03R\x08rowCount\x12\x1d\n\nsigned_url\x18\x05 \x01(\tR\tsignedUrl\x12\x14\n\x05error\x18\x06 \x01(\tR\x05error"n\n0GetMaterializedAggregateTileDownloadLinksRequest\x12\x1f\n\x0bmanifest_id\x18\x01 \x01(\x03R\nmanifestId\x12\x19\n\x08file_ids\x18\x02 \x03(\x03R\x07fileIds"\xc0\x01\n1GetMaterializedAggregateTileDownloadLinksResponse\x12P\n\x05links\x18\x01 \x03(\x0b2:.chalk.server.v1.MaterializedAggregateTileFileDownloadLinkR\x05links\x129\n\nexpires_at\x18\x02 \x01(\x0b2\x1a.google.protobuf.TimestampR\texpiresAt"\xde\x01\n0GetMaterializedAggregateTileRowCountChartRequest\x128\n\x18materialization_key_hash\x18\x01 \x01(\tR\x16materializationKeyHash\x12`\n\x0btime_window\x18\x02 \x01(\x0b2:.chalk.server.v1.MaterializedAggregateTileTimelineIntervalH\x00R\ntimeWindow\x88\x01\x01B\x0e\n\x0c_time_window"o\n1GetMaterializedAggregateTileRowCountChartResponse\x12:\n\x05chart\x18\x01 \x01(\x0b2$.chalk.chart.v1.DenseTimeSeriesChartR\x05chart"\xad\x02\n)GetMaterializedAggregateTileValuesRequest\x128\n\x18materialization_key_hash\x18\x01 \x01(\tR\x16materializationKeyHash\x12*\n\x11primary_key_value\x18\x02 \x01(\tR\x0fprimaryKeyValue\x12[\n\x0btime_window\x18\x03 \x01(\x0b2:.chalk.server.v1.MaterializedAggregateTileTimelineIntervalR\ntimeWindow\x12*\n\x0eresource_group\x18\x04 \x01(\tH\x00R\rresourceGroup\x88\x01\x01B\x11\n\x0f_resource_group"t\n*GetMaterializedAggregateTileValuesResponse\x12F\n\x08response\x18\x01 \x01(\x0b2*.chalk.protosql.v1.ExecuteSqlQueryResponseR\x08response"8\n&DeleteMaterializedAggregateTileRequest\x12\x0e\n\x02id\x18\x01 \x01(\x03R\x02id"9\n\'DeleteMaterializedAggregateTileResponse\x12\x0e\n\x02id\x18\x01 \x01(\x03R\x02id"C\n GetDatasetRevisionPreviewRequest\x12\x1f\n\x0brevision_id\x18\x01 \x01(\tR\nrevisionId"\xab\x02\n!GetDatasetRevisionPreviewResponse\x12=\n\x0eoutput_preview\x18\x01 \x01(\x0b2\x16.google.protobuf.ValueR\routputPreview\x120\n\x07summary\x18\x02 \x01(\x0b2\x16.google.protobuf.ValueR\x07summary\x12G\n\x0fcolumn_profiles\x18\x03 \x03(\x0b2\x1e.chalk.common.v1.ColumnProfileR\x0ecolumnProfiles\x12L\n\x0eprofile_status\x18\x04 \x01(\x0e2%.chalk.server.v1.DatasetProfileStatusR\rprofileStatus">\n\x1bGenerateDatasetStatsRequest\x12\x1f\n\x0brevision_id\x18\x01 \x01(\tR\nrevisionId"P\n\x1cGenerateDatasetStatsResponse\x120\n\x07summary\x18\x01 \x01(\x0b2\x16.google.protobuf.ValueR\x07summary"\xf3\x01\n\nDatasetEdf\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x15\n\x06job_id\x18\x02 \x01(\tR\x05jobId\x12!\n\x0cfeature_name\x18\x03 \x01(\tR\x0bfeatureName\x12\x19\n\x08data_max\x18\x04 \x01(\x01R\x07dataMax\x12\x19\n\x08data_min\x18\x05 \x01(\x01R\x07dataMin\x12\x1d\n\ndata_count\x18\x06 \x01(\x03R\tdataCount\x12!\n\x0cbucket_count\x18\x07 \x01(\x05R\x0bbucketCount\x12#\n\rbucket_values\x18\x08 \x03(\x01R\x0cbucketValues"8\n\x15GetDatasetEdfsRequest\x12\x1f\n\x0brevision_id\x18\x01 \x01(\tR\nrevisionId"I\n\x16GetDatasetEdfsResponse\x12/\n\x04edfs\x18\x01 \x03(\x0b2\x1b.chalk.server.v1.DatasetEdfR\x04edfs"=\n\x1aGenerateDatasetEdfsRequest\x12\x1f\n\x0brevision_id\x18\x01 \x01(\tR\nrevisionId"9\n\x1bGenerateDatasetEdfsResponse\x12\x1a\n\x08features\x18\x01 \x03(\tR\x08features*\x9f\x02\n\x15DatasetRevisionStatus\x12\'\n#DATASET_REVISION_STATUS_UNSPECIFIED\x10\x00\x12#\n\x1fDATASET_REVISION_STATUS_UNKNOWN\x10\x01\x12#\n\x1fDATASET_REVISION_STATUS_WORKING\x10\x02\x12%\n!DATASET_REVISION_STATUS_COMPLETED\x10\x03\x12"\n\x1eDATASET_REVISION_STATUS_FAILED\x10\x04\x12$\n DATASET_REVISION_STATUS_CANCELED\x10\x05\x12"\n\x1eDATASET_REVISION_STATUS_QUEUED\x10\x06*\xe9\x02\n\x0eDatasetVersion\x12\x1f\n\x1bDATASET_VERSION_UNSPECIFIED\x10\x00\x12\x1b\n\x17DATASET_VERSION_UNKNOWN\x10\x01\x12:\n6DATASET_VERSION_BIGQUERY_JOB_WITH_B32_ENCODED_COLNAMES\x10\x02\x12"\n\x1eDATASET_VERSION_DATASET_WRITER\x10\x03\x12=\n9DATASET_VERSION_BIGQUERY_JOB_WITH_B32_ENCODED_COLNAMES_V2\x10\x04\x12.\n*DATASET_VERSION_COMPUTE_RESOLVER_OUTPUT_V1\x10\x05\x12!\n\x1dDATASET_VERSION_NATIVE_DTYPES\x10\x06\x12\'\n#DATASET_VERSION_NATIVE_COLUMN_NAMES\x10\x07*\xad\x02\n\x19OfflineQueryGivensVersion\x12,\n(OFFLINE_QUERY_GIVENS_VERSION_UNSPECIFIED\x10\x00\x12(\n$OFFLINE_QUERY_GIVENS_VERSION_UNKNOWN\x10\x01\x12>\n:OFFLINE_QUERY_GIVENS_VERSION_NATIVE_TS_FEATURE_FOR_ROOT_NS\x10\x02\x123\n/OFFLINE_QUERY_GIVENS_VERSION_SINGLE_TS_COL_NAME\x10\x03\x12C\n?OFFLINE_QUERY_GIVENS_VERSION_SINGLE_TS_COL_NAME_WITH_URI_PREFIX\x10\x04*\\\n\x11DatasetSortColumn\x12#\n\x1fDATASET_SORT_COLUMN_UNSPECIFIED\x10\x00\x12"\n\x1eDATASET_SORT_COLUMN_CREATED_AT\x10\x01*P\n\tSortOrder\x12\x1a\n\x16SORT_ORDER_UNSPECIFIED\x10\x00\x12\x13\n\x0fSORT_ORDER_DESC\x10\x01\x12\x12\n\x0eSORT_ORDER_ASC\x10\x02*_\n\x0bDatasetKind\x12\x1c\n\x18DATASET_KIND_UNSPECIFIED\x10\x00\x12\x16\n\x12DATASET_KIND_NAMED\x10\x01\x12\x1a\n\x16DATASET_KIND_ANONYMOUS\x10\x02*\xda\x01\n\x1dShardPerformanceSummaryStatus\x120\n,SHARD_PERFORMANCE_SUMMARY_STATUS_UNSPECIFIED\x10\x00\x12.\n*SHARD_PERFORMANCE_SUMMARY_STATUS_AVAILABLE\x10\x01\x12,\n(SHARD_PERFORMANCE_SUMMARY_STATUS_PENDING\x10\x02\x12)\n%SHARD_PERFORMANCE_SUMMARY_STATUS_NONE\x10\x03*\xce\x01\n\x14DatasetProfileStatus\x12&\n"DATASET_PROFILE_STATUS_UNSPECIFIED\x10\x00\x12!\n\x1dDATASET_PROFILE_STATUS_QUEUED\x10\x01\x12"\n\x1eDATASET_PROFILE_STATUS_RUNNING\x10\x02\x12$\n DATASET_PROFILE_STATUS_COMPLETED\x10\x03\x12!\n\x1dDATASET_PROFILE_STATUS_FAILED\x10\x042\x8f\x1f\n\x16DatasetMetadataService\x12g\n\x0cListDatasets\x12$.chalk.server.v1.ListDatasetsRequest\x1a%.chalk.server.v1.ListDatasetsResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12a\n\nGetDataset\x12".chalk.server.v1.GetDatasetRequest\x1a#.chalk.server.v1.GetDatasetResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12\x7f\n\x14ListDatasetRevisions\x12,.chalk.server.v1.ListDatasetRevisionsRequest\x1a-.chalk.server.v1.ListDatasetRevisionsResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12y\n\x12GetDatasetRevision\x12*.chalk.server.v1.GetDatasetRevisionRequest\x1a+.chalk.server.v1.GetDatasetRevisionResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12\x9c\x01\n\x1fGetDatasetRevisionDownloadLinks\x127.chalk.server.v1.GetDatasetRevisionDownloadLinksRequest\x1a8.chalk.server.v1.GetDatasetRevisionDownloadLinksResponse"\x06\x90\x02\x01\x80}\x04\x12\xa5\x01\n"GetDatasetRevisionPerformanceLinks\x12:.chalk.server.v1.GetDatasetRevisionPerformanceLinksRequest\x1a;.chalk.server.v1.GetDatasetRevisionPerformanceLinksResponse"\x06\x90\x02\x01\x80}$\x12\xa7\x01\n"StreamDatasetRevisionDownloadLinks\x12:.chalk.server.v1.StreamDatasetRevisionDownloadLinksRequest\x1a;.chalk.server.v1.StreamDatasetRevisionDownloadLinksResponse"\x06\x90\x02\x01\x80}\x040\x01\x12f\n\rRenameDataset\x12%.chalk.server.v1.RenameDatasetRequest\x1a&.chalk.server.v1.RenameDatasetResponse"\x06\x90\x02\x02\x80}\x04\x12\x84\x01\n\x16ArchiveDatasetRevision\x12..chalk.server.v1.ArchiveDatasetRevisionRequest\x1a/.chalk.server.v1.ArchiveDatasetRevisionResponse"\t\x88\x02\x01\x90\x02\x02\x80}\x04\x12\x84\x01\n\x17ArchiveDatasetRevisions\x12/.chalk.server.v1.ArchiveDatasetRevisionsRequest\x1a0.chalk.server.v1.ArchiveDatasetRevisionsResponse"\x06\x90\x02\x02\x80}\x04\x12f\n\rDeleteDataset\x12%.chalk.server.v1.DeleteDatasetRequest\x1a&.chalk.server.v1.DeleteDatasetResponse"\x06\x90\x02\x02\x80}\x04\x12\xa0\x01\n\x1eListMaterializedAggregateTiles\x126.chalk.server.v1.ListMaterializedAggregateTilesRequest\x1a7.chalk.server.v1.ListMaterializedAggregateTilesResponse"\r\x88\x02\x01\x90\x02\x01\x80}\x04\x92}\x01$\x12\xb5\x01\n&ListMaterializedAggregateTileTimelines\x12>.chalk.server.v1.ListMaterializedAggregateTileTimelinesRequest\x1a?.chalk.server.v1.ListMaterializedAggregateTileTimelinesResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12\xa9\x01\n"GetMaterializedAggregateTileFacets\x12:.chalk.server.v1.GetMaterializedAggregateTileFacetsRequest\x1a;.chalk.server.v1.GetMaterializedAggregateTileFacetsResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12\xb8\x01\n\'GetMaterializedAggregateTileFacetValues\x12?.chalk.server.v1.GetMaterializedAggregateTileFacetValuesRequest\x1a@.chalk.server.v1.GetMaterializedAggregateTileFacetValuesResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12\xbe\x01\n)ListMaterializedAggregateTilesForTimeline\x12A.chalk.server.v1.ListMaterializedAggregateTilesForTimelineRequest\x1aB.chalk.server.v1.ListMaterializedAggregateTilesForTimelineResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12\xa9\x01\n"ListMaterializedAggregateTileFiles\x12:.chalk.server.v1.ListMaterializedAggregateTileFilesRequest\x1a;.chalk.server.v1.ListMaterializedAggregateTileFilesResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12\xbe\x01\n)GetMaterializedAggregateTileRowCountChart\x12A.chalk.server.v1.GetMaterializedAggregateTileRowCountChartRequest\x1aB.chalk.server.v1.GetMaterializedAggregateTileRowCountChartResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12\xa5\x01\n"GetMaterializedAggregateTileValues\x12:.chalk.server.v1.GetMaterializedAggregateTileValuesRequest\x1a;.chalk.server.v1.GetMaterializedAggregateTileValuesResponse"\x06\x90\x02\x01\x80}$\x12\xbe\x01\n)GetMaterializedAggregateTileDownloadLinks\x12A.chalk.server.v1.GetMaterializedAggregateTileDownloadLinksRequest\x1aB.chalk.server.v1.GetMaterializedAggregateTileDownloadLinksResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12\x9c\x01\n\x1fDeleteMaterializedAggregateTile\x127.chalk.server.v1.DeleteMaterializedAggregateTileRequest\x1a8.chalk.server.v1.DeleteMaterializedAggregateTileResponse"\x06\x90\x02\x02\x80}\x04\x12\x8e\x01\n\x19GetDatasetRevisionPreview\x121.chalk.server.v1.GetDatasetRevisionPreviewRequest\x1a2.chalk.server.v1.GetDatasetRevisionPreviewResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12x\n\x14GenerateDatasetStats\x12,.chalk.server.v1.GenerateDatasetStatsRequest\x1a-.chalk.server.v1.GenerateDatasetStatsResponse"\x03\x80}\x04\x12m\n\x0eGetDatasetEdfs\x12&.chalk.server.v1.GetDatasetEdfsRequest\x1a\'.chalk.server.v1.GetDatasetEdfsResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12u\n\x13GenerateDatasetEdfs\x12+.chalk.server.v1.GenerateDatasetEdfsRequest\x1a,.chalk.server.v1.GenerateDatasetEdfsResponse"\x03\x80}\x04\x12x\n\x14GetDatasetUploadUris\x12,.chalk.server.v1.GetDatasetUploadUrisRequest\x1a-.chalk.server.v1.GetDatasetUploadUrisResponse"\x03\x80}\x04\x12{\n\x15FinalizeDatasetUpload\x12-.chalk.server.v1.FinalizeDatasetUploadRequest\x1a..chalk.server.v1.FinalizeDatasetUploadResponse"\x03\x80}\x04B\x96\x01\n\x13com.chalk.server.v1B\rDatasetsProtoP\x01Z\x12server/v1;serverv1\xa2\x02\x03CSX\xaa\x02\x0fChalk.Server.V1\xca\x02\x0fChalk\\Server\\V1\xe2\x02\x1bChalk\\Server\\V1\\GPBMetadata\xea\x02\x11Chalk::Server::V1b\x06proto3',
+    b'\n\x1echalk/server/v1/datasets.proto\x12\x0fchalk.server.v1\x1a\x1fchalk/auth/v1/permissions.proto\x1a)chalk/chart/v1/densetimeserieschart.proto\x1a$chalk/common/v1/column_profile.proto\x1a#chalk/protosql/v1/sql_service.proto\x1a2chalk/server/v1/materialized_aggregate_tiles.proto\x1a\x1cchalk/volume/v1/volume.proto\x1a google/protobuf/field_mask.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto"\xb9\x0c\n\x13DatasetRevisionMeta\x12\x1d\n\nnumeric_id\x18\x01 \x01(\x03R\tnumericId\x12(\n\x10offline_query_id\x18\x02 \x01(\tR\x0eofflineQueryId\x12\x1d\n\ndataset_id\x18\x03 \x01(\tR\tdatasetId\x12"\n\ngivens_uri\x18\x04 \x01(\tH\x00R\tgivensUri\x88\x01\x01\x12V\n\x0egivens_version\x18\x05 \x01(\x0e2*.chalk.server.v1.OfflineQueryGivensVersionH\x01R\rgivensVersion\x88\x01\x01\x12"\n\noutput_uri\x18\x06 \x01(\tH\x02R\toutputUri\x88\x01\x01\x12K\n\x0eoutput_version\x18\x07 \x01(\x0e2\x1f.chalk.server.v1.DatasetVersionH\x03R\routputVersion\x88\x01\x01\x12$\n\x0bbranch_name\x18\x08 \x01(\tH\x04R\nbranchName\x88\x01\x01\x12"\n\x08num_rows\x18\t \x01(\x03H\x05R\x07numRowsB\x02\x18\x01\x88\x01\x01\x127\n\x13physical_size_bytes\x18\n \x01(\x03H\x06R\x11physicalSizeBytesB\x02\x18\x01\x88\x01\x01\x12%\n\x0eoutput_columns\x18\x0b \x03(\tR\routputColumns\x12\x1f\n\x0boutput_fqns\x18\x0c \x03(\tR\noutputFqns\x12\x1e\n\x08agent_id\x18\r \x01(\tH\x07R\x07agentId\x88\x01\x01\x12B\n\x0ccompleted_at\x18\x0e \x01(\x0b2\x1a.google.protobuf.TimestampH\x08R\x0bcompletedAt\x88\x01\x01\x12"\n\nnum_shards\x18\x0f \x01(\x03H\tR\tnumShards\x88\x01\x01\x12(\n\rnum_computers\x18\x10 \x01(\x03H\nR\x0cnumComputers\x88\x01\x01\x127\n\x08metadata\x18\x11 \x01(\x0b2\x16.google.protobuf.ValueH\x0bR\x08metadata\x88\x01\x01\x12C\n\x06status\x18\x12 \x01(\x0e2&.chalk.server.v1.DatasetRevisionStatusH\x0cR\x06status\x88\x01\x01\x123\n\x13num_rows_calculated\x18\x13 \x01(\x03H\rR\x11numRowsCalculated\x88\x01\x01\x12H\n\x1ephysical_size_bytes_calculated\x18\x14 \x01(\x03H\x0eR\x1bphysicalSizeBytesCalculated\x88\x01\x01\x12>\n\ncreated_at\x18\x15 \x01(\x0b2\x1a.google.protobuf.TimestampH\x0fR\tcreatedAt\x88\x01\x01\x12@\n\x0barchived_at\x18\x16 \x01(\x0b2\x1a.google.protobuf.TimestampH\x10R\narchivedAt\x88\x01\x01\x12H\n\x1eoutput_arrow_schema_serialized\x18\x17 \x01(\x0cH\x11R\x1boutputArrowSchemaSerialized\x88\x01\x01\x12:\n\x19feature_distribution_fqns\x18\x18 \x03(\tR\x17featureDistributionFqnsB\r\n\x0b_givens_uriB\x11\n\x0f_givens_versionB\r\n\x0b_output_uriB\x11\n\x0f_output_versionB\x0e\n\x0c_branch_nameB\x0b\n\t_num_rowsB\x16\n\x14_physical_size_bytesB\x0b\n\t_agent_idB\x0f\n\r_completed_atB\r\n\x0b_num_shardsB\x10\n\x0e_num_computersB\x0b\n\t_metadataB\t\n\x07_statusB\x16\n\x14_num_rows_calculatedB!\n\x1f_physical_size_bytes_calculatedB\r\n\x0b_created_atB\x0e\n\x0c_archived_atB!\n\x1f_output_arrow_schema_serialized"\xea\x02\n\x0bDatasetMeta\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12%\n\x0eenvironment_id\x18\x02 \x01(\tR\renvironmentId\x12&\n\x0cdataset_name\x18\x03 \x01(\tH\x00R\x0bdatasetName\x88\x01\x01\x129\n\ncreated_at\x18\x05 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x12[\n\x14most_recent_revision\x18\x07 \x01(\x0b2$.chalk.server.v1.DatasetRevisionMetaH\x01R\x12mostRecentRevision\x88\x01\x01\x12(\n\rnum_revisions\x18\x08 \x01(\x03H\x02R\x0cnumRevisions\x88\x01\x01B\x0f\n\r_dataset_nameB\x17\n\x15_most_recent_revisionB\x10\n\x0e_num_revisions"\xb0\x05\n\x13ListDatasetsRequest\x12\x1b\n\x06cursor\x18\x01 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x02 \x01(\x05H\x01R\x05limit\x88\x01\x01\x12\x1f\n\x06search\x18\x03 \x01(\tH\x02R\x06searchB\x02\x18\x01\x88\x01\x01\x124\n\x11include_anonymous\x18\x04 \x01(\x08H\x03R\x10includeAnonymousB\x02\x18\x01\x88\x01\x01\x12H\n\x0bsort_column\x18\x05 \x01(\x0e2".chalk.server.v1.DatasetSortColumnH\x04R\nsortColumn\x88\x01\x01\x12>\n\nsort_order\x18\x06 \x01(\x0e2\x1a.chalk.server.v1.SortOrderH\x05R\tsortOrder\x88\x01\x01\x12B\n\x06status\x18\x07 \x03(\x0e2&.chalk.server.v1.DatasetRevisionStatusR\x06statusB\x02\x18\x01\x124\n\x04kind\x18\x08 \x03(\x0e2\x1c.chalk.server.v1.DatasetKindR\x04kindB\x02\x18\x01\x12\x14\n\x03ids\x18\t \x03(\tR\x03idsB\x02\x18\x01\x12<\n\tread_mask\x18\n \x01(\x0b2\x1a.google.protobuf.FieldMaskH\x06R\x08readMask\x88\x01\x01\x12C\n\x07filters\x18\x0b \x01(\x0b2$.chalk.server.v1.ListDatasetsFiltersH\x07R\x07filters\x88\x01\x01B\t\n\x07_cursorB\x08\n\x06_limitB\t\n\x07_searchB\x14\n\x12_include_anonymousB\x0e\n\x0c_sort_columnB\r\n\x0b_sort_orderB\x0c\n\n_read_maskB\n\n\x08_filters"\xb4\x02\n\x13ListDatasetsFilters\x12\x1b\n\tagent_ids\x18\x01 \x03(\tR\x08agentIds\x12\x1b\n\x06search\x18\x02 \x01(\tH\x00R\x06search\x88\x01\x01\x12>\n\x06status\x18\x03 \x03(\x0e2&.chalk.server.v1.DatasetRevisionStatusR\x06status\x120\n\x04kind\x18\x04 \x03(\x0e2\x1c.chalk.server.v1.DatasetKindR\x04kind\x12\x10\n\x03ids\x18\x05 \x03(\tR\x03ids\x129\n\x16feature_drift_eligible\x18\x06 \x01(\x08H\x01R\x14featureDriftEligible\x88\x01\x01B\t\n\x07_searchB\x19\n\x17_feature_drift_eligible"x\n\x14ListDatasetsResponse\x128\n\x08datasets\x18\x01 \x03(\x0b2\x1c.chalk.server.v1.DatasetMetaR\x08datasets\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x00R\x06cursor\x88\x01\x01B\t\n\x07_cursor"#\n\x11GetDatasetRequest\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id"L\n\x12GetDatasetResponse\x126\n\x07dataset\x18\x01 \x01(\x0b2\x1c.chalk.server.v1.DatasetMetaR\x07dataset"\xcb\x03\n\x1bListDatasetRevisionsRequest\x12\x1d\n\ndataset_id\x18\x01 \x01(\tR\tdatasetId\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x03 \x01(\x05H\x01R\x05limit\x88\x01\x01\x122\n\x10include_archived\x18\x04 \x01(\x08H\x02R\x0fincludeArchivedB\x02\x18\x01\x88\x01\x01\x12B\n\nstart_time\x18\x05 \x01(\x0b2\x1a.google.protobuf.TimestampH\x03R\tstartTimeB\x02\x18\x01\x88\x01\x01\x12>\n\x08end_time\x18\x06 \x01(\x0b2\x1a.google.protobuf.TimestampH\x04R\x07endTimeB\x02\x18\x01\x88\x01\x01\x12K\n\x07filters\x18\x07 \x01(\x0b2,.chalk.server.v1.ListDatasetRevisionsFiltersH\x05R\x07filters\x88\x01\x01B\t\n\x07_cursorB\x08\n\x06_limitB\x13\n\x11_include_archivedB\r\n\x0b_start_timeB\x0b\n\t_end_timeB\n\n\x08_filters"\xed\x02\n\x1bListDatasetRevisionsFilters\x12\x1b\n\tagent_ids\x18\x01 \x03(\tR\x08agentIds\x12.\n\x10include_archived\x18\x02 \x01(\x08H\x00R\x0fincludeArchived\x88\x01\x01\x12>\n\nstart_time\x18\x03 \x01(\x0b2\x1a.google.protobuf.TimestampH\x01R\tstartTime\x88\x01\x01\x12:\n\x08end_time\x18\x04 \x01(\x0b2\x1a.google.protobuf.TimestampH\x02R\x07endTime\x88\x01\x01\x129\n\x16feature_drift_eligible\x18\x05 \x01(\x08H\x03R\x14featureDriftEligible\x88\x01\x01B\x13\n\x11_include_archivedB\r\n\x0b_start_timeB\x0b\n\t_end_timeB\x19\n\x17_feature_drift_eligible"\x8a\x01\n\x1cListDatasetRevisionsResponse\x12B\n\trevisions\x18\x01 \x03(\x0b2$.chalk.server.v1.DatasetRevisionMetaR\trevisions\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x00R\x06cursor\x88\x01\x01B\t\n\x07_cursor"\x81\x01\n\x19GetDatasetRevisionRequest\x12\x1f\n\x0brevision_id\x18\x01 \x01(\tR\nrevisionId\x12.\n\x10include_archived\x18\x02 \x01(\x08H\x00R\x0fincludeArchived\x88\x01\x01B\x13\n\x11_include_archived"^\n\x1aGetDatasetRevisionResponse\x12@\n\x08revision\x18\x01 \x01(\x0b2$.chalk.server.v1.DatasetRevisionMetaR\x08revision"I\n&GetDatasetRevisionDownloadLinksRequest\x12\x1f\n\x0brevision_id\x18\x01 \x01(\tR\nrevisionId"\x9f\x01\n\x1bShardPerformanceSummaryLink\x12\x19\n\x08shard_id\x18\x01 \x01(\x05R\x07shardId\x12\x15\n\x03url\x18\x02 \x01(\tH\x00R\x03url\x88\x01\x01\x12F\n\x06status\x18\x03 \x01(\x0e2..chalk.server.v1.ShardPerformanceSummaryStatusR\x06statusB\x06\n\x04_url"h\n\x14ShardRequestBodyLink\x12\x19\n\x08shard_id\x18\x01 \x01(\x05R\x07shardId\x12\x15\n\x03url\x18\x02 \x01(\tH\x00R\x03url\x88\x01\x01\x12\x16\n\x06exists\x18\x03 \x01(\x08R\x06existsB\x06\n\x04_url"\xcf\x04\n\'GetDatasetRevisionDownloadLinksResponse\x12\x1f\n\x0boutput_urls\x18\x01 \x03(\tR\noutputUrls\x12\x1f\n\x0bgivens_urls\x18\x02 \x03(\tR\ngivensUrls\x12<\n\x18performance_summary_urls\x18\x03 \x03(\tR\x16performanceSummaryUrlsB\x02\x18\x01\x12-\n\x10request_body_url\x18\x04 \x01(\tH\x00R\x0erequestBodyUrl\x88\x01\x01\x12\x1d\n\ntrace_urls\x18\x05 \x03(\tR\ttraceUrls\x12\x19\n\x05error\x18\x06 \x01(\tH\x01R\x05error\x88\x01\x01\x12?\n\nexpiration\x18\x07 \x01(\x0b2\x1a.google.protobuf.TimestampH\x02R\nexpiration\x88\x01\x01\x12l\n\x19performance_summary_links\x18\x08 \x03(\x0b2,.chalk.server.v1.ShardPerformanceSummaryLinkR\x17performanceSummaryLinksB\x02\x18\x01\x12^\n\x18shard_request_body_links\x18\t \x03(\x0b2%.chalk.server.v1.ShardRequestBodyLinkR\x15shardRequestBodyLinksB\x13\n\x11_request_body_urlB\x08\n\x06_errorB\r\n\x0b_expiration"L\n)GetDatasetRevisionPerformanceLinksRequest\x12\x1f\n\x0brevision_id\x18\x01 \x01(\tR\nrevisionId"\x8b\x02\n*GetDatasetRevisionPerformanceLinksResponse\x12h\n\x19performance_summary_links\x18\x01 \x03(\x0b2,.chalk.server.v1.ShardPerformanceSummaryLinkR\x17performanceSummaryLinks\x12\x19\n\x05error\x18\x02 \x01(\tH\x00R\x05error\x88\x01\x01\x12?\n\nexpiration\x18\x03 \x01(\x0b2\x1a.google.protobuf.TimestampH\x01R\nexpiration\x88\x01\x01B\x08\n\x06_errorB\r\n\x0b_expiration"L\n)StreamDatasetRevisionDownloadLinksRequest\x12\x1f\n\x0brevision_id\x18\x01 \x01(\tR\nrevisionId"\xea\x03\n*StreamDatasetRevisionDownloadLinksResponse\x12\x1f\n\x0boutput_urls\x18\x01 \x03(\tR\noutputUrls\x12\x1f\n\x0bgivens_urls\x18\x02 \x03(\tR\ngivensUrls\x128\n\x18performance_summary_urls\x18\x03 \x03(\tR\x16performanceSummaryUrls\x12-\n\x10request_body_url\x18\x04 \x01(\tH\x00R\x0erequestBodyUrl\x88\x01\x01\x12\x1d\n\ntrace_urls\x18\x05 \x03(\tR\ttraceUrls\x12\x19\n\x05error\x18\x06 \x01(\tH\x01R\x05error\x88\x01\x01\x12?\n\nexpiration\x18\x07 \x01(\x0b2\x1a.google.protobuf.TimestampH\x02R\nexpiration\x88\x01\x01\x12h\n\x19performance_summary_links\x18\x08 \x03(\x0b2,.chalk.server.v1.ShardPerformanceSummaryLinkR\x17performanceSummaryLinksB\x13\n\x11_request_body_urlB\x08\n\x06_errorB\r\n\x0b_expiration"\xd9\x01\n\x1bGetDatasetUploadUrisRequest\x12!\n\x0ccontent_size\x18\x01 \x01(\x03R\x0bcontentSize\x12\x17\n\x04hash\x18\x02 \x01(\tH\x00R\x04hash\x88\x01\x01\x12 \n\tpart_size\x18\x03 \x01(\x03H\x01R\x08partSize\x88\x01\x01\x12/\n\x11upload_session_id\x18\x04 \x01(\tH\x02R\x0fuploadSessionId\x88\x01\x01B\x07\n\x05_hashB\x0c\n\n_part_sizeB\x14\n\x12_upload_session_id"\x83\x03\n\x1cGetDatasetUploadUrisResponse\x12*\n\x11upload_session_id\x18\x01 \x01(\tR\x0fuploadSessionId\x12*\n\x11storage_object_id\x18\x02 \x01(\tR\x0fstorageObjectId\x12@\n\tmultipart\x18\x03 \x01(\x0b2 .chalk.volume.v1.MultipartUploadH\x00R\tmultipart\x12@\n\tresumable\x18\x04 \x01(\x0b2 .chalk.volume.v1.ResumableUploadH\x00R\tresumable\x12D\n\x0bazure_block\x18\x05 \x01(\x0b2!.chalk.volume.v1.AzureBlockUploadH\x00R\nazureBlock\x127\n\x06direct\x18\x06 \x01(\x0b2\x1d.chalk.volume.v1.DirectUploadH\x00R\x06directB\x08\n\x06upload"\xa5\x01\n\x1cFinalizeDatasetUploadRequest\x12*\n\x11upload_session_id\x18\x01 \x01(\tR\x0fuploadSessionId\x12!\n\x0cdataset_name\x18\x02 \x01(\tR\x0bdatasetName\x126\n\x17arrow_schema_serialized\x18\x03 \x01(\x0cR\x15arrowSchemaSerialized"W\n\x1dFinalizeDatasetUploadResponse\x126\n\x07dataset\x18\x01 \x01(\x0b2\x1c.chalk.server.v1.DatasetMetaR\x07dataset"P\n\x14RenameDatasetRequest\x12\x1d\n\ndataset_id\x18\x01 \x01(\tR\tdatasetId\x12\x19\n\x08new_name\x18\x02 \x01(\tR\x07newName"O\n\x15RenameDatasetResponse\x126\n\x07dataset\x18\x01 \x01(\x0b2\x1c.chalk.server.v1.DatasetMetaR\x07dataset"@\n\x1dArchiveDatasetRevisionRequest\x12\x1f\n\x0brevision_id\x18\x01 \x01(\tR\nrevisionId"b\n\x1eArchiveDatasetRevisionResponse\x12@\n\x08revision\x18\x01 \x01(\x0b2$.chalk.server.v1.DatasetRevisionMetaR\x08revision"C\n\x1eArchiveDatasetRevisionsRequest\x12!\n\x0crevision_ids\x18\x01 \x03(\tR\x0brevisionIds"v\n\x1fArchiveDatasetRevisionsResponse\x12S\n\x12archived_revisions\x18\x01 \x03(\x0b2$.chalk.server.v1.DatasetRevisionMetaR\x11archivedRevisions"5\n\x14DeleteDatasetRequest\x12\x1d\n\ndataset_id\x18\x01 \x01(\tR\tdatasetId"6\n\x15DeleteDatasetResponse\x12\x1d\n\ndataset_id\x18\x01 \x01(\tR\tdatasetId"\xc6\x07\n\x1dMaterializedAggregateTileMeta\x12\x0e\n\x02id\x18\x01 \x01(\x03R\x02id\x12%\n\x0eenvironment_id\x18\x12 \x01(\tR\renvironmentId\x12#\n\rdeployment_id\x18\x02 \x01(\tR\x0cdeploymentId\x12!\n\x0coperation_id\x18\x03 \x01(\tR\x0boperationId\x122\n\x15aggregate_backfill_id\x18\x04 \x01(\tR\x13aggregateBackfillId\x128\n\x18materialization_key_hash\x18\x05 \x01(\tR\x16materializationKeyHash\x12 \n\x0baggregation\x18\x06 \x01(\tR\x0baggregation\x12!\n\x0caggregate_on\x18\x07 \x01(\tR\x0baggregateOn\x12\x16\n\x06groups\x18\x08 \x03(\tR\x06groups\x12\x1b\n\tbucket_on\x18\t \x01(\tR\x08bucketOn\x12,\n\x12bucket_duration_ms\x18\n \x01(\x03R\x10bucketDurationMs\x12L\n\x14coverage_lower_bound\x18\x0b \x01(\x0b2\x1a.google.protobuf.TimestampR\x12coverageLowerBound\x12L\n\x14coverage_upper_bound\x18\x0c \x01(\x0b2\x1a.google.protobuf.TimestampR\x12coverageUpperBound\x12\x1f\n\x0bsource_kind\x18\r \x01(\tR\nsourceKind\x12\x1d\n\nfile_count\x18\x0e \x01(\x03R\tfileCount\x12\x1d\n\ntotal_rows\x18\x0f \x01(\x03R\ttotalRows\x129\n\ncreated_at\x18\x10 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n\nupdated_at\x18\x11 \x01(\x0b2\x1a.google.protobuf.TimestampR\tupdatedAt\x128\n\x18materialization_key_json\x18\x13 \x01(\tR\x16materializationKeyJson\x12;\n\x1aoutput_schema_bytes_base64\x18\x14 \x01(\tR\x17outputSchemaBytesBase64\x12(\n\x10source_meta_json\x18\x15 \x01(\tR\x0esourceMetaJson"\x8c\x02\n!MaterializedAggregateTileFileMeta\x12\x0e\n\x02id\x18\x01 \x01(\x03R\x02id\x12%\n\x0eenvironment_id\x18\x07 \x01(\tR\renvironmentId\x12#\n\rdeployment_id\x18\x02 \x01(\tR\x0cdeploymentId\x12!\n\x0cfile_ordinal\x18\x03 \x01(\x03R\x0bfileOrdinal\x12\x1b\n\trow_count\x18\x04 \x01(\x03R\x08rowCount\x12\x10\n\x03uri\x18\x05 \x01(\tR\x03uri\x129\n\ncreated_at\x18\x06 \x01(\x0b2\x1a.google.protobuf.TimestampR\tcreatedAt"z\n%ListMaterializedAggregateTilesFilters\x127\n\x15aggregate_backfill_id\x18\x01 \x01(\tH\x00R\x13aggregateBackfillId\x88\x01\x01B\x18\n\x16_aggregate_backfill_id"\xd7\x01\n%ListMaterializedAggregateTilesRequest\x12\x1b\n\x06cursor\x18\x01 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x02 \x01(\x05H\x01R\x05limit\x88\x01\x01\x12U\n\x07filters\x18\x03 \x01(\x0b26.chalk.server.v1.ListMaterializedAggregateTilesFiltersH\x02R\x07filters\x88\x01\x01B\t\n\x07_cursorB\x08\n\x06_limitB\n\n\x08_filters"\xa4\x01\n&ListMaterializedAggregateTilesResponse\x12D\n\x05tiles\x18\x01 \x03(\x0b2..chalk.server.v1.MaterializedAggregateTileMetaR\x05tiles\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"\xab\x02\n0ListMaterializedAggregateTilesForTimelineRequest\x128\n\x18materialization_key_hash\x18\x01 \x01(\tR\x16materializationKeyHash\x12`\n\x0btime_window\x18\x02 \x01(\x0b2:.chalk.server.v1.MaterializedAggregateTileTimelineIntervalH\x00R\ntimeWindow\x88\x01\x01\x12\x1b\n\x06cursor\x18\x03 \x01(\tH\x01R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x04 \x01(\x05H\x02R\x05limit\x88\x01\x01B\x0e\n\x0c_time_windowB\t\n\x07_cursorB\x08\n\x06_limit"\xe2\x01\n1ListMaterializedAggregateTilesForTimelineResponse\x12D\n\x05tiles\x18\x01 \x03(\x0b2..chalk.server.v1.MaterializedAggregateTileMetaR\x05tiles\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01\x12"\n\ntotal_rows\x18\x03 \x01(\x03H\x01R\ttotalRows\x88\x01\x01B\x0e\n\x0c_next_cursorB\r\n\x0b_total_rows"\x99\x01\n)ListMaterializedAggregateTileFilesRequest\x12\x1f\n\x0bmanifest_id\x18\x01 \x01(\x03R\nmanifestId\x12\x1b\n\x06cursor\x18\x02 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x03 \x01(\x05H\x01R\x05limit\x88\x01\x01B\t\n\x07_cursorB\x08\n\x06_limit"\xac\x01\n*ListMaterializedAggregateTileFilesResponse\x12H\n\x05files\x18\x01 \x03(\x0b22.chalk.server.v1.MaterializedAggregateTileFileMetaR\x05files\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"\xcb\x01\n)MaterializedAggregateTileFileDownloadLink\x12\x17\n\x07file_id\x18\x01 \x01(\x03R\x06fileId\x12!\n\x0cfile_ordinal\x18\x02 \x01(\x03R\x0bfileOrdinal\x12\x10\n\x03uri\x18\x03 \x01(\tR\x03uri\x12\x1b\n\trow_count\x18\x04 \x01(\x03R\x08rowCount\x12\x1d\n\nsigned_url\x18\x05 \x01(\tR\tsignedUrl\x12\x14\n\x05error\x18\x06 \x01(\tR\x05error"n\n0GetMaterializedAggregateTileDownloadLinksRequest\x12\x1f\n\x0bmanifest_id\x18\x01 \x01(\x03R\nmanifestId\x12\x19\n\x08file_ids\x18\x02 \x03(\x03R\x07fileIds"\xc0\x01\n1GetMaterializedAggregateTileDownloadLinksResponse\x12P\n\x05links\x18\x01 \x03(\x0b2:.chalk.server.v1.MaterializedAggregateTileFileDownloadLinkR\x05links\x129\n\nexpires_at\x18\x02 \x01(\x0b2\x1a.google.protobuf.TimestampR\texpiresAt"\xde\x01\n0GetMaterializedAggregateTileRowCountChartRequest\x128\n\x18materialization_key_hash\x18\x01 \x01(\tR\x16materializationKeyHash\x12`\n\x0btime_window\x18\x02 \x01(\x0b2:.chalk.server.v1.MaterializedAggregateTileTimelineIntervalH\x00R\ntimeWindow\x88\x01\x01B\x0e\n\x0c_time_window"o\n1GetMaterializedAggregateTileRowCountChartResponse\x12:\n\x05chart\x18\x01 \x01(\x0b2$.chalk.chart.v1.DenseTimeSeriesChartR\x05chart"\xad\x02\n)GetMaterializedAggregateTileValuesRequest\x128\n\x18materialization_key_hash\x18\x01 \x01(\tR\x16materializationKeyHash\x12*\n\x11primary_key_value\x18\x02 \x01(\tR\x0fprimaryKeyValue\x12[\n\x0btime_window\x18\x03 \x01(\x0b2:.chalk.server.v1.MaterializedAggregateTileTimelineIntervalR\ntimeWindow\x12*\n\x0eresource_group\x18\x04 \x01(\tH\x00R\rresourceGroup\x88\x01\x01B\x11\n\x0f_resource_group"t\n*GetMaterializedAggregateTileValuesResponse\x12F\n\x08response\x18\x01 \x01(\x0b2*.chalk.protosql.v1.ExecuteSqlQueryResponseR\x08response"8\n&DeleteMaterializedAggregateTileRequest\x12\x0e\n\x02id\x18\x01 \x01(\x03R\x02id"9\n\'DeleteMaterializedAggregateTileResponse\x12\x0e\n\x02id\x18\x01 \x01(\x03R\x02id"C\n GetDatasetRevisionPreviewRequest\x12\x1f\n\x0brevision_id\x18\x01 \x01(\tR\nrevisionId"\xab\x02\n!GetDatasetRevisionPreviewResponse\x12=\n\x0eoutput_preview\x18\x01 \x01(\x0b2\x16.google.protobuf.ValueR\routputPreview\x120\n\x07summary\x18\x02 \x01(\x0b2\x16.google.protobuf.ValueR\x07summary\x12G\n\x0fcolumn_profiles\x18\x03 \x03(\x0b2\x1e.chalk.common.v1.ColumnProfileR\x0ecolumnProfiles\x12L\n\x0eprofile_status\x18\x04 \x01(\x0e2%.chalk.server.v1.DatasetProfileStatusR\rprofileStatus">\n\x1bGenerateDatasetStatsRequest\x12\x1f\n\x0brevision_id\x18\x01 \x01(\tR\nrevisionId"P\n\x1cGenerateDatasetStatsResponse\x120\n\x07summary\x18\x01 \x01(\x0b2\x16.google.protobuf.ValueR\x07summary"\xf3\x01\n\nDatasetEdf\x12\x0e\n\x02id\x18\x01 \x01(\tR\x02id\x12\x15\n\x06job_id\x18\x02 \x01(\tR\x05jobId\x12!\n\x0cfeature_name\x18\x03 \x01(\tR\x0bfeatureName\x12\x19\n\x08data_max\x18\x04 \x01(\x01R\x07dataMax\x12\x19\n\x08data_min\x18\x05 \x01(\x01R\x07dataMin\x12\x1d\n\ndata_count\x18\x06 \x01(\x03R\tdataCount\x12!\n\x0cbucket_count\x18\x07 \x01(\x05R\x0bbucketCount\x12#\n\rbucket_values\x18\x08 \x03(\x01R\x0cbucketValues"8\n\x15GetDatasetEdfsRequest\x12\x1f\n\x0brevision_id\x18\x01 \x01(\tR\nrevisionId"I\n\x16GetDatasetEdfsResponse\x12/\n\x04edfs\x18\x01 \x03(\x0b2\x1b.chalk.server.v1.DatasetEdfR\x04edfs"=\n\x1aGenerateDatasetEdfsRequest\x12\x1f\n\x0brevision_id\x18\x01 \x01(\tR\nrevisionId"9\n\x1bGenerateDatasetEdfsResponse\x12\x1a\n\x08features\x18\x01 \x03(\tR\x08features*\x9f\x02\n\x15DatasetRevisionStatus\x12\'\n#DATASET_REVISION_STATUS_UNSPECIFIED\x10\x00\x12#\n\x1fDATASET_REVISION_STATUS_UNKNOWN\x10\x01\x12#\n\x1fDATASET_REVISION_STATUS_WORKING\x10\x02\x12%\n!DATASET_REVISION_STATUS_COMPLETED\x10\x03\x12"\n\x1eDATASET_REVISION_STATUS_FAILED\x10\x04\x12$\n DATASET_REVISION_STATUS_CANCELED\x10\x05\x12"\n\x1eDATASET_REVISION_STATUS_QUEUED\x10\x06*\xe9\x02\n\x0eDatasetVersion\x12\x1f\n\x1bDATASET_VERSION_UNSPECIFIED\x10\x00\x12\x1b\n\x17DATASET_VERSION_UNKNOWN\x10\x01\x12:\n6DATASET_VERSION_BIGQUERY_JOB_WITH_B32_ENCODED_COLNAMES\x10\x02\x12"\n\x1eDATASET_VERSION_DATASET_WRITER\x10\x03\x12=\n9DATASET_VERSION_BIGQUERY_JOB_WITH_B32_ENCODED_COLNAMES_V2\x10\x04\x12.\n*DATASET_VERSION_COMPUTE_RESOLVER_OUTPUT_V1\x10\x05\x12!\n\x1dDATASET_VERSION_NATIVE_DTYPES\x10\x06\x12\'\n#DATASET_VERSION_NATIVE_COLUMN_NAMES\x10\x07*\xad\x02\n\x19OfflineQueryGivensVersion\x12,\n(OFFLINE_QUERY_GIVENS_VERSION_UNSPECIFIED\x10\x00\x12(\n$OFFLINE_QUERY_GIVENS_VERSION_UNKNOWN\x10\x01\x12>\n:OFFLINE_QUERY_GIVENS_VERSION_NATIVE_TS_FEATURE_FOR_ROOT_NS\x10\x02\x123\n/OFFLINE_QUERY_GIVENS_VERSION_SINGLE_TS_COL_NAME\x10\x03\x12C\n?OFFLINE_QUERY_GIVENS_VERSION_SINGLE_TS_COL_NAME_WITH_URI_PREFIX\x10\x04*\x80\x01\n\x11DatasetSortColumn\x12#\n\x1fDATASET_SORT_COLUMN_UNSPECIFIED\x10\x00\x12"\n\x1eDATASET_SORT_COLUMN_CREATED_AT\x10\x01\x12"\n\x1eDATASET_SORT_COLUMN_UPDATED_AT\x10\x02*P\n\tSortOrder\x12\x1a\n\x16SORT_ORDER_UNSPECIFIED\x10\x00\x12\x13\n\x0fSORT_ORDER_DESC\x10\x01\x12\x12\n\x0eSORT_ORDER_ASC\x10\x02*_\n\x0bDatasetKind\x12\x1c\n\x18DATASET_KIND_UNSPECIFIED\x10\x00\x12\x16\n\x12DATASET_KIND_NAMED\x10\x01\x12\x1a\n\x16DATASET_KIND_ANONYMOUS\x10\x02*\xda\x01\n\x1dShardPerformanceSummaryStatus\x120\n,SHARD_PERFORMANCE_SUMMARY_STATUS_UNSPECIFIED\x10\x00\x12.\n*SHARD_PERFORMANCE_SUMMARY_STATUS_AVAILABLE\x10\x01\x12,\n(SHARD_PERFORMANCE_SUMMARY_STATUS_PENDING\x10\x02\x12)\n%SHARD_PERFORMANCE_SUMMARY_STATUS_NONE\x10\x03*\xce\x01\n\x14DatasetProfileStatus\x12&\n"DATASET_PROFILE_STATUS_UNSPECIFIED\x10\x00\x12!\n\x1dDATASET_PROFILE_STATUS_QUEUED\x10\x01\x12"\n\x1eDATASET_PROFILE_STATUS_RUNNING\x10\x02\x12$\n DATASET_PROFILE_STATUS_COMPLETED\x10\x03\x12!\n\x1dDATASET_PROFILE_STATUS_FAILED\x10\x042\xc2!\n\x16DatasetMetadataService\x12g\n\x0cListDatasets\x12$.chalk.server.v1.ListDatasetsRequest\x1a%.chalk.server.v1.ListDatasetsResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12a\n\nGetDataset\x12".chalk.server.v1.GetDatasetRequest\x1a#.chalk.server.v1.GetDatasetResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12\x7f\n\x14ListDatasetRevisions\x12,.chalk.server.v1.ListDatasetRevisionsRequest\x1a-.chalk.server.v1.ListDatasetRevisionsResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12y\n\x12GetDatasetRevision\x12*.chalk.server.v1.GetDatasetRevisionRequest\x1a+.chalk.server.v1.GetDatasetRevisionResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12\x9c\x01\n\x1fGetDatasetRevisionDownloadLinks\x127.chalk.server.v1.GetDatasetRevisionDownloadLinksRequest\x1a8.chalk.server.v1.GetDatasetRevisionDownloadLinksResponse"\x06\x90\x02\x01\x80}\x04\x12\xa5\x01\n"GetDatasetRevisionPerformanceLinks\x12:.chalk.server.v1.GetDatasetRevisionPerformanceLinksRequest\x1a;.chalk.server.v1.GetDatasetRevisionPerformanceLinksResponse"\x06\x90\x02\x01\x80}$\x12\xa7\x01\n"StreamDatasetRevisionDownloadLinks\x12:.chalk.server.v1.StreamDatasetRevisionDownloadLinksRequest\x1a;.chalk.server.v1.StreamDatasetRevisionDownloadLinksResponse"\x06\x90\x02\x01\x80}\x040\x01\x12f\n\rRenameDataset\x12%.chalk.server.v1.RenameDatasetRequest\x1a&.chalk.server.v1.RenameDatasetResponse"\x06\x90\x02\x02\x80}\x04\x12\x84\x01\n\x16ArchiveDatasetRevision\x12..chalk.server.v1.ArchiveDatasetRevisionRequest\x1a/.chalk.server.v1.ArchiveDatasetRevisionResponse"\t\x88\x02\x01\x90\x02\x02\x80}\x04\x12\x84\x01\n\x17ArchiveDatasetRevisions\x12/.chalk.server.v1.ArchiveDatasetRevisionsRequest\x1a0.chalk.server.v1.ArchiveDatasetRevisionsResponse"\x06\x90\x02\x02\x80}\x04\x12f\n\rDeleteDataset\x12%.chalk.server.v1.DeleteDatasetRequest\x1a&.chalk.server.v1.DeleteDatasetResponse"\x06\x90\x02\x02\x80}\x04\x12\xa0\x01\n\x1eListMaterializedAggregateTiles\x126.chalk.server.v1.ListMaterializedAggregateTilesRequest\x1a7.chalk.server.v1.ListMaterializedAggregateTilesResponse"\r\x88\x02\x01\x90\x02\x01\x80}\x04\x92}\x01$\x12\xb5\x01\n&ListMaterializedAggregateTileTimelines\x12>.chalk.server.v1.ListMaterializedAggregateTileTimelinesRequest\x1a?.chalk.server.v1.ListMaterializedAggregateTileTimelinesResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12\xa9\x01\n"GetMaterializedAggregateTileFacets\x12:.chalk.server.v1.GetMaterializedAggregateTileFacetsRequest\x1a;.chalk.server.v1.GetMaterializedAggregateTileFacetsResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12\xb8\x01\n\'GetMaterializedAggregateTileFacetValues\x12?.chalk.server.v1.GetMaterializedAggregateTileFacetValuesRequest\x1a@.chalk.server.v1.GetMaterializedAggregateTileFacetValuesResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12\xa5\x01\n"GetFeatureMaterializedAggregations\x12:.chalk.server.v1.GetFeatureMaterializedAggregationsRequest\x1a;.chalk.server.v1.GetFeatureMaterializedAggregationsResponse"\x06\x90\x02\x01\x80}\x0b\x12\x88\x01\n\x17ListTileFeatureCoverage\x12/.chalk.server.v1.ListTileFeatureCoverageRequest\x1a0.chalk.server.v1.ListTileFeatureCoverageResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12\xbe\x01\n)ListMaterializedAggregateTilesForTimeline\x12A.chalk.server.v1.ListMaterializedAggregateTilesForTimelineRequest\x1aB.chalk.server.v1.ListMaterializedAggregateTilesForTimelineResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12\xa9\x01\n"ListMaterializedAggregateTileFiles\x12:.chalk.server.v1.ListMaterializedAggregateTileFilesRequest\x1a;.chalk.server.v1.ListMaterializedAggregateTileFilesResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12\xbe\x01\n)GetMaterializedAggregateTileRowCountChart\x12A.chalk.server.v1.GetMaterializedAggregateTileRowCountChartRequest\x1aB.chalk.server.v1.GetMaterializedAggregateTileRowCountChartResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12\xa5\x01\n"GetMaterializedAggregateTileValues\x12:.chalk.server.v1.GetMaterializedAggregateTileValuesRequest\x1a;.chalk.server.v1.GetMaterializedAggregateTileValuesResponse"\x06\x90\x02\x01\x80}$\x12\xbe\x01\n)GetMaterializedAggregateTileDownloadLinks\x12A.chalk.server.v1.GetMaterializedAggregateTileDownloadLinksRequest\x1aB.chalk.server.v1.GetMaterializedAggregateTileDownloadLinksResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12\x9c\x01\n\x1fDeleteMaterializedAggregateTile\x127.chalk.server.v1.DeleteMaterializedAggregateTileRequest\x1a8.chalk.server.v1.DeleteMaterializedAggregateTileResponse"\x06\x90\x02\x02\x80}\x04\x12\x8e\x01\n\x19GetDatasetRevisionPreview\x121.chalk.server.v1.GetDatasetRevisionPreviewRequest\x1a2.chalk.server.v1.GetDatasetRevisionPreviewResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12x\n\x14GenerateDatasetStats\x12,.chalk.server.v1.GenerateDatasetStatsRequest\x1a-.chalk.server.v1.GenerateDatasetStatsResponse"\x03\x80}\x04\x12m\n\x0eGetDatasetEdfs\x12&.chalk.server.v1.GetDatasetEdfsRequest\x1a\'.chalk.server.v1.GetDatasetEdfsResponse"\n\x90\x02\x01\x80}\x04\x92}\x01$\x12u\n\x13GenerateDatasetEdfs\x12+.chalk.server.v1.GenerateDatasetEdfsRequest\x1a,.chalk.server.v1.GenerateDatasetEdfsResponse"\x03\x80}\x04\x12x\n\x14GetDatasetUploadUris\x12,.chalk.server.v1.GetDatasetUploadUrisRequest\x1a-.chalk.server.v1.GetDatasetUploadUrisResponse"\x03\x80}\x04\x12{\n\x15FinalizeDatasetUpload\x12-.chalk.server.v1.FinalizeDatasetUploadRequest\x1a..chalk.server.v1.FinalizeDatasetUploadResponse"\x03\x80}\x04B\x96\x01\n\x13com.chalk.server.v1B\rDatasetsProtoP\x01Z\x12server/v1;serverv1\xa2\x02\x03CSX\xaa\x02\x0fChalk.Server.V1\xca\x02\x0fChalk\\Server\\V1\xe2\x02\x1bChalk\\Server\\V1\\GPBMetadata\xea\x02\x11Chalk::Server::V1b\x06proto3',
     [
         permissions_pb.desc(),
         densetimeserieschart_pb.desc(),
@@ -2817,10 +2998,12 @@ _DESC = file_desc(
         "DatasetRevisionMeta": DatasetRevisionMeta,
         "DatasetMeta": DatasetMeta,
         "ListDatasetsRequest": ListDatasetsRequest,
+        "ListDatasetsFilters": ListDatasetsFilters,
         "ListDatasetsResponse": ListDatasetsResponse,
         "GetDatasetRequest": GetDatasetRequest,
         "GetDatasetResponse": GetDatasetResponse,
         "ListDatasetRevisionsRequest": ListDatasetRevisionsRequest,
+        "ListDatasetRevisionsFilters": ListDatasetRevisionsFilters,
         "ListDatasetRevisionsResponse": ListDatasetRevisionsResponse,
         "GetDatasetRevisionRequest": GetDatasetRevisionRequest,
         "GetDatasetRevisionResponse": GetDatasetRevisionResponse,
