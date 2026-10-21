@@ -477,6 +477,10 @@ supported for sandboxes only; functions, classes, containers and scaling groups
 reject `ChalkIdentity(mode="sandbox")`, and `OIDCTokenFile` is rejected in image
 and per-exec `env`.
 
+A sandbox can declare at most 8 token files, must run on host compute (the
+default; `compute_class=cc.ComputeClass.K8S` is rejected), and cannot set a
+token file's variable through `env` or `secrets` as well.
+
 ## Chalk SQL
 
 Run SQL against your Chalk environment without installing ChalkPy or defining

@@ -708,6 +708,7 @@ class ContainerSpec:
             chalk_identity=chalk_identity,
             allow_sandbox_identity=allow_sandbox_identity,
             env=env,
+            compute_class=compute_class,
         )
         normalize_managed_ssh(managed_ssh)
 
@@ -930,6 +931,9 @@ _RESERVED_IDENTITY_ENV_VARS = frozenset(
     {"CHALK_WEB_IDENTITY_TOKEN_FILE", "CHALK_API_SERVER", "CHALK_ENVIRONMENT"}
 )
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# The platform re-mints every declared token concurrently on each refresh, so it
+# caps the declarations per sandbox.
+_MAX_OIDC_TOKEN_FILES = 8
 
 
 def _validate_oidc_token_files(
@@ -938,8 +942,13 @@ def _validate_oidc_token_files(
     chalk_identity: bool | ChalkIdentity,
     allow_sandbox_identity: bool,
     env: Mapping[str, str] | None,
+    compute_class: ComputeClass | None,
 ) -> None:
-    """Check OIDC token file declarations the same way the server will."""
+    """Check OIDC token file declarations the same way the server will.
+
+    Variables injected by ``secrets`` are checked by the server, which knows
+    which keys an integration holds only after resolving it.
+    """
     if not oidc_token_files:
         return
     if not allow_sandbox_identity:
@@ -949,6 +958,16 @@ def _validate_oidc_token_files(
         raise ValueError(
             'OIDCTokenFile requires chalk_identity=ChalkIdentity(mode="sandbox") '
             "so the token identifies the sandbox rather than its creator"
+        )
+    # Sandboxes default to host compute; only an explicit K8S choice is refused.
+    if compute_class is not None and compute_class != ComputeClass.HOST:
+        raise ValueError(
+            f"OIDCTokenFile requires host compute; got compute_class={compute_class}"
+        )
+    if len(oidc_token_files) > _MAX_OIDC_TOKEN_FILES:
+        raise ValueError(
+            f"at most {_MAX_OIDC_TOKEN_FILES} OIDCTokenFile values may be declared, "
+            f"got {len(oidc_token_files)}"
         )
     for env_var, file in oidc_token_files.items():
         if not isinstance(file, OIDCTokenFile):

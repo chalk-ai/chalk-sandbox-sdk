@@ -299,6 +299,53 @@ def test_sandbox_rejects_invalid_oidc_token_file_env_var(
         )
 
 
+def test_sandbox_accepts_up_to_eight_oidc_token_files() -> None:
+    Sandbox(
+        image="python:3.14-slim",
+        chalk_identity=SANDBOX_IDENTITY,
+        env={f"TOKEN_{i}": OIDCTokenFile(audience=f"aud-{i}") for i in range(8)},
+    )
+
+
+def test_sandbox_rejects_more_than_eight_oidc_token_files() -> None:
+    with pytest.raises(ValueError, match="at most 8 OIDCTokenFile values"):
+        Sandbox(
+            image="python:3.14-slim",
+            chalk_identity=SANDBOX_IDENTITY,
+            env={f"TOKEN_{i}": OIDCTokenFile(audience=f"aud-{i}") for i in range(9)},
+        )
+
+
+@pytest.mark.parametrize("compute_class", [None, cc.ComputeClass.HOST])
+def test_sandbox_accepts_oidc_token_files_on_host_compute(
+    compute_class: cc.ComputeClass | None,
+) -> None:
+    Sandbox(
+        image="python:3.14-slim",
+        chalk_identity=SANDBOX_IDENTITY,
+        compute_class=compute_class,
+        env={"TOKEN": SNOWFLAKE},
+    )
+
+
+def test_sandbox_rejects_oidc_token_files_on_k8s_compute() -> None:
+    with pytest.raises(ValueError, match="requires host compute"):
+        Sandbox(
+            image="python:3.14-slim",
+            chalk_identity=SANDBOX_IDENTITY,
+            compute_class=cc.ComputeClass.K8S,
+            env={"TOKEN": SNOWFLAKE},
+        )
+
+
+def test_sandbox_identity_without_files_is_allowed_on_k8s_compute() -> None:
+    Sandbox(
+        image="python:3.14-slim",
+        chalk_identity=SANDBOX_IDENTITY,
+        compute_class=cc.ComputeClass.K8S,
+    )
+
+
 def test_sandbox_rejects_non_identity_chalk_identity() -> None:
     with pytest.raises(TypeError, match="bool or ChalkIdentity"):
         Sandbox(image="python:3.14-slim", chalk_identity="sandbox")  # type: ignore[arg-type]

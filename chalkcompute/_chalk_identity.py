@@ -25,7 +25,9 @@ class OIDCTokenFile:
 
     Requires ``chalk_identity=ChalkIdentity(mode="sandbox")``, so the token
     identifies the sandbox rather than the user who created it. The sandbox can
-    mint tokens only for the audiences it declares.
+    mint tokens only for the audiences it declares. Supported on host compute
+    (the sandbox default), with at most 8 token files per sandbox. The
+    variable must not also be set by ``env`` or ``secrets``.
 
     Parameters
     ----------
