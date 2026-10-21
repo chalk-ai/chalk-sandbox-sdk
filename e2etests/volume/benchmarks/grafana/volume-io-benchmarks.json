@@ -997,12 +997,206 @@
     },
     {
       "collapsed": false,
-      "description": "Benchmark attempts blocked by host capacity or exhausted volume write spools.",
+      "description": "SDK control plane and file API throughput with 10,000 volumes and 5,000 one-byte files.",
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 64
+      },
+      "id": 24,
+      "panels": [],
+      "title": "API throughput",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "benchmark-pg"
+      },
+      "description": "Successful operations divided by elapsed time for volume create, delete, upload commits, and per-file reads.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "showPoints": "always"
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 65
+      },
+      "id": 25,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "showPoints": "always"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "benchmark-pg"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT created_at AS \"time\", (metrics->>'api_ops_per_sec')::numeric AS value, split_part(split_part(suite_name, '(', 2), ')', 1) || ' / ' || run_name AS metric\nFROM benchmark_results\nWHERE $__timeFilter(created_at)\n  AND split_part(split_part(suite_name, '(', 2), ')', 1) IN (${environment:sqlstring})\n  AND source = 'ci'\n  AND case_name = 'volume-api-throughput'\n  AND metrics ? 'api_ops_per_sec'\nORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "title": "Volume API operations per second",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "benchmark-pg"
+      },
+      "description": "Per-operation latency percentiles seen by SDK callers. Upload operations are 200-file commits.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "showPoints": "always"
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 65
+      },
+      "id": 26,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "showPoints": "always"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "benchmark-pg"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT created_at AS \"time\", unnest(ARRAY[(metrics->>'api_latency_p50_sec')::numeric, (metrics->>'api_latency_p95_sec')::numeric, (metrics->>'api_latency_p99_sec')::numeric]) AS value, split_part(split_part(suite_name, '(', 2), ')', 1) || ' / ' || run_name || ' ' || unnest(ARRAY['p50', 'p95', 'p99']) AS metric\nFROM benchmark_results\nWHERE $__timeFilter(created_at)\n  AND split_part(split_part(suite_name, '(', 2), ')', 1) IN (${environment:sqlstring})\n  AND source = 'ci'\n  AND case_name = 'volume-api-throughput'\n  AND metrics ? 'api_latency_p50_sec'\nORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "title": "Volume API latency p50, p95 and p99",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "benchmark-pg"
+      },
+      "description": "Share of requests that failed after SDK retries, and for create and delete the share that failed on the first attempt before a retry succeeded. The benchmark fails and alerts when any run exceeds 5% after retries.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "showPoints": "always",
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 73
+      },
+      "id": 27,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "showPoints": "always"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "benchmark-pg"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT created_at AS \"time\", 100.0 * (metrics->>'api_error_rate')::numeric AS value, split_part(split_part(suite_name, '(', 2), ')', 1) || ' / ' || run_name AS metric\nFROM benchmark_results\nWHERE $__timeFilter(created_at)\n  AND split_part(split_part(suite_name, '(', 2), ')', 1) IN (${environment:sqlstring})\n  AND source = 'ci'\n  AND case_name = 'volume-api-throughput'\n  AND metrics ? 'api_error_rate'\nORDER BY 1",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "benchmark-pg"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT created_at AS \"time\", 100.0 * (metrics->>'api_first_attempt_error_rate')::numeric AS value, split_part(split_part(suite_name, '(', 2), ')', 1) || ' / ' || run_name || ' first attempt' AS metric\nFROM benchmark_results\nWHERE $__timeFilter(created_at)\n  AND split_part(split_part(suite_name, '(', 2), ')', 1) IN (${environment:sqlstring})\n  AND source = 'ci'\n  AND case_name = 'volume-api-throughput'\n  AND metrics ? 'api_first_attempt_error_rate'\nORDER BY 1",
+          "refId": "B"
+        }
+      ],
+      "title": "Volume API error rate",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "description": "Benchmark attempts blocked by host capacity or exhausted volume write spools.",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 81
       },
       "id": 19,
       "panels": [],
@@ -1033,7 +1227,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 65
+        "y": 82
       },
       "id": 15,
       "options": {

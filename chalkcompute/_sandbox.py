@@ -87,7 +87,12 @@ from chalkcompute._remote_function_tracing import (
 from chalkcompute._secret import Secret, SecretScope, resolve_lazy_secrets
 from chalkcompute._sandbox_git import SandboxGit
 from chalkcompute._rpc import RPC_READ_MAX_BYTES, rpc_interceptors
-from chalkcompute._tracing import _instrumented, _request_tracing_intent, trace_env
+from chalkcompute._tracing import (
+    _instrumented,
+    _request_tracing_intent,
+    _set_sandbox_span_id,
+    trace_env,
+)
 from chalkcompute._volume import (
     VolumeClient,
     cleanup_owned_volumes,
@@ -751,9 +756,76 @@ class Sandbox:
 
         Examples
         --------
-        >>> sandbox = Sandbox(image="ubuntu:latest")
-        >>> with SandboxClient.from_env() as client:
-        ...     client.run(sandbox)
+        Use the default image with Python, Git, SSH, and ``/workspace``:
+
+        >>> from chalkcompute import Sandbox
+        >>> Sandbox()
+
+        Add Python dependencies and upload a local project when the sandbox starts:
+
+        >>> from chalkcompute import Image
+        >>> Sandbox(
+        ...     image=Image.debian_slim("3.12")
+        ...         .pip_install(["pandas", "requests"])
+        ...         .add_local_dir("./src", "/workspace/src")
+        ...         .workdir("/workspace"),
+        ...     cpu="2",
+        ...     memory="8Gi",
+        ... )
+
+        Configure an API client with a secret and restricted outbound access:
+
+        >>> from chalkcompute import NetworkPolicy, Secret
+        >>> Sandbox(
+        ...     image=Image.debian_slim().pip_install(["openai"]),
+        ...     env={"LOG_LEVEL": "INFO"},
+        ...     network_policy=NetworkPolicy(allowed_hosts=["api.openai.com"]),
+        ... ).add_credentials("api.openai.com", Secret.from_chalk_env("OPENAI_API_KEY"))
+
+        Mount existing volumes for durable inputs and outputs:
+
+        >>> Sandbox(
+        ...     volumes=[("training-data", "/data"), ("results", "/results")],
+        ...     cpu="4",
+        ...     memory="16Gi",
+        ...     lifetime="3600s",
+        ... )
+
+        Prepare a coding agent with Claude Code, GitHub CLI, and tmux. Managed
+        SSH uses a stored deploy key; resource detection records pull requests:
+
+        >>> from chalkcompute import ComputeClass, ResourceDetector, SSHDest
+        >>> Sandbox(
+        ...     image=Image.sandbox().with_claude_code().with_gh().with_tmux(),
+        ...     compute_class=ComputeClass.HOST,
+        ...     managed_ssh=[SSHDest.github("GITHUB_DEPLOY_KEY")],
+        ...     resource_detectors=[ResourceDetector.GITHUB_PULL_REQUESTS],
+        ...     cpu="2",
+        ...     memory="16Gi",
+        ... ).add_credentials("api.github.com", "GITHUB_TOKEN").add_credentials(
+        ...     "api.anthropic.com", "CLAUDE_CODE_OAUTH_TOKEN",
+        ... )
+
+        Request a GPU on a host pool configured with NVIDIA L4 GPUs:
+
+        >>> Sandbox(
+        ...     image="nvcr.io/nvidia/pytorch:24.01-py3",
+        ...     gpu="nvidia-l4",
+        ...     cpu="8",
+        ...     memory="64Gi",
+        ...     compute_class=ComputeClass.HOST,
+        ... )
+
+        Give code inside the sandbox a Chalk identity and trace its requests:
+
+        >>> Sandbox(
+        ...     chalk_identity=True,
+        ...     tracing=True,
+        ...     tags={"project": "agent-evals", "stage": "development"},
+        ... )
+
+        These expressions configure sandboxes. Call :meth:`run` on a configured
+        sandbox, or pass it to :meth:`SandboxClient.run`, to start it.
         """
         self._client: Any | None = None
         self._id: str | None = None
@@ -1289,6 +1361,7 @@ class Sandbox:
         )
         self._client = client
         self._terminated = False
+        _set_sandbox_span_id(self._id)
 
         return self
 
@@ -1363,6 +1436,7 @@ class Sandbox:
         ExecResult
             Result with stdout/stderr and exit code.
         """
+        _set_sandbox_span_id(self._id)
         self._require_started()
         process = self.exec_start(
             command,
@@ -1531,6 +1605,7 @@ class Sandbox:
         PythonExecution
             Buffered stdout/stderr, exit status, and persisted artifacts.
         """
+        _set_sandbox_span_id(self._id)
         client = self._require_client()
         sandbox_id = self._require_started()
         spec = runtime_pb.ExecutePythonSpec(
@@ -1617,6 +1692,7 @@ class Sandbox:
         grace_period_seconds
             Optional grace period to allow running processes to shut down.
         """
+        _set_sandbox_span_id(self._id)
         if self._terminated:
             return
         client = self._require_client()
@@ -2023,6 +2099,8 @@ class SandboxClient:
         )
         if resp.sandbox is None:
             raise SandboxCreationError("CreateSandbox returned no sandbox")
+        # Keep the created identity even when readiness polling fails before the handle is bound.
+        _set_sandbox_span_id(resp.sandbox.id)
         if sandbox._oidc_token_files and not _echoes_oidc_token_files(
             resp.sandbox, len(sandbox._oidc_token_files)
         ):

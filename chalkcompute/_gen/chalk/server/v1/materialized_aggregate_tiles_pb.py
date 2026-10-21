@@ -12,9 +12,13 @@ from protobuf import Enum, Message
 from protobuf._codegen import file_desc
 from protobuf.wkt import timestamp_pb
 
+from ...aggregate.v1 import timeseries_pb
+
 if TYPE_CHECKING:
     from protobuf import DescFile
     from protobuf.wkt import Timestamp
+
+    from ...aggregate.v1.timeseries_pb import AggregateTimeSeries
 
 
 _MaterializedAggregateTileTimelineIntervalFields: TypeAlias = Literal["coverage_lower_bound", "coverage_upper_bound"]
@@ -54,7 +58,7 @@ class MaterializedAggregateTileTimelineInterval(Message[_MaterializedAggregateTi
         coverage_lower_bound: Timestamp | None
         coverage_upper_bound: Timestamp | None
 
-_MaterializedAggregateTileTimelineFields: TypeAlias = Literal["materialization_key_hash", "aggregation", "aggregate_on", "group_by", "bucket_on", "coverage", "intervals", "bucket_duration_ms"]
+_MaterializedAggregateTileTimelineFields: TypeAlias = Literal["materialization_key_hash", "aggregation", "aggregate_on", "group_by", "bucket_on", "coverage", "intervals", "bucket_duration_ms", "reading_features"]
 
 class MaterializedAggregateTileTimeline(Message[_MaterializedAggregateTileTimelineFields]):
     """
@@ -101,9 +105,15 @@ class MaterializedAggregateTileTimeline(Message[_MaterializedAggregateTileTimeli
             ```proto
             int64 bucket_duration_ms = 9;
             ```
+        reading_features:
+            Windowed features of the active deployment that read this series; empty without a mapping.
+
+            ```proto
+            repeated chalk.server.v1.TileReadingFeature reading_features = 10;
+            ```
     """
 
-    __slots__ = ("materialization_key_hash", "aggregation", "aggregate_on", "group_by", "bucket_on", "coverage", "intervals", "bucket_duration_ms")
+    __slots__ = ("materialization_key_hash", "aggregation", "aggregate_on", "group_by", "bucket_on", "coverage", "intervals", "bucket_duration_ms", "reading_features")
 
     if TYPE_CHECKING:
 
@@ -118,6 +128,7 @@ class MaterializedAggregateTileTimeline(Message[_MaterializedAggregateTileTimeli
             coverage: MaterializedAggregateTileTimelineInterval | None = None,
             intervals: list[MaterializedAggregateTileTimelineInterval] | None = None,
             bucket_duration_ms: int = 0,
+            reading_features: list[TileReadingFeature] | None = None,
         ) -> None:
             pass
 
@@ -129,6 +140,53 @@ class MaterializedAggregateTileTimeline(Message[_MaterializedAggregateTileTimeli
         coverage: MaterializedAggregateTileTimelineInterval | None
         intervals: list[MaterializedAggregateTileTimelineInterval]
         bucket_duration_ms: int
+        reading_features: list[TileReadingFeature]
+
+_TileReadingFeatureFields: TypeAlias = Literal["fqn", "windowed_features", "series_count"]
+
+class TileReadingFeature(Message[_TileReadingFeatureFields]):
+    """
+    ```proto
+    message chalk.server.v1.TileReadingFeature
+    ```
+
+    Attributes:
+        fqn:
+            The base feature, e.g. `user.spend` for `user.spend__604800__`.
+
+            ```proto
+            string fqn = 1;
+            ```
+        windowed_features:
+            The window features the engine reports, e.g. `user.spend__604800__`, sorted.
+
+            ```proto
+            repeated string windowed_features = 2;
+            ```
+        series_count:
+            Tile series this feature reads in total; a backfill of it writes them all.
+
+            ```proto
+            int32 series_count = 3;
+            ```
+    """
+
+    __slots__ = ("fqn", "windowed_features", "series_count")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            fqn: str = "",
+            windowed_features: list[str] | None = None,
+            series_count: int = 0,
+        ) -> None:
+            pass
+
+        fqn: str
+        windowed_features: list[str]
+        series_count: int
 
 _MaterializedAggregateTileTimelineGroupFields: TypeAlias = Literal["aggregate_on", "timelines", "coverage"]
 
@@ -377,7 +435,7 @@ class GetMaterializedAggregateTileFacetsResponse(Message[_GetMaterializedAggrega
 
         facets: list[TileFacet]
 
-_GetMaterializedAggregateTileFacetValuesRequestFields: TypeAlias = Literal["path", "limit", "filter"]
+_GetMaterializedAggregateTileFacetValuesRequestFields: TypeAlias = Literal["path", "limit", "filter", "value_search"]
 
 class GetMaterializedAggregateTileFacetValuesRequest(Message[_GetMaterializedAggregateTileFacetValuesRequestFields]):
     """
@@ -404,9 +462,15 @@ class GetMaterializedAggregateTileFacetValuesRequest(Message[_GetMaterializedAgg
             ```proto
             optional chalk.server.v1.ListMaterializedAggregateTileTimelinesFilter filter = 3;
             ```
+        value_search:
+            Case-insensitive substring match on values, applied before `limit`. Unset or empty matches all.
+
+            ```proto
+            optional string value_search = 4;
+            ```
     """
 
-    __slots__ = ("path", "limit", "filter")
+    __slots__ = ("path", "limit", "filter", "value_search")
 
     if TYPE_CHECKING:
 
@@ -416,12 +480,14 @@ class GetMaterializedAggregateTileFacetValuesRequest(Message[_GetMaterializedAgg
             path: str = "",
             limit: int | None = None,
             filter: ListMaterializedAggregateTileTimelinesFilter | None = None,
+            value_search: str | None = None,
         ) -> None:
             pass
 
         path: str
         limit: int
         filter: ListMaterializedAggregateTileTimelinesFilter | None
+        value_search: str
 
 _TileTimelineFacetValueFields: TypeAlias = Literal["path", "value", "count"]
 
@@ -495,6 +561,396 @@ class GetMaterializedAggregateTileFacetValuesResponse(Message[_GetMaterializedAg
 
         values: list[TileTimelineFacetValue]
 
+_TileSeriesSummaryFields: TypeAlias = Literal["materialization_key_hash", "aggregations", "bucket_duration_ms", "reading_features"]
+
+class TileSeriesSummary(Message[_TileSeriesSummaryFields]):
+    """
+    ```proto
+    message chalk.server.v1.TileSeriesSummary
+    ```
+
+    Attributes:
+        materialization_key_hash:
+            ```proto
+            string materialization_key_hash = 1;
+            ```
+        aggregations:
+            Rule aggregations stored under this key, e.g. a mean's `count` and `sum`.
+
+            ```proto
+            repeated string aggregations = 2;
+            ```
+        bucket_duration_ms:
+            ```proto
+            int64 bucket_duration_ms = 3;
+            ```
+        reading_features:
+            ```proto
+            repeated chalk.server.v1.TileReadingFeature reading_features = 4;
+            ```
+    """
+
+    __slots__ = ("materialization_key_hash", "aggregations", "bucket_duration_ms", "reading_features")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            materialization_key_hash: str = "",
+            aggregations: list[str] | None = None,
+            bucket_duration_ms: int = 0,
+            reading_features: list[TileReadingFeature] | None = None,
+        ) -> None:
+            pass
+
+        materialization_key_hash: str
+        aggregations: list[str]
+        bucket_duration_ms: int
+        reading_features: list[TileReadingFeature]
+
+_FeatureMaterializedAggregationFields: TypeAlias = Literal["series", "tile_series"]
+
+class FeatureMaterializedAggregation(Message[_FeatureMaterializedAggregationFields]):
+    """
+    A materialized aggregation of the active deployment, with its tile series.
+
+    ```proto
+    message chalk.server.v1.FeatureMaterializedAggregation
+    ```
+
+    Attributes:
+        series:
+            ```proto
+            optional chalk.aggregate.v1.AggregateTimeSeries series = 1;
+            ```
+        tile_series:
+            One per distinct rule key; empty for series with no tiles, e.g. expression projections.
+
+            ```proto
+            repeated chalk.server.v1.TileSeriesSummary tile_series = 2;
+            ```
+    """
+
+    __slots__ = ("series", "tile_series")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            series: AggregateTimeSeries | None = None,
+            tile_series: list[TileSeriesSummary] | None = None,
+        ) -> None:
+            pass
+
+        series: AggregateTimeSeries | None
+        tile_series: list[TileSeriesSummary]
+
+_GetFeatureMaterializedAggregationsRequestFields: TypeAlias = Literal["feature_fqn"]
+
+class GetFeatureMaterializedAggregationsRequest(Message[_GetFeatureMaterializedAggregationsRequestFields]):
+    """
+    ```proto
+    message chalk.server.v1.GetFeatureMaterializedAggregationsRequest
+    ```
+
+    Attributes:
+        feature_fqn:
+            A windowed child such as `user.spend__604800__` resolves to its base feature.
+
+            ```proto
+            string feature_fqn = 1;
+            ```
+    """
+
+    __slots__ = ("feature_fqn",)
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            feature_fqn: str = "",
+        ) -> None:
+            pass
+
+        feature_fqn: str
+
+_GetFeatureMaterializedAggregationsResponseFields: TypeAlias = Literal["computing", "reading", "errors", "mapping_status"]
+
+class GetFeatureMaterializedAggregationsResponse(Message[_GetFeatureMaterializedAggregationsResponseFields]):
+    """
+    ```proto
+    message chalk.server.v1.GetFeatureMaterializedAggregationsResponse
+    ```
+
+    Attributes:
+        computing:
+            Series this feature's windows are computed from.
+
+            ```proto
+            repeated chalk.server.v1.FeatureMaterializedAggregation computing = 1;
+            ```
+        reading:
+            Series that read this feature as an input: aggregated, projected, filtered, grouped or bucketed on.
+
+            ```proto
+            repeated chalk.server.v1.FeatureMaterializedAggregation reading = 2;
+            ```
+        errors:
+            Aggregations the engine failed to parse.
+
+            ```proto
+            repeated string errors = 3;
+            ```
+        mapping_status:
+            ```proto
+            chalk.server.v1.TileFeatureMappingStatus mapping_status = 4;
+            ```
+    """
+
+    __slots__ = ("computing", "reading", "errors", "mapping_status")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            computing: list[FeatureMaterializedAggregation] | None = None,
+            reading: list[FeatureMaterializedAggregation] | None = None,
+            errors: list[str] | None = None,
+            mapping_status: TileFeatureMappingStatus | None = None,
+        ) -> None:
+            pass
+
+        computing: list[FeatureMaterializedAggregation]
+        reading: list[FeatureMaterializedAggregation]
+        errors: list[str]
+        mapping_status: TileFeatureMappingStatus
+
+_TileSeriesCoverageFields: TypeAlias = Literal["materialization_key_hash", "bucket_duration_ms", "coverage", "gaps", "tile_count"]
+
+class TileSeriesCoverage(Message[_TileSeriesCoverageFields]):
+    """
+    One tile series of a feature that has tiles.
+
+    ```proto
+    message chalk.server.v1.TileSeriesCoverage
+    ```
+
+    Attributes:
+        materialization_key_hash:
+            ```proto
+            string materialization_key_hash = 1;
+            ```
+        bucket_duration_ms:
+            ```proto
+            int64 bucket_duration_ms = 2;
+            ```
+        coverage:
+            From the series' first tile to its last.
+
+            ```proto
+            optional chalk.server.v1.MaterializedAggregateTileTimelineInterval coverage = 3;
+            ```
+        gaps:
+            Holes between its tiles, sorted.
+
+            ```proto
+            repeated chalk.server.v1.MaterializedAggregateTileTimelineInterval gaps = 4;
+            ```
+        tile_count:
+            ```proto
+            int32 tile_count = 5;
+            ```
+    """
+
+    __slots__ = ("materialization_key_hash", "bucket_duration_ms", "coverage", "gaps", "tile_count")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            materialization_key_hash: str = "",
+            bucket_duration_ms: int = 0,
+            coverage: MaterializedAggregateTileTimelineInterval | None = None,
+            gaps: list[MaterializedAggregateTileTimelineInterval] | None = None,
+            tile_count: int = 0,
+        ) -> None:
+            pass
+
+        materialization_key_hash: str
+        bucket_duration_ms: int
+        coverage: MaterializedAggregateTileTimelineInterval | None
+        gaps: list[MaterializedAggregateTileTimelineInterval]
+        tile_count: int
+
+_TileFeatureCoverageFields: TypeAlias = Literal["fqn", "windowed_features", "series"]
+
+class TileFeatureCoverage(Message[_TileFeatureCoverageFields]):
+    """
+    ```proto
+    message chalk.server.v1.TileFeatureCoverage
+    ```
+
+    Attributes:
+        fqn:
+            ```proto
+            string fqn = 1;
+            ```
+        windowed_features:
+            ```proto
+            repeated string windowed_features = 2;
+            ```
+        series:
+            Only series with tiles; a feature with none is omitted from the listing.
+
+            ```proto
+            repeated chalk.server.v1.TileSeriesCoverage series = 3;
+            ```
+    """
+
+    __slots__ = ("fqn", "windowed_features", "series")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            fqn: str = "",
+            windowed_features: list[str] | None = None,
+            series: list[TileSeriesCoverage] | None = None,
+        ) -> None:
+            pass
+
+        fqn: str
+        windowed_features: list[str]
+        series: list[TileSeriesCoverage]
+
+_ListTileFeatureCoverageFiltersFields: TypeAlias = Literal["fqn_search", "feature_fqns"]
+
+class ListTileFeatureCoverageFilters(Message[_ListTileFeatureCoverageFiltersFields]):
+    """
+    ```proto
+    message chalk.server.v1.ListTileFeatureCoverageFilters
+    ```
+
+    Attributes:
+        fqn_search:
+            Case-insensitive substring match on the feature fqn. Unset or empty matches all.
+
+            ```proto
+            optional string fqn_search = 1;
+            ```
+        feature_fqns:
+            Exact base features, e.g. for one feature's drawer or page; a window name resolves to its base.
+
+            ```proto
+            repeated string feature_fqns = 2;
+            ```
+    """
+
+    __slots__ = ("fqn_search", "feature_fqns")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            fqn_search: str | None = None,
+            feature_fqns: list[str] | None = None,
+        ) -> None:
+            pass
+
+        fqn_search: str
+        feature_fqns: list[str]
+
+_ListTileFeatureCoverageRequestFields: TypeAlias = Literal["cursor", "limit", "filters"]
+
+class ListTileFeatureCoverageRequest(Message[_ListTileFeatureCoverageRequestFields]):
+    """
+    ```proto
+    message chalk.server.v1.ListTileFeatureCoverageRequest
+    ```
+
+    Attributes:
+        cursor:
+            ```proto
+            optional string cursor = 1;
+            ```
+        limit:
+            Server default is 50 if unset.
+
+            ```proto
+            optional int32 limit = 2;
+            ```
+        filters:
+            ```proto
+            optional chalk.server.v1.ListTileFeatureCoverageFilters filters = 3;
+            ```
+    """
+
+    __slots__ = ("cursor", "limit", "filters")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            cursor: str | None = None,
+            limit: int | None = None,
+            filters: ListTileFeatureCoverageFilters | None = None,
+        ) -> None:
+            pass
+
+        cursor: str
+        limit: int
+        filters: ListTileFeatureCoverageFilters | None
+
+_ListTileFeatureCoverageResponseFields: TypeAlias = Literal["features", "next_cursor", "mapping_status"]
+
+class ListTileFeatureCoverageResponse(Message[_ListTileFeatureCoverageResponseFields]):
+    """
+    ```proto
+    message chalk.server.v1.ListTileFeatureCoverageResponse
+    ```
+
+    Attributes:
+        features:
+            ```proto
+            repeated chalk.server.v1.TileFeatureCoverage features = 1;
+            ```
+        next_cursor:
+            ```proto
+            optional string next_cursor = 2;
+            ```
+        mapping_status:
+            Features are listed only when this is AVAILABLE.
+
+            ```proto
+            chalk.server.v1.TileFeatureMappingStatus mapping_status = 3;
+            ```
+    """
+
+    __slots__ = ("features", "next_cursor", "mapping_status")
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self,
+            *,
+            features: list[TileFeatureCoverage] | None = None,
+            next_cursor: str | None = None,
+            mapping_status: TileFeatureMappingStatus | None = None,
+        ) -> None:
+            pass
+
+        features: list[TileFeatureCoverage]
+        next_cursor: str
+        mapping_status: TileFeatureMappingStatus
+
 class TileFacetType(Enum):
     """
     Parallels LogFacetType / KubeEventFacetType / SpanFacetType, which share these numeric values.
@@ -517,15 +973,53 @@ class TileFacetType(Enum):
     UNSPECIFIED = 0
     LIST = 1
 
+class TileFeatureMappingStatus(Enum):
+    """
+    Whether the active deployment can map features to tile series.
+
+    ```proto
+    enum chalk.server.v1.TileFeatureMappingStatus
+    ```
+
+    Attributes:
+        UNSPECIFIED:
+            ```proto
+            TILE_FEATURE_MAPPING_STATUS_UNSPECIFIED = 0
+            ```
+        AVAILABLE:
+            ```proto
+            TILE_FEATURE_MAPPING_STATUS_AVAILABLE = 1
+            ```
+        NO_ACTIVE_DEPLOYMENT:
+            The environment has no active deployment to ask.
+
+            ```proto
+            TILE_FEATURE_MAPPING_STATUS_NO_ACTIVE_DEPLOYMENT = 2
+            ```
+        ENGINE_UNSUPPORTED:
+            The active engine predates rule tile keys; aggregation definitions are still returned.
+
+            ```proto
+            TILE_FEATURE_MAPPING_STATUS_ENGINE_UNSUPPORTED = 3
+            ```
+    """
+
+    UNSPECIFIED = 0
+    AVAILABLE = 1
+    NO_ACTIVE_DEPLOYMENT = 2
+    ENGINE_UNSUPPORTED = 3
+
 
 _DESC = file_desc(
-    b'\n2chalk/server/v1/materialized_aggregate_tiles.proto\x12\x0fchalk.server.v1\x1a\x1fgoogle/protobuf/timestamp.proto"\xc7\x01\n)MaterializedAggregateTileTimelineInterval\x12L\n\x14coverage_lower_bound\x18\x01 \x01(\x0b2\x1a.google.protobuf.TimestampR\x12coverageLowerBound\x12L\n\x14coverage_upper_bound\x18\x02 \x01(\x0b2\x1a.google.protobuf.TimestampR\x12coverageUpperBound"\xba\x03\n!MaterializedAggregateTileTimeline\x128\n\x18materialization_key_hash\x18\x01 \x01(\tR\x16materializationKeyHash\x12 \n\x0baggregation\x18\x02 \x01(\tR\x0baggregation\x12!\n\x0caggregate_on\x18\x03 \x01(\tR\x0baggregateOn\x12\x19\n\x08group_by\x18\x04 \x01(\tR\x07groupBy\x12\x1b\n\tbucket_on\x18\x05 \x01(\tR\x08bucketOn\x12V\n\x08coverage\x18\x06 \x01(\x0b2:.chalk.server.v1.MaterializedAggregateTileTimelineIntervalR\x08coverage\x12X\n\tintervals\x18\x08 \x03(\x0b2:.chalk.server.v1.MaterializedAggregateTileTimelineIntervalR\tintervals\x12,\n\x12bucket_duration_ms\x18\t \x01(\x03R\x10bucketDurationMs"\xf5\x01\n&MaterializedAggregateTileTimelineGroup\x12!\n\x0caggregate_on\x18\x01 \x01(\tR\x0baggregateOn\x12P\n\ttimelines\x18\x02 \x03(\x0b22.chalk.server.v1.MaterializedAggregateTileTimelineR\ttimelines\x12V\n\x08coverage\x18\x03 \x01(\x0b2:.chalk.server.v1.MaterializedAggregateTileTimelineIntervalR\x08coverage"\xa0\x01\n,ListMaterializedAggregateTileTimelinesFilter\x123\n\x13aggregate_on_prefix\x18\x01 \x01(\tH\x00R\x11aggregateOnPrefix\x88\x01\x01\x12\x19\n\x05query\x18\x02 \x01(\tH\x01R\x05query\x88\x01\x01B\x16\n\x14_aggregate_on_prefixB\x08\n\x06_query"\xe3\x01\n-ListMaterializedAggregateTileTimelinesRequest\x12\x1b\n\x06cursor\x18\x01 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x02 \x01(\x05H\x01R\x05limit\x88\x01\x01\x12Z\n\x06filter\x18\x03 \x01(\x0b2=.chalk.server.v1.ListMaterializedAggregateTileTimelinesFilterH\x02R\x06filter\x88\x01\x01B\t\n\x07_cursorB\x08\n\x06_limitB\t\n\x07_filter"\xc8\x01\n.ListMaterializedAggregateTileTimelinesResponse\x12`\n\x0ftimeline_groups\x18\x01 \x03(\x0b27.chalk.server.v1.MaterializedAggregateTileTimelineGroupR\x0etimelineGroups\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"r\n\tTileFacet\x12\x12\n\x04path\x18\x01 \x01(\tR\x04path\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x12=\n\nfacet_type\x18\x03 \x01(\x0e2\x1e.chalk.server.v1.TileFacetTypeR\tfacetType"+\n)GetMaterializedAggregateTileFacetsRequest"`\n*GetMaterializedAggregateTileFacetsResponse\x122\n\x06facets\x18\x01 \x03(\x0b2\x1a.chalk.server.v1.TileFacetR\x06facets"\xd0\x01\n.GetMaterializedAggregateTileFacetValuesRequest\x12\x12\n\x04path\x18\x01 \x01(\tR\x04path\x12\x19\n\x05limit\x18\x02 \x01(\x05H\x00R\x05limit\x88\x01\x01\x12Z\n\x06filter\x18\x03 \x01(\x0b2=.chalk.server.v1.ListMaterializedAggregateTileTimelinesFilterH\x01R\x06filter\x88\x01\x01B\x08\n\x06_limitB\t\n\x07_filter"X\n\x16TileTimelineFacetValue\x12\x12\n\x04path\x18\x01 \x01(\tR\x04path\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value\x12\x14\n\x05count\x18\x03 \x01(\x03R\x05count"r\n/GetMaterializedAggregateTileFacetValuesResponse\x12?\n\x06values\x18\x01 \x03(\x0b2\'.chalk.server.v1.TileTimelineFacetValueR\x06values*J\n\rTileFacetType\x12\x1f\n\x1bTILE_FACET_TYPE_UNSPECIFIED\x10\x00\x12\x18\n\x14TILE_FACET_TYPE_LIST\x10\x01B\xa8\x01\n\x13com.chalk.server.v1B\x1fMaterializedAggregateTilesProtoP\x01Z\x12server/v1;serverv1\xa2\x02\x03CSX\xaa\x02\x0fChalk.Server.V1\xca\x02\x0fChalk\\Server\\V1\xe2\x02\x1bChalk\\Server\\V1\\GPBMetadata\xea\x02\x11Chalk::Server::V1b\x06proto3',
+    b'\n2chalk/server/v1/materialized_aggregate_tiles.proto\x12\x0fchalk.server.v1\x1a#chalk/aggregate/v1/timeseries.proto\x1a\x1fgoogle/protobuf/timestamp.proto"\xc7\x01\n)MaterializedAggregateTileTimelineInterval\x12L\n\x14coverage_lower_bound\x18\x01 \x01(\x0b2\x1a.google.protobuf.TimestampR\x12coverageLowerBound\x12L\n\x14coverage_upper_bound\x18\x02 \x01(\x0b2\x1a.google.protobuf.TimestampR\x12coverageUpperBound"\x8a\x04\n!MaterializedAggregateTileTimeline\x128\n\x18materialization_key_hash\x18\x01 \x01(\tR\x16materializationKeyHash\x12 \n\x0baggregation\x18\x02 \x01(\tR\x0baggregation\x12!\n\x0caggregate_on\x18\x03 \x01(\tR\x0baggregateOn\x12\x19\n\x08group_by\x18\x04 \x01(\tR\x07groupBy\x12\x1b\n\tbucket_on\x18\x05 \x01(\tR\x08bucketOn\x12V\n\x08coverage\x18\x06 \x01(\x0b2:.chalk.server.v1.MaterializedAggregateTileTimelineIntervalR\x08coverage\x12X\n\tintervals\x18\x08 \x03(\x0b2:.chalk.server.v1.MaterializedAggregateTileTimelineIntervalR\tintervals\x12,\n\x12bucket_duration_ms\x18\t \x01(\x03R\x10bucketDurationMs\x12N\n\x10reading_features\x18\n \x03(\x0b2#.chalk.server.v1.TileReadingFeatureR\x0freadingFeatures"v\n\x12TileReadingFeature\x12\x10\n\x03fqn\x18\x01 \x01(\tR\x03fqn\x12+\n\x11windowed_features\x18\x02 \x03(\tR\x10windowedFeatures\x12!\n\x0cseries_count\x18\x03 \x01(\x05R\x0bseriesCount"\xf5\x01\n&MaterializedAggregateTileTimelineGroup\x12!\n\x0caggregate_on\x18\x01 \x01(\tR\x0baggregateOn\x12P\n\ttimelines\x18\x02 \x03(\x0b22.chalk.server.v1.MaterializedAggregateTileTimelineR\ttimelines\x12V\n\x08coverage\x18\x03 \x01(\x0b2:.chalk.server.v1.MaterializedAggregateTileTimelineIntervalR\x08coverage"\xa0\x01\n,ListMaterializedAggregateTileTimelinesFilter\x123\n\x13aggregate_on_prefix\x18\x01 \x01(\tH\x00R\x11aggregateOnPrefix\x88\x01\x01\x12\x19\n\x05query\x18\x02 \x01(\tH\x01R\x05query\x88\x01\x01B\x16\n\x14_aggregate_on_prefixB\x08\n\x06_query"\xe3\x01\n-ListMaterializedAggregateTileTimelinesRequest\x12\x1b\n\x06cursor\x18\x01 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x02 \x01(\x05H\x01R\x05limit\x88\x01\x01\x12Z\n\x06filter\x18\x03 \x01(\x0b2=.chalk.server.v1.ListMaterializedAggregateTileTimelinesFilterH\x02R\x06filter\x88\x01\x01B\t\n\x07_cursorB\x08\n\x06_limitB\t\n\x07_filter"\xc8\x01\n.ListMaterializedAggregateTileTimelinesResponse\x12`\n\x0ftimeline_groups\x18\x01 \x03(\x0b27.chalk.server.v1.MaterializedAggregateTileTimelineGroupR\x0etimelineGroups\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01B\x0e\n\x0c_next_cursor"r\n\tTileFacet\x12\x12\n\x04path\x18\x01 \x01(\tR\x04path\x12\x12\n\x04name\x18\x02 \x01(\tR\x04name\x12=\n\nfacet_type\x18\x03 \x01(\x0e2\x1e.chalk.server.v1.TileFacetTypeR\tfacetType"+\n)GetMaterializedAggregateTileFacetsRequest"`\n*GetMaterializedAggregateTileFacetsResponse\x122\n\x06facets\x18\x01 \x03(\x0b2\x1a.chalk.server.v1.TileFacetR\x06facets"\x89\x02\n.GetMaterializedAggregateTileFacetValuesRequest\x12\x12\n\x04path\x18\x01 \x01(\tR\x04path\x12\x19\n\x05limit\x18\x02 \x01(\x05H\x00R\x05limit\x88\x01\x01\x12Z\n\x06filter\x18\x03 \x01(\x0b2=.chalk.server.v1.ListMaterializedAggregateTileTimelinesFilterH\x01R\x06filter\x88\x01\x01\x12&\n\x0cvalue_search\x18\x04 \x01(\tH\x02R\x0bvalueSearch\x88\x01\x01B\x08\n\x06_limitB\t\n\x07_filterB\x0f\n\r_value_search"X\n\x16TileTimelineFacetValue\x12\x12\n\x04path\x18\x01 \x01(\tR\x04path\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value\x12\x14\n\x05count\x18\x03 \x01(\x03R\x05count"r\n/GetMaterializedAggregateTileFacetValuesResponse\x12?\n\x06values\x18\x01 \x03(\x0b2\'.chalk.server.v1.TileTimelineFacetValueR\x06values"\xef\x01\n\x11TileSeriesSummary\x128\n\x18materialization_key_hash\x18\x01 \x01(\tR\x16materializationKeyHash\x12"\n\x0caggregations\x18\x02 \x03(\tR\x0caggregations\x12,\n\x12bucket_duration_ms\x18\x03 \x01(\x03R\x10bucketDurationMs\x12N\n\x10reading_features\x18\x04 \x03(\x0b2#.chalk.server.v1.TileReadingFeatureR\x0freadingFeatures"\xa6\x01\n\x1eFeatureMaterializedAggregation\x12?\n\x06series\x18\x01 \x01(\x0b2\'.chalk.aggregate.v1.AggregateTimeSeriesR\x06series\x12C\n\x0btile_series\x18\x02 \x03(\x0b2".chalk.server.v1.TileSeriesSummaryR\ntileSeries"L\n)GetFeatureMaterializedAggregationsRequest\x12\x1f\n\x0bfeature_fqn\x18\x01 \x01(\tR\nfeatureFqn"\xb0\x02\n*GetFeatureMaterializedAggregationsResponse\x12M\n\tcomputing\x18\x01 \x03(\x0b2/.chalk.server.v1.FeatureMaterializedAggregationR\tcomputing\x12I\n\x07reading\x18\x02 \x03(\x0b2/.chalk.server.v1.FeatureMaterializedAggregationR\x07reading\x12\x16\n\x06errors\x18\x03 \x03(\tR\x06errors\x12P\n\x0emapping_status\x18\x04 \x01(\x0e2).chalk.server.v1.TileFeatureMappingStatusR\rmappingStatus"\xc3\x02\n\x12TileSeriesCoverage\x128\n\x18materialization_key_hash\x18\x01 \x01(\tR\x16materializationKeyHash\x12,\n\x12bucket_duration_ms\x18\x02 \x01(\x03R\x10bucketDurationMs\x12V\n\x08coverage\x18\x03 \x01(\x0b2:.chalk.server.v1.MaterializedAggregateTileTimelineIntervalR\x08coverage\x12N\n\x04gaps\x18\x04 \x03(\x0b2:.chalk.server.v1.MaterializedAggregateTileTimelineIntervalR\x04gaps\x12\x1d\n\ntile_count\x18\x05 \x01(\x05R\ttileCount"\x91\x01\n\x13TileFeatureCoverage\x12\x10\n\x03fqn\x18\x01 \x01(\tR\x03fqn\x12+\n\x11windowed_features\x18\x02 \x03(\tR\x10windowedFeatures\x12;\n\x06series\x18\x03 \x03(\x0b2#.chalk.server.v1.TileSeriesCoverageR\x06series"v\n\x1eListTileFeatureCoverageFilters\x12"\n\nfqn_search\x18\x01 \x01(\tH\x00R\tfqnSearch\x88\x01\x01\x12!\n\x0cfeature_fqns\x18\x02 \x03(\tR\x0bfeatureFqnsB\r\n\x0b_fqn_search"\xc9\x01\n\x1eListTileFeatureCoverageRequest\x12\x1b\n\x06cursor\x18\x01 \x01(\tH\x00R\x06cursor\x88\x01\x01\x12\x19\n\x05limit\x18\x02 \x01(\x05H\x01R\x05limit\x88\x01\x01\x12N\n\x07filters\x18\x03 \x01(\x0b2/.chalk.server.v1.ListTileFeatureCoverageFiltersH\x02R\x07filters\x88\x01\x01B\t\n\x07_cursorB\x08\n\x06_limitB\n\n\x08_filters"\xeb\x01\n\x1fListTileFeatureCoverageResponse\x12@\n\x08features\x18\x01 \x03(\x0b2$.chalk.server.v1.TileFeatureCoverageR\x08features\x12$\n\x0bnext_cursor\x18\x02 \x01(\tH\x00R\nnextCursor\x88\x01\x01\x12P\n\x0emapping_status\x18\x03 \x01(\x0e2).chalk.server.v1.TileFeatureMappingStatusR\rmappingStatusB\x0e\n\x0c_next_cursor*J\n\rTileFacetType\x12\x1f\n\x1bTILE_FACET_TYPE_UNSPECIFIED\x10\x00\x12\x18\n\x14TILE_FACET_TYPE_LIST\x10\x01*\xdc\x01\n\x18TileFeatureMappingStatus\x12+\n\'TILE_FEATURE_MAPPING_STATUS_UNSPECIFIED\x10\x00\x12)\n%TILE_FEATURE_MAPPING_STATUS_AVAILABLE\x10\x01\x124\n0TILE_FEATURE_MAPPING_STATUS_NO_ACTIVE_DEPLOYMENT\x10\x02\x122\n.TILE_FEATURE_MAPPING_STATUS_ENGINE_UNSUPPORTED\x10\x03B\xa8\x01\n\x13com.chalk.server.v1B\x1fMaterializedAggregateTilesProtoP\x01Z\x12server/v1;serverv1\xa2\x02\x03CSX\xaa\x02\x0fChalk.Server.V1\xca\x02\x0fChalk\\Server\\V1\xe2\x02\x1bChalk\\Server\\V1\\GPBMetadata\xea\x02\x11Chalk::Server::V1b\x06proto3',
     [
+        timeseries_pb.desc(),
         timestamp_pb.desc(),
     ],
     {
         "MaterializedAggregateTileTimelineInterval": MaterializedAggregateTileTimelineInterval,
         "MaterializedAggregateTileTimeline": MaterializedAggregateTileTimeline,
+        "TileReadingFeature": TileReadingFeature,
         "MaterializedAggregateTileTimelineGroup": MaterializedAggregateTileTimelineGroup,
         "ListMaterializedAggregateTileTimelinesFilter": ListMaterializedAggregateTileTimelinesFilter,
         "ListMaterializedAggregateTileTimelinesRequest": ListMaterializedAggregateTileTimelinesRequest,
@@ -536,7 +1030,17 @@ _DESC = file_desc(
         "GetMaterializedAggregateTileFacetValuesRequest": GetMaterializedAggregateTileFacetValuesRequest,
         "TileTimelineFacetValue": TileTimelineFacetValue,
         "GetMaterializedAggregateTileFacetValuesResponse": GetMaterializedAggregateTileFacetValuesResponse,
+        "TileSeriesSummary": TileSeriesSummary,
+        "FeatureMaterializedAggregation": FeatureMaterializedAggregation,
+        "GetFeatureMaterializedAggregationsRequest": GetFeatureMaterializedAggregationsRequest,
+        "GetFeatureMaterializedAggregationsResponse": GetFeatureMaterializedAggregationsResponse,
+        "TileSeriesCoverage": TileSeriesCoverage,
+        "TileFeatureCoverage": TileFeatureCoverage,
+        "ListTileFeatureCoverageFilters": ListTileFeatureCoverageFilters,
+        "ListTileFeatureCoverageRequest": ListTileFeatureCoverageRequest,
+        "ListTileFeatureCoverageResponse": ListTileFeatureCoverageResponse,
         "TileFacetType": TileFacetType,
+        "TileFeatureMappingStatus": TileFeatureMappingStatus,
     },
 )
 

@@ -86,3 +86,19 @@ git-repo environment:
         --cpu 2 \
         --memory 4Gi \
         --timeout-secs 2700
+
+api-throughput environment:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    environment={{ quote(environment) }}
+    source .buildkite/select-env-file.sh "$environment"
+    source .buildkite/setup-benchmark-env.sh
+    .buildkite/run-benchmark.sh \
+      --suite "Sandbox Volume API Throughput Benchmarks ($environment)" \
+      --case volume-api-throughput \
+      --tags "sandbox,volume,api-throughput,$environment" \
+      -- uv run python -m e2etests.volume.benchmarks.cases.api_throughput \
+        --volumes 10000 \
+        --files 5000 \
+        --file-bytes 1 \
+        --concurrency 32

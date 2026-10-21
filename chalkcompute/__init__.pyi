@@ -115,6 +115,11 @@ from chalkcompute._sandbox import SandboxTerminatedError as SandboxTerminatedErr
 from chalkcompute._sandbox_fs import FilesystemError as FilesystemError
 from chalkcompute._sandbox_fs import SandboxFileSystemError as SandboxFileSystemError
 from chalkcompute._scaling_group import CronScalingTrigger as CronScalingTrigger
+from chalkcompute._workflow_worker import WorkflowWorker as WorkflowWorker
+from chalkcompute._workflow_worker import (
+    deploy_workflow_worker as deploy_workflow_worker,
+)
+from chalkcompute._workflow_worker import run_workflow as run_workflow
 from chalkcompute._scaling_group import CronScalingWindow as CronScalingWindow
 from chalkcompute._scaling_group import ReadinessProbe as ReadinessProbe
 from chalkcompute._scaling_group import ScalingGroup as ScalingGroup
@@ -164,7 +169,6 @@ from chalkcompute._training import TrainingRunHandle as TrainingRunHandle
 from chalkcompute._training import training as training
 
 from chalkcompute._workflow import WorkflowError as WorkflowError
-from chalkcompute._workflow import run_workflow as run_workflow
 from chalkcompute._workflow import trigger_workflow as trigger_workflow
 
 # Back-compat aliases: all volumes are versioned, so the qualifier is gone from
@@ -304,6 +308,9 @@ __all__ = [
     "StartupProbe",
     "CronScalingTrigger",
     "CronScalingWindow",
+    "WorkflowWorker",
+    "deploy_workflow_worker",
+    "run_workflow",
     "FileInfo",
     "ForkInfo",
     "Volume",
@@ -323,7 +330,6 @@ __all__ = [
     "TrainingError",
     "training",
     "WorkflowError",
-    "run_workflow",
     "trigger_workflow",
     "SessionSummary",
     "Span",

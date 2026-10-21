@@ -249,3 +249,63 @@ def test_missing_dependency_fails_before_scheduling(
     with pytest.raises(FunctionBuildError, match="missing"):
         RemoteFunction(shell.user_ns["score"])
     assert calls == []
+
+
+def test_notebook_training_function_ships_frozen_source(
+    shell: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from unittest.mock import MagicMock, patch
+
+    from chalkcompute._gen.chalk.server.v1 import training_runs_pb as tr_pb
+    from chalkcompute._training import TrainingFunction
+
+    monkeypatch.delenv("CHALK_TRAINING_RUN_ID", raising=False)
+    shell.run_cell("import math as m\nimport chalkcompute", store_history=True)
+    shell.run_cell(
+        "offset = 2\ndef helper(x):\n    return m.sqrt(x) + offset", store_history=True
+    )
+    result = shell.run_cell(
+        '@chalkcompute.training(data="ds")\ndef train_model(df, config):\n    return helper(df)\nprint("local only")',
+        store_history=True,
+    )
+    assert result.success
+    fn = shell.user_ns["train_model"]
+    assert isinstance(fn, TrainingFunction)
+    snapshot = fn._notebook_source
+    assert snapshot is not None
+    assert "local only" not in snapshot
+    shell.run_cell("offset = 100", store_history=True)
+    assert fn._notebook_source == snapshot
+
+    shipped: dict[str, str] = {}
+    client = MagicMock()
+    client.call.return_value = tr_pb.CreateTrainingRunResponse(
+        training_run=tr_pb.TrainingRun(id="run-1")
+    )
+    image = MagicMock()
+    image.lazy_local_files = []
+    image.add_local_file.side_effect = lambda source, destination: (
+        shipped.__setitem__(destination, Path(source).read_text()) or image
+    )
+    with (
+        patch("chalkcompute._function._make_base_image", return_value=image),
+        patch("chalkcompute._training.build_image", return_value="img:latest"),
+    ):
+        fn.run_training(client=client)
+    assert fn._temp_files == []
+
+    request = client.call.call_args.args[1]
+    assert request.env["CHALK_TRAINING_MODULE"] == "train_model.train_model"
+    assert list(shipped) == ["/app/train_model.py"]
+
+    # The container entrypoint imports the shipped module; its decorator is a no-op.
+    from chalkcompute._training_entrypoint import _discover_function
+
+    (tmp_path / "train_model.py").write_text(shipped["/app/train_model.py"])
+    monkeypatch.setenv("CHALK_TRAINING_RUN_ID", "run-1")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, "train_model", raising=False)
+    try:
+        assert _discover_function("train_model.train_model")(9, None) == 5
+    finally:
+        sys.modules.pop("train_model", None)

@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Any, Callable, overload
 from protobuf import Oneof
 from protobuf.wkt import Struct, Value
 
-from chalkcompute._connect import ConnectClient, build_image
+from chalkcompute._connect import ConnectClient, ImageBuildTimeoutError, build_image
 from chalkcompute._containerspec import (
     ComputeClass,
     ContainerSpec,
@@ -56,6 +56,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _CHALK_TRAINING_RUN_ID_ENV = "CHALK_TRAINING_RUN_ID"
+# Sent with each run so the server starts the entrypoint this SDK installs in the image.
+_TRAINING_ENTRYPOINT = ["python", "-m", "chalkcompute._training_entrypoint"]
 _DEFAULT_POLL_INTERVAL = 5.0
 
 
@@ -246,6 +248,14 @@ class TrainingFunction:
 
         self._func = func
         self._func_name = getattr(func, "__name__", "anonymous")
+        from chalkcompute._notebook import notebook_source_for_function
+
+        try:
+            # Freeze notebook dependencies at decoration time, like remote functions.
+            self._notebook_source = notebook_source_for_function(func)
+        except ValueError as error:
+            raise TrainingError(str(error)) from error
+        self._temp_files: list[str] = []
 
         self._data = data
         self._dataset = dataset
@@ -350,6 +360,7 @@ class TrainingFunction:
             _make_base_image,
             _package_dir_for_module,
             _source_file_for_deploy,
+            _write_temp,
         )
 
         from chalkcompute import _local_dev
@@ -374,6 +385,13 @@ class TrainingFunction:
             )
         else:
             deploy_image = _make_base_image(self._image)
+
+        if self._notebook_source is not None:
+            source_file = _write_temp(self._notebook_source)
+            self._temp_files.append(source_file)
+            return deploy_image.add_local_file(
+                source_file, f"/app/{self._func_name}.py"
+            )
 
         module_name = _deploy_module_name(self._func)
         package_dir = _package_dir_for_module(module_name)
@@ -400,6 +418,7 @@ class TrainingFunction:
         config: Any = None,
         client: ConnectClient | None = None,
         experiment_id: str | None = None,
+        build_timeout: float | None = None,
     ) -> TrainingRunHandle:
         """Submit a training run to chalkcompute.
 
@@ -414,12 +433,46 @@ class TrainingFunction:
         experiment_id
             Optional ID of the experiment this training run should be
             associated with.
+        build_timeout
+            Optional maximum time in seconds to wait for the image build.
+            By default, wait until the server reports success or failure.
+            If this client-side timeout expires, the build may still be
+            running and the training run has not been submitted.
         """
         if client is None:
             client = ConnectClient()
 
+        try:
+            return self._run_training(
+                config=config,
+                client=client,
+                experiment_id=experiment_id,
+                build_timeout=build_timeout,
+            )
+        finally:
+            from chalkcompute._function import _cleanup_temp_files
+
+            _cleanup_temp_files(self._temp_files)
+            self._temp_files = []
+
+    def _run_training(
+        self,
+        *,
+        config: Any,
+        client: ConnectClient,
+        experiment_id: str | None,
+        build_timeout: float | None,
+    ) -> TrainingRunHandle:
         deploy_image = self._build_deploy_image()
-        image_uri = build_image(client, deploy_image)
+        try:
+            image_uri = build_image(client, deploy_image, timeout=build_timeout)
+        except ImageBuildTimeoutError as exc:
+            raise TrainingError(
+                f"Training run was not submitted because image build {exc.build_id} "
+                f"is still running after the client wait timeout of {exc.timeout}s. "
+                "The build was not cancelled; rerun with the same image spec to "
+                "rejoin it."
+            ) from exc
 
         proto_mounts: list[container_pb.VolumeMount] = []
         if deploy_image.lazy_local_files:
@@ -453,7 +506,10 @@ class TrainingFunction:
         env = dict(self._env) if self._env else {}
         env["PYTHONPATH"] = "/app"
         module = self._func.__module__
-        if module == "__main__":
+        if self._notebook_source is not None:
+            # Shipped as /app/<func_name>.py; __main__.__spec__ is the kernel's.
+            module = self._func_name
+        elif module == "__main__":
             import __main__
 
             spec = getattr(__main__, "__spec__", None)
@@ -482,6 +538,7 @@ class TrainingFunction:
             volume_mounts=proto_mounts or None,
             max_retries=self._max_retries,
             experiment_id=experiment_id,
+            entrypoint=list(_TRAINING_ENTRYPOINT),
         )
 
         stub = client.stub(tr_connect.TrainingRunServiceClientSync)

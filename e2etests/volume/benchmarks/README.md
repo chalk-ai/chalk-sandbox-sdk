@@ -119,6 +119,10 @@ show the complete scheduled matrix before jobs run.
 | `volume-git-repo` | `git-status-on-sdk-clone` | Git work-tree traversal | n/a | n/a | n/a | unspecified |
 | `volume-git-repo` | `git-commit-on-fuse-clone` | Git commit creation | n/a | n/a | n/a | n/a |
 | `volume-git-repo` | `git-commit-on-sdk-clone` | Git commit creation | n/a | n/a | n/a | n/a |
+| `volume-api-throughput` | `create-volumes` | SDK volume creation | n/a | configurable | n/a | n/a |
+| `volume-api-throughput` | `delete-volumes` | SDK volume deletion | n/a | configurable | n/a | n/a |
+| `volume-api-throughput` | `upload-files` | SDK batch upload commits of tiny files | configurable | 1 | n/a | n/a |
+| `volume-api-throughput` | `read-files` | SDK per-file reads | configurable | configurable | n/a | unspecified |
 
 The model-download workload preserves the approximate 29:1 shard-size ratio of
 Gemma 4 26B A4B at a smaller 1024 MiB plus 35 MiB scale. Direct mode writes
@@ -185,6 +189,25 @@ the timings and exit codes are written. Author and committer identity are
 provided through standard Git environment variables; signing behavior is not
 overridden.
 
+### API throughput
+
+The API throughput workload runs entirely from the benchmark host through the
+SDK with no sandbox. It creates 10,000 volumes and then deletes all of them
+using a thread pool of 32 concurrent callers. It then uploads 5,000 one-byte
+files to one volume in sequential `Volume.batch_upload()` commits of 200 files
+and reads each one back with a separate `read_file()` call against that pinned
+version. Upload operations are commits, not files. Each run reports elapsed
+time as its value and operations per second, errors, and latency percentiles
+as metadata.
+
+Individual request failures are counted rather than stopping the run. Failures
+are counted after the SDK's own retries. If more than 5% of the requests in any
+run fail, the benchmark records a `benchmark-failure` status and exits nonzero,
+which triggers the Buildkite Slack alert. Create and delete runs also record how many
+requests failed their first attempt and then succeeded on retry. Upload and read
+retries happen inside the native client and are not counted. Volumes left behind by failed creates
+or deletes are removed before the benchmark exits.
+
 ## Canonical naming
 
 Buildkite uploads each module with these identifiers:
@@ -195,6 +218,7 @@ Buildkite uploads each module with these identifiers:
 | `Sandbox Volume Model Load Benchmarks ({env})` | `volume-model-load` |
 | `Sandbox Volume Model Download Benchmarks ({env})` | `volume-model-download` |
 | `Sandbox Volume Git Repo Benchmarks ({env})` | `volume-git-repo` |
+| `Sandbox Volume API Throughput Benchmarks ({env})` | `volume-api-throughput` |
 
 `{env}` is the Buildkite matrix value, currently `staging/ftqa` or `meta-ci`.
 The run name is the pyperf benchmark `metadata.name` value listed above.
@@ -209,7 +233,7 @@ Common keys:
 
 | Key | Type | Meaning |
 | --- | --- | --- |
-| `workload` | string | `fio-microbench`, `synthetic-model-load`, `synthetic-model-download`, or `git-repo` |
+| `workload` | string | `fio-microbench`, `synthetic-model-load`, `synthetic-model-download`, `git-repo`, or `volume-api-throughput` |
 | `sandbox_cpu` | string | Requested sandbox CPU |
 | `sandbox_memory` | string | Requested sandbox memory |
 | `volume_version_id` | integer | Relevant committed volume version when present |
@@ -263,6 +287,25 @@ Git repository keys:
 | `git_exit_code` | integer | Exit code from the timed Git command |
 | `volume_versions_created` | integer | Versions created by the SDK repository upload |
 
+API throughput keys:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `api_concurrency` | integer | Concurrent SDK callers |
+| `api_max_error_rate` | number | Error rate above which the benchmark fails |
+| `api_ops` | integer | API operations attempted in one run |
+| `api_errors` | integer | Operations that failed after SDK retries |
+| `api_error_rate` | number | `api_errors` divided by `api_ops` |
+| `api_first_attempt_errors` | integer | Create or delete requests that failed once before an SDK retry |
+| `api_first_attempt_error_rate` | number | `api_first_attempt_errors` divided by `api_ops` |
+| `api_ops_per_sec` | number | Successful operations divided by elapsed time |
+| `api_latency_mean_sec` | number | Mean per-operation latency |
+| `api_latency_p50_sec` | number | p50 per-operation latency |
+| `api_latency_p95_sec` | number | p95 per-operation latency |
+| `api_latency_p99_sec` | number | p99 per-operation latency |
+| `file_bytes` | integer | Size of each uploaded file |
+| `files_per_commit` | integer | Files in each upload commit |
+
 Keys are optional when they do not apply to a run. Historical rows from before
 normalization may not contain `workload`, `fio_jobs_list`, or integer
 `fio_jobs`.
@@ -314,6 +357,10 @@ CHALK_BENCHMARK_PYPERF_OUTPUT=/tmp/model-download.json \
 CHALK_BENCHMARK_PYPERF_OUTPUT=/tmp/git-repo.json \
   uv run python -m e2etests.volume.benchmarks.cases.git_repo \
     --timeout-secs 1800
+
+CHALK_BENCHMARK_PYPERF_OUTPUT=/tmp/api-throughput.json \
+  uv run python -m e2etests.volume.benchmarks.cases.api_throughput \
+    --volumes 10000 --files 5000 --file-bytes 1 --concurrency 32
 ```
 
 Buildkite expands one two-dimensional matrix step into every case for

@@ -10,7 +10,7 @@ import pytest
 from chalkcompute._gen.chalk.server.v1 import (
     training_runs_pb as tr_pb,
 )
-from chalkcompute.training.entrypoint import (
+from chalkcompute._training_entrypoint import (
     _deserialize_config,
     _discover_function,
     _load_dataframe,
@@ -183,10 +183,10 @@ def test_main_happy_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
 
     with (
         patch(
-            "chalkcompute.training.entrypoint.ConnectClient", return_value=mock_client
+            "chalkcompute._training_entrypoint.ConnectClient", return_value=mock_client
         ),
         patch(
-            "chalkcompute.training.entrypoint._discover_function",
+            "chalkcompute._training_entrypoint._discover_function",
             return_value=fake_func,
         ),
     ):
@@ -227,9 +227,11 @@ def test_main_function_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
 
     with (
         patch(
-            "chalkcompute.training.entrypoint.ConnectClient", return_value=mock_client
+            "chalkcompute._training_entrypoint.ConnectClient", return_value=mock_client
         ),
-        patch("chalkcompute.training.entrypoint._discover_function", return_value=boom),
+        patch(
+            "chalkcompute._training_entrypoint._discover_function", return_value=boom
+        ),
         pytest.raises(SystemExit),
     ):
         main()
@@ -279,13 +281,13 @@ def test_entrypoint_uses_data_volume_name_env(
 
     with (
         patch(
-            "chalkcompute.training.entrypoint.ConnectClient", return_value=mock_client
+            "chalkcompute._training_entrypoint.ConnectClient", return_value=mock_client
         ),
         patch(
-            "chalkcompute.training.entrypoint._discover_function",
+            "chalkcompute._training_entrypoint._discover_function",
             return_value=fake_func,
         ),
-        patch("chalkcompute.training.entrypoint._load_dataset") as mock_load,
+        patch("chalkcompute._training_entrypoint._load_dataset") as mock_load,
     ):
         main()
 
@@ -324,13 +326,13 @@ def test_retry_first_attempt_succeeds(
 
     with (
         patch(
-            "chalkcompute.training.entrypoint.ConnectClient", return_value=mock_client
+            "chalkcompute._training_entrypoint.ConnectClient", return_value=mock_client
         ),
         patch(
-            "chalkcompute.training.entrypoint._discover_function",
+            "chalkcompute._training_entrypoint._discover_function",
             return_value=fake_func,
         ),
-        patch("chalkcompute.training.entrypoint._commit_retry_count", mock_commit),
+        patch("chalkcompute._training_entrypoint._commit_retry_count", mock_commit),
     ):
         main()
 
@@ -374,10 +376,12 @@ def test_retry_increments_counter_on_failure(
 
     with (
         patch(
-            "chalkcompute.training.entrypoint.ConnectClient", return_value=mock_client
+            "chalkcompute._training_entrypoint.ConnectClient", return_value=mock_client
         ),
-        patch("chalkcompute.training.entrypoint._discover_function", return_value=boom),
-        patch("chalkcompute.training.entrypoint._commit_retry_count", mock_commit),
+        patch(
+            "chalkcompute._training_entrypoint._discover_function", return_value=boom
+        ),
+        patch("chalkcompute._training_entrypoint._commit_retry_count", mock_commit),
         pytest.raises(SystemExit),
     ):
         main()
@@ -411,7 +415,7 @@ def test_retry_exhausted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
 
     with (
         patch(
-            "chalkcompute.training.entrypoint.ConnectClient", return_value=mock_client
+            "chalkcompute._training_entrypoint.ConnectClient", return_value=mock_client
         ),
         pytest.raises(SystemExit, match="0"),
     ):
@@ -454,9 +458,11 @@ def test_no_retries_reports_failed(
 
     with (
         patch(
-            "chalkcompute.training.entrypoint.ConnectClient", return_value=mock_client
+            "chalkcompute._training_entrypoint.ConnectClient", return_value=mock_client
         ),
-        patch("chalkcompute.training.entrypoint._discover_function", return_value=boom),
+        patch(
+            "chalkcompute._training_entrypoint._discover_function", return_value=boom
+        ),
         pytest.raises(SystemExit),
     ):
         main()
@@ -468,3 +474,56 @@ def test_no_retries_reports_failed(
     ]
     statuses = [c[0][1].update.status for c in update_calls]
     assert tr_pb.TrainingRunStatus.FAILED in statuses
+
+
+_USER_MODULES = {
+    "attr_style": 'import chalkcompute\n\n@chalkcompute.training(data="ds")\ndef train(df, config):\n    return "trained"\n',
+    "from_style": 'from chalkcompute import training\n\n@training(data="ds")\ndef train(df, config):\n    return "trained"\n',
+}
+
+
+def _run_entrypoint_script(tmp_path: Path, script: str) -> str:
+    import os
+    import subprocess
+    import sys
+
+    for name, source in _USER_MODULES.items():
+        (tmp_path / f"{name}.py").write_text(source)
+    env = {
+        **os.environ,
+        "CHALK_TRAINING_RUN_ID": "run-1",
+        "PYTHONPATH": str(tmp_path),
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, env=env
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+def test_entrypoint_does_not_shadow_training_decorator(tmp_path: Path) -> None:
+    # Subprocess: importing the training subpackage in-process would leak.
+    out = _run_entrypoint_script(
+        tmp_path,
+        "import sys\n"
+        "from chalkcompute._training_entrypoint import _discover_function\n"
+        "assert 'chalkcompute.training' not in sys.modules\n"
+        "for name in ('attr_style', 'from_style'):\n"
+        "    print(_discover_function(name + '.train')(None, None))\n",
+    )
+    assert out.split() == ["trained", "trained"]
+
+
+def test_legacy_entrypoint_path_restores_training_decorator(tmp_path: Path) -> None:
+    # Mirrors ``python -m chalkcompute.training.entrypoint`` with main() stubbed.
+    out = _run_entrypoint_script(
+        tmp_path,
+        "import runpy\n"
+        "import chalkcompute._training_entrypoint as entrypoint\n"
+        "def fake_main():\n"
+        "    for name in ('attr_style', 'from_style'):\n"
+        "        print(entrypoint._discover_function(name + '.train')(None, None))\n"
+        "entrypoint.main = fake_main\n"
+        "runpy.run_module('chalkcompute.training.entrypoint', run_name='__main__', alter_sys=True)\n",
+    )
+    assert out.split() == ["trained", "trained"]
