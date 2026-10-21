@@ -7,6 +7,8 @@ from typing import Any
 
 import pytest
 
+from chalk.workflows import WorkflowSchedule
+
 import chalkcompute._workflow_worker as workflow_worker_mod
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from chalkcompute._scaling_group import (
@@ -16,6 +18,7 @@ from chalkcompute._scaling_group import (
 )
 from chalkcompute._workflow_worker import (
     default_worker_name,
+    WorkflowWorker,
     deploy_workflow_worker,
     script_dependencies,
     worker_requirements,
@@ -151,6 +154,21 @@ class _RecordingScalingGroup:
     def deploy(self) -> _RecordingScalingGroup:
         return self
 
+    def delete(self) -> None:
+        self.kwargs["deleted"] = True
+
+
+class _RecordingChalkClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, Any]] = []
+
+    def sync_workflow_schedules(
+        self, task_queue: str, schedules: list[WorkflowSchedule]
+    ) -> list[Any]:
+        assert _RecordingScalingGroup.instances, "synced before deploying the worker"
+        self.calls.append((task_queue, schedules))
+        return []
+
 
 def test_deploy_workflow_worker_builds_a_task_queue_triggered_group(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -224,3 +242,77 @@ def test_owned_volumes_from_revisions_treats_an_empty_fork_as_unset() -> None:
 
     assert volumes["chalkcompute-sg-files-abc"].ref_name is None
     assert volumes["chalkcompute-sg-files-abc"].mount_path == "/app"
+
+
+def test_deploy_workflow_worker_syncs_schedules_to_its_queue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "nightly_scoring.py"
+    source.write_text(_SCRIPT)
+    _RecordingScalingGroup.instances.clear()
+    monkeypatch.setattr(workflow_worker_mod, "ScalingGroup", _RecordingScalingGroup)
+    client = _RecordingChalkClient()
+    schedules = (
+        WorkflowSchedule("score", "1d", inputs={"segment": "us"}),
+        WorkflowSchedule("score", "0 8 * * 1", name="score-weekly"),
+    )
+
+    worker = deploy_workflow_worker(
+        str(source), schedules=schedules, chalk_client=client
+    )
+
+    assert client.calls == [(worker.task_queue, list(schedules))]
+
+
+def test_deploy_workflow_worker_leaves_schedules_alone_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "nightly_scoring.py"
+    source.write_text(_SCRIPT)
+    _RecordingScalingGroup.instances.clear()
+    monkeypatch.setattr(workflow_worker_mod, "ScalingGroup", _RecordingScalingGroup)
+    client = _RecordingChalkClient()
+
+    deploy_workflow_worker(str(source), chalk_client=client)
+    assert client.calls == []
+
+    worker = deploy_workflow_worker(str(source), schedules=[], chalk_client=client)
+    assert client.calls == [(worker.task_queue, [])]
+
+
+@pytest.mark.parametrize(
+    "schedules",
+    [WorkflowSchedule("score", "1d"), ["score"]],
+)
+def test_deploy_workflow_worker_rejects_invalid_schedules_before_deploying(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, schedules: Any
+) -> None:
+    source = tmp_path / "nightly_scoring.py"
+    source.write_text(_SCRIPT)
+    _RecordingScalingGroup.instances.clear()
+    monkeypatch.setattr(workflow_worker_mod, "ScalingGroup", _RecordingScalingGroup)
+
+    with pytest.raises(TypeError, match="WorkflowSchedule"):
+        deploy_workflow_worker(
+            str(source), schedules=schedules, chalk_client=_RecordingChalkClient()
+        )
+    assert _RecordingScalingGroup.instances == []
+
+
+def test_deleting_a_worker_clears_its_schedules_first() -> None:
+    _RecordingScalingGroup.instances.clear()
+    group = _RecordingScalingGroup()
+    client = _RecordingChalkClient()
+    worker = WorkflowWorker(
+        scaling_group=group,  # type: ignore[arg-type]
+        task_queue="chalkcompute-workflows.wf-nightly",
+    )
+
+    def delete() -> None:
+        assert client.calls == [("chalkcompute-workflows.wf-nightly", [])]
+        group.kwargs["deleted"] = True
+
+    group.delete = delete  # type: ignore[method-assign]
+    worker.delete(chalk_client=client)
+
+    assert group.kwargs["deleted"] is True

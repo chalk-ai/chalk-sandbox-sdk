@@ -15,13 +15,15 @@ import os
 import re
 import sys
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from chalkcompute._image import Image
 from chalkcompute._naming import sanitize_dns_label
 from chalkcompute._scaling_group import ScalingGroup
 
 if TYPE_CHECKING:
+    from chalk.workflows import WorkflowSchedule
+
     from chalkcompute._secret import Secret
 
 # Queues outside the `chalk-workflows` family, so the offline-query consumer's workflow
@@ -67,6 +69,15 @@ class WorkflowWorker:
             wait=wait,
             task_queue=self.task_queue,
         )
+
+    def delete(self, *, chalk_client: Any | None = None) -> None:
+        """Delete the worker's workflow schedules, then its scaling group.
+
+        Schedules go first so that no firing starts a run on a queue with no worker.
+        """
+        client = chalk_client if chalk_client is not None else _default_chalk_client()
+        client.sync_workflow_schedules(self.task_queue, [])
+        self.scaling_group.delete()
 
 
 def script_dependencies(source: str) -> list[str] | None:
@@ -155,6 +166,7 @@ def deploy_workflow_worker(
     secrets: list[Secret] | None = None,
     max_replicas: int = 1,
     shutdown_delay_seconds: int | None = None,
+    schedules: Sequence[WorkflowSchedule] | None = None,
     chalk_client: Any | None = None,
 ) -> WorkflowWorker:
     """Deploy a scale-to-zero worker for the workflows defined in ``source``.
@@ -174,7 +186,15 @@ def deploy_workflow_worker(
     image
         Base image for the worker. The source file is added to it, along with the
         packages from ``worker_requirements`` when no image is given.
+    schedules
+        ``chalk.workflows.WorkflowSchedule`` cadences that start the file's workflows on
+        this worker. After deploying, the worker's task queue is synced to exactly these
+        schedules: new ones are created, changed ones updated, and ones no longer listed
+        deleted, while a paused schedule stays paused. ``None`` leaves the queue's
+        schedules as they are; ``[]`` deletes them all.
     """
+    if schedules is not None:
+        schedules = _validated_schedules(schedules)
     if source is None:
         source = getattr(sys.modules.get("__main__"), "__file__", None)
         if source is None:
@@ -209,7 +229,30 @@ def deploy_workflow_worker(
         workflow_task_queue=task_queue,
         chalk_client=chalk_client,
     ).deploy()
-    return WorkflowWorker(scaling_group=scaling_group, task_queue=task_queue)
+    worker = WorkflowWorker(scaling_group=scaling_group, task_queue=task_queue)
+    if schedules is not None:
+        client = chalk_client if chalk_client is not None else _default_chalk_client()
+        client.sync_workflow_schedules(task_queue, schedules)
+    return worker
+
+
+def _validated_schedules(
+    schedules: Sequence[WorkflowSchedule],
+) -> list[WorkflowSchedule]:
+    try:
+        from chalk.workflows import WorkflowSchedule
+    except ImportError as exc:
+        raise ImportError(
+            "Workflow schedules need chalkpy with workflow schedule support: "
+            + "pip install -U 'chalkpy[workflows]'"
+        ) from exc
+    if isinstance(schedules, (str, WorkflowSchedule)):
+        raise TypeError("schedules must be a list of WorkflowSchedule")
+    result = list(schedules)
+    for schedule in result:
+        if not isinstance(schedule, WorkflowSchedule):
+            raise TypeError(f"Expected a WorkflowSchedule, got {schedule!r}")
+    return result
 
 
 def run_workflow(
