@@ -1059,9 +1059,7 @@ def _network_matcher_to_proto(
     else:
         assert matcher.regex is not None
         value = Oneof("regex", matcher.regex)
-    return container_pb.NetworkPolicyMatcher(
-        matcher=value
-    )
+    return container_pb.NetworkPolicyMatcher(matcher=value)
 
 
 def _network_key_value_matcher_to_proto(
