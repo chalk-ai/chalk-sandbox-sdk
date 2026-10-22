@@ -355,15 +355,11 @@ class ConnectClient:
             return matches[0]
         return environment
 
-    def _default_dashboard_url(self) -> str:
-        """Dashboard origin implied by the API server (``api.X`` -> ``X``)."""
-        host = urlparse(self._api_server or "").hostname or ""
-        return f"https://{host.removeprefix('api.')}"
-
     def function_dashboard_url(self, function_name: str) -> str | None:
-        """Return the dashboard URL for an external function, if resolvable.
+        """Return the dashboard URL for an external function, if known.
 
-        Returns ``None`` when the environment lookup fails (for example the
+        Only the environment's own ``dashboard_url`` is trusted; the host is
+        never guessed. Returns ``None`` when it is unset or the lookup fails (for example the
         caller lacks ``DEPLOY_READ``); the link is a convenience and must never
         fail a deployment.
         """
@@ -375,9 +371,14 @@ class ConnectClient:
         except (ConnectRpcError, *HTTP_TRANSPORT_ERRORS):
             return None
         environment = response.environment
-        if environment is None or not environment.project_id or not self._env_id:
+        if (
+            environment is None
+            or not environment.dashboard_url
+            or not environment.project_id
+            or not self._env_id
+        ):
             return None
-        base = (environment.dashboard_url or self._default_dashboard_url()).rstrip("/")
+        base = environment.dashboard_url.rstrip("/")
         return (
             f"{base}/projects/{environment.project_id}/environments/{self._env_id}"
             f"/external-functions/{quote(function_name, safe='')}"
