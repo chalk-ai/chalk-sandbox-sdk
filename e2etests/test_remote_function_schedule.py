@@ -9,16 +9,25 @@ from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import (
     service_connect as catalog_connect,
 )
 from chalkcompute._gen.chalk.externalfunctioncatalog.v1 import service_pb as catalog_pb
-from e2etests.conftest import _deploy_script, needs_staging
+from e2etests._ci_resources import build_scoped_name
+from e2etests.conftest import _delete_function, _deploy_script, needs_staging
 
 
 @needs_staging
 def test_remote_function_registers_with_schedule() -> None:
+    function_name = build_scoped_name("ex-heartbeat")
+    try:
+        _assert_scheduled_function(function_name)
+    finally:
+        _delete_function(function_name)
+
+
+def _assert_scheduled_function(function_name: str) -> None:
     """Deploy the scheduled heartbeat example, verify the schedule is persisted
     in the catalog, and exercise the no-input invoke path."""
-    _deploy_script("scheduled-function", "heartbeat.py")
+    _deploy_script("scheduled-function", "heartbeat.py", function_name=function_name)
 
-    fn = chalkcompute.RemoteFunction.from_name("ex-heartbeat")
+    fn = chalkcompute.RemoteFunction.from_name(function_name)
     assert fn.version_info is not None
 
     stub = fn._client.stub(catalog_connect.ExternalFunctionCatalogServiceClientSync)
