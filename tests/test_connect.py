@@ -1159,6 +1159,7 @@ class TestWebIdentityDataplaneRouting:
         token_file = tmp_path / "identity.jwt"
         token_file.write_text(_identity_jwt("env-identity"))
         monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(token_file))
+        monkeypatch.delenv("CHALK_DATAPLANE_API_ENDPOINT", raising=False)
         monkeypatch.delenv("CHALK_FUNCTION_QUEUE_ENDPOINT", raising=False)
         monkeypatch.setenv("CHALK_CLIENT_ID", "ambient-client")
         monkeypatch.setenv("CHALK_CLIENT_SECRET", "ambient-secret")
@@ -1193,7 +1194,7 @@ class TestWebIdentityDataplaneRouting:
     def test_uses_injected_endpoint_without_discovery(
         self, monkeypatch, endpoint, expected
     ):
-        monkeypatch.setenv("CHALK_FUNCTION_QUEUE_ENDPOINT", endpoint)
+        monkeypatch.setenv("CHALK_DATAPLANE_API_ENDPOINT", endpoint)
         monkeypatch.setenv("CHALK_GRPC_ENGINE", "wrong-engine.chalk.test:443")
         client = ConnectClient()
         assert client.dataplane_api_server_target() == expected
@@ -1202,9 +1203,9 @@ class TestWebIdentityDataplaneRouting:
     @pytest.mark.parametrize("endpoint", [None, "", "   "])
     def test_requires_injected_endpoint(self, monkeypatch, endpoint):
         if endpoint is not None:
-            monkeypatch.setenv("CHALK_FUNCTION_QUEUE_ENDPOINT", endpoint)
+            monkeypatch.setenv("CHALK_DATAPLANE_API_ENDPOINT", endpoint)
         monkeypatch.setenv("CHALK_GRPC_ENGINE", "wrong-engine.chalk.test:443")
-        with pytest.raises(ConnectError, match="require CHALK_FUNCTION_QUEUE_ENDPOINT"):
+        with pytest.raises(ConnectError, match="require CHALK_DATAPLANE_API_ENDPOINT"):
             ConnectClient().dataplane_api_server_target()
 
     @pytest.mark.parametrize(
@@ -1226,15 +1227,15 @@ class TestWebIdentityDataplaneRouting:
         ],
     )
     def test_rejects_malformed_endpoint(self, monkeypatch, endpoint):
-        monkeypatch.setenv("CHALK_FUNCTION_QUEUE_ENDPOINT", endpoint)
-        with pytest.raises(ConnectError, match="Invalid CHALK_FUNCTION_QUEUE_ENDPOINT"):
+        monkeypatch.setenv("CHALK_DATAPLANE_API_ENDPOINT", endpoint)
+        with pytest.raises(ConnectError, match="Invalid CHALK_DATAPLANE_API_ENDPOINT"):
             ConnectClient().dataplane_api_server_target()
 
     def test_rotation_keeps_injected_routing_and_refreshes_bearer(
         self, monkeypatch, identity
     ):
         monkeypatch.setenv(
-            "CHALK_FUNCTION_QUEUE_ENDPOINT", "https://dataplane.chalk.test"
+            "CHALK_DATAPLANE_API_ENDPOINT", "https://dataplane.chalk.test"
         )
         client = ConnectClient()
         assert client.dataplane_api_server_target() == ("dataplane.chalk.test", True)
@@ -1245,6 +1246,34 @@ class TestWebIdentityDataplaneRouting:
         assert (
             dict(client._rpc_metadata())["authorization"]
             == f"Bearer {identity.read_text()}"
+        )
+
+    def test_explicit_queue_endpoint_overrides_platform_route(self, monkeypatch):
+        monkeypatch.setenv(
+            "CHALK_DATAPLANE_API_ENDPOINT", "https://platform.chalk.test"
+        )
+        monkeypatch.setenv(
+            "CHALK_FUNCTION_QUEUE_ENDPOINT", "http://custom.chalk.test:8080"
+        )
+        assert ConnectClient().dataplane_api_server_target() == (
+            "custom.chalk.test:8080",
+            False,
+        )
+
+    @pytest.mark.parametrize("endpoint", ["", "   ", "https://host/path"])
+    def test_invalid_explicit_override_does_not_fall_back(self, monkeypatch, endpoint):
+        monkeypatch.setenv(
+            "CHALK_DATAPLANE_API_ENDPOINT", "https://platform.chalk.test"
+        )
+        monkeypatch.setenv("CHALK_FUNCTION_QUEUE_ENDPOINT", endpoint)
+        with pytest.raises(ConnectError, match="CHALK_FUNCTION_QUEUE_ENDPOINT"):
+            ConnectClient().dataplane_api_server_target()
+
+    def test_explicit_queue_endpoint_works_without_platform_route(self, monkeypatch):
+        monkeypatch.setenv("CHALK_FUNCTION_QUEUE_ENDPOINT", "custom.chalk.test:443")
+        assert ConnectClient().dataplane_api_server_target() == (
+            "custom.chalk.test:443",
+            True,
         )
 
 

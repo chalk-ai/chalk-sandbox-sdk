@@ -381,10 +381,10 @@ token's remaining lifetime from its `exp` claim, then re-reads the file on its
 next authenticated operation. Tokens without `exp` use the one-hour limit.
 Changing the configured file path bypasses the cache. The JWT's
 `environment_id` claim selects the environment unless `CHALK_ENVIRONMENT` or
-`CHALK_ENVIRONMENT_ID` is set explicitly. Queued function calls currently require
-client-credential or service authentication so the SDK can discover the dataplane
-API server from Auth's service routing metadata. A JWT file alone does not carry
-that metadata.
+`CHALK_ENVIRONMENT_ID` is set explicitly. With token-file authentication, queued
+function calls use the platform-provided `CHALK_DATAPLANE_API_ENDPOINT`. An explicit
+`CHALK_FUNCTION_QUEUE_ENDPOINT` overrides that default; an empty override disables
+queued calls. Client-credential and service authentication use Auth routing metadata.
 
 ### Workload identity federation
 

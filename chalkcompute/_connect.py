@@ -427,11 +427,16 @@ class ConnectClient:
         if not self._env_id:
             raise ConnectError("No Chalk environment selected")
         if self._uses_web_identity_token():
-            endpoint = os.environ.get("CHALK_FUNCTION_QUEUE_ENDPOINT", "").strip()
+            endpoint_variable = (
+                "CHALK_FUNCTION_QUEUE_ENDPOINT"
+                if "CHALK_FUNCTION_QUEUE_ENDPOINT" in os.environ
+                else "CHALK_DATAPLANE_API_ENDPOINT"
+            )
+            endpoint = os.environ.get(endpoint_variable, "").strip()
             if not endpoint:
                 raise ConnectError(
                     "Queued function calls with CHALK_WEB_IDENTITY_TOKEN_FILE require "
-                    "CHALK_FUNCTION_QUEUE_ENDPOINT. The platform must inject the "
+                    f"{endpoint_variable}. The platform must inject the "
                     "dataplane API server endpoint alongside the token file."
                 )
             try:
@@ -452,7 +457,7 @@ class ConnectClient:
                 valid = False
             if not valid:
                 raise ConnectError(
-                    "Invalid CHALK_FUNCTION_QUEUE_ENDPOINT: expected a dataplane "
+                    f"Invalid {endpoint_variable}: expected a dataplane "
                     "API server host with optional port and http:// or https:// scheme"
                 )
             return grpc_engine_target_from_url(
