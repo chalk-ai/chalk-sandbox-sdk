@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 
+from chalkcompute._chalk_identity import OIDCTokenFile
 from chalkcompute._secret import Secret
 
 _DNS_LABEL_RE = re.compile(r"^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$")
@@ -123,6 +124,14 @@ def validate_env(env: Mapping[str, str] | None) -> None:
     if secret_keys:
         raise TypeError(
             f"Secret values are not supported in this env mapping: {secret_keys!r}. "
+        )
+    token_file_keys = [k for k, v in env.items() if isinstance(v, OIDCTokenFile)]
+    if token_file_keys:
+        raise TypeError(
+            f"OIDCTokenFile values are not supported in this env mapping: "
+            f"{token_file_keys!r}. They are only supported in the env of a Sandbox "
+            'created with chalk_identity=ChalkIdentity(mode="sandbox"); image '
+            "env, per-exec env and other workloads cannot carry them."
         )
     bad = {k: v for k, v in env.items() if not isinstance(v, str)}
     if bad:
