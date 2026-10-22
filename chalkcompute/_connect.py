@@ -310,6 +310,24 @@ class ConnectClient:
                 headers={"X-Chalk-Server": "go-api"},
                 timeout_ms=30_000,
             )
+            # Resolve names using login's environment metadata before restricting
+            # the token. Keep the scoped response, including its service routes,
+            # instead of passing an unscoped token on subsequent API requests.
+            self._environment_id_to_name = _string_map(data.environment_id_to_name)
+            environment_id = self._resolve_environment_id(
+                requested_env or data.primary_environment or ""
+            )
+            if environment_id:
+                data = auth_client.get_token(
+                    auth_pb.GetTokenRequest(
+                        client_id=client_id,
+                        client_secret=client_secret,
+                        grant_type="client_credentials",
+                        scope=f"env:{environment_id}",
+                    ),
+                    headers={"X-Chalk-Server": "go-api"},
+                    timeout_ms=30_000,
+                )
         finally:
             auth_client.close()
         self._access_token = data.access_token
@@ -320,9 +338,7 @@ class ConnectClient:
             data.environment_id_to_authority
         )
         self._service_prefixes = _int_string_map(data.service_prefixes)
-        self._env_id = self._resolve_environment_id(
-            requested_env or self._primary_environment or ""
-        )
+        self._env_id = environment_id
 
         self._headers = {
             "Content-Type": "application/json",
@@ -406,13 +422,10 @@ class ConnectClient:
         return grpc_engine_target_from_url(query_server)
 
     def dataplane_api_server_target(self) -> tuple[str, bool]:
-        """Resolve the DPA target from an override or auth service URI metadata."""
+        """Resolve the DPA target from auth's generic service URI metadata."""
         self._ensure_auth()
         if not self._env_id:
             raise ConnectError("No Chalk environment selected")
-        endpoint = os.environ.get("CHALK_DATAPLANE_API_SERVER", "").strip()
-        if endpoint:
-            return grpc_engine_target_from_url(endpoint)
         authority = self._environment_id_to_authority.get(self._env_id, "")
         service_prefix = self._service_prefixes.get(
             auth_pb.ServiceKind.DATAPLANE_API_SERVER.value, ""
@@ -420,8 +433,7 @@ class ConnectClient:
         if not authority or not service_prefix:
             raise ConnectError(
                 "No dataplane API server endpoint found for Chalk environment "
-                f"{self._env_id!r}; auth did not provide service URI metadata. "
-                "Set CHALK_DATAPLANE_API_SERVER when using a web identity token file."
+                f"{self._env_id!r}; auth did not provide service URI metadata"
             )
         return grpc_engine_target_from_url(f"https://{service_prefix}.{authority}")
 

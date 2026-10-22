@@ -213,6 +213,58 @@ class TestConnectClientGrpcEngineTarget:
     def teardown_method(self) -> None:
         _auth_config._load_global_config.cache_clear()
 
+    @pytest.mark.parametrize("selected_environment", ["env-1", "Staging", None])
+    def test_scoped_credentials_preserve_queue_routing(
+        self, monkeypatch: pytest.MonkeyPatch, selected_environment
+    ):
+        monkeypatch.setattr(
+            "chalkcompute._connect.load_token",
+            lambda *a: _auth_config.TokenConfig(
+                clientId="client-id",
+                clientSecret="client-secret",
+                apiServer="https://api.chalk.test",
+                activeEnvironment=selected_environment,
+            ),
+        )
+        requests = []
+
+        class AuthClient:
+            def __init__(self, address, **kwargs):
+                assert address == "https://api.chalk.test"
+
+            def get_token(self, request, **kwargs):
+                requests.append(request)
+                if request.scope:
+                    assert request.scope == "env:env-1"
+                    return auth_pb.GetTokenResponse(
+                        access_token="scoped-token",
+                        environment_id_to_authority={"env-1": "services.chalk.test"},
+                        service_prefixes={
+                            auth_pb.ServiceKind.DATAPLANE_API_SERVER.value: "dataplane-api-server"
+                        },
+                    )
+                return auth_pb.GetTokenResponse(
+                    access_token="unscoped-token",
+                    primary_environment="env-1",
+                    environment_id_to_name={"env-1": "Staging"},
+                )
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(
+            "chalkcompute._connect.auth_connect.AuthServiceClientSync", AuthClient
+        )
+        client = ConnectClient()
+        assert client.dataplane_api_server_target() == (
+            "dataplane-api-server.services.chalk.test",
+            True,
+        )
+        assert ("authorization", "Bearer scoped-token") in client._rpc_metadata()
+        assert ("x-chalk-env-id", "env-1") in client._rpc_metadata()
+        assert len(requests) == 2
+        assert not requests[0].scope
+
     def test_uses_grpc_engine_from_token_response(self, monkeypatch):
         monkeypatch.setenv("CHALK_API_SERVER", "https://api.staging.chalk.dev")
         monkeypatch.setenv("CHALK_CLIENT_ID", "client-id")
@@ -291,6 +343,7 @@ tokens:
             client_id="config-client",
             client_secret="config-secret",
             grant_type="client_credentials",
+            scope="env:env-1",
         )
         assert posted["closed"] is True
         assert client._env_id == "env-1"
@@ -1044,30 +1097,6 @@ class TestConnectClientServiceAuth:
 
 
 class TestDataplaneApiServerTarget:
-    @pytest.mark.parametrize(
-        "endpoint, expected",
-        [
-            (
-                " https://dataplane.example.test:8443/ ",
-                ("dataplane.example.test:8443", True),
-            ),
-            ("http://localhost:8080", ("localhost:8080", False)),
-        ],
-    )
-    def test_web_identity_uses_explicit_endpoint(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path, endpoint, expected
-    ):
-        token_file = tmp_path / "identity.jwt"
-        token_file.write_text(_identity_jwt("env-identity"))
-        monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(token_file))
-        monkeypatch.setenv("CHALK_DATAPLANE_API_SERVER", endpoint)
-        monkeypatch.setattr(
-            "chalkcompute._connect.load_token",
-            lambda *a: pytest.fail("must use web identity"),
-        )
-
-        assert ConnectClient().dataplane_api_server_target() == expected
-
     def test_uses_token_service_uri_metadata(self):
         client = ConnectClient()
         client._access_token = "token"
