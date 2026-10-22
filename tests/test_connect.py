@@ -1,6 +1,7 @@
 import contextlib
 import base64
 import json
+import subprocess
 import sys
 import types
 from typing import Any
@@ -1247,6 +1248,28 @@ class TestWebIdentityDataplaneRouting:
             dict(client._rpc_metadata())["authorization"]
             == f"Bearer {identity.read_text()}"
         )
+
+    def test_subprocess_inherits_token_file_and_dataplane_route(self, monkeypatch):
+        monkeypatch.setenv(
+            "CHALK_DATAPLANE_API_ENDPOINT", "https://owner.chalk.test:443"
+        )
+        monkeypatch.setenv("CHALK_GRPC_ENGINE", "wrong-engine.chalk.test:443")
+        output = subprocess.check_output(
+            [
+                sys.executable,
+                "-c",
+                "import json; from unittest.mock import patch; "
+                "from chalkcompute._connect import ConnectClient; "
+                "\n"
+                "with patch('chalkcompute._connect.load_token', side_effect=AssertionError('unexpected credential auth')), "
+                "patch.object(ConnectClient, 'stub', side_effect=AssertionError('unexpected discovery')):\n"
+                "    client = ConnectClient()\n"
+                "    print(json.dumps([client.dataplane_api_server_target(), client._env_id]))\n",
+            ],
+            text=True,
+            timeout=15,
+        )
+        assert json.loads(output) == [["owner.chalk.test:443", True], "env-identity"]
 
     def test_explicit_queue_endpoint_overrides_platform_route(self, monkeypatch):
         monkeypatch.setenv(
