@@ -422,10 +422,47 @@ class ConnectClient:
         return grpc_engine_target_from_url(query_server)
 
     def dataplane_api_server_target(self) -> tuple[str, bool]:
-        """Resolve the DPA target from auth's generic service URI metadata."""
+        """Return the injected workload target or auth's dataplane service URI."""
         self._ensure_auth()
         if not self._env_id:
             raise ConnectError("No Chalk environment selected")
+        if self._uses_web_identity_token():
+            endpoint_variable = (
+                "CHALK_FUNCTION_QUEUE_ENDPOINT"
+                if "CHALK_FUNCTION_QUEUE_ENDPOINT" in os.environ
+                else "CHALK_DATAPLANE_API_ENDPOINT"
+            )
+            endpoint = os.environ.get(endpoint_variable, "").strip()
+            if not endpoint:
+                raise ConnectError(
+                    "Queued function calls with CHALK_WEB_IDENTITY_TOKEN_FILE require "
+                    f"{endpoint_variable}. The platform must inject the "
+                    "dataplane API server endpoint alongside the token file."
+                )
+            try:
+                parsed = urlparse(endpoint if "://" in endpoint else f"//{endpoint}")
+                valid = (
+                    parsed.scheme in ("", "http", "https")
+                    and parsed.hostname
+                    and parsed.port != 0
+                    and parsed.username is None
+                    and parsed.password is None
+                    and parsed.path in ("", "/")
+                    and "?" not in endpoint
+                    and "#" not in endpoint
+                    and not parsed.netloc.endswith(":")
+                    and not any(char.isspace() for char in endpoint)
+                )
+            except ValueError:
+                valid = False
+            if not valid:
+                raise ConnectError(
+                    f"Invalid {endpoint_variable}: expected a dataplane "
+                    "API server host with optional port and http:// or https:// scheme"
+                )
+            return grpc_engine_target_from_url(
+                parsed.geturl() if parsed.scheme else endpoint
+            )
         authority = self._environment_id_to_authority.get(self._env_id, "")
         service_prefix = self._service_prefixes.get(
             auth_pb.ServiceKind.DATAPLANE_API_SERVER.value, ""
