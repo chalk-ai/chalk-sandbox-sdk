@@ -310,6 +310,24 @@ class ConnectClient:
                 headers={"X-Chalk-Server": "go-api"},
                 timeout_ms=30_000,
             )
+            # Resolve names using login's environment metadata before restricting
+            # the token. Keep the scoped response, including its service routes,
+            # instead of passing an unscoped token on subsequent API requests.
+            self._environment_id_to_name = _string_map(data.environment_id_to_name)
+            environment_id = self._resolve_environment_id(
+                requested_env or data.primary_environment or ""
+            )
+            if environment_id:
+                data = auth_client.get_token(
+                    auth_pb.GetTokenRequest(
+                        client_id=client_id,
+                        client_secret=client_secret,
+                        grant_type="client_credentials",
+                        scope=f"env:{environment_id}",
+                    ),
+                    headers={"X-Chalk-Server": "go-api"},
+                    timeout_ms=30_000,
+                )
         finally:
             auth_client.close()
         self._access_token = data.access_token
@@ -320,9 +338,7 @@ class ConnectClient:
             data.environment_id_to_authority
         )
         self._service_prefixes = _int_string_map(data.service_prefixes)
-        self._env_id = self._resolve_environment_id(
-            requested_env or self._primary_environment or ""
-        )
+        self._env_id = environment_id
 
         self._headers = {
             "Content-Type": "application/json",

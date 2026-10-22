@@ -6,7 +6,6 @@ Connect-protocol RPC pattern.  This module centralizes:
 * ``load_dotenv()`` and the four ``CHALK_*`` env lookups
 * the ``needs_staging`` skip marker
 * ``_get_access_token`` + ``_connect_rpc`` helpers
-* environment-scoped identity files for Buildkite tests and their subprocesses
 * the ``access_token`` / ``auth_headers`` module-scoped fixtures
 * the sweep that reaps CI-scoped resources leaked by earlier builds
 """
@@ -20,7 +19,6 @@ import warnings
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Any
 
 import chalkcompute
@@ -181,35 +179,6 @@ def _get_token_response() -> dict[str, Any]:
 def _get_access_token() -> str:
     """Exchange client credentials for a bearer token via the Chalk REST API."""
     return _get_token_response()["access_token"]
-
-
-@pytest.fixture(scope="session", autouse=True)
-def ci_scoped_auth() -> Iterator[None]:
-    """Keep CI bearer headers small for SDK calls and example subprocesses."""
-    if (
-        os.environ.get("BUILDKITE") != "true"
-        or not CHALK_CLIENT_ID
-        or not CHALK_CLIENT_SECRET
-        or not CHALK_API_SERVER
-        or os.environ.get("CHALK_WEB_IDENTITY_TOKEN_FILE", "").strip()
-    ):
-        yield
-        return
-
-    token_response = _get_token_response()
-    # Token files carry no routing metadata. Preserve login's queue endpoint:
-    # TeamService.GetEnv does not populate grpc_engine_url in every CI environment.
-    engines = token_response.get("grpc_engines") or token_response.get("engines") or {}
-    grpc_engine = engines.get(CHALK_ENVIRONMENT_ID, "")
-    with TemporaryDirectory(prefix="chalk-ci-auth-") as directory:
-        token_path = Path(directory) / "token.jwt"
-        token_path.touch(mode=0o600)
-        token_path.write_text(token_response["access_token"], encoding="utf-8")
-        with pytest.MonkeyPatch.context() as patch:
-            patch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(token_path))
-            if grpc_engine and not os.environ.get("CHALK_GRPC_ENGINE", "").strip():
-                patch.setenv("CHALK_GRPC_ENGINE", grpc_engine)
-            yield
 
 
 def _connect_rpc(
@@ -431,7 +400,7 @@ def _sweep_stale_scoped_models() -> None:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def sweep_stale_ci_resources(ci_scoped_auth: None) -> None:
+def sweep_stale_ci_resources() -> None:
     """Reap scoped resources leaked by earlier builds before any test runs.
 
     Failures are warnings, shown in pytest's warnings summary, so one stuck

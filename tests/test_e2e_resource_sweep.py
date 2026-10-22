@@ -419,7 +419,7 @@ def test_failed_group_sweep_warns_and_still_sweeps_models(
     )
 
     with pytest.warns(UserWarning, match="stale scaling-group cleanup failed"):
-        conftest.sweep_stale_ci_resources.__wrapped__(None)
+        conftest.sweep_stale_ci_resources.__wrapped__()
     assert swept_models == ["called"]
 
 
