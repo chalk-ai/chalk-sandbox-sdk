@@ -28,6 +28,7 @@ import pytest
 from pyqwest import FullResponse, SyncClient
 from dotenv import load_dotenv
 
+from chalkcompute._gen.chalk.server.v1.auth_pb import ServiceKind
 from e2etests._ci_resources import SCOPED_NAME_RE, STALE_AFTER, parse_rfc3339
 
 load_dotenv()
@@ -197,10 +198,16 @@ def ci_scoped_auth() -> Iterator[None]:
         return
 
     token_response = _get_token_response()
-    # Token files carry no routing metadata. Preserve login's queue endpoint:
+    # Token files carry no routing metadata. Preserve login's service endpoints:
     # TeamService.GetEnv does not populate grpc_engine_url in every CI environment.
     engines = token_response.get("grpc_engines") or token_response.get("engines") or {}
     grpc_engine = engines.get(CHALK_ENVIRONMENT_ID, "")
+    authority = token_response.get("environment_id_to_authority", {}).get(
+        CHALK_ENVIRONMENT_ID, ""
+    )
+    service_prefix = token_response.get("service_prefixes", {}).get(
+        str(ServiceKind.DATAPLANE_API_SERVER.value), ""
+    )
     with TemporaryDirectory(prefix="chalk-ci-auth-") as directory:
         token_path = Path(directory) / "token.jwt"
         token_path.touch(mode=0o600)
@@ -209,6 +216,15 @@ def ci_scoped_auth() -> Iterator[None]:
             patch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(token_path))
             if grpc_engine and not os.environ.get("CHALK_GRPC_ENGINE", "").strip():
                 patch.setenv("CHALK_GRPC_ENGINE", grpc_engine)
+            if (
+                authority
+                and service_prefix
+                and not os.environ.get("CHALK_DATAPLANE_API_SERVER", "").strip()
+            ):
+                patch.setenv(
+                    "CHALK_DATAPLANE_API_SERVER",
+                    f"https://{service_prefix}.{authority}",
+                )
             yield
 
 

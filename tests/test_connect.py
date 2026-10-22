@@ -1044,6 +1044,30 @@ class TestConnectClientServiceAuth:
 
 
 class TestDataplaneApiServerTarget:
+    @pytest.mark.parametrize(
+        "endpoint, expected",
+        [
+            (
+                " https://dataplane.example.test:8443/ ",
+                ("dataplane.example.test:8443", True),
+            ),
+            ("http://localhost:8080", ("localhost:8080", False)),
+        ],
+    )
+    def test_web_identity_uses_explicit_endpoint(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path, endpoint, expected
+    ):
+        token_file = tmp_path / "identity.jwt"
+        token_file.write_text(_identity_jwt("env-identity"))
+        monkeypatch.setenv("CHALK_WEB_IDENTITY_TOKEN_FILE", str(token_file))
+        monkeypatch.setenv("CHALK_DATAPLANE_API_SERVER", endpoint)
+        monkeypatch.setattr(
+            "chalkcompute._connect.load_token",
+            lambda *a: pytest.fail("must use web identity"),
+        )
+
+        assert ConnectClient().dataplane_api_server_target() == expected
+
     def test_uses_token_service_uri_metadata(self):
         client = ConnectClient()
         client._access_token = "token"

@@ -40,6 +40,7 @@ def ci_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv("CHALK_WEB_IDENTITY_TOKEN_FILE", raising=False)
     monkeypatch.delenv("CHALK_GRPC_ENGINE", raising=False)
+    monkeypatch.delenv("CHALK_DATAPLANE_API_SERVER", raising=False)
     monkeypatch.setattr(conftest, "CHALK_CLIENT_ID", "client-id")
     monkeypatch.setattr(conftest, "CHALK_CLIENT_SECRET", "client-secret")
     monkeypatch.setattr(conftest, "CHALK_API_SERVER", "https://api.example.test")
@@ -100,6 +101,8 @@ def test_ci_identity_is_used_by_sdk_and_inherited_by_subprocesses(
         {
             "access_token": token,
             "grpc_engines": {"env-ci": "https://queue.example.test:443"},
+            "environment_id_to_authority": {"env-ci": "services.example.test:8443"},
+            "service_prefixes": {"1": "dataplane-api-server"},
         },
     )
     monkeypatch.setattr(
@@ -121,6 +124,10 @@ def test_ci_identity_is_used_by_sdk_and_inherited_by_subprocesses(
                 lambda *a: pytest.fail("must use login's queue endpoint"),
             )
             assert client.grpc_engine_target() == ("queue.example.test:443", True)
+            assert client.dataplane_api_server_target() == (
+                "dataplane-api-server.services.example.test:8443",
+                True,
+            )
         finally:
             client.close()
         child_token = subprocess.check_output(
@@ -137,14 +144,17 @@ def test_ci_identity_is_used_by_sdk_and_inherited_by_subprocesses(
                 sys.executable,
                 "-c",
                 "from chalkcompute._connect import ConnectClient; "
-                "print(ConnectClient().grpc_engine_target())",
+                "print(ConnectClient().dataplane_api_server_target())",
             ],
             text=True,
         ).strip()
-        assert child_target == "('queue.example.test:443', True)"
+        assert child_target == (
+            "('dataplane-api-server.services.example.test:8443', True)"
+        )
 
     assert "CHALK_WEB_IDENTITY_TOKEN_FILE" not in os.environ
     assert "CHALK_GRPC_ENGINE" not in os.environ
+    assert "CHALK_DATAPLANE_API_SERVER" not in os.environ
     assert not token_path.exists()
 
 
@@ -224,3 +234,20 @@ def test_ci_identity_preserves_explicit_queue_endpoint(
     with contextmanager(conftest.ci_scoped_auth.__wrapped__)():
         assert os.environ["CHALK_GRPC_ENGINE"] == "localhost:50051"
     assert os.environ["CHALK_GRPC_ENGINE"] == "localhost:50051"
+
+
+def test_ci_identity_preserves_explicit_dataplane_endpoint(
+    ci_credentials: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CHALK_DATAPLANE_API_SERVER", "http://localhost:8080")
+    _mock_token_response(
+        monkeypatch,
+        {
+            "access_token": "test-token",
+            "environment_id_to_authority": {"env-ci": "services.example.test"},
+            "service_prefixes": {"1": "dataplane-api-server"},
+        },
+    )
+    with contextmanager(conftest.ci_scoped_auth.__wrapped__)():
+        assert os.environ["CHALK_DATAPLANE_API_SERVER"] == "http://localhost:8080"
+    assert os.environ["CHALK_DATAPLANE_API_SERVER"] == "http://localhost:8080"

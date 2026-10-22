@@ -381,11 +381,12 @@ token's remaining lifetime from its `exp` claim, then re-reads the file on its
 next authenticated operation. Tokens without `exp` use the one-hour limit.
 Changing the configured file path bypasses the cache. The JWT's
 `environment_id` claim selects the environment unless `CHALK_ENVIRONMENT` or
-`CHALK_ENVIRONMENT_ID` is set explicitly. For queued function calls, the SDK
-uses `CHALK_GRPC_ENGINE` when set; otherwise it discovers the environment's gRPC
-endpoint through the metadata API's `TeamService.GetEnv` RPC. Discovery requires
-`DEPLOY_READ` permission. The endpoint is cached until the identity is refreshed;
-set `CHALK_GRPC_ENGINE` explicitly if the identity cannot read environment metadata.
+`CHALK_ENVIRONMENT_ID` is set explicitly. Queued function calls require
+`CHALK_DATAPLANE_API_SERVER` to point to the environment's dataplane API server
+when using a token file. Token files contain no service routing metadata;
+client-credential and service-auth exchanges discover this endpoint from Auth.
+`CHALK_GRPC_ENGINE` configures the separate engine endpoint and does not configure
+queued function calls.
 
 ### Workload identity federation
 

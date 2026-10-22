@@ -1,0 +1,1 @@
+Queued function calls using a web identity token file can now configure their dataplane endpoint with `CHALK_DATAPLANE_API_SERVER`. Buildkite integration tests preserve this endpoint from the auth response for tests and example subprocesses.
