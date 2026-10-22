@@ -1042,7 +1042,7 @@ def _secret_to_proto(secret: Secret) -> container_pb.SecretRef:
     elif secret._secret_name is not None:
         source = Oneof("secret_name", secret._secret_name)
     return container_pb.SecretRef(
-        source=source,  # ty: ignore[invalid-argument-type]
+        source=source,
         keys=list(secret._keys),
         aliases=dict(secret._aliases),
         prefix=secret._prefix,
@@ -1059,9 +1059,7 @@ def _network_matcher_to_proto(
     else:
         assert matcher.regex is not None
         value = Oneof("regex", matcher.regex)
-    return container_pb.NetworkPolicyMatcher(
-        matcher=value  # ty: ignore[invalid-argument-type]
-    )
+    return container_pb.NetworkPolicyMatcher(matcher=value)
 
 
 def _network_key_value_matcher_to_proto(
