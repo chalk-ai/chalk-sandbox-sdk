@@ -10,13 +10,15 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sys
 import time
-from typing import TYPE_CHECKING, Any, Callable, Mapping, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, TypeVar
 from urllib.parse import urlparse
 
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
 from connectrpc.protocol import ProtocolType
+from protobuf import Oneof
 
 from chalkcompute._auth_config import active_environment_from_env, load_token
 from chalkcompute._gen.chalk.auth.v1 import permissions_pb
@@ -29,6 +31,14 @@ from chalkcompute._gen.chalk.server.v1 import (
     team_pb,
 )
 from chalkcompute._http import HTTP_TRANSPORT_ERRORS, SYNC_HTTP_CLIENT
+from chalkcompute._progress import (
+    progress_add,
+    progress_done,
+    progress_fail,
+    progress_finish,
+    progress_update,
+    tui_enabled,
+)
 from chalkcompute._remote_call_client import (
     RemoteCallClientUnavailable,
     ServiceAuthContext,
@@ -553,6 +563,7 @@ def build_image(
     *,
     poll_interval: float = 0.5,
     timeout: float | None = None,
+    progress_parent: str | None = None,
 ) -> str:
     """Build an ``Image`` spec via ``CustomImageService`` and return its URI.
 
@@ -570,6 +581,8 @@ def build_image(
     timeout
         Optional maximum seconds to wait for the build to complete. By default,
         wait for the server to report a terminal build status.
+    progress_parent
+        Optional progress row to nest the "Building image" step under.
 
     Returns
     -------
@@ -593,13 +606,89 @@ def build_image(
     )
     status = response.status
     if status in ("exists", "succeeded"):
+        key = _image_build_key(response.image)
+        progress_add(key, "image", "Building image", parent=progress_parent, detail="")
+        progress_done(key, detail="already built, using existing image")
+        if progress_parent is None:
+            progress_finish()
         return response.image
     if status == "failed":
         raise ConnectError(f"Image build failed: {response.error or 'unknown'}")
 
     return wait_for_image_build(
-        client, response.build_id, poll_interval=poll_interval, timeout=timeout
+        client,
+        response.build_id,
+        poll_interval=poll_interval,
+        timeout=timeout,
+        progress_parent=progress_parent,
     )
+
+
+class _BuildLogStreamer:
+    """Print new image build log lines to stderr as a build progresses.
+
+    Log streaming is best-effort: a builder that cannot serve logs, or a failed
+    fetch, disables streaming and never fails the build. Lines go to stderr
+    without color so build output reads as progress rather than as errors.
+    """
+
+    _PAGE_SIZE = 500
+
+    def __init__(self, client: ConnectClient, build_id: str) -> None:
+        self._client = client
+        self._build_id = build_id
+        self._page_token: str | None = None
+        self._seen: set[str] = set()
+        self._enabled = tui_enabled()
+
+    def poll(self) -> None:
+        if not self._enabled:
+            return
+        try:
+            self._drain()
+        except ConnectRpcError as exc:
+            if exc.code in (Code.UNIMPLEMENTED, Code.NOT_FOUND, Code.PERMISSION_DENIED):
+                self._enabled = False
+            logger.debug("GetCustomImageBuildLogs failed: %s", exc)
+        except HTTP_TRANSPORT_ERRORS as exc:
+            logger.debug("GetCustomImageBuildLogs transport error: %s", exc)
+
+    def _drain(self) -> None:
+        stub = self._client.stub(image_connect.CustomImageServiceClientSync)
+        while True:
+            response = self._client.call(
+                stub.get_custom_image_build_logs,
+                image_pb.GetCustomImageBuildLogsRequest(
+                    identifier=Oneof("build_id", self._build_id),
+                    limit=self._PAGE_SIZE,
+                    page_token=self._page_token,
+                ),
+            )
+            self._write(response.logs)
+            if not response.next_page_token:
+                return
+            self._page_token = response.next_page_token
+
+    def _write(self, entries: Iterable[Any]) -> None:
+        lines = []
+        for entry in entries:
+            if entry.id:
+                if entry.id in self._seen:
+                    continue
+                self._seen.add(entry.id)
+            lines.extend(entry.message.rstrip("\n").splitlines() or [""])
+        if not lines:
+            return
+        try:
+            sys.stderr.write("\n".join(lines) + "\n")
+            sys.stderr.flush()
+        except (OSError, ValueError):
+            # A closed/redirected console must not fail a build.
+            self._enabled = False
+
+
+def _image_build_key(build_id: str) -> str:
+    return f"image-build:{build_id}"
 
 
 def wait_for_image_build(
@@ -608,12 +697,50 @@ def wait_for_image_build(
     *,
     poll_interval: float,
     timeout: float | None,
+    progress_parent: str | None = None,
 ) -> str:
-    """Wait for an already-submitted build without another get-or-build call."""
+    """Wait for an already-submitted build without another get-or-build call.
+
+    Shows a "Building image" row in the deploy progress display while waiting,
+    nested under ``progress_parent`` when the caller has its own progress row.
+    """
+    key = _image_build_key(build_id)
+    started = time.monotonic()
+    progress_add(
+        key,
+        "image",
+        "Building image",
+        parent=progress_parent,
+        detail=f"Build started ({build_id})",
+    )
+    try:
+        image = _poll_image_build(
+            client, build_id, poll_interval=poll_interval, timeout=timeout
+        )
+    except BaseException:
+        progress_fail(key, detail="build did not complete")
+        if progress_parent is None:
+            progress_finish()
+        raise
+    progress_done(key, detail=f"built in {time.monotonic() - started:.0f}s")
+    if progress_parent is None:
+        progress_finish()
+    return image
+
+
+def _poll_image_build(
+    client: ConnectClient,
+    build_id: str,
+    *,
+    poll_interval: float,
+    timeout: float | None,
+) -> str:
     stub = client.stub(image_connect.CustomImageServiceClientSync)
     deadline = time.monotonic() + timeout if timeout is not None else None
     transient_failures = 0
     max_transient_failures = 5
+    logs = _BuildLogStreamer(client, build_id)
+    announced_building = False
     while deadline is None or time.monotonic() < deadline:
         try:
             get_response = client.call(
@@ -641,6 +768,11 @@ def wait_for_image_build(
             continue
         transient_failures = 0
         status = get_response.status
+        if status == "building" and not announced_building:
+            announced_building = True
+            progress_update(_image_build_key(build_id), detail="Building")
+        # Fetch after the status so a terminal build's last lines are shown.
+        logs.poll()
         if status == "succeeded":
             return get_response.image
         if status == "failed":

@@ -20,6 +20,7 @@ from chalkcompute._connect import (
     wait_for_image_build,
 )
 from chalkcompute._gen.chalk.server.v1 import auth_pb, team_pb
+from chalkcompute._gen.chalk.common.v1.log_pb import LogEntry
 from chalkcompute._gen.chalk.sandbox.v1 import service_pb as image_pb
 from connectrpc.code import Code
 from connectrpc.errors import ConnectError as ConnectRpcError
@@ -1267,13 +1268,181 @@ class TestStubAndCall:
 
 def test_wait_for_image_build_uses_server_status_without_client_timeout() -> None:
     client = MagicMock()
-    client.call.return_value = image_pb.GetCustomImageResponse(
-        status="succeeded", image="registry/image:built"
-    )
+    client.call.side_effect = [
+        image_pb.GetCustomImageResponse(
+            status="succeeded", image="registry/image:built"
+        ),
+        image_pb.GetCustomImageBuildLogsResponse(),
+    ]
 
     image_uri = wait_for_image_build(client, "build-123", poll_interval=0, timeout=None)
 
     assert image_uri == "registry/image:built"
+    assert client.call.call_count == 2
+
+
+def _log_entry(entry_id: str, message: str) -> LogEntry:
+    return LogEntry(id=entry_id, message=message)
+
+
+def test_wait_for_image_build_streams_logs_to_stderr(monkeypatch, capsys) -> None:
+    monkeypatch.delenv("CHALK_SANDBOX_TUI", raising=False)
+    client = MagicMock()
+    client.call.side_effect = [
+        image_pb.GetCustomImageResponse(status="building"),
+        image_pb.GetCustomImageBuildLogsResponse(
+            logs=[_log_entry("1", "Step 1/2: pip install\n")], next_page_token="t1"
+        ),
+        image_pb.GetCustomImageBuildLogsResponse(
+            logs=[_log_entry("2", "Collecting numpy")]
+        ),
+        image_pb.GetCustomImageResponse(status="succeeded", image="registry/img:1"),
+        # The server may repeat an entry; it must be printed once.
+        image_pb.GetCustomImageBuildLogsResponse(
+            logs=[_log_entry("2", "Collecting numpy"), _log_entry("3", "Done")]
+        ),
+    ]
+
+    assert wait_for_image_build(client, "b", poll_interval=0, timeout=None) == (
+        "registry/img:1"
+    )
+
+    captured = capsys.readouterr()
+    assert captured.err == "Step 1/2: pip install\nCollecting numpy\nDone\n"
+    assert "\x1b" not in captured.err
+
+
+def test_wait_for_image_build_shows_building_row(monkeypatch, capsys) -> None:
+    monkeypatch.delenv("CHALK_SANDBOX_TUI", raising=False)
+    client = MagicMock()
+    client.call.side_effect = [
+        image_pb.GetCustomImageResponse(status="building"),
+        image_pb.GetCustomImageBuildLogsResponse(),
+        image_pb.GetCustomImageResponse(status="succeeded", image="registry/img:1"),
+        image_pb.GetCustomImageBuildLogsResponse(),
+    ]
+
+    wait_for_image_build(client, "build-9", poll_interval=0, timeout=None)
+
+    out = capsys.readouterr().out
+    assert "Building image" in out
+    assert "Build started (build-9)" in out
+    assert "Building" in out.split("Build started (build-9)")[1]
+    assert "Done" in out
+    assert "built in" in out
+
+
+def test_wait_for_image_build_nests_under_parent_row(monkeypatch, capsys) -> None:
+    from chalkcompute._progress import progress_add, progress_done, reset_progress
+
+    monkeypatch.delenv("CHALK_SANDBOX_TUI", raising=False)
+    reset_progress()
+    client = MagicMock()
+    client.call.side_effect = [
+        image_pb.GetCustomImageResponse(status="building"),
+        image_pb.GetCustomImageBuildLogsResponse(),
+        image_pb.GetCustomImageResponse(status="succeeded", image="registry/img:1"),
+        image_pb.GetCustomImageBuildLogsResponse(),
+    ]
+
+    progress_add("function:f", "function", 'Function "f"')
+    wait_for_image_build(
+        client, "build-7", poll_interval=0, timeout=None, progress_parent="function:f"
+    )
+    progress_done("function:f", detail="ready")
+
+    out = capsys.readouterr().out
+    assert out.count('Function "f"') == 1
+    assert "(continued)" not in out
+    assert "Building image" in out
+    reset_progress()
+
+
+def test_build_image_nests_cached_row_under_parent(monkeypatch, capsys) -> None:
+    from chalkcompute import Image
+    from chalkcompute._connect import build_image
+    from chalkcompute._progress import progress_add, reset_progress
+
+    monkeypatch.delenv("CHALK_SANDBOX_TUI", raising=False)
+    reset_progress()
+    client = MagicMock()
+    client.call.return_value = image_pb.GetOrBuildCustomImageResponse(
+        status="exists", build_id="b-2", image="registry/img:cached"
+    )
+    image = Image.debian_slim("3.12").run_commands("echo hi")
+
+    progress_add("sg:1", "scaling_group", "Scaling group")
+    build_image(client, image, progress_parent="sg:1")
+
+    out = capsys.readouterr().out
+    assert out.count("Scaling group") == 1
+    assert "(continued)" not in out
+    assert "already built" in out
+    reset_progress()
+
+
+def test_build_image_cached_shows_already_built(monkeypatch, capsys) -> None:
+    from chalkcompute import Image
+    from chalkcompute._connect import build_image
+
+    monkeypatch.delenv("CHALK_SANDBOX_TUI", raising=False)
+    client = MagicMock()
+    client.call.return_value = image_pb.GetOrBuildCustomImageResponse(
+        status="exists", build_id="b-1", image="registry/img:cached"
+    )
+
+    image = Image.debian_slim("3.12").run_commands("echo hi")
+
+    assert build_image(client, image) == "registry/img:cached"
+
+    out = capsys.readouterr().out
+    assert "Building image" in out
+    assert "already built" in out
+
+
+def test_wait_for_image_build_failure_marks_row_failed(monkeypatch, capsys) -> None:
+    monkeypatch.delenv("CHALK_SANDBOX_TUI", raising=False)
+    client = MagicMock()
+    client.call.side_effect = [
+        image_pb.GetCustomImageResponse(status="failed", error="boom"),
+        image_pb.GetCustomImageBuildLogsResponse(),
+    ]
+
+    with pytest.raises(ConnectError, match="boom"):
+        wait_for_image_build(client, "build-8", poll_interval=0, timeout=None)
+
+    assert "Failed" in capsys.readouterr().out
+
+
+def test_wait_for_image_build_log_failure_does_not_fail_build(
+    monkeypatch, capsys
+) -> None:
+    monkeypatch.delenv("CHALK_SANDBOX_TUI", raising=False)
+    client = MagicMock()
+    client.call.side_effect = [
+        image_pb.GetCustomImageResponse(status="building"),
+        ConnectRpcError(Code.UNIMPLEMENTED, "no logs"),
+        image_pb.GetCustomImageResponse(status="succeeded", image="registry/img:1"),
+    ]
+
+    assert wait_for_image_build(client, "b", poll_interval=0, timeout=None) == (
+        "registry/img:1"
+    )
+
+    # Streaming is disabled after UNIMPLEMENTED: no further log calls.
+    assert client.call.call_count == 3
+    assert capsys.readouterr().err == ""
+
+
+def test_wait_for_image_build_logs_disabled_with_progress(monkeypatch) -> None:
+    monkeypatch.setenv("CHALK_SANDBOX_TUI", "false")
+    client = MagicMock()
+    client.call.return_value = image_pb.GetCustomImageResponse(
+        status="succeeded", image="registry/img:1"
+    )
+
+    wait_for_image_build(client, "b", poll_interval=0, timeout=None)
+
     client.call.assert_called_once()
 
 

@@ -3149,6 +3149,7 @@ class RemoteFunction:
                 force_new_version=force_new_version,
                 poll_interval=poll_interval,
                 timeout=build_timeout,
+                progress_parent=fkey,
                 version_spec=catalog_pb.ExternalFunctionVersionSpec(
                     input_arrow_schema=input_schema_proto,
                     output_arrow_schema=output_schema_proto,

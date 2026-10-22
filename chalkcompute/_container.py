@@ -898,6 +898,7 @@ class Container:
         *,
         poll_interval: float = 0.5,
         timeout: float = 600.0,
+        progress_parent: str | None = None,
     ) -> str:
         """Build the ``Image`` spec via ``CustomImageService`` and return the URI.
 
@@ -907,6 +908,8 @@ class Container:
             Seconds between build-status polls.
         timeout
             Maximum seconds to wait for the build to complete.
+        progress_parent
+            Optional progress row to nest the "Building image" step under.
 
         Returns
         -------
@@ -928,6 +931,7 @@ class Container:
                 self._image,
                 poll_interval=poll_interval,
                 timeout=timeout,
+                progress_parent=progress_parent,
             )
         except ConnectError as e:
             raise ImageBuildError(str(e)) from e
@@ -1055,17 +1059,13 @@ class Container:
         try:
             # 1. Resolve image URI
             if isinstance(self._image, Image):
-                ikey = f"image:{container_name}"
-                progress_add(ikey, "image", "Building image", parent=ckey)
                 logger.info("Building image from %r...", self._image)
                 self._built_image_uri = self._build_image(
                     poll_interval=poll_interval,
                     timeout=build_timeout,
+                    progress_parent=ckey,
                 )
                 logger.info("Image built: %s", self._built_image_uri)
-                progress_done(
-                    ikey, detail="cached" if self._built_image_uri else "built"
-                )
             else:
                 self._built_image_uri = self._image
 
