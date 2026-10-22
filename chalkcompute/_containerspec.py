@@ -39,8 +39,9 @@ class ResourceDetector(Enum):
     """Egress detectors that record resources a sandbox creates.
 
     Each detector inspects the sandbox's egress traffic to the hosts it
-    recognizes. A sandbox that enables a detector implicitly allows those
-    hosts in its ``NetworkPolicy``.
+    recognizes. Enabling a detector does not change the sandbox's
+    ``NetworkPolicy``; a sandbox with an explicit allow-list must allow
+    those hosts itself.
     """
 
     GITHUB_PULL_REQUESTS = "RESOURCE_DETECTOR_GITHUB_PULL_REQUESTS"
