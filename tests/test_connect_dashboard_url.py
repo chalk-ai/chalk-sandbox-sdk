@@ -48,7 +48,7 @@ def test_function_dashboard_url_is_none_when_lookup_fails():
     assert client.function_dashboard_url("f") is None
 
 
-def test_function_dashboard_url_prod_uses_console_host():
+def test_function_dashboard_url_prod_host():
     client = _Client(_env_response(id="env-1", project_id="proj"))
     client._api_server = "https://api.chalk.ai"
-    assert client.function_dashboard_url("f").startswith("https://console.chalk.ai/")
+    assert client.function_dashboard_url("f").startswith("https://chalk.ai/projects/")

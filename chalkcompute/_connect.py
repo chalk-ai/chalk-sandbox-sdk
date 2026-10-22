@@ -358,10 +358,7 @@ class ConnectClient:
     def _default_dashboard_url(self) -> str:
         """Dashboard origin implied by the API server (``api.X`` -> ``X``)."""
         host = urlparse(self._api_server or "").hostname or ""
-        host = host.removeprefix("api.")
-        if not host or host == "chalk.ai":
-            return "https://console.chalk.ai"
-        return f"https://{host}"
+        return f"https://{host.removeprefix('api.')}"
 
     def function_dashboard_url(self, function_name: str) -> str | None:
         """Return the dashboard URL for an external function, if resolvable.
