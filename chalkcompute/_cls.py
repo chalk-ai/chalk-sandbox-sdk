@@ -1277,7 +1277,7 @@ class RemoteClass:
                 container_spec = ContainerSpec(
                     name=sg_name,
                     image="",
-                    entrypoint=_local_install_entrypoint(handler_cmd),
+                    entrypoint=_local_install_entrypoint(handler_cmd, deploy_image),
                     env=_remote_call_container_env(
                         self._env, deploy_image._env.get("PYTHONPATH", "/app")
                     ),
