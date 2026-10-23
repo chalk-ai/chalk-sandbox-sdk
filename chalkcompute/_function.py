@@ -785,6 +785,9 @@ def _generate_handler_shim(
                         bucket.setdefault(ci, {{}})[ri] = value
                 return [[bucket[ci][ri] for ri in sorted(bucket[ci])]
                         for ci in range(len(events))]
+
+
+            handler.__chalk_capture_ordered__ = True
             """)
         )
     return (
@@ -860,6 +863,8 @@ def _generate_handler_shim(
                 def _gen():
                     for i in range(n):
                         kwargs = _kwargs_for_row(columns, i)
+                        if context is not None:
+                            context["__chalk_capture_input_row__"] = i
                         with _call_scope(context, row_metadata, i):
                             if _output_encoder is None:
                                 yield from {func_name}(**kwargs)
@@ -871,6 +876,8 @@ def _generate_handler_shim(
                 async def _agen():
                     for i in range(n):
                         kwargs = _kwargs_for_row(columns, i)
+                        if context is not None:
+                            context["__chalk_capture_input_row__"] = i
                         with _call_scope(context, row_metadata, i):
                             async for item in {func_name}(**kwargs):
                                 yield item if _output_encoder is None else _output_encoder(item)
@@ -896,6 +903,9 @@ def _generate_handler_shim(
                         result = _output_encoder(result)
                     results.append(result)
                 return results
+
+
+        handler.__chalk_capture_ordered__ = True
         """)
     )
 

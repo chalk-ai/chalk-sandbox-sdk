@@ -675,6 +675,8 @@ def _generate_class_handler_shim(
                     def _gen():
                         for i in range(n):
                             kwargs = {{k: v[i].as_py() for k, v in event.items()}}
+                            if context is not None:
+                                context["__chalk_capture_input_row__"] = i
                             with _call_scope(context, row_metadata, i, True):
                                 yield from {method_caller}.{method_name}(**kwargs)
                     return _gen()
@@ -682,6 +684,8 @@ def _generate_class_handler_shim(
                     async def _agen():
                         for i in range(n):
                             kwargs = {{k: v[i].as_py() for k, v in event.items()}}
+                            if context is not None:
+                                context["__chalk_capture_input_row__"] = i
                             with _call_scope(context, row_metadata, i, True):
                                 async for item in {method_caller}.{method_name}(**kwargs):
                                     yield item
@@ -704,6 +708,7 @@ def _generate_class_handler_shim(
             """).rstrip()
         )
 
+    parts.append("handler.__chalk_capture_ordered__ = True")
     return "\n".join(parts) + "\n"
 
 

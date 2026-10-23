@@ -789,3 +789,68 @@ class TestShimViaRemoteCallLib:
             [{}, {}],
         )
         assert _decode_result_column(payloads) == [[11], [22, 33]]
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("class_method", [False, True])
+def test_capture_generator_row_mapping_across_input_batches(asynchronous, class_method):
+    from chalk_remote_call.servicer import process_batches
+
+    def expand(n: int):
+        yield from range(n)
+
+    async def async_expand(n: int):
+        for i in range(n):
+            yield i
+
+    target = async_expand if asynchronous else expand
+    if class_method:
+
+        class Worker:
+            expand = staticmethod(target)
+
+        _install_user_module(Worker=Worker)
+        source = _generate_class_handler_shim(
+            "Worker", "expand", False, None, False, None, False
+        )
+    else:
+        _install_user_module(expand=target)
+        source = _generate_handler_shim("expand")
+    handler = _load_shim(source)["handler"]
+    sink = pa.BufferOutputStream()
+    schema = pa.schema([("n", pa.int64())])
+    with pa.ipc.new_stream(sink, schema) as writer:
+        for values in ([2, 0], [1, 2]):
+            writer.write_batch(pa.record_batch([pa.array(values)], schema=schema))
+    payloads = process_batches(sink.getvalue().to_pybytes(), handler, None, {})
+    rows = [
+        int(batch.schema.metadata[b"chalk.capture.input_row"])
+        for payload in payloads
+        for batch in decode_ipc_stream(payload)
+    ]
+    assert rows == [0, 0, 2, 3, 3]
+    assert _decode_result_column(payloads) == [[0], [1], [0], [0], [1]]
+
+
+def test_capture_coalesced_results_keep_each_callers_row_order():
+    from chalk_remote_call.servicer import process_batches_coalesced
+
+    def double(x: int) -> int:
+        return x * 2
+
+    _install_user_module(double=double)
+    handler = _load_shim(_generate_handler_shim("double", batched=True))["handler"]
+    payloads = process_batches_coalesced(
+        [
+            _encode_event({"x": pa.array([30, 10])}),
+            _encode_event({"x": pa.array([20])}),
+        ],
+        handler,
+        None,
+        [{}, {}],
+    )
+    batches = [decode_ipc_stream(payload)[0] for payload in payloads]
+    assert [
+        batch.schema.metadata[b"chalk.capture.input_row_start"] for batch in batches
+    ] == [b"0", b"0"]
+    assert _decode_result_column(payloads) == [[60, 20], [40]]

@@ -1221,12 +1221,26 @@ SELECT * FROM function_calls.data
 WHERE function_version_id = '<version-id>'
 ORDER BY __chalk__query_ts DESC;
 
-SELECT * FROM function_calls."<version-id>_inputs";
-SELECT * FROM function_calls."<version-id>_outputs";
+SELECT customer_id, __chalk__output
+FROM function_calls."<version-id>_values";
 ```
 
-Payload columns use the `value_` prefix; bookkeeping columns identify the call,
-attempt, row, and chunk. A table appears after its first captured payload reaches
+Each argument has its own column, named exactly as the Python parameter:
+`score(customer_id, token)` produces `customer_id`, `token`, and
+`__chalk__output`. A structured argument keeps its own struct column; arguments
+are never packed together into one struct. The return value occupies the reserved
+`__chalk__output` column, including a struct or list when that is its declared type.
+Names starting with `__chalk` are reserved for capture bookkeeping.
+
+Ordinary results share rows with their arguments. Generator yields repeat the
+corresponding argument values, with explicit input-row IDs and chunk order.
+Inputs without a captured output (including errors, empty generators, or disabled
+output capture) have `__chalk__has_output = false`; this distinguishes them from
+an actual null return. Disabled or Secret arguments remain typed null columns.
+Custom runtime handlers without an explicit row mapping retain unmatched inputs
+and outputs as separate rows in the same table; no positional match is guessed.
+Bookkeeping uses `__chalk__operation_id`, `__chalk__attempt_id`,
+`__chalk__chunk_index`, `__chalk__row_id`, and `__chalk__input_row_id`. A table appears after its first captured payload reaches
 the offline store. Metadata and payloads are independently ingested, so a
 completed call can have payloads still pending ingestion. Every scan is scoped to
 the current environment.
