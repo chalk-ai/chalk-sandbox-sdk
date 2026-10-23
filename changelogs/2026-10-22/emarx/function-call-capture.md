@@ -1,0 +1,2 @@
+- Add function and class call capture policies, request-scoped overrides, and Secret annotations that exclude values and defaults from capture.
+- Preserve function-version and invocation identity across remote calls and expose capture history through the shared offline-store infrastructure.

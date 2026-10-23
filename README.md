@@ -1165,3 +1165,73 @@ are omitted. These values are catalog-visible; keep secrets in Chalk-managed
 secret references rather than function defaults. Clients can show descriptions,
 collect required arguments, and reconstruct declared defaults without invoking
 the function. Record and invoke the same immutable version selected by the user.
+
+### Capture function calls
+
+Call capture retains execution metadata and samples typed inputs and outputs in
+Chalk's offline store. It is separate from tracing and console logging, and is
+opt-in for each deployed function or class:
+
+```python
+from typing import Annotated
+import chalkcompute as cc
+
+@cc.function(capture=cc.CapturePolicy(sample_rate=0.1, inputs=True, outputs=True))
+def score(customer_id: int, token: Annotated[str, cc.Secret]) -> float:
+    return 0.5
+
+score.with_capture(inputs=False, outputs=True).remote(123, "token")
+```
+
+`capture=True` captures all calls' permitted values. `capture=False` disables
+metadata and value capture. An omitted policy keeps capture disabled. With an
+enabled policy, metadata is retained for every invocation; `sample_rate` selects
+which invocations retain values, independently of trace sampling.
+
+A request can override either side using `with_capture(inputs=..., outputs=...)`
+or the `x-chalk-capture-inputs` / `x-chalk-capture-outputs` headers (`true` or
+`false`). Missing settings use the deployment policy. Explicit `true` bypasses
+sampling, but cannot override `capture=False` or a `Secret` annotation. A parent's
+explicit `false` propagates through nested SDK calls and cannot be re-enabled by
+a child. Handles returned by `with_capture` do not mutate the original handle.
+The same overrides apply to deferred calls and remote class methods.
+
+`Annotated[T, cc.Secret]` preserves the ordinary Python type `T`. It excludes the
+value from capture; it does not wrap credentials or change function execution.
+It works on parameters, return values, generator yield types, and nested model
+fields. If any nested field is secret, the enclosing argument or result is
+excluded as a whole. Secret defaults are excluded from catalog metadata too.
+The marker does not perform taint tracking or redact application `print`, logs,
+exception messages, or tracing attributes.
+
+Captured calls use the executing immutable function-version ID. A call targeting
+a different version fails clearly; it is never relabeled as the requested
+version. Queued calls retain their logical call ID through retries; attempts have
+separate IDs. Streaming results retain chunk order and publish incrementally.
+Capture uses bounded asynchronous buffers and a 1 MiB payload budget per attempt;
+loss, truncation, sampling, and request suppression are represented in capture
+states where metadata publication succeeds. Capture is best effort: process
+termination or unavailable storage can lose records, and bus redelivery can
+produce duplicates. Deduplicate by call, attempt, chunk, and row IDs.
+
+Query captured calls by version with Chalk SQL:
+
+```sql
+SELECT * FROM function_calls.data
+WHERE function_version_id = '<version-id>'
+ORDER BY __chalk__query_ts DESC;
+
+SELECT * FROM function_calls."<version-id>_inputs";
+SELECT * FROM function_calls."<version-id>_outputs";
+```
+
+Payload columns use the `value_` prefix; bookkeeping columns identify the call,
+attempt, row, and chunk. A table appears after its first captured payload reaches
+the offline store. Metadata and payloads are independently ingested, so a
+completed call can have payloads still pending ingestion. Every scan is scoped to
+the current environment.
+
+Deploy the capture-aware writer/API/engine and release a runtime advertising
+capture protocol 1 before using this SDK API. Capture-enabled image construction
+rejects older installed runtimes. The runtime uses the existing configured
+offline-store insertion bus; functions do not need offline-store credentials.

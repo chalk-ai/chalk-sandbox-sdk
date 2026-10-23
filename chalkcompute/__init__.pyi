@@ -238,6 +238,7 @@ __all__ = [
     "ConcurrencyPolicy",
     "QueuePolicy",
     "TracingPolicy",
+    "CapturePolicy",
     "function",
     "DatasetClient",
     "DatasetError",
@@ -341,3 +342,5 @@ __all__ = [
     "TraceNotFoundError",
     "TraceSummary",
 ]
+
+from chalkcompute._capture import CapturePolicy as CapturePolicy

@@ -117,6 +117,17 @@ from chalkcompute._naming import (
 )
 from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
+from chalkcompute._capture import (
+    CapturePolicy,
+    capture_options,
+    INPUTS_HEADER,
+    OUTPUTS_HEADER,
+    VERSION_HEADER,
+    CALL_ID_HEADER,
+    PARENT_HEADER,
+    SECRET_METADATA,
+    contains_secret,
+)
 from chalkcompute._remote_function_tracing import (
     TracingPolicy,
     TracingPolicyConfig,
@@ -473,6 +484,9 @@ def _strip_chalkcompute_from_source(source: str) -> str:
     str
         Rewritten source with chalkcompute references removed.
     """
+    from chalkcompute._capture import strip_secret_annotation_markers
+
+    source = strip_secret_annotation_markers(source)
     tree = ast.parse(source)
     lines = source.splitlines(keepends=True)
 
@@ -1945,7 +1959,10 @@ def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
     input_schema = rich_to_arrow_schema(input_types)
     for column in input_schema.columns:
         default = sig.parameters[column.name].default
-        if default is not inspect.Parameter.empty:
+        if (
+            default is not inspect.Parameter.empty
+            and column.metadata.get(SECRET_METADATA, contains_secret) != "true"
+        ):
             try:
                 column.metadata["chalk.default"] = json.dumps(default, allow_nan=False)
             except (TypeError, ValueError):
@@ -1961,6 +1978,9 @@ def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
             "Add '-> None' if it returns nothing, or annotate the returned value's type."
         )
 
+    secret_result = contains_secret(return_type, frozenset())
+    if typing.get_origin(return_type) is typing.Annotated:
+        return_type = typing.get_args(return_type)[0]
     is_generator = False
     is_async = inspect.iscoroutinefunction(func) or inspect.isasyncgenfunction(func)
 
@@ -1979,6 +1999,8 @@ def _build_schemas(func: Callable[..., Any]) -> tuple[Any, Any]:
                 return_type = args[0]
 
     output_schema = rich_to_arrow_schema({"result": return_type})
+    if secret_result:
+        output_schema.columns[0].metadata[SECRET_METADATA] = "true"
 
     description = inspect.getdoc(func)
     if description:
@@ -2353,6 +2375,7 @@ class RemoteFunction:
         concurrency: int | ConcurrencyPolicy | None = None,
         queue_policy: QueuePolicy | None = None,
         schedule: str | None = None,
+        capture: bool | CapturePolicy | None = None,
         tracing: TracingPolicyConfig | None = None,
         models: typing.Mapping[str, Any] | None = None,
         call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
@@ -2466,7 +2489,7 @@ class RemoteFunction:
         self._target_queue_depth = target_queue_depth
         self._cron_scaling_trigger = cron_scaling_trigger
         self._serialization_format: SerializationFormat = serialization_format
-        self._options = options or {}
+        self._options = capture_options(options or {}, capture)
         self._max_buffer_duration = max_buffer_duration
         self._max_batching_size = max_batching_size
         self._schedule = _normalize_schedule(
@@ -2511,6 +2534,7 @@ class RemoteFunction:
                 f"queue_policy must be a QueuePolicy, got {type(queue_policy).__name__}"
             )
         self._queue_policy = queue_policy
+        self._capture_overrides: dict[str, str] = {}
         self._tracing = normalize_remote_function_tracing(tracing)
         self._call_timeout = call_timeout
 
@@ -2709,6 +2733,7 @@ class RemoteFunction:
         f._rate_limit = None
         f._concurrency = None
         f._queue_policy = None
+        f._capture_overrides = {}
         f._tracing = None
         f._function_id = None
         f._version_info = None
@@ -3204,6 +3229,9 @@ class RemoteFunction:
         return self
 
     def _remote_call_runtime_package(self) -> str:
+        from chalkcompute._capture import require_capture_runtime
+
+        require_capture_runtime(self._options)
         extras: list[str] = []
         if isinstance(self._tracing, TracingPolicy):
             extras.append("tracing")
@@ -3534,7 +3562,23 @@ class RemoteFunction:
         ]
 
     def _per_call_metadata(self) -> list[tuple[str, str]]:
+        from uuid import uuid4
+        from chalkcompute._call_context import get_call_context
+
         metadata = current_trace_metadata()
+        context = get_call_context()
+        # A request's explicit denial remains sticky across nested calls.
+        for header in (INPUTS_HEADER, OUTPUTS_HEADER):
+            value = self._capture_overrides.get(header, context.get(header))
+            if context.get(header) == "false":
+                value = "false"
+            if value is not None:
+                metadata.append((header, value))
+        metadata.append((CALL_ID_HEADER, str(uuid4())))
+        if context.get(CALL_ID_HEADER):
+            metadata.append((PARENT_HEADER, context[CALL_ID_HEADER]))
+        if self._version_info is not None:
+            metadata.append((VERSION_HEADER, self._version_info.id))
         if self._knowledge_cutoff is not None:
             metadata.append((_REQUEST_TIMESTAMP_HEADER, self._knowledge_cutoff))
         return metadata
@@ -3785,6 +3829,21 @@ class RemoteFunction:
         if not response.body.value.feather_stream:
             raise FunctionError("No featherStream in CallExternalFunction response")
         return response.body.value.feather_stream
+
+    def with_capture(
+        self, *, inputs: bool | None = None, outputs: bool | None = None
+    ) -> RemoteFunction:
+        """Return a call-scoped handle overriding payload capture for remote/deferred calls."""
+        self._wait_for_background_deploy()
+        clone = self.__class__.__new__(self.__class__)
+        clone.__dict__ = self.__dict__.copy()
+        clone._capture_overrides = self._capture_overrides.copy()
+        for header, value in ((INPUTS_HEADER, inputs), (OUTPUTS_HEADER, outputs)):
+            if value is not None:
+                if not isinstance(value, bool):
+                    raise TypeError("capture inputs and outputs must be bools or None")
+                clone._capture_overrides[header] = str(value).lower()
+        return clone
 
     def with_knowledge_cutoff(
         self, knowledge_cutoff: KnowledgeCutoff
@@ -4164,6 +4223,11 @@ class _NoOpFunction:
     def defer(self, *args: Any, **kwargs: Any) -> FunctionCallHandle:
         return self._bound().defer(*args, **kwargs)
 
+    def with_capture(
+        self, *, inputs: bool | None = None, outputs: bool | None = None
+    ) -> RemoteFunction:
+        return self._bound().with_capture(inputs=inputs, outputs=outputs)
+
     def with_knowledge_cutoff(
         self, knowledge_cutoff: KnowledgeCutoff
     ) -> RemoteFunction:
@@ -4240,6 +4304,7 @@ def function(
     queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
+    capture: bool | CapturePolicy | None = None,
     tracing: TracingPolicyConfig | None = None,
     call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
 ) -> RemoteFunction | _NoOpFunction: ...
@@ -4282,6 +4347,7 @@ def function(
     queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
+    capture: bool | CapturePolicy | None = None,
     tracing: TracingPolicyConfig | None = None,
     call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
 ) -> Callable[..., RemoteFunction | _NoOpFunction]: ...
@@ -4325,6 +4391,7 @@ def function(
     queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
+    capture: bool | CapturePolicy | None = None,
     tracing: TracingPolicyConfig | None = None,
     call_timeout: float | None = _DEFAULT_CALL_TIMEOUT,
 ) -> Callable[..., RemoteFunction | _NoOpFunction] | RemoteFunction | _NoOpFunction:
@@ -4524,6 +4591,7 @@ def function(
             concurrency=concurrency,
             queue_policy=queue_policy,
             schedule=schedule,
+            capture=capture,
             tracing=tracing,
             models=models,
             call_timeout=call_timeout,

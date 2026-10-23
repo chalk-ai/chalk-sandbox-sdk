@@ -109,6 +109,7 @@ from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
 from chalkcompute._naming import sanitize_dns_label
 from chalkcompute._quota import QueuePolicy
 from chalkcompute._rate_limit import RateLimitPolicy
+from chalkcompute._capture import CapturePolicy, capture_options
 from chalkcompute._remote_function_tracing import (
     TracingPolicy,
     TracingPolicyConfig,
@@ -298,6 +299,11 @@ class _BoundRemoteMethod:
         """Enqueue a wire call and return a handle immediately."""
         return self._remote().defer(*args, **kwargs)
 
+    def with_capture(
+        self, *, inputs: bool | None = None, outputs: bool | None = None
+    ) -> RemoteFunction:
+        return self._remote().with_capture(inputs=inputs, outputs=outputs)
+
     def with_knowledge_cutoff(self, knowledge_cutoff: Any) -> RemoteFunction:
         """Return a call-scoped remote handle with an overridden request time."""
         return self._remote().with_knowledge_cutoff(knowledge_cutoff)
@@ -332,6 +338,9 @@ def _strip_chalkcompute_from_class_source(source: str) -> str:
     str
         Rewritten source with chalkcompute references removed.
     """
+    from chalkcompute._capture import strip_secret_annotation_markers
+
+    source = strip_secret_annotation_markers(source)
     tree = ast.parse(source)
     lines = source.splitlines(keepends=True)
 
@@ -425,7 +434,7 @@ def _build_method_schemas(method_func: Callable[..., Any]) -> tuple[Any, Any]:
     """
     from chalkcompute._arrow_schema import rich_to_arrow_schema
 
-    hints = typing.get_type_hints(method_func)
+    hints = typing.get_type_hints(method_func, include_extras=True)
     sig = inspect.signature(method_func)
 
     input_types: dict[str, type] = {}
@@ -787,6 +796,7 @@ class RemoteClass:
         concurrency: int | ConcurrencyPolicy | None = None,
         queue_policy: QueuePolicy | None = None,
         schedule: str | None = None,
+        capture: bool | CapturePolicy | None = None,
         tracing: TracingPolicyConfig | None = None,
         models: typing.Mapping[str, Any] | None = None,
         chalk_client: Any | None = None,
@@ -866,7 +876,7 @@ class RemoteClass:
         self._target_queue_depth = target_queue_depth
         self._cron_scaling_trigger = cron_scaling_trigger
         self._serialization_format: SerializationFormat = serialization_format
-        self._options = options or {}
+        self._options = capture_options(options or {}, capture)
         self._max_buffer_duration = max_buffer_duration
         self._max_batching_size = max_batching_size
         self._schedule = _normalize_schedule(
@@ -1091,6 +1101,9 @@ class RemoteClass:
         return self._user_cls
 
     def _remote_call_runtime_package(self) -> str:
+        from chalkcompute._capture import require_capture_runtime
+
+        require_capture_runtime(self._options)
         extras: list[str] = []
         if isinstance(self._tracing, TracingPolicy):
             extras.append("tracing")
@@ -1685,6 +1698,7 @@ def cls(
     queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
+    capture: bool | CapturePolicy | None = None,
     tracing: TracingPolicyConfig | None = None,
 ) -> RemoteClass | _NoOpClass: ...
 
@@ -1726,6 +1740,7 @@ def cls(
     queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
+    capture: bool | CapturePolicy | None = None,
     tracing: TracingPolicyConfig | None = None,
 ) -> Callable[..., RemoteClass | _NoOpClass]: ...
 
@@ -1768,6 +1783,7 @@ def cls(
     queue_policy: QueuePolicy | None = None,
     schedule: str | None = None,
     models: typing.Mapping[str, Any] | None = None,
+    capture: bool | CapturePolicy | None = None,
     tracing: TracingPolicyConfig | None = None,
 ) -> Callable[..., RemoteClass | _NoOpClass] | RemoteClass | _NoOpClass:
     """Decorator that deploys a class as versioned remote functions.
@@ -1923,6 +1939,7 @@ def cls(
             concurrency=concurrency,
             queue_policy=queue_policy,
             schedule=schedule,
+            capture=capture,
             tracing=tracing,
             models=models,
         )
