@@ -1249,3 +1249,7 @@ Deploy the capture-aware writer/API/engine and release a runtime advertising
 capture protocol 1 before using this SDK API. Capture-enabled image construction
 rejects older installed runtimes. The runtime uses the existing configured
 offline-store insertion bus; functions do not need offline-store credentials.
+Capture processing and publishing run in native background workers. PubSub uses
+the existing workload identity; Kafka uses the platform's existing broker secret,
+delivered through the workload's Kubernetes env Secret. Missing configuration or
+credentials disables capture with a warning while the function continues serving.

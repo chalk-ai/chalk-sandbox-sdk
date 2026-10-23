@@ -1,3 +1,4 @@
 - Add function and class call capture policies, request-scoped overrides, and Secret annotations that exclude values and defaults from capture.
 - Preserve function-version and invocation identity across remote calls and expose capture history through the shared offline-store infrastructure.
 - Store captured arguments as individually named columns beside a reserved output column in one values table per function version.
+- Document background capture processing and optional publisher credentials.
