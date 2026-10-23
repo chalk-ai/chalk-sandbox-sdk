@@ -621,9 +621,13 @@ class ScalingGroup:
         )
 
         key = f"scaling_group:{id(self)}"
-        progress_add(key, "scaling_group", self._name or "Scaling group")
+        # Resolve the final name up front so the progress heading never changes
+        # (and reprints as "continued") once rows have been printed under it.
+        sg_name = sanitize_dns_label(self._name or f"sg-{uuid.uuid4().hex[:8]}")
+        progress_add(key, "scaling_group", f'Scaling group "{sg_name}"')
         try:
             self._deploy(
+                sg_name=sg_name,
                 poll_interval=poll_interval,
                 build_timeout=build_timeout,
                 ready_timeout=ready_timeout,
@@ -638,7 +642,12 @@ class ScalingGroup:
         return self
 
     def _deploy(
-        self, *, poll_interval: float, build_timeout: float, ready_timeout: float
+        self,
+        *,
+        sg_name: str,
+        poll_interval: float,
+        build_timeout: float,
+        ready_timeout: float,
     ) -> ScalingGroup:
         from chalkcompute._image import Image
         from chalkcompute._progress import progress_update
@@ -647,20 +656,17 @@ class ScalingGroup:
 
         # 1. Resolve image URI
         if isinstance(self._image, Image):
-            progress_update(key, detail="Building image")
             logger.info("Building image from %r...", self._image)
             self._built_image_uri = build_image(
                 self._client,
                 self._image,
                 poll_interval=poll_interval,
                 timeout=build_timeout,
+                progress_parent=key,
             )
             logger.info("Image built: %s", self._built_image_uri)
-            progress_update(key, detail="Image built")
         else:
             self._built_image_uri = self._image
-
-        sg_name = sanitize_dns_label(self._name or f"sg-{uuid.uuid4().hex[:8]}")
 
         # 2a. A missing user-referenced volume fails the deploy.
         self._volumes = [
@@ -747,7 +753,7 @@ class ScalingGroup:
         )
 
         logger.info("Deploying scaling group '%s'...", sg_name)
-        progress_update(key, label=f'Scaling group "{sg_name}"', detail="Deploying")
+        progress_update(key, detail="Deploying")
         stub = self._client.stub(sg_connect.ScalingGroupManagerServiceClientSync)
         try:
             if self._scaling_group_id is None:

@@ -29,6 +29,13 @@ from chalkcompute._gen.chalk.server.v1 import (
     team_pb,
 )
 from chalkcompute._http import HTTP_TRANSPORT_ERRORS, SYNC_HTTP_CLIENT
+from chalkcompute._progress import (
+    progress_add,
+    progress_done,
+    progress_fail,
+    progress_finish,
+    progress_update,
+)
 from chalkcompute._remote_call_client import (
     RemoteCallClientUnavailable,
     ServiceAuthContext,
@@ -606,6 +613,7 @@ def build_image(
     *,
     poll_interval: float = 0.5,
     timeout: float | None = None,
+    progress_parent: str | None = None,
 ) -> str:
     """Build an ``Image`` spec via ``CustomImageService`` and return its URI.
 
@@ -623,6 +631,8 @@ def build_image(
     timeout
         Optional maximum seconds to wait for the build to complete. By default,
         wait for the server to report a terminal build status.
+    progress_parent
+        Optional progress row to nest the "Building image" step under.
 
     Returns
     -------
@@ -651,7 +661,11 @@ def build_image(
         raise ConnectError(f"Image build failed: {response.error or 'unknown'}")
 
     return wait_for_image_build(
-        client, response.build_id, poll_interval=poll_interval, timeout=timeout
+        client,
+        response.build_id,
+        poll_interval=poll_interval,
+        timeout=timeout,
+        progress_parent=progress_parent,
     )
 
 
@@ -661,12 +675,50 @@ def wait_for_image_build(
     *,
     poll_interval: float,
     timeout: float | None,
+    progress_parent: str | None = None,
 ) -> str:
-    """Wait for an already-submitted build without another get-or-build call."""
+    """Wait for an already-submitted build without another get-or-build call.
+
+    Shows a "Building image" row in the deploy progress display while waiting,
+    nested under ``progress_parent`` when the caller has its own progress row.
+    """
+    key = f"image-build:{build_id}"
+    started = time.monotonic()
+    progress_add(
+        key,
+        "image",
+        "Building image",
+        parent=progress_parent,
+        detail=f"Build started ({build_id})",
+    )
+    try:
+        image = _poll_image_build(
+            client, build_id, key, poll_interval=poll_interval, timeout=timeout
+        )
+    except BaseException:
+        progress_fail(key, detail="build did not complete")
+        if progress_parent is None:
+            progress_finish()
+        raise
+    progress_done(key, detail=f"built in {time.monotonic() - started:.0f}s")
+    if progress_parent is None:
+        progress_finish()
+    return image
+
+
+def _poll_image_build(
+    client: ConnectClient,
+    build_id: str,
+    progress_key: str,
+    *,
+    poll_interval: float,
+    timeout: float | None,
+) -> str:
     stub = client.stub(image_connect.CustomImageServiceClientSync)
     deadline = time.monotonic() + timeout if timeout is not None else None
     transient_failures = 0
     max_transient_failures = 5
+    announced_building = False
     while deadline is None or time.monotonic() < deadline:
         try:
             get_response = client.call(
@@ -694,6 +746,9 @@ def wait_for_image_build(
             continue
         transient_failures = 0
         status = get_response.status
+        if status == "building" and not announced_building:
+            announced_building = True
+            progress_update(progress_key, detail="Building")
         if status == "succeeded":
             return get_response.image
         if status == "failed":

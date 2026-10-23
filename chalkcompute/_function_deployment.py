@@ -89,6 +89,7 @@ def ensure_external_function(
     force_new_version: bool,
     poll_interval: float,
     timeout: float,
+    progress_parent: str | None = None,
 ) -> service_pb.EnsuredExternalFunction:
     stub = client.stub(service_connect.ExternalFunctionCatalogServiceClientSync)
     deadline = time.monotonic() + timeout
@@ -127,6 +128,7 @@ def ensure_external_function(
                     response.result.value.build_id,
                     poll_interval=poll_interval,
                     timeout=max(0.0, deadline - time.monotonic()),
+                    progress_parent=progress_parent,
                 )
             except ConnectRpcError as exc:
                 if exc.code != Code.NOT_FOUND:

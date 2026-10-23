@@ -1518,3 +1518,55 @@ def test_wait_for_image_build_timeout_identifies_running_build() -> None:
     assert "may still be running" in str(raised.value)
     assert "was not cancelled" in str(raised.value)
     client.call.assert_not_called()
+
+
+def _building_then_succeeded() -> list[image_pb.GetCustomImageResponse]:
+    return [
+        image_pb.GetCustomImageResponse(status="building"),
+        image_pb.GetCustomImageResponse(status="succeeded", image="registry/img:1"),
+    ]
+
+
+def test_wait_for_image_build_shows_started_building_done(capsys) -> None:
+    client = MagicMock()
+    client.call.side_effect = _building_then_succeeded()
+
+    wait_for_image_build(client, "build-9", poll_interval=0, timeout=None)
+
+    out = capsys.readouterr().out
+    assert "Building image" in out
+    assert "Build started (build-9)" in out
+    assert "Building" in out.split("Build started (build-9)")[1]
+    assert "built in" in out
+
+
+def test_wait_for_image_build_nests_under_parent_row(capsys) -> None:
+    from chalkcompute._progress import progress_add, progress_done, reset_progress
+
+    reset_progress()
+    client = MagicMock()
+    client.call.side_effect = _building_then_succeeded()
+
+    progress_add("function:f", "function", 'Function "f"')
+    wait_for_image_build(
+        client, "build-7", poll_interval=0, timeout=None, progress_parent="function:f"
+    )
+    progress_done("function:f", detail="ready")
+
+    out = capsys.readouterr().out
+    assert out.count('Function "f"') == 1
+    assert "(continued)" not in out
+    assert "Building image" in out
+    reset_progress()
+
+
+def test_wait_for_image_build_failure_marks_row_failed(capsys) -> None:
+    client = MagicMock()
+    client.call.return_value = image_pb.GetCustomImageResponse(
+        status="failed", error="boom"
+    )
+
+    with pytest.raises(ConnectError, match="boom"):
+        wait_for_image_build(client, "build-8", poll_interval=0, timeout=None)
+
+    assert "Failed" in capsys.readouterr().out
