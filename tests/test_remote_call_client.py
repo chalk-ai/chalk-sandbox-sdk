@@ -542,7 +542,7 @@ def test_direct_call_uses_native_client_and_catalog_function_name() -> None:
     assert ("x-chalk-deployment-type", "function-queue") not in client.metadata
     assert client.calls[0][0] == "catalog-add"
     assert _read_input(client.calls[0][1]) == {"x": [41]}
-    assert client.calls[0][2] == []
+    assert dict(client.calls[0][2])["x-chalk-function-version-id"] == "version-1"
 
 
 def test_sync_direct_call_can_be_awaited_in_async_context() -> None:
@@ -925,7 +925,7 @@ def test_defer_get_and_purge_use_queue_client() -> None:
     assert ("x-chalk-deployment-type", "function-queue") not in client.metadata
     assert client.enqueues[0][0] == "catalog-add"
     assert _read_input(client.enqueues[0][1]) == {"x": [98]}
-    assert client.enqueues[0][2] == []
+    assert dict(client.enqueues[0][2])["x-chalk-function-version-id"] == "version-1"
     assert client.purges == ["catalog-add"]
 
 
@@ -1077,9 +1077,8 @@ def test_api_rpc_call_propagates_remote_trace_headers(monkeypatch) -> None:
     assert isinstance(request, catalog_pb.CallExternalFunctionRequest)
     assert request.body is not None
     assert request.body.value.name == "catalog-add"
-    assert kwargs["extra_headers"] == {
-        "traceparent": "trace-id",
-    }
+    assert kwargs["extra_headers"]["traceparent"] == "trace-id"
+    assert kwargs["extra_headers"]["x-chalk-function-version-id"] == "version-1"
 
 
 def test_api_rpc_call_propagates_knowledge_cutoff_header() -> None:
@@ -1090,18 +1089,19 @@ def test_api_rpc_call_propagates_knowledge_cutoff_header() -> None:
     assert fn._call_via_api_rpc(b"request-ipc") == b"response-ipc"
 
     _method, _request, kwargs = client.rpc_calls[0]
-    assert kwargs["extra_headers"] == {
-        REQUEST_TIMESTAMP_HEADER: "2026-05-01T12:30:45Z",
-    }
+    assert kwargs["extra_headers"][REQUEST_TIMESTAMP_HEADER] == "2026-05-01T12:30:45Z"
 
 
-def test_api_rpc_call_omits_extra_headers_by_default() -> None:
+def test_api_rpc_call_sends_version_and_call_identity_by_default() -> None:
     fn = _remote_function()
     client = RpcConnectClient()
     fn._client = client
 
     assert fn._call_via_api_rpc(b"request-ipc") == b"response-ipc"
-    assert client.rpc_calls[0][2]["extra_headers"] is None
+    assert (
+        client.rpc_calls[0][2]["extra_headers"]["x-chalk-function-version-id"]
+        == "version-1"
+    )
 
 
 def test_direct_call_rebuilds_client_after_identity_token_rotation(

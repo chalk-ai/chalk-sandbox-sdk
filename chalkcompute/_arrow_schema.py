@@ -155,6 +155,11 @@ def rich_to_arrow_schema(
                 nullable=nullable,
             )
         )
+    from chalkcompute._capture import SECRET_METADATA, contains_secret
+
+    for column, annotation in zip(columns, params.values()):
+        if contains_secret(annotation, frozenset()):
+            column.metadata[SECRET_METADATA] = "true"
     return arrow_pb.Schema(columns=columns)
 
 
@@ -283,7 +288,7 @@ def _rich_to_arrow_type(
         or _has_attrs(python_type)
         or _is_pydantic_basemodel(python_type)
     ):
-        annotations = typing.get_type_hints(python_type)
+        annotations = typing.get_type_hints(python_type, include_extras=True)
         sub_fields = []
         for field_name, field_type in annotations.items():
             if field_name.startswith("__"):

@@ -139,6 +139,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     # _http.py
     "HTTPHeaders": ("chalkcompute._http", "HTTPHeaders"),
     "HTTPResponse": ("chalkcompute._http", "HTTPResponse"),
+    "CapturePolicy": ("chalkcompute._capture", "CapturePolicy"),
     # _tracing.py
     "span": ("chalkcompute._tracing", "span"),
     "trace_headers": ("chalkcompute._tracing", "trace_headers"),
