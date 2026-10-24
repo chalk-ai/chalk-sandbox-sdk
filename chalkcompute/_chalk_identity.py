@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 IdentityModeName = Literal["creator", "sandbox"]
 _IDENTITY_MODES: tuple[IdentityModeName, ...] = ("creator", "sandbox")
+
+# Mirror the server's limits so mistakes fail before a sandbox is created.
+_MAX_CLAIMS = 16
+_MAX_CLAIM_VALUE_BYTES = 256
+_CLAIM_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 
 
 @dataclass(frozen=True)
@@ -73,9 +79,32 @@ class ChalkIdentity:
         ``"sandbox"`` issues credentials that identify the sandbox itself.
         This is supported for sandboxes only and is required by
         :class:`OIDCTokenFile`.
+    claims
+        Claims to add to every OIDC token the sandbox mints, such as the
+        permission profile it was launched for. Requires ``mode="sandbox"``.
+        Each appears in the token as ``chalk.ai.user_provided/<key>``, so an
+        external service can tell them apart from claims Chalk asserts. They
+        are fixed when the sandbox is created; code inside the sandbox cannot
+        change them. At most 16; keys are 1-64 letters, digits, ``_``, ``.``
+        or ``-``, and values are non-empty strings of at most 256 bytes.
+
+        Tokens also carry ``sandbox_id`` and ``creator_sub``, the user or
+        service token that created the sandbox.
+
+    Examples
+    --------
+    >>> import chalkcompute as cc
+    >>> sandbox = cc.Sandbox(
+    ...     chalk_identity=cc.ChalkIdentity(
+    ...         mode="sandbox", claims={"profile": "bq-orders-reader"}
+    ...     ),
+    ...     env={"GCP_TOKEN_FILE": cc.OIDCTokenFile(audience="//iam.googleapis.com/...")},
+    ... ).run()
     """
 
     mode: IdentityModeName = "creator"
+    # Excluded from the hash because a dict is unhashable.
+    claims: Mapping[str, str] = field(default_factory=dict, hash=False)
 
     def __post_init__(self) -> None:
         if self.mode not in _IDENTITY_MODES:
@@ -83,6 +112,33 @@ class ChalkIdentity:
                 f"ChalkIdentity mode must be one of {list(_IDENTITY_MODES)}, "
                 f"got {self.mode!r}"
             )
+        if not isinstance(self.claims, Mapping):
+            raise TypeError("ChalkIdentity claims must be a mapping of str to str")
+        object.__setattr__(self, "claims", dict(self.claims))
+        if not self.claims:
+            return
+        if self.mode != "sandbox":
+            raise ValueError('ChalkIdentity claims require mode="sandbox"')
+        if len(self.claims) > _MAX_CLAIMS:
+            raise ValueError(
+                f"at most {_MAX_CLAIMS} ChalkIdentity claims may be set, "
+                f"got {len(self.claims)}"
+            )
+        for key, value in self.claims.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                raise TypeError("ChalkIdentity claims must be a mapping of str to str")
+            if not _CLAIM_KEY_RE.match(key):
+                raise ValueError(
+                    f"ChalkIdentity claim key {key!r} must be 1-64 letters, "
+                    "digits, '_', '.' or '-'"
+                )
+            if not value:
+                raise ValueError(f"ChalkIdentity claim {key!r} must not be empty")
+            if len(value.encode()) > _MAX_CLAIM_VALUE_BYTES:
+                raise ValueError(
+                    f"ChalkIdentity claim {key!r} exceeds "
+                    f"{_MAX_CLAIM_VALUE_BYTES} bytes"
+                )
 
 
 def normalize_chalk_identity(

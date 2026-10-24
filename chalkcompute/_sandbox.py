@@ -75,6 +75,7 @@ from chalkcompute._image import Image
 from chalkcompute._chalk_identity import (
     ChalkIdentity,
     OIDCTokenFile,
+    normalize_chalk_identity,
     split_oidc_token_files,
 )
 from chalkcompute._naming import validate_env
@@ -1760,11 +1761,20 @@ _SandboxInfoList = list[SandboxInfo]
 _StrList = list[str]
 
 
-def _echoes_oidc_token_files(sandbox_info: Any, expected: int) -> bool:
-    """Whether the server's view of the sandbox includes the declared token files."""
+def _dropped_identity_features(
+    sandbox_info: Any, *, token_files: int, claims: Mapping[str, str]
+) -> _StrList:
+    """Name the requested identity features missing from the server's view of the sandbox."""
     spec = getattr(sandbox_info, "spec", None)
     identity = None if spec is None else spec.chalk_workload_identity
-    return identity is not None and len(identity.oidc_token_files) >= expected
+    dropped: list[str] = []
+    if token_files and (
+        identity is None or len(identity.oidc_token_files) < token_files
+    ):
+        dropped.append("OIDCTokenFile")
+    if claims and (identity is None or dict(identity.user_provided_claims) != claims):
+        dropped.append("ChalkIdentity claims")
+    return dropped
 
 
 class SandboxClient:
@@ -2101,11 +2111,16 @@ class SandboxClient:
             raise SandboxCreationError("CreateSandbox returned no sandbox")
         # Keep the created identity even when readiness polling fails before the handle is bound.
         _set_sandbox_span_id(resp.sandbox.id)
-        if sandbox._oidc_token_files and not _echoes_oidc_token_files(
-            resp.sandbox, len(sandbox._oidc_token_files)
-        ):
-            # A server that predates OIDC token files drops the field and starts a
-            # sandbox whose env var points nowhere. Fail loudly instead.
+        identity = normalize_chalk_identity(sandbox._chalk_identity)
+        dropped = _dropped_identity_features(
+            resp.sandbox,
+            token_files=len(sandbox._oidc_token_files),
+            claims=identity.claims if identity is not None else {},
+        )
+        if dropped:
+            # A server that predates these features drops the fields and starts a
+            # sandbox whose token file points nowhere or whose tokens lack the
+            # requested claims. Fail loudly instead.
             try:
                 self._stub.terminate_sandbox(
                     pb.TerminateSandboxRequest(id=resp.sandbox.id),
@@ -2114,9 +2129,9 @@ class SandboxClient:
             except ConnectRpcError:
                 pass
             raise SandboxCreationError(
-                "The Chalk server does not support OIDCTokenFile; the sandbox was "
-                "terminated. Upgrade the Chalk deployment or remove the OIDCTokenFile "
-                "values from env."
+                f"The Chalk server does not support {' or '.join(dropped)}; the "
+                "sandbox was terminated. Upgrade the Chalk deployment or remove them "
+                "from the sandbox."
             )
         info = _pb_to_sandbox_info(resp.sandbox)
 

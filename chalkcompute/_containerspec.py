@@ -786,6 +786,11 @@ class ContainerSpec:
                         if self.oidc_token_files
                         else {}
                     ),
+                    **(
+                        {"userProvidedClaims": dict(identity.claims)}
+                        if identity.claims
+                        else {}
+                    ),
                 }
                 if identity.mode == "sandbox"
                 else {}
@@ -922,6 +927,7 @@ class ContainerSpec:
                 container_pb.OIDCTokenFile(audience=file.audience, env_var=env_var)
                 for env_var, file in self.oidc_token_files.items()
             ],
+            user_provided_claims=dict(identity.claims),
         )
 
 

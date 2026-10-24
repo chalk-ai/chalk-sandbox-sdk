@@ -376,3 +376,101 @@ def test_sandbox_without_token_files_is_unaffected_by_the_server_check() -> None
     sandbox = _create(stub, chalk_identity=SANDBOX_IDENTITY)
     assert sandbox.id == "sandbox-old"
     assert stub.terminated == []
+
+
+# --- claims ---------------------------------------------------------------
+
+PROFILE = {"profile": "bq-orders-reader"}
+
+
+def test_chalk_identity_claims_are_copied_and_compared() -> None:
+    source = dict(PROFILE)
+    identity = ChalkIdentity(mode="sandbox", claims=source)
+    source["profile"] = "changed"
+    assert identity.claims == PROFILE
+    assert identity == ChalkIdentity(mode="sandbox", claims=PROFILE)
+    assert identity != SANDBOX_IDENTITY
+    assert ChalkIdentity().claims == {}
+    hash(identity)
+
+
+def test_chalk_identity_claims_require_sandbox_mode() -> None:
+    with pytest.raises(ValueError, match='require mode="sandbox"'):
+        ChalkIdentity(claims=PROFILE)
+
+
+@pytest.mark.parametrize(
+    ("claims", "error", "match"),
+    [
+        ({"okta/groups": "x"}, ValueError, "claim key"),
+        ({"": "x"}, ValueError, "claim key"),
+        ({"k" * 65: "x"}, ValueError, "claim key"),
+        ({"profile": ""}, ValueError, "must not be empty"),
+        ({"profile": "v" * 257}, ValueError, "exceeds 256 bytes"),
+        ({"profile": 3}, TypeError, "str to str"),
+        ({f"claim_{i}": "x" for i in range(17)}, ValueError, "at most 16"),
+        (["profile"], TypeError, "mapping"),
+    ],
+)
+def test_chalk_identity_rejects_invalid_claims(
+    claims: Any, error: type[Exception], match: str
+) -> None:
+    with pytest.raises(error, match=match):
+        ChalkIdentity(mode="sandbox", claims=claims)
+
+
+def test_chalk_identity_accepts_claims_at_the_limits() -> None:
+    claims = {f"claim_{i}": "x" for i in range(15)} | {"a.b-c_D9": "v" * 256}
+    assert ChalkIdentity(mode="sandbox", claims=claims).claims == claims
+
+
+def test_sandbox_sends_claims() -> None:
+    stub = _EchoStub()
+    sandbox = _create(
+        stub, chalk_identity=ChalkIdentity(mode="sandbox", claims=PROFILE)
+    )
+    identity = _requested_identity(stub)
+    assert identity.mode == container_pb.IdentityMode.WORKLOAD_PRINCIPAL
+    assert dict(identity.user_provided_claims) == PROFILE
+    assert sandbox.id == "sandbox-123"
+
+
+def test_sandbox_to_dict_declares_claims() -> None:
+    spec = ContainerSpec(
+        image="python:3.14-slim",
+        chalk_identity=ChalkIdentity(mode="sandbox", claims=PROFILE),
+        allow_sandbox_identity=True,
+    )
+    assert spec.to_dict()["chalkWorkloadIdentity"] == {
+        "mode": "IDENTITY_MODE_WORKLOAD_PRINCIPAL",
+        "userProvidedClaims": PROFILE,
+    }
+
+
+def test_other_surfaces_reject_claims() -> None:
+    with pytest.raises(ValueError, match="only supported for sandboxes"):
+        ContainerSpec(
+            image="x", chalk_identity=ChalkIdentity(mode="sandbox", claims=PROFILE)
+        )
+
+
+def test_sandbox_create_fails_and_cleans_up_when_server_drops_claims() -> None:
+    stub = _OldServerStub()
+    with pytest.raises(
+        SandboxCreationError, match="does not support ChalkIdentity claims"
+    ):
+        _create(stub, chalk_identity=ChalkIdentity(mode="sandbox", claims=PROFILE))
+    assert stub.terminated == ["sandbox-old"]
+
+
+def test_server_dropping_claims_and_token_files_names_both() -> None:
+    stub = _OldServerStub()
+    with pytest.raises(
+        SandboxCreationError,
+        match="does not support OIDCTokenFile or ChalkIdentity claims",
+    ):
+        _create(
+            stub,
+            chalk_identity=ChalkIdentity(mode="sandbox", claims=PROFILE),
+            env={"TOKEN": SNOWFLAKE},
+        )

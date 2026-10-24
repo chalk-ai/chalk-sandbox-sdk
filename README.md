@@ -480,6 +480,28 @@ A sandbox can declare at most 8 token files, must run on host compute (the
 default; `compute_class=cc.ComputeClass.K8S` is rejected), and cannot set a
 token file's variable through `env` or `secrets` as well.
 
+#### Claims for external IAM
+
+A sandbox can add claims to every token it mints, so an external identity
+provider can scope access to the role the sandbox was launched for rather than
+to everything its creator may use:
+
+```python
+sandbox = cc.Sandbox(
+    chalk_identity=cc.ChalkIdentity(mode="sandbox", claims={"profile": "bq-orders-reader"}),
+    env={"GCP_OIDC_TOKEN_FILE": cc.OIDCTokenFile(audience="//iam.googleapis.com/projects/...")},
+).run()
+```
+
+Each claim appears in the token as `chalk.ai.user_provided/<key>`, so the
+service can tell it apart from claims Chalk asserts. Sandbox tokens also carry
+`sandbox_id` and `creator_sub`, the user or service token that created the
+sandbox. Claims are fixed when the sandbox is created; code inside it cannot
+change them. Because anyone who can create a sandbox can choose its claims,
+trust a user-provided claim only together with a claim the creator cannot
+choose, such as an identity provider group. At most 16 claims; keys are 1-64
+letters, digits, `_`, `.` or `-`, and values are at most 256 bytes.
+
 ## Chalk SQL
 
 Run SQL against your Chalk environment without installing ChalkPy or defining
