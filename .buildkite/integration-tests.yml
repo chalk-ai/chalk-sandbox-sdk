@@ -314,7 +314,8 @@ steps:
       uv sync --locked --all-extras --reinstall-package chalkcompute
 
       echo "--- :package: Build deployable SDK wheel"
-      sdk_python="$$(uv python find 3.11)"
+      uv python install 3.14
+      sdk_python="$$(uv python find 3.14)"
       wheel_dir="$$(mktemp -d)"
       uvx --python "$$sdk_python" --from 'maturin>=1.7,<2' maturin build \
         --release \
@@ -327,7 +328,7 @@ steps:
       fi
       export CHALK_FUNCTION_LOCAL_SDK_WHEEL="$${sdk_wheels[0]}"
       export CHALK_FUNCTION_STRIP_SOURCE=0
-      export CHALK_E2E_PYTHON_VERSION=3.11
+      export CHALK_E2E_PYTHON_VERSION=3.14
 
       echo "--- :zap: Deploy and test scalar functions"
       CHALK_RUN_FUNCTION_SANDBOX_E2E=1 uv run python -m pytest e2etests/test_scalar.py e2etests/test_function_sandbox.py -v -s --tb=short
