@@ -41,18 +41,30 @@ async def _await_get(handle, *, timeout=None):
 class TestSyncScalar:
     @classmethod
     def setup_class(cls):
-        _deploy_script("scalar", "deploy_sync.py")
-        _deploy_script("scalar", "deploy_nested_gather.py")
+        cls.function_name = build_scoped_name("ex-add")
+        cls.nested_gather_name = build_scoped_name("ex-nested-gather-add")
+        _deploy_script("scalar", "deploy_sync.py", function_name=cls.function_name)
+        _deploy_script(
+            "scalar",
+            "deploy_nested_gather.py",
+            function_name=cls.nested_gather_name,
+            extra_env={"CHALK_E2E_ADD_FUNCTION_NAME": cls.function_name},
+        )
+
+    @classmethod
+    def teardown_class(cls):
+        _delete_function(cls.nested_gather_name)
+        _delete_function(cls.function_name)
 
     def test_direct_call(self):
         """Sync scalar calls work in sync and async contexts."""
-        fn = chalkcompute.RemoteFunction.from_name("ex-add")
+        fn = chalkcompute.RemoteFunction.from_name(self.function_name)
         assert fn.remote(1, 10) == 11
         assert asyncio.run(_await_call(fn, 2, 20)) == 22
 
     def test_defer_get(self):
         """Sync scalar defer/get works in sync and async contexts."""
-        fn = chalkcompute.RemoteFunction.from_name("ex-add")
+        fn = chalkcompute.RemoteFunction.from_name(self.function_name)
         handle = fn.defer(2, 20)
         assert handle.get(timeout=60) == 22
 
@@ -61,7 +73,7 @@ class TestSyncScalar:
 
     def test_concurrent_calls(self):
         """Fire 10 calls in parallel, verify all return correct results."""
-        fn = chalkcompute.RemoteFunction.from_name("ex-add")
+        fn = chalkcompute.RemoteFunction.from_name(self.function_name)
         n = 10
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=n) as pool:
@@ -73,7 +85,7 @@ class TestSyncScalar:
 
     def test_concurrent_defer_calls(self):
         """Fire 10 deferred calls, verify all return correct results."""
-        fn = chalkcompute.RemoteFunction.from_name("ex-add")
+        fn = chalkcompute.RemoteFunction.from_name(self.function_name)
         n = 10
 
         handles = [fn.defer(i, i * 10) for i in range(1, n + 1)]
@@ -84,7 +96,7 @@ class TestSyncScalar:
 
     def test_throughput(self):
         """Fire 20 rapid calls and measure throughput."""
-        fn = chalkcompute.RemoteFunction.from_name("ex-add")
+        fn = chalkcompute.RemoteFunction.from_name(self.function_name)
         n = 20
 
         start = time.monotonic()
@@ -98,8 +110,10 @@ class TestSyncScalar:
         assert elapsed < 120, f"Took too long: {elapsed:.1f}s"
 
     def test_nested_gather_uses_function_queue_without_env_vars(self) -> None:
-        fn = chalkcompute.RemoteFunction.from_name("ex-nested-gather-add")
-        assert fn.web_url, "ex-nested-gather-add should be deployed before this test"
+        fn = chalkcompute.RemoteFunction.from_name(self.nested_gather_name)
+        assert fn.web_url, (
+            f"{self.nested_gather_name} should be deployed before this test"
+        )
         assert fn.remote([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]) == [
             1,
             2,
@@ -123,18 +137,23 @@ class TestSyncScalar:
 class TestAsyncScalar:
     @classmethod
     def setup_class(cls):
-        _deploy_script("scalar", "deploy_async.py")
+        cls.function_name = build_scoped_name("ex-async-add")
+        _deploy_script("scalar", "deploy_async.py", function_name=cls.function_name)
+
+    @classmethod
+    def teardown_class(cls):
+        _delete_function(cls.function_name)
 
     def test_direct_call(self):
         """Async scalar calls work in sync and async contexts."""
-        fn = chalkcompute.RemoteFunction.from_name("ex-async-add")
+        fn = chalkcompute.RemoteFunction.from_name(self.function_name)
 
         assert fn.remote(3, 30) == 33
         assert asyncio.run(_await_call(fn, 4, 40)) == 44
 
     def test_defer_get(self):
         """Async scalar defer/get works in sync and async contexts."""
-        fn = chalkcompute.RemoteFunction.from_name("ex-async-add")
+        fn = chalkcompute.RemoteFunction.from_name(self.function_name)
         handle = fn.defer(5, 50)
         assert handle.get(timeout=60) == 55
 
@@ -149,9 +168,18 @@ class TestAsyncScalar:
 
 @needs_staging
 class TestTimeout:
+    @classmethod
+    def setup_class(cls):
+        cls.function_name = build_scoped_name("ex-timeout-add")
+        _deploy_script("scalar", "deploy_sync.py", function_name=cls.function_name)
+
+    @classmethod
+    def teardown_class(cls):
+        _delete_function(cls.function_name)
+
     def test_defer_get_with_timeout(self):
         """handle.get(timeout=30) succeeds for a real function."""
-        fn = chalkcompute.RemoteFunction.from_name("ex-add")
+        fn = chalkcompute.RemoteFunction.from_name(self.function_name)
         handle = fn.defer(1, 1)
         assert handle.get(timeout=30) == 2
 
