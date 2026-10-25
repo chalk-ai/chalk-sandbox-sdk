@@ -12,13 +12,14 @@ The deployment intentionally persists for subsequent remote calls.
 from __future__ import annotations
 
 import logging
+import os
 
 import chalkcompute
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 
-@chalkcompute.function(name="ex-async-add")
+@chalkcompute.function(name=os.environ.get("CHALK_E2E_FUNCTION_NAME", "ex-async-add"))
 async def async_add(a: int, b: int) -> int:
     """Simple async addition."""
     return a + b

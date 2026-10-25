@@ -26,6 +26,11 @@ log = logging.getLogger(__name__)
     image=chalkcompute.Image.debian_slim(
         os.environ.get("CHALK_E2E_PYTHON_VERSION", "3.11")
     ),
+    env={
+        "CHALK_E2E_ADD_FUNCTION_NAME": os.environ.get(
+            "CHALK_E2E_ADD_FUNCTION_NAME", "ex-add"
+        )
+    },
 )
 def nested_gather_add(values: list[int]) -> list[int]:
     """Fan out deferred calls from inside a remote function and gather them."""
@@ -33,7 +38,9 @@ def nested_gather_add(values: list[int]) -> list[int]:
 
     import chalkcompute
 
-    add = chalkcompute.RemoteFunction.from_name("ex-add")
+    add = chalkcompute.RemoteFunction.from_name(
+        os.environ.get("CHALK_E2E_ADD_FUNCTION_NAME", "ex-add")
+    )
     return chalkcompute.gather(
         [
             add.with_knowledge_cutoff(datetime.now(timezone.utc)).defer(1, value)
