@@ -314,7 +314,7 @@ steps:
       uv sync --locked --all-extras --reinstall-package chalkcompute
 
       echo "--- :zap: Deploy and test scalar functions"
-      CHALK_FUNCTION_STRIP_SOURCE=1 CHALK_RUN_FUNCTION_SANDBOX_E2E=1 uv run python -m pytest e2etests/test_scalar.py e2etests/test_function_sandbox.py -v -s --tb=short
+      CHALK_FUNCTION_STRIP_SOURCE=0 CHALK_FUNCTION_LOCAL_SDK_COPY=1 CHALK_RUN_FUNCTION_SANDBOX_E2E=1 uv run python -m pytest e2etests/test_scalar.py e2etests/test_function_sandbox.py -v -s --tb=short
 
     agents:
       queue: default

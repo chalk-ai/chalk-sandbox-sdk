@@ -136,7 +136,7 @@ def test_local_sdk_wheel_installs_runtime_dependencies_before_overlay(tmp_path) 
 
     packages = image.to_proto().steps[0].step.value.packages
     assert packages[0].startswith("chalk-remote-call-python")
-    assert "connectrpc>=0.12.1" in packages
+    assert "connectrpc>=0.12.1,<0.13.0" in packages
     assert any(lf.src == str(wheel) for lf in image.lazy_local_files)
     assert (
         "python -m pip install --force-reinstall --no-deps "
