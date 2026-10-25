@@ -25,6 +25,7 @@ _LOCAL_SDK_COPY_EXCLUDES = [
     "**/__pycache__/**",
     "**/target/**",
 ]
+_CONNECTRPC_RUNTIME_PACKAGE = "connectrpc>=0.12.1,<0.13.0"
 _LOCAL_SDK_RUNTIME_PACKAGES = [
     "pyyaml>=6.0.0",
     "opentelemetry-api>=1.20.0",
@@ -32,7 +33,7 @@ _LOCAL_SDK_RUNTIME_PACKAGES = [
     "opentelemetry-exporter-otlp-proto-http>=1.20.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.20.0",
     "protobuf-py==0.3.0",
-    "connectrpc>=0.12.1",
+    _CONNECTRPC_RUNTIME_PACKAGE,
     "pyqwest>=0.9.0",
 ]
 
@@ -171,7 +172,9 @@ def apply_local_dev_mounts(
             archive=True,
         )
     elif config.strip_source:
-        image = image.pip_install([remote_call_runtime_package])
+        image = image.pip_install(
+            [remote_call_runtime_package, _CONNECTRPC_RUNTIME_PACKAGE]
+        )
     else:
         from importlib.metadata import version as _pkg_version
 
@@ -179,6 +182,7 @@ def apply_local_dev_mounts(
             [
                 remote_call_runtime_package,
                 f"chalkcompute=={_pkg_version('chalkcompute')}",
+                _CONNECTRPC_RUNTIME_PACKAGE,
             ]
         )
 
