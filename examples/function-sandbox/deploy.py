@@ -29,7 +29,9 @@ SANDBOX_E2E_ENV = {
 
 @chalkcompute.function(
     name=os.environ.get("CHALK_E2E_FUNCTION_NAME", "ex-function-sandbox"),
-    image=chalkcompute.Image.debian_slim("3.12"),
+    image=chalkcompute.Image.debian_slim(
+        os.environ.get("CHALK_E2E_PYTHON_VERSION", "3.12")
+    ),
     env=SANDBOX_E2E_ENV or None,
 )
 def create_sandbox() -> str:
