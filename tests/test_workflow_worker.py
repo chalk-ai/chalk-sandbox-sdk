@@ -374,3 +374,87 @@ def test_worker_keeps_the_default_client_it_deployed_with(
     (client,) = defaults
     assert worker.chalk_client is client
     assert client.calls == [(worker.task_queue, []), (worker.task_queue, [])]
+
+
+def test_deleting_a_worker_skips_schedules_on_a_chalkpy_without_them() -> None:
+    _RecordingScalingGroup.instances.clear()
+    group = _RecordingScalingGroup()
+    worker = WorkflowWorker(
+        scaling_group=group,  # type: ignore[arg-type]
+        task_queue="chalkcompute-workflows.wf-nightly",
+        chalk_client=object(),
+    )
+
+    worker.delete()
+
+    assert group.kwargs["deleted"] is True
+
+
+class _FailingSyncClient:
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+
+    def sync_workflow_schedules(self, task_queue: str, schedules: Any) -> list[Any]:
+        raise self.exc
+
+
+class _CodedError(RuntimeError):
+    """Like chalkpy's WorkflowScheduleError, which carries the Connect error code."""
+
+    def __init__(self, message: str, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        _CodedError("SyncWorkflowSchedules failed: not supported", "unimplemented"),
+        # Older chalkpy only reports the HTTP status.
+        RuntimeError("SyncWorkflowSchedules failed (404): 404 page not found"),
+        RuntimeError('SyncWorkflowSchedules failed (501): {"code":"unimplemented"}'),
+    ],
+)
+def test_deleting_a_worker_continues_when_the_server_lacks_schedules(
+    exc: Exception, caplog: pytest.LogCaptureFixture
+) -> None:
+    _RecordingScalingGroup.instances.clear()
+    group = _RecordingScalingGroup()
+    worker = WorkflowWorker(
+        scaling_group=group,  # type: ignore[arg-type]
+        task_queue="chalkcompute-workflows.wf-nightly",
+        chalk_client=_FailingSyncClient(exc),
+    )
+
+    with caplog.at_level("WARNING", logger="chalkcompute._workflow_worker"):
+        worker.delete()
+
+    assert group.kwargs["deleted"] is True
+    assert "does not support them" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        RuntimeError("SyncWorkflowSchedules failed (503): upstream unavailable"),
+        _CodedError("SyncWorkflowSchedules failed: no such environment", "not_found"),
+        RuntimeError("unsupported response from the server"),
+    ],
+)
+def test_deleting_a_worker_keeps_it_when_clearing_schedules_fails(
+    exc: Exception,
+) -> None:
+    _RecordingScalingGroup.instances.clear()
+    group = _RecordingScalingGroup()
+    worker = WorkflowWorker(
+        scaling_group=group,  # type: ignore[arg-type]
+        task_queue="chalkcompute-workflows.wf-nightly",
+        chalk_client=_FailingSyncClient(exc),
+    )
+
+    with pytest.raises(RuntimeError) as info:
+        worker.delete()
+
+    assert info.value is exc
+
+    assert "deleted" not in group.kwargs

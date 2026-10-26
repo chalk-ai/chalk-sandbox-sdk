@@ -11,6 +11,7 @@ sleeps, retries, or outlives the script still finishes.
 from __future__ import annotations
 
 import inspect
+import logging
 import os
 import re
 import sys
@@ -26,6 +27,8 @@ if TYPE_CHECKING:
 
     from chalkcompute._secret import Secret
 
+logger = logging.getLogger(__name__)
+
 # Queues outside the `chalk-workflows` family, so the offline-query consumer's workflow
 # supervisor (which starts workers for `chalk-workflows.<deployment>` queues) never claims them.
 _TASK_QUEUE_PREFIX = "chalkcompute-workflows."
@@ -34,6 +37,10 @@ _TASK_QUEUE_PREFIX = "chalkcompute-workflows."
 _MAX_WORKER_NAME_LENGTH = 40
 
 _SOURCE_DIR = "/app"
+
+# Older chalkpy reports a schedule call's HTTP status only in its message, as "<Method> failed (<status>): ...";
+# a server without the schedule service answers 404 or 501.
+_SCHEDULES_UNSUPPORTED_RE = re.compile(r"^\w+ failed \((404|501)\): ")
 
 # PEP 723 inline script metadata, e.g. the `# /// script` block `uv run` reads.
 _SCRIPT_METADATA_RE = re.compile(
@@ -75,10 +82,22 @@ class WorkflowWorker:
     def delete(self, *, chalk_client: Any | None = None) -> None:
         """Delete the worker's workflow schedules, then its scaling group.
 
-        Schedules go first so that no firing starts a run on a queue with no worker.
+        Schedules go first so that no firing starts a run on a queue with no worker. On a
+        chalkpy or Chalk server without workflow schedules there are none to delete, so the
+        scaling group is deleted alone.
         """
-        client = self._client(chalk_client)
-        client.sync_workflow_schedules(self.task_queue, [])
+        sync = getattr(self._client(chalk_client), "sync_workflow_schedules", None)
+        if sync is not None:
+            try:
+                sync(self.task_queue, [])
+            except Exception as exc:
+                if not _schedules_unsupported(exc):
+                    raise
+                logger.warning(
+                    "Not deleting workflow schedules for %s: the Chalk server does not support them (%s)",
+                    self.task_queue,
+                    exc,
+                )
         self.scaling_group.delete()
 
     def _client(self, chalk_client: Any | None) -> Any:
@@ -87,6 +106,13 @@ class WorkflowWorker:
         if self.chalk_client is not None:
             return self.chalk_client
         return _default_chalk_client()
+
+
+def _schedules_unsupported(exc: Exception) -> bool:
+    # chalkpy's WorkflowScheduleError carries the Connect code, "unimplemented" when the server lacks schedules.
+    if getattr(exc, "code", None) == "unimplemented":
+        return True
+    return bool(_SCHEDULES_UNSUPPORTED_RE.match(str(exc)))
 
 
 def script_dependencies(source: str) -> list[str] | None:
