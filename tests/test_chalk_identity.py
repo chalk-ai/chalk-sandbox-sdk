@@ -207,10 +207,12 @@ def test_container_spec_rejects_sandbox_identity_by_default() -> None:
 def test_creator_identity_forms_are_equivalent_on_other_surfaces() -> None:
     for identity in (True, ChalkIdentity(), ChalkIdentity(mode="creator")):
         spec = ContainerSpec(image="python:3.14-slim", chalk_identity=identity)
-        assert spec.to_dict()["chalkWorkloadIdentity"] == {}
+        assert spec.to_dict()["chalkWorkloadIdentity"] == {
+            "mode": "IDENTITY_MODE_CREATOR_IDENTITY"
+        }
         proto = spec.to_proto().chalk_workload_identity
         assert proto is not None
-        assert proto.mode == container_pb.IdentityMode.UNSPECIFIED
+        assert proto.mode == container_pb.IdentityMode.CREATOR_IDENTITY
         assert list(proto.oidc_token_files) == []
     assert "chalkWorkloadIdentity" not in ContainerSpec(image="x").to_dict()
 
@@ -349,15 +351,6 @@ def test_sandbox_identity_without_files_is_allowed_on_k8s_compute() -> None:
 def test_sandbox_rejects_non_identity_chalk_identity() -> None:
     with pytest.raises(TypeError, match="bool or ChalkIdentity"):
         Sandbox(image="python:3.14-slim", chalk_identity="sandbox")  # type: ignore[arg-type]
-
-
-def test_sandbox_attach_cannot_combine_with_sandbox_identity() -> None:
-    with pytest.raises(TypeError, match="cannot be combined"):
-        Sandbox(
-            client=SandboxClient(),
-            sandbox_id="sandbox-123",
-            chalk_identity=SANDBOX_IDENTITY,
-        )
 
 
 def test_sandbox_create_fails_and_cleans_up_when_server_drops_token_files() -> None:

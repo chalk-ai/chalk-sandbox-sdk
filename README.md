@@ -793,8 +793,11 @@ if use_shared_cache:
 client.run(sandbox)
 ```
 
-Set `chalk_identity=True` to give the sandbox a platform-managed Chalk
-identity. The sandbox receives `CHALK_WEB_IDENTITY_TOKEN_FILE` and the Chalk
+Sandboxes default to a platform-managed Chalk identity representing the creating
+user or service token. Inside deployed functions and classes, indicated by a
+nonempty `CHALK_REMOTE_FUNCTION`, identity defaults to disabled. Set
+`chalk_identity=True` or `chalk_identity=False` to override the default.
+With identity enabled, the sandbox receives `CHALK_WEB_IDENTITY_TOKEN_FILE` and the Chalk
 API/environment settings it needs to authenticate without caller credentials
 being copied into the workload.
 

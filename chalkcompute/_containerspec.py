@@ -788,7 +788,7 @@ class ContainerSpec:
                     ),
                 }
                 if identity.mode == "sandbox"
-                else {}
+                else {"mode": "IDENTITY_MODE_CREATOR_IDENTITY"}
             )
         return spec
 
@@ -914,7 +914,9 @@ class ContainerSpec:
         if identity is None:
             return None
         if identity.mode == "creator":
-            return container_pb.ChalkWorkloadIdentity()
+            return container_pb.ChalkWorkloadIdentity(
+                mode=container_pb.IdentityMode.CREATOR_IDENTITY
+            )
         return container_pb.ChalkWorkloadIdentity(
             mode=container_pb.IdentityMode.WORKLOAD_PRINCIPAL,
             workload_principal=container_pb.WorkloadPrincipalIdentity(),

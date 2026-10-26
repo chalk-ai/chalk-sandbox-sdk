@@ -481,20 +481,7 @@ def test_sandbox_add_credentials_configures_env_and_network_policy(monkeypatch) 
     }
 
 
-def test_sandbox_client_create_can_request_chalk_identity() -> None:
-    client = SandboxClient()
-    stub = _Stub()
-    client._stub = stub  # type: ignore[assignment]
-    try:
-        client.create("python:3.14-slim", chalk_identity=True, wait=False)
-    finally:
-        client.close()
-
-    assert stub.request is not None
-    assert stub.request.source.value.has_field("chalk_workload_identity")
-
-
-def test_sandbox_client_create_omits_chalk_identity_by_default() -> None:
+def test_sandbox_client_create_default_identity() -> None:
     client = SandboxClient()
     stub = _Stub()
     client._stub = stub  # type: ignore[assignment]
@@ -504,7 +491,11 @@ def test_sandbox_client_create_omits_chalk_identity_by_default() -> None:
         client.close()
 
     assert stub.request is not None
-    assert not stub.request.source.value.has_field("chalk_workload_identity")
+    assert stub.request.source.value.has_field("chalk_workload_identity")
+    assert (
+        stub.request.source.value.chalk_workload_identity.mode
+        == container_pb.IdentityMode.CREATOR_IDENTITY
+    )
 
 
 def test_sandbox_client_create_sends_resource_detectors() -> None:
