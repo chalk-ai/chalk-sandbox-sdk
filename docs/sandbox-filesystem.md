@@ -6,12 +6,17 @@ Directory, search, and permission methods run GNU coreutils, findutils, and
 grep inside the sandbox; the default `Image.sandbox()` includes them, and custom
 images need them too (BusyBox-only images are not supported).
 
+`sandbox.fs`, `sandbox.git`, and `exec` need a `HOST` compute class sandbox (the
+default). On a `ComputeClass.K8S` sandbox they raise `SandboxError` without
+contacting the server.
+
 ## Declare files before the sandbox starts
 
 `add_file` works on a sandbox that has not started yet. Queued files are uploaded
 by `run()` as soon as the sandbox is ready, after its entrypoint starts.
-`run(wait=False)` is rejected when files are queued. On a running sandbox,
-`add_file` uploads immediately.
+`run(wait=False)` is rejected when files are queued. If a queued upload fails,
+`run()` terminates the sandbox and re-raises; the files stay queued, so `run()`
+can be retried. On a running sandbox, `add_file` uploads immediately.
 
 ```python
 from chalkcompute import Sandbox
@@ -46,7 +51,7 @@ results = sandbox.fs.download_files([
 ])  # [b"hello\n", None]
 ```
 
-Uploads create missing parent directories. Local downloads atomically replace
+Uploads, including `write_bytes`, create missing parent directories. Local downloads atomically replace
 the destination. For large files, `upload_iter` and `download_iter` stream byte
 chunks; `write_bytes` and `read_bytes` transfer whole files in memory.
 

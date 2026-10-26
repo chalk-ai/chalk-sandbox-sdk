@@ -354,8 +354,8 @@ class SandboxFileSystem:
         destination = _path(path)
         file_mode = _mode(mode)
         timeout_ms = _timeout_ms(timeout_secs)
+        sandbox_id = self._sandbox._require_session()
         client = self._sandbox._require_client()
-        sandbox_id = self._sandbox._require_started()
         bytes_written = 0
 
         def requests() -> Iterator[UploadFileRequest]:
@@ -415,11 +415,11 @@ class SandboxFileSystem:
     ) -> Iterator[bytes]:
         source = _path(path)
         timeout_ms = _timeout_ms(timeout_secs)
-        client = self._sandbox._require_client()
         request = fs_pb.DownloadFileRequest(
-            sandbox_id=self._sandbox._require_started(),
+            sandbox_id=self._sandbox._require_session(),
             path=source,
         )
+        client = self._sandbox._require_client()
         responses = None
         try:
             responses = client._filesystem_stub.download_file(
@@ -446,10 +446,10 @@ class SandboxFileSystem:
         mode: int | None = None,
         timeout_secs: int | None = None,
     ) -> None:
-        """Write ``data`` to ``path`` in the sandbox."""
+        """Write ``data`` to ``path`` in the sandbox, creating missing parents."""
         if not isinstance(data, bytes):
             raise TypeError("data must be bytes")
-        self._upload((data,), path, mode=mode, timeout_secs=timeout_secs)
+        self._upload_source(data, path, mode=mode, timeout_secs=timeout_secs)
 
     @_instrumented("chalkcompute.sandbox.fs.upload_iter")
     def upload_iter(
@@ -545,6 +545,7 @@ class SandboxFileSystem:
                 raise FileNotFoundError(f"Local file not found: {source}")
         elif not isinstance(source, bytes):
             raise TypeError("source must be bytes or a local path")
+        self._sandbox._check_session_support()
         if self._sandbox._id is None:
             self._sandbox._pending_files.append(file)
         else:

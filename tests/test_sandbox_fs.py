@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from chalkcompute import (
+    ComputeClass,
     ExecResult,
     FileDownload,
     SandboxFileInfo,
@@ -389,3 +390,102 @@ def test_upload_creates_missing_parent_and_retries() -> None:
         with pytest.raises(SandboxFileSystemError):
             sandbox.fs.upload_file(b"data", "relative.txt")
     assert sandbox.exec.call_count == 1
+
+
+def test_write_bytes_creates_missing_parent() -> None:
+    sandbox = _sandbox(ExecResult(b"", b"", 0))
+    attempts = 0
+
+    def upload(
+        fs: SandboxFileSystem,
+        chunks: Iterable[bytes],
+        path: str,
+        *,
+        mode: int | None,
+        timeout_secs: int | None,
+    ) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise SandboxFileSystemError("missing", error=FilesystemError.NOT_FOUND)
+
+    with patch.object(SandboxFileSystem, "_upload", autospec=True, side_effect=upload):
+        sandbox.fs.write_bytes("/new/dir/file", b"data")
+    assert attempts == 2
+    assert sandbox.exec.call_args.args == ("mkdir", "-p", "--", "/new/dir")
+
+
+def test_run_terminates_sandbox_when_queued_upload_fails() -> None:
+    sandbox = Sandbox(image="custom")
+    sandbox.fs.add_file(b"data", "/data")
+    client = MagicMock()
+
+    def instantiate(sb: Sandbox, *_args: object, **_kwargs: object) -> None:
+        sb._id = "started"
+
+    client._instantiate.side_effect = instantiate
+    sandbox._client = client
+    failure = SandboxFileSystemError(
+        "disk full", error=FilesystemError.RESOURCE_EXHAUSTED
+    )
+    with patch.object(SandboxFileSystem, "_upload", autospec=True, side_effect=failure):
+        with pytest.raises(SandboxFileSystemError, match="disk full"):
+            sandbox.run()
+
+    client._stub.terminate_sandbox.assert_called_once()
+    assert client._stub.terminate_sandbox.call_args.args[0].id == "started"
+    # The handle is reset and keeps its queue, so run() can be retried.
+    assert sandbox.id is None
+    assert [file.destination for file in sandbox._pending_files] == ["/data"]
+
+
+def test_run_reports_terminate_failure_as_note() -> None:
+    sandbox = Sandbox(image="custom")
+    sandbox.fs.add_file(b"data", "/data")
+    client = MagicMock()
+
+    def instantiate(sb: Sandbox, *_args: object, **_kwargs: object) -> None:
+        sb._id = "started"
+
+    client._instantiate.side_effect = instantiate
+    client._stub.terminate_sandbox.side_effect = RuntimeError("terminate broke")
+    sandbox._client = client
+    with patch.object(
+        SandboxFileSystem,
+        "_upload",
+        autospec=True,
+        side_effect=SandboxFileSystemError("x", error=FilesystemError.INTERNAL),
+    ):
+        with pytest.raises(SandboxFileSystemError) as error:
+            sandbox.run()
+    assert error.value.__notes__ == [
+        "Terminating sandbox started also failed: terminate broke"
+    ]
+
+
+def test_k8s_sandboxes_reject_session_operations_locally() -> None:
+    # Real exec(): the guard must fire before any client or RPC is needed.
+    sandbox = Sandbox(sandbox_id="test")
+    sandbox._compute_class = ComputeClass.K8S
+
+    for operation in (
+        lambda: sandbox.exec("true"),
+        lambda: sandbox.fs.list_files("/"),
+        lambda: sandbox.fs.write_bytes("/x", b"x"),
+        lambda: sandbox.fs.read_bytes("/x"),
+        lambda: sandbox.git.init("repo"),
+    ):
+        with pytest.raises(SandboxError, match="HOST compute class"):
+            operation()
+    assert sandbox._client is None
+
+    unstarted = Sandbox(image="custom", compute_class=ComputeClass.K8S)
+    with pytest.raises(SandboxError, match="HOST compute class"):
+        unstarted.fs.add_file(b"x", "/x")
+    assert unstarted._pending_files == []
+
+    # HOST and unknown (attached by ID) classes are left to the server.
+    for compute_class in (ComputeClass.HOST, None):
+        allowed = _sandbox(ExecResult(b"", b"", 0))
+        allowed._compute_class = compute_class
+        allowed.fs.create_folder("/ok")
