@@ -116,8 +116,10 @@ def test_clone_defaults_shallow_and_detached(sandbox, tmp_path):
     sandbox.git.commit("origin", "second", "Test", "test@example.com")
     url = (tmp_path / "origin").as_uri()
     sandbox.git.clone(url, "clone", depth=None)
-    assert sandbox.git.status("clone").current_branch == "trunk"
-    assert sandbox.git.status("clone").branch_published
+    status = sandbox.git.status("clone")
+    assert status.current_branch == "trunk" and not status.detached
+    assert status.branch_published and status.upstream == "origin/trunk"
+    assert sandbox.git.status("origin").upstream is None
     assert (
         sandbox.exec(
             "git", "rev-list", "--count", "HEAD", workdir="clone"
@@ -132,7 +134,8 @@ def test_clone_defaults_shallow_and_detached(sandbox, tmp_path):
         == "1"
     )
     sandbox.git.clone(url, "detached", commit_id=first)
-    assert sandbox.git.status("detached").current_branch is None
+    status = sandbox.git.status("detached")
+    assert status.current_branch is None and status.detached
     assert (sandbox._test_root / "detached/initial.txt").read_bytes() == b"initial\n"
 
 
