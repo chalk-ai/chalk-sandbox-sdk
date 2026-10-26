@@ -923,6 +923,28 @@ Helpers accept `timeout_secs`; multi-command operations apply it to each command
 See the [sandbox Git guide](docs/sandbox-git.md) for workflows and a method reference.
 See [the sandbox capability guide](docs/sandbox-capabilities.md) for defaults.
 
+### Files inside a sandbox
+
+`sandbox.fs` transfers and manages files. `add_file` can be called before
+`run()`; queued files are uploaded once the sandbox is ready.
+
+```python
+from chalkcompute import Sandbox
+
+sandbox = Sandbox()
+sandbox.fs.add_file("requirements.txt", "/workspace/requirements.txt")
+sandbox.fs.add_file(b"#!/bin/sh\necho ready\n", "/workspace/run.sh", mode=0o755)
+sandbox.run()
+try:
+    for info in sandbox.fs.list_files("/workspace"):
+        print(info.name, info.size, oct(info.mode))
+    print(sandbox.fs.find_files("/workspace", "TODO"))
+finally:
+    sandbox.terminate()
+```
+
+See the [sandbox filesystem guide](docs/sandbox-filesystem.md) for every method.
+
 ### Add tmux to a sandbox image
 
 Use `apt_install` like `pip_install` to add system packages to a Debian/Ubuntu

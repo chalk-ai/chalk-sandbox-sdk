@@ -117,7 +117,7 @@ if TYPE_CHECKING:
         SSHDest,
     )
     from chalkcompute._remote_function_tracing import _RemoteFunctionTracingPolicy
-    from chalkcompute._sandbox_fs import SandboxFileSystem
+    from chalkcompute._sandbox_fs import FileUpload, SandboxFileSystem
     from chalkcompute._volume import Volume, VolumeMount
 
     # Aliases defined before SandboxClient, which has a ``.list()`` method that
@@ -831,6 +831,8 @@ class Sandbox:
         self._id: str | None = None
         self._info: SandboxInfo | None = None
         self._terminated = False
+        # Files added with fs.add_file before run(); uploaded once ready.
+        self._pending_files: list[FileUpload] = []
 
         self._image: str | Image | None = None
         self._name: str | None = None
@@ -1255,6 +1257,11 @@ class Sandbox:
             )
         if self._image is None:
             raise SandboxError("Sandbox has no image configured.")
+        if self._pending_files and not wait:
+            raise SandboxError(
+                "Files added with fs.add_file() are uploaded once the sandbox is "
+                "ready; call .run() with wait=True."
+            )
 
         client = self._client
         if client is None:
@@ -1362,6 +1369,9 @@ class Sandbox:
         self._client = client
         self._terminated = False
         _set_sandbox_span_id(self._id)
+        if self._pending_files:
+            self.fs.upload_files(self._pending_files)
+            self._pending_files.clear()
 
         return self
 

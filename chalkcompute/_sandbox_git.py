@@ -53,6 +53,10 @@ class GitStatus:
     branch_published
         Whether Git reports a configured upstream. This does not check whether
         the branch currently exists on the remote server.
+    upstream
+        Configured upstream branch, such as "origin/main"; otherwise None.
+    detached
+        Whether HEAD is detached rather than on a local branch.
     """
 
     current_branch: str | None
@@ -60,6 +64,8 @@ class GitStatus:
     ahead: int = 0
     behind: int = 0
     branch_published: bool = False
+    upstream: str | None = None
+    detached: bool = False
 
 
 @dataclass(frozen=True)
@@ -429,17 +435,18 @@ class SandboxGit:
             .decode("utf-8", "surrogateescape")
             .split("\0")
         )
-        branch = None
+        branch = upstream = None
         ahead = behind = 0
-        published = False
+        detached = False
         files: list[GitFileStatus] = []
         records_iter = iter(records)
         for record in records_iter:
             if record.startswith("# branch.head "):
                 value = record.removeprefix("# branch.head ")
-                branch = None if value == "(detached)" else value
+                detached = value == "(detached)"
+                branch = None if detached else value
             elif record.startswith("# branch.upstream "):
-                published = True
+                upstream = record.removeprefix("# branch.upstream ")
             elif record.startswith("# branch.ab "):
                 a, b = record.removeprefix("# branch.ab ").split()
                 ahead, behind = int(a), -int(b)
@@ -451,7 +458,9 @@ class SandboxGit:
                 )
             elif record.startswith("? "):
                 files.append(GitFileStatus(record[2:], "?", "?"))
-        return GitStatus(branch, files, ahead, behind, published)
+        return GitStatus(
+            branch, files, ahead, behind, upstream is not None, upstream, detached
+        )
 
     def branches(self, path: str, *, timeout_secs: int | None = None) -> list[str]:
         """List local branch names.
