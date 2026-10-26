@@ -10,7 +10,7 @@ from typing import Literal
 IdentityModeName = Literal["creator", "sandbox"]
 _IDENTITY_MODES: tuple[IdentityModeName, ...] = ("creator", "sandbox")
 
-# Mirror the server's limits so mistakes fail before a sandbox is created.
+# Same limits as the server.
 _MAX_CLAIMS = 16
 _MAX_CLAIM_VALUE_BYTES = 256
 _CLAIM_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
@@ -80,30 +80,13 @@ class ChalkIdentity:
         This is supported for sandboxes only and is required by
         :class:`OIDCTokenFile`.
     claims
-        Claims to add to every OIDC token the sandbox mints, such as the
-        permission profile it was launched for. Requires ``mode="sandbox"``.
-        Each appears in the token as ``chalk.ai.user_provided/<key>``, so an
-        external service can tell them apart from claims Chalk asserts. They
-        are fixed when the sandbox is created; code inside the sandbox cannot
-        change them. At most 16; keys are 1-64 letters, digits, ``_``, ``.``
-        or ``-``, and values are non-empty strings of at most 256 bytes.
-
-        Tokens also carry ``sandbox_id`` and ``creator_sub``, the user or
-        service token that created the sandbox.
-
-    Examples
-    --------
-    >>> import chalkcompute as cc
-    >>> sandbox = cc.Sandbox(
-    ...     chalk_identity=cc.ChalkIdentity(
-    ...         mode="sandbox", claims={"profile": "bq-orders-reader"}
-    ...     ),
-    ...     env={"GCP_TOKEN_FILE": cc.OIDCTokenFile(audience="//iam.googleapis.com/...")},
-    ... ).run()
+        Added to the sandbox's OIDC tokens as ``chalk.ai.user_provided/<key>``
+        and fixed at creation. Requires ``mode="sandbox"``. At most 16; keys
+        are 1-64 letters, digits, ``_``, ``.`` or ``-``; values are 1-256 bytes.
     """
 
     mode: IdentityModeName = "creator"
-    # Excluded from the hash because a dict is unhashable.
+    # Dicts are unhashable.
     claims: Mapping[str, str] = field(default_factory=dict, hash=False)
 
     def __post_init__(self) -> None:

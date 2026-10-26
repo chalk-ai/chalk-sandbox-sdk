@@ -3385,9 +3385,7 @@ class WorkloadPrincipalIdentity(Message[_WorkloadPrincipalIdentityFields]):
             repeated chalk.auth.v1.CustomClaim customer_claims = 3;
             ```
         creator_subject:
-            Subject of the user or service token that created the sandbox, in the
-            same "v1:env:<env>:<kind>:<id>" form as a workload identity token's sub.
-            Derived by the server and persisted; clients must not set it.
+            Workload identity sub of the sandbox's creator. Set by the server.
 
             ```proto
             string creator_subject = 4;
@@ -3441,11 +3439,8 @@ class ChalkWorkloadIdentity(Message[_ChalkWorkloadIdentityFields]):
             repeated chalk.container.v1.OIDCTokenFile oidc_token_files = 3;
             ```
         user_provided_claims:
-            Claims the creator adds to every OIDC token the workload mints, each
-            emitted as "chalk.ai.user_provided/<key>". The namespace keeps them apart
-            from claims Chalk or an identity provider asserts, so external services
-            can tell who vouched for each claim. Fixed at creation. Requires
-            IDENTITY_MODE_WORKLOAD_PRINCIPAL and is supported for sandboxes only.
+            Added to the workload's OIDC tokens as "chalk.ai.user_provided/<key>".
+            Sandboxes in IDENTITY_MODE_WORKLOAD_PRINCIPAL only.
 
             ```proto
             map<string, string> user_provided_claims = 4;

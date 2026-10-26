@@ -1764,7 +1764,7 @@ _StrList = list[str]
 def _dropped_identity_features(
     sandbox_info: Any, *, token_files: int, claims: Mapping[str, str]
 ) -> _StrList:
-    """Name the requested identity features missing from the server's view of the sandbox."""
+    """Requested identity features missing from the spec the server echoed."""
     spec = getattr(sandbox_info, "spec", None)
     identity = None if spec is None else spec.chalk_workload_identity
     dropped: list[str] = []
@@ -2118,9 +2118,7 @@ class SandboxClient:
             claims=identity.claims if identity is not None else {},
         )
         if dropped:
-            # A server that predates these features drops the fields and starts a
-            # sandbox whose token file points nowhere or whose tokens lack the
-            # requested claims. Fail loudly instead.
+            # Older servers drop these fields; fail rather than run without them.
             try:
                 self._stub.terminate_sandbox(
                     pb.TerminateSandboxRequest(id=resp.sandbox.id),
