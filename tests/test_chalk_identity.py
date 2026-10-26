@@ -207,10 +207,12 @@ def test_container_spec_rejects_sandbox_identity_by_default() -> None:
 def test_creator_identity_forms_are_equivalent_on_other_surfaces() -> None:
     for identity in (True, ChalkIdentity(), ChalkIdentity(mode="creator")):
         spec = ContainerSpec(image="python:3.14-slim", chalk_identity=identity)
-        assert spec.to_dict()["chalkWorkloadIdentity"] == {}
+        assert spec.to_dict()["chalkWorkloadIdentity"] == {
+            "mode": "IDENTITY_MODE_CREATOR_IDENTITY"
+        }
         proto = spec.to_proto().chalk_workload_identity
         assert proto is not None
-        assert proto.mode == container_pb.IdentityMode.UNSPECIFIED
+        assert proto.mode == container_pb.IdentityMode.CREATOR_IDENTITY
         assert list(proto.oidc_token_files) == []
     assert "chalkWorkloadIdentity" not in ContainerSpec(image="x").to_dict()
 
