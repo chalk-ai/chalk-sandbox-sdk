@@ -1,0 +1,3 @@
+- `sandbox.fs.write_bytes` now creates missing parent directories, like `upload_file`.
+- If a file queued with `sandbox.fs.add_file` fails to upload during `run()`, the sandbox is terminated before the error is re-raised, so `client.create()` callers don't leak it. The files stay queued for a retry.
+- `exec`, `sandbox.fs`, and `sandbox.git` on a `ComputeClass.K8S` sandbox now raise a clear `SandboxError` locally instead of the server's "container sessions require a host-backed container"; the API server only opens exec/filesystem sessions on `HOST` sandboxes.

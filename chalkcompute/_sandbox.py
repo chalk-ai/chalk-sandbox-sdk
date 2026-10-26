@@ -1261,6 +1261,8 @@ class Sandbox:
             )
         if self._image is None:
             raise SandboxError("Sandbox has no image configured.")
+        if self._pending_files:
+            self._check_session_support()
         if self._pending_files and not wait:
             raise SandboxError(
                 "Files added with fs.add_file() are uploaded once the sandbox is "
@@ -1374,7 +1376,19 @@ class Sandbox:
         self._terminated = False
         _set_sandbox_span_id(self._id)
         if self._pending_files:
-            self.fs.upload_files(self._pending_files)
+            try:
+                self.fs.upload_files(self._pending_files)
+            except BaseException as error:
+                # The caller may not hold a handle (e.g. client.create()), so
+                # don't leave a sandbox running that it cannot clean up.
+                sandbox_id = self._id
+                try:
+                    self.terminate()
+                except Exception as cleanup_error:
+                    error.add_note(
+                        f"Terminating sandbox {sandbox_id} also failed: {cleanup_error}"
+                    )
+                raise
             self._pending_files.clear()
 
         return self
@@ -1390,6 +1404,21 @@ class Sandbox:
         if self._id is None:
             raise SandboxError("Sandbox is not running. Call .run() first.")
         return self._id
+
+    def _check_session_support(self) -> None:
+        from chalkcompute._containerspec import ComputeClass
+
+        # The API server only opens exec/filesystem sessions on HOST sandboxes.
+        # A handle attached by ID has no known class; the server enforces it.
+        if self._compute_class == ComputeClass.K8S:
+            raise SandboxError(
+                "exec, fs, and git operations require a HOST compute class "
+                "sandbox; this sandbox uses ComputeClass.K8S."
+            )
+
+    def _require_session(self) -> str:
+        self._check_session_support()
+        return self._require_started()
 
     @property
     def git(self) -> SandboxGit:
@@ -1532,8 +1561,8 @@ class Sandbox:
         ExecProcess
             Handle for interacting with the running process.
         """
+        sandbox_id = self._require_session()
         client = self._require_client()
-        sandbox_id = self._require_started()
         init = process_pb.NewProcess(
             sandbox_id=sandbox_id,
             command=command,
