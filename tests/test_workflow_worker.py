@@ -299,6 +299,48 @@ def test_deploy_workflow_worker_rejects_invalid_schedules_before_deploying(
     assert _RecordingScalingGroup.instances == []
 
 
+def test_deploy_workflow_worker_rejects_duplicate_schedule_names_before_deploying(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "nightly_scoring.py"
+    source.write_text(_SCRIPT)
+    _RecordingScalingGroup.instances.clear()
+    monkeypatch.setattr(workflow_worker_mod, "ScalingGroup", _RecordingScalingGroup)
+    client = _RecordingChalkClient()
+    schedules = [
+        WorkflowSchedule("score", "1d"),
+        WorkflowSchedule("rescore", "1h", name="score"),
+    ]
+
+    with pytest.raises(ValueError, match=r"unique.*\['score'\]"):
+        deploy_workflow_worker(str(source), schedules=schedules, chalk_client=client)
+    assert _RecordingScalingGroup.instances == []
+    assert client.calls == []
+
+
+def test_deploy_workflow_worker_reports_a_failed_sync_after_deploying(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "nightly_scoring.py"
+    source.write_text(_SCRIPT)
+    _RecordingScalingGroup.instances.clear()
+    monkeypatch.setattr(workflow_worker_mod, "ScalingGroup", _RecordingScalingGroup)
+    cause = RuntimeError("SyncWorkflowSchedules failed (503): upstream unavailable")
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"^Worker wf-nightly-scoring was deployed but its schedules were not synced: "
+        + r"SyncWorkflowSchedules failed \(503\): upstream unavailable; redeploy to retry$",
+    ) as info:
+        deploy_workflow_worker(
+            str(source),
+            schedules=[WorkflowSchedule("score", "1d")],
+            chalk_client=_FailingSyncClient(cause),
+        )
+    assert info.value.__cause__ is cause
+    assert len(_RecordingScalingGroup.instances) == 1
+
+
 def test_deleting_a_worker_clears_its_schedules_first() -> None:
     _RecordingScalingGroup.instances.clear()
     group = _RecordingScalingGroup()

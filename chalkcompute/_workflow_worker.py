@@ -269,7 +269,12 @@ def deploy_workflow_worker(
         scaling_group=scaling_group, task_queue=task_queue, chalk_client=client
     )
     if schedules is not None:
-        client.sync_workflow_schedules(task_queue, schedules)
+        try:
+            client.sync_workflow_schedules(task_queue, schedules)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Worker {worker_name} was deployed but its schedules were not synced: {exc}; redeploy to retry"
+            ) from exc
     return worker
 
 
@@ -289,6 +294,13 @@ def _validated_schedules(
     for schedule in result:
         if not isinstance(schedule, WorkflowSchedule):
             raise TypeError(f"Expected a WorkflowSchedule, got {schedule!r}")
+    # The queue's schedules are matched by name, so two with the same name would fail the sync after deploying.
+    names = [schedule.schedule_name for schedule in result]
+    duplicates = sorted({n for n in names if names.count(n) > 1})
+    if duplicates:
+        raise ValueError(
+            f"Workflow schedule names must be unique; pass name=... to tell apart {duplicates}"
+        )
     return result
 
 
