@@ -25,6 +25,7 @@ Usage:
 from __future__ import annotations
 
 import copy
+import os
 import queue
 import signal
 import time
@@ -657,7 +658,7 @@ class Sandbox:
         host_pool_id: str | None = None,
         tags: dict[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
-        chalk_identity: bool | ChalkIdentity = True,
+        chalk_identity: bool | ChalkIdentity | None = None,
         managed_ssh: Mapping[str, SSHDest] | Sequence[SSHDest] | None = None,
         tracing: TracingPolicyConfig | None = None,
         chalk_client: Any | None = None,
@@ -728,8 +729,9 @@ class Sandbox:
             Whether to give the sandbox a platform-managed Chalk identity.
             The identity is exposed inside the sandbox through the standard
             ``CHALK_WEB_IDENTITY_TOKEN_FILE`` environment variable.
-            Defaults to ``True``, identifying the creating user or service token.
-            Set ``False`` to disable managed Chalk identity. Pass
+            When omitted, enables creator identity unless ``CHALK_REMOTE_FUNCTION``
+            is set to a nonempty value. Set ``True`` to explicitly enable creator
+            identity or ``False`` to disable managed Chalk identity. Pass
             ``ChalkIdentity(mode="sandbox")`` for credentials that identify
             the sandbox itself, which :class:`OIDCTokenFile` requires.
         managed_ssh
@@ -902,6 +904,8 @@ class Sandbox:
 
         if image is None:
             image = Image.sandbox()
+        if chalk_identity is None:
+            chalk_identity = not os.environ.get("CHALK_REMOTE_FUNCTION")
         env_without_token_files, oidc_token_files = split_oidc_token_files(env)
         env, secrets = normalize_env(
             cast("Mapping[str, str | Secret]", env_without_token_files), secrets
@@ -1909,7 +1913,7 @@ class SandboxClient:
         host_pool_id: str | None = None,
         tags: dict[str, str] | None = None,
         restart_policy: RestartPolicy | None = None,
-        chalk_identity: bool | ChalkIdentity = True,
+        chalk_identity: bool | ChalkIdentity | None = None,
         managed_ssh: Mapping[str, SSHDest] | Sequence[SSHDest] | None = None,
         tracing: TracingPolicyConfig | None = None,
         wait: bool = True,
@@ -1963,8 +1967,9 @@ class SandboxClient:
             Whether to give the sandbox a platform-managed Chalk identity.
             The identity is exposed inside the sandbox through the standard
             ``CHALK_WEB_IDENTITY_TOKEN_FILE`` environment variable.
-            Defaults to ``True``, identifying the creating user or service token.
-            Set ``False`` to disable managed Chalk identity. Pass
+            When omitted, enables creator identity unless ``CHALK_REMOTE_FUNCTION``
+            is set to a nonempty value. Set ``True`` to explicitly enable creator
+            identity or ``False`` to disable managed Chalk identity. Pass
             ``ChalkIdentity(mode="sandbox")`` for credentials that identify
             the sandbox itself, which :class:`OIDCTokenFile` requires.
         managed_ssh
