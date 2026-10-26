@@ -14,7 +14,7 @@ import inspect
 import os
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from chalkcompute._image import Image
@@ -47,6 +47,8 @@ class WorkflowWorker:
 
     scaling_group: ScalingGroup
     task_queue: str
+    chalk_client: Any | None = field(default=None, repr=False, compare=False)
+    """The client the worker was deployed with; ``trigger`` and ``delete`` use it by default."""
 
     def trigger(
         self,
@@ -61,7 +63,7 @@ class WorkflowWorker:
 
         Returns a run handle, or the workflow's result when ``wait`` is true.
         """
-        client = chalk_client if chalk_client is not None else _default_chalk_client()
+        client = self._client(chalk_client)
         return client.trigger_workflow(
             workflow,
             input,
@@ -75,9 +77,16 @@ class WorkflowWorker:
 
         Schedules go first so that no firing starts a run on a queue with no worker.
         """
-        client = chalk_client if chalk_client is not None else _default_chalk_client()
+        client = self._client(chalk_client)
         client.sync_workflow_schedules(self.task_queue, [])
         self.scaling_group.delete()
+
+    def _client(self, chalk_client: Any | None) -> Any:
+        if chalk_client is not None:
+            return chalk_client
+        if self.chalk_client is not None:
+            return self.chalk_client
+        return _default_chalk_client()
 
 
 def script_dependencies(source: str) -> list[str] | None:
@@ -229,9 +238,11 @@ def deploy_workflow_worker(
         workflow_task_queue=task_queue,
         chalk_client=chalk_client,
     ).deploy()
-    worker = WorkflowWorker(scaling_group=scaling_group, task_queue=task_queue)
+    client = chalk_client if chalk_client is not None else _default_chalk_client()
+    worker = WorkflowWorker(
+        scaling_group=scaling_group, task_queue=task_queue, chalk_client=client
+    )
     if schedules is not None:
-        client = chalk_client if chalk_client is not None else _default_chalk_client()
         client.sync_workflow_schedules(task_queue, schedules)
     return worker
 

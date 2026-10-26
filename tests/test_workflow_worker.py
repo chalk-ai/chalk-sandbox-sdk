@@ -316,3 +316,61 @@ def test_deleting_a_worker_clears_its_schedules_first() -> None:
     worker.delete(chalk_client=client)
 
     assert group.kwargs["deleted"] is True
+
+
+def test_worker_reuses_its_deploy_client_for_delete_and_trigger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "nightly_scoring.py"
+    source.write_text(_SCRIPT)
+    _RecordingScalingGroup.instances.clear()
+    monkeypatch.setattr(workflow_worker_mod, "ScalingGroup", _RecordingScalingGroup)
+
+    def no_default_client() -> Any:
+        raise AssertionError("fell back to a default ChalkClient")
+
+    monkeypatch.setattr(workflow_worker_mod, "_default_chalk_client", no_default_client)
+    triggered: list[tuple[Any, ...]] = []
+
+    class _Client(_RecordingChalkClient):
+        def trigger_workflow(self, workflow: Any, input: Any, **kwargs: Any) -> str:
+            triggered.append((workflow, input, kwargs["task_queue"]))
+            return "handle"
+
+    client = _Client()
+    worker = deploy_workflow_worker(str(source), chalk_client=client)
+    (group,) = _RecordingScalingGroup.instances
+    assert group.kwargs["chalk_client"] is client
+
+    assert worker.trigger("score", {"segment": "us"}) == "handle"
+    assert triggered == [("score", {"segment": "us"}, worker.task_queue)]
+
+    worker.delete()
+    assert client.calls == [(worker.task_queue, [])]
+    assert group.kwargs["deleted"] is True
+
+    other = _RecordingChalkClient()
+    worker.delete(chalk_client=other)
+    assert other.calls == [(worker.task_queue, [])]
+
+
+def test_worker_keeps_the_default_client_it_deployed_with(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "nightly_scoring.py"
+    source.write_text(_SCRIPT)
+    monkeypatch.setattr(workflow_worker_mod, "ScalingGroup", _RecordingScalingGroup)
+    defaults: list[_RecordingChalkClient] = []
+
+    def default_client() -> _RecordingChalkClient:
+        defaults.append(_RecordingChalkClient())
+        return defaults[-1]
+
+    monkeypatch.setattr(workflow_worker_mod, "_default_chalk_client", default_client)
+
+    worker = deploy_workflow_worker(str(source), schedules=[])
+    worker.delete()
+
+    (client,) = defaults
+    assert worker.chalk_client is client
+    assert client.calls == [(worker.task_queue, []), (worker.task_queue, [])]
