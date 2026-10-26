@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import importlib.util
 import sys
 import textwrap
+import warnings
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -500,3 +503,95 @@ def test_deleting_a_worker_keeps_it_when_clearing_schedules_fails(
     assert info.value is exc
 
     assert "deleted" not in group.kwargs
+
+
+def _load_workflow(path: Path, name: str) -> Any:
+    path.write_text(
+        _SCRIPT
+        + textwrap.dedent(
+            f"""\
+            from chalk.workflows import workflow
+
+            @workflow(name={name!r})
+            async def {name}() -> None:
+                pass
+            """
+        )
+    )
+    spec = importlib.util.spec_from_file_location(f"_wf_{name}", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return getattr(module, name)
+
+
+def test_deploy_workflow_worker_warns_about_a_workflow_from_another_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "nightly_scoring.py"
+    source.write_text(_SCRIPT)
+    other = _load_workflow(tmp_path / "other.py", "wfsched_other_file")
+    _RecordingScalingGroup.instances.clear()
+    monkeypatch.setattr(workflow_worker_mod, "ScalingGroup", _RecordingScalingGroup)
+    client = _RecordingChalkClient()
+    schedules = [WorkflowSchedule(other, "1d", execution_timeout="1h")]
+
+    with pytest.warns(
+        UserWarning, match="defined in .*other.py, not in the worker's source"
+    ):
+        worker = deploy_workflow_worker(
+            str(source), schedules=schedules, chalk_client=client
+        )
+
+    # The source may import it from a package in the image, so the worker still deploys.
+    assert client.calls == [(worker.task_queue, schedules)]
+
+
+def test_deploy_workflow_worker_accepts_a_workflow_from_its_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "nightly_scoring.py"
+    own = _load_workflow(source, "wfsched_own_file")
+    _RecordingScalingGroup.instances.clear()
+    monkeypatch.setattr(workflow_worker_mod, "ScalingGroup", _RecordingScalingGroup)
+    client = _RecordingChalkClient()
+    schedules = [WorkflowSchedule(own, "1d", execution_timeout=timedelta(hours=1))]
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        worker = deploy_workflow_worker(
+            str(source), schedules=schedules, chalk_client=client
+        )
+
+    assert not [w for w in caught if "worker's source" in str(w.message)]
+    assert client.calls == [(worker.task_queue, schedules)]
+
+
+@pytest.mark.parametrize(
+    ("schedule", "warns"),
+    [
+        (WorkflowSchedule("score", "1d"), True),
+        (WorkflowSchedule("score", "1d", execution_timeout="2h"), False),
+        (WorkflowSchedule("score", "1d", overlap_policy="allow_all"), False),
+    ],
+)
+def test_deploy_workflow_worker_warns_about_an_unbounded_skip_schedule(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    schedule: WorkflowSchedule,
+    warns: bool,
+) -> None:
+    source = tmp_path / "nightly_scoring.py"
+    source.write_text(_SCRIPT)
+    monkeypatch.setattr(workflow_worker_mod, "ScalingGroup", _RecordingScalingGroup)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        deploy_workflow_worker(
+            str(source), schedules=[schedule], chalk_client=_RecordingChalkClient()
+        )
+
+    unbounded = [w for w in caught if "execution_timeout" in str(w.message)]
+    assert len(unbounded) == (1 if warns else 0)
+    # Attributed to the deploy_workflow_worker call, not to chalkcompute internals.
+    assert all(w.filename == __file__ for w in unbounded)

@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import sys
+import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
@@ -226,7 +227,11 @@ def deploy_workflow_worker(
         this worker. After deploying, the worker's task queue is synced to exactly these
         schedules: new ones are created, changed ones updated, and ones no longer listed
         deleted, while a paused schedule stays paused. ``None`` leaves the queue's
-        schedules as they are; ``[]`` deletes them all.
+        schedules as they are; ``[]`` deletes them all. A schedule's workflow must be
+        defined in ``source`` or imported by it from a package in the worker's image;
+        deploying warns about a workflow definition from any other file. Set
+        ``execution_timeout`` on ``"skip"`` schedules: a run that never finishes blocks
+        every later firing.
     """
     if schedules is not None:
         schedules = _validated_schedules(schedules)
@@ -235,6 +240,8 @@ def deploy_workflow_worker(
         if source is None:
             raise ValueError("No running script to deploy; pass source=...")
     source = os.path.abspath(source)
+    if schedules is not None:
+        _check_schedules_run_on(schedules, source)
     with open(source, encoding="utf-8") as f:
         text = f.read()
 
@@ -302,6 +309,30 @@ def _validated_schedules(
             f"Workflow schedule names must be unique; pass name=... to tell apart {duplicates}"
         )
     return result
+
+
+def _check_schedules_run_on(schedules: Sequence[WorkflowSchedule], source: str) -> None:
+    for schedule in schedules:
+        # A run of a workflow the worker doesn't define is retried forever. The worker serves every
+        # workflow its source registers, including ones imported from packages in its image, so a
+        # definition from another file is only suspect; a workflow given by name is taken on trust.
+        if not isinstance(schedule.workflow, str):
+            defined_in = _source_path_for(schedule.workflow)
+            if os.path.realpath(defined_in) != os.path.realpath(source):
+                warnings.warn(
+                    f"Schedule {schedule.schedule_name!r} starts workflow {schedule.workflow_name!r}, "
+                    + f"which is defined in {defined_in}, not in the worker's source {source}; "
+                    + "unless the source imports it from a package in the worker's image, its runs "
+                    + "will never start",
+                    stacklevel=3,
+                )
+        if schedule.overlap_policy == "skip" and schedule.execution_timeout is None:
+            warnings.warn(
+                f"Schedule {schedule.schedule_name!r} skips firings while a run is open and has no "
+                + "execution_timeout, so a run that never finishes blocks it forever; "
+                + "set execution_timeout=... to bound each run",
+                stacklevel=3,
+            )
 
 
 def run_workflow(
