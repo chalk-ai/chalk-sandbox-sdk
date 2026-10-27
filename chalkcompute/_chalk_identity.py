@@ -40,6 +40,10 @@ class OIDCTokenFile:
     audience
         Audience claim of the token, as expected by the service that verifies
         it, for example ``"snowflakecomputing.com"``.
+    claims
+        Added to this audience's tokens as ``chalk.ai.user_provided/<key>`` and
+        fixed at creation. At most 16; keys are 1-64 letters, digits, ``_``,
+        ``.`` or ``-``; values are 1-256 bytes.
 
     Examples
     --------
@@ -57,10 +61,35 @@ class OIDCTokenFile:
     """
 
     audience: str
+    # Dicts are unhashable.
+    claims: Mapping[str, str] = field(default_factory=dict, hash=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.audience, str) or not self.audience.strip():
             raise ValueError("OIDCTokenFile audience must be a non-empty string")
+        if not isinstance(self.claims, Mapping):
+            raise TypeError("OIDCTokenFile claims must be a mapping of str to str")
+        object.__setattr__(self, "claims", dict(self.claims))
+        if len(self.claims) > _MAX_CLAIMS:
+            raise ValueError(
+                f"at most {_MAX_CLAIMS} OIDCTokenFile claims may be set, "
+                f"got {len(self.claims)}"
+            )
+        for key, value in self.claims.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                raise TypeError("OIDCTokenFile claims must be a mapping of str to str")
+            if not _CLAIM_KEY_RE.match(key):
+                raise ValueError(
+                    f"OIDCTokenFile claim key {key!r} must be 1-64 letters, "
+                    "digits, '_', '.' or '-'"
+                )
+            if not value:
+                raise ValueError(f"OIDCTokenFile claim {key!r} must not be empty")
+            if len(value.encode()) > _MAX_CLAIM_VALUE_BYTES:
+                raise ValueError(
+                    f"OIDCTokenFile claim {key!r} exceeds "
+                    f"{_MAX_CLAIM_VALUE_BYTES} bytes"
+                )
 
 
 @dataclass(frozen=True)
@@ -79,15 +108,9 @@ class ChalkIdentity:
         ``"sandbox"`` issues credentials that identify the sandbox itself.
         This is supported for sandboxes only and is required by
         :class:`OIDCTokenFile`.
-    claims
-        Added to the sandbox's OIDC tokens as ``chalk.ai.user_provided/<key>``
-        and fixed at creation. Requires ``mode="sandbox"``. At most 16; keys
-        are 1-64 letters, digits, ``_``, ``.`` or ``-``; values are 1-256 bytes.
     """
 
     mode: IdentityModeName = "creator"
-    # Dicts are unhashable.
-    claims: Mapping[str, str] = field(default_factory=dict, hash=False)
 
     def __post_init__(self) -> None:
         if self.mode not in _IDENTITY_MODES:
@@ -95,33 +118,6 @@ class ChalkIdentity:
                 f"ChalkIdentity mode must be one of {list(_IDENTITY_MODES)}, "
                 f"got {self.mode!r}"
             )
-        if not isinstance(self.claims, Mapping):
-            raise TypeError("ChalkIdentity claims must be a mapping of str to str")
-        object.__setattr__(self, "claims", dict(self.claims))
-        if not self.claims:
-            return
-        if self.mode != "sandbox":
-            raise ValueError('ChalkIdentity claims require mode="sandbox"')
-        if len(self.claims) > _MAX_CLAIMS:
-            raise ValueError(
-                f"at most {_MAX_CLAIMS} ChalkIdentity claims may be set, "
-                f"got {len(self.claims)}"
-            )
-        for key, value in self.claims.items():
-            if not isinstance(key, str) or not isinstance(value, str):
-                raise TypeError("ChalkIdentity claims must be a mapping of str to str")
-            if not _CLAIM_KEY_RE.match(key):
-                raise ValueError(
-                    f"ChalkIdentity claim key {key!r} must be 1-64 letters, "
-                    "digits, '_', '.' or '-'"
-                )
-            if not value:
-                raise ValueError(f"ChalkIdentity claim {key!r} must not be empty")
-            if len(value.encode()) > _MAX_CLAIM_VALUE_BYTES:
-                raise ValueError(
-                    f"ChalkIdentity claim {key!r} exceeds "
-                    f"{_MAX_CLAIM_VALUE_BYTES} bytes"
-                )
 
 
 def normalize_chalk_identity(

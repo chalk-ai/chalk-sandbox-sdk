@@ -779,16 +779,19 @@ class ContainerSpec:
                     **(
                         {
                             "oidcTokenFiles": [
-                                {"audience": file.audience, "envVar": env_var}
+                                {
+                                    "audience": file.audience,
+                                    "envVar": env_var,
+                                    **(
+                                        {"claims": dict(file.claims)}
+                                        if file.claims
+                                        else {}
+                                    ),
+                                }
                                 for env_var, file in self.oidc_token_files.items()
                             ]
                         }
                         if self.oidc_token_files
-                        else {}
-                    ),
-                    **(
-                        {"userProvidedClaims": dict(identity.claims)}
-                        if identity.claims
                         else {}
                     ),
                 }
@@ -924,10 +927,11 @@ class ContainerSpec:
             mode=container_pb.IdentityMode.WORKLOAD_PRINCIPAL,
             workload_principal=container_pb.WorkloadPrincipalIdentity(),
             oidc_token_files=[
-                container_pb.OIDCTokenFile(audience=file.audience, env_var=env_var)
+                container_pb.OIDCTokenFile(
+                    audience=file.audience, env_var=env_var, claims=dict(file.claims)
+                )
                 for env_var, file in self.oidc_token_files.items()
             ],
-            user_provided_claims=dict(identity.claims),
         )
 
 
@@ -975,11 +979,18 @@ def _validate_oidc_token_files(
             f"at most {_MAX_OIDC_TOKEN_FILES} OIDCTokenFile values may be declared, "
             f"got {len(oidc_token_files)}"
         )
+    claims_by_audience: dict[str, Mapping[str, str]] = {}
     for env_var, file in oidc_token_files.items():
         if not isinstance(file, OIDCTokenFile):
             raise TypeError(
                 f"oidc_token_files[{env_var!r}] must be an OIDCTokenFile, got "
                 f"{type(file).__name__}"
+            )
+        # A token is minted per audience, so files for one audience must agree.
+        if claims_by_audience.setdefault(file.audience, file.claims) != file.claims:
+            raise ValueError(
+                f"OIDCTokenFile {env_var!r} declares different claims for audience "
+                f"{file.audience!r} than another file"
             )
         if not _ENV_VAR_NAME_RE.match(env_var):
             raise ValueError(

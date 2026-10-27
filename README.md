@@ -486,15 +486,21 @@ Claims let external IAM scope access to the role a sandbox was launched for:
 
 ```python
 sandbox = cc.Sandbox(
-    chalk_identity=cc.ChalkIdentity(mode="sandbox", claims={"profile": "bq-orders-reader"}),
-    env={"GCP_OIDC_TOKEN_FILE": cc.OIDCTokenFile(audience="//iam.googleapis.com/projects/...")},
+    chalk_identity=cc.ChalkIdentity(mode="sandbox"),
+    env={
+        "GCP_OIDC_TOKEN_FILE": cc.OIDCTokenFile(
+            audience="//iam.googleapis.com/projects/...",
+            claims={"role": "bq-orders-reader"},
+        ),
+    },
 ).run()
 ```
 
-Each claim appears in the token as `chalk.ai.user_provided/<key>`, alongside
-`sandbox_id` and `creator_sub` (who created the sandbox). Claims are fixed at
-creation. The creator chooses them, so pair them with a claim the creator
-can't choose, such as an identity provider group.
+Each claim appears as `chalk.ai.user_provided/<key>`, only in tokens for that
+file's audience. Every sandbox token also carries `sandbox_id` and
+`creator_sub` (who created the sandbox). Claims are fixed at creation. The
+creator chooses them, so pair them with a claim the creator can't choose, such
+as an identity provider group.
 
 ## Chalk SQL
 
