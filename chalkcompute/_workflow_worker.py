@@ -231,7 +231,9 @@ def deploy_workflow_worker(
         defined in ``source`` or imported by it from a package in the worker's image;
         deploying warns about a workflow definition from any other file. Set
         ``execution_timeout`` on ``"skip"`` schedules: a run that never finishes blocks
-        every later firing.
+        every later firing. Schedule names are unique within an environment and default
+        to the workflow name, so pass ``name=...`` when another worker already schedules
+        a workflow with the same name; otherwise the sync fails after the worker deploys.
     """
     if schedules is not None:
         schedules = _validated_schedules(schedules)
