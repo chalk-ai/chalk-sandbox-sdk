@@ -1,0 +1,1 @@
+- Add `schedules=[chalk.workflows.WorkflowSchedule(...)]` to `deploy_workflow_worker`, which syncs the worker's task queue to exactly those schedules, and `WorkflowWorker.delete()`, which removes the worker's schedules before deleting its scaling group

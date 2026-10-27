@@ -11,18 +11,24 @@ sleeps, retries, or outlives the script still finishes.
 from __future__ import annotations
 
 import inspect
+import logging
 import os
 import re
 import sys
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Mapping
+import warnings
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from chalkcompute._image import Image
 from chalkcompute._naming import sanitize_dns_label
 from chalkcompute._scaling_group import ScalingGroup
 
 if TYPE_CHECKING:
+    from chalk.workflows import WorkflowSchedule
+
     from chalkcompute._secret import Secret
+
+logger = logging.getLogger(__name__)
 
 # Queues outside the `chalk-workflows` family, so the offline-query consumer's workflow
 # supervisor (which starts workers for `chalk-workflows.<deployment>` queues) never claims them.
@@ -32,6 +38,10 @@ _TASK_QUEUE_PREFIX = "chalkcompute-workflows."
 _MAX_WORKER_NAME_LENGTH = 40
 
 _SOURCE_DIR = "/app"
+
+# Older chalkpy reports a schedule call's HTTP status only in its message, as "<Method> failed (<status>): ...";
+# a server without the schedule service answers 404 or 501.
+_SCHEDULES_UNSUPPORTED_RE = re.compile(r"^\w+ failed \((404|501)\): ")
 
 # PEP 723 inline script metadata, e.g. the `# /// script` block `uv run` reads.
 _SCRIPT_METADATA_RE = re.compile(
@@ -45,6 +55,8 @@ class WorkflowWorker:
 
     scaling_group: ScalingGroup
     task_queue: str
+    chalk_client: Any | None = field(default=None, repr=False, compare=False)
+    """The client the worker was deployed with; ``trigger`` and ``delete`` use it by default."""
 
     def trigger(
         self,
@@ -59,7 +71,7 @@ class WorkflowWorker:
 
         Returns a run handle, or the workflow's result when ``wait`` is true.
         """
-        client = chalk_client if chalk_client is not None else _default_chalk_client()
+        client = self._client(chalk_client)
         return client.trigger_workflow(
             workflow,
             input,
@@ -67,6 +79,41 @@ class WorkflowWorker:
             wait=wait,
             task_queue=self.task_queue,
         )
+
+    def delete(self, *, chalk_client: Any | None = None) -> None:
+        """Delete the worker's workflow schedules, then its scaling group.
+
+        Schedules go first so that no firing starts a run on a queue with no worker. On a
+        chalkpy or Chalk server without workflow schedules there are none to delete, so the
+        scaling group is deleted alone.
+        """
+        sync = getattr(self._client(chalk_client), "sync_workflow_schedules", None)
+        if sync is not None:
+            try:
+                sync(self.task_queue, [])
+            except Exception as exc:
+                if not _schedules_unsupported(exc):
+                    raise
+                logger.warning(
+                    "Not deleting workflow schedules for %s: the Chalk server does not support them (%s)",
+                    self.task_queue,
+                    exc,
+                )
+        self.scaling_group.delete()
+
+    def _client(self, chalk_client: Any | None) -> Any:
+        if chalk_client is not None:
+            return chalk_client
+        if self.chalk_client is not None:
+            return self.chalk_client
+        return _default_chalk_client()
+
+
+def _schedules_unsupported(exc: Exception) -> bool:
+    # chalkpy's WorkflowScheduleError carries the Connect code, "unimplemented" when the server lacks schedules.
+    if getattr(exc, "code", None) == "unimplemented":
+        return True
+    return bool(_SCHEDULES_UNSUPPORTED_RE.match(str(exc)))
 
 
 def script_dependencies(source: str) -> list[str] | None:
@@ -155,6 +202,7 @@ def deploy_workflow_worker(
     secrets: list[Secret] | None = None,
     max_replicas: int = 1,
     shutdown_delay_seconds: int | None = None,
+    schedules: Sequence[WorkflowSchedule] | None = None,
     chalk_client: Any | None = None,
 ) -> WorkflowWorker:
     """Deploy a scale-to-zero worker for the workflows defined in ``source``.
@@ -174,12 +222,28 @@ def deploy_workflow_worker(
     image
         Base image for the worker. The source file is added to it, along with the
         packages from ``worker_requirements`` when no image is given.
+    schedules
+        ``chalk.workflows.WorkflowSchedule`` cadences that start the file's workflows on
+        this worker. After deploying, the worker's task queue is synced to exactly these
+        schedules: new ones are created, changed ones updated, and ones no longer listed
+        deleted, while a paused schedule stays paused. ``None`` leaves the queue's
+        schedules as they are; ``[]`` deletes them all. A schedule's workflow must be
+        defined in ``source`` or imported by it from a package in the worker's image;
+        deploying warns about a workflow definition from any other file. Set
+        ``execution_timeout`` on ``"skip"`` schedules: a run that never finishes blocks
+        every later firing. Schedule names are unique within an environment and default
+        to the workflow name, so pass ``name=...`` when another worker already schedules
+        a workflow with the same name; otherwise the sync fails after the worker deploys.
     """
+    if schedules is not None:
+        schedules = _validated_schedules(schedules)
     if source is None:
         source = getattr(sys.modules.get("__main__"), "__file__", None)
         if source is None:
             raise ValueError("No running script to deploy; pass source=...")
     source = os.path.abspath(source)
+    if schedules is not None:
+        _check_schedules_run_on(schedules, source)
     with open(source, encoding="utf-8") as f:
         text = f.read()
 
@@ -209,7 +273,68 @@ def deploy_workflow_worker(
         workflow_task_queue=task_queue,
         chalk_client=chalk_client,
     ).deploy()
-    return WorkflowWorker(scaling_group=scaling_group, task_queue=task_queue)
+    client = chalk_client if chalk_client is not None else _default_chalk_client()
+    worker = WorkflowWorker(
+        scaling_group=scaling_group, task_queue=task_queue, chalk_client=client
+    )
+    if schedules is not None:
+        try:
+            client.sync_workflow_schedules(task_queue, schedules)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Worker {worker_name} was deployed but its schedules were not synced: {exc}; redeploy to retry"
+            ) from exc
+    return worker
+
+
+def _validated_schedules(
+    schedules: Sequence[WorkflowSchedule],
+) -> list[WorkflowSchedule]:
+    try:
+        from chalk.workflows import WorkflowSchedule
+    except ImportError as exc:
+        raise ImportError(
+            "Workflow schedules need chalkpy with workflow schedule support: "
+            + "pip install -U 'chalkpy[workflows]'"
+        ) from exc
+    if isinstance(schedules, (str, WorkflowSchedule)):
+        raise TypeError("schedules must be a list of WorkflowSchedule")
+    result = list(schedules)
+    for schedule in result:
+        if not isinstance(schedule, WorkflowSchedule):
+            raise TypeError(f"Expected a WorkflowSchedule, got {schedule!r}")
+    # The queue's schedules are matched by name, so two with the same name would fail the sync after deploying.
+    names = [schedule.schedule_name for schedule in result]
+    duplicates = sorted({n for n in names if names.count(n) > 1})
+    if duplicates:
+        raise ValueError(
+            f"Workflow schedule names must be unique; pass name=... to tell apart {duplicates}"
+        )
+    return result
+
+
+def _check_schedules_run_on(schedules: Sequence[WorkflowSchedule], source: str) -> None:
+    for schedule in schedules:
+        # A run of a workflow the worker doesn't define is retried forever. The worker serves every
+        # workflow its source registers, including ones imported from packages in its image, so a
+        # definition from another file is only suspect; a workflow given by name is taken on trust.
+        if not isinstance(schedule.workflow, str):
+            defined_in = _source_path_for(schedule.workflow)
+            if os.path.realpath(defined_in) != os.path.realpath(source):
+                warnings.warn(
+                    f"Schedule {schedule.schedule_name!r} starts workflow {schedule.workflow_name!r}, "
+                    + f"which is defined in {defined_in}, not in the worker's source {source}; "
+                    + "unless the source imports it from a package in the worker's image, its runs "
+                    + "will never start",
+                    stacklevel=3,
+                )
+        if schedule.overlap_policy == "skip" and schedule.execution_timeout is None:
+            warnings.warn(
+                f"Schedule {schedule.schedule_name!r} skips firings while a run is open and has no "
+                + "execution_timeout, so a run that never finishes blocks it forever; "
+                + "set execution_timeout=... to bound each run",
+                stacklevel=3,
+            )
 
 
 def run_workflow(

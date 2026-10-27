@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import importlib.util
 import sys
 import textwrap
+import warnings
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+from chalk.workflows import WorkflowSchedule
 
 import chalkcompute._workflow_worker as workflow_worker_mod
 from chalkcompute._gen.chalk.scalinggroup.v1 import service_pb as sg_pb
@@ -16,6 +21,7 @@ from chalkcompute._scaling_group import (
 )
 from chalkcompute._workflow_worker import (
     default_worker_name,
+    WorkflowWorker,
     deploy_workflow_worker,
     script_dependencies,
     worker_requirements,
@@ -151,6 +157,21 @@ class _RecordingScalingGroup:
     def deploy(self) -> _RecordingScalingGroup:
         return self
 
+    def delete(self) -> None:
+        self.kwargs["deleted"] = True
+
+
+class _RecordingChalkClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, Any]] = []
+
+    def sync_workflow_schedules(
+        self, task_queue: str, schedules: list[WorkflowSchedule]
+    ) -> list[Any]:
+        assert _RecordingScalingGroup.instances, "synced before deploying the worker"
+        self.calls.append((task_queue, schedules))
+        return []
+
 
 def test_deploy_workflow_worker_builds_a_task_queue_triggered_group(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -224,3 +245,353 @@ def test_owned_volumes_from_revisions_treats_an_empty_fork_as_unset() -> None:
 
     assert volumes["chalkcompute-sg-files-abc"].ref_name is None
     assert volumes["chalkcompute-sg-files-abc"].mount_path == "/app"
+
+
+def test_deploy_workflow_worker_syncs_schedules_to_its_queue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "nightly_scoring.py"
+    source.write_text(_SCRIPT)
+    _RecordingScalingGroup.instances.clear()
+    monkeypatch.setattr(workflow_worker_mod, "ScalingGroup", _RecordingScalingGroup)
+    client = _RecordingChalkClient()
+    schedules = (
+        WorkflowSchedule("score", "1d", inputs={"segment": "us"}),
+        WorkflowSchedule("score", "0 8 * * 1", name="score-weekly"),
+    )
+
+    worker = deploy_workflow_worker(
+        str(source), schedules=schedules, chalk_client=client
+    )
+
+    assert client.calls == [(worker.task_queue, list(schedules))]
+
+
+def test_deploy_workflow_worker_leaves_schedules_alone_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "nightly_scoring.py"
+    source.write_text(_SCRIPT)
+    _RecordingScalingGroup.instances.clear()
+    monkeypatch.setattr(workflow_worker_mod, "ScalingGroup", _RecordingScalingGroup)
+    client = _RecordingChalkClient()
+
+    deploy_workflow_worker(str(source), chalk_client=client)
+    assert client.calls == []
+
+    worker = deploy_workflow_worker(str(source), schedules=[], chalk_client=client)
+    assert client.calls == [(worker.task_queue, [])]
+
+
+@pytest.mark.parametrize(
+    "schedules",
+    [WorkflowSchedule("score", "1d"), ["score"]],
+)
+def test_deploy_workflow_worker_rejects_invalid_schedules_before_deploying(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, schedules: Any
+) -> None:
+    source = tmp_path / "nightly_scoring.py"
+    source.write_text(_SCRIPT)
+    _RecordingScalingGroup.instances.clear()
+    monkeypatch.setattr(workflow_worker_mod, "ScalingGroup", _RecordingScalingGroup)
+
+    with pytest.raises(TypeError, match="WorkflowSchedule"):
+        deploy_workflow_worker(
+            str(source), schedules=schedules, chalk_client=_RecordingChalkClient()
+        )
+    assert _RecordingScalingGroup.instances == []
+
+
+def test_deploy_workflow_worker_rejects_duplicate_schedule_names_before_deploying(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "nightly_scoring.py"
+    source.write_text(_SCRIPT)
+    _RecordingScalingGroup.instances.clear()
+    monkeypatch.setattr(workflow_worker_mod, "ScalingGroup", _RecordingScalingGroup)
+    client = _RecordingChalkClient()
+    schedules = [
+        WorkflowSchedule("score", "1d"),
+        WorkflowSchedule("rescore", "1h", name="score"),
+    ]
+
+    with pytest.raises(ValueError, match=r"unique.*\['score'\]"):
+        deploy_workflow_worker(str(source), schedules=schedules, chalk_client=client)
+    assert _RecordingScalingGroup.instances == []
+    assert client.calls == []
+
+
+def test_deploy_workflow_worker_reports_a_failed_sync_after_deploying(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "nightly_scoring.py"
+    source.write_text(_SCRIPT)
+    _RecordingScalingGroup.instances.clear()
+    monkeypatch.setattr(workflow_worker_mod, "ScalingGroup", _RecordingScalingGroup)
+    cause = RuntimeError("SyncWorkflowSchedules failed (503): upstream unavailable")
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"^Worker wf-nightly-scoring was deployed but its schedules were not synced: "
+        + r"SyncWorkflowSchedules failed \(503\): upstream unavailable; redeploy to retry$",
+    ) as info:
+        deploy_workflow_worker(
+            str(source),
+            schedules=[WorkflowSchedule("score", "1d")],
+            chalk_client=_FailingSyncClient(cause),
+        )
+    assert info.value.__cause__ is cause
+    assert len(_RecordingScalingGroup.instances) == 1
+
+
+def test_deleting_a_worker_clears_its_schedules_first() -> None:
+    _RecordingScalingGroup.instances.clear()
+    group = _RecordingScalingGroup()
+    client = _RecordingChalkClient()
+    worker = WorkflowWorker(
+        scaling_group=group,  # type: ignore[arg-type]
+        task_queue="chalkcompute-workflows.wf-nightly",
+    )
+
+    def delete() -> None:
+        assert client.calls == [("chalkcompute-workflows.wf-nightly", [])]
+        group.kwargs["deleted"] = True
+
+    group.delete = delete  # type: ignore[method-assign]
+    worker.delete(chalk_client=client)
+
+    assert group.kwargs["deleted"] is True
+
+
+def test_worker_reuses_its_deploy_client_for_delete_and_trigger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "nightly_scoring.py"
+    source.write_text(_SCRIPT)
+    _RecordingScalingGroup.instances.clear()
+    monkeypatch.setattr(workflow_worker_mod, "ScalingGroup", _RecordingScalingGroup)
+
+    def no_default_client() -> Any:
+        raise AssertionError("fell back to a default ChalkClient")
+
+    monkeypatch.setattr(workflow_worker_mod, "_default_chalk_client", no_default_client)
+    triggered: list[tuple[Any, ...]] = []
+
+    class _Client(_RecordingChalkClient):
+        def trigger_workflow(self, workflow: Any, input: Any, **kwargs: Any) -> str:
+            triggered.append((workflow, input, kwargs["task_queue"]))
+            return "handle"
+
+    client = _Client()
+    worker = deploy_workflow_worker(str(source), chalk_client=client)
+    (group,) = _RecordingScalingGroup.instances
+    assert group.kwargs["chalk_client"] is client
+
+    assert worker.trigger("score", {"segment": "us"}) == "handle"
+    assert triggered == [("score", {"segment": "us"}, worker.task_queue)]
+
+    worker.delete()
+    assert client.calls == [(worker.task_queue, [])]
+    assert group.kwargs["deleted"] is True
+
+    other = _RecordingChalkClient()
+    worker.delete(chalk_client=other)
+    assert other.calls == [(worker.task_queue, [])]
+
+
+def test_worker_keeps_the_default_client_it_deployed_with(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "nightly_scoring.py"
+    source.write_text(_SCRIPT)
+    monkeypatch.setattr(workflow_worker_mod, "ScalingGroup", _RecordingScalingGroup)
+    defaults: list[_RecordingChalkClient] = []
+
+    def default_client() -> _RecordingChalkClient:
+        defaults.append(_RecordingChalkClient())
+        return defaults[-1]
+
+    monkeypatch.setattr(workflow_worker_mod, "_default_chalk_client", default_client)
+
+    worker = deploy_workflow_worker(str(source), schedules=[])
+    worker.delete()
+
+    (client,) = defaults
+    assert worker.chalk_client is client
+    assert client.calls == [(worker.task_queue, []), (worker.task_queue, [])]
+
+
+def test_deleting_a_worker_skips_schedules_on_a_chalkpy_without_them() -> None:
+    _RecordingScalingGroup.instances.clear()
+    group = _RecordingScalingGroup()
+    worker = WorkflowWorker(
+        scaling_group=group,  # type: ignore[arg-type]
+        task_queue="chalkcompute-workflows.wf-nightly",
+        chalk_client=object(),
+    )
+
+    worker.delete()
+
+    assert group.kwargs["deleted"] is True
+
+
+class _FailingSyncClient:
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+
+    def sync_workflow_schedules(self, task_queue: str, schedules: Any) -> list[Any]:
+        raise self.exc
+
+
+class _CodedError(RuntimeError):
+    """Like chalkpy's WorkflowScheduleError, which carries the Connect error code."""
+
+    def __init__(self, message: str, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        _CodedError("SyncWorkflowSchedules failed: not supported", "unimplemented"),
+        # Older chalkpy only reports the HTTP status.
+        RuntimeError("SyncWorkflowSchedules failed (404): 404 page not found"),
+        RuntimeError('SyncWorkflowSchedules failed (501): {"code":"unimplemented"}'),
+    ],
+)
+def test_deleting_a_worker_continues_when_the_server_lacks_schedules(
+    exc: Exception, caplog: pytest.LogCaptureFixture
+) -> None:
+    _RecordingScalingGroup.instances.clear()
+    group = _RecordingScalingGroup()
+    worker = WorkflowWorker(
+        scaling_group=group,  # type: ignore[arg-type]
+        task_queue="chalkcompute-workflows.wf-nightly",
+        chalk_client=_FailingSyncClient(exc),
+    )
+
+    with caplog.at_level("WARNING", logger="chalkcompute._workflow_worker"):
+        worker.delete()
+
+    assert group.kwargs["deleted"] is True
+    assert "does not support them" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        RuntimeError("SyncWorkflowSchedules failed (503): upstream unavailable"),
+        _CodedError("SyncWorkflowSchedules failed: no such environment", "not_found"),
+        RuntimeError("unsupported response from the server"),
+    ],
+)
+def test_deleting_a_worker_keeps_it_when_clearing_schedules_fails(
+    exc: Exception,
+) -> None:
+    _RecordingScalingGroup.instances.clear()
+    group = _RecordingScalingGroup()
+    worker = WorkflowWorker(
+        scaling_group=group,  # type: ignore[arg-type]
+        task_queue="chalkcompute-workflows.wf-nightly",
+        chalk_client=_FailingSyncClient(exc),
+    )
+
+    with pytest.raises(RuntimeError) as info:
+        worker.delete()
+
+    assert info.value is exc
+
+    assert "deleted" not in group.kwargs
+
+
+def _load_workflow(path: Path, name: str) -> Any:
+    path.write_text(
+        _SCRIPT
+        + textwrap.dedent(
+            f"""\
+            from chalk.workflows import workflow
+
+            @workflow(name={name!r})
+            async def {name}() -> None:
+                pass
+            """
+        )
+    )
+    spec = importlib.util.spec_from_file_location(f"_wf_{name}", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return getattr(module, name)
+
+
+def test_deploy_workflow_worker_warns_about_a_workflow_from_another_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "nightly_scoring.py"
+    source.write_text(_SCRIPT)
+    other = _load_workflow(tmp_path / "other.py", "wfsched_other_file")
+    _RecordingScalingGroup.instances.clear()
+    monkeypatch.setattr(workflow_worker_mod, "ScalingGroup", _RecordingScalingGroup)
+    client = _RecordingChalkClient()
+    schedules = [WorkflowSchedule(other, "1d", execution_timeout="1h")]
+
+    with pytest.warns(
+        UserWarning, match="defined in .*other.py, not in the worker's source"
+    ):
+        worker = deploy_workflow_worker(
+            str(source), schedules=schedules, chalk_client=client
+        )
+
+    # The source may import it from a package in the image, so the worker still deploys.
+    assert client.calls == [(worker.task_queue, schedules)]
+
+
+def test_deploy_workflow_worker_accepts_a_workflow_from_its_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "nightly_scoring.py"
+    own = _load_workflow(source, "wfsched_own_file")
+    _RecordingScalingGroup.instances.clear()
+    monkeypatch.setattr(workflow_worker_mod, "ScalingGroup", _RecordingScalingGroup)
+    client = _RecordingChalkClient()
+    schedules = [WorkflowSchedule(own, "1d", execution_timeout=timedelta(hours=1))]
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        worker = deploy_workflow_worker(
+            str(source), schedules=schedules, chalk_client=client
+        )
+
+    assert not [w for w in caught if "worker's source" in str(w.message)]
+    assert client.calls == [(worker.task_queue, schedules)]
+
+
+@pytest.mark.parametrize(
+    ("schedule", "warns"),
+    [
+        (WorkflowSchedule("score", "1d"), True),
+        (WorkflowSchedule("score", "1d", execution_timeout="2h"), False),
+        (WorkflowSchedule("score", "1d", overlap_policy="allow_all"), False),
+    ],
+)
+def test_deploy_workflow_worker_warns_about_an_unbounded_skip_schedule(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    schedule: WorkflowSchedule,
+    warns: bool,
+) -> None:
+    source = tmp_path / "nightly_scoring.py"
+    source.write_text(_SCRIPT)
+    monkeypatch.setattr(workflow_worker_mod, "ScalingGroup", _RecordingScalingGroup)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        deploy_workflow_worker(
+            str(source), schedules=[schedule], chalk_client=_RecordingChalkClient()
+        )
+
+    unbounded = [w for w in caught if "execution_timeout" in str(w.message)]
+    assert len(unbounded) == (1 if warns else 0)
+    # Attributed to the deploy_workflow_worker call, not to chalkcompute internals.
+    assert all(w.filename == __file__ for w in unbounded)
