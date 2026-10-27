@@ -184,6 +184,38 @@ def test_deploy_workflow_worker_builds_a_task_queue_triggered_group(
     assert {(f.src, f.dest) for f in image.lazy_local_files} == {
         (str(source), "/app/nightly_scoring.py")
     }
+    assert kwargs["chalk_identity"] is False
+
+
+def test_deploy_workflow_worker_passes_chalk_identity_to_the_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "nightly_scoring.py"
+    source.write_text(_SCRIPT)
+    _RecordingScalingGroup.instances.clear()
+    monkeypatch.setattr(workflow_worker_mod, "ScalingGroup", _RecordingScalingGroup)
+
+    deploy_workflow_worker(str(source), chalk_identity=True)
+
+    (group,) = _RecordingScalingGroup.instances
+    assert group.kwargs["chalk_identity"] is True
+
+
+def test_task_queue_group_sends_chalk_identity() -> None:
+    group = ScalingGroup(
+        image="ubuntu:latest",
+        name="wf-demo",
+        port=None,
+        min_replicas=0,
+        workflow_task_queue="chalkcompute-workflows.wf-demo",
+        chalk_identity=True,
+    )
+    client = _ScalingLifecycleClient()
+    group._client = client  # type: ignore[assignment]
+
+    group.deploy()
+
+    assert client.calls[0][1].spec.container_spec.chalk_workload_identity is not None
 
 
 class _RevisionHistoryClient(_ScalingLifecycleClient):

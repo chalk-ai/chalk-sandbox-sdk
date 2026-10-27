@@ -17,6 +17,7 @@ import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Mapping
 
+from chalkcompute._chalk_identity import ChalkIdentity
 from chalkcompute._image import Image
 from chalkcompute._naming import sanitize_dns_label
 from chalkcompute._scaling_group import ScalingGroup
@@ -155,6 +156,7 @@ def deploy_workflow_worker(
     secrets: list[Secret] | None = None,
     max_replicas: int = 1,
     shutdown_delay_seconds: int | None = None,
+    chalk_identity: bool | ChalkIdentity = False,
     chalk_client: Any | None = None,
 ) -> WorkflowWorker:
     """Deploy a scale-to-zero worker for the workflows defined in ``source``.
@@ -174,6 +176,10 @@ def deploy_workflow_worker(
     image
         Base image for the worker. The source file is added to it, along with the
         packages from ``worker_requirements`` when no image is given.
+    chalk_identity
+        Give the worker Chalk credentials that identify the principal deploying it,
+        so ``ChalkClient()`` inside a task authenticates without a client id/secret.
+        ``ChalkIdentity(mode="sandbox")`` is not supported for scaling groups.
     """
     if source is None:
         source = getattr(sys.modules.get("__main__"), "__file__", None)
@@ -207,6 +213,7 @@ def deploy_workflow_worker(
         max_replicas=max_replicas,
         shutdown_delay_seconds=shutdown_delay_seconds,
         workflow_task_queue=task_queue,
+        chalk_identity=chalk_identity,
         chalk_client=chalk_client,
     ).deploy()
     return WorkflowWorker(scaling_group=scaling_group, task_queue=task_queue)
