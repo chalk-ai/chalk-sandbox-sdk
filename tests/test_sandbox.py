@@ -9,6 +9,7 @@ from connectrpc.errors import ConnectError as ConnectRpcError
 from protobuf import Oneof
 from protobuf.wkt import Timestamp
 from chalkcompute._containerspec import ContainerSpec
+from chalkcompute._call_context import reset_call_scope, set_call_scope
 from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb as process_pb
 from chalkcompute._gen.chalk.sandbox.v2 import service_pb as pb
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
@@ -585,23 +586,54 @@ def test_sandbox_client_create_defaults_entrypoint_to_sleep_infinity() -> None:
 
     assert stub.request is not None
     assert list(stub.request.source.value.entrypoint) == ["sleep", "infinity"]
+    assert not stub.request.source.value.tags
     assert sandbox.image_uri == "python:3.14-slim"
 
 
-def test_sandbox_client_create_forwards_container_fields() -> None:
+@pytest.mark.parametrize(
+    "context, tags, expected_tags",
+    [
+        ({}, {"team": "compute"}, {"team": "compute"}),
+        (
+            {"x-chalk-evaluation-id": "eval-1", "x-chalk-evaluation-run-id": "run-1"},
+            {"team": "compute"},
+            {
+                "team": "compute",
+                "evaluation": "eval-1",
+                "chalk.evaluation.run_id": "run-1",
+            },
+        ),
+        (
+            {"x-chalk-evaluation-run-id": "run-1", "x-chalk-evaluation-id": ""},
+            {},
+            {"chalk.evaluation.run_id": "run-1"},
+        ),
+        (
+            {"x-chalk-evaluation-id": "eval-1", "x-chalk-evaluation-run-id": "run-1"},
+            {"evaluation": "explicit-eval", "chalk.evaluation.run_id": "explicit-run"},
+            {"evaluation": "explicit-eval", "chalk.evaluation.run_id": "explicit-run"},
+        ),
+    ],
+    ids=["no-context", "evaluation-context", "run-only", "explicit-tags"],
+)
+def test_sandbox_client_create_forwards_container_fields(
+    context: dict[str, str], tags: dict[str, str], expected_tags: dict[str, str]
+) -> None:
     from chalkcompute import ComputeClass, ContainerSecurityPolicy, KernelPolicy
     from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
 
     client = SandboxClient()
     stub = _Stub()
     client._stub = stub  # type: ignore[assignment]
+    original_tags = dict(tags)
+    token = set_call_scope({"metadata": context}, None)
     try:
         client.create(
             "python:3.14-slim",
             gpu="nvidia-l4",
             port=8080,
             lifetime="30s",
-            tags={"team": "compute"},
+            tags=tags,
             compute_class=ComputeClass.HOST,
             security_policy=ContainerSecurityPolicy(
                 kernel_policy=KernelPolicy.RESTRICTED
@@ -609,6 +641,7 @@ def test_sandbox_client_create_forwards_container_fields() -> None:
             wait=False,
         )
     finally:
+        reset_call_scope(token)
         client.close()
 
     assert stub.request is not None
@@ -616,7 +649,8 @@ def test_sandbox_client_create_forwards_container_fields() -> None:
     assert spec.resources is not None
     assert spec.resources.gpu == "nvidia-l4"
     assert spec.port == 8080
-    assert dict(spec.tags) == {"team": "compute"}
+    assert dict(spec.tags) == expected_tags
+    assert tags == original_tags
     assert spec.compute_class == container_pb.ComputeClass.HOST
     assert spec.security_policy is not None
     assert spec.has_field("lifetime")

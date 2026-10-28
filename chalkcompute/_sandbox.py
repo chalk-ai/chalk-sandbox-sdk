@@ -41,6 +41,7 @@ from protobuf import Oneof
 from protobuf.wkt import Duration
 
 from chalkcompute._artifact import ArtifactClient, _artifact_from_proto
+from chalkcompute._call_context import get_call_context
 from chalkcompute._connect import (
     ConnectError,
     ConnectClient,
@@ -721,7 +722,8 @@ class Sandbox:
             Optional host pool ID to restrict placement of host compute class sandboxes.
             Unstable; subject to change.
         tags
-            Optional labels attached to the sandbox spec.
+            Optional labels attached to the sandbox spec. During an evaluation call,
+            evaluation and run IDs are added unless explicitly supplied in tags.
         restart_policy
             Optional restart behavior. Use :attr:`RestartPolicy.NEVER` or
             :attr:`RestartPolicy.ALWAYS`.
@@ -2108,6 +2110,15 @@ class SandboxClient:
         poll_interval: float | None,
         timeout: float,
     ) -> None:
+        # Attribute sandboxes created by evaluation tasks without replacing explicit tags.
+        tags = dict(sandbox._tags)
+        context = get_call_context()
+        for header, tag in (
+            ("x-chalk-evaluation-id", "evaluation"),
+            ("x-chalk-evaluation-run-id", "chalk.evaluation.run_id"),
+        ):
+            if value := context.get(header):
+                tags.setdefault(tag, value)
         spec = ContainerSpec(
             image=image,
             name=sandbox._name,
@@ -2130,7 +2141,7 @@ class SandboxClient:
             execution_target=sandbox._execution_target,
             resource_detectors=sandbox._resource_detectors,
             host_pool_id=sandbox._host_pool_id,
-            tags=sandbox._tags,
+            tags=tags,
             restart_policy=sandbox._restart_policy,
             chalk_identity=sandbox._chalk_identity,
             oidc_token_files=sandbox._oidc_token_files,
