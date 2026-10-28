@@ -16,6 +16,62 @@ from chalkcompute._sandbox import SandboxClient, SandboxCreationError
 from chalkcompute._volume import VolumeMount
 
 
+@pytest.mark.parametrize("next_cursor", [None, ""])
+@pytest.mark.parametrize("count", [0, 1])
+def test_sandbox_client_list_single_page(count: int, next_cursor: str | None) -> None:
+    client = SandboxClient()
+    stub = MagicMock()
+    stub.list_sandboxes.return_value = pb.ListSandboxesResponse(
+        sandboxes=[pb.SandboxInfo(id="sandbox-1", status=pb.SandboxStatus.RUNNING)]
+        * count,
+        next_cursor=next_cursor,
+    )
+    client._stub = stub
+    try:
+        sandboxes = client.list()
+    finally:
+        client.close()
+
+    assert [sandbox.id for sandbox in sandboxes] == ["sandbox-1"] * count
+    stub.list_sandboxes.assert_called_once_with(
+        pb.ListSandboxesRequest(), headers=client._headers
+    )
+
+
+def test_sandbox_client_list_follows_cursors_through_empty_page() -> None:
+    client = SandboxClient()
+    stub = MagicMock()
+    stub.list_sandboxes.side_effect = [
+        pb.ListSandboxesResponse(
+            sandboxes=[
+                pb.SandboxInfo(id=f"sandbox-{i}", status=pb.SandboxStatus.RUNNING)
+                for i in range(100)
+            ],
+            next_cursor="page-2",
+        ),
+        pb.ListSandboxesResponse(next_cursor="page-3"),
+        pb.ListSandboxesResponse(
+            sandboxes=[
+                pb.SandboxInfo(id="sandbox-100", status=pb.SandboxStatus.TERMINATED)
+            ]
+        ),
+    ]
+    client._stub = stub
+    try:
+        sandboxes = client.list()
+    finally:
+        client.close()
+
+    assert [sandbox.id for sandbox in sandboxes] == [f"sandbox-{i}" for i in range(101)]
+    assert sandboxes[0].status == "running"
+    assert sandboxes[-1].status == "terminated"
+    calls = stub.list_sandboxes.call_args_list
+    assert len(calls) == 3
+    assert not calls[0].args[0].has_field("cursor")
+    assert [call.args[0].cursor for call in calls[1:]] == ["page-2", "page-3"]
+    assert all(call.kwargs == {"headers": client._headers} for call in calls)
+
+
 class _RecordingSandboxClient:
     _connect = object()
 

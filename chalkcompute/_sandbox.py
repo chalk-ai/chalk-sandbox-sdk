@@ -2195,10 +2195,16 @@ class SandboxClient:
         list of SandboxInfo
             One entry per sandbox.
         """
-        resp = self._stub.list_sandboxes(
-            pb.ListSandboxesRequest(), headers=self._headers
-        )
-        return [_pb_to_sandbox_info(s) for s in resp.sandboxes]
+        sandboxes: _SandboxInfoList = []
+        cursor: str | None = None
+        while True:
+            resp = self._stub.list_sandboxes(
+                pb.ListSandboxesRequest(cursor=cursor), headers=self._headers
+            )
+            sandboxes.extend(_pb_to_sandbox_info(s) for s in resp.sandboxes)
+            cursor = resp.next_cursor or None
+            if cursor is None:
+                return sandboxes
 
 
 # ---------------------------------------------------------------------------
