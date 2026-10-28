@@ -989,11 +989,13 @@ class Sandbox:
         return sandbox
 
     @classmethod
-    def list_all(cls, *, chalk_client: Any | None = None) -> list[SandboxInfo]:
-        """List all sandboxes in the current environment."""
+    def list_all(
+        cls, *, chalk_client: Any | None = None, limit: int | None = None
+    ) -> list[SandboxInfo]:
+        """List sandboxes in the current environment, optionally capped by ``limit``."""
         client = SandboxClient.from_env(chalk_client=chalk_client)
         try:
-            return client.list()
+            return client.list(limit=limit)
         finally:
             client.close()
 
@@ -2232,24 +2234,51 @@ class SandboxClient:
         """
         return Sandbox(client=self, sandbox_id=id)
 
-    def list(self) -> _SandboxInfoList:
-        """List all sandboxes.
+    def list(self, *, limit: int | None = None) -> _SandboxInfoList:
+        """List sandboxes, fetching pages until exhausted or ``limit`` is reached.
+
+        Parameters
+        ----------
+        limit
+            Maximum number of results. ``None`` fetches all pages; zero returns
+            an empty list without making a request. Must be nonnegative.
 
         Returns
         -------
         list of SandboxInfo
             One entry per sandbox.
+
+        Raises
+        ------
+        SandboxError
+            The service repeats a pagination cursor before reaching the limit.
         """
+        if limit is not None and limit < 0:
+            raise ValueError("limit must be >= 0 or None")
         sandboxes: _SandboxInfoList = []
         cursor: str | None = None
-        while True:
+        seen_cursors: set[str] = set()
+        while limit is None or len(sandboxes) < limit:
+            remaining = None if limit is None else limit - len(sandboxes)
             resp = self._stub.list_sandboxes(
-                pb.ListSandboxesRequest(cursor=cursor), headers=self._headers
+                pb.ListSandboxesRequest(
+                    cursor=cursor,
+                    limit=None if remaining is None else min(100, remaining),
+                ),
+                headers=self._headers,
             )
-            sandboxes.extend(_pb_to_sandbox_info(s) for s in resp.sandboxes)
+            sandboxes.extend(_pb_to_sandbox_info(s) for s in resp.sandboxes[:remaining])
+            if limit is not None and len(sandboxes) >= limit:
+                return sandboxes
             cursor = resp.next_cursor or None
             if cursor is None:
                 return sandboxes
+            if cursor in seen_cursors:
+                raise SandboxError(
+                    "ListSandboxes returned a repeated pagination cursor"
+                )
+            seen_cursors.add(cursor)
+        return sandboxes
 
 
 # ---------------------------------------------------------------------------

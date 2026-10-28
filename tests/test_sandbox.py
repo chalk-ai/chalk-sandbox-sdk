@@ -12,7 +12,7 @@ from chalkcompute._containerspec import ContainerSpec
 from chalkcompute._gen.chalk.sandbox.v2 import process_service_pb as process_pb
 from chalkcompute._gen.chalk.sandbox.v2 import service_pb as pb
 from chalkcompute._gen.chalk.container.v1 import service_pb as container_pb
-from chalkcompute._sandbox import SandboxClient, SandboxCreationError
+from chalkcompute._sandbox import SandboxClient, SandboxCreationError, SandboxError
 from chalkcompute._volume import VolumeMount
 
 
@@ -70,6 +70,65 @@ def test_sandbox_client_list_follows_cursors_through_empty_page() -> None:
     assert not calls[0].args[0].has_field("cursor")
     assert [call.args[0].cursor for call in calls[1:]] == ["page-2", "page-3"]
     assert all(call.kwargs == {"headers": client._headers} for call in calls)
+
+
+@pytest.mark.parametrize("cursors", [["a", "a"], ["a", "b", "a"]])
+def test_sandbox_client_list_rejects_cursor_cycles(cursors: list[str]) -> None:
+    with SandboxClient() as client:
+        stub = MagicMock()
+        stub.list_sandboxes.side_effect = [
+            pb.ListSandboxesResponse(next_cursor=cursor) for cursor in cursors
+        ]
+        client._stub = stub
+        with pytest.raises(SandboxError, match="repeated pagination cursor"):
+            client.list()
+        assert stub.list_sandboxes.call_count == len(cursors)
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_sandbox_client_list_limit_without_requests(limit: int) -> None:
+    with SandboxClient() as client:
+        stub = MagicMock()
+        client._stub = stub
+        if limit < 0:
+            with pytest.raises(ValueError, match="limit must be >= 0"):
+                client.list(limit=limit)
+        else:
+            assert client.list(limit=limit) == []
+        stub.list_sandboxes.assert_not_called()
+
+
+def test_sandbox_client_list_caps_results_and_page_sizes() -> None:
+    with SandboxClient() as client:
+        stub = MagicMock()
+        stub.list_sandboxes.side_effect = [
+            pb.ListSandboxesResponse(
+                sandboxes=[
+                    pb.SandboxInfo(id=f"sandbox-{i}", status=pb.SandboxStatus.RUNNING)
+                    for i in range(start, start + 100)
+                ],
+                next_cursor="next",
+            )
+            for start in (0, 100)
+        ]
+        client._stub = stub
+        sandboxes = client.list(limit=101)
+        assert [sandbox.id for sandbox in sandboxes] == [
+            f"sandbox-{i}" for i in range(101)
+        ]
+        calls = stub.list_sandboxes.call_args_list
+        assert len(calls) == 2
+        assert [call.args[0].limit for call in calls] == [100, 1]
+        assert calls[1].args[0].cursor == "next"
+
+
+def test_sandbox_list_all_forwards_limit() -> None:
+    with patch.object(SandboxClient, "from_env") as from_env:
+        client = from_env.return_value
+        client.list.return_value = []
+        assert Sandbox.list_all(limit=5) == []
+        client.list.assert_called_once_with(limit=5)
+        client.close.assert_called_once()
 
 
 class _RecordingSandboxClient:
