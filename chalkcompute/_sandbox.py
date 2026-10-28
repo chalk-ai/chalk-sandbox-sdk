@@ -1442,10 +1442,10 @@ class Sandbox:
         """
         _set_sandbox_span_id(self._id)
         sandbox_id = self._require_started()
+        validate_env(env)
         info = self.info
         if info is not None and info.compute_class == ComputeClass.K8S:
             client = self._require_client()
-            validate_env(env)
             request = process_pb.ExecCommandRequest(
                 sandbox_id=sandbox_id,
                 command=command,
