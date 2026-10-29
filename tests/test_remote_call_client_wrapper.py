@@ -286,3 +286,38 @@ def test_import_native_falls_back_to_site_packages(
 
     assert module.RemoteCallClient is LegacyNativeRemoteCallClient
     assert module.__file__ == str(native_path)
+
+
+def test_cancel_preserves_server_outcome_and_termination_status(monkeypatch):
+    from chalkcompute import RemoteCallTerminationStatus
+
+    requests = []
+
+    def cancel(self, call_id, terminate_containers):
+        requests.append((call_id, terminate_containers))
+        return {"status": 6, "status_name": "cancelled", "termination_status": 2}
+
+    monkeypatch.setattr(LegacyNativeRemoteCallClient, "cancel", cancel, raising=False)
+    client = RemoteCallClient("remote.chalk.test:443")
+    result = client.cancel("call-1", terminate_containers=True)
+    assert result.is_cancelled
+    assert result.termination_status is RemoteCallTerminationStatus.PENDING
+    assert requests == [("call-1", True)]
+
+
+def test_cancel_conflicting_policy_error_is_not_retried(monkeypatch):
+    attempts = []
+
+    def cancel(self, call_id, terminate_containers):
+        attempts.append((call_id, terminate_containers))
+        raise remote_call_client.RemoteCallStatusError(
+            "cancellation policy already fixed"
+        )
+
+    monkeypatch.setattr(LegacyNativeRemoteCallClient, "cancel", cancel, raising=False)
+    client = RemoteCallClient("remote.chalk.test:443")
+    with pytest.raises(
+        remote_call_client.RemoteCallStatusError, match="policy already fixed"
+    ):
+        client.cancel("call-1", terminate_containers=True)
+    assert attempts == [("call-1", True)]

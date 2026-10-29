@@ -5,7 +5,7 @@ description = "SDK for Chalk sandboxes, containers, and volumes"
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
 dependencies = [
-    "chalk-remote-call-python>=1.10.10,<2.0.0",
+    "chalk-remote-call-python>=1.10.12,<2.0.0",
     "pyyaml>=6.0.0",
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",

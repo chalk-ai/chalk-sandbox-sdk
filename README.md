@@ -12,6 +12,41 @@ or local `chalk-remote-call-python` changes, see
 pip install chalkcompute
 ```
 
+## Cancelling deferred calls
+
+Handles returned by function and class-method `defer()` calls support cancellation:
+
+```python
+import chalkcompute as cc
+
+call = worker.defer(inputs)
+result = call.cancel()  # Running work finishes, but its result is discarded.
+# To also kill containers executing a call, select this on its first cancellation:
+# result = call.cancel(terminate_containers=True)
+
+try:
+    call.get()
+except cc.CallCancelledError:
+    pass
+```
+
+Inside an event loop, use `await call.cancel(...)`. The result reports the call
+status and `termination_status`; container termination may still be pending when
+cancellation returns. The first successful cancellation fixes the termination
+choice. Repeating the same choice is idempotent; changing it is rejected.
+
+Cancellation requires a Stream-backed queue and cancellation-capable consumers.
+Queued calls are removed. Running calls retain their concurrency reservation until
+execution finishes or their consumer dies. `get()` and `stream()` raise
+`CallCancelledError` and never resubmit cancelled work. Output already delivered
+by a stream cannot be retracted. A result timeout does not cancel the call.
+Terminating a container can interrupt other calls executing in that container;
+those calls follow their normal crash/retry policy.
+
+Generated function/class images advertise `CHALK_FNQ_CANCELLATION_SUPPORTED=true`.
+Set it to `false` in the deployment environment to opt out. Custom images must
+advertise support only when their shim implements the cancellation protocol.
+
 ## Quick start
 
 ```python

@@ -350,6 +350,7 @@ class FakeRemoteCallClient:
         self.calls: list[tuple[str, bytes, list[tuple[str, str]]]] = []
         self.enqueues: list[tuple[str, bytes, list[tuple[str, str]]]] = []
         self.purges: list[str] = []
+        self.cancellations: list[tuple[str, bool]] = []
         self.closed = False
         FakeRemoteCallClient.instances.append(self)
 
@@ -392,6 +393,21 @@ class FakeRemoteCallClient:
         if self.poll_errors:
             raise self.poll_errors.pop(0)
         return self.poll_results.pop(0)
+
+    def cancel(self, call_id: str, *, terminate_containers: bool = False):
+        from chalkcompute._remote_call_client import (
+            RemoteCallCancelResult,
+            RemoteCallTerminationStatus,
+        )
+
+        self.cancellations.append((call_id, terminate_containers))
+        return RemoteCallCancelResult(
+            6,
+            "cancelled",
+            RemoteCallTerminationStatus.PENDING
+            if terminate_containers
+            else RemoteCallTerminationStatus.NOT_REQUESTED,
+        )
 
     def purge_function(self, function_name: str) -> int:
         if self.purge_errors:
@@ -706,9 +722,14 @@ def _err(exc_type: str, message: str) -> str:
 
 
 def _poll(status_name, *, chunks=None, error_message=None):
-    status = {"pending": 1, "running": 2, "completed": 3, "failed": 4, "expired": 5}[
-        status_name
-    ]
+    status = {
+        "pending": 1,
+        "running": 2,
+        "completed": 3,
+        "failed": 4,
+        "expired": 5,
+        "cancelled": 6,
+    }[status_name]
     return RemoteCallPollResult(
         status=status,
         status_name=status_name,
@@ -1288,3 +1309,97 @@ def test_call_timeout_none_disables_deadline() -> None:
 
     assert thread.is_alive()
     assert result == {}
+
+
+@pytest.mark.parametrize("terminate_containers", [False, True])
+def test_deferred_cancel_threads_policy_and_stops_get(terminate_containers):
+    from chalkcompute import CallCancelledError, RemoteCallTerminationStatus
+
+    handle = _remote_function().defer(98)
+    result = handle.cancel(terminate_containers=terminate_containers)
+    assert result.is_cancelled
+    assert result.termination_status == (
+        RemoteCallTerminationStatus.PENDING
+        if terminate_containers
+        else RemoteCallTerminationStatus.NOT_REQUESTED
+    )
+    client = FakeRemoteCallClient.instances[-1]
+    assert client.cancellations == [("call-1", terminate_containers)]
+    with pytest.raises(CallCancelledError, match="call-1"):
+        handle.get()
+    assert len(client.enqueues) == 1
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("async_call", [False, True])
+def test_deferred_cancelled_poll_never_resubmits_or_delivers_chunks(stream, async_call):
+    from chalkcompute import CallCancelledError
+
+    FakeRemoteCallClient.poll_results = [
+        _poll("cancelled", chunks=[_result_ipc([99])]),
+    ]
+    handle = _remote_function().defer(98)
+    handle._is_async = async_call
+
+    async def run():
+        if stream:
+            return [item async for item in handle.stream()]
+        return await handle.get()
+
+    with pytest.raises(CallCancelledError, match="call-1"):
+        if async_call:
+            asyncio.run(run())
+        elif stream:
+            list(handle.stream())
+        else:
+            handle.get()
+    assert sum(len(client.enqueues) for client in FakeRemoteCallClient.instances) == 1
+
+
+def test_deferred_cancel_during_retry_backoff_prevents_resubmission(monkeypatch):
+    from chalkcompute import CallCancelledError
+
+    FakeRemoteCallClient.poll_results = [
+        _poll("failed", error_message=_err("ProxyError", "CallFunction RPC failed")),
+    ]
+    handle = _remote_function().defer(98)
+    monkeypatch.setattr(function_mod.time, "sleep", lambda _: handle.cancel())
+    with pytest.raises(CallCancelledError):
+        handle.get()
+    assert sum(len(client.enqueues) for client in FakeRemoteCallClient.instances) == 1
+
+
+def test_deferred_cancel_awaitable_in_event_loop():
+    async def run():
+        handle = _remote_function().defer(98)
+        result = await handle.cancel(terminate_containers=True)
+        assert result.is_cancelled
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("async_call", [False, True])
+def test_cancelling_suspended_stream_discards_buffered_chunks(async_call):
+    from chalkcompute import CallCancelledError
+
+    FakeRemoteCallClient.poll_results = [
+        _poll("running", chunks=[_result_ipc([1]), _result_ipc([2])]),
+    ]
+    handle = _remote_function().defer(98)
+    handle._is_async = async_call
+
+    async def run():
+        stream = handle.stream()
+        assert (await anext(stream)).column(0).to_pylist() == [1]
+        await handle.cancel()
+        with pytest.raises(CallCancelledError):
+            await anext(stream)
+
+    if async_call:
+        asyncio.run(run())
+    else:
+        stream = handle.stream()
+        assert next(stream).column(0).to_pylist() == [1]
+        handle.cancel()
+        with pytest.raises(CallCancelledError):
+            next(stream)
