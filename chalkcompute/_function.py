@@ -3805,11 +3805,10 @@ class RemoteFunction:
         return results
 
     def _enqueue(self, feather_bytes: bytes) -> str:
-        """Enqueue a pre-serialized call payload and return its call id.
+        """Enqueue a serialized call and return its stable call ID.
 
-        Shared by :meth:`defer` and :meth:`FunctionCallHandle` resubmission, so a
-        retried call goes through the exact same queue path (fresh per-call
-        metadata included).
+        The server owns all execution retries for this queued invocation;
+        per-call retry-count overrides travel with its admission request.
         """
         self._wait_for_background_deploy()
         function_name = self._queue_function_name()
