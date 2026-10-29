@@ -968,6 +968,32 @@ def test_sandbox_id_survives_permission_denied_during_readiness_poll() -> None:
         client.close()
 
 
+def test_sandbox_terminate_reuses_run_client_after_readiness_failure() -> None:
+    # Unlike the test above, this sandbox has no sandbox_client= at
+    # construction, so run() must resolve one via SandboxClient.from_env().
+    # terminate() should reuse that same client rather than resolving a
+    # second, differently-authenticated one through _require_client().
+    fake_client = SandboxClient()
+    fake_client._stub = _PermissionDeniedOnGetStub()  # type: ignore[assignment]
+    sandbox = Sandbox(image="ubuntu:latest")
+
+    try:
+        with patch.object(
+            SandboxClient, "from_env", return_value=fake_client
+        ) as from_env:
+            with pytest.raises(SandboxError, match="still running"):
+                with patch("chalkcompute._sandbox.time.sleep"):
+                    sandbox.run(poll_interval=0, timeout=30)
+
+            sandbox.terminate()
+
+        from_env.assert_called_once_with(chalk_client=None)
+        assert fake_client._stub.terminate_request is not None
+        assert fake_client._stub.terminate_request.id == "sandbox-123"
+    finally:
+        fake_client.close()
+
+
 class _ProcessStub:
     def __init__(self) -> None:
         self.request: process_pb.OpenSessionRequest | None = None

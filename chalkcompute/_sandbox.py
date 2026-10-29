@@ -1012,7 +1012,10 @@ class Sandbox:
     def info(self) -> SandboxInfo | None:
         """The most recently fetched :class:`SandboxInfo` snapshot.
 
-        ``None`` until the sandbox has been started or attached to.
+        ``None`` until the sandbox has been started or attached to. If
+        :meth:`run` created the sandbox but failed before a snapshot was
+        fetched (for example, a readiness check that errored), this fetches
+        one now and raises if that fetch itself fails.
         """
         if self._info is None and self._id is not None:
             self._info = self._fetch_info()
@@ -1366,6 +1369,9 @@ class Sandbox:
                                 secret_name = resolved._secret_name
                                 resolved_credentials.append((secret, secret_name))
                             transform.headers_secrets[placeholder] = secret_name
+        # Bind the client before instantiating so a handle still has one to
+        # call .terminate() with if readiness polling fails mid-_instantiate.
+        self._client = client
         client._instantiate(
             self,
             image,
@@ -1375,7 +1381,6 @@ class Sandbox:
             poll_interval=poll_interval,
             timeout=timeout,
         )
-        self._client = client
         self._terminated = False
         _set_sandbox_span_id(self._id)
         if self._pending_files:
@@ -2163,6 +2168,9 @@ class SandboxClient:
                 )
             except ConnectRpcError:
                 pass
+            # Already terminated above, so the handle shouldn't claim to be running.
+            sandbox._id = None
+            sandbox._info = None
             raise SandboxCreationError(
                 "The Chalk server does not support OIDCTokenFile; the sandbox was "
                 "terminated. Upgrade the Chalk deployment or remove the OIDCTokenFile "
@@ -2179,7 +2187,7 @@ class SandboxClient:
         elif wait and info.status in ("failed", "error", "unknown", "terminated"):
             raise _sandbox_creation_error(info)
 
-        sandbox._id = info.id
+        # info.id is already sandbox._id, bound above before polling.
         sandbox._info = info
 
     def _poll_until_ready(

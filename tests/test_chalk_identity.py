@@ -364,6 +364,30 @@ def test_sandbox_create_fails_and_cleans_up_when_server_drops_token_files() -> N
     assert stub.terminated == ["sandbox-old"]
 
 
+def test_sandbox_handle_is_reusable_after_server_drops_token_files() -> None:
+    # The server-side terminate above already tore the sandbox down, so the
+    # handle shouldn't keep claiming that id -- otherwise a retried .run()
+    # sees "already running" and .terminate() hits a 404 instead of a no-op.
+    stub = _OldServerStub()
+    client = SandboxClient()
+    client._stub = stub  # type: ignore[assignment]
+    sandbox = Sandbox(
+        image="python:3.14-slim",
+        chalk_identity=SANDBOX_IDENTITY,
+        env={"TOKEN": SNOWFLAKE},
+        sandbox_client=client,
+    )
+    try:
+        with pytest.raises(
+            SandboxCreationError, match="does not support OIDCTokenFile"
+        ):
+            sandbox.run(wait=False)
+        assert sandbox.id is None
+        assert sandbox.info is None
+    finally:
+        client.close()
+
+
 def test_sandbox_without_token_files_is_unaffected_by_the_server_check() -> None:
     stub = _OldServerStub()
     sandbox = _create(stub, chalk_identity=SANDBOX_IDENTITY)
